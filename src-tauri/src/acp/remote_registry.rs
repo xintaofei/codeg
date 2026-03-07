@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 use crate::acp::registry;
+use crate::app_error::AppCommandError;
 use crate::models::agent::AgentType;
 
 pub const REGISTRY_URL: &str =
@@ -51,30 +52,29 @@ struct RegistryBinaryPlatformItem {
     archive: String,
 }
 
-async fn fetch_registry_payload() -> Result<RegistryPayload, String> {
+async fn fetch_registry_payload() -> Result<RegistryPayload, AppCommandError> {
     let response = reqwest::Client::new()
         .get(REGISTRY_URL)
         .send()
         .await
-        .map_err(|e| format!("failed to fetch ACP registry: {e}"))?;
+        .map_err(|e| AppCommandError::from(format!("failed to fetch ACP registry: {e}")))?;
     if !response.status().is_success() {
         return Err(format!(
             "failed to fetch ACP registry: HTTP {}",
             response.status()
-        ));
+        )
+        .into());
     }
 
-    response
+    let text = response
         .text()
         .await
-        .map_err(|e| format!("failed to read ACP registry response: {e}"))
-        .and_then(|text| {
-            serde_json::from_str::<RegistryPayload>(&text)
-                .map_err(|e| format!("failed to parse ACP registry JSON: {e}"))
-        })
+        .map_err(|e| AppCommandError::from(format!("failed to read ACP registry response: {e}")))?;
+    serde_json::from_str::<RegistryPayload>(&text)
+        .map_err(|e| AppCommandError::from(format!("failed to parse ACP registry JSON: {e}")))
 }
 
-pub async fn fetch_supported_agents() -> Result<Vec<RegistryAgent>, String> {
+pub async fn fetch_supported_agents() -> Result<Vec<RegistryAgent>, AppCommandError> {
     let payload = fetch_registry_payload().await?;
 
     let mut supported = Vec::new();
@@ -96,7 +96,7 @@ pub async fn fetch_supported_agents() -> Result<Vec<RegistryAgent>, String> {
 pub async fn fetch_binary_release(
     agent_type: AgentType,
     platform: &str,
-) -> Result<Option<RegistryBinaryRelease>, String> {
+) -> Result<Option<RegistryBinaryRelease>, AppCommandError> {
     let payload = fetch_registry_payload().await?;
     let item = payload.agents.into_iter().find(|item| {
         registry::from_registry_id(&item.id)

@@ -7,6 +7,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::app_error::AppCommandError;
+
 const MARKETPLACE_OFFICIAL: &str = "official_registry";
 const MARKETPLACE_SMITHERY: &str = "smithery";
 
@@ -98,12 +100,12 @@ pub struct McpMarketplaceServerDetail {
 }
 
 #[tauri::command]
-pub async fn mcp_scan_local() -> Result<Vec<LocalMcpServer>, String> {
+pub async fn mcp_scan_local() -> Result<Vec<LocalMcpServer>, AppCommandError> {
     scan_local_servers()
 }
 
 #[tauri::command]
-pub async fn mcp_list_marketplaces() -> Result<Vec<McpMarketplaceProvider>, String> {
+pub async fn mcp_list_marketplaces() -> Result<Vec<McpMarketplaceProvider>, AppCommandError> {
     Ok(vec![
         McpMarketplaceProvider {
             id: MARKETPLACE_OFFICIAL.to_string(),
@@ -124,14 +126,14 @@ pub async fn mcp_search_marketplace(
     provider_id: String,
     query: Option<String>,
     limit: Option<u32>,
-) -> Result<Vec<McpMarketplaceItem>, String> {
+) -> Result<Vec<McpMarketplaceItem>, AppCommandError> {
     let q = query.unwrap_or_default();
     let max = limit.unwrap_or(30).clamp(1, 100);
 
     match provider_id.as_str() {
         MARKETPLACE_OFFICIAL => search_official_registry(&q, max).await,
         MARKETPLACE_SMITHERY => search_smithery(&q, max).await,
-        _ => Err(format!("unsupported marketplace provider: {provider_id}")),
+        _ => Err(format!("unsupported marketplace provider: {provider_id}").into()),
     }
 }
 
@@ -139,7 +141,7 @@ pub async fn mcp_search_marketplace(
 pub async fn mcp_get_marketplace_server_detail(
     provider_id: String,
     server_id: String,
-) -> Result<McpMarketplaceServerDetail, String> {
+) -> Result<McpMarketplaceServerDetail, AppCommandError> {
     match provider_id.as_str() {
         MARKETPLACE_OFFICIAL => {
             let detail = fetch_official_server_detail(&server_id).await?;
@@ -251,7 +253,7 @@ pub async fn mcp_get_marketplace_server_detail(
                 spec,
             })
         }
-        _ => Err(format!("unsupported marketplace provider: {provider_id}")),
+        _ => Err(format!("unsupported marketplace provider: {provider_id}").into()),
     }
 }
 
@@ -264,10 +266,10 @@ pub async fn mcp_install_from_marketplace(
     option_id: Option<String>,
     protocol: Option<String>,
     parameter_values: Option<Value>,
-) -> Result<LocalMcpServer, String> {
+) -> Result<LocalMcpServer, AppCommandError> {
     let normalized_apps = normalize_apps(apps);
     if normalized_apps.is_empty() {
-        return Err("at least one target app is required".to_string());
+        return Err("at least one target app is required".to_string().into());
     }
 
     let selection = InstallSelection::new(option_id, protocol, parameter_values)?;
@@ -284,7 +286,7 @@ pub async fn mcp_install_from_marketplace(
                 let detail = fetch_smithery_server_detail(&server_id).await?;
                 resolve_smithery_install_spec_with_selection(&detail, &selection)?
             }
-            _ => return Err(format!("unsupported marketplace provider: {provider_id}")),
+            _ => return Err(format!("unsupported marketplace provider: {provider_id}").into()),
         }
     };
 
@@ -293,7 +295,9 @@ pub async fn mcp_install_from_marketplace(
     }
 
     find_local_server(&server_id)?.ok_or_else(|| {
-        format!("installed server '{server_id}', but failed to load it from local configuration")
+        AppCommandError::from(format!(
+            "installed server '{server_id}', but failed to load it from local configuration"
+        ))
     })
 }
 
@@ -302,11 +306,11 @@ pub async fn mcp_upsert_local_server(
     server_id: String,
     spec: Value,
     apps: Vec<McpAppType>,
-) -> Result<LocalMcpServer, String> {
+) -> Result<LocalMcpServer, AppCommandError> {
     let canonical_spec = canonicalize_spec(&spec, "local MCP save")?;
     let target_apps = normalize_apps(apps);
     if target_apps.is_empty() {
-        return Err("at least one target app is required".to_string());
+        return Err(AppCommandError::from("at least one target app is required"));
     }
 
     let target_set = target_apps.iter().copied().collect::<BTreeSet<_>>();
@@ -324,18 +328,21 @@ pub async fn mcp_upsert_local_server(
         }
     }
 
-    find_local_server(&server_id)?
-        .ok_or_else(|| format!("saved local MCP server '{server_id}', but failed to reload it"))
+    find_local_server(&server_id)?.ok_or_else(|| {
+        AppCommandError::from(format!(
+            "saved local MCP server '{server_id}', but failed to reload it"
+        ))
+    })
 }
 
 #[tauri::command]
 pub async fn mcp_set_server_apps(
     server_id: String,
     apps: Vec<McpAppType>,
-) -> Result<Option<LocalMcpServer>, String> {
+) -> Result<Option<LocalMcpServer>, AppCommandError> {
     let target_apps = normalize_apps(apps);
     let current = find_local_server(&server_id)?
-        .ok_or_else(|| format!("local MCP server not found: {server_id}"))?;
+        .ok_or_else(|| AppCommandError::from(format!("local MCP server not found: {server_id}")))?;
 
     let target_set = target_apps.iter().copied().collect::<BTreeSet<_>>();
     let current_set = current.apps.iter().copied().collect::<BTreeSet<_>>();
@@ -355,7 +362,7 @@ pub async fn mcp_set_server_apps(
 pub async fn mcp_remove_server(
     server_id: String,
     apps: Option<Vec<McpAppType>>,
-) -> Result<bool, String> {
+) -> Result<bool, AppCommandError> {
     let target_apps = match apps {
         Some(selected) => normalize_apps(selected),
         None => vec![
@@ -396,11 +403,11 @@ impl InstallSelection {
         option_id: Option<String>,
         protocol: Option<String>,
         parameter_values: Option<Value>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, AppCommandError> {
         let parsed = if let Some(raw) = parameter_values {
             let obj = raw
                 .as_object()
-                .ok_or_else(|| "parameter_values must be a JSON object".to_string())?;
+                .ok_or_else(|| AppCommandError::from("parameter_values must be a JSON object"))?;
             obj.clone()
         } else {
             Map::new()
@@ -497,61 +504,68 @@ fn opencode_config_path() -> PathBuf {
         .join("config.json")
 }
 
-fn read_json_file(path: &Path) -> Result<Value, String> {
+fn read_json_file(path: &Path) -> Result<Value, AppCommandError> {
     if !path.exists() {
         return Ok(json!({}));
     }
 
-    let raw =
-        fs::read_to_string(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let raw = fs::read_to_string(path)
+        .map_err(|e| AppCommandError::from(format!("failed to read {}: {e}", path.display())))?;
     serde_json::from_str::<Value>(&raw)
-        .map_err(|e| format!("invalid JSON at {}: {e}", path.display()))
+        .map_err(|e| AppCommandError::from(format!("invalid JSON at {}: {e}", path.display())))
 }
 
-fn write_json_file(path: &Path, value: &Value) -> Result<(), String> {
+fn write_json_file(path: &Path, value: &Value) -> Result<(), AppCommandError> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|e| {
+            AppCommandError::from(format!("failed to create {}: {e}", parent.display()))
+        })?;
     }
-    let serialized = serde_json::to_string_pretty(value)
-        .map_err(|e| format!("failed to serialize JSON for {}: {e}", path.display()))?;
+    let serialized = serde_json::to_string_pretty(value).map_err(|e| {
+        AppCommandError::from(format!(
+            "failed to serialize JSON for {}: {e}",
+            path.display()
+        ))
+    })?;
     fs::write(path, format!("{serialized}\n"))
-        .map_err(|e| format!("failed to write {}: {e}", path.display()))
+        .map_err(|e| AppCommandError::from(format!("failed to write {}: {e}", path.display())))
 }
 
-fn read_codex_root_toml() -> Result<toml::Value, String> {
+fn read_codex_root_toml() -> Result<toml::Value, AppCommandError> {
     let path = codex_config_toml_path();
     if !path.exists() {
         return Ok(toml::Value::Table(toml::map::Map::new()));
     }
 
-    let raw =
-        fs::read_to_string(&path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let raw = fs::read_to_string(&path)
+        .map_err(|e| AppCommandError::from(format!("failed to read {}: {e}", path.display())))?;
     let parsed = raw
         .parse::<toml::Value>()
-        .map_err(|e| format!("invalid TOML at {}: {e}", path.display()))?;
+        .map_err(|e| AppCommandError::from(format!("invalid TOML at {}: {e}", path.display())))?;
 
     if !parsed.is_table() {
-        return Err(format!(
-            "invalid TOML root at {}: expected table",
-            path.display()
-        ));
+        return Err(format!("invalid TOML root at {}: expected table", path.display()).into());
     }
 
     Ok(parsed)
 }
 
-fn write_codex_root_toml(root: &toml::Value) -> Result<(), String> {
+fn write_codex_root_toml(root: &toml::Value) -> Result<(), AppCommandError> {
     let path = codex_config_toml_path();
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|e| {
+            AppCommandError::from(format!("failed to create {}: {e}", parent.display()))
+        })?;
     }
 
-    let serialized = toml::to_string_pretty(root)
-        .map_err(|e| format!("failed to serialize TOML for {}: {e}", path.display()))?;
+    let serialized = toml::to_string_pretty(root).map_err(|e| {
+        AppCommandError::from(format!(
+            "failed to serialize TOML for {}: {e}",
+            path.display()
+        ))
+    })?;
     fs::write(&path, format!("{serialized}\n"))
-        .map_err(|e| format!("failed to write {}: {e}", path.display()))
+        .map_err(|e| AppCommandError::from(format!("failed to write {}: {e}", path.display())))
 }
 
 fn obj_as_string_map(value: Option<&Value>) -> Option<Map<String, Value>> {
@@ -582,13 +596,15 @@ fn contains_unresolved_placeholder(value: &str) -> bool {
     value.contains('{') && value.contains('}')
 }
 
-fn marketplace_http_client() -> Result<reqwest::Client, String> {
+fn marketplace_http_client() -> Result<reqwest::Client, AppCommandError> {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(8))
         .timeout(Duration::from_secs(20))
         .user_agent("codeg-mcp-market/1.0")
         .build()
-        .map_err(|e| format!("failed to initialize marketplace HTTP client: {e}"))
+        .map_err(|e| {
+            AppCommandError::from(format!("failed to initialize marketplace HTTP client: {e}"))
+        })
 }
 
 fn should_retry_http_status(status: reqwest::StatusCode) -> bool {
@@ -612,7 +628,7 @@ fn format_market_network_error(context: &str, err: &reqwest::Error) -> String {
 async fn send_request_with_retry<F>(
     context: &str,
     mut build: F,
-) -> Result<reqwest::Response, String>
+) -> Result<reqwest::Response, AppCommandError>
 where
     F: FnMut() -> reqwest::RequestBuilder,
 {
@@ -637,36 +653,37 @@ where
         }
     }
 
-    Err(last_error.unwrap_or_else(|| format!("{context}: request failed")))
+    Err(last_error
+        .unwrap_or_else(|| format!("{context}: request failed"))
+        .into())
 }
 
 async fn parse_json_response<T: DeserializeOwned>(
     response: reqwest::Response,
     context: &str,
-) -> Result<T, String> {
-    let raw = response
-        .text()
-        .await
-        .map_err(|e| format!("{context}: failed to read response body: {e}"))?;
-    serde_json::from_str::<T>(&raw).map_err(|e| format!("{context}: invalid JSON response: {e}"))
+) -> Result<T, AppCommandError> {
+    let raw = response.text().await.map_err(|e| {
+        AppCommandError::from(format!("{context}: failed to read response body: {e}"))
+    })?;
+    serde_json::from_str::<T>(&raw)
+        .map_err(|e| AppCommandError::from(format!("{context}: invalid JSON response: {e}")))
 }
 
 async fn parse_json_value_response(
     response: reqwest::Response,
     context: &str,
-) -> Result<Value, String> {
-    let raw = response
-        .text()
-        .await
-        .map_err(|e| format!("{context}: failed to read response body: {e}"))?;
+) -> Result<Value, AppCommandError> {
+    let raw = response.text().await.map_err(|e| {
+        AppCommandError::from(format!("{context}: failed to read response body: {e}"))
+    })?;
     serde_json::from_str::<Value>(&raw)
-        .map_err(|e| format!("{context}: invalid JSON response: {e}"))
+        .map_err(|e| AppCommandError::from(format!("{context}: invalid JSON response: {e}")))
 }
 
-fn canonicalize_spec(spec: &Value, source: &str) -> Result<Value, String> {
-    let obj = spec
-        .as_object()
-        .ok_or_else(|| format!("{source}: MCP spec must be a JSON object"))?;
+fn canonicalize_spec(spec: &Value, source: &str) -> Result<Value, AppCommandError> {
+    let obj = spec.as_object().ok_or_else(|| {
+        AppCommandError::from(format!("{source}: MCP spec must be a JSON object"))
+    })?;
 
     let mut inferred_type = obj
         .get("type")
@@ -696,7 +713,11 @@ fn canonicalize_spec(spec: &Value, source: &str) -> Result<Value, String> {
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
-                .ok_or_else(|| format!("{source}: stdio MCP spec requires a non-empty command"))?;
+                .ok_or_else(|| {
+                    AppCommandError::from(format!(
+                        "{source}: stdio MCP spec requires a non-empty command"
+                    ))
+                })?;
 
             normalized.insert("type".to_string(), Value::String("stdio".to_string()));
             normalized.insert("command".to_string(), Value::String(command.to_string()));
@@ -733,7 +754,11 @@ fn canonicalize_spec(spec: &Value, source: &str) -> Result<Value, String> {
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
-                .ok_or_else(|| format!("{source}: remote MCP spec requires a non-empty url"))?;
+                .ok_or_else(|| {
+                    AppCommandError::from(format!(
+                        "{source}: remote MCP spec requires a non-empty url"
+                    ))
+                })?;
 
             normalized.insert("type".to_string(), Value::String(inferred_type));
             normalized.insert("url".to_string(), Value::String(url.to_string()));
@@ -752,7 +777,8 @@ fn canonicalize_spec(spec: &Value, source: &str) -> Result<Value, String> {
             return Err(format!(
                 "{source}: unsupported MCP server type '{}'; expected stdio/http/sse",
                 inferred_type
-            ));
+            )
+            .into());
         }
     }
 
@@ -778,10 +804,10 @@ fn canonicalize_spec(spec: &Value, source: &str) -> Result<Value, String> {
     Ok(Value::Object(normalized))
 }
 
-fn canonicalize_opencode_spec(spec: &Value, source: &str) -> Result<Value, String> {
-    let obj = spec
-        .as_object()
-        .ok_or_else(|| format!("{source}: OpenCode MCP spec must be a JSON object"))?;
+fn canonicalize_opencode_spec(spec: &Value, source: &str) -> Result<Value, AppCommandError> {
+    let obj = spec.as_object().ok_or_else(|| {
+        AppCommandError::from(format!("{source}: OpenCode MCP spec must be a JSON object"))
+    })?;
 
     let typ = obj
         .get("type")
@@ -821,7 +847,7 @@ fn canonicalize_opencode_spec(spec: &Value, source: &str) -> Result<Value, Strin
                 } else if let Some(raw) = command.as_str() {
                     let trimmed = raw.trim();
                     if trimmed.is_empty() {
-                        return Err(format!("{source}: local MCP command must be non-empty"));
+                        return Err(format!("{source}: local MCP command must be non-empty").into());
                     }
                     converted.insert("command".to_string(), Value::String(trimmed.to_string()));
                 }
@@ -873,11 +899,11 @@ fn canonicalize_opencode_spec(spec: &Value, source: &str) -> Result<Value, Strin
     }
 }
 
-fn canonical_to_opencode_spec(spec: &Value) -> Result<Value, String> {
+fn canonical_to_opencode_spec(spec: &Value) -> Result<Value, AppCommandError> {
     let canonical = canonicalize_spec(spec, "OpenCode conversion")?;
-    let obj = canonical
-        .as_object()
-        .ok_or_else(|| "OpenCode conversion: canonical spec must be an object".to_string())?;
+    let obj = canonical.as_object().ok_or_else(|| {
+        AppCommandError::from("OpenCode conversion: canonical spec must be an object")
+    })?;
 
     let typ = obj.get("type").and_then(Value::as_str).unwrap_or("stdio");
 
@@ -885,10 +911,9 @@ fn canonical_to_opencode_spec(spec: &Value) -> Result<Value, String> {
 
     match typ {
         "stdio" => {
-            let cmd = obj
-                .get("command")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "OpenCode conversion: stdio MCP spec missing command".to_string())?;
+            let cmd = obj.get("command").and_then(Value::as_str).ok_or_else(|| {
+                AppCommandError::from("OpenCode conversion: stdio MCP spec missing command")
+            })?;
             out.insert("type".to_string(), Value::String("local".to_string()));
 
             let mut command = vec![Value::String(cmd.to_string())];
@@ -918,10 +943,9 @@ fn canonical_to_opencode_spec(spec: &Value) -> Result<Value, String> {
             }
         }
         "http" | "sse" => {
-            let url = obj
-                .get("url")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "OpenCode conversion: remote MCP spec missing url".to_string())?;
+            let url = obj.get("url").and_then(Value::as_str).ok_or_else(|| {
+                AppCommandError::from("OpenCode conversion: remote MCP spec missing url")
+            })?;
             out.insert("type".to_string(), Value::String("remote".to_string()));
             out.insert("url".to_string(), Value::String(url.to_string()));
             if typ == "sse" {
@@ -932,7 +956,7 @@ fn canonical_to_opencode_spec(spec: &Value) -> Result<Value, String> {
             }
         }
         _ => {
-            return Err(format!("OpenCode conversion: unsupported MCP type '{typ}'"));
+            return Err(format!("OpenCode conversion: unsupported MCP type '{typ}'").into());
         }
     }
 
@@ -994,10 +1018,10 @@ fn toml_to_json_value(value: &toml::Value) -> Value {
     }
 }
 
-fn codex_entry_to_canonical(id: &str, value: &toml::Value) -> Result<Value, String> {
+fn codex_entry_to_canonical(id: &str, value: &toml::Value) -> Result<Value, AppCommandError> {
     let table = value
         .as_table()
-        .ok_or_else(|| format!("Codex MCP entry '{id}' must be a table"))?;
+        .ok_or_else(|| AppCommandError::from(format!("Codex MCP entry '{id}' must be a table")))?;
 
     let raw_type = table
         .get("type")
@@ -1093,9 +1117,7 @@ fn codex_entry_to_canonical(id: &str, value: &toml::Value) -> Result<Value, Stri
             }
         }
         _ => {
-            return Err(format!(
-                "Codex MCP entry '{id}' has unsupported type '{raw_type}'"
-            ));
+            return Err(format!("Codex MCP entry '{id}' has unsupported type '{raw_type}'").into());
         }
     }
 
@@ -1117,11 +1139,11 @@ fn codex_entry_to_canonical(id: &str, value: &toml::Value) -> Result<Value, Stri
     canonicalize_spec(&Value::Object(spec), "Codex config")
 }
 
-fn canonical_to_codex_entry(spec: &Value) -> Result<toml::Value, String> {
+fn canonical_to_codex_entry(spec: &Value) -> Result<toml::Value, AppCommandError> {
     let canonical = canonicalize_spec(spec, "Codex conversion")?;
-    let obj = canonical
-        .as_object()
-        .ok_or_else(|| "Codex conversion: canonical spec must be an object".to_string())?;
+    let obj = canonical.as_object().ok_or_else(|| {
+        AppCommandError::from("Codex conversion: canonical spec must be an object")
+    })?;
 
     let typ = obj.get("type").and_then(Value::as_str).unwrap_or("stdio");
 
@@ -1130,10 +1152,9 @@ fn canonical_to_codex_entry(spec: &Value) -> Result<toml::Value, String> {
 
     match typ {
         "stdio" => {
-            let command = obj
-                .get("command")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "Codex conversion: stdio MCP spec missing command".to_string())?;
+            let command = obj.get("command").and_then(Value::as_str).ok_or_else(|| {
+                AppCommandError::from("Codex conversion: stdio MCP spec missing command")
+            })?;
             table.insert(
                 "command".to_string(),
                 toml::Value::String(command.to_string()),
@@ -1179,10 +1200,9 @@ fn canonical_to_codex_entry(spec: &Value) -> Result<toml::Value, String> {
             }
         }
         "http" | "sse" => {
-            let url = obj
-                .get("url")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "Codex conversion: remote MCP spec missing url".to_string())?;
+            let url = obj.get("url").and_then(Value::as_str).ok_or_else(|| {
+                AppCommandError::from("Codex conversion: remote MCP spec missing url")
+            })?;
             table.insert("url".to_string(), toml::Value::String(url.to_string()));
 
             if let Some(headers) = obj.get("headers").and_then(Value::as_object) {
@@ -1206,7 +1226,7 @@ fn canonical_to_codex_entry(spec: &Value) -> Result<toml::Value, String> {
             }
         }
         _ => {
-            return Err(format!("Codex conversion: unsupported MCP type '{typ}'"));
+            return Err(format!("Codex conversion: unsupported MCP type '{typ}'").into());
         }
     }
 
@@ -1229,7 +1249,7 @@ fn canonical_to_codex_entry(spec: &Value) -> Result<toml::Value, String> {
     Ok(toml::Value::Table(table))
 }
 
-fn read_claude_servers() -> Result<BTreeMap<String, Value>, String> {
+fn read_claude_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
     let path = claude_config_path();
     let root = read_json_file(&path)?;
     let mut out = BTreeMap::new();
@@ -1252,7 +1272,7 @@ fn read_claude_servers() -> Result<BTreeMap<String, Value>, String> {
     Ok(out)
 }
 
-fn upsert_claude_server(id: &str, spec: &Value) -> Result<(), String> {
+fn upsert_claude_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
     let path = claude_config_path();
     let mut root = read_json_file(&path)?;
     if !root.is_object() {
@@ -1263,7 +1283,7 @@ fn upsert_claude_server(id: &str, spec: &Value) -> Result<(), String> {
 
     let obj = root
         .as_object_mut()
-        .ok_or_else(|| format!("invalid JSON root in {}", path.display()))?;
+        .ok_or_else(|| AppCommandError::from(format!("invalid JSON root in {}", path.display())))?;
     if !obj.get("mcpServers").map(Value::is_object).unwrap_or(false) {
         obj.insert("mcpServers".to_string(), Value::Object(Map::new()));
     }
@@ -1271,13 +1291,15 @@ fn upsert_claude_server(id: &str, spec: &Value) -> Result<(), String> {
     let map = obj
         .get_mut("mcpServers")
         .and_then(Value::as_object_mut)
-        .ok_or_else(|| format!("invalid mcpServers in {}", path.display()))?;
+        .ok_or_else(|| {
+            AppCommandError::from(format!("invalid mcpServers in {}", path.display()))
+        })?;
     map.insert(id.to_string(), canonical);
 
     write_json_file(&path, &root)
 }
 
-fn remove_claude_server(id: &str) -> Result<bool, String> {
+fn remove_claude_server(id: &str) -> Result<bool, AppCommandError> {
     let path = claude_config_path();
     if !path.exists() {
         return Ok(false);
@@ -1298,7 +1320,7 @@ fn remove_claude_server(id: &str) -> Result<bool, String> {
     Ok(removed)
 }
 
-fn read_codex_servers() -> Result<BTreeMap<String, Value>, String> {
+fn read_codex_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
     let root = read_codex_root_toml()?;
     let Some(table) = root.as_table() else {
         return Ok(BTreeMap::new());
@@ -1340,11 +1362,11 @@ fn read_codex_servers() -> Result<BTreeMap<String, Value>, String> {
     Ok(out)
 }
 
-fn upsert_codex_server(id: &str, spec: &Value) -> Result<(), String> {
+fn upsert_codex_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
     let mut root = read_codex_root_toml()?;
     let table = root
         .as_table_mut()
-        .ok_or_else(|| "Codex root TOML must be a table".to_string())?;
+        .ok_or_else(|| AppCommandError::from("Codex root TOML must be a table"))?;
 
     let codex_entry = canonical_to_codex_entry(spec)?;
 
@@ -1362,7 +1384,7 @@ fn upsert_codex_server(id: &str, spec: &Value) -> Result<(), String> {
     let mcp_servers = table
         .get_mut("mcp_servers")
         .and_then(toml::Value::as_table_mut)
-        .ok_or_else(|| "Codex mcp_servers must be a TOML table".to_string())?;
+        .ok_or_else(|| AppCommandError::from("Codex mcp_servers must be a TOML table"))?;
     mcp_servers.insert(id.to_string(), codex_entry);
 
     if let Some(legacy_mcp) = table.get_mut("mcp").and_then(toml::Value::as_table_mut) {
@@ -1383,7 +1405,7 @@ fn upsert_codex_server(id: &str, spec: &Value) -> Result<(), String> {
     write_codex_root_toml(&root)
 }
 
-fn remove_codex_server(id: &str) -> Result<bool, String> {
+fn remove_codex_server(id: &str) -> Result<bool, AppCommandError> {
     let path = codex_config_toml_path();
     if !path.exists() {
         return Ok(false);
@@ -1428,7 +1450,7 @@ fn remove_codex_server(id: &str) -> Result<bool, String> {
     Ok(removed)
 }
 
-fn read_opencode_servers() -> Result<BTreeMap<String, Value>, String> {
+fn read_opencode_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
     let path = opencode_config_path();
     let root = read_json_file(&path)?;
 
@@ -1466,7 +1488,7 @@ fn read_opencode_servers() -> Result<BTreeMap<String, Value>, String> {
     Ok(out)
 }
 
-fn upsert_opencode_server(id: &str, spec: &Value) -> Result<(), String> {
+fn upsert_opencode_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
     let path = opencode_config_path();
     let mut root = read_json_file(&path)?;
     if !root.is_object() {
@@ -1475,14 +1497,16 @@ fn upsert_opencode_server(id: &str, spec: &Value) -> Result<(), String> {
 
     let obj = root
         .as_object_mut()
-        .ok_or_else(|| format!("invalid JSON root in {}", path.display()))?;
+        .ok_or_else(|| AppCommandError::from(format!("invalid JSON root in {}", path.display())))?;
 
     if obj.get("mcpServers").map(Value::is_object).unwrap_or(false) {
         let canonical = canonicalize_spec(spec, "OpenCode write mcpServers")?;
         let map = obj
             .get_mut("mcpServers")
             .and_then(Value::as_object_mut)
-            .ok_or_else(|| format!("invalid mcpServers in {}", path.display()))?;
+            .ok_or_else(|| {
+                AppCommandError::from(format!("invalid mcpServers in {}", path.display()))
+            })?;
         map.insert(id.to_string(), canonical);
     } else {
         if !obj.get("mcp").map(Value::is_object).unwrap_or(false) {
@@ -1492,14 +1516,14 @@ fn upsert_opencode_server(id: &str, spec: &Value) -> Result<(), String> {
         let map = obj
             .get_mut("mcp")
             .and_then(Value::as_object_mut)
-            .ok_or_else(|| format!("invalid mcp in {}", path.display()))?;
+            .ok_or_else(|| AppCommandError::from(format!("invalid mcp in {}", path.display())))?;
         map.insert(id.to_string(), converted);
     }
 
     write_json_file(&path, &root)
 }
 
-fn remove_opencode_server(id: &str) -> Result<bool, String> {
+fn remove_opencode_server(id: &str) -> Result<bool, AppCommandError> {
     let path = opencode_config_path();
     if !path.exists() {
         return Ok(false);
@@ -1527,7 +1551,7 @@ fn remove_opencode_server(id: &str) -> Result<bool, String> {
     Ok(removed)
 }
 
-fn scan_local_servers() -> Result<Vec<LocalMcpServer>, String> {
+fn scan_local_servers() -> Result<Vec<LocalMcpServer>, AppCommandError> {
     let mut merged: BTreeMap<String, (Value, BTreeSet<McpAppType>)> = BTreeMap::new();
 
     for (id, spec) in read_claude_servers()? {
@@ -1561,12 +1585,12 @@ fn scan_local_servers() -> Result<Vec<LocalMcpServer>, String> {
         .collect())
 }
 
-fn find_local_server(server_id: &str) -> Result<Option<LocalMcpServer>, String> {
+fn find_local_server(server_id: &str) -> Result<Option<LocalMcpServer>, AppCommandError> {
     let servers = scan_local_servers()?;
     Ok(servers.into_iter().find(|item| item.id == server_id))
 }
 
-fn upsert_server_for_app(app: McpAppType, id: &str, spec: &Value) -> Result<(), String> {
+fn upsert_server_for_app(app: McpAppType, id: &str, spec: &Value) -> Result<(), AppCommandError> {
     match app {
         McpAppType::ClaudeCode => upsert_claude_server(id, spec),
         McpAppType::Codex => upsert_codex_server(id, spec),
@@ -1574,7 +1598,7 @@ fn upsert_server_for_app(app: McpAppType, id: &str, spec: &Value) -> Result<(), 
     }
 }
 
-fn remove_server_for_app(app: McpAppType, id: &str) -> Result<bool, String> {
+fn remove_server_for_app(app: McpAppType, id: &str) -> Result<bool, AppCommandError> {
     match app {
         McpAppType::ClaudeCode => remove_claude_server(id),
         McpAppType::Codex => remove_codex_server(id),
@@ -1996,7 +2020,7 @@ fn official_entry_to_item(entry: &OfficialServerResponse) -> McpMarketplaceItem 
 async fn search_official_registry(
     query: &str,
     limit: u32,
-) -> Result<Vec<McpMarketplaceItem>, String> {
+) -> Result<Vec<McpMarketplaceItem>, AppCommandError> {
     let client = marketplace_http_client()?;
     let trimmed = query.trim();
 
@@ -2015,7 +2039,8 @@ async fn search_official_registry(
         return Err(format!(
             "official MCP registry request failed: HTTP {}",
             response.status()
-        ));
+        )
+        .into());
     }
 
     let payload =
@@ -2044,7 +2069,9 @@ async fn search_official_registry(
     Ok(out)
 }
 
-async fn fetch_official_server_detail(server_name: &str) -> Result<OfficialServerResponse, String> {
+async fn fetch_official_server_detail(
+    server_name: &str,
+) -> Result<OfficialServerResponse, AppCommandError> {
     let encoded_name = urlencoding::encode(server_name);
     let url = format!(
         "https://registry.modelcontextprotocol.io/v0.1/servers/{encoded_name}/versions/latest"
@@ -2060,7 +2087,8 @@ async fn fetch_official_server_detail(server_name: &str) -> Result<OfficialServe
         return Err(format!(
             "official MCP server detail request failed: HTTP {}",
             response.status()
-        ));
+        )
+        .into());
     }
 
     parse_json_response::<OfficialServerResponse>(
@@ -2092,12 +2120,14 @@ fn parse_official_option_id(option_id: &str) -> Option<(&str, usize)> {
 fn select_option_from_list<'a>(
     options: &'a [McpMarketplaceInstallOption],
     selection: &InstallSelection,
-) -> Result<&'a McpMarketplaceInstallOption, String> {
+) -> Result<&'a McpMarketplaceInstallOption, AppCommandError> {
     if let Some(option_id) = selection.option_id.as_deref() {
         return options
             .iter()
             .find(|item| item.id == option_id)
-            .ok_or_else(|| format!("selected install option not found: {option_id}"));
+            .ok_or_else(|| {
+                AppCommandError::from(format!("selected install option not found: {option_id}"))
+            });
     }
 
     if let Some(protocol) = selection.protocol.as_deref() {
@@ -2113,11 +2143,11 @@ fn select_option_from_list<'a>(
             }
             return Ok(best);
         }
-        return Err(format!("no install option found for protocol '{protocol}'"));
+        return Err(format!("no install option found for protocol '{protocol}'").into());
     }
 
     select_default_install_option(options)
-        .ok_or_else(|| "server does not provide installable options".to_string())
+        .ok_or_else(|| AppCommandError::from("server does not provide installable options"))
 }
 
 fn key_looks_secret(name: &str) -> bool {
@@ -2223,7 +2253,7 @@ fn apply_transport_variables(
     variables: Option<&[OfficialKeyValueInput]>,
     values: &Map<String, Value>,
     enforce_required: bool,
-) -> Result<String, String> {
+) -> Result<String, AppCommandError> {
     let Some(items) = variables else {
         return Ok(base_url.to_string());
     };
@@ -2251,7 +2281,7 @@ fn apply_transport_variables(
             continue;
         }
         if enforce_required && official_kv_is_required(item) {
-            return Err(format!("missing required variable '{key_name}'"));
+            return Err(format!("missing required variable '{key_name}'").into());
         }
     }
     Ok(url)
@@ -2261,12 +2291,12 @@ fn remote_spec_from_transport_with_values(
     transport: &OfficialTransport,
     values: &Map<String, Value>,
     enforce_required: bool,
-) -> Result<Value, String> {
+) -> Result<Value, AppCommandError> {
     let kind = transport.r#type.trim();
     let canonical_type = match kind {
         "streamable-http" | "http" => "http",
         "sse" => "sse",
-        _ => return Err(format!("unsupported transport type '{kind}'")),
+        _ => return Err(format!("unsupported transport type '{kind}'").into()),
     };
 
     let base_url = transport
@@ -2274,7 +2304,7 @@ fn remote_spec_from_transport_with_values(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "remote transport missing URL".to_string())?;
+        .ok_or_else(|| AppCommandError::from("remote transport missing URL"))?;
 
     let url = apply_transport_variables(
         base_url,
@@ -2305,7 +2335,7 @@ fn remote_spec_from_transport_with_values(
                 continue;
             }
             if enforce_required && official_kv_is_required(item) {
-                return Err(format!("missing required header '{key_name}'"));
+                return Err(format!("missing required header '{key_name}'").into());
             }
         }
     }
@@ -2393,7 +2423,7 @@ fn official_remote_parameter_fields(
 
 fn build_official_install_options(
     server: &OfficialServer,
-) -> Result<Vec<McpMarketplaceInstallOption>, String> {
+) -> Result<Vec<McpMarketplaceInstallOption>, AppCommandError> {
     let mut options = Vec::new();
 
     if let Some(packages) = server.packages.as_ref() {
@@ -2467,7 +2497,8 @@ fn build_official_install_options(
         return Err(format!(
             "official MCP server '{}' does not expose an installable transport",
             server.name
-        ));
+        )
+        .into());
     }
 
     Ok(options)
@@ -2476,7 +2507,7 @@ fn build_official_install_options(
 fn resolve_official_install_spec_with_selection(
     server: &OfficialServer,
     selection: &InstallSelection,
-) -> Result<Value, String> {
+) -> Result<Value, AppCommandError> {
     let options = build_official_install_options(server)?;
     let selected = select_option_from_list(&options, selection)?;
     let values = &selection.parameter_values;
@@ -2487,7 +2518,11 @@ fn resolve_official_install_spec_with_selection(
                 .packages
                 .as_ref()
                 .and_then(|items| items.get(index))
-                .ok_or_else(|| format!("selected package option index is out of range: {index}"))?;
+                .ok_or_else(|| {
+                    AppCommandError::from(format!(
+                        "selected package option index is out of range: {index}"
+                    ))
+                })?;
             if normalize_protocol_value(&selected.protocol) == "stdio" {
                 return resolve_official_stdio_package_with_values(package, values, true);
             }
@@ -2498,15 +2533,16 @@ fn resolve_official_install_spec_with_selection(
                 .remotes
                 .as_ref()
                 .and_then(|items| items.get(index))
-                .ok_or_else(|| format!("selected remote option index is out of range: {index}"))?;
+                .ok_or_else(|| {
+                    AppCommandError::from(format!(
+                        "selected remote option index is out of range: {index}"
+                    ))
+                })?;
             return remote_spec_from_transport_with_values(remote, values, true);
         }
     }
 
-    Err(format!(
-        "unsupported official install option '{}'",
-        selected.id
-    ))
+    Err(format!("unsupported official install option '{}'", selected.id).into())
 }
 
 fn package_identifier_with_version(package: &OfficialPackage, runtime: &str) -> String {
@@ -2586,7 +2622,7 @@ fn append_argument_value(
     index: usize,
     values: &Map<String, Value>,
     enforce_required: bool,
-) -> Result<(), String> {
+) -> Result<(), AppCommandError> {
     let kind = arg.r#type.as_deref().map(str::trim).unwrap_or("positional");
     let resolved = resolve_argument_value(arg, scope, index, values);
 
@@ -2605,7 +2641,7 @@ fn append_argument_value(
             return Ok(());
         }
         if enforce_required && argument_is_required(arg) {
-            return Err(format!("missing required argument '{name}'"));
+            return Err(format!("missing required argument '{name}'").into());
         }
         return Ok(());
     }
@@ -2621,7 +2657,7 @@ fn append_argument_value(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .unwrap_or("positional");
-        return Err(format!("missing required argument '{name}'"));
+        return Err(format!("missing required argument '{name}'").into());
     }
     Ok(())
 }
@@ -2736,7 +2772,7 @@ fn official_stdio_parameter_fields(
     fields
 }
 
-fn resolve_official_stdio_package(package: &OfficialPackage) -> Result<Value, String> {
+fn resolve_official_stdio_package(package: &OfficialPackage) -> Result<Value, AppCommandError> {
     resolve_official_stdio_package_with_values(package, &Map::new(), false)
 }
 
@@ -2744,7 +2780,7 @@ fn resolve_official_stdio_package_with_values(
     package: &OfficialPackage,
     values: &Map<String, Value>,
     enforce_required: bool,
-) -> Result<Value, String> {
+) -> Result<Value, AppCommandError> {
     let runtime = package
         .runtime_hint
         .as_deref()
@@ -2781,7 +2817,7 @@ fn resolve_official_stdio_package_with_values(
 
     let package_identifier = package_identifier_with_version(package, &runtime);
     if package_identifier.is_empty() {
-        return Err("official package identifier is empty".to_string());
+        return Err("official package identifier is empty".to_string().into());
     }
     args.push(package_identifier);
 
@@ -2810,7 +2846,7 @@ fn resolve_official_stdio_package_with_values(
             continue;
         }
         if enforce_required && official_kv_is_required(item) {
-            return Err(format!("missing required environment variable '{key}'"));
+            return Err(format!("missing required environment variable '{key}'").into());
         }
     }
 
@@ -2830,7 +2866,10 @@ fn resolve_official_stdio_package_with_values(
     Ok(Value::Object(spec))
 }
 
-async fn search_smithery(query: &str, limit: u32) -> Result<Vec<McpMarketplaceItem>, String> {
+async fn search_smithery(
+    query: &str,
+    limit: u32,
+) -> Result<Vec<McpMarketplaceItem>, AppCommandError> {
     let client = marketplace_http_client()?;
     let trimmed = query.trim();
 
@@ -2845,7 +2884,8 @@ async fn search_smithery(query: &str, limit: u32) -> Result<Vec<McpMarketplaceIt
         return Err(format!(
             "smithery marketplace request failed: HTTP {}",
             response.status()
-        ));
+        )
+        .into());
     }
 
     let payload = parse_json_response::<SmitheryServerListResponse>(
@@ -2898,7 +2938,9 @@ async fn search_smithery(query: &str, limit: u32) -> Result<Vec<McpMarketplaceIt
         .collect())
 }
 
-async fn fetch_smithery_server_summary(server_id: &str) -> Result<SmitheryServerSummary, String> {
+async fn fetch_smithery_server_summary(
+    server_id: &str,
+) -> Result<SmitheryServerSummary, AppCommandError> {
     let client = marketplace_http_client()?;
     let response = send_request_with_retry("failed to fetch smithery server summary", || {
         client
@@ -2911,7 +2953,8 @@ async fn fetch_smithery_server_summary(server_id: &str) -> Result<SmitheryServer
         return Err(format!(
             "smithery server summary request failed: HTTP {}",
             response.status()
-        ));
+        )
+        .into());
     }
 
     let payload = parse_json_response::<SmitheryServerListResponse>(
@@ -2924,10 +2967,14 @@ async fn fetch_smithery_server_summary(server_id: &str) -> Result<SmitheryServer
         .servers
         .into_iter()
         .find(|item| item.qualified_name == server_id)
-        .ok_or_else(|| format!("smithery server summary not found: {server_id}"))
+        .ok_or_else(|| {
+            AppCommandError::from(format!("smithery server summary not found: {server_id}"))
+        })
 }
 
-async fn fetch_smithery_server_detail(server_id: &str) -> Result<SmitheryServerDetail, String> {
+async fn fetch_smithery_server_detail(
+    server_id: &str,
+) -> Result<SmitheryServerDetail, AppCommandError> {
     let url = format!("https://api.smithery.ai/servers/{server_id}");
     let client = marketplace_http_client()?;
     let response = send_request_with_retry("failed to fetch smithery server detail", || {
@@ -2939,7 +2986,8 @@ async fn fetch_smithery_server_detail(server_id: &str) -> Result<SmitheryServerD
         return Err(format!(
             "smithery server detail request failed: HTTP {}",
             response.status()
-        ));
+        )
+        .into());
     }
 
     parse_json_response::<SmitheryServerDetail>(response, "failed to parse smithery server detail")
@@ -3148,10 +3196,10 @@ fn resolve_smithery_connection_spec_with_values(
     fallback_url: Option<&str>,
     values: &Map<String, Value>,
     enforce_required: bool,
-) -> Result<Value, String> {
+) -> Result<Value, AppCommandError> {
     let protocol = smithery_connection_protocol(connection);
     let url = smithery_connection_url(connection, fallback_url)
-        .ok_or_else(|| "smithery connection missing deployment URL".to_string())?;
+        .ok_or_else(|| AppCommandError::from("smithery connection missing deployment URL"))?;
 
     let config_fields = parse_smithery_config_fields(connection.config_schema.as_ref());
     let mut next_url = url;
@@ -3165,7 +3213,7 @@ fn resolve_smithery_connection_spec_with_values(
 
         let Some(value) = value else {
             if enforce_required && field.required {
-                return Err(format!("missing required configuration '{}'", field.key));
+                return Err(format!("missing required configuration '{}'", field.key).into());
             }
             continue;
         };
@@ -3174,7 +3222,7 @@ fn resolve_smithery_connection_spec_with_values(
             if let Some(text) = smithery_header_value_to_text(&value) {
                 headers.insert(field.key, Value::String(text));
             } else if enforce_required && field.required {
-                return Err(format!("invalid configuration value '{}'", field.key));
+                return Err(format!("invalid configuration value '{}'", field.key).into());
             }
             continue;
         }
@@ -3182,7 +3230,7 @@ fn resolve_smithery_connection_spec_with_values(
         if let Some(text) = smithery_query_value_to_text(&value) {
             next_url = append_query_param(&next_url, &field.key, &text);
         } else if enforce_required && field.required {
-            return Err(format!("invalid configuration value '{}'", field.key));
+            return Err(format!("invalid configuration value '{}'", field.key).into());
         }
     }
 
@@ -3198,7 +3246,7 @@ fn resolve_smithery_connection_spec_with_values(
 
 fn build_smithery_install_options(
     server: &SmitheryServerDetail,
-) -> Result<Vec<McpMarketplaceInstallOption>, String> {
+) -> Result<Vec<McpMarketplaceInstallOption>, AppCommandError> {
     let mut options = Vec::new();
     for (index, connection) in server.connections.iter().enumerate() {
         let protocol = smithery_connection_protocol(connection);
@@ -3253,7 +3301,8 @@ fn build_smithery_install_options(
         return Err(format!(
             "smithery server '{}' does not provide installable connection info",
             server.qualified_name
-        ));
+        )
+        .into());
     }
 
     Ok(options)
@@ -3262,15 +3311,16 @@ fn build_smithery_install_options(
 fn resolve_smithery_install_spec_with_selection(
     server: &SmitheryServerDetail,
     selection: &InstallSelection,
-) -> Result<Value, String> {
+) -> Result<Value, AppCommandError> {
     let options = build_smithery_install_options(server)?;
     let selected = select_option_from_list(&options, selection)?;
 
     if let Some(index) = parse_smithery_option_id(&selected.id) {
-        let connection = server
-            .connections
-            .get(index)
-            .ok_or_else(|| format!("selected smithery connection is out of range: {index}"))?;
+        let connection = server.connections.get(index).ok_or_else(|| {
+            AppCommandError::from(format!(
+                "selected smithery connection is out of range: {index}"
+            ))
+        })?;
         return resolve_smithery_connection_spec_with_values(
             connection,
             server.deployment_url.as_deref(),
