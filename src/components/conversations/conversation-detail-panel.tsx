@@ -111,8 +111,7 @@ const ExistingConversationView = memo(function ExistingConversationView({
   // Wrap handleSend to update status
   const handleSendWithPersist = useCallback(
     (draft: PromptDraft, selectedModeId?: string | null) => {
-      setPendingMessages((prev) => [
-        ...prev,
+      setPendingMessages([
         {
           id: `pending-${Date.now()}`,
           role: "user",

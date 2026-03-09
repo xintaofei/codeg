@@ -213,17 +213,12 @@ export function MessageListView({
 }: MessageListViewProps) {
   const t = useTranslations("Folder.chat.messageList")
   const sharedT = useTranslations("Folder.chat.shared")
-  const { detail, loading, error, refetch } = useDbMessageDetail(conversationId)
+  const { detail, loading, error } = useDbMessageDetail(conversationId)
   const turnCount = detail?.turns.length ?? 0
 
-  const prevStatusRef = useRef(connStatus)
-  useEffect(() => {
-    const prev = prevStatusRef.current
-    prevStatusRef.current = connStatus
-    if (prev === "prompting" && connStatus && connStatus !== "prompting") {
-      refetch()
-    }
-  }, [connStatus, refetch])
+  // 移除了 prompting 结束后的立即刷新
+  // 原因：后端自动持久化可能有延迟，立即刷新会读到不完整数据
+  // 现在通过清空 pending 来避免累积问题，等用户切换会话或手动刷新时再加载
 
   const prevTurnCountRef = useRef(turnCount)
   const prevConvIdRef = useRef(conversationId)
