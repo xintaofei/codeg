@@ -22,6 +22,7 @@ jobs:
       release_id: ${{ steps.release.outputs.release_id }}
       release_url: ${{ steps.release.outputs.release_url }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
+      release_body: ${{ steps.release.outputs.release_body }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -75,6 +76,37 @@ jobs:
             const tag = context.ref.replace("refs/tags/", "");
             const { owner, repo } = context.repo;
             const prerelease = process.env.PRERELEASE === "true";
+            const releaseName = `codeg ${tag}`;
+            const { data: tagRef } = await github.rest.git.getRef({
+              owner,
+              repo,
+              ref: `tags/${tag}`,
+            });
+
+            let commitSha = tagRef.object.sha;
+            if (tagRef.object.type === "tag") {
+              const { data: annotatedTag } = await github.rest.git.getTag({
+                owner,
+                repo,
+                tag_sha: commitSha,
+              });
+              if (annotatedTag.object.type !== "commit") {
+                core.setFailed(
+                  `Tag ${tag} points to ${annotatedTag.object.type}, not a commit.`,
+                );
+                return;
+              }
+              commitSha = annotatedTag.object.sha;
+            }
+
+            const { data: commit } = await github.rest.repos.getCommit({
+              owner,
+              repo,
+              ref: commitSha,
+            });
+
+            const releaseBody =
+              commit.commit.message?.trim() || "_No commit message._";
             let release;
 
             try {
@@ -92,12 +124,18 @@ jobs:
               }
 
               release = existing.data;
-              if (release.prerelease !== prerelease) {
+              if (
+                release.prerelease !== prerelease ||
+                release.name !== releaseName ||
+                (release.body ?? "").trim() !== releaseBody
+              ) {
                 const updated = await github.rest.repos.updateRelease({
                   owner,
                   repo,
                   release_id: release.id,
+                  name: releaseName,
                   prerelease,
+                  body: releaseBody,
                 });
                 release = updated.data;
               }
@@ -111,13 +149,8 @@ jobs:
                 owner,
                 repo,
                 tag_name: tag,
-                name: `codeg ${tag}`,
-                body: [
-                  `Release channel: ${prerelease ? "Pre-release" : "Stable"}`,
-                  "",
-                  "Assets will be attached automatically by this workflow.",
-                  `Workflow run: https://github.com/${owner}/${repo}/actions/runs/${context.runId}`,
-                ].join("\n"),
+                name: releaseName,
+                body: releaseBody,
                 draft: true,
                 prerelease,
               });
@@ -128,6 +161,7 @@ jobs:
 
             core.setOutput("release_id", String(release.id));
             core.setOutput("release_url", release.html_url);
+            core.setOutput("release_body", releaseBody);
 
   build-tauri:
     needs: create-draft-release
@@ -271,6 +305,7 @@ jobs:
         with:
           releaseId: ${{ needs.create-draft-release.outputs.release_id }}
           tagName: ${{ github.ref_name }}
+          releaseBody: ${{ needs.create-draft-release.outputs.release_body }}
           releaseDraft: true
           prerelease: ${{ needs.create-draft-release.outputs.prerelease }}
           tauriScript: pnpm tauri
@@ -288,6 +323,7 @@ jobs:
         with:
           releaseId: ${{ needs.create-draft-release.outputs.release_id }}
           tagName: ${{ github.ref_name }}
+          releaseBody: ${{ needs.create-draft-release.outputs.release_body }}
           releaseDraft: true
           prerelease: ${{ needs.create-draft-release.outputs.prerelease }}
           tauriScript: pnpm tauri
@@ -314,51 +350,11 @@ jobs:
             const releaseId = Number(process.env.RELEASE_ID);
             const prerelease =
               "${{ needs.create-draft-release.outputs.prerelease }}" === "true";
-            const tag = context.ref.replace("refs/tags/", "");
-
-            const { data: tagRef } = await github.rest.git.getRef({
-              owner,
-              repo,
-              ref: `tags/${tag}`,
-            });
-
-            let commitSha = tagRef.object.sha;
-            if (tagRef.object.type === "tag") {
-              const { data: annotatedTag } = await github.rest.git.getTag({
-                owner,
-                repo,
-                tag_sha: commitSha,
-              });
-              if (annotatedTag.object.type !== "commit") {
-                core.setFailed(
-                  `Tag ${tag} points to ${annotatedTag.object.type}, not a commit.`,
-                );
-                return;
-              }
-              commitSha = annotatedTag.object.sha;
-            }
-
-            const { data: commit } = await github.rest.repos.getCommit({
-              owner,
-              repo,
-              ref: commitSha,
-            });
-
-            const commitMessage =
-              commit.commit.message?.trim() || "_No commit message._";
-
-            const body = [
-              `Release channel: ${prerelease ? "Pre-release" : "Stable"}`,
-              "",
-              "## Release notes",
-              commitMessage,
-            ].join("\n");
 
             await github.rest.repos.updateRelease({
               owner,
               repo,
               release_id: releaseId,
-              body,
               draft: false,
               prerelease,
             });
