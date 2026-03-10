@@ -70,12 +70,6 @@ async function loadAndCacheDetail(
   return promise
 }
 
-export async function warmupDetailCache(
-  conversationId: number
-): Promise<DbConversationDetail> {
-  return loadAndCacheDetail(conversationId)
-}
-
 export async function refreshDetailCache(
   conversationId: number
 ): Promise<DbConversationDetail> {

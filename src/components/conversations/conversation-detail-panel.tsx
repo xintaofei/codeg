@@ -165,10 +165,6 @@ const ConversationTabView = memo(function ConversationTabView({
   const dbConvIdRef = useRef<number | null>(conversationId)
   const statusUpdatedRef = useRef(false)
   const selectedAgentRef = useRef(selectedAgent)
-  const pendingPromptRef = useRef<{
-    draft: PromptDraft
-    modeId: string | null
-  } | null>(null)
   const createConversationPendingRef = useRef(false)
   const reconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const externalIdSavedRef = useRef(false)
@@ -356,14 +352,6 @@ const ConversationTabView = memo(function ConversationTabView({
   ])
 
   useEffect(() => {
-    if (connStatus === "connected" && pendingPromptRef.current) {
-      const pending = pendingPromptRef.current
-      pendingPromptRef.current = null
-      lifecycleSend(pending.draft, pending.modeId)
-    }
-  }, [connStatus, lifecycleSend])
-
-  useEffect(() => {
     if (connStatus === "connected" || connStatus === "prompting") {
       statusUpdatedRef.current = false
       return
@@ -424,6 +412,7 @@ const ConversationTabView = memo(function ConversationTabView({
         setAgentConnectError(tWelcome("enableAgentFirstPlaceholder"))
         return
       }
+      if (connStatus !== "connected") return
 
       const optimisticTurn = buildOptimisticUserTurnFromDraft(
         draft,
@@ -436,32 +425,7 @@ const ConversationTabView = memo(function ConversationTabView({
       )
       setSendSignal((prev) => prev + 1)
       setSyncState(effectiveConversationId, "awaiting_persist")
-
-      if (connStatus === "connected") {
-        lifecycleSend(draft, selectedModeIdArg)
-      } else {
-        pendingPromptRef.current = {
-          draft,
-          modeId: selectedModeIdArg ?? null,
-        }
-        if (
-          (!connStatus ||
-            connStatus === "disconnected" ||
-            connStatus === "error") &&
-          workingDirForConnection
-        ) {
-          connConnect(
-            selectedAgent,
-            workingDirForConnection,
-            dbConversationId != null ? externalId : undefined,
-            {
-              source: "auto_link",
-            }
-          ).catch((e) => {
-            setAgentConnectError(normalizeErrorMessage(e))
-          })
-        }
-      }
+      lifecycleSend(draft, selectedModeIdArg)
 
       const persistedId = dbConvIdRef.current
       if (persistedId) {
@@ -511,11 +475,8 @@ const ConversationTabView = memo(function ConversationTabView({
       appendOptimisticTurn,
       bindConversationTab,
       canAutoConnect,
-      connConnect,
       connStatus,
-      dbConversationId,
       effectiveConversationId,
-      externalId,
       folderId,
       hasPersistedConversation,
       lifecycleSend,
@@ -530,7 +491,6 @@ const ConversationTabView = memo(function ConversationTabView({
       tabId,
       temporaryConversationId,
       trySaveExternalId,
-      workingDirForConnection,
     ]
   )
 
@@ -659,11 +619,16 @@ export function ConversationDetailPanel() {
   const { tabs, activeTabId, openNewConversationTab, closeTab } =
     useTabContext()
   const [reloadByTabId, setReloadByTabId] = useState<Record<string, number>>({})
+  const tabsRef = useRef(tabs)
   const conversationsRef = useRef(conversations)
   const pendingClosedConversationIdsRef = useRef<Set<number>>(new Set())
   const pendingRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
   )
+
+  useEffect(() => {
+    tabsRef.current = tabs
+  }, [tabs])
 
   useEffect(() => {
     conversationsRef.current = conversations
@@ -743,6 +708,11 @@ export function ConversationDetailPanel() {
           const matchedConversationId =
             runtimeConversationId ?? summary?.id ?? null
           if (!matchedConversationId) return
+
+          const isOpenInTabs = tabsRef.current.some(
+            (tab) => tab.conversationId === matchedConversationId
+          )
+          if (isOpenInTabs) return
 
           invalidateDetailCache(matchedConversationId)
           setSyncState(matchedConversationId, "reconciling")
