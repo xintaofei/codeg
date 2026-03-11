@@ -165,6 +165,8 @@ export function MessageListView({
     [sharedT]
   )
 
+  const sessionSyncState = session?.syncState ?? "idle"
+
   const { threadItems, nonStreamingAdapted } = useMemo(() => {
     const allTurns = timelineTurns.map((item) => item.turn)
     const allAdapted = adaptMessageTurns(allTurns, adapterText)
@@ -206,12 +208,15 @@ export function MessageListView({
     }
 
     const lastPhase = timelineTurns[timelineTurns.length - 1]?.phase ?? null
-    if (connStatus === "prompting" && lastPhase === "optimistic") {
+    if (
+      lastPhase === "optimistic" &&
+      (connStatus === "prompting" || sessionSyncState === "awaiting_persist")
+    ) {
       items.push({ key: "pending-typing", kind: "typing" })
     }
 
     return { threadItems: items, nonStreamingAdapted: nonStreaming }
-  }, [adapterText, connStatus, timelineTurns])
+  }, [adapterText, connStatus, sessionSyncState, timelineTurns])
 
   const historicalPlanEntries = useMemo(
     () => extractLatestPlanEntriesFromMessages(nonStreamingAdapted),

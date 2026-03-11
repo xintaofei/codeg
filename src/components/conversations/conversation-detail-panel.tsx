@@ -277,6 +277,11 @@ const ConversationTabView = memo(function ConversationTabView({
     async (refreshConversationId: number) => {
       try {
         const refreshed = await refreshDetailCache(refreshConversationId)
+        // Skip ACK during prompting to avoid clearing liveMessage /
+        // resetting syncState while streaming. The useEffect with the
+        // connStatus === "prompting" guard will handle it naturally
+        // once prompting ends.
+        if (prevStatusRef.current === "prompting") return
         acknowledgePersistedDetail(refreshConversationId, refreshed)
       } catch (error) {
         setSyncState(refreshConversationId, "failed")

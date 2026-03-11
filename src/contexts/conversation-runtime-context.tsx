@@ -250,7 +250,10 @@ function reduceHydrateDetail(
     ...(current ?? createEmptySession(conversationId)),
     externalId: nextExternalId,
     persistedTurns,
-    liveMessage: hasPersistedAdvance ? null : (current?.liveMessage ?? null),
+    liveMessage:
+      hasPersistedAdvance && current?.syncState !== "awaiting_persist"
+        ? null
+        : (current?.liveMessage ?? null),
     optimisticTurns: shouldDropOptimistic ? [] : optimisticTurns,
     syncState: shouldDropOptimistic ? "idle" : (current?.syncState ?? "idle"),
     activeTurnToken: shouldDropOptimistic
