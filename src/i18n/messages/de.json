@@ -680,7 +680,9 @@
       "closeConversationTab": "Konversationstab schließen",
       "close": "Schließen",
       "closeOthers": "Andere schließen",
-      "closeAll": "Alle schließen"
+      "closeAll": "Alle schließen",
+      "tileDisplay": "Kachelansicht",
+      "untileDisplay": "Kachel beenden"
     },
     "fileWorkspace": {
       "files": "Dateien",

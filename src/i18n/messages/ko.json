@@ -680,7 +680,9 @@
       "closeConversationTab": "대화 탭 닫기",
       "close": "닫기",
       "closeOthers": "다른 항목 닫기",
-      "closeAll": "모두 닫기"
+      "closeAll": "모두 닫기",
+      "tileDisplay": "타일 표시",
+      "untileDisplay": "타일 해제"
     },
     "fileWorkspace": {
       "files": "파일",

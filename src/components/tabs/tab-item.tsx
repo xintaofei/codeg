@@ -19,21 +19,25 @@ import type { TabItem as TabItemData } from "@/contexts/tab-context"
 interface TabItemProps {
   tab: TabItemData
   isActive: boolean
+  isTileMode: boolean
   onSwitch: (tabId: string) => void
   onClose: (tabId: string) => void
   onCloseOthers: (tabId: string) => void
   onCloseAll: () => void
   onPin: (tabId: string) => void
+  onToggleTile: () => void
 }
 
 export const TabItem = memo(function TabItem({
   tab,
   isActive,
+  isTileMode,
   onSwitch,
   onClose,
   onCloseOthers,
   onCloseAll,
   onPin,
+  onToggleTile,
 }: TabItemProps) {
   const t = useTranslations("Folder.tabs")
   const isDragging = useRef(false)
@@ -141,6 +145,10 @@ export const TabItem = memo(function TabItem({
           <ContextMenuItem onSelect={handleClose}>{t("close")}</ContextMenuItem>
           <ContextMenuItem onSelect={handleCloseOthers}>
             {t("closeOthers")}
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={onToggleTile}>
+            {isTileMode ? t("untileDisplay") : t("tileDisplay")}
           </ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={onCloseAll}>

@@ -36,6 +36,7 @@ export type TabItem = TabItemInternal
 interface TabContextValue {
   tabs: TabItem[]
   activeTabId: string | null
+  isTileMode: boolean
   openTab: (
     conversationId: number,
     agentType: AgentType,
@@ -48,6 +49,7 @@ interface TabContextValue {
   closeAllTabs: () => void
   switchTab: (tabId: string) => void
   pinTab: (tabId: string) => void
+  toggleTileMode: () => void
   openNewConversationTab: (agentType: AgentType, workingDir: string) => void
   bindConversationTab: (
     tabId: string,
@@ -394,6 +396,8 @@ export function TabProvider({ children }: TabProviderProps) {
     [folder?.path, t]
   )
 
+  const [isTileMode, setIsTileMode] = useState(false)
+
   const closeTab = useCallback(
     (tabId: string) => {
       let neighborToSync: TabItemInternal | undefined
@@ -450,6 +454,7 @@ export function TabProvider({ children }: TabProviderProps) {
         const kept = prev.filter((t) => t.id === tabId)
         return kept.length === prev.length ? prev : kept
       })
+      setIsTileMode(false)
 
       const tab = rawTabsRef.current.find((t) => t.id === tabId)
       if (tab) {
@@ -470,6 +475,7 @@ export function TabProvider({ children }: TabProviderProps) {
 
     const replacementTab = makeReplacementDraftTab(seedTab)
     setTabs([replacementTab])
+    setIsTileMode(false)
     setActiveTabId(replacementTab.id)
     syncFolderContext(replacementTab)
     activateConversationPane()
@@ -491,6 +497,10 @@ export function TabProvider({ children }: TabProviderProps) {
     setTabs((prev) =>
       prev.map((t) => (t.id === tabId ? { ...t, isPinned: true } : t))
     )
+  }, [])
+
+  const toggleTileMode = useCallback(() => {
+    setIsTileMode((prev) => !prev)
   }, [])
 
   const reorderTabs = useCallback(
@@ -575,6 +585,7 @@ export function TabProvider({ children }: TabProviderProps) {
     () => ({
       tabs,
       activeTabId,
+      isTileMode,
       openTab,
       closeTab,
       closeConversationTab,
@@ -582,6 +593,7 @@ export function TabProvider({ children }: TabProviderProps) {
       closeAllTabs,
       switchTab,
       pinTab,
+      toggleTileMode,
       openNewConversationTab,
       bindConversationTab,
       reorderTabs,
@@ -589,6 +601,7 @@ export function TabProvider({ children }: TabProviderProps) {
     [
       tabs,
       activeTabId,
+      isTileMode,
       openTab,
       closeTab,
       closeConversationTab,
@@ -596,6 +609,7 @@ export function TabProvider({ children }: TabProviderProps) {
       closeAllTabs,
       switchTab,
       pinTab,
+      toggleTileMode,
       openNewConversationTab,
       bindConversationTab,
       reorderTabs,

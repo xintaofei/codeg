@@ -680,7 +680,9 @@
       "closeConversationTab": "إغلاق تبويب المحادثة",
       "close": "إغلاق",
       "closeOthers": "إغلاق البقية",
-      "closeAll": "إغلاق الكل"
+      "closeAll": "إغلاق الكل",
+      "tileDisplay": "عرض متجانب",
+      "untileDisplay": "إلغاء التجانب"
     },
     "fileWorkspace": {
       "files": "الملفات",

@@ -680,7 +680,9 @@
       "closeConversationTab": "關閉會話分頁",
       "close": "關閉",
       "closeOthers": "關閉其它",
-      "closeAll": "關閉所有"
+      "closeAll": "關閉所有",
+      "tileDisplay": "平鋪顯示",
+      "untileDisplay": "取消平鋪"
     },
     "fileWorkspace": {
       "files": "檔案",

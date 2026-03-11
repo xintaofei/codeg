@@ -680,7 +680,9 @@
       "closeConversationTab": "Fechar aba de conversa",
       "close": "Fechar",
       "closeOthers": "Fechar outros",
-      "closeAll": "Fechar tudo"
+      "closeAll": "Fechar tudo",
+      "tileDisplay": "Exibição em mosaico",
+      "untileDisplay": "Sair do mosaico"
     },
     "fileWorkspace": {
       "files": "Arquivos",

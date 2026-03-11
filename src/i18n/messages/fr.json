@@ -680,7 +680,9 @@
       "closeConversationTab": "Fermer l’onglet de conversation",
       "close": "Fermer",
       "closeOthers": "Fermer les autres",
-      "closeAll": "Tout fermer"
+      "closeAll": "Tout fermer",
+      "tileDisplay": "Affichage en mosaïque",
+      "untileDisplay": "Quitter la mosaïque"
     },
     "fileWorkspace": {
       "files": "Fichiers",

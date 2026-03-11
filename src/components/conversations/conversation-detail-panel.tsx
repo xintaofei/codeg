@@ -1,12 +1,21 @@
 "use client"
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  memo,
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import { Plus, RefreshCw, X } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { disposeTauriListener } from "@/lib/tauri-listener"
 import { useFolderContext } from "@/contexts/folder-context"
 import { useTabContext } from "@/contexts/tab-context"
+import { cn } from "@/lib/utils"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
 import { MessageListView } from "@/components/message/message-list-view"
 import { ConversationShell } from "@/components/chat/conversation-shell"
@@ -48,6 +57,11 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable"
 
 interface ConversationTabViewProps {
   tabId: string
@@ -677,8 +691,14 @@ export function ConversationDetailPanel() {
   } = useConversationRuntime()
   const { folder, newConversation, conversations, refreshConversations } =
     useFolderContext()
-  const { tabs, activeTabId, openNewConversationTab, closeTab } =
-    useTabContext()
+  const {
+    tabs,
+    activeTabId,
+    isTileMode,
+    openNewConversationTab,
+    closeTab,
+    switchTab,
+  } = useTabContext()
   const [reloadByTabId, setReloadByTabId] = useState<Record<string, number>>({})
   const tabsRef = useRef(tabs)
   const conversationsRef = useRef(conversations)
@@ -859,6 +879,8 @@ export function ConversationDetailPanel() {
     openNewConversationTab,
   ])
 
+  const canTile = isTileMode && tabs.length > 1
+
   // Empty state: no tabs at all — show full-screen welcome
   if (hasNoTabs) {
     return null
@@ -868,28 +890,65 @@ export function ConversationDetailPanel() {
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <div className="relative h-full min-h-0 overflow-hidden">
-          {tabs.map((tab) => {
-            const active = tab.id === activeTabId
-            return (
-              <div
-                key={tab.id}
-                className={
-                  active
-                    ? "h-full"
-                    : "absolute inset-0 invisible pointer-events-none"
-                }
-              >
-                <ConversationTabView
-                  tabId={tab.id}
-                  conversationId={tab.conversationId}
-                  agentType={tab.agentType}
-                  workingDir={tab.workingDir ?? folder?.path}
-                  isActive={active}
-                  reloadSignal={reloadByTabId[tab.id] ?? 0}
-                />
-              </div>
-            )
-          })}
+          {canTile ? (
+            <ResizablePanelGroup direction="horizontal">
+              {tabs.map((tab, index) => {
+                const active = tab.id === activeTabId
+                return (
+                  <Fragment key={tab.id}>
+                    {index > 0 && <ResizableHandle withHandle />}
+                    <ResizablePanel
+                      id={`tile-${tab.id}`}
+                      order={index}
+                      minSize={15}
+                    >
+                      <div
+                        className={cn(
+                          "h-full",
+                          active ? "ring-1 ring-inset ring-primary/30" : ""
+                        )}
+                        onPointerDownCapture={() => {
+                          if (!active) switchTab(tab.id)
+                        }}
+                      >
+                        <ConversationTabView
+                          tabId={tab.id}
+                          conversationId={tab.conversationId}
+                          agentType={tab.agentType}
+                          workingDir={tab.workingDir ?? folder?.path}
+                          isActive={active}
+                          reloadSignal={reloadByTabId[tab.id] ?? 0}
+                        />
+                      </div>
+                    </ResizablePanel>
+                  </Fragment>
+                )
+              })}
+            </ResizablePanelGroup>
+          ) : (
+            tabs.map((tab) => {
+              const active = tab.id === activeTabId
+              return (
+                <div
+                  key={tab.id}
+                  className={
+                    active
+                      ? "h-full"
+                      : "absolute inset-0 invisible pointer-events-none"
+                  }
+                >
+                  <ConversationTabView
+                    tabId={tab.id}
+                    conversationId={tab.conversationId}
+                    agentType={tab.agentType}
+                    workingDir={tab.workingDir ?? folder?.path}
+                    isActive={active}
+                    reloadSignal={reloadByTabId[tab.id] ?? 0}
+                  />
+                </div>
+              )
+            })
+          )}
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>

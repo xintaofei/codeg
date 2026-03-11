@@ -13,11 +13,13 @@ export function TabBar() {
   const {
     tabs,
     activeTabId,
+    isTileMode,
     switchTab,
     closeTab,
     closeOtherTabs,
     closeAllTabs,
     pinTab,
+    toggleTileMode,
     reorderTabs,
   } = useTabContext()
   const { mode, activePane } = useWorkspaceContext()
@@ -89,11 +91,13 @@ export function TabBar() {
           key={tab.id}
           tab={tab}
           isActive={tab.id === activeTabId}
+          isTileMode={isTileMode}
           onSwitch={switchTab}
           onClose={closeTab}
           onCloseOthers={closeOtherTabs}
           onCloseAll={closeAllTabs}
           onPin={pinTab}
+          onToggleTile={toggleTileMode}
         />
       ))}
     </Reorder.Group>

@@ -680,7 +680,9 @@
       "closeConversationTab": "Close conversation tab",
       "close": "Close",
       "closeOthers": "Close Others",
-      "closeAll": "Close All"
+      "closeAll": "Close All",
+      "tileDisplay": "Tile Display",
+      "untileDisplay": "Exit Tile"
     },
     "fileWorkspace": {
       "files": "Files",

@@ -680,7 +680,9 @@
       "closeConversationTab": "会話タブを閉じる",
       "close": "閉じる",
       "closeOthers": "他を閉じる",
-      "closeAll": "すべて閉じる"
+      "closeAll": "すべて閉じる",
+      "tileDisplay": "タイル表示",
+      "untileDisplay": "タイル解除"
     },
     "fileWorkspace": {
       "files": "ファイル",
