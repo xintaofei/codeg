@@ -612,11 +612,15 @@ export function TabProvider({ children }: TabProviderProps) {
 
   const setTabRuntimeConversationId = useCallback(
     (tabId: string, runtimeConversationId: number) => {
-      setTabs((prev) =>
-        prev.map((tab) =>
+      setTabs((prev) => {
+        const target = prev.find((tab) => tab.id === tabId)
+        if (!target || target.runtimeConversationId === runtimeConversationId) {
+          return prev
+        }
+        return prev.map((tab) =>
           tab.id === tabId ? { ...tab, runtimeConversationId } : tab
         )
-      )
+      })
     },
     []
   )
