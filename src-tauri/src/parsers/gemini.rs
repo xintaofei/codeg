@@ -49,18 +49,23 @@ impl GeminiParser {
     }
 
     fn list_chat_files(&self) -> Vec<PathBuf> {
-        let tmp_dir = self.tmp_dir();
-        if !tmp_dir.exists() {
-            return Vec::new();
+        let mut files: Vec<PathBuf> = Vec::new();
+
+        // Scan both tmp/ (active sessions) and history/ (archived sessions)
+        for dir in [self.tmp_dir(), self.history_dir()] {
+            if !dir.exists() {
+                continue;
+            }
+            let found = WalkDir::new(&dir)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .map(|e| e.path().to_path_buf())
+                .filter(|p| p.is_file() && Self::is_chat_file(p));
+            files.extend(found);
         }
 
-        let mut files: Vec<PathBuf> = WalkDir::new(&tmp_dir)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .map(|e| e.path().to_path_buf())
-            .filter(|p| p.is_file() && Self::is_chat_file(p))
-            .collect();
         files.sort();
+        files.dedup();
         files
     }
 

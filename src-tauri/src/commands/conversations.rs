@@ -84,6 +84,10 @@ fn list_conversations_sync(
                     .as_ref()
                     .map(|b| b.to_lowercase().contains(&query_lower))
                     .unwrap_or(false)
+                || s.model
+                    .as_ref()
+                    .map(|m| m.to_lowercase().contains(&query_lower))
+                    .unwrap_or(false)
         });
     }
 
