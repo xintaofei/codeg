@@ -967,6 +967,9 @@
       "attachToCurrentSession": "Attach to current session",
       "compareWithBranch": "Compare with branch...",
       "reloadFromDisk": "Reload from disk",
+      "new": "New",
+      "newFile": "File",
+      "newDirectory": "Directory",
       "openIn": "Open in",
       "openInTerminal": "Open in terminal",
       "actions": {
@@ -996,7 +999,15 @@
         "rolledBackFiles": "Rolled back {count, plural, one {# file} other {# files}}",
         "savedAsCopy": "Saved as a copy",
         "saveCopyFailed": "Failed to save as copy",
-        "watchStartFailed": "Failed to start file watch"
+        "watchStartFailed": "Failed to start file watch",
+        "createFailed": "Failed to create"
+      },
+      "createDialog": {
+        "newFile": "New file",
+        "newDirectory": "New directory",
+        "description": "Enter a name for the new {kind}.",
+        "placeholderFile": "file-name.ext",
+        "placeholderDirectory": "folder-name"
       },
       "renameDialog": {
         "renameDirectory": "Rename directory",

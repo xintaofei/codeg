@@ -850,6 +850,15 @@ export async function deleteFileTreeEntry(
   return invoke("delete_file_tree_entry", { rootPath, path })
 }
 
+export async function createFileTreeEntry(
+  rootPath: string,
+  path: string,
+  name: string,
+  kind: "file" | "dir"
+): Promise<string> {
+  return invoke("create_file_tree_entry", { rootPath, path, name, kind })
+}
+
 export async function gitLog(
   path: string,
   limit?: number,

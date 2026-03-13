@@ -967,6 +967,9 @@
       "attachToCurrentSession": "An aktuelle Sitzung anhängen",
       "compareWithBranch": "Mit Branch vergleichen...",
       "reloadFromDisk": "Von Datenträger neu laden",
+      "new": "Neu",
+      "newFile": "Datei",
+      "newDirectory": "Verzeichnis",
       "openIn": "Öffnen in",
       "openInTerminal": "Im Terminal öffnen",
       "actions": {
@@ -996,7 +999,15 @@
         "rolledBackFiles": "{count, plural, one {# Datei zurückgesetzt} other {# Dateien zurückgesetzt}}",
         "savedAsCopy": "Als Kopie gespeichert",
         "saveCopyFailed": "Speichern als Kopie fehlgeschlagen",
-        "watchStartFailed": "Dateiwatch konnte nicht gestartet werden"
+        "watchStartFailed": "Dateiwatch konnte nicht gestartet werden",
+        "createFailed": "Erstellen fehlgeschlagen"
+      },
+      "createDialog": {
+        "newFile": "Neue Datei",
+        "newDirectory": "Neues Verzeichnis",
+        "description": "Geben Sie einen Namen für das neue {kind} ein.",
+        "placeholderFile": "file-name.ext",
+        "placeholderDirectory": "folder-name"
       },
       "renameDialog": {
         "renameDirectory": "Verzeichnis umbenennen",

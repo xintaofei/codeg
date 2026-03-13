@@ -967,6 +967,9 @@
       "attachToCurrentSession": "附加到当前会话",
       "compareWithBranch": "与分支比较...",
       "reloadFromDisk": "从磁盘重新加载",
+      "new": "新建",
+      "newFile": "文件",
+      "newDirectory": "目录",
       "openIn": "打开于",
       "openInTerminal": "在终端打开",
       "actions": {
@@ -996,7 +999,15 @@
         "rolledBackFiles": "已回滚 {count} 个文件",
         "savedAsCopy": "已另存为副本",
         "saveCopyFailed": "另存为副本失败",
-        "watchStartFailed": "文件监听启动失败"
+        "watchStartFailed": "文件监听启动失败",
+        "createFailed": "创建失败"
+      },
+      "createDialog": {
+        "newFile": "新建文件",
+        "newDirectory": "新建目录",
+        "description": "输入新{kind}的名称。",
+        "placeholderFile": "文件名.ext",
+        "placeholderDirectory": "文件夹名"
       },
       "renameDialog": {
         "renameDirectory": "重命名目录",

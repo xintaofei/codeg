@@ -967,6 +967,9 @@
       "attachToCurrentSession": "현재 세션에 연결",
       "compareWithBranch": "브랜치와 비교...",
       "reloadFromDisk": "디스크에서 다시 불러오기",
+      "new": "새로 만들기",
+      "newFile": "파일",
+      "newDirectory": "디렉터리",
       "openIn": "열기",
       "openInTerminal": "터미널에서 열기",
       "actions": {
@@ -996,7 +999,15 @@
         "rolledBackFiles": "{count, plural, one {#개 파일을 롤백했습니다} other {#개 파일을 롤백했습니다}}",
         "savedAsCopy": "사본으로 저장했습니다",
         "saveCopyFailed": "사본으로 저장하지 못했습니다",
-        "watchStartFailed": "파일 감시 시작에 실패했습니다"
+        "watchStartFailed": "파일 감시 시작에 실패했습니다",
+        "createFailed": "생성 실패"
+      },
+      "createDialog": {
+        "newFile": "새 파일",
+        "newDirectory": "새 디렉터리",
+        "description": "새 {kind}의 이름을 입력하세요.",
+        "placeholderFile": "file-name.ext",
+        "placeholderDirectory": "folder-name"
       },
       "renameDialog": {
         "renameDirectory": "디렉터리 이름 변경",

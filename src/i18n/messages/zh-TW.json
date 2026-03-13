@@ -967,6 +967,9 @@
       "attachToCurrentSession": "附加到目前會話",
       "compareWithBranch": "與分支比較...",
       "reloadFromDisk": "從磁碟重新載入",
+      "new": "新建",
+      "newFile": "檔案",
+      "newDirectory": "目錄",
       "openIn": "開啟於",
       "openInTerminal": "在終端開啟",
       "actions": {
@@ -996,7 +999,15 @@
         "rolledBackFiles": "已回滾 {count} 個檔案",
         "savedAsCopy": "已另存為副本",
         "saveCopyFailed": "另存為副本失敗",
-        "watchStartFailed": "檔案監聽啟動失敗"
+        "watchStartFailed": "檔案監聽啟動失敗",
+        "createFailed": "建立失敗"
+      },
+      "createDialog": {
+        "newFile": "新建檔案",
+        "newDirectory": "新建目錄",
+        "description": "輸入新{kind}的名稱。",
+        "placeholderFile": "file-name.ext",
+        "placeholderDirectory": "folder-name"
       },
       "renameDialog": {
         "renameDirectory": "重新命名目錄",

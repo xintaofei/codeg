@@ -967,6 +967,9 @@
       "attachToCurrentSession": "Anexar à sessão atual",
       "compareWithBranch": "Comparar com branch...",
       "reloadFromDisk": "Recarregar do disco",
+      "new": "Novo",
+      "newFile": "Arquivo",
+      "newDirectory": "Diretório",
       "openIn": "Abrir em",
       "openInTerminal": "Abrir no terminal",
       "actions": {
@@ -996,7 +999,15 @@
         "rolledBackFiles": "{count, plural, one {# arquivo revertido} other {# arquivos revertidos}}",
         "savedAsCopy": "Salvo como cópia",
         "saveCopyFailed": "Falha ao salvar como cópia",
-        "watchStartFailed": "Falha ao iniciar monitoramento de arquivos"
+        "watchStartFailed": "Falha ao iniciar monitoramento de arquivos",
+        "createFailed": "Falha ao criar"
+      },
+      "createDialog": {
+        "newFile": "Novo arquivo",
+        "newDirectory": "Novo diretório",
+        "description": "Digite um nome para o novo {kind}.",
+        "placeholderFile": "file-name.ext",
+        "placeholderDirectory": "folder-name"
       },
       "renameDialog": {
         "renameDirectory": "Renomear diretório",

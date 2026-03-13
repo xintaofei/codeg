@@ -2556,6 +2556,69 @@ pub async fn delete_file_tree_entry(
 }
 
 #[tauri::command]
+pub async fn create_file_tree_entry(
+    root_path: String,
+    path: String,
+    name: String,
+    kind: String,
+) -> Result<String, AppCommandError> {
+    let root = PathBuf::from(&root_path);
+    if !root.exists() || !root.is_dir() {
+        return Err(AppCommandError::not_found("Folder does not exist"));
+    }
+
+    let validated_name = validate_new_name(&name)?;
+
+    let parent_dir = if path.is_empty() {
+        root.clone()
+    } else {
+        let resolved = resolve_tree_path(&root, &path)?;
+        if !resolved.exists() {
+            return Err(AppCommandError::not_found("Parent path does not exist"));
+        }
+        if resolved.is_file() {
+            resolved
+                .parent()
+                .map(|p| p.to_path_buf())
+                .ok_or_else(|| AppCommandError::invalid_input("Cannot determine parent directory"))?
+        } else {
+            resolved
+        }
+    };
+
+    let target = parent_dir.join(validated_name);
+    if target.exists() {
+        return Err(AppCommandError::already_exists(
+            "A file or directory with this name already exists",
+        ));
+    }
+
+    match kind.as_str() {
+        "file" => {
+            std::fs::File::create(&target).map_err(AppCommandError::io)?;
+        }
+        "dir" => {
+            std::fs::create_dir(&target).map_err(AppCommandError::io)?;
+        }
+        _ => {
+            return Err(AppCommandError::invalid_input(
+                "Kind must be 'file' or 'dir'",
+            ));
+        }
+    }
+
+    let rel = target
+        .strip_prefix(&root)
+        .map_err(|e| {
+            AppCommandError::invalid_input("Failed to compute relative path")
+                .with_detail(e.to_string())
+        })?
+        .to_string_lossy()
+        .to_string();
+    Ok(rel)
+}
+
+#[tauri::command]
 pub async fn git_log(
     path: String,
     limit: Option<u32>,

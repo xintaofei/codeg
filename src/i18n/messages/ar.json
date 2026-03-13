@@ -967,6 +967,9 @@
       "attachToCurrentSession": "إرفاق بالجلسة الحالية",
       "compareWithBranch": "المقارنة مع الفرع...",
       "reloadFromDisk": "إعادة التحميل من القرص",
+      "new": "جديد",
+      "newFile": "ملف",
+      "newDirectory": "مجلد",
       "openIn": "فتح في",
       "openInTerminal": "فتح في الطرفية",
       "actions": {
@@ -996,7 +999,15 @@
         "rolledBackFiles": "{count, plural, one {تم التراجع عن ملف واحد} other {تم التراجع عن # ملفات}}",
         "savedAsCopy": "تم الحفظ كنسخة",
         "saveCopyFailed": "فشل الحفظ كنسخة",
-        "watchStartFailed": "فشل بدء مراقبة الملفات"
+        "watchStartFailed": "فشل بدء مراقبة الملفات",
+        "createFailed": "فشل في الإنشاء"
+      },
+      "createDialog": {
+        "newFile": "ملف جديد",
+        "newDirectory": "مجلد جديد",
+        "description": "أدخل اسمًا لـ{kind} الجديد.",
+        "placeholderFile": "file-name.ext",
+        "placeholderDirectory": "folder-name"
       },
       "renameDialog": {
         "renameDirectory": "إعادة تسمية المجلد",

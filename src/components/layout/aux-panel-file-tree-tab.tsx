@@ -21,6 +21,7 @@ import { useTabContext } from "@/contexts/tab-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
 import { useWorkspaceContext } from "@/contexts/workspace-context"
 import {
+  createFileTreeEntry,
   deleteFileTreeEntry,
   gitAddFiles,
   getGitBranch,
@@ -419,6 +420,7 @@ interface RenderNodeProps {
   onOpenDirInTerminal: (dirPath: string, fileName: string) => Promise<void>
   onRequestAddToVcs: (target: FileActionTarget) => void
   onRequestRename: (target: FileActionTarget) => void
+  onRequestCreate: (parentPath: string, kind: "file" | "dir") => void
   onRequestDelete: (target: FileActionTarget) => void
   onRefresh: () => void
 }
@@ -441,6 +443,7 @@ function RenderNode({
   onRequestRollback,
   onOpenDirInTerminal,
   onRequestAddToVcs,
+  onRequestCreate,
   onRequestRename,
   onRequestDelete,
   onRefresh,
@@ -507,6 +510,21 @@ function RenderNode({
           >
             {t("attachToCurrentSession")}
           </ContextMenuItem>
+          <ContextMenuSub>
+            <ContextMenuSubTrigger>{t("new")}</ContextMenuSubTrigger>
+            <ContextMenuSubContent>
+              <ContextMenuItem
+                onSelect={() => onRequestCreate(node.path, "file")}
+              >
+                {t("newFile")}
+              </ContextMenuItem>
+              <ContextMenuItem
+                onSelect={() => onRequestCreate(node.path, "dir")}
+              >
+                {t("newDirectory")}
+              </ContextMenuItem>
+            </ContextMenuSubContent>
+          </ContextMenuSub>
           <ContextMenuSub>
             <ContextMenuSubTrigger disabled={isGitMenuDisabled}>
               {t("git")}
@@ -629,6 +647,7 @@ function RenderNode({
                   onRequestCompareWithBranch={onRequestCompareWithBranch}
                   onRequestRollback={onRequestRollback}
                   onOpenDirInTerminal={onOpenDirInTerminal}
+                  onRequestCreate={onRequestCreate}
                   onRequestAddToVcs={onRequestAddToVcs}
                   onRequestRename={onRequestRename}
                   onRequestDelete={onRequestDelete}
@@ -639,6 +658,19 @@ function RenderNode({
         </FileTreeFolder>
       </ContextMenuTrigger>
       <ContextMenuContent>
+        <ContextMenuSub>
+          <ContextMenuSubTrigger>{t("new")}</ContextMenuSubTrigger>
+          <ContextMenuSubContent>
+            <ContextMenuItem
+              onSelect={() => onRequestCreate(node.path, "file")}
+            >
+              {t("newFile")}
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={() => onRequestCreate(node.path, "dir")}>
+              {t("newDirectory")}
+            </ContextMenuItem>
+          </ContextMenuSubContent>
+        </ContextMenuSub>
         <ContextMenuSub>
           <ContextMenuSubTrigger disabled={isGitMenuDisabled}>
             {t("git")}
@@ -736,6 +768,10 @@ export function FileTreeTab() {
   )
   const [renameValue, setRenameValue] = useState("")
   const [renaming, setRenaming] = useState(false)
+  const [createParentPath, setCreateParentPath] = useState<string | null>(null)
+  const [createKind, setCreateKind] = useState<"file" | "dir">("file")
+  const [createName, setCreateName] = useState("")
+  const [creating, setCreating] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<FileActionTarget | null>(
     null
   )
@@ -1139,6 +1175,15 @@ export function FileTreeTab() {
     })
   }, [folder, t])
 
+  const handleRequestCreate = useCallback(
+    (parentPath: string, kind: "file" | "dir") => {
+      setCreateParentPath(parentPath)
+      setCreateKind(kind)
+      setCreateName("")
+    },
+    []
+  )
+
   const handleRequestRename = useCallback((target: FileActionTarget) => {
     setRenameTarget(target)
     setRenameValue(target.name)
@@ -1515,6 +1560,33 @@ export function FileTreeTab() {
       t,
     ]
   )
+
+  const handleCreateConfirm = useCallback(async () => {
+    if (!folder?.path || createParentPath === null) return
+    const trimmedName = createName.trim()
+    if (!trimmedName) {
+      setCreateParentPath(null)
+      return
+    }
+
+    setCreating(true)
+    try {
+      await createFileTreeEntry(
+        folder.path,
+        createParentPath,
+        trimmedName,
+        createKind
+      )
+      setCreateParentPath(null)
+      setCreateName("")
+      await fetchTree()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      toast.error(t("toasts.createFailed"), { description: message })
+    } finally {
+      setCreating(false)
+    }
+  }, [createKind, createName, createParentPath, fetchTree, folder?.path, t])
 
   const handleRenameConfirm = useCallback(async () => {
     if (!folder?.path || !renameTarget) return
@@ -2074,6 +2146,7 @@ export function FileTreeTab() {
                           }
                           onRequestRollback={handleRequestRollback}
                           onOpenDirInTerminal={handleOpenDirInTerminal}
+                          onRequestCreate={handleRequestCreate}
                           onRequestAddToVcs={handleAddToVcs}
                           onRequestRename={handleRequestRename}
                           onRequestDelete={handleRequestDelete}
@@ -2083,6 +2156,21 @@ export function FileTreeTab() {
                     </FileTreeFolder>
                   </ContextMenuTrigger>
                   <ContextMenuContent>
+                    <ContextMenuSub>
+                      <ContextMenuSubTrigger>{t("new")}</ContextMenuSubTrigger>
+                      <ContextMenuSubContent>
+                        <ContextMenuItem
+                          onSelect={() => handleRequestCreate("", "file")}
+                        >
+                          {t("newFile")}
+                        </ContextMenuItem>
+                        <ContextMenuItem
+                          onSelect={() => handleRequestCreate("", "dir")}
+                        >
+                          {t("newDirectory")}
+                        </ContextMenuItem>
+                      </ContextMenuSubContent>
+                    </ContextMenuSub>
                     <ContextMenuSub>
                       <ContextMenuSubTrigger disabled={!gitEnabled}>
                         {t("git")}
@@ -2165,6 +2253,17 @@ export function FileTreeTab() {
           </div>
         </ContextMenuTrigger>
         <ContextMenuContent>
+          <ContextMenuSub>
+            <ContextMenuSubTrigger>{t("new")}</ContextMenuSubTrigger>
+            <ContextMenuSubContent>
+              <ContextMenuItem onSelect={() => handleRequestCreate("", "file")}>
+                {t("newFile")}
+              </ContextMenuItem>
+              <ContextMenuItem onSelect={() => handleRequestCreate("", "dir")}>
+                {t("newDirectory")}
+              </ContextMenuItem>
+            </ContextMenuSubContent>
+          </ContextMenuSub>
           <ContextMenuItem
             onSelect={() => {
               void fetchTree()
@@ -2174,6 +2273,68 @@ export function FileTreeTab() {
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
+
+      <Dialog
+        open={createParentPath !== null}
+        onOpenChange={(open) => {
+          if (open) return
+          setCreateParentPath(null)
+          setCreateName("")
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {createKind === "dir"
+                ? t("createDialog.newDirectory")
+                : t("createDialog.newFile")}
+            </DialogTitle>
+            <DialogDescription>
+              {t("createDialog.description", {
+                kind:
+                  createKind === "dir"
+                    ? t("newDirectory").toLowerCase()
+                    : t("newFile").toLowerCase(),
+              })}
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault()
+              void handleCreateConfirm()
+            }}
+            className="space-y-4"
+          >
+            <Input
+              value={createName}
+              onChange={(event) => setCreateName(event.target.value)}
+              autoFocus
+              disabled={creating}
+              placeholder={
+                createKind === "dir"
+                  ? t("createDialog.placeholderDirectory")
+                  : t("createDialog.placeholderFile")
+              }
+            />
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={creating}
+                onClick={() => {
+                  setCreateParentPath(null)
+                  setCreateName("")
+                }}
+              >
+                {tCommon("cancel")}
+              </Button>
+              <Button type="submit" disabled={creating || !createName.trim()}>
+                {tCommon("create")}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={Boolean(renameTarget)}
@@ -2473,7 +2634,12 @@ export function FileTreeTab() {
                               <Collapsible key={remoteName}>
                                 <CollapsibleTrigger className="flex w-full items-center gap-2.5 rounded-xl px-2 py-1.5 pl-5 text-sm hover:bg-accent hover:text-accent-foreground select-none outline-hidden">
                                   <ChevronRight className="h-3 w-3 shrink-0 transition-transform [[data-state=open]>&]:rotate-90" />
-                                  {remoteName} ({groupedCompareRemoteBranches[remoteName].length})
+                                  {remoteName} (
+                                  {
+                                    groupedCompareRemoteBranches[remoteName]
+                                      .length
+                                  }
+                                  )
                                 </CollapsibleTrigger>
                                 <CollapsibleContent className="space-y-1 pt-1 pl-3">
                                   {groupedCompareRemoteBranches[remoteName].map(
@@ -2489,7 +2655,9 @@ export function FileTreeTab() {
                                         }}
                                         disabled={comparing}
                                       >
-                                        {branch.substring(remoteName.length + 1)}
+                                        {branch.substring(
+                                          remoteName.length + 1
+                                        )}
                                       </Button>
                                     )
                                   )}

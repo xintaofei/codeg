@@ -967,6 +967,9 @@
       "attachToCurrentSession": "Adjuntar a la sesión actual",
       "compareWithBranch": "Comparar con rama...",
       "reloadFromDisk": "Recargar desde disco",
+      "new": "Nuevo",
+      "newFile": "Archivo",
+      "newDirectory": "Directorio",
       "openIn": "Abrir en",
       "openInTerminal": "Abrir en terminal",
       "actions": {
@@ -996,7 +999,15 @@
         "rolledBackFiles": "{count, plural, one {Se revirtió # archivo} other {Se revirtieron # archivos}}",
         "savedAsCopy": "Guardado como copia",
         "saveCopyFailed": "No se pudo guardar como copia",
-        "watchStartFailed": "No se pudo iniciar la vigilancia de archivos"
+        "watchStartFailed": "No se pudo iniciar la vigilancia de archivos",
+        "createFailed": "Error al crear"
+      },
+      "createDialog": {
+        "newFile": "Nuevo archivo",
+        "newDirectory": "Nuevo directorio",
+        "description": "Ingrese un nombre para el nuevo {kind}.",
+        "placeholderFile": "file-name.ext",
+        "placeholderDirectory": "folder-name"
       },
       "renameDialog": {
         "renameDirectory": "Renombrar directorio",

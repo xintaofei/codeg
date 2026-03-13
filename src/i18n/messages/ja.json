@@ -967,6 +967,9 @@
       "attachToCurrentSession": "現在のセッションに添付",
       "compareWithBranch": "ブランチと比較...",
       "reloadFromDisk": "ディスクから再読み込み",
+      "new": "新規作成",
+      "newFile": "ファイル",
+      "newDirectory": "ディレクトリ",
       "openIn": "で開く",
       "openInTerminal": "ターミナルで開く",
       "actions": {
@@ -996,7 +999,15 @@
         "rolledBackFiles": "{count, plural, one {# 件のファイルをロールバックしました} other {# 件のファイルをロールバックしました}}",
         "savedAsCopy": "コピーとして保存しました",
         "saveCopyFailed": "コピーとして保存できませんでした",
-        "watchStartFailed": "ファイル監視の開始に失敗しました"
+        "watchStartFailed": "ファイル監視の開始に失敗しました",
+        "createFailed": "作成に失敗しました"
+      },
+      "createDialog": {
+        "newFile": "新規ファイル",
+        "newDirectory": "新規ディレクトリ",
+        "description": "新しい{kind}の名前を入力してください。",
+        "placeholderFile": "file-name.ext",
+        "placeholderDirectory": "folder-name"
       },
       "renameDialog": {
         "renameDirectory": "ディレクトリ名を変更",
