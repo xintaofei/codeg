@@ -1,28 +1,154 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+  type ComponentProps,
+  type ComponentPropsWithoutRef,
+  type SyntheticEvent,
+} from "react"
 import dynamic from "next/dynamic"
-import { ChevronDown, ChevronRight, FileCode2, FileIcon } from "lucide-react"
+import { cjk } from "@streamdown/cjk"
+import { code } from "@streamdown/code"
+import { math } from "@streamdown/math"
+import { mermaid } from "@streamdown/mermaid"
+import { convertFileSrc } from "@tauri-apps/api/core"
+import {
+  ChevronDown,
+  ChevronRight,
+  Eye,
+  FileCode2,
+  FileIcon,
+  Pencil,
+} from "lucide-react"
 import type { editor as MonacoEditorNs } from "monaco-editor"
 import { useTranslations } from "next-intl"
+import { defaultRehypePlugins, Streamdown } from "streamdown"
+import type { UrlTransform } from "streamdown"
 import { useWorkspaceContext } from "@/contexts/workspace-context"
+import { useFolderContext } from "@/contexts/folder-context"
 import { DiffViewer } from "@/components/diff/diff-viewer"
 import { UnifiedDiffPreview } from "@/components/diff/unified-diff-preview"
+import { useStreamdownLinkSafety } from "@/components/ai-elements/link-safety"
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
+import { Button } from "@/components/ui/button"
+import { ButtonGroup } from "@/components/ui/button-group"
 import { defineMonacoThemes, useMonacoThemeSync } from "@/lib/monaco-themes"
+import { readFileBase64 } from "@/lib/tauri"
 
 const AUTO_SAVE_DELAY_MS = 5000
+const streamdownPlugins = { cjk, code, math, mermaid }
+
+type StreamdownRehypePlugins = NonNullable<
+  ComponentProps<typeof Streamdown>["rehypePlugins"]
+>
+type StreamdownComponents = NonNullable<
+  ComponentProps<typeof Streamdown>["components"]
+>
+
+function uniqStrings(values: readonly string[]): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const value of values) {
+    if (!seen.has(value)) {
+      seen.add(value)
+      result.push(value)
+    }
+  }
+  return result
+}
+
+const URL_SCHEME = /^[a-zA-Z][a-zA-Z\d+\-.]*:/
+const WINDOWS_ABSOLUTE_PATH = /^[a-zA-Z]:[\\/]/
+const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  bmp: "image/bmp",
+  ico: "image/x-icon",
+  avif: "image/avif",
+}
 
 function buildMonacoModelPath(path: string | null, id: string): string {
   if (!path) return `inmemory://model/${encodeURIComponent(id)}`
   const normalized = path.replace(/\\/g, "/")
   const encoded = normalized.split("/").map(encodeURIComponent).join("/")
   return `file:///${encoded}`
+}
+
+function splitUrlSuffix(raw: string): { path: string; suffix: string } {
+  const hashIndex = raw.indexOf("#")
+  const queryIndex = raw.indexOf("?")
+  const cutIndex =
+    hashIndex >= 0 && queryIndex >= 0
+      ? Math.min(hashIndex, queryIndex)
+      : hashIndex >= 0
+        ? hashIndex
+        : queryIndex
+
+  if (cutIndex < 0) return { path: raw, suffix: "" }
+  return { path: raw.slice(0, cutIndex), suffix: raw.slice(cutIndex) }
+}
+
+function extensionFromPath(path: string): string {
+  const normalized = normalizeSlashPath(path)
+  const withoutSuffix = splitUrlSuffix(normalized).path
+  const filename = withoutSuffix.split("/").pop() ?? ""
+  const idx = filename.lastIndexOf(".")
+  if (idx < 0) return ""
+  return filename.slice(idx + 1).toLowerCase()
+}
+
+function guessImageMimeType(path: string): string {
+  const ext = extensionFromPath(path)
+  return IMAGE_MIME_BY_EXTENSION[ext] ?? "application/octet-stream"
+}
+
+function normalizeSlashPath(path: string): string {
+  return path.replace(/\\/g, "/")
+}
+
+function dirnameSlashPath(path: string): string {
+  const normalized = normalizeSlashPath(path).replace(/\/+$/, "")
+  const idx = normalized.lastIndexOf("/")
+  if (idx < 0) return ""
+  return normalized.slice(0, idx)
+}
+
+function resolveSlashPath(baseDir: string, relative: string): string {
+  const joined = `${baseDir}/${relative}`.replace(/\/+/g, "/")
+  const segments = joined.split("/")
+  const stack: string[] = []
+
+  for (const seg of segments) {
+    if (!seg || seg === ".") continue
+    if (seg === "..") {
+      if (stack.length > 0) stack.pop()
+      continue
+    }
+    stack.push(seg)
+  }
+
+  return stack.join("/")
+}
+
+function isExternalUrl(url: string): boolean {
+  if (!url) return false
+  if (url.startsWith("//")) return true
+  if (WINDOWS_ABSOLUTE_PATH.test(url)) return false
+  return URL_SCHEME.test(url)
 }
 
 interface DiffOutlineFile {
@@ -77,6 +203,54 @@ function normalizeDiffPath(rawPath: string): string | null {
 
 function normalizeWorkspacePath(path: string): string {
   return path.replace(/\\/g, "/")
+}
+
+function toWorkspaceRelativePath(folderPath: string, filePath: string): string {
+  const folderRoot = normalizeSlashPath(folderPath).replace(/\/+$/, "")
+  const normalized = normalizeSlashPath(filePath)
+  if (!folderRoot) return normalized
+
+  const isWindows = WINDOWS_ABSOLUTE_PATH.test(folderRoot)
+  const rootForCompare = isWindows ? folderRoot.toLowerCase() : folderRoot
+  const fileForCompare = isWindows ? normalized.toLowerCase() : normalized
+
+  if (fileForCompare === rootForCompare) return ""
+  if (fileForCompare.startsWith(`${rootForCompare}/`)) {
+    return normalized.slice(folderRoot.length + 1)
+  }
+
+  return normalized.startsWith("/") ? normalized.slice(1) : normalized
+}
+
+function resolveMarkdownImageNativePath(params: {
+  folderPath: string
+  activeFilePath: string
+  rawUrl: string
+}): string | null {
+  const trimmed = params.rawUrl.trim()
+  if (!trimmed) return null
+  if (trimmed.startsWith("data:") || trimmed.startsWith("blob:")) return null
+  if (isExternalUrl(trimmed)) return null
+
+  const { path: urlPath } = splitUrlSuffix(trimmed)
+  if (!urlPath) return null
+  if (WINDOWS_ABSOLUTE_PATH.test(urlPath)) return null
+
+  const workspaceActivePath = toWorkspaceRelativePath(
+    params.folderPath,
+    params.activeFilePath
+  )
+
+  const relativeWorkspacePath = urlPath.startsWith("/")
+    ? urlPath.slice(1)
+    : resolveSlashPath(dirnameSlashPath(workspaceActivePath), urlPath)
+  if (!relativeWorkspacePath) return null
+
+  const root = normalizeSlashPath(params.folderPath).replace(/\/+$/, "")
+  const absoluteSlash = `${root}/${relativeWorkspacePath}`.replace(/\/+/g, "/")
+  return WINDOWS_ABSOLUTE_PATH.test(params.folderPath)
+    ? absoluteSlash.replace(/\//g, "\\")
+    : absoluteSlash
 }
 
 function parsePathFromDiffGitLine(line: string): string | null {
@@ -576,6 +750,8 @@ function DiffFileList({
 
 export function FileWorkspacePanel() {
   const t = useTranslations("Folder.fileWorkspacePanel")
+  const { folder } = useFolderContext()
+  const folderPath = folder?.path ?? null
   const {
     activeFileTab,
     consumePendingFileReveal,
@@ -607,6 +783,17 @@ export function FileWorkspacePanel() {
   const fileSaveState = isFileTab ? (activeFileTab.saveState ?? "idle") : "idle"
   const fileIsDirty = isFileTab ? Boolean(activeFileTab.isDirty) : false
   const canEdit = isFileTab && !fileReadonly && !fileTruncated
+  const isMarkdownFile = isFileTab && activeFileTab?.language === "markdown"
+  const activeFilePath = isFileTab ? activeFileTab?.path : null
+  const streamdownLinkSafety = useStreamdownLinkSafety()
+  const [, startMarkdownPreviewTransition] = useTransition()
+  const markdownImageDataUrlCacheRef = useRef<Map<string, string>>(new Map())
+  const markdownImageInflightRef = useRef<Map<string, Promise<string>>>(
+    new Map()
+  )
+  const markdownImageNativePathByResolvedSrcRef = useRef<Map<string, string>>(
+    new Map()
+  )
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const autoSaveGuardRef = useRef({
     canEdit: false,
@@ -1033,6 +1220,288 @@ export function FileWorkspacePanel() {
     []
   )
 
+  const [markdownModeByTab, setMarkdownModeByTab] = useState<
+    Record<string, "edit" | "preview">
+  >({})
+  const [markdownPreviewContentByTab, setMarkdownPreviewContentByTab] =
+    useState<Record<string, string>>({})
+
+  const markdownMode = isMarkdownFile
+    ? canEdit
+      ? (markdownModeByTab[activeScope] ?? "preview")
+      : "preview"
+    : "edit"
+
+  useEffect(() => {
+    if (!isMarkdownFile) return
+    setMarkdownPreviewContentByTab((prev) => {
+      if (prev[activeScope] !== undefined) return prev
+      return { ...prev, [activeScope]: renderedContent }
+    })
+  }, [activeScope, isMarkdownFile, renderedContent])
+
+  useEffect(() => {
+    if (!isMarkdownFile) return
+    if (markdownMode !== "edit") return
+
+    const timer = window.setTimeout(() => {
+      startMarkdownPreviewTransition(() => {
+        setMarkdownPreviewContentByTab((prev) => {
+          if (prev[activeScope] === renderedContent) return prev
+          return { ...prev, [activeScope]: renderedContent }
+        })
+      })
+    }, 400)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [
+    activeScope,
+    isMarkdownFile,
+    markdownMode,
+    renderedContent,
+    startMarkdownPreviewTransition,
+  ])
+
+  useEffect(() => {
+    if (!isMarkdownFile) return
+    if (markdownMode !== "preview") return
+
+    startMarkdownPreviewTransition(() => {
+      setMarkdownPreviewContentByTab((prev) => {
+        if (prev[activeScope] === renderedContent) return prev
+        return { ...prev, [activeScope]: renderedContent }
+      })
+    })
+  }, [
+    activeScope,
+    isMarkdownFile,
+    markdownMode,
+    renderedContent,
+    startMarkdownPreviewTransition,
+  ])
+
+  const getMarkdownImageDataUrl = useCallback(async (nativePath: string) => {
+    const cached = markdownImageDataUrlCacheRef.current.get(nativePath)
+    if (cached) return cached
+
+    const inflight = markdownImageInflightRef.current.get(nativePath)
+    if (inflight) return inflight
+
+    const promise = (async () => {
+      const mime = guessImageMimeType(nativePath)
+      const base64 = await readFileBase64(nativePath, 10_000_000)
+      const dataUrl = `data:${mime};base64,${base64}`
+      markdownImageDataUrlCacheRef.current.set(nativePath, dataUrl)
+      markdownImageInflightRef.current.delete(nativePath)
+      return dataUrl
+    })().catch((error) => {
+      markdownImageInflightRef.current.delete(nativePath)
+      throw error
+    })
+
+    markdownImageInflightRef.current.set(nativePath, promise)
+    return promise
+  }, [])
+
+  const markdownRehypePlugins = useMemo<StreamdownRehypePlugins>(() => {
+    const raw = defaultRehypePlugins.raw
+    const hardenBase = defaultRehypePlugins.harden
+    const sanitize = defaultRehypePlugins.sanitize
+
+    const harden = Array.isArray(hardenBase)
+      ? ((): unknown => {
+          const [hardenPlugin, hardenOptions] = hardenBase
+          if (!hardenOptions || typeof hardenOptions !== "object") {
+            return hardenBase
+          }
+
+          const options = hardenOptions as {
+            defaultOrigin?: string | undefined
+            allowedProtocols?: string[] | undefined
+            allowedImagePrefixes?: string[] | undefined
+          }
+
+          const nextOptions = {
+            ...options,
+            defaultOrigin: options.defaultOrigin ?? "http://localhost",
+            allowedProtocols: uniqStrings([
+              ...(options.allowedProtocols ?? []),
+              "asset:",
+              "tauri:",
+            ]),
+            allowedImagePrefixes: uniqStrings([
+              ...(options.allowedImagePrefixes ?? []),
+              "asset://localhost/",
+              "tauri://localhost/",
+            ]),
+          }
+
+          return [hardenPlugin, nextOptions]
+        })()
+      : hardenBase
+
+    if (!Array.isArray(sanitize)) {
+      return [raw, sanitize, harden] as unknown as StreamdownRehypePlugins
+    }
+
+    const [sanitizePlugin, sanitizeSchema] = sanitize
+    if (!sanitizeSchema || typeof sanitizeSchema !== "object") {
+      return [raw, sanitize, harden] as unknown as StreamdownRehypePlugins
+    }
+
+    const schema = sanitizeSchema as {
+      protocols?: Record<string, string[] | undefined>
+      attributes?: Record<string, string[] | undefined>
+    }
+
+    const nextSchema = {
+      ...schema,
+      protocols: {
+        ...schema.protocols,
+        src: uniqStrings([
+          ...(schema.protocols?.src ?? []),
+          "data",
+          "asset",
+          "tauri",
+        ]),
+      },
+      attributes: {
+        ...schema.attributes,
+        img: uniqStrings([
+          ...(schema.attributes?.img ?? []),
+          "alt",
+          "title",
+          "width",
+          "height",
+        ]),
+      },
+    }
+
+    return [
+      raw,
+      [sanitizePlugin, nextSchema],
+      harden,
+    ] as unknown as StreamdownRehypePlugins
+  }, [])
+
+  const markdownUrlTransform = useCallback<UrlTransform>(
+    (rawUrl, key, node) => {
+      if (!folderPath) return rawUrl
+      if (!isMarkdownFile) return rawUrl
+      if (!activeFilePath) return rawUrl
+      if (key !== "src") return rawUrl
+      if (node.tagName.toLowerCase() !== "img") return rawUrl
+
+      const url = rawUrl.trim()
+      if (!url) return rawUrl
+      if (url.startsWith("data:") || url.startsWith("blob:")) return rawUrl
+      if (url.startsWith("//")) return rawUrl
+      if (URL_SCHEME.test(url) && !WINDOWS_ABSOLUTE_PATH.test(url)) {
+        return rawUrl
+      }
+
+      const absoluteNativePath = resolveMarkdownImageNativePath({
+        folderPath,
+        activeFilePath,
+        rawUrl: url,
+      })
+      if (!absoluteNativePath) return rawUrl
+
+      try {
+        const resolvedSrc = convertFileSrc(absoluteNativePath)
+        markdownImageNativePathByResolvedSrcRef.current.set(
+          resolvedSrc,
+          absoluteNativePath
+        )
+        return resolvedSrc
+      } catch {
+        return rawUrl
+      }
+    },
+    [activeFilePath, folderPath, isMarkdownFile]
+  )
+
+  const markdownComponents = useMemo<StreamdownComponents>(() => {
+    const MarkdownImg = (
+      props: ComponentPropsWithoutRef<"img"> & { node?: unknown }
+    ) => {
+      const rawSrc = typeof props.src === "string" ? props.src : ""
+      const [src, setSrc] = useState(rawSrc)
+      const loadedRef = useRef(false)
+      const fallbackStartedRef = useRef(false)
+
+      useEffect(() => {
+        setSrc(rawSrc)
+        loadedRef.current = false
+        fallbackStartedRef.current = false
+      }, [rawSrc])
+
+      const startFallback = useCallback(() => {
+        if (!rawSrc) return
+        if (fallbackStartedRef.current) return
+        fallbackStartedRef.current = true
+
+        const nativePath =
+          markdownImageNativePathByResolvedSrcRef.current.get(rawSrc)
+        if (!nativePath) return
+
+        void getMarkdownImageDataUrl(nativePath)
+          .then((dataUrl) => {
+            setSrc(dataUrl)
+          })
+          .catch(() => {
+            fallbackStartedRef.current = false
+          })
+      }, [rawSrc])
+
+      useEffect(() => {
+        if (!rawSrc.startsWith("asset:") && !rawSrc.startsWith("tauri:")) {
+          return
+        }
+
+        const timer = window.setTimeout(() => {
+          if (loadedRef.current) return
+          startFallback()
+        }, 300)
+
+        return () => {
+          window.clearTimeout(timer)
+        }
+      }, [rawSrc, startFallback])
+
+      const handleError = useCallback(
+        (event: SyntheticEvent<HTMLImageElement>) => {
+          props.onError?.(event)
+          startFallback()
+        },
+        [props, startFallback]
+      )
+
+      const handleLoad = useCallback(
+        (event: SyntheticEvent<HTMLImageElement>) => {
+          loadedRef.current = true
+          props.onLoad?.(event)
+        },
+        [props]
+      )
+
+      return (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          {...props}
+          alt={typeof props.alt === "string" ? props.alt : ""}
+          src={src}
+          onError={handleError}
+          onLoad={handleLoad}
+        />
+      )
+    }
+
+    return { img: MarkdownImg }
+  }, [getMarkdownImageDataUrl])
+
   if (!activeFileTab) {
     return (
       <div className="h-full flex flex-col items-center justify-center text-center px-6">
@@ -1161,6 +1630,49 @@ export function FileWorkspacePanel() {
       {activeFileTab.loading && (
         <div className="absolute top-2 right-3 z-10 rounded-md bg-background/70 px-2 py-1 text-[11px] text-muted-foreground backdrop-blur-sm">
           {t("loading")}
+        </div>
+      )}
+      {isMarkdownFile && !activeFileTab.loading && (
+        <div className="absolute top-2 right-3 z-10">
+          <ButtonGroup className="rounded-4xl">
+            <Button
+              size="xs"
+              variant={markdownMode === "edit" ? "secondary" : "outline"}
+              onClick={() => {
+                setMarkdownModeByTab((prev) => ({
+                  ...prev,
+                  [activeScope]: "edit",
+                }))
+              }}
+              disabled={!canEdit}
+              title="Edit"
+              aria-label="Edit"
+            >
+              <Pencil className="h-3 w-3" />
+              Edit
+            </Button>
+            <Button
+              size="xs"
+              variant={markdownMode === "preview" ? "secondary" : "outline"}
+              onClick={() => {
+                setMarkdownModeByTab((prev) => ({
+                  ...prev,
+                  [activeScope]: "preview",
+                }))
+                startMarkdownPreviewTransition(() => {
+                  setMarkdownPreviewContentByTab((prev) => ({
+                    ...prev,
+                    [activeScope]: renderedContent,
+                  }))
+                })
+              }}
+              title="Preview"
+              aria-label="Preview"
+            >
+              <Eye className="h-3 w-3" />
+              Preview
+            </Button>
+          </ButtonGroup>
         </div>
       )}
       <div className="h-full flex flex-col min-h-0">
@@ -1303,39 +1815,70 @@ export function FileWorkspacePanel() {
             </div>
           </div>
         )}
-        <div className="flex-1 min-h-0">
-          <MonacoEditor
-            beforeMount={defineMonacoThemes}
-            onMount={handleEditorMount}
-            path={buildMonacoModelPath(activeFileTab.path, activeFileTab.id)}
-            value={renderedContent}
-            onChange={(value) => {
-              if (!isFileTab) return
-              updateActiveFileContent(value ?? "")
-            }}
-            language={activeFileTab.language}
-            theme={editorTheme}
-            loading={
-              <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
-                {t("loadingEditor")}
+        <div className="flex-1 min-h-0 relative">
+          {isMarkdownFile && (
+            <div
+              className={`absolute inset-0 h-full overflow-auto px-4 py-3 ${
+                markdownMode === "preview" ? "" : "hidden"
+              }`}
+            >
+              <div className="break-words text-sm prose prose-sm dark:prose-invert max-w-none [&_ul]:list-inside [&_ol]:list-inside">
+                {activeFileTab.loading &&
+                !(
+                  markdownPreviewContentByTab[activeScope] ?? renderedContent
+                ).trim() ? (
+                  <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
+                    {t("loading")}
+                  </div>
+                ) : (
+                  <Streamdown
+                    plugins={streamdownPlugins}
+                    components={markdownComponents}
+                    linkSafety={streamdownLinkSafety}
+                    urlTransform={markdownUrlTransform}
+                    rehypePlugins={markdownRehypePlugins}
+                  >
+                    {markdownPreviewContentByTab[activeScope] ??
+                      renderedContent}
+                  </Streamdown>
+                )}
               </div>
-            }
-            options={{
-              readOnly: !canEdit,
-              minimap: { enabled: false },
-              automaticLayout: true,
-              fontSize: 13,
-              lineNumbersMinChars,
-              lineDecorationsWidth: 10,
-              wordWrap: "off",
-              scrollBeyondLastLine: false,
-              scrollBeyondLastColumn: 8,
-              renderLineHighlight: "line",
-              scrollbar: {
-                horizontal: "auto",
-              },
-            }}
-          />
+            </div>
+          )}
+          {(!isMarkdownFile || markdownMode !== "preview") && (
+            <MonacoEditor
+              beforeMount={defineMonacoThemes}
+              onMount={handleEditorMount}
+              path={buildMonacoModelPath(activeFileTab.path, activeFileTab.id)}
+              value={renderedContent}
+              onChange={(value) => {
+                if (!isFileTab) return
+                updateActiveFileContent(value ?? "")
+              }}
+              language={activeFileTab.language}
+              theme={editorTheme}
+              loading={
+                <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
+                  {t("loadingEditor")}
+                </div>
+              }
+              options={{
+                readOnly: !canEdit,
+                minimap: { enabled: false },
+                automaticLayout: true,
+                fontSize: 13,
+                lineNumbersMinChars,
+                lineDecorationsWidth: 10,
+                wordWrap: "off",
+                scrollBeyondLastLine: false,
+                scrollBeyondLastColumn: 8,
+                renderLineHighlight: "line",
+                scrollbar: {
+                  horizontal: "auto",
+                },
+              }}
+            />
+          )}
         </div>
       </div>
     </div>
