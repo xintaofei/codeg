@@ -1162,6 +1162,7 @@ export function MessageInput({
         const history = sendHistoryRef.current
 
         if (history.length > 0) {
+          const hasSelection = textarea.selectionStart !== textarea.selectionEnd
           const applyHistoryValue = (
             nextText: string,
             nextIndex: number | null
@@ -1177,53 +1178,43 @@ export function MessageInput({
             })
           }
 
-          const atStart =
-            textarea.selectionStart === 0 && textarea.selectionEnd === 0
-          const atEnd =
-            textarea.selectionStart === value.length &&
-            textarea.selectionEnd === value.length
-
-          if (isArrowUp && atStart) {
-            if (sendHistoryIndex === null) {
-              if (value.length === 0) {
-                const nextIndex = history.length - 1
-                applyHistoryValue(history[nextIndex] ?? "", nextIndex)
-                return
-              }
-            } else {
-              if (value.length === 0) {
-                const nextIndex = history.length - 1
-                applyHistoryValue(history[nextIndex] ?? "", nextIndex)
-                return
-              }
-
-              const current = history[sendHistoryIndex]
-              if (current && value === current) {
+          if (sendHistoryIndex !== null && !hasSelection) {
+            const current = history[sendHistoryIndex]
+            if (current && value === current) {
+              if (isArrowUp) {
                 const nextIndex = Math.max(0, sendHistoryIndex - 1)
+                applyHistoryValue(history[nextIndex] ?? "", nextIndex)
+                return
+              }
+
+              if (isArrowDown) {
+                const isLast = sendHistoryIndex >= history.length - 1
+                if (isLast) {
+                  applyHistoryValue("", null)
+                  return
+                }
+
+                const nextIndex = sendHistoryIndex + 1
                 applyHistoryValue(history[nextIndex] ?? "", nextIndex)
                 return
               }
             }
           }
 
-          if (isArrowDown && atEnd && sendHistoryIndex !== null) {
+          const atStart =
+            textarea.selectionStart === 0 && textarea.selectionEnd === 0
+
+          if (
+            sendHistoryIndex === null &&
+            !hasSelection &&
+            isArrowUp &&
+            atStart
+          ) {
             if (value.length === 0) {
-              setSendHistoryIndex(null)
+              const nextIndex = history.length - 1
+              applyHistoryValue(history[nextIndex] ?? "", nextIndex)
               return
             }
-
-            const current = history[sendHistoryIndex]
-            if (!current || value !== current) return
-
-            const isLast = sendHistoryIndex >= history.length - 1
-            if (isLast) {
-              applyHistoryValue("", null)
-              return
-            }
-
-            const nextIndex = sendHistoryIndex + 1
-            applyHistoryValue(history[nextIndex] ?? "", nextIndex)
-            return
           }
         }
       }
