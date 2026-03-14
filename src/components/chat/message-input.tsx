@@ -1072,7 +1072,6 @@ export function MessageInput({
       }
 
       if (
-        !disabled &&
         !isEditingQueueItem &&
         !slashMenuOpen &&
         (e.key === "ArrowUp" || e.key === "ArrowDown") &&
