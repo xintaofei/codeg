@@ -1087,7 +1087,7 @@ export function MessageInput({
         : hasResourceAttachments
           ? "pt-10"
           : "pt-3"
-  const bottomPaddingClass = "pb-10"
+  const bottomPaddingClass = "pb-14"
   const showDragActive = isDragActive && !disabled
 
   const selectorItems = (
@@ -1211,7 +1211,14 @@ export function MessageInput({
           {t("dropFilesToAttach")}
         </div>
       )}
-      <div className="@container absolute left-2 right-24 bottom-2">
+      <div
+        className={cn(
+          "pointer-events-none absolute left-px right-px bottom-px z-10 rounded-b-xl bg-background",
+          "h-14"
+        )}
+        aria-hidden="true"
+      />
+      <div className="@container absolute left-2 right-24 bottom-2 z-20">
         <div className="flex items-center gap-1">
           <Button
             onClick={handlePickFiles}
@@ -1248,7 +1255,7 @@ export function MessageInput({
         </div>
       </div>
       {isEditingQueueItem ? (
-        <div className="absolute right-2 bottom-2 flex items-center gap-1">
+        <div className="absolute right-2 bottom-2 z-20 flex items-center gap-1">
           <Button
             onClick={onCancelQueueEdit}
             variant="ghost"
@@ -1268,7 +1275,7 @@ export function MessageInput({
           </Button>
         </div>
       ) : isPrompting && onCancel ? (
-        <div className="absolute right-2 bottom-2 flex items-center gap-1">
+        <div className="absolute right-2 bottom-2 z-20 flex items-center gap-1">
           <Button
             onClick={handleSend}
             disabled={!hasSendableContent}
@@ -1293,7 +1300,7 @@ export function MessageInput({
           onClick={handleSend}
           disabled={disabled || !hasSendableContent}
           size="icon"
-          className="absolute right-2 bottom-2"
+          className="absolute right-2 bottom-2 z-20"
           title={t("send")}
         >
           <Send className="h-4 w-4" />
