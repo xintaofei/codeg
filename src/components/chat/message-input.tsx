@@ -26,10 +26,11 @@ import {
 import { cn } from "@/lib/utils"
 import { matchShortcutEvent } from "@/lib/keyboard-shortcuts"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
-import { readFileBase64 } from "@/lib/tauri"
+import { getFolderConversation, readFileBase64 } from "@/lib/tauri"
 import { disposeTauriListener } from "@/lib/tauri-listener"
 import type {
   AvailableCommandInfo,
+  ContentBlock,
   PromptCapabilitiesInfo,
   PromptDraft,
   PromptInputBlock,
@@ -164,6 +165,27 @@ function saveMessageInputSendHistory(scopeKey: string | null, items: string[]) {
   } catch {
     // ignore
   }
+}
+
+function parseConversationIdFromDraftStorageKey(
+  draftStorageKey: string | null
+): number | null {
+  if (!draftStorageKey) return null
+  const match = /^conv:[^:]+:(\d+)$/.exec(draftStorageKey)
+  if (!match) return null
+  const id = Number(match[1])
+  return Number.isFinite(id) ? id : null
+}
+
+function textFromBlocks(blocks: ContentBlock[]): string | null {
+  const parts: string[] = []
+  for (const block of blocks) {
+    if (block.type !== "text") continue
+    if (!block.text.trim()) continue
+    parts.push(block.text)
+  }
+  const joined = parts.join("\n").trim()
+  return joined.length > 0 ? joined : null
 }
 
 function fileNameFromPath(path: string): string {
@@ -351,6 +373,45 @@ export function MessageInput({
       effectiveDraftStorageKey
     )
     setSendHistoryIndex(null)
+  }, [effectiveDraftStorageKey])
+
+  useEffect(() => {
+    if (!effectiveDraftStorageKey) return
+    if (sendHistoryRef.current.length > 0) return
+    const conversationId = parseConversationIdFromDraftStorageKey(
+      effectiveDraftStorageKey
+    )
+    if (!conversationId) return
+
+    let cancelled = false
+    getFolderConversation(conversationId)
+      .then((detail) => {
+        if (cancelled) return
+        if (sendHistoryRef.current.length > 0) return
+
+        const seeded: string[] = []
+        let last: string | null = null
+        for (const turn of detail.turns) {
+          if (turn.role !== "user") continue
+          const next = textFromBlocks(turn.blocks)
+          if (!next) continue
+          if (next === last) continue
+          seeded.push(next)
+          last = next
+        }
+
+        if (seeded.length === 0) return
+        const limited = seeded.slice(-MESSAGE_INPUT_SEND_HISTORY_LIMIT)
+        saveMessageInputSendHistory(effectiveDraftStorageKey, limited)
+        sendHistoryRef.current = limited
+      })
+      .catch(() => {
+        // ignore
+      })
+
+    return () => {
+      cancelled = true
+    }
   }, [effectiveDraftStorageKey])
   const dragActiveRef = useRef(false)
   const canAttachImages = promptCapabilities.image
@@ -1035,19 +1096,30 @@ export function MessageInput({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (
-        e.nativeEvent.isComposing ||
-        composingRef.current ||
-        e.key === "Process" ||
-        e.keyCode === 229
-      ) {
+      const isArrowUp =
+        e.key === "ArrowUp" ||
+        e.key === "Up" ||
+        (e.nativeEvent as KeyboardEvent).code === "ArrowUp" ||
+        e.code === "ArrowUp" ||
+        e.keyCode === 38
+      const isArrowDown =
+        e.key === "ArrowDown" ||
+        e.key === "Down" ||
+        (e.nativeEvent as KeyboardEvent).code === "ArrowDown" ||
+        e.code === "ArrowDown" ||
+        e.keyCode === 40
+
+      if (e.nativeEvent.isComposing || composingRef.current) {
         return
       }
 
-      const isArrowUp =
-        e.key === "ArrowUp" || e.key === "Up" || e.keyCode === 38
-      const isArrowDown =
-        e.key === "ArrowDown" || e.key === "Down" || e.keyCode === 40
+      if (
+        (e.key === "Process" || e.keyCode === 229) &&
+        !isArrowUp &&
+        !isArrowDown
+      ) {
+        return
+      }
 
       if (slashMenuOpen && filteredSlashCommands.length > 0) {
         if (isArrowDown) {
