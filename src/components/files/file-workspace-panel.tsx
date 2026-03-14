@@ -1,11 +1,22 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+  type ComponentProps,
+  type ComponentPropsWithoutRef,
+  type SyntheticEvent,
+} from "react"
 import dynamic from "next/dynamic"
 import { cjk } from "@streamdown/cjk"
 import { code } from "@streamdown/code"
 import { math } from "@streamdown/math"
 import { mermaid } from "@streamdown/mermaid"
+import { convertFileSrc } from "@tauri-apps/api/core"
 import {
   ChevronDown,
   ChevronRight,
@@ -16,7 +27,7 @@ import {
 } from "lucide-react"
 import type { editor as MonacoEditorNs } from "monaco-editor"
 import { useTranslations } from "next-intl"
-import { Streamdown } from "streamdown"
+import { defaultRehypePlugins, Streamdown } from "streamdown"
 import type { UrlTransform } from "streamdown"
 import { useWorkspaceContext } from "@/contexts/workspace-context"
 import { useFolderContext } from "@/contexts/folder-context"
@@ -37,12 +48,23 @@ import { readFileBase64 } from "@/lib/tauri"
 const AUTO_SAVE_DELAY_MS = 5000
 const streamdownPlugins = { cjk, code, math, mermaid }
 
-declare global {
-  interface Window {
-    __TAURI_INTERNALS__?: {
-      convertFileSrc?: (filePath: string, protocol?: string) => string
+type StreamdownRehypePlugins = NonNullable<
+  ComponentProps<typeof Streamdown>["rehypePlugins"]
+>
+type StreamdownComponents = NonNullable<
+  ComponentProps<typeof Streamdown>["components"]
+>
+
+function uniqStrings(values: readonly string[]): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const value of values) {
+    if (!seen.has(value)) {
+      seen.add(value)
+      result.push(value)
     }
   }
+  return result
 }
 
 const URL_SCHEME = /^[a-zA-Z][a-zA-Z\d+\-.]*:/
@@ -56,6 +78,7 @@ const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
   svg: "image/svg+xml",
   bmp: "image/bmp",
   ico: "image/x-icon",
+  avif: "image/avif",
 }
 
 function buildMonacoModelPath(path: string | null, id: string): string {
@@ -128,26 +151,6 @@ function isExternalUrl(url: string): boolean {
   return URL_SCHEME.test(url)
 }
 
-type MarkdownImageRef =
-  | { kind: "markdown"; rawUrl: string }
-  | { kind: "html"; rawUrl: string }
-
-function collectMarkdownImageRefs(markdown: string): MarkdownImageRef[] {
-  const results: MarkdownImageRef[] = []
-  const markdownImageRe = /!\[[^\]]*]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)/g
-  const htmlImageRe = /<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi
-
-  let match: RegExpExecArray | null = null
-  while ((match = markdownImageRe.exec(markdown))) {
-    results.push({ kind: "markdown", rawUrl: match[1] ?? "" })
-  }
-  while ((match = htmlImageRe.exec(markdown))) {
-    results.push({ kind: "html", rawUrl: match[1] ?? "" })
-  }
-
-  return results
-}
-
 interface DiffOutlineFile {
   key: string
   path: string
@@ -200,6 +203,54 @@ function normalizeDiffPath(rawPath: string): string | null {
 
 function normalizeWorkspacePath(path: string): string {
   return path.replace(/\\/g, "/")
+}
+
+function toWorkspaceRelativePath(folderPath: string, filePath: string): string {
+  const folderRoot = normalizeSlashPath(folderPath).replace(/\/+$/, "")
+  const normalized = normalizeSlashPath(filePath)
+  if (!folderRoot) return normalized
+
+  const isWindows = WINDOWS_ABSOLUTE_PATH.test(folderRoot)
+  const rootForCompare = isWindows ? folderRoot.toLowerCase() : folderRoot
+  const fileForCompare = isWindows ? normalized.toLowerCase() : normalized
+
+  if (fileForCompare === rootForCompare) return ""
+  if (fileForCompare.startsWith(`${rootForCompare}/`)) {
+    return normalized.slice(folderRoot.length + 1)
+  }
+
+  return normalized.startsWith("/") ? normalized.slice(1) : normalized
+}
+
+function resolveMarkdownImageNativePath(params: {
+  folderPath: string
+  activeFilePath: string
+  rawUrl: string
+}): string | null {
+  const trimmed = params.rawUrl.trim()
+  if (!trimmed) return null
+  if (trimmed.startsWith("data:") || trimmed.startsWith("blob:")) return null
+  if (isExternalUrl(trimmed)) return null
+
+  const { path: urlPath } = splitUrlSuffix(trimmed)
+  if (!urlPath) return null
+  if (WINDOWS_ABSOLUTE_PATH.test(urlPath)) return null
+
+  const workspaceActivePath = toWorkspaceRelativePath(
+    params.folderPath,
+    params.activeFilePath
+  )
+
+  const relativeWorkspacePath = urlPath.startsWith("/")
+    ? urlPath.slice(1)
+    : resolveSlashPath(dirnameSlashPath(workspaceActivePath), urlPath)
+  if (!relativeWorkspacePath) return null
+
+  const root = normalizeSlashPath(params.folderPath).replace(/\/+$/, "")
+  const absoluteSlash = `${root}/${relativeWorkspacePath}`.replace(/\/+/g, "/")
+  return WINDOWS_ABSOLUTE_PATH.test(params.folderPath)
+    ? absoluteSlash.replace(/\//g, "\\")
+    : absoluteSlash
 }
 
 function parsePathFromDiffGitLine(line: string): string | null {
@@ -735,12 +786,14 @@ export function FileWorkspacePanel() {
   const isMarkdownFile = isFileTab && activeFileTab?.language === "markdown"
   const activeFilePath = isFileTab ? activeFileTab?.path : null
   const streamdownLinkSafety = useStreamdownLinkSafety()
-  const [markdownPreviewState, setMarkdownPreviewState] = useState<{
-    scope: string
-    source: string
-    inlined: string
-  } | null>(null)
-  const markdownImageCacheRef = useRef<Map<string, string>>(new Map())
+  const [, startMarkdownPreviewTransition] = useTransition()
+  const markdownImageDataUrlCacheRef = useRef<Map<string, string>>(new Map())
+  const markdownImageInflightRef = useRef<Map<string, Promise<string>>>(
+    new Map()
+  )
+  const markdownImageNativePathByResolvedSrcRef = useRef<Map<string, string>>(
+    new Map()
+  )
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const autoSaveGuardRef = useRef({
     canEdit: false,
@@ -1170,6 +1223,8 @@ export function FileWorkspacePanel() {
   const [markdownModeByTab, setMarkdownModeByTab] = useState<
     Record<string, "edit" | "preview">
   >({})
+  const [markdownPreviewContentByTab, setMarkdownPreviewContentByTab] =
+    useState<Record<string, string>>({})
 
   const markdownMode = isMarkdownFile
     ? canEdit
@@ -1177,48 +1232,190 @@ export function FileWorkspacePanel() {
       : "preview"
     : "edit"
 
+  useEffect(() => {
+    if (!isMarkdownFile) return
+    setMarkdownPreviewContentByTab((prev) => {
+      if (prev[activeScope] !== undefined) return prev
+      return { ...prev, [activeScope]: renderedContent }
+    })
+  }, [activeScope, isMarkdownFile, renderedContent])
+
+  useEffect(() => {
+    if (!isMarkdownFile) return
+    if (markdownMode !== "edit") return
+
+    const timer = window.setTimeout(() => {
+      startMarkdownPreviewTransition(() => {
+        setMarkdownPreviewContentByTab((prev) => {
+          if (prev[activeScope] === renderedContent) return prev
+          return { ...prev, [activeScope]: renderedContent }
+        })
+      })
+    }, 400)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [
+    activeScope,
+    isMarkdownFile,
+    markdownMode,
+    renderedContent,
+    startMarkdownPreviewTransition,
+  ])
+
+  useEffect(() => {
+    if (!isMarkdownFile) return
+    if (markdownMode !== "preview") return
+
+    startMarkdownPreviewTransition(() => {
+      setMarkdownPreviewContentByTab((prev) => {
+        if (prev[activeScope] === renderedContent) return prev
+        return { ...prev, [activeScope]: renderedContent }
+      })
+    })
+  }, [
+    activeScope,
+    isMarkdownFile,
+    markdownMode,
+    renderedContent,
+    startMarkdownPreviewTransition,
+  ])
+
+  const getMarkdownImageDataUrl = useCallback(async (nativePath: string) => {
+    const cached = markdownImageDataUrlCacheRef.current.get(nativePath)
+    if (cached) return cached
+
+    const inflight = markdownImageInflightRef.current.get(nativePath)
+    if (inflight) return inflight
+
+    const promise = (async () => {
+      const mime = guessImageMimeType(nativePath)
+      const base64 = await readFileBase64(nativePath, 10_000_000)
+      const dataUrl = `data:${mime};base64,${base64}`
+      markdownImageDataUrlCacheRef.current.set(nativePath, dataUrl)
+      markdownImageInflightRef.current.delete(nativePath)
+      return dataUrl
+    })().catch((error) => {
+      markdownImageInflightRef.current.delete(nativePath)
+      throw error
+    })
+
+    markdownImageInflightRef.current.set(nativePath, promise)
+    return promise
+  }, [])
+
+  const markdownRehypePlugins = useMemo<StreamdownRehypePlugins>(() => {
+    const raw = defaultRehypePlugins.raw
+    const hardenBase = defaultRehypePlugins.harden
+    const sanitize = defaultRehypePlugins.sanitize
+
+    const harden = Array.isArray(hardenBase)
+      ? ((): unknown => {
+          const [hardenPlugin, hardenOptions] = hardenBase
+          if (!hardenOptions || typeof hardenOptions !== "object") {
+            return hardenBase
+          }
+
+          const options = hardenOptions as {
+            defaultOrigin?: string | undefined
+            allowedProtocols?: string[] | undefined
+            allowedImagePrefixes?: string[] | undefined
+          }
+
+          const nextOptions = {
+            ...options,
+            defaultOrigin: options.defaultOrigin ?? "http://localhost",
+            allowedProtocols: uniqStrings([
+              ...(options.allowedProtocols ?? []),
+              "asset:",
+              "tauri:",
+            ]),
+            allowedImagePrefixes: uniqStrings([
+              ...(options.allowedImagePrefixes ?? []),
+              "asset://localhost/",
+              "tauri://localhost/",
+            ]),
+          }
+
+          return [hardenPlugin, nextOptions]
+        })()
+      : hardenBase
+
+    if (!Array.isArray(sanitize)) {
+      return [raw, sanitize, harden] as unknown as StreamdownRehypePlugins
+    }
+
+    const [sanitizePlugin, sanitizeSchema] = sanitize
+    if (!sanitizeSchema || typeof sanitizeSchema !== "object") {
+      return [raw, sanitize, harden] as unknown as StreamdownRehypePlugins
+    }
+
+    const schema = sanitizeSchema as {
+      protocols?: Record<string, string[] | undefined>
+      attributes?: Record<string, string[] | undefined>
+    }
+
+    const nextSchema = {
+      ...schema,
+      protocols: {
+        ...schema.protocols,
+        src: uniqStrings([
+          ...(schema.protocols?.src ?? []),
+          "data",
+          "asset",
+          "tauri",
+        ]),
+      },
+      attributes: {
+        ...schema.attributes,
+        img: uniqStrings([
+          ...(schema.attributes?.img ?? []),
+          "alt",
+          "title",
+          "width",
+          "height",
+        ]),
+      },
+    }
+
+    return [
+      raw,
+      [sanitizePlugin, nextSchema],
+      harden,
+    ] as unknown as StreamdownRehypePlugins
+  }, [])
+
   const markdownUrlTransform = useCallback<UrlTransform>(
     (rawUrl, key, node) => {
       if (!folderPath) return rawUrl
       if (!isMarkdownFile) return rawUrl
       if (!activeFilePath) return rawUrl
-      const convertFileSrc = window.__TAURI_INTERNALS__?.convertFileSrc
-      if (!convertFileSrc) return rawUrl
       if (key !== "src") return rawUrl
       if (node.tagName.toLowerCase() !== "img") return rawUrl
 
       const url = rawUrl.trim()
       if (!url) return rawUrl
       if (url.startsWith("data:") || url.startsWith("blob:")) return rawUrl
+      if (url.startsWith("//")) return rawUrl
       if (URL_SCHEME.test(url) && !WINDOWS_ABSOLUTE_PATH.test(url)) {
         return rawUrl
       }
-      if (url.startsWith("//")) return rawUrl
 
-      const { path: urlPath, suffix } = splitUrlSuffix(url)
-      if (!urlPath) return rawUrl
-
-      if (WINDOWS_ABSOLUTE_PATH.test(urlPath)) {
-        try {
-          return `${convertFileSrc(urlPath)}${suffix}`
-        } catch {
-          return rawUrl
-        }
-      }
-
-      const relativePath = urlPath.startsWith("/")
-        ? urlPath.slice(1)
-        : resolveSlashPath(dirnameSlashPath(activeFilePath), urlPath)
-      if (!relativePath) return rawUrl
-
-      const root = normalizeSlashPath(folderPath).replace(/\/+$/, "")
-      const absoluteSlash = `${root}/${relativePath}`.replace(/\/+/g, "/")
-      const absoluteNative = WINDOWS_ABSOLUTE_PATH.test(folderPath)
-        ? absoluteSlash.replace(/\//g, "\\")
-        : absoluteSlash
+      const absoluteNativePath = resolveMarkdownImageNativePath({
+        folderPath,
+        activeFilePath,
+        rawUrl: url,
+      })
+      if (!absoluteNativePath) return rawUrl
 
       try {
-        return `${convertFileSrc(absoluteNative)}${suffix}`
+        const resolvedSrc = convertFileSrc(absoluteNativePath)
+        markdownImageNativePathByResolvedSrcRef.current.set(
+          resolvedSrc,
+          absoluteNativePath
+        )
+        return resolvedSrc
       } catch {
         return rawUrl
       }
@@ -1226,112 +1423,84 @@ export function FileWorkspacePanel() {
     [activeFilePath, folderPath, isMarkdownFile]
   )
 
-  useEffect(() => {
-    let cancelled = false
+  const markdownComponents = useMemo<StreamdownComponents>(() => {
+    const MarkdownImg = (
+      props: ComponentPropsWithoutRef<"img"> & { node?: unknown }
+    ) => {
+      const rawSrc = typeof props.src === "string" ? props.src : ""
+      const [src, setSrc] = useState(rawSrc)
+      const loadedRef = useRef(false)
+      const fallbackStartedRef = useRef(false)
 
-    if (!isMarkdownFile || markdownMode !== "preview") return
-    if (!folderPath || !activeFilePath) return
+      useEffect(() => {
+        setSrc(rawSrc)
+        loadedRef.current = false
+        fallbackStartedRef.current = false
+      }, [rawSrc])
 
-    const refs = collectMarkdownImageRefs(renderedContent)
-    const uniqueUrls = Array.from(
-      new Set(refs.map((ref) => ref.rawUrl.trim()).filter(Boolean))
-    )
+      const startFallback = useCallback(() => {
+        if (!rawSrc) return
+        if (fallbackStartedRef.current) return
+        fallbackStartedRef.current = true
 
-    const resolveToAbsoluteNativePath = (rawUrl: string): string | null => {
-      const trimmed = rawUrl.trim()
-      if (!trimmed) return null
-      if (trimmed.startsWith("data:") || trimmed.startsWith("blob:")) {
-        return null
-      }
-      if (isExternalUrl(trimmed)) return null
+        const nativePath =
+          markdownImageNativePathByResolvedSrcRef.current.get(rawSrc)
+        if (!nativePath) return
 
-      const { path: urlPath } = splitUrlSuffix(trimmed)
-      if (!urlPath) return null
+        void getMarkdownImageDataUrl(nativePath)
+          .then((dataUrl) => {
+            setSrc(dataUrl)
+          })
+          .catch(() => {
+            fallbackStartedRef.current = false
+          })
+      }, [rawSrc])
 
-      if (WINDOWS_ABSOLUTE_PATH.test(urlPath)) return urlPath
-
-      const relativeWorkspacePath = urlPath.startsWith("/")
-        ? urlPath.slice(1)
-        : resolveSlashPath(dirnameSlashPath(activeFilePath), urlPath)
-      if (!relativeWorkspacePath) return null
-
-      const root = normalizeSlashPath(folderPath).replace(/\/+$/, "")
-      const absoluteSlash = `${root}/${relativeWorkspacePath}`.replace(
-        /\/+/g,
-        "/"
-      )
-      return WINDOWS_ABSOLUTE_PATH.test(folderPath)
-        ? absoluteSlash.replace(/\//g, "\\")
-        : absoluteSlash
-    }
-
-    const toDataUrl = async (absoluteNativePath: string) => {
-      const cached = markdownImageCacheRef.current.get(absoluteNativePath)
-      if (cached) return cached
-
-      const mime = guessImageMimeType(absoluteNativePath)
-      const base64 = await readFileBase64(absoluteNativePath, 10_000_000)
-      const dataUrl = `data:${mime};base64,${base64}`
-      markdownImageCacheRef.current.set(absoluteNativePath, dataUrl)
-      return dataUrl
-    }
-
-    void (async () => {
-      const replacementMap = new Map<string, string>()
-
-      for (const rawUrl of uniqueUrls) {
-        const absoluteNativePath = resolveToAbsoluteNativePath(rawUrl)
-        if (!absoluteNativePath) continue
-
-        try {
-          const dataUrl = await toDataUrl(absoluteNativePath)
-          replacementMap.set(rawUrl, dataUrl)
-        } catch {
-          // keep original url on failure
+      useEffect(() => {
+        if (!rawSrc.startsWith("asset:") && !rawSrc.startsWith("tauri:")) {
+          return
         }
-      }
 
-      if (cancelled) return
+        const timer = window.setTimeout(() => {
+          if (loadedRef.current) return
+          startFallback()
+        }, 300)
 
-      if (replacementMap.size === 0) {
-        return
-      }
+        return () => {
+          window.clearTimeout(timer)
+        }
+      }, [rawSrc, startFallback])
 
-      const markdownImageRe = /(!\[[^\]]*]\()([^)\s]+)((?:\s+\"[^\"]*\")?\))/g
-      const htmlImageRe = /(<img\b[^>]*\bsrc=["'])([^"']+)(["'][^>]*>)/gi
+      const handleError = useCallback(
+        (event: SyntheticEvent<HTMLImageElement>) => {
+          props.onError?.(event)
+          startFallback()
+        },
+        [props, startFallback]
+      )
 
-      let next = renderedContent
-      next = next.replace(markdownImageRe, (full, start, url, end) => {
-        const trimmed = String(url ?? "").trim()
-        const replacement = replacementMap.get(trimmed)
-        if (!replacement) return full
-        return `${start}${replacement}${end}`
-      })
-      next = next.replace(htmlImageRe, (full, start, url, end) => {
-        const trimmed = String(url ?? "").trim()
-        const replacement = replacementMap.get(trimmed)
-        if (!replacement) return full
-        return `${start}${replacement}${end}`
-      })
+      const handleLoad = useCallback(
+        (event: SyntheticEvent<HTMLImageElement>) => {
+          loadedRef.current = true
+          props.onLoad?.(event)
+        },
+        [props]
+      )
 
-      setMarkdownPreviewState({
-        scope: activeScope,
-        source: renderedContent,
-        inlined: next,
-      })
-    })()
-
-    return () => {
-      cancelled = true
+      return (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          {...props}
+          alt={typeof props.alt === "string" ? props.alt : ""}
+          src={src}
+          onError={handleError}
+          onLoad={handleLoad}
+        />
+      )
     }
-  }, [
-    activeFilePath,
-    activeScope,
-    folderPath,
-    isMarkdownFile,
-    markdownMode,
-    renderedContent,
-  ])
+
+    return { img: MarkdownImg }
+  }, [getMarkdownImageDataUrl])
 
   if (!activeFileTab) {
     return (
@@ -1490,6 +1659,12 @@ export function FileWorkspacePanel() {
                   ...prev,
                   [activeScope]: "preview",
                 }))
+                startMarkdownPreviewTransition(() => {
+                  setMarkdownPreviewContentByTab((prev) => ({
+                    ...prev,
+                    [activeScope]: renderedContent,
+                  }))
+                })
               }}
               title="Preview"
               aria-label="Preview"
@@ -1640,23 +1815,37 @@ export function FileWorkspacePanel() {
             </div>
           </div>
         )}
-        <div className="flex-1 min-h-0">
-          {isMarkdownFile && markdownMode === "preview" ? (
-            <div className="h-full overflow-auto px-4 py-3">
+        <div className="flex-1 min-h-0 relative">
+          {isMarkdownFile && (
+            <div
+              className={`absolute inset-0 h-full overflow-auto px-4 py-3 ${
+                markdownMode === "preview" ? "" : "hidden"
+              }`}
+            >
               <div className="break-words text-sm prose prose-sm dark:prose-invert max-w-none [&_ul]:list-inside [&_ol]:list-inside">
-                <Streamdown
-                  plugins={streamdownPlugins}
-                  linkSafety={streamdownLinkSafety}
-                  urlTransform={markdownUrlTransform}
-                >
-                  {markdownPreviewState?.scope === activeScope &&
-                  markdownPreviewState.source === renderedContent
-                    ? markdownPreviewState.inlined
-                    : renderedContent}
-                </Streamdown>
+                {activeFileTab.loading &&
+                !(
+                  markdownPreviewContentByTab[activeScope] ?? renderedContent
+                ).trim() ? (
+                  <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
+                    {t("loading")}
+                  </div>
+                ) : (
+                  <Streamdown
+                    plugins={streamdownPlugins}
+                    components={markdownComponents}
+                    linkSafety={streamdownLinkSafety}
+                    urlTransform={markdownUrlTransform}
+                    rehypePlugins={markdownRehypePlugins}
+                  >
+                    {markdownPreviewContentByTab[activeScope] ??
+                      renderedContent}
+                  </Streamdown>
+                )}
               </div>
             </div>
-          ) : (
+          )}
+          {(!isMarkdownFile || markdownMode !== "preview") && (
             <MonacoEditor
               beforeMount={defineMonacoThemes}
               onMount={handleEditorMount}
