@@ -1044,15 +1044,20 @@ export function MessageInput({
         return
       }
 
+      const isArrowUp =
+        e.key === "ArrowUp" || e.key === "Up" || e.keyCode === 38
+      const isArrowDown =
+        e.key === "ArrowDown" || e.key === "Down" || e.keyCode === 40
+
       if (slashMenuOpen && filteredSlashCommands.length > 0) {
-        if (e.key === "ArrowDown") {
+        if (isArrowDown) {
           e.preventDefault()
           setSlashSelectedIndex((i) =>
             i < filteredSlashCommands.length - 1 ? i + 1 : 0
           )
           return
         }
-        if (e.key === "ArrowUp") {
+        if (isArrowUp) {
           e.preventDefault()
           setSlashSelectedIndex((i) =>
             i > 0 ? i - 1 : filteredSlashCommands.length - 1
@@ -1074,7 +1079,7 @@ export function MessageInput({
       if (
         !isEditingQueueItem &&
         !slashMenuOpen &&
-        (e.key === "ArrowUp" || e.key === "ArrowDown") &&
+        (isArrowUp || isArrowDown) &&
         !e.metaKey &&
         !e.ctrlKey &&
         !e.altKey &&
@@ -1106,7 +1111,7 @@ export function MessageInput({
             textarea.selectionStart === value.length &&
             textarea.selectionEnd === value.length
 
-          if (e.key === "ArrowUp" && atStart) {
+          if (isArrowUp && atStart) {
             if (sendHistoryIndex === null) {
               if (value.length === 0) {
                 const nextIndex = history.length - 1
@@ -1129,7 +1134,7 @@ export function MessageInput({
             }
           }
 
-          if (e.key === "ArrowDown" && atEnd && sendHistoryIndex !== null) {
+          if (isArrowDown && atEnd && sendHistoryIndex !== null) {
             if (value.length === 0) {
               setSendHistoryIndex(null)
               return
