@@ -2299,7 +2299,13 @@ export function FileTreeTab() {
           setCreateName("")
         }}
       >
-        <DialogContent>
+        <DialogContent
+          onOpenAutoFocus={(e) => {
+            e.preventDefault()
+            const input = e.currentTarget.querySelector("input")
+            if (input) requestAnimationFrame(() => input.focus())
+          }}
+        >
           <DialogHeader>
             <DialogTitle>
               {createKind === "dir"
@@ -2325,7 +2331,6 @@ export function FileTreeTab() {
             <Input
               value={createName}
               onChange={(event) => setCreateName(event.target.value)}
-              autoFocus
               disabled={creating}
               placeholder={
                 createKind === "dir"
@@ -2361,7 +2366,13 @@ export function FileTreeTab() {
           setRenameValue("")
         }}
       >
-        <DialogContent>
+        <DialogContent
+          onOpenAutoFocus={(e) => {
+            e.preventDefault()
+            const input = e.currentTarget.querySelector("input")
+            if (input) requestAnimationFrame(() => input.focus())
+          }}
+        >
           <DialogHeader>
             <DialogTitle>
               {renameTarget?.kind === "dir"
@@ -2382,7 +2393,6 @@ export function FileTreeTab() {
             <Input
               value={renameValue}
               onChange={(event) => setRenameValue(event.target.value)}
-              autoFocus
               disabled={renaming}
               placeholder={
                 renameTarget?.kind === "dir"
