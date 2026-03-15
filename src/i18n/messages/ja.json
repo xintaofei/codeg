@@ -895,13 +895,17 @@
         "fileDeleted": "ファイルを削除しました",
         "deleteFailed": "削除に失敗しました",
         "fileRolledBack": "ファイルをロールバックしました",
-        "rollbackFailed": "ロールバックに失敗しました"
+        "rollbackFailed": "ロールバックに失敗しました",
+        "dirRolledBack": "ディレクトリをロールバックしました",
+        "dirDeleted": "ディレクトリを削除しました"
       },
       "confirm": {
         "deleteTitle": "削除の確認",
         "deleteDescription": "ファイル \"{file}\" を削除しますか？この操作は元に戻せません。",
         "rollbackTitle": "ロールバックの確認",
-        "rollbackDescription": "ファイル \"{file}\" を HEAD にロールバックしますか？未保存の変更は失われます。"
+        "rollbackDescription": "ファイル \"{file}\" を HEAD にロールバックしますか？未保存の変更は失われます。",
+        "rollbackDirDescription": "ディレクトリ「{dir}」をHEADにロールバックしますか？未保存の変更は失われます。",
+        "deleteDirDescription": "ディレクトリ「{dir}」を削除しますか？この操作は元に戻せません。"
       },
       "actions": {
         "select": "選択",

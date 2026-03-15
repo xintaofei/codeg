@@ -895,13 +895,17 @@
         "fileDeleted": "Arquivo excluído",
         "deleteFailed": "Falha ao excluir",
         "fileRolledBack": "Arquivo revertido",
-        "rollbackFailed": "Falha no rollback"
+        "rollbackFailed": "Falha no rollback",
+        "dirRolledBack": "Diretório revertido",
+        "dirDeleted": "Diretório excluído"
       },
       "confirm": {
         "deleteTitle": "Confirmar exclusão",
         "deleteDescription": "Excluir o arquivo \"{file}\"? Esta ação não pode ser desfeita.",
         "rollbackTitle": "Confirmar rollback",
-        "rollbackDescription": "Reverter o arquivo \"{file}\" para o HEAD? Alterações não salvas serão perdidas."
+        "rollbackDescription": "Reverter o arquivo \"{file}\" para o HEAD? Alterações não salvas serão perdidas.",
+        "rollbackDirDescription": "Reverter o diretório \"{dir}\" para HEAD? Alterações não salvas serão perdidas.",
+        "deleteDirDescription": "Excluir o diretório \"{dir}\"? Esta ação não pode ser desfeita."
       },
       "actions": {
         "select": "Selecionar",

@@ -895,13 +895,17 @@
         "fileDeleted": "File deleted",
         "deleteFailed": "Delete failed",
         "fileRolledBack": "File rolled back",
-        "rollbackFailed": "Rollback failed"
+        "rollbackFailed": "Rollback failed",
+        "dirRolledBack": "Directory rolled back",
+        "dirDeleted": "Directory deleted"
       },
       "confirm": {
         "deleteTitle": "Confirm deletion",
         "deleteDescription": "Delete file \"{file}\"? This action cannot be undone.",
         "rollbackTitle": "Confirm rollback",
-        "rollbackDescription": "Rollback file \"{file}\" to HEAD? Unsaved changes will be lost."
+        "rollbackDescription": "Rollback file \"{file}\" to HEAD? Unsaved changes will be lost.",
+        "rollbackDirDescription": "Rollback directory \"{dir}\" to HEAD? Unsaved changes will be lost.",
+        "deleteDirDescription": "Delete directory \"{dir}\"? This action cannot be undone."
       },
       "actions": {
         "select": "Select",

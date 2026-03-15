@@ -895,13 +895,17 @@
         "fileDeleted": "Archivo eliminado",
         "deleteFailed": "Error al eliminar",
         "fileRolledBack": "Archivo revertido",
-        "rollbackFailed": "Error al revertir"
+        "rollbackFailed": "Error al revertir",
+        "dirRolledBack": "Directorio revertido",
+        "dirDeleted": "Directorio eliminado"
       },
       "confirm": {
         "deleteTitle": "Confirmar eliminación",
         "deleteDescription": "¿Eliminar el archivo \"{file}\"? Esta acción no se puede deshacer.",
         "rollbackTitle": "Confirmar reversión",
-        "rollbackDescription": "¿Revertir el archivo \"{file}\" a HEAD? Se perderán los cambios sin guardar."
+        "rollbackDescription": "¿Revertir el archivo \"{file}\" a HEAD? Se perderán los cambios sin guardar.",
+        "rollbackDirDescription": "¿Revertir el directorio \"{dir}\" a HEAD? Los cambios no guardados se perderán.",
+        "deleteDirDescription": "¿Eliminar el directorio \"{dir}\"? Esta acción no se puede deshacer."
       },
       "actions": {
         "select": "Seleccionar",

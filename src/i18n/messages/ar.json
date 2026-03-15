@@ -895,13 +895,17 @@
         "fileDeleted": "تم حذف الملف",
         "deleteFailed": "فشل الحذف",
         "fileRolledBack": "تم التراجع عن الملف",
-        "rollbackFailed": "فشل التراجع"
+        "rollbackFailed": "فشل التراجع",
+        "dirRolledBack": "تم استعادة المجلد",
+        "dirDeleted": "تم حذف المجلد"
       },
       "confirm": {
         "deleteTitle": "تأكيد الحذف",
         "deleteDescription": "حذف الملف \"{file}\"؟ لا يمكن التراجع عن هذا الإجراء.",
         "rollbackTitle": "تأكيد التراجع",
-        "rollbackDescription": "التراجع عن الملف \"{file}\" إلى HEAD؟ ستفقد التغييرات غير المحفوظة."
+        "rollbackDescription": "التراجع عن الملف \"{file}\" إلى HEAD؟ ستفقد التغييرات غير المحفوظة.",
+        "rollbackDirDescription": "هل تريد استعادة المجلد \"{dir}\" إلى HEAD؟ ستفقد التغييرات غير المحفوظة.",
+        "deleteDirDescription": "هل تريد حذف المجلد \"{dir}\"؟ لا يمكن التراجع عن هذا الإجراء."
       },
       "actions": {
         "select": "تحديد",

@@ -895,13 +895,17 @@
         "fileDeleted": "Fichier supprimé",
         "deleteFailed": "Échec de la suppression",
         "fileRolledBack": "Fichier restauré",
-        "rollbackFailed": "Échec du rollback"
+        "rollbackFailed": "Échec du rollback",
+        "dirRolledBack": "Répertoire restauré",
+        "dirDeleted": "Répertoire supprimé"
       },
       "confirm": {
         "deleteTitle": "Confirmer la suppression",
         "deleteDescription": "Supprimer le fichier \"{file}\" ? Cette action est irréversible.",
         "rollbackTitle": "Confirmer le rollback",
-        "rollbackDescription": "Restaurer le fichier \"{file}\" vers HEAD ? Les modifications non enregistrées seront perdues."
+        "rollbackDescription": "Restaurer le fichier \"{file}\" vers HEAD ? Les modifications non enregistrées seront perdues.",
+        "rollbackDirDescription": "Restaurer le répertoire \"{dir}\" vers HEAD ? Les modifications non enregistrées seront perdues.",
+        "deleteDirDescription": "Supprimer le répertoire \"{dir}\" ? Cette action est irréversible."
       },
       "actions": {
         "select": "Sélectionner",

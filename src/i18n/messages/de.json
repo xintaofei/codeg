@@ -895,13 +895,17 @@
         "fileDeleted": "Datei gelöscht",
         "deleteFailed": "Löschen fehlgeschlagen",
         "fileRolledBack": "Datei zurückgesetzt",
-        "rollbackFailed": "Rollback fehlgeschlagen"
+        "rollbackFailed": "Rollback fehlgeschlagen",
+        "dirRolledBack": "Verzeichnis zurückgesetzt",
+        "dirDeleted": "Verzeichnis gelöscht"
       },
       "confirm": {
         "deleteTitle": "Löschen bestätigen",
         "deleteDescription": "Datei \"{file}\" löschen? Diese Aktion kann nicht rückgängig gemacht werden.",
         "rollbackTitle": "Rollback bestätigen",
-        "rollbackDescription": "Datei \"{file}\" auf HEAD zurücksetzen? Ungespeicherte Änderungen gehen verloren."
+        "rollbackDescription": "Datei \"{file}\" auf HEAD zurücksetzen? Ungespeicherte Änderungen gehen verloren.",
+        "rollbackDirDescription": "Verzeichnis \"{dir}\" auf HEAD zurücksetzen? Nicht gespeicherte Änderungen gehen verloren.",
+        "deleteDirDescription": "Verzeichnis \"{dir}\" löschen? Diese Aktion kann nicht rückgängig gemacht werden."
       },
       "actions": {
         "select": "Auswählen",

@@ -489,7 +489,7 @@ function RenderNode({
 
     return (
       <ContextMenu>
-        <ContextMenuTrigger asChild>
+        <ContextMenuTrigger>
           <FileTreeFile
             path={node.path}
             name={node.name}
@@ -614,7 +614,7 @@ function RenderNode({
 
   return (
     <ContextMenu>
-      <ContextMenuTrigger asChild>
+      <ContextMenuTrigger>
         <FileTreeFolder
           path={node.path}
           name={node.name}
@@ -2128,7 +2128,7 @@ export function FileTreeTab() {
             >
               {folder?.path && (
                 <ContextMenu>
-                  <ContextMenuTrigger asChild>
+                  <ContextMenuTrigger>
                     <FileTreeFolder
                       path={FILE_TREE_ROOT_PATH}
                       name={rootNodeName}

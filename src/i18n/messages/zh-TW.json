@@ -895,13 +895,17 @@
         "fileDeleted": "檔案已刪除",
         "deleteFailed": "刪除失敗",
         "fileRolledBack": "檔案已回滾",
-        "rollbackFailed": "回滾失敗"
+        "rollbackFailed": "回滾失敗",
+        "dirRolledBack": "目錄已回滾",
+        "dirDeleted": "目錄已刪除"
       },
       "confirm": {
         "deleteTitle": "確認刪除",
         "deleteDescription": "確定要刪除檔案「{file}」嗎？此操作無法復原。",
         "rollbackTitle": "確認回滾",
-        "rollbackDescription": "確定要回滾檔案「{file}」到 HEAD 版本嗎？未儲存修改將遺失。"
+        "rollbackDescription": "確定要回滾檔案「{file}」到 HEAD 版本嗎？未儲存修改將遺失。",
+        "rollbackDirDescription": "確定要回滾目錄「{dir}」到 HEAD 版本嗎？未儲存的修改將遺失。",
+        "deleteDirDescription": "確定要刪除目錄「{dir}」嗎？此操作不可恢復。"
       },
       "actions": {
         "select": "選擇",

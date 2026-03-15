@@ -157,6 +157,12 @@ function buildFileTree(entries: GitStatusEntry[]): TreeNode[] {
   return toNodes(root)
 }
 
+/** Collect all file paths under a tree node (recursive). */
+function collectFilePaths(node: TreeNode): string[] {
+  if (node.kind === "file") return [node.path]
+  return node.children.flatMap(collectFilePaths)
+}
+
 /** Depth-first traversal to find the first file node (matches visual order). */
 function findFirstFile(nodes: TreeNode[]): string | undefined {
   for (const node of nodes) {
@@ -523,6 +529,99 @@ export function CommitWorkspace({
     [folderPath, loadStatus, t]
   )
 
+  const handleRollbackDir = useCallback(
+    (dirPath: string, files: string[], displayName?: string) => {
+      const label = displayName ?? dirPath
+      setConfirm({
+        open: true,
+        title: t("confirm.rollbackTitle"),
+        description: t("confirm.rollbackDirDescription", { dir: label }),
+        variant: "destructive",
+        action: () => {
+          void (async () => {
+            if (!folderPath) return
+            try {
+              await gitRollbackFile(folderPath, dirPath)
+              toast.success(t("toasts.dirRolledBack"), {
+                description: label,
+              })
+              if (diffFileRef.current && files.includes(diffFileRef.current)) {
+                setDiffFile(null)
+                setDiffOriginal("")
+                setDiffModified("")
+              }
+              setSelected((prev) => {
+                const next = new Set(prev)
+                files.forEach((f) => next.delete(f))
+                return next
+              })
+              void loadStatus()
+            } catch (err) {
+              toast.error(t("toasts.rollbackFailed"), {
+                description: String(err),
+              })
+            }
+          })()
+        },
+      })
+    },
+    [folderPath, loadStatus, t]
+  )
+
+  const handleDeleteDir = useCallback(
+    (dirPath: string, files: string[], displayName?: string) => {
+      const label = displayName ?? dirPath
+      setConfirm({
+        open: true,
+        title: t("confirm.deleteTitle"),
+        description: t("confirm.deleteDirDescription", { dir: label }),
+        variant: "destructive",
+        action: () => {
+          void (async () => {
+            if (!folderPath) return
+            try {
+              await deleteFileTreeEntry(folderPath, dirPath)
+              toast.success(t("toasts.dirDeleted"), {
+                description: label,
+              })
+              if (diffFileRef.current && files.includes(diffFileRef.current)) {
+                setDiffFile(null)
+                setDiffOriginal("")
+                setDiffModified("")
+              }
+              setSelected((prev) => {
+                const next = new Set(prev)
+                files.forEach((f) => next.delete(f))
+                return next
+              })
+              void loadStatus()
+            } catch (err) {
+              toast.error(t("toasts.deleteFailed"), {
+                description: String(err),
+              })
+            }
+          })()
+        },
+      })
+    },
+    [folderPath, loadStatus, t]
+  )
+
+  const handleAddDirToVcs = useCallback(
+    async (dirPath: string, files: string[], displayName?: string) => {
+      if (!folderPath) return
+      const label = displayName ?? dirPath
+      try {
+        await gitAddFiles(folderPath, files)
+        toast.success(t("toasts.addedToVcs"), { description: label })
+        void loadStatus()
+      } catch (err) {
+        toast.error(t("toasts.addToVcsFailed"), { description: String(err) })
+      }
+    },
+    [folderPath, loadStatus, t]
+  )
+
   const closeConfirm = useCallback(() => {
     setConfirm(CONFIRM_INITIAL)
   }, [])
@@ -607,14 +706,36 @@ export function CommitWorkspace({
   const renderTrackedNode = useCallback(
     function renderNode(node: TreeNode): React.ReactNode {
       if (node.kind === "dir") {
+        const dirFiles = collectFilePaths(node)
+        const hasNonDeleted = node.children.some(
+          (child) =>
+            child.kind === "file" &&
+            child.entry.status !== " D" &&
+            child.entry.status !== "D"
+        )
         return (
-          <FileTreeFolder
-            key={`tracked:${node.path}`}
-            name={node.name}
-            path={node.path}
-          >
-            {node.children.map(renderNode)}
-          </FileTreeFolder>
+          <ContextMenu key={`tracked:${node.path}`}>
+            <ContextMenuTrigger>
+              <FileTreeFolder name={node.name} path={node.path}>
+                {node.children.map(renderNode)}
+              </FileTreeFolder>
+            </ContextMenuTrigger>
+            <ContextMenuContent>
+              {hasNonDeleted && (
+                <ContextMenuItem
+                  onClick={() => handleRollbackDir(node.path, dirFiles)}
+                >
+                  {t("actions.rollback")}
+                </ContextMenuItem>
+              )}
+              <ContextMenuItem
+                variant="destructive"
+                onClick={() => handleDeleteDir(node.path, dirFiles)}
+              >
+                {tCommon("delete")}
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
         )
       }
 
@@ -686,7 +807,9 @@ export function CommitWorkspace({
       toggleFile,
       handleViewDiff,
       handleRollbackFile,
+      handleRollbackDir,
       handleDeleteFile,
+      handleDeleteDir,
       t,
       tCommon,
     ]
@@ -695,14 +818,31 @@ export function CommitWorkspace({
   const renderUntrackedNode = useCallback(
     function renderNode(node: TreeNode): React.ReactNode {
       if (node.kind === "dir") {
+        const dirFiles = collectFilePaths(node)
         return (
-          <FileTreeFolder
-            key={`untracked:${node.path}`}
-            name={node.name}
-            path={node.path}
-          >
-            {node.children.map(renderNode)}
-          </FileTreeFolder>
+          <ContextMenu key={`untracked:${node.path}`}>
+            <ContextMenuTrigger>
+              <FileTreeFolder name={node.name} path={node.path}>
+                {node.children.map(renderNode)}
+              </FileTreeFolder>
+            </ContextMenuTrigger>
+            <ContextMenuContent>
+              <ContextMenuItem
+                onClick={() => {
+                  void handleAddDirToVcs(node.path, dirFiles)
+                }}
+              >
+                {t("actions.addToVcs")}
+              </ContextMenuItem>
+              <ContextMenuSeparator />
+              <ContextMenuItem
+                variant="destructive"
+                onClick={() => handleDeleteDir(node.path, dirFiles)}
+              >
+                {tCommon("delete")}
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
         )
       }
 
@@ -768,7 +908,9 @@ export function CommitWorkspace({
       toggleFile,
       handleViewDiff,
       handleAddToVcs,
+      handleAddDirToVcs,
       handleDeleteFile,
+      handleDeleteDir,
       t,
       tCommon,
     ]
@@ -879,9 +1021,37 @@ export function CommitWorkspace({
                           selectedPath={diffFile ?? undefined}
                           onSelect={handleSelectPath}
                         >
-                          <FileTreeFolder name={folderName} path={folderName}>
-                            {trackedTree.map(renderTrackedNode)}
-                          </FileTreeFolder>
+                          <ContextMenu>
+                            <ContextMenuTrigger>
+                              <FileTreeFolder
+                                name={folderName}
+                                path={folderName}
+                              >
+                                {trackedTree.map(renderTrackedNode)}
+                              </FileTreeFolder>
+                            </ContextMenuTrigger>
+                            <ContextMenuContent>
+                              <ContextMenuItem
+                                onClick={() =>
+                                  handleRollbackDir(
+                                    ".",
+                                    trackedFiles,
+                                    folderName
+                                  )
+                                }
+                              >
+                                {t("actions.rollback")}
+                              </ContextMenuItem>
+                              <ContextMenuItem
+                                variant="destructive"
+                                onClick={() =>
+                                  handleDeleteDir(".", trackedFiles, folderName)
+                                }
+                              >
+                                {tCommon("delete")}
+                              </ContextMenuItem>
+                            </ContextMenuContent>
+                          </ContextMenu>
                         </FileTree>
                       </section>
                     )}
@@ -933,9 +1103,42 @@ export function CommitWorkspace({
                             selectedPath={diffFile ?? undefined}
                             onSelect={handleSelectPath}
                           >
-                            <FileTreeFolder name={folderName} path={folderName}>
-                              {untrackedTree.map(renderUntrackedNode)}
-                            </FileTreeFolder>
+                            <ContextMenu>
+                              <ContextMenuTrigger>
+                                <FileTreeFolder
+                                  name={folderName}
+                                  path={folderName}
+                                >
+                                  {untrackedTree.map(renderUntrackedNode)}
+                                </FileTreeFolder>
+                              </ContextMenuTrigger>
+                              <ContextMenuContent>
+                                <ContextMenuItem
+                                  onClick={() => {
+                                    void handleAddDirToVcs(
+                                      ".",
+                                      untrackedFiles,
+                                      folderName
+                                    )
+                                  }}
+                                >
+                                  {t("actions.addToVcs")}
+                                </ContextMenuItem>
+                                <ContextMenuSeparator />
+                                <ContextMenuItem
+                                  variant="destructive"
+                                  onClick={() =>
+                                    handleDeleteDir(
+                                      ".",
+                                      untrackedFiles,
+                                      folderName
+                                    )
+                                  }
+                                >
+                                  {tCommon("delete")}
+                                </ContextMenuItem>
+                              </ContextMenuContent>
+                            </ContextMenu>
                           </FileTree>
                         )}
                       </section>

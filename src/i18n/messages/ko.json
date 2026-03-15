@@ -895,13 +895,17 @@
         "fileDeleted": "파일이 삭제되었습니다",
         "deleteFailed": "삭제에 실패했습니다",
         "fileRolledBack": "파일이 롤백되었습니다",
-        "rollbackFailed": "롤백에 실패했습니다"
+        "rollbackFailed": "롤백에 실패했습니다",
+        "dirRolledBack": "디렉토리가 롤백되었습니다",
+        "dirDeleted": "디렉토리가 삭제되었습니다"
       },
       "confirm": {
         "deleteTitle": "삭제 확인",
         "deleteDescription": "파일 \"{file}\"을(를) 삭제할까요? 이 작업은 되돌릴 수 없습니다.",
         "rollbackTitle": "롤백 확인",
-        "rollbackDescription": "파일 \"{file}\"을(를) HEAD로 롤백할까요? 저장되지 않은 변경 사항은 사라집니다."
+        "rollbackDescription": "파일 \"{file}\"을(를) HEAD로 롤백할까요? 저장되지 않은 변경 사항은 사라집니다.",
+        "rollbackDirDescription": "디렉토리 \"{dir}\"를 HEAD로 롤백하시겠습니까? 저장되지 않은 변경 사항이 손실됩니다.",
+        "deleteDirDescription": "디렉토리 \"{dir}\"를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다."
       },
       "actions": {
         "select": "선택",

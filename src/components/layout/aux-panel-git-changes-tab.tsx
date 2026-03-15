@@ -900,7 +900,7 @@ export function GitChangesTab() {
 
         return (
           <ContextMenu key={`tracked:${node.path}`}>
-            <ContextMenuTrigger asChild>
+            <ContextMenuTrigger>
               <FileTreeFolder
                 path={node.path}
                 name={node.name}
@@ -956,7 +956,7 @@ export function GitChangesTab() {
 
       return (
         <ContextMenu key={`tracked:${file.path}`}>
-          <ContextMenuTrigger asChild>
+          <ContextMenuTrigger>
             <FileTreeFile
               className="w-full min-w-0 cursor-pointer"
               name={node.name}
@@ -1047,7 +1047,7 @@ export function GitChangesTab() {
 
         return (
           <ContextMenu key={`untracked:${node.path}`}>
-            <ContextMenuTrigger asChild>
+            <ContextMenuTrigger>
               <FileTreeFolder
                 path={node.path}
                 name={node.name}
@@ -1102,7 +1102,7 @@ export function GitChangesTab() {
 
       return (
         <ContextMenu key={`untracked:${file.path}`}>
-          <ContextMenuTrigger asChild>
+          <ContextMenuTrigger>
             <FileTreeFile
               className="w-full min-w-0 cursor-pointer"
               name={node.name}
@@ -1239,7 +1239,7 @@ export function GitChangesTab() {
                   onExpandedChange={setExpandedTrackedPaths}
                 >
                   <ContextMenu>
-                    <ContextMenuTrigger asChild>
+                    <ContextMenuTrigger>
                       <FileTreeFolder
                         path={TRACKED_ROOT_PATH}
                         name={folderName}
@@ -1332,7 +1332,7 @@ export function GitChangesTab() {
                   onExpandedChange={setExpandedUntrackedPaths}
                 >
                   <ContextMenu>
-                    <ContextMenuTrigger asChild>
+                    <ContextMenuTrigger>
                       <FileTreeFolder
                         path={UNTRACKED_ROOT_PATH}
                         name={folderName}

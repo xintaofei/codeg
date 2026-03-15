@@ -422,7 +422,7 @@ function CommitFilesTree({
     const file = node.change
     return (
       <ContextMenu key={`${commitHash}:${file.path}`}>
-        <ContextMenuTrigger asChild>
+        <ContextMenuTrigger>
           <FileTreeFile
             className="w-full min-w-0 cursor-pointer"
             name={node.name}
