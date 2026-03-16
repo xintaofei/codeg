@@ -1113,11 +1113,7 @@ export function MessageInput({
         return
       }
 
-      if (
-        (e.key === "Process" || e.keyCode === 229) &&
-        !isArrowUp &&
-        !isArrowDown
-      ) {
+      if (e.key === "Process" || e.keyCode === 229) {
         return
       }
 
