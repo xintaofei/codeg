@@ -34,10 +34,11 @@ import {
 import { cn } from "@/lib/utils"
 import { matchShortcutEvent } from "@/lib/keyboard-shortcuts"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
-import { readFileBase64 } from "@/lib/tauri"
+import { getFolderConversation, readFileBase64 } from "@/lib/tauri"
 import { disposeTauriListener } from "@/lib/tauri-listener"
 import type {
   AvailableCommandInfo,
+  ContentBlock,
   PromptCapabilitiesInfo,
   PromptDraft,
   PromptInputBlock,
@@ -137,6 +138,63 @@ const MIME_BY_EXT: Record<string, string> = {
   gif: "image/gif",
   webp: "image/webp",
   svg: "image/svg+xml",
+}
+
+const MESSAGE_INPUT_SEND_HISTORY_LIMIT = 50
+
+function getMessageInputSendHistoryStorageKey(scopeKey: string | null): string {
+  return `codeg:messageInputSendHistory:${scopeKey ?? "global"}`
+}
+
+function loadMessageInputSendHistory(scopeKey: string | null): string[] {
+  if (typeof window === "undefined") return []
+  try {
+    const raw = window.localStorage.getItem(
+      getMessageInputSendHistoryStorageKey(scopeKey)
+    )
+    if (!raw) return []
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0)
+  } catch {
+    return []
+  }
+}
+
+function saveMessageInputSendHistory(scopeKey: string | null, items: string[]) {
+  if (typeof window === "undefined") return
+  try {
+    window.localStorage.setItem(
+      getMessageInputSendHistoryStorageKey(scopeKey),
+      JSON.stringify(items)
+    )
+  } catch {
+    // ignore
+  }
+}
+
+function parseConversationIdFromDraftStorageKey(
+  draftStorageKey: string | null
+): number | null {
+  if (!draftStorageKey) return null
+  const match = /^conv:[^:]+:(\d+)$/.exec(draftStorageKey)
+  if (!match) return null
+  const id = Number(match[1])
+  return Number.isFinite(id) ? id : null
+}
+
+function textFromBlocks(blocks: ContentBlock[]): string | null {
+  const parts: string[] = []
+  for (const block of blocks) {
+    if (block.type !== "text") continue
+    if (!block.text.trim()) continue
+    parts.push(block.text)
+  }
+  const joined = parts.join("\n").trim()
+  return joined.length > 0 ? joined : null
 }
 
 function fileNameFromPath(path: string): string {
@@ -309,6 +367,8 @@ export function MessageInput({
   const textRef = useRef(text)
   const disabledRef = useRef(disabled)
   const isPromptingRef = useRef(isPrompting)
+  const sendHistoryRef = useRef<string[]>([])
+  const [sendHistoryIndex, setSendHistoryIndex] = useState<number | null>(null)
 
   useEffect(() => {
     if (isActive && !disabled && !isPrompting) {
@@ -317,6 +377,52 @@ export function MessageInput({
       })
     }
   }, [isActive, disabled, isPrompting])
+
+  useEffect(() => {
+    sendHistoryRef.current = loadMessageInputSendHistory(
+      effectiveDraftStorageKey
+    )
+    setSendHistoryIndex(null)
+  }, [effectiveDraftStorageKey])
+
+  useEffect(() => {
+    if (!effectiveDraftStorageKey) return
+    if (sendHistoryRef.current.length > 0) return
+    const conversationId = parseConversationIdFromDraftStorageKey(
+      effectiveDraftStorageKey
+    )
+    if (!conversationId) return
+
+    let cancelled = false
+    getFolderConversation(conversationId)
+      .then((detail) => {
+        if (cancelled) return
+        if (sendHistoryRef.current.length > 0) return
+
+        const seeded: string[] = []
+        let last: string | null = null
+        for (const turn of detail.turns) {
+          if (turn.role !== "user") continue
+          const next = textFromBlocks(turn.blocks)
+          if (!next) continue
+          if (next === last) continue
+          seeded.push(next)
+          last = next
+        }
+
+        if (seeded.length === 0) return
+        const limited = seeded.slice(-MESSAGE_INPUT_SEND_HISTORY_LIMIT)
+        saveMessageInputSendHistory(effectiveDraftStorageKey, limited)
+        sendHistoryRef.current = limited
+      })
+      .catch(() => {
+        // ignore
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [effectiveDraftStorageKey])
   const dragActiveRef = useRef(false)
   const canAttachImages = promptCapabilities.image
 
@@ -736,6 +842,9 @@ export function MessageInput({
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       const value = e.target.value
       setText(value)
+      if (value.length === 0 && sendHistoryIndex !== null) {
+        setSendHistoryIndex(null)
+      }
       if (slashCommands.length > 0 && /^\/(\S*)$/.test(value)) {
         setSlashSelectedIndex(0)
         setSlashMenuOpen(true)
@@ -743,7 +852,26 @@ export function MessageInput({
         setSlashMenuOpen(false)
       }
     },
-    [slashCommands.length]
+    [sendHistoryIndex, slashCommands.length]
+  )
+
+  const pushMessageToSendHistory = useCallback(
+    (value: string) => {
+      const trimmed = value.trim()
+      if (!trimmed) return
+
+      const prev = loadMessageInputSendHistory(effectiveDraftStorageKey)
+      const last = prev.length > 0 ? prev[prev.length - 1] : null
+      if (last === trimmed) {
+        sendHistoryRef.current = prev
+        return
+      }
+
+      const next = [...prev, trimmed].slice(-MESSAGE_INPUT_SEND_HISTORY_LIMIT)
+      saveMessageInputSendHistory(effectiveDraftStorageKey, next)
+      sendHistoryRef.current = next
+    },
+    [effectiveDraftStorageKey]
   )
 
   const handlePickFiles = useCallback(async () => {
@@ -936,6 +1064,11 @@ export function MessageInput({
     const draft = buildDraft()
     if (!draft) return
 
+    if (!isEditingQueueItem) {
+      pushMessageToSendHistory(textRef.current)
+      setSendHistoryIndex(null)
+    }
+
     // Edit mode: save back to queue item
     if (isEditingQueueItem && onSaveQueueEdit) {
       onSaveQueueEdit(draft)
@@ -961,6 +1094,7 @@ export function MessageInput({
   }, [
     buildDraft,
     isEditingQueueItem,
+    pushMessageToSendHistory,
     isPrompting,
     onSaveQueueEdit,
     onEnqueue,
@@ -990,24 +1124,36 @@ export function MessageInput({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (
-        e.nativeEvent.isComposing ||
-        composingRef.current ||
-        e.key === "Process" ||
-        e.keyCode === 229
-      ) {
+      const isArrowUp =
+        e.key === "ArrowUp" ||
+        e.key === "Up" ||
+        (e.nativeEvent as KeyboardEvent).code === "ArrowUp" ||
+        e.code === "ArrowUp" ||
+        e.keyCode === 38
+      const isArrowDown =
+        e.key === "ArrowDown" ||
+        e.key === "Down" ||
+        (e.nativeEvent as KeyboardEvent).code === "ArrowDown" ||
+        e.code === "ArrowDown" ||
+        e.keyCode === 40
+
+      if (e.nativeEvent.isComposing || composingRef.current) {
+        return
+      }
+
+      if (e.key === "Process" || e.keyCode === 229) {
         return
       }
 
       if (slashMenuOpen && filteredSlashCommands.length > 0) {
-        if (e.key === "ArrowDown") {
+        if (isArrowDown) {
           e.preventDefault()
           setSlashSelectedIndex((i) =>
             i < filteredSlashCommands.length - 1 ? i + 1 : 0
           )
           return
         }
-        if (e.key === "ArrowUp") {
+        if (isArrowUp) {
           e.preventDefault()
           setSlashSelectedIndex((i) =>
             i > 0 ? i - 1 : filteredSlashCommands.length - 1
@@ -1023,6 +1169,77 @@ export function MessageInput({
           e.preventDefault()
           setSlashMenuOpen(false)
           return
+        }
+      }
+
+      if (
+        !isEditingQueueItem &&
+        !slashMenuOpen &&
+        (isArrowUp || isArrowDown) &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        const textarea = e.currentTarget as HTMLTextAreaElement
+        const value = textarea.value
+        const history = sendHistoryRef.current
+
+        if (history.length > 0) {
+          const hasSelection = textarea.selectionStart !== textarea.selectionEnd
+          const applyHistoryValue = (
+            nextText: string,
+            nextIndex: number | null
+          ) => {
+            e.preventDefault()
+            setSendHistoryIndex(nextIndex)
+            setText(nextText)
+            requestAnimationFrame(() => {
+              const el = textareaRef.current
+              if (!el) return
+              const pos = el.value.length
+              el.selectionStart = el.selectionEnd = pos
+            })
+          }
+
+          if (sendHistoryIndex !== null && !hasSelection) {
+            const current = history[sendHistoryIndex]
+            if (current && value === current) {
+              if (isArrowUp) {
+                const nextIndex = Math.max(0, sendHistoryIndex - 1)
+                applyHistoryValue(history[nextIndex] ?? "", nextIndex)
+                return
+              }
+
+              if (isArrowDown) {
+                const isLast = sendHistoryIndex >= history.length - 1
+                if (isLast) {
+                  applyHistoryValue("", null)
+                  return
+                }
+
+                const nextIndex = sendHistoryIndex + 1
+                applyHistoryValue(history[nextIndex] ?? "", nextIndex)
+                return
+              }
+            }
+          }
+
+          const atStart =
+            textarea.selectionStart === 0 && textarea.selectionEnd === 0
+
+          if (
+            sendHistoryIndex === null &&
+            !hasSelection &&
+            isArrowUp &&
+            atStart
+          ) {
+            if (value.length === 0) {
+              const nextIndex = history.length - 1
+              applyHistoryValue(history[nextIndex] ?? "", nextIndex)
+              return
+            }
+          }
         }
       }
 
@@ -1059,6 +1276,7 @@ export function MessageInput({
       filteredSlashCommands,
       slashSelectedIndex,
       handleSlashSelect,
+      sendHistoryIndex,
     ]
   )
 
