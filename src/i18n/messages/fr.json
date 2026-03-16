@@ -603,6 +603,9 @@
     },
     "sidebar": {
       "title": "Discussions",
+      "tabs": {
+        "directory": "Plan"
+      },
       "locateActiveConversation": "Localiser la conversation active",
       "expandAllGroups": "Développer tous les groupes",
       "collapseAllGroups": "Réduire tous les groupes",
@@ -615,6 +618,11 @@
       "completeAllReviewTitle": "Terminer toutes les sessions en revue ?",
       "completeAllReviewDescription": "Cela marquera comme terminées toutes les {count, plural, one {# session} other {# sessions}} en Revue.",
       "completing": "Finalisation...",
+      "directory": {
+        "noConversation": "Sélectionnez une conversation pour afficher son plan.",
+        "loading": "Chargement du plan...",
+        "empty": "Aucun élément de plan pour cette conversation."
+      },
       "toasts": {
         "importedSessions": "{imported, plural, one {# session} other {# sessions}} importée(s), {skipped} ignorée(s)",
         "noNewSessionsFound": "Aucune nouvelle session trouvée ({skipped} ignorée(s))",
@@ -1272,6 +1280,19 @@
           "low": "Basse",
           "unknown": "Inconnue"
         }
+      },
+      "sessionLocatorOverlay": {
+        "title": "Localisateur de session",
+        "collapseAria": "Réduire le localisateur de session",
+        "collapsedSummary": "Repères {count}",
+        "userLabel": "Utilisateur",
+        "assistantLabel": "IA",
+        "toolOnly": "Réponse d’outil uniquement",
+        "attachmentOnly": "Images/pièces jointes",
+        "pendingReply": "Sans réponse",
+        "emptyPreview": "Aucun aperçu disponible",
+        "jumpToUserAria": "Aller au message de l’utilisateur",
+        "jumpToAssistantAria": "Aller à la réponse de l’IA"
       },
       "permissionDialog": {
         "subtitle": "L'agent demande une autorisation pour continuer ce tour.",

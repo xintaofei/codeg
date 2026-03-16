@@ -1,6 +1,7 @@
 "use client"
 
 import { memo, useCallback, useEffect, useMemo, useRef } from "react"
+import type { StickToBottomContext } from "use-stick-to-bottom"
 import { useConversationRuntime } from "@/contexts/conversation-runtime-context"
 import { ContentPartsRenderer } from "./content-parts-renderer"
 import {
@@ -14,7 +15,10 @@ import { LiveTurnStats } from "./live-turn-stats"
 import { UserResourceLinks } from "./user-resource-links"
 import { UserImageAttachments } from "./user-image-attachments"
 import { useSessionStats } from "@/contexts/session-stats-context"
-import { AgentPlanOverlay } from "@/components/chat/agent-plan-overlay"
+import {
+  AgentPlanOverlay,
+  getLatestPlanEntries,
+} from "@/components/chat/agent-plan-overlay"
 import { MessageThread } from "@/components/ai-elements/message-thread"
 import { Message, MessageContent } from "@/components/ai-elements/message"
 import { Loader2 } from "lucide-react"
@@ -24,7 +28,13 @@ import {
   extractLatestPlanEntriesFromMessages,
 } from "@/lib/agent-plan"
 import type { AgentType, ConnectionStatus, SessionStats } from "@/lib/types"
-import { VirtualizedMessageThread } from "@/components/message/virtualized-message-thread"
+import {
+  VirtualizedMessageThread,
+  type VirtualizedMessageThreadHandle,
+} from "@/components/message/virtualized-message-thread"
+import { useMessageHighlight } from "@/components/message/use-message-highlight"
+import { useSessionLocatorContext } from "@/contexts/session-locator-context"
+import { cn } from "@/lib/utils"
 import { useStickToBottomContext } from "use-stick-to-bottom"
 
 interface MessageListViewProps {
@@ -66,18 +76,39 @@ type ThreadRenderItem =
 const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   group,
   dimmed = false,
+  highlightedPartIndex = null,
+  highlightTurn = false,
+  highlightToken,
 }: {
   group: ResolvedMessageGroup
   dimmed?: boolean
+  highlightedPartIndex?: number | null
+  highlightTurn?: boolean
+  highlightToken?: number
 }) {
   return (
-    <div className={dimmed ? "opacity-70" : undefined}>
+    <div
+      className={cn(
+        "rounded-2xl",
+        dimmed && "opacity-70",
+        highlightTurn &&
+          highlightToken !== undefined &&
+          "session-locator-turn-highlight"
+      )}
+      data-turn-id={group.id}
+      data-highlight-token={highlightToken}
+    >
       <Message from={group.role}>
         {group.role === "user" && group.images.length > 0 ? (
           <UserImageAttachments images={group.images} className="self-end" />
         ) : null}
         <MessageContent>
-          <ContentPartsRenderer parts={group.parts} role={group.role} />
+          <ContentPartsRenderer
+            parts={group.parts}
+            role={group.role}
+            highlightedPartIndex={highlightedPartIndex}
+            highlightToken={highlightToken}
+          />
         </MessageContent>
         {group.role === "user" && group.resources.length > 0 ? (
           <UserResourceLinks resources={group.resources} className="self-end" />
@@ -152,6 +183,20 @@ export function MessageListView({
   const timelineTurns = getTimelineTurns(conversationId)
 
   const { setSessionStats } = useSessionStats()
+  const rootRef = useRef<HTMLDivElement>(null)
+  const threadRef = useRef<VirtualizedMessageThreadHandle | null>(null)
+  const stickToBottomContextRef = useRef<StickToBottomContext | null>(null)
+  const { registerJumpHandler } = useSessionLocatorContext()
+  const { highlightedTarget, jumpToTarget } = useMessageHighlight({
+    rootRef,
+    threadRef,
+    stopAutoStick: () => stickToBottomContextRef.current?.stopScroll(),
+  })
+
+  useEffect(
+    () => registerJumpHandler(conversationId, jumpToTarget),
+    [conversationId, jumpToTarget, registerJumpHandler]
+  )
 
   useEffect(() => {
     if (isActive) {
@@ -233,22 +278,41 @@ export function MessageListView({
     () => buildPlanKey(historicalPlanEntries),
     [historicalPlanEntries]
   )
+  const livePlanEntries = useMemo(
+    () => getLatestPlanEntries(liveMessage ?? null),
+    [liveMessage]
+  )
 
-  const renderThreadItem = useCallback((item: ThreadRenderItem) => {
-    switch (item.kind) {
-      case "turn":
-        return (
-          <HistoricalMessageGroup
-            group={item.group}
-            dimmed={item.phase === "optimistic"}
-          />
-        )
-      case "typing":
-        return <PendingTypingIndicator />
-      default:
-        return null
-    }
-  }, [])
+  const renderThreadItem = useCallback(
+    (item: ThreadRenderItem) => {
+      switch (item.kind) {
+        case "turn": {
+          const isHighlightedTurn = highlightedTarget?.turnId === item.group.id
+          const highlightedPartIndex = isHighlightedTurn
+            ? highlightedTarget.partIndex
+            : null
+          const shouldHighlightWholeTurn =
+            isHighlightedTurn && highlightedPartIndex === null
+          return (
+            <HistoricalMessageGroup
+              group={item.group}
+              dimmed={item.phase === "optimistic"}
+              highlightedPartIndex={highlightedPartIndex}
+              highlightTurn={shouldHighlightWholeTurn}
+              highlightToken={
+                isHighlightedTurn ? highlightedTarget.token : undefined
+              }
+            />
+          )
+        }
+        case "typing":
+          return <PendingTypingIndicator />
+        default:
+          return null
+      }
+    },
+    [highlightedTarget]
+  )
 
   const emptyState = useMemo(
     () =>
@@ -263,8 +327,9 @@ export function MessageListView({
   )
 
   const agentPlanOverlayKey = liveMessage?.id ?? `history-${conversationId}`
-
   const hasRenderableContent = threadItems.length > 0 || Boolean(liveMessage)
+  const hasAgentPlanOverlay =
+    livePlanEntries.length > 0 || historicalPlanEntries.length > 0
 
   if (detailLoading && !hasRenderableContent) {
     return (
@@ -290,13 +355,15 @@ export function MessageListView({
   }
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col">
+    <div ref={rootRef} className="relative flex h-full min-h-0 flex-col">
       <MessageThread
         className="flex-1 min-h-0"
+        contextRef={stickToBottomContextRef}
         resize={shouldUseSmoothResize ? "smooth" : undefined}
       >
         <AutoScrollOnSend signal={sendSignal} />
         <VirtualizedMessageThread
+          ref={threadRef}
           items={threadItems}
           getItemKey={(item) => item.key}
           renderItem={renderThreadItem}
@@ -312,13 +379,20 @@ export function MessageListView({
           isStreaming={connStatus === "prompting"}
         />
       )}
-      <AgentPlanOverlay
-        key={agentPlanOverlayKey}
-        message={liveMessage ?? null}
-        entries={historicalPlanEntries}
-        planKey={historicalPlanKey}
-        defaultExpanded={connStatus === "prompting"}
-      />
+      {hasAgentPlanOverlay && (
+        <div className="pointer-events-none absolute inset-x-0 top-4 z-20 px-4 sm:px-8">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+            <AgentPlanOverlay
+              key={agentPlanOverlayKey}
+              className="max-w-full sm:ml-auto"
+              message={liveMessage ?? null}
+              entries={historicalPlanEntries}
+              planKey={historicalPlanKey}
+              defaultExpanded={connStatus === "prompting"}
+            />
+          </div>
+        </div>
+      )}
     </div>
   )
 }

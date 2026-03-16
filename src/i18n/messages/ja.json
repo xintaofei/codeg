@@ -603,6 +603,9 @@
     },
     "sidebar": {
       "title": "会話",
+      "tabs": {
+        "directory": "目次"
+      },
       "locateActiveConversation": "アクティブな会話を表示",
       "expandAllGroups": "すべてのグループを展開",
       "collapseAllGroups": "すべてのグループを折りたたむ",
@@ -615,6 +618,11 @@
       "completeAllReviewTitle": "すべてのレビューセッションを完了しますか？",
       "completeAllReviewDescription": "これにより、レビュー中の {count, plural, one {# 件のセッション} other {# 件のセッション}} が完了としてマークされます。",
       "completing": "完了処理中...",
+      "directory": {
+        "noConversation": "会話を選択すると目次を表示します。",
+        "loading": "目次を読み込み中...",
+        "empty": "この会話には目次項目がありません。"
+      },
       "toasts": {
         "importedSessions": "{imported, plural, one {# 件のセッション} other {# 件のセッション}} をインポートし、{skipped} 件をスキップしました",
         "noNewSessionsFound": "新しいセッションは見つかりませんでした（{skipped} 件をスキップ）",
@@ -1272,6 +1280,19 @@
           "low": "低",
           "unknown": "不明"
         }
+      },
+      "sessionLocatorOverlay": {
+        "title": "セッションナビゲーター",
+        "collapseAria": "セッションナビゲーターを折りたたむ",
+        "collapsedSummary": "ナビ {count}",
+        "userLabel": "ユーザー",
+        "assistantLabel": "AI",
+        "toolOnly": "ツール出力のみ",
+        "attachmentOnly": "画像/添付ファイル",
+        "pendingReply": "返信なし",
+        "emptyPreview": "プレビューはありません",
+        "jumpToUserAria": "ユーザーメッセージへ移動",
+        "jumpToAssistantAria": "AI の返信へ移動"
       },
       "permissionDialog": {
         "subtitle": "エージェントがこのターンを続行するための許可を要求しています。",

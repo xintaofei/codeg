@@ -603,6 +603,9 @@
     },
     "sidebar": {
       "title": "المحادثات",
+      "tabs": {
+        "directory": "الدليل"
+      },
       "locateActiveConversation": "تحديد المحادثة النشطة",
       "expandAllGroups": "توسيع كل المجموعات",
       "collapseAllGroups": "طي كل المجموعات",
@@ -615,6 +618,11 @@
       "completeAllReviewTitle": "إكمال جميع جلسات المراجعة؟",
       "completeAllReviewDescription": "سيؤدي ذلك إلى وضع علامة مكتمل على جميع {count, plural, one {# جلسة} other {# جلسات}} في المراجعة.",
       "completing": "جارٍ الإكمال...",
+      "directory": {
+        "noConversation": "اختر محادثة لعرض دليلها.",
+        "loading": "جارٍ تحميل الدليل...",
+        "empty": "لا توجد عناصر دليل في هذه المحادثة."
+      },
       "toasts": {
         "importedSessions": "تم استيراد {imported, plural, one {# جلسة} other {# جلسات}}، وتم تخطي {skipped}",
         "noNewSessionsFound": "لم يتم العثور على جلسات جديدة (تم تخطي {skipped})",
@@ -1272,6 +1280,19 @@
           "low": "منخفض",
           "unknown": "غير معروف"
         }
+      },
+      "sessionLocatorOverlay": {
+        "title": "محدد الجلسة",
+        "collapseAria": "طي محدد الجلسة",
+        "collapsedSummary": "المحدد {count}",
+        "userLabel": "المستخدم",
+        "assistantLabel": "AI",
+        "toolOnly": "استجابة أدوات فقط",
+        "attachmentOnly": "صور/مرفقات",
+        "pendingReply": "لا يوجد رد",
+        "emptyPreview": "لا تتوفر معاينة",
+        "jumpToUserAria": "الانتقال إلى رسالة المستخدم",
+        "jumpToAssistantAria": "الانتقال إلى رد AI"
       },
       "permissionDialog": {
         "subtitle": "يطلب الوكيل إذنًا لمتابعة هذا الدور.",

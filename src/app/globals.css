@@ -517,3 +517,78 @@
     background-color: rgba(248, 81, 73, 0.35);
   }
 }
+
+@keyframes session-locator-highlight-fade {
+  0% {
+    opacity: 0;
+    border-color: color-mix(in srgb, var(--primary) 14%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 0%, transparent);
+  }
+
+  10% {
+    opacity: 1;
+    border-color: color-mix(in srgb, var(--primary) 30%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 0%, transparent);
+  }
+
+  40% {
+    opacity: 1;
+    border-color: color-mix(in srgb, var(--primary) 46%, transparent);
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--primary) 12%, transparent);
+  }
+
+  68% {
+    opacity: 1;
+    border-color: color-mix(in srgb, var(--primary) 26%, transparent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 6%, transparent);
+  }
+
+  100% {
+    opacity: 0;
+    border-color: color-mix(in srgb, var(--primary) 14%, transparent);
+    box-shadow: 0 0 0 10px color-mix(in srgb, var(--primary) 0%, transparent);
+  }
+}
+
+.session-locator-turn-highlight {
+  isolation: isolate;
+  position: relative;
+}
+
+.session-locator-turn-highlight::after {
+  content: "";
+  position: absolute;
+  inset: -10px;
+  pointer-events: none;
+  border-radius: calc(1rem + 10px);
+  border: 1px solid color-mix(in srgb, var(--primary) 28%, transparent);
+  background: transparent;
+  animation: session-locator-highlight-fade 1500ms
+    cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.session-locator-part-highlight {
+  isolation: isolate;
+  position: relative;
+}
+
+.session-locator-part-highlight::after {
+  content: "";
+  position: absolute;
+  inset-block: -8px;
+  inset-inline: -6px;
+  pointer-events: none;
+  border-radius: calc(0.75rem + 6px);
+  border: 1px solid color-mix(in srgb, var(--primary) 30%, transparent);
+  background: transparent;
+  animation: session-locator-highlight-fade 1500ms
+    cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-locator-turn-highlight::after,
+  .session-locator-part-highlight::after {
+    animation: none;
+    opacity: 1;
+  }
+}

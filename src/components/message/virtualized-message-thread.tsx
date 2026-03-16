@@ -1,7 +1,7 @@
 "use client"
 
-import { useCallback } from "react"
-import type { ReactNode } from "react"
+import { useCallback, useImperativeHandle } from "react"
+import type { ReactNode, Ref } from "react"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { useStickToBottomContext } from "use-stick-to-bottom"
 import {
@@ -9,6 +9,17 @@ import {
   type MessageThreadContentProps,
 } from "@/components/ai-elements/message-thread"
 import { cn } from "@/lib/utils"
+
+export interface VirtualizedMessageThreadHandle {
+  scrollToIndex: (
+    index: number,
+    options?: {
+      align?: "start" | "center" | "end" | "auto"
+      behavior?: "auto" | "smooth"
+    }
+  ) => void
+  getScrollElement: () => HTMLElement | null
+}
 
 interface VirtualizedMessageThreadProps<T> {
   items: T[]
@@ -20,6 +31,7 @@ interface VirtualizedMessageThreadProps<T> {
   className?: string
   contentClassName?: string
   contentProps?: Omit<MessageThreadContentProps, "children" | "className">
+  ref?: Ref<VirtualizedMessageThreadHandle>
 }
 
 export function VirtualizedMessageThread<T>({
@@ -32,6 +44,7 @@ export function VirtualizedMessageThread<T>({
   className,
   contentClassName,
   contentProps,
+  ref,
 }: VirtualizedMessageThreadProps<T>) {
   const { scrollRef } = useStickToBottomContext()
 
@@ -51,6 +64,19 @@ export function VirtualizedMessageThread<T>({
       return item ? getItemKey(item, index) : index
     },
   })
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      scrollToIndex(index, options) {
+        virtualizer.scrollToIndex(index, options)
+      },
+      getScrollElement() {
+        return scrollRef.current
+      },
+    }),
+    [scrollRef, virtualizer]
+  )
 
   const renderVirtualRow = useCallback(
     (virtualItem: ReturnType<typeof virtualizer.getVirtualItems>[number]) => {

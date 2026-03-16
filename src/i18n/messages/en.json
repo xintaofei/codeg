@@ -603,6 +603,9 @@
     },
     "sidebar": {
       "title": "Conversations",
+      "tabs": {
+        "directory": "Directory"
+      },
       "locateActiveConversation": "Locate Active Conversation",
       "expandAllGroups": "Expand All Groups",
       "collapseAllGroups": "Collapse All Groups",
@@ -615,6 +618,11 @@
       "completeAllReviewTitle": "Complete all review sessions?",
       "completeAllReviewDescription": "This will mark all {count, plural, one {# session} other {# sessions}} in Review as completed.",
       "completing": "Completing...",
+      "directory": {
+        "noConversation": "Select a conversation to view its directory.",
+        "loading": "Loading directory...",
+        "empty": "No directory items in this conversation."
+      },
       "toasts": {
         "importedSessions": "Imported {imported, plural, one {# session} other {# sessions}}, skipped {skipped}",
         "noNewSessionsFound": "No new sessions found (skipped {skipped})",
@@ -1272,6 +1280,19 @@
           "low": "Low",
           "unknown": "Unknown"
         }
+      },
+      "sessionLocatorOverlay": {
+        "title": "Session Locator",
+        "collapseAria": "Collapse session locator",
+        "collapsedSummary": "Locator {count}",
+        "userLabel": "User",
+        "assistantLabel": "AI",
+        "toolOnly": "Tool-only response",
+        "attachmentOnly": "Images/attachments",
+        "pendingReply": "No reply",
+        "emptyPreview": "No preview available",
+        "jumpToUserAria": "Jump to user message",
+        "jumpToAssistantAria": "Jump to AI reply"
       },
       "permissionDialog": {
         "subtitle": "Agent requests permission to continue this turn.",

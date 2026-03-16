@@ -603,6 +603,9 @@
     },
     "sidebar": {
       "title": "Konversationen",
+      "tabs": {
+        "directory": "Verzeichnis"
+      },
       "locateActiveConversation": "Aktive Konversation finden",
       "expandAllGroups": "Alle Gruppen erweitern",
       "collapseAllGroups": "Alle Gruppen einklappen",
@@ -615,6 +618,11 @@
       "completeAllReviewTitle": "Alle Review-Sitzungen abschließen?",
       "completeAllReviewDescription": "Dadurch werden alle {count, plural, one {# Sitzung} other {# Sitzungen}} im Review als abgeschlossen markiert.",
       "completing": "Abschließen...",
+      "directory": {
+        "noConversation": "Wähle eine Konversation aus, um ihr Verzeichnis anzuzeigen.",
+        "loading": "Verzeichnis wird geladen...",
+        "empty": "Für diese Konversation sind keine Verzeichniseinträge vorhanden."
+      },
       "toasts": {
         "importedSessions": "{imported, plural, one {# Sitzung} other {# Sitzungen}} importiert, {skipped} übersprungen",
         "noNewSessionsFound": "Keine neuen Sitzungen gefunden ({skipped} übersprungen)",
@@ -1272,6 +1280,19 @@
           "low": "Niedrig",
           "unknown": "Unbekannt"
         }
+      },
+      "sessionLocatorOverlay": {
+        "title": "Sitzungsnavigator",
+        "collapseAria": "Sitzungsnavigator einklappen",
+        "collapsedSummary": "Navigator {count}",
+        "userLabel": "Benutzer",
+        "assistantLabel": "KI",
+        "toolOnly": "Nur Werkzeugausgabe",
+        "attachmentOnly": "Bilder/Anhänge",
+        "pendingReply": "Keine Antwort",
+        "emptyPreview": "Keine Vorschau verfügbar",
+        "jumpToUserAria": "Zur Benutzernachricht springen",
+        "jumpToAssistantAria": "Zur KI-Antwort springen"
       },
       "permissionDialog": {
         "subtitle": "Agent fordert Berechtigung an, um diesen Zug fortzusetzen.",

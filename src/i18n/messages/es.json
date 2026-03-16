@@ -603,6 +603,9 @@
     },
     "sidebar": {
       "title": "Conversaciones",
+      "tabs": {
+        "directory": "Directorio"
+      },
       "locateActiveConversation": "Ubicar conversación activa",
       "expandAllGroups": "Expandir todos los grupos",
       "collapseAllGroups": "Colapsar todos los grupos",
@@ -615,6 +618,11 @@
       "completeAllReviewTitle": "¿Completar todas las sesiones en revisión?",
       "completeAllReviewDescription": "Esto marcará como completadas todas las {count, plural, one {# sesión} other {# sesiones}} en Revisión.",
       "completing": "Completando...",
+      "directory": {
+        "noConversation": "Selecciona una conversación para ver su directorio.",
+        "loading": "Cargando directorio...",
+        "empty": "No hay elementos de directorio en esta conversación."
+      },
       "toasts": {
         "importedSessions": "Se importaron {imported, plural, one {# sesión} other {# sesiones}}, se omitieron {skipped}",
         "noNewSessionsFound": "No se encontraron sesiones nuevas (omitidas {skipped})",
@@ -1272,6 +1280,19 @@
           "low": "Baja",
           "unknown": "Desconocida"
         }
+      },
+      "sessionLocatorOverlay": {
+        "title": "Localizador de sesión",
+        "collapseAria": "Contraer localizador de sesión",
+        "collapsedSummary": "Localizador {count}",
+        "userLabel": "Usuario",
+        "assistantLabel": "IA",
+        "toolOnly": "Solo salida de herramientas",
+        "attachmentOnly": "Imágenes/adjuntos",
+        "pendingReply": "Sin respuesta",
+        "emptyPreview": "No hay vista previa disponible",
+        "jumpToUserAria": "Ir al mensaje del usuario",
+        "jumpToAssistantAria": "Ir a la respuesta de la IA"
       },
       "permissionDialog": {
         "subtitle": "El agente solicita permiso para continuar este turno.",
