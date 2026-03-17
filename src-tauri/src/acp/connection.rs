@@ -123,7 +123,7 @@ async fn build_agent(
 
     match meta.distribution {
         AgentDistribution::Npx {
-            package, args, env, ..
+            cmd, args, env, ..
         } => {
             let merged_env = merge_agent_env(env, runtime_env);
             let mut parts: Vec<String> = Vec::new();
@@ -131,12 +131,10 @@ async fn build_agent(
                 parts.push(format!("{k}={v}"));
             }
             parts.push(
-                crate::process::normalized_program("npx")
+                crate::process::normalized_program(cmd)
                     .to_string_lossy()
                     .to_string(),
             );
-            parts.push("-y".into());
-            parts.push(package.into());
             for a in args {
                 parts.push((*a).into());
             }

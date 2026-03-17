@@ -78,153 +78,24 @@ fn package_name_from_spec(package: &str) -> String {
     normalized.to_string()
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum NpmPackageBin {
-    Single(String),
-    Multiple(BTreeMap<String, String>),
-}
-
-#[derive(Deserialize)]
-struct NpmPackageManifest {
-    version: Option<String>,
-    bin: Option<NpmPackageBin>,
-}
-
-fn read_npx_cached_package_version(package_dir: &Path) -> Option<String> {
-    let manifest_path = package_dir.join("package.json");
-    let content = std::fs::read_to_string(manifest_path).ok()?;
-    let manifest: NpmPackageManifest = serde_json::from_str(&content).ok()?;
-    manifest
-        .version
-        .as_deref()
-        .and_then(normalize_version_candidate)
-}
-
-fn read_npx_cached_package_manifest(package_dir: &Path) -> Option<NpmPackageManifest> {
-    let manifest_path = package_dir.join("package.json");
-    let content = std::fs::read_to_string(manifest_path).ok()?;
-    serde_json::from_str(&content).ok()
-}
-
-fn npx_package_parts(package: &str) -> Vec<String> {
-    package_name_from_spec(package)
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .map(ToString::to_string)
-        .collect()
-}
-
-fn npx_cached_package_dirs(cache_dir: &Path, package: &str) -> Vec<PathBuf> {
-    let package_parts = npx_package_parts(package);
-    if package_parts.is_empty() {
-        return vec![];
+async fn detect_global_cmd_version(cmd: &str) -> Option<String> {
+    let output = crate::process::tokio_command(cmd)
+        .arg("--version")
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
     }
-
-    let npx_root = cache_dir.join("_npx");
-    let Ok(entries) = std::fs::read_dir(&npx_root) else {
-        return vec![];
-    };
-
-    let mut dirs = Vec::new();
-    for entry in entries.flatten() {
-        let root = entry.path();
-        if !root.is_dir() {
-            continue;
-        }
-
-        let mut package_dir = root.join("node_modules");
-        for part in &package_parts {
-            package_dir = package_dir.join(part);
-        }
-        if package_dir.is_dir() {
-            dirs.push(package_dir);
-        }
-    }
-
-    dirs
-}
-
-#[cfg(unix)]
-fn ensure_executable(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let metadata = std::fs::metadata(path)?;
-    let mut permissions = metadata.permissions();
-    let current = permissions.mode();
-    let next = current | 0o111;
-    if next != current {
-        permissions.set_mode(next);
-        std::fs::set_permissions(path, permissions)?;
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn ensure_executable(_path: &Path) -> std::io::Result<()> {
-    Ok(())
-}
-
-async fn ensure_npx_cached_bins_executable(package: &str) -> Result<(), AcpError> {
-    let Some(cache_dir) = npm_cache_dir().await else {
-        return Ok(());
-    };
-
-    for package_dir in npx_cached_package_dirs(&cache_dir, package) {
-        let Some(manifest) = read_npx_cached_package_manifest(&package_dir) else {
-            continue;
-        };
-
-        let mut bin_rel_paths = Vec::new();
-        match manifest.bin {
-            Some(NpmPackageBin::Single(path)) => bin_rel_paths.push(path),
-            Some(NpmPackageBin::Multiple(map)) => {
-                bin_rel_paths.extend(map.into_values());
-            }
-            None => {}
-        }
-
-        for rel_path in bin_rel_paths {
-            let script_path = package_dir.join(rel_path);
-            if !script_path.is_file() {
-                continue;
-            }
-            if let Err(e) = ensure_executable(&script_path) {
-                return Err(AcpError::protocol(format!(
-                    "failed to set executable permission for npx package script: {e}"
-                )));
-            }
-        }
-    }
-
-    Ok(())
-}
-
-async fn detect_npx_cached_version(package: &str) -> Option<String> {
-    let cache_dir = npm_cache_dir().await?;
-    let expected = version_from_package_spec(package);
-    let mut detected = None;
-
-    for package_dir in npx_cached_package_dirs(&cache_dir, package) {
-        let version = read_npx_cached_package_version(&package_dir).or_else(|| expected.clone());
-        if let Some(found) = version {
-            if expected.as_deref() == Some(found.as_str()) {
-                return Some(found);
-            }
-            if detected.is_none() {
-                detected = Some(found);
-            }
-        }
-    }
-
-    detected
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    normalize_version_candidate(&raw)
 }
 
 async fn detect_local_version(agent_type: AgentType) -> Option<String> {
     let meta = registry::get_agent_meta(agent_type);
     match meta.distribution {
-        registry::AgentDistribution::Npx { package, .. } => {
-            detect_npx_cached_version(package).await
+        registry::AgentDistribution::Npx { cmd, .. } => {
+            detect_global_cmd_version(cmd).await
         }
         registry::AgentDistribution::Binary { cmd, .. } => {
             binary_cache::detect_installed_version(agent_type, cmd)
@@ -234,104 +105,49 @@ async fn detect_local_version(agent_type: AgentType) -> Option<String> {
     }
 }
 
-async fn prepare_npx_package(package: &str) -> Result<(), AcpError> {
-    let output = crate::process::tokio_command("npx")
-        .arg("--yes")
-        .arg("--package")
+async fn install_npm_global_package(package: &str) -> Result<(), AcpError> {
+    let output = crate::process::tokio_command("npm")
+        .arg("install")
+        .arg("-g")
         .arg(package)
-        .arg("--")
-        .arg("node")
-        .arg("-e")
-        .arg("process.exit(0)")
         .output()
         .await
-        .map_err(|e| AcpError::protocol(format!("failed to run npx: {e}")))?;
+        .map_err(|e| AcpError::protocol(format!("failed to run npm install -g: {e}")))?;
 
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let msg = if err.is_empty() {
-            "failed to prepare npx package".to_string()
+            "failed to install npm package globally".to_string()
         } else {
-            format!("failed to prepare npx package: {err}")
+            format!("failed to install npm package globally: {err}")
         };
         return Err(AcpError::protocol(msg));
     }
 
-    // Some npm packages ship bin scripts without executable bit.
-    // Normalize permissions in local npx cache to avoid runtime spawn failures.
-    ensure_npx_cached_bins_executable(package).await?;
-
     Ok(())
 }
 
-async fn npm_cache_dir() -> Option<PathBuf> {
-    let output = crate::process::tokio_command("npm")
-        .arg("config")
-        .arg("get")
-        .arg("cache")
-        .output()
-        .await
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if raw.is_empty() || raw.eq_ignore_ascii_case("undefined") {
-        return None;
-    }
-    Some(PathBuf::from(raw))
-}
-
-fn remove_npx_package_cache(cache_dir: &Path, package_name: &str) -> Result<(), AcpError> {
-    let npx_root = cache_dir.join("_npx");
-    if !npx_root.exists() {
-        return Ok(());
-    }
-
-    let package_parts = package_name
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>();
-    if package_parts.is_empty() {
-        return Ok(());
-    }
-
-    let entries = std::fs::read_dir(&npx_root)
-        .map_err(|e| AcpError::protocol(format!("failed to read npx cache directory: {e}")))?;
-    for entry in entries.flatten() {
-        let root = entry.path();
-        if !root.is_dir() {
-            continue;
-        }
-        let mut package_dir = root.join("node_modules");
-        for part in &package_parts {
-            package_dir = package_dir.join(part);
-        }
-        if package_dir.exists() {
-            std::fs::remove_dir_all(&package_dir).map_err(|e| {
-                AcpError::protocol(format!("failed to remove npx package cache: {e}"))
-            })?;
-        }
-    }
-
-    Ok(())
-}
-
-async fn uninstall_npx_package(package: &str) -> Result<(), AcpError> {
+async fn uninstall_npm_global_package(package: &str) -> Result<(), AcpError> {
     let package_name = package_name_from_spec(package);
 
     if !package_name.is_empty() {
-        // Best effort: if package was installed globally, remove it as well.
-        let _ = crate::process::tokio_command("npm")
+        let output = crate::process::tokio_command("npm")
             .arg("uninstall")
             .arg("-g")
             .arg(&package_name)
             .output()
-            .await;
-    }
+            .await
+            .map_err(|e| AcpError::protocol(format!("failed to run npm uninstall -g: {e}")))?;
 
-    if let Some(cache_dir) = npm_cache_dir().await {
-        remove_npx_package_cache(&cache_dir, &package_name)?;
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let msg = if err.is_empty() {
+                "failed to uninstall npm package globally".to_string()
+            } else {
+                format!("failed to uninstall npm package globally: {err}")
+            };
+            return Err(AcpError::protocol(msg));
+        }
     }
 
     Ok(())
@@ -1214,11 +1030,9 @@ pub async fn acp_connect(
         runtime_env.insert("OPENCLAW_RESET_SESSION".into(), "1".into());
     }
 
-    if let registry::AgentDistribution::Npx { package, .. } = meta.distribution {
-        if detect_npx_cached_version(package).await.is_none() {
-            prepare_npx_package(package).await?;
-        } else {
-            ensure_npx_cached_bins_executable(package).await?;
+    if let registry::AgentDistribution::Npx { cmd, package, .. } = meta.distribution {
+        if detect_global_cmd_version(cmd).await.is_none() {
+            install_npm_global_package(package).await?;
         }
     }
 
@@ -1635,7 +1449,7 @@ pub async fn acp_prepare_npx_agent(
                 .flatten()
                 .and_then(|m| m.installed_version);
 
-            prepare_npx_package(package).await?;
+            install_npm_global_package(package).await?;
             let resolved = detect_local_version(agent_type)
                 .await
                 .or_else(|| version_from_package_spec(package))
@@ -1647,7 +1461,7 @@ pub async fn acp_prepare_npx_agent(
                 .or(existing)
                 .ok_or_else(|| {
                     AcpError::protocol(
-                        "npx install succeeded but failed to determine local version",
+                        "npm global install succeeded but failed to determine local version",
                     )
                 })?;
 
@@ -1679,7 +1493,7 @@ pub async fn acp_uninstall_agent(
             binary_cache::clear_agent_cache(agent_type)?;
         }
         registry::AgentDistribution::Npx { package, .. } => {
-            uninstall_npx_package(package).await?;
+            uninstall_npm_global_package(package).await?;
         }
     }
 

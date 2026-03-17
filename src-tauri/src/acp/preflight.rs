@@ -5,10 +5,10 @@ use crate::acp::binary_cache;
 use crate::acp::registry::{self, AgentDistribution};
 use crate::models::agent::AgentType;
 
-/// Cache for NPX environment check results.
+/// Cache for npm environment check results.
 /// Stores `Some(checks)` after a successful (all-pass) run;
 /// stays `None` if checks failed so they are retried next time.
-static NPX_ENV_CACHE: Mutex<Option<Vec<CheckItem>>> = Mutex::new(None);
+static NPM_ENV_CACHE: Mutex<Option<Vec<CheckItem>>> = Mutex::new(None);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,7 +52,7 @@ pub async fn run_preflight(agent_type: AgentType) -> PreflightResult {
     let meta = registry::get_agent_meta(agent_type);
     debug_assert_eq!(meta.agent_type, agent_type);
     let checks = match &meta.distribution {
-        AgentDistribution::Npx { node_required, .. } => check_npx_environment(*node_required).await,
+        AgentDistribution::Npx { node_required, .. } => check_npm_environment(*node_required).await,
         AgentDistribution::Binary {
             version,
             cmd,
@@ -73,11 +73,11 @@ pub async fn run_preflight(agent_type: AgentType) -> PreflightResult {
     }
 }
 
-async fn check_npx_environment(node_required: Option<&str>) -> Vec<CheckItem> {
+async fn check_npm_environment(node_required: Option<&str>) -> Vec<CheckItem> {
     // Return cached result if a previous check passed.
-    // The cache stores only the base checks (node_available + npx_available);
+    // The cache stores only the base checks (node_available + npm_available);
     // the per-agent node_version check is appended separately.
-    let cached = NPX_ENV_CACHE.lock().unwrap().clone();
+    let cached = NPM_ENV_CACHE.lock().unwrap().clone();
     if let Some(cached) = cached {
         let mut checks = cached;
         if let Some(required) = node_required {
@@ -89,12 +89,12 @@ async fn check_npx_environment(node_required: Option<&str>) -> Vec<CheckItem> {
         return checks;
     }
 
-    // Run node and npx checks in parallel
-    let (node_result, npx_result) = tokio::join!(
+    // Run node and npm checks in parallel
+    let (node_result, npm_result) = tokio::join!(
         crate::process::tokio_command("node")
             .arg("--version")
             .output(),
-        crate::process::tokio_command("npx")
+        crate::process::tokio_command("npm")
             .arg("--version")
             .output(),
     );
@@ -127,22 +127,22 @@ async fn check_npx_environment(node_required: Option<&str>) -> Vec<CheckItem> {
         },
     };
 
-    let npx_check = match npx_result {
+    let npm_check = match npm_result {
         Ok(output) if output.status.success() => {
             let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
             CheckItem {
-                check_id: "npx_available".into(),
-                label: "npx".into(),
+                check_id: "npm_available".into(),
+                label: "npm".into(),
                 status: CheckStatus::Pass,
-                message: format!("npx {version} available"),
+                message: format!("npm {version} available"),
                 fixes: vec![],
             }
         }
         _ => CheckItem {
-            check_id: "npx_available".into(),
-            label: "npx".into(),
+            check_id: "npm_available".into(),
+            label: "npm".into(),
             status: CheckStatus::Fail,
-            message: "npx is not installed or not in PATH".into(),
+            message: "npm is not installed or not in PATH".into(),
             fixes: vec![FixAction {
                 label: "Install Node.js".into(),
                 kind: FixActionKind::OpenUrl,
@@ -151,7 +151,7 @@ async fn check_npx_environment(node_required: Option<&str>) -> Vec<CheckItem> {
         },
     };
 
-    let mut checks = vec![node_check, npx_check];
+    let mut checks = vec![node_check, npm_check];
 
     // Cache only if all checks passed — failed results are not cached so
     // the user can retry after installing the missing tools.
@@ -159,7 +159,7 @@ async fn check_npx_environment(node_required: Option<&str>) -> Vec<CheckItem> {
         .iter()
         .all(|c| !matches!(c.status, CheckStatus::Fail));
     if all_passed {
-        *NPX_ENV_CACHE.lock().unwrap() = Some(checks.clone());
+        *NPM_ENV_CACHE.lock().unwrap() = Some(checks.clone());
     }
 
     // After caching the base checks, append the per-agent Node.js version
