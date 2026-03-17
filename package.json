@@ -7,7 +7,7 @@
     "build": "next build",
     "lint": "eslint",
     "tauri": "tauri",
-    "postinstall": "node -e \"const fs=require('fs');fs.cpSync('node_modules/monaco-editor/min/vs','public/vs',{recursive:true,force:true})\""
+    "postinstall": "node -e \"const fs=require('fs');fs.cpSync('node_modules/monaco-editor/min/vs','public/vs',{recursive:true,force:true});const p='public/vs/loader.js';fs.writeFileSync(p,fs.readFileSync(p,'utf8').replace(/\\n\\/\\/# sourceMappingURL=.*/,''))\""
   },
   "dependencies": {
     "@base-ui/react": "^1.1.0",
