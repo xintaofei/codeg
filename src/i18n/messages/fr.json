@@ -1001,7 +1001,8 @@
       "actions": {
         "commitCode": "Commit du code",
         "rollback": "Annuler",
-        "addToVcs": "Ajouter à VCS"
+        "addToVcs": "Ajouter à VCS",
+        "delete": "Supprimer"
       },
       "toasts": {
         "noAddableFilesInDir": "Aucun fichier modifié de ce répertoire ne peut être ajouté à VCS",
@@ -1012,11 +1013,16 @@
         "rolledBack": "{name} restauré",
         "rollbackFailed": "Échec du rollback",
         "addedFilesToVcs": "{count, plural, one {# fichier} other {# fichiers}} ajouté(s) à VCS",
-        "rolledBackFiles": "{count, plural, one {# fichier restauré} other {# fichiers restaurés}}"
+        "rolledBackFiles": "{count, plural, one {# fichier restauré} other {# fichiers restaurés}}",
+        "deleted": "{name} supprimé",
+        "deleteFailed": "Échec de la suppression",
+        "deletedFiles": "{count} fichiers supprimés",
+        "noDeletableFilesInDir": "Aucun fichier modifié dans ce répertoire ne peut être supprimé"
       },
       "directoryDialog": {
         "descriptionAdd": "Sélectionnez les fichiers du répertoire {path} à ajouter à VCS.",
         "descriptionRollback": "Sélectionnez les fichiers du répertoire {path} à rollback.",
+        "descriptionDelete": "Sélectionnez les fichiers du répertoire {path} à supprimer. Cette action est irréversible.",
         "descriptionFallback": "Sélectionnez les fichiers pour continuer.",
         "selectionCount": "{selected} / {total} fichiers sélectionnés",
         "selectAll": "Tout sélectionner",
@@ -1028,6 +1034,13 @@
         "title": "Confirmer le rollback",
         "descriptionWithTarget": "Rollback des changements locaux pour {kind} \"{name}\" ?",
         "descriptionFallback": "Rollback des changements locaux ?",
+        "kindDirectory": "répertoire",
+        "kindFile": "fichier"
+      },
+      "deleteConfirm": {
+        "title": "Confirmer la suppression",
+        "descriptionWithTarget": "Supprimer {kind} \"{name}\" ? Cette action est irréversible.",
+        "descriptionFallback": "Cette action est irréversible.",
         "kindDirectory": "répertoire",
         "kindFile": "fichier"
       }

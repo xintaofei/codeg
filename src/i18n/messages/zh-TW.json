@@ -1001,7 +1001,8 @@
       "actions": {
         "commitCode": "提交程式碼",
         "rollback": "回滾",
-        "addToVcs": "加入到 VCS"
+        "addToVcs": "加入到 VCS",
+        "delete": "刪除"
       },
       "toasts": {
         "noAddableFilesInDir": "該目錄下沒有可加入到 VCS 的變更檔案",
@@ -1012,11 +1013,16 @@
         "rolledBack": "已回滾 {name}",
         "rollbackFailed": "回滾失敗",
         "addedFilesToVcs": "已加入 {count} 個檔案到 VCS",
-        "rolledBackFiles": "已回滾 {count} 個檔案"
+        "rolledBackFiles": "已回滾 {count} 個檔案",
+        "deleted": "已刪除 {name}",
+        "deleteFailed": "刪除失敗",
+        "deletedFiles": "已刪除 {count} 個檔案",
+        "noDeletableFilesInDir": "此目錄下沒有可刪除的變更檔案"
       },
       "directoryDialog": {
         "descriptionAdd": "選擇目錄 {path} 下要加入到 VCS 的檔案。",
         "descriptionRollback": "選擇目錄 {path} 下要回滾的檔案。",
+        "descriptionDelete": "選擇目錄 {path} 下要刪除的檔案。此操作不可撤銷。",
         "descriptionFallback": "選擇要操作的檔案。",
         "selectionCount": "已選擇 {selected} / {total} 個檔案",
         "selectAll": "全選",
@@ -1028,6 +1034,13 @@
         "title": "確認回滾",
         "descriptionWithTarget": "確定回滾{kind}「{name}」的本地修改嗎？",
         "descriptionFallback": "確定回滾本地修改嗎？",
+        "kindDirectory": "目錄",
+        "kindFile": "檔案"
+      },
+      "deleteConfirm": {
+        "title": "確認刪除",
+        "descriptionWithTarget": "確定刪除{kind}「{name}」嗎？此操作無法撤銷。",
+        "descriptionFallback": "此操作無法撤銷。",
         "kindDirectory": "目錄",
         "kindFile": "檔案"
       }

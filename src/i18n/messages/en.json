@@ -1001,7 +1001,8 @@
       "actions": {
         "commitCode": "Commit code",
         "rollback": "Rollback",
-        "addToVcs": "Add to VCS"
+        "addToVcs": "Add to VCS",
+        "delete": "Delete"
       },
       "toasts": {
         "noAddableFilesInDir": "No changed files in this directory can be added to VCS",
@@ -1012,11 +1013,16 @@
         "rolledBack": "Rolled back {name}",
         "rollbackFailed": "Rollback failed",
         "addedFilesToVcs": "Added {count, plural, one {# file} other {# files}} to VCS",
-        "rolledBackFiles": "Rolled back {count, plural, one {# file} other {# files}}"
+        "rolledBackFiles": "Rolled back {count, plural, one {# file} other {# files}}",
+        "deleted": "Deleted {name}",
+        "deleteFailed": "Delete failed",
+        "deletedFiles": "Deleted {count, plural, one {# file} other {# files}}",
+        "noDeletableFilesInDir": "No changed files in this directory can be deleted"
       },
       "directoryDialog": {
         "descriptionAdd": "Select files under directory {path} to add to VCS.",
         "descriptionRollback": "Select files under directory {path} to roll back.",
+        "descriptionDelete": "Select files under directory {path} to delete. This action cannot be undone.",
         "descriptionFallback": "Select files to proceed.",
         "selectionCount": "Selected {selected} / {total} files",
         "selectAll": "Select all",
@@ -1028,6 +1034,13 @@
         "title": "Confirm rollback",
         "descriptionWithTarget": "Roll back local changes for {kind} \"{name}\"?",
         "descriptionFallback": "Roll back local changes?",
+        "kindDirectory": "directory",
+        "kindFile": "file"
+      },
+      "deleteConfirm": {
+        "title": "Confirm deletion",
+        "descriptionWithTarget": "Delete {kind} \"{name}\"? This action cannot be undone.",
+        "descriptionFallback": "This action cannot be undone.",
         "kindDirectory": "directory",
         "kindFile": "file"
       }

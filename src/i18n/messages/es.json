@@ -1001,7 +1001,8 @@
       "actions": {
         "commitCode": "Hacer commit del código",
         "rollback": "Revertir",
-        "addToVcs": "Añadir a VCS"
+        "addToVcs": "Añadir a VCS",
+        "delete": "Eliminar"
       },
       "toasts": {
         "noAddableFilesInDir": "No hay archivos cambiados en este directorio para añadir a VCS",
@@ -1012,11 +1013,16 @@
         "rolledBack": "Se revirtió {name}",
         "rollbackFailed": "Error al revertir",
         "addedFilesToVcs": "Se añadieron {count, plural, one {# archivo} other {# archivos}} a VCS",
-        "rolledBackFiles": "Se revirtieron {count, plural, one {# archivo} other {# archivos}}"
+        "rolledBackFiles": "Se revirtieron {count, plural, one {# archivo} other {# archivos}}",
+        "deleted": "Se eliminó {name}",
+        "deleteFailed": "Error al eliminar",
+        "deletedFiles": "Se eliminaron {count} archivos",
+        "noDeletableFilesInDir": "No hay archivos modificados en este directorio que se puedan eliminar"
       },
       "directoryDialog": {
         "descriptionAdd": "Selecciona archivos bajo el directorio {path} para añadir a VCS.",
         "descriptionRollback": "Selecciona archivos bajo el directorio {path} para revertir.",
+        "descriptionDelete": "Selecciona archivos bajo el directorio {path} para eliminar. Esta acción no se puede deshacer.",
         "descriptionFallback": "Selecciona archivos para continuar.",
         "selectionCount": "Seleccionados {selected} / {total} archivos",
         "selectAll": "Seleccionar todo",
@@ -1028,6 +1034,13 @@
         "title": "Confirmar reversión",
         "descriptionWithTarget": "¿Revertir cambios locales de {kind} \"{name}\"?",
         "descriptionFallback": "¿Revertir cambios locales?",
+        "kindDirectory": "directorio",
+        "kindFile": "archivo"
+      },
+      "deleteConfirm": {
+        "title": "Confirmar eliminación",
+        "descriptionWithTarget": "¿Eliminar {kind} \"{name}\"? Esta acción no se puede deshacer.",
+        "descriptionFallback": "Esta acción no se puede deshacer.",
         "kindDirectory": "directorio",
         "kindFile": "archivo"
       }

@@ -1001,7 +1001,8 @@
       "actions": {
         "commitCode": "Code committen",
         "rollback": "Zurücksetzen",
-        "addToVcs": "Zu VCS hinzufügen"
+        "addToVcs": "Zu VCS hinzufügen",
+        "delete": "Löschen"
       },
       "toasts": {
         "noAddableFilesInDir": "Keine geänderten Dateien in diesem Verzeichnis können zu VCS hinzugefügt werden",
@@ -1012,11 +1013,16 @@
         "rolledBack": "{name} zurückgesetzt",
         "rollbackFailed": "Rollback fehlgeschlagen",
         "addedFilesToVcs": "{count, plural, one {# Datei} other {# Dateien}} zu VCS hinzugefügt",
-        "rolledBackFiles": "{count, plural, one {# Datei zurückgesetzt} other {# Dateien zurückgesetzt}}"
+        "rolledBackFiles": "{count, plural, one {# Datei zurückgesetzt} other {# Dateien zurückgesetzt}}",
+        "deleted": "{name} gelöscht",
+        "deleteFailed": "Löschen fehlgeschlagen",
+        "deletedFiles": "{count} Dateien gelöscht",
+        "noDeletableFilesInDir": "In diesem Verzeichnis gibt es keine löschbaren geänderten Dateien"
       },
       "directoryDialog": {
         "descriptionAdd": "Dateien unter Verzeichnis {path} auswählen, um sie zu VCS hinzuzufügen.",
         "descriptionRollback": "Dateien unter Verzeichnis {path} auswählen, um sie zurückzusetzen.",
+        "descriptionDelete": "Dateien unter Verzeichnis {path} auswählen, um sie zu löschen. Diese Aktion kann nicht rückgängig gemacht werden.",
         "descriptionFallback": "Dateien auswählen, um fortzufahren.",
         "selectionCount": "{selected} / {total} Dateien ausgewählt",
         "selectAll": "Alle auswählen",
@@ -1028,6 +1034,13 @@
         "title": "Rollback bestätigen",
         "descriptionWithTarget": "Lokale Änderungen für {kind} \"{name}\" zurücksetzen?",
         "descriptionFallback": "Lokale Änderungen zurücksetzen?",
+        "kindDirectory": "Verzeichnis",
+        "kindFile": "Datei"
+      },
+      "deleteConfirm": {
+        "title": "Löschen bestätigen",
+        "descriptionWithTarget": "{kind} \"{name}\" löschen? Diese Aktion kann nicht rückgängig gemacht werden.",
+        "descriptionFallback": "Diese Aktion kann nicht rückgängig gemacht werden.",
         "kindDirectory": "Verzeichnis",
         "kindFile": "Datei"
       }

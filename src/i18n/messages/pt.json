@@ -1001,7 +1001,8 @@
       "actions": {
         "commitCode": "Commit do código",
         "rollback": "Reverter",
-        "addToVcs": "Adicionar ao VCS"
+        "addToVcs": "Adicionar ao VCS",
+        "delete": "Excluir"
       },
       "toasts": {
         "noAddableFilesInDir": "Nenhum arquivo alterado neste diretório pode ser adicionado ao VCS",
@@ -1012,11 +1013,16 @@
         "rolledBack": "{name} revertido",
         "rollbackFailed": "Falha no rollback",
         "addedFilesToVcs": "{count, plural, one {# arquivo} other {# arquivos}} adicionados ao VCS",
-        "rolledBackFiles": "{count, plural, one {# arquivo revertido} other {# arquivos revertidos}}"
+        "rolledBackFiles": "{count, plural, one {# arquivo revertido} other {# arquivos revertidos}}",
+        "deleted": "{name} excluído",
+        "deleteFailed": "Falha ao excluir",
+        "deletedFiles": "{count} arquivos excluídos",
+        "noDeletableFilesInDir": "Nenhum arquivo alterado neste diretório pode ser excluído"
       },
       "directoryDialog": {
         "descriptionAdd": "Selecione arquivos sob o diretório {path} para adicionar ao VCS.",
         "descriptionRollback": "Selecione arquivos sob o diretório {path} para reverter.",
+        "descriptionDelete": "Selecione arquivos no diretório {path} para excluir. Esta ação não pode ser desfeita.",
         "descriptionFallback": "Selecione arquivos para prosseguir.",
         "selectionCount": "Selecionados {selected} / {total} arquivos",
         "selectAll": "Selecionar todos",
@@ -1028,6 +1034,13 @@
         "title": "Confirmar rollback",
         "descriptionWithTarget": "Reverter alterações locais de {kind} \"{name}\"?",
         "descriptionFallback": "Reverter alterações locais?",
+        "kindDirectory": "diretório",
+        "kindFile": "arquivo"
+      },
+      "deleteConfirm": {
+        "title": "Confirmar exclusão",
+        "descriptionWithTarget": "Excluir {kind} \"{name}\"? Esta ação não pode ser desfeita.",
+        "descriptionFallback": "Esta ação não pode ser desfeita.",
         "kindDirectory": "diretório",
         "kindFile": "arquivo"
       }

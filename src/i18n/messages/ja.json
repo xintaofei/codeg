@@ -1001,7 +1001,8 @@
       "actions": {
         "commitCode": "コードをコミット",
         "rollback": "ロールバック",
-        "addToVcs": "VCS に追加"
+        "addToVcs": "VCS に追加",
+        "delete": "削除"
       },
       "toasts": {
         "noAddableFilesInDir": "このディレクトリには VCS に追加できる変更ファイルがありません",
@@ -1012,11 +1013,16 @@
         "rolledBack": "{name} をロールバックしました",
         "rollbackFailed": "ロールバックに失敗しました",
         "addedFilesToVcs": "{count, plural, one {# 個のファイルを VCS に追加} other {# 個のファイルを VCS に追加}}",
-        "rolledBackFiles": "{count, plural, one {# 個のファイルをロールバック} other {# 個のファイルをロールバック}}"
+        "rolledBackFiles": "{count, plural, one {# 個のファイルをロールバック} other {# 個のファイルをロールバック}}",
+        "deleted": "{name} を削除しました",
+        "deleteFailed": "削除に失敗しました",
+        "deletedFiles": "{count} 個のファイルを削除しました",
+        "noDeletableFilesInDir": "このディレクトリには削除可能な変更ファイルがありません"
       },
       "directoryDialog": {
         "descriptionAdd": "ディレクトリ {path} 配下で VCS に追加するファイルを選択してください。",
         "descriptionRollback": "ディレクトリ {path} 配下でロールバックするファイルを選択してください。",
+        "descriptionDelete": "ディレクトリ {path} 配下で削除するファイルを選択してください。この操作は元に戻せません。",
         "descriptionFallback": "続行するファイルを選択してください。",
         "selectionCount": "{selected} / {total} を選択",
         "selectAll": "すべて選択",
@@ -1028,6 +1034,13 @@
         "title": "ロールバックの確認",
         "descriptionWithTarget": "{kind} \"{name}\" のローカル変更をロールバックしますか？",
         "descriptionFallback": "ローカル変更をロールバックしますか？",
+        "kindDirectory": "ディレクトリ",
+        "kindFile": "ファイル"
+      },
+      "deleteConfirm": {
+        "title": "削除の確認",
+        "descriptionWithTarget": "{kind}「{name}」を削除しますか？この操作は元に戻せません。",
+        "descriptionFallback": "この操作は元に戻せません。",
         "kindDirectory": "ディレクトリ",
         "kindFile": "ファイル"
       }

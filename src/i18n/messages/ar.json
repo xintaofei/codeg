@@ -1001,7 +1001,8 @@
       "actions": {
         "commitCode": "التزام الكود",
         "rollback": "تراجع",
-        "addToVcs": "إضافة إلى VCS"
+        "addToVcs": "إضافة إلى VCS",
+        "delete": "حذف"
       },
       "toasts": {
         "noAddableFilesInDir": "لا توجد ملفات متغيرة في هذا الدليل يمكن إضافتها إلى VCS",
@@ -1012,11 +1013,16 @@
         "rolledBack": "تم التراجع عن {name}",
         "rollbackFailed": "فشل التراجع",
         "addedFilesToVcs": "تمت إضافة {count, plural, one {# ملف} other {# ملفات}} إلى VCS",
-        "rolledBackFiles": "تم التراجع عن {count, plural, one {# ملف} other {# ملفات}}"
+        "rolledBackFiles": "تم التراجع عن {count, plural, one {# ملف} other {# ملفات}}",
+        "deleted": "تم حذف {name}",
+        "deleteFailed": "فشل الحذف",
+        "deletedFiles": "تم حذف {count} ملفات",
+        "noDeletableFilesInDir": "لا توجد ملفات معدّلة في هذا الدليل يمكن حذفها"
       },
       "directoryDialog": {
         "descriptionAdd": "اختر ملفات داخل الدليل {path} لإضافتها إلى VCS.",
         "descriptionRollback": "اختر ملفات داخل الدليل {path} للتراجع عنها.",
+        "descriptionDelete": "اختر ملفات داخل الدليل {path} لحذفها. لا يمكن التراجع عن هذا الإجراء.",
         "descriptionFallback": "اختر ملفات للمتابعة.",
         "selectionCount": "تم تحديد {selected} / {total} ملف",
         "selectAll": "تحديد الكل",
@@ -1028,6 +1034,13 @@
         "title": "تأكيد التراجع",
         "descriptionWithTarget": "التراجع عن التغييرات المحلية لـ {kind} \"{name}\"؟",
         "descriptionFallback": "التراجع عن التغييرات المحلية؟",
+        "kindDirectory": "الدليل",
+        "kindFile": "الملف"
+      },
+      "deleteConfirm": {
+        "title": "تأكيد الحذف",
+        "descriptionWithTarget": "حذف {kind} \"{name}\"؟ لا يمكن التراجع عن هذا الإجراء.",
+        "descriptionFallback": "لا يمكن التراجع عن هذا الإجراء.",
         "kindDirectory": "الدليل",
         "kindFile": "الملف"
       }

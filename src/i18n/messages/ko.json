@@ -1001,7 +1001,8 @@
       "actions": {
         "commitCode": "코드 커밋",
         "rollback": "롤백",
-        "addToVcs": "VCS에 추가"
+        "addToVcs": "VCS에 추가",
+        "delete": "삭제"
       },
       "toasts": {
         "noAddableFilesInDir": "이 디렉터리에는 VCS에 추가할 수 있는 변경 파일이 없습니다",
@@ -1012,11 +1013,16 @@
         "rolledBack": "{name}을(를) 롤백했습니다",
         "rollbackFailed": "롤백에 실패했습니다",
         "addedFilesToVcs": "{count, plural, one {#개 파일을 VCS에 추가} other {#개 파일을 VCS에 추가}}",
-        "rolledBackFiles": "{count, plural, one {#개 파일 롤백} other {#개 파일 롤백}}"
+        "rolledBackFiles": "{count, plural, one {#개 파일 롤백} other {#개 파일 롤백}}",
+        "deleted": "{name}이(가) 삭제되었습니다",
+        "deleteFailed": "삭제에 실패했습니다",
+        "deletedFiles": "{count}개 파일을 삭제했습니다",
+        "noDeletableFilesInDir": "이 디렉터리에서 삭제할 수 있는 변경된 파일이 없습니다"
       },
       "directoryDialog": {
         "descriptionAdd": "디렉터리 {path} 아래에서 VCS에 추가할 파일을 선택하세요.",
         "descriptionRollback": "디렉터리 {path} 아래에서 롤백할 파일을 선택하세요.",
+        "descriptionDelete": "디렉터리 {path} 아래에서 삭제할 파일을 선택하세요. 이 작업은 되돌릴 수 없습니다.",
         "descriptionFallback": "계속 진행할 파일을 선택하세요.",
         "selectionCount": "{selected} / {total} 선택됨",
         "selectAll": "모두 선택",
@@ -1028,6 +1034,13 @@
         "title": "롤백 확인",
         "descriptionWithTarget": "{kind} \"{name}\"의 로컬 변경 사항을 롤백할까요?",
         "descriptionFallback": "로컬 변경 사항을 롤백할까요?",
+        "kindDirectory": "디렉터리",
+        "kindFile": "파일"
+      },
+      "deleteConfirm": {
+        "title": "삭제 확인",
+        "descriptionWithTarget": "{kind} \"{name}\"을(를) 삭제할까요? 이 작업은 되돌릴 수 없습니다.",
+        "descriptionFallback": "이 작업은 되돌릴 수 없습니다.",
         "kindDirectory": "디렉터리",
         "kindFile": "파일"
       }
