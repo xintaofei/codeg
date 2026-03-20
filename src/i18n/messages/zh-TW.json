@@ -1279,6 +1279,16 @@
           "unknown": "未知"
         }
       },
+      "messageNavigator": {
+        "title": "訊息導航",
+        "collapseAria": "摺疊訊息導航",
+        "collapsedSummary": "導航 {count}",
+        "toolOnly": "僅工具呼叫",
+        "attachmentOnly": "圖片/附件",
+        "emptyPreview": "無可用摘要",
+        "jumpToUserAria": "跳轉到使用者訊息",
+        "jumpToAssistantAria": "跳轉到 AI 回覆"
+      },
       "permissionDialog": {
         "subtitle": "Agent 請求繼續目前輪次的權限。",
         "kindFallbackTool": "工具",

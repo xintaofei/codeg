@@ -1279,6 +1279,16 @@
           "unknown": "Unknown"
         }
       },
+      "messageNavigator": {
+        "title": "Message Navigator",
+        "collapseAria": "Collapse message navigator",
+        "collapsedSummary": "Navigator {count}",
+        "toolOnly": "Tool-only response",
+        "attachmentOnly": "Images/attachments",
+        "emptyPreview": "No preview available",
+        "jumpToUserAria": "Jump to user message",
+        "jumpToAssistantAria": "Jump to AI reply"
+      },
       "permissionDialog": {
         "subtitle": "Agent requests permission to continue this turn.",
         "kindFallbackTool": "tool",

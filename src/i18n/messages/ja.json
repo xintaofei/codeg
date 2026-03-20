@@ -1279,6 +1279,16 @@
           "unknown": "不明"
         }
       },
+      "messageNavigator": {
+        "title": "メッセージナビゲーター",
+        "collapseAria": "メッセージナビゲーターを折りたたむ",
+        "collapsedSummary": "ナビ {count}",
+        "toolOnly": "ツール出力のみ",
+        "attachmentOnly": "画像/添付ファイル",
+        "emptyPreview": "プレビューはありません",
+        "jumpToUserAria": "ユーザーメッセージへ移動",
+        "jumpToAssistantAria": "AI の返信へ移動"
+      },
       "permissionDialog": {
         "subtitle": "エージェントがこのターンを続行するための許可を要求しています。",
         "kindFallbackTool": "ツール",

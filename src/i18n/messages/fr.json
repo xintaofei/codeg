@@ -1279,6 +1279,16 @@
           "unknown": "Inconnue"
         }
       },
+      "messageNavigator": {
+        "title": "Navigateur de messages",
+        "collapseAria": "Réduire le navigateur de messages",
+        "collapsedSummary": "Navigateur {count}",
+        "toolOnly": "Réponse d’outil uniquement",
+        "attachmentOnly": "Images/pièces jointes",
+        "emptyPreview": "Aucun aperçu disponible",
+        "jumpToUserAria": "Aller au message de l’utilisateur",
+        "jumpToAssistantAria": "Aller à la réponse de l’IA"
+      },
       "permissionDialog": {
         "subtitle": "L'agent demande une autorisation pour continuer ce tour.",
         "kindFallbackTool": "outil",

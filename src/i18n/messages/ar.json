@@ -1279,6 +1279,16 @@
           "unknown": "غير معروف"
         }
       },
+      "messageNavigator": {
+        "title": "مستكشف الرسائل",
+        "collapseAria": "طي مستكشف الرسائل",
+        "collapsedSummary": "المستكشف {count}",
+        "toolOnly": "استجابة أدوات فقط",
+        "attachmentOnly": "صور/مرفقات",
+        "emptyPreview": "لا تتوفر معاينة",
+        "jumpToUserAria": "الانتقال إلى رسالة المستخدم",
+        "jumpToAssistantAria": "الانتقال إلى رد AI"
+      },
       "permissionDialog": {
         "subtitle": "يطلب الوكيل إذنًا لمتابعة هذا الدور.",
         "kindFallbackTool": "أداة",

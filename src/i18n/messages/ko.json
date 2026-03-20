@@ -1279,6 +1279,16 @@
           "unknown": "알 수 없음"
         }
       },
+      "messageNavigator": {
+        "title": "메시지 내비게이터",
+        "collapseAria": "메시지 내비게이터 접기",
+        "collapsedSummary": "내비게이터 {count}",
+        "toolOnly": "도구 출력만",
+        "attachmentOnly": "이미지/첨부파일",
+        "emptyPreview": "미리보기가 없습니다",
+        "jumpToUserAria": "사용자 메시지로 이동",
+        "jumpToAssistantAria": "AI 응답으로 이동"
+      },
       "permissionDialog": {
         "subtitle": "에이전트가 이 턴을 계속하기 위한 권한을 요청합니다.",
         "kindFallbackTool": "도구",
