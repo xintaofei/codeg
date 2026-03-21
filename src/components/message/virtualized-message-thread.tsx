@@ -1,7 +1,7 @@
 "use client"
 
-import { useCallback } from "react"
-import type { ReactNode } from "react"
+import { useCallback, useImperativeHandle } from "react"
+import type { CSSProperties, ReactNode, Ref } from "react"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { useStickToBottomContext } from "use-stick-to-bottom"
 import {
@@ -9,6 +9,17 @@ import {
   type MessageThreadContentProps,
 } from "@/components/ai-elements/message-thread"
 import { cn } from "@/lib/utils"
+
+export interface VirtualizedMessageThreadHandle {
+  scrollToIndex: (
+    index: number,
+    options?: {
+      align?: "start" | "center" | "end" | "auto"
+      behavior?: "auto" | "smooth"
+    }
+  ) => void
+  getScrollElement: () => HTMLElement | null
+}
 
 interface VirtualizedMessageThreadProps<T> {
   items: T[]
@@ -18,8 +29,10 @@ interface VirtualizedMessageThreadProps<T> {
   estimateSize?: number
   overscan?: number
   className?: string
+  rowContainerStyle?: CSSProperties
   contentClassName?: string
   contentProps?: Omit<MessageThreadContentProps, "children" | "className">
+  ref?: Ref<VirtualizedMessageThreadHandle>
 }
 
 export function VirtualizedMessageThread<T>({
@@ -30,8 +43,10 @@ export function VirtualizedMessageThread<T>({
   estimateSize = 160,
   overscan = 8,
   className,
+  rowContainerStyle,
   contentClassName,
   contentProps,
+  ref,
 }: VirtualizedMessageThreadProps<T>) {
   const { scrollRef } = useStickToBottomContext()
 
@@ -52,6 +67,19 @@ export function VirtualizedMessageThread<T>({
     },
   })
 
+  useImperativeHandle(
+    ref,
+    () => ({
+      scrollToIndex(index, options) {
+        virtualizer.scrollToIndex(index, options)
+      },
+      getScrollElement() {
+        return scrollRef.current
+      },
+    }),
+    [scrollRef, virtualizer]
+  )
+
   const renderVirtualRow = useCallback(
     (virtualItem: ReturnType<typeof virtualizer.getVirtualItems>[number]) => {
       const item = items[virtualItem.index]
@@ -68,13 +96,16 @@ export function VirtualizedMessageThread<T>({
             willChange: "transform",
           }}
         >
-          <div className={cn("mx-auto max-w-3xl px-4", className)}>
+          <div
+            className={cn("mx-auto max-w-3xl px-4", className)}
+            style={rowContainerStyle}
+          >
             {renderItem(item, virtualItem.index)}
           </div>
         </div>
       )
     },
-    [className, items, renderItem, virtualizer]
+    [className, items, renderItem, rowContainerStyle, virtualizer]
   )
 
   return (

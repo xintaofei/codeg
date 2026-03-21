@@ -1292,6 +1292,16 @@
           "unknown": "Unbekannt"
         }
       },
+      "messageNavigator": {
+        "title": "Nachrichtennavigator",
+        "collapseAria": "Nachrichtennavigator einklappen",
+        "collapsedSummary": "Navigator {count}",
+        "toolOnly": "Nur Werkzeugausgabe",
+        "attachmentOnly": "Bilder/Anhänge",
+        "emptyPreview": "Keine Vorschau verfügbar",
+        "jumpToUserAria": "Zur Benutzernachricht springen",
+        "jumpToAssistantAria": "Zur KI-Antwort springen"
+      },
       "permissionDialog": {
         "subtitle": "Agent fordert Berechtigung an, um diesen Zug fortzusetzen.",
         "kindFallbackTool": "Tool",

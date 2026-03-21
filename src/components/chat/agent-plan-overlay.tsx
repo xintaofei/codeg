@@ -1,6 +1,6 @@
 "use client"
 
-import { memo, useMemo, useState } from "react"
+import { memo, useMemo, useState, type CSSProperties } from "react"
 import { useTranslations } from "next-intl"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -22,9 +22,12 @@ interface AgentPlanOverlayProps {
   planKey?: string | null
   visible?: boolean
   defaultExpanded?: boolean
+  className?: string
+  panelWidthPx?: number
+  panelMaxHeightPx?: number
 }
 
-function getLatestPlanEntries(message: LiveMessage | null): PlanEntryInfo[] {
+export function getLatestPlanEntries(message: LiveMessage | null): PlanEntryInfo[] {
   if (!message) return []
 
   for (let i = message.content.length - 1; i >= 0; i -= 1) {
@@ -106,6 +109,9 @@ export const AgentPlanOverlay = memo(function AgentPlanOverlay({
   planKey,
   visible = true,
   defaultExpanded = true,
+  className,
+  panelWidthPx,
+  panelMaxHeightPx,
 }: AgentPlanOverlayProps) {
   const t = useTranslations("Folder.chat.agentPlanOverlay")
   const liveEntries = useMemo(
@@ -136,6 +142,17 @@ export const AgentPlanOverlay = memo(function AgentPlanOverlay({
   const [collapsedByPlanKey, setCollapsedByPlanKey] = useState<
     Record<string, boolean>
   >({})
+  const panelStyle: CSSProperties | undefined = panelWidthPx
+    ? {
+        width: `${panelWidthPx}px`,
+        maxWidth: "100%",
+        ...(panelMaxHeightPx
+          ? { maxHeight: `${panelMaxHeightPx}px` }
+          : null),
+      }
+    : panelMaxHeightPx
+      ? { maxHeight: `${panelMaxHeightPx}px` }
+      : undefined
   const isExpanded = !(
     collapsedByPlanKey[currentPlanStateKey] ?? !resolvedDefaultExpanded
   )
@@ -146,12 +163,12 @@ export const AgentPlanOverlay = memo(function AgentPlanOverlay({
 
   if (!isExpanded) {
     return (
-      <div className="pointer-events-none absolute right-8 top-4 z-20 flex">
+      <div className={cn("pointer-events-auto flex", className)}>
         <Button
           type="button"
           variant="secondary"
           size="sm"
-          className="cursor-pointer pointer-events-auto shadow-md bg-secondary/70 hover:bg-secondary"
+          className="h-8 w-44 justify-between gap-2 cursor-pointer shadow-md bg-secondary/70 hover:bg-secondary"
           onClick={() =>
             setCollapsedByPlanKey((prev) => ({
               ...prev,
@@ -160,10 +177,12 @@ export const AgentPlanOverlay = memo(function AgentPlanOverlay({
           }
         >
           <ListTodoIcon className="h-4 w-4" />
-          {t("collapsedSummary", {
-            completed: completedCount,
-            total: resolvedEntries.length,
-          })}
+          <span className="min-w-0 flex-1 truncate text-center">
+            {t("collapsedSummary", {
+              completed: completedCount,
+              total: resolvedEntries.length,
+            })}
+          </span>
           <ChevronUpIcon className="h-4 w-4" />
         </Button>
       </div>
@@ -172,10 +191,11 @@ export const AgentPlanOverlay = memo(function AgentPlanOverlay({
 
   return (
     <div
-      className="pointer-events-none absolute right-8 top-4 z-20 flex max-w-[min(22rem,calc(100%-2rem))]"
+      className={cn("pointer-events-auto flex min-h-0 min-w-0 max-h-full", className)}
+      style={panelStyle}
       data-plan-key={currentPlanKey ?? undefined}
     >
-      <div className="pointer-events-auto w-72 max-w-full rounded-xl border bg-card/60 hover:bg-card/95 shadow-lg backdrop-blur transition-colors supports-[backdrop-filter]:bg-card/50 supports-[backdrop-filter]:hover:bg-card/85">
+      <div className="flex min-h-0 max-h-full w-full max-w-full flex-col rounded-xl border bg-card/60 shadow-lg backdrop-blur transition-colors hover:bg-card/95 supports-[backdrop-filter]:bg-card/50 supports-[backdrop-filter]:hover:bg-card/85">
         <div className="flex items-center justify-between border-b px-3 py-2">
           <div className="flex items-center gap-2 min-w-0">
             <ListTodoIcon className="h-4 w-4 text-muted-foreground" />
@@ -200,7 +220,7 @@ export const AgentPlanOverlay = memo(function AgentPlanOverlay({
           </Button>
         </div>
 
-        <div className="max-h-96 overflow-y-auto p-3 space-y-2">
+        <div className="min-h-0 flex-1 overflow-y-auto p-3 space-y-2">
           {resolvedEntries.map((entry, index) => (
             <div
               key={`${entry.content}-${index}`}

@@ -1292,6 +1292,16 @@
           "unknown": "Desconocida"
         }
       },
+      "messageNavigator": {
+        "title": "Navegador de mensajes",
+        "collapseAria": "Contraer navegador de mensajes",
+        "collapsedSummary": "Navegador {count}",
+        "toolOnly": "Solo salida de herramientas",
+        "attachmentOnly": "Imágenes/adjuntos",
+        "emptyPreview": "No hay vista previa disponible",
+        "jumpToUserAria": "Ir al mensaje del usuario",
+        "jumpToAssistantAria": "Ir a la respuesta de la IA"
+      },
       "permissionDialog": {
         "subtitle": "El agente solicita permiso para continuar este turno.",
         "kindFallbackTool": "herramienta",
