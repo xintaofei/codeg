@@ -128,6 +128,7 @@
     "languageSaveSuccess": "語言設定已儲存",
     "languageSaveFailed": "語言設定儲存失敗：{message}",
     "updateTitle": "應用升級",
+    "versionTitle": "軟體更新",
     "updateDescription": "點擊檢查後會從設定的發佈來源拉取最新版本資訊，有新版本時可直接下載並安裝。",
     "currentVersion": "目前版本",
     "upgradableVersion": "最新版本",
@@ -614,6 +615,7 @@
       "openClawSaved": "OpenClaw 配置已儲存",
       "saveOpenClawFailed": "儲存 OpenClaw 配置失敗",
       "configSaved": "配置已儲存",
+      "configSavedHint": "已有會話需要重新打開才能生效",
       "saveConfigManagementFailed": "儲存配置管理失敗"
     },
     "version": {
@@ -1063,6 +1065,7 @@
     "pushWindow": {
       "title": "推送程式碼",
       "noUnpushedCommits": "沒有未推送的提交",
+      "newBranchNoPushedCommits": "新分支 — 推送以建立遠端追蹤分支",
       "unpushed": "未推送",
       "selectFileToViewDiff": "選擇檔案查看差異",
       "before": "修改前",

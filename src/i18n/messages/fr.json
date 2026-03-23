@@ -128,6 +128,7 @@
     "languageSaveSuccess": "Les paramètres de langue ont été enregistrés",
     "languageSaveFailed": "Échec de l’enregistrement des paramètres de langue : {message}",
     "updateTitle": "Mise à jour de l’app",
+    "versionTitle": "Mise à jour logicielle",
     "updateDescription": "Vérifiez les nouvelles versions depuis la source de publication configurée et installez-les directement si disponibles.",
     "currentVersion": "Version actuelle",
     "upgradableVersion": "Dernière version",
@@ -614,6 +615,7 @@
       "openClawSaved": "Configuration OpenClaw enregistrée",
       "saveOpenClawFailed": "Échec de l’enregistrement de la configuration OpenClaw",
       "configSaved": "Configuration enregistrée",
+      "configSavedHint": "Les sessions existantes doivent être rouvertes pour prendre effet",
       "saveConfigManagementFailed": "Échec de l’enregistrement de la gestion de configuration"
     },
     "version": {
@@ -1063,6 +1065,7 @@
     "pushWindow": {
       "title": "Pousser le code",
       "noUnpushedCommits": "Aucun commit non poussé",
+      "newBranchNoPushedCommits": "Nouvelle branche — pousser pour créer la branche de suivi distante",
       "unpushed": "Non poussé",
       "selectFileToViewDiff": "Sélectionnez un fichier pour voir les différences",
       "before": "Avant",

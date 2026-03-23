@@ -4412,17 +4412,23 @@ export function AcpAgentSettings() {
                                   selectedDraft.openCodeAuthJsonText,
                               }
                             : undefined
-                        ).catch((err) => {
-                          console.error(
-                            "[Settings] save preferences failed:",
-                            err
-                          )
-                          const message =
-                            err instanceof Error ? err.message : String(err)
-                          toast.error(t("toasts.saveEnvFailed"), {
-                            description: message,
+                        )
+                          .then(() => {
+                            toast.success(t("toasts.configSaved"), {
+                              description: t("toasts.configSavedHint"),
+                            })
                           })
-                        })
+                          .catch((err) => {
+                            console.error(
+                              "[Settings] save preferences failed:",
+                              err
+                            )
+                            const message =
+                              err instanceof Error ? err.message : String(err)
+                            toast.error(t("toasts.saveEnvFailed"), {
+                              description: message,
+                            })
+                          })
                       }}
                       disabled={selectedIsSaving}
                     >
@@ -4712,7 +4718,9 @@ supports_websockets = true`}
                             }
                           )
                             .then(() => {
-                              toast.success(t("toasts.codexSaved"))
+                              toast.success(t("toasts.codexSaved"), {
+                                description: t("toasts.configSavedHint"),
+                              })
                             })
                             .catch((err) => {
                               console.error(
@@ -4970,7 +4978,9 @@ supports_websockets = true`}
                             selectedDraft.configText
                           )
                             .then(() => {
-                              toast.success(t("toasts.geminiSaved"))
+                              toast.success(t("toasts.geminiSaved"), {
+                                description: t("toasts.configSavedHint"),
+                              })
                             })
                             .catch((err) => {
                               console.error(
@@ -5557,9 +5567,7 @@ supports_websockets = true`}
                                                     providerId,
                                                   }),
                                                   {
-                                                    description: t(
-                                                      "toasts.openCodeConfigSynced"
-                                                    ),
+                                                    description: `${t("toasts.openCodeConfigSynced")} ${t("toasts.configSavedHint")}`,
                                                   }
                                                 )
                                               })
@@ -5654,7 +5662,9 @@ supports_websockets = true`}
                             }
                           )
                             .then(() => {
-                              toast.success(t("toasts.openCodeSaved"))
+                              toast.success(t("toasts.openCodeSaved"), {
+                                description: t("toasts.configSavedHint"),
+                              })
                             })
                             .catch((err) => {
                               console.error(
@@ -5793,7 +5803,9 @@ supports_websockets = true`}
                             selectedDraft.configText
                           )
                             .then(() => {
-                              toast.success(t("toasts.openClawSaved"))
+                              toast.success(t("toasts.openClawSaved"), {
+                                description: t("toasts.configSavedHint"),
+                              })
                             })
                             .catch((err) => {
                               console.error(
@@ -6036,7 +6048,9 @@ supports_websockets = true`}
                             selectedDraft.configText
                           )
                             .then(() => {
-                              toast.success(t("toasts.configSaved"))
+                              toast.success(t("toasts.configSaved"), {
+                                description: t("toasts.configSavedHint"),
+                              })
                             })
                             .catch((err) => {
                               console.error(

@@ -128,6 +128,7 @@
     "languageSaveSuccess": "Language settings saved",
     "languageSaveFailed": "Failed to save language settings: {message}",
     "updateTitle": "App Update",
+    "versionTitle": "Software Update",
     "updateDescription": "Check the configured release source for newer versions and install directly when available.",
     "currentVersion": "Current version",
     "upgradableVersion": "Latest version",
@@ -614,6 +615,7 @@
       "openClawSaved": "OpenClaw config saved",
       "saveOpenClawFailed": "Failed to save OpenClaw config",
       "configSaved": "Config saved",
+      "configSavedHint": "Existing sessions need to be reopened to take effect",
       "saveConfigManagementFailed": "Failed to save config management"
     },
     "version": {
@@ -1063,6 +1065,7 @@
     "pushWindow": {
       "title": "Push Code",
       "noUnpushedCommits": "No unpushed commits",
+      "newBranchNoPushedCommits": "New branch — push to create remote tracking branch",
       "unpushed": "Unpushed",
       "selectFileToViewDiff": "Select a file to view diff",
       "before": "Before",

@@ -128,6 +128,7 @@
     "languageSaveSuccess": "言語設定を保存しました",
     "languageSaveFailed": "言語設定の保存に失敗しました: {message}",
     "updateTitle": "アプリ更新",
+    "versionTitle": "ソフトウェアアップデート",
     "updateDescription": "設定されたリリースソースで新しいバージョンを確認し、利用可能なら直接インストールします。",
     "currentVersion": "現在のバージョン",
     "upgradableVersion": "最新バージョン",
@@ -614,6 +615,7 @@
       "openClawSaved": "OpenClaw設定を保存しました",
       "saveOpenClawFailed": "OpenClaw設定の保存に失敗しました",
       "configSaved": "設定を保存しました",
+      "configSavedHint": "既存のセッションは再度開く必要があります",
       "saveConfigManagementFailed": "設定管理の保存に失敗しました"
     },
     "version": {
@@ -1063,6 +1065,7 @@
     "pushWindow": {
       "title": "コードをプッシュ",
       "noUnpushedCommits": "未プッシュのコミットはありません",
+      "newBranchNoPushedCommits": "新しいブランチ — プッシュしてリモート追跡ブランチを作成",
       "unpushed": "未プッシュ",
       "selectFileToViewDiff": "ファイルを選択して差分を表示",
       "before": "変更前",

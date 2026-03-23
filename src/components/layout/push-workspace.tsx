@@ -3,9 +3,11 @@
 import type { ReactElement } from "react"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import {
+  ArrowRight,
   ChevronsDownUp,
   ChevronsUpDown,
   CloudOff,
+  GitBranch,
   Loader2,
   Upload,
 } from "lucide-react"
@@ -42,11 +44,21 @@ import {
 } from "@/components/ai-elements/commit"
 import { DiffViewer } from "@/components/diff/diff-viewer"
 import { Button } from "@/components/ui/button"
-import { gitLog, gitPush, gitShowFile } from "@/lib/tauri"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { gitLog, gitPush, gitPushInfo, gitShowFile } from "@/lib/tauri"
 import { toErrorMessage } from "@/lib/app-error"
 import { languageFromPath } from "@/lib/language-detect"
-import type { GitLogEntry, GitLogFileChange } from "@/lib/types"
-import { useGitCredential } from "@/contexts/git-credential-context"
+import type { GitLogEntry, GitLogFileChange, GitPushInfo } from "@/lib/types"
+import {
+  useGitCredential,
+  type GitRemoteHint,
+} from "@/contexts/git-credential-context"
 
 // --- File tree types & builder (same as aux-panel-git-log-tab) ---
 
@@ -278,7 +290,10 @@ export function PushWorkspace({
   const tLog = useTranslations("Folder.gitLogTab")
   const { withCredentialRetry } = useGitCredential()
 
+  const [pushInfoData, setPushInfoData] = useState<GitPushInfo | null>(null)
+  const [selectedRemote, setSelectedRemote] = useState<string | null>(null)
   const [commits, setCommits] = useState<GitLogEntry[]>([])
+  const [hasUpstream, setHasUpstream] = useState(true)
   const [listLoading, setListLoading] = useState(false)
   const [openByCommit, setOpenByCommit] = useState<Record<string, boolean>>({})
   const [pushing, setPushing] = useState(false)
@@ -294,21 +309,60 @@ export function PushWorkspace({
     [commits]
   )
 
-  const loadCommits = useCallback(async () => {
-    setListLoading(true)
-    try {
-      const entries = await gitLog(folderPath, 100)
-      setCommits(entries)
-    } catch (err) {
-      toast.error(toErrorMessage(err))
-    } finally {
-      setListLoading(false)
-    }
+  // Load push info (branch, remotes, tracking remote)
+  useEffect(() => {
+    gitPushInfo(folderPath)
+      .then((info) => {
+        setPushInfoData(info)
+        // Default to tracking remote or first remote
+        const defaultRemote =
+          info.tracking_remote ??
+          (info.remotes.length > 0 ? info.remotes[0].name : null)
+        setSelectedRemote(defaultRemote)
+      })
+      .catch((err) => {
+        toast.error(toErrorMessage(err))
+      })
   }, [folderPath])
 
+  // Deduplicate remotes (git remote -v returns fetch + push entries)
+  const uniqueRemotes = useMemo(() => {
+    if (!pushInfoData) return []
+    const seen = new Set<string>()
+    return pushInfoData.remotes.filter((r) => {
+      if (seen.has(r.name)) return false
+      seen.add(r.name)
+      return true
+    })
+  }, [pushInfoData])
+
+  const loadCommits = useCallback(
+    async (remote?: string) => {
+      setListLoading(true)
+      try {
+        const result = await gitLog(
+          folderPath,
+          100,
+          undefined,
+          remote ?? undefined
+        )
+        setCommits(result.entries)
+        setHasUpstream(result.has_upstream)
+      } catch (err) {
+        toast.error(toErrorMessage(err))
+      } finally {
+        setListLoading(false)
+      }
+    },
+    [folderPath]
+  )
+
+  // Reload commits when selected remote changes
   useEffect(() => {
-    loadCommits()
-  }, [loadCommits])
+    if (selectedRemote !== null) {
+      loadCommits(selectedRemote)
+    }
+  }, [selectedRemote, loadCommits])
 
   async function handleSelectFile(commitHash: string, file: string) {
     setSelectedFile(file)
@@ -332,9 +386,15 @@ export function PushWorkspace({
   async function handlePush() {
     setPushing(true)
     try {
-      await withCredentialRetry((creds) => gitPush(folderPath, creds), {
-        folderPath,
-      })
+      // Resolve the selected remote's URL for credential matching
+      const remoteUrl = pushInfoData?.remotes.find(
+        (r) => r.name === selectedRemote
+      )?.url
+      const hint: GitRemoteHint = remoteUrl ? { remoteUrl } : { folderPath }
+      await withCredentialRetry(
+        (creds) => gitPush(folderPath, selectedRemote, creds),
+        hint
+      )
       onPushed?.()
     } catch (err) {
       toast.error(t("toasts.pushFailed"), {
@@ -347,6 +407,43 @@ export function PushWorkspace({
 
   return (
     <div className="flex h-full flex-col">
+      {/* Push target header: branch → remote/branch */}
+      {pushInfoData && (
+        <div className="flex items-center gap-2 border-b px-3 py-2">
+          <GitBranch className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <span className="truncate text-sm font-medium">
+            {pushInfoData.branch}
+          </span>
+          <ArrowRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          {uniqueRemotes.length <= 1 ? (
+            <span className="truncate text-sm text-muted-foreground">
+              {selectedRemote ?? "origin"}/{pushInfoData.branch}
+            </span>
+          ) : (
+            <div className="flex items-center gap-1">
+              <Select
+                value={selectedRemote ?? ""}
+                onValueChange={setSelectedRemote}
+              >
+                <SelectTrigger className="h-7 w-auto gap-1 border-none bg-transparent px-1.5 text-sm shadow-none">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {uniqueRemotes.map((r) => (
+                    <SelectItem key={r.name} value={r.name}>
+                      {r.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="text-sm text-muted-foreground">
+                /{pushInfoData.branch}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
       <ResizablePanelGroup direction="horizontal" className="min-h-0 flex-1">
         {/* Left panel: commit list */}
         <ResizablePanel defaultSize={35} minSize={25}>
@@ -358,7 +455,9 @@ export function PushWorkspace({
                 </div>
               ) : unpushedCommits.length === 0 ? (
                 <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
-                  {t("noUnpushedCommits")}
+                  {!hasUpstream
+                    ? t("newBranchNoPushedCommits")
+                    : t("noUnpushedCommits")}
                 </div>
               ) : (
                 <div className="flex flex-col gap-2 p-2">
@@ -433,7 +532,9 @@ export function PushWorkspace({
             <div className="border-t p-2">
               <Button
                 className="w-full"
-                disabled={pushing || unpushedCommits.length === 0}
+                disabled={
+                  pushing || (hasUpstream && unpushedCommits.length === 0)
+                }
                 onClick={handlePush}
               >
                 {pushing ? (

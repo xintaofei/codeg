@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useRef, useCallback, useMemo, useEffect } from "react"
-import { listen, type UnlistenFn } from "@tauri-apps/api/event"
+import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event"
 import {
   GitBranch,
   ChevronDown,
@@ -245,6 +245,9 @@ export function BranchDropdown({
       const successDescription = getSuccessDescription?.(result)
       updateTask(taskId, { status: "completed" })
       onBranchChange()
+      void emit("folder://git-branch-changed", {
+        folder_id: folder?.id,
+      })
       if (successDescription !== false) {
         toast.success(
           t("toasts.taskCompleted", { label }),

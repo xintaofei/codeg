@@ -31,6 +31,7 @@ export function AgentSelector({
   const [selected, setSelected] = useState<AgentType | null>(
     defaultAgentType ?? null
   )
+  const selectedRef = useRef(selected)
   const onSelectRef = useRef(onSelect)
   const onAgentsLoadedRef = useRef(onAgentsLoaded)
 
@@ -58,23 +59,19 @@ export function AgentSelector({
         const visible = sorted.filter((a) => a.enabled)
         setAgents(visible)
         onAgentsLoadedRef.current?.(visible)
-        if (defaultAgentType) {
-          const found = visible.find(
-            (a) => a.agent_type === defaultAgentType && a.available
-          )
-          if (found) {
-            setSelected(found.agent_type)
-          } else {
-            const first = visible.find((a) => a.available)
-            if (first) {
-              setSelected(first.agent_type)
-              onSelectRef.current(first.agent_type)
-            }
-          }
+        // Keep current selection if still available; otherwise pick first.
+        const preferred = defaultAgentType ?? selectedRef.current
+        const found = preferred
+          ? visible.find((a) => a.agent_type === preferred && a.available)
+          : null
+        if (found) {
+          setSelected(found.agent_type)
+          selectedRef.current = found.agent_type
         } else {
           const first = visible.find((a) => a.available)
           if (first) {
             setSelected(first.agent_type)
+            selectedRef.current = first.agent_type
             onSelectRef.current(first.agent_type)
           }
         }
@@ -119,6 +116,7 @@ export function AgentSelector({
 
   const handleSelect = (agentType: AgentType) => {
     setSelected(agentType)
+    selectedRef.current = agentType
     onSelect(agentType)
   }
 

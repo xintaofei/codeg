@@ -322,7 +322,7 @@ export function TabProvider({ children }: TabProviderProps) {
           cancelNewConversation()
           return
         }
-        startNewConversation(tab.agentType, workingDir)
+        startNewConversation(workingDir)
       }
     },
     [
@@ -588,7 +588,7 @@ export function TabProvider({ children }: TabProviderProps) {
 
       setTabs((prev) => [...prev, newTab])
       setActiveTabId(tabId)
-      startNewConversation(agentType, workingDir)
+      startNewConversation(workingDir)
       activateConversationPane()
     },
     [activateConversationPane, startNewConversation, syncFolderContext, t]

@@ -675,6 +675,12 @@ export interface GitPushResult {
   upstream_set: boolean
 }
 
+export interface GitPushInfo {
+  branch: string
+  remotes: GitRemote[]
+  tracking_remote: string | null
+}
+
 export interface GitMergeResult {
   merged_commits: number
   conflict?: GitConflictInfo | null
@@ -741,6 +747,11 @@ export interface FileTreeChangedEvent {
   kind: "create" | "modify" | "remove" | "access" | "any" | "other"
   full_reload: boolean
   refresh_git_status: boolean
+}
+
+export interface GitLogResult {
+  entries: GitLogEntry[]
+  has_upstream: boolean
 }
 
 export interface GitLogEntry {

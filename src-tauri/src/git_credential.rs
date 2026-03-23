@@ -215,8 +215,16 @@ pub fn inject_credentials(
 
 /// Get the remote URL for the "origin" remote of a repository.
 pub async fn get_remote_url(repo_path: &str) -> Option<String> {
+    get_remote_url_by_name(repo_path, "origin").await
+}
+
+/// Get the remote URL for a specific named remote.
+pub async fn get_remote_url_by_name(
+    repo_path: &str,
+    remote_name: &str,
+) -> Option<String> {
     let output = crate::process::tokio_command("git")
-        .args(["remote", "get-url", "origin"])
+        .args(["remote", "get-url", remote_name])
         .current_dir(repo_path)
         .output()
         .await
@@ -335,10 +343,23 @@ pub async fn resolve_commit_author(
 ///
 /// This is the main entry point: given a repo path and a git command,
 /// it finds the matching GitHub account and injects credentials.
+/// When `remote_name` is provided, uses that remote's URL for credential matching;
+/// otherwise defaults to "origin".
 /// Returns `true` if credentials were injected.
 pub async fn try_inject_for_repo(
     cmd: &mut tokio::process::Command,
     repo_path: &str,
+    conn: &DatabaseConnection,
+    app_data_dir: &Path,
+) -> bool {
+    try_inject_for_repo_remote(cmd, repo_path, None, conn, app_data_dir).await
+}
+
+/// Same as `try_inject_for_repo` but allows specifying the remote name.
+pub async fn try_inject_for_repo_remote(
+    cmd: &mut tokio::process::Command,
+    repo_path: &str,
+    remote_name: Option<&str>,
     conn: &DatabaseConnection,
     app_data_dir: &Path,
 ) -> bool {
@@ -350,10 +371,11 @@ pub async fn try_inject_for_repo(
         }
     };
 
-    let remote_url = match get_remote_url(repo_path).await {
+    let target_remote = remote_name.unwrap_or("origin");
+    let remote_url = match get_remote_url_by_name(repo_path, target_remote).await {
         Some(url) => url,
         None => {
-            eprintln!("[GIT_CRED] no remote URL found for {}", repo_path);
+            eprintln!("[GIT_CRED] no remote URL found for {} (remote: {})", repo_path, target_remote);
             return false;
         }
     };

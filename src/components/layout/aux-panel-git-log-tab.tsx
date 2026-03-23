@@ -75,6 +75,8 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
 import { Skeleton } from "@/components/ui/skeleton"
+import { listen, type UnlistenFn } from "@tauri-apps/api/event"
+import { disposeTauriListener } from "@/lib/tauri-listener"
 import { useFolderContext } from "@/contexts/folder-context"
 import { useWorkspaceContext } from "@/contexts/workspace-context"
 import {
@@ -782,10 +784,12 @@ export function GitLogTab() {
       }
       setError(null)
       try {
-        const log = await gitLog(folder.path, 100, branch ?? undefined)
-        setEntries(log)
+        const result = await gitLog(folder.path, 100, branch ?? undefined)
+        setEntries(result.entries)
         if (inline) {
-          const commitHashes = new Set(log.map((entry) => entry.full_hash))
+          const commitHashes = new Set(
+            result.entries.map((entry) => entry.full_hash)
+          )
           setOpenByCommit((prev) =>
             filterRecordByCommitHashes(prev, commitHashes)
           )
@@ -859,6 +863,39 @@ export function GitLogTab() {
   useEffect(() => {
     void fetchLog()
   }, [fetchLog])
+
+  // Refresh branches & log on branch change, commit, or push
+  useEffect(() => {
+    if (!folder) return
+
+    const events = [
+      "folder://git-branch-changed",
+      "folder://git-commit-succeeded",
+      "folder://git-push-succeeded",
+    ] as const
+
+    const unlistens: (UnlistenFn | null)[] = events.map(() => null)
+
+    events.forEach((eventName, i) => {
+      listen<{ folder_id: number }>(eventName, (event) => {
+        if (event.payload.folder_id !== folder.id) return
+        void refreshBranches()
+        void fetchLog({ inline: true })
+      })
+        .then((fn) => {
+          unlistens[i] = fn
+        })
+        .catch((err) => {
+          console.error(`[GitLogTab] failed to listen ${eventName}:`, err)
+        })
+    })
+
+    return () => {
+      events.forEach((eventName, i) => {
+        disposeTauriListener(unlistens[i], `GitLogTab.${eventName}`)
+      })
+    }
+  }, [folder, refreshBranches, fetchLog])
 
   const handleScroll = useCallback((e: UIEvent<HTMLDivElement>) => {
     const nextScrolled = e.currentTarget.scrollTop > 0

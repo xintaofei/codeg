@@ -128,6 +128,7 @@
     "languageSaveSuccess": "Spracheinstellungen wurden gespeichert",
     "languageSaveFailed": "Spracheinstellungen konnten nicht gespeichert werden: {message}",
     "updateTitle": "App-Update",
+    "versionTitle": "Softwareupdate",
     "updateDescription": "Prüft die konfigurierte Release-Quelle auf neue Versionen und installiert sie bei Verfügbarkeit direkt.",
     "currentVersion": "Aktuelle Version",
     "upgradableVersion": "Neueste Version",
@@ -614,6 +615,7 @@
       "openClawSaved": "OpenClaw-Konfiguration gespeichert",
       "saveOpenClawFailed": "Speichern der OpenClaw-Konfiguration fehlgeschlagen",
       "configSaved": "Konfiguration gespeichert",
+      "configSavedHint": "Bestehende Sitzungen müssen neu geöffnet werden, damit die Änderungen wirksam werden",
       "saveConfigManagementFailed": "Speichern der Konfigurationsverwaltung fehlgeschlagen"
     },
     "version": {
@@ -1063,6 +1065,7 @@
     "pushWindow": {
       "title": "Code pushen",
       "noUnpushedCommits": "Keine ungepushten Commits",
+      "newBranchNoPushedCommits": "Neuer Branch — pushen, um Remote-Tracking-Branch zu erstellen",
       "unpushed": "Nicht gepusht",
       "selectFileToViewDiff": "Datei auswählen, um Unterschiede anzuzeigen",
       "before": "Vorher",

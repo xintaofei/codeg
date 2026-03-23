@@ -38,7 +38,10 @@ import {
   stopFileTreeWatch,
 } from "@/lib/tauri"
 import { disposeTauriListener } from "@/lib/tauri-listener"
-import { emitAttachFileToSession } from "@/lib/session-attachment-events"
+import {
+  emitAttachFileToSession,
+  emitAppendTextToSession,
+} from "@/lib/session-attachment-events"
 import type {
   FileTreeChangedEvent,
   FileTreeNode,
@@ -612,6 +615,17 @@ function RenderNode({
   const isGitMenuDisabled = !gitEnabled || isGitignoreIgnored
   const shouldRenderChildren = expandedPaths.has(node.path)
 
+  const handleAttachDirToSession = () => {
+    if (!activeSessionTabId) return
+    const relativePath = node.path.endsWith("/")
+      ? `@${node.path} `
+      : `@${node.path}/ `
+    emitAppendTextToSession({
+      tabId: activeSessionTabId,
+      text: relativePath,
+    })
+  }
+
   const handleOpenDirInSystemExplorer = async () => {
     try {
       await revealItemInDir(absolutePath)
@@ -669,6 +683,12 @@ function RenderNode({
         </FileTreeFolder>
       </ContextMenuTrigger>
       <ContextMenuContent>
+        <ContextMenuItem
+          onSelect={handleAttachDirToSession}
+          disabled={!activeSessionTabId}
+        >
+          {t("attachToCurrentSession")}
+        </ContextMenuItem>
         <ContextMenuSub>
           <ContextMenuSubTrigger>{t("new")}</ContextMenuSubTrigger>
           <ContextMenuSubContent>

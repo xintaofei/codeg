@@ -128,6 +128,7 @@
     "languageSaveSuccess": "언어 설정이 저장되었습니다",
     "languageSaveFailed": "언어 설정 저장 실패: {message}",
     "updateTitle": "앱 업데이트",
+    "versionTitle": "소프트웨어 업데이트",
     "updateDescription": "설정된 릴리스 소스에서 새 버전을 확인하고 가능하면 바로 설치합니다.",
     "currentVersion": "현재 버전",
     "upgradableVersion": "최신 버전",
@@ -614,6 +615,7 @@
       "openClawSaved": "OpenClaw 설정 저장됨",
       "saveOpenClawFailed": "OpenClaw 설정 저장 실패",
       "configSaved": "구성이 저장되었습니다",
+      "configSavedHint": "기존 세션은 다시 열어야 적용됩니다",
       "saveConfigManagementFailed": "구성 관리 저장 실패"
     },
     "version": {
@@ -1063,6 +1065,7 @@
     "pushWindow": {
       "title": "코드 푸시",
       "noUnpushedCommits": "푸시되지 않은 커밋이 없습니다",
+      "newBranchNoPushedCommits": "새 브랜치 — 푸시하여 원격 추적 브랜치 생성",
       "unpushed": "미푸시",
       "selectFileToViewDiff": "파일을 선택하여 차이 보기",
       "before": "변경 전",

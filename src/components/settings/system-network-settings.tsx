@@ -3,10 +3,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   ArrowUpCircle,
+  CheckCircle2,
   Languages,
   Loader2,
   RefreshCw,
-  Save,
   Wifi,
 } from "lucide-react"
 import type { Update } from "@tauri-apps/plugin-updater"
@@ -153,7 +153,11 @@ export function SystemNetworkSettings() {
     loadSettings().catch((err) => {
       console.error("[Settings] load system settings failed:", err)
     })
-  }, [loadSettings])
+    checkForUpdates().catch((err) => {
+      console.error("[Settings] auto check update failed:", err)
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     return () => {
@@ -164,48 +168,48 @@ export function SystemNetworkSettings() {
     }
   }, [availableUpdate])
 
-  const saveSettings = useCallback(async () => {
-    if (enabled && !proxyUrl.trim()) {
-      toast.error(t("proxyRequired"))
-      return
-    }
+  const saveProxySettings = useCallback(
+    async (nextEnabled: boolean, nextProxyUrl: string) => {
+      if (nextEnabled && !nextProxyUrl.trim()) return
 
-    setSaving(true)
-    try {
-      const next = await updateSystemProxySettings({
-        enabled,
-        proxy_url: proxyUrl.trim() || null,
-      })
-      setEnabled(next.enabled)
-      setProxyUrl(next.proxy_url ?? "")
-      toast.success(t("saveSuccess"))
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      toast.error(t("saveFailed", { message }))
-    } finally {
-      setSaving(false)
-    }
-  }, [enabled, proxyUrl, t])
+      setSaving(true)
+      try {
+        const next = await updateSystemProxySettings({
+          enabled: nextEnabled,
+          proxy_url: nextProxyUrl.trim() || null,
+        })
+        setEnabled(next.enabled)
+        setProxyUrl(next.proxy_url ?? "")
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        toast.error(t("saveFailed", { message }))
+      } finally {
+        setSaving(false)
+      }
+    },
+    [t]
+  )
 
-  const saveLanguage = useCallback(async () => {
-    setSavingLanguage(true)
+  const saveLanguage = useCallback(
+    async (lang: LanguageSelectValue) => {
+      setSavingLanguage(true)
 
-    try {
-      const next = await updateSystemLanguageSettings({
-        mode: appLanguage === "system" ? "system" : "manual",
-        language:
-          appLanguage === "system" ? languageSettings.language : appLanguage,
-      })
+      try {
+        const next = await updateSystemLanguageSettings({
+          mode: lang === "system" ? "system" : "manual",
+          language: lang === "system" ? languageSettings.language : lang,
+        })
 
-      setLanguageSettings(next)
-      toast.success(t("languageSaveSuccess"))
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      toast.error(t("languageSaveFailed", { message }))
-    } finally {
-      setSavingLanguage(false)
-    }
-  }, [appLanguage, languageSettings.language, setLanguageSettings, t])
+        setLanguageSettings(next)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        toast.error(t("languageSaveFailed", { message }))
+      } finally {
+        setSavingLanguage(false)
+      }
+    },
+    [languageSettings.language, setLanguageSettings, t]
+  )
 
   const formatUpdateError = useCallback(
     (error: unknown, action: UpdateAction): string => {
@@ -302,128 +306,16 @@ export function SystemNetworkSettings() {
 
         <section className="rounded-xl border bg-card p-4 space-y-4">
           <div className="flex items-center gap-2">
-            <Wifi className="h-4 w-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold">{t("proxyTitle")}</h2>
-          </div>
-
-          <p className="text-xs text-muted-foreground leading-5">
-            {t("proxyDescription")}
-          </p>
-
-          {loadError && (
-            <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400">
-              {t("loadFailed", { message: loadError })}
-            </div>
-          )}
-
-          <label className="inline-flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={enabled}
-              onChange={(event) => setEnabled(event.target.checked)}
-            />
-            {t("enableProxy")}
-          </label>
-
-          <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground">
-              {t("proxyAddress")}
-            </label>
-            <Input
-              value={proxyUrl}
-              onChange={(event) => setProxyUrl(event.target.value)}
-              placeholder={PROXY_EXAMPLE}
-            />
-            <p className="text-[11px] text-muted-foreground">
-              {t("proxyHint", { example: PROXY_EXAMPLE })}
-            </p>
-          </div>
-
-          <div className="flex justify-end">
-            <Button size="sm" onClick={saveSettings} disabled={saving}>
-              {saving ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  {t("saving")}
-                </>
-              ) : (
-                <>
-                  <Save className="h-3.5 w-3.5" />
-                  {t("save")}
-                </>
-              )}
-            </Button>
-          </div>
-        </section>
-
-        <section className="rounded-xl border bg-card p-4 space-y-4">
-          <div className="flex items-center gap-2">
-            <Languages className="h-4 w-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold">{t("languageTitle")}</h2>
-          </div>
-
-          <p className="text-xs text-muted-foreground leading-5">
-            {t("languageDescription")}
-          </p>
-
-          <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground">
-              {t("appLanguage")}
-            </label>
-            <Select
-              value={appLanguage}
-              onValueChange={(value) => {
-                if (value === "system") {
-                  setAppLanguage("system")
-                  return
-                }
-                if (!isAppLocale(value)) return
-                setAppLanguage(value)
-              }}
-              disabled={savingLanguage || !languageSettingsLoaded}
-            >
-              <SelectTrigger className="w-full sm:w-56">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent align="start">
-                <SelectItem value="system">
-                  {tLanguage("followSystem")}
-                </SelectItem>
-                <SelectItem value="en">{languageLabels.en}</SelectItem>
-                <SelectItem value="zh_cn">{languageLabels.zh_cn}</SelectItem>
-                <SelectItem value="zh_tw">{languageLabels.zh_tw}</SelectItem>
-                <SelectItem value="ja">{languageLabels.ja}</SelectItem>
-                <SelectItem value="ko">{languageLabels.ko}</SelectItem>
-                <SelectItem value="es">{languageLabels.es}</SelectItem>
-                <SelectItem value="de">{languageLabels.de}</SelectItem>
-                <SelectItem value="fr">{languageLabels.fr}</SelectItem>
-                <SelectItem value="pt">{languageLabels.pt}</SelectItem>
-                <SelectItem value="ar">{languageLabels.ar}</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="flex justify-end">
-            <Button size="sm" onClick={saveLanguage} disabled={savingLanguage}>
-              {savingLanguage ? (
-                <>
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  {t("saving")}
-                </>
-              ) : (
-                <>
-                  <Save className="h-3.5 w-3.5" />
-                  {t("save")}
-                </>
-              )}
-            </Button>
-          </div>
-        </section>
-
-        <section className="rounded-xl border bg-card p-4 space-y-4">
-          <div className="flex items-center gap-2">
-            <RefreshCw className="h-4 w-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold">{t("updateTitle")}</h2>
+            {checkingUpdate ? (
+              <RefreshCw className="h-4 w-4 text-muted-foreground animate-spin" />
+            ) : availableUpdate ? (
+              <ArrowUpCircle className="h-4 w-4 text-muted-foreground" />
+            ) : lastCheckedAt ? (
+              <CheckCircle2 className="h-4 w-4 text-green-500" />
+            ) : (
+              <RefreshCw className="h-4 w-4 text-muted-foreground" />
+            )}
+            <h2 className="text-sm font-semibold">{t("versionTitle")}</h2>
           </div>
 
           <p className="text-xs text-muted-foreground leading-5">
@@ -513,6 +405,105 @@ export function SystemNetworkSettings() {
               {t("updateError", { message: updateError })}
             </div>
           )}
+        </section>
+
+        <section className="rounded-xl border bg-card p-4 space-y-4">
+          <div className="flex items-center gap-2">
+            <Wifi className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold">{t("proxyTitle")}</h2>
+          </div>
+
+          <p className="text-xs text-muted-foreground leading-5">
+            {t("proxyDescription")}
+          </p>
+
+          {loadError && (
+            <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400">
+              {t("loadFailed", { message: loadError })}
+            </div>
+          )}
+
+          <label className="inline-flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={enabled}
+              disabled={saving}
+              onChange={(event) => {
+                const next = event.target.checked
+                setEnabled(next)
+                saveProxySettings(next, proxyUrl)
+              }}
+            />
+            {t("enableProxy")}
+          </label>
+
+          <div className="space-y-2">
+            <label className="text-xs font-medium text-muted-foreground">
+              {t("proxyAddress")}
+            </label>
+            <Input
+              value={proxyUrl}
+              onChange={(event) => setProxyUrl(event.target.value)}
+              onBlur={() => saveProxySettings(enabled, proxyUrl)}
+              placeholder={PROXY_EXAMPLE}
+              disabled={saving}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              {t("proxyHint", { example: PROXY_EXAMPLE })}
+            </p>
+          </div>
+        </section>
+
+        <section className="rounded-xl border bg-card p-4 space-y-4">
+          <div className="flex items-center gap-2">
+            <Languages className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold">{t("languageTitle")}</h2>
+          </div>
+
+          <p className="text-xs text-muted-foreground leading-5">
+            {t("languageDescription")}
+          </p>
+
+          <div className="space-y-2">
+            <label className="text-xs font-medium text-muted-foreground">
+              {t("appLanguage")}
+            </label>
+            <Select
+              value={appLanguage}
+              onValueChange={(value) => {
+                let nextLang: LanguageSelectValue
+                if (value === "system") {
+                  nextLang = "system"
+                } else if (isAppLocale(value)) {
+                  nextLang = value
+                } else {
+                  return
+                }
+                setAppLanguage(nextLang)
+                saveLanguage(nextLang)
+              }}
+              disabled={savingLanguage || !languageSettingsLoaded}
+            >
+              <SelectTrigger className="w-full sm:w-56">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="start">
+                <SelectItem value="system">
+                  {tLanguage("followSystem")}
+                </SelectItem>
+                <SelectItem value="en">{languageLabels.en}</SelectItem>
+                <SelectItem value="zh_cn">{languageLabels.zh_cn}</SelectItem>
+                <SelectItem value="zh_tw">{languageLabels.zh_tw}</SelectItem>
+                <SelectItem value="ja">{languageLabels.ja}</SelectItem>
+                <SelectItem value="ko">{languageLabels.ko}</SelectItem>
+                <SelectItem value="es">{languageLabels.es}</SelectItem>
+                <SelectItem value="de">{languageLabels.de}</SelectItem>
+                <SelectItem value="fr">{languageLabels.fr}</SelectItem>
+                <SelectItem value="pt">{languageLabels.pt}</SelectItem>
+                <SelectItem value="ar">{languageLabels.ar}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </section>
       </div>
     </div>

@@ -24,6 +24,7 @@ import type {
   GitBranchList,
   GitPullResult,
   GitPushResult,
+  GitPushInfo,
   GitMergeResult,
   GitRebaseResult,
   GitConflictFileVersions,
@@ -38,7 +39,7 @@ import type {
   FilePreviewContent,
   FileEditContent,
   FileSaveResult,
-  GitLogEntry,
+  GitLogResult,
   SystemLanguageSettings,
   SystemProxySettings,
   GitCredentials,
@@ -551,11 +552,20 @@ export async function gitFetch(
   return invoke("git_fetch", { path, credentials: credentials ?? null })
 }
 
+export async function gitPushInfo(path: string): Promise<GitPushInfo> {
+  return invoke("git_push_info", { path })
+}
+
 export async function gitPush(
   path: string,
+  remote?: string | null,
   credentials?: GitCredentials | null
 ): Promise<GitPushResult> {
-  return invoke("git_push", { path, credentials: credentials ?? null })
+  return invoke("git_push", {
+    path,
+    remote: remote ?? null,
+    credentials: credentials ?? null,
+  })
 }
 
 export async function gitNewBranch(
@@ -1050,12 +1060,14 @@ export async function createFileTreeEntry(
 export async function gitLog(
   path: string,
   limit?: number,
-  branch?: string
-): Promise<GitLogEntry[]> {
+  branch?: string,
+  remote?: string
+): Promise<GitLogResult> {
   return invoke("git_log", {
     path,
     limit: limit ?? null,
     branch: branch ?? null,
+    remote: remote ?? null,
   })
 }
 

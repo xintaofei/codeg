@@ -46,7 +46,9 @@ import type {
 } from "@/lib/types"
 import {
   ATTACH_FILE_TO_SESSION_EVENT,
+  APPEND_TEXT_TO_SESSION_EVENT,
   type AttachFileToSessionDetail,
+  type AppendTextToSessionDetail,
 } from "@/lib/session-attachment-events"
 import { ModeSelector } from "@/components/chat/mode-selector"
 import { SessionConfigSelector } from "@/components/chat/session-config-selector"
@@ -777,6 +779,29 @@ export function MessageInput({
       window.removeEventListener(ATTACH_FILE_TO_SESSION_EVENT, handleAttachFile)
     }
   }, [appendResourceAttachments, attachmentTabId])
+
+  useEffect(() => {
+    if (!attachmentTabId) return
+
+    const handleAppendText = (event: Event) => {
+      const customEvent = event as CustomEvent<AppendTextToSessionDetail>
+      if (!customEvent.detail) return
+      if (customEvent.detail.tabId !== attachmentTabId) return
+      const appendText = customEvent.detail.text
+      setText((prev) => {
+        if (prev.length === 0) return appendText
+        return prev.endsWith(" ") ? prev + appendText : prev + " " + appendText
+      })
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus()
+      })
+    }
+
+    window.addEventListener(APPEND_TEXT_TO_SESSION_EVENT, handleAppendText)
+    return () => {
+      window.removeEventListener(APPEND_TEXT_TO_SESSION_EVENT, handleAppendText)
+    }
+  }, [attachmentTabId])
 
   useEffect(() => {
     let cancelled = false

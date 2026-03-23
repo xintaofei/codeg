@@ -209,6 +209,7 @@ pub fn run() {
             folders::git_start_pull_merge,
             folders::git_has_merge_head,
             folders::git_fetch,
+            folders::git_push_info,
             folders::git_push,
             folders::git_new_branch,
             folders::git_worktree_add,

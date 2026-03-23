@@ -15,3 +15,21 @@ export function emitAttachFileToSession(
     })
   )
 }
+
+export const APPEND_TEXT_TO_SESSION_EVENT = "codeg:append-text-to-session"
+
+export interface AppendTextToSessionDetail {
+  tabId: string
+  text: string
+}
+
+export function emitAppendTextToSession(
+  detail: AppendTextToSessionDetail
+): void {
+  if (typeof window === "undefined") return
+  window.dispatchEvent(
+    new CustomEvent<AppendTextToSessionDetail>(APPEND_TEXT_TO_SESSION_EVENT, {
+      detail,
+    })
+  )
+}

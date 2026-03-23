@@ -25,7 +25,6 @@ interface SelectedConversation {
 }
 
 interface NewConversationState {
-  agentType: AgentType
   workingDir: string
 }
 
@@ -44,7 +43,7 @@ interface FolderContextValue {
   clearSelection: () => void
 
   newConversation: NewConversationState | null
-  startNewConversation: (agentType: AgentType, workingDir: string) => void
+  startNewConversation: (workingDir: string) => void
   cancelNewConversation: () => void
 
   stats: AgentStats | null
@@ -205,13 +204,10 @@ export function FolderProvider({
     setSelectedConversation(null)
   }, [])
 
-  const startNewConversation = useCallback(
-    (agentType: AgentType, workingDir: string) => {
-      setNewConversation({ agentType, workingDir })
-      setSelectedConversation(null)
-    },
-    []
-  )
+  const startNewConversation = useCallback((workingDir: string) => {
+    setNewConversation({ workingDir })
+    setSelectedConversation(null)
+  }, [])
 
   const cancelNewConversation = useCallback(() => {
     setNewConversation(null)
