@@ -85,6 +85,7 @@
       "appearance": "Appearance",
       "agents": "Agents",
       "mcp": "MCP",
+      "lsp": "LSP",
       "skills": "Skills",
       "shortcuts": "Shortcuts",
       "version_control": "Version Control",
@@ -628,7 +629,31 @@
     }
   },
   "SettingsPages": {
-    "agentsLoading": "Loading agent settings..."
+    "agentsLoading": "Loading agent settings...",
+    "lspLoading": "Loading LSP server settings..."
+  },
+  "LspSettings": {
+    "title": "Language Servers",
+    "loading": "Loading language servers...",
+    "retry": "Retry",
+    "language": "Language",
+    "latestVersion": "Latest",
+    "updateAvailable": "Update",
+    "install": "Install",
+    "upgrade": "Upgrade",
+    "uninstall": "Uninstall",
+    "preflight": "Check",
+    "preflightPassed": "All checks passed",
+    "preflightFailed": "Some checks failed",
+    "cancel": "Cancel",
+    "installSuccess": "{name} installed successfully",
+    "installError": "Failed to install {name}: {error}",
+    "upgradeSuccess": "{name} upgraded successfully",
+    "upgradeError": "Failed to upgrade {name}: {error}",
+    "uninstallSuccess": "{name} uninstalled successfully",
+    "uninstallError": "Failed to uninstall {name}: {error}",
+    "uninstallConfirmTitle": "Uninstall {name}?",
+    "uninstallConfirmDescription": "This will remove the language server from your system. You can reinstall it later."
   },
   "CommitPage": {
     "title": "Commit",

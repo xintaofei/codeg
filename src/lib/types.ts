@@ -813,3 +813,38 @@ export interface PreflightResult {
   passed: boolean
   checks: CheckItem[]
 }
+
+// LSP Server types
+
+export type LspDistributionType =
+  | "npm"
+  | "binary"
+  | "cargo_install"
+  | "pip_install"
+
+export interface LspServerInfo {
+  id: string
+  name: string
+  description: string
+  language: string
+  distribution_type: LspDistributionType
+  registry_version: string | null
+  enabled: boolean
+  sort_order: number
+  installed_version: string | null
+  config_json: string | null
+}
+
+export interface LspServerStatus {
+  id: string
+  installed: boolean
+  installed_version: string | null
+  update_available: boolean
+}
+
+export interface LspPreflightResult {
+  server_id: string
+  server_name: string
+  passed: boolean
+  checks: CheckItem[]
+}

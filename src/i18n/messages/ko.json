@@ -85,6 +85,7 @@
       "appearance": "외관",
       "agents": "에이전트",
       "mcp": "MCP",
+      "lsp": "LSP",
       "skills": "Skills",
       "shortcuts": "단축키",
       "version_control": "버전 관리",
@@ -628,7 +629,31 @@
     }
   },
   "SettingsPages": {
-    "agentsLoading": "에이전트 설정을 불러오는 중..."
+    "agentsLoading": "에이전트 설정을 불러오는 중...",
+    "lspLoading": "LSP 서버 설정을 불러오는 중..."
+  },
+  "LspSettings": {
+    "title": "언어 서버",
+    "loading": "언어 서버를 불러오는 중...",
+    "retry": "재시도",
+    "language": "언어",
+    "latestVersion": "최신 버전",
+    "updateAvailable": "업데이트",
+    "install": "설치",
+    "upgrade": "업그레이드",
+    "uninstall": "제거",
+    "preflight": "검사",
+    "preflightPassed": "모든 검사를 통과했습니다",
+    "preflightFailed": "일부 검사에 실패했습니다",
+    "cancel": "취소",
+    "installSuccess": "{name} 설치가 완료되었습니다",
+    "installError": "{name} 설치에 실패했습니다: {error}",
+    "upgradeSuccess": "{name} 업그레이드가 완료되었습니다",
+    "upgradeError": "{name} 업그레이드에 실패했습니다: {error}",
+    "uninstallSuccess": "{name} 제거가 완료되었습니다",
+    "uninstallError": "{name} 제거에 실패했습니다: {error}",
+    "uninstallConfirmTitle": "{name}을(를) 제거하시겠습니까?",
+    "uninstallConfirmDescription": "시스템에서 언어 서버가 제거됩니다. 나중에 다시 설치할 수 있습니다."
   },
   "CommitPage": {
     "title": "커밋",

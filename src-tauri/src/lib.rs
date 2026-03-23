@@ -4,6 +4,7 @@ mod commands;
 mod db;
 pub mod git_credential;
 pub mod keyring_store;
+mod lsp;
 mod models;
 mod network;
 mod parsers;
@@ -14,8 +15,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use acp::manager::ConnectionManager;
 use commands::{
-    acp as acp_commands, conversations, folder_commands, folders, mcp as mcp_commands,
-    notification, system_settings, terminal as terminal_commands, version_control, windows,
+    acp as acp_commands, conversations, folder_commands, folders, lsp as lsp_commands,
+    mcp as mcp_commands, notification, system_settings, terminal as terminal_commands,
+    version_control, windows,
 };
 use tauri::Manager;
 use terminal::manager::TerminalManager;
@@ -321,6 +323,16 @@ pub fn run() {
             mcp_commands::mcp_set_server_apps,
             mcp_commands::mcp_remove_server,
             notification::send_notification,
+            lsp_commands::lsp_list_servers,
+            lsp_commands::lsp_get_server_status,
+            lsp_commands::lsp_preflight,
+            lsp_commands::lsp_install_server,
+            lsp_commands::lsp_upgrade_server,
+            lsp_commands::lsp_uninstall_server,
+            lsp_commands::lsp_detect_server_version,
+            lsp_commands::lsp_update_server_preferences,
+            lsp_commands::lsp_reorder_servers,
+            lsp_commands::lsp_clear_binary_cache,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

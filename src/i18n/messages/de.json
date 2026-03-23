@@ -85,6 +85,7 @@
       "appearance": "Darstellung",
       "agents": "Agenten",
       "mcp": "MCP",
+      "lsp": "LSP",
       "skills": "Skills",
       "shortcuts": "Kurzbefehle",
       "version_control": "Versionskontrolle",
@@ -628,7 +629,31 @@
     }
   },
   "SettingsPages": {
-    "agentsLoading": "Agent-Einstellungen werden geladen..."
+    "agentsLoading": "Agent-Einstellungen werden geladen...",
+    "lspLoading": "LSP-Server-Einstellungen werden geladen..."
+  },
+  "LspSettings": {
+    "title": "Sprachserver",
+    "loading": "Sprachserver werden geladen...",
+    "retry": "Erneut versuchen",
+    "language": "Sprache",
+    "latestVersion": "Neueste Version",
+    "updateAvailable": "Aktualisieren",
+    "install": "Installieren",
+    "upgrade": "Aktualisieren",
+    "uninstall": "Deinstallieren",
+    "preflight": "Prüfen",
+    "preflightPassed": "Alle Prüfungen bestanden",
+    "preflightFailed": "Einige Prüfungen fehlgeschlagen",
+    "cancel": "Abbrechen",
+    "installSuccess": "{name} wurde erfolgreich installiert",
+    "installError": "Installation von {name} fehlgeschlagen: {error}",
+    "upgradeSuccess": "{name} wurde erfolgreich aktualisiert",
+    "upgradeError": "Aktualisierung von {name} fehlgeschlagen: {error}",
+    "uninstallSuccess": "{name} wurde erfolgreich deinstalliert",
+    "uninstallError": "Deinstallation von {name} fehlgeschlagen: {error}",
+    "uninstallConfirmTitle": "{name} deinstallieren?",
+    "uninstallConfirmDescription": "Der Sprachserver wird von Ihrem System entfernt. Sie können ihn später erneut installieren."
   },
   "CommitPage": {
     "title": "Einchecken",

@@ -85,6 +85,7 @@
       "appearance": "外観",
       "agents": "エージェント",
       "mcp": "MCP",
+      "lsp": "LSP",
       "skills": "Skills",
       "shortcuts": "ショートカット",
       "version_control": "バージョン管理",
@@ -628,7 +629,31 @@
     }
   },
   "SettingsPages": {
-    "agentsLoading": "エージェント設定を読み込み中..."
+    "agentsLoading": "エージェント設定を読み込み中...",
+    "lspLoading": "LSPサーバー設定を読み込み中..."
+  },
+  "LspSettings": {
+    "title": "言語サーバー",
+    "loading": "言語サーバーを読み込み中...",
+    "retry": "再試行",
+    "language": "言語",
+    "latestVersion": "最新版",
+    "updateAvailable": "更新",
+    "install": "インストール",
+    "upgrade": "アップグレード",
+    "uninstall": "アンインストール",
+    "preflight": "チェック",
+    "preflightPassed": "すべてのチェックに合格しました",
+    "preflightFailed": "一部のチェックに失敗しました",
+    "cancel": "キャンセル",
+    "installSuccess": "{name} のインストールが完了しました",
+    "installError": "{name} のインストールに失敗しました：{error}",
+    "upgradeSuccess": "{name} のアップグレードが完了しました",
+    "upgradeError": "{name} のアップグレードに失敗しました：{error}",
+    "uninstallSuccess": "{name} のアンインストールが完了しました",
+    "uninstallError": "{name} のアンインストールに失敗しました：{error}",
+    "uninstallConfirmTitle": "{name} をアンインストールしますか？",
+    "uninstallConfirmDescription": "言語サーバーがシステムから削除されます。後から再インストールできます。"
   },
   "CommitPage": {
     "title": "コミット",

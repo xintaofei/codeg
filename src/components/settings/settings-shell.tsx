@@ -8,6 +8,7 @@ import {
   Keyboard,
   Palette,
   PlugZap,
+  Server,
   Settings,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -24,6 +25,7 @@ interface SettingsNavItem {
     | "appearance"
     | "agents"
     | "mcp"
+    | "lsp"
     | "skills"
     | "shortcuts"
     | "version_control"
@@ -46,6 +48,11 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     href: "/settings/mcp",
     labelKey: "mcp",
     icon: PlugZap,
+  },
+  {
+    href: "/settings/lsp",
+    labelKey: "lsp",
+    icon: Server,
   },
   {
     href: "/settings/skills",

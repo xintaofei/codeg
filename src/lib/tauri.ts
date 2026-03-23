@@ -51,6 +51,9 @@ import type {
   McpMarketplaceProvider,
   McpMarketplaceItem,
   McpMarketplaceServerDetail,
+  LspServerInfo,
+  LspServerStatus,
+  LspPreflightResult,
 } from "./types"
 
 export async function listConversations(params?: {
@@ -1096,4 +1099,62 @@ export async function terminalKill(terminalId: string): Promise<void> {
 
 export async function terminalList(): Promise<TerminalInfo[]> {
   return invoke("terminal_list")
+}
+
+// LSP commands
+
+export async function lspListServers(): Promise<LspServerInfo[]> {
+  return invoke("lsp_list_servers")
+}
+
+export async function lspGetServerStatus(
+  serverId: string
+): Promise<LspServerStatus> {
+  return invoke("lsp_get_server_status", { serverId })
+}
+
+export async function lspPreflight(
+  serverId: string
+): Promise<LspPreflightResult> {
+  return invoke("lsp_preflight", { serverId })
+}
+
+export async function lspInstallServer(serverId: string): Promise<void> {
+  return invoke("lsp_install_server", { serverId })
+}
+
+export async function lspUpgradeServer(serverId: string): Promise<void> {
+  return invoke("lsp_upgrade_server", { serverId })
+}
+
+export async function lspUninstallServer(serverId: string): Promise<void> {
+  return invoke("lsp_uninstall_server", { serverId })
+}
+
+export async function lspDetectServerVersion(
+  serverId: string
+): Promise<string | null> {
+  return invoke("lsp_detect_server_version", { serverId })
+}
+
+export async function lspUpdateServerPreferences(
+  serverId: string,
+  enabled: boolean,
+  configJson?: string | null
+): Promise<void> {
+  return invoke("lsp_update_server_preferences", {
+    serverId,
+    enabled,
+    configJson: configJson ?? null,
+  })
+}
+
+export async function lspReorderServers(
+  serverIds: string[]
+): Promise<void> {
+  return invoke("lsp_reorder_servers", { serverIds })
+}
+
+export async function lspClearBinaryCache(serverId: string): Promise<void> {
+  return invoke("lsp_clear_binary_cache", { serverId })
 }

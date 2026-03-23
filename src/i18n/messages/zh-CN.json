@@ -85,6 +85,7 @@
       "appearance": "外观",
       "agents": "Agents",
       "mcp": "MCP",
+      "lsp": "LSP",
       "skills": "Skills",
       "shortcuts": "快捷键",
       "version_control": "版本控制",
@@ -628,7 +629,31 @@
     }
   },
   "SettingsPages": {
-    "agentsLoading": "加载 Agent 设置中..."
+    "agentsLoading": "加载 Agent 设置中...",
+    "lspLoading": "加载 LSP 服务器设置中..."
+  },
+  "LspSettings": {
+    "title": "语言服务器",
+    "loading": "加载语言服务器中...",
+    "retry": "重试",
+    "language": "语言",
+    "latestVersion": "最新版本",
+    "updateAvailable": "可更新",
+    "install": "安装",
+    "upgrade": "升级",
+    "uninstall": "卸载",
+    "preflight": "检查",
+    "preflightPassed": "所有检查通过",
+    "preflightFailed": "部分检查未通过",
+    "cancel": "取消",
+    "installSuccess": "{name} 安装成功",
+    "installError": "安装 {name} 失败：{error}",
+    "upgradeSuccess": "{name} 升级成功",
+    "upgradeError": "升级 {name} 失败：{error}",
+    "uninstallSuccess": "{name} 已卸载",
+    "uninstallError": "卸载 {name} 失败：{error}",
+    "uninstallConfirmTitle": "确认卸载 {name}？",
+    "uninstallConfirmDescription": "这将从系统中移除该语言服务器。之后可以重新安装。"
   },
   "CommitPage": {
     "title": "提交代码",

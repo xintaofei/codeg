@@ -85,6 +85,7 @@
       "appearance": "المظهر",
       "agents": "الوكلاء",
       "mcp": "MCP",
+      "lsp": "LSP",
       "skills": "Skills",
       "shortcuts": "الاختصارات",
       "version_control": "التحكم بالإصدارات",
@@ -628,7 +629,31 @@
     }
   },
   "SettingsPages": {
-    "agentsLoading": "جارٍ تحميل إعدادات الوكلاء..."
+    "agentsLoading": "جارٍ تحميل إعدادات الوكلاء...",
+    "lspLoading": "جارٍ تحميل إعدادات خادم LSP..."
+  },
+  "LspSettings": {
+    "title": "خوادم اللغة",
+    "loading": "جارٍ تحميل خوادم اللغة...",
+    "retry": "إعادة المحاولة",
+    "language": "اللغة",
+    "latestVersion": "أحدث إصدار",
+    "updateAvailable": "تحديث",
+    "install": "تثبيت",
+    "upgrade": "ترقية",
+    "uninstall": "إلغاء التثبيت",
+    "preflight": "فحص",
+    "preflightPassed": "نجحت جميع الفحوصات",
+    "preflightFailed": "فشلت بعض الفحوصات",
+    "cancel": "إلغاء",
+    "installSuccess": "تم تثبيت {name} بنجاح",
+    "installError": "فشل تثبيت {name}: {error}",
+    "upgradeSuccess": "تمت ترقية {name} بنجاح",
+    "upgradeError": "فشلت ترقية {name}: {error}",
+    "uninstallSuccess": "تم إلغاء تثبيت {name} بنجاح",
+    "uninstallError": "فشل إلغاء تثبيت {name}: {error}",
+    "uninstallConfirmTitle": "إلغاء تثبيت {name}؟",
+    "uninstallConfirmDescription": "سيتم إزالة خادم اللغة من نظامك. يمكنك إعادة تثبيته لاحقاً."
   },
   "CommitPage": {
     "title": "التزام",

@@ -85,6 +85,7 @@
       "appearance": "Aparência",
       "agents": "Agentes",
       "mcp": "MCP",
+      "lsp": "LSP",
       "skills": "Skills",
       "shortcuts": "Atalhos",
       "version_control": "Controle de versão",
@@ -628,7 +629,31 @@
     }
   },
   "SettingsPages": {
-    "agentsLoading": "Carregando configurações de agentes..."
+    "agentsLoading": "Carregando configurações de agentes...",
+    "lspLoading": "Carregando configurações do servidor LSP..."
+  },
+  "LspSettings": {
+    "title": "Servidores de linguagem",
+    "loading": "Carregando servidores de linguagem...",
+    "retry": "Tentar novamente",
+    "language": "Linguagem",
+    "latestVersion": "Última versão",
+    "updateAvailable": "Atualizar",
+    "install": "Instalar",
+    "upgrade": "Atualizar",
+    "uninstall": "Desinstalar",
+    "preflight": "Verificar",
+    "preflightPassed": "Todas as verificações passaram",
+    "preflightFailed": "Algumas verificações falharam",
+    "cancel": "Cancelar",
+    "installSuccess": "{name} foi instalado com sucesso",
+    "installError": "Falha ao instalar {name}: {error}",
+    "upgradeSuccess": "{name} foi atualizado com sucesso",
+    "upgradeError": "Falha ao atualizar {name}: {error}",
+    "uninstallSuccess": "{name} foi desinstalado com sucesso",
+    "uninstallError": "Falha ao desinstalar {name}: {error}",
+    "uninstallConfirmTitle": "Desinstalar {name}?",
+    "uninstallConfirmDescription": "O servidor de linguagem será removido do seu sistema. Você pode reinstalá-lo posteriormente."
   },
   "CommitPage": {
     "title": "Confirmar",

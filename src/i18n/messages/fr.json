@@ -85,6 +85,7 @@
       "appearance": "Apparence",
       "agents": "Agents IA",
       "mcp": "MCP",
+      "lsp": "LSP",
       "skills": "Skills",
       "shortcuts": "Raccourcis",
       "version_control": "Contrôle de version",
@@ -628,7 +629,31 @@
     }
   },
   "SettingsPages": {
-    "agentsLoading": "Chargement des paramètres des agents..."
+    "agentsLoading": "Chargement des paramètres des agents...",
+    "lspLoading": "Chargement des paramètres du serveur LSP..."
+  },
+  "LspSettings": {
+    "title": "Serveurs de langage",
+    "loading": "Chargement des serveurs de langage...",
+    "retry": "Réessayer",
+    "language": "Langage",
+    "latestVersion": "Dernière version",
+    "updateAvailable": "Mettre à jour",
+    "install": "Installer",
+    "upgrade": "Mettre à niveau",
+    "uninstall": "Désinstaller",
+    "preflight": "Vérifier",
+    "preflightPassed": "Toutes les vérifications ont réussi",
+    "preflightFailed": "Certaines vérifications ont échoué",
+    "cancel": "Annuler",
+    "installSuccess": "{name} a été installé avec succès",
+    "installError": "Échec de l'installation de {name} : {error}",
+    "upgradeSuccess": "{name} a été mis à niveau avec succès",
+    "upgradeError": "Échec de la mise à niveau de {name} : {error}",
+    "uninstallSuccess": "{name} a été désinstallé avec succès",
+    "uninstallError": "Échec de la désinstallation de {name} : {error}",
+    "uninstallConfirmTitle": "Désinstaller {name} ?",
+    "uninstallConfirmDescription": "Le serveur de langage sera supprimé de votre système. Vous pourrez le réinstaller ultérieurement."
   },
   "CommitPage": {
     "title": "Valider",
