@@ -50,11 +50,6 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     icon: PlugZap,
   },
   {
-    href: "/settings/lsp",
-    labelKey: "lsp",
-    icon: Server,
-  },
-  {
     href: "/settings/skills",
     labelKey: "skills",
     icon: BookOpenText,
@@ -68,6 +63,11 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     href: "/settings/version-control",
     labelKey: "version_control",
     icon: GitBranch,
+  },
+  {
+    href: "/settings/lsp",
+    labelKey: "lsp",
+    icon: Server,
   },
   {
     href: "/settings/system",

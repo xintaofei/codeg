@@ -1,22 +1,12 @@
 "use client"
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type PointerEvent,
-} from "react"
-import { Reorder, useDragControls } from "motion/react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
   AlertCircle,
-  CheckCircle2,
   ChevronDown,
   ChevronRight,
   Download,
-  GripVertical,
   Loader2,
   RefreshCw,
   Trash2,
@@ -44,7 +34,6 @@ import {
   lspUpgradeServer,
   lspUninstallServer,
   lspUpdateServerPreferences,
-  lspReorderServers,
   lspClearBinaryCache,
   lspDetectServerVersion,
 } from "@/lib/tauri"
@@ -62,17 +51,18 @@ const DISTRIBUTION_LABELS: Record<string, string> = {
   pip_install: "pip",
 }
 
-const LANGUAGE_COLORS: Record<string, string> = {
-  "TypeScript/JavaScript": "bg-blue-500",
-  "HTML/CSS/JSON": "bg-orange-500",
-  Shell: "bg-green-500",
-  YAML: "bg-yellow-500",
-  Python: "bg-sky-500",
-  Rust: "bg-amber-600",
-  Go: "bg-cyan-500",
-  "C/C++": "bg-purple-500",
-  Lua: "bg-indigo-500",
-  TOML: "bg-rose-500",
+function summarizeCheckStatus(
+  state: ServerCheckState | undefined,
+  isInstalled: boolean
+): CheckStatus | "unchecked" {
+  if (!state?.result) return "unchecked"
+  if (state.error) return "fail"
+  const { checks } = state.result
+  if (checks.some((c) => c.status === "fail")) return "fail"
+  if (checks.some((c) => c.status === "warn")) return "warn"
+  // Environment passed but server not installed — treat as warn
+  if (!isInstalled) return "warn"
+  return "pass"
 }
 
 interface ServerCheckState {
@@ -80,20 +70,16 @@ interface ServerCheckState {
   error?: string
 }
 
-type RunningAction =
-  | "install"
-  | "upgrade"
-  | "uninstall"
-  | "detect_version"
+type RunningAction = "install" | "upgrade" | "uninstall" | "detect_version"
 
 export function LspServerSettings() {
   const t = useTranslations("LspSettings")
   const [servers, setServers] = useState<LspServerInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [loadingError, setLoadingError] = useState<string | null>(null)
-  const [checkState, setCheckState] = useState<Record<string, ServerCheckState>>(
-    {}
-  )
+  const [checkState, setCheckState] = useState<
+    Record<string, ServerCheckState>
+  >({})
   const [checking, setChecking] = useState<Record<string, boolean>>({})
   const [busyAction, setBusyAction] = useState<Record<string, boolean>>({})
   const [runningAction, setRunningAction] = useState<
@@ -105,15 +91,21 @@ export function LspServerSettings() {
     {}
   )
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [dragging, setDragging] = useState<string | null>(null)
-  const [reordering, setReordering] = useState(false)
-  const pendingOrderRef = useRef<string[] | null>(null)
 
   const sortedServers = useMemo(
     () =>
       [...servers].sort(
         (a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name)
       ),
+    [servers]
+  )
+
+  const serverIdsKey = useMemo(
+    () =>
+      servers
+        .map((s) => s.id)
+        .sort()
+        .join(","),
     [servers]
   )
 
@@ -131,10 +123,6 @@ export function LspServerSettings() {
     }
   }, [])
 
-  useEffect(() => {
-    refreshServers()
-  }, [refreshServers])
-
   const runPreflight = useCallback(async (serverId: string) => {
     setChecking((prev) => ({ ...prev, [serverId]: true }))
     try {
@@ -151,9 +139,7 @@ export function LspServerSettings() {
       if (detectedVersion !== undefined) {
         setServers((prev) =>
           prev.map((s) =>
-            s.id === serverId
-              ? { ...s, installed_version: detectedVersion }
-              : s
+            s.id === serverId ? { ...s, installed_version: detectedVersion } : s
           )
         )
       }
@@ -180,6 +166,38 @@ export function LspServerSettings() {
       setChecking((prev) => ({ ...prev, [serverId]: false }))
     }
   }, [])
+
+  const runAllPreflight = useCallback(
+    async (serverIds: string[]) => {
+      if (serverIds.length === 0) return
+      setChecking((prev) => {
+        const next = { ...prev }
+        for (const id of serverIds) {
+          next[id] = true
+        }
+        return next
+      })
+      await Promise.all(serverIds.map((id) => runPreflight(id)))
+    },
+    [runPreflight]
+  )
+
+  useEffect(() => {
+    refreshServers()
+  }, [refreshServers])
+
+  // Auto-run preflight for all servers after loading
+  useEffect(() => {
+    if (loading || !serverIdsKey) return
+    const ids = serverIdsKey.split(",")
+    runAllPreflight(ids).catch((err) => {
+      console.error("[LSP] run all preflight failed:", err)
+    })
+  }, [serverIdsKey, loading, runAllPreflight])
+
+  const handleRefreshAll = useCallback(async () => {
+    await refreshServers()
+  }, [refreshServers])
 
   const handleInstall = useCallback(
     async (server: LspServerInfo) => {
@@ -248,7 +266,12 @@ export function LspServerSettings() {
           await lspClearBinaryCache(server.id)
         }
         toast.success(t("uninstallSuccess", { name: server.name }))
+        // Also disable if was enabled
+        if (server.enabled) {
+          await lspUpdateServerPreferences(server.id, false, server.config_json)
+        }
         await refreshServers()
+        runPreflight(server.id)
       } catch (err) {
         toast.error(
           t("uninstallError", {
@@ -265,17 +288,13 @@ export function LspServerSettings() {
         })
       }
     },
-    [refreshServers, t]
+    [refreshServers, runPreflight, t]
   )
 
   const handleToggleEnabled = useCallback(
     async (server: LspServerInfo, enabled: boolean) => {
       try {
-        await lspUpdateServerPreferences(
-          server.id,
-          enabled,
-          server.config_json
-        )
+        await lspUpdateServerPreferences(server.id, enabled, server.config_json)
         setServers((prev) =>
           prev.map((s) => (s.id === server.id ? { ...s, enabled } : s))
         )
@@ -285,29 +304,6 @@ export function LspServerSettings() {
     },
     []
   )
-
-  const handleReorder = useCallback(
-    (newOrder: LspServerInfo[]) => {
-      setServers(newOrder)
-      pendingOrderRef.current = newOrder.map((s) => s.id)
-    },
-    []
-  )
-
-  const flushReorder = useCallback(async () => {
-    const ids = pendingOrderRef.current
-    if (!ids) return
-    pendingOrderRef.current = null
-    setReordering(true)
-    try {
-      await lspReorderServers(ids)
-    } catch {
-      // Revert on failure
-      await refreshServers()
-    } finally {
-      setReordering(false)
-    }
-  }, [refreshServers])
 
   if (loading) {
     return (
@@ -333,64 +329,64 @@ export function LspServerSettings() {
 
   return (
     <div className="flex h-full">
-      {/* Server list */}
       <div className="w-full flex flex-col">
-        <div className="px-4 pt-3 pb-2 flex items-center justify-between">
-          <h2 className="text-sm font-semibold">{t("title")}</h2>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            onClick={refreshServers}
-            disabled={reordering}
-          >
+        <div className="flex items-center justify-between gap-3 pb-4">
+          <div>
+            <h2 className="text-base font-semibold">{t("title")}</h2>
+            <p className="text-xs text-muted-foreground mt-1">
+              {t("description")}
+            </p>
+          </div>
+          <Button variant="ghost" size="icon-sm" onClick={handleRefreshAll}>
             <RefreshCw className="h-3.5 w-3.5" />
           </Button>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-4 pb-4">
-          <Reorder.Group
-            axis="y"
-            values={sortedServers}
-            onReorder={handleReorder}
-            className="space-y-1"
-          >
-            {sortedServers.map((server) => (
-              <LspServerRow
-                key={server.id}
-                server={server}
-                selected={selectedId === server.id}
-                onSelect={() =>
-                  setSelectedId((prev) =>
-                    prev === server.id ? null : server.id
-                  )
-                }
-                checking={!!checking[server.id]}
-                checkState={checkState[server.id]}
-                busy={!!busyAction[server.id]}
-                runningAction={runningAction[server.id]}
-                expandedChecks={!!expandedChecks[server.id]}
-                onToggleChecks={() =>
-                  setExpandedChecks((prev) => ({
-                    ...prev,
-                    [server.id]: !prev[server.id],
-                  }))
-                }
-                onRunPreflight={() => runPreflight(server.id)}
-                onInstall={() => handleInstall(server)}
-                onUpgrade={() => handleUpgrade(server)}
-                onUninstall={() => setUninstallConfirm(server)}
-                onToggleEnabled={(enabled) =>
-                  handleToggleEnabled(server, enabled)
-                }
-                onDragStart={() => setDragging(server.id)}
-                onDragEnd={() => {
-                  setDragging(null)
-                  flushReorder()
-                }}
-                dragging={dragging === server.id}
-              />
-            ))}
-          </Reorder.Group>
+        <div className="flex-1 overflow-y-auto pb-4">
+          <div className="grid gap-3">
+            {sortedServers.map((server) => {
+              const isChecking = !!checking[server.id]
+              const state = checkState[server.id]
+              const summary = summarizeCheckStatus(
+                state,
+                !!server.installed_version
+              )
+              const displayStatus: CheckStatus | "unchecked" | "checking" =
+                isChecking ? "checking" : summary
+
+              return (
+                <LspServerCard
+                  key={server.id}
+                  server={server}
+                  selected={selectedId === server.id}
+                  onSelect={() =>
+                    setSelectedId((prev) =>
+                      prev === server.id ? null : server.id
+                    )
+                  }
+                  checking={isChecking}
+                  checkState={state}
+                  displayStatus={displayStatus}
+                  busy={!!busyAction[server.id]}
+                  runningAction={runningAction[server.id]}
+                  expandedChecks={expandedChecks}
+                  onToggleCheck={(checkKey) =>
+                    setExpandedChecks((prev) => ({
+                      ...prev,
+                      [checkKey]: !prev[checkKey],
+                    }))
+                  }
+                  onRunPreflight={() => runPreflight(server.id)}
+                  onInstall={() => handleInstall(server)}
+                  onUpgrade={() => handleUpgrade(server)}
+                  onUninstall={() => setUninstallConfirm(server)}
+                  onToggleEnabled={(enabled) =>
+                    handleToggleEnabled(server, enabled)
+                  }
+                />
+              )
+            })}
+          </div>
         </div>
       </div>
 
@@ -429,114 +425,126 @@ export function LspServerSettings() {
   )
 }
 
-// ─── Server Row ──────────────────────────────────────────────────────────
+// ─── Server Card ──────────────────────────────────────────────────────────
 
-interface LspServerRowProps {
+interface LspServerCardProps {
   server: LspServerInfo
   selected: boolean
   onSelect: () => void
   checking: boolean
   checkState?: ServerCheckState
+  displayStatus: CheckStatus | "unchecked" | "checking"
   busy: boolean
   runningAction?: RunningAction
-  expandedChecks: boolean
-  onToggleChecks: () => void
+  expandedChecks: Record<string, boolean>
+  onToggleCheck: (checkKey: string) => void
   onRunPreflight: () => void
   onInstall: () => void
   onUpgrade: () => void
   onUninstall: () => void
   onToggleEnabled: (enabled: boolean) => void
-  onDragStart: () => void
-  onDragEnd: () => void
-  dragging: boolean
 }
 
-function LspServerRow({
+function LspServerCard({
   server,
   selected,
   onSelect,
   checking,
   checkState,
+  displayStatus,
   busy,
   runningAction,
   expandedChecks,
-  onToggleChecks,
+  onToggleCheck,
   onRunPreflight,
   onInstall,
   onUpgrade,
   onUninstall,
   onToggleEnabled,
-  onDragStart,
-  onDragEnd,
-  dragging,
-}: LspServerRowProps) {
+}: LspServerCardProps) {
   const t = useTranslations("LspSettings")
-  const dragControls = useDragControls()
-
-  const hasUpdate =
-    server.installed_version &&
-    server.registry_version &&
-    server.installed_version !== server.registry_version
 
   const isInstalled = !!server.installed_version
+  const preflightPassed = checkState?.result?.passed === true
+
+  // Can only enable when installed AND preflight passed
+  const canEnable = isInstalled && preflightPassed
+
+  const ExpandIcon = selected ? ChevronDown : ChevronRight
+
+  // Status badge styling (like agents)
+  const statusLabel =
+    displayStatus === "unchecked"
+      ? t("statusUnchecked")
+      : displayStatus === "checking"
+        ? "Checking"
+        : displayStatus.toUpperCase()
+
+  const statusToneClass = !server.enabled
+    ? "border-muted-foreground/30 bg-muted/30 text-muted-foreground"
+    : displayStatus === "pass"
+      ? "border-green-500/40 bg-green-500/10 text-green-600 dark:text-green-400"
+      : displayStatus === "fail"
+        ? "border-red-500/40 bg-red-500/10 text-red-500"
+        : displayStatus === "warn"
+          ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-600 dark:text-yellow-400"
+          : displayStatus === "checking"
+            ? "border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-400"
+            : "border-muted-foreground/30 bg-muted/30 text-muted-foreground"
 
   return (
-    <Reorder.Item
-      value={server}
-      dragControls={dragControls}
-      dragListener={false}
-      onDragEnd={onDragEnd}
-      className={cn(
-        "rounded-lg border bg-card",
-        dragging && "opacity-60",
-        selected && "ring-1 ring-ring"
-      )}
-    >
-      {/* Header row */}
+    <div className="rounded-lg border bg-card">
+      {/* Header */}
       <div className="flex items-center gap-2 p-3">
-        <button
-          className="touch-none cursor-grab active:cursor-grabbing text-muted-foreground hover:text-foreground"
-          onPointerDown={(e: PointerEvent) => {
-            onDragStart()
-            dragControls.start(e)
-          }}
-        >
-          <GripVertical className="h-4 w-4" />
-        </button>
-
         <button
           className="flex-1 flex items-center gap-2 text-left min-w-0"
           onClick={onSelect}
         >
-          <span
-            className={cn(
-              "inline-block h-2.5 w-2.5 rounded-full shrink-0",
-              LANGUAGE_COLORS[server.language] ?? "bg-gray-400"
-            )}
-          />
-          <span className="text-sm font-medium truncate">{server.name}</span>
+          <ExpandIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <span className="text-sm text-muted-foreground truncate">
+            {t("language")}: {server.language}
+          </span>
           <Badge variant="outline" className="text-[10px] px-1.5 py-0 shrink-0">
             {DISTRIBUTION_LABELS[server.distribution_type] ??
               server.distribution_type}
           </Badge>
-          {isInstalled && (
-            <Badge
-              variant="secondary"
-              className="text-[10px] px-1.5 py-0 shrink-0"
-            >
-              v{server.installed_version}
-            </Badge>
-          )}
-          {hasUpdate && (
-            <Badge className="text-[10px] px-1.5 py-0 bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-500/25 shrink-0">
-              {t("updateAvailable")}
-            </Badge>
-          )}
+          <span className="text-xs text-muted-foreground truncate">
+            {server.description}
+          </span>
         </button>
 
+        {/* Status badge with inline refresh */}
+        <Badge
+          variant="outline"
+          className={cn(
+            "h-6 px-2 inline-flex items-center gap-1 text-xs leading-none shrink-0",
+            statusToneClass
+          )}
+        >
+          <span>{statusLabel}</span>
+          {displayStatus === "checking" && (
+            <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+          )}
+          {!checking && (
+            <button
+              type="button"
+              className="inline-flex h-4 w-4 items-center justify-center rounded hover:bg-black/10 dark:hover:bg-white/10"
+              title={t("preflight")}
+              onClick={(e) => {
+                e.stopPropagation()
+                onRunPreflight()
+              }}
+            >
+              <RefreshCw className="h-3 w-3 shrink-0" />
+            </button>
+          )}
+        </Badge>
+
+        {/* Enable/disable switch */}
         <Switch
           checked={server.enabled}
           onCheckedChange={(checked) => onToggleEnabled(checked)}
+          disabled={!server.enabled && !canEnable}
           className="shrink-0"
         />
       </div>
@@ -544,194 +552,267 @@ function LspServerRow({
       {/* Expanded detail */}
       <Collapsible open={selected}>
         <CollapsibleContent>
-          <div className="px-3 pb-3 space-y-3 border-t pt-3">
+          <div className="px-3 pb-3 space-y-3 pt-3">
+            <div className="text-sm font-medium">{server.name}</div>
             <p className="text-xs text-muted-foreground">
               {server.description}
             </p>
 
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <span>
-                {t("language")}: {server.language}
-              </span>
-              {server.registry_version && (
-                <>
-                  <span className="text-border">|</span>
-                  <span>
-                    {t("latestVersion")}: {server.registry_version}
-                  </span>
-                </>
-              )}
-            </div>
-
-            {/* Action buttons */}
-            <div className="flex items-center gap-2 flex-wrap">
-              {!isInstalled && (
-                <Button
-                  size="xs"
-                  onClick={onInstall}
-                  disabled={busy}
-                >
-                  {busy && runningAction === "install" ? (
-                    <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
-                  ) : (
-                    <Download className="mr-1.5 h-3 w-3" />
-                  )}
-                  {t("install")}
-                </Button>
-              )}
-
-              {isInstalled && hasUpdate && (
-                <Button
-                  size="xs"
-                  onClick={onUpgrade}
-                  disabled={busy}
-                >
-                  {busy && runningAction === "upgrade" ? (
-                    <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
-                  ) : (
-                    <RefreshCw className="mr-1.5 h-3 w-3" />
-                  )}
-                  {t("upgrade")}
-                </Button>
-              )}
-
-              {isInstalled && (
-                <Button
-                  size="xs"
-                  variant="destructive"
-                  onClick={onUninstall}
-                  disabled={busy}
-                >
-                  {busy && runningAction === "uninstall" ? (
-                    <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
-                  ) : (
-                    <Trash2 className="mr-1.5 h-3 w-3" />
-                  )}
-                  {t("uninstall")}
-                </Button>
-              )}
-
-              <Button
-                size="xs"
-                variant="outline"
-                onClick={onRunPreflight}
-                disabled={checking || busy}
-              >
-                {checking ? (
-                  <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
-                ) : (
-                  <CheckCircle2 className="mr-1.5 h-3 w-3" />
-                )}
-                {t("preflight")}
-              </Button>
-            </div>
-
-            {/* Preflight results */}
-            {checkState && (
-              <PreflightSection
-                state={checkState}
-                expanded={expandedChecks}
-                onToggle={onToggleChecks}
-              />
-            )}
+            {/* Check items (version + preflight) */}
+            <CheckItemList
+              server={server}
+              checkState={checkState}
+              expandedChecks={expandedChecks}
+              onToggleCheck={onToggleCheck}
+              busy={busy}
+              runningAction={runningAction}
+              preflightPassed={preflightPassed}
+              onInstall={onInstall}
+              onUpgrade={onUpgrade}
+              onUninstall={onUninstall}
+            />
           </div>
         </CollapsibleContent>
       </Collapsible>
-    </Reorder.Item>
-  )
-}
-
-// ─── Preflight Section ───────────────────────────────────────────────────
-
-function PreflightSection({
-  state,
-  expanded,
-  onToggle,
-}: {
-  state: ServerCheckState
-  expanded: boolean
-  onToggle: () => void
-}) {
-  const t = useTranslations("LspSettings")
-
-  if (state.error) {
-    return (
-      <div className="rounded-md bg-destructive/10 p-2 text-xs text-destructive">
-        {state.error}
-      </div>
-    )
-  }
-
-  if (!state.result) return null
-
-  const { passed, checks } = state.result
-  const Icon = expanded ? ChevronDown : ChevronRight
-
-  return (
-    <div className="space-y-1">
-      <button
-        className="flex items-center gap-1.5 text-xs font-medium"
-        onClick={onToggle}
-      >
-        <Icon className="h-3 w-3" />
-        {passed ? (
-          <span className="text-green-600 dark:text-green-400">
-            {t("preflightPassed")}
-          </span>
-        ) : (
-          <span className="text-destructive">{t("preflightFailed")}</span>
-        )}
-      </button>
-
-      {expanded && (
-        <div className="space-y-1 ml-4">
-          {checks.map((check) => (
-            <CheckItemRow key={check.check_id} check={check} />
-          ))}
-        </div>
-      )}
     </div>
   )
 }
 
-function CheckItemRow({
-  check,
+// ─── Check Item List (version + preflight, agents-style) ─────────────────
+
+function statusTone(status: CheckStatus): string {
+  if (status === "pass") return "text-green-500"
+  if (status === "warn") return "text-yellow-500"
+  return "text-red-500"
+}
+
+interface UiCheckItem {
+  check_id: string
+  label: string
+  status: CheckStatus
+  message: string
+  fixes: FixAction[]
+}
+
+function buildVersionCheck(
+  server: LspServerInfo,
+  t: (key: string) => string
+): UiCheckItem {
+  const remoteVersion = server.registry_version ?? "-"
+  const localVersion = server.installed_version ?? "-"
+  const versionText = `${t("remoteVersion")}: ${remoteVersion} · ${t("localVersion")}: ${localVersion}`
+
+  if (!server.installed_version) {
+    return {
+      check_id: "version_status",
+      label: t("versionStatus"),
+      status: "fail",
+      message: `${versionText}. ${t("notInstalled")}.`,
+      fixes: [],
+    }
+  }
+
+  if (
+    server.registry_version &&
+    server.installed_version !== server.registry_version
+  ) {
+    return {
+      check_id: "version_status",
+      label: t("versionStatus"),
+      status: "warn",
+      message: `${versionText}. ${t("upgradeAvailable")}.`,
+      fixes: [],
+    }
+  }
+
+  if (!server.registry_version) {
+    return {
+      check_id: "version_status",
+      label: t("versionStatus"),
+      status: "warn",
+      message: `${versionText}. ${t("remoteVersionUnavailable")}.`,
+      fixes: [],
+    }
+  }
+
+  return {
+    check_id: "version_status",
+    label: t("versionStatus"),
+    status: "pass",
+    message: `${versionText}. ${t("alreadyLatest")}.`,
+    fixes: [],
+  }
+}
+
+function getServerChecks(
+  server: LspServerInfo,
+  state: ServerCheckState | undefined,
+  t: (key: string) => string
+): UiCheckItem[] {
+  const versionCheck = buildVersionCheck(server, t)
+  const preflightChecks: UiCheckItem[] = (state?.result?.checks ?? []).map(
+    (c) => ({ ...c, fixes: [...c.fixes] })
+  )
+  return [versionCheck, ...preflightChecks]
+}
+
+function CheckItemList({
+  server,
+  checkState,
+  expandedChecks,
+  onToggleCheck,
+  busy,
+  runningAction,
+  preflightPassed,
+  onInstall,
+  onUpgrade,
+  onUninstall,
 }: {
-  check: { check_id: string; label: string; status: CheckStatus; message: string; fixes: FixAction[] }
+  server: LspServerInfo
+  checkState?: ServerCheckState
+  expandedChecks: Record<string, boolean>
+  onToggleCheck: (checkKey: string) => void
+  busy: boolean
+  runningAction?: RunningAction
+  preflightPassed: boolean
+  onInstall: () => void
+  onUpgrade: () => void
+  onUninstall: () => void
 }) {
-  const statusIcon =
-    check.status === "pass" ? (
-      <CheckCircle2 className="h-3 w-3 text-green-600 dark:text-green-400" />
-    ) : check.status === "fail" ? (
-      <AlertCircle className="h-3 w-3 text-destructive" />
-    ) : (
-      <AlertCircle className="h-3 w-3 text-yellow-500" />
+  const t = useTranslations("LspSettings")
+
+  if (checkState?.error) {
+    return (
+      <div className="rounded-md bg-destructive/10 p-2 text-xs text-destructive">
+        {checkState.error}
+      </div>
     )
+  }
+
+  const checks = getServerChecks(server, checkState, t)
+  if (checks.length === 0) return null
+
+  const isInstalled = !!server.installed_version
+  const hasUpdate =
+    server.installed_version &&
+    server.registry_version &&
+    server.installed_version !== server.registry_version
 
   return (
-    <div className="flex items-start gap-1.5 text-xs">
-      <span className="mt-0.5 shrink-0">{statusIcon}</span>
-      <div className="min-w-0">
-        <span className="font-medium">{check.label}</span>
-        <span className="text-muted-foreground"> — {check.message}</span>
-        {check.fixes.length > 0 && (
-          <div className="mt-0.5 flex gap-2">
-            {check.fixes.map((fix, i) => (
-              <button
-                key={i}
-                className="text-blue-600 dark:text-blue-400 underline"
-                onClick={() => {
-                  if (fix.kind === "open_url") {
-                    openUrl(fix.payload)
-                  }
-                }}
+    <div className="space-y-1.5">
+      {checks.map((check) => {
+        const checkKey = `${server.id}:${check.check_id}`
+        const expanded = expandedChecks[checkKey] ?? check.status !== "pass"
+        const isVersionCheck = check.check_id === "version_status"
+
+        return (
+          <div
+            key={check.check_id}
+            className="rounded-md border bg-muted/20 px-3 py-2 space-y-2"
+          >
+            <button
+              type="button"
+              className="w-full flex items-center justify-between gap-2 text-left"
+              onClick={() => onToggleCheck(checkKey)}
+            >
+              <div className="min-w-0 flex items-center gap-1.5">
+                {expanded ? (
+                  <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                ) : (
+                  <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                )}
+                <span className="text-xs font-medium truncate">
+                  {check.label}
+                </span>
+              </div>
+              <span
+                className={`text-[11px] font-semibold shrink-0 ${statusTone(check.status)}`}
               >
-                {fix.label}
-              </button>
-            ))}
+                {check.status.toUpperCase()}
+              </span>
+            </button>
+
+            {expanded && (
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 text-[11px] text-muted-foreground break-words">
+                  {check.message}
+                </div>
+                {/* Version check: install/upgrade/uninstall buttons */}
+                {isVersionCheck && (
+                  <div className="flex flex-wrap gap-1.5 justify-end shrink-0">
+                    {!isInstalled && preflightPassed && (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        className="h-6 bg-muted/30 hover:bg-muted/50"
+                        onClick={onInstall}
+                        disabled={busy}
+                      >
+                        {busy && runningAction === "install" ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Download className="h-3 w-3" />
+                        )}
+                        {t("install")}
+                      </Button>
+                    )}
+                    {isInstalled && hasUpdate && (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        className="h-6 bg-muted/30 hover:bg-muted/50"
+                        onClick={onUpgrade}
+                        disabled={busy}
+                      >
+                        {busy && runningAction === "upgrade" ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <RefreshCw className="h-3 w-3" />
+                        )}
+                        {t("upgrade")}
+                      </Button>
+                    )}
+                    {isInstalled && (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        className="h-6 bg-muted/30 hover:bg-muted/50"
+                        onClick={onUninstall}
+                        disabled={busy}
+                      >
+                        {busy && runningAction === "uninstall" ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-3 w-3" />
+                        )}
+                        {t("uninstall")}
+                      </Button>
+                    )}
+                  </div>
+                )}
+                {/* Other checks: fix links */}
+                {!isVersionCheck && check.fixes.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 justify-end shrink-0">
+                    {check.fixes.map((fix, i) => (
+                      <button
+                        key={i}
+                        className="text-[11px] text-blue-600 dark:text-blue-400 underline"
+                        onClick={() => {
+                          if (fix.kind === "open_url") {
+                            openUrl(fix.payload)
+                          }
+                        }}
+                      >
+                        {fix.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        )
+      })}
     </div>
   )
 }
