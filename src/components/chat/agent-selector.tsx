@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { acpListAgents } from "@/lib/tauri"
 import { disposeTauriListener } from "@/lib/tauri-listener"
@@ -34,6 +34,59 @@ export function AgentSelector({
   const selectedRef = useRef(selected)
   const onSelectRef = useRef(onSelect)
   const onAgentsLoadedRef = useRef(onAgentsLoaded)
+
+  // Sliding indicator state
+  const containerRef = useRef<HTMLDivElement>(null)
+  const itemRefs = useRef<Map<AgentType, HTMLButtonElement>>(new Map())
+  const [indicator, setIndicator] = useState<{
+    left: number
+    width: number
+  } | null>(null)
+
+  // Use ResizeObserver to track button size changes during CSS transitions
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    const measure = () => {
+      if (!selected) {
+        setIndicator(null)
+        return
+      }
+      const btn = itemRefs.current.get(selected)
+      if (!btn || !container) {
+        setIndicator(null)
+        return
+      }
+      const containerRect = container.getBoundingClientRect()
+      const btnRect = btn.getBoundingClientRect()
+      setIndicator({
+        left: btnRect.left - containerRect.left,
+        width: btnRect.width,
+      })
+    }
+
+    const ro = new ResizeObserver(() => {
+      measure()
+    })
+
+    // Observe all button elements so indicator updates as they resize
+    for (const btn of itemRefs.current.values()) {
+      ro.observe(btn)
+    }
+    ro.observe(container)
+
+    // Initial measurement
+    measure()
+
+    const onResize = () => measure()
+    window.addEventListener("resize", onResize)
+
+    return () => {
+      ro.disconnect()
+      window.removeEventListener("resize", onResize)
+    }
+  }, [selected, agents])
 
   useEffect(() => {
     onSelectRef.current = onSelect
@@ -120,6 +173,17 @@ export function AgentSelector({
     onSelect(agentType)
   }
 
+  const setItemRef = useCallback(
+    (agentType: AgentType) => (el: HTMLButtonElement | null) => {
+      if (el) {
+        itemRefs.current.set(agentType, el)
+      } else {
+        itemRefs.current.delete(agentType)
+      }
+    },
+    []
+  )
+
   if (agents.length === 0) {
     return (
       <div className="rounded-lg border border-dashed bg-muted/30 px-4 py-3 text-center text-sm text-muted-foreground">
@@ -138,27 +202,57 @@ export function AgentSelector({
   }
 
   return (
-    <div className="flex flex-wrap items-center justify-center gap-2">
-      {agents.map((agent) => (
-        <button
-          key={agent.agent_type}
-          disabled={disabled || !agent.available}
-          onClick={() => handleSelect(agent.agent_type)}
-          className={cn(
-            "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
-            "border",
-            disabled || !agent.available
-              ? "cursor-not-allowed opacity-40"
-              : "cursor-pointer hover:bg-accent",
-            selected === agent.agent_type
-              ? "border-primary bg-primary/10 text-primary"
-              : "border-border text-muted-foreground"
-          )}
-        >
-          <AgentIcon agentType={agent.agent_type} className="w-3.5 h-3.5" />
-          {AGENT_LABELS[agent.agent_type]}
-        </button>
-      ))}
+    <div
+      ref={containerRef}
+      className="relative inline-flex items-center self-center rounded-full bg-muted/50 p-1 border border-border/50"
+    >
+      {/* Sliding droplet indicator */}
+      {indicator && (
+        <div
+          className="absolute top-1 bottom-1 rounded-full bg-background shadow-sm ring-1 ring-border/50 transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]"
+          style={{
+            left: indicator.left,
+            width: indicator.width,
+          }}
+        />
+      )}
+      {agents.map((agent) => {
+        const isSelected = selected === agent.agent_type
+        return (
+          <button
+            key={agent.agent_type}
+            ref={setItemRef(agent.agent_type)}
+            title={!isSelected ? AGENT_LABELS[agent.agent_type] : undefined}
+            disabled={disabled || !agent.available}
+            onClick={() => handleSelect(agent.agent_type)}
+            className={cn(
+              "relative z-10 inline-flex items-center justify-center gap-1.5 rounded-full text-xs font-medium transition-all duration-300",
+              isSelected ? "px-3 py-2" : "px-2 py-2",
+              disabled || !agent.available
+                ? "cursor-not-allowed opacity-40"
+                : "cursor-pointer",
+              isSelected
+                ? "text-foreground"
+                : "text-muted-foreground hover:text-foreground/70"
+            )}
+          >
+            <AgentIcon
+              agentType={agent.agent_type}
+              className="w-4 h-4 shrink-0"
+            />
+            <span
+              className={cn(
+                "overflow-hidden whitespace-nowrap transition-all duration-300",
+                isSelected
+                  ? "max-w-[80px] opacity-100"
+                  : "max-w-0 opacity-0"
+              )}
+            >
+              {AGENT_LABELS[agent.agent_type]}
+            </span>
+          </button>
+        )
+      })}
     </div>
   )
 }
