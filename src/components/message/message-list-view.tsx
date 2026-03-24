@@ -376,8 +376,6 @@ export function MessageListView({
           getItemKey={(item) => item.key}
           renderItem={renderThreadItem}
           emptyState={emptyState}
-          estimateSize={100}
-          overscan={10}
         />
         <MessageThreadScrollButton />
       </MessageThread>

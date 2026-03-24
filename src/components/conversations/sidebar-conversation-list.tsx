@@ -12,7 +12,7 @@ import {
 } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
-import { useVirtualizer } from "@tanstack/react-virtual"
+import { Virtualizer, type VirtualizerHandle } from "virtua"
 import { CheckCheck, ChevronRight, Download, Loader2, Plus } from "lucide-react"
 import { useFolderContext } from "@/contexts/folder-context"
 import { useTabContext } from "@/contexts/tab-context"
@@ -71,7 +71,6 @@ type FlatItem =
   | { type: "header"; status: ConversationStatus; count: number }
   | { type: "conversation"; conversation: DbConversationSummary }
 
-const HEADER_HEIGHT = 32
 const CARD_HEIGHT = 62
 
 const GroupHeader = memo(function GroupHeader({
@@ -209,8 +208,7 @@ export function SidebarConversationList({
 
   const scrollToActiveRef = useRef<() => void>(() => {})
   const pendingScrollRef = useRef(false)
-  const virtualizerRef =
-    useRef<ReturnType<typeof useVirtualizer<HTMLDivElement, Element>>>(null)
+  const virtualizerRef = useRef<VirtualizerHandle>(null)
 
   useImperativeHandle(ref, () => ({
     scrollToActive() {
@@ -272,22 +270,6 @@ export function SidebarConversationList({
   )
   const reviewConversationCount = reviewConversations.length
 
-  const virtualizer = useVirtualizer({
-    count: flatItems.length,
-    getScrollElement: () => scrollContainerRef.current,
-    estimateSize: (index) =>
-      flatItems[index].type === "header" ? HEADER_HEIGHT : CARD_HEIGHT,
-    getItemKey: (index) => {
-      const item = flatItems[index]
-      return item.type === "header"
-        ? `header-${item.status}`
-        : `conv-${item.conversation.id}`
-    },
-    overscan: 5,
-  })
-
-  virtualizerRef.current = virtualizer
-
   useEffect(() => {
     scrollToActiveRef.current = () => {
       if (!selectedConversation) return
@@ -312,7 +294,7 @@ export function SidebarConversationList({
       if (index >= 0) {
         virtualizerRef.current?.scrollToIndex(index, {
           align: "center",
-          behavior: "smooth",
+          smooth: true,
         })
       }
     }
@@ -494,33 +476,20 @@ export function SidebarConversationList({
               ref={scrollContainerRef}
               className={cn(
                 "flex-1 min-h-0 overflow-y-auto px-1.5",
+                "[overflow-anchor:none]",
                 "[&::-webkit-scrollbar]:w-1.5",
                 "[&::-webkit-scrollbar-thumb]:rounded-full",
                 "[&::-webkit-scrollbar-thumb]:bg-border"
               )}
             >
-              <div
-                style={{
-                  height: virtualizer.getTotalSize(),
-                  position: "relative",
-                  width: "100%",
-                }}
-              >
-                {virtualizer.getVirtualItems().map((virtualRow) => {
-                  const item = flatItems[virtualRow.index]
+              <Virtualizer ref={virtualizerRef} itemSize={CARD_HEIGHT}>
+                {flatItems.map((item) => {
+                  const key =
+                    item.type === "header"
+                      ? `header-${item.status}`
+                      : `conv-${item.conversation.id}`
                   return (
-                    <div
-                      key={virtualRow.key}
-                      data-index={virtualRow.index}
-                      ref={virtualizer.measureElement}
-                      style={{
-                        position: "absolute",
-                        top: 0,
-                        left: 0,
-                        width: "100%",
-                        transform: `translateY(${virtualRow.start}px)`,
-                      }}
-                    >
+                    <div key={key}>
                       {item.type === "header" ? (
                         item.status === "pending_review" ? (
                           <PendingReviewHeader
@@ -563,7 +532,7 @@ export function SidebarConversationList({
                     </div>
                   )
                 })}
-              </div>
+              </Virtualizer>
             </div>
           </ContextMenuTrigger>
           <ContextMenuContent>

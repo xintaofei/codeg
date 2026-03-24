@@ -1,8 +1,8 @@
 "use client"
 
-import { useCallback, useEffect } from "react"
-import type { ReactNode } from "react"
-import { useVirtualizer } from "@tanstack/react-virtual"
+import { useMemo } from "react"
+import type { CSSProperties, ReactNode, RefObject } from "react"
+import { Virtualizer } from "virtua"
 import { useStickToBottomContext } from "use-stick-to-bottom"
 import {
   MessageThreadContent,
@@ -11,15 +11,29 @@ import {
 import { cn } from "@/lib/utils"
 
 interface VirtualizedMessageThreadProps<T> {
+  /** Data to virtualise — each entry becomes one virtual row. */
   items: T[]
+  /** Stable key for a given item (used as React key). */
   getItemKey: (item: T, index: number) => string
+  /** Render the content of one row. */
   renderItem: (item: T, index: number) => ReactNode
+  /** Shown when `items` is empty. */
   emptyState?: ReactNode
-  estimateSize?: number
-  overscan?: number
+  /**
+   * Hint for the initial height (px) of an unmeasured item.
+   * Virtua auto-measures every item once mounted, so this only
+   * affects the very first paint — omit it if you don't care.
+   */
+  itemSize?: number
+  /** Vertical gap between items in px. @default 16 */
   gap?: number
+  /** Vertical padding before the first / after the last item. @default 16 */
+  padding?: number
+  /** Extra className on every item's inner wrapper (the `max-w-3xl` div). */
   className?: string
+  /** Extra className on the MessageThreadContent shell. */
   contentClassName?: string
+  /** Extra props forwarded to MessageThreadContent. */
   contentProps?: Omit<MessageThreadContentProps, "children" | "className">
 }
 
@@ -28,83 +42,58 @@ export function VirtualizedMessageThread<T>({
   getItemKey,
   renderItem,
   emptyState,
-  estimateSize = 160,
-  overscan = 8,
+  itemSize,
   gap = 16,
+  padding = 16,
   className,
   contentClassName,
   contentProps,
 }: VirtualizedMessageThreadProps<T>) {
   const { scrollRef } = useStickToBottomContext()
 
-  // eslint-disable-next-line react-hooks/incompatible-library
-  const virtualizer = useVirtualizer({
-    count: items.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => estimateSize,
-    overscan,
-    useAnimationFrameWithResizeObserver: true,
-    isScrollingResetDelay: 100,
-    paddingStart: 16,
-    paddingEnd: 16,
-    gap,
-    getItemKey: (index) => {
-      const item = items[index]
-      return item ? getItemKey(item, index) : index
-    },
-  })
+  // Pre-compute the three possible padding styles so every render reuses
+  // the same object references (avoids allocating per-item on each frame).
+  const styles = useMemo(() => {
+    const halfGap = gap / 2
+    return {
+      only: { paddingTop: padding, paddingBottom: padding } as CSSProperties,
+      first: { paddingTop: padding, paddingBottom: halfGap } as CSSProperties,
+      middle: { paddingTop: halfGap, paddingBottom: halfGap } as CSSProperties,
+      last: { paddingTop: halfGap, paddingBottom: padding } as CSSProperties,
+    }
+  }, [gap, padding])
 
-  // Adjust scroll position when items above the viewport are measured
-  // differently from their estimates — prevents blank gaps when scrolling up
-  useEffect(() => {
-    virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (
-      item,
-      _delta,
-      instance
-    ) => item.start < (instance.scrollOffset ?? 0)
-  }, [virtualizer])
-
-  const renderVirtualRow = useCallback(
-    (virtualItem: ReturnType<typeof virtualizer.getVirtualItems>[number]) => {
-      const item = items[virtualItem.index]
-      if (!item) return null
-
-      return (
-        <div
-          key={virtualItem.key}
-          ref={virtualizer.measureElement}
-          data-index={virtualItem.index}
-          className="absolute left-0 top-0 w-full bg-background"
-          style={{
-            transform: `translate3d(0, ${virtualItem.start}px, 0)`,
-            willChange: "transform",
-          }}
-        >
-          <div className={cn("mx-auto max-w-3xl px-4", className)}>
-            {renderItem(item, virtualItem.index)}
-          </div>
-        </div>
-      )
-    },
-    [className, items, renderItem, virtualizer]
-  )
+  const itemStyle = (index: number, total: number) => {
+    if (total === 1) return styles.only
+    if (index === 0) return styles.first
+    if (index === total - 1) return styles.last
+    return styles.middle
+  }
 
   return (
     <MessageThreadContent
       className={cn("mx-0 max-w-none p-0", contentClassName)}
+      scrollClassName="[overflow-anchor:none]"
       {...contentProps}
     >
       {items.length === 0 ? (
         (emptyState ?? null)
       ) : (
-        <div
-          className="relative w-full"
-          style={{
-            height: `${virtualizer.getTotalSize()}px`,
-          }}
+        <Virtualizer
+          scrollRef={scrollRef as unknown as RefObject<HTMLElement | null>}
+          itemSize={itemSize}
         >
-          {virtualizer.getVirtualItems().map(renderVirtualRow)}
-        </div>
+          {items.map((item, index) => (
+            <div
+              key={getItemKey(item, index)}
+              style={itemStyle(index, items.length)}
+            >
+              <div className={cn("mx-auto max-w-3xl px-4", className)}>
+                {renderItem(item, index)}
+              </div>
+            </div>
+          ))}
+        </Virtualizer>
       )}
     </MessageThreadContent>
   )
