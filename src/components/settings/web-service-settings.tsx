@@ -1,23 +1,49 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { Check, Copy, Eye, EyeOff } from "lucide-react"
+import { Check, Copy, ExternalLink, Eye, EyeOff } from "lucide-react"
 import {
   startWebServer,
   stopWebServer,
   getWebServerStatus,
   type WebServerInfo,
 } from "@/lib/api"
+import { openUrl } from "@/lib/platform"
 
-function CopyableCard({
-  label,
-  value,
-  masked,
-}: {
-  label: string
-  value: string
-  masked?: boolean
-}) {
+function AddressCard({ label, value }: { label: string; value: string }) {
+  const [hovered, setHovered] = useState(false)
+
+  return (
+    <div className="space-y-1.5">
+      <div className="text-xs font-medium text-muted-foreground">{label}</div>
+      <div
+        className="group relative flex items-center rounded-md border bg-muted/40 px-3 py-2"
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+      >
+        <code className="min-w-0 flex-1 truncate text-sm select-all">
+          {value}
+        </code>
+        <div
+          className={`ml-2 flex shrink-0 items-center gap-1 transition-opacity ${
+            hovered ? "opacity-100" : "opacity-0"
+          }`}
+        >
+          <button
+            type="button"
+            onClick={() => openUrl(value)}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            title="打开"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TokenCard({ label, value }: { label: string; value: string }) {
   const [hovered, setHovered] = useState(false)
   const [copied, setCopied] = useState(false)
   const [revealed, setRevealed] = useState(false)
@@ -28,10 +54,9 @@ function CopyableCard({
     setTimeout(() => setCopied(false), 1500)
   }
 
-  const displayValue =
-    masked && !revealed
-      ? value.slice(0, 4) + "\u2022".repeat(Math.max(value.length - 4, 8))
-      : value
+  const displayValue = revealed
+    ? value
+    : "\u2022".repeat(Math.max(value.length, 12))
 
   return (
     <div className="space-y-1.5">
@@ -49,20 +74,18 @@ function CopyableCard({
             hovered ? "opacity-100" : "opacity-0"
           }`}
         >
-          {masked && (
-            <button
-              type="button"
-              onClick={() => setRevealed((v) => !v)}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-              title={revealed ? "隐藏" : "显示"}
-            >
-              {revealed ? (
-                <EyeOff className="h-3.5 w-3.5" />
-              ) : (
-                <Eye className="h-3.5 w-3.5" />
-              )}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => setRevealed((v) => !v)}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            title={revealed ? "隐藏" : "显示"}
+          >
+            {revealed ? (
+              <EyeOff className="h-3.5 w-3.5" />
+            ) : (
+              <Eye className="h-3.5 w-3.5" />
+            )}
+          </button>
           <button
             type="button"
             onClick={handleCopy}
@@ -194,13 +217,9 @@ export function WebServiceSettings() {
         {isRunning && (
           <div className="space-y-3">
             {status.addresses.map((addr) => (
-              <CopyableCard key={addr} label="访问地址" value={addr} />
+              <AddressCard key={addr} label="访问地址" value={addr} />
             ))}
-            <CopyableCard
-              label="访问 Token"
-              value={status.token}
-              masked
-            />
+            <TokenCard label="访问 Token" value={status.token} />
             <p className="text-xs text-muted-foreground">
               Web 客户端首次访问时需输入此 Token
             </p>
