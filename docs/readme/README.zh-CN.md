@@ -20,8 +20,8 @@
 
 Codeg（Code Generation）是一个企业级多 Agent 编码工作台。
 它将本地 AI 编码代理（Claude Code、Codex CLI、OpenCode、Gemini CLI、
-OpenClaw 等）统一到一个桌面应用中，支持会话聚合、并行 `git worktree`
-开发、MCP/Skills 管理，以及集成的 Git/文件/终端工作流。
+OpenClaw 等）统一到桌面应用与 Web 服务中——通过浏览器即可远程开发——支持会话聚合、
+并行 `git worktree` 开发、MCP/Skills 管理，以及集成的 Git/文件/终端工作流。
 
 ## 主界面
 ![Codeg Light](../images/main-light.png#gh-light-mode-only)
@@ -40,6 +40,8 @@ OpenClaw 等）统一到一个桌面应用中，支持会话聚合、并行 `git
 - 内置 `git worktree` 并行开发流程
 - MCP 管理（本地扫描 + 市场搜索/安装）
 - Skills 管理（全局与项目级）
+- Git 远程账号管理（支持 GitHub 及其它 Git 服务器）
+- Web 服务模式 — 开启后可在浏览器中访问 Codeg，支持远程工作
 - 集成工程闭环（文件树、Diff、Git 变更、提交、终端）
 
 ## 支持范围

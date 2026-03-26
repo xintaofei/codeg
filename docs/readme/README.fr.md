@@ -20,7 +20,7 @@
 
 Codeg (Code Generation) est un workspace de codage multi-agents de niveau entreprise.
 Il unifie les agents de codage IA locaux (Claude Code, Codex CLI, OpenCode, Gemini CLI,
-OpenClaw, etc.) dans une seule application de bureau avec agrégation de sessions, développement
+OpenClaw, etc.) dans une application de bureau et un service web — permettant le développement à distance depuis n'importe quel navigateur — avec agrégation de sessions, développement
 parallèle via `git worktree`, gestion MCP/Skills et workflows intégrés Git/fichiers/terminal.
 
 ## Interface principale
@@ -40,6 +40,8 @@ parallèle via `git worktree`, gestion MCP/Skills et workflows intégrés Git/fi
 - Développement parallèle avec flux `git worktree` intégré
 - Gestion MCP (scan local + recherche/installation depuis le registre)
 - Gestion des Skills (portée globale et projet)
+- Gestion des comptes distants Git (GitHub et autres serveurs Git)
+- Mode service web — accédez à Codeg depuis n'importe quel navigateur pour le travail à distance
 - Boucle d'ingénierie intégrée (arborescence de fichiers, diff, changements git, commit, terminal)
 
 ## Périmètre pris en charge
