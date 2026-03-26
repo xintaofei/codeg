@@ -113,8 +113,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "Claude Code",
             description: "ACP wrapper for Anthropic's Claude",
             distribution: AgentDistribution::Npx {
-                version: "0.24.0",
-                package: "@agentclientprotocol/claude-agent-acp@0.24.0",
+                version: "0.24.1",
+                package: "@agentclientprotocol/claude-agent-acp@0.24.1",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
