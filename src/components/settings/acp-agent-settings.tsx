@@ -5875,27 +5875,21 @@ supports_websockets = true`}
                       />
                     </div>
 
-                    {(selectedDraft.clineProvider === "anthropic" ||
-                      selectedDraft.clineProvider === "openai-native" ||
-                      selectedDraft.clineProvider === "openai" ||
-                      selectedDraft.clineProvider === "openrouter" ||
-                      selectedDraft.clineProvider === "ollama") && (
-                      <div className="space-y-1.5">
-                        <label className="text-[11px] text-muted-foreground">
-                          API URL
-                        </label>
-                        <Input
-                          value={selectedDraft.clineBaseUrl}
-                          onChange={(event) => {
-                            handleClineFieldChange(
-                              "clineBaseUrl",
-                              event.target.value
-                            )
-                          }}
-                          placeholder="https://api.openai.com"
-                        />
-                      </div>
-                    )}
+                    <div className="space-y-1.5">
+                      <label className="text-[11px] text-muted-foreground">
+                        API URL
+                      </label>
+                      <Input
+                        value={selectedDraft.clineBaseUrl}
+                        onChange={(event) => {
+                          handleClineFieldChange(
+                            "clineBaseUrl",
+                            event.target.value
+                          )
+                        }}
+                        placeholder="https://api.openai.com"
+                      />
+                    </div>
 
                     <div className="space-y-1.5">
                       <label className="text-[11px] text-muted-foreground">
