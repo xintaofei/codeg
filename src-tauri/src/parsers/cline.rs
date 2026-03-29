@@ -170,7 +170,7 @@ impl AgentParser for ClineParser {
                 id: entry.id,
                 agent_type: AgentType::Cline,
                 folder_path,
-                folder_name: folder_name.map(String::from),
+                folder_name,
                 title,
                 started_at,
                 ended_at,
@@ -321,7 +321,7 @@ impl AgentParser for ClineParser {
             id: conversation_id.to_string(),
             agent_type: AgentType::Cline,
             folder_path,
-            folder_name: folder_name.map(String::from),
+            folder_name,
             title,
             started_at,
             ended_at,
@@ -451,7 +451,7 @@ fn parse_tool_result_text(text: &str) -> (String, String, bool) {
     let tool_name = trimmed
         .strip_prefix('[')
         .and_then(|s| {
-            s.find(|c: char| c == ']' || c == ' ')
+            s.find([']', ' '])
                 .map(|i| s[..i].to_string())
         })
         .unwrap_or_default();

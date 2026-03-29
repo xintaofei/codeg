@@ -390,7 +390,7 @@ pub async fn acp_update_agent_preferences(
         params.opencode_auth_json,
         params.codex_auth_json,
         params.codex_config_toml,
-        &db,
+        db,
         &emitter,
     )
     .await
@@ -437,7 +437,7 @@ pub async fn acp_prepare_npx_agent(
     let result = acp_commands::acp_prepare_npx_agent_core(
         params.agent_type,
         params.registry_version,
-        &db,
+        db,
         &emitter,
     )
     .await
@@ -451,7 +451,7 @@ pub async fn acp_uninstall_agent(
 ) -> Result<Json<()>, AppCommandError> {
     let db = &state.db;
     let emitter = state.emitter.clone();
-    acp_commands::acp_uninstall_agent_core(params.agent_type, &db, &emitter)
+    acp_commands::acp_uninstall_agent_core(params.agent_type, db, &emitter)
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(()))
@@ -469,7 +469,7 @@ pub async fn acp_reorder_agents(
 ) -> Result<Json<()>, AppCommandError> {
     let db = &state.db;
     let emitter = state.emitter.clone();
-    acp_commands::acp_reorder_agents_core(&params.agent_types, &db, &emitter)
+    acp_commands::acp_reorder_agents_core(&params.agent_types, db, &emitter)
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(()))

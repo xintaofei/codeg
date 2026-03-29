@@ -21,6 +21,12 @@ pub struct WebServerState {
     running: std::sync::atomic::AtomicBool,
 }
 
+impl Default for WebServerState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WebServerState {
     pub fn new() -> Self {
         Self {

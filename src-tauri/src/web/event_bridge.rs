@@ -13,6 +13,12 @@ pub struct WebEventBroadcaster {
     sender: broadcast::Sender<WebEvent>,
 }
 
+impl Default for WebEventBroadcaster {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WebEventBroadcaster {
     pub fn new() -> Self {
         let (sender, _) = broadcast::channel(4096);
