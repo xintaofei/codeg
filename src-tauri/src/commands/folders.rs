@@ -3794,16 +3794,11 @@ async fn get_unpushed_hashes(
             .trim()
             .is_empty();
 
-    // When remote_override is specified, always compare against that remote
-    let rev_list_output = if let Some(target_remote) = remote_override {
-        let remote_arg = format!("--remotes={}", target_remote);
-        crate::process::tokio_command("git")
-            .args(["rev-list", &limit_arg, "HEAD", "--not", &remote_arg])
-            .current_dir(path)
-            .output()
-            .await
-            .map_err(AppCommandError::io)?
-    } else if has_upstream {
+    // Determine the comparison target for unpushed commits.
+    // We compare against <remote>/<branch> specifically rather than all remote
+    // branches, so that commits shared with other remote branches still appear.
+    let rev_list_output = if has_upstream && remote_override.is_none() {
+        // Fast path: branch has an upstream tracking ref, use it directly
         let upstream = String::from_utf8_lossy(&upstream_output.stdout)
             .trim()
             .to_string();
@@ -3815,8 +3810,8 @@ async fn get_unpushed_hashes(
             .await
             .map_err(AppCommandError::io)?
     } else {
-        // No upstream (e.g. newly created branch): fall back to comparing
-        // against all remote branches to find commits not yet pushed.
+        // Either remote_override is specified or no upstream exists.
+        // Resolve the current branch and the target remote.
         let branch_output = crate::process::tokio_command("git")
             .args(["rev-parse", "--abbrev-ref", "HEAD"])
             .current_dir(path)
@@ -3833,26 +3828,76 @@ async fn get_unpushed_hashes(
             return Ok((None, has_upstream));
         }
 
-        let remote_key = format!("branch.{}.remote", branch);
-        let remote_output = crate::process::tokio_command("git")
-            .args(["config", "--get", &remote_key])
+        let remote = if let Some(r) = remote_override {
+            r.to_string()
+        } else {
+            let remote_key = format!("branch.{}.remote", branch);
+            let remote_output = crate::process::tokio_command("git")
+                .args(["config", "--get", &remote_key])
+                .current_dir(path)
+                .output()
+                .await;
+            remote_output
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "origin".to_string())
+        };
+
+        // Try comparing against <remote>/<branch> directly
+        let remote_branch_ref = format!("refs/remotes/{}/{}", remote, branch);
+        let verify_output = crate::process::tokio_command("git")
+            .args(["rev-parse", "--verify", "--quiet", &remote_branch_ref])
             .current_dir(path)
             .output()
             .await;
-        let remote = remote_output
-            .ok()
-            .filter(|output| output.status.success())
-            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "origin".to_string());
+        let remote_branch_exists = verify_output
+            .is_ok_and(|o| o.status.success());
 
-        let remote_arg = format!("--remotes={}", remote);
-        crate::process::tokio_command("git")
-            .args(["rev-list", &limit_arg, "HEAD", "--not", &remote_arg])
-            .current_dir(path)
-            .output()
-            .await
-            .map_err(AppCommandError::io)?
+        if remote_branch_exists {
+            let range = format!("{}/{}..HEAD", remote, branch);
+            crate::process::tokio_command("git")
+                .args(["rev-list", &limit_arg, &range])
+                .current_dir(path)
+                .output()
+                .await
+                .map_err(AppCommandError::io)?
+        } else {
+            // Branch doesn't exist on remote yet (new branch).
+            // Try merge-base with the remote's default branch to show
+            // the meaningful divergence point.
+            let remote_head = format!("{}/HEAD", remote);
+            let mb_output = crate::process::tokio_command("git")
+                .args(["merge-base", "HEAD", &remote_head])
+                .current_dir(path)
+                .output()
+                .await;
+            let merge_base = mb_output
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|s| !s.is_empty());
+
+            if let Some(base) = merge_base {
+                let range = format!("{}..HEAD", base);
+                crate::process::tokio_command("git")
+                    .args(["rev-list", &limit_arg, &range])
+                    .current_dir(path)
+                    .output()
+                    .await
+                    .map_err(AppCommandError::io)?
+            } else {
+                // Last resort: compare against all branches on the remote
+                let remote_arg = format!("--remotes={}", remote);
+                crate::process::tokio_command("git")
+                    .args(["rev-list", &limit_arg, "HEAD", "--not", &remote_arg])
+                    .current_dir(path)
+                    .output()
+                    .await
+                    .map_err(AppCommandError::io)?
+            }
+        }
     };
 
     if !rev_list_output.status.success() {
