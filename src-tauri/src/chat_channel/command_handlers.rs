@@ -205,14 +205,14 @@ pub async fn handle_status(manager: &ChatChannelManager) -> RichMessage {
     RichMessage::info(body.trim_end()).with_title("渠道状态")
 }
 
-pub fn handle_help() -> RichMessage {
-    RichMessage::info(
-        "/recent - 最近 5 条会话\n\
-         /search <关键词> - 搜索会话\n\
-         /detail <ID> - 会话详情\n\
-         /today - 今日活动汇总\n\
-         /status - 渠道连接状态\n\
-         /help - 显示帮助",
-    )
+pub fn handle_help(prefix: &str) -> RichMessage {
+    RichMessage::info(format!(
+        "{prefix}recent - 最近 5 条会话\n\
+         {prefix}search <关键词> - 搜索会话\n\
+         {prefix}detail <ID> - 会话详情\n\
+         {prefix}today - 今日活动汇总\n\
+         {prefix}status - 渠道连接状态\n\
+         {prefix}help - 显示帮助",
+    ))
     .with_title("Codeg Bot 帮助")
 }

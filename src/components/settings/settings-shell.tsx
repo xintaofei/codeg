@@ -12,7 +12,7 @@ import {
   GitBranch,
   Globe,
   Keyboard,
-  MessageCircle,
+  BotMessageSquare,
   Palette,
   PlugZap,
   Settings,
@@ -74,7 +74,7 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
   {
     href: "/settings/chat-channels",
     labelKey: "chat_channels",
-    icon: MessageCircle,
+    icon: BotMessageSquare,
   },
   {
     href: "/settings/web-service",

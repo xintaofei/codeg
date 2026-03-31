@@ -1701,6 +1701,55 @@
     "deleteConfirmMessage": "将永久删除该渠道及其消息日志，确定吗？",
     "cancel": "取消",
     "delete": "删除",
-    "create": "创建"
+    "create": "创建",
+    "save": "保存",
+    "channelListTitle": "已配置渠道",
+    "channelListDescription": "已启用的渠道在服务启动时会自动连接。",
+    "editChannel": "编辑渠道",
+    "editSuccess": "渠道已更新。",
+    "tokenPlaceholderKeep": "留空保持不变",
+    "connect": "连接",
+    "disconnect": "断开",
+    "test": "测试连接",
+    "tabs": {
+      "channels": "渠道",
+      "commands": "指令",
+      "events": "事件"
+    },
+    "commands": {
+      "title": "内置指令",
+      "description": "消息渠道中可用的 Bot 指令。",
+      "prefixLabel": "指令前缀",
+      "prefixDescription": "触发 Bot 指令的前缀，1-3 个非字母数字字符（默认 /）。",
+      "prefixSaved": "指令前缀已保存。",
+      "prefixSaveFailed": "保存指令前缀失败。",
+      "prefixInvalid": "前缀必须是 1-3 个非字母数字字符。",
+      "save": "保存",
+      "recentDesc": "最近 5 条会话",
+      "searchDesc": "按关键词搜索会话",
+      "detailDesc": "会话详情",
+      "todayDesc": "今日活动汇总",
+      "statusDesc": "渠道连接状态",
+      "helpDesc": "显示帮助"
+    },
+    "events": {
+      "title": "事件通知",
+      "description": "配置每个渠道推送哪些事件。",
+      "allEnabled": "所有事件已启用（默认）",
+      "sessionStarted": "会话开始",
+      "sessionStartedDesc": "AI 代理开始新会话时",
+      "turnComplete": "对话完成",
+      "turnCompleteDesc": "代理回合结束时",
+      "error": "代理错误",
+      "errorDesc": "代理遇到错误时",
+      "statusDisconnected": "代理断开",
+      "statusDisconnectedDesc": "代理连接断开时",
+      "gitPush": "Git 推送",
+      "gitPushDesc": "Git Push 成功时",
+      "gitCommit": "Git 提交",
+      "gitCommitDesc": "Git Commit 成功时",
+      "saved": "事件过滤已更新。",
+      "saveFailed": "保存事件过滤失败。"
+    }
   }
 }

@@ -264,6 +264,85 @@ pub async fn list_chat_channel_messages_core(
     Ok(rows.into_iter().map(ChatChannelMessageLogInfo::from).collect())
 }
 
+const COMMAND_PREFIX_KEY: &str = "chat_command_prefix";
+const DEFAULT_COMMAND_PREFIX: &str = "/";
+
+pub async fn get_chat_command_prefix_core(
+    db: &AppDatabase,
+) -> Result<String, AppCommandError> {
+    let val = crate::db::service::app_metadata_service::get_value(&db.conn, COMMAND_PREFIX_KEY)
+        .await
+        .map_err(AppCommandError::from)?;
+    Ok(val.unwrap_or_else(|| DEFAULT_COMMAND_PREFIX.to_string()))
+}
+
+pub async fn set_chat_command_prefix_core(
+    db: &AppDatabase,
+    prefix: String,
+) -> Result<(), AppCommandError> {
+    let trimmed = prefix.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 3
+        || trimmed.chars().any(|c| c.is_alphanumeric())
+    {
+        return Err(AppCommandError::invalid_input(
+            "Prefix must be 1-3 non-alphanumeric characters",
+        ));
+    }
+    crate::db::service::app_metadata_service::upsert_value(&db.conn, COMMAND_PREFIX_KEY, trimmed)
+        .await
+        .map_err(AppCommandError::from)?;
+    Ok(())
+}
+
+const EVENT_FILTER_KEY: &str = "chat_event_filter";
+
+pub async fn get_chat_event_filter_core(
+    db: &AppDatabase,
+) -> Result<Option<Vec<String>>, AppCommandError> {
+    let val = crate::db::service::app_metadata_service::get_value(&db.conn, EVENT_FILTER_KEY)
+        .await
+        .map_err(AppCommandError::from)?;
+    match val {
+        Some(json) => {
+            let arr: Vec<String> =
+                serde_json::from_str(&json).map_err(|e| AppCommandError::invalid_input(e.to_string()))?;
+            Ok(Some(arr))
+        }
+        None => Ok(None),
+    }
+}
+
+pub async fn set_chat_event_filter_core(
+    db: &AppDatabase,
+    filter: Option<Vec<String>>,
+) -> Result<(), AppCommandError> {
+    match filter {
+        Some(arr) => {
+            let json = serde_json::to_string(&arr)
+                .map_err(|e| AppCommandError::invalid_input(e.to_string()))?;
+            crate::db::service::app_metadata_service::upsert_value(
+                &db.conn,
+                EVENT_FILTER_KEY,
+                &json,
+            )
+            .await
+            .map_err(AppCommandError::from)?;
+        }
+        None => {
+            // null means all events enabled — remove the key
+            crate::db::service::app_metadata_service::upsert_value(
+                &db.conn,
+                EVENT_FILTER_KEY,
+                "null",
+            )
+            .await
+            .map_err(AppCommandError::from)?;
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Tauri commands (use tauri::State for injection)
 // ---------------------------------------------------------------------------
@@ -377,4 +456,38 @@ pub async fn list_chat_channel_messages(
     offset: Option<u64>,
 ) -> Result<Vec<ChatChannelMessageLogInfo>, AppCommandError> {
     list_chat_channel_messages_core(&db, channel_id, limit, offset).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn get_chat_command_prefix(
+    db: tauri::State<'_, AppDatabase>,
+) -> Result<String, AppCommandError> {
+    get_chat_command_prefix_core(&db).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn set_chat_command_prefix(
+    db: tauri::State<'_, AppDatabase>,
+    prefix: String,
+) -> Result<(), AppCommandError> {
+    set_chat_command_prefix_core(&db, prefix).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn get_chat_event_filter(
+    db: tauri::State<'_, AppDatabase>,
+) -> Result<Option<Vec<String>>, AppCommandError> {
+    get_chat_event_filter_core(&db).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn set_chat_event_filter(
+    db: tauri::State<'_, AppDatabase>,
+    filter: Option<Vec<String>>,
+) -> Result<(), AppCommandError> {
+    set_chat_event_filter_core(&db, filter).await
 }

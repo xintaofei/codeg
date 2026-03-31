@@ -1701,6 +1701,55 @@
     "deleteConfirmMessage": "This will permanently delete the channel and its message logs. Are you sure?",
     "cancel": "Cancel",
     "delete": "Delete",
-    "create": "Create"
+    "create": "Create",
+    "save": "Save",
+    "channelListTitle": "Configured Channels",
+    "channelListDescription": "Enabled channels will auto-connect when the service starts.",
+    "editChannel": "Edit Channel",
+    "editSuccess": "Channel updated.",
+    "tokenPlaceholderKeep": "Leave blank to keep current",
+    "connect": "Connect",
+    "disconnect": "Disconnect",
+    "test": "Test Connection",
+    "tabs": {
+      "channels": "Channels",
+      "commands": "Commands",
+      "events": "Events"
+    },
+    "commands": {
+      "title": "Built-in Commands",
+      "description": "Bot commands available in chat channels.",
+      "prefixLabel": "Command Prefix",
+      "prefixDescription": "1-3 non-alphanumeric characters used to trigger bot commands (default /).",
+      "prefixSaved": "Command prefix saved.",
+      "prefixSaveFailed": "Failed to save command prefix.",
+      "prefixInvalid": "Prefix must be 1-3 non-alphanumeric characters.",
+      "save": "Save",
+      "recentDesc": "Show 5 most recent conversations",
+      "searchDesc": "Search conversations by keyword",
+      "detailDesc": "Show conversation details",
+      "todayDesc": "Today's activity summary",
+      "statusDesc": "Channel connection status",
+      "helpDesc": "Show help message"
+    },
+    "events": {
+      "title": "Event Notifications",
+      "description": "Configure which events are pushed to each channel.",
+      "allEnabled": "All events enabled (default)",
+      "sessionStarted": "Session Started",
+      "sessionStartedDesc": "When an AI agent session begins",
+      "turnComplete": "Turn Complete",
+      "turnCompleteDesc": "When an agent turn ends",
+      "error": "Agent Error",
+      "errorDesc": "When an agent encounters an error",
+      "statusDisconnected": "Agent Disconnected",
+      "statusDisconnectedDesc": "When agent connection is lost",
+      "gitPush": "Git Push",
+      "gitPushDesc": "When a git push succeeds",
+      "gitCommit": "Git Commit",
+      "gitCommitDesc": "When a git commit succeeds",
+      "saved": "Event filter updated.",
+      "saveFailed": "Failed to save event filter."
+    }
   }
 }

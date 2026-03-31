@@ -1402,3 +1402,21 @@ export async function listChatChannelMessages(params: {
     offset: params.offset ?? null,
   })
 }
+
+export async function getChatCommandPrefix(): Promise<string> {
+  return getTransport().call("get_chat_command_prefix")
+}
+
+export async function setChatCommandPrefix(prefix: string): Promise<void> {
+  return getTransport().call("set_chat_command_prefix", { prefix })
+}
+
+export async function getChatEventFilter(): Promise<string[] | null> {
+  return getTransport().call("get_chat_event_filter")
+}
+
+export async function setChatEventFilter(
+  filter: string[] | null,
+): Promise<void> {
+  return getTransport().call("set_chat_event_filter", { filter })
+}

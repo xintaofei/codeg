@@ -8,7 +8,7 @@ use tokio::task::JoinHandle;
 use super::manager::ChatChannelManager;
 use super::message_formatter;
 use super::types::RichMessage;
-use crate::db::service::{chat_channel_message_log_service, chat_channel_service};
+use crate::db::service::{app_metadata_service, chat_channel_message_log_service, chat_channel_service};
 use crate::web::event_bridge::WebEventBroadcaster;
 
 /// Minimum interval between pushes for the same event type per channel (debounce).
@@ -38,6 +38,19 @@ pub fn spawn_event_subscriber(
 
             let message = match parse_event(&event.channel, &event.payload) {
                 Some((event_type, msg)) => {
+                    // Global event filter check
+                    let global_filter = app_metadata_service::get_value(&db_conn, "chat_event_filter")
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok());
+
+                    if let Some(filter) = &global_filter {
+                        if !filter.contains(&event_type) {
+                            continue;
+                        }
+                    }
+
                     // Check enabled channels and forward
                     let channels = match chat_channel_service::list_enabled(&db_conn).await {
                         Ok(c) => c,
@@ -48,17 +61,6 @@ pub fn spawn_event_subscriber(
                     };
 
                     for ch in &channels {
-                        // Check event filter
-                        if let Some(filter_json) = &ch.event_filter_json {
-                            if let Ok(filter) =
-                                serde_json::from_str::<Vec<String>>(filter_json)
-                            {
-                                if !filter.contains(&event_type) {
-                                    continue;
-                                }
-                            }
-                        }
-
                         // Debounce
                         let key = (ch.id, event_type.clone());
                         let now = Instant::now();

@@ -183,3 +183,45 @@ pub async fn list_chat_channel_messages(
     .await?;
     Ok(Json(result))
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetCommandPrefixParams {
+    pub prefix: String,
+}
+
+pub async fn get_chat_command_prefix(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<String>, AppCommandError> {
+    let result = cc_commands::get_chat_command_prefix_core(&state.db).await?;
+    Ok(Json(result))
+}
+
+pub async fn set_chat_command_prefix(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<SetCommandPrefixParams>,
+) -> Result<Json<()>, AppCommandError> {
+    cc_commands::set_chat_command_prefix_core(&state.db, params.prefix).await?;
+    Ok(Json(()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetEventFilterParams {
+    pub filter: Option<Vec<String>>,
+}
+
+pub async fn get_chat_event_filter(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<Option<Vec<String>>>, AppCommandError> {
+    let result = cc_commands::get_chat_event_filter_core(&state.db).await?;
+    Ok(Json(result))
+}
+
+pub async fn set_chat_event_filter(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<SetEventFilterParams>,
+) -> Result<Json<()>, AppCommandError> {
+    cc_commands::set_chat_event_filter_core(&state.db, params.filter).await?;
+    Ok(Json(()))
+}

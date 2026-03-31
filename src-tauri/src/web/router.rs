@@ -193,6 +193,10 @@ pub fn build_router(state: Arc<AppState>, token: String, static_dir: std::path::
         .route("/test_chat_channel", post(handlers::chat_channel::test_chat_channel))
         .route("/get_chat_channel_status", post(handlers::chat_channel::get_chat_channel_status))
         .route("/list_chat_channel_messages", post(handlers::chat_channel::list_chat_channel_messages))
+        .route("/get_chat_command_prefix", post(handlers::chat_channel::get_chat_command_prefix))
+        .route("/set_chat_command_prefix", post(handlers::chat_channel::set_chat_command_prefix))
+        .route("/get_chat_event_filter", post(handlers::chat_channel::get_chat_event_filter))
+        .route("/set_chat_event_filter", post(handlers::chat_channel::set_chat_event_filter))
         // ─── Terminal ───
         .route("/terminal_spawn", post(handlers::terminal::terminal_spawn))
         .route("/terminal_write", post(handlers::terminal::terminal_write))
