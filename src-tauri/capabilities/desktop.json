@@ -9,6 +9,9 @@
     "welcome",
     "folder-*",
     "commit-*",
+    "merge-*",
+    "stash-*",
+    "push-*",
     "settings",
     "project-boot"
   ],
