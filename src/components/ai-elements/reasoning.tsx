@@ -12,7 +12,7 @@ import {
 import { cn } from "@/lib/utils"
 import { cjk } from "@streamdown/cjk"
 import { code } from "@streamdown/code"
-import { math } from "@streamdown/math"
+import { createMathPlugin } from "@streamdown/math"
 import { mermaid } from "@streamdown/mermaid"
 import { BrainIcon, ChevronDownIcon } from "lucide-react"
 import {
@@ -212,6 +212,7 @@ export type ReasoningContentProps = ComponentProps<
   children: string
 }
 
+const math = createMathPlugin({ singleDollarTextMath: true })
 const streamdownPlugins = { cjk, code, math, mermaid }
 
 export const ReasoningContent = memo(

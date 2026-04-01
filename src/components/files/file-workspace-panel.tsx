@@ -18,13 +18,14 @@ import {
 } from "@/components/ui/context-menu"
 import { cjk } from "@streamdown/cjk"
 import { code } from "@streamdown/code"
-import { math } from "@streamdown/math"
+import { createMathPlugin } from "@streamdown/math"
 import { mermaid } from "@streamdown/mermaid"
 import { Streamdown } from "streamdown"
 import { readFileBase64 } from "@/lib/api"
 import { defineMonacoThemes, useMonacoThemeSync } from "@/lib/monaco-themes"
 import "@/lib/monaco-local"
 
+const math = createMathPlugin({ singleDollarTextMath: true })
 const previewPlugins = { cjk, code, math, mermaid }
 
 function resolveRelativePath(base: string, relative: string): string {
