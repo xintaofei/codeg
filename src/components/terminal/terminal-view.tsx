@@ -10,58 +10,9 @@ import {
 } from "@/lib/api"
 import type { TerminalEvent } from "@/lib/types"
 import type { ITheme } from "@xterm/xterm"
-
-const DARK_THEME: ITheme = {
-  background: "#1a1a1a",
-  foreground: "#e0e0e0",
-  cursor: "#e0e0e0",
-  cursorAccent: "#1a1a1a",
-  selectionBackground: "#444444",
-  black: "#1a1a1a",
-  red: "#f87171",
-  green: "#4ade80",
-  yellow: "#facc15",
-  blue: "#60a5fa",
-  magenta: "#c084fc",
-  cyan: "#22d3ee",
-  white: "#e0e0e0",
-  brightBlack: "#737373",
-  brightRed: "#fca5a5",
-  brightGreen: "#86efac",
-  brightYellow: "#fde68a",
-  brightBlue: "#93c5fd",
-  brightMagenta: "#d8b4fe",
-  brightCyan: "#67e8f9",
-  brightWhite: "#ffffff",
-}
-
-const LIGHT_THEME: ITheme = {
-  background: "#ffffff",
-  foreground: "#1a1a1a",
-  cursor: "#1a1a1a",
-  cursorAccent: "#ffffff",
-  selectionBackground: "#b4d5fe",
-  black: "#1a1a1a",
-  red: "#dc2626",
-  green: "#16a34a",
-  yellow: "#ca8a04",
-  blue: "#2563eb",
-  magenta: "#9333ea",
-  cyan: "#0891b2",
-  white: "#e5e5e5",
-  brightBlack: "#a3a3a3",
-  brightRed: "#ef4444",
-  brightGreen: "#22c55e",
-  brightYellow: "#eab308",
-  brightBlue: "#3b82f6",
-  brightMagenta: "#a855f7",
-  brightCyan: "#06b6d4",
-  brightWhite: "#ffffff",
-}
-
-function isDarkMode() {
-  return document.documentElement.classList.contains("dark")
-}
+import { useAppearance } from "@/lib/appearance/use-appearance"
+import { TERMINAL_SCHEMES } from "@/lib/appearance/constants"
+import type { TerminalScheme } from "@/lib/appearance/types"
 
 function resolveBackgroundColor(
   element: HTMLElement | null | undefined
@@ -77,11 +28,13 @@ function resolveBackgroundColor(
   return null
 }
 
-function getTerminalTheme(container: HTMLDivElement | null): ITheme {
-  const baseTheme = isDarkMode() ? DARK_THEME : LIGHT_THEME
+function getTerminalTheme(
+  container: HTMLDivElement | null,
+  scheme: TerminalScheme
+): ITheme {
+  const baseTheme = TERMINAL_SCHEMES[scheme]
   const background = resolveBackgroundColor(container)
   if (!background) return baseTheme
-
   return {
     ...baseTheme,
     background,
@@ -106,6 +59,7 @@ export function TerminalView({
   isVisible,
   onProcessExited,
 }: TerminalViewProps) {
+  const { settings } = useAppearance()
   const containerRef = useRef<HTMLDivElement>(null)
   const fitAddonRef = useRef<{ fit: () => void } | null>(null)
   const termRef = useRef<{ focus: () => void } | null>(null)
@@ -113,6 +67,7 @@ export function TerminalView({
   const isActiveRef = useRef(isActive)
   const isVisibleRef = useRef(isVisible)
   const onProcessExitedRef = useRef(onProcessExited)
+  const settingsRef = useRef(settings)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -123,6 +78,10 @@ export function TerminalView({
   useEffect(() => {
     onProcessExitedRef.current = onProcessExited
   }, [onProcessExited])
+
+  useEffect(() => {
+    settingsRef.current = settings
+  }, [settings])
 
   useEffect(() => {
     let cancelled = false
@@ -140,9 +99,12 @@ export function TerminalView({
 
       const term = new Terminal({
         cursorBlink: true,
-        fontSize: 13,
-        fontFamily: "Menlo, Monaco, 'Courier New', monospace",
-        theme: getTerminalTheme(containerRef.current),
+        fontSize: settingsRef.current.codeFontSize,
+        fontFamily: settingsRef.current.codeFont,
+        theme: getTerminalTheme(
+          containerRef.current,
+          settingsRef.current.terminalScheme
+        ),
         allowProposedApi: true,
       })
 
@@ -155,7 +117,10 @@ export function TerminalView({
 
       // Watch <html> class changes for theme switching
       const themeObserver = new MutationObserver(() => {
-        term.options.theme = getTerminalTheme(containerRef.current)
+        term.options.theme = getTerminalTheme(
+          containerRef.current,
+          settingsRef.current.terminalScheme
+        )
       })
       themeObserver.observe(document.documentElement, {
         attributes: true,
@@ -291,6 +256,21 @@ export function TerminalView({
       })
     }
   }, [isActive, isVisible])
+
+  // React to appearance settings changes on an existing terminal
+  useEffect(() => {
+    const term = termRef.current as {
+      options: { fontSize: number; fontFamily: string; theme: ITheme }
+    } | null
+    if (!term?.options) return
+    term.options.fontSize = settings.codeFontSize
+    term.options.fontFamily = settings.codeFont
+    term.options.theme = getTerminalTheme(
+      containerRef.current,
+      settings.terminalScheme
+    )
+    fitAddonRef.current?.fit()
+  }, [settings.codeFontSize, settings.codeFont, settings.terminalScheme])
 
   return (
     <div

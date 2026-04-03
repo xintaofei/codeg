@@ -108,8 +108,32 @@
     "resolvedTheme": {
       "light": "浅色",
       "dark": "深色",
-      "unknown": "未知"
-    }
+      "unknown": "--"
+    },
+    "accentColor": "强调色",
+    "fontSection": "字体",
+    "fontSectionDesc": "自定义界面和代码的字体及大小。",
+    "uiFont": "界面字体",
+    "codeFont": "代码字体",
+    "uiFontSize": "界面字号",
+    "codeFontSize": "代码字号",
+    "editorSection": "编辑器",
+    "editorSectionDesc": "配置代码语法高亮主题。",
+    "codeThemeLight": "浅色主题",
+    "codeThemeDark": "深色主题",
+    "terminalSection": "终端",
+    "terminalSectionDesc": "选择内置终端的配色方案。",
+    "terminalScheme": "配色方案",
+    "accessibilitySection": "无障碍",
+    "accessibilitySectionDesc": "调整间距和动画偏好。",
+    "density": "界面密度",
+    "densityCompact": "紧凑",
+    "densityDefault": "默认",
+    "densitySpacious": "宽松",
+    "reduceMotion": "减少动画",
+    "reduceMotionSystem": "跟随系统",
+    "reduceMotionOn": "开启",
+    "reduceMotionOff": "关闭"
   },
   "SystemSettings": {
     "loading": "加载中...",

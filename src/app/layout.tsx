@@ -1,16 +1,21 @@
 import type { Metadata } from "next"
 import "./globals.css"
-import { JetBrains_Mono } from "next/font/google"
+import { Inter, JetBrains_Mono } from "next/font/google"
 import { NextIntlClientProvider } from "next-intl"
 import { AppI18nProvider } from "@/components/i18n-provider"
 import { getMessagesForLocale } from "@/i18n/messages"
 import { resolveRequestLocale } from "@/i18n/resolve-request-locale"
 import { ThemeProvider } from "@/components/theme-provider"
 import { toIntlLocale } from "@/lib/i18n"
+import { AppearanceProvider } from "@/lib/appearance/use-appearance"
 
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+})
 const jetbrainsMono = JetBrains_Mono({
   subsets: ["latin"],
-  variable: "--font-sans",
+  variable: "--font-jetbrains-mono",
 })
 
 export const metadata: Metadata = {
@@ -37,7 +42,7 @@ export default async function RootLayout({
   return (
     <html
       lang={initialLocale}
-      className={jetbrainsMono.variable}
+      className={`${inter.variable} ${jetbrainsMono.variable}`}
       suppressHydrationWarning
     >
       <body>
@@ -57,7 +62,7 @@ export default async function RootLayout({
               enableSystem
               disableTransitionOnChange
             >
-              {children}
+              <AppearanceProvider>{children}</AppearanceProvider>
             </ThemeProvider>
           </AppI18nProvider>
         </NextIntlClientProvider>
