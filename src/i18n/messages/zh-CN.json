@@ -117,7 +117,6 @@
     "codeFont": "代码字体",
     "uiFontSize": "界面字号",
     "codeFontSize": "代码字号",
-    "customFontPlaceholder": "输入字体名称...",
     "editorSection": "编辑器",
     "editorSectionDesc": "配置代码语法高亮主题。",
     "codeThemeLight": "浅色主题",

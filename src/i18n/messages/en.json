@@ -117,7 +117,6 @@
     "codeFont": "Code font",
     "uiFontSize": "UI font size",
     "codeFontSize": "Code font size",
-    "customFontPlaceholder": "Enter font family...",
     "editorSection": "Editor",
     "editorSectionDesc": "Configure code syntax highlighting theme.",
     "codeThemeLight": "Light theme",
