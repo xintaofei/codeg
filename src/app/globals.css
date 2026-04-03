@@ -174,7 +174,16 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-size: var(--font-size-base);
   }
+}
+
+code,
+pre,
+.font-mono,
+[data-streamdown="code-block-body"] {
+  font-family: var(--font-code);
+  font-size: var(--font-size-code);
 }
 
 /* Streamdown code blocks: dark mode via shiki dual-theme CSS variables */
