@@ -1468,7 +1468,13 @@
         "moreFiles": "+{count} 个更多文件",
         "plan": "计划",
         "allowedActions": "允许的操作",
-        "targetMode": "目标模式：{mode}"
+        "targetMode": "目标模式：{mode}",
+        "actions": {
+          "allowOnce": "允许",
+          "allowAlways": "始终允许",
+          "rejectOnce": "拒绝",
+          "rejectAlways": "始终拒绝"
+        }
       },
       "questionDialog": {
         "title": "代理正在提问",

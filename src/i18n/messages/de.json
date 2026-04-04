@@ -1468,7 +1468,13 @@
         "moreFiles": "+{count} weitere Dateien",
         "plan": "Arbeitsplan",
         "allowedActions": "Erlaubte Aktionen",
-        "targetMode": "Zielmodus: {mode}"
+        "targetMode": "Zielmodus: {mode}",
+        "actions": {
+          "allowOnce": "Erlauben",
+          "allowAlways": "Immer erlauben",
+          "rejectOnce": "Ablehnen",
+          "rejectAlways": "Immer ablehnen"
+        }
       },
       "questionDialog": {
         "title": "Agent stellt eine Frage",

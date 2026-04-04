@@ -1468,7 +1468,13 @@
         "moreFiles": "+{count} ملف إضافي",
         "plan": "الخطة",
         "allowedActions": "الإجراءات المسموح بها",
-        "targetMode": "وضع الهدف: {mode}"
+        "targetMode": "وضع الهدف: {mode}",
+        "actions": {
+          "allowOnce": "السماح",
+          "allowAlways": "السماح دائمًا",
+          "rejectOnce": "رفض",
+          "rejectAlways": "رفض دائمًا"
+        }
       },
       "questionDialog": {
         "title": "الوكيل يطرح سؤالاً",

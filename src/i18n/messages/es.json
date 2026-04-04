@@ -1468,7 +1468,13 @@
         "moreFiles": "+{count} archivos más",
         "plan": "Plan de trabajo",
         "allowedActions": "Acciones permitidas",
-        "targetMode": "Modo objetivo: {mode}"
+        "targetMode": "Modo objetivo: {mode}",
+        "actions": {
+          "allowOnce": "Permitir",
+          "allowAlways": "Permitir siempre",
+          "rejectOnce": "Rechazar",
+          "rejectAlways": "Rechazar siempre"
+        }
       },
       "questionDialog": {
         "title": "El agente está haciendo una pregunta",

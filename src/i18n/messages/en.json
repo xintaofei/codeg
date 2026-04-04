@@ -1468,7 +1468,13 @@
         "moreFiles": "+{count} more files",
         "plan": "Plan",
         "allowedActions": "Allowed actions",
-        "targetMode": "Target mode: {mode}"
+        "targetMode": "Target mode: {mode}",
+        "actions": {
+          "allowOnce": "Allow",
+          "allowAlways": "Always allow",
+          "rejectOnce": "Reject",
+          "rejectAlways": "Always reject"
+        }
       },
       "questionDialog": {
         "title": "Agent is asking a question",
