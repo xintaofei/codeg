@@ -93,7 +93,8 @@
       "version_control": "バージョン管理",
       "system": "システム",
       "chat_channels": "チャットチャンネル",
-      "web_service": "Webサービス"
+      "web_service": "Webサービス",
+      "model_providers": "モデルプロバイダー"
     }
   },
   "AppearanceSettings": {
@@ -1808,5 +1809,37 @@
       "pt": "ポルトガル語",
       "ar": "アラビア語"
     }
+  },
+  "ModelProviderSettings": {
+    "sectionTitle": "モデルプロバイダー",
+    "sectionDescription": "エージェントのAPIプロバイダー認証情報を管理します。",
+    "filterAll": "すべて",
+    "providerListTitle": "設定済みプロバイダー",
+    "addProvider": "プロバイダーを追加",
+    "editProvider": "プロバイダーを編集",
+    "noProviders": "モデルプロバイダーはまだ設定されていません。",
+    "providerName": "名前",
+    "providerNamePlaceholder": "例: OpenAI、Anthropic",
+    "apiUrl": "API URL",
+    "apiUrlPlaceholder": "https://api.openai.com/v1",
+    "apiKey": "APIキー",
+    "apiKeyPlaceholder": "sk-...",
+    "apiKeyKeepCurrent": "空欄のまま現在の値を維持",
+    "agentTypes": "エージェントタイプ",
+    "agentTypesRequired": "少なくとも1つのエージェントタイプを選択してください。",
+    "nameRequired": "プロバイダー名は必須です。",
+    "apiUrlRequired": "API URLは必須です。",
+    "apiKeyRequired": "APIキーは必須です。",
+    "loadFailed": "プロバイダーの読み込みに失敗しました。",
+    "saveFailed": "変更の保存に失敗しました。",
+    "createSuccess": "プロバイダーを作成しました。",
+    "editSuccess": "プロバイダーを更新しました。",
+    "deleteSuccess": "プロバイダーを削除しました。",
+    "deleteConfirmTitle": "プロバイダーを削除",
+    "deleteConfirmMessage": "プロバイダー「{name}」を完全に削除しますか？",
+    "cancel": "キャンセル",
+    "delete": "削除",
+    "create": "作成",
+    "save": "保存"
   }
 }

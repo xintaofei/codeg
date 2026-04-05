@@ -93,7 +93,8 @@
       "version_control": "التحكم بالإصدارات",
       "system": "النظام",
       "chat_channels": "قنوات المحادثة",
-      "web_service": "خدمة الويب"
+      "web_service": "خدمة الويب",
+      "model_providers": "مزودو النماذج"
     }
   },
   "AppearanceSettings": {
@@ -1808,5 +1809,37 @@
       "pt": "البرتغالية",
       "ar": "العربية"
     }
+  },
+  "ModelProviderSettings": {
+    "sectionTitle": "مزودو النماذج",
+    "sectionDescription": "إدارة بيانات اعتماد مزودي API للوكلاء.",
+    "filterAll": "الكل",
+    "providerListTitle": "المزودون المُعدّون",
+    "addProvider": "إضافة مزود",
+    "editProvider": "تعديل المزود",
+    "noProviders": "لم يتم تكوين أي مزود نماذج بعد.",
+    "providerName": "الاسم",
+    "providerNamePlaceholder": "مثال: OpenAI، Anthropic",
+    "apiUrl": "عنوان API",
+    "apiUrlPlaceholder": "https://api.openai.com/v1",
+    "apiKey": "مفتاح API",
+    "apiKeyPlaceholder": "sk-...",
+    "apiKeyKeepCurrent": "اتركه فارغاً للإبقاء على الحالي",
+    "agentTypes": "أنواع الوكلاء",
+    "agentTypesRequired": "يجب اختيار نوع وكيل واحد على الأقل.",
+    "nameRequired": "اسم المزود مطلوب.",
+    "apiUrlRequired": "عنوان API مطلوب.",
+    "apiKeyRequired": "مفتاح API مطلوب.",
+    "loadFailed": "فشل تحميل المزودين.",
+    "saveFailed": "فشل حفظ التغييرات.",
+    "createSuccess": "تم إنشاء المزود.",
+    "editSuccess": "تم تحديث المزود.",
+    "deleteSuccess": "تم حذف المزود.",
+    "deleteConfirmTitle": "حذف المزود",
+    "deleteConfirmMessage": "سيتم حذف المزود \"{name}\" نهائياً. هل أنت متأكد؟",
+    "cancel": "إلغاء",
+    "delete": "حذف",
+    "create": "إنشاء",
+    "save": "حفظ"
   }
 }

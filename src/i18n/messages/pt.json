@@ -93,7 +93,8 @@
       "version_control": "Controle de versão",
       "system": "Sistema",
       "chat_channels": "Canais de chat",
-      "web_service": "Serviço Web"
+      "web_service": "Serviço Web",
+      "model_providers": "Provedores de Modelos"
     }
   },
   "AppearanceSettings": {
@@ -1808,5 +1809,37 @@
       "pt": "Português",
       "ar": "Árabe"
     }
+  },
+  "ModelProviderSettings": {
+    "sectionTitle": "Provedores de Modelos",
+    "sectionDescription": "Gerenciar credenciais de provedores de API para agentes.",
+    "filterAll": "Todos",
+    "providerListTitle": "Provedores Configurados",
+    "addProvider": "Adicionar Provedor",
+    "editProvider": "Editar Provedor",
+    "noProviders": "Nenhum provedor de modelo configurado.",
+    "providerName": "Nome",
+    "providerNamePlaceholder": "Ex. OpenAI, Anthropic",
+    "apiUrl": "URL da API",
+    "apiUrlPlaceholder": "https://api.openai.com/v1",
+    "apiKey": "Chave da API",
+    "apiKeyPlaceholder": "sk-...",
+    "apiKeyKeepCurrent": "Deixe em branco para manter atual",
+    "agentTypes": "Tipos de Agente",
+    "agentTypesRequired": "Pelo menos um tipo de agente é necessário.",
+    "nameRequired": "O nome do provedor é obrigatório.",
+    "apiUrlRequired": "A URL da API é obrigatória.",
+    "apiKeyRequired": "A chave da API é obrigatória.",
+    "loadFailed": "Falha ao carregar provedores.",
+    "saveFailed": "Falha ao salvar alterações.",
+    "createSuccess": "Provedor criado.",
+    "editSuccess": "Provedor atualizado.",
+    "deleteSuccess": "Provedor excluído.",
+    "deleteConfirmTitle": "Excluir Provedor",
+    "deleteConfirmMessage": "O provedor \"{name}\" será excluído permanentemente. Tem certeza?",
+    "cancel": "Cancelar",
+    "delete": "Excluir",
+    "create": "Criar",
+    "save": "Salvar"
   }
 }

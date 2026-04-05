@@ -220,6 +220,15 @@ export function compareAgentType(a: AgentType, b: AgentType): number {
   return aIndex - bIndex
 }
 
+export const ALL_AGENT_TYPES: AgentType[] = [
+  "claude_code",
+  "codex",
+  "open_code",
+  "gemini",
+  "open_claw",
+  "cline",
+]
+
 export const AGENT_LABELS: Record<AgentType, string> = {
   claude_code: "Claude Code",
   codex: "Codex",
@@ -887,4 +896,14 @@ export interface ChatChannelMessageLog {
   status: "sent" | "failed"
   error_detail: string | null
   created_at: string
+}
+
+export interface ModelProviderInfo {
+  id: number
+  name: string
+  api_url: string
+  api_key_masked: string
+  agent_types: AgentType[]
+  created_at: string
+  updated_at: string
 }

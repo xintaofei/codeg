@@ -15,6 +15,7 @@ import {
   BotMessageSquare,
   Palette,
   PlugZap,
+  Server,
   Settings,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -31,6 +32,7 @@ interface SettingsNavItem {
   labelKey:
     | "appearance"
     | "agents"
+    | "model_providers"
     | "mcp"
     | "skills"
     | "shortcuts"
@@ -51,6 +53,11 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     href: "/settings/agents",
     labelKey: "agents",
     icon: Bot,
+  },
+  {
+    href: "/settings/model-providers",
+    labelKey: "model_providers",
+    icon: Server,
   },
   {
     href: "/settings/mcp",

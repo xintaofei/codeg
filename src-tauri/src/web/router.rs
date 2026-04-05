@@ -202,6 +202,11 @@ pub fn build_router(state: Arc<AppState>, token: String, static_dir: std::path::
         .route("/set_chat_message_language", post(handlers::chat_channel::set_chat_message_language))
         .route("/weixin_get_qrcode", post(handlers::chat_channel::weixin_get_qrcode))
         .route("/weixin_check_qrcode", post(handlers::chat_channel::weixin_check_qrcode))
+        // ─── Model Providers ───
+        .route("/list_model_providers", post(handlers::model_provider::list_model_providers))
+        .route("/create_model_provider", post(handlers::model_provider::create_model_provider))
+        .route("/update_model_provider", post(handlers::model_provider::update_model_provider))
+        .route("/delete_model_provider", post(handlers::model_provider::delete_model_provider))
         // ─── Terminal ───
         .route("/terminal_spawn", post(handlers::terminal::terminal_spawn))
         .route("/terminal_write", post(handlers::terminal::terminal_write))

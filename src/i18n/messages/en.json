@@ -93,7 +93,8 @@
       "version_control": "Version Control",
       "system": "System",
       "chat_channels": "Chat Channels",
-      "web_service": "Web Service"
+      "web_service": "Web Service",
+      "model_providers": "Model Providers"
     }
   },
   "AppearanceSettings": {
@@ -1808,5 +1809,37 @@
       "pt": "Portuguese",
       "ar": "Arabic"
     }
+  },
+  "ModelProviderSettings": {
+    "sectionTitle": "Model Providers",
+    "sectionDescription": "Manage API provider credentials for agents.",
+    "filterAll": "All",
+    "providerListTitle": "Configured Providers",
+    "addProvider": "Add Provider",
+    "editProvider": "Edit Provider",
+    "noProviders": "No model providers configured yet.",
+    "providerName": "Name",
+    "providerNamePlaceholder": "e.g. OpenAI, Anthropic",
+    "apiUrl": "API URL",
+    "apiUrlPlaceholder": "https://api.openai.com/v1",
+    "apiKey": "API Key",
+    "apiKeyPlaceholder": "sk-...",
+    "apiKeyKeepCurrent": "Leave blank to keep current",
+    "agentTypes": "Agent Types",
+    "agentTypesRequired": "At least one agent type is required.",
+    "nameRequired": "Provider name is required.",
+    "apiUrlRequired": "API URL is required.",
+    "apiKeyRequired": "API Key is required.",
+    "loadFailed": "Failed to load providers.",
+    "saveFailed": "Failed to save changes.",
+    "createSuccess": "Provider created.",
+    "editSuccess": "Provider updated.",
+    "deleteSuccess": "Provider deleted.",
+    "deleteConfirmTitle": "Delete Provider",
+    "deleteConfirmMessage": "This will permanently delete the provider \"{name}\". Are you sure?",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "create": "Create",
+    "save": "Save"
   }
 }

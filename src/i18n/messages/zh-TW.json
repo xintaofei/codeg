@@ -93,7 +93,8 @@
       "version_control": "版本控制",
       "system": "系統",
       "chat_channels": "訊息頻道",
-      "web_service": "Web 服務"
+      "web_service": "Web 服務",
+      "model_providers": "模型供應商"
     }
   },
   "AppearanceSettings": {
@@ -1808,5 +1809,37 @@
       "pt": "葡萄牙語",
       "ar": "阿拉伯語"
     }
+  },
+  "ModelProviderSettings": {
+    "sectionTitle": "模型供應商",
+    "sectionDescription": "管理 Agent 的 API 供應商憑據。",
+    "filterAll": "全部",
+    "providerListTitle": "已配置的供應商",
+    "addProvider": "新增供應商",
+    "editProvider": "編輯供應商",
+    "noProviders": "尚未配置模型供應商。",
+    "providerName": "名稱",
+    "providerNamePlaceholder": "例如 OpenAI、Anthropic",
+    "apiUrl": "API 位址",
+    "apiUrlPlaceholder": "https://api.openai.com/v1",
+    "apiKey": "API 金鑰",
+    "apiKeyPlaceholder": "sk-...",
+    "apiKeyKeepCurrent": "留空則保持不變",
+    "agentTypes": "代理類型",
+    "agentTypesRequired": "至少選擇一個代理類型。",
+    "nameRequired": "供應商名稱不能為空。",
+    "apiUrlRequired": "API 位址不能為空。",
+    "apiKeyRequired": "API 金鑰不能為空。",
+    "loadFailed": "載入供應商失敗。",
+    "saveFailed": "儲存變更失敗。",
+    "createSuccess": "供應商已建立。",
+    "editSuccess": "供應商已更新。",
+    "deleteSuccess": "供應商已刪除。",
+    "deleteConfirmTitle": "刪除供應商",
+    "deleteConfirmMessage": "確定要永久刪除供應商「{name}」嗎？",
+    "cancel": "取消",
+    "delete": "刪除",
+    "create": "建立",
+    "save": "儲存"
   }
 }

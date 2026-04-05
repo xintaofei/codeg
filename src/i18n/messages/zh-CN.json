@@ -93,7 +93,8 @@
       "version_control": "版本控制",
       "system": "系统",
       "chat_channels": "消息渠道",
-      "web_service": "Web 服务"
+      "web_service": "Web 服务",
+      "model_providers": "模型供应商"
     }
   },
   "AppearanceSettings": {
@@ -1808,5 +1809,37 @@
       "pt": "葡萄牙语",
       "ar": "阿拉伯语"
     }
+  },
+  "ModelProviderSettings": {
+    "sectionTitle": "模型供应商",
+    "sectionDescription": "管理 Agent 的 API 供应商凭据。",
+    "filterAll": "全部",
+    "providerListTitle": "已配置的供应商",
+    "addProvider": "添加供应商",
+    "editProvider": "编辑供应商",
+    "noProviders": "尚未配置模型供应商。",
+    "providerName": "名称",
+    "providerNamePlaceholder": "例如 OpenAI、Anthropic",
+    "apiUrl": "API 地址",
+    "apiUrlPlaceholder": "https://api.openai.com/v1",
+    "apiKey": "API 密钥",
+    "apiKeyPlaceholder": "sk-...",
+    "apiKeyKeepCurrent": "留空则保持不变",
+    "agentTypes": "代理类型",
+    "agentTypesRequired": "至少选择一个代理类型。",
+    "nameRequired": "供应商名称不能为空。",
+    "apiUrlRequired": "API 地址不能为空。",
+    "apiKeyRequired": "API 密钥不能为空。",
+    "loadFailed": "加载供应商失败。",
+    "saveFailed": "保存更改失败。",
+    "createSuccess": "供应商已创建。",
+    "editSuccess": "供应商已更新。",
+    "deleteSuccess": "供应商已删除。",
+    "deleteConfirmTitle": "删除供应商",
+    "deleteConfirmMessage": "确定要永久删除供应商「{name}」吗？",
+    "cancel": "取消",
+    "delete": "删除",
+    "create": "创建",
+    "save": "保存"
   }
 }

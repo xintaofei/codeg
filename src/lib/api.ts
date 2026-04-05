@@ -57,6 +57,7 @@ import type {
   ChatChannelInfo,
   ChannelStatusInfo,
   ChatChannelMessageLog,
+  ModelProviderInfo,
 } from "./types"
 
 export async function listConversations(params?: {
@@ -1467,4 +1468,41 @@ export async function weixinCheckQrcode(
   status: string
 }> {
   return getTransport().call("weixin_check_qrcode", { channelId, qrcode })
+}
+
+// ---------------------------------------------------------------------------
+// Model Providers
+// ---------------------------------------------------------------------------
+
+export async function listModelProviders(): Promise<ModelProviderInfo[]> {
+  return getTransport().call("list_model_providers")
+}
+
+export async function createModelProvider(params: {
+  name: string
+  apiUrl: string
+  apiKey: string
+  agentTypes: string[]
+}): Promise<ModelProviderInfo> {
+  return getTransport().call("create_model_provider", params)
+}
+
+export async function updateModelProvider(params: {
+  id: number
+  name?: string | null
+  apiUrl?: string | null
+  apiKey?: string | null
+  agentTypes?: string[] | null
+}): Promise<ModelProviderInfo> {
+  return getTransport().call("update_model_provider", {
+    id: params.id,
+    name: params.name ?? null,
+    apiUrl: params.apiUrl ?? null,
+    apiKey: params.apiKey ?? null,
+    agentTypes: params.agentTypes ?? null,
+  })
+}
+
+export async function deleteModelProvider(id: number): Promise<void> {
+  return getTransport().call("delete_model_provider", { id })
 }

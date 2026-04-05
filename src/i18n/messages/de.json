@@ -93,7 +93,8 @@
       "version_control": "Versionskontrolle",
       "system": "Systemeinstellungen",
       "chat_channels": "Chat-Kanäle",
-      "web_service": "Webdienst"
+      "web_service": "Webdienst",
+      "model_providers": "Modellanbieter"
     }
   },
   "AppearanceSettings": {
@@ -1808,5 +1809,37 @@
       "pt": "Portugiesisch",
       "ar": "Arabisch"
     }
+  },
+  "ModelProviderSettings": {
+    "sectionTitle": "Modellanbieter",
+    "sectionDescription": "API-Anbieter-Zugangsdaten für Agenten verwalten.",
+    "filterAll": "Alle",
+    "providerListTitle": "Konfigurierte Anbieter",
+    "addProvider": "Anbieter hinzufügen",
+    "editProvider": "Anbieter bearbeiten",
+    "noProviders": "Noch keine Modellanbieter konfiguriert.",
+    "providerName": "Name",
+    "providerNamePlaceholder": "z.B. OpenAI, Anthropic",
+    "apiUrl": "API-URL",
+    "apiUrlPlaceholder": "https://api.openai.com/v1",
+    "apiKey": "API-Schlüssel",
+    "apiKeyPlaceholder": "sk-...",
+    "apiKeyKeepCurrent": "Leer lassen, um aktuellen Wert beizubehalten",
+    "agentTypes": "Agententypen",
+    "agentTypesRequired": "Mindestens ein Agententyp ist erforderlich.",
+    "nameRequired": "Anbietername ist erforderlich.",
+    "apiUrlRequired": "API-URL ist erforderlich.",
+    "apiKeyRequired": "API-Schlüssel ist erforderlich.",
+    "loadFailed": "Anbieter konnten nicht geladen werden.",
+    "saveFailed": "Änderungen konnten nicht gespeichert werden.",
+    "createSuccess": "Anbieter erstellt.",
+    "editSuccess": "Anbieter aktualisiert.",
+    "deleteSuccess": "Anbieter gelöscht.",
+    "deleteConfirmTitle": "Anbieter löschen",
+    "deleteConfirmMessage": "Der Anbieter \"{name}\" wird dauerhaft gelöscht. Sind Sie sicher?",
+    "cancel": "Abbrechen",
+    "delete": "Löschen",
+    "create": "Erstellen",
+    "save": "Speichern"
   }
 }

@@ -93,7 +93,8 @@
       "version_control": "Contrôle de version",
       "system": "Système",
       "chat_channels": "Canaux de chat",
-      "web_service": "Service Web"
+      "web_service": "Service Web",
+      "model_providers": "Fournisseurs de Modèles"
     }
   },
   "AppearanceSettings": {
@@ -1808,5 +1809,37 @@
       "pt": "Portugais",
       "ar": "Arabe"
     }
+  },
+  "ModelProviderSettings": {
+    "sectionTitle": "Fournisseurs de Modèles",
+    "sectionDescription": "Gérer les identifiants des fournisseurs d'API pour les agents.",
+    "filterAll": "Tous",
+    "providerListTitle": "Fournisseurs Configurés",
+    "addProvider": "Ajouter un Fournisseur",
+    "editProvider": "Modifier le Fournisseur",
+    "noProviders": "Aucun fournisseur de modèle configuré.",
+    "providerName": "Nom",
+    "providerNamePlaceholder": "Ex. OpenAI, Anthropic",
+    "apiUrl": "URL de l'API",
+    "apiUrlPlaceholder": "https://api.openai.com/v1",
+    "apiKey": "Clé API",
+    "apiKeyPlaceholder": "sk-...",
+    "apiKeyKeepCurrent": "Laisser vide pour conserver l'actuelle",
+    "agentTypes": "Types d'Agent",
+    "agentTypesRequired": "Au moins un type d'agent est requis.",
+    "nameRequired": "Le nom du fournisseur est requis.",
+    "apiUrlRequired": "L'URL de l'API est requise.",
+    "apiKeyRequired": "La clé API est requise.",
+    "loadFailed": "Échec du chargement des fournisseurs.",
+    "saveFailed": "Échec de la sauvegarde.",
+    "createSuccess": "Fournisseur créé.",
+    "editSuccess": "Fournisseur mis à jour.",
+    "deleteSuccess": "Fournisseur supprimé.",
+    "deleteConfirmTitle": "Supprimer le Fournisseur",
+    "deleteConfirmMessage": "Le fournisseur \"{name}\" sera définitivement supprimé. Êtes-vous sûr ?",
+    "cancel": "Annuler",
+    "delete": "Supprimer",
+    "create": "Créer",
+    "save": "Enregistrer"
   }
 }

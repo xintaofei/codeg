@@ -9,3 +9,4 @@ pub use super::conversation::Entity as Conversation;
 pub use super::folder::Entity as Folder;
 pub use super::folder_command::Entity as FolderCommand;
 pub use super::folder_opened_conversation::Entity as FolderOpenedConversation;
+pub use super::model_provider::Entity as ModelProvider;
