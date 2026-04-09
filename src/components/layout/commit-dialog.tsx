@@ -1196,7 +1196,7 @@ export function CommitWorkspace({
                 placeholder={t("commitMessagePlaceholder")}
                 defaultValue=""
                 onChange={handleMessageChange}
-                className="min-h-[90px] resize-y"
+                className="min-h-[90px] max-h-[200px] resize-y"
               />
               <div className="mt-3 flex items-center justify-end gap-2">
                 <Button variant="outline" onClick={onCancel}>
