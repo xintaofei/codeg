@@ -109,10 +109,18 @@ export function applyAppearanceSettings(settings: AppearanceSettings): void {
     (!root.classList.contains("light") &&
       window.matchMedia("(prefers-color-scheme: dark)").matches)
 
-  // UI font size: use CSS zoom to scale the entire interface uniformly,
-  // including absolute px values from Tailwind arbitrary classes like text-[13px]
+  // UI font size: scale via root font-size AND zoom for complete coverage.
+  // - root font-size affects all rem-based Tailwind utilities (text-sm, etc.)
+  // - zoom affects absolute px values (text-[13px], etc.)
   const zoom = settings.uiFontSize / DEFAULT_APPEARANCE.uiFontSize
-  root.style.zoom = String(zoom)
+  root.style.setProperty("--ui-font-size", `${settings.uiFontSize}px`)
+  root.style.fontSize = `${settings.uiFontSize}px`
+  // Try zoom (works in Chromium/Safari); harmless no-op if unsupported
+  try {
+    root.style.setProperty("zoom", String(zoom))
+  } catch {
+    // Fallback: font-size alone handles rem-based values
+  }
 
   // Code font size: store as CSS variable; getCodeFontSize() compensates
   // for zoom so Monaco/terminal render at the intended pixel size
