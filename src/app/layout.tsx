@@ -51,7 +51,7 @@ export default async function RootLayout({
         {/* Suppress benign ResizeObserver loop warnings (W3C spec §3.3) */}
         <script>{`window.addEventListener("error",function(e){if(e.message&&e.message.indexOf("ResizeObserver")!==-1){e.stopImmediatePropagation();e.preventDefault()}});window.onerror=function(m){if(typeof m==="string"&&m.indexOf("ResizeObserver")!==-1)return true}`}</script>
         {/* Apply appearance settings before paint to prevent flash */}
-        <script>{`(function(){try{var s=localStorage.getItem("settings:appearance:v1");if(!s)return;var a=JSON.parse(s);var r=document.documentElement;if(typeof a.uiFontSize==="number")r.style.setProperty("--ui-font-size",Math.min(Math.max(a.uiFontSize,12),20)+"px");if(typeof a.codeFontSize==="number")r.style.setProperty("--code-font-size",Math.min(Math.max(a.codeFontSize,10),24)+"px")}catch(e){}})()`}</script>
+        <script>{`(function(){try{var s=localStorage.getItem("settings:appearance:v1");if(!s)return;var a=JSON.parse(s);var r=document.documentElement;if(typeof a.uiFontSize==="number"){var u=Math.min(Math.max(a.uiFontSize,12),20)+"px";r.style.setProperty("--ui-font-size",u);r.style.fontSize=u}if(typeof a.codeFontSize==="number")r.style.setProperty("--code-font-size",Math.min(Math.max(a.codeFontSize,10),24)+"px")}catch(e){}})()`}</script>
         <NextIntlClientProvider
           locale={initialLocale}
           messages={initialMessages}

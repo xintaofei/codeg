@@ -109,8 +109,10 @@ export function applyAppearanceSettings(settings: AppearanceSettings): void {
     (!root.classList.contains("light") &&
       window.matchMedia("(prefers-color-scheme: dark)").matches)
 
-  // Apply font sizes
+  // Apply font sizes — set both the CSS variable and the direct property
+  // to ensure it overrides any Tailwind preflight/layer rules
   root.style.setProperty("--ui-font-size", `${settings.uiFontSize}px`)
+  root.style.fontSize = `${settings.uiFontSize}px`
   root.style.setProperty("--code-font-size", `${settings.codeFontSize}px`)
 
   // Clear previous theme color overrides
