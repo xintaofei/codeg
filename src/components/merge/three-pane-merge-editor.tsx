@@ -8,6 +8,7 @@ import { ArrowLeft, ArrowRight, CheckCheck } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { defineMonacoThemes, useMonacoThemeSync } from "@/lib/monaco-themes"
 import { cn } from "@/lib/utils"
+import { getCodeFontSize } from "@/lib/appearance-settings"
 import { Button } from "@/components/ui/button"
 import {
   ResizableHandle,
@@ -498,7 +499,7 @@ export function ThreePaneMergeEditor({
   // Editor options
   // ---------------------------------------------------------------------------
   const editorOptions: MonacoEditorNs.IStandaloneEditorConstructionOptions = {
-    fontSize: 13,
+    fontSize: getCodeFontSize(),
     minimap: { enabled: false },
     scrollBeyondLastLine: false,
     automaticLayout: true,

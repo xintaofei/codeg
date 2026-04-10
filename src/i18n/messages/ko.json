@@ -111,6 +111,22 @@
       "light": "라이트",
       "dark": "다크",
       "unknown": "--"
+    },
+    "themeColor": "테마 색상",
+    "themeColorDescription": "인터페이스의 강조 색상을 선택하세요.",
+    "fontSizeTitle": "글꼴 크기",
+    "fontSizeDescription": "인터페이스 및 코드의 글꼴 크기를 조정합니다.",
+    "uiFontSize": "UI 글꼴 크기",
+    "codeFontSize": "코드 글꼴 크기",
+    "resetDefaults": "기본값으로 재설정",
+    "themeColors": {
+      "zinc": "징크",
+      "slate": "슬레이트",
+      "blue": "블루",
+      "green": "그린",
+      "violet": "바이올렛",
+      "orange": "오렌지",
+      "rose": "로즈"
     }
   },
   "SystemSettings": {

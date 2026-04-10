@@ -3,6 +3,10 @@
 import { useEffect, useRef, useState } from "react"
 import { subscribe } from "@/lib/platform"
 import {
+  APPEARANCE_UPDATED_EVENT,
+  getCodeFontSize,
+} from "@/lib/appearance-settings"
+import {
   terminalSpawn,
   terminalWrite,
   terminalResize,
@@ -140,7 +144,7 @@ export function TerminalView({
 
       const term = new Terminal({
         cursorBlink: true,
-        fontSize: 13,
+        fontSize: getCodeFontSize(),
         fontFamily: "Menlo, Monaco, 'Courier New', monospace",
         theme: getTerminalTheme(containerRef.current),
         allowProposedApi: true,
@@ -161,6 +165,12 @@ export function TerminalView({
         attributes: true,
         attributeFilter: ["class"],
       })
+
+      const onAppearanceUpdate = () => {
+        term.options.fontSize = getCodeFontSize()
+        fitAddon.fit()
+      }
+      window.addEventListener(APPEARANCE_UPDATED_EVENT, onAppearanceUpdate)
 
       // Send input to PTY
       const onDataDisposable = term.onData((data: string) => {
@@ -201,6 +211,7 @@ export function TerminalView({
       )
 
       if (cancelled) {
+        window.removeEventListener(APPEARANCE_UPDATED_EVENT, onAppearanceUpdate)
         themeObserver.disconnect()
         onDataDisposable.dispose()
         onResizeDisposable.dispose()
@@ -223,6 +234,7 @@ export function TerminalView({
       // If unmounted while spawn was in flight, clean up the spawned PTY
       if (cancelled) {
         terminalKill(terminalId).catch(() => {})
+        window.removeEventListener(APPEARANCE_UPDATED_EVENT, onAppearanceUpdate)
         themeObserver.disconnect()
         onDataDisposable.dispose()
         onResizeDisposable.dispose()
@@ -258,6 +270,7 @@ export function TerminalView({
       cleanup = () => {
         if (resizeTimer) clearTimeout(resizeTimer)
         if (fitTimer) clearTimeout(fitTimer)
+        window.removeEventListener(APPEARANCE_UPDATED_EVENT, onAppearanceUpdate)
         themeObserver.disconnect()
         onDataDisposable.dispose()
         onResizeDisposable.dispose()

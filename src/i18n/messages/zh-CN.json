@@ -111,6 +111,22 @@
       "light": "浅色",
       "dark": "深色",
       "unknown": "未知"
+    },
+    "themeColor": "主题色",
+    "themeColorDescription": "选择界面主色调。",
+    "fontSizeTitle": "字体大小",
+    "fontSizeDescription": "调整界面和代码的字体大小。",
+    "uiFontSize": "界面字体大小",
+    "codeFontSize": "代码字体大小",
+    "resetDefaults": "恢复默认",
+    "themeColors": {
+      "zinc": "锌灰",
+      "slate": "岩蓝",
+      "blue": "蓝色",
+      "green": "绿色",
+      "violet": "紫色",
+      "orange": "橙色",
+      "rose": "玫红"
     }
   },
   "SystemSettings": {

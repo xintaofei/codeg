@@ -111,6 +111,22 @@
       "light": "Hell",
       "dark": "Dunkel",
       "unknown": "--"
+    },
+    "themeColor": "Themenfarbe",
+    "themeColorDescription": "Wählen Sie die Akzentfarbe für die Benutzeroberfläche.",
+    "fontSizeTitle": "Schriftgröße",
+    "fontSizeDescription": "Passen Sie die Schriftgröße für Oberfläche und Code an.",
+    "uiFontSize": "UI-Schriftgröße",
+    "codeFontSize": "Code-Schriftgröße",
+    "resetDefaults": "Auf Standard zurücksetzen",
+    "themeColors": {
+      "zinc": "Zink",
+      "slate": "Schiefer",
+      "blue": "Blau",
+      "green": "Grün",
+      "violet": "Violett",
+      "orange": "Orange",
+      "rose": "Rosa"
     }
   },
   "SystemSettings": {

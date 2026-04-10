@@ -24,6 +24,7 @@ import { Streamdown } from "streamdown"
 import { readFileBase64 } from "@/lib/api"
 import { normalizeMathDelimiters } from "@/components/ai-elements/message"
 import { defineMonacoThemes, useMonacoThemeSync } from "@/lib/monaco-themes"
+import { getCodeFontSize } from "@/lib/appearance-settings"
 import "@/lib/monaco-local"
 
 const math = createMathPlugin({ singleDollarTextMath: true })
@@ -1594,7 +1595,7 @@ export function FileWorkspacePanel() {
                 readOnly: !canEdit,
                 minimap: { enabled: false },
                 automaticLayout: true,
-                fontSize: 13,
+                fontSize: getCodeFontSize(),
                 lineNumbersMinChars,
                 lineDecorationsWidth: 10,
                 wordWrap: "off",
