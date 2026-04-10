@@ -7,6 +7,7 @@ import type { DiffOnMount } from "@monaco-editor/react"
 import type { editor as MonacoEditorNs } from "monaco-editor"
 import { defineMonacoThemes, useMonacoThemeSync } from "@/lib/monaco-themes"
 import { cn } from "@/lib/utils"
+import { getCodeFontSize } from "@/lib/appearance-settings"
 
 import "@/lib/monaco-local"
 
@@ -187,7 +188,7 @@ export function DiffViewer({
             renderSideBySide: true,
             renderSideBySideInlineBreakpoint: 0,
             automaticLayout: true,
-            fontSize: 13,
+            fontSize: getCodeFontSize(),
             minimap: { enabled: false },
             scrollBeyondLastLine: false,
             renderOverviewRuler: false,
