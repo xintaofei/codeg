@@ -844,6 +844,12 @@ async fn run_connection(
                         // Only emit a visible error for unexpected failures;
                         // "Method not found" is expected for agents that don't
                         // support session resume (e.g. Cline).
+                        // "Authentication required" is expected for agents whose
+                        // credentials have expired (e.g. Gemini CLI) — skip
+                        // session/new too since it will also fail.
+                        if err_str.contains("Authentication required") {
+                            return Ok(());
+                        }
                         if !err_str.contains("Method not found") {
                             crate::web::event_bridge::emit_event(
                                 &emitter_clone,

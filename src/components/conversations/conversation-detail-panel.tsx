@@ -225,7 +225,9 @@ const ConversationTabView = memo(function ConversationTabView({
   // resolves, we can't update the DB status yet.  This ref records the
   // desired status so the createConversation callback can apply it.
   const deferredStatusRef = useRef<string | null>(null)
-  const externalIdSavedRef = useRef(false)
+  // For existing conversations (opened from sidebar), the external_id is
+  // already persisted — don't let a session/new fallback overwrite it.
+  const externalIdSavedRef = useRef(conversationId != null)
   const sessionIdRef = useRef<string | null>(null)
   const syncCancelRef = useRef<(() => void) | null>(null)
 
@@ -477,6 +479,11 @@ const ConversationTabView = memo(function ConversationTabView({
     if (statusUpdatedRef.current) return
     const persistedId = dbConvIdRef.current
     if (!persistedId) return
+    // Only update status if the user actually interacted in this session.
+    // A pure history view (opened from sidebar, no messages sent) should
+    // not flip the conversation to "completed" just because the ACP
+    // connection disconnected (e.g. agent auth expired).
+    if (!hasSentMessage) return
     if (connStatus === "disconnected") {
       statusUpdatedRef.current = true
       updateConversationLocal(persistedId, { status: "completed" })
@@ -490,7 +497,7 @@ const ConversationTabView = memo(function ConversationTabView({
         console.error("[ConversationTabView] update status:", e)
       )
     }
-  }, [connStatus, updateConversationLocal])
+  }, [connStatus, hasSentMessage, updateConversationLocal])
 
   useEffect(() => {
     if (dbConversationId == null) return

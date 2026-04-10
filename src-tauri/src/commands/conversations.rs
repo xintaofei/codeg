@@ -289,11 +289,12 @@ pub async fn get_folder_conversation_core(
             match parser.get_conversation(&eid) {
                 Ok(d) => Ok((d.turns, d.session_stats, None)),
                 Err(crate::parsers::ParseError::ConversationNotFound(_)) => {
-                    // For agents like OpenClaw and Cline, the external_id is an
-                    // ACP session UUID that doesn't correspond to any local file.
-                    // Fall back to matching by folder_path and started_at from
-                    // the parsed conversation list.
-                    if at == AgentType::OpenClaw || at == AgentType::Cline {
+                    // The external_id may no longer match any local file —
+                    // e.g. an ACP session UUID (OpenClaw, Cline) or a stale
+                    // ID after session/new fallback overwrote the original
+                    // (Gemini CLI).  Fall back to matching by folder_path
+                    // and started_at from the parsed conversation list.
+                    if matches!(at, AgentType::OpenClaw | AgentType::Cline | AgentType::Gemini) {
                         if let Ok(all) = parser.list_conversations() {
                             // Filter by folder_path first, then find the closest
                             // started_at match within 300 seconds of db_created_at.
