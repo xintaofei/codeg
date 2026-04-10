@@ -1,3 +1,5 @@
+import { THEME_COLOR_PRESETS } from "./theme-color-presets"
+
 export type ThemeColor =
   | "zinc"
   | "slate"
@@ -95,4 +97,48 @@ export function writeAppearanceSettings(settings: AppearanceSettings): void {
   } catch {
     // Ignore storage failures
   }
+}
+
+/** Apply appearance settings to the document root as CSS custom properties. */
+export function applyAppearanceSettings(settings: AppearanceSettings): void {
+  if (typeof document === "undefined") return
+
+  const root = document.documentElement
+  const isDark =
+    root.classList.contains("dark") ||
+    (!root.classList.contains("light") &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches)
+
+  // Apply font sizes
+  root.style.setProperty("--ui-font-size", `${settings.uiFontSize}px`)
+  root.style.setProperty("--code-font-size", `${settings.codeFontSize}px`)
+
+  // Clear previous theme color overrides
+  const allVars = new Set<string>()
+  for (const preset of THEME_COLOR_PRESETS) {
+    for (const key of Object.keys(preset.light)) allVars.add(key)
+    for (const key of Object.keys(preset.dark)) allVars.add(key)
+  }
+  for (const v of allVars) {
+    root.style.removeProperty(v)
+  }
+
+  // Apply current theme color
+  const preset = THEME_COLOR_PRESETS.find((p) => p.name === settings.themeColor)
+  if (preset) {
+    const overrides = isDark ? preset.dark : preset.light
+    for (const [key, value] of Object.entries(overrides)) {
+      root.style.setProperty(key, value)
+    }
+  }
+}
+
+/** Read the current code font size from the CSS variable on :root. */
+export function getCodeFontSize(): number {
+  if (typeof document === "undefined") return DEFAULT_APPEARANCE.codeFontSize
+  const value =
+    document.documentElement.style.getPropertyValue("--code-font-size")
+  if (!value) return DEFAULT_APPEARANCE.codeFontSize
+  const parsed = parseInt(value, 10)
+  return Number.isNaN(parsed) ? DEFAULT_APPEARANCE.codeFontSize : parsed
 }
