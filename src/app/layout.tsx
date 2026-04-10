@@ -7,6 +7,7 @@ import { AppI18nProvider } from "@/components/i18n-provider"
 import { getMessagesForLocale } from "@/i18n/messages"
 import { resolveRequestLocale } from "@/i18n/resolve-request-locale"
 import { ThemeProvider } from "@/components/theme-provider"
+import { AppearanceInitializer } from "@/components/appearance-initializer"
 import { toIntlLocale } from "@/lib/i18n"
 
 const jetbrainsMono = JetBrains_Mono({
@@ -66,6 +67,7 @@ export default async function RootLayout({
               enableSystem
               disableTransitionOnChange
             >
+              <AppearanceInitializer />
               {children}
             </ThemeProvider>
           </AppI18nProvider>
