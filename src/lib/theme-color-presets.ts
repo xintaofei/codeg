@@ -126,9 +126,3 @@ export const THEME_COLOR_PRESETS: ThemeColorPreset[] = [
     },
   },
 ]
-
-export function getThemeColorPreset(
-  name: ThemeColor
-): ThemeColorPreset | undefined {
-  return THEME_COLOR_PRESETS.find((p) => p.name === name)
-}

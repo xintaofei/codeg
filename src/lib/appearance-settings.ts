@@ -39,6 +39,16 @@ export const CODE_FONT_SIZE_MAX = 24
 export const APPEARANCE_STORAGE_KEY = "settings:appearance:v1"
 export const APPEARANCE_UPDATED_EVENT = "codeg:appearance-updated"
 
+// Computed once: all CSS variable names used by any theme color preset
+const ALL_THEME_CSS_VARS: readonly string[] = (() => {
+  const s = new Set<string>()
+  for (const p of THEME_COLOR_PRESETS) {
+    for (const k of Object.keys(p.light)) s.add(k)
+    for (const k of Object.keys(p.dark)) s.add(k)
+  }
+  return [...s]
+})()
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max)
 }
@@ -99,7 +109,6 @@ export function writeAppearanceSettings(settings: AppearanceSettings): void {
   }
 }
 
-/** Apply appearance settings to the document root as CSS custom properties. */
 export function applyAppearanceSettings(settings: AppearanceSettings): void {
   if (typeof document === "undefined") return
 
@@ -109,35 +118,16 @@ export function applyAppearanceSettings(settings: AppearanceSettings): void {
     (!root.classList.contains("light") &&
       window.matchMedia("(prefers-color-scheme: dark)").matches)
 
-  // UI font size: scale via root font-size AND zoom for complete coverage.
-  // - root font-size affects all rem-based Tailwind utilities (text-sm, etc.)
-  // - zoom affects absolute px values (text-[13px], etc.)
   const zoom = settings.uiFontSize / DEFAULT_APPEARANCE.uiFontSize
   root.style.setProperty("--ui-font-size", `${settings.uiFontSize}px`)
   root.style.fontSize = `${settings.uiFontSize}px`
-  // Try zoom (works in Chromium/Safari); harmless no-op if unsupported
-  try {
-    root.style.setProperty("zoom", String(zoom))
-  } catch {
-    // Fallback: font-size alone handles rem-based values
-  }
+  root.style.setProperty("zoom", String(zoom))
 
-  // Code font size: store as CSS variable; getCodeFontSize() compensates
-  // for zoom so Monaco/terminal render at the intended pixel size
   root.style.setProperty("--code-font-size", `${settings.codeFontSize}px`)
   root.style.setProperty("--ui-zoom", String(zoom))
 
-  // Clear previous theme color overrides
-  const allVars = new Set<string>()
-  for (const preset of THEME_COLOR_PRESETS) {
-    for (const key of Object.keys(preset.light)) allVars.add(key)
-    for (const key of Object.keys(preset.dark)) allVars.add(key)
-  }
-  for (const v of allVars) {
-    root.style.removeProperty(v)
-  }
+  for (const v of ALL_THEME_CSS_VARS) root.style.removeProperty(v)
 
-  // Apply current theme color
   const preset = THEME_COLOR_PRESETS.find((p) => p.name === settings.themeColor)
   if (preset) {
     const overrides = isDark ? preset.dark : preset.light

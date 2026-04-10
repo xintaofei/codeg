@@ -1,17 +1,11 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
-import { useTheme } from "next-themes"
+import { useCallback, useEffect, useState } from "react"
 import {
   type AppearanceSettings,
   type ThemeColor,
   APPEARANCE_STORAGE_KEY,
-  APPEARANCE_UPDATED_EVENT,
-  CODE_FONT_SIZE_MAX,
-  CODE_FONT_SIZE_MIN,
   DEFAULT_APPEARANCE,
-  UI_FONT_SIZE_MAX,
-  UI_FONT_SIZE_MIN,
   applyAppearanceSettings,
   readAppearanceSettings,
   writeAppearanceSettings,
@@ -26,40 +20,17 @@ interface UseAppearanceSettingsResult {
 }
 
 export function useAppearanceSettings(): UseAppearanceSettingsResult {
-  const [appearance, setAppearance] =
-    useState<AppearanceSettings>(DEFAULT_APPEARANCE)
-  const { resolvedTheme } = useTheme()
-  const appearanceRef = useRef(appearance)
+  const [appearance, setAppearance] = useState<AppearanceSettings>(
+    readAppearanceSettings
+  )
 
   useEffect(() => {
-    appearanceRef.current = appearance
-  }, [appearance])
-
-  // Re-apply theme color when dark/light mode changes
-  useEffect(() => {
-    applyAppearanceSettings(appearanceRef.current)
-  }, [resolvedTheme])
-
-  useEffect(() => {
-    const syncFromStorage = () => {
-      const settings = readAppearanceSettings()
-      setAppearance(settings)
-      applyAppearanceSettings(settings)
-    }
-
-    syncFromStorage()
-
     const onStorage = (event: StorageEvent) => {
       if (event.key && event.key !== APPEARANCE_STORAGE_KEY) return
-      syncFromStorage()
+      setAppearance(readAppearanceSettings())
     }
-
     window.addEventListener("storage", onStorage)
-    window.addEventListener(APPEARANCE_UPDATED_EVENT, syncFromStorage)
-    return () => {
-      window.removeEventListener("storage", onStorage)
-      window.removeEventListener(APPEARANCE_UPDATED_EVENT, syncFromStorage)
-    }
+    return () => window.removeEventListener("storage", onStorage)
   }, [])
 
   const update = useCallback((patch: Partial<AppearanceSettings>) => {
@@ -77,36 +48,26 @@ export function useAppearanceSettings(): UseAppearanceSettingsResult {
   )
 
   const updateUiFontSize = useCallback(
-    (size: number) =>
-      update({
-        uiFontSize: Math.round(
-          Math.min(Math.max(size, UI_FONT_SIZE_MIN), UI_FONT_SIZE_MAX)
-        ),
-      }),
+    (size: number) => update({ uiFontSize: size }),
     [update]
   )
 
   const updateCodeFontSize = useCallback(
-    (size: number) =>
-      update({
-        codeFontSize: Math.round(
-          Math.min(Math.max(size, CODE_FONT_SIZE_MIN), CODE_FONT_SIZE_MAX)
-        ),
-      }),
+    (size: number) => update({ codeFontSize: size }),
     [update]
   )
 
   const resetAppearance = useCallback(() => {
-    setAppearance({ ...DEFAULT_APPEARANCE })
     writeAppearanceSettings(DEFAULT_APPEARANCE)
     applyAppearanceSettings(DEFAULT_APPEARANCE)
+    setAppearance({ ...DEFAULT_APPEARANCE })
   }, [])
 
   return {
     appearance,
     updateThemeColor,
-    updateUiFontSize,
     updateCodeFontSize,
+    updateUiFontSize,
     resetAppearance,
   }
 }

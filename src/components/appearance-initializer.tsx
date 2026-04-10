@@ -17,29 +17,21 @@ import {
 export function AppearanceInitializer() {
   const { resolvedTheme } = useTheme()
 
-  // Apply on mount + whenever the custom event fires (same tab)
   useEffect(() => {
     const apply = () => applyAppearanceSettings(readAppearanceSettings())
     apply()
 
-    window.addEventListener(APPEARANCE_UPDATED_EVENT, apply)
-    return () => window.removeEventListener(APPEARANCE_UPDATED_EVENT, apply)
-  }, [])
-
-  // Re-apply when dark/light mode toggles so theme-color overrides match
-  useEffect(() => {
-    applyAppearanceSettings(readAppearanceSettings())
-  }, [resolvedTheme])
-
-  // Cross-tab sync via StorageEvent
-  useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key && e.key !== APPEARANCE_STORAGE_KEY) return
-      applyAppearanceSettings(readAppearanceSettings())
+      apply()
     }
+    window.addEventListener(APPEARANCE_UPDATED_EVENT, apply)
     window.addEventListener("storage", onStorage)
-    return () => window.removeEventListener("storage", onStorage)
-  }, [])
+    return () => {
+      window.removeEventListener(APPEARANCE_UPDATED_EVENT, apply)
+      window.removeEventListener("storage", onStorage)
+    }
+  }, [resolvedTheme])
 
   return null
 }
