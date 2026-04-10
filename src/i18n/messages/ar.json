@@ -110,6 +110,22 @@
       "light": "فاتح",
       "dark": "داكن",
       "unknown": "--"
+    },
+    "themeColor": "لون السمة",
+    "themeColorDescription": "اختر لون التمييز للواجهة.",
+    "fontSizeTitle": "حجم الخط",
+    "fontSizeDescription": "ضبط حجم خط الواجهة والشفرة.",
+    "uiFontSize": "حجم خط الواجهة",
+    "codeFontSize": "حجم خط الشفرة",
+    "resetDefaults": "إعادة التعيين إلى الافتراضي",
+    "themeColors": {
+      "zinc": "زنك",
+      "slate": "أردواز",
+      "blue": "أزرق",
+      "green": "أخضر",
+      "violet": "بنفسجي",
+      "orange": "برتقالي",
+      "rose": "وردي"
     }
   },
   "SystemSettings": {

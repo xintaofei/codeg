@@ -110,6 +110,22 @@
       "light": "Light",
       "dark": "Dark",
       "unknown": "--"
+    },
+    "themeColor": "Theme Color",
+    "themeColorDescription": "Choose the accent color for the interface.",
+    "fontSizeTitle": "Font Size",
+    "fontSizeDescription": "Adjust the font size for interface and code.",
+    "uiFontSize": "UI font size",
+    "codeFontSize": "Code font size",
+    "resetDefaults": "Reset to defaults",
+    "themeColors": {
+      "zinc": "Zinc",
+      "slate": "Slate",
+      "blue": "Blue",
+      "green": "Green",
+      "violet": "Violet",
+      "orange": "Orange",
+      "rose": "Rose"
     }
   },
   "SystemSettings": {

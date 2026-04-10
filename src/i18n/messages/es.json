@@ -110,6 +110,22 @@
       "light": "Claro",
       "dark": "Oscuro",
       "unknown": "--"
+    },
+    "themeColor": "Color del tema",
+    "themeColorDescription": "Elige el color de acento para la interfaz.",
+    "fontSizeTitle": "Tamaño de fuente",
+    "fontSizeDescription": "Ajusta el tamaño de fuente de la interfaz y el código.",
+    "uiFontSize": "Tamaño de fuente de la interfaz",
+    "codeFontSize": "Tamaño de fuente del código",
+    "resetDefaults": "Restablecer valores predeterminados",
+    "themeColors": {
+      "zinc": "Zinc",
+      "slate": "Pizarra",
+      "blue": "Azul",
+      "green": "Verde",
+      "violet": "Violeta",
+      "orange": "Naranja",
+      "rose": "Rosa"
     }
   },
   "SystemSettings": {

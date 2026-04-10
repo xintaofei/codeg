@@ -110,6 +110,22 @@
       "light": "Clair",
       "dark": "Sombre",
       "unknown": "--"
+    },
+    "themeColor": "Couleur du thème",
+    "themeColorDescription": "Choisissez la couleur d'accentuation de l'interface.",
+    "fontSizeTitle": "Taille de la police",
+    "fontSizeDescription": "Ajustez la taille de police de l'interface et du code.",
+    "uiFontSize": "Taille de police de l'interface",
+    "codeFontSize": "Taille de police du code",
+    "resetDefaults": "Réinitialiser par défaut",
+    "themeColors": {
+      "zinc": "Zinc",
+      "slate": "Ardoise",
+      "blue": "Bleu",
+      "green": "Vert",
+      "violet": "Violet",
+      "orange": "Orange",
+      "rose": "Rose"
     }
   },
   "SystemSettings": {

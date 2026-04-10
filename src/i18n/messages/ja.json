@@ -110,6 +110,22 @@
       "light": "ライト",
       "dark": "ダーク",
       "unknown": "--"
+    },
+    "themeColor": "テーマカラー",
+    "themeColorDescription": "インターフェースのアクセントカラーを選択します。",
+    "fontSizeTitle": "フォントサイズ",
+    "fontSizeDescription": "インターフェースとコードのフォントサイズを調整します。",
+    "uiFontSize": "UIフォントサイズ",
+    "codeFontSize": "コードフォントサイズ",
+    "resetDefaults": "デフォルトに戻す",
+    "themeColors": {
+      "zinc": "ジンク",
+      "slate": "スレート",
+      "blue": "ブルー",
+      "green": "グリーン",
+      "violet": "バイオレット",
+      "orange": "オレンジ",
+      "rose": "ローズ"
     }
   },
   "SystemSettings": {
