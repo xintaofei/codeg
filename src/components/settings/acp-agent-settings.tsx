@@ -676,6 +676,7 @@ function patchGeminiConfigText(
   if (typeof patch.model === "string") {
     delete config.model
     delete config.model_name
+    assignOrRemoveEnv(GEMINI_ENV_KEYS.model, patch.model)
   }
   assignOrRemoveEnv(GEMINI_ENV_KEYS.baseUrl, patch.apiBaseUrl)
   if (typeof patch.apiBaseUrl === "string") {
@@ -798,6 +799,12 @@ function patchGeminiAuthMode(
     next.apiBaseUrl = ""
     next.geminiApiKey = ""
     next.googleApiKey = ""
+    return next
+  }
+  if (mode === "model_provider") {
+    next.googleCloudProject = ""
+    next.googleCloudLocation = ""
+    next.googleApplicationCredentials = ""
     return next
   }
   next.apiBaseUrl = ""
