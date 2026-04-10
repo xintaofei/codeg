@@ -109,11 +109,15 @@ export function applyAppearanceSettings(settings: AppearanceSettings): void {
     (!root.classList.contains("light") &&
       window.matchMedia("(prefers-color-scheme: dark)").matches)
 
-  // Apply font sizes — set both the CSS variable and the direct property
-  // to ensure it overrides any Tailwind preflight/layer rules
-  root.style.setProperty("--ui-font-size", `${settings.uiFontSize}px`)
-  root.style.fontSize = `${settings.uiFontSize}px`
+  // UI font size: use CSS zoom to scale the entire interface uniformly,
+  // including absolute px values from Tailwind arbitrary classes like text-[13px]
+  const zoom = settings.uiFontSize / DEFAULT_APPEARANCE.uiFontSize
+  root.style.zoom = String(zoom)
+
+  // Code font size: store as CSS variable; getCodeFontSize() compensates
+  // for zoom so Monaco/terminal render at the intended pixel size
   root.style.setProperty("--code-font-size", `${settings.codeFontSize}px`)
+  root.style.setProperty("--ui-zoom", String(zoom))
 
   // Clear previous theme color overrides
   const allVars = new Set<string>()
@@ -135,12 +139,16 @@ export function applyAppearanceSettings(settings: AppearanceSettings): void {
   }
 }
 
-/** Read the current code font size from the CSS variable on :root. */
+/**
+ * Read the current code font size, compensated for UI zoom so that
+ * Monaco/terminal render at the user's intended pixel size.
+ */
 export function getCodeFontSize(): number {
   if (typeof document === "undefined") return DEFAULT_APPEARANCE.codeFontSize
-  const value =
-    document.documentElement.style.getPropertyValue("--code-font-size")
-  if (!value) return DEFAULT_APPEARANCE.codeFontSize
-  const parsed = parseInt(value, 10)
-  return Number.isNaN(parsed) ? DEFAULT_APPEARANCE.codeFontSize : parsed
+  const root = document.documentElement
+  const raw = root.style.getPropertyValue("--code-font-size")
+  const zoom = parseFloat(root.style.getPropertyValue("--ui-zoom")) || 1
+  const size = raw ? parseInt(raw, 10) : DEFAULT_APPEARANCE.codeFontSize
+  if (Number.isNaN(size)) return DEFAULT_APPEARANCE.codeFontSize
+  return Math.round(size / zoom)
 }

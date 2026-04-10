@@ -7,7 +7,7 @@
 
 :root {
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: var(--ui-font-size, 14px);
+  font-size: 14px;
   line-height: 1.6;
   font-weight: 400;
 
