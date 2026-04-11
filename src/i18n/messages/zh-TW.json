@@ -1517,7 +1517,13 @@
         "moreFiles": "+{count} 個更多檔案",
         "plan": "計畫",
         "allowedActions": "允許的操作",
-        "targetMode": "目標模式：{mode}"
+        "targetMode": "目標模式：{mode}",
+        "actions": {
+          "allowOnce": "允許",
+          "allowAlways": "始終允許",
+          "rejectOnce": "拒絕",
+          "rejectAlways": "始終拒絕"
+        }
       },
       "questionDialog": {
         "title": "代理正在提問",
