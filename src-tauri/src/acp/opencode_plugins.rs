@@ -47,12 +47,32 @@ pub struct PluginInstallEvent {
 }
 
 /// Well-known paths for opencode configuration and cache.
+///
+/// OpenCode follows XDG conventions on all platforms:
+///   config: $XDG_CONFIG_HOME/opencode  or  ~/.config/opencode
+///   cache:  $XDG_CACHE_HOME/opencode   or  ~/.cache/opencode
+///
+/// We must NOT use `dirs::config_dir()` / `dirs::cache_dir()` because on
+/// macOS those return ~/Library/Application Support and ~/Library/Caches,
+/// while opencode always uses the XDG paths.
 fn opencode_config_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("opencode").join("opencode.json"))
+    xdg_config_home().map(|d| d.join("opencode").join("opencode.json"))
 }
 
 fn opencode_cache_dir() -> Option<PathBuf> {
-    dirs::cache_dir().map(|d| d.join("opencode"))
+    xdg_cache_home().map(|d| d.join("opencode"))
+}
+
+fn xdg_config_home() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+}
+
+fn xdg_cache_home() -> Option<PathBuf> {
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
 }
 
 /// Check whether a project directory contains any opencode configuration file.
