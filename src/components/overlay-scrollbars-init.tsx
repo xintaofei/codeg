@@ -10,7 +10,7 @@ export function OverlayScrollbarsInit() {
       scrollbars: {
         theme: "os-theme-codeg",
         autoHide: "leave",
-        clickScroll: true,
+        dragScroll: false,
       },
       overflow: { x: "hidden" },
     },
