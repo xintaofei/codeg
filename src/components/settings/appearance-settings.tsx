@@ -66,7 +66,18 @@ export function AppearanceSettings() {
             </label>
             <Select
               value={theme ?? "system"}
-              onValueChange={(value) => setTheme(value as ThemeMode)}
+              onValueChange={(value) => {
+                setTheme(value as ThemeMode)
+                // Persist to Tauri DB so native window background matches on next open
+                if (
+                  typeof window !== "undefined" &&
+                  "__TAURI_INTERNALS__" in window
+                ) {
+                  import("@/lib/tauri").then((t) =>
+                    t.updateAppearanceMode(value).catch(() => {})
+                  )
+                }
+              }}
             >
               <SelectTrigger className="w-56">
                 <SelectValue placeholder={t("placeholder")} />

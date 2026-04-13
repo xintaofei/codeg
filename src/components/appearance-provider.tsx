@@ -22,6 +22,14 @@ function syncTrafficLightPosition(zoom: number) {
   )
 }
 
+function syncAppearanceMode(mode: string) {
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window))
+    return
+  import("@/lib/tauri").then((t) =>
+    t.updateAppearanceMode(mode).catch(() => {})
+  )
+}
+
 type AppearanceContextValue = {
   themeColor: ThemeColor
   setThemeColor: (color: ThemeColor) => void
@@ -89,9 +97,14 @@ export function AppearanceProvider({
     }
   }, [])
 
-  // Sync traffic-light position on mount (initial zoom)
+  // Sync traffic-light position and appearance mode on mount
   useEffect(() => {
     syncTrafficLightPosition(zoomLevel)
+    try {
+      syncAppearanceMode(localStorage.getItem("theme") ?? "system")
+    } catch {
+      // localStorage unavailable
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -112,6 +125,10 @@ export function AppearanceProvider({
           document.documentElement.style.fontSize = `${(16 * zoom) / 100}px`
           syncTrafficLightPosition(zoom)
         }
+      }
+      // Sync appearance mode to Tauri DB when changed in another window
+      if (e.key === "theme") {
+        syncAppearanceMode(e.newValue ?? "system")
       }
     }
     window.addEventListener("storage", onStorage)

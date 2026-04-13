@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
 #[cfg(target_os = "macos")]
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::AtomicU32;
 
 use sea_orm::DatabaseConnection;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -22,7 +23,7 @@ static CURRENT_ZOOM: AtomicU32 = AtomicU32::new(100);
 
 #[cfg(target_os = "macos")]
 fn traffic_light_position() -> tauri::LogicalPosition<f64> {
-    let zoom = CURRENT_ZOOM.load(Ordering::Relaxed) as f64;
+    let zoom = CURRENT_ZOOM.load(AtomicOrdering::Relaxed) as f64;
     // Only Y scales with zoom: overlay content shifts vertically with
     // font-size changes, but the horizontal inset remains constant.
     tauri::LogicalPosition::new(TRAFFIC_LIGHT_X, TRAFFIC_LIGHT_Y * zoom / 100.0)
@@ -38,13 +39,41 @@ pub async fn load_saved_zoom(conn: &DatabaseConnection) {
         if let Ok(Some(raw)) = app_metadata_service::get_value(conn, ZOOM_LEVEL_DB_KEY).await {
             if let Ok(zoom) = raw.parse::<u32>() {
                 let clamped = zoom.clamp(50, 300);
-                CURRENT_ZOOM.store(clamped, Ordering::Relaxed);
+                CURRENT_ZOOM.store(clamped, AtomicOrdering::Relaxed);
             }
         }
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = conn;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Appearance mode persistence (dark / light / system)
+// ---------------------------------------------------------------------------
+
+const APPEARANCE_MODE_DB_KEY: &str = "appearance_mode";
+
+/// Encoded appearance mode: 0 = system (default), 1 = dark, 2 = light.
+static CACHED_APPEARANCE_MODE: AtomicU8 = AtomicU8::new(0);
+
+const MODE_SYSTEM: u8 = 0;
+const MODE_DARK: u8 = 1;
+const MODE_LIGHT: u8 = 2;
+
+fn mode_from_str(s: &str) -> u8 {
+    match s {
+        "dark" => MODE_DARK,
+        "light" => MODE_LIGHT,
+        _ => MODE_SYSTEM,
+    }
+}
+
+/// Load saved appearance mode from DB. Called once at startup.
+pub async fn load_saved_appearance_mode(conn: &DatabaseConnection) {
+    if let Ok(Some(raw)) = app_metadata_service::get_value(conn, APPEARANCE_MODE_DB_KEY).await {
+        CACHED_APPEARANCE_MODE.store(mode_from_str(&raw), AtomicOrdering::Relaxed);
     }
 }
 
@@ -60,6 +89,32 @@ pub fn folder_window_label(folder_id: i32) -> String {
     format!("folder-{folder_id}")
 }
 
+/// Detect macOS system dark mode via `defaults read`.
+/// Result is cached for the process lifetime via `OnceLock`.
+#[cfg(target_os = "macos")]
+fn is_system_dark_mode() -> bool {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::process::Command::new("defaults")
+            .args(["read", "-g", "AppleInterfaceStyle"])
+            .output()
+            .map(|o| o.status.success()) // key exists only in dark mode
+            .unwrap_or(false)
+    })
+}
+
+/// Determine whether the window should use a dark background, considering
+/// both the user's explicit preference (from DB) and the OS appearance.
+#[cfg(target_os = "macos")]
+fn should_use_dark_background() -> bool {
+    match CACHED_APPEARANCE_MODE.load(AtomicOrdering::Relaxed) {
+        MODE_DARK => true,
+        MODE_LIGHT => false,
+        _ => is_system_dark_mode(), // "system" or unknown — follow OS
+    }
+}
+
 pub(crate) fn apply_platform_window_style<'a, R, M>(
     builder: WebviewWindowBuilder<'a, R, M>,
 ) -> WebviewWindowBuilder<'a, R, M>
@@ -69,6 +124,12 @@ where
 {
     #[cfg(target_os = "macos")]
     {
+        let builder = if should_use_dark_background() {
+            // oklch(0.145 0 0) ≈ rgb(9,9,11) — matches CSS --background in dark mode
+            builder.background_color(tauri::window::Color(9, 9, 11, 255))
+        } else {
+            builder
+        };
         builder
             .hidden_title(true)
             .title_bar_style(tauri::TitleBarStyle::Overlay)
@@ -722,7 +783,7 @@ pub async fn update_traffic_light_position(
     let clamped = zoom.clamp(50.0, 300.0) as u32;
 
     #[cfg(target_os = "macos")]
-    CURRENT_ZOOM.store(clamped, Ordering::Relaxed);
+    CURRENT_ZOOM.store(clamped, AtomicOrdering::Relaxed);
 
     // Persist to DB so the next launch reads the correct value.
     let _ = app_metadata_service::upsert_value(
@@ -733,6 +794,27 @@ pub async fn update_traffic_light_position(
     .await;
 
     let _ = app;
+    Ok(())
+}
+
+/// Persist the user's appearance mode ("dark" / "light" / "system") to DB
+/// and update the in-memory cache so that subsequent window creations use the
+/// correct native background color.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn update_appearance_mode(
+    db: tauri::State<'_, AppDatabase>,
+    mode: String,
+) -> Result<(), AppCommandError> {
+    CACHED_APPEARANCE_MODE.store(mode_from_str(&mode), AtomicOrdering::Relaxed);
+
+    let _ = app_metadata_service::upsert_value(
+        &db.conn,
+        APPEARANCE_MODE_DB_KEY,
+        &mode,
+    )
+    .await;
+
     Ok(())
 }
 

@@ -454,6 +454,10 @@ export async function updateTrafficLightPosition(zoom: number): Promise<void> {
   return invoke("update_traffic_light_position", { zoom: zoom as number })
 }
 
+export async function updateAppearanceMode(mode: string): Promise<void> {
+  return invoke("update_appearance_mode", { mode })
+}
+
 // Folder history commands
 
 export async function loadFolderHistory(): Promise<FolderHistoryEntry[]> {

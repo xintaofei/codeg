@@ -32,6 +32,21 @@ const SCRIPT = `
     var storedZoom = parseInt(localStorage.getItem("${STORAGE_KEY_ZOOM_LEVEL}") || "", 10);
     var zoom = VALID_ZOOMS.indexOf(storedZoom) >= 0 ? storedZoom : 100;
     document.documentElement.style.fontSize = (16 * zoom / 100) + "px";
+
+    // 在 next-themes 水合之前同步检测暗色模式，防止白色闪屏。
+    // next-themes 使用 localStorage key "theme"，attribute="class"。
+    var storedMode = localStorage.getItem("theme");
+    var isDark = storedMode === "dark" ||
+        (storedMode !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    if (isDark) {
+      document.documentElement.classList.add("dark");
+      document.documentElement.style.colorScheme = "dark";
+      // 直接设置背景色，比等待 CSS 类匹配更快，覆盖"系统浅色 + 应用深色"场景
+      document.documentElement.style.backgroundColor = "#09090b";
+    } else {
+      document.documentElement.style.colorScheme = "light";
+      document.documentElement.style.backgroundColor = "";
+    }
   } catch (e) {
     // localStorage 不可用时静默走默认
   }

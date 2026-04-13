@@ -83,9 +83,9 @@ mod tauri_app {
                     }
                 }
 
-                // Load saved zoom level for traffic-light positioning before
-                // any window is created.
+                // Load saved appearance settings before any window is created.
                 tauri::async_runtime::block_on(windows::load_saved_zoom(&db.conn));
+                tauri::async_runtime::block_on(windows::load_saved_appearance_mode(&db.conn));
 
                 // Install bundled expert skills into the central store
                 // (`~/.codeg/skills/`). Runs in the background and does
@@ -341,6 +341,7 @@ mod tauri_app {
                 windows::open_push_window,
                 windows::open_project_boot_window,
                 windows::update_traffic_light_position,
+                windows::update_appearance_mode,
                 project_boot::detect_package_manager,
                 project_boot::create_shadcn_project,
                 system_settings::get_system_proxy_settings,
