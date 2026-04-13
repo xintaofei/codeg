@@ -62,7 +62,8 @@ export interface ToolCallInfo {
   status: string
   content: string | null
   raw_input: string | null
-  raw_output: string | null
+  raw_output_chunks: string[]
+  raw_output_total_bytes: number
 }
 
 export interface PendingPermission {
@@ -153,6 +154,21 @@ type Action =
       raw_output_append?: boolean
     }
   | {
+      type: "BATCH_TOOL_CALL_UPDATES"
+      actions: Array<{
+        contextKey: string
+        tool_call_id: string
+        title: string | null
+        fallback_title: string
+        fallback_kind: string
+        status: string | null
+        content: string | null
+        raw_input: string | null
+        raw_output: string | null
+        raw_output_append?: boolean
+      }>
+    }
+  | {
       type: "PERMISSION_REQUEST"
       contextKey: string
       request_id: string
@@ -239,12 +255,6 @@ const selectorsCache = new Map<
 
 export function getCachedSelectors(agentType: string) {
   return selectorsCache.get(agentType) ?? null
-}
-
-function clampLiveRawOutput(output: string | null): string | null {
-  if (typeof output !== "string") return output
-  if (output.length <= MAX_LIVE_TOOL_RAW_OUTPUT_CHARS) return output
-  return output.slice(-MAX_LIVE_TOOL_RAW_OUTPUT_CHARS)
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -649,9 +659,14 @@ function connectionsReducer(
                 status: action.status ?? block.info.status,
                 content: action.content ?? block.info.content,
                 raw_input: action.raw_input ?? block.info.raw_input,
-                raw_output: clampLiveRawOutput(
-                  action.raw_output ?? block.info.raw_output
-                ),
+                raw_output_chunks:
+                  action.raw_output !== null
+                    ? [action.raw_output]
+                    : block.info.raw_output_chunks,
+                raw_output_total_bytes:
+                  action.raw_output !== null
+                    ? action.raw_output.length
+                    : block.info.raw_output_total_bytes,
               },
             },
             ...prev.content.slice(existingIndex + 1),
@@ -671,7 +686,9 @@ function connectionsReducer(
               status: action.status,
               content: action.content,
               raw_input: action.raw_input,
-              raw_output: clampLiveRawOutput(action.raw_output),
+              raw_output_chunks:
+                action.raw_output !== null ? [action.raw_output] : [],
+              raw_output_total_bytes: action.raw_output?.length ?? 0,
             },
           },
         ]
@@ -695,7 +712,9 @@ function connectionsReducer(
       let newContent: LiveContentBlock[]
 
       if (existingIndex === -1) {
-        const normalizedRawOutput = clampLiveRawOutput(action.raw_output)
+        const initialChunks =
+          action.raw_output !== null ? [action.raw_output] : []
+        const initialBytes = action.raw_output?.length ?? 0
         newContent = [
           ...prev.content,
           {
@@ -706,23 +725,54 @@ function connectionsReducer(
               kind: action.fallback_kind,
               status:
                 action.status ??
-                (normalizedRawOutput ? "in_progress" : "pending"),
+                (initialChunks.length > 0 ? "in_progress" : "pending"),
               content: action.content,
               raw_input: action.raw_input,
-              raw_output: normalizedRawOutput,
+              raw_output_chunks: initialChunks,
+              raw_output_total_bytes: initialBytes,
             },
           },
         ]
       } else {
         const block = prev.content[existingIndex]
         if (block.type !== "tool_call") return state
-        const mergedRawOutput =
-          action.raw_output === null
-            ? block.info.raw_output
-            : action.raw_output_append
-              ? (block.info.raw_output ?? "") + action.raw_output
-              : action.raw_output
-        const normalizedRawOutput = clampLiveRawOutput(mergedRawOutput)
+
+        let newChunks: string[]
+        let newTotalBytes: number
+
+        if (action.raw_output === null) {
+          newChunks = block.info.raw_output_chunks
+          newTotalBytes = block.info.raw_output_total_bytes
+        } else if (action.raw_output_append) {
+          newChunks = [...block.info.raw_output_chunks, action.raw_output]
+          newTotalBytes =
+            block.info.raw_output_total_bytes + action.raw_output.length
+
+          // 超限时从头部批量移除 chunks（单次 slice 替代循环 shift）
+          if (
+            newTotalBytes > MAX_LIVE_TOOL_RAW_OUTPUT_CHARS &&
+            newChunks.length > 1
+          ) {
+            let evictCount = 0
+            let evictedBytes = 0
+            while (
+              evictCount < newChunks.length - 1 &&
+              newTotalBytes - evictedBytes > MAX_LIVE_TOOL_RAW_OUTPUT_CHARS
+            ) {
+              evictedBytes += newChunks[evictCount].length
+              evictCount++
+            }
+            if (evictCount > 0) {
+              newChunks = newChunks.slice(evictCount)
+              newTotalBytes -= evictedBytes
+            }
+          }
+        } else {
+          // 非 append 模式（替换）
+          newChunks = [action.raw_output]
+          newTotalBytes = action.raw_output.length
+        }
+
         newContent = [
           ...prev.content.slice(0, existingIndex),
           {
@@ -733,7 +783,8 @@ function connectionsReducer(
               status: action.status ?? block.info.status,
               content: action.content ?? block.info.content,
               raw_input: action.raw_input ?? block.info.raw_input,
-              raw_output: normalizedRawOutput,
+              raw_output_chunks: newChunks,
+              raw_output_total_bytes: newTotalBytes,
             },
           },
           ...prev.content.slice(existingIndex + 1),
@@ -746,6 +797,17 @@ function connectionsReducer(
         liveMessage: { ...prev, content: newContent },
       })
       return next
+    }
+
+    case "BATCH_TOOL_CALL_UPDATES": {
+      let current = state
+      for (const sub of action.actions) {
+        current = connectionsReducer(current, {
+          type: "TOOL_CALL_UPDATE",
+          ...sub,
+        })
+      }
+      return current
     }
 
     case "PERMISSION_REQUEST": {
@@ -804,7 +866,8 @@ function connectionsReducer(
                   status: "pending",
                   content: null,
                   raw_input: permissionToolInput,
-                  raw_output: null,
+                  raw_output_chunks: [],
+                  raw_output_total_bytes: 0,
                 },
               },
             ],
@@ -1306,6 +1369,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         for (const key of keys) {
           notifyKeyListeners(key)
         }
+      } else if (action.type === "BATCH_TOOL_CALL_UPDATES") {
+        const keys = new Set(action.actions.map((item) => item.contextKey))
+        for (const key of keys) {
+          notifyKeyListeners(key)
+        }
       } else {
         const key = getAffectedKey(action)
         if (key) notifyKeyListeners(key)
@@ -1453,6 +1521,50 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     []
   )
 
+  // ── RAF batching for tool_call_update events ──
+  const pendingToolCallUpdates = useRef<
+    Array<{
+      contextKey: string
+      tool_call_id: string
+      title: string | null
+      fallback_title: string
+      fallback_kind: string
+      status: string | null
+      content: string | null
+      raw_input: string | null
+      raw_output: string | null
+      raw_output_append?: boolean
+    }>
+  >([])
+  const toolCallUpdateRafId = useRef<number | null>(null)
+
+  const flushPendingToolCallUpdates = useCallback(() => {
+    if (pendingToolCallUpdates.current.length === 0) return
+    if (toolCallUpdateRafId.current !== null) {
+      cancelAnimationFrame(toolCallUpdateRafId.current)
+      toolCallUpdateRafId.current = null
+    }
+    const batch = pendingToolCallUpdates.current
+    pendingToolCallUpdates.current = []
+    dispatch({ type: "BATCH_TOOL_CALL_UPDATES", actions: batch })
+  }, [dispatch])
+
+  const scheduleToolCallUpdateFlush = useCallback(() => {
+    if (toolCallUpdateRafId.current !== null) return
+    toolCallUpdateRafId.current = requestAnimationFrame(() => {
+      toolCallUpdateRafId.current = null
+      flushPendingToolCallUpdates()
+    })
+  }, [flushPendingToolCallUpdates])
+
+  useEffect(() => {
+    return () => {
+      if (toolCallUpdateRafId.current !== null) {
+        cancelAnimationFrame(toolCallUpdateRafId.current)
+      }
+    }
+  }, [])
+
   const handleMappedEvent = useCallback(
     (contextKey: string, e: AcpEvent) => {
       switch (e.type) {
@@ -1486,8 +1598,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           break
         case "tool_call_update":
           flushStreamingQueue()
-          dispatch({
-            type: "TOOL_CALL_UPDATE",
+          pendingToolCallUpdates.current.push({
             contextKey,
             tool_call_id: e.tool_call_id,
             title: e.title,
@@ -1499,6 +1610,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             raw_output: e.raw_output,
             raw_output_append: e.raw_output_append,
           })
+          scheduleToolCallUpdateFlush()
           break
         case "permission_request":
           flushStreamingQueue()
@@ -1657,6 +1769,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           break
         case "turn_complete": {
           flushStreamingQueue()
+          flushPendingToolCallUpdates()
           dispatch({
             type: "STATUS_CHANGED",
             contextKey,
@@ -1779,7 +1892,14 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           break
       }
     },
-    [dispatch, enqueueStreamingAction, flushStreamingQueue, t]
+    [
+      dispatch,
+      enqueueStreamingAction,
+      flushPendingToolCallUpdates,
+      flushStreamingQueue,
+      scheduleToolCallUpdateFlush,
+      t,
+    ]
   )
 
   // Single global event listener

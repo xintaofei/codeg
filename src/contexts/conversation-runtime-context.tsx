@@ -221,7 +221,10 @@ function buildStreamingTurnsFromLiveMessage(
           currentBlocks.push({
             type: "tool_result",
             tool_use_id: block.info.tool_call_id,
-            output_preview: block.info.raw_output ?? block.info.content,
+            output_preview:
+              block.info.raw_output_chunks.length > 0
+                ? block.info.raw_output_chunks.join("")
+                : block.info.content,
             is_error: block.info.status === "failed",
           })
           currentGroupHasCompletedTool = true
