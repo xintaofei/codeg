@@ -1552,7 +1552,7 @@
         "running": "実行中"
       },
       "reasoning": {
-        "thinking": "考え中",
+        "thinking": "考え中…",
         "thoughtForFewSeconds": "考えた",
         "thoughtForSeconds": "考えた"
       },

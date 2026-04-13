@@ -1552,7 +1552,7 @@
         "running": "قيد التشغيل"
       },
       "reasoning": {
-        "thinking": "جارٍ التفكير",
+        "thinking": "جارٍ التفكير…",
         "thoughtForFewSeconds": "تفكير",
         "thoughtForSeconds": "تفكير"
       },

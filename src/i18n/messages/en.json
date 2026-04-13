@@ -1552,7 +1552,7 @@
         "running": "Running"
       },
       "reasoning": {
-        "thinking": "Thinking",
+        "thinking": "Thinking…",
         "thoughtForFewSeconds": "Thought",
         "thoughtForSeconds": "Thought"
       },

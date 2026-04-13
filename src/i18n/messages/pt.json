@@ -1552,7 +1552,7 @@
         "running": "Em execução"
       },
       "reasoning": {
-        "thinking": "Pensando",
+        "thinking": "Pensando…",
         "thoughtForFewSeconds": "Pensamento",
         "thoughtForSeconds": "Pensamento"
       },

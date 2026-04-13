@@ -1552,7 +1552,7 @@
         "running": "실행 중"
       },
       "reasoning": {
-        "thinking": "생각 중",
+        "thinking": "생각 중…",
         "thoughtForFewSeconds": "생각함",
         "thoughtForSeconds": "생각함"
       },
