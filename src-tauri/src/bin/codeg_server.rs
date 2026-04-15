@@ -16,6 +16,7 @@ async fn main() {
         return;
     }
 
+    codeg_lib::process::ensure_node_in_path();
     codeg_lib::process::ensure_user_npm_prefix_in_path();
 
     let port: u16 = std::env::var("CODEG_PORT")

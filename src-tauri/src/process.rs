@@ -125,7 +125,6 @@ where
 /// child processes) can find node/npm/npx without any special handling.
 ///
 /// Call once at startup, after `fix_path_env::fix()`.
-#[cfg(feature = "tauri-runtime")]
 pub fn ensure_node_in_path() {
     // Already reachable — nothing to do.
     if which::which("node").is_ok() {
@@ -145,7 +144,6 @@ pub fn ensure_node_in_path() {
 
 /// Search common Node.js version manager directories for a `node` binary and
 /// return the containing bin directory.
-#[cfg(feature = "tauri-runtime")]
 fn find_node_bin_dir(home: &std::path::Path) -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
 
@@ -184,6 +182,14 @@ fn find_node_bin_dir(home: &std::path::Path) -> Option<PathBuf> {
     }
 
     // ── fnm ──────────────────────────────────────────────────────────────
+    // Prefer active fnm shell path when available.
+    if let Ok(fnm_multishell_path) = std::env::var("FNM_MULTISHELL_PATH") {
+        let path = PathBuf::from(fnm_multishell_path);
+        if path.is_dir() {
+            candidates.push(path);
+        }
+    }
+
     let fnm_dir = std::env::var("FNM_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| home.join(".local").join("share").join("fnm"));
@@ -195,7 +201,11 @@ fn find_node_bin_dir(home: &std::path::Path) -> Option<PathBuf> {
             entries.sort();
             entries.reverse();
             for entry in entries {
-                candidates.push(entry.join("installation").join("bin"));
+                let installation = entry.join("installation");
+                // On Unix fnm places binaries under installation/bin;
+                // on Windows they sit directly in the installation dir.
+                let bin = installation.join("bin");
+                candidates.push(if bin.is_dir() { bin } else { installation });
             }
         }
     }
@@ -210,7 +220,11 @@ fn find_node_bin_dir(home: &std::path::Path) -> Option<PathBuf> {
     }
 
     // Return the first candidate that actually contains a `node` binary.
-    candidates.into_iter().find(|dir| dir.join("node").is_file())
+    // Check both `node` (Unix) and `node.exe` (Windows) so the detection
+    // works regardless of the current platform.
+    candidates
+        .into_iter()
+        .find(|dir| dir.join("node.exe").is_file() || dir.join("node").is_file())
 }
 
 /// Prepend a directory to the process `PATH` environment variable.
