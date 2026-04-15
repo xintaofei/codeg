@@ -348,6 +348,14 @@
     "emptyContentHint": "まだ内容がありません。「編集」をクリックして開始してください。",
     "loadingSkill": "Skillを読み込み中...",
     "emptyNoAgents": "利用可能なエージェントがありません。",
+    "noSelectionHint": "左側から Skill を選択するか、「新規 Skill」をクリックして作成してください。",
+    "scope": {
+      "global": "グローバル",
+      "folder": "フォルダ",
+      "selectFolderPlaceholder": "フォルダを選択",
+      "noFolders": "フォルダが見つかりません",
+      "pickFolderHint": "Skills を表示するフォルダを選択してください。"
+    },
     "actions": {
       "preview": "プレビュー",
       "edit": "編集",

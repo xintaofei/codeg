@@ -348,6 +348,14 @@
     "emptyContentHint": "暂无内容。点击“编辑”开始输入。",
     "loadingSkill": "正在加载 Skill...",
     "emptyNoAgents": "暂无可用 Agent。",
+    "noSelectionHint": "从左侧选择一个 Skill，或点击“新建 Skill”创建。",
+    "scope": {
+      "global": "全局",
+      "folder": "文件夹",
+      "selectFolderPlaceholder": "选择文件夹",
+      "noFolders": "未找到任何文件夹",
+      "pickFolderHint": "选择一个文件夹以查看其 Skills。"
+    },
     "actions": {
       "preview": "预览",
       "edit": "编辑",

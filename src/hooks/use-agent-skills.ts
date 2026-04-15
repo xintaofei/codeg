@@ -5,83 +5,108 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { acpListAgentSkills } from "@/lib/api"
 import type { AgentSkillItem, AgentType } from "@/lib/types"
 
-const agentCache = new Map<AgentType, AgentSkillItem[]>()
-const inflightMap = new Map<AgentType, Promise<AgentSkillItem[]>>()
+// Cache/inflight keyed by `${agentType}|${workspacePath ?? ""}` so different
+// folders keep their own skill list, and switching folders never serves stale
+// entries from a previous workspace.
+const cache = new Map<string, AgentSkillItem[]>()
+const inflight = new Map<string, Promise<AgentSkillItem[]>>()
 
 const EMPTY: AgentSkillItem[] = []
 
-function fetchForAgent(agentType: AgentType): Promise<AgentSkillItem[]> {
-  let promise = inflightMap.get(agentType)
+function makeKey(agentType: AgentType, workspacePath: string | null): string {
+  return `${agentType}|${workspacePath ?? ""}`
+}
+
+function fetchSkills(
+  agentType: AgentType,
+  workspacePath: string | null
+): Promise<AgentSkillItem[]> {
+  const key = makeKey(agentType, workspacePath)
+  let promise = inflight.get(key)
   if (!promise) {
-    promise = acpListAgentSkills({ agentType })
+    promise = acpListAgentSkills({ agentType, workspacePath })
       .then((result) => {
         const skills = result.supported ? result.skills : EMPTY
-        agentCache.set(agentType, skills)
-        inflightMap.delete(agentType)
+        cache.set(key, skills)
+        inflight.delete(key)
         return skills
       })
       .catch((err) => {
-        inflightMap.delete(agentType)
+        inflight.delete(key)
         console.warn("[useAgentSkills] failed:", err)
         return EMPTY
       })
-    inflightMap.set(agentType, promise)
+    inflight.set(key, promise)
   }
   return promise
 }
 
-export function useAgentSkills(agentType: AgentType | null): AgentSkillItem[] {
-  const cached = useMemo(
-    () => (agentType ? (agentCache.get(agentType) ?? null) : null),
-    [agentType]
+export function useAgentSkills(
+  agentType: AgentType | null,
+  workspacePath?: string | null
+): AgentSkillItem[] {
+  const normalizedPath = workspacePath ?? null
+  const cacheKey = useMemo(
+    () => (agentType ? makeKey(agentType, normalizedPath) : null),
+    [agentType, normalizedPath]
   )
-  // Track which agent type the fetched result belongs to so stale data
-  // from a previous agent is never returned after a switch.
+  const cached = useMemo(
+    () => (cacheKey ? (cache.get(cacheKey) ?? null) : null),
+    [cacheKey]
+  )
+  // Track which (agentType, workspacePath) the fetched result belongs to so
+  // stale data from a previous key is never returned after a switch.
   const [fetched, setFetched] = useState<{
-    agentType: AgentType
+    key: string
     skills: AgentSkillItem[]
   } | null>(null)
 
   const doFetch = useCallback(() => {
-    if (!agentType || agentCache.has(agentType)) return
+    if (!agentType || !cacheKey || cache.has(cacheKey)) return
     let cancelled = false
-    fetchForAgent(agentType).then((list) => {
-      if (!cancelled) setFetched({ agentType, skills: list })
+    fetchSkills(agentType, normalizedPath).then((list) => {
+      if (!cancelled) setFetched({ key: cacheKey, skills: list })
     })
     return () => {
       cancelled = true
     }
-  }, [agentType])
+  }, [agentType, cacheKey, normalizedPath])
 
   // Initial fetch
   useEffect(() => doFetch(), [doFetch])
 
   // Re-fetch when window regains focus (covers cross-window cache
   // invalidation — e.g. settings window creates/removes skills while the
-  // conversation window stays mounted).
+  // conversation window stays mounted). Only invalidate the current key to
+  // avoid clobbering caches for other folders.
   useEffect(() => {
     const onFocus = () => {
-      if (!agentType) return
-      agentCache.delete(agentType)
-      inflightMap.delete(agentType)
+      if (!cacheKey) return
+      cache.delete(cacheKey)
+      inflight.delete(cacheKey)
       doFetch()
     }
     window.addEventListener("focus", onFocus)
     return () => window.removeEventListener("focus", onFocus)
-  }, [agentType, doFetch])
+  }, [cacheKey, doFetch])
 
-  if (!agentType) return EMPTY
+  if (!agentType || !cacheKey) return EMPTY
   if (cached) return cached
-  if (fetched && fetched.agentType === agentType) return fetched.skills
+  if (fetched && fetched.key === cacheKey) return fetched.skills
   return EMPTY
 }
 
 export function invalidateAgentSkillsCache(agentType?: AgentType) {
   if (agentType) {
-    agentCache.delete(agentType)
-    inflightMap.delete(agentType)
+    const prefix = `${agentType}|`
+    for (const key of Array.from(cache.keys())) {
+      if (key.startsWith(prefix)) cache.delete(key)
+    }
+    for (const key of Array.from(inflight.keys())) {
+      if (key.startsWith(prefix)) inflight.delete(key)
+    }
   } else {
-    agentCache.clear()
-    inflightMap.clear()
+    cache.clear()
+    inflight.clear()
   }
 }

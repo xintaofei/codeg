@@ -348,6 +348,14 @@
     "emptyContentHint": "لا يوجد محتوى بعد. انقر \"تحرير\" للبدء.",
     "loadingSkill": "جارٍ تحميل Skill...",
     "emptyNoAgents": "لا يوجد وكيل متاح.",
+    "noSelectionHint": "اختر Skill من اليسار، أو انقر على \"Skill جديد\" لإنشاء واحد.",
+    "scope": {
+      "global": "عام",
+      "folder": "مجلد",
+      "selectFolderPlaceholder": "اختر مجلدًا",
+      "noFolders": "لم يتم العثور على مجلدات",
+      "pickFolderHint": "اختر مجلدًا لعرض مهاراته."
+    },
     "actions": {
       "preview": "معاينة",
       "edit": "تحرير",

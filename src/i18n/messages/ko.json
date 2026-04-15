@@ -348,6 +348,14 @@
     "emptyContentHint": "아직 내용이 없습니다. \"편집\"을 눌러 시작하세요.",
     "loadingSkill": "Skill 불러오는 중...",
     "emptyNoAgents": "사용 가능한 에이전트가 없습니다.",
+    "noSelectionHint": "왼쪽에서 Skill을 선택하거나 \"새 Skill\"을 클릭하여 만드세요.",
+    "scope": {
+      "global": "전역",
+      "folder": "폴더",
+      "selectFolderPlaceholder": "폴더 선택",
+      "noFolders": "폴더를 찾을 수 없습니다",
+      "pickFolderHint": "Skills을 보려면 폴더를 선택하세요."
+    },
     "actions": {
       "preview": "미리보기",
       "edit": "편집",

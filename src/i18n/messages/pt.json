@@ -348,6 +348,14 @@
     "emptyContentHint": "Ainda não há conteúdo. Clique em \"Editar\" para começar.",
     "loadingSkill": "Carregando Skill...",
     "emptyNoAgents": "Nenhum agente disponível.",
+    "noSelectionHint": "Selecione um Skill à esquerda ou clique em \"Novo Skill\" para criar um.",
+    "scope": {
+      "global": "Global",
+      "folder": "Pasta",
+      "selectFolderPlaceholder": "Selecionar uma pasta",
+      "noFolders": "Nenhuma pasta encontrada",
+      "pickFolderHint": "Selecione uma pasta para ver suas Skills."
+    },
     "actions": {
       "preview": "Prévia",
       "edit": "Editar",

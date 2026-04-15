@@ -331,7 +331,10 @@ export function MessageInput({
   // set through ACP `availableCommands`, so injecting skills there would
   // be duplicate/extra UI noise — skip the skills fetch for them entirely.
   const skillAgentType = agentType === "codex" ? "codex" : null
-  const availableSkills = useAgentSkills(skillAgentType)
+  // Pass the working dir so we see both global skills and folder-scoped
+  // project skills (e.g. `{folder}/.codex/skills`). Without this, users
+  // only ever saw global skills in the `$` autocomplete.
+  const availableSkills = useAgentSkills(skillAgentType, defaultPath ?? null)
   // Expert skills are symlinked into the agent's skill directories, so they
   // also show up in `acp_list_agent_skills`. Strip them out — experts remain
   // reachable via the expert button, and the `$` list is skills-only.

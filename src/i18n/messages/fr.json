@@ -348,6 +348,14 @@
     "emptyContentHint": "Aucun contenu pour le moment. Cliquez sur « Éditer » pour commencer.",
     "loadingSkill": "Chargement de la Skill...",
     "emptyNoAgents": "Aucun agent disponible.",
+    "noSelectionHint": "Sélectionnez un Skill à gauche ou cliquez sur « Nouveau Skill » pour en créer un.",
+    "scope": {
+      "global": "Global",
+      "folder": "Dossier",
+      "selectFolderPlaceholder": "Sélectionner un dossier",
+      "noFolders": "Aucun dossier trouvé",
+      "pickFolderHint": "Sélectionnez un dossier pour afficher ses Skills."
+    },
     "actions": {
       "preview": "Aperçu",
       "edit": "Éditer",

@@ -348,6 +348,14 @@
     "emptyContentHint": "No content yet. Click \"Edit\" to start.",
     "loadingSkill": "Loading skill...",
     "emptyNoAgents": "No available agent.",
+    "noSelectionHint": "Select a skill on the left, or click \"New Skill\" to create one.",
+    "scope": {
+      "global": "Global",
+      "folder": "Folder",
+      "selectFolderPlaceholder": "Select a folder",
+      "noFolders": "No folders found",
+      "pickFolderHint": "Select a folder to view its skills."
+    },
     "actions": {
       "preview": "Preview",
       "edit": "Edit",
