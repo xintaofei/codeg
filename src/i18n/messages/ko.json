@@ -1619,7 +1619,13 @@
         "moreFiles": "+{count}개 파일 더",
         "plan": "계획",
         "allowedActions": "허용된 작업",
-        "targetMode": "대상 모드: {mode}"
+        "targetMode": "대상 모드: {mode}",
+        "actions": {
+          "allowOnce": "허용",
+          "allowAlways": "항상 허용",
+          "rejectOnce": "거부",
+          "rejectAlways": "항상 거부"
+        }
       },
       "questionDialog": {
         "title": "에이전트가 질문하고 있습니다",

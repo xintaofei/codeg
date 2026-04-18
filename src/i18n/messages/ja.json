@@ -1619,7 +1619,13 @@
         "moreFiles": "+{count} 件の追加ファイル",
         "plan": "計画",
         "allowedActions": "許可されたアクション",
-        "targetMode": "対象モード: {mode}"
+        "targetMode": "対象モード: {mode}",
+        "actions": {
+          "allowOnce": "許可",
+          "allowAlways": "常に許可",
+          "rejectOnce": "拒否",
+          "rejectAlways": "常に拒否"
+        }
       },
       "questionDialog": {
         "title": "エージェントが質問しています",
