@@ -82,7 +82,7 @@ export function FolderTitleBar() {
   const [branch, setBranch] = useState<string | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
   const [browserOpen, setBrowserOpen] = useState(false)
-  const intervalRef = useRef<ReturnType<typeof setInterval> | undefined>(
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined
   )
 
@@ -116,36 +116,41 @@ export function FolderTitleBar() {
     if (!folderPath) return
     let cancelled = false
 
+    // 10s when we have a branch, 60s when we don't. The slow poll still
+    // discovers a branch created externally (e.g. `git init` in a terminal)
+    // without hammering the backend when there is nothing to find.
+    const POLL_FAST_MS = 10_000
+    const POLL_SLOW_MS = 60_000
+
     const clearPoll = () => {
-      if (intervalRef.current !== undefined) {
-        clearInterval(intervalRef.current)
-        intervalRef.current = undefined
+      if (pollTimerRef.current !== undefined) {
+        clearTimeout(pollTimerRef.current)
+        pollTimerRef.current = undefined
       }
     }
 
-    const armPoll = () => {
-      if (intervalRef.current !== undefined) return
-      intervalRef.current = setInterval(() => {
+    const scheduleNext = (delayMs: number) => {
+      clearPoll()
+      pollTimerRef.current = setTimeout(() => {
+        pollTimerRef.current = undefined
         void doFetch()
-      }, 10_000)
+      }, delayMs)
     }
 
     async function doFetch() {
       if (document.visibilityState !== "visible") return
 
+      let nextDelayMs = POLL_FAST_MS
       try {
         const b = await getGitBranch(folderPath)
         if (cancelled) return
         setBranch(b)
-        if (b === null) {
-          clearPoll()
-        } else {
-          armPoll()
-        }
+        if (b === null) nextDelayMs = POLL_SLOW_MS
       } catch {
         if (!cancelled) setBranch(null)
-        clearPoll()
+        nextDelayMs = POLL_SLOW_MS
       }
+      if (!cancelled) scheduleNext(nextDelayMs)
     }
 
     function handleVisibilityChange() {

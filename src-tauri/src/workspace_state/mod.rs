@@ -678,6 +678,15 @@ async fn flush_watch_batch(
             Err(_) => return,
         };
 
+        // Keep the cached git-presence flag in sync with the filesystem.
+        // When it flips, the snapshot response carries the new value, and the
+        // emitted event carries `requires_resync=true` so the frontend re-fetches
+        // to align its isGitRepo view.
+        let git_presence_changed = guard.is_git_repo != is_git;
+        if git_presence_changed {
+            guard.is_git_repo = is_git;
+        }
+
         if let Some(tree) = refreshed_tree {
             if tree != guard.tree_snapshot {
                 payload.push(WorkspaceDelta::TreeReplace { nodes: tree });
@@ -689,6 +698,22 @@ async fn flush_watch_batch(
                     entries: git_snapshot,
                 });
             }
+        } else if !is_git && !guard.git_snapshot.is_empty() {
+            // .git vanished (or was never there) and we still hold stale git
+            // data — emit an empty GitReplace so the UI stops showing tracked
+            // files that no longer exist from git's perspective.
+            payload.push(WorkspaceDelta::GitReplace {
+                entries: Vec::new(),
+            });
+        }
+
+        // Presence flip with no data delta (e.g. `git init` in a clean folder)
+        // still needs to wake the frontend, otherwise the snapshot flag never
+        // propagates until an unrelated change happens.
+        if git_presence_changed && payload.is_empty() {
+            payload.push(WorkspaceDelta::Meta {
+                reason: format!("is_git_repo_changed:{is_git}"),
+            });
         }
 
         if payload.is_empty() {
@@ -709,7 +734,7 @@ async fn flush_watch_batch(
             "meta".to_string()
         };
 
-        guard.append_event(kind, payload, false)
+        guard.append_event(kind, payload, git_presence_changed)
     };
 
     emit_event(emitter, "folder://workspace-state-event", event);
