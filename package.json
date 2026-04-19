@@ -1,7 +1,7 @@
 {
   "name": "codeg",
   "private": true,
-  "version": "0.9.3",
+  "version": "0.9.4",
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build",
