@@ -1,0 +1,369 @@
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .create_table(
+                Table::create()
+                    .table(SquadRoleProfile::Table)
+                    .if_not_exists()
+                    .col(id_col(SquadRoleProfile::Id))
+                    .col(
+                        ColumnDef::new(SquadRoleProfile::FolderId)
+                            .integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(SquadRoleProfile::RoleKind)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(SquadRoleProfile::Enabled)
+                            .boolean()
+                            .not_null()
+                            .default(true),
+                    )
+                    .col(
+                        ColumnDef::new(SquadRoleProfile::AgentType)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(SquadRoleProfile::RegistryId)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(SquadRoleProfile::ModelProviderId)
+                            .integer()
+                            .null(),
+                    )
+                    .col(ColumnDef::new(SquadRoleProfile::ModelId).string().null())
+                    .col(ColumnDef::new(SquadRoleProfile::EnvJson).text().null())
+                    .col(
+                        ColumnDef::new(SquadRoleProfile::SystemPrompt)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(SquadRoleProfile::WorkspacePolicy)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(SquadRoleProfile::DefaultRunMode)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(ColumnDef::new(SquadRoleProfile::ModeId).string().null())
+                    .col(
+                        ColumnDef::new(SquadRoleProfile::ConfigOptionsJson)
+                            .text()
+                            .null(),
+                    )
+                    .col(timestamp_col(SquadRoleProfile::CreatedAt))
+                    .col(timestamp_col(SquadRoleProfile::UpdatedAt))
+                    .index(
+                        Index::create()
+                            .name("idx_squad_role_profile_folder_role")
+                            .col(SquadRoleProfile::FolderId)
+                            .col(SquadRoleProfile::RoleKind)
+                            .unique(),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_table(
+                Table::create()
+                    .table(SquadRun::Table)
+                    .if_not_exists()
+                    .col(id_col(SquadRun::Id))
+                    .col(ColumnDef::new(SquadRun::FolderId).integer().not_null())
+                    .col(
+                        ColumnDef::new(SquadRun::OriginConversationId)
+                            .integer()
+                            .null(),
+                    )
+                    .col(ColumnDef::new(SquadRun::Mode).string().not_null())
+                    .col(ColumnDef::new(SquadRun::Status).string().not_null())
+                    .col(ColumnDef::new(SquadRun::GoalSummary).text().not_null())
+                    .col(ColumnDef::new(SquadRun::BaseBranch).string().null())
+                    .col(ColumnDef::new(SquadRun::IsolationMode).string().not_null())
+                    .col(
+                        ColumnDef::new(SquadRun::StartedWithDirtyBase)
+                            .boolean()
+                            .not_null()
+                            .default(false),
+                    )
+                    .col(timestamp_col(SquadRun::CreatedAt))
+                    .col(timestamp_col(SquadRun::UpdatedAt))
+                    .col(
+                        ColumnDef::new(SquadRun::StartedAt)
+                            .timestamp_with_time_zone()
+                            .null(),
+                    )
+                    .col(
+                        ColumnDef::new(SquadRun::CompletedAt)
+                            .timestamp_with_time_zone()
+                            .null(),
+                    )
+                    .col(
+                        ColumnDef::new(SquadRun::CancelledAt)
+                            .timestamp_with_time_zone()
+                            .null(),
+                    )
+                    .col(ColumnDef::new(SquadRun::ErrorMessage).text().null())
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_table(
+                Table::create()
+                    .table(SquadRoleRun::Table)
+                    .if_not_exists()
+                    .col(id_col(SquadRoleRun::Id))
+                    .col(
+                        ColumnDef::new(SquadRoleRun::SquadRunId)
+                            .integer()
+                            .not_null(),
+                    )
+                    .col(ColumnDef::new(SquadRoleRun::RoleKind).string().not_null())
+                    .col(
+                        ColumnDef::new(SquadRoleRun::RoleProfileSnapshotJson)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(ColumnDef::new(SquadRoleRun::ConnectionId).string().null())
+                    .col(ColumnDef::new(SquadRoleRun::SessionId).string().null())
+                    .col(
+                        ColumnDef::new(SquadRoleRun::ConversationId)
+                            .integer()
+                            .null(),
+                    )
+                    .col(ColumnDef::new(SquadRoleRun::WorkspacePath).text().null())
+                    .col(ColumnDef::new(SquadRoleRun::BranchName).string().null())
+                    .col(ColumnDef::new(SquadRoleRun::Status).string().not_null())
+                    .col(
+                        ColumnDef::new(SquadRoleRun::LastEventAt)
+                            .timestamp_with_time_zone()
+                            .null(),
+                    )
+                    .col(ColumnDef::new(SquadRoleRun::BudgetStateJson).text().null())
+                    .col(ColumnDef::new(SquadRoleRun::ErrorMessage).text().null())
+                    .col(timestamp_col(SquadRoleRun::CreatedAt))
+                    .col(timestamp_col(SquadRoleRun::UpdatedAt))
+                    .index(
+                        Index::create()
+                            .name("idx_squad_role_run_run_role")
+                            .col(SquadRoleRun::SquadRunId)
+                            .col(SquadRoleRun::RoleKind)
+                            .unique(),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_table(
+                Table::create()
+                    .table(SquadTask::Table)
+                    .if_not_exists()
+                    .col(id_col(SquadTask::Id))
+                    .col(ColumnDef::new(SquadTask::SquadRunId).integer().not_null())
+                    .col(
+                        ColumnDef::new(SquadTask::AssignedRoleKind)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(ColumnDef::new(SquadTask::Title).string().not_null())
+                    .col(ColumnDef::new(SquadTask::Description).text().not_null())
+                    .col(ColumnDef::new(SquadTask::InputSummary).text().null())
+                    .col(ColumnDef::new(SquadTask::Status).string().not_null())
+                    .col(ColumnDef::new(SquadTask::DependsOnJson).text().null())
+                    .col(
+                        ColumnDef::new(SquadTask::Priority)
+                            .integer()
+                            .not_null()
+                            .default(0),
+                    )
+                    .col(timestamp_col(SquadTask::CreatedAt))
+                    .col(timestamp_col(SquadTask::UpdatedAt))
+                    .col(
+                        ColumnDef::new(SquadTask::CompletedAt)
+                            .timestamp_with_time_zone()
+                            .null(),
+                    )
+                    .col(ColumnDef::new(SquadTask::ErrorMessage).text().null())
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_table(
+                Table::create()
+                    .table(SquadArtifact::Table)
+                    .if_not_exists()
+                    .col(id_col(SquadArtifact::Id))
+                    .col(
+                        ColumnDef::new(SquadArtifact::SquadRunId)
+                            .integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(SquadArtifact::SquadRoleRunId)
+                            .integer()
+                            .null(),
+                    )
+                    .col(ColumnDef::new(SquadArtifact::TaskId).integer().null())
+                    .col(ColumnDef::new(SquadArtifact::RoleKind).string().null())
+                    .col(
+                        ColumnDef::new(SquadArtifact::ArtifactType)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(ColumnDef::new(SquadArtifact::Title).string().not_null())
+                    .col(ColumnDef::new(SquadArtifact::ContentJson).text().not_null())
+                    .col(timestamp_col(SquadArtifact::CreatedAt))
+                    .to_owned(),
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_table(Table::drop().table(SquadArtifact::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(SquadTask::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(SquadRoleRun::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(SquadRun::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(SquadRoleProfile::Table).to_owned())
+            .await?;
+        Ok(())
+    }
+}
+
+fn id_col<T: Iden + 'static>(col: T) -> ColumnDef {
+    ColumnDef::new(col)
+        .integer()
+        .not_null()
+        .auto_increment()
+        .primary_key()
+        .to_owned()
+}
+
+fn timestamp_col<T: Iden + 'static>(col: T) -> ColumnDef {
+    ColumnDef::new(col)
+        .timestamp_with_time_zone()
+        .not_null()
+        .to_owned()
+}
+
+#[derive(DeriveIden)]
+enum SquadRoleProfile {
+    Table,
+    Id,
+    FolderId,
+    RoleKind,
+    Enabled,
+    AgentType,
+    RegistryId,
+    ModelProviderId,
+    ModelId,
+    EnvJson,
+    SystemPrompt,
+    WorkspacePolicy,
+    DefaultRunMode,
+    ModeId,
+    ConfigOptionsJson,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveIden)]
+enum SquadRun {
+    Table,
+    Id,
+    FolderId,
+    OriginConversationId,
+    Mode,
+    Status,
+    GoalSummary,
+    BaseBranch,
+    IsolationMode,
+    StartedWithDirtyBase,
+    CreatedAt,
+    UpdatedAt,
+    StartedAt,
+    CompletedAt,
+    CancelledAt,
+    ErrorMessage,
+}
+
+#[derive(DeriveIden)]
+enum SquadRoleRun {
+    Table,
+    Id,
+    SquadRunId,
+    RoleKind,
+    RoleProfileSnapshotJson,
+    ConnectionId,
+    SessionId,
+    ConversationId,
+    WorkspacePath,
+    BranchName,
+    Status,
+    LastEventAt,
+    BudgetStateJson,
+    ErrorMessage,
+    CreatedAt,
+    UpdatedAt,
+}
+
+#[derive(DeriveIden)]
+enum SquadTask {
+    Table,
+    Id,
+    SquadRunId,
+    AssignedRoleKind,
+    Title,
+    Description,
+    InputSummary,
+    Status,
+    DependsOnJson,
+    Priority,
+    CreatedAt,
+    UpdatedAt,
+    CompletedAt,
+    ErrorMessage,
+}
+
+#[derive(DeriveIden)]
+enum SquadArtifact {
+    Table,
+    Id,
+    SquadRunId,
+    SquadRoleRunId,
+    TaskId,
+    RoleKind,
+    ArtifactType,
+    Title,
+    ContentJson,
+    CreatedAt,
+}

@@ -9,3 +9,8 @@ pub mod folder_command;
 pub mod model_provider;
 pub mod opened_tab;
 pub mod prelude;
+pub mod squad_artifact;
+pub mod squad_role_profile;
+pub mod squad_role_run;
+pub mod squad_run;
+pub mod squad_task;

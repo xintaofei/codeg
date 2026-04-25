@@ -13,6 +13,7 @@ mod m20260420_000001_opened_tabs;
 mod m20260422_000001_folder_sort_order;
 mod m20260423_000001_drop_folder_parent_branch;
 mod m20260424_000001_folder_workspace_preset;
+mod m20260425_000001_squad;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -32,6 +33,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260422_000001_folder_sort_order::Migration),
             Box::new(m20260423_000001_drop_folder_parent_branch::Migration),
             Box::new(m20260424_000001_folder_workspace_preset::Migration),
+            Box::new(m20260425_000001_squad::Migration),
         ]
     }
 }
