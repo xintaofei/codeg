@@ -10,6 +10,7 @@ pub mod model_provider;
 pub mod notification;
 pub mod project_boot;
 pub mod runtime;
+pub mod squad;
 pub mod system_settings;
 pub mod terminal;
 pub mod version_control;
