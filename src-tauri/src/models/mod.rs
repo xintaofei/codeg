@@ -4,6 +4,7 @@ pub mod conversation;
 pub mod folder;
 pub mod message;
 pub mod model_provider;
+pub mod squad;
 pub mod system;
 
 pub use agent::AgentType;

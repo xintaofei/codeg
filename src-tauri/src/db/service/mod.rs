@@ -8,4 +8,5 @@ pub mod folder_service;
 pub mod import_service;
 pub mod model_provider_service;
 pub mod sender_context_service;
+pub mod squad_service;
 pub mod tab_service;
