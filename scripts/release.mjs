@@ -12,6 +12,10 @@ function run(cmd, args, options = {}) {
 }
 
 run("pnpm", ["build"])
-run("cargo", ["build", "--release", "--bin", "codeg-server", "--no-default-features"], {
-  cwd: "src-tauri",
-})
+run(
+  "cargo",
+  ["build", "--release", "--bin", "codeg-server", "--no-default-features"],
+  {
+    cwd: "src-tauri",
+  }
+)

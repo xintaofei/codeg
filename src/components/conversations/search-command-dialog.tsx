@@ -62,7 +62,9 @@ export function SearchCommandDialog({
   const [activeTab, setActiveTab] = useState<SearchTab>("conversations")
   const [query, setQuery] = useState("")
   const [agentFilter, setAgentFilter] = useState<AgentType | null>(null)
-  const [searchAllFolders, setSearchAllFolders] = useState(activeFolderId == null)
+  const [searchAllFolders, setSearchAllFolders] = useState(
+    activeFolderId == null
+  )
   const [results, setResults] = useState<DbConversationSummary[]>([])
   const [searching, setSearching] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -113,8 +115,7 @@ export function SearchCommandDialog({
       setSearching(true)
       try {
         const data = await listAllConversations({
-          folder_ids:
-            !searchAllFolders && folderId > 0 ? [folderId] : null,
+          folder_ids: !searchAllFolders && folderId > 0 ? [folderId] : null,
           search: q.trim() || null,
           agent_type: agent,
         })
@@ -340,7 +341,9 @@ export function SearchCommandDialog({
                       </span>
                       {searchAllFolders && (
                         <span className="truncate text-[11px] text-muted-foreground">
-                          {conv.folder_name ?? conv.folder_path ?? "Unknown workspace"}
+                          {conv.folder_name ??
+                            conv.folder_path ??
+                            "Unknown workspace"}
                         </span>
                       )}
                     </div>

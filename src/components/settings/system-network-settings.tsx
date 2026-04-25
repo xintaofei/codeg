@@ -99,10 +99,11 @@ export function SystemNetworkSettings() {
   const [appLanguage, setAppLanguage] = useState<LanguageSelectValue>(
     languageSettings.mode === "system" ? "system" : languageSettings.language
   )
-  const [diagnostics, setDiagnostics] = useState<RuntimeDiagnostics | null>(null)
-  const [cacheInventory, setCacheInventory] = useState<AcpCacheInventory | null>(
+  const [diagnostics, setDiagnostics] = useState<RuntimeDiagnostics | null>(
     null
   )
+  const [cacheInventory, setCacheInventory] =
+    useState<AcpCacheInventory | null>(null)
   const [loadingRuntime, setLoadingRuntime] = useState(false)
   const [runtimeError, setRuntimeError] = useState<string | null>(null)
   const [clearingCache, setClearingCache] = useState<AgentType | "all" | null>(
@@ -391,7 +392,9 @@ export function SystemNetworkSettings() {
       try {
         if (agentType === "all") {
           await Promise.all(
-            cacheInventory.entries.map((entry) => acpClearBinaryCache(entry.agent_type))
+            cacheInventory.entries.map((entry) =>
+              acpClearBinaryCache(entry.agent_type)
+            )
           )
         } else {
           await acpClearBinaryCache(agentType)
@@ -682,7 +685,10 @@ export function SystemNetworkSettings() {
                     {diagnostics.security?.allow_remote_access ? "yes" : "no"}
                   </div>
                   <div>
-                    Auth: {diagnostics.security?.auth_enabled ? "enabled" : "disabled"}
+                    Auth:{" "}
+                    {diagnostics.security?.auth_enabled
+                      ? "enabled"
+                      : "disabled"}
                   </div>
                   <div className="text-muted-foreground">
                     {diagnostics.security?.insecure
@@ -717,15 +723,21 @@ export function SystemNetworkSettings() {
               <div className="rounded-md border bg-muted/20 px-3 py-3 text-xs space-y-2">
                 <div className="font-medium">Active ACP connections</div>
                 {diagnostics.connections.length === 0 ? (
-                  <div className="text-muted-foreground">No active ACP connections.</div>
+                  <div className="text-muted-foreground">
+                    No active ACP connections.
+                  </div>
                 ) : (
                   diagnostics.connections.map((connection) => (
                     <div
                       key={connection.id}
                       className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b last:border-b-0 pb-2 last:pb-0"
                     >
-                      <span className="font-medium">{AGENT_LABELS[connection.agent_type]}</span>
-                      <span className="text-muted-foreground">{connection.status}</span>
+                      <span className="font-medium">
+                        {AGENT_LABELS[connection.agent_type]}
+                      </span>
+                      <span className="text-muted-foreground">
+                        {connection.status}
+                      </span>
                       <span className="text-muted-foreground">
                         owner {connection.owner_window_label}
                       </span>
@@ -740,7 +752,9 @@ export function SystemNetworkSettings() {
               <div className="rounded-md border bg-muted/20 px-3 py-3 text-xs space-y-2">
                 <div className="font-medium">Recent runtime logs</div>
                 {diagnostics.recent_logs.length === 0 ? (
-                  <div className="text-muted-foreground">No recent runtime logs.</div>
+                  <div className="text-muted-foreground">
+                    No recent runtime logs.
+                  </div>
                 ) : (
                   diagnostics.recent_logs.slice(-12).map((entry, index) => (
                     <div
@@ -748,8 +762,12 @@ export function SystemNetworkSettings() {
                       className="grid gap-1 border-b last:border-b-0 pb-2 last:pb-0"
                     >
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-medium uppercase">{entry.level}</span>
-                        <span className="text-muted-foreground">{entry.scope}</span>
+                        <span className="font-medium uppercase">
+                          {entry.level}
+                        </span>
+                        <span className="text-muted-foreground">
+                          {entry.scope}
+                        </span>
                         <span className="text-muted-foreground">
                           {formatTimestamp(entry.timestamp)}
                         </span>
@@ -787,9 +805,13 @@ export function SystemNetworkSettings() {
           {cacheInventory && (
             <div className="rounded-md border bg-muted/20 px-3 py-3 text-xs space-y-3">
               <div className="flex flex-wrap items-center gap-3 text-muted-foreground">
-                <span>Total size: {formatBytes(cacheInventory.total_size_bytes)}</span>
+                <span>
+                  Total size: {formatBytes(cacheInventory.total_size_bytes)}
+                </span>
                 <span>Root: {cacheInventory.root_path}</span>
-                <span>Generated: {formatTimestamp(cacheInventory.generated_at)}</span>
+                <span>
+                  Generated: {formatTimestamp(cacheInventory.generated_at)}
+                </span>
               </div>
 
               {cacheInventory.entries.map((entry) => (
@@ -801,7 +823,8 @@ export function SystemNetworkSettings() {
                     <div className="space-y-1">
                       <div className="font-medium">{entry.label}</div>
                       <div className="text-muted-foreground">
-                        {formatBytes(entry.size_bytes)} · {entry.file_count} files
+                        {formatBytes(entry.size_bytes)} · {entry.file_count}{" "}
+                        files
                       </div>
                       <div className="text-muted-foreground truncate">
                         {entry.path}

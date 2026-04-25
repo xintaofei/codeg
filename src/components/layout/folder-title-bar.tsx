@@ -355,11 +355,11 @@ export function FolderTitleBar() {
                     {tTitleBar("toggleAuxPanel")}
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                  onClick={() => toggleTerminal()}
-                  disabled={!activeFolder}
-                >
-                  <SquareTerminal className="h-3.5 w-3.5" />
-                  {tTitleBar("toggleTerminal")}
+                    onClick={() => toggleTerminal()}
+                    disabled={!activeFolder}
+                  >
+                    <SquareTerminal className="h-3.5 w-3.5" />
+                    {tTitleBar("toggleTerminal")}
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     onClick={() => setWorkspacePresetOpen(true)}

@@ -2310,10 +2310,7 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
     configText
   )
   const geminiImportant = extractGeminiImportantValues(agent.env, configText)
-  const genericImportant = extractGenericImportantValues(
-    agent.env,
-    configText
-  )
+  const genericImportant = extractGenericImportantValues(agent.env, configText)
   const codexImportant = extractCodexImportantValues(
     codexAuthJsonText,
     codexConfigTomlText
