@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -161,6 +162,33 @@ pub enum AcpEvent {
         used: u64,
         size: u64,
     },
+    /// Agent has begun compacting/summarizing context history mid-turn.
+    /// The frontend should keep the spinner running but display a hint
+    /// such as "Compacting context…" and reset its idle watchdog.
+    CompactionStarted {
+        connection_id: String,
+        session_id: String,
+    },
+    /// Compaction finished; agent will resume normal streaming.
+    CompactionFinished {
+        connection_id: String,
+        session_id: String,
+    },
+    /// Non-fatal stream parse/decode warning. Surfaced to the UI so a
+    /// silent loop swallow can't masquerade as a hang.
+    StreamWarning {
+        connection_id: String,
+        message: String,
+    },
+    /// Turn was aborted because no events arrived for too long. The
+    /// frontend treats this exactly like TurnComplete so the user can
+    /// resume sending messages.
+    TurnIdleTimeout {
+        connection_id: String,
+        session_id: String,
+        agent_type: String,
+        idle_ms: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,6 +269,12 @@ pub struct ConnectionInfo {
     pub id: String,
     pub agent_type: crate::models::agent::AgentType,
     pub status: ConnectionStatus,
+    pub owner_window_label: String,
+    pub working_dir: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub session_id: Option<String>,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

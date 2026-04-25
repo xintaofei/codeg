@@ -8,7 +8,6 @@ import {
   ClaudeCode,
   Cline,
   GeminiCLI,
-  OpenClaw,
   OpenCode,
 } from "@lobehub/icons"
 
@@ -57,17 +56,53 @@ const CodexColorIcon = memo(function CodexColorIcon({
   )
 })
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyIcon = React.ComponentType<any>
+const GenericColorIcon = memo(function GenericColorIcon({
+  size = "1em",
+}: {
+  size?: string | number
+}) {
+  return (
+    <svg
+      height={size}
+      style={{ flex: "none", lineHeight: 1 }}
+      viewBox="0 0 24 24"
+      width={size}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <title>Generic</title>
+      <rect
+        fill="#475569"
+        height="24"
+        rx="4"
+        width="24"
+      />
+      <text
+        dominantBaseline="central"
+        fill="white"
+        fontFamily="system-ui, sans-serif"
+        fontSize="14"
+        fontWeight="bold"
+        textAnchor="middle"
+        x="12"
+        y="12.5"
+      >
+        G
+      </text>
+    </svg>
+  )
+})
 
-const COLOR_ICONS: Partial<Record<AgentType, AnyIcon>> = {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyIcon2 = React.ComponentType<any>
+
+const COLOR_ICONS: Partial<Record<AgentType, AnyIcon2>> = {
   claude_code: ClaudeCode.Color,
   codex: CodexColorIcon,
   gemini: GeminiCLI.Color,
-  open_claw: OpenClaw.Color,
+  generic: GenericColorIcon,
 }
 
-const MONO_ICONS: Partial<Record<AgentType, AnyIcon>> = {
+const MONO_ICONS: Partial<Record<AgentType, AnyIcon2>> = {
   open_code: OpenCode,
   cline: Cline,
 }

@@ -22,6 +22,8 @@ pub struct ConversationSummary {
 pub struct DbConversationSummary {
     pub id: i32,
     pub folder_id: i32,
+    pub folder_name: Option<String>,
+    pub folder_path: Option<String>,
     pub title: Option<String>,
     pub agent_type: AgentType,
     pub status: String,

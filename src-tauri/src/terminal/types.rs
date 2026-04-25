@@ -10,4 +10,7 @@ pub struct TerminalEvent {
 pub struct TerminalInfo {
     pub id: String,
     pub title: String,
+    pub working_dir: String,
+    pub owner_window_label: String,
+    pub created_at: String,
 }

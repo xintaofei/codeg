@@ -28,12 +28,21 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
+  acpClearBinaryCache,
+  getAcpCacheInventory,
+  getRuntimeDiagnostics,
   getSystemProxySettings,
   updateSystemLanguageSettings,
   updateSystemProxySettings,
 } from "@/lib/api"
 import { openUrl } from "@/lib/platform"
-import type { AppLocale } from "@/lib/types"
+import { AGENT_LABELS } from "@/lib/types"
+import type {
+  AcpCacheInventory,
+  AgentType,
+  AppLocale,
+  RuntimeDiagnostics,
+} from "@/lib/types"
 import {
   checkAppUpdate,
   closeAppUpdate,
@@ -89,6 +98,15 @@ export function SystemNetworkSettings() {
 
   const [appLanguage, setAppLanguage] = useState<LanguageSelectValue>(
     languageSettings.mode === "system" ? "system" : languageSettings.language
+  )
+  const [diagnostics, setDiagnostics] = useState<RuntimeDiagnostics | null>(null)
+  const [cacheInventory, setCacheInventory] = useState<AcpCacheInventory | null>(
+    null
+  )
+  const [loadingRuntime, setLoadingRuntime] = useState(false)
+  const [runtimeError, setRuntimeError] = useState<string | null>(null)
+  const [clearingCache, setClearingCache] = useState<AgentType | "all" | null>(
+    null
   )
 
   useEffect(() => {
@@ -167,9 +185,30 @@ export function SystemNetworkSettings() {
     }
   }, [])
 
+  const loadRuntimeData = useCallback(async () => {
+    setLoadingRuntime(true)
+    setRuntimeError(null)
+    try {
+      const [runtimeSnapshot, cacheSnapshot] = await Promise.all([
+        getRuntimeDiagnostics(),
+        getAcpCacheInventory(),
+      ])
+      setDiagnostics(runtimeSnapshot)
+      setCacheInventory(cacheSnapshot)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setRuntimeError(message)
+    } finally {
+      setLoadingRuntime(false)
+    }
+  }, [])
+
   useEffect(() => {
     loadSettings().catch((err) => {
       console.error("[Settings] load system settings failed:", err)
+    })
+    loadRuntimeData().catch((err) => {
+      console.error("[Settings] load runtime diagnostics failed:", err)
     })
     checkForUpdates().catch((err) => {
       console.error("[Settings] auto check update failed:", err)
@@ -331,6 +370,43 @@ export function SystemNetworkSettings() {
       setDownloadProgress(null)
     }
   }, [availableUpdate, formatUpdateError, t])
+
+  const formatTimestamp = useCallback(
+    (value?: string | null) => {
+      if (!value) return "-"
+      const parsed = new Date(value)
+      if (Number.isNaN(parsed.getTime())) return value
+      return new Intl.DateTimeFormat(locale, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(parsed)
+    },
+    [locale]
+  )
+
+  const clearCache = useCallback(
+    async (agentType: AgentType | "all") => {
+      if (!cacheInventory) return
+      setClearingCache(agentType)
+      try {
+        if (agentType === "all") {
+          await Promise.all(
+            cacheInventory.entries.map((entry) => acpClearBinaryCache(entry.agent_type))
+          )
+        } else {
+          await acpClearBinaryCache(agentType)
+        }
+        await loadRuntimeData()
+        toast.success("ACP binary cache cleared")
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        toast.error(`Failed to clear cache: ${message}`)
+      } finally {
+        setClearingCache(null)
+      }
+    },
+    [cacheInventory, loadRuntimeData]
+  )
 
   if (loading) {
     return (
@@ -557,6 +633,205 @@ export function SystemNetworkSettings() {
               {t("proxyHint", { example: PROXY_EXAMPLE })}
             </p>
           </div>
+        </section>
+
+        <section className="rounded-xl border bg-card p-4 space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="space-y-1">
+              <h2 className="text-sm font-semibold">Runtime Diagnostics</h2>
+              <p className="text-xs text-muted-foreground leading-5">
+                ACP connections, web clients, build consistency and recent
+                runtime events.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => loadRuntimeData()}
+              disabled={loadingRuntime}
+            >
+              {loadingRuntime ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3.5 w-3.5" />
+              )}
+              Refresh
+            </Button>
+          </div>
+
+          {runtimeError && (
+            <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400">
+              {runtimeError}
+            </div>
+          )}
+
+          {diagnostics && (
+            <>
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <div className="rounded-md border bg-muted/20 px-3 py-3 text-xs space-y-1">
+                  <div className="font-medium">Build</div>
+                  <div>Status: {diagnostics.build?.status ?? "-"}</div>
+                  <div className="text-muted-foreground">
+                    {diagnostics.build?.message ?? "Unavailable"}
+                  </div>
+                </div>
+                <div className="rounded-md border bg-muted/20 px-3 py-3 text-xs space-y-1">
+                  <div className="font-medium">Security</div>
+                  <div>
+                    Remote access:{" "}
+                    {diagnostics.security?.allow_remote_access ? "yes" : "no"}
+                  </div>
+                  <div>
+                    Auth: {diagnostics.security?.auth_enabled ? "enabled" : "disabled"}
+                  </div>
+                  <div className="text-muted-foreground">
+                    {diagnostics.security?.insecure
+                      ? "Insecure remote exposure detected"
+                      : "No insecure startup warning"}
+                  </div>
+                </div>
+                <div className="rounded-md border bg-muted/20 px-3 py-3 text-xs space-y-1">
+                  <div className="font-medium">Sessions</div>
+                  <div>ACP: {diagnostics.connections.length}</div>
+                  <div>Terminals: {diagnostics.terminals.length}</div>
+                  <div>Web clients: {diagnostics.web_clients.length}</div>
+                </div>
+                <div className="rounded-md border bg-muted/20 px-3 py-3 text-xs space-y-1">
+                  <div className="font-medium">Circuit Breaker</div>
+                  <div>
+                    {diagnostics.connection_limits.breaker_open
+                      ? "Open"
+                      : "Closed"}
+                  </div>
+                  <div>
+                    Failures: {diagnostics.connection_limits.recent_failures}/
+                    {diagnostics.connection_limits.breaker_threshold}
+                  </div>
+                  <div className="text-muted-foreground">
+                    Global limit: {diagnostics.connection_limits.current_total}/
+                    {diagnostics.connection_limits.global_limit}
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-md border bg-muted/20 px-3 py-3 text-xs space-y-2">
+                <div className="font-medium">Active ACP connections</div>
+                {diagnostics.connections.length === 0 ? (
+                  <div className="text-muted-foreground">No active ACP connections.</div>
+                ) : (
+                  diagnostics.connections.map((connection) => (
+                    <div
+                      key={connection.id}
+                      className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b last:border-b-0 pb-2 last:pb-0"
+                    >
+                      <span className="font-medium">{AGENT_LABELS[connection.agent_type]}</span>
+                      <span className="text-muted-foreground">{connection.status}</span>
+                      <span className="text-muted-foreground">
+                        owner {connection.owner_window_label}
+                      </span>
+                      <span className="text-muted-foreground">
+                        {connection.working_dir ?? "-"}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div className="rounded-md border bg-muted/20 px-3 py-3 text-xs space-y-2">
+                <div className="font-medium">Recent runtime logs</div>
+                {diagnostics.recent_logs.length === 0 ? (
+                  <div className="text-muted-foreground">No recent runtime logs.</div>
+                ) : (
+                  diagnostics.recent_logs.slice(-12).map((entry, index) => (
+                    <div
+                      key={`${entry.timestamp}-${index}`}
+                      className="grid gap-1 border-b last:border-b-0 pb-2 last:pb-0"
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium uppercase">{entry.level}</span>
+                        <span className="text-muted-foreground">{entry.scope}</span>
+                        <span className="text-muted-foreground">
+                          {formatTimestamp(entry.timestamp)}
+                        </span>
+                      </div>
+                      <div>{entry.message}</div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </>
+          )}
+        </section>
+
+        <section className="rounded-xl border bg-card p-4 space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="space-y-1">
+              <h2 className="text-sm font-semibold">Cache Governance</h2>
+              <p className="text-xs text-muted-foreground leading-5">
+                Inspect and clear ACP binary caches without leaving Settings.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!cacheInventory || clearingCache !== null}
+              onClick={() => clearCache("all")}
+            >
+              {clearingCache === "all" && (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              )}
+              Clear all
+            </Button>
+          </div>
+
+          {cacheInventory && (
+            <div className="rounded-md border bg-muted/20 px-3 py-3 text-xs space-y-3">
+              <div className="flex flex-wrap items-center gap-3 text-muted-foreground">
+                <span>Total size: {formatBytes(cacheInventory.total_size_bytes)}</span>
+                <span>Root: {cacheInventory.root_path}</span>
+                <span>Generated: {formatTimestamp(cacheInventory.generated_at)}</span>
+              </div>
+
+              {cacheInventory.entries.map((entry) => (
+                <div
+                  key={entry.agent_type}
+                  className="flex flex-col gap-2 rounded-md border bg-background/70 px-3 py-3"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="font-medium">{entry.label}</div>
+                      <div className="text-muted-foreground">
+                        {formatBytes(entry.size_bytes)} · {entry.file_count} files
+                      </div>
+                      <div className="text-muted-foreground truncate">
+                        {entry.path}
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={clearingCache !== null}
+                      onClick={() => clearCache(entry.agent_type)}
+                    >
+                      {clearingCache === entry.agent_type && (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      )}
+                      Clear
+                    </Button>
+                  </div>
+                  <div className="text-muted-foreground">
+                    Installed: {entry.installed_version ?? "-"} · Recommended:{" "}
+                    {entry.recommended_version ?? "-"}
+                  </div>
+                  {entry.versions.length > 0 && (
+                    <div className="text-muted-foreground">
+                      Versions: {entry.versions.join(", ")}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </section>
 
         <section className="rounded-xl border bg-card p-4 space-y-4">

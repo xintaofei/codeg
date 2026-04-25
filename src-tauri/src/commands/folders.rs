@@ -24,7 +24,7 @@ use crate::db::service::folder_service;
 use crate::db::AppDatabase;
 use crate::models::GitCredentials;
 #[cfg(feature = "tauri-runtime")]
-use crate::models::{FolderDetail, FolderHistoryEntry};
+use crate::models::{FolderDetail, FolderHistoryEntry, WorkspacePreset};
 use crate::web::event_bridge::EventEmitter;
 
 /// Configure a git command for remote operations:
@@ -552,6 +552,18 @@ pub async fn remove_folder_from_workspace(
         .await
         .map_err(AppCommandError::from)?;
     folder_service::set_folder_open(&db.conn, folder_id, false)
+        .await
+        .map_err(AppCommandError::from)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn update_folder_workspace_preset(
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    workspace_preset: Option<WorkspacePreset>,
+) -> Result<FolderDetail, AppCommandError> {
+    folder_service::update_workspace_preset(&db.conn, folder_id, workspace_preset)
         .await
         .map_err(AppCommandError::from)
 }

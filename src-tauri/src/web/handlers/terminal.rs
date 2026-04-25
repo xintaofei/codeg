@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::{extract::Extension, Json};
+use axum::{extract::Extension, http::HeaderMap, Json};
 use serde::Deserialize;
 
 use crate::app_error::AppCommandError;
@@ -48,6 +48,7 @@ pub struct TerminalResizeParams {
 
 pub async fn terminal_spawn(
     Extension(state): Extension<Arc<AppState>>,
+    headers: HeaderMap,
     Json(params): Json<TerminalSpawnParams>,
 ) -> Result<Json<String>, AppCommandError> {
     let manager = &state.terminal_manager;
@@ -57,13 +58,14 @@ pub async fn terminal_spawn(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     let extra_env = prepare_credential_env(&state.data_dir);
+    let owner_window_label = crate::web::client_owner::owner_label_from_headers(&headers);
 
     let id = manager
         .spawn_with_id(
             SpawnOptions {
                 terminal_id,
                 working_dir: params.working_dir,
-                owner_window_label: "web".to_string(),
+                owner_window_label,
                 initial_command: params.initial_command,
                 extra_env,
                 temp_files: vec![],

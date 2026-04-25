@@ -124,6 +124,13 @@ export interface ConnectionState {
   pendingPermission: PendingPermission | null
   pendingQuestion: PendingQuestion | null
   claudeApiRetry: ClaudeApiRetryState | null
+  /** True while the agent is performing mid-turn context compaction.
+   * Used to render a "Compacting context…" hint without leaving the
+   * spinner unexplained. */
+  compacting: boolean
+  /** Most recent non-fatal stream parse warning. Cleared on next turn
+   * start. Helps surface silently swallowed errors. */
+  streamWarning: string | null
   error: string | null
 }
 
@@ -252,6 +259,10 @@ type Action =
       retry: ClaudeApiRetryState | null
     }
   | { type: "ERROR"; contextKey: string; message: string }
+  | { type: "COMPACTION_STARTED"; contextKey: string }
+  | { type: "COMPACTION_FINISHED"; contextKey: string }
+  | { type: "STREAM_WARNING"; contextKey: string; message: string }
+  | { type: "TURN_IDLE_TIMEOUT"; contextKey: string; idleMs: number }
   | {
       type: "AVAILABLE_COMMANDS"
       contextKey: string
@@ -621,6 +632,8 @@ function connectionsReducer(
         pendingPermission: null,
         pendingQuestion: null,
         claudeApiRetry: null,
+        compacting: false,
+        streamWarning: null,
         error: null,
       })
       return next
@@ -649,10 +662,14 @@ function connectionsReducer(
         }
         updated.pendingQuestion = null
         updated.claudeApiRetry = null
+        updated.compacting = false
+        updated.streamWarning = null
         updated.error = null
       } else if (conn.status === "prompting") {
-        // Prompt cycle ended: clear in-flight Claude API retry banner.
+        // Prompt cycle ended: clear in-flight Claude API retry banner
+        // and any lingering compaction hint.
         updated.claudeApiRetry = null
+        updated.compacting = false
       }
       next.set(action.contextKey, updated)
       return next
@@ -1183,10 +1200,63 @@ function connectionsReducer(
       const conn = state.get(action.contextKey)
       if (!conn) return state
       const next = new Map(state)
+      // If the error arrived while a turn was in flight, the turn is
+      // effectively dead — bring the UI back to a usable "connected"
+      // state so the user can retry. Without this the spinner would
+      // run forever and the send box stay disabled even though we
+      // already showed an error banner.
+      const wasPrompting = conn.status === "prompting"
       next.set(action.contextKey, {
         ...conn,
+        status: wasPrompting ? "connected" : conn.status,
+        liveMessage: wasPrompting ? null : conn.liveMessage,
         claudeApiRetry: null,
+        compacting: false,
         error: action.message,
+      })
+      return next
+    }
+
+    case "COMPACTION_STARTED": {
+      const conn = state.get(action.contextKey)
+      if (!conn) return state
+      if (conn.compacting) return state
+      const next = new Map(state)
+      next.set(action.contextKey, { ...conn, compacting: true })
+      return next
+    }
+
+    case "COMPACTION_FINISHED": {
+      const conn = state.get(action.contextKey)
+      if (!conn) return state
+      if (!conn.compacting) return state
+      const next = new Map(state)
+      next.set(action.contextKey, { ...conn, compacting: false })
+      return next
+    }
+
+    case "STREAM_WARNING": {
+      const conn = state.get(action.contextKey)
+      if (!conn) return state
+      if (conn.streamWarning === action.message) return state
+      const next = new Map(state)
+      next.set(action.contextKey, { ...conn, streamWarning: action.message })
+      return next
+    }
+
+    case "TURN_IDLE_TIMEOUT": {
+      // Treated like a forced TurnComplete: clear in-flight state and
+      // surface a recoverable error so the user knows what happened.
+      const conn = state.get(action.contextKey)
+      if (!conn) return state
+      const next = new Map(state)
+      next.set(action.contextKey, {
+        ...conn,
+        status: "connected",
+        liveMessage: null,
+        pendingPermission: null,
+        claudeApiRetry: null,
+        compacting: false,
       })
       return next
     }
@@ -2012,6 +2082,46 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             },
           })
           break
+        case "compaction_started":
+          // Don't flush streaming queue — text deltas can resume
+          // immediately after compaction; we just want to surface the
+          // hint and keep ordering intact.
+          dispatch({ type: "COMPACTION_STARTED", contextKey })
+          break
+        case "compaction_finished":
+          dispatch({ type: "COMPACTION_FINISHED", contextKey })
+          break
+        case "stream_warning":
+          // Non-fatal: stash the message so debugging is possible, but
+          // don't break the spinner. The watchdog will catch a true hang.
+          dispatch({
+            type: "STREAM_WARNING",
+            contextKey,
+            message: e.message,
+          })
+          break
+        case "turn_idle_timeout": {
+          flushStreamingQueue()
+          flushPendingToolCallUpdates()
+          dispatch({
+            type: "TURN_IDLE_TIMEOUT",
+            contextKey,
+            idleMs: e.idle_ms,
+          })
+          // Surface a localized banner so the user understands why the
+          // turn ended without a normal completion.
+          const idleConn = storeRef.current.connections.get(contextKey)
+          const agentLabel = idleConn
+            ? AGENT_LABELS[idleConn.agentType]
+            : (e.agent_type as string)
+          const seconds = Math.round(e.idle_ms / 1000)
+          const message = t("backendErrors.turnIdleTimeout", {
+            agent: agentLabel,
+            seconds,
+          })
+          pushAlertRef.current("warning", t("eventErrorTitle"), message)
+          break
+        }
       }
     },
     [
@@ -2171,11 +2281,17 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         }
 
         const nextWorkingDir = workingDir ?? null
+        const requestedSessionId =
+          typeof sessionId === "string" && sessionId.trim().length > 0
+            ? sessionId
+            : null
         const existing = storeRef.current.connections.get(contextKey)
         if (existing) {
           if (
             existing.agentType === agentType &&
             existing.workingDir === nextWorkingDir &&
+            (requestedSessionId === null ||
+              existing.sessionId === requestedSessionId) &&
             existing.status !== "disconnected" &&
             existing.status !== "error"
           ) {

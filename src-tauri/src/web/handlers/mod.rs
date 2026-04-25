@@ -10,6 +10,7 @@ pub mod git;
 pub mod mcp;
 pub mod model_provider;
 pub mod project_boot;
+pub mod runtime;
 pub mod system_settings;
 pub mod terminal;
 pub mod version_control;

@@ -134,9 +134,9 @@ interface AgentDraft {
   codexAuthJsonText: string
   codexConfigTomlText: string
   openCodeAuthJsonText: string
-  openClawGatewayUrl: string
-  openClawGatewayToken: string
-  openClawSessionKey: string
+  genericGatewayUrl: string
+  genericGatewayToken: string
+  genericSessionKey: string
   clineProvider: ClineProvider
   clineApiKey: string
   clineModel: string
@@ -302,10 +302,10 @@ const GEMINI_ENV_KEYS = {
   model: "GEMINI_MODEL",
 } as const
 
-const OPENCLAW_ENV_KEYS = {
-  gatewayUrl: "OPENCLAW_GATEWAY_URL",
-  gatewayToken: "OPENCLAW_GATEWAY_TOKEN",
-  sessionKey: "OPENCLAW_SESSION_KEY",
+const GENERIC_ENV_KEYS = {
+  gatewayUrl: "GENERIC_GATEWAY_URL",
+  gatewayToken: "GENERIC_GATEWAY_TOKEN",
+  sessionKey: "GENERIC_SESSION_KEY",
 } as const
 
 const CLINE_PROVIDERS = [
@@ -637,7 +637,7 @@ function extractGeminiImportantValues(
   }
 }
 
-interface OpenClawImportantValues {
+interface GenericImportantValues {
   gatewayUrl: string
   gatewayToken: string
   sessionKey: string
@@ -663,19 +663,19 @@ function extractClineImportantValues(configText: string): ClineImportantValues {
   }
 }
 
-function extractOpenClawImportantValues(
+function extractGenericImportantValues(
   env: Record<string, string>,
   configText: string
-): OpenClawImportantValues {
+): GenericImportantValues {
   const parseResult = parseConfigJsonText(configText)
   const config = parseResult.config
   const configEnv = envFromConfig(config)
   const mergedEnv = { ...env, ...configEnv }
 
   return {
-    gatewayUrl: findEnvValue(mergedEnv, [OPENCLAW_ENV_KEYS.gatewayUrl]),
-    gatewayToken: findEnvValue(mergedEnv, [OPENCLAW_ENV_KEYS.gatewayToken]),
-    sessionKey: findEnvValue(mergedEnv, [OPENCLAW_ENV_KEYS.sessionKey]),
+    gatewayUrl: findEnvValue(mergedEnv, [GENERIC_ENV_KEYS.gatewayUrl]),
+    gatewayToken: findEnvValue(mergedEnv, [GENERIC_ENV_KEYS.gatewayToken]),
+    sessionKey: findEnvValue(mergedEnv, [GENERIC_ENV_KEYS.sessionKey]),
   }
 }
 
@@ -2310,7 +2310,7 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
     configText
   )
   const geminiImportant = extractGeminiImportantValues(agent.env, configText)
-  const openClawImportant = extractOpenClawImportantValues(
+  const genericImportant = extractGenericImportantValues(
     agent.env,
     configText
   )
@@ -2395,9 +2395,9 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
     codexAuthJsonText,
     codexConfigTomlText,
     openCodeAuthJsonText,
-    openClawGatewayUrl: openClawImportant.gatewayUrl,
-    openClawGatewayToken: openClawImportant.gatewayToken,
-    openClawSessionKey: openClawImportant.sessionKey,
+    genericGatewayUrl: genericImportant.gatewayUrl,
+    genericGatewayToken: genericImportant.gatewayToken,
+    genericSessionKey: genericImportant.sessionKey,
     clineProvider: clineImportant.provider,
     clineApiKey: clineImportant.apiKey,
     clineModel: clineImportant.model,
@@ -3009,7 +3009,7 @@ export function AcpAgentSettings() {
       const usesMerge =
         agentType === "claude_code" ||
         agentType === "gemini" ||
-        agentType === "open_claw"
+        agentType === "generic"
       if (usesMerge && configForPersist) {
         const originalAgent = agents.find((a) => a.agent_type === agentType)
         const originalConfig = originalAgent?.config_json
@@ -4048,22 +4048,22 @@ export function AcpAgentSettings() {
     [selectedAgent, selectedDraft, t, updateSelectedDraft]
   )
 
-  const handleOpenClawFieldChange = useCallback(
+  const handleGenericFieldChange = useCallback(
     (
-      key: "openClawGatewayUrl" | "openClawGatewayToken" | "openClawSessionKey",
+      key: "genericGatewayUrl" | "genericGatewayToken" | "genericSessionKey",
       value: string
     ) => {
       if (
         !selectedAgent ||
         !selectedDraft ||
-        selectedAgent.agent_type !== "open_claw"
+        selectedAgent.agent_type !== "generic"
       )
         return
 
       const envKeyMap: Record<string, string> = {
-        openClawGatewayUrl: OPENCLAW_ENV_KEYS.gatewayUrl,
-        openClawGatewayToken: OPENCLAW_ENV_KEYS.gatewayToken,
-        openClawSessionKey: OPENCLAW_ENV_KEYS.sessionKey,
+        genericGatewayUrl: GENERIC_ENV_KEYS.gatewayUrl,
+        genericGatewayToken: GENERIC_ENV_KEYS.gatewayToken,
+        genericSessionKey: GENERIC_ENV_KEYS.sessionKey,
       }
 
       updateSelectedDraft((current) => ({
@@ -7013,14 +7013,14 @@ supports_websockets = true`}
                       </Button>
                     </div>
                   </div>
-                ) : selectedAgent.agent_type === "open_claw" ? (
+                ) : selectedAgent.agent_type === "generic" ? (
                   <div className="space-y-3 rounded-md border bg-muted/10 p-3">
                     <div>
                       <label className="text-xs font-medium">
-                        {t("openClaw.gatewayConfig")}
+                        {t("generic.gatewayConfig")}
                       </label>
                       <p className="mt-1 text-[11px] text-muted-foreground">
-                        {t("openClaw.gatewayDescription")}
+                        {t("generic.gatewayDescription")}
                       </p>
                     </div>
 
@@ -7029,17 +7029,17 @@ supports_websockets = true`}
                         Gateway URL
                       </label>
                       <Input
-                        value={selectedDraft.openClawGatewayUrl}
+                        value={selectedDraft.genericGatewayUrl}
                         onChange={(event) => {
-                          handleOpenClawFieldChange(
-                            "openClawGatewayUrl",
+                          handleGenericFieldChange(
+                            "genericGatewayUrl",
                             event.target.value
                           )
                         }}
                         placeholder="wss://gateway-host:18789"
                       />
                       <p className="text-[11px] text-muted-foreground">
-                        {t("openClaw.gatewayUrlHint")}
+                        {t("generic.gatewayUrlHint")}
                       </p>
                     </div>
 
@@ -7054,14 +7054,14 @@ supports_websockets = true`}
                               ? "text"
                               : "password"
                           }
-                          value={selectedDraft.openClawGatewayToken}
+                          value={selectedDraft.genericGatewayToken}
                           onChange={(event) => {
-                            handleOpenClawFieldChange(
-                              "openClawGatewayToken",
+                            handleGenericFieldChange(
+                              "genericGatewayToken",
                               event.target.value
                             )
                           }}
-                          placeholder={t("openClaw.gatewayTokenPlaceholder")}
+                          placeholder={t("generic.gatewayTokenPlaceholder")}
                         />
                         <Button
                           type="button"
@@ -7088,7 +7088,7 @@ supports_websockets = true`}
                         </Button>
                       </div>
                       <p className="text-[11px] text-muted-foreground">
-                        {t("openClaw.gatewayTokenHint")}
+                        {t("generic.gatewayTokenHint")}
                       </p>
                     </div>
 
@@ -7097,17 +7097,17 @@ supports_websockets = true`}
                         Session Key
                       </label>
                       <Input
-                        value={selectedDraft.openClawSessionKey}
+                        value={selectedDraft.genericSessionKey}
                         onChange={(event) => {
-                          handleOpenClawFieldChange(
-                            "openClawSessionKey",
+                          handleGenericFieldChange(
+                            "genericSessionKey",
                             event.target.value
                           )
                         }}
                         placeholder="agent:main:main"
                       />
                       <p className="text-[11px] text-muted-foreground">
-                        {t("openClaw.sessionKeyHint")}
+                        {t("generic.sessionKeyHint")}
                       </p>
                     </div>
 
@@ -7128,18 +7128,18 @@ supports_websockets = true`}
                             ),
                           ])
                             .then(() => {
-                              toast.success(t("toasts.openClawSaved"), {
+                              toast.success(t("toasts.genericSaved"), {
                                 description: t("toasts.configSavedHint"),
                               })
                             })
                             .catch((err) => {
                               console.error(
-                                "[Settings] save openclaw config failed:",
+                                "[Settings] save generic config failed:",
                                 err
                               )
                               const message =
                                 err instanceof Error ? err.message : String(err)
-                              toast.error(t("toasts.saveOpenClawFailed"), {
+                              toast.error(t("toasts.saveGenericFailed"), {
                                 description: message,
                               })
                             })
@@ -7154,7 +7154,7 @@ supports_websockets = true`}
                         ) : (
                           <>
                             <Save className="h-3.5 w-3.5" />
-                            {t("actions.saveOpenClawConfig")}
+                            {t("actions.saveGenericConfig")}
                           </>
                         )}
                       </Button>

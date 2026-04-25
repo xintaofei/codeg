@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use axum::{extract::Extension, Json};
+use axum::{extract::Extension, http::HeaderMap, Json};
 use serde::Deserialize;
 
 use crate::acp::opencode_plugins::PluginCheckSummary;
@@ -14,6 +14,7 @@ use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::commands::acp as acp_commands;
 use crate::db::service::agent_setting_service;
+use crate::db::service::folder_service;
 use crate::models::agent::AgentType;
 
 #[derive(Deserialize)]
@@ -53,6 +54,7 @@ pub struct AcpConnectParams {
 
 pub async fn acp_connect(
     Extension(state): Extension<Arc<AppState>>,
+    headers: HeaderMap,
     Json(params): Json<AcpConnectParams>,
 ) -> Result<Json<String>, AppCommandError> {
     let db = &state.db;
@@ -80,16 +82,38 @@ pub async fn acp_connect(
     );
 
     // Resolve model provider credentials if configured.
+    let workspace_preset = match params
+        .working_dir
+        .as_deref()
+        .filter(|path| !path.trim().is_empty())
+    {
+        Some(path) => folder_service::get_folder_by_path(&db.conn, path)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|folder| folder.workspace_preset),
+        None => None,
+    };
+    let preset_model_provider_id = workspace_preset
+        .as_ref()
+        .and_then(|preset| preset.model_provider_id);
     acp_commands::apply_model_provider_env(
         params.agent_type,
         setting.as_ref(),
+        preset_model_provider_id,
         &mut runtime_env,
         &db.conn,
     )
     .await;
 
-    if params.agent_type == AgentType::OpenClaw && params.session_id.is_none() {
-        runtime_env.insert("OPENCLAW_RESET_SESSION".into(), "1".into());
+    if let Some(preset) = workspace_preset.as_ref() {
+        for (key, value) in &preset.env_overrides {
+            runtime_env.insert(key.clone(), value.clone());
+        }
+    }
+
+    if params.agent_type == AgentType::Generic && params.session_id.is_none() {
+        runtime_env.insert("GENERIC_RESET_SESSION".into(), "1".into());
     }
 
     // Guard: the session page must never trigger a download or install.
@@ -99,13 +123,14 @@ pub async fn acp_connect(
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
 
     let emitter = state.emitter.clone();
+    let owner_window_label = crate::web::client_owner::owner_label_from_headers(&headers);
     let connection_id = manager
         .spawn_agent(
             params.agent_type,
             params.working_dir,
             params.session_id,
             runtime_env,
-            "web".to_string(),
+            owner_window_label,
             emitter,
         )
         .await

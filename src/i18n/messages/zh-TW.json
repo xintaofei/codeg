@@ -341,7 +341,7 @@
     "templates": {
       "gemini": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Skill Name\n\nInstructions for the agent when this skill is active.\n\n## Workflow\n\n1. Add actionable step one.\n2. Add actionable step two.\n",
       "openCode": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Purpose\n\nDescribe what this skill helps with.\n\n# Steps\n\n1. Add actionable step one.\n2. Add actionable step two.\n",
-      "openClaw": "---\nname: example-skill\ndescription: Describe when this skill should be used.\nuser-invocable: true\ndisable-model-invocation: false\n---\n\n# Purpose\n\nDescribe what this skill helps with.\n\n# Instructions\n\n1. Add actionable instruction one.\n2. Add actionable instruction two.\n",
+      "generic": "---\nname: example-skill\ndescription: Describe when this skill should be used.\nuser-invocable: true\ndisable-model-invocation: false\n---\n\n# Purpose\n\nDescribe what this skill helps with.\n\n# Instructions\n\n1. Add actionable instruction one.\n2. Add actionable instruction two.\n",
       "default": "# Skill: example-skill\n\n## When to use\n\n- Describe trigger conditions.\n\n## Instructions\n\n1. Add actionable instruction one.\n2. Add actionable instruction two.\n"
     }
   },
@@ -466,7 +466,7 @@
       "saveCodexConfig": "儲存 Codex 配置",
       "saveGeminiConfig": "儲存 Gemini 配置",
       "saveOpenCodeConfig": "儲存 OpenCode 配置",
-      "saveOpenClawConfig": "儲存 OpenClaw 配置",
+      "saveGenericConfig": "儲存 Generic 配置",
       "saveConfigManagement": "儲存配置管理",
       "saveCurrentProvider": "儲存目前 Provider",
       "showApiKey": "顯示 API Key",
@@ -568,12 +568,12 @@
       "smallModel": "小模型",
       "noMatchingModels": "沒有匹配的模型"
     },
-    "openClaw": {
+    "generic": {
       "gatewayConfig": "Gateway 配置",
-      "gatewayDescription": "配置 OpenClaw Gateway 連線資訊。支援本地或遠端 Gateway。",
-      "gatewayUrlHint": "留空則使用 openclaw 本地配置的 gateway.remote.url。",
+      "gatewayDescription": "配置 Generic Gateway 連線資訊。支援本地或遠端 Gateway。",
+      "gatewayUrlHint": "留空則使用 generic 本地配置的 gateway.remote.url。",
       "gatewayTokenPlaceholder": "Gateway 認證 Token",
-      "gatewayTokenHint": "建議使用 token-file 取代明文 Token，可透過 openclaw 命令列配置。",
+      "gatewayTokenHint": "建議使用 token-file 取代明文 Token，可透過 generic 命令列配置。",
       "sessionKeyHint": "可選。指定 Gateway Session Key，留空則自動分配隔離會話。"
     },
     "authModeOfficialSubscription": "官網訂閱",
@@ -646,8 +646,8 @@
       "openCodeConfigSynced": "OpenCode 配置與認證 JSON 已同步儲存。",
       "openCodeSaved": "OpenCode 配置已儲存",
       "saveOpenCodeFailed": "儲存 OpenCode 配置失敗",
-      "openClawSaved": "OpenClaw 配置已儲存",
-      "saveOpenClawFailed": "儲存 OpenClaw 配置失敗",
+      "genericSaved": "Generic 配置已儲存",
+      "saveGenericFailed": "儲存 Generic 配置失敗",
       "configSaved": "配置已儲存",
       "configSavedHint": "已有會話需要重新打開才能生效",
       "saveConfigManagementFailed": "儲存配置管理失敗",
@@ -1517,7 +1517,8 @@
           "initializeTimeout": "{agent} 連線交握逾時（60 秒未回應），請前往設定頁面檢查智能體與網路設定。",
           "processExited": "{agent} 處理程序意外結束。",
           "spawnFailed": "啟動 {agent} 失敗：{message}",
-          "downloadFailed": "{agent} 下載失敗：{message}"
+          "downloadFailed": "{agent} 下載失敗：{message}",
+          "turnIdleTimeout": "{agent} 在 {seconds} 秒內無任何回應，本輪對話已自動中止，可重新發送。"
         },
         "unableReadAgentConfig": "無法讀取 Agent 設定：{message}",
         "connectFailedTitle": "{agent} 連線失敗",
@@ -1534,7 +1535,8 @@
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}，{delay}",
           "httpStatus": "（HTTP {status}）"
-        }
+        },
+        "compacting": "正在壓縮上下文…"
       },
       "connectionLifecycle": {
         "tasks": {

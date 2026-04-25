@@ -43,7 +43,7 @@ pub enum McpAppType {
     ClaudeCode,
     Codex,
     Gemini,
-    OpenClaw,
+    Generic,
     OpenCode,
     Cline,
 }
@@ -354,7 +354,7 @@ pub async fn mcp_upsert_local_server(
         McpAppType::ClaudeCode,
         McpAppType::Codex,
         McpAppType::Gemini,
-        McpAppType::OpenClaw,
+        McpAppType::Generic,
         McpAppType::OpenCode,
         McpAppType::Cline,
     ];
@@ -408,7 +408,7 @@ pub async fn mcp_remove_server(
             McpAppType::ClaudeCode,
             McpAppType::Codex,
             McpAppType::Gemini,
-            McpAppType::OpenClaw,
+            McpAppType::Generic,
             McpAppType::OpenCode,
             McpAppType::Cline,
         ],
@@ -550,10 +550,10 @@ fn gemini_config_path() -> PathBuf {
     home_dir_or_default().join(".gemini").join("settings.json")
 }
 
-fn openclaw_config_path() -> PathBuf {
+fn generic_config_path() -> PathBuf {
     home_dir_or_default()
-        .join(".openclaw")
-        .join("openclaw.json")
+        .join(".generic")
+        .join("generic.json")
 }
 
 fn cline_config_path() -> PathBuf {
@@ -1687,11 +1687,11 @@ fn remove_gemini_server(id: &str) -> Result<bool, AppCommandError> {
 }
 
 // ---------------------------------------------------------------------------
-// OpenClaw  (~/.openclaw/openclaw.json  →  mcp.servers)
+// Generic  (~/.generic/generic.json  →  mcp.servers)
 // ---------------------------------------------------------------------------
 
-fn read_openclaw_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
-    let path = openclaw_config_path();
+fn read_generic_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
+    let path = generic_config_path();
     let root = read_json_file(&path)?;
     let mut out = BTreeMap::new();
 
@@ -1703,12 +1703,12 @@ fn read_openclaw_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
     };
 
     for (id, spec) in servers {
-        match canonicalize_spec(spec, "OpenClaw config") {
+        match canonicalize_spec(spec, "Generic config") {
             Ok(normalized) => {
                 out.insert(id.to_string(), normalized);
             }
             Err(err) => {
-                eprintln!("[MCP] skip invalid OpenClaw MCP entry id={id}: {err}");
+                eprintln!("[MCP] skip invalid Generic MCP entry id={id}: {err}");
             }
         }
     }
@@ -1716,14 +1716,14 @@ fn read_openclaw_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
     Ok(out)
 }
 
-fn upsert_openclaw_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
-    let path = openclaw_config_path();
+fn upsert_generic_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
+    let path = generic_config_path();
     let mut root = read_json_file(&path)?;
     if !root.is_object() {
         root = json!({});
     }
 
-    let canonical = canonicalize_spec(spec, "OpenClaw write")?;
+    let canonical = canonicalize_spec(spec, "Generic write")?;
 
     let obj = root.as_object_mut().ok_or_else(|| {
         mcp_configuration_invalid(format!("invalid JSON root in {}", path.display()))
@@ -1751,8 +1751,8 @@ fn upsert_openclaw_server(id: &str, spec: &Value) -> Result<(), AppCommandError>
     write_json_file(&path, &root)
 }
 
-fn remove_openclaw_server(id: &str) -> Result<bool, AppCommandError> {
-    let path = openclaw_config_path();
+fn remove_generic_server(id: &str) -> Result<bool, AppCommandError> {
+    let path = generic_config_path();
     if !path.exists() {
         return Ok(false);
     }
@@ -1887,11 +1887,11 @@ fn scan_local_servers() -> Result<Vec<LocalMcpServer>, AppCommandError> {
         entry.1.insert(McpAppType::Gemini);
     }
 
-    for (id, spec) in read_openclaw_servers()? {
+    for (id, spec) in read_generic_servers()? {
         let entry = merged
             .entry(id)
             .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        entry.1.insert(McpAppType::OpenClaw);
+        entry.1.insert(McpAppType::Generic);
     }
 
     for (id, spec) in read_cline_servers()? {
@@ -1922,7 +1922,7 @@ fn upsert_server_for_app(app: McpAppType, id: &str, spec: &Value) -> Result<(), 
         McpAppType::Codex => upsert_codex_server(id, spec),
         McpAppType::OpenCode => upsert_opencode_server(id, spec),
         McpAppType::Gemini => upsert_gemini_server(id, spec),
-        McpAppType::OpenClaw => upsert_openclaw_server(id, spec),
+        McpAppType::Generic => upsert_generic_server(id, spec),
         McpAppType::Cline => upsert_cline_server(id, spec),
     }
 }
@@ -1933,7 +1933,7 @@ fn remove_server_for_app(app: McpAppType, id: &str) -> Result<bool, AppCommandEr
         McpAppType::Codex => remove_codex_server(id),
         McpAppType::OpenCode => remove_opencode_server(id),
         McpAppType::Gemini => remove_gemini_server(id),
-        McpAppType::OpenClaw => remove_openclaw_server(id),
+        McpAppType::Generic => remove_generic_server(id),
         McpAppType::Cline => remove_cline_server(id),
     }
 }

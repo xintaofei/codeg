@@ -5,6 +5,13 @@ interface WebEvent {
   payload: unknown
 }
 
+function createClientId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID()
+  }
+  return `web-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
 function getToken(): string {
   return localStorage.getItem("codeg_token") ?? ""
 }
@@ -15,6 +22,7 @@ export class WebTransport implements Transport {
   private baseUrl: string
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private wsFailCount = 0
+  private clientId = createClientId()
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl
@@ -22,13 +30,20 @@ export class WebTransport implements Transport {
 
   async call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
     const token = getToken()
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "X-Codeg-Client-Id": this.clientId,
+    }
+    if (token) {
+      headers.Authorization = `Bearer ${token}`
+    }
+    const keepalive =
+      command === "acp_disconnect" || command === "terminal_kill"
     const res = await fetch(`${this.baseUrl}/api/${command}`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
+      headers,
       body: JSON.stringify(args ?? {}),
+      keepalive,
     })
     if (res.status === 401) {
       WebTransport.redirectToLogin()
@@ -54,8 +69,7 @@ export class WebTransport implements Transport {
     const wrappedHandler = handler as (payload: unknown) => void
     this.handlers.get(event)!.add(wrappedHandler)
 
-    // If WS is not connected but we now have a token, connect
-    if (!this.ws && getToken()) {
+    if (!this.ws) {
       this.connectWs()
     }
 
@@ -76,11 +90,11 @@ export class WebTransport implements Transport {
 
   private connectWs() {
     const token = getToken()
-    if (!token) return
-
-    const wsUrl =
-      this.baseUrl.replace(/^http/, "ws") +
-      `/ws/events?token=${encodeURIComponent(token)}`
+    const wsUrl = new URL("/ws/events", this.baseUrl)
+    if (token) {
+      wsUrl.searchParams.set("token", token)
+    }
+    wsUrl.searchParams.set("clientId", this.clientId)
     this.ws = new WebSocket(wsUrl)
 
     this.ws.onopen = () => {

@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+
 use crate::acp::error::AcpError;
 use crate::acp::registry;
 use crate::models::agent::AgentType;
@@ -50,6 +52,72 @@ pub fn clear_agent_cache(agent_type: AgentType) -> Result<(), AcpError> {
             .map_err(|e| AcpError::DownloadFailed(format!("failed to clear cache: {e}")))?;
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AcpCacheEntry {
+    pub agent_type: AgentType,
+    pub label: String,
+    pub path: String,
+    pub size_bytes: u64,
+    pub file_count: usize,
+    pub versions: Vec<String>,
+    pub installed_version: Option<String>,
+    pub recommended_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AcpCacheInventory {
+    pub generated_at: String,
+    pub root_path: String,
+    pub total_size_bytes: u64,
+    pub entries: Vec<AcpCacheEntry>,
+}
+
+pub fn inventory_agent_caches() -> Result<AcpCacheInventory, AcpError> {
+    let root = cache_dir()?;
+    let mut entries = Vec::new();
+    let mut total_size_bytes = 0u64;
+
+    for agent_type in AgentType::all() {
+        let meta = registry::get_agent_meta(agent_type);
+        let recommended_version = match &meta.distribution {
+            registry::AgentDistribution::Binary { version, .. } => Some((*version).to_string()),
+            _ => None,
+        };
+        if recommended_version.is_none() {
+            continue;
+        }
+
+        let agent_id = agent_cache_key(agent_type);
+        let dir = root.join(&agent_id);
+        let (size_bytes, file_count) = directory_usage(&dir)?;
+        let mut versions = match &meta.distribution {
+            registry::AgentDistribution::Binary { cmd, .. } => installed_version_labels(&agent_id, cmd)?,
+            _ => Vec::new(),
+        };
+        versions.sort_by(|left, right| version_cmp(left, right));
+        let installed_version = versions.last().cloned();
+
+        total_size_bytes = total_size_bytes.saturating_add(size_bytes);
+        entries.push(AcpCacheEntry {
+            agent_type,
+            label: meta.name.to_string(),
+            path: dir.to_string_lossy().to_string(),
+            size_bytes,
+            file_count,
+            versions,
+            installed_version,
+            recommended_version,
+        });
+    }
+
+    Ok(AcpCacheInventory {
+        generated_at: chrono::Utc::now().to_rfc3339(),
+        root_path: root.to_string_lossy().to_string(),
+        total_size_bytes,
+        entries,
+    })
 }
 
 fn installed_binary_path(agent_id: &str, version: &str, cmd_name: &str) -> Option<PathBuf> {
@@ -186,6 +254,30 @@ fn parse_version_parts(input: &str) -> Vec<u32> {
             numeric.parse::<u32>().unwrap_or(0)
         })
         .collect()
+}
+
+fn directory_usage(path: &Path) -> Result<(u64, usize), AcpError> {
+    if !path.exists() {
+        return Ok((0, 0));
+    }
+
+    let mut total_size = 0u64;
+    let mut file_count = 0usize;
+
+    for entry in walkdir::WalkDir::new(path) {
+        let entry = entry
+            .map_err(|error| AcpError::DownloadFailed(format!("failed to scan cache dir: {error}")))?;
+        if entry.file_type().is_file() {
+            let size = entry
+                .metadata()
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            total_size = total_size.saturating_add(size);
+            file_count += 1;
+        }
+    }
+
+    Ok((total_size, file_count))
 }
 
 /// Same as `ensure_binary_for_agent` but calls `on_progress` with human-readable

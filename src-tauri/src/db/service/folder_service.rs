@@ -8,7 +8,7 @@ use sea_orm::{
 use crate::db::entities::folder;
 use crate::db::error::DbError;
 use crate::models::agent::AgentType;
-use crate::models::{FolderDetail, FolderHistoryEntry};
+use crate::models::{FolderDetail, FolderHistoryEntry, WorkspacePreset};
 
 fn to_entry(m: folder::Model) -> FolderHistoryEntry {
     FolderHistoryEntry {
@@ -24,6 +24,11 @@ fn parse_agent_type(s: &Option<String>) -> Option<AgentType> {
         .and_then(|v| serde_json::from_value(serde_json::Value::String(v.to_string())).ok())
 }
 
+fn parse_workspace_preset(s: &Option<String>) -> Option<WorkspacePreset> {
+    s.as_deref()
+        .and_then(|raw| serde_json::from_str::<WorkspacePreset>(raw).ok())
+}
+
 fn to_detail(m: folder::Model) -> FolderDetail {
     let default_agent_type = parse_agent_type(&m.default_agent_type);
     FolderDetail {
@@ -32,6 +37,7 @@ fn to_detail(m: folder::Model) -> FolderDetail {
         path: m.path,
         git_branch: m.git_branch,
         default_agent_type,
+        workspace_preset: parse_workspace_preset(&m.workspace_preset_json),
         last_opened_at: m.last_opened_at,
         sort_order: m.sort_order,
     }
@@ -42,6 +48,19 @@ pub async fn get_folder_by_id(
     folder_id: i32,
 ) -> Result<Option<FolderDetail>, DbError> {
     let row = folder::Entity::find_by_id(folder_id)
+        .filter(folder::Column::DeletedAt.is_null())
+        .one(conn)
+        .await?;
+
+    Ok(row.map(to_detail))
+}
+
+pub async fn get_folder_by_path(
+    conn: &DatabaseConnection,
+    path: &str,
+) -> Result<Option<FolderDetail>, DbError> {
+    let row = folder::Entity::find()
+        .filter(folder::Column::Path.eq(path))
         .filter(folder::Column::DeletedAt.is_null())
         .one(conn)
         .await?;
@@ -85,6 +104,7 @@ pub async fn add_folder(
             path: Set(path.to_string()),
             git_branch: Set(None),
             default_agent_type: Set(None),
+            workspace_preset_json: Set(None),
             last_opened_at: Set(now),
             created_at: Set(now),
             updated_at: Set(now),
@@ -207,4 +227,36 @@ pub async fn reorder_folders(conn: &DatabaseConnection, ids: Vec<i32>) -> Result
         .await?;
 
     Ok(())
+}
+
+pub async fn update_workspace_preset(
+    conn: &DatabaseConnection,
+    folder_id: i32,
+    preset: Option<WorkspacePreset>,
+) -> Result<FolderDetail, DbError> {
+    let row = folder::Entity::find_by_id(folder_id)
+        .filter(folder::Column::DeletedAt.is_null())
+        .one(conn)
+        .await?
+        .ok_or_else(|| DbError::Migration(format!("Folder not found: {folder_id}")))?;
+
+    let mut active = row.into_active_model();
+    let now = Utc::now();
+    let preset_json = preset
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| DbError::Migration(error.to_string()))?;
+    let default_agent_type = preset
+        .as_ref()
+        .and_then(|value| value.default_agent_type)
+        .and_then(|value| serde_json::to_value(value).ok())
+        .and_then(|value| value.as_str().map(str::to_string));
+
+    active.workspace_preset_json = Set(preset_json);
+    active.default_agent_type = Set(default_agent_type);
+    active.updated_at = Set(now);
+
+    let updated = active.update(conn).await?;
+    Ok(to_detail(updated))
 }

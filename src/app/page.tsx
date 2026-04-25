@@ -11,19 +11,16 @@ export default function Page() {
       router.replace("/workspace")
       return
     }
-    // Web mode: validate token before entering app
     const token = localStorage.getItem("codeg_token")
-    if (!token) {
-      router.replace("/login")
-      return
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
     }
-    // Verify token is still valid
+    if (token) {
+      headers.Authorization = `Bearer ${token}`
+    }
     fetch("/api/health", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
+      headers,
       body: "{}",
     })
       .then((res) => {

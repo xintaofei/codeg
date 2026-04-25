@@ -14,7 +14,7 @@ pub use conversation::{
     DbConversationDetail, DbConversationSummary, FolderInfo, ImportResult, SessionStats,
     SidebarData,
 };
-pub use folder::{FolderCommandInfo, FolderDetail, FolderHistoryEntry, OpenedTab};
+pub use folder::{FolderCommandInfo, FolderDetail, FolderHistoryEntry, OpenedTab, WorkspacePreset};
 pub use message::{
     AgentExecutionStats, AgentToolCall, ContentBlock, MessageRole, MessageTurn, TurnRole,
     TurnUsage, UnifiedMessage,

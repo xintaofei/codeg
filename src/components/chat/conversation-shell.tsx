@@ -27,6 +27,9 @@ interface ConversationShellProps {
   agentName?: string
   error: string | null
   claudeApiRetry: ClaudeApiRetryState | null
+  /** True while the agent is compressing context mid-turn. Surfaced as
+   * a hint so the user understands why streaming is paused. */
+  compacting?: boolean
   pendingPermission: PendingPermission | null
   pendingQuestion: PendingQuestion | null
   onFocus: () => void
@@ -69,6 +72,7 @@ export function ConversationShell({
   agentName,
   error,
   claudeApiRetry,
+  compacting = false,
   pendingPermission,
   pendingQuestion,
   onFocus,
@@ -212,6 +216,17 @@ export function ConversationShell({
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
               {retryLineText}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {compacting && !retryLineText && (
+        <div className="border-t border-muted-foreground/20 bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
+          <div className="flex items-center gap-2 font-medium">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
+              {tAcp("compacting")}
             </span>
           </div>
         </div>

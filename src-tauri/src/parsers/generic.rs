@@ -16,7 +16,7 @@ use crate::parsers::{
 };
 
 /// Regex to strip the "Sender (untrusted metadata):" block and optional
-/// timestamp prefix from OpenClaw user messages.
+/// timestamp prefix from Generic user messages.
 fn sender_block_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"(?s)^Sender \(untrusted metadata\):\s*```[^`]*```\s*").unwrap())
@@ -38,7 +38,7 @@ fn working_dir_extract_regex() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"\[Working directory:\s*([^\]]+)\]").unwrap())
 }
 
-/// Extract the working directory from OpenClaw user message text.
+/// Extract the working directory from Generic user message text.
 /// Returns the expanded path (~ replaced with home dir).
 fn extract_working_dir(text: &str) -> Option<String> {
     let captures = working_dir_extract_regex().captures(text)?;
@@ -55,8 +55,8 @@ fn extract_working_dir(text: &str) -> Option<String> {
     Some(raw_path.to_string())
 }
 
-/// Strip OpenClaw user message prefix metadata.
-fn strip_openclaw_user_prefix(text: &str) -> String {
+/// Strip Generic user message prefix metadata.
+fn strip_generic_user_prefix(text: &str) -> String {
     let cleaned = sender_block_regex().replace(text, "");
     let cleaned = timestamp_prefix_regex().replace(&cleaned, "");
     let cleaned = working_dir_prefix_regex().replace(&cleaned, "");
@@ -338,15 +338,15 @@ impl JTree {
 
 // ── Parser ─────────────────────────────────────────────────────────────
 
-pub struct OpenClawParser {
+pub struct GenericParser {
     base_dir: PathBuf,
 }
 
-impl OpenClawParser {
+impl GenericParser {
     pub fn new() -> Self {
         let base_dir = dirs::home_dir()
             .unwrap_or_default()
-            .join(".openclaw")
+            .join(".generic")
             .join("agents");
         Self { base_dir }
     }
@@ -435,7 +435,7 @@ impl OpenClawParser {
                                 cwd = Some(wd);
                             }
                             if title.is_none() {
-                                let cleaned = strip_openclaw_user_prefix(&text);
+                                let cleaned = strip_generic_user_prefix(&text);
                                 if !cleaned.is_empty() {
                                     title = Some(truncate_str(&cleaned, 100));
                                 }
@@ -473,7 +473,7 @@ impl OpenClawParser {
 
             summaries.push(ConversationSummary {
                 id: conversation_id,
-                agent_type: AgentType::OpenClaw,
+                agent_type: AgentType::Generic,
                 folder_path,
                 folder_name,
                 title,
@@ -663,7 +663,7 @@ impl OpenClawParser {
 
         let summary = ConversationSummary {
             id: conversation_id.to_string(),
-            agent_type: AgentType::OpenClaw,
+            agent_type: AgentType::Generic,
             folder_path,
             folder_name,
             title,
@@ -805,7 +805,7 @@ impl OpenClawParser {
     }
 }
 
-impl AgentParser for OpenClawParser {
+impl AgentParser for GenericParser {
     fn list_conversations(&self) -> Result<Vec<ConversationSummary>, ParseError> {
         let mut conversations = Vec::new();
 
@@ -917,7 +917,7 @@ fn extract_user_content(value: &serde_json::Value) -> Vec<ContentBlock> {
             let block_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
             if block_type == "text" {
                 if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                    let cleaned = strip_openclaw_user_prefix(text);
+                    let cleaned = strip_generic_user_prefix(text);
                     if !cleaned.is_empty() {
                         blocks.push(ContentBlock::Text { text: cleaned });
                     }
@@ -1141,13 +1141,13 @@ mod tests {
     #[test]
     fn strips_sender_block_and_timestamp() {
         let input = "Sender (untrusted metadata):\n```json\n{\"label\": \"test\"}\n```\n\n[Tue 2026-03-17 12:56 GMT+8] Hello world";
-        assert_eq!(strip_openclaw_user_prefix(input), "Hello world");
+        assert_eq!(strip_generic_user_prefix(input), "Hello world");
     }
 
     #[test]
     fn strips_timestamp_only() {
         let input = "[Tue 2026-03-17 12:56 GMT+8] Hello";
-        assert_eq!(strip_openclaw_user_prefix(input), "Hello");
+        assert_eq!(strip_generic_user_prefix(input), "Hello");
     }
 
     #[test]
@@ -1167,17 +1167,17 @@ mod tests {
     #[test]
     fn strips_working_dir_prefix() {
         let input = "[Tue 2026-03-17 12:58 GMT+8] [Working directory: ~/projects/test]\n\nHello";
-        let result = strip_openclaw_user_prefix(input);
+        let result = strip_generic_user_prefix(input);
         assert_eq!(result, "Hello");
     }
 
     #[test]
     fn preserves_plain_text() {
-        assert_eq!(strip_openclaw_user_prefix("Hello world"), "Hello world");
+        assert_eq!(strip_generic_user_prefix("Hello world"), "Hello world");
     }
 
     #[test]
-    fn extracts_usage_from_openclaw_format() {
+    fn extracts_usage_from_generic_format() {
         let value = json!({
             "message": {
                 "usage": {
@@ -1242,9 +1242,9 @@ mod tests {
     }
 
     #[test]
-    fn parses_openclaw_conversation_detail_with_tree() {
+    fn parses_generic_conversation_detail_with_tree() {
         let path = std::env::temp_dir().join(format!(
-            "codeg-openclaw-tree-{}.jsonl",
+            "codeg-generic-tree-{}.jsonl",
             uuid::Uuid::new_v4()
         ));
         let mut file = fs::File::create(&path).expect("create temp jsonl");
@@ -1268,7 +1268,7 @@ mod tests {
         ).unwrap();
 
         let detail =
-            OpenClawParser::parse_conversation_detail(&path, "test/test-session", None, None)
+            GenericParser::parse_conversation_detail(&path, "test/test-session", None, None)
                 .expect("parse detail");
         fs::remove_file(&path).unwrap();
 
@@ -1305,7 +1305,7 @@ mod tests {
         //   u1 → a1 → u2 → a2  (branch 1: "Hello" conversation)
         //              ↘ u3 → a3  (branch 2: "Bye" conversation, forked from a1)
         let path = std::env::temp_dir().join(format!(
-            "codeg-openclaw-branches-{}.jsonl",
+            "codeg-generic-branches-{}.jsonl",
             uuid::Uuid::new_v4()
         ));
         let mut file = fs::File::create(&path).expect("create temp jsonl");

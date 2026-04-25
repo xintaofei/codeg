@@ -17,6 +17,7 @@ import {
   PanelRight,
   Search,
   Settings,
+  SlidersHorizontal,
   SquareTerminal,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -44,6 +45,7 @@ import { SearchCommandDialog } from "@/components/conversations/search-command-d
 import { DirectoryBrowserDialog } from "@/components/shared/directory-browser-dialog"
 import { cn } from "@/lib/utils"
 import { useIsMobile } from "@/hooks/use-mobile"
+import { WorkspacePresetDialog } from "@/components/layout/workspace-preset-dialog"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -83,6 +85,7 @@ export function FolderTitleBar() {
   const { shortcuts } = useShortcutSettings()
   const [searchOpen, setSearchOpen] = useState(false)
   const [browserOpen, setBrowserOpen] = useState(false)
+  const [workspacePresetOpen, setWorkspacePresetOpen] = useState(false)
 
   const handleOpenFolder = useCallback(async () => {
     if (isDesktop()) {
@@ -352,11 +355,18 @@ export function FolderTitleBar() {
                     {tTitleBar("toggleAuxPanel")}
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    onClick={() => toggleTerminal()}
+                  onClick={() => toggleTerminal()}
+                  disabled={!activeFolder}
+                >
+                  <SquareTerminal className="h-3.5 w-3.5" />
+                  {tTitleBar("toggleTerminal")}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => setWorkspacePresetOpen(true)}
                     disabled={!activeFolder}
                   >
-                    <SquareTerminal className="h-3.5 w-3.5" />
-                    {tTitleBar("toggleTerminal")}
+                    <SlidersHorizontal className="h-3.5 w-3.5" />
+                    Workspace preset
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={handleOpenSettings}>
                     <Settings className="h-3.5 w-3.5" />
@@ -407,6 +417,16 @@ export function FolderTitleBar() {
                   variant="ghost"
                   size="icon"
                   className="h-6 w-6 hover:text-foreground/80"
+                  onClick={() => setWorkspacePresetOpen(true)}
+                  disabled={!activeFolder}
+                  title="Workspace preset"
+                >
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 hover:text-foreground/80"
                   onClick={() => setSearchOpen(true)}
                   title={tTitleBar("withShortcut", {
                     label: tTitleBar("search"),
@@ -439,6 +459,11 @@ export function FolderTitleBar() {
         }
       />
       <SearchCommandDialog open={searchOpen} onOpenChange={setSearchOpen} />
+      <WorkspacePresetDialog
+        open={workspacePresetOpen}
+        onOpenChange={setWorkspacePresetOpen}
+        folder={activeFolder}
+      />
       <DirectoryBrowserDialog
         open={browserOpen}
         onOpenChange={setBrowserOpen}

@@ -341,7 +341,7 @@
     "templates": {
       "gemini": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Skill Name\n\nInstructions for the agent when this skill is active.\n\n## Workflow\n\n1. Add actionable step one.\n2. Add actionable step two.\n",
       "openCode": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Purpose\n\nDescribe what this skill helps with.\n\n# Steps\n\n1. Add actionable step one.\n2. Add actionable step two.\n",
-      "openClaw": "---\nname: example-skill\ndescription: Describe when this skill should be used.\nuser-invocable: true\ndisable-model-invocation: false\n---\n\n# Purpose\n\nDescribe what this skill helps with.\n\n# Instructions\n\n1. Add actionable instruction one.\n2. Add actionable instruction two.\n",
+      "generic": "---\nname: example-skill\ndescription: Describe when this skill should be used.\nuser-invocable: true\ndisable-model-invocation: false\n---\n\n# Purpose\n\nDescribe what this skill helps with.\n\n# Instructions\n\n1. Add actionable instruction one.\n2. Add actionable instruction two.\n",
       "default": "# Skill: example-skill\n\n## When to use\n\n- Describe trigger conditions.\n\n## Instructions\n\n1. Add actionable instruction one.\n2. Add actionable instruction two.\n"
     }
   },
@@ -466,7 +466,7 @@
       "saveCodexConfig": "Enregistrer la config Codex",
       "saveGeminiConfig": "Enregistrer la config Gemini",
       "saveOpenCodeConfig": "Enregistrer la config OpenCode",
-      "saveOpenClawConfig": "Enregistrer la config OpenClaw",
+      "saveGenericConfig": "Enregistrer la config Generic",
       "saveConfigManagement": "Enregistrer la gestion de config",
       "saveCurrentProvider": "Enregistrer le provider actuel",
       "showApiKey": "Afficher la clé API",
@@ -568,12 +568,12 @@
       "smallModel": "Petit modèle",
       "noMatchingModels": "Aucun modèle correspondant"
     },
-    "openClaw": {
+    "generic": {
       "gatewayConfig": "Configuration Gateway",
-      "gatewayDescription": "Configure la connexion OpenClaw Gateway. Prend en charge une gateway locale ou distante.",
-      "gatewayUrlHint": "Laisser vide pour utiliser gateway.remote.url depuis la configuration locale openclaw.",
+      "gatewayDescription": "Configure la connexion Generic Gateway. Prend en charge une gateway locale ou distante.",
+      "gatewayUrlHint": "Laisser vide pour utiliser gateway.remote.url depuis la configuration locale generic.",
       "gatewayTokenPlaceholder": "Token d’authentification Gateway",
-      "gatewayTokenHint": "Utilisez token-file plutôt qu’un token en clair si possible ; configurez-le via le CLI openclaw.",
+      "gatewayTokenHint": "Utilisez token-file plutôt qu’un token en clair si possible ; configurez-le via le CLI generic.",
       "sessionKeyHint": "Optionnel. Spécifie la session key de la gateway ; laisser vide pour auto-attribuer une session isolée."
     },
     "authModeOfficialSubscription": "Abonnement officiel",
@@ -646,8 +646,8 @@
       "openCodeConfigSynced": "La configuration OpenCode et auth JSON ont été synchronisés.",
       "openCodeSaved": "Configuration OpenCode enregistrée",
       "saveOpenCodeFailed": "Échec de l’enregistrement de la configuration OpenCode",
-      "openClawSaved": "Configuration OpenClaw enregistrée",
-      "saveOpenClawFailed": "Échec de l’enregistrement de la configuration OpenClaw",
+      "genericSaved": "Configuration Generic enregistrée",
+      "saveGenericFailed": "Échec de l’enregistrement de la configuration Generic",
       "configSaved": "Configuration enregistrée",
       "configSavedHint": "Les sessions existantes doivent être rouvertes pour prendre effet",
       "saveConfigManagementFailed": "Échec de l’enregistrement de la gestion de configuration",
@@ -1517,7 +1517,8 @@
           "initializeTimeout": "Le handshake de connexion de {agent} a expiré (aucune réponse après 60 secondes). Ouvrez Paramètres pour vérifier la configuration de l'agent et du réseau.",
           "processExited": "Le processus {agent} s'est arrêté de manière inattendue.",
           "spawnFailed": "Impossible de démarrer {agent} : {message}",
-          "downloadFailed": "Échec du téléchargement de {agent} : {message}"
+          "downloadFailed": "Échec du téléchargement de {agent} : {message}",
+          "turnIdleTimeout": "{agent} n'a pas répondu pendant {seconds} s — le tour a été interrompu automatiquement. Vous pouvez réessayer."
         },
         "unableReadAgentConfig": "Impossible de lire la configuration de l'agent : {message}",
         "connectFailedTitle": "Échec de la connexion de {agent}",
@@ -1534,7 +1535,8 @@
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}, {delay}",
           "httpStatus": " (HTTP {status})"
-        }
+        },
+        "compacting": "Compactage du contexte…"
       },
       "connectionLifecycle": {
         "tasks": {

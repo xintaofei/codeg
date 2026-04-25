@@ -85,8 +85,8 @@ function defaultSkillContent(
     return t("templates.openCode")
   }
 
-  if (agentType === "open_claw") {
-    return t("templates.openClaw")
+  if (agentType === "generic") {
+    return t("templates.generic")
   }
 
   return t("templates.default")
@@ -101,7 +101,7 @@ function defaultSkillLayoutForAgent(
   if (agentType === "open_code") return "skill_directory"
   if (agentType === "codex") return "skill_directory"
   if (agentType === "gemini") return "skill_directory"
-  if (agentType === "open_claw") return "skill_directory"
+  if (agentType === "generic") return "skill_directory"
   if (agentType === "cline") return "skill_directory"
   return null
 }

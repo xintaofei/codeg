@@ -1,6 +1,7 @@
 mod acp;
 mod app_error;
 pub mod app_state;
+pub mod build_info;
 pub mod chat_channel;
 pub mod commands;
 pub mod db;
@@ -11,6 +12,7 @@ mod models;
 mod network;
 mod parsers;
 pub mod process;
+pub mod runtime_monitor;
 mod terminal;
 pub mod web;
 pub mod workspace_state;
@@ -24,10 +26,12 @@ mod tauri_app {
     use crate::commands::{
         acp as acp_commands, chat_channel as chat_channel_commands, conversations,
         experts as experts_commands, folder_commands, folders, mcp as mcp_commands,
-        model_provider as model_provider_commands, notification, project_boot, system_settings,
+        model_provider as model_provider_commands, notification, project_boot,
+        runtime as runtime_commands, system_settings,
         terminal as terminal_commands, version_control, windows,
         workspace_state as workspace_state_commands,
     };
+    use crate::runtime_monitor::RuntimeMonitor;
     use crate::terminal::manager::TerminalManager;
     use crate::{db, network, process, web};
     use tauri::Manager;
@@ -56,9 +60,11 @@ mod tauri_app {
             .manage(windows::CommitWindowState::new())
             .manage(windows::MergeWindowState::new())
             .manage(web::WebServerState::new())
+            .manage(std::sync::Arc::new(web::client_owner::WebClientRegistry::new()))
             .manage(std::sync::Arc::new(
                 web::event_bridge::WebEventBroadcaster::new(),
             ))
+            .manage(std::sync::Arc::new(RuntimeMonitor::new()))
             .setup(|app| {
                 let app_data_dir = app.path().app_data_dir()?;
                 let app_version = env!("CARGO_PKG_VERSION");
@@ -66,6 +72,40 @@ mod tauri_app {
                     tauri::async_runtime::block_on(db::init_database(&app_data_dir, app_version))
                         .map_err(|e| e.to_string())?;
                 app.manage(database);
+
+                {
+                    let runtime_monitor = app.state::<std::sync::Arc<RuntimeMonitor>>().inner().clone();
+                    let connection_manager = app.state::<ConnectionManager>().inner().clone_ref();
+                    let web_client_registry = app
+                        .state::<std::sync::Arc<web::client_owner::WebClientRegistry>>()
+                        .inner()
+                        .clone();
+                    connection_manager.attach_runtime_monitor(runtime_monitor.clone());
+                    connection_manager.start_orphan_watchdog(web_client_registry);
+
+                    let static_dir = web::find_static_dir_tauri(&app.handle());
+                    let build_consistency = crate::build_info::evaluate_build_consistency(&static_dir);
+                    runtime_monitor.set_build_consistency(build_consistency.clone());
+                    runtime_monitor.record(
+                        if build_consistency.status == "ok" {
+                            "info"
+                        } else {
+                            "warn"
+                        },
+                        "startup",
+                        build_consistency.message.clone(),
+                        None,
+                    );
+
+                    let security = crate::build_info::build_security_info(
+                        "desktop",
+                        None,
+                        true,
+                        Some(&static_dir),
+                        Some(&app_data_dir),
+                    );
+                    runtime_monitor.set_security(security);
+                }
 
                 // Restore and apply saved system proxy settings before any network operation.
                 let db = app.state::<db::AppDatabase>();
@@ -220,6 +260,7 @@ mod tauri_app {
                 folders::open_folder,
                 folders::open_folder_by_id,
                 folders::remove_folder_from_workspace,
+                folders::update_folder_workspace_preset,
                 folders::reorder_folders,
                 folders::add_folder_to_history,
                 folders::remove_folder_from_history,
@@ -300,6 +341,8 @@ mod tauri_app {
                 system_settings::update_system_proxy_settings,
                 system_settings::get_system_language_settings,
                 system_settings::update_system_language_settings,
+                runtime_commands::get_runtime_diagnostics,
+                runtime_commands::get_acp_cache_inventory,
                 version_control::detect_git,
                 version_control::test_git_path,
                 version_control::get_git_settings,

@@ -341,7 +341,7 @@
     "templates": {
       "gemini": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Skill Name\n\nInstructions for the agent when this skill is active.\n\n## Workflow\n\n1. Add actionable step one.\n2. Add actionable step two.\n",
       "openCode": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Purpose\n\nDescribe what this skill helps with.\n\n# Steps\n\n1. Add actionable step one.\n2. Add actionable step two.\n",
-      "openClaw": "---\nname: example-skill\ndescription: Describe when this skill should be used.\nuser-invocable: true\ndisable-model-invocation: false\n---\n\n# Purpose\n\nDescribe what this skill helps with.\n\n# Instructions\n\n1. Add actionable instruction one.\n2. Add actionable instruction two.\n",
+      "generic": "---\nname: example-skill\ndescription: Describe when this skill should be used.\nuser-invocable: true\ndisable-model-invocation: false\n---\n\n# Purpose\n\nDescribe what this skill helps with.\n\n# Instructions\n\n1. Add actionable instruction one.\n2. Add actionable instruction two.\n",
       "default": "# Skill: example-skill\n\n## When to use\n\n- Describe trigger conditions.\n\n## Instructions\n\n1. Add actionable instruction one.\n2. Add actionable instruction two.\n"
     }
   },
@@ -466,7 +466,7 @@
       "saveCodexConfig": "Codex設定を保存",
       "saveGeminiConfig": "Gemini設定を保存",
       "saveOpenCodeConfig": "OpenCode設定を保存",
-      "saveOpenClawConfig": "OpenClaw設定を保存",
+      "saveGenericConfig": "Generic設定を保存",
       "saveConfigManagement": "設定管理を保存",
       "saveCurrentProvider": "現在のプロバイダーを保存",
       "showApiKey": "APIキーを表示",
@@ -568,12 +568,12 @@
       "smallModel": "スモールモデル",
       "noMatchingModels": "一致するモデルがありません"
     },
-    "openClaw": {
+    "generic": {
       "gatewayConfig": "Gateway 設定",
-      "gatewayDescription": "OpenClaw Gateway 接続を設定します。ローカルまたはリモートの gateway をサポートします。",
-      "gatewayUrlHint": "空欄の場合はローカル openclaw 設定の gateway.remote.url を使用します。",
+      "gatewayDescription": "Generic Gateway 接続を設定します。ローカルまたはリモートの gateway をサポートします。",
+      "gatewayUrlHint": "空欄の場合はローカル generic 設定の gateway.remote.url を使用します。",
       "gatewayTokenPlaceholder": "Gateway 認証トークン",
-      "gatewayTokenHint": "可能な場合は平文トークンではなく token-file の使用を推奨します。openclaw CLI で設定してください。",
+      "gatewayTokenHint": "可能な場合は平文トークンではなく token-file の使用を推奨します。generic CLI で設定してください。",
       "sessionKeyHint": "任意。gateway の session key を指定します。空欄の場合は分離されたセッションが自動割り当てされます。"
     },
     "authModeOfficialSubscription": "公式サブスクリプション",
@@ -646,8 +646,8 @@
       "openCodeConfigSynced": "OpenCode config と auth JSON が同期されました。",
       "openCodeSaved": "OpenCode設定を保存しました",
       "saveOpenCodeFailed": "OpenCode設定の保存に失敗しました",
-      "openClawSaved": "OpenClaw設定を保存しました",
-      "saveOpenClawFailed": "OpenClaw設定の保存に失敗しました",
+      "genericSaved": "Generic設定を保存しました",
+      "saveGenericFailed": "Generic設定の保存に失敗しました",
       "configSaved": "設定を保存しました",
       "configSavedHint": "既存のセッションは再度開く必要があります",
       "saveConfigManagementFailed": "設定管理の保存に失敗しました",
@@ -1517,7 +1517,8 @@
           "initializeTimeout": "{agent} の接続ハンドシェイクがタイムアウトしました（60 秒以内に応答なし）。設定を開いてエージェントとネットワーク設定を確認してください。",
           "processExited": "{agent} プロセスが予期せず終了しました。",
           "spawnFailed": "{agent} の起動に失敗しました: {message}",
-          "downloadFailed": "{agent} のダウンロードに失敗しました: {message}"
+          "downloadFailed": "{agent} のダウンロードに失敗しました: {message}",
+          "turnIdleTimeout": "{agent} が {seconds} 秒間応答しなかったため、ターンを自動中断しました。再送信できます。"
         },
         "unableReadAgentConfig": "エージェント設定を読み取れません: {message}",
         "connectFailedTitle": "{agent} の接続に失敗しました",
@@ -1534,7 +1535,8 @@
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}、{delay}",
           "httpStatus": " (HTTP {status})"
-        }
+        },
+        "compacting": "コンテキストを圧縮中…"
       },
       "connectionLifecycle": {
         "tasks": {

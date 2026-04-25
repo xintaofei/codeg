@@ -21,6 +21,8 @@ use crate::acp::types::{
 use crate::acp::types::{ConnectionInfo, ForkResultInfo, PromptInputBlock};
 use crate::db::service::agent_setting_service;
 use crate::db::service::model_provider_service;
+#[cfg(feature = "tauri-runtime")]
+use crate::db::service::folder_service;
 use crate::db::AppDatabase;
 use crate::models::agent::AgentType;
 use crate::web::event_bridge::EventEmitter;
@@ -1417,9 +1419,9 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
             ],
             project_rel_dirs: vec![".gemini/skills", ".agents/skills"],
         }),
-        AgentType::OpenClaw => Some(SkillStorageSpec {
+        AgentType::Generic => Some(SkillStorageSpec {
             kind: SkillStorageKind::SkillDirectoryOnly,
-            global_dirs: vec![home_dir_or_default().join(".openclaw").join("skills")],
+            global_dirs: vec![home_dir_or_default().join(".generic").join("skills")],
             project_rel_dirs: vec!["skills"],
         }),
         AgentType::Cline => Some(SkillStorageSpec {
@@ -1799,10 +1801,11 @@ pub(crate) fn build_runtime_env_from_setting(
 pub(crate) async fn apply_model_provider_env(
     agent_type: AgentType,
     setting: Option<&crate::db::entities::agent_setting::Model>,
+    provider_id_override: Option<i32>,
     runtime_env: &mut BTreeMap<String, String>,
     conn: &sea_orm::DatabaseConnection,
 ) {
-    let provider_id = match setting.and_then(|s| s.model_provider_id) {
+    let provider_id = match provider_id_override.or_else(|| setting.and_then(|s| s.model_provider_id)) {
         Some(id) => id,
         None => return,
     };
@@ -1844,8 +1847,8 @@ fn cascade_update_agent_config(
                 serde_json::to_string(&patch).map_err(|e| AcpError::protocol(e.to_string()))?;
             persist_agent_local_config_json(agent_type, Some(&patch_str))?;
         }
-        AgentType::OpenClaw => {
-            // agent_local_config_path returns None for OpenClaw — no-op
+        AgentType::Generic => {
+            // agent_local_config_path returns None for Generic — no-op
         }
         AgentType::Codex => {
             let auth_path = codex_auth_json_path();
@@ -2010,12 +2013,40 @@ pub async fn acp_connect(
         build_runtime_env_from_setting(agent_type, setting.as_ref(), local_config_json.as_deref());
 
     // Resolve model provider credentials if configured.
-    apply_model_provider_env(agent_type, setting.as_ref(), &mut runtime_env, &db.conn).await;
+    let workspace_preset = match working_dir
+        .as_deref()
+        .filter(|path| !path.trim().is_empty())
+    {
+        Some(path) => folder_service::get_folder_by_path(&db.conn, path)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|folder| folder.workspace_preset),
+        None => None,
+    };
 
-    // For OpenClaw: when creating a new conversation (no session_id to resume),
+    let preset_model_provider_id = workspace_preset
+        .as_ref()
+        .and_then(|preset| preset.model_provider_id);
+    apply_model_provider_env(
+        agent_type,
+        setting.as_ref(),
+        preset_model_provider_id,
+        &mut runtime_env,
+        &db.conn,
+    )
+    .await;
+
+    if let Some(preset) = workspace_preset.as_ref() {
+        for (key, value) in &preset.env_overrides {
+            runtime_env.insert(key.clone(), value.clone());
+        }
+    }
+
+    // For Generic: when creating a new conversation (no session_id to resume),
     // signal that we want a fresh transcript via --reset-session.
-    if agent_type == AgentType::OpenClaw && session_id.is_none() {
-        runtime_env.insert("OPENCLAW_RESET_SESSION".into(), "1".into());
+    if agent_type == AgentType::Generic && session_id.is_none() {
+        runtime_env.insert("GENERIC_RESET_SESSION".into(), "1".into());
     }
 
     // Guard: the session page must never trigger a download or install.
@@ -2558,7 +2589,7 @@ pub(crate) async fn acp_update_agent_config_core(
         return Ok(());
     }
 
-    // Claude Code, Gemini, OpenClaw — write config JSON to local file without merging env
+    // Claude Code, Gemini, Generic — write config JSON to local file without merging env
     let local_patch_value = config_json
         .as_deref()
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())

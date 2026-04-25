@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod client_owner;
 pub mod event_bridge;
 pub mod handlers;
 pub mod router;
@@ -302,6 +303,39 @@ pub(crate) async fn do_start_web_server_with_state(
     let port = resolve_web_service_port(&app_state.db.conn, port).await?;
     let host = host.unwrap_or_else(|| "0.0.0.0".to_string());
     let token = resolve_web_service_token(&app_state.db.conn, token).await?;
+    let auth_enabled = !token.is_empty();
+
+    let build_consistency = crate::build_info::enforce_build_consistency(&static_dir)?;
+    app_state
+        .runtime_monitor
+        .set_build_consistency(build_consistency.clone());
+    app_state.runtime_monitor.record(
+        if build_consistency.status == "ok" {
+            "info"
+        } else {
+            "warn"
+        },
+        "web",
+        build_consistency.message.clone(),
+        None,
+    );
+
+    let security = crate::build_info::enforce_startup_security(
+        "embedded_web",
+        &host,
+        auth_enabled,
+        Some(&static_dir),
+        Some(&app_state.data_dir),
+    )?;
+    app_state.runtime_monitor.set_security(security.clone());
+    if security.insecure && security.override_active {
+        app_state.runtime_monitor.record(
+            "warn",
+            "web",
+            "Insecure remote web-server override is active",
+            None,
+        );
+    }
 
     let addr: SocketAddr =
         format!("{}:{}", host, port)
@@ -398,6 +432,7 @@ pub async fn start_web_server(
     let port_val = resolve_web_service_port(&db.conn, port).await?;
     let host_val = host.unwrap_or_else(|| "0.0.0.0".to_string());
     let token = resolve_web_service_token(&db.conn, token).await?;
+    let auth_enabled = !token.is_empty();
 
     let addr: SocketAddr =
         format!("{}:{}", host_val, port_val)
@@ -415,6 +450,40 @@ pub async fn start_web_server(
     persist_web_service_config(&db.conn, &token, port_val).await?;
 
     let static_dir = find_static_dir_tauri(&app);
+    let runtime_monitor = app
+        .state::<std::sync::Arc<crate::runtime_monitor::RuntimeMonitor>>()
+        .inner()
+        .clone();
+    let build_consistency = crate::build_info::enforce_build_consistency(&static_dir)?;
+    runtime_monitor.set_build_consistency(build_consistency.clone());
+    runtime_monitor.record(
+        if build_consistency.status == "ok" {
+            "info"
+        } else {
+            "warn"
+        },
+        "web",
+        build_consistency.message.clone(),
+        None,
+    );
+
+    let data_dir = app.path().app_data_dir().unwrap_or_default();
+    let security = crate::build_info::enforce_startup_security(
+        "embedded_web",
+        &host_val,
+        auth_enabled,
+        Some(&static_dir),
+        Some(&data_dir),
+    )?;
+    runtime_monitor.set_security(security.clone());
+    if security.insecure && security.override_active {
+        runtime_monitor.record(
+            "warn",
+            "web",
+            "Insecure remote web-server override is active",
+            None,
+        );
+    }
 
     // Build AppState for the router
     let app_state = Arc::new(AppState {
@@ -423,12 +492,17 @@ pub async fn start_web_server(
         },
         connection_manager: (*app.state::<crate::acp::manager::ConnectionManager>()).clone_ref(),
         terminal_manager: (*app.state::<crate::terminal::manager::TerminalManager>()).clone_ref(),
+        web_client_registry: app
+            .state::<Arc<crate::web::client_owner::WebClientRegistry>>()
+            .inner()
+            .clone(),
         event_broadcaster: app
             .state::<Arc<crate::web::event_bridge::WebEventBroadcaster>>()
             .inner()
             .clone(),
         emitter: crate::web::event_bridge::EventEmitter::Tauri(app.clone()),
-        data_dir: app.path().app_data_dir().unwrap_or_default(),
+        data_dir,
+        runtime_monitor,
         web_server_state: WebServerState::new(), // placeholder; not used by handlers
         chat_channel_manager: crate::app_state::default_chat_channel_manager(),
     });

@@ -341,7 +341,7 @@
     "templates": {
       "gemini": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Skill Name\n\nInstructions for the agent when this skill is active.\n\n## Workflow\n\n1. Add actionable step one.\n2. Add actionable step two.\n",
       "openCode": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Purpose\n\nDescribe what this skill helps with.\n\n# Steps\n\n1. Add actionable step one.\n2. Add actionable step two.\n",
-      "openClaw": "---\nname: example-skill\ndescription: Describe when this skill should be used.\nuser-invocable: true\ndisable-model-invocation: false\n---\n\n# Purpose\n\nDescribe what this skill helps with.\n\n# Instructions\n\n1. Add actionable instruction one.\n2. Add actionable instruction two.\n",
+      "generic": "---\nname: example-skill\ndescription: Describe when this skill should be used.\nuser-invocable: true\ndisable-model-invocation: false\n---\n\n# Purpose\n\nDescribe what this skill helps with.\n\n# Instructions\n\n1. Add actionable instruction one.\n2. Add actionable instruction two.\n",
       "default": "# Skill: example-skill\n\n## When to use\n\n- Describe trigger conditions.\n\n## Instructions\n\n1. Add actionable instruction one.\n2. Add actionable instruction two.\n"
     }
   },
@@ -466,7 +466,7 @@
       "saveCodexConfig": "Save Codex Config",
       "saveGeminiConfig": "Save Gemini Config",
       "saveOpenCodeConfig": "Save OpenCode Config",
-      "saveOpenClawConfig": "Save OpenClaw Config",
+      "saveGenericConfig": "Save Generic Config",
       "saveConfigManagement": "Save Config Management",
       "saveCurrentProvider": "Save Current Provider",
       "showApiKey": "Show API Key",
@@ -568,12 +568,12 @@
       "smallModel": "Small Model",
       "noMatchingModels": "No matching models"
     },
-    "openClaw": {
+    "generic": {
       "gatewayConfig": "Gateway Config",
-      "gatewayDescription": "Configure OpenClaw Gateway connection. Supports local or remote gateway.",
-      "gatewayUrlHint": "Leave empty to use gateway.remote.url from local openclaw config.",
+      "gatewayDescription": "Configure Generic Gateway connection. Supports local or remote gateway.",
+      "gatewayUrlHint": "Leave empty to use gateway.remote.url from local generic config.",
       "gatewayTokenPlaceholder": "Gateway auth token",
-      "gatewayTokenHint": "Use token-file instead of plain token when possible; configure via openclaw CLI.",
+      "gatewayTokenHint": "Use token-file instead of plain token when possible; configure via generic CLI.",
       "sessionKeyHint": "Optional. Specify gateway session key; leave empty to auto-assign isolated session."
     },
     "authModeOfficialSubscription": "Official Subscription",
@@ -646,8 +646,8 @@
       "openCodeConfigSynced": "OpenCode config and auth JSON have been synced.",
       "openCodeSaved": "OpenCode config saved",
       "saveOpenCodeFailed": "Failed to save OpenCode config",
-      "openClawSaved": "OpenClaw config saved",
-      "saveOpenClawFailed": "Failed to save OpenClaw config",
+      "genericSaved": "Generic config saved",
+      "saveGenericFailed": "Failed to save Generic config",
       "configSaved": "Config saved",
       "configSavedHint": "Existing sessions need to be reopened to take effect",
       "saveConfigManagementFailed": "Failed to save config management",
@@ -1517,7 +1517,8 @@
           "initializeTimeout": "{agent} connection handshake timed out after 60 seconds. Please open Settings to check Agent configuration and network settings.",
           "processExited": "{agent} process exited unexpectedly.",
           "spawnFailed": "Failed to start {agent}: {message}",
-          "downloadFailed": "{agent} download failed: {message}"
+          "downloadFailed": "{agent} download failed: {message}",
+          "turnIdleTimeout": "{agent} stopped responding after {seconds}s — the turn was aborted automatically. You can retry now."
         },
         "unableReadAgentConfig": "Unable to read Agent config: {message}",
         "connectFailedTitle": "{agent} connection failed",
@@ -1534,7 +1535,8 @@
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}, {delay}",
           "httpStatus": " (HTTP {status})"
-        }
+        },
+        "compacting": "Compacting context…"
       },
       "connectionLifecycle": {
         "tasks": {

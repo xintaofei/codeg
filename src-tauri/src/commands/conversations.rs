@@ -13,7 +13,7 @@ use crate::parsers::claude::ClaudeParser;
 use crate::parsers::cline::ClineParser;
 use crate::parsers::codex::CodexParser;
 use crate::parsers::gemini::GeminiParser;
-use crate::parsers::openclaw::OpenClawParser;
+use crate::parsers::generic::GenericParser;
 use crate::parsers::opencode::OpenCodeParser;
 use crate::parsers::{path_eq_for_matching, AgentParser, ParseError};
 
@@ -70,7 +70,7 @@ fn list_conversations_sync(
         (AgentType::Codex, Box::new(CodexParser::new())),
         (AgentType::OpenCode, Box::new(OpenCodeParser::new())),
         (AgentType::Gemini, Box::new(GeminiParser::new())),
-        (AgentType::OpenClaw, Box::new(OpenClawParser::new())),
+        (AgentType::Generic, Box::new(GenericParser::new())),
         (AgentType::Cline, Box::new(ClineParser::new())),
     ];
 
@@ -171,7 +171,7 @@ pub async fn get_conversation(
             AgentType::Codex => Box::new(CodexParser::new()),
             AgentType::OpenCode => Box::new(OpenCodeParser::new()),
             AgentType::Gemini => Box::new(GeminiParser::new()),
-            AgentType::OpenClaw => Box::new(OpenClawParser::new()),
+            AgentType::Generic => Box::new(GenericParser::new()),
             AgentType::Cline => Box::new(ClineParser::new()),
         };
 
@@ -278,7 +278,7 @@ pub async fn import_local_conversations(
         .map_err(AppCommandError::from)
 }
 
-/// Core logic for loading a folder conversation with full OpenClaw fallback.
+/// Core logic for loading a folder conversation with full Generic fallback.
 /// Shared by both the Tauri command and the web handler.
 pub async fn get_folder_conversation_core(
     conn: &sea_orm::DatabaseConnection,
@@ -305,20 +305,20 @@ pub async fn get_folder_conversation_core(
                 AgentType::Codex => Box::new(CodexParser::new()),
                 AgentType::OpenCode => Box::new(OpenCodeParser::new()),
                 AgentType::Gemini => Box::new(GeminiParser::new()),
-                AgentType::OpenClaw => Box::new(OpenClawParser::new()),
+                AgentType::Generic => Box::new(GenericParser::new()),
                 AgentType::Cline => Box::new(ClineParser::new()),
             };
             match parser.get_conversation(&eid) {
                 Ok(d) => Ok((d.turns, d.session_stats, None)),
                 Err(crate::parsers::ParseError::ConversationNotFound(_)) => {
                     // The external_id may no longer match any local file —
-                    // e.g. an ACP session UUID (OpenClaw, Cline) or a stale
+                    // e.g. an ACP session UUID (Generic, Cline) or a stale
                     // ID after session/new fallback overwrote the original
                     // (Gemini CLI).  Fall back to matching by folder_path
                     // and started_at from the parsed conversation list.
                     if matches!(
                         at,
-                        AgentType::OpenClaw | AgentType::Cline | AgentType::Gemini
+                        AgentType::Generic | AgentType::Cline | AgentType::Gemini
                     ) {
                         if let Ok(all) = parser.list_conversations() {
                             // Filter by folder_path first, then find the closest

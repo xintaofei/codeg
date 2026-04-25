@@ -2,6 +2,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use codeg_lib::app_state::AppState;
+use codeg_lib::build_info;
+use codeg_lib::runtime_monitor::RuntimeMonitor;
+use codeg_lib::web::client_owner::WebClientRegistry;
 use codeg_lib::web::event_bridge::{EventEmitter, WebEventBroadcaster};
 use codeg_lib::web::{
     find_static_dir_standalone, generate_random_token, get_local_addresses, WebServerState,
@@ -34,7 +37,15 @@ async fn async_main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(3080);
     let host = std::env::var("CODEG_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let token = std::env::var("CODEG_TOKEN").unwrap_or_else(|_| generate_random_token());
+    let disable_auth = std::env::var("CODEG_DISABLE_AUTH")
+        .ok()
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+    let token = if disable_auth {
+        String::new()
+    } else {
+        std::env::var("CODEG_TOKEN").unwrap_or_else(|_| generate_random_token())
+    };
     let data_dir = std::env::var("CODEG_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_data_dir());
@@ -42,6 +53,55 @@ async fn async_main() {
 
     let static_dir = find_static_dir_standalone(static_dir_env.as_deref());
     let app_version = env!("CARGO_PKG_VERSION");
+    let runtime_monitor = Arc::new(RuntimeMonitor::new());
+
+    let build_consistency = match build_info::enforce_build_consistency(&static_dir) {
+        Ok(info) => info,
+        Err(error) => {
+            eprintln!("[SERVER] {}", error);
+            if let Some(detail) = error.detail {
+                eprintln!("[SERVER] {detail}");
+            }
+            std::process::exit(1);
+        }
+    };
+    runtime_monitor.set_build_consistency(build_consistency.clone());
+    runtime_monitor.record(
+        if build_consistency.status == "ok" {
+            "info"
+        } else {
+            "warn"
+        },
+        "startup",
+        build_consistency.message.clone(),
+        None,
+    );
+
+    let security_info = match build_info::enforce_startup_security(
+        "standalone",
+        &host,
+        !disable_auth,
+        Some(&static_dir),
+        Some(&data_dir),
+    ) {
+        Ok(info) => info,
+        Err(error) => {
+            eprintln!("[SERVER] {}", error);
+            if let Some(detail) = error.detail {
+                eprintln!("[SERVER] {detail}");
+            }
+            std::process::exit(1);
+        }
+    };
+    runtime_monitor.set_security(security_info.clone());
+    if security_info.insecure && security_info.override_active {
+        runtime_monitor.record(
+            "warn",
+            "startup",
+            "Insecure remote startup override is active",
+            None,
+        );
+    }
 
     eprintln!("[SERVER] codeg-server v{}", app_version);
     eprintln!("[SERVER] Data directory: {}", data_dir.display());
@@ -55,15 +115,21 @@ async fn async_main() {
     // Create shared broadcaster
     let broadcaster = Arc::new(WebEventBroadcaster::new());
     let emitter = EventEmitter::WebOnly(broadcaster.clone());
+    let connection_manager = codeg_lib::app_state::default_connection_manager();
+    let web_client_registry = Arc::new(WebClientRegistry::new());
+    connection_manager.attach_runtime_monitor(runtime_monitor.clone());
+    connection_manager.start_orphan_watchdog(web_client_registry.clone());
 
     // Build AppState
     let state = Arc::new(AppState {
         db,
-        connection_manager: codeg_lib::app_state::default_connection_manager(),
+        connection_manager,
         terminal_manager: codeg_lib::app_state::default_terminal_manager(),
+        web_client_registry,
         event_broadcaster: broadcaster,
         emitter,
         data_dir,
+        runtime_monitor,
         web_server_state: WebServerState::new(),
         chat_channel_manager: codeg_lib::app_state::default_chat_channel_manager(),
     });
@@ -115,7 +181,11 @@ async fn async_main() {
     let actual_port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
     let addresses = get_local_addresses(actual_port);
 
-    eprintln!("[SERVER] Token: {}", token);
+    if token.is_empty() {
+        eprintln!("[SERVER] Auth: disabled");
+    } else {
+        eprintln!("[SERVER] Token: {}", token);
+    }
     eprintln!("[SERVER] Listening on:");
     for addr in &addresses {
         eprintln!("  {}", addr);

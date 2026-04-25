@@ -4,8 +4,11 @@
   "version": "0.10.0",
   "scripts": {
     "dev": "next dev --turbopack",
-    "build": "next build",
+    "build:web": "next build",
+    "build:manifest": "node scripts/write-build-manifest.mjs",
+    "build": "pnpm build:web && pnpm build:manifest",
     "lint": "eslint",
+    "release:standalone": "node scripts/release.mjs",
     "tauri": "tauri",
     "server:build": "cd src-tauri && cargo build --release --bin codeg-server --no-default-features",
     "server:dev": "cd src-tauri && cargo run --bin codeg-server --no-default-features",

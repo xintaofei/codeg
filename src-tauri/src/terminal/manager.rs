@@ -5,6 +5,7 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
+use chrono::Utc;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 
 use super::error::TerminalError;
@@ -16,7 +17,9 @@ struct TerminalInstance {
     master: Box<dyn MasterPty + Send>,
     _child: Box<dyn portable_pty::Child + Send>,
     title: String,
+    working_dir: String,
     owner_window_label: String,
+    created_at: String,
     /// Temp files (credential store + helper script) to clean up on exit.
     temp_files: Vec<std::path::PathBuf>,
 }
@@ -250,7 +253,9 @@ impl TerminalManager {
             master: pair.master,
             _child: child,
             title: "Terminal".to_string(),
+            working_dir: opts.working_dir,
             owner_window_label: opts.owner_window_label,
+            created_at: Utc::now().to_rfc3339(),
             temp_files: opts.temp_files,
         };
 
@@ -350,6 +355,9 @@ impl TerminalManager {
             .map(|(id, inst)| TerminalInfo {
                 id: id.clone(),
                 title: inst.title.clone(),
+                working_dir: inst.working_dir.clone(),
+                owner_window_label: inst.owner_window_label.clone(),
+                created_at: inst.created_at.clone(),
             })
             .collect();
 

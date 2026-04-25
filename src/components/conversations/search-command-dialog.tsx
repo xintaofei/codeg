@@ -62,6 +62,7 @@ export function SearchCommandDialog({
   const [activeTab, setActiveTab] = useState<SearchTab>("conversations")
   const [query, setQuery] = useState("")
   const [agentFilter, setAgentFilter] = useState<AgentType | null>(null)
+  const [searchAllFolders, setSearchAllFolders] = useState(activeFolderId == null)
   const [results, setResults] = useState<DbConversationSummary[]>([])
   const [searching, setSearching] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -80,7 +81,11 @@ export function SearchCommandDialog({
 
   // Compute which agent types exist in current folder
   const availableAgents = Array.from(
-    new Set(conversations.map((c) => c.agent_type))
+    new Set(
+      (searchAllFolders ? allConversations : conversations).map(
+        (conversation) => conversation.agent_type
+      )
+    )
   ).sort(compareAgentType)
 
   // Filter files by query using pre-computed lowercase fields
@@ -108,7 +113,8 @@ export function SearchCommandDialog({
       setSearching(true)
       try {
         const data = await listAllConversations({
-          folder_ids: folderId > 0 ? [folderId] : null,
+          folder_ids:
+            !searchAllFolders && folderId > 0 ? [folderId] : null,
           search: q.trim() || null,
           agent_type: agent,
         })
@@ -119,7 +125,7 @@ export function SearchCommandDialog({
         setSearching(false)
       }
     },
-    [folderId]
+    [folderId, searchAllFolders]
   )
 
   // Debounced search on query change (conversations tab only)
@@ -132,18 +138,25 @@ export function SearchCommandDialog({
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
     }
-  }, [query, agentFilter, doSearch, activeTab])
+  }, [query, agentFilter, doSearch, activeTab, searchAllFolders])
 
   // Reset state when dialog closes
   useEffect(() => {
     if (!open) {
       setQuery("")
       setAgentFilter(null)
+      setSearchAllFolders(activeFolderId == null)
       setResults([])
       setActiveTab("conversations")
       resetFileTree()
     }
-  }, [open, resetFileTree])
+  }, [activeFolderId, open, resetFileTree])
+
+  useEffect(() => {
+    if (activeFolderId == null) {
+      setSearchAllFolders(true)
+    }
+  }, [activeFolderId])
 
   const handleSelectConversation = useCallback(
     (conv: DbConversationSummary) => {
@@ -233,34 +246,64 @@ export function SearchCommandDialog({
       />
 
       {/* Agent filter (conversations tab only) */}
-      {activeTab === "conversations" && availableAgents.length > 1 && (
-        <div className="flex items-center gap-1 px-3 py-2 border-b">
-          <button
-            onClick={() => setAgentFilter(null)}
-            className={cn(
-              "h-6 text-xs px-2 rounded-md transition-colors",
-              agentFilter === null
-                ? "bg-secondary text-secondary-foreground"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            {t("allAgents")}
-          </button>
-          {availableAgents.map((at) => (
-            <button
-              key={at}
-              onClick={() => setAgentFilter(at)}
-              className={cn(
-                "flex items-center gap-1.5 h-6 text-xs px-2 rounded-md transition-colors",
-                agentFilter === at
-                  ? "bg-secondary text-secondary-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              <AgentIcon agentType={at} className="w-3.5 h-3.5" />
-              {AGENT_LABELS[at]}
-            </button>
-          ))}
+      {activeTab === "conversations" && (
+        <div className="flex flex-wrap items-center gap-1 px-3 py-2 border-b">
+          {folder && (
+            <>
+              <button
+                onClick={() => setSearchAllFolders(false)}
+                className={cn(
+                  "h-6 text-xs px-2 rounded-md transition-colors",
+                  !searchAllFolders
+                    ? "bg-secondary text-secondary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {folder.name}
+              </button>
+              <button
+                onClick={() => setSearchAllFolders(true)}
+                className={cn(
+                  "h-6 text-xs px-2 rounded-md transition-colors",
+                  searchAllFolders
+                    ? "bg-secondary text-secondary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                All workspaces
+              </button>
+            </>
+          )}
+          {availableAgents.length > 1 && (
+            <>
+              <button
+                onClick={() => setAgentFilter(null)}
+                className={cn(
+                  "h-6 text-xs px-2 rounded-md transition-colors",
+                  agentFilter === null
+                    ? "bg-secondary text-secondary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {t("allAgents")}
+              </button>
+              {availableAgents.map((at) => (
+                <button
+                  key={at}
+                  onClick={() => setAgentFilter(at)}
+                  className={cn(
+                    "flex items-center gap-1.5 h-6 text-xs px-2 rounded-md transition-colors",
+                    agentFilter === at
+                      ? "bg-secondary text-secondary-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  <AgentIcon agentType={at} className="w-3.5 h-3.5" />
+                  {AGENT_LABELS[at]}
+                </button>
+              ))}
+            </>
+          )}
         </div>
       )}
 
@@ -280,25 +323,32 @@ export function SearchCommandDialog({
                 {results.map((conv) => (
                   <CommandItem
                     key={conv.id}
-                    value={`${conv.id}-${conv.title ?? ""}`}
+                    value={`${conv.id}-${conv.title ?? ""}-${conv.folder_name ?? ""}-${conv.folder_path ?? ""}`}
                     onSelect={() => handleSelectConversation(conv)}
                   >
                     <ConversationStatusIcon
                       status={conv.status as ConversationStatus}
                       className={cn(
-                        "h-4 w-4",
+                        "h-4 w-4 self-start mt-0.5",
                         STATUS_ICON_COLORS[conv.status as ConversationStatus] ??
                           "text-muted-foreground"
                       )}
                     />
-                    <span className="flex-1 truncate">
-                      {conv.title || t("untitledConversation")}
-                    </span>
+                    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <span className="truncate">
+                        {conv.title || t("untitledConversation")}
+                      </span>
+                      {searchAllFolders && (
+                        <span className="truncate text-[11px] text-muted-foreground">
+                          {conv.folder_name ?? conv.folder_path ?? "Unknown workspace"}
+                        </span>
+                      )}
+                    </div>
                     <span className="text-xs text-muted-foreground shrink-0">
                       {AGENT_LABELS[conv.agent_type]}
                     </span>
                     <span className="text-xs text-muted-foreground shrink-0">
-                      {formatDistanceToNow(new Date(conv.created_at), {
+                      {formatDistanceToNow(new Date(conv.updated_at), {
                         addSuffix: true,
                         locale: dateFnsLocale,
                       })}

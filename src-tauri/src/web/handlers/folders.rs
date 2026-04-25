@@ -15,6 +15,13 @@ pub struct FolderIdParams {
     pub folder_id: i32,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateFolderWorkspacePresetParams {
+    pub folder_id: i32,
+    pub workspace_preset: Option<WorkspacePreset>,
+}
+
 pub async fn load_folder_history(
     Extension(state): Extension<Arc<AppState>>,
 ) -> Result<Json<Vec<FolderHistoryEntry>>, AppCommandError> {
@@ -121,6 +128,18 @@ pub async fn remove_folder_from_workspace(
         .await
         .map_err(AppCommandError::from)?;
     Ok(Json(()))
+}
+
+pub async fn update_folder_workspace_preset(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<UpdateFolderWorkspacePresetParams>,
+) -> Result<Json<FolderDetail>, AppCommandError> {
+    let db = &state.db;
+    let result =
+        folder_service::update_workspace_preset(&db.conn, params.folder_id, params.workspace_preset)
+            .await
+            .map_err(AppCommandError::from)?;
+    Ok(Json(result))
 }
 
 #[derive(Deserialize)]

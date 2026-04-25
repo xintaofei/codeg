@@ -8,7 +8,7 @@ pub enum AgentType {
     Codex,
     OpenCode,
     Gemini,
-    OpenClaw,
+    Generic,
     Cline,
 }
 
@@ -19,8 +19,21 @@ impl fmt::Display for AgentType {
             AgentType::Codex => write!(f, "Codex CLI"),
             AgentType::OpenCode => write!(f, "OpenCode"),
             AgentType::Gemini => write!(f, "Gemini CLI"),
-            AgentType::OpenClaw => write!(f, "OpenClaw"),
+            AgentType::Generic => write!(f, "Generic"),
             AgentType::Cline => write!(f, "Cline"),
         }
+    }
+}
+
+impl AgentType {
+    pub const fn all() -> [AgentType; 6] {
+        [
+            AgentType::ClaudeCode,
+            AgentType::Codex,
+            AgentType::OpenCode,
+            AgentType::Gemini,
+            AgentType::Generic,
+            AgentType::Cline,
+        ]
     }
 }

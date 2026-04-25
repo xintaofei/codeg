@@ -3,7 +3,7 @@ export type AgentType =
   | "codex"
   | "open_code"
   | "gemini"
-  | "open_claw"
+  | "generic"
   | "cline"
 
 export type AppErrorCode =
@@ -161,8 +161,18 @@ export interface FolderDetail {
   path: string
   git_branch: string | null
   default_agent_type: AgentType | null
+  workspace_preset: WorkspacePreset | null
   last_opened_at: string
   sort_order: number
+}
+
+export interface WorkspacePreset {
+  default_agent_type: AgentType | null
+  model_provider_id: number | null
+  approval_policy: string | null
+  skill_ids: string[]
+  mcp_server_ids: string[]
+  env_overrides: Record<string, string>
 }
 
 export interface OpenedTab {
@@ -178,6 +188,8 @@ export interface OpenedTab {
 export interface DbConversationSummary {
   id: number
   folder_id: number
+  folder_name: string | null
+  folder_path: string | null
   title: string | null
   agent_type: AgentType
   status: string
@@ -239,7 +251,7 @@ export const AGENT_DISPLAY_ORDER: AgentType[] = [
   "claude_code",
   "open_code",
   "gemini",
-  "open_claw",
+  "generic",
   "cline",
 ]
 
@@ -258,7 +270,7 @@ export const ALL_AGENT_TYPES: AgentType[] = [
   "codex",
   "open_code",
   "gemini",
-  "open_claw",
+  "generic",
   "cline",
 ]
 
@@ -273,7 +285,7 @@ export const AGENT_LABELS: Record<AgentType, string> = {
   codex: "Codex",
   open_code: "OpenCode",
   gemini: "Gemini CLI",
-  open_claw: "OpenClaw",
+  generic: "Generic",
   cline: "Cline",
 }
 
@@ -282,7 +294,7 @@ export const AGENT_COLORS: Record<AgentType, string> = {
   codex: "bg-[#7A9DFF]",
   open_code: "bg-black",
   gemini: "bg-[#3186FF]",
-  open_claw: "bg-emerald-600",
+  generic: "bg-slate-600",
   cline: "bg-purple-500",
 }
 
@@ -503,12 +515,45 @@ export type AcpEvent =
       used: number
       size: number
     }
+  | {
+      /** Agent has begun mid-turn context compaction. UI shows a hint. */
+      type: "compaction_started"
+      connection_id: string
+      session_id: string
+    }
+  | {
+      /** Compaction finished; clear the hint. */
+      type: "compaction_finished"
+      connection_id: string
+      session_id: string
+    }
+  | {
+      /** Non-fatal stream parse warning. Lets the UI know the stream
+       * had a hiccup instead of silently freezing. */
+      type: "stream_warning"
+      connection_id: string
+      message: string
+    }
+  | {
+      /** Watchdog aborted the turn after no agent activity for `idle_ms`. */
+      type: "turn_idle_timeout"
+      connection_id: string
+      session_id: string
+      agent_type: string
+      idle_ms: number
+    }
 
 // Connection info returned by acp_list_connections
 export interface ConnectionInfo {
   id: string
   agent_type: AgentType
   status: ConnectionStatus
+  owner_window_label: string
+  working_dir: string | null
+  created_at: string
+  updated_at: string
+  session_id: string | null
+  last_error: string | null
 }
 
 // ACP agent info returned by acp_list_agents
@@ -632,6 +677,97 @@ export interface SystemLanguageSettings {
   language: AppLocale
 }
 
+export interface BackendBuildInfo {
+  version: string
+  git_commit: string | null
+  built_at: string | null
+  profile: string
+}
+
+export interface FrontendBuildManifest {
+  version: string
+  git_commit: string | null
+  built_at: string | null
+}
+
+export interface BuildConsistencyInfo {
+  status: string
+  message: string
+  backend: BackendBuildInfo
+  frontend: FrontendBuildManifest | null
+  manifest_path: string
+}
+
+export interface RuntimeSecurityInfo {
+  mode: string
+  host: string | null
+  auth_enabled: boolean
+  allow_remote_access: boolean
+  insecure: boolean
+  override_active: boolean
+  static_dir: string | null
+  data_dir: string | null
+}
+
+export interface RuntimeLogEntry {
+  timestamp: string
+  level: string
+  scope: string
+  message: string
+  data?: unknown
+}
+
+export interface ConnectionLimitSnapshot {
+  current_total: number
+  global_limit: number
+  per_owner_limit: number
+  per_agent_limit: number
+  by_agent: Record<string, number>
+  recent_failures: number
+  breaker_threshold: number
+  breaker_window_seconds: number
+  breaker_cooldown_seconds: number
+  breaker_open: boolean
+  breaker_open_until: string | null
+  orphan_grace_seconds: number
+  connecting_timeout_seconds: number
+}
+
+export interface RuntimeDiagnostics {
+  build: BuildConsistencyInfo | null
+  security: RuntimeSecurityInfo | null
+  connections: ConnectionInfo[]
+  terminals: TerminalInfo[]
+  web_clients: WebClientInfo[]
+  recent_logs: RuntimeLogEntry[]
+  connection_limits: ConnectionLimitSnapshot
+}
+
+export interface WebClientInfo {
+  client_id: string
+  active_sockets: number
+  connected_at: string
+  updated_at: string
+}
+
+export interface AcpCacheEntry {
+  agent_type: AgentType
+  label: string
+  path: string
+  size_bytes: number
+  file_count: number
+  versions: string[]
+  installed_version: string | null
+  recommended_version: string | null
+}
+
+export interface AcpCacheInventory {
+  generated_at: string
+  root_path: string
+  total_size_bytes: number
+  entries: AcpCacheEntry[]
+}
+
 // --- Version Control ---
 
 export interface GitCredentials {
@@ -681,7 +817,7 @@ export type McpAppType =
   | "claude_code"
   | "codex"
   | "gemini"
-  | "open_claw"
+  | "generic"
   | "open_code"
   | "cline"
 
@@ -938,6 +1074,9 @@ export interface GitLogFileChange {
 export interface TerminalInfo {
   id: string
   title: string
+  working_dir: string
+  owner_window_label: string
+  created_at: string
 }
 
 export interface TerminalEvent {

@@ -202,7 +202,7 @@ const ConversationTabView = memo(function ConversationTabView({
   const [hasSentMessage, setHasSentMessage] = useState(false)
 
   const hasPersistedConversation = dbConversationId != null
-  const canAutoConnect =
+  const canUseAgent =
     hasPersistedConversation || (agentsLoaded && usableAgentCount > 0)
 
   // Expose the runtime session key to the tab so the aux panel (Diff sidebar)
@@ -266,6 +266,13 @@ const ConversationTabView = memo(function ConversationTabView({
   }, [effectiveSessionStats, isActive, setSessionStats])
 
   const externalId = detail?.summary.external_id ?? undefined
+  const requiresResumeSessionResolution =
+    conversationId != null && selectedAgent !== "cline"
+  const resumeSessionId = requiresResumeSessionResolution
+    ? externalId
+    : undefined
+  const canAutoConnect =
+    canUseAgent && (!requiresResumeSessionResolution || detail != null)
   const draftStorageKey = useMemo(() => {
     if (dbConversationId != null) {
       return buildConversationDraftStorageKey(selectedAgent, dbConversationId)
@@ -294,10 +301,7 @@ const ConversationTabView = memo(function ConversationTabView({
     agentType: selectedAgent,
     isActive: isActive && canAutoConnect,
     workingDir: workingDirForConnection,
-    sessionId:
-      dbConversationId != null && selectedAgent !== "cline"
-        ? externalId
-        : undefined,
+    sessionId: resumeSessionId,
   })
   const {
     status: connStatus,
@@ -889,6 +893,7 @@ const ConversationTabView = memo(function ConversationTabView({
       agentName={AGENT_LABELS[selectedAgent]}
       error={conn.error}
       claudeApiRetry={conn.claudeApiRetry}
+      compacting={conn.compacting}
       pendingPermission={conn.pendingPermission}
       pendingQuestion={conn.pendingQuestion}
       onFocus={handleFocus}

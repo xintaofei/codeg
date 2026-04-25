@@ -4,6 +4,10 @@ use serde::Serialize;
 pub enum AcpError {
     #[error("agent process failed to spawn: {0}")]
     SpawnFailed(String),
+    #[error("{0}")]
+    LimitExceeded(String),
+    #[error("{0}")]
+    CircuitOpen(String),
     #[error("connection not found: {0}")]
     ConnectionNotFound(String),
     #[error("ACP protocol error: {0}")]
@@ -48,6 +52,8 @@ impl AcpError {
             Self::InitializeTimeout => Some("initialize_timeout"),
             Self::ProcessExited => Some("process_exited"),
             Self::SpawnFailed(_) => Some("spawn_failed"),
+            Self::LimitExceeded(_) => Some("limit_exceeded"),
+            Self::CircuitOpen(_) => Some("circuit_open"),
             Self::DownloadFailed(_) => Some("download_failed"),
             Self::ConnectionNotFound(_) => Some("connection_not_found"),
             Self::Protocol(_) => None,

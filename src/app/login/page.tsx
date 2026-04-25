@@ -12,7 +12,23 @@ export default function LoginPage() {
 
   useEffect(() => {
     document.title = "Login - codeg"
-  }, [])
+    fetch("/api/health", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    })
+      .then((res) => {
+        if (res.ok) {
+          localStorage.removeItem("codeg_token")
+          router.replace("/workspace")
+        }
+      })
+      .catch(() => {
+        // keep login form for protected mode or unreachable server
+      })
+  }, [router])
 
   // Desktop users skip login entirely
   if (isDesktop()) {
@@ -29,15 +45,23 @@ export default function LoginPage() {
       // Validate token by calling a lightweight API endpoint
       const res = await fetch("/api/health", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
+        headers: token
+          ? {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            }
+          : {
+              "Content-Type": "application/json",
+            },
         body: "{}",
       })
 
       if (res.ok) {
-        localStorage.setItem("codeg_token", token)
+        if (token) {
+          localStorage.setItem("codeg_token", token)
+        } else {
+          localStorage.removeItem("codeg_token")
+        }
         router.replace("/workspace")
       } else if (res.status === 401) {
         setError("Token 无效，请检查后重试")
@@ -77,7 +101,7 @@ export default function LoginPage() {
 
           <button
             type="submit"
-            disabled={!token || loading}
+            disabled={loading}
             className="inline-flex h-10 w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground ring-offset-background transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
           >
             {loading ? "连接中..." : "连接"}

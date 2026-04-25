@@ -42,6 +42,8 @@ export interface UseConnectionReturn {
   pendingPermission: PendingPermission | null
   pendingQuestion: PendingQuestion | null
   claudeApiRetry: ClaudeApiRetryState | null
+  /** True while the agent is compacting context history mid-turn. */
+  compacting: boolean
   error: string | null
   connect: (
     agentType: AgentType,
@@ -94,6 +96,7 @@ export function useConnection(contextKey: string): UseConnectionReturn {
   const pendingPermission = connection?.pendingPermission ?? null
   const pendingQuestion = connection?.pendingQuestion ?? null
   const claudeApiRetry = connection?.claudeApiRetry ?? null
+  const compacting = connection?.compacting ?? false
   const error = connection?.error ?? null
 
   const connect = useCallback(
@@ -150,6 +153,7 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       pendingPermission,
       pendingQuestion,
       claudeApiRetry,
+      compacting,
       error,
       connect,
       disconnect,
@@ -174,6 +178,7 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       pendingPermission,
       pendingQuestion,
       claudeApiRetry,
+      compacting,
       error,
       connect,
       disconnect,

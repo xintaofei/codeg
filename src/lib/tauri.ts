@@ -17,6 +17,7 @@ import type {
   AgentSkillContent,
   FolderHistoryEntry,
   FolderDetail,
+  WorkspacePreset,
   DbConversationSummary,
   ImportResult,
   OpenedTab,
@@ -50,6 +51,8 @@ import type {
   GitSettings,
   GitHubAccountsSettings,
   GitHubTokenValidation,
+  RuntimeDiagnostics,
+  AcpCacheInventory,
   McpAppType,
   LocalMcpServer,
   McpMarketplaceProvider,
@@ -317,6 +320,14 @@ export async function updateSystemLanguageSettings(
   return invoke("update_system_language_settings", { settings })
 }
 
+export async function getRuntimeDiagnostics(): Promise<RuntimeDiagnostics> {
+  return invoke("get_runtime_diagnostics")
+}
+
+export async function getAcpCacheInventory(): Promise<AcpCacheInventory> {
+  return invoke("get_acp_cache_inventory")
+}
+
 // --- Version Control ---
 
 export async function detectGit(): Promise<GitDetectResult> {
@@ -496,6 +507,20 @@ export async function saveOpenedTabs(items: OpenedTab[]): Promise<void> {
 
 export async function listOpenFolderDetails(): Promise<FolderDetail[]> {
   return invoke("list_open_folder_details")
+}
+
+export async function listAllFolderDetails(): Promise<FolderDetail[]> {
+  return invoke("list_all_folder_details")
+}
+
+export async function updateFolderWorkspacePreset(
+  folderId: number,
+  workspacePreset: WorkspacePreset | null
+): Promise<FolderDetail> {
+  return invoke("update_folder_workspace_preset", {
+    folderId,
+    workspacePreset,
+  })
 }
 
 export async function openFolderById(folderId: number): Promise<FolderDetail> {

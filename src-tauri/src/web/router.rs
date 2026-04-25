@@ -21,6 +21,7 @@ pub fn build_router(state: Arc<AppState>, token: String, static_dir: std::path::
         .allow_headers(Any);
 
     let token_for_ws = token.clone();
+    let auth_enabled = !token.is_empty();
 
     let api = Router::new()
         .route("/health", post(health_check))
@@ -79,6 +80,14 @@ pub fn build_router(state: Arc<AppState>, token: String, static_dir: std::path::
             "/update_conversation_external_id",
             post(handlers::conversations::update_conversation_external_id),
         )
+        .route(
+            "/get_runtime_diagnostics",
+            post(handlers::runtime::get_runtime_diagnostics),
+        )
+        .route(
+            "/get_acp_cache_inventory",
+            post(handlers::runtime::get_acp_cache_inventory),
+        )
         // ─── Folders ───
         .route(
             "/load_folder_history",
@@ -105,6 +114,10 @@ pub fn build_router(state: Arc<AppState>, token: String, static_dir: std::path::
         .route(
             "/remove_folder_from_workspace",
             post(handlers::folders::remove_folder_from_workspace),
+        )
+        .route(
+            "/update_folder_workspace_preset",
+            post(handlers::folders::update_folder_workspace_preset),
         )
         .route("/reorder_folders", post(handlers::folders::reorder_folders))
         .route(
@@ -637,17 +650,26 @@ pub fn build_router(state: Arc<AppState>, token: String, static_dir: std::path::
         .route("/terminal_kill", post(handlers::terminal::terminal_kill))
         .route("/terminal_list", post(handlers::terminal::terminal_list))
         // Catch-all
-        .fallback(api_not_found)
-        .layer(middleware::from_fn(move |req, next| {
+        .fallback(api_not_found);
+
+    let api = if auth_enabled {
+        api.layer(middleware::from_fn(move |req, next| {
             auth::require_token(req, next, token.clone())
-        }));
+        }))
+    } else {
+        api
+    };
 
     // WebSocket route (auth via query param)
-    let ws_route = Router::new()
-        .route("/ws/events", get(ws::ws_handler))
-        .layer(middleware::from_fn(move |req, next| {
+    let ws_route = Router::new().route("/ws/events", get(ws::ws_handler));
+
+    let ws_route = if auth_enabled {
+        ws_route.layer(middleware::from_fn(move |req, next| {
             auth::require_token(req, next, token_for_ws.clone())
-        }));
+        }))
+    } else {
+        ws_route
+    };
 
     // Static file serving.
     // Next.js static export produces "folder.html" for "/folder" route.

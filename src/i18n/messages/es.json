@@ -341,7 +341,7 @@
     "templates": {
       "gemini": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Skill Name\n\nInstructions for the agent when this skill is active.\n\n## Workflow\n\n1. Add actionable step one.\n2. Add actionable step two.\n",
       "openCode": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Purpose\n\nDescribe what this skill helps with.\n\n# Steps\n\n1. Add actionable step one.\n2. Add actionable step two.\n",
-      "openClaw": "---\nname: example-skill\ndescription: Describe when this skill should be used.\nuser-invocable: true\ndisable-model-invocation: false\n---\n\n# Purpose\n\nDescribe what this skill helps with.\n\n# Instructions\n\n1. Add actionable instruction one.\n2. Add actionable instruction two.\n",
+      "generic": "---\nname: example-skill\ndescription: Describe when this skill should be used.\nuser-invocable: true\ndisable-model-invocation: false\n---\n\n# Purpose\n\nDescribe what this skill helps with.\n\n# Instructions\n\n1. Add actionable instruction one.\n2. Add actionable instruction two.\n",
       "default": "# Skill: example-skill\n\n## When to use\n\n- Describe trigger conditions.\n\n## Instructions\n\n1. Add actionable instruction one.\n2. Add actionable instruction two.\n"
     }
   },
@@ -466,7 +466,7 @@
       "saveCodexConfig": "Guardar configuración de Codex",
       "saveGeminiConfig": "Guardar configuración de Gemini",
       "saveOpenCodeConfig": "Guardar configuración de OpenCode",
-      "saveOpenClawConfig": "Guardar configuración de OpenClaw",
+      "saveGenericConfig": "Guardar configuración de Generic",
       "saveConfigManagement": "Guardar gestión de configuración",
       "saveCurrentProvider": "Guardar proveedor actual",
       "showApiKey": "Mostrar API Key",
@@ -568,12 +568,12 @@
       "smallModel": "Modelo pequeño",
       "noMatchingModels": "No hay modelos coincidentes"
     },
-    "openClaw": {
+    "generic": {
       "gatewayConfig": "Configuración de Gateway",
-      "gatewayDescription": "Configura la conexión de OpenClaw Gateway. Admite gateway local o remoto.",
-      "gatewayUrlHint": "Déjalo vacío para usar gateway.remote.url desde la configuración local de openclaw.",
+      "gatewayDescription": "Configura la conexión de Generic Gateway. Admite gateway local o remoto.",
+      "gatewayUrlHint": "Déjalo vacío para usar gateway.remote.url desde la configuración local de generic.",
       "gatewayTokenPlaceholder": "Token de autenticación de Gateway",
-      "gatewayTokenHint": "Usa token-file en lugar de token en texto plano cuando sea posible; configúralo con el CLI de openclaw.",
+      "gatewayTokenHint": "Usa token-file en lugar de token en texto plano cuando sea posible; configúralo con el CLI de generic.",
       "sessionKeyHint": "Opcional. Especifica la session key del gateway; si se deja vacío se asigna automáticamente una sesión aislada."
     },
     "authModeOfficialSubscription": "Suscripción oficial",
@@ -646,8 +646,8 @@
       "openCodeConfigSynced": "La configuración de OpenCode y auth JSON se sincronizaron.",
       "openCodeSaved": "Configuración de OpenCode guardada",
       "saveOpenCodeFailed": "No se pudo guardar la configuración de OpenCode",
-      "openClawSaved": "Configuración de OpenClaw guardada",
-      "saveOpenClawFailed": "No se pudo guardar la configuración de OpenClaw",
+      "genericSaved": "Configuración de Generic guardada",
+      "saveGenericFailed": "No se pudo guardar la configuración de Generic",
       "configSaved": "Configuración guardada",
       "configSavedHint": "Las sesiones existentes deben reabrirse para que surta efecto",
       "saveConfigManagementFailed": "No se pudo guardar la gestión de configuración",
@@ -1517,7 +1517,8 @@
           "initializeTimeout": "Se agotó el tiempo del handshake de conexión de {agent} (sin respuesta tras 60 segundos). Abre Ajustes para revisar la configuración del agente y de la red.",
           "processExited": "El proceso de {agent} terminó inesperadamente.",
           "spawnFailed": "No se pudo iniciar {agent}: {message}",
-          "downloadFailed": "La descarga de {agent} falló: {message}"
+          "downloadFailed": "La descarga de {agent} falló: {message}",
+          "turnIdleTimeout": "{agent} dejó de responder durante {seconds} s; el turno se canceló automáticamente. Puedes volver a intentarlo."
         },
         "unableReadAgentConfig": "No se puede leer la configuración del agente: {message}",
         "connectFailedTitle": "Falló la conexión de {agent}",
@@ -1534,7 +1535,8 @@
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}, {delay}",
           "httpStatus": " (HTTP {status})"
-        }
+        },
+        "compacting": "Compactando contexto…"
       },
       "connectionLifecycle": {
         "tasks": {

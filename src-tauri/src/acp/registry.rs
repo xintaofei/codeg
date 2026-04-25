@@ -5,7 +5,7 @@ pub enum AgentDistribution {
     Npx {
         version: &'static str,
         package: &'static str,
-        /// The command name provided by this npx package (e.g. "gemini", "openclaw").
+        /// The command name provided by this npx package (e.g. "gemini", "generic-agent").
         cmd: &'static str,
         args: &'static [&'static str],
         env: &'static [(&'static str, &'static str)],
@@ -77,7 +77,7 @@ pub fn all_acp_agents() -> Vec<AgentType> {
         AgentType::ClaudeCode,
         AgentType::Codex,
         AgentType::Gemini,
-        AgentType::OpenClaw,
+        AgentType::Generic,
         AgentType::OpenCode,
         AgentType::Cline,
     ]
@@ -88,7 +88,7 @@ pub fn registry_id_for(agent_type: AgentType) -> &'static str {
         AgentType::ClaudeCode => "claude-acp",
         AgentType::Codex => "codex-acp",
         AgentType::Gemini => "gemini",
-        AgentType::OpenClaw => "openclaw-acp",
+        AgentType::Generic => "generic-acp",
         AgentType::OpenCode => "opencode",
         AgentType::Cline => "cline",
     }
@@ -99,7 +99,7 @@ pub fn from_registry_id(id: &str) -> Option<AgentType> {
         "claude-acp" => Some(AgentType::ClaudeCode),
         "codex-acp" => Some(AgentType::Codex),
         "gemini" => Some(AgentType::Gemini),
-        "openclaw-acp" => Some(AgentType::OpenClaw),
+        "generic-acp" => Some(AgentType::Generic),
         "opencode" => Some(AgentType::OpenCode),
         "cline" => Some(AgentType::Cline),
         _ => None,
@@ -117,8 +117,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "Claude Code",
             description: "ACP wrapper for Anthropic's Claude",
             distribution: AgentDistribution::Npx {
-                version: "0.30.0",
-                package: "@agentclientprotocol/claude-agent-acp@0.30.0",
+                version: "0.31.0",
+                package: "@agentclientprotocol/claude-agent-acp@0.31.0",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -175,14 +175,14 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                 node_required: None,
             },
         },
-        AgentType::OpenClaw => AcpAgentMeta {
+        AgentType::Generic => AcpAgentMeta {
             agent_type,
-            name: "OpenClaw",
-            description: "OpenClaw is a personal AI assistant you run on your own devices.",
+            name: "Generic",
+            description: "A generic AI coding agent.",
             distribution: AgentDistribution::Npx {
                 version: "2026.4.15",
-                package: "openclaw@2026.4.15",
-                cmd: "openclaw",
+                package: "generic-agent@2026.4.15",
+                cmd: "generic-agent",
                 args: &["acp"],
                 env: &[],
                 node_required: Some("22.12.0"),

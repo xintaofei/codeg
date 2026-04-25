@@ -341,7 +341,7 @@
     "templates": {
       "gemini": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Skill Name\n\nInstructions for the agent when this skill is active.\n\n## Workflow\n\n1. Add actionable step one.\n2. Add actionable step two.\n",
       "openCode": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Purpose\n\nDescribe what this skill helps with.\n\n# Steps\n\n1. Add actionable step one.\n2. Add actionable step two.\n",
-      "openClaw": "---\nname: example-skill\ndescription: Describe when this skill should be used.\nuser-invocable: true\ndisable-model-invocation: false\n---\n\n# Purpose\n\nDescribe what this skill helps with.\n\n# Instructions\n\n1. Add actionable instruction one.\n2. Add actionable instruction two.\n",
+      "generic": "---\nname: example-skill\ndescription: Describe when this skill should be used.\nuser-invocable: true\ndisable-model-invocation: false\n---\n\n# Purpose\n\nDescribe what this skill helps with.\n\n# Instructions\n\n1. Add actionable instruction one.\n2. Add actionable instruction two.\n",
       "default": "# Skill: example-skill\n\n## When to use\n\n- Describe trigger conditions.\n\n## Instructions\n\n1. Add actionable instruction one.\n2. Add actionable instruction two.\n"
     }
   },
@@ -466,7 +466,7 @@
       "saveCodexConfig": "حفظ إعداد Codex",
       "saveGeminiConfig": "حفظ إعداد Gemini",
       "saveOpenCodeConfig": "حفظ إعداد OpenCode",
-      "saveOpenClawConfig": "حفظ إعداد OpenClaw",
+      "saveGenericConfig": "حفظ إعداد Generic",
       "saveConfigManagement": "حفظ إدارة الإعدادات",
       "saveCurrentProvider": "حفظ المزود الحالي",
       "showApiKey": "إظهار مفتاح API",
@@ -568,12 +568,12 @@
       "smallModel": "النموذج الصغير",
       "noMatchingModels": "لا توجد نماذج مطابقة"
     },
-    "openClaw": {
+    "generic": {
       "gatewayConfig": "إعداد Gateway",
-      "gatewayDescription": "قم بإعداد اتصال OpenClaw Gateway. يدعم gateway محليًا أو بعيدًا.",
-      "gatewayUrlHint": "اتركه فارغًا لاستخدام gateway.remote.url من إعداد openclaw المحلي.",
+      "gatewayDescription": "قم بإعداد اتصال Generic Gateway. يدعم gateway محليًا أو بعيدًا.",
+      "gatewayUrlHint": "اتركه فارغًا لاستخدام gateway.remote.url من إعداد generic المحلي.",
       "gatewayTokenPlaceholder": "رمز مصادقة Gateway",
-      "gatewayTokenHint": "يُفضّل استخدام token-file بدل الرمز النصي متى أمكن؛ قم بالإعداد عبر openclaw CLI.",
+      "gatewayTokenHint": "يُفضّل استخدام token-file بدل الرمز النصي متى أمكن؛ قم بالإعداد عبر generic CLI.",
       "sessionKeyHint": "اختياري. حدّد مفتاح جلسة gateway؛ واتركه فارغًا للتعيين التلقائي لجلسة معزولة."
     },
     "authModeOfficialSubscription": "الاشتراك الرسمي",
@@ -646,8 +646,8 @@
       "openCodeConfigSynced": "تمت مزامنة إعداد OpenCode وauth JSON.",
       "openCodeSaved": "تم حفظ إعداد OpenCode",
       "saveOpenCodeFailed": "فشل حفظ إعداد OpenCode",
-      "openClawSaved": "تم حفظ إعداد OpenClaw",
-      "saveOpenClawFailed": "فشل حفظ إعداد OpenClaw",
+      "genericSaved": "تم حفظ إعداد Generic",
+      "saveGenericFailed": "فشل حفظ إعداد Generic",
       "configSaved": "تم حفظ الإعداد",
       "configSavedHint": "يجب إعادة فتح الجلسات الحالية لتطبيق التغييرات",
       "saveConfigManagementFailed": "فشل حفظ إدارة الإعدادات",
@@ -1517,7 +1517,8 @@
           "initializeTimeout": "انتهت مهلة مصافحة اتصال {agent} (لا استجابة بعد 60 ثانية). افتح الإعدادات للتحقق من إعدادات الوكيل والشبكة.",
           "processExited": "انتهت عملية {agent} بشكل غير متوقع.",
           "spawnFailed": "تعذر بدء تشغيل {agent}: {message}",
-          "downloadFailed": "فشل تنزيل {agent}: {message}"
+          "downloadFailed": "فشل تنزيل {agent}: {message}",
+          "turnIdleTimeout": "توقف {agent} عن الاستجابة لمدة {seconds} ثانية — تم إنهاء الجولة تلقائيًا. يمكنك المحاولة مجددًا."
         },
         "unableReadAgentConfig": "تعذر قراءة إعدادات الوكيل: {message}",
         "connectFailedTitle": "فشل اتصال {agent}",
@@ -1534,7 +1535,8 @@
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}، {delay}",
           "httpStatus": " (HTTP {status})"
-        }
+        },
+        "compacting": "جارٍ ضغط السياق…"
       },
       "connectionLifecycle": {
         "tasks": {

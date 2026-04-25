@@ -72,7 +72,7 @@ const APP_OPTIONS: { value: McpAppType; label: string }[] = [
   { value: "claude_code", label: "Claude Code" },
   { value: "codex", label: "Codex CLI" },
   { value: "gemini", label: "Gemini CLI" },
-  { value: "open_claw", label: "OpenClaw" },
+  { value: "generic", label: "Generic" },
   { value: "open_code", label: "OpenCode" },
   { value: "cline", label: "Cline" },
 ]
@@ -232,7 +232,7 @@ function appsToDraft(apps: McpAppType[]): Record<McpAppType, boolean> {
     claude_code: appSet.has("claude_code"),
     codex: appSet.has("codex"),
     gemini: appSet.has("gemini"),
-    open_claw: appSet.has("open_claw"),
+    generic: appSet.has("generic"),
     open_code: appSet.has("open_code"),
     cline: appSet.has("cline"),
   }

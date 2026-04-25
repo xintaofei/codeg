@@ -1,7 +1,20 @@
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::agent::AgentType;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct WorkspacePreset {
+    pub default_agent_type: Option<AgentType>,
+    pub model_provider_id: Option<i32>,
+    pub approval_policy: Option<String>,
+    pub skill_ids: Vec<String>,
+    pub mcp_server_ids: Vec<String>,
+    pub env_overrides: BTreeMap<String, String>,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FolderHistoryEntry {
@@ -18,6 +31,7 @@ pub struct FolderDetail {
     pub path: String,
     pub git_branch: Option<String>,
     pub default_agent_type: Option<AgentType>,
+    pub workspace_preset: Option<WorkspacePreset>,
     pub last_opened_at: DateTime<Utc>,
     pub sort_order: i32,
 }

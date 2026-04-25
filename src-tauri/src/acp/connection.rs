@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
 use sacp::schema::McpServerStdio;
 use sacp::schema::{
     BlobResourceContents, CancelNotification, ClientCapabilities, ContentBlock, ContentChunk,
@@ -29,6 +30,7 @@ use tokio::sync::mpsc;
 
 use crate::acp::error::AcpError;
 use crate::acp::file_system_runtime::{FileSystemRuntime, FileSystemRuntimeError};
+use crate::acp::manager::ConnectionManager;
 use crate::acp::registry::{self, AgentDistribution};
 use crate::acp::terminal_runtime::{TerminalRuntime, TerminalRuntimeError};
 use crate::acp::types::{
@@ -129,22 +131,135 @@ impl Drop for ConnectionCleanupGuard {
 }
 
 /// Represents a single active ACP agent connection.
+#[derive(Debug, Clone)]
+pub struct AgentConnectionMetadata {
+    pub status: ConnectionStatus,
+    pub working_dir: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub session_id: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone)]
 pub struct AgentConnection {
     pub id: String,
     pub agent_type: AgentType,
-    pub status: ConnectionStatus,
     pub owner_window_label: String,
     pub cmd_tx: mpsc::Sender<ConnectionCommand>,
+    pub metadata: Arc<tokio::sync::RwLock<AgentConnectionMetadata>>,
 }
 
 impl AgentConnection {
-    pub fn info(&self) -> ConnectionInfo {
+    pub async fn info(&self) -> ConnectionInfo {
+        let metadata = self.metadata.read().await;
         ConnectionInfo {
             id: self.id.clone(),
             agent_type: self.agent_type,
-            status: self.status.clone(),
+            status: metadata.status.clone(),
+            owner_window_label: self.owner_window_label.clone(),
+            working_dir: metadata.working_dir.clone(),
+            created_at: metadata.created_at,
+            updated_at: metadata.updated_at,
+            session_id: metadata.session_id.clone(),
+            last_error: metadata.last_error.clone(),
         }
     }
+}
+
+async fn with_connection_metadata<F>(
+    connections: &Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
+    connection_id: &str,
+    update: F,
+) where
+    F: FnOnce(&mut AgentConnectionMetadata),
+{
+    let metadata = {
+        let connections = connections.lock().await;
+        connections
+            .get(connection_id)
+            .map(|connection| connection.metadata.clone())
+    };
+
+    if let Some(metadata) = metadata {
+        let mut metadata = metadata.write().await;
+        update(&mut metadata);
+        metadata.updated_at = Utc::now();
+    }
+}
+
+async fn emit_status_changed(
+    connections: &Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
+    emitter: &EventEmitter,
+    connection_id: &str,
+    status: ConnectionStatus,
+) {
+    let metadata_status = status.clone();
+    with_connection_metadata(connections, connection_id, move |metadata| {
+        metadata.status = metadata_status.clone();
+        if metadata_status != ConnectionStatus::Error {
+            metadata.last_error = None;
+        }
+    })
+    .await;
+
+    crate::web::event_bridge::emit_event(
+        emitter,
+        "acp://event",
+        AcpEvent::StatusChanged {
+            connection_id: connection_id.to_string(),
+            status,
+        },
+    );
+}
+
+async fn emit_connection_error(
+    connections: &Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
+    emitter: &EventEmitter,
+    connection_id: &str,
+    agent_type: AgentType,
+    message: String,
+    code: Option<String>,
+) {
+    let metadata_message = message.clone();
+    with_connection_metadata(connections, connection_id, move |metadata| {
+        metadata.status = ConnectionStatus::Error;
+        metadata.last_error = Some(metadata_message.clone());
+    })
+    .await;
+
+    crate::web::event_bridge::emit_event(
+        emitter,
+        "acp://event",
+        AcpEvent::Error {
+            connection_id: connection_id.to_string(),
+            message,
+            agent_type: agent_type.to_string(),
+            code,
+        },
+    );
+}
+
+async fn emit_session_started(
+    connections: &Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
+    emitter: &EventEmitter,
+    connection_id: &str,
+    session_id: &str,
+) {
+    let session_id_string = session_id.to_string();
+    with_connection_metadata(connections, connection_id, move |metadata| {
+        metadata.session_id = Some(session_id_string.clone());
+    })
+    .await;
+
+    crate::web::event_bridge::emit_event(
+        emitter,
+        "acp://event",
+        AcpEvent::SessionStarted {
+            connection_id: connection_id.to_string(),
+            session_id: session_id.to_string(),
+        },
+    );
 }
 
 /// Build an AcpAgent from registry metadata.
@@ -174,27 +289,24 @@ async fn build_agent(
             for a in args {
                 parts.push((*a).into());
             }
-            // Translate OpenClaw-specific env vars to CLI flags
-            if agent_type == AgentType::OpenClaw {
+            // Translate Generic-specific env vars to CLI flags
+            if agent_type == AgentType::Generic {
                 if let Some(url) = runtime_env
-                    .get("OPENCLAW_GATEWAY_URL")
+                    .get("GENERIC_GATEWAY_URL")
                     .filter(|v| !v.is_empty())
                 {
                     parts.push("--url".into());
                     parts.push(url.clone());
                 }
                 if let Some(key) = runtime_env
-                    .get("OPENCLAW_SESSION_KEY")
+                    .get("GENERIC_SESSION_KEY")
                     .filter(|v| !v.is_empty())
                 {
                     parts.push("--session".into());
                     parts.push(key.clone());
                 }
-                // When creating a new conversation (no session_id to resume),
-                // pass --reset-session so OpenClaw mints a fresh transcript
-                // instead of appending to the previous one.
                 if runtime_env
-                    .get("OPENCLAW_RESET_SESSION")
+                    .get("GENERIC_RESET_SESSION")
                     .is_some_and(|v| v == "1")
                 {
                     parts.push("--reset-session".into());
@@ -351,6 +463,7 @@ async fn build_agent(
 /// leaks stale entries after a connection tears down.
 #[allow(clippy::too_many_arguments)]
 pub async fn spawn_agent_connection(
+    manager: ConnectionManager,
     connection_id: String,
     agent_type: AgentType,
     working_dir: Option<String>,
@@ -358,8 +471,9 @@ pub async fn spawn_agent_connection(
     runtime_env: BTreeMap<String, String>,
     owner_window_label: String,
     emitter: EventEmitter,
-    connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
 ) -> Result<(), AcpError> {
+    let connections = manager.connections_arc();
+
     crate::web::event_bridge::emit_event(
         &emitter,
         "acp://event",
@@ -375,7 +489,12 @@ pub async fn spawn_agent_connection(
     let conn_id = connection_id.clone();
     let emitter_clone = emitter.clone();
     let cleanup_connections = connections.clone();
+    let event_connections = connections.clone();
+    let run_connections = connections.clone();
     let cleanup_connection_id = connection_id.clone();
+    let manager_clone = manager.clone_ref();
+    let working_dir_for_metadata = working_dir.clone();
+    let owner_window_label_for_log = owner_window_label.clone();
 
     // Insert the entry BEFORE spawning the background task so that a
     // fast-failing `run_connection` can never remove it before it was
@@ -385,9 +504,16 @@ pub async fn spawn_agent_connection(
         AgentConnection {
             id: connection_id,
             agent_type,
-            status: ConnectionStatus::Connecting,
             owner_window_label,
             cmd_tx,
+            metadata: Arc::new(tokio::sync::RwLock::new(AgentConnectionMetadata {
+                status: ConnectionStatus::Connecting,
+                working_dir: working_dir_for_metadata,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                session_id: None,
+                last_error: None,
+            })),
         },
     );
 
@@ -406,31 +532,42 @@ pub async fn spawn_agent_connection(
             working_dir,
             session_id,
             cmd_rx,
+            run_connections,
             emitter_clone.clone(),
         )
         .await;
 
         if let Err(e) = result {
             let code = e.code().map(String::from);
-            crate::web::event_bridge::emit_event(
+            manager_clone
+                .record_failure(agent_type, &e.to_string(), Some(&conn_id))
+                .await;
+            emit_connection_error(
+                &event_connections,
                 &emitter_clone,
-                "acp://event",
-                AcpEvent::Error {
-                    connection_id: conn_id.clone(),
-                    message: e.to_string(),
-                    agent_type: agent_type.to_string(),
-                    code,
-                },
-            );
+                &conn_id,
+                agent_type,
+                e.to_string(),
+                code,
+            )
+            .await;
         }
 
-        crate::web::event_bridge::emit_event(
+        emit_status_changed(
+            &event_connections,
             &emitter_clone,
-            "acp://event",
-            AcpEvent::StatusChanged {
-                connection_id: conn_id,
-                status: ConnectionStatus::Disconnected,
-            },
+            &conn_id,
+            ConnectionStatus::Disconnected,
+        )
+        .await;
+        manager_clone.log_runtime(
+            "info",
+            "acp",
+            format!(
+                "connection {} closed for {} ({})",
+                conn_id, agent_type, owner_window_label_for_log
+            ),
+            None,
         );
         // `_cleanup` is dropped here — removes the connection entry from
         // the manager map. Same drop semantics apply on panic unwinding.
@@ -733,6 +870,7 @@ async fn run_connection(
     working_dir: Option<String>,
     session_id: Option<String>,
     mut cmd_rx: mpsc::Receiver<ConnectionCommand>,
+    connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
     emitter: EventEmitter,
 ) -> Result<(), AcpError> {
     let pending_perms: PendingPermissions = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
@@ -942,14 +1080,13 @@ async fn run_connection(
             // selectors and enable sending while the session initialises.
             // Prompts sent before run_conversation_loop are buffered in
             // the cmd_rx channel and processed as soon as the loop starts.
-            crate::web::event_bridge::emit_event(
+            emit_status_changed(
+                &connections,
                 &emitter_clone,
-                "acp://event",
-                AcpEvent::StatusChanged {
-                    connection_id: conn_id.clone(),
-                    status: ConnectionStatus::Connected,
-                },
-            );
+                &conn_id,
+                ConnectionStatus::Connected,
+            )
+            .await;
 
             if let Some(sid) = session_id {
                 // Load existing session via session/load
@@ -1008,14 +1145,7 @@ async fn run_connection(
                             eprintln!("[ACP] Drained {drained} historical replay notifications");
                         }
 
-                        crate::web::event_bridge::emit_event(
-                            &emitter_clone,
-                            "acp://event",
-                            AcpEvent::SessionStarted {
-                                connection_id: conn_id.clone(),
-                                session_id: sid.clone(),
-                            },
-                        );
+                        emit_session_started(&connections, &emitter_clone, &conn_id, &sid).await;
                         emit_session_modes(&conn_id, &emitter_clone, session.modes());
                         emit_session_config_options(
                             &conn_id,
@@ -1028,6 +1158,7 @@ async fn run_connection(
                         let loop_result = run_conversation_loop(
                             &mut session,
                             &conn_id,
+                            &connections,
                             &emitter_clone,
                             agent_type,
                             &perms,
@@ -1042,6 +1173,7 @@ async fn run_connection(
                         handle_fork_or_exit(
                             loop_result,
                             &conn_id,
+                            &connections,
                             &emitter_clone,
                             agent_type,
                             &perms,
@@ -1071,16 +1203,15 @@ async fn run_connection(
                             return Ok(());
                         }
                         if !err_str.contains("Method not found") {
-                            crate::web::event_bridge::emit_event(
+                            emit_connection_error(
+                                &connections,
                                 &emitter_clone,
-                                "acp://event",
-                                AcpEvent::Error {
-                                    connection_id: conn_id.clone(),
-                                    message: format!("Failed to load session, starting new: {e}"),
-                                    agent_type: agent_type.to_string(),
-                                    code: None,
-                                },
-                            );
+                                &conn_id,
+                                agent_type,
+                                format!("Failed to load session, starting new: {e}"),
+                                None,
+                            )
+                            .await;
                         }
                         let new_resp = cx
                             .send_request_to(Agent, build_new_session_request(agent_type, &cwd))
@@ -1089,14 +1220,13 @@ async fn run_connection(
                         let fallback_sid = new_resp.session_id.0.to_string();
                         let initial_config_options = new_resp.config_options.clone();
                         let mut session = cx.attach_session(new_resp, Default::default())?;
-                        crate::web::event_bridge::emit_event(
+                        emit_session_started(
+                            &connections,
                             &emitter_clone,
-                            "acp://event",
-                            AcpEvent::SessionStarted {
-                                connection_id: conn_id.clone(),
-                                session_id: fallback_sid.clone(),
-                            },
-                        );
+                            &conn_id,
+                            &fallback_sid,
+                        )
+                        .await;
                         emit_session_modes(&conn_id, &emitter_clone, session.modes());
                         emit_session_config_options(
                             &conn_id,
@@ -1109,6 +1239,7 @@ async fn run_connection(
                         let loop_result = run_conversation_loop(
                             &mut session,
                             &conn_id,
+                            &connections,
                             &emitter_clone,
                             agent_type,
                             &perms,
@@ -1125,6 +1256,7 @@ async fn run_connection(
                         handle_fork_or_exit(
                             loop_result,
                             &conn_id,
+                            &connections,
                             &emitter_clone,
                             agent_type,
                             &perms,
@@ -1145,14 +1277,7 @@ async fn run_connection(
                 let sid = new_resp.session_id.0.to_string();
                 let initial_config_options = new_resp.config_options.clone();
                 let mut session = cx.attach_session(new_resp, Default::default())?;
-                crate::web::event_bridge::emit_event(
-                    &emitter_clone,
-                    "acp://event",
-                    AcpEvent::SessionStarted {
-                        connection_id: conn_id.clone(),
-                        session_id: sid.clone(),
-                    },
-                );
+                emit_session_started(&connections, &emitter_clone, &conn_id, &sid).await;
                 emit_session_modes(&conn_id, &emitter_clone, session.modes());
                 emit_session_config_options(
                     &conn_id,
@@ -1165,6 +1290,7 @@ async fn run_connection(
                 let loop_result = run_conversation_loop(
                     &mut session,
                     &conn_id,
+                    &connections,
                     &emitter_clone,
                     agent_type,
                     &perms,
@@ -1179,6 +1305,7 @@ async fn run_connection(
                 handle_fork_or_exit(
                     loop_result,
                     &conn_id,
+                    &connections,
                     &emitter_clone,
                     agent_type,
                     &perms,
@@ -1345,6 +1472,30 @@ async fn set_session_config_option(
 
 const TERMINAL_POLL_INTERVAL_MS: u64 = 200;
 const TERMINAL_POLL_MISSING_LIMIT: u8 = 10;
+
+/// Maximum time a turn may go without ANY observable signal from the agent
+/// (notification, tool poll tick, prompt response, parse warning, etc.)
+/// before we consider it stuck. Auto-compaction can take a while, so this
+/// is intentionally generous; the watchdog is reset by every event,
+/// including compaction markers.
+const TURN_IDLE_TIMEOUT_MS: u64 = 180_000;
+
+/// Emit a non-fatal stream warning to the UI. Used when we have to
+/// `continue` past a parse error inside the streaming loop — the UI must
+/// have *some* signal that something went sideways instead of a silent
+/// hang.
+fn emit_stream_warning(connection_id: &str, emitter: &EventEmitter, message: impl Into<String>) {
+    let message = message.into();
+    eprintln!("[ACP] stream warning ({connection_id}): {message}");
+    crate::web::event_bridge::emit_event(
+        emitter,
+        "acp://event",
+        AcpEvent::StreamWarning {
+            connection_id: connection_id.to_string(),
+            message,
+        },
+    );
+}
 
 #[derive(Debug, Default)]
 struct TrackedTerminalToolCall {
@@ -1711,6 +1862,7 @@ struct ForkExitInfo {
 async fn handle_fork_or_exit(
     loop_result: Result<Option<ForkExitInfo>, sacp::Error>,
     conn_id: &str,
+    connections: &Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
     emitter: &EventEmitter,
     agent_type: AgentType,
     perms: &PendingPermissions,
@@ -1749,14 +1901,7 @@ async fn handle_fork_or_exit(
         .meta(fork_resp.meta);
     let mut session = cx.attach_session(new_resp, Default::default())?;
 
-    crate::web::event_bridge::emit_event(
-        emitter,
-        "acp://event",
-        AcpEvent::SessionStarted {
-            connection_id: conn_id.to_string(),
-            session_id: new_sid.clone(),
-        },
-    );
+    emit_session_started(connections, emitter, conn_id, &new_sid).await;
     emit_session_modes(conn_id, emitter, session.modes());
     emit_session_config_options(conn_id, emitter, agent_type, &initial_config_options);
     emit_selectors_ready(conn_id, emitter);
@@ -1764,6 +1909,7 @@ async fn handle_fork_or_exit(
     let loop_result = run_conversation_loop(
         &mut session,
         conn_id,
+        connections,
         emitter,
         agent_type,
         perms,
@@ -1780,6 +1926,7 @@ async fn handle_fork_or_exit(
     Box::pin(handle_fork_or_exit(
         loop_result,
         conn_id,
+        connections,
         emitter,
         agent_type,
         perms,
@@ -1799,6 +1946,7 @@ async fn handle_fork_or_exit(
 async fn run_conversation_loop<'a>(
     session: &mut sacp::ActiveSession<'a, Agent>,
     conn_id: &str,
+    connections: &Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
     emitter: &EventEmitter,
     agent_type: AgentType,
     perms: &PendingPermissions,
@@ -1836,7 +1984,11 @@ async fn run_conversation_loop<'a>(
                         }
                         Ok(_) => {}
                         Err(e) => {
-                            eprintln!("[ACP] Ignoring unrecognized session update in idle loop: {e}");
+                            emit_stream_warning(
+                                conn_id,
+                                emitter,
+                                format!("idle stream parse error: {e}"),
+                            );
                         }
                     }
                 }
@@ -1846,27 +1998,20 @@ async fn run_conversation_loop<'a>(
             Some(ConnectionCommand::Prompt { blocks }) => {
                 let prompt_blocks = map_prompt_blocks(blocks);
                 if prompt_blocks.is_empty() {
-                    crate::web::event_bridge::emit_event(
+                    emit_connection_error(
+                        connections,
                         emitter,
-                        "acp://event",
-                        AcpEvent::Error {
-                            connection_id: conn_id.into(),
-                            message: "Prompt must contain at least one content block".into(),
-                            agent_type: agent_type.to_string(),
-                            code: None,
-                        },
-                    );
+                        conn_id,
+                        agent_type,
+                        "Prompt must contain at least one content block".into(),
+                        None,
+                    )
+                    .await;
                     continue;
                 }
 
-                crate::web::event_bridge::emit_event(
-                    emitter,
-                    "acp://event",
-                    AcpEvent::StatusChanged {
-                        connection_id: conn_id.into(),
-                        status: ConnectionStatus::Prompting,
-                    },
-                );
+                emit_status_changed(connections, emitter, conn_id, ConnectionStatus::Prompting)
+                    .await;
 
                 // Clone connection and session ID before entering the
                 // select loop so we can send CancelNotification without
@@ -1890,16 +2035,45 @@ async fn run_conversation_loop<'a>(
                     .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 let mut disconnect_requested = false;
 
+                // Idle watchdog: if nothing is heard from the agent for
+                // TURN_IDLE_TIMEOUT_MS, abort the turn so the UI is not
+                // stuck in "prompting" forever. Reset by every observable
+                // signal (stream notification, parse warning, terminal
+                // poll tick, command, prompt response).
+                let idle_deadline = tokio::time::sleep(std::time::Duration::from_millis(
+                    TURN_IDLE_TIMEOUT_MS,
+                ));
+                tokio::pin!(idle_deadline);
+                // Helper macro: every active branch resets the deadline.
+                // Using a macro instead of a closure avoids re-borrowing
+                // the pinned future across an await point.
+                macro_rules! reset_idle {
+                    () => {
+                        idle_deadline.as_mut().reset(
+                            tokio::time::Instant::now()
+                                + std::time::Duration::from_millis(TURN_IDLE_TIMEOUT_MS),
+                        );
+                    };
+                }
+
                 // Read updates until turn completes.
                 // We must also listen for commands (e.g. RespondPermission)
                 // to avoid deadlocking when the agent awaits a permission response.
                 loop {
                     tokio::select! {
                         update = session.read_update() => {
+                            // Any signal — even a parse error — proves the
+                            // agent process is still alive and producing
+                            // output, so reset the idle watchdog.
+                            reset_idle!();
                             let update = match update {
                                 Ok(u) => u,
                                 Err(e) => {
-                                    eprintln!("[ACP] Ignoring unrecognized session update: {e}");
+                                    emit_stream_warning(
+                                        conn_id,
+                                        emitter,
+                                        format!("unrecognized session update: {e}"),
+                                    );
                                     continue;
                                 }
                             };
@@ -1939,7 +2113,11 @@ async fn run_conversation_loop<'a>(
                                         })
                                         .await
                                     {
-                                        eprintln!("[ACP] Ignoring dispatch parse error: {e}");
+                                        emit_stream_warning(
+                                            conn_id,
+                                            emitter,
+                                            format!("dispatch parse error: {e}"),
+                                        );
                                     }
                                 }
                                 SessionMessage::StopReason(reason) => {
@@ -2003,6 +2181,9 @@ async fn run_conversation_loop<'a>(
                             break;
                         }
                         _ = terminal_poll_interval.tick(), if !tracked_terminal_tool_calls.is_empty() => {
+                            // Active tool polling counts as "we're still
+                            // doing work" — keep the watchdog at bay.
+                            reset_idle!();
                             poll_tracked_terminal_tool_calls(
                                 terminal_runtime.as_ref(),
                                 &sid,
@@ -2012,7 +2193,66 @@ async fn run_conversation_loop<'a>(
                             )
                             .await;
                         }
+                        _ = &mut idle_deadline => {
+                            // No event from the agent for the whole
+                            // TURN_IDLE_TIMEOUT_MS window. The turn is
+                            // wedged (often because an SDK message we
+                            // don't understand killed the stream silently
+                            // or because the child process hung after
+                            // auto-compaction). Cancel and surface a
+                            // synthetic TurnIdleTimeout + TurnComplete so
+                            // the UI exits "prompting" cleanly.
+                            eprintln!(
+                                "[ACP] turn idle timeout after {}ms; cancelling. connection_id={conn_id}",
+                                TURN_IDLE_TIMEOUT_MS
+                            );
+                            let _ = cx.send_notification_to(
+                                Agent,
+                                CancelNotification::new(sid.clone()),
+                            );
+                            terminal_runtime
+                                .release_all_for_session(sid.0.as_ref())
+                                .await;
+                            tracked_terminal_tool_calls.clear();
+                            let mut locked = perms.lock().await;
+                            for (_, responder) in locked.drain() {
+                                let _ = responder.respond(RequestPermissionResponse::new(
+                                    RequestPermissionOutcome::Cancelled,
+                                ));
+                            }
+                            drop(locked);
+                            crate::web::event_bridge::emit_event(
+                                emitter,
+                                "acp://event",
+                                AcpEvent::TurnIdleTimeout {
+                                    connection_id: conn_id.into(),
+                                    session_id: sid.0.to_string(),
+                                    agent_type: agent_type.to_string(),
+                                    idle_ms: TURN_IDLE_TIMEOUT_MS,
+                                },
+                            );
+                            crate::web::event_bridge::emit_event(
+                                emitter,
+                                "acp://event",
+                                AcpEvent::TurnComplete {
+                                    connection_id: conn_id.into(),
+                                    session_id: sid.0.to_string(),
+                                    stop_reason: "idle_timeout".into(),
+                                    agent_type: agent_type.to_string(),
+                                },
+                            );
+                            // Drain prompt_response in the background;
+                            // the agent may still respond eventually.
+                            tokio::spawn(async move {
+                                let _ = prompt_response.await;
+                            });
+                            break;
+                        }
                         cmd = cmd_rx.recv() => {
+                            // User-initiated commands (cancel, permission
+                            // response, etc.) are also activity and reset
+                            // the watchdog.
+                            reset_idle!();
                             match cmd {
                                 Some(ConnectionCommand::RespondPermission {
                                     request_id,
@@ -2039,16 +2279,15 @@ async fn run_conversation_loop<'a>(
                                             );
                                         }
                                         Err(e) => {
-                                            crate::web::event_bridge::emit_event(
+                                            emit_connection_error(
+                                                connections,
                                                 emitter,
-                                                "acp://event",
-                                                AcpEvent::Error {
-                                                    connection_id: conn_id.into(),
-                                                    message: format!("Failed to set mode: {e}"),
-                                                    agent_type: agent_type.to_string(),
-                                                    code: None,
-                                                },
-                                            );
+                                                conn_id,
+                                                agent_type,
+                                                format!("Failed to set mode: {e}"),
+                                                None,
+                                            )
+                                            .await;
                                         }
                                     }
                                 }
@@ -2067,16 +2306,15 @@ async fn run_conversation_loop<'a>(
                                     )
                                     .await
                                     {
-                                        crate::web::event_bridge::emit_event(
+                                        emit_connection_error(
+                                            connections,
                                             emitter,
-                                            "acp://event",
-                                            AcpEvent::Error {
-                                                connection_id: conn_id.into(),
-                                                message: format!("Failed to set config option: {e}"),
-                                                agent_type: agent_type.to_string(),
-                                                code: None,
-                                            },
-                                        );
+                                            conn_id,
+                                            agent_type,
+                                            format!("Failed to set config option: {e}"),
+                                            None,
+                                        )
+                                        .await;
                                     }
                                 }
                                 Some(ConnectionCommand::Cancel) => {
@@ -2155,14 +2393,8 @@ async fn run_conversation_loop<'a>(
                     break;
                 }
 
-                crate::web::event_bridge::emit_event(
-                    emitter,
-                    "acp://event",
-                    AcpEvent::StatusChanged {
-                        connection_id: conn_id.into(),
-                        status: ConnectionStatus::Connected,
-                    },
-                );
+                emit_status_changed(connections, emitter, conn_id, ConnectionStatus::Connected)
+                    .await;
             }
             Some(ConnectionCommand::RespondPermission {
                 request_id,
@@ -2177,16 +2409,15 @@ async fn run_conversation_loop<'a>(
             }
             Some(ConnectionCommand::SetMode { mode_id }) => {
                 if let Err(e) = set_session_mode(session, conn_id, emitter, mode_id).await {
-                    crate::web::event_bridge::emit_event(
+                    emit_connection_error(
+                        connections,
                         emitter,
-                        "acp://event",
-                        AcpEvent::Error {
-                            connection_id: conn_id.into(),
-                            message: format!("Failed to set mode: {e}"),
-                            agent_type: agent_type.to_string(),
-                            code: None,
-                        },
-                    );
+                        conn_id,
+                        agent_type,
+                        format!("Failed to set mode: {e}"),
+                        None,
+                    )
+                    .await;
                 }
             }
             Some(ConnectionCommand::SetConfigOption {
@@ -2200,16 +2431,15 @@ async fn run_conversation_loop<'a>(
                 )
                 .await
                 {
-                    crate::web::event_bridge::emit_event(
+                    emit_connection_error(
+                        connections,
                         emitter,
-                        "acp://event",
-                        AcpEvent::Error {
-                            connection_id: conn_id.into(),
-                            message: format!("Failed to set config option: {e}"),
-                            agent_type: agent_type.to_string(),
-                            code: None,
-                        },
-                    );
+                        conn_id,
+                        agent_type,
+                        format!("Failed to set config option: {e}"),
+                        None,
+                    )
+                    .await;
                 }
             }
             Some(ConnectionCommand::Cancel) => {
@@ -2426,6 +2656,42 @@ fn is_claude_api_retry_message(message: &serde_json::Value) -> bool {
     matches!(message_type, Some("system")) && matches!(message_subtype, Some("api_retry"))
 }
 
+/// Classify a `_claude/sdkMessage` payload's compaction state.
+///
+/// The Claude Agent SDK announces auto-compaction with one of several
+/// markers depending on version: a `system/compact_boundary` notification,
+/// a `system/compact` system message, or an inline `subtype: "compact"` /
+/// `prompt_too_long` recovery message. We treat any `compact_boundary`
+/// / `compact_started` / `prompt_too_long` as the start of compaction
+/// and `compact_finished` / `compacted` as the end. When the SDK only
+/// emits a single boundary marker we still surface it as
+/// `CompactionStarted` so the UI can display "compacting…" and reset
+/// its watchdog; the next non-system event will naturally end the hint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompactionSignal {
+    Started,
+    Finished,
+}
+
+fn classify_compaction_signal(message: &serde_json::Value) -> Option<CompactionSignal> {
+    let obj = message.as_object()?;
+    let message_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let subtype = obj.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
+
+    // Common SDK markers, normalized.
+    match (message_type, subtype) {
+        ("system", "compact_boundary")
+        | ("system", "compact")
+        | ("system", "compact_started")
+        | ("system", "compacting")
+        | ("system", "prompt_too_long") => Some(CompactionSignal::Started),
+        ("system", "compact_finished")
+        | ("system", "compacted")
+        | ("system", "compact_complete") => Some(CompactionSignal::Finished),
+        _ => None,
+    }
+}
+
 fn map_claude_sdk_ext_notification(
     connection_id: &str,
     notification: &UntypedMessage,
@@ -2435,6 +2701,22 @@ fn map_claude_sdk_ext_notification(
     }
 
     let (session_id, message) = parse_claude_sdk_message_params(notification.params())?;
+
+    // Compaction takes priority: the UI needs to know the agent is
+    // alive but busy summarizing.
+    if let Some(signal) = classify_compaction_signal(&message) {
+        return Some(match signal {
+            CompactionSignal::Started => AcpEvent::CompactionStarted {
+                connection_id: connection_id.to_string(),
+                session_id,
+            },
+            CompactionSignal::Finished => AcpEvent::CompactionFinished {
+                connection_id: connection_id.to_string(),
+                session_id,
+            },
+        });
+    }
+
     if !is_claude_api_retry_message(&message) {
         return None;
     }

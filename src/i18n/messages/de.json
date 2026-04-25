@@ -341,7 +341,7 @@
     "templates": {
       "gemini": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Skill Name\n\nInstructions for the agent when this skill is active.\n\n## Workflow\n\n1. Add actionable step one.\n2. Add actionable step two.\n",
       "openCode": "---\nname: example-skill\ndescription: Describe when this skill should be used.\n---\n\n# Purpose\n\nDescribe what this skill helps with.\n\n# Steps\n\n1. Add actionable step one.\n2. Add actionable step two.\n",
-      "openClaw": "---\nname: example-skill\ndescription: Describe when this skill should be used.\nuser-invocable: true\ndisable-model-invocation: false\n---\n\n# Purpose\n\nDescribe what this skill helps with.\n\n# Instructions\n\n1. Add actionable instruction one.\n2. Add actionable instruction two.\n",
+      "generic": "---\nname: example-skill\ndescription: Describe when this skill should be used.\nuser-invocable: true\ndisable-model-invocation: false\n---\n\n# Purpose\n\nDescribe what this skill helps with.\n\n# Instructions\n\n1. Add actionable instruction one.\n2. Add actionable instruction two.\n",
       "default": "# Skill: example-skill\n\n## When to use\n\n- Describe trigger conditions.\n\n## Instructions\n\n1. Add actionable instruction one.\n2. Add actionable instruction two.\n"
     }
   },
@@ -466,7 +466,7 @@
       "saveCodexConfig": "Codex-Konfiguration speichern",
       "saveGeminiConfig": "Gemini-Konfiguration speichern",
       "saveOpenCodeConfig": "OpenCode-Konfiguration speichern",
-      "saveOpenClawConfig": "OpenClaw-Konfiguration speichern",
+      "saveGenericConfig": "Generic-Konfiguration speichern",
       "saveConfigManagement": "Konfigurationsverwaltung speichern",
       "saveCurrentProvider": "Aktuellen Provider speichern",
       "showApiKey": "API-Key anzeigen",
@@ -568,12 +568,12 @@
       "smallModel": "Kleines Modell",
       "noMatchingModels": "Keine passenden Modelle"
     },
-    "openClaw": {
+    "generic": {
       "gatewayConfig": "Gateway-Konfiguration",
-      "gatewayDescription": "OpenClaw-Gateway-Verbindung konfigurieren. Unterstützt lokales oder entferntes Gateway.",
-      "gatewayUrlHint": "Leer lassen, um gateway.remote.url aus der lokalen openclaw-Konfiguration zu verwenden.",
+      "gatewayDescription": "Generic-Gateway-Verbindung konfigurieren. Unterstützt lokales oder entferntes Gateway.",
+      "gatewayUrlHint": "Leer lassen, um gateway.remote.url aus der lokalen generic-Konfiguration zu verwenden.",
       "gatewayTokenPlaceholder": "Gateway-Auth-Token",
-      "gatewayTokenHint": "Wenn möglich token-file statt Klartext-Token verwenden; über openclaw CLI konfigurieren.",
+      "gatewayTokenHint": "Wenn möglich token-file statt Klartext-Token verwenden; über generic CLI konfigurieren.",
       "sessionKeyHint": "Optional. Gateway-Session-Key angeben; leer lassen für automatische Zuweisung einer isolierten Session."
     },
     "authModeOfficialSubscription": "Offizielles Abonnement",
@@ -646,8 +646,8 @@
       "openCodeConfigSynced": "OpenCode-Konfiguration und auth JSON wurden synchronisiert.",
       "openCodeSaved": "OpenCode-Konfiguration gespeichert",
       "saveOpenCodeFailed": "Speichern der OpenCode-Konfiguration fehlgeschlagen",
-      "openClawSaved": "OpenClaw-Konfiguration gespeichert",
-      "saveOpenClawFailed": "Speichern der OpenClaw-Konfiguration fehlgeschlagen",
+      "genericSaved": "Generic-Konfiguration gespeichert",
+      "saveGenericFailed": "Speichern der Generic-Konfiguration fehlgeschlagen",
       "configSaved": "Konfiguration gespeichert",
       "configSavedHint": "Bestehende Sitzungen müssen neu geöffnet werden, damit die Änderungen wirksam werden",
       "saveConfigManagementFailed": "Speichern der Konfigurationsverwaltung fehlgeschlagen",
@@ -1517,7 +1517,8 @@
           "initializeTimeout": "Der Verbindungs-Handshake von {agent} hat nach 60 Sekunden das Zeitlimit überschritten. Öffnen Sie die Einstellungen, um Agenten- und Netzwerkkonfiguration zu prüfen.",
           "processExited": "{agent}-Prozess wurde unerwartet beendet.",
           "spawnFailed": "{agent} konnte nicht gestartet werden: {message}",
-          "downloadFailed": "{agent}-Download fehlgeschlagen: {message}"
+          "downloadFailed": "{agent}-Download fehlgeschlagen: {message}",
+          "turnIdleTimeout": "{agent} hat {seconds} s lang nicht reagiert – die Anfrage wurde automatisch abgebrochen. Du kannst es erneut versuchen."
         },
         "unableReadAgentConfig": "Agenten-Konfiguration kann nicht gelesen werden: {message}",
         "connectFailedTitle": "{agent} Verbindung fehlgeschlagen",
@@ -1534,7 +1535,8 @@
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}, {delay}",
           "httpStatus": " (HTTP {status})"
-        }
+        },
+        "compacting": "Kontext wird komprimiert …"
       },
       "connectionLifecycle": {
         "tasks": {
