@@ -103,6 +103,11 @@ pub struct ConnectionManager {
     limits: ConnectionLimits,
     runtime_monitor: Arc<StdMutex<Option<Arc<RuntimeMonitor>>>>,
     watchdog_started: Arc<AtomicBool>,
+    /// Tracks ACP background tasks (per-connection event loop, drain
+    /// helpers). Wired up so a graceful shutdown can `wait()` for ACP
+    /// agents to finish their current iteration instead of getting
+    /// detached on tokio runtime drop.
+    task_tracker: tokio_util::task::TaskTracker,
 }
 
 impl ConnectionManager {
@@ -113,7 +118,14 @@ impl ConnectionManager {
             limits: ConnectionLimits::from_env(),
             runtime_monitor: Arc::new(StdMutex::new(None)),
             watchdog_started: Arc::new(AtomicBool::new(false)),
+            task_tracker: tokio_util::task::TaskTracker::new(),
         }
+    }
+
+    /// Background-task tracker used for ACP-spawned tasks. Exposed so
+    /// graceful shutdown can `wait()` on it.
+    pub fn task_tracker(&self) -> &tokio_util::task::TaskTracker {
+        &self.task_tracker
     }
 
     /// Returns a shallow clone sharing the same underlying connection state.

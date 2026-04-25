@@ -493,6 +493,7 @@ pub async fn spawn_agent_connection(
     let run_connections = connections.clone();
     let cleanup_connection_id = connection_id.clone();
     let manager_clone = manager.clone_ref();
+    let task_tracker = manager.task_tracker().clone();
     let working_dir_for_metadata = working_dir.clone();
     let owner_window_label_for_log = owner_window_label.clone();
 
@@ -517,7 +518,7 @@ pub async fn spawn_agent_connection(
         },
     );
 
-    tokio::spawn(async move {
+    task_tracker.spawn(async move {
         // RAII guard: runs on normal exit AND on panic unwinding, so a
         // panic inside `run_connection` can't leak a stale map entry.
         let _cleanup = ConnectionCleanupGuard {
@@ -534,6 +535,7 @@ pub async fn spawn_agent_connection(
             cmd_rx,
             run_connections,
             emitter_clone.clone(),
+            manager_clone.task_tracker().clone(),
         )
         .await;
 
@@ -873,6 +875,7 @@ async fn run_connection(
     mut cmd_rx: mpsc::Receiver<ConnectionCommand>,
     connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
     emitter: EventEmitter,
+    task_tracker: tokio_util::task::TaskTracker,
 ) -> Result<(), AcpError> {
     let pending_perms: PendingPermissions = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let terminal_runtime = Arc::new(TerminalRuntime::new());
@@ -1167,6 +1170,7 @@ async fn run_connection(
                             terminal_runtime.clone(),
                             &cwd_string,
                             supports_fork,
+                            &task_tracker,
                         )
                         .await;
                         terminal_runtime.release_all_for_session(&sid).await;
@@ -1182,6 +1186,7 @@ async fn run_connection(
                             terminal_runtime.clone(),
                             &cwd,
                             &cwd_string,
+                            &task_tracker,
                         )
                         .await
                     }
@@ -1243,6 +1248,7 @@ async fn run_connection(
                             terminal_runtime.clone(),
                             &cwd_string,
                             supports_fork,
+                            &task_tracker,
                         )
                         .await;
                         terminal_runtime
@@ -1260,6 +1266,7 @@ async fn run_connection(
                             terminal_runtime.clone(),
                             &cwd,
                             &cwd_string,
+                            &task_tracker,
                         )
                         .await
                     }
@@ -1294,6 +1301,7 @@ async fn run_connection(
                     terminal_runtime.clone(),
                     &cwd_string,
                     supports_fork,
+                    &task_tracker,
                 )
                 .await;
                 terminal_runtime.release_all_for_session(&sid).await;
@@ -1309,6 +1317,7 @@ async fn run_connection(
                     terminal_runtime.clone(),
                     &cwd,
                     &cwd_string,
+                    &task_tracker,
                 )
                 .await
             }
@@ -1866,6 +1875,7 @@ async fn handle_fork_or_exit(
     terminal_runtime: Arc<TerminalRuntime>,
     _cwd: &std::path::Path,
     cwd_string: &str,
+    task_tracker: &tokio_util::task::TaskTracker,
 ) -> Result<(), sacp::Error> {
     let fork_info = match loop_result {
         Ok(Some(info)) => info,
@@ -1913,6 +1923,7 @@ async fn handle_fork_or_exit(
         terminal_runtime.clone(),
         cwd_string,
         true, // fork already succeeded on this process
+        task_tracker,
     )
     .await;
     terminal_runtime.release_all_for_session(&new_sid).await;
@@ -1930,6 +1941,7 @@ async fn handle_fork_or_exit(
         terminal_runtime,
         _cwd,
         cwd_string,
+        task_tracker,
     ))
     .await
 }
@@ -1950,6 +1962,7 @@ async fn run_conversation_loop<'a>(
     terminal_runtime: Arc<TerminalRuntime>,
     cwd: &str,
     supports_fork: bool,
+    task_tracker: &tokio_util::task::TaskTracker,
 ) -> Result<Option<ForkExitInfo>, sacp::Error> {
     loop {
         // Wait for either a user command or a session update (e.g. available_commands_update)
@@ -2238,7 +2251,7 @@ async fn run_conversation_loop<'a>(
                             );
                             // Drain prompt_response in the background;
                             // the agent may still respond eventually.
-                            tokio::spawn(async move {
+                            task_tracker.spawn(async move {
                                 let _ = prompt_response.await;
                             });
                             break;
@@ -2349,7 +2362,7 @@ async fn run_conversation_loop<'a>(
                                     // Drain the prompt response in the background so
                                     // the SACP library doesn't log "receiver dropped"
                                     // errors when the agent eventually responds.
-                                    tokio::spawn(async move {
+                                    task_tracker.spawn(async move {
                                         let _ = prompt_response.await;
                                     });
                                     break;
