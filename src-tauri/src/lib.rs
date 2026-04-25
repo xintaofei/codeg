@@ -13,6 +13,7 @@ mod network;
 mod parsers;
 pub mod process;
 pub mod runtime_monitor;
+mod squad;
 mod terminal;
 pub mod web;
 pub mod workspace_state;
