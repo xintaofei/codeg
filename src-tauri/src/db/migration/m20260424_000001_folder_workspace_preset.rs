@@ -10,11 +10,7 @@ impl MigrationTrait for Migration {
             .alter_table(
                 Table::alter()
                     .table(Folder::Table)
-                    .add_column(
-                        ColumnDef::new(Folder::WorkspacePresetJson)
-                            .text()
-                            .null(),
-                    )
+                    .add_column(ColumnDef::new(Folder::WorkspacePresetJson).text().null())
                     .to_owned(),
             )
             .await

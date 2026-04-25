@@ -4,12 +4,7 @@ import type { AgentType } from "@/lib/types"
 import { AGENT_COLORS } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
-import {
-  ClaudeCode,
-  Cline,
-  GeminiCLI,
-  OpenCode,
-} from "@lobehub/icons"
+import { ClaudeCode, Cline, GeminiCLI, OpenCode } from "@lobehub/icons"
 
 interface AgentIconProps {
   agentType: AgentType
@@ -70,12 +65,7 @@ const GenericColorIcon = memo(function GenericColorIcon({
       xmlns="http://www.w3.org/2000/svg"
     >
       <title>Generic</title>
-      <rect
-        fill="#475569"
-        height="24"
-        rx="4"
-        width="24"
-      />
+      <rect fill="#475569" height="24" rx="4" width="24" />
       <text
         dominantBaseline="central"
         fill="white"

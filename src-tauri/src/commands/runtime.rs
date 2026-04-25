@@ -12,8 +12,8 @@ use crate::terminal::types::TerminalInfo;
 use crate::web::client_owner::{WebClientInfo, WebClientRegistry};
 #[cfg(feature = "tauri-runtime")]
 use {
-    std::sync::Arc,
     crate::acp::binary_cache::{self, AcpCacheInventory},
+    std::sync::Arc,
 };
 
 #[derive(Debug, Clone, Serialize)]

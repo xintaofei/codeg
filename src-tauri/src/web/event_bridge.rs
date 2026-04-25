@@ -21,7 +21,11 @@ impl Default for WebEventBroadcaster {
 
 impl WebEventBroadcaster {
     pub fn new() -> Self {
-        let (sender, _) = broadcast::channel(4096);
+        // Capacity tuned for bursty ACP/terminal output. Slow clients can
+        // still overrun this; when that happens the WS handler emits a
+        // `__resync` event so the client refetches state instead of
+        // silently missing transitions.
+        let (sender, _) = broadcast::channel(8192);
         Self { sender }
     }
 

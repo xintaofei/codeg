@@ -8,6 +8,7 @@
     "build:manifest": "node scripts/write-build-manifest.mjs",
     "build": "pnpm build:web && pnpm build:manifest",
     "lint": "eslint",
+    "check:i18n": "node scripts/check-i18n-parity.mjs",
     "release:standalone": "node scripts/release.mjs",
     "tauri": "tauri",
     "server:build": "cd src-tauri && cargo build --release --bin codeg-server --no-default-features",

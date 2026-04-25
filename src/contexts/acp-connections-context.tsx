@@ -282,6 +282,13 @@ type ConnectionsMap = Map<string, ConnectionState>
 const MAX_LIVE_TOOL_RAW_OUTPUT_CHARS = 200_000
 const MAX_BUFFERED_UNMAPPED_EVENTS_PER_CONNECTION = 64
 const MAX_BUFFERED_UNMAPPED_CONNECTIONS = 128
+/** Buffered unmapped events older than this are evicted on access. */
+const UNMAPPED_EVENT_TTL_MS = 60_000
+
+interface BufferedEntry {
+  events: AcpEvent[]
+  lastSeenAt: number
+}
 
 // Per-agentType cache for selectors (modes / configOptions).
 // Populated when real data arrives from the backend.
@@ -1494,7 +1501,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   const lastActivityRef = useRef(new Map<string, number>())
   const streamingQueueRef = useRef<StreamingAction[]>([])
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const pendingUnmappedEventsRef = useRef(new Map<string, AcpEvent[]>())
+  const pendingUnmappedEventsRef = useRef(new Map<string, BufferedEntry>())
   const listenerReadyRef = useRef(false)
   const listenerReadyWaitersRef = useRef<Array<() => void>>([])
 
@@ -1659,29 +1666,43 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
 
   const bufferUnmappedEvent = useCallback((event: AcpEvent) => {
     const connectionId = event.connection_id
-    const buffered = pendingUnmappedEventsRef.current.get(connectionId) ?? []
-    if (buffered.length >= MAX_BUFFERED_UNMAPPED_EVENTS_PER_CONNECTION) {
-      buffered.shift()
-    }
-    buffered.push(event)
-    pendingUnmappedEventsRef.current.set(connectionId, buffered)
+    const now = Date.now()
+    const map = pendingUnmappedEventsRef.current
 
-    if (
-      pendingUnmappedEventsRef.current.size > MAX_BUFFERED_UNMAPPED_CONNECTIONS
-    ) {
-      const oldest = pendingUnmappedEventsRef.current.keys().next().value
-      if (oldest) {
-        pendingUnmappedEventsRef.current.delete(oldest)
+    // TTL eviction: drop entries whose lastSeenAt is older than TTL.
+    // Iterating a Map in insertion order makes this cheap — once we hit
+    // a non-stale entry the rest are guaranteed newer (we re-set on touch).
+    if (map.size > 0) {
+      for (const [key, entry] of map) {
+        if (now - entry.lastSeenAt < UNMAPPED_EVENT_TTL_MS) break
+        map.delete(key)
       }
+    }
+
+    const existing = map.get(connectionId)
+    const events = existing?.events ?? []
+    if (events.length >= MAX_BUFFERED_UNMAPPED_EVENTS_PER_CONNECTION) {
+      events.shift()
+    }
+    events.push(event)
+
+    // Re-insert (delete + set) so the entry moves to the tail, keeping the
+    // Map in approximate LRU order for the iterator-based eviction above.
+    map.delete(connectionId)
+    map.set(connectionId, { events, lastSeenAt: now })
+
+    if (map.size > MAX_BUFFERED_UNMAPPED_CONNECTIONS) {
+      const oldest = map.keys().next().value
+      if (oldest) map.delete(oldest)
     }
   }, [])
 
   const consumeBufferedEvents = useCallback(
     (connectionId: string): AcpEvent[] => {
-      const buffered = pendingUnmappedEventsRef.current.get(connectionId)
-      if (!buffered || buffered.length === 0) return []
+      const entry = pendingUnmappedEventsRef.current.get(connectionId)
+      if (!entry || entry.events.length === 0) return []
       pendingUnmappedEventsRef.current.delete(connectionId)
-      return buffered
+      return entry.events
     },
     []
   )

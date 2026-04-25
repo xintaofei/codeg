@@ -1,4 +1,5 @@
 pub mod backends;
+pub mod backoff;
 pub mod command_dispatcher;
 pub mod command_handlers;
 pub mod error;

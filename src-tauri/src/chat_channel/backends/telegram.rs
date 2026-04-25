@@ -22,11 +22,12 @@ impl TelegramBackend {
         Self {
             bot_token,
             chat_id,
-            client: reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(60))
-                .build()
-                .unwrap_or_default(),
+            client: crate::network::http_client::build_client_with(
+                crate::network::http_client::ClientConfig::with_timeouts(
+                    Duration::from_secs(10),
+                    Duration::from_secs(60),
+                ),
+            ),
             status: Arc::new(Mutex::new(ChannelConnectionStatus::Disconnected)),
             channel_id,
             shutdown_tx: Arc::new(Mutex::new(None)),
@@ -132,6 +133,7 @@ impl ChatChannelBackend for TelegramBackend {
 
         tokio::spawn(async move {
             let mut offset: i64 = 0;
+            let mut consecutive_errors: u32 = 0;
             loop {
                 if *shutdown_rx.borrow() {
                     break;
@@ -156,6 +158,7 @@ impl ChatChannelBackend for TelegramBackend {
                                 *s = ChannelConnectionStatus::Connected;
                             }
                         }
+                        consecutive_errors = 0;
 
                         if let Ok(body) = resp.json::<serde_json::Value>().await {
                             if let Some(updates) = body.get("result").and_then(|r| r.as_array()) {
@@ -219,7 +222,10 @@ impl ChatChannelBackend for TelegramBackend {
                     Err(e) => {
                         eprintln!("[Telegram] polling error: {e}");
                         *status.lock().await = ChannelConnectionStatus::Error;
-                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                        let delay =
+                            crate::chat_channel::backoff::reconnect_delay(consecutive_errors);
+                        consecutive_errors = consecutive_errors.saturating_add(1);
+                        tokio::time::sleep(delay).await;
                     }
                 }
             }

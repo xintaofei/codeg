@@ -135,10 +135,13 @@ pub async fn update_folder_workspace_preset(
     Json(params): Json<UpdateFolderWorkspacePresetParams>,
 ) -> Result<Json<FolderDetail>, AppCommandError> {
     let db = &state.db;
-    let result =
-        folder_service::update_workspace_preset(&db.conn, params.folder_id, params.workspace_preset)
-            .await
-            .map_err(AppCommandError::from)?;
+    let result = folder_service::update_workspace_preset(
+        &db.conn,
+        params.folder_id,
+        params.workspace_preset,
+    )
+    .await
+    .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 

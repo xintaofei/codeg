@@ -1,9 +1,9 @@
 use chrono::Utc;
-use std::collections::HashMap;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, DatabaseConnection, EntityTrait,
-    QueryFilter, QueryOrder, Set,
+    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, DatabaseConnection, EntityTrait, JoinType,
+    QueryFilter, QueryOrder, QuerySelect, RelationTrait, Set,
 };
+use std::collections::HashMap;
 
 use crate::db::entities::{conversation, folder};
 use crate::db::error::DbError;
@@ -212,25 +212,20 @@ pub async fn list_all(
     sort_by: Option<String>,
     status: Option<String>,
 ) -> Result<Vec<DbConversationSummary>, DbError> {
-    let mut query = conversation::Entity::find().filter(conversation::Column::DeletedAt.is_null());
+    // Join folder so we can (a) cheaply exclude conversations whose folder
+    // was soft-deleted without a separate round-trip, and (b) reuse the
+    // covering index `idx_conversation_deleted_updated`. Previously this
+    // path issued a `SELECT id FROM folder WHERE deleted_at IS NULL` and
+    // shoved the result into an `is_in(...)` clause, which scaled with the
+    // number of folders and forced a wide IN list.
+    let mut query = conversation::Entity::find()
+        .filter(conversation::Column::DeletedAt.is_null())
+        .join(JoinType::InnerJoin, conversation::Relation::Folder.def())
+        .filter(folder::Column::DeletedAt.is_null());
 
-    match folder_ids {
-        Some(ids) if !ids.is_empty() => {
+    if let Some(ids) = folder_ids {
+        if !ids.is_empty() {
             query = query.filter(conversation::Column::FolderId.is_in(ids));
-        }
-        _ => {
-            // Exclude conversations whose folder was soft-deleted.
-            let active_folder_ids: Vec<i32> = folder::Entity::find()
-                .filter(folder::Column::DeletedAt.is_null())
-                .all(conn)
-                .await?
-                .into_iter()
-                .map(|m| m.id)
-                .collect();
-            if active_folder_ids.is_empty() {
-                return Ok(Vec::new());
-            }
-            query = query.filter(conversation::Column::FolderId.is_in(active_folder_ids));
         }
     }
 
@@ -329,7 +324,11 @@ fn search_score(row: &DbConversationSummary, query: &str) -> Option<i32> {
     score = score.max(field_score(row.model.as_deref(), query, 70, 60, 45));
     score = score.max(field_score(row.git_branch.as_deref(), query, 65, 55, 40));
 
-    if score == 0 { None } else { Some(score) }
+    if score == 0 {
+        None
+    } else {
+        Some(score)
+    }
 }
 
 fn field_score(

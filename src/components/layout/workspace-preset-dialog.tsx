@@ -96,7 +96,9 @@ export function WorkspacePresetDialog({
     const preset = folder?.workspace_preset
     setDefaultAgent(preset?.default_agent_type ?? "none")
     setModelProviderId(
-      preset?.model_provider_id != null ? String(preset.model_provider_id) : "none"
+      preset?.model_provider_id != null
+        ? String(preset.model_provider_id)
+        : "none"
     )
     setApprovalPolicy(preset?.approval_policy ?? "")
     setSkillIds((preset?.skill_ids ?? []).join("\n"))
@@ -115,7 +117,10 @@ export function WorkspacePresetDialog({
     listModelProviders()
       .then((items) => setProviders(items))
       .catch((error) => {
-        console.error("[WorkspacePresetDialog] load model providers failed:", error)
+        console.error(
+          "[WorkspacePresetDialog] load model providers failed:",
+          error
+        )
       })
       .finally(() => setLoadingProviders(false))
   }, [open])
@@ -143,7 +148,10 @@ export function WorkspacePresetDialog({
 
     setSaving(true)
     try {
-      await updateFolderWorkspacePreset(folder.id, isPresetEmpty(preset) ? null : preset)
+      await updateFolderWorkspacePreset(
+        folder.id,
+        isPresetEmpty(preset) ? null : preset
+      )
       await refreshFolder(folder.id)
       toast.success("Workspace preset saved")
       onOpenChange(false)
@@ -196,7 +204,10 @@ export function WorkspacePresetDialog({
 
             <div className="space-y-2">
               <Label>Model provider</Label>
-              <Select value={modelProviderId} onValueChange={setModelProviderId}>
+              <Select
+                value={modelProviderId}
+                onValueChange={setModelProviderId}
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -210,7 +221,9 @@ export function WorkspacePresetDialog({
                 </SelectContent>
               </Select>
               {loadingProviders && (
-                <div className="text-xs text-muted-foreground">Loading providers…</div>
+                <div className="text-xs text-muted-foreground">
+                  Loading providers…
+                </div>
               )}
             </div>
           </div>

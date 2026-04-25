@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useMemo, useSyncExternalStore } from "react"
+import { useCallback, useMemo, useRef, useSyncExternalStore } from "react"
 import {
   useAcpActions,
   useConnectionStore,
@@ -61,6 +61,101 @@ export interface UseConnectionReturn {
 function derive(conn: ConnectionState | undefined) {
   if (!conn) return null
   return conn
+}
+
+/**
+ * Subscribe to a single derived slice of a connection. Returns a stable
+ * reference whenever the slice value compares equal (Object.is) to the
+ * previous one, so consumers re-render only when their slice actually
+ * changes — instead of on every connection-state mutation.
+ *
+ * This is the field-scoped primitive that backs the granular hooks below.
+ * Use it directly when you need a custom slice not covered by them.
+ */
+function useConnectionSlice<T>(
+  contextKey: string,
+  selector: (conn: ConnectionState | undefined) => T
+): T {
+  const store = useConnectionStore()
+  const subscribe = useCallback(
+    (cb: () => void) => store.subscribeKey(contextKey, cb),
+    [store, contextKey]
+  )
+
+  // Cache the last selected value to keep the snapshot identity stable
+  // when the underlying connection mutates but the slice is equal.
+  const lastValueRef = useRef<{ value: T; computed: boolean }>({
+    value: undefined as unknown as T,
+    computed: false,
+  })
+
+  const getSnapshot = useCallback(() => {
+    const next = selector(store.getConnection(contextKey))
+    if (
+      lastValueRef.current.computed &&
+      Object.is(lastValueRef.current.value, next)
+    ) {
+      return lastValueRef.current.value
+    }
+    lastValueRef.current = { value: next, computed: true }
+    return next
+  }, [store, contextKey, selector])
+
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+}
+
+const selectStatus = (c: ConnectionState | undefined) => c?.status ?? null
+const selectLiveMessage = (c: ConnectionState | undefined) =>
+  c?.liveMessage ?? null
+const selectPendingPermission = (c: ConnectionState | undefined) =>
+  c?.pendingPermission ?? null
+const selectPendingQuestion = (c: ConnectionState | undefined) =>
+  c?.pendingQuestion ?? null
+const selectError = (c: ConnectionState | undefined) => c?.error ?? null
+const selectCompacting = (c: ConnectionState | undefined) =>
+  c?.compacting ?? false
+const selectClaudeApiRetry = (c: ConnectionState | undefined) =>
+  c?.claudeApiRetry ?? null
+const selectConnectionId = (c: ConnectionState | undefined) =>
+  c?.connectionId ?? null
+const selectSessionId = (c: ConnectionState | undefined) => c?.sessionId ?? null
+
+/** Subscribe only to connection status. */
+export function useConnectionStatus(contextKey: string) {
+  return useConnectionSlice(contextKey, selectStatus)
+}
+
+/** Subscribe only to the live (streaming) message. High-frequency: prefer
+ * this over `useConnection` in components that render the streaming bubble. */
+export function useConnectionLiveMessage(contextKey: string) {
+  return useConnectionSlice(contextKey, selectLiveMessage)
+}
+
+/** Subscribe only to pending permission/question prompts. */
+export function useConnectionPendingPermission(contextKey: string) {
+  return useConnectionSlice(contextKey, selectPendingPermission)
+}
+export function useConnectionPendingQuestion(contextKey: string) {
+  return useConnectionSlice(contextKey, selectPendingQuestion)
+}
+
+/** Subscribe only to error / retry / compacting indicators. */
+export function useConnectionError(contextKey: string) {
+  return useConnectionSlice(contextKey, selectError)
+}
+export function useConnectionCompacting(contextKey: string) {
+  return useConnectionSlice(contextKey, selectCompacting)
+}
+export function useConnectionClaudeApiRetry(contextKey: string) {
+  return useConnectionSlice(contextKey, selectClaudeApiRetry)
+}
+
+/** Subscribe only to identifiers. */
+export function useConnectionId(contextKey: string) {
+  return useConnectionSlice(contextKey, selectConnectionId)
+}
+export function useConnectionSessionId(contextKey: string) {
+  return useConnectionSlice(contextKey, selectSessionId)
 }
 
 export function useConnection(contextKey: string): UseConnectionReturn {

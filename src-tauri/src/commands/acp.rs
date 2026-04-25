@@ -20,9 +20,9 @@ use crate::acp::types::{
 #[cfg(feature = "tauri-runtime")]
 use crate::acp::types::{ConnectionInfo, ForkResultInfo, PromptInputBlock};
 use crate::db::service::agent_setting_service;
-use crate::db::service::model_provider_service;
 #[cfg(feature = "tauri-runtime")]
 use crate::db::service::folder_service;
+use crate::db::service::model_provider_service;
 use crate::db::AppDatabase;
 use crate::models::agent::AgentType;
 use crate::web::event_bridge::EventEmitter;
@@ -1805,10 +1805,11 @@ pub(crate) async fn apply_model_provider_env(
     runtime_env: &mut BTreeMap<String, String>,
     conn: &sea_orm::DatabaseConnection,
 ) {
-    let provider_id = match provider_id_override.or_else(|| setting.and_then(|s| s.model_provider_id)) {
-        Some(id) => id,
-        None => return,
-    };
+    let provider_id =
+        match provider_id_override.or_else(|| setting.and_then(|s| s.model_provider_id)) {
+            Some(id) => id,
+            None => return,
+        };
     let provider = match model_provider_service::get_by_id(conn, provider_id).await {
         Ok(Some(p)) => p,
         _ => return,
@@ -3247,7 +3248,7 @@ struct OAuthTokenResp {
 }
 
 pub(crate) async fn codex_request_device_code_core() -> Result<CodexDeviceCodeResponse, AcpError> {
-    let client = reqwest::Client::new();
+    let client = crate::network::http_client::build_client();
     let url = format!("{CODEX_OAUTH_ISSUER}/api/accounts/deviceauth/usercode");
     let body = serde_json::json!({ "client_id": CODEX_OAUTH_CLIENT_ID });
 
@@ -3301,7 +3302,7 @@ pub(crate) async fn codex_poll_device_code_core(
     device_auth_id: String,
     user_code: String,
 ) -> Result<CodexDeviceCodePollResult, AcpError> {
-    let client = reqwest::Client::new();
+    let client = crate::network::http_client::build_client();
     let poll_url = format!("{CODEX_OAUTH_ISSUER}/api/accounts/deviceauth/token");
     let poll_body = serde_json::json!({
         "device_auth_id": device_auth_id,

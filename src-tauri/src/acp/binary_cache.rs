@@ -93,7 +93,9 @@ pub fn inventory_agent_caches() -> Result<AcpCacheInventory, AcpError> {
         let dir = root.join(&agent_id);
         let (size_bytes, file_count) = directory_usage(&dir)?;
         let mut versions = match &meta.distribution {
-            registry::AgentDistribution::Binary { cmd, .. } => installed_version_labels(&agent_id, cmd)?,
+            registry::AgentDistribution::Binary { cmd, .. } => {
+                installed_version_labels(&agent_id, cmd)?
+            }
             _ => Vec::new(),
         };
         versions.sort_by(|left, right| version_cmp(left, right));
@@ -265,13 +267,11 @@ fn directory_usage(path: &Path) -> Result<(u64, usize), AcpError> {
     let mut file_count = 0usize;
 
     for entry in walkdir::WalkDir::new(path) {
-        let entry = entry
-            .map_err(|error| AcpError::DownloadFailed(format!("failed to scan cache dir: {error}")))?;
+        let entry = entry.map_err(|error| {
+            AcpError::DownloadFailed(format!("failed to scan cache dir: {error}"))
+        })?;
         if entry.file_type().is_file() {
-            let size = entry
-                .metadata()
-                .map(|metadata| metadata.len())
-                .unwrap_or(0);
+            let size = entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
             total_size = total_size.saturating_add(size);
             file_count += 1;
         }
@@ -417,11 +417,19 @@ async fn download_file_with_progress(
 ) -> Result<(), AcpError> {
     use futures_util::StreamExt;
 
-    let response = reqwest::Client::new()
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| AcpError::DownloadFailed(format!("HTTP request failed: {e}")))?;
+    // Binary downloads can be tens of MB; use a generous total timeout. The
+    // factory still injects user proxy settings so air-gapped corp networks
+    // route through their internal mirror.
+    let response = crate::network::http_client::build_client_with(
+        crate::network::http_client::ClientConfig::with_timeouts(
+            std::time::Duration::from_secs(15),
+            std::time::Duration::from_secs(600),
+        ),
+    )
+    .get(url)
+    .send()
+    .await
+    .map_err(|e| AcpError::DownloadFailed(format!("HTTP request failed: {e}")))?;
 
     if !response.status().is_success() {
         return Err(AcpError::DownloadFailed(format!(

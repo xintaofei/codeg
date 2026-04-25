@@ -153,11 +153,12 @@ impl LarkBackend {
             app_secret,
             chat_id,
             channel_id,
-            client: reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(30))
-                .build()
-                .unwrap_or_default(),
+            client: crate::network::http_client::build_client_with(
+                crate::network::http_client::ClientConfig::with_timeouts(
+                    Duration::from_secs(10),
+                    Duration::from_secs(30),
+                ),
+            ),
             token_cache: Arc::new(RwLock::new(None)),
             status: Arc::new(Mutex::new(ChannelConnectionStatus::Disconnected)),
             shutdown_tx: Arc::new(Mutex::new(None)),
@@ -283,7 +284,7 @@ impl LarkBackend {
                     Err(e) => {
                         eprintln!("[Lark] failed to get WS endpoint: {e}");
                         *status.lock().await = ChannelConnectionStatus::Error;
-                        let delay = Duration::from_secs((2u64).pow(retry_count.min(5)));
+                        let delay = crate::chat_channel::backoff::reconnect_delay(retry_count);
                         retry_count += 1;
                         tokio::select! {
                             _ = tokio::time::sleep(delay) => continue,
@@ -303,7 +304,7 @@ impl LarkBackend {
                     Err(e) => {
                         eprintln!("[Lark] WebSocket connect failed: {e}");
                         *status.lock().await = ChannelConnectionStatus::Error;
-                        let delay = Duration::from_secs((2u64).pow(retry_count.min(5)));
+                        let delay = crate::chat_channel::backoff::reconnect_delay(retry_count);
                         retry_count += 1;
                         tokio::select! {
                             _ = tokio::time::sleep(delay) => continue,

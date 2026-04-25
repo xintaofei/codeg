@@ -73,7 +73,7 @@ toml = "0.8"
 notify = "6"
 base64 = "0.22"
 agent-client-protocol-schema = { version = "0.11", features = ["unstable_session_usage", "unstable_session_fork"] }
-kill_tree = { version = "0.2", features = ["tokio"] }
+kill_tree = { version = "0.2", features = ["tokio", "blocking"] }
 which = "7"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"], optional = true }
 axum = { version = "0.8", features = ["ws"] }
@@ -86,6 +86,8 @@ qrcode = "0.14"
 image = { version = "0.25", default-features = false, features = ["png"] }
 include_dir = "0.7"
 sha2 = "0.10"
+subtle = "2"
+tokio-util = { version = "0.7", features = ["rt"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-window-state = { version = "2", optional = true }
@@ -102,3 +104,10 @@ junction = "1"
 
 [patch.crates-io]
 sacp-tokio = { path = "vendor/sacp-tokio" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+opt-level = 3

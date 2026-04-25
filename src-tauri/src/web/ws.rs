@@ -24,7 +24,9 @@ pub(crate) async fn ws_handler(
     Query(params): Query<WsQueryParams>,
     Extension(state): Extension<Arc<AppState>>,
 ) -> impl IntoResponse {
-    let client_id = params.client_id.and_then(|value| normalize_web_client_id(&value));
+    let client_id = params
+        .client_id
+        .and_then(|value| normalize_web_client_id(&value));
     ws.on_upgrade(|socket| handle_ws_connection(socket, state, client_id))
 }
 
@@ -51,7 +53,21 @@ async fn handle_ws_connection(
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        // The broadcast buffer overflowed for this socket.
+                        // Tell the client to resync: it should re-fetch the
+                        // active conversation/connection state since it may
+                        // have missed transitions (e.g. a connection going
+                        // from running → idle).
                         eprintln!("[WS] receiver lagged, skipped {n} events");
+                        let resync = serde_json::json!({
+                            "channel": "__resync",
+                            "payload": { "skipped": n }
+                        });
+                        if let Ok(msg) = serde_json::to_string(&resync) {
+                            if socket.send(Message::Text(msg.into())).await.is_err() {
+                                break;
+                            }
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         break;
@@ -70,14 +86,23 @@ async fn handle_ws_connection(
     }
 
     if let Some(client_id) = client_id {
-        if let Some(cleanup_lease) = state.web_client_registry.unregister_socket(&client_id).await {
+        if let Some(cleanup_lease) = state
+            .web_client_registry
+            .unregister_socket(&client_id)
+            .await
+        {
             schedule_web_client_cleanup(state, cleanup_lease);
         }
     }
 }
 
 fn schedule_web_client_cleanup(state: Arc<AppState>, cleanup_lease: CleanupLease) {
-    tokio::spawn(async move {
+    // Track the cleanup task so server shutdown can await pending cleanups
+    // instead of dropping them mid-sleep.
+    let tracker = state.task_tracker.clone();
+    let state_for_task = state.clone();
+    tracker.spawn(async move {
+        let state = state_for_task;
         sleep(WEB_CLIENT_CLEANUP_DELAY).await;
         if !state
             .web_client_registry

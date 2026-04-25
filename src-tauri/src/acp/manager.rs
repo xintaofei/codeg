@@ -40,10 +40,7 @@ struct ConnectionLimits {
 impl ConnectionLimits {
     fn from_env() -> Self {
         Self {
-            max_connections: parse_env_usize(
-                "CODEG_ACP_MAX_CONNECTIONS",
-                DEFAULT_MAX_CONNECTIONS,
-            ),
+            max_connections: parse_env_usize("CODEG_ACP_MAX_CONNECTIONS", DEFAULT_MAX_CONNECTIONS),
             max_connections_per_owner: parse_env_usize(
                 "CODEG_ACP_MAX_CONNECTIONS_PER_OWNER",
                 DEFAULT_MAX_CONNECTIONS_PER_OWNER,
@@ -76,18 +73,10 @@ impl ConnectionLimits {
     }
 }
 
+#[derive(Default)]
 struct CircuitBreakerState {
     failure_timestamps: VecDeque<Instant>,
     open_until: Option<Instant>,
-}
-
-impl Default for CircuitBreakerState {
-    fn default() -> Self {
-        Self {
-            failure_timestamps: VecDeque::new(),
-            open_until: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -114,6 +103,11 @@ pub struct ConnectionManager {
     limits: ConnectionLimits,
     runtime_monitor: Arc<StdMutex<Option<Arc<RuntimeMonitor>>>>,
     watchdog_started: Arc<AtomicBool>,
+    /// Tracks ACP background tasks (per-connection event loop, drain
+    /// helpers). Wired up so a graceful shutdown can `wait()` for ACP
+    /// agents to finish their current iteration instead of getting
+    /// detached on tokio runtime drop.
+    task_tracker: tokio_util::task::TaskTracker,
 }
 
 impl ConnectionManager {
@@ -124,7 +118,14 @@ impl ConnectionManager {
             limits: ConnectionLimits::from_env(),
             runtime_monitor: Arc::new(StdMutex::new(None)),
             watchdog_started: Arc::new(AtomicBool::new(false)),
+            task_tracker: tokio_util::task::TaskTracker::new(),
         }
+    }
+
+    /// Background-task tracker used for ACP-spawned tasks. Exposed so
+    /// graceful shutdown can `wait()` on it.
+    pub fn task_tracker(&self) -> &tokio_util::task::TaskTracker {
+        &self.task_tracker
     }
 
     /// Returns a shallow clone sharing the same underlying connection state.
@@ -185,7 +186,11 @@ impl ConnectionManager {
         let now = Instant::now();
         let recent_failures = {
             let mut breaker = self.breaker.lock().await;
-            trim_failure_window(&mut breaker.failure_timestamps, self.limits.breaker_window, now);
+            trim_failure_window(
+                &mut breaker.failure_timestamps,
+                self.limits.breaker_window,
+                now,
+            );
             breaker.failure_timestamps.push_back(now);
             if breaker.failure_timestamps.len() >= self.limits.breaker_threshold {
                 breaker.open_until = Some(now + self.limits.breaker_cooldown);
@@ -214,7 +219,8 @@ impl ConnectionManager {
         owner_window_label: String,
         emitter: EventEmitter,
     ) -> Result<String, AcpError> {
-        self.enforce_spawn_guards(agent_type, &owner_window_label).await?;
+        self.enforce_spawn_guards(agent_type, &owner_window_label)
+            .await?;
 
         let connection_id = uuid::Uuid::new_v4().to_string();
         self.log_runtime(
@@ -398,9 +404,7 @@ impl ConnectionManager {
         self.log_runtime(
             "info",
             "acp",
-            format!(
-                "disconnected {disconnected} connection(s) for owner {owner_window_label}"
-            ),
+            format!("disconnected {disconnected} connection(s) for owner {owner_window_label}"),
             None,
         );
         disconnected
@@ -455,7 +459,11 @@ impl ConnectionManager {
         let (recent_failures, breaker_open, breaker_open_until) = {
             let now = Instant::now();
             let mut breaker = self.breaker.lock().await;
-            trim_failure_window(&mut breaker.failure_timestamps, self.limits.breaker_window, now);
+            trim_failure_window(
+                &mut breaker.failure_timestamps,
+                self.limits.breaker_window,
+                now,
+            );
             let breaker_open = breaker.open_until.is_some_and(|until| until > now);
             let breaker_open_until = breaker
                 .open_until
@@ -464,7 +472,11 @@ impl ConnectionManager {
                     let seconds = until.saturating_duration_since(now).as_secs();
                     (Utc::now() + chrono::Duration::seconds(seconds as i64)).to_rfc3339()
                 });
-            (breaker.failure_timestamps.len(), breaker_open, breaker_open_until)
+            (
+                breaker.failure_timestamps.len(),
+                breaker_open,
+                breaker_open_until,
+            )
         };
 
         ConnectionLimitSnapshot {
@@ -492,7 +504,11 @@ impl ConnectionManager {
         let now = Instant::now();
         {
             let mut breaker = self.breaker.lock().await;
-            trim_failure_window(&mut breaker.failure_timestamps, self.limits.breaker_window, now);
+            trim_failure_window(
+                &mut breaker.failure_timestamps,
+                self.limits.breaker_window,
+                now,
+            );
             if let Some(until) = breaker.open_until {
                 if until > now {
                     let wait_seconds = until.saturating_duration_since(now).as_secs();
@@ -633,11 +649,7 @@ fn parse_env_u64(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-fn trim_failure_window(
-    failures: &mut VecDeque<Instant>,
-    window: Duration,
-    now: Instant,
-) {
+fn trim_failure_window(failures: &mut VecDeque<Instant>, window: Duration, now: Instant) {
     while failures
         .front()
         .is_some_and(|instant| now.saturating_duration_since(*instant) > window)

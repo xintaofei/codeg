@@ -1243,10 +1243,8 @@ mod tests {
 
     #[test]
     fn parses_generic_conversation_detail_with_tree() {
-        let path = std::env::temp_dir().join(format!(
-            "codeg-generic-tree-{}.jsonl",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("codeg-generic-tree-{}.jsonl", uuid::Uuid::new_v4()));
         let mut file = fs::File::create(&path).expect("create temp jsonl");
 
         writeln!(

@@ -264,7 +264,7 @@ pub async fn validate_github_token(
         format!("{trimmed_url}/api/v3/user")
     };
 
-    let response = reqwest::Client::new()
+    let response = crate::network::http_client::build_client()
         .get(&api_url)
         .header("Authorization", format!("Bearer {trimmed_token}"))
         .header("User-Agent", "codeg")

@@ -146,13 +146,15 @@ pub fn evaluate_build_consistency(static_dir: &Path) -> BuildConsistencyInfo {
     }
 }
 
-pub fn enforce_build_consistency(static_dir: &Path) -> Result<BuildConsistencyInfo, AppCommandError> {
+pub fn enforce_build_consistency(
+    static_dir: &Path,
+) -> Result<BuildConsistencyInfo, AppCommandError> {
     let info = evaluate_build_consistency(static_dir);
     if info.status == "mismatch" && !env_flag(BUILD_MISMATCH_OVERRIDE_ENV) {
-        return Err(
-            AppCommandError::configuration_invalid("Frontend and backend builds do not match")
-                .with_detail(info.message.clone()),
-        );
+        return Err(AppCommandError::configuration_invalid(
+            "Frontend and backend builds do not match",
+        )
+        .with_detail(info.message.clone()));
     }
     Ok(info)
 }
@@ -213,6 +215,11 @@ pub fn is_loopback_host(host: &str) -> bool {
 pub fn env_flag(name: &str) -> bool {
     std::env::var(name)
         .ok()
-        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false)
 }
