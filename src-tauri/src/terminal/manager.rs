@@ -417,8 +417,37 @@ impl TerminalManager {
 }
 
 fn terminate_terminal(instance: &mut TerminalInstance) {
+    // Capture the child PID before killing so we can also reap any
+    // descendants the shell spawned (cargo, node, long-running tools).
+    // Without this, those orphans get re-parented to PID 1 on Linux/macOS
+    // and continue burning CPU after the user "closed" the terminal.
+    let pid = instance._child.process_id();
     let _ = instance._child.kill();
     let _ = instance._child.wait();
+    if let Some(pid) = pid {
+        match kill_tree::blocking::kill_tree(pid) {
+            Ok(outputs) => {
+                if !outputs.is_empty() {
+                    let killed: Vec<u32> = outputs
+                        .iter()
+                        .filter_map(|o| match o {
+                            kill_tree::Output::Killed { process_id, .. } => Some(*process_id),
+                            _ => None,
+                        })
+                        .collect();
+                    if !killed.is_empty() {
+                        eprintln!(
+                            "[TERM] kill_tree pid={} descendants_killed={:?}",
+                            pid, killed
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                eprintln!("[TERM] kill_tree pid={} failed: {}", pid, err);
+            }
+        }
+    }
     cleanup_temp_files(&mut instance.temp_files);
 }
 
