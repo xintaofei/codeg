@@ -710,13 +710,12 @@ impl ChatChannelBackend for WeixinBackend {
                         }
                     }
                     Err(e) => {
-                        consecutive_errors += 1;
                         eprintln!("[Weixin] polling error ({consecutive_errors}): {e}");
                         *status.lock().await = ChannelConnectionStatus::Error;
-                        // Exponential backoff: 5s, 10s, 20s, capped at 30s
                         let delay =
-                            std::cmp::min(5 * 2u64.saturating_pow(consecutive_errors - 1), 30);
-                        tokio::time::sleep(Duration::from_secs(delay)).await;
+                            crate::chat_channel::backoff::reconnect_delay(consecutive_errors);
+                        consecutive_errors += 1;
+                        tokio::time::sleep(delay).await;
                     }
                 }
             }

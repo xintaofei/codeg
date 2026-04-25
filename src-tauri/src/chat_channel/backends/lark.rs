@@ -284,7 +284,7 @@ impl LarkBackend {
                     Err(e) => {
                         eprintln!("[Lark] failed to get WS endpoint: {e}");
                         *status.lock().await = ChannelConnectionStatus::Error;
-                        let delay = Duration::from_secs((2u64).pow(retry_count.min(5)));
+                        let delay = crate::chat_channel::backoff::reconnect_delay(retry_count);
                         retry_count += 1;
                         tokio::select! {
                             _ = tokio::time::sleep(delay) => continue,
@@ -304,7 +304,7 @@ impl LarkBackend {
                     Err(e) => {
                         eprintln!("[Lark] WebSocket connect failed: {e}");
                         *status.lock().await = ChannelConnectionStatus::Error;
-                        let delay = Duration::from_secs((2u64).pow(retry_count.min(5)));
+                        let delay = crate::chat_channel::backoff::reconnect_delay(retry_count);
                         retry_count += 1;
                         tokio::select! {
                             _ = tokio::time::sleep(delay) => continue,

@@ -133,6 +133,7 @@ impl ChatChannelBackend for TelegramBackend {
 
         tokio::spawn(async move {
             let mut offset: i64 = 0;
+            let mut consecutive_errors: u32 = 0;
             loop {
                 if *shutdown_rx.borrow() {
                     break;
@@ -157,6 +158,7 @@ impl ChatChannelBackend for TelegramBackend {
                                 *s = ChannelConnectionStatus::Connected;
                             }
                         }
+                        consecutive_errors = 0;
 
                         if let Ok(body) = resp.json::<serde_json::Value>().await {
                             if let Some(updates) = body.get("result").and_then(|r| r.as_array()) {
@@ -220,7 +222,10 @@ impl ChatChannelBackend for TelegramBackend {
                     Err(e) => {
                         eprintln!("[Telegram] polling error: {e}");
                         *status.lock().await = ChannelConnectionStatus::Error;
-                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                        let delay =
+                            crate::chat_channel::backoff::reconnect_delay(consecutive_errors);
+                        consecutive_errors = consecutive_errors.saturating_add(1);
+                        tokio::time::sleep(delay).await;
                     }
                 }
             }
