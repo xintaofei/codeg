@@ -7,8 +7,8 @@ use crate::db::service::{agent_setting_service, squad_service};
 use crate::db::AppDatabase;
 use crate::models::agent::AgentType;
 use crate::models::squad::{
-    SquadRoleKind, SquadRoleProfileInfo, SquadRoleRunInfo, SquadRoleRunStatus, SquadRunStatus,
-    SquadTaskInfo,
+    SquadRoleKind, SquadRoleProfileInfo, SquadRoleRunInfo, SquadRoleRunStatus, SquadRunMode,
+    SquadRunStatus, SquadTaskInfo,
 };
 use crate::squad::events::{emit_payload, RoleConnectionAttachedPayload};
 use crate::squad::prompt_builder;
@@ -299,12 +299,14 @@ pub async fn start_run(
     let snapshot = squad_service::get_run(&db.conn, run_id)
         .await
         .map_err(|e| AcpError::protocol(e.to_string()))?;
+    let mode = snapshot.run.mode;
     let run = squad_service::set_run_status(&db.conn, run_id, SquadRunStatus::Running, None)
         .await
         .map_err(|e| AcpError::protocol(e.to_string()))?;
     emit_payload(emitter, "squad_run_status_changed", run_id, None, &run);
 
     let mut failures = Vec::new();
+    let mut connected_enabled: Vec<SquadRoleKind> = Vec::new();
     for role in snapshot.roles {
         let profile = parse_profile(&role)?;
         if !profile.enabled {
@@ -320,22 +322,42 @@ pub async fn start_run(
         )
         .await
         {
-            Ok(_) => {
-                if matches!(role.role_kind, SquadRoleKind::Conductor) {
-                    if let Err(err) =
-                        prompt_role(db, manager, emitter, run_id, role.role_kind, None).await
-                    {
-                        failures.push(format!(
-                            "{} prompt failed: {err}",
-                            profile.role_kind.as_str()
-                        ));
-                    }
-                }
-            }
+            Ok(_) => connected_enabled.push(role.role_kind),
             Err(err) => failures.push(format!(
                 "{} connect failed: {err}",
                 profile.role_kind.as_str()
             )),
+        }
+    }
+
+    // Mode-specific dispatch policy. connect_role above is shared; only the
+    // *who gets prompted automatically* part differs.
+    match mode {
+        SquadRunMode::Manual => {
+            // No auto-prompt. The user drives prompts via squad_prompt_role.
+        }
+        SquadRunMode::ConductorDispatch => {
+            // Conductor plans the task list; workers wait for dispatch_pending_tasks.
+            if connected_enabled.contains(&SquadRoleKind::Conductor) {
+                if let Err(err) =
+                    prompt_role(db, manager, emitter, run_id, SquadRoleKind::Conductor, None).await
+                {
+                    failures.push(format!("conductor prompt failed: {err}"));
+                }
+            } else {
+                failures.push(
+                    "conductor_dispatch mode requires a connected Conductor role".to_string(),
+                );
+            }
+        }
+        SquadRunMode::AllHandsReview => {
+            // Every connected role gets prompted once for an independent review pass.
+            for role_kind in &connected_enabled {
+                if let Err(err) = prompt_role(db, manager, emitter, run_id, *role_kind, None).await
+                {
+                    failures.push(format!("{} prompt failed: {err}", role_kind.as_str()));
+                }
+            }
         }
     }
 
