@@ -53,7 +53,21 @@ async fn handle_ws_connection(
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        // The broadcast buffer overflowed for this socket.
+                        // Tell the client to resync: it should re-fetch the
+                        // active conversation/connection state since it may
+                        // have missed transitions (e.g. a connection going
+                        // from running → idle).
                         eprintln!("[WS] receiver lagged, skipped {n} events");
+                        let resync = serde_json::json!({
+                            "channel": "__resync",
+                            "payload": { "skipped": n }
+                        });
+                        if let Ok(msg) = serde_json::to_string(&resync) {
+                            if socket.send(Message::Text(msg.into())).await.is_err() {
+                                break;
+                            }
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         break;

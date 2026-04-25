@@ -153,6 +153,12 @@ export class WebTransport implements Transport {
     this.ws.onmessage = (msg) => {
       try {
         const event = JSON.parse(msg.data) as WebEvent
+        // Server emits `__resync` when a slow socket overflows the
+        // broadcast buffer and skipped events. If nothing is subscribed
+        // we at least log it so devs see why the UI may be stale.
+        if (event.channel === "__resync" && !this.handlers.has("__resync")) {
+          console.warn("[ws] resync requested but no handler", event.payload)
+        }
         const handlers = this.handlers.get(event.channel)
         if (handlers) {
           for (const h of handlers) {
