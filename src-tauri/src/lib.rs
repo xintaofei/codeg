@@ -28,8 +28,9 @@ mod tauri_app {
         acp as acp_commands, chat_channel as chat_channel_commands, conversations,
         experts as experts_commands, folder_commands, folders, mcp as mcp_commands,
         model_provider as model_provider_commands, notification, project_boot,
-        runtime as runtime_commands, system_settings, terminal as terminal_commands,
-        version_control, windows, workspace_state as workspace_state_commands,
+        runtime as runtime_commands, squad as squad_commands, system_settings,
+        terminal as terminal_commands, version_control, windows,
+        workspace_state as workspace_state_commands,
     };
     use crate::runtime_monitor::RuntimeMonitor;
     use crate::terminal::manager::TerminalManager;
@@ -444,6 +445,22 @@ mod tauri_app {
                 web::stop_web_server,
                 web::get_web_server_status,
                 web::get_web_service_config,
+                squad_commands::squad_get_role_profiles,
+                squad_commands::squad_seed_role_profiles,
+                squad_commands::squad_update_role_profile,
+                squad_commands::squad_reset_role_profile,
+                squad_commands::squad_create_run,
+                squad_commands::squad_get_run,
+                squad_commands::squad_list_runs,
+                squad_commands::squad_start_run,
+                squad_commands::squad_stop_run,
+                squad_commands::squad_connect_role,
+                squad_commands::squad_prompt_role,
+                squad_commands::squad_create_task,
+                squad_commands::squad_update_task_status,
+                squad_commands::squad_list_tasks,
+                squad_commands::squad_create_artifact,
+                squad_commands::squad_list_artifacts,
             ])
             .build(tauri::generate_context!())
             .expect("error while building tauri application")

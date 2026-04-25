@@ -304,3 +304,102 @@ pub async fn squad_stop_run(
     let emitter = EventEmitter::Tauri(app);
     squad_stop_run_core(&db, &manager, &emitter, squad_run_id).await
 }
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn squad_connect_role(
+    db: tauri::State<'_, AppDatabase>,
+    manager: tauri::State<'_, ConnectionManager>,
+    app: tauri::AppHandle,
+    squad_run_id: i32,
+    role_kind: SquadRoleKind,
+    working_dir: Option<String>,
+) -> Result<SquadRoleRunInfo, AppCommandError> {
+    let emitter = EventEmitter::Tauri(app);
+    squad_connect_role_core(
+        &db,
+        &manager,
+        &emitter,
+        squad_run_id,
+        role_kind,
+        working_dir,
+    )
+    .await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn squad_prompt_role(
+    db: tauri::State<'_, AppDatabase>,
+    manager: tauri::State<'_, ConnectionManager>,
+    app: tauri::AppHandle,
+    squad_run_id: i32,
+    role_kind: SquadRoleKind,
+    task_id: Option<i32>,
+) -> Result<SquadRoleRunInfo, AppCommandError> {
+    let emitter = EventEmitter::Tauri(app);
+    squad_prompt_role_core(&db, &manager, &emitter, squad_run_id, role_kind, task_id).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn squad_create_task(
+    db: tauri::State<'_, AppDatabase>,
+    squad_run_id: i32,
+    assigned_role_kind: SquadRoleKind,
+    title: String,
+    description: String,
+) -> Result<SquadTaskInfo, AppCommandError> {
+    squad_create_task_core(&db, squad_run_id, assigned_role_kind, title, description).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn squad_update_task_status(
+    db: tauri::State<'_, AppDatabase>,
+    task_id: i32,
+    status: SquadTaskStatus,
+) -> Result<SquadTaskInfo, AppCommandError> {
+    squad_update_task_status_core(&db, task_id, status).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn squad_list_tasks(
+    db: tauri::State<'_, AppDatabase>,
+    squad_run_id: i32,
+) -> Result<Vec<SquadTaskInfo>, AppCommandError> {
+    squad_list_tasks_core(&db, squad_run_id).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn squad_create_artifact(
+    db: tauri::State<'_, AppDatabase>,
+    squad_run_id: i32,
+    role_kind: Option<SquadRoleKind>,
+    task_id: Option<i32>,
+    artifact_type: SquadArtifactType,
+    title: String,
+    content_json: String,
+) -> Result<SquadArtifactInfo, AppCommandError> {
+    squad_create_artifact_core(
+        &db,
+        squad_run_id,
+        role_kind,
+        task_id,
+        artifact_type,
+        title,
+        content_json,
+    )
+    .await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn squad_list_artifacts(
+    db: tauri::State<'_, AppDatabase>,
+    squad_run_id: i32,
+) -> Result<Vec<SquadArtifactInfo>, AppCommandError> {
+    squad_list_artifacts_core(&db, squad_run_id).await
+}
