@@ -66,6 +66,17 @@ import type {
   ChatChannelMessageLog,
   ModelProviderInfo,
   PluginCheckSummary,
+  SquadArtifactInfo,
+  SquadArtifactType,
+  SquadRoleKind,
+  SquadRoleProfileInfo,
+  SquadRoleProfilePatch,
+  SquadRoleRunInfo,
+  SquadRunInfo,
+  SquadRunMode,
+  SquadRunSnapshot,
+  SquadTaskInfo,
+  SquadTaskStatus,
 } from "./types"
 
 export async function listConversations(params?: {
@@ -1676,4 +1687,141 @@ export async function updateModelProvider(params: {
 
 export async function deleteModelProvider(id: number): Promise<void> {
   return getTransport().call("delete_model_provider", { id })
+}
+
+// Squad orchestration
+
+export async function squadGetRoleProfiles(
+  folderId: number
+): Promise<SquadRoleProfileInfo[]> {
+  return getTransport().call("squad_get_role_profiles", { folderId })
+}
+
+export async function squadSeedRoleProfiles(
+  folderId: number
+): Promise<SquadRoleProfileInfo[]> {
+  return getTransport().call("squad_seed_role_profiles", { folderId })
+}
+
+export async function squadUpdateRoleProfile(params: {
+  folderId: number
+  roleKind: SquadRoleKind
+  patch: SquadRoleProfilePatch
+}): Promise<SquadRoleProfileInfo> {
+  return getTransport().call("squad_update_role_profile", params)
+}
+
+export async function squadResetRoleProfile(params: {
+  folderId: number
+  roleKind: SquadRoleKind
+}): Promise<SquadRoleProfileInfo> {
+  return getTransport().call("squad_reset_role_profile", params)
+}
+
+export async function squadCreateRun(params: {
+  folderId: number
+  originConversationId?: number | null
+  mode: SquadRunMode
+  goalSummary: string
+}): Promise<SquadRunSnapshot> {
+  return getTransport().call("squad_create_run", {
+    folderId: params.folderId,
+    originConversationId: params.originConversationId ?? null,
+    mode: params.mode,
+    goalSummary: params.goalSummary,
+  })
+}
+
+export async function squadGetRun(
+  squadRunId: number
+): Promise<SquadRunSnapshot> {
+  return getTransport().call("squad_get_run", { squadRunId })
+}
+
+export async function squadListRuns(folderId: number): Promise<SquadRunInfo[]> {
+  return getTransport().call("squad_list_runs", { folderId })
+}
+
+export async function squadStartRun(params: {
+  squadRunId: number
+  workingDir?: string | null
+}): Promise<void> {
+  return getTransport().call("squad_start_run", {
+    squadRunId: params.squadRunId,
+    workingDir: params.workingDir ?? null,
+  })
+}
+
+export async function squadStopRun(squadRunId: number): Promise<void> {
+  return getTransport().call("squad_stop_run", { squadRunId })
+}
+
+export async function squadConnectRole(params: {
+  squadRunId: number
+  roleKind: SquadRoleKind
+  workingDir?: string | null
+}): Promise<SquadRoleRunInfo> {
+  return getTransport().call("squad_connect_role", {
+    squadRunId: params.squadRunId,
+    roleKind: params.roleKind,
+    workingDir: params.workingDir ?? null,
+  })
+}
+
+export async function squadPromptRole(params: {
+  squadRunId: number
+  roleKind: SquadRoleKind
+  taskId?: number | null
+}): Promise<SquadRoleRunInfo> {
+  return getTransport().call("squad_prompt_role", {
+    squadRunId: params.squadRunId,
+    roleKind: params.roleKind,
+    taskId: params.taskId ?? null,
+  })
+}
+
+export async function squadCreateTask(params: {
+  squadRunId: number
+  assignedRoleKind: SquadRoleKind
+  title: string
+  description: string
+}): Promise<SquadTaskInfo> {
+  return getTransport().call("squad_create_task", params)
+}
+
+export async function squadUpdateTaskStatus(params: {
+  taskId: number
+  status: SquadTaskStatus
+}): Promise<SquadTaskInfo> {
+  return getTransport().call("squad_update_task_status", params)
+}
+
+export async function squadListTasks(
+  squadRunId: number
+): Promise<SquadTaskInfo[]> {
+  return getTransport().call("squad_list_tasks", { squadRunId })
+}
+
+export async function squadCreateArtifact(params: {
+  squadRunId: number
+  roleKind?: SquadRoleKind | null
+  taskId?: number | null
+  artifactType: SquadArtifactType
+  title: string
+  contentJson: string
+}): Promise<SquadArtifactInfo> {
+  return getTransport().call("squad_create_artifact", {
+    squadRunId: params.squadRunId,
+    roleKind: params.roleKind ?? null,
+    taskId: params.taskId ?? null,
+    artifactType: params.artifactType,
+    title: params.title,
+    contentJson: params.contentJson,
+  })
+}
+
+export async function squadListArtifacts(
+  squadRunId: number
+): Promise<SquadArtifactInfo[]> {
+  return getTransport().call("squad_list_artifacts", { squadRunId })
 }

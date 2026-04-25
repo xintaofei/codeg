@@ -6,6 +6,167 @@ export type AgentType =
   | "generic"
   | "cline"
 
+export type SquadRoleKind = "conductor" | "frontend" | "backend" | "worker"
+
+export type SquadRunMode = "manual" | "conductor_dispatch" | "all_hands_review"
+
+export type SquadRunStatus =
+  | "pending"
+  | "preparing"
+  | "running"
+  | "blocked"
+  | "completed"
+  | "failed"
+  | "cancelled"
+
+export type SquadRoleRunStatus =
+  | "pending"
+  | "preparing"
+  | "connecting"
+  | "connected"
+  | "prompting"
+  | "stopped"
+  | "completed"
+  | "failed"
+  | "cancelled"
+
+export type SquadTaskStatus =
+  | "pending"
+  | "assigned"
+  | "running"
+  | "blocked"
+  | "completed"
+  | "failed"
+  | "cancelled"
+
+export type SquadArtifactType =
+  | "summary"
+  | "diff"
+  | "file_patch"
+  | "review"
+  | "terminal"
+  | "plan"
+  | "warning"
+  | "log"
+
+export type SquadWorkspacePolicy =
+  | "read_only"
+  | "write_isolated"
+  | "write_shared"
+
+export interface SquadRoleProfileInfo {
+  id: number
+  folderId: number
+  roleKind: SquadRoleKind
+  enabled: boolean
+  agentType: AgentType
+  registryId: string
+  modelProviderId: number | null
+  modelId: string | null
+  envJson: string | null
+  systemPrompt: string
+  workspacePolicy: SquadWorkspacePolicy
+  defaultRunMode: SquadRunMode
+  modeId: string | null
+  configOptionsJson: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SquadRoleProfilePatch {
+  enabled?: boolean
+  agentType?: AgentType
+  registryId?: string
+  modelProviderId?: number | null
+  modelId?: string | null
+  envJson?: string | null
+  systemPrompt?: string
+  workspacePolicy?: SquadWorkspacePolicy
+  defaultRunMode?: SquadRunMode
+  modeId?: string | null
+  configOptionsJson?: string | null
+}
+
+export interface SquadRunInfo {
+  id: number
+  folderId: number
+  originConversationId: number | null
+  mode: SquadRunMode
+  status: SquadRunStatus
+  goalSummary: string
+  baseBranch: string | null
+  isolationMode: string
+  startedWithDirtyBase: boolean
+  createdAt: string
+  updatedAt: string
+  startedAt: string | null
+  completedAt: string | null
+  cancelledAt: string | null
+  errorMessage: string | null
+}
+
+export interface SquadRoleRunInfo {
+  id: number
+  squadRunId: number
+  roleKind: SquadRoleKind
+  roleProfileSnapshotJson: string
+  connectionId: string | null
+  sessionId: string | null
+  conversationId: number | null
+  workspacePath: string | null
+  branchName: string | null
+  status: SquadRoleRunStatus
+  lastEventAt: string | null
+  budgetStateJson: string | null
+  errorMessage: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SquadTaskInfo {
+  id: number
+  squadRunId: number
+  assignedRoleKind: SquadRoleKind
+  title: string
+  description: string
+  inputSummary: string | null
+  status: SquadTaskStatus
+  dependsOnJson: string | null
+  priority: number
+  createdAt: string
+  updatedAt: string
+  completedAt: string | null
+  errorMessage: string | null
+}
+
+export interface SquadArtifactInfo {
+  id: number
+  squadRunId: number
+  squadRoleRunId: number | null
+  taskId: number | null
+  roleKind: SquadRoleKind | null
+  artifactType: SquadArtifactType
+  title: string
+  contentJson: string
+  createdAt: string
+}
+
+export interface SquadRunSnapshot {
+  run: SquadRunInfo
+  roles: SquadRoleRunInfo[]
+  tasks: SquadTaskInfo[]
+  artifacts: SquadArtifactInfo[]
+}
+
+export interface SquadEvent {
+  type: string
+  squadRunId: number
+  seq: number
+  at: string
+  roleKind?: SquadRoleKind | null
+  payload?: unknown
+}
+
 export type AppErrorCode =
   | "invalid_input"
   | "configuration_missing"
@@ -514,33 +675,6 @@ export type AcpEvent =
       connection_id: string
       used: number
       size: number
-    }
-  | {
-      /** Agent has begun mid-turn context compaction. UI shows a hint. */
-      type: "compaction_started"
-      connection_id: string
-      session_id: string
-    }
-  | {
-      /** Compaction finished; clear the hint. */
-      type: "compaction_finished"
-      connection_id: string
-      session_id: string
-    }
-  | {
-      /** Non-fatal stream parse warning. Lets the UI know the stream
-       * had a hiccup instead of silently freezing. */
-      type: "stream_warning"
-      connection_id: string
-      message: string
-    }
-  | {
-      /** Watchdog aborted the turn after no agent activity for `idle_ms`. */
-      type: "turn_idle_timeout"
-      connection_id: string
-      session_id: string
-      agent_type: string
-      idle_ms: number
     }
 
 // Connection info returned by acp_list_connections

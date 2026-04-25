@@ -15,7 +15,12 @@ import {
 } from "@/lib/panel-state-storage"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 
-export type AuxPanelTab = "file_tree" | "changes" | "git_log" | "session_files"
+export type AuxPanelTab =
+  | "file_tree"
+  | "changes"
+  | "git_log"
+  | "session_files"
+  | "squad"
 
 const STORAGE_KEY = "workspace:right-sidebar"
 

@@ -27,6 +27,8 @@ import { ConversationRuntimeProvider } from "@/contexts/conversation-runtime-con
 import { TabProvider, useTabContext } from "@/contexts/tab-context"
 import { SessionStatsProvider } from "@/contexts/session-stats-context"
 import { SidebarProvider, useSidebarContext } from "@/contexts/sidebar-context"
+import { SquadProvider } from "@/contexts/squad-context"
+import { TabBar } from "@/components/tabs/tab-bar"
 import {
   AuxPanelProvider,
   useAuxPanelContext,
@@ -40,9 +42,8 @@ import {
   WorkspaceProvider,
   useWorkspaceContext,
 } from "@/contexts/workspace-context"
-import { TabBar } from "@/components/tabs/tab-bar"
-import { TerminalPanel } from "@/components/terminal/terminal-panel"
 import { AuxPanel } from "@/components/layout/aux-panel"
+import { TerminalPanel } from "@/components/terminal/terminal-panel"
 import { FileWorkspaceTabBar } from "@/components/files/file-workspace-tab-bar"
 import { FileWorkspacePanel } from "@/components/files/file-workspace-panel"
 import { AppToaster } from "@/components/ui/app-toaster"
@@ -782,11 +783,15 @@ function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
                       <DeepLinkBootstrap />
                       <SessionStatsProvider>
                         <SidebarProvider>
-                          <AuxPanelProvider>
-                            <TerminalProvider>
-                              <FolderLayoutShell>{children}</FolderLayoutShell>
-                            </TerminalProvider>
-                          </AuxPanelProvider>
+                          <SquadProvider>
+                            <AuxPanelProvider>
+                              <TerminalProvider>
+                                <FolderLayoutShell>
+                                  {children}
+                                </FolderLayoutShell>
+                              </TerminalProvider>
+                            </AuxPanelProvider>
+                          </SquadProvider>
                         </SidebarProvider>
                       </SessionStatsProvider>
                     </TabProvider>
