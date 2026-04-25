@@ -640,6 +640,53 @@ pub fn build_router(state: Arc<AppState>, token: String, static_dir: std::path::
             "/delete_model_provider",
             post(handlers::model_provider::delete_model_provider),
         )
+        // ─── Squad ───
+        .route(
+            "/squad_get_role_profiles",
+            post(handlers::squad::squad_get_role_profiles),
+        )
+        .route(
+            "/squad_seed_role_profiles",
+            post(handlers::squad::squad_seed_role_profiles),
+        )
+        .route(
+            "/squad_update_role_profile",
+            post(handlers::squad::squad_update_role_profile),
+        )
+        .route(
+            "/squad_reset_role_profile",
+            post(handlers::squad::squad_reset_role_profile),
+        )
+        .route("/squad_create_run", post(handlers::squad::squad_create_run))
+        .route("/squad_get_run", post(handlers::squad::squad_get_run))
+        .route("/squad_list_runs", post(handlers::squad::squad_list_runs))
+        .route("/squad_start_run", post(handlers::squad::squad_start_run))
+        .route("/squad_stop_run", post(handlers::squad::squad_stop_run))
+        .route(
+            "/squad_connect_role",
+            post(handlers::squad::squad_connect_role),
+        )
+        .route(
+            "/squad_prompt_role",
+            post(handlers::squad::squad_prompt_role),
+        )
+        .route(
+            "/squad_create_task",
+            post(handlers::squad::squad_create_task),
+        )
+        .route(
+            "/squad_update_task_status",
+            post(handlers::squad::squad_update_task_status),
+        )
+        .route("/squad_list_tasks", post(handlers::squad::squad_list_tasks))
+        .route(
+            "/squad_create_artifact",
+            post(handlers::squad::squad_create_artifact),
+        )
+        .route(
+            "/squad_list_artifacts",
+            post(handlers::squad::squad_list_artifacts),
+        )
         // ─── Terminal ───
         .route("/terminal_spawn", post(handlers::terminal::terminal_spawn))
         .route("/terminal_write", post(handlers::terminal::terminal_write))
