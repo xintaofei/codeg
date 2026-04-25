@@ -505,6 +505,7 @@ pub async fn start_web_server(
         runtime_monitor,
         web_server_state: WebServerState::new(), // placeholder; not used by handlers
         chat_channel_manager: crate::app_state::default_chat_channel_manager(),
+        task_tracker: tokio_util::task::TaskTracker::new(),
     });
 
     let router = router::build_router(app_state, token.clone(), static_dir);

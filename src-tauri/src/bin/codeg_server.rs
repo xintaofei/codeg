@@ -132,6 +132,7 @@ async fn async_main() {
         runtime_monitor,
         web_server_state: WebServerState::new(),
         chat_channel_manager: codeg_lib::app_state::default_chat_channel_manager(),
+        task_tracker: tokio_util::task::TaskTracker::new(),
     });
 
     // Install bundled expert skills into the central store

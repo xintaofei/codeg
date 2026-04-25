@@ -77,7 +77,12 @@ async fn handle_ws_connection(
 }
 
 fn schedule_web_client_cleanup(state: Arc<AppState>, cleanup_lease: CleanupLease) {
-    tokio::spawn(async move {
+    // Track the cleanup task so server shutdown can await pending cleanups
+    // instead of dropping them mid-sleep.
+    let tracker = state.task_tracker.clone();
+    let state_for_task = state.clone();
+    tracker.spawn(async move {
+        let state = state_for_task;
         sleep(WEB_CLIENT_CLEANUP_DELAY).await;
         if !state
             .web_client_registry

@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use tokio_util::task::TaskTracker;
+
 use crate::acp::manager::ConnectionManager;
 use crate::chat_channel::manager::ChatChannelManager;
 use crate::db::AppDatabase;
@@ -21,6 +23,9 @@ pub struct AppState {
     pub runtime_monitor: Arc<RuntimeMonitor>,
     pub web_server_state: WebServerState,
     pub chat_channel_manager: ChatChannelManager,
+    /// Tracks background tasks spawned by web request handlers (e.g. WS
+    /// cleanup timers). Allows graceful shutdown to await pending work.
+    pub task_tracker: TaskTracker,
 }
 
 pub fn default_connection_manager() -> ConnectionManager {
