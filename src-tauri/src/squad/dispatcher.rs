@@ -46,12 +46,14 @@ pub async fn connect_role(
         .ok_or_else(|| AcpError::protocol("squad role run not found"))?;
     let profile = parse_profile(&role_run)?;
 
-    let role_workspace = worktree_manager::role_workspace_path(
+    let role_workspace = worktree_manager::ensure_role_workspace(
         working_dir.as_deref(),
         run_id,
         role_kind,
         profile.workspace_policy,
-    );
+    )
+    .await
+    .map_err(|e| AcpError::protocol(format!("failed to materialize role workspace: {e}")))?;
     let role_run =
         squad_service::update_role_workspace(&db.conn, role_run.id, role_workspace.clone(), None)
             .await

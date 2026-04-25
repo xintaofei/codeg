@@ -102,6 +102,9 @@ mac-notification-sys = "0.6"
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
 junction = "1"
 
+[dev-dependencies]
+tempfile = "3"
+
 [patch.crates-io]
 sacp-tokio = { path = "vendor/sacp-tokio" }
 
