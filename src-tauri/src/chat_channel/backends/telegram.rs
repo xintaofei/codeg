@@ -22,11 +22,12 @@ impl TelegramBackend {
         Self {
             bot_token,
             chat_id,
-            client: reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(60))
-                .build()
-                .unwrap_or_default(),
+            client: crate::network::http_client::build_client_with(
+                crate::network::http_client::ClientConfig::with_timeouts(
+                    Duration::from_secs(10),
+                    Duration::from_secs(60),
+                ),
+            ),
             status: Arc::new(Mutex::new(ChannelConnectionStatus::Disconnected)),
             channel_id,
             shutdown_tx: Arc::new(Mutex::new(None)),

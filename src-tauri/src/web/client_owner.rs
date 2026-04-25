@@ -105,7 +105,9 @@ impl WebClientRegistry {
 
     pub async fn has_active_client(&self, client_id: &str) -> bool {
         let inner = self.inner.lock().await;
-        inner.get(client_id).is_some_and(|entry| entry.active_sockets > 0)
+        inner
+            .get(client_id)
+            .is_some_and(|entry| entry.active_sockets > 0)
     }
 
     pub async fn list_clients(&self) -> Vec<WebClientInfo> {

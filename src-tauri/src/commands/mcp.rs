@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
@@ -12,14 +11,6 @@ use crate::app_error::AppCommandError;
 
 const MARKETPLACE_OFFICIAL: &str = "official_registry";
 const MARKETPLACE_SMITHERY: &str = "smithery";
-static MARKETPLACE_HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(8))
-        .timeout(Duration::from_secs(20))
-        .user_agent("codeg-mcp-market/1.0")
-        .build()
-        .map_err(|e| format!("failed to initialize marketplace HTTP client: {e}"))
-});
 
 fn mcp_invalid_input(message: impl Into<String>) -> AppCommandError {
     AppCommandError::invalid_input(message)
@@ -551,9 +542,7 @@ fn gemini_config_path() -> PathBuf {
 }
 
 fn generic_config_path() -> PathBuf {
-    home_dir_or_default()
-        .join(".generic")
-        .join("generic.json")
+    home_dir_or_default().join(".generic").join("generic.json")
 }
 
 fn cline_config_path() -> PathBuf {
@@ -650,10 +639,13 @@ fn contains_unresolved_placeholder(value: &str) -> bool {
 }
 
 fn marketplace_http_client() -> Result<reqwest::Client, AppCommandError> {
-    match &*MARKETPLACE_HTTP_CLIENT {
-        Ok(client) => Ok(client.clone()),
-        Err(err) => Err(mcp_network(err.clone())),
-    }
+    Ok(crate::network::http_client::build_client_with(
+        crate::network::http_client::ClientConfig::with_timeouts(
+            Duration::from_secs(8),
+            Duration::from_secs(20),
+        )
+        .user_agent("codeg-mcp-market/1.0"),
+    ))
 }
 
 fn should_retry_http_status(status: reqwest::StatusCode) -> bool {

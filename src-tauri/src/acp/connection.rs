@@ -863,6 +863,7 @@ fn build_load_session_request(
 }
 
 /// The main ACP connection loop.
+#[allow(clippy::too_many_arguments)]
 async fn run_connection(
     agent: AcpAgent,
     connection_id: String,
@@ -1220,13 +1221,8 @@ async fn run_connection(
                         let fallback_sid = new_resp.session_id.0.to_string();
                         let initial_config_options = new_resp.config_options.clone();
                         let mut session = cx.attach_session(new_resp, Default::default())?;
-                        emit_session_started(
-                            &connections,
-                            &emitter_clone,
-                            &conn_id,
-                            &fallback_sid,
-                        )
-                        .await;
+                        emit_session_started(&connections, &emitter_clone, &conn_id, &fallback_sid)
+                            .await;
                         emit_session_modes(&conn_id, &emitter_clone, session.modes());
                         emit_session_config_options(
                             &conn_id,
@@ -2040,9 +2036,8 @@ async fn run_conversation_loop<'a>(
                 // stuck in "prompting" forever. Reset by every observable
                 // signal (stream notification, parse warning, terminal
                 // poll tick, command, prompt response).
-                let idle_deadline = tokio::time::sleep(std::time::Duration::from_millis(
-                    TURN_IDLE_TIMEOUT_MS,
-                ));
+                let idle_deadline =
+                    tokio::time::sleep(std::time::Duration::from_millis(TURN_IDLE_TIMEOUT_MS));
                 tokio::pin!(idle_deadline);
                 // Helper macro: every active branch resets the deadline.
                 // Using a macro instead of a closure avoids re-borrowing

@@ -62,7 +62,11 @@ jobs:
 
       - name: cargo clippy (server mode)
         working-directory: src-tauri
-        run: cargo clippy --bin codeg-server --no-default-features --all-targets -- -D warnings
+        # Cannot use --all-targets here: the desktop `codeg` bin re-exports
+        # `tauri_app::run` which is cfg-gated to the tauri-runtime feature,
+        # so building it without the feature fails. We lint the lib + the
+        # explicit server bin instead.
+        run: cargo clippy --lib --bin codeg-server --no-default-features -- -D warnings
 
   backend-desktop:
     name: Backend (Tauri desktop)

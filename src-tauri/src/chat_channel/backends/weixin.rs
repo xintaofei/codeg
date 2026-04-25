@@ -17,19 +17,17 @@ const ILINK_CHANNEL_VERSION: &str = "1.0.2";
 /// Maximum number of messages buffered while context_token is expired.
 const MAX_PENDING_MESSAGES: usize = 50;
 
-/// Shared HTTP client for QR code auth requests (avoids re-creating TLS state).
+/// HTTP client for QR code auth requests. Built fresh each call so proxy
+/// updates are picked up without requiring a process restart; the QR auth
+/// flow runs at most a handful of times per session, so the TLS-state
+/// rebuild cost is irrelevant.
 fn qr_client() -> reqwest::Client {
-    use std::sync::OnceLock;
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(15))
-                .build()
-                .unwrap_or_default()
-        })
-        .clone()
+    crate::network::http_client::build_client_with(
+        crate::network::http_client::ClientConfig::with_timeouts(
+            Duration::from_secs(10),
+            Duration::from_secs(15),
+        ),
+    )
 }
 
 // ── QR code auth types (public, used by commands) ──
@@ -266,11 +264,12 @@ impl WeixinBackend {
         Self {
             bot_token,
             base_url,
-            client: reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(45))
-                .build()
-                .unwrap_or_default(),
+            client: crate::network::http_client::build_client_with(
+                crate::network::http_client::ClientConfig::with_timeouts(
+                    Duration::from_secs(10),
+                    Duration::from_secs(45),
+                ),
+            ),
             status: Arc::new(Mutex::new(ChannelConnectionStatus::Disconnected)),
             channel_id,
             shutdown_tx: Arc::new(Mutex::new(None)),

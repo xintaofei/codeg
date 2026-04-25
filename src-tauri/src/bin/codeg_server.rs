@@ -39,7 +39,12 @@ async fn async_main() {
     let host = std::env::var("CODEG_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
     let disable_auth = std::env::var("CODEG_DISABLE_AUTH")
         .ok()
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false);
     let token = if disable_auth {
         String::new()

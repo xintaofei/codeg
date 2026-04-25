@@ -1,9 +1,9 @@
 use chrono::Utc;
-use std::collections::HashMap;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, DatabaseConnection, EntityTrait,
-    JoinType, QueryFilter, QueryOrder, QuerySelect, RelationTrait, Set,
+    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, DatabaseConnection, EntityTrait, JoinType,
+    QueryFilter, QueryOrder, QuerySelect, RelationTrait, Set,
 };
+use std::collections::HashMap;
 
 use crate::db::entities::{conversation, folder};
 use crate::db::error::DbError;
@@ -324,7 +324,11 @@ fn search_score(row: &DbConversationSummary, query: &str) -> Option<i32> {
     score = score.max(field_score(row.model.as_deref(), query, 70, 60, 45));
     score = score.max(field_score(row.git_branch.as_deref(), query, 65, 55, 40));
 
-    if score == 0 { None } else { Some(score) }
+    if score == 0 {
+        None
+    } else {
+        Some(score)
+    }
 }
 
 fn field_score(

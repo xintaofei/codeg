@@ -24,7 +24,9 @@ pub(crate) async fn ws_handler(
     Query(params): Query<WsQueryParams>,
     Extension(state): Extension<Arc<AppState>>,
 ) -> impl IntoResponse {
-    let client_id = params.client_id.and_then(|value| normalize_web_client_id(&value));
+    let client_id = params
+        .client_id
+        .and_then(|value| normalize_web_client_id(&value));
     ws.on_upgrade(|socket| handle_ws_connection(socket, state, client_id))
 }
 
@@ -70,7 +72,11 @@ async fn handle_ws_connection(
     }
 
     if let Some(client_id) = client_id {
-        if let Some(cleanup_lease) = state.web_client_registry.unregister_socket(&client_id).await {
+        if let Some(cleanup_lease) = state
+            .web_client_registry
+            .unregister_socket(&client_id)
+            .await
+        {
             schedule_web_client_cleanup(state, cleanup_lease);
         }
     }

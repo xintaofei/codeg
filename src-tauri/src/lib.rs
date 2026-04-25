@@ -27,9 +27,8 @@ mod tauri_app {
         acp as acp_commands, chat_channel as chat_channel_commands, conversations,
         experts as experts_commands, folder_commands, folders, mcp as mcp_commands,
         model_provider as model_provider_commands, notification, project_boot,
-        runtime as runtime_commands, system_settings,
-        terminal as terminal_commands, version_control, windows,
-        workspace_state as workspace_state_commands,
+        runtime as runtime_commands, system_settings, terminal as terminal_commands,
+        version_control, windows, workspace_state as workspace_state_commands,
     };
     use crate::runtime_monitor::RuntimeMonitor;
     use crate::terminal::manager::TerminalManager;
@@ -60,7 +59,9 @@ mod tauri_app {
             .manage(windows::CommitWindowState::new())
             .manage(windows::MergeWindowState::new())
             .manage(web::WebServerState::new())
-            .manage(std::sync::Arc::new(web::client_owner::WebClientRegistry::new()))
+            .manage(std::sync::Arc::new(
+                web::client_owner::WebClientRegistry::new(),
+            ))
             .manage(std::sync::Arc::new(
                 web::event_bridge::WebEventBroadcaster::new(),
             ))
@@ -74,7 +75,10 @@ mod tauri_app {
                 app.manage(database);
 
                 {
-                    let runtime_monitor = app.state::<std::sync::Arc<RuntimeMonitor>>().inner().clone();
+                    let runtime_monitor = app
+                        .state::<std::sync::Arc<RuntimeMonitor>>()
+                        .inner()
+                        .clone();
                     let connection_manager = app.state::<ConnectionManager>().inner().clone_ref();
                     let web_client_registry = app
                         .state::<std::sync::Arc<web::client_owner::WebClientRegistry>>()
@@ -84,7 +88,8 @@ mod tauri_app {
                     connection_manager.start_orphan_watchdog(web_client_registry);
 
                     let static_dir = web::find_static_dir_tauri(&app.handle());
-                    let build_consistency = crate::build_info::evaluate_build_consistency(&static_dir);
+                    let build_consistency =
+                        crate::build_info::evaluate_build_consistency(&static_dir);
                     runtime_monitor.set_build_consistency(build_consistency.clone());
                     runtime_monitor.record(
                         if build_consistency.status == "ok" {

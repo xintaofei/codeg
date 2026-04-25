@@ -53,7 +53,7 @@ struct RegistryBinaryPlatformItem {
 }
 
 async fn fetch_registry_payload() -> Result<RegistryPayload, AppCommandError> {
-    let response = reqwest::Client::new()
+    let response = crate::network::http_client::build_client()
         .get(REGISTRY_URL)
         .send()
         .await

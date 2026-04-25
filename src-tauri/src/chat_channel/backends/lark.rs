@@ -153,11 +153,12 @@ impl LarkBackend {
             app_secret,
             chat_id,
             channel_id,
-            client: reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(30))
-                .build()
-                .unwrap_or_default(),
+            client: crate::network::http_client::build_client_with(
+                crate::network::http_client::ClientConfig::with_timeouts(
+                    Duration::from_secs(10),
+                    Duration::from_secs(30),
+                ),
+            ),
             token_cache: Arc::new(RwLock::new(None)),
             status: Arc::new(Mutex::new(ChannelConnectionStatus::Disconnected)),
             shutdown_tx: Arc::new(Mutex::new(None)),
