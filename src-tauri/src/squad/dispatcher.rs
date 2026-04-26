@@ -10,7 +10,8 @@ use crate::models::squad::{
     SquadRoleKind, SquadRoleProfileInfo, SquadRoleRunInfo, SquadRoleRunStatus, SquadRunMode,
     SquadRunStatus, SquadTaskInfo,
 };
-use crate::squad::events::{emit_payload, RoleConnectionAttachedPayload};
+use crate::squad::conductor_parser::{parse_conductor_output, ParseReport};
+use crate::squad::events::{emit_payload, emit_squad_event, RoleConnectionAttachedPayload};
 use crate::squad::prompt_builder;
 use crate::squad::worktree_manager;
 use crate::web::event_bridge::EventEmitter;
@@ -417,4 +418,73 @@ pub async fn stop_run(
 
 pub fn _agent_type_for_profile(profile: &SquadRoleProfileInfo) -> AgentType {
     profile.agent_type
+}
+
+/// Outcome of feeding a Conductor reply through the parser + task-writer pipeline.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyConductorOutputResult {
+    pub created_tasks: Vec<SquadTaskInfo>,
+    pub skipped_reasons: Vec<String>,
+}
+
+/// Parse a Conductor's free-form reply into a task list and persist each
+/// recovered item as a `squad_task` row. Emits `squad_task_created` per task
+/// and a single trailing `squad_conductor_plan_applied` summary event so the
+/// UI can refresh once instead of N times.
+///
+/// This is intentionally callable from any layer (Tauri command, Web handler,
+/// or — eventually — an ACP TurnComplete listener) so the pipeline doesn't
+/// have to be re-implemented when the live stream gets wired up.
+pub async fn apply_conductor_output(
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+    run_id: i32,
+    raw_text: &str,
+) -> Result<ApplyConductorOutputResult, AcpError> {
+    // Validate the run exists so we don't write orphan tasks.
+    let _ = squad_service::get_run(&db.conn, run_id)
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+
+    let ParseReport { tasks, skipped } = parse_conductor_output(raw_text);
+
+    let mut created = Vec::with_capacity(tasks.len());
+    for parsed in tasks {
+        let task = squad_service::create_task(
+            &db.conn,
+            run_id,
+            parsed.role,
+            parsed.title,
+            parsed.description,
+        )
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+        emit_payload(
+            emitter,
+            "squad_task_created",
+            run_id,
+            Some(parsed.role),
+            &task,
+        );
+        created.push(task);
+    }
+
+    let summary = serde_json::json!({
+        "createdCount": created.len(),
+        "skippedCount": skipped.len(),
+        "skippedReasons": &skipped,
+    });
+    emit_squad_event(
+        emitter,
+        "squad_conductor_plan_applied",
+        run_id,
+        None,
+        Some(summary),
+    );
+
+    Ok(ApplyConductorOutputResult {
+        created_tasks: created,
+        skipped_reasons: skipped,
+    })
 }

@@ -211,6 +211,17 @@ pub async fn squad_list_artifacts_core(
         .map_err(AppCommandError::from)
 }
 
+pub async fn squad_apply_conductor_output_core(
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+    squad_run_id: i32,
+    raw_text: String,
+) -> Result<dispatcher::ApplyConductorOutputResult, AppCommandError> {
+    dispatcher::apply_conductor_output(db, emitter, squad_run_id, &raw_text)
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[tauri::command]
 pub async fn squad_get_role_profiles(
@@ -402,4 +413,16 @@ pub async fn squad_list_artifacts(
     squad_run_id: i32,
 ) -> Result<Vec<SquadArtifactInfo>, AppCommandError> {
     squad_list_artifacts_core(&db, squad_run_id).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn squad_apply_conductor_output(
+    db: tauri::State<'_, AppDatabase>,
+    app: tauri::AppHandle,
+    squad_run_id: i32,
+    raw_text: String,
+) -> Result<dispatcher::ApplyConductorOutputResult, AppCommandError> {
+    let emitter = EventEmitter::Tauri(app);
+    squad_apply_conductor_output_core(&db, &emitter, squad_run_id, raw_text).await
 }

@@ -461,6 +461,7 @@ mod tauri_app {
                 squad_commands::squad_list_tasks,
                 squad_commands::squad_create_artifact,
                 squad_commands::squad_list_artifacts,
+                squad_commands::squad_apply_conductor_output,
             ])
             .build(tauri::generate_context!())
             .expect("error while building tauri application")
