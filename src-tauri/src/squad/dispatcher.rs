@@ -378,6 +378,15 @@ pub async fn start_run(
     }
 }
 
+/// Grace period to let each ACP connection loop observe `Disconnect`,
+/// release terminals and pending permission responders, and exit
+/// cleanly before we flip the squad role row to `Stopped`. The
+/// connection task itself doesn't expose a "terminated" handle, so
+/// this drain window is the closest we can get without restructuring
+/// `acp::manager`. Tuned conservatively — disconnect handling in
+/// `acp::connection` is non-blocking aside from `release_all_for_session`.
+const STOP_RUN_DRAIN_MS: u64 = 250;
+
 pub async fn stop_run(
     db: &AppDatabase,
     manager: &ConnectionManager,
@@ -387,10 +396,36 @@ pub async fn stop_run(
     let roles = squad_service::list_role_runs(&db.conn, run_id)
         .await
         .map_err(|e| AcpError::protocol(e.to_string()))?;
+
+    // Phase 1: fan-out disconnect requests in parallel. We don't flip
+    // role status to Stopped yet — the ACP connection loop is still
+    // tearing down terminals and responding to in-flight permission
+    // requests. Doing the status flip here would race the UI into
+    // showing "Stopped" while the agent process is still emitting
+    // events.
+    let disconnect_futures = roles
+        .iter()
+        .filter_map(|role| role.connection_id.clone())
+        .map(|conn_id| {
+            let manager = manager.clone();
+            async move {
+                let _ = manager.disconnect(&conn_id).await;
+            }
+        });
+    futures::future::join_all(disconnect_futures).await;
+
+    // Phase 2: brief drain window so the per-connection event loop
+    // can observe the Disconnect command, run its cleanup branch in
+    // `acp::connection`, and break out before we record the terminal
+    // state. Fixed-duration; if the agent is wedged we proceed anyway
+    // — the connection task is detached on its own runtime and the DB
+    // row is what the user sees.
+    if !roles.is_empty() {
+        tokio::time::sleep(std::time::Duration::from_millis(STOP_RUN_DRAIN_MS)).await;
+    }
+
+    // Phase 3: now record terminal status per role and emit events.
     for role in roles {
-        if let Some(connection_id) = role.connection_id.clone() {
-            let _ = manager.disconnect(&connection_id).await;
-        }
         let stopped = squad_service::update_role_connection(
             &db.conn,
             role.id,
@@ -409,6 +444,7 @@ pub async fn stop_run(
             &stopped,
         );
     }
+
     let run = squad_service::set_run_status(&db.conn, run_id, SquadRunStatus::Cancelled, None)
         .await
         .map_err(|e| AcpError::protocol(e.to_string()))?;
