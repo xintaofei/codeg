@@ -16,7 +16,7 @@ function makeRun(overrides: Partial<SquadRunInfo> = {}): SquadRunInfo {
     id: 1,
     folderId: 10,
     originConversationId: null,
-    mode: "feature",
+    mode: "manual",
     status: "running",
     goalSummary: "ship it",
     baseBranch: "main",
@@ -43,7 +43,7 @@ function makeRole(overrides: Partial<SquadRoleRunInfo> = {}): SquadRoleRunInfo {
     conversationId: null,
     workspacePath: null,
     branchName: null,
-    status: "idle",
+    status: "pending",
     lastEventAt: null,
     budgetStateJson: null,
     errorMessage: null,
@@ -155,16 +155,16 @@ describe("applySquadEvent", () => {
   })
 
   it("upserts role on squad_role_status_changed", () => {
-    const existing = makeRole({ id: 100, status: "idle" })
+    const existing = makeRole({ id: 100, status: "pending" })
     const snapshot = makeSnapshot({ roles: [existing] })
-    const updated = makeRole({ id: 100, status: "working" })
+    const updated = makeRole({ id: 100, status: "connected" })
     const result = applySquadEvent(
       snapshot,
       makeEvent({ type: "squad_role_status_changed", payload: updated })
     )
     expect(result.changed).toBe(true)
     expect(result.snapshot?.roles).toHaveLength(1)
-    expect(result.snapshot?.roles[0].status).toBe("working")
+    expect(result.snapshot?.roles[0].status).toBe("connected")
   })
 
   it("appends a brand-new role on squad_role_status_changed", () => {
@@ -297,15 +297,15 @@ describe("applySquadEvent", () => {
   })
 
   it("does not mutate the input snapshot when applying changes", () => {
-    const role = makeRole({ id: 100, status: "idle" })
+    const role = makeRole({ id: 100, status: "pending" })
     const snapshot = makeSnapshot({ roles: [role] })
-    const updated = makeRole({ id: 100, status: "working" })
+    const updated = makeRole({ id: 100, status: "connected" })
     const result = applySquadEvent(
       snapshot,
       makeEvent({ type: "squad_role_status_changed", payload: updated })
     )
     expect(result.snapshot).not.toBe(snapshot)
-    expect(snapshot.roles[0].status).toBe("idle")
-    expect(result.snapshot?.roles[0].status).toBe("working")
+    expect(snapshot.roles[0].status).toBe("pending")
+    expect(result.snapshot?.roles[0].status).toBe("connected")
   })
 })
