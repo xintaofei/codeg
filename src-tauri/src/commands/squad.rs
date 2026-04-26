@@ -222,6 +222,17 @@ pub async fn squad_apply_conductor_output_core(
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))
 }
 
+pub async fn squad_dispatch_pending_tasks_core(
+    db: &AppDatabase,
+    manager: &ConnectionManager,
+    emitter: &EventEmitter,
+    squad_run_id: i32,
+) -> Result<dispatcher::DispatchPendingTasksResult, AppCommandError> {
+    dispatcher::dispatch_pending_tasks(db, manager, emitter, squad_run_id)
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[tauri::command]
 pub async fn squad_get_role_profiles(
@@ -425,4 +436,16 @@ pub async fn squad_apply_conductor_output(
 ) -> Result<dispatcher::ApplyConductorOutputResult, AppCommandError> {
     let emitter = EventEmitter::Tauri(app);
     squad_apply_conductor_output_core(&db, &emitter, squad_run_id, raw_text).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn squad_dispatch_pending_tasks(
+    db: tauri::State<'_, AppDatabase>,
+    manager: tauri::State<'_, ConnectionManager>,
+    app: tauri::AppHandle,
+    squad_run_id: i32,
+) -> Result<dispatcher::DispatchPendingTasksResult, AppCommandError> {
+    let emitter = EventEmitter::Tauri(app);
+    squad_dispatch_pending_tasks_core(&db, &manager, &emitter, squad_run_id).await
 }

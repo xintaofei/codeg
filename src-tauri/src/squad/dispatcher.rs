@@ -8,7 +8,7 @@ use crate::db::AppDatabase;
 use crate::models::agent::AgentType;
 use crate::models::squad::{
     SquadRoleKind, SquadRoleProfileInfo, SquadRoleRunInfo, SquadRoleRunStatus, SquadRunMode,
-    SquadRunStatus, SquadTaskInfo,
+    SquadRunStatus, SquadTaskInfo, SquadTaskStatus,
 };
 use crate::squad::conductor_parser::{parse_conductor_output, ParseReport};
 use crate::squad::events::{emit_payload, emit_squad_event, RoleConnectionAttachedPayload};
@@ -487,4 +487,275 @@ pub async fn apply_conductor_output(
         created_tasks: created,
         skipped_reasons: skipped,
     })
+}
+
+/// Per-task dispatch outcome — useful for tests, logs, and the UI summary.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DispatchedTask {
+    pub task_id: i32,
+    pub role_kind: SquadRoleKind,
+    pub outcome: DispatchOutcome,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DispatchOutcome {
+    /// Task was prompted to its role; status moved Pending → Assigned.
+    Dispatched,
+    /// Skipped this round because at least one dependency hasn't completed yet.
+    BlockedOnDeps,
+    /// The assigned role isn't connected (or not enabled) — left Pending.
+    RoleNotConnected,
+    /// Already in flight (Assigned/Running); not re-dispatched.
+    AlreadyInFlight,
+    /// Failed to prompt the role; task moved Pending → Failed with note.
+    PromptFailed,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DispatchPendingTasksResult {
+    pub run_id: i32,
+    pub considered: usize,
+    pub dispatched: Vec<DispatchedTask>,
+}
+
+/// Walk every task on a run and prompt each Pending task whose dependencies
+/// are satisfied. Idempotent: re-running won't re-dispatch tasks already in
+/// flight, and tasks blocked on deps will simply be reported and tried again
+/// next call. Intended to be invoked after `apply_conductor_output` and again
+/// each time a task transitions to Completed.
+pub async fn dispatch_pending_tasks(
+    db: &AppDatabase,
+    manager: &ConnectionManager,
+    emitter: &EventEmitter,
+    run_id: i32,
+) -> Result<DispatchPendingTasksResult, AcpError> {
+    let snapshot = squad_service::get_run(&db.conn, run_id)
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+
+    // Build a quick lookup of which roles are currently connected so we don't
+    // try to prompt a role that isn't even up.
+    let connected_roles: std::collections::HashSet<SquadRoleKind> = snapshot
+        .roles
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.status,
+                SquadRoleRunStatus::Connected | SquadRoleRunStatus::Prompting
+            )
+        })
+        .map(|r| r.role_kind)
+        .collect();
+
+    // Index task statuses for dependency checks.
+    let task_status: std::collections::HashMap<i32, SquadTaskStatus> =
+        snapshot.tasks.iter().map(|t| (t.id, t.status)).collect();
+
+    let mut dispatched = Vec::new();
+    let considered = snapshot.tasks.len();
+
+    for task in &snapshot.tasks {
+        match task.status {
+            SquadTaskStatus::Pending => {}
+            SquadTaskStatus::Assigned | SquadTaskStatus::Running => {
+                dispatched.push(DispatchedTask {
+                    task_id: task.id,
+                    role_kind: task.assigned_role_kind,
+                    outcome: DispatchOutcome::AlreadyInFlight,
+                    note: None,
+                });
+                continue;
+            }
+            // Blocked / Completed / Failed / Cancelled: nothing to do this pass.
+            _ => continue,
+        }
+
+        if !deps_satisfied(task, &task_status) {
+            dispatched.push(DispatchedTask {
+                task_id: task.id,
+                role_kind: task.assigned_role_kind,
+                outcome: DispatchOutcome::BlockedOnDeps,
+                note: None,
+            });
+            continue;
+        }
+
+        if !connected_roles.contains(&task.assigned_role_kind) {
+            dispatched.push(DispatchedTask {
+                task_id: task.id,
+                role_kind: task.assigned_role_kind,
+                outcome: DispatchOutcome::RoleNotConnected,
+                note: None,
+            });
+            continue;
+        }
+
+        // Move to Assigned *before* prompting so a parallel dispatch_pending_tasks
+        // call can't double-fire.
+        let assigned =
+            squad_service::update_task_status(&db.conn, task.id, SquadTaskStatus::Assigned)
+                .await
+                .map_err(|e| AcpError::protocol(e.to_string()))?;
+        emit_payload(
+            emitter,
+            "squad_task_status_changed",
+            run_id,
+            Some(task.assigned_role_kind),
+            &assigned,
+        );
+
+        match prompt_role(
+            db,
+            manager,
+            emitter,
+            run_id,
+            task.assigned_role_kind,
+            Some(assigned.clone()),
+        )
+        .await
+        {
+            Ok(_) => {
+                dispatched.push(DispatchedTask {
+                    task_id: task.id,
+                    role_kind: task.assigned_role_kind,
+                    outcome: DispatchOutcome::Dispatched,
+                    note: None,
+                });
+            }
+            Err(err) => {
+                let note = err.to_string();
+                let failed =
+                    squad_service::update_task_status(&db.conn, task.id, SquadTaskStatus::Failed)
+                        .await
+                        .map_err(|e| AcpError::protocol(e.to_string()))?;
+                emit_payload(
+                    emitter,
+                    "squad_task_status_changed",
+                    run_id,
+                    Some(task.assigned_role_kind),
+                    &failed,
+                );
+                dispatched.push(DispatchedTask {
+                    task_id: task.id,
+                    role_kind: task.assigned_role_kind,
+                    outcome: DispatchOutcome::PromptFailed,
+                    note: Some(note),
+                });
+            }
+        }
+    }
+
+    let summary = serde_json::json!({
+        "considered": considered,
+        "dispatched": &dispatched,
+    });
+    emit_squad_event(
+        emitter,
+        "squad_dispatch_round_completed",
+        run_id,
+        None,
+        Some(summary),
+    );
+
+    Ok(DispatchPendingTasksResult {
+        run_id,
+        considered,
+        dispatched,
+    })
+}
+
+/// Returns true when every task id in `task.depends_on_json` (if any) has
+/// status Completed. Missing/unparsable dep lists are treated as "no deps"
+/// rather than failing — the parser is best-effort.
+fn deps_satisfied(
+    task: &SquadTaskInfo,
+    statuses: &std::collections::HashMap<i32, SquadTaskStatus>,
+) -> bool {
+    let Some(raw) = task.depends_on_json.as_deref() else {
+        return true;
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let deps: Vec<i32> = match serde_json::from_str(trimmed) {
+        Ok(deps) => deps,
+        Err(_) => return true,
+    };
+    deps.iter()
+        .all(|dep_id| matches!(statuses.get(dep_id), Some(SquadTaskStatus::Completed)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task_with_deps(id: i32, status: SquadTaskStatus, deps: Option<&str>) -> SquadTaskInfo {
+        SquadTaskInfo {
+            id,
+            squad_run_id: 1,
+            assigned_role_kind: SquadRoleKind::Worker,
+            title: format!("t{id}"),
+            description: String::new(),
+            input_summary: None,
+            status,
+            depends_on_json: deps.map(str::to_string),
+            priority: 0,
+            created_at: String::new(),
+            updated_at: String::new(),
+            completed_at: None,
+            error_message: None,
+        }
+    }
+
+    #[test]
+    fn deps_none_means_satisfied() {
+        let t = task_with_deps(1, SquadTaskStatus::Pending, None);
+        let map = std::collections::HashMap::new();
+        assert!(deps_satisfied(&t, &map));
+    }
+
+    #[test]
+    fn deps_empty_array_means_satisfied() {
+        let t = task_with_deps(1, SquadTaskStatus::Pending, Some("[]"));
+        let map = std::collections::HashMap::new();
+        assert!(deps_satisfied(&t, &map));
+    }
+
+    #[test]
+    fn deps_unparsable_treated_as_satisfied() {
+        let t = task_with_deps(1, SquadTaskStatus::Pending, Some("not json"));
+        let map = std::collections::HashMap::new();
+        assert!(deps_satisfied(&t, &map));
+    }
+
+    #[test]
+    fn deps_block_when_any_incomplete() {
+        let t = task_with_deps(3, SquadTaskStatus::Pending, Some("[1, 2]"));
+        let mut map = std::collections::HashMap::new();
+        map.insert(1, SquadTaskStatus::Completed);
+        map.insert(2, SquadTaskStatus::Running);
+        assert!(!deps_satisfied(&t, &map));
+    }
+
+    #[test]
+    fn deps_all_completed_unblocks() {
+        let t = task_with_deps(3, SquadTaskStatus::Pending, Some("[1, 2]"));
+        let mut map = std::collections::HashMap::new();
+        map.insert(1, SquadTaskStatus::Completed);
+        map.insert(2, SquadTaskStatus::Completed);
+        assert!(deps_satisfied(&t, &map));
+    }
+
+    #[test]
+    fn deps_missing_id_blocks() {
+        // dep id we have no record of — be conservative and block.
+        let t = task_with_deps(3, SquadTaskStatus::Pending, Some("[99]"));
+        let map = std::collections::HashMap::new();
+        assert!(!deps_satisfied(&t, &map));
+    }
 }
