@@ -93,6 +93,14 @@ export function SquadProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Track the active run snapshot in a ref so callbacks can read the
+  // latest value without re-binding when state changes. Declared up
+  // front so any callback below can rely on it.
+  const activeRunRef = useRef<SquadRunSnapshot | null>(null)
+  useEffect(() => {
+    activeRunRef.current = activeRun
+  }, [activeRun])
+
   const loadForFolder = useCallback(async (folderId: number) => {
     setLoading(true)
     try {
@@ -102,8 +110,16 @@ export function SquadProvider({ children }: { children: ReactNode }) {
       ])
       setProfiles(nextProfiles)
       setRuns(nextRuns)
-      if (nextRuns[0]) {
-        setActiveRun(await squadGetRun(nextRuns[0].id))
+      // Prefer keeping the currently-selected run if it still exists in
+      // the folder; otherwise pick the most recent. This avoids clobbering
+      // a user's selection on a routine refresh.
+      const previousId = activeRunRef.current?.run.id
+      const stillSelected = previousId
+        ? nextRuns.find((r) => r.id === previousId)
+        : null
+      const target = stillSelected ?? nextRuns[0]
+      if (target) {
+        setActiveRun(await squadGetRun(target.id))
       } else {
         setActiveRun(null)
       }
@@ -127,6 +143,7 @@ export function SquadProvider({ children }: { children: ReactNode }) {
         snapshot.run,
         ...prev.filter((r) => r.id !== snapshot.run.id),
       ])
+      setError(null)
       return snapshot
     },
     []
@@ -168,8 +185,11 @@ export function SquadProvider({ children }: { children: ReactNode }) {
       title: string
       description: string
     }) => {
+      // Backend emits `squad_task_created` which the event reducer in
+      // useEffect below patches into activeRun.tasks; we don't need a
+      // follow-up squadGetRun here. The optimistic returned task lets
+      // callers chain on the new id immediately.
       const task = await squadCreateTask(params)
-      setActiveRun(await squadGetRun(params.squadRunId))
       setError(null)
       return task
     },
@@ -178,8 +198,9 @@ export function SquadProvider({ children }: { children: ReactNode }) {
 
   const updateTaskStatus = useCallback(
     async (params: { taskId: number; status: SquadTaskStatus }) => {
+      // `squad_task_status_changed` event will patch activeRun.tasks via
+      // the reducer.
       const task = await squadUpdateTaskStatus(params)
-      setActiveRun(await squadGetRun(task.squadRunId))
       setError(null)
       return task
     },
@@ -192,19 +213,13 @@ export function SquadProvider({ children }: { children: ReactNode }) {
       roleKind: SquadRoleKind
       taskId?: number | null
     }) => {
+      // Role status flips are emitted via `squad_role_status_changed`;
+      // the reducer keeps activeRun.roles in sync without a refetch.
       await squadPromptRole(params)
-      setActiveRun(await squadGetRun(params.squadRunId))
       setError(null)
     },
     []
   )
-
-  // Track the active run id in a ref so the event subscription doesn't have
-  // to re-bind when the snapshot reference changes.
-  const activeRunRef = useRef<SquadRunSnapshot | null>(null)
-  useEffect(() => {
-    activeRunRef.current = activeRun
-  }, [activeRun])
 
   useEffect(() => {
     // Coalesce reload requests so a burst of unknown-entity events triggers
