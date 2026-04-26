@@ -639,6 +639,7 @@ export type AcpEvent =
       connection_id: string
       session_id: string
       stop_reason: string
+      agent_type: string
     }
   | {
       type: "session_started"
@@ -702,6 +703,28 @@ export type AcpEvent =
       connection_id: string
       used: number
       size: number
+    }
+  | {
+      type: "compaction_started"
+      connection_id: string
+      session_id: string
+    }
+  | {
+      type: "compaction_finished"
+      connection_id: string
+      session_id: string
+    }
+  | {
+      type: "stream_warning"
+      connection_id: string
+      message: string
+    }
+  | {
+      type: "turn_idle_timeout"
+      connection_id: string
+      session_id: string
+      agent_type: string
+      idle_ms: number
     }
 
 // Connection info returned by acp_list_connections
