@@ -37,6 +37,7 @@
     "title": "Configurações",
     "preferences": "Preferências",
     "nav": {
+      "general": "Geral",
       "appearance": "Aparência",
       "agents": "Agentes",
       "mcp": "MCP",
@@ -49,6 +50,29 @@
       "model_providers": "Provedores de Modelos",
       "experts": "Especialistas",
       "quick_messages": "Mensagens rápidas"
+    }
+  },
+  "GeneralSettings": {
+    "loading": "Carregando...",
+    "sectionTitle": "Geral",
+    "sectionDescription": "Configure as preferências gerais do app.",
+    "loadFailed": "Falha ao carregar: {message}",
+    "openTargetTitle": "Abertura de arquivos",
+    "defaultOpenTarget": "Destino padrão de abertura",
+    "defaultOpenTargetDescription": "Local padrão para abrir arquivos e pastas",
+    "openTargetDesktopOnly": "Abrir arquivos em um editor nativo está disponível apenas no app desktop.",
+    "openTargetSaveFailed": "Falha ao salvar o destino de abertura: {message}",
+    "webFileOpenMethod": "Abertura de arquivos web",
+    "webFileOpenMethodDescription": "Método padrão para abrir HTML e outros arquivos web",
+    "webFileOpenMethodSaveFailed": "Falha ao salvar as configurações de abertura de arquivos web: {message}",
+    "openTargets": {
+      "vscode": "VS Code",
+      "file_manager": "Gerenciador de arquivos",
+      "terminal": "Terminal"
+    },
+    "webFileOpenMethods": {
+      "browser": "Abrir no navegador",
+      "editor": "Usar destino padrão de abertura"
     }
   },
   "AppearanceSettings": {
@@ -109,6 +133,14 @@
     "proxyRequired": "A URL do proxy é obrigatória quando o proxy está ativado",
     "saveSuccess": "As configurações de proxy do sistema foram salvas",
     "saveFailed": "Falha ao salvar: {message}",
+    "openTargetTitle": "Abertura de arquivos",
+    "defaultOpenTarget": "Destino padrão de abertura",
+    "defaultOpenTargetDescription": "Local padrão para abrir arquivos e pastas",
+    "openTargetDesktopOnly": "Abrir arquivos em um editor nativo está disponível apenas no app desktop.",
+    "openTargetSaveFailed": "Falha ao salvar o destino de abertura: {message}",
+    "openTargets": {
+      "vscode": "VS Code"
+    },
     "languageTitle": "Idioma",
     "languageDescription": "Defina o idioma do app. Ao seguir o idioma do sistema, idiomas não suportados voltam para inglês.",
     "appLanguage": "Idioma do app",
@@ -983,7 +1015,10 @@
       "closeOthers": "Fechar outros",
       "closeAll": "Fechar tudo",
       "preview": "Visualizar",
-      "editSource": "Editar fonte"
+      "editSource": "Editar fonte",
+      "openInEditor": "Abrir no editor",
+      "openInEditorFailed": "Falha ao abrir no editor: {message}",
+      "openInBrowserFailed": "Falha ao abrir no navegador: {message}"
     },
     "terminal": {
       "rename": "Renomear",
@@ -1377,6 +1412,8 @@
       "newFile": "Arquivo",
       "newDirectory": "Diretório",
       "openIn": "Abrir em",
+      "openInBrowser": "Abrir no navegador",
+      "openInEditor": "Abrir no editor",
       "openInTerminal": "Abrir no terminal",
       "actions": {
         "select": "Selecionar",
@@ -1390,6 +1427,7 @@
       },
       "toasts": {
         "openDirectoryFailed": "Falha ao abrir diretório",
+        "openInEditorFailed": "Falha ao abrir no editor",
         "openBuiltinTerminalFailed": "Não foi possível abrir o terminal embutido",
         "openCommitWindowFailed": "Falha ao abrir janela de commit",
         "noAddableFilesInDir": "Nenhum arquivo alterado neste diretório pode ser adicionado ao VCS",
@@ -1406,7 +1444,8 @@
         "savedAsCopy": "Salvo como cópia",
         "saveCopyFailed": "Falha ao salvar como cópia",
         "watchStartFailed": "Falha ao iniciar monitoramento de arquivos",
-        "createFailed": "Falha ao criar"
+        "createFailed": "Falha ao criar",
+        "openInBrowserFailed": "Falha ao abrir no navegador"
       },
       "createDialog": {
         "newFile": "Novo arquivo",

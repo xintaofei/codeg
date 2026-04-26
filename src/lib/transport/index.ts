@@ -28,5 +28,5 @@ export function getTransport(): Transport {
 }
 
 export function isDesktop(): boolean {
-  return getTransport().isDesktop()
+  return detectEnvironment() === "tauri"
 }

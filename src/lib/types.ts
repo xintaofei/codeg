@@ -634,6 +634,15 @@ export interface SystemLanguageSettings {
   language: AppLocale
 }
 
+export type SystemOpenTarget = "vscode" | "file_manager" | "terminal"
+
+export type SystemWebFileOpenMethod = "browser" | "editor"
+
+export interface SystemOpenTargetSettings {
+  target: SystemOpenTarget
+  web_file_open_method: SystemWebFileOpenMethod
+}
+
 export interface SystemRenderingSettings {
   disable_hardware_acceleration: boolean
 }

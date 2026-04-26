@@ -16,14 +16,14 @@ pub use conversation::{
     SidebarData,
 };
 pub use folder::{FolderCommandInfo, FolderDetail, FolderHistoryEntry, OpenedTab};
-pub use quick_message::QuickMessageInfo;
 pub use message::{
     AgentExecutionStats, AgentToolCall, ContentBlock, MessageRole, MessageTurn, TurnRole,
     TurnUsage, UnifiedMessage,
 };
+pub use quick_message::QuickMessageInfo;
+#[cfg(feature = "tauri-runtime")]
+pub use system::{SystemOpenTarget, SystemRenderingSettings};
 pub use system::{
     GitCredentials, GitDetectResult, GitHubAccountsSettings, GitHubTokenValidation, GitSettings,
-    SystemLanguageSettings, SystemProxySettings,
+    SystemLanguageSettings, SystemOpenTargetSettings, SystemProxySettings,
 };
-#[cfg(feature = "tauri-runtime")]
-pub use system::SystemRenderingSettings;

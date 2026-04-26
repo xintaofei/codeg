@@ -37,6 +37,7 @@
     "title": "設定",
     "preferences": "環境設定",
     "nav": {
+      "general": "一般",
       "appearance": "外観",
       "agents": "エージェント",
       "mcp": "MCP",
@@ -49,6 +50,29 @@
       "model_providers": "モデルプロバイダー",
       "experts": "エキスパート",
       "quick_messages": "クイックメッセージ"
+    }
+  },
+  "GeneralSettings": {
+    "loading": "読み込み中...",
+    "sectionTitle": "一般",
+    "sectionDescription": "アプリの一般設定を構成します。",
+    "loadFailed": "読み込みに失敗しました: {message}",
+    "openTargetTitle": "ファイルを開く",
+    "defaultOpenTarget": "デフォルトの開き先",
+    "defaultOpenTargetDescription": "ファイルとフォルダーを開くデフォルトの場所",
+    "openTargetDesktopOnly": "ネイティブエディターでファイルを開く機能はデスクトップアプリでのみ利用できます。",
+    "openTargetSaveFailed": "開き先設定の保存に失敗しました: {message}",
+    "webFileOpenMethod": "Web ファイルの開き方",
+    "webFileOpenMethodDescription": "HTML などのファイルを開く既定の方法",
+    "webFileOpenMethodSaveFailed": "Web ファイルの開き方設定の保存に失敗しました: {message}",
+    "openTargets": {
+      "vscode": "VS Code",
+      "file_manager": "ファイルマネージャー",
+      "terminal": "ターミナル"
+    },
+    "webFileOpenMethods": {
+      "browser": "ブラウザーで開く",
+      "editor": "デフォルトの開き先を使用"
     }
   },
   "AppearanceSettings": {
@@ -109,6 +133,14 @@
     "proxyRequired": "プロキシ有効時はプロキシ URL が必要です",
     "saveSuccess": "システムプロキシ設定を保存しました",
     "saveFailed": "保存に失敗しました: {message}",
+    "openTargetTitle": "ファイルを開く",
+    "defaultOpenTarget": "デフォルトの開き先",
+    "defaultOpenTargetDescription": "ファイルとフォルダーを開くデフォルトの場所",
+    "openTargetDesktopOnly": "ネイティブエディターでファイルを開く機能はデスクトップアプリでのみ利用できます。",
+    "openTargetSaveFailed": "開き先設定の保存に失敗しました: {message}",
+    "openTargets": {
+      "vscode": "VS Code"
+    },
     "languageTitle": "言語",
     "languageDescription": "アプリの言語を設定します。システムに従う場合、未対応言語は英語にフォールバックします。",
     "appLanguage": "アプリ言語",
@@ -983,7 +1015,10 @@
       "closeOthers": "他を閉じる",
       "closeAll": "すべて閉じる",
       "preview": "プレビュー",
-      "editSource": "ソースを編集"
+      "editSource": "ソースを編集",
+      "openInEditor": "エディターで開く",
+      "openInEditorFailed": "エディターで開けませんでした: {message}",
+      "openInBrowserFailed": "ブラウザーで開けませんでした: {message}"
     },
     "terminal": {
       "rename": "名前を変更",
@@ -1377,6 +1412,8 @@
       "newFile": "ファイル",
       "newDirectory": "ディレクトリ",
       "openIn": "で開く",
+      "openInBrowser": "ブラウザーで開く",
+      "openInEditor": "エディターで開く",
       "openInTerminal": "ターミナルで開く",
       "actions": {
         "select": "選択",
@@ -1390,6 +1427,7 @@
       },
       "toasts": {
         "openDirectoryFailed": "ディレクトリを開けませんでした",
+        "openInEditorFailed": "エディターで開けませんでした",
         "openBuiltinTerminalFailed": "内蔵ターミナルを開けませんでした",
         "openCommitWindowFailed": "コミットウィンドウを開けませんでした",
         "noAddableFilesInDir": "このディレクトリには VCS に追加できる変更ファイルがありません",
@@ -1406,7 +1444,8 @@
         "savedAsCopy": "コピーとして保存しました",
         "saveCopyFailed": "コピーとして保存できませんでした",
         "watchStartFailed": "ファイル監視の開始に失敗しました",
-        "createFailed": "作成に失敗しました"
+        "createFailed": "作成に失敗しました",
+        "openInBrowserFailed": "ブラウザーで開けませんでした"
       },
       "createDialog": {
         "newFile": "新規ファイル",

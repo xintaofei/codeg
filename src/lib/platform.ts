@@ -1,4 +1,5 @@
-import { isDesktop, getTransport } from "./transport"
+import { detectEnvironment } from "./transport/detect"
+import { getTransport } from "./transport"
 import type { UnsubscribeFn } from "./transport"
 
 /**
@@ -6,7 +7,9 @@ import type { UnsubscribeFn } from "./transport"
  * Tauri desktop and web browser environments.
  */
 
-export { isDesktop }
+export function isDesktop(): boolean {
+  return detectEnvironment() === "tauri"
+}
 
 /**
  * Subscribe to backend events.

@@ -301,13 +301,14 @@ impl Default for CommitWindowState {
 
 fn resolve_settings_route(section: Option<&str>) -> &'static str {
     match section {
+        Some("general") => "settings/general",
         Some("appearance") => "settings/appearance",
         Some("agents") => "settings/agents",
         Some("mcp") => "settings/mcp",
         Some("skills") => "settings/skills",
         Some("shortcuts") => "settings/shortcuts",
         Some("system") => "settings/system",
-        _ => "settings/appearance",
+        _ => "settings/general",
     }
 }
 

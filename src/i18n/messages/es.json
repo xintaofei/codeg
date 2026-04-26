@@ -37,6 +37,7 @@
     "title": "Configuración",
     "preferences": "Preferencias",
     "nav": {
+      "general": "General",
       "appearance": "Apariencia",
       "agents": "Agentes",
       "mcp": "MCP",
@@ -49,6 +50,29 @@
       "model_providers": "Proveedores de Modelos",
       "experts": "Expertos",
       "quick_messages": "Mensajes rápidos"
+    }
+  },
+  "GeneralSettings": {
+    "loading": "Cargando...",
+    "sectionTitle": "General",
+    "sectionDescription": "Configura las preferencias generales de la aplicación.",
+    "loadFailed": "Error al cargar: {message}",
+    "openTargetTitle": "Apertura de archivos",
+    "defaultOpenTarget": "Destino predeterminado de apertura",
+    "defaultOpenTargetDescription": "Ubicación predeterminada para abrir archivos y carpetas",
+    "openTargetDesktopOnly": "Abrir archivos en un editor nativo solo está disponible en la app de escritorio.",
+    "openTargetSaveFailed": "No se pudo guardar el destino de apertura: {message}",
+    "webFileOpenMethod": "Apertura de archivos web",
+    "webFileOpenMethodDescription": "Método predeterminado para abrir HTML y otros archivos web",
+    "webFileOpenMethodSaveFailed": "No se pudo guardar la configuración de apertura de archivos web: {message}",
+    "openTargets": {
+      "vscode": "VS Code",
+      "file_manager": "Gestor de archivos",
+      "terminal": "Terminal"
+    },
+    "webFileOpenMethods": {
+      "browser": "Abrir en el navegador",
+      "editor": "Usar destino de apertura predeterminado"
     }
   },
   "AppearanceSettings": {
@@ -109,6 +133,14 @@
     "proxyRequired": "Se requiere URL del proxy cuando el proxy está activado",
     "saveSuccess": "La configuración del proxy del sistema se guardó",
     "saveFailed": "Error al guardar: {message}",
+    "openTargetTitle": "Apertura de archivos",
+    "defaultOpenTarget": "Destino predeterminado de apertura",
+    "defaultOpenTargetDescription": "Ubicación predeterminada para abrir archivos y carpetas",
+    "openTargetDesktopOnly": "Abrir archivos en un editor nativo solo está disponible en la app de escritorio.",
+    "openTargetSaveFailed": "No se pudo guardar el destino de apertura: {message}",
+    "openTargets": {
+      "vscode": "VS Code"
+    },
     "languageTitle": "Idioma",
     "languageDescription": "Configura el idioma de la app. Al seguir el idioma del sistema, los no compatibles vuelven a inglés.",
     "appLanguage": "Idioma de la app",
@@ -983,7 +1015,10 @@
       "closeOthers": "Cerrar otros",
       "closeAll": "Cerrar todo",
       "preview": "Vista previa",
-      "editSource": "Editar fuente"
+      "editSource": "Editar fuente",
+      "openInEditor": "Abrir en editor",
+      "openInEditorFailed": "No se pudo abrir en el editor: {message}",
+      "openInBrowserFailed": "No se pudo abrir en el navegador: {message}"
     },
     "terminal": {
       "rename": "Renombrar",
@@ -1377,6 +1412,8 @@
       "newFile": "Archivo",
       "newDirectory": "Directorio",
       "openIn": "Abrir en",
+      "openInBrowser": "Abrir en el navegador",
+      "openInEditor": "Abrir en editor",
       "openInTerminal": "Abrir en terminal",
       "actions": {
         "select": "Seleccionar",
@@ -1390,6 +1427,7 @@
       },
       "toasts": {
         "openDirectoryFailed": "No se pudo abrir el directorio",
+        "openInEditorFailed": "No se pudo abrir en el editor",
         "openBuiltinTerminalFailed": "No se pudo abrir la terminal integrada",
         "openCommitWindowFailed": "No se pudo abrir la ventana de commit",
         "noAddableFilesInDir": "No hay archivos modificados en este directorio que se puedan añadir a VCS",
@@ -1406,7 +1444,8 @@
         "savedAsCopy": "Guardado como copia",
         "saveCopyFailed": "No se pudo guardar como copia",
         "watchStartFailed": "No se pudo iniciar la vigilancia de archivos",
-        "createFailed": "Error al crear"
+        "createFailed": "Error al crear",
+        "openInBrowserFailed": "No se pudo abrir en el navegador"
       },
       "createDialog": {
         "newFile": "Nuevo archivo",

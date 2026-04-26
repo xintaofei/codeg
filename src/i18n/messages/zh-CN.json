@@ -37,6 +37,7 @@
     "title": "设置",
     "preferences": "偏好设置",
     "nav": {
+      "general": "常规",
       "appearance": "外观",
       "agents": "智能体",
       "mcp": "MCP",
@@ -49,6 +50,29 @@
       "model_providers": "模型供应商",
       "experts": "专家",
       "quick_messages": "快捷消息"
+    }
+  },
+  "GeneralSettings": {
+    "loading": "加载中...",
+    "sectionTitle": "常规",
+    "sectionDescription": "配置应用的通用偏好设置。",
+    "loadFailed": "加载失败：{message}",
+    "openTargetTitle": "文件打开",
+    "defaultOpenTarget": "默认打开目标",
+    "defaultOpenTargetDescription": "打开文件和文件夹的默认位置",
+    "openTargetDesktopOnly": "在原生编辑器中打开文件仅桌面应用可用。",
+    "openTargetSaveFailed": "打开目标设置保存失败：{message}",
+    "webFileOpenMethod": "网页文件打开方式",
+    "webFileOpenMethodDescription": "html等文件默认打开方式",
+    "webFileOpenMethodSaveFailed": "网页文件打开方式保存失败：{message}",
+    "openTargets": {
+      "vscode": "VS Code",
+      "file_manager": "文件管理器",
+      "terminal": "终端"
+    },
+    "webFileOpenMethods": {
+      "browser": "在浏览器中打开",
+      "editor": "使用默认打开目标"
     }
   },
   "AppearanceSettings": {
@@ -109,6 +133,14 @@
     "proxyRequired": "启用代理时必须填写代理地址",
     "saveSuccess": "系统代理设置已保存",
     "saveFailed": "保存失败：{message}",
+    "openTargetTitle": "文件打开",
+    "defaultOpenTarget": "默认打开目标",
+    "defaultOpenTargetDescription": "打开文件和文件夹的默认位置",
+    "openTargetDesktopOnly": "在原生编辑器中打开文件仅桌面应用可用。",
+    "openTargetSaveFailed": "打开目标设置保存失败：{message}",
+    "openTargets": {
+      "vscode": "VS Code"
+    },
     "languageTitle": "语言",
     "languageDescription": "设置应用语言。跟随系统时，若系统语言不受支持将回退为英文。",
     "appLanguage": "应用语言",
@@ -983,7 +1015,10 @@
       "closeOthers": "关闭其它",
       "closeAll": "关闭所有",
       "preview": "预览",
-      "editSource": "编辑源码"
+      "editSource": "编辑源码",
+      "openInEditor": "在编辑器中打开",
+      "openInEditorFailed": "在编辑器中打开失败：{message}",
+      "openInBrowserFailed": "在浏览器中打开失败：{message}"
     },
     "terminal": {
       "rename": "重命名",
@@ -1377,6 +1412,8 @@
       "newFile": "文件",
       "newDirectory": "目录",
       "openIn": "打开于",
+      "openInBrowser": "在浏览器中打开",
+      "openInEditor": "在编辑器中打开",
       "openInTerminal": "在终端打开",
       "actions": {
         "select": "选择",
@@ -1390,6 +1427,7 @@
       },
       "toasts": {
         "openDirectoryFailed": "打开目录失败",
+        "openInEditorFailed": "在编辑器中打开失败",
         "openBuiltinTerminalFailed": "无法打开内置终端",
         "openCommitWindowFailed": "打开提交窗口失败",
         "noAddableFilesInDir": "该目录下没有可添加到 VCS 的变更文件",
@@ -1406,7 +1444,8 @@
         "savedAsCopy": "已另存为副本",
         "saveCopyFailed": "另存为副本失败",
         "watchStartFailed": "文件监听启动失败",
-        "createFailed": "创建失败"
+        "createFailed": "创建失败",
+        "openInBrowserFailed": "在浏览器中打开失败"
       },
       "createDialog": {
         "newFile": "新建文件",

@@ -37,6 +37,7 @@
     "title": "설정",
     "preferences": "환경설정",
     "nav": {
+      "general": "일반",
       "appearance": "외관",
       "agents": "에이전트",
       "mcp": "MCP",
@@ -49,6 +50,29 @@
       "model_providers": "모델 제공업체",
       "experts": "전문가",
       "quick_messages": "빠른 메시지"
+    }
+  },
+  "GeneralSettings": {
+    "loading": "로딩 중...",
+    "sectionTitle": "일반",
+    "sectionDescription": "앱의 일반 환경설정을 구성합니다.",
+    "loadFailed": "불러오기 실패: {message}",
+    "openTargetTitle": "파일 열기",
+    "defaultOpenTarget": "기본 열기 대상",
+    "defaultOpenTargetDescription": "파일과 폴더를 열 기본 위치",
+    "openTargetDesktopOnly": "네이티브 편집기에서 파일 열기는 데스크톱 앱에서만 사용할 수 있습니다.",
+    "openTargetSaveFailed": "열기 대상 설정 저장 실패: {message}",
+    "webFileOpenMethod": "웹 파일 열기 방식",
+    "webFileOpenMethodDescription": "HTML 등 파일의 기본 열기 방식",
+    "webFileOpenMethodSaveFailed": "웹 파일 열기 설정 저장 실패: {message}",
+    "openTargets": {
+      "vscode": "VS Code",
+      "file_manager": "파일 관리자",
+      "terminal": "터미널"
+    },
+    "webFileOpenMethods": {
+      "browser": "브라우저에서 열기",
+      "editor": "기본 열기 대상 사용"
     }
   },
   "AppearanceSettings": {
@@ -109,6 +133,14 @@
     "proxyRequired": "프록시를 활성화하면 프록시 URL이 필요합니다",
     "saveSuccess": "시스템 프록시 설정이 저장되었습니다",
     "saveFailed": "저장 실패: {message}",
+    "openTargetTitle": "파일 열기",
+    "defaultOpenTarget": "기본 열기 대상",
+    "defaultOpenTargetDescription": "파일과 폴더를 열 기본 위치",
+    "openTargetDesktopOnly": "네이티브 편집기에서 파일 열기는 데스크톱 앱에서만 사용할 수 있습니다.",
+    "openTargetSaveFailed": "열기 대상 설정 저장 실패: {message}",
+    "openTargets": {
+      "vscode": "VS Code"
+    },
     "languageTitle": "언어",
     "languageDescription": "앱 언어를 설정합니다. 시스템 언어를 따를 때 지원되지 않는 언어는 영어로 대체됩니다.",
     "appLanguage": "앱 언어",
@@ -983,7 +1015,10 @@
       "closeOthers": "다른 항목 닫기",
       "closeAll": "모두 닫기",
       "preview": "미리보기",
-      "editSource": "소스 편집"
+      "editSource": "소스 편집",
+      "openInEditor": "편집기에서 열기",
+      "openInEditorFailed": "편집기에서 열기 실패: {message}",
+      "openInBrowserFailed": "브라우저에서 열지 못했습니다: {message}"
     },
     "terminal": {
       "rename": "이름 변경",
@@ -1377,6 +1412,8 @@
       "newFile": "파일",
       "newDirectory": "디렉터리",
       "openIn": "열기",
+      "openInBrowser": "브라우저에서 열기",
+      "openInEditor": "편집기에서 열기",
       "openInTerminal": "터미널에서 열기",
       "actions": {
         "select": "선택",
@@ -1390,6 +1427,7 @@
       },
       "toasts": {
         "openDirectoryFailed": "디렉터리를 열지 못했습니다",
+        "openInEditorFailed": "편집기에서 열기 실패",
         "openBuiltinTerminalFailed": "내장 터미널을 열 수 없습니다",
         "openCommitWindowFailed": "커밋 창을 열지 못했습니다",
         "noAddableFilesInDir": "이 디렉터리에는 VCS에 추가할 수 있는 변경 파일이 없습니다",
@@ -1406,7 +1444,8 @@
         "savedAsCopy": "사본으로 저장했습니다",
         "saveCopyFailed": "사본으로 저장하지 못했습니다",
         "watchStartFailed": "파일 감시 시작에 실패했습니다",
-        "createFailed": "생성 실패"
+        "createFailed": "생성 실패",
+        "openInBrowserFailed": "브라우저에서 열지 못했습니다"
       },
       "createDialog": {
         "newFile": "새 파일",

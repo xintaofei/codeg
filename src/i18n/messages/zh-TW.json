@@ -37,6 +37,7 @@
     "title": "設定",
     "preferences": "偏好設定",
     "nav": {
+      "general": "常規",
       "appearance": "外觀",
       "agents": "智能體",
       "mcp": "MCP",
@@ -49,6 +50,29 @@
       "model_providers": "模型供應商",
       "experts": "專家",
       "quick_messages": "快捷訊息"
+    }
+  },
+  "GeneralSettings": {
+    "loading": "載入中...",
+    "sectionTitle": "常規",
+    "sectionDescription": "配置應用程式的一般偏好設定。",
+    "loadFailed": "載入失敗：{message}",
+    "openTargetTitle": "檔案開啟",
+    "defaultOpenTarget": "預設開啟目標",
+    "defaultOpenTargetDescription": "開啟檔案和資料夾的預設位置",
+    "openTargetDesktopOnly": "在原生編輯器中開啟檔案僅桌面應用程式可用。",
+    "openTargetSaveFailed": "開啟目標設定儲存失敗：{message}",
+    "webFileOpenMethod": "網頁檔案開啟方式",
+    "webFileOpenMethodDescription": "HTML 等檔案的預設開啟方式",
+    "webFileOpenMethodSaveFailed": "網頁檔案開啟方式儲存失敗：{message}",
+    "openTargets": {
+      "vscode": "VS Code",
+      "file_manager": "檔案管理器",
+      "terminal": "終端"
+    },
+    "webFileOpenMethods": {
+      "browser": "在瀏覽器中開啟",
+      "editor": "使用預設開啟目標"
     }
   },
   "AppearanceSettings": {
@@ -109,6 +133,14 @@
     "proxyRequired": "啟用代理時必須填寫代理位址",
     "saveSuccess": "系統代理設定已儲存",
     "saveFailed": "儲存失敗：{message}",
+    "openTargetTitle": "檔案開啟",
+    "defaultOpenTarget": "預設開啟目標",
+    "defaultOpenTargetDescription": "開啟檔案和資料夾的預設位置",
+    "openTargetDesktopOnly": "在原生編輯器中開啟檔案僅桌面應用程式可用。",
+    "openTargetSaveFailed": "開啟目標設定儲存失敗：{message}",
+    "openTargets": {
+      "vscode": "VS Code"
+    },
     "languageTitle": "語言",
     "languageDescription": "設定應用語言。跟隨系統時，若系統語言不受支援將回退為英文。",
     "appLanguage": "應用語言",
@@ -983,7 +1015,10 @@
       "closeOthers": "關閉其它",
       "closeAll": "關閉所有",
       "preview": "預覽",
-      "editSource": "編輯原始碼"
+      "editSource": "編輯原始碼",
+      "openInEditor": "在編輯器中開啟",
+      "openInEditorFailed": "在編輯器中開啟失敗：{message}",
+      "openInBrowserFailed": "在瀏覽器中開啟失敗：{message}"
     },
     "terminal": {
       "rename": "重新命名",
@@ -1377,6 +1412,8 @@
       "newFile": "檔案",
       "newDirectory": "目錄",
       "openIn": "開啟於",
+      "openInBrowser": "在瀏覽器中開啟",
+      "openInEditor": "在編輯器中開啟",
       "openInTerminal": "在終端開啟",
       "actions": {
         "select": "選擇",
@@ -1390,6 +1427,7 @@
       },
       "toasts": {
         "openDirectoryFailed": "開啟目錄失敗",
+        "openInEditorFailed": "在編輯器中開啟失敗",
         "openBuiltinTerminalFailed": "無法開啟內建終端",
         "openCommitWindowFailed": "打開提交視窗失敗",
         "noAddableFilesInDir": "該目錄下沒有可加入到 VCS 的變更檔案",
@@ -1406,7 +1444,8 @@
         "savedAsCopy": "已另存為副本",
         "saveCopyFailed": "另存為副本失敗",
         "watchStartFailed": "檔案監聽啟動失敗",
-        "createFailed": "建立失敗"
+        "createFailed": "建立失敗",
+        "openInBrowserFailed": "在瀏覽器中開啟失敗"
       },
       "createDialog": {
         "newFile": "新建檔案",

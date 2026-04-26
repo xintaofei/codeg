@@ -46,6 +46,8 @@ import type {
   WorkspaceSnapshotResponse,
   GitLogResult,
   SystemLanguageSettings,
+  SystemOpenTarget,
+  SystemOpenTargetSettings,
   SystemProxySettings,
   SystemRenderingSettings,
   GitCredentials,
@@ -457,6 +459,28 @@ export async function updateSystemLanguageSettings(
   settings: SystemLanguageSettings
 ): Promise<SystemLanguageSettings> {
   return getTransport().call("update_system_language_settings", { settings })
+}
+
+export async function getSystemOpenTargetSettings(): Promise<SystemOpenTargetSettings> {
+  return getTransport().call("get_system_open_target_settings")
+}
+
+export async function updateSystemOpenTargetSettings(
+  settings: SystemOpenTargetSettings
+): Promise<SystemOpenTargetSettings> {
+  return getTransport().call("update_system_open_target_settings", { settings })
+}
+
+export async function openPathWithTarget(params: {
+  folderPath: string
+  relativePath: string
+  target?: SystemOpenTarget | null
+}): Promise<void> {
+  return getTransport().call("open_path_with_target", {
+    folderPath: params.folderPath,
+    relativePath: params.relativePath,
+    target: params.target ?? null,
+  })
 }
 
 export async function getSystemRenderingSettings(): Promise<SystemRenderingSettings> {
@@ -1104,6 +1128,7 @@ export async function openCommitWindow(folderId: number): Promise<void> {
 }
 
 export type SettingsSection =
+  | "general"
   | "appearance"
   | "agents"
   | "mcp"

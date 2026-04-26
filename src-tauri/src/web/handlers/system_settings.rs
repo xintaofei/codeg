@@ -28,6 +28,11 @@ pub struct UpdateLanguageSettingsParams {
     pub settings: SystemLanguageSettings,
 }
 
+#[derive(Deserialize)]
+pub struct UpdateOpenTargetSettingsParams {
+    pub settings: SystemOpenTargetSettings,
+}
+
 // ---------------------------------------------------------------------------
 // Read handlers
 // ---------------------------------------------------------------------------
@@ -45,6 +50,14 @@ pub async fn get_system_language_settings(
 ) -> Result<Json<SystemLanguageSettings>, AppCommandError> {
     let db = &state.db;
     let settings = settings_commands::load_system_language_settings(&db.conn).await?;
+    Ok(Json(settings))
+}
+
+pub async fn get_system_open_target_settings(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<SystemOpenTargetSettings>, AppCommandError> {
+    let db = &state.db;
+    let settings = settings_commands::load_system_open_target_settings(&db.conn).await?;
     Ok(Json(settings))
 }
 
@@ -97,4 +110,21 @@ pub async fn update_system_language_settings(
     );
 
     Ok(Json(settings))
+}
+
+pub async fn update_system_open_target_settings(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<UpdateOpenTargetSettingsParams>,
+) -> Result<Json<SystemOpenTargetSettings>, AppCommandError> {
+    let db = &state.db;
+    let settings =
+        settings_commands::update_system_open_target_settings_core(&db.conn, params.settings)
+            .await?;
+    Ok(Json(settings))
+}
+
+pub async fn open_path_with_target() -> Result<Json<()>, AppCommandError> {
+    Err(AppCommandError::configuration_invalid(
+        "Opening files in a native editor is only available in the desktop app",
+    ))
 }

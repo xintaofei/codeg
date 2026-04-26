@@ -377,12 +377,24 @@ pub fn build_router(state: Arc<AppState>, token: String, static_dir: std::path::
             post(handlers::system_settings::get_system_language_settings),
         )
         .route(
+            "/get_system_open_target_settings",
+            post(handlers::system_settings::get_system_open_target_settings),
+        )
+        .route(
             "/update_system_proxy_settings",
             post(handlers::system_settings::update_system_proxy_settings),
         )
         .route(
             "/update_system_language_settings",
             post(handlers::system_settings::update_system_language_settings),
+        )
+        .route(
+            "/update_system_open_target_settings",
+            post(handlers::system_settings::update_system_open_target_settings),
+        )
+        .route(
+            "/open_path_with_target",
+            post(handlers::system_settings::open_path_with_target),
         )
         // ─── ACP ───
         .route(

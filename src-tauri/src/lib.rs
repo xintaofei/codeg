@@ -35,9 +35,8 @@ mod tauri_app {
         acp as acp_commands, chat_channel as chat_channel_commands, conversations,
         experts as experts_commands, folder_commands, folders, mcp as mcp_commands,
         model_provider as model_provider_commands, notification, project_boot,
-        quick_messages as quick_messages_commands, system_settings,
-        terminal as terminal_commands, version_control, windows,
-        workspace_state as workspace_state_commands,
+        quick_messages as quick_messages_commands, system_settings, terminal as terminal_commands,
+        version_control, windows, workspace_state as workspace_state_commands,
     };
     use crate::terminal::manager::TerminalManager;
     use crate::{db, network, process, web};
@@ -66,10 +65,7 @@ mod tauri_app {
         }
 
         let mut tokens: Vec<String> = match std::env::var(ENV_KEY) {
-            Ok(prev) => prev
-                .split_whitespace()
-                .map(str::to_string)
-                .collect(),
+            Ok(prev) => prev.split_whitespace().map(str::to_string).collect(),
             Err(_) => Vec::new(),
         };
         for arg in DISABLE_GPU_ARGS {
@@ -366,6 +362,9 @@ mod tauri_app {
                 system_settings::update_system_proxy_settings,
                 system_settings::get_system_language_settings,
                 system_settings::update_system_language_settings,
+                system_settings::get_system_open_target_settings,
+                system_settings::update_system_open_target_settings,
+                system_settings::open_path_with_target,
                 system_settings::get_system_rendering_settings,
                 system_settings::update_system_rendering_settings,
                 version_control::detect_git,

@@ -37,6 +37,7 @@
     "title": "Settings",
     "preferences": "Preferences",
     "nav": {
+      "general": "General",
       "appearance": "Appearance",
       "agents": "Agents",
       "mcp": "MCP",
@@ -49,6 +50,29 @@
       "model_providers": "Model Providers",
       "experts": "Experts",
       "quick_messages": "Quick Messages"
+    }
+  },
+  "GeneralSettings": {
+    "loading": "Loading...",
+    "sectionTitle": "General",
+    "sectionDescription": "Configure default app preferences.",
+    "loadFailed": "Load failed: {message}",
+    "openTargetTitle": "File opening",
+    "defaultOpenTarget": "Default open target",
+    "defaultOpenTargetDescription": "Default location for opening files and folders",
+    "openTargetDesktopOnly": "Opening files in a native editor is available in the desktop app.",
+    "openTargetSaveFailed": "Failed to save open target settings: {message}",
+    "webFileOpenMethod": "Web file opening",
+    "webFileOpenMethodDescription": "Default method for opening HTML and other web files",
+    "webFileOpenMethodSaveFailed": "Failed to save web file opening settings: {message}",
+    "openTargets": {
+      "vscode": "VS Code",
+      "file_manager": "File manager",
+      "terminal": "Terminal"
+    },
+    "webFileOpenMethods": {
+      "browser": "Open in browser",
+      "editor": "Use default open target"
     }
   },
   "AppearanceSettings": {
@@ -109,6 +133,14 @@
     "proxyRequired": "Proxy URL is required when proxy is enabled",
     "saveSuccess": "System proxy settings saved",
     "saveFailed": "Save failed: {message}",
+    "openTargetTitle": "File opening",
+    "defaultOpenTarget": "Default open target",
+    "defaultOpenTargetDescription": "Default location for opening files and folders",
+    "openTargetDesktopOnly": "Opening files in a native editor is available in the desktop app.",
+    "openTargetSaveFailed": "Failed to save open target settings: {message}",
+    "openTargets": {
+      "vscode": "VS Code"
+    },
     "languageTitle": "Language",
     "languageDescription": "Set app language. When following system locale, unsupported languages fall back to English.",
     "appLanguage": "App language",
@@ -983,7 +1015,10 @@
       "closeOthers": "Close Others",
       "closeAll": "Close All",
       "preview": "Preview",
-      "editSource": "Edit Source"
+      "editSource": "Edit Source",
+      "openInEditor": "Open in editor",
+      "openInEditorFailed": "Failed to open in editor: {message}",
+      "openInBrowserFailed": "Failed to open in browser: {message}"
     },
     "terminal": {
       "rename": "Rename",
@@ -1377,6 +1412,8 @@
       "newFile": "File",
       "newDirectory": "Directory",
       "openIn": "Open in",
+      "openInBrowser": "Open in browser",
+      "openInEditor": "Open in editor",
       "openInTerminal": "Open in terminal",
       "actions": {
         "select": "Select",
@@ -1390,6 +1427,7 @@
       },
       "toasts": {
         "openDirectoryFailed": "Failed to open directory",
+        "openInEditorFailed": "Failed to open in editor",
         "openBuiltinTerminalFailed": "Unable to open built-in terminal",
         "openCommitWindowFailed": "Failed to open commit window",
         "noAddableFilesInDir": "No changed files in this directory can be added to VCS",
@@ -1406,7 +1444,8 @@
         "savedAsCopy": "Saved as a copy",
         "saveCopyFailed": "Failed to save as copy",
         "watchStartFailed": "Failed to start file watch",
-        "createFailed": "Failed to create"
+        "createFailed": "Failed to create",
+        "openInBrowserFailed": "Failed to open in browser"
       },
       "createDialog": {
         "newFile": "New file",

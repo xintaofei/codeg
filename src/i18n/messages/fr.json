@@ -37,6 +37,7 @@
     "title": "Paramètres",
     "preferences": "Préférences",
     "nav": {
+      "general": "Général",
       "appearance": "Apparence",
       "agents": "Agents IA",
       "mcp": "MCP",
@@ -49,6 +50,29 @@
       "model_providers": "Fournisseurs de Modèles",
       "experts": "Experts",
       "quick_messages": "Messages rapides"
+    }
+  },
+  "GeneralSettings": {
+    "loading": "Chargement...",
+    "sectionTitle": "Général",
+    "sectionDescription": "Configurez les préférences générales de l’application.",
+    "loadFailed": "Échec du chargement : {message}",
+    "openTargetTitle": "Ouverture de fichiers",
+    "defaultOpenTarget": "Cible d’ouverture par défaut",
+    "defaultOpenTargetDescription": "Emplacement par défaut pour ouvrir les fichiers et dossiers",
+    "openTargetDesktopOnly": "L’ouverture dans un éditeur natif est disponible uniquement dans l’app de bureau.",
+    "openTargetSaveFailed": "Échec de l’enregistrement de la cible d’ouverture : {message}",
+    "webFileOpenMethod": "Ouverture des fichiers web",
+    "webFileOpenMethodDescription": "Méthode par défaut pour ouvrir les fichiers HTML et autres fichiers web",
+    "webFileOpenMethodSaveFailed": "Échec de l’enregistrement de l’ouverture des fichiers web : {message}",
+    "openTargets": {
+      "vscode": "VS Code",
+      "file_manager": "Gestionnaire de fichiers",
+      "terminal": "Terminal"
+    },
+    "webFileOpenMethods": {
+      "browser": "Ouvrir dans le navigateur",
+      "editor": "Utiliser la cible d’ouverture par défaut"
     }
   },
   "AppearanceSettings": {
@@ -109,6 +133,14 @@
     "proxyRequired": "L’URL du proxy est requise lorsque le proxy est activé",
     "saveSuccess": "Les paramètres du proxy système ont été enregistrés",
     "saveFailed": "Échec de l’enregistrement : {message}",
+    "openTargetTitle": "Ouverture de fichiers",
+    "defaultOpenTarget": "Cible d’ouverture par défaut",
+    "defaultOpenTargetDescription": "Emplacement par défaut pour ouvrir les fichiers et dossiers",
+    "openTargetDesktopOnly": "L’ouverture dans un éditeur natif est disponible uniquement dans l’app de bureau.",
+    "openTargetSaveFailed": "Échec de l’enregistrement de la cible d’ouverture : {message}",
+    "openTargets": {
+      "vscode": "VS Code"
+    },
     "languageTitle": "Langue",
     "languageDescription": "Définissez la langue de l’app. En mode système, les langues non prises en charge reviennent à l’anglais.",
     "appLanguage": "Langue de l’app",
@@ -983,7 +1015,10 @@
       "closeOthers": "Fermer les autres",
       "closeAll": "Tout fermer",
       "preview": "Aperçu",
-      "editSource": "Modifier la source"
+      "editSource": "Modifier la source",
+      "openInEditor": "Ouvrir dans l’éditeur",
+      "openInEditorFailed": "Échec de l’ouverture dans l’éditeur : {message}",
+      "openInBrowserFailed": "Échec de l’ouverture dans le navigateur : {message}"
     },
     "terminal": {
       "rename": "Renommer",
@@ -1377,6 +1412,8 @@
       "newFile": "Fichier",
       "newDirectory": "Répertoire",
       "openIn": "Ouvrir dans",
+      "openInBrowser": "Ouvrir dans le navigateur",
+      "openInEditor": "Ouvrir dans l’éditeur",
       "openInTerminal": "Ouvrir dans le terminal",
       "actions": {
         "select": "Sélectionner",
@@ -1390,6 +1427,7 @@
       },
       "toasts": {
         "openDirectoryFailed": "Échec de l'ouverture du dossier",
+        "openInEditorFailed": "Échec de l’ouverture dans l’éditeur",
         "openBuiltinTerminalFailed": "Impossible d'ouvrir le terminal intégré",
         "openCommitWindowFailed": "Échec de l'ouverture de la fenêtre de commit",
         "noAddableFilesInDir": "Aucun fichier modifié de ce dossier ne peut être ajouté au VCS",
@@ -1406,7 +1444,8 @@
         "savedAsCopy": "Enregistré en copie",
         "saveCopyFailed": "Échec de l'enregistrement en copie",
         "watchStartFailed": "Échec du démarrage de la surveillance de fichiers",
-        "createFailed": "Échec de la création"
+        "createFailed": "Échec de la création",
+        "openInBrowserFailed": "Échec de l’ouverture dans le navigateur"
       },
       "createDialog": {
         "newFile": "Nouveau fichier",

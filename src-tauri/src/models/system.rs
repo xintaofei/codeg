@@ -37,6 +37,30 @@ pub struct SystemLanguageSettings {
     pub language: AppLocale,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemOpenTarget {
+    Vscode,
+    #[default]
+    FileManager,
+    Terminal,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemWebFileOpenMethod {
+    #[default]
+    Browser,
+    Editor,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SystemOpenTargetSettings {
+    pub target: SystemOpenTarget,
+    pub web_file_open_method: SystemWebFileOpenMethod,
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
