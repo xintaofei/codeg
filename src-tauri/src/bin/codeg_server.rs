@@ -172,6 +172,16 @@ async fn async_main() {
         )
         .await;
 
+    // Start squad ACP→pipeline bridge: see crate::squad::turn_listener.
+    codeg_lib::squad::turn_listener::spawn(
+        codeg_lib::db::AppDatabase {
+            conn: state.db.conn.clone(),
+        },
+        state.connection_manager.clone_ref(),
+        state.emitter.clone(),
+        state.event_broadcaster.clone(),
+    );
+
     // Build router
     let router = codeg_lib::web::router::build_router(state, token.clone(), static_dir);
 

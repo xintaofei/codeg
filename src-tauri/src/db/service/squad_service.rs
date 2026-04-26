@@ -434,6 +434,21 @@ pub async fn list_role_runs(
     Ok(rows.into_iter().map(role_run_info).collect())
 }
 
+/// Look up an active role run by ACP connection id. Returns `None` when
+/// the connection isn't bound to any squad role (typical case — most
+/// ACP connections are normal user-driven conversations, not squad
+/// role processes).
+pub async fn find_role_run_by_connection_id(
+    conn: &DatabaseConnection,
+    connection_id: &str,
+) -> Result<Option<SquadRoleRunInfo>, DbError> {
+    let row = squad_role_run::Entity::find()
+        .filter(squad_role_run::Column::ConnectionId.eq(connection_id))
+        .one(conn)
+        .await?;
+    Ok(row.map(role_run_info))
+}
+
 pub async fn get_role_run(
     conn: &DatabaseConnection,
     run_id: i32,

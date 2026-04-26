@@ -13,7 +13,7 @@ mod network;
 mod parsers;
 pub mod process;
 pub mod runtime_monitor;
-mod squad;
+pub mod squad;
 mod terminal;
 pub mod web;
 pub mod workspace_state;
@@ -165,6 +165,27 @@ mod tauri_app {
                     tauri::async_runtime::spawn(async move {
                         ccm_ref.start_background(br, db_conn, cm, emitter).await;
                     });
+                }
+
+                // Start squad ACP→pipeline bridge: eavesdrops on the
+                // event broadcast and, when a squad-bound connection
+                // completes a turn, records artifacts and dispatches
+                // any newly-unblocked tasks. Detached; failure is
+                // logged in-task and never propagated.
+                {
+                    let db_conn = app.state::<db::AppDatabase>().conn.clone();
+                    let cm = app.state::<ConnectionManager>().clone_ref();
+                    let br = app
+                        .state::<std::sync::Arc<web::event_bridge::WebEventBroadcaster>>()
+                        .inner()
+                        .clone();
+                    let emitter = web::event_bridge::EventEmitter::Tauri(app.handle().clone());
+                    crate::squad::turn_listener::spawn(
+                        db::AppDatabase { conn: db_conn },
+                        cm,
+                        emitter,
+                        br,
+                    );
                 }
 
                 // Single-window workspace: ensure the main window exists.
