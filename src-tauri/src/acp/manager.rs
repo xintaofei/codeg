@@ -428,6 +428,19 @@ impl ConnectionManager {
         disconnected
     }
 
+    /// Look up the live metadata for a single connection. Returns
+    /// `None` if the connection has been disconnected and removed.
+    pub async fn connection_info(&self, conn_id: &str) -> Option<ConnectionInfo> {
+        let connection = {
+            let connections = self.connections.lock().await;
+            connections.get(conn_id).cloned()
+        };
+        match connection {
+            Some(connection) => Some(connection.info().await),
+            None => None,
+        }
+    }
+
     pub async fn list_connections(&self) -> Vec<ConnectionInfo> {
         let entries = {
             let connections = self.connections.lock().await;

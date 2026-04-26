@@ -210,11 +210,20 @@ pub async fn connect_role(
         }
     };
 
+    // Wait briefly for the agent's SessionStarted handshake so we can
+    // persist the session_id back onto the squad_role_run row. The
+    // agent process is freshly spawned; in practice the session_id
+    // lands in connection metadata within tens of ms. If it doesn't,
+    // we proceed without — `prompt_role` doesn't require it on the
+    // squad row, the connection's own metadata is the source of
+    // truth for ACP-level session bookkeeping.
+    let session_id = wait_for_session_id(manager, &connection_id).await;
+
     let connected = squad_service::update_role_connection(
         &db.conn,
         role_run.id,
         Some(connection_id.clone()),
-        None,
+        session_id.clone(),
         SquadRoleRunStatus::Connected,
         None,
     )
@@ -236,10 +245,32 @@ pub async fn connect_role(
             connection_id,
             agent_type: profile.agent_type,
             working_dir: role_workspace,
-            session_id: None,
+            session_id,
         },
     );
     Ok(connected)
+}
+
+/// Poll the connection metadata for up to ~1.5s waiting for the agent's
+/// SessionStarted handshake to populate `session_id`. Returns `None` if
+/// the agent never reports a session within the budget — `connect_role`
+/// continues without it; it is recoverable later (the ACP layer caches
+/// it on connection metadata regardless).
+async fn wait_for_session_id(manager: &ConnectionManager, conn_id: &str) -> Option<String> {
+    const POLL_INTERVAL_MS: u64 = 50;
+    const MAX_ATTEMPTS: u32 = 30; // 30 * 50ms = 1.5s
+    for _ in 0..MAX_ATTEMPTS {
+        if let Some(info) = manager.connection_info(conn_id).await {
+            if let Some(sid) = info.session_id {
+                return Some(sid);
+            }
+        } else {
+            // Connection vanished (process exited / disconnected). Bail.
+            return None;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+    }
+    None
 }
 
 pub async fn prompt_role(
