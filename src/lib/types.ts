@@ -158,13 +158,40 @@ export interface SquadRunSnapshot {
   artifacts: SquadArtifactInfo[]
 }
 
+export type SquadEventType =
+  | "squad_run_status_changed"
+  | "squad_role_status_changed"
+  | "squad_role_connection_attached"
+  | "squad_task_created"
+  | "squad_task_status_changed"
+  | "squad_artifact_created"
+  | "squad_conductor_plan_applied"
+  | "squad_dispatch_round_completed"
+  | (string & {})
+
 export interface SquadEvent {
-  type: string
+  type: SquadEventType
   squadRunId: number
   seq: number
   at: string
   roleKind?: SquadRoleKind | null
   payload?: unknown
+}
+
+export interface SquadConductorPlanAppliedPayload {
+  createdCount: number
+  skippedCount: number
+  skippedReasons: string[]
+}
+
+export interface SquadDispatchRoundCompletedPayload {
+  considered: number
+  dispatched: Array<{
+    taskId: number
+    roleKind: SquadRoleKind
+    outcome: string
+    note: string | null
+  }>
 }
 
 export type AppErrorCode =

@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react"
@@ -22,6 +23,7 @@ import {
   squadUpdateTaskStatus,
 } from "@/lib/api"
 import { subscribe } from "@/lib/platform"
+import { applySquadEvent } from "@/lib/squad-events"
 import type {
   SquadEvent,
   SquadRoleKind,
@@ -197,13 +199,66 @@ export function SquadProvider({ children }: { children: ReactNode }) {
     []
   )
 
+  // Track the active run id in a ref so the event subscription doesn't have
+  // to re-bind when the snapshot reference changes.
+  const activeRunRef = useRef<SquadRunSnapshot | null>(null)
   useEffect(() => {
+    activeRunRef.current = activeRun
+  }, [activeRun])
+
+  useEffect(() => {
+    // Coalesce reload requests so a burst of unknown-entity events triggers
+    // at most one refetch per run id.
+    const pendingReload = new Map<number, ReturnType<typeof setTimeout>>()
+    const scheduleReload = (squadRunId: number) => {
+      if (pendingReload.has(squadRunId)) return
+      const handle = setTimeout(() => {
+        pendingReload.delete(squadRunId)
+        void squadGetRun(squadRunId)
+          .then((snap) => {
+            // Only commit if we're still looking at this run.
+            if (activeRunRef.current?.run.id === snap.run.id) {
+              setActiveRun(snap)
+            }
+            setError(null)
+          })
+          .catch((err) => setError(errorMessage(err)))
+      }, 50)
+      pendingReload.set(squadRunId, handle)
+    }
+
     const unlisten = subscribe<SquadEvent>("squad://event", (event) => {
-      void squadGetRun(event.squadRunId)
-        .then(setActiveRun)
-        .catch((err) => setError(errorMessage(err)))
+      // Keep the runs list summary in sync for run-level transitions even
+      // when the user isn't focused on that specific run.
+      if (event.type === "squad_run_status_changed") {
+        const payload = event.payload as Partial<SquadRunInfo> | undefined
+        if (
+          payload &&
+          typeof payload.id === "number" &&
+          typeof payload.status === "string"
+        ) {
+          const next = payload as SquadRunInfo
+          setRuns((prev) => prev.map((r) => (r.id === next.id ? next : r)))
+        }
+      }
+      const current = activeRunRef.current
+      if (!current || current.run.id !== event.squadRunId) {
+        // Event is for a different run: nothing to patch locally.
+        return
+      }
+      const result = applySquadEvent(current, event)
+      if (result.changed && result.snapshot) {
+        setActiveRun(result.snapshot)
+      }
+      if (result.needsReload) {
+        scheduleReload(event.squadRunId)
+      }
     })
     return () => {
+      for (const handle of pendingReload.values()) {
+        clearTimeout(handle)
+      }
+      pendingReload.clear()
       void unlisten.then((fn) => fn())
     }
   }, [])
