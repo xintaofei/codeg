@@ -89,7 +89,7 @@ mod tauri_app {
                     connection_manager.attach_runtime_monitor(runtime_monitor.clone());
                     connection_manager.start_orphan_watchdog(web_client_registry);
 
-                    let static_dir = web::find_static_dir_tauri(&app.handle());
+                    let static_dir = web::find_static_dir_tauri(app.handle());
                     let build_consistency =
                         crate::build_info::evaluate_build_consistency(&static_dir);
                     runtime_monitor.set_build_consistency(build_consistency.clone());

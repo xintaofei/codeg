@@ -421,6 +421,7 @@ pub async fn squad_list_tasks(
 
 #[cfg(feature = "tauri-runtime")]
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command surface mirrors the underlying _core fn.
 pub async fn squad_create_artifact(
     db: tauri::State<'_, AppDatabase>,
     app: tauri::AppHandle,
