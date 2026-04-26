@@ -687,6 +687,18 @@ pub fn build_router(state: Arc<AppState>, token: String, static_dir: std::path::
             "/squad_list_artifacts",
             post(handlers::squad::squad_list_artifacts),
         )
+        .route(
+            "/squad_apply_conductor_output",
+            post(handlers::squad::squad_apply_conductor_output),
+        )
+        .route(
+            "/squad_dispatch_pending_tasks",
+            post(handlers::squad::squad_dispatch_pending_tasks),
+        )
+        .route(
+            "/squad_record_turn_artifacts",
+            post(handlers::squad::squad_record_turn_artifacts),
+        )
         // ─── Terminal ───
         .route("/terminal_spawn", post(handlers::terminal::terminal_spawn))
         .route("/terminal_write", post(handlers::terminal::terminal_write))

@@ -98,6 +98,23 @@ pub struct CreateArtifactParams {
     pub content_json: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyConductorOutputParams {
+    pub squad_run_id: i32,
+    pub raw_text: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordTurnArtifactsParams {
+    pub squad_run_id: i32,
+    pub role_kind: SquadRoleKind,
+    pub task_id: Option<i32>,
+    pub agent_text: String,
+    pub plan_json: Option<String>,
+}
+
 pub async fn squad_get_role_profiles(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<FolderIdParams>,
@@ -284,6 +301,7 @@ pub async fn squad_create_artifact(
     Ok(Json(
         squad_commands::squad_create_artifact_core(
             &state.db,
+            &state.emitter,
             params.squad_run_id,
             params.role_kind,
             params.task_id,
@@ -301,5 +319,53 @@ pub async fn squad_list_artifacts(
 ) -> Result<Json<Vec<SquadArtifactInfo>>, AppCommandError> {
     Ok(Json(
         squad_commands::squad_list_artifacts_core(&state.db, params.squad_run_id).await?,
+    ))
+}
+
+pub async fn squad_apply_conductor_output(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<ApplyConductorOutputParams>,
+) -> Result<Json<crate::squad::dispatcher::ApplyConductorOutputResult>, AppCommandError> {
+    Ok(Json(
+        squad_commands::squad_apply_conductor_output_core(
+            &state.db,
+            &state.emitter,
+            params.squad_run_id,
+            params.raw_text,
+        )
+        .await?,
+    ))
+}
+
+pub async fn squad_dispatch_pending_tasks(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<RunIdParams>,
+) -> Result<Json<crate::squad::dispatcher::DispatchPendingTasksResult>, AppCommandError> {
+    Ok(Json(
+        squad_commands::squad_dispatch_pending_tasks_core(
+            &state.db,
+            &state.connection_manager,
+            &state.emitter,
+            params.squad_run_id,
+        )
+        .await?,
+    ))
+}
+
+pub async fn squad_record_turn_artifacts(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<RecordTurnArtifactsParams>,
+) -> Result<Json<crate::squad::dispatcher::TurnArtifactsResult>, AppCommandError> {
+    Ok(Json(
+        squad_commands::squad_record_turn_artifacts_core(
+            &state.db,
+            &state.emitter,
+            params.squad_run_id,
+            params.role_kind,
+            params.task_id,
+            params.agent_text,
+            params.plan_json,
+        )
+        .await?,
     ))
 }

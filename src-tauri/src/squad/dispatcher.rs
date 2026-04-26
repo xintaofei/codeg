@@ -7,8 +7,8 @@ use crate::db::service::{agent_setting_service, squad_service};
 use crate::db::AppDatabase;
 use crate::models::agent::AgentType;
 use crate::models::squad::{
-    SquadRoleKind, SquadRoleProfileInfo, SquadRoleRunInfo, SquadRoleRunStatus, SquadRunMode,
-    SquadRunStatus, SquadTaskInfo, SquadTaskStatus,
+    SquadArtifactInfo, SquadArtifactType, SquadRoleKind, SquadRoleProfileInfo, SquadRoleRunInfo,
+    SquadRoleRunStatus, SquadRunMode, SquadRunStatus, SquadTaskInfo, SquadTaskStatus,
 };
 use crate::squad::conductor_parser::{parse_conductor_output, ParseReport};
 use crate::squad::events::{emit_payload, emit_squad_event, RoleConnectionAttachedPayload};
@@ -420,6 +420,136 @@ pub fn _agent_type_for_profile(profile: &SquadRoleProfileInfo) -> AgentType {
     profile.agent_type
 }
 
+/// Persist an artifact for a squad role and emit `squad_artifact_created`
+/// so any subscriber (UI, log tail, future analytics) reacts in one place.
+/// Re-used by every artifact-writing path (frontend command, conductor
+/// pipeline, future ACP listener) so events never get skipped.
+#[allow(clippy::too_many_arguments)]
+pub async fn record_role_artifact(
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+    run_id: i32,
+    role_kind: Option<SquadRoleKind>,
+    task_id: Option<i32>,
+    artifact_type: SquadArtifactType,
+    title: String,
+    content_json: String,
+) -> Result<SquadArtifactInfo, AcpError> {
+    let artifact = squad_service::create_artifact(
+        &db.conn,
+        run_id,
+        role_kind,
+        task_id,
+        artifact_type,
+        title,
+        content_json,
+    )
+    .await
+    .map_err(|e| AcpError::protocol(e.to_string()))?;
+    emit_payload(
+        emitter,
+        "squad_artifact_created",
+        run_id,
+        role_kind,
+        &artifact,
+    );
+    Ok(artifact)
+}
+
+/// What a single ACP turn produced as squad artifacts.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnArtifactsResult {
+    pub summary: Option<SquadArtifactInfo>,
+    pub plan: Option<SquadArtifactInfo>,
+}
+
+/// Capture an ACP turn's output as squad artifacts. Frontends that already
+/// receive `acp://event` chunks can call this on `TurnComplete` with the
+/// accumulated agent text + the latest plan JSON. Both inputs are optional:
+///
+/// - `agent_text` — when non-empty (after trim), persisted as an artifact
+///   of type `Summary`. Stored under a JSON envelope `{"text": "..."}` so
+///   future fields (token usage, cwd, etc.) can be added without a schema
+///   bump.
+/// - `plan_json` — when present, persisted as-is as an artifact of type
+///   `Plan`. The service layer validates JSON shape, so malformed input
+///   surfaces a clear error.
+pub async fn record_turn_artifacts(
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+    run_id: i32,
+    role_kind: SquadRoleKind,
+    task_id: Option<i32>,
+    agent_text: String,
+    plan_json: Option<String>,
+) -> Result<TurnArtifactsResult, AcpError> {
+    // Validate the run exists once up front.
+    let _ = squad_service::get_run(&db.conn, run_id)
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+
+    let summary = if !agent_text.trim().is_empty() {
+        let envelope = serde_json::json!({ "text": agent_text }).to_string();
+        let title = synthesize_summary_title(&agent_text);
+        Some(
+            record_role_artifact(
+                db,
+                emitter,
+                run_id,
+                Some(role_kind),
+                task_id,
+                SquadArtifactType::Summary,
+                title,
+                envelope,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+
+    let plan = match plan_json
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(raw) => Some(
+            record_role_artifact(
+                db,
+                emitter,
+                run_id,
+                Some(role_kind),
+                task_id,
+                SquadArtifactType::Plan,
+                "Plan update".to_string(),
+                raw.to_string(),
+            )
+            .await?,
+        ),
+        None => None,
+    };
+
+    Ok(TurnArtifactsResult { summary, plan })
+}
+
+/// Build a short title from the first non-empty line of a turn's text,
+/// trimmed to 80 chars so artifact lists stay readable.
+fn synthesize_summary_title(text: &str) -> String {
+    let first = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("(empty turn)");
+    if first.chars().count() > 80 {
+        let mut out: String = first.chars().take(77).collect();
+        out.push('…');
+        out
+    } else {
+        first.to_string()
+    }
+}
+
 /// Outcome of feeding a Conductor reply through the parser + task-writer pipeline.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -757,5 +887,26 @@ mod tests {
         let t = task_with_deps(3, SquadTaskStatus::Pending, Some("[99]"));
         let map = std::collections::HashMap::new();
         assert!(!deps_satisfied(&t, &map));
+    }
+
+    #[test]
+    fn summary_title_truncates_long_first_line() {
+        let long = "a".repeat(200);
+        let title = synthesize_summary_title(&long);
+        // 77 chars + ellipsis
+        assert_eq!(title.chars().count(), 78);
+        assert!(title.ends_with('…'));
+    }
+
+    #[test]
+    fn summary_title_uses_first_non_empty_line() {
+        let text = "\n\n  Hello, world!  \nsecond line";
+        assert_eq!(synthesize_summary_title(text), "Hello, world!");
+    }
+
+    #[test]
+    fn summary_title_handles_empty() {
+        assert_eq!(synthesize_summary_title(""), "(empty turn)");
+        assert_eq!(synthesize_summary_title("   \n  "), "(empty turn)");
     }
 }

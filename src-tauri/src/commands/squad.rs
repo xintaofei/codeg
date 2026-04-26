@@ -180,8 +180,10 @@ pub async fn squad_list_tasks_core(
         .map_err(AppCommandError::from)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn squad_create_artifact_core(
     db: &AppDatabase,
+    emitter: &EventEmitter,
     squad_run_id: i32,
     role_kind: Option<SquadRoleKind>,
     task_id: Option<i32>,
@@ -189,8 +191,9 @@ pub async fn squad_create_artifact_core(
     title: String,
     content_json: String,
 ) -> Result<SquadArtifactInfo, AppCommandError> {
-    squad_service::create_artifact(
-        &db.conn,
+    dispatcher::record_role_artifact(
+        db,
+        emitter,
         squad_run_id,
         role_kind,
         task_id,
@@ -199,7 +202,7 @@ pub async fn squad_create_artifact_core(
         content_json,
     )
     .await
-    .map_err(AppCommandError::from)
+    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))
 }
 
 pub async fn squad_list_artifacts_core(
@@ -231,6 +234,28 @@ pub async fn squad_dispatch_pending_tasks_core(
     dispatcher::dispatch_pending_tasks(db, manager, emitter, squad_run_id)
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))
+}
+
+pub async fn squad_record_turn_artifacts_core(
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+    squad_run_id: i32,
+    role_kind: SquadRoleKind,
+    task_id: Option<i32>,
+    agent_text: String,
+    plan_json: Option<String>,
+) -> Result<dispatcher::TurnArtifactsResult, AppCommandError> {
+    dispatcher::record_turn_artifacts(
+        db,
+        emitter,
+        squad_run_id,
+        role_kind,
+        task_id,
+        agent_text,
+        plan_json,
+    )
+    .await
+    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -398,6 +423,7 @@ pub async fn squad_list_tasks(
 #[tauri::command]
 pub async fn squad_create_artifact(
     db: tauri::State<'_, AppDatabase>,
+    app: tauri::AppHandle,
     squad_run_id: i32,
     role_kind: Option<SquadRoleKind>,
     task_id: Option<i32>,
@@ -405,8 +431,10 @@ pub async fn squad_create_artifact(
     title: String,
     content_json: String,
 ) -> Result<SquadArtifactInfo, AppCommandError> {
+    let emitter = EventEmitter::Tauri(app);
     squad_create_artifact_core(
         &db,
+        &emitter,
         squad_run_id,
         role_kind,
         task_id,
@@ -448,4 +476,28 @@ pub async fn squad_dispatch_pending_tasks(
 ) -> Result<dispatcher::DispatchPendingTasksResult, AppCommandError> {
     let emitter = EventEmitter::Tauri(app);
     squad_dispatch_pending_tasks_core(&db, &manager, &emitter, squad_run_id).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn squad_record_turn_artifacts(
+    db: tauri::State<'_, AppDatabase>,
+    app: tauri::AppHandle,
+    squad_run_id: i32,
+    role_kind: SquadRoleKind,
+    task_id: Option<i32>,
+    agent_text: String,
+    plan_json: Option<String>,
+) -> Result<dispatcher::TurnArtifactsResult, AppCommandError> {
+    let emitter = EventEmitter::Tauri(app);
+    squad_record_turn_artifacts_core(
+        &db,
+        &emitter,
+        squad_run_id,
+        role_kind,
+        task_id,
+        agent_text,
+        plan_json,
+    )
+    .await
 }
