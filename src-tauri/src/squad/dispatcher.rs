@@ -976,4 +976,59 @@ mod tests {
         assert_eq!(synthesize_summary_title(""), "(empty turn)");
         assert_eq!(synthesize_summary_title("   \n  "), "(empty turn)");
     }
+
+    #[test]
+    fn summary_title_handles_multibyte_truncation() {
+        // 100 CJK chars — each is one char but multiple bytes. We
+        // count chars not bytes, so 77 chars + ellipsis.
+        let text = "你".repeat(100);
+        let title = synthesize_summary_title(&text);
+        assert_eq!(title.chars().count(), 78);
+        assert!(title.ends_with('…'));
+        // No trailing UTF-8 boundary panic.
+        assert!(title.is_char_boundary(title.len()));
+    }
+
+    #[test]
+    fn summary_title_exactly_80_chars_no_truncation() {
+        let text = "a".repeat(80);
+        let title = synthesize_summary_title(&text);
+        assert_eq!(title.chars().count(), 80);
+        assert!(!title.ends_with('…'));
+    }
+
+    #[test]
+    fn summary_title_strips_leading_blank_lines_and_whitespace() {
+        let text = "\n\n\n   \n\n  hello world  \n   trailing";
+        assert_eq!(synthesize_summary_title(text), "hello world");
+    }
+
+    #[test]
+    fn deps_blocked_when_dep_failed() {
+        // A failed dependency should still block — the parent task
+        // can't reasonably run on top of incomplete work.
+        let task = task_with_deps(5, SquadTaskStatus::Pending, Some("[1]"));
+        let mut statuses = std::collections::HashMap::new();
+        statuses.insert(1, SquadTaskStatus::Failed);
+        assert!(!deps_satisfied(&task, &statuses));
+    }
+
+    #[test]
+    fn deps_mixed_completed_and_failed_blocks() {
+        let task = task_with_deps(5, SquadTaskStatus::Pending, Some("[1, 2, 3]"));
+        let mut statuses = std::collections::HashMap::new();
+        statuses.insert(1, SquadTaskStatus::Completed);
+        statuses.insert(2, SquadTaskStatus::Failed);
+        statuses.insert(3, SquadTaskStatus::Completed);
+        assert!(!deps_satisfied(&task, &statuses));
+    }
+
+    #[test]
+    fn deps_object_form_treated_as_satisfied() {
+        // depends_on_json that's a JSON object (not an array of ids) is
+        // unparseable for the array shape and falls through to "no deps".
+        let task = task_with_deps(5, SquadTaskStatus::Pending, Some(r#"{"after":[1]}"#));
+        let statuses = std::collections::HashMap::new();
+        assert!(deps_satisfied(&task, &statuses));
+    }
 }

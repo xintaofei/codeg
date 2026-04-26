@@ -240,4 +240,61 @@ mod tests {
         let path = res.expect("workspace path");
         assert!(Path::new(&path).is_dir());
     }
+
+    #[tokio::test]
+    async fn write_shared_returns_base_unchanged() {
+        let res = ensure_role_workspace(
+            Some("/tmp/shared-base"),
+            1,
+            SquadRoleKind::Worker,
+            SquadWorkspacePolicy::WriteShared,
+        )
+        .await
+        .unwrap();
+        assert_eq!(res.as_deref(), Some("/tmp/shared-base"));
+    }
+
+    #[tokio::test]
+    async fn none_base_returns_none_for_every_policy() {
+        for policy in [
+            SquadWorkspacePolicy::ReadOnly,
+            SquadWorkspacePolicy::WriteShared,
+            SquadWorkspacePolicy::WriteIsolated,
+        ] {
+            let res = ensure_role_workspace(None, 1, SquadRoleKind::Worker, policy)
+                .await
+                .unwrap();
+            assert!(res.is_none(), "policy {policy:?} should yield None");
+        }
+    }
+
+    #[test]
+    fn planned_path_distinguishes_run_and_role() {
+        let base = Path::new("/tmp/myrepo");
+        let p1 = planned_worktree_path(base, 42, SquadRoleKind::Worker);
+        let p2 = planned_worktree_path(base, 42, SquadRoleKind::Frontend);
+        let p3 = planned_worktree_path(base, 43, SquadRoleKind::Worker);
+        assert_ne!(p1, p2, "different roles must produce different paths");
+        assert_ne!(p1, p3, "different runs must produce different paths");
+    }
+
+    #[test]
+    fn branch_name_distinguishes_run_and_role() {
+        assert_ne!(
+            role_branch_name(1, SquadRoleKind::Worker),
+            role_branch_name(1, SquadRoleKind::Frontend)
+        );
+        assert_ne!(
+            role_branch_name(1, SquadRoleKind::Worker),
+            role_branch_name(2, SquadRoleKind::Worker)
+        );
+    }
+
+    #[test]
+    fn planned_path_handles_base_without_filename() {
+        // A base path that has no terminal filename component (e.g. `/`)
+        // shouldn't panic — fall back to "workspace".
+        let p = planned_worktree_path(Path::new("/"), 1, SquadRoleKind::Worker);
+        assert!(p.display().to_string().contains("workspace"));
+    }
 }

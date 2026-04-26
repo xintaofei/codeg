@@ -319,4 +319,93 @@ Plan:
         assert_eq!(parse_role("impl"), Some(SquadRoleKind::Worker));
         assert_eq!(parse_role("frontend"), Some(SquadRoleKind::Frontend));
     }
+
+    #[test]
+    fn parses_cjk_titles_and_descriptions() {
+        // Conductors will often plan in the user's language. CJK chars
+        // should round-trip cleanly through both parsers.
+        let raw = r#"```json
+[
+  {"role": "frontend", "title": "设置面板开关", "description": "接入 UI"},
+  {"role": "backend",  "title": "API 端点",     "description": "接受 payload"}
+]
+```"#;
+        let report = parse_conductor_output(raw);
+        assert_eq!(report.skipped.len(), 0);
+        assert_eq!(report.tasks.len(), 2);
+        assert_eq!(report.tasks[0].title, "设置面板开关");
+        assert_eq!(report.tasks[1].description, "接受 payload");
+    }
+
+    #[test]
+    fn checklist_skips_lines_without_role_tag() {
+        // Lines that don't carry a [role] prefix should be silently
+        // skipped — the conductor often interleaves prose with the list.
+        let raw = "\
+Plan:
+- [ ] [frontend] Toggle button — wire mode change
+- [ ] just a note about the layout
+- [ ] [worker] Migrate tests
+";
+        let report = parse_conductor_output(raw);
+        assert_eq!(
+            report.tasks.len(),
+            2,
+            "untagged lines are skipped, tagged ones kept"
+        );
+        assert_eq!(report.tasks[0].role, SquadRoleKind::Frontend);
+        assert_eq!(report.tasks[1].role, SquadRoleKind::Worker);
+    }
+
+    #[test]
+    fn json_takes_precedence_over_checklist_when_both_present() {
+        // If a fenced JSON array parses successfully, the checklist
+        // fallback should not also run — otherwise we'd double-count.
+        let raw = r#"
+- [ ] [worker] checklist task
+
+```json
+[{"role": "frontend", "title": "json task", "description": "from json"}]
+```
+"#;
+        let report = parse_conductor_output(raw);
+        assert_eq!(
+            report.tasks.len(),
+            1,
+            "JSON wins; checklist must not also fire"
+        );
+        assert_eq!(report.tasks[0].title, "json task");
+    }
+
+    #[test]
+    fn malformed_json_falls_through_to_checklist() {
+        // A fenced block that fails to parse as JSON shouldn't poison
+        // the rest of the message — the markdown fallback should still
+        // pick up checklist items elsewhere in the body.
+        let raw = "\
+```json
+{this is not valid JSON
+```
+
+- [ ] [backend] still got picked up
+";
+        let report = parse_conductor_output(raw);
+        assert_eq!(report.tasks.len(), 1);
+        assert_eq!(report.tasks[0].role, SquadRoleKind::Backend);
+    }
+
+    #[test]
+    fn json_object_with_tasks_array_supported() {
+        // Some Conductors will wrap the array in a top-level object.
+        // We require a literal array; an object is unparseable for the
+        // array shape, so this should fall through to no tasks.
+        let raw = r#"```json
+{"tasks": [{"role": "worker", "title": "x", "description": "y"}]}
+```"#;
+        let report = parse_conductor_output(raw);
+        // We don't currently destructure {tasks: [...]}, so we expect
+        // zero tasks; this guards against accidentally accepting the
+        // wrong shape later.
+        assert_eq!(report.tasks.len(), 0);
+    }
 }
