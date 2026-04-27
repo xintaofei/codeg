@@ -24,7 +24,7 @@ import { Streamdown } from "streamdown"
 import { readFileBase64 } from "@/lib/api"
 import { normalizeMathDelimiters } from "@/components/ai-elements/message"
 import { defineMonacoThemes, useMonacoThemeSync } from "@/lib/monaco-themes"
-import { useZoomLevel } from "@/hooks/use-appearance"
+import { useCodeFontFamily, useZoomLevel } from "@/hooks/use-appearance"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
 const EDITOR_BASE_FONT_SIZE = 13
@@ -774,6 +774,7 @@ export function FileWorkspacePanel() {
   const gitChangeDecorationsRef = useRef<string[]>([])
   const editorTheme = useMonacoThemeSync()
   const { zoomLevel } = useZoomLevel()
+  const { codeFontFamilyStack } = useCodeFontFamily()
   const [editorMountVersion, setEditorMountVersion] = useState(0)
   const [cursorLine, setCursorLine] = useState(1)
   const [collapsedFiles, setCollapsedFiles] = useState<Record<string, boolean>>(
@@ -1614,6 +1615,7 @@ export function FileWorkspacePanel() {
                 readOnly: !canEdit,
                 minimap: { enabled: false },
                 automaticLayout: true,
+                fontFamily: codeFontFamilyStack,
                 fontSize: (EDITOR_BASE_FONT_SIZE * zoomLevel) / 100,
                 lineNumbersMinChars,
                 lineDecorationsWidth: 10,

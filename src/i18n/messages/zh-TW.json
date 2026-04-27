@@ -84,6 +84,16 @@
         "violet": "Violet"
       }
     },
+    "fontFamily": {
+      "sectionTitle": "字型",
+      "sectionDescription": "選擇介面和程式碼區域使用的字型。",
+      "uiFont": "UI 字型",
+      "codeFont": "程式碼字型",
+      "placeholder": "請選擇字型",
+      "default": "預設",
+      "systemFallbackHint": "Web 模式下僅顯示安全的通用字型選項。",
+      "loadFailed": "載入系統字型失敗：{message}"
+    },
     "zoomLevel": {
       "sectionTitle": "視窗縮放",
       "sectionDescription": "整體放大或縮小介面，立即生效，依裝置分別儲存。",
@@ -92,7 +102,7 @@
       "current": "目前縮放：{zoom}%"
     },
     "resetToDefaults": "恢復預設",
-    "resetHint": "將主題顏色和視窗縮放恢復到預設值。"
+    "resetHint": "將主題顏色、視窗縮放和字型恢復到預設值。"
   },
   "SystemSettings": {
     "loading": "載入中...",

@@ -28,6 +28,7 @@ tauri-runtime = [
     "dep:tauri-plugin-process",
     "dep:tauri-plugin-notification",
     "dep:keyring",
+    "dep:fontdb",
 ]
 
 [[bin]]
@@ -86,6 +87,7 @@ qrcode = "0.14"
 image = { version = "0.25", default-features = false, features = ["png"] }
 include_dir = "0.7"
 sha2 = "0.10"
+fontdb = { version = "0.23", optional = true }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-window-state = { version = "2", optional = true }

@@ -5,7 +5,9 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  --codeg-ui-font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  --codeg-code-font-family: Menlo, Monaco, "Courier New", monospace;
+  font-family: var(--codeg-ui-font-family);
   font-size: 16px;
   line-height: 24px;
   font-weight: 400;
@@ -943,7 +945,8 @@
 }
 
 @theme inline {
-  --font-sans: var(--font-sans);
+  --font-sans: var(--codeg-ui-font-family);
+  --font-mono: var(--codeg-code-font-family);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -994,6 +997,7 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-family: var(--codeg-ui-font-family);
     padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
     padding-left: env(safe-area-inset-left);

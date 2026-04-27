@@ -1,3 +1,6 @@
+#[cfg(feature = "tauri-runtime")]
+use std::collections::BTreeMap;
+
 use sea_orm::DatabaseConnection;
 #[cfg(feature = "tauri-runtime")]
 use tauri::State;
@@ -6,18 +9,111 @@ use crate::app_error::AppCommandError;
 use crate::db::service::app_metadata_service;
 #[cfg(feature = "tauri-runtime")]
 use crate::db::AppDatabase;
-use crate::models::{SystemLanguageSettings, SystemProxySettings};
 #[cfg(feature = "tauri-runtime")]
-use crate::models::SystemRenderingSettings;
-#[cfg(feature = "tauri-runtime")]
-use crate::preferences;
+use crate::models::{SystemFontSettings, SystemRenderingSettings};
+use crate::models::{
+    SystemFontFamily, SystemFontFamilyList, SystemFontFamilySource, SystemLanguageSettings,
+    SystemProxySettings,
+};
 #[cfg(feature = "tauri-runtime")]
 use crate::network::proxy;
+#[cfg(feature = "tauri-runtime")]
+use crate::preferences;
 
 const SYSTEM_PROXY_SETTINGS_KEY: &str = "system_proxy_settings";
 const SYSTEM_LANGUAGE_SETTINGS_KEY: &str = "system_language_settings";
 #[cfg(feature = "tauri-runtime")]
+const APPEARANCE_FONT_SETTINGS_KEY: &str = "appearance_font_settings";
+#[cfg(feature = "tauri-runtime")]
 const LANGUAGE_SETTINGS_UPDATED_EVENT: &str = "app://language-settings-updated";
+#[cfg(feature = "tauri-runtime")]
+const MAX_FONT_FAMILY_LENGTH: usize = 128;
+#[cfg(feature = "tauri-runtime")]
+const MAX_FONT_FAMILIES: usize = 512;
+const FALLBACK_FONT_FAMILIES: [(&str, bool); 10] = [
+    ("system-ui", false),
+    ("ui-sans-serif", false),
+    ("Arial", false),
+    ("Helvetica", false),
+    ("sans-serif", false),
+    ("ui-monospace", true),
+    ("Menlo", true),
+    ("Monaco", true),
+    ("Courier New", true),
+    ("monospace", true),
+];
+
+#[cfg(feature = "tauri-runtime")]
+fn sanitize_font_family_name(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with('.')
+        || trimmed.chars().count() > MAX_FONT_FAMILY_LENGTH
+        || trimmed.chars().any(char::is_control)
+    {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+#[cfg(feature = "tauri-runtime")]
+fn insert_font_family(
+    families: &mut BTreeMap<String, SystemFontFamily>,
+    family: String,
+    monospace: bool,
+) {
+    let key = family.to_lowercase();
+    families
+        .entry(key)
+        .and_modify(|existing| {
+            existing.monospace = existing.monospace || monospace;
+        })
+        .or_insert(SystemFontFamily { family, monospace });
+}
+
+pub(crate) fn fallback_system_font_families() -> SystemFontFamilyList {
+    let families = FALLBACK_FONT_FAMILIES
+        .iter()
+        .map(|(family, monospace)| SystemFontFamily {
+            family: (*family).to_string(),
+            monospace: *monospace,
+        })
+        .collect();
+
+    SystemFontFamilyList {
+        families,
+        source: SystemFontFamilySource::Fallback,
+    }
+}
+
+#[cfg(feature = "tauri-runtime")]
+pub(crate) fn list_system_font_families_core() -> SystemFontFamilyList {
+    let mut db = fontdb::Database::new();
+    db.load_system_fonts();
+
+    let mut families = BTreeMap::new();
+    for face in db.faces() {
+        for (family, _language) in &face.families {
+            if let Some(safe_family) = sanitize_font_family_name(family) {
+                insert_font_family(&mut families, safe_family, face.monospaced);
+            }
+        }
+    }
+
+    let families = families
+        .into_values()
+        .take(MAX_FONT_FAMILIES)
+        .collect::<Vec<_>>();
+
+    if families.is_empty() {
+        fallback_system_font_families()
+    } else {
+        SystemFontFamilyList {
+            families,
+            source: SystemFontFamilySource::System,
+        }
+    }
+}
 
 fn normalize_proxy_settings(
     settings: SystemProxySettings,
@@ -53,6 +149,28 @@ fn normalize_proxy_settings(
         enabled: true,
         proxy_url: Some(proxy_url.to_string()),
     })
+}
+
+#[cfg(feature = "tauri-runtime")]
+fn normalize_font_family_preference(value: Option<String>) -> Option<String> {
+    let value = value?;
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with('.')
+        || trimmed.chars().count() > MAX_FONT_FAMILY_LENGTH
+        || trimmed.chars().any(char::is_control)
+    {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+#[cfg(feature = "tauri-runtime")]
+fn normalize_font_settings(settings: SystemFontSettings) -> SystemFontSettings {
+    SystemFontSettings {
+        ui_font_family: normalize_font_family_preference(settings.ui_font_family),
+        code_font_family: normalize_font_family_preference(settings.code_font_family),
+    }
 }
 
 pub(crate) async fn load_system_proxy_settings(
@@ -91,6 +209,49 @@ pub(crate) async fn load_system_language_settings(
 }
 
 #[cfg(feature = "tauri-runtime")]
+pub(crate) async fn load_system_font_settings(
+    conn: &DatabaseConnection,
+) -> Result<SystemFontSettings, AppCommandError> {
+    let raw = app_metadata_service::get_value(conn, APPEARANCE_FONT_SETTINGS_KEY)
+        .await
+        .map_err(AppCommandError::from)?;
+
+    let Some(raw) = raw else {
+        return Ok(SystemFontSettings::default());
+    };
+
+    let parsed = serde_json::from_str::<SystemFontSettings>(&raw).map_err(|e| {
+        AppCommandError::configuration_invalid("Failed to parse stored font settings")
+            .with_detail(e.to_string())
+    })?;
+    Ok(normalize_font_settings(parsed))
+}
+
+#[cfg(feature = "tauri-runtime")]
+pub(crate) async fn update_system_font_settings_core(
+    conn: &DatabaseConnection,
+    settings: SystemFontSettings,
+) -> Result<SystemFontSettings, AppCommandError> {
+    let normalized = normalize_font_settings(settings);
+    let serialized = serde_json::to_string(&normalized).map_err(|e| {
+        AppCommandError::invalid_input("Failed to serialize font settings")
+            .with_detail(e.to_string())
+    })?;
+
+    app_metadata_service::upsert_value(conn, APPEARANCE_FONT_SETTINGS_KEY, &serialized)
+        .await
+        .map_err(AppCommandError::from)?;
+
+    Ok(normalized)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn list_system_font_families() -> Result<SystemFontFamilyList, AppCommandError> {
+    Ok(list_system_font_families_core())
+}
+
+#[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn get_system_proxy_settings(
     db: State<'_, AppDatabase>,
@@ -124,6 +285,23 @@ pub async fn get_system_language_settings(
     db: State<'_, AppDatabase>,
 ) -> Result<SystemLanguageSettings, AppCommandError> {
     load_system_language_settings(&db.conn).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn get_system_font_settings(
+    db: State<'_, AppDatabase>,
+) -> Result<SystemFontSettings, AppCommandError> {
+    load_system_font_settings(&db.conn).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn update_system_font_settings(
+    settings: SystemFontSettings,
+    db: State<'_, AppDatabase>,
+) -> Result<SystemFontSettings, AppCommandError> {
+    update_system_font_settings_core(&db.conn, settings).await
 }
 
 #[cfg(feature = "tauri-runtime")]

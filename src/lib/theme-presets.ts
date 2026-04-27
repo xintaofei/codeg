@@ -59,3 +59,103 @@ export const ZOOM_LEVELS = [80, 90, 100, 110, 125, 150] as const
 export type ZoomLevel = (typeof ZOOM_LEVELS)[number]
 
 export const DEFAULT_ZOOM_LEVEL: ZoomLevel = 100
+
+export type FontFamilyPreference = string | null
+
+export const DEFAULT_UI_FONT_FAMILY: FontFamilyPreference = null
+export const DEFAULT_CODE_FONT_FAMILY: FontFamilyPreference = null
+
+export const UI_FONT_FALLBACK_STACK =
+  "Inter, Avenir, Helvetica, Arial, sans-serif"
+export const CODE_FONT_FALLBACK_STACK =
+  'Menlo, Monaco, "Courier New", monospace'
+
+export const MAX_FONT_FAMILY_NAME_LENGTH = 128
+
+export const BUILT_IN_UI_FONT_FAMILIES = [
+  "system-ui",
+  "ui-sans-serif",
+  "Arial",
+  "Helvetica",
+  "sans-serif",
+] as const
+
+export const BUILT_IN_CODE_FONT_FAMILIES = [
+  "ui-monospace",
+  "Menlo",
+  "Monaco",
+  "Courier New",
+  "monospace",
+] as const
+
+export const BUILT_IN_FONT_FAMILY_OPTIONS = [
+  ...BUILT_IN_UI_FONT_FAMILIES,
+  ...BUILT_IN_CODE_FONT_FAMILIES,
+] as const
+
+const CSS_GENERIC_FONT_FAMILIES = new Set<string>([
+  "sans-serif",
+  "monospace",
+  "system-ui",
+  "ui-sans-serif",
+  "ui-monospace",
+])
+
+const BUILT_IN_FONT_FAMILY_KEYS = new Set<string>(
+  BUILT_IN_FONT_FAMILY_OPTIONS.map((family) => family.toLowerCase())
+)
+
+export function normalizeFontFamilyPreference(
+  value: unknown
+): FontFamilyPreference {
+  if (typeof value !== "string") return null
+
+  const trimmed = value.trim()
+  if (
+    !trimmed ||
+    trimmed.startsWith(".") ||
+    [...trimmed].length > MAX_FONT_FAMILY_NAME_LENGTH ||
+    [...trimmed].some((char) => {
+      const code = char.charCodeAt(0)
+      return code < 32 || code === 127
+    })
+  ) {
+    return null
+  }
+
+  return trimmed
+}
+
+export function isBuiltInFontFamilyOption(family: string): boolean {
+  return BUILT_IN_FONT_FAMILY_KEYS.has(family.trim().toLowerCase())
+}
+
+function formatFontFamilyForCss(family: string): string {
+  const normalized = normalizeFontFamilyPreference(family)
+  if (!normalized) return ""
+  if (CSS_GENERIC_FONT_FAMILIES.has(normalized.toLowerCase())) {
+    return normalized
+  }
+  return JSON.stringify(normalized)
+}
+
+export function buildFontFamilyStack(
+  selectedFont: FontFamilyPreference,
+  fallbackStack: string
+): string {
+  const normalized = normalizeFontFamilyPreference(selectedFont)
+  if (!normalized) return fallbackStack
+  return `${formatFontFamilyForCss(normalized)}, ${fallbackStack}`
+}
+
+export function buildUiFontFamilyStack(
+  selectedFont: FontFamilyPreference
+): string {
+  return buildFontFamilyStack(selectedFont, UI_FONT_FALLBACK_STACK)
+}
+
+export function buildCodeFontFamilyStack(
+  selectedFont: FontFamilyPreference
+): string {
+  return buildFontFamilyStack(selectedFont, CODE_FONT_FALLBACK_STACK)
+}

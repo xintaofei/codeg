@@ -84,6 +84,16 @@
         "violet": "Violet"
       }
     },
+    "fontFamily": {
+      "sectionTitle": "Schriftarten",
+      "sectionDescription": "Wähle die Schriftarten für Oberfläche und Codebereiche.",
+      "uiFont": "UI-Schriftart",
+      "codeFont": "Code-Schriftart",
+      "placeholder": "Schriftart auswählen",
+      "default": "Standard",
+      "systemFallbackHint": "Im Webmodus werden nur sichere generische Schriftoptionen angezeigt.",
+      "loadFailed": "Systemschriftarten konnten nicht geladen werden: {message}"
+    },
     "zoomLevel": {
       "sectionTitle": "Fensterzoom",
       "sectionDescription": "Skaliert die gesamte Oberfläche. Wird sofort übernommen und pro Gerät gespeichert.",
@@ -92,7 +102,7 @@
       "current": "Aktueller Zoom: {zoom}%"
     },
     "resetToDefaults": "Auf Standard zurücksetzen",
-    "resetHint": "Themenfarbe und Fensterzoom auf Standardwerte zurücksetzen."
+    "resetHint": "Themenfarbe, Fensterzoom und Schriftarten auf Standardwerte zurücksetzen."
   },
   "SystemSettings": {
     "loading": "Wird geladen...",

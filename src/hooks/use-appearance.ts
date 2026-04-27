@@ -22,3 +22,16 @@ export function useZoomLevel() {
   const { zoomLevel, setZoomLevel } = useAppearance()
   return { zoomLevel, setZoomLevel }
 }
+
+/** 语义化包装：只关心 UI 字体的调用点用这个 */
+export function useUiFontFamily() {
+  const { uiFontFamily, setUiFontFamily, uiFontFamilyStack } = useAppearance()
+  return { uiFontFamily, setUiFontFamily, uiFontFamilyStack }
+}
+
+/** 语义化包装：只关心代码字体的调用点用这个 */
+export function useCodeFontFamily() {
+  const { codeFontFamily, setCodeFontFamily, codeFontFamilyStack } =
+    useAppearance()
+  return { codeFontFamily, setCodeFontFamily, codeFontFamilyStack }
+}

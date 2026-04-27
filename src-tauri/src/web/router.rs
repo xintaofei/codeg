@@ -369,6 +369,10 @@ pub fn build_router(state: Arc<AppState>, token: String, static_dir: std::path::
         )
         // ─── System settings ───
         .route(
+            "/list_system_font_families",
+            post(handlers::system_settings::list_system_font_families),
+        )
+        .route(
             "/get_system_proxy_settings",
             post(handlers::system_settings::get_system_proxy_settings),
         )

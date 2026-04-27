@@ -84,6 +84,16 @@
         "violet": "Violet"
       }
     },
+    "fontFamily": {
+      "sectionTitle": "글꼴",
+      "sectionDescription": "인터페이스와 코드 영역에 사용할 글꼴을 선택하세요.",
+      "uiFont": "UI 글꼴",
+      "codeFont": "코드 글꼴",
+      "placeholder": "글꼴 선택",
+      "default": "기본값",
+      "systemFallbackHint": "웹 모드에서는 안전한 일반 글꼴 옵션만 표시됩니다.",
+      "loadFailed": "시스템 글꼴을 불러오지 못했습니다: {message}"
+    },
     "zoomLevel": {
       "sectionTitle": "창 확대/축소",
       "sectionDescription": "전체 인터페이스를 확대하거나 축소합니다. 즉시 적용되며 장치별로 저장됩니다.",
@@ -92,7 +102,7 @@
       "current": "현재 확대/축소: {zoom}%"
     },
     "resetToDefaults": "기본값으로 재설정",
-    "resetHint": "테마 색상과 창 확대/축소를 기본값으로 재설정합니다."
+    "resetHint": "테마 색상, 창 확대/축소, 글꼴을 기본값으로 재설정합니다."
   },
   "SystemSettings": {
     "loading": "로딩 중...",

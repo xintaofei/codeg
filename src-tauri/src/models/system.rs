@@ -1,5 +1,32 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemFontFamilySource {
+    System,
+    Fallback,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SystemFontFamily {
+    pub family: String,
+    pub monospace: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SystemFontFamilyList {
+    pub families: Vec<SystemFontFamily>,
+    pub source: SystemFontFamilySource,
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct SystemFontSettings {
+    pub ui_font_family: Option<String>,
+    pub code_font_family: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SystemProxySettings {
     pub enabled: bool,

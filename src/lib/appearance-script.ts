@@ -6,6 +6,8 @@
  */
 export const STORAGE_KEY_THEME_COLOR = "codeg-theme-color"
 export const STORAGE_KEY_ZOOM_LEVEL = "codeg-zoom-level"
+export const STORAGE_KEY_UI_FONT_FAMILY = "codeg-ui-font-family"
+export const STORAGE_KEY_CODE_FONT_FAMILY = "codeg-code-font-family"
 
 /**
  * 同步执行的 inline 脚本，由 layout.tsx 通过 dangerouslySetInnerHTML 注入。
@@ -24,6 +26,39 @@ const SCRIPT = `
   try {
     var VALID_COLORS = ["neutral","zinc","slate","stone","gray","red","rose","orange","green","blue","yellow","violet"];
     var VALID_ZOOMS = [80, 90, 100, 110, 125, 150];
+    var MAX_FONT_LENGTH = 128;
+    var UI_FALLBACK = "Inter, Avenir, Helvetica, Arial, sans-serif";
+    var CODE_FALLBACK = "Menlo, Monaco, \\"Courier New\\", monospace";
+    var CSS_GENERIC_FAMILIES = [
+      "sans-serif",
+      "monospace",
+      "system-ui",
+      "ui-sans-serif",
+      "ui-monospace"
+    ];
+
+    function normalizeFontFamily(value) {
+      if (typeof value !== "string") return null;
+      var trimmed = value.trim();
+      if (!trimmed || trimmed.charAt(0) === "." || trimmed.length > MAX_FONT_LENGTH) {
+        return null;
+      }
+      for (var i = 0; i < trimmed.length; i++) {
+        var code = trimmed.charCodeAt(i);
+        if (code < 32 || code === 127) return null;
+      }
+      return trimmed;
+    }
+
+    function isGenericFamily(value) {
+      return CSS_GENERIC_FAMILIES.indexOf(value.toLowerCase()) >= 0;
+    }
+
+    function fontFamilyStack(value, fallback) {
+      var font = normalizeFontFamily(value);
+      if (!font) return fallback;
+      return (isGenericFamily(font) ? font : JSON.stringify(font)) + ", " + fallback;
+    }
 
     var storedColor = localStorage.getItem("${STORAGE_KEY_THEME_COLOR}");
     var color = VALID_COLORS.indexOf(storedColor) >= 0 ? storedColor : "neutral";
@@ -32,6 +67,23 @@ const SCRIPT = `
     var storedZoom = parseInt(localStorage.getItem("${STORAGE_KEY_ZOOM_LEVEL}") || "", 10);
     var zoom = VALID_ZOOMS.indexOf(storedZoom) >= 0 ? storedZoom : 100;
     document.documentElement.style.fontSize = (16 * zoom / 100) + "px";
+
+    var uiFont = normalizeFontFamily(localStorage.getItem("${STORAGE_KEY_UI_FONT_FAMILY}"));
+    var codeFont = normalizeFontFamily(localStorage.getItem("${STORAGE_KEY_CODE_FONT_FAMILY}"));
+    if (uiFont) {
+      document.documentElement.dataset.uiFontFamily = uiFont;
+      document.documentElement.style.setProperty("--codeg-ui-font-family", fontFamilyStack(uiFont, UI_FALLBACK));
+    } else {
+      document.documentElement.removeAttribute("data-ui-font-family");
+      document.documentElement.style.setProperty("--codeg-ui-font-family", UI_FALLBACK);
+    }
+    if (codeFont) {
+      document.documentElement.dataset.codeFontFamily = codeFont;
+      document.documentElement.style.setProperty("--codeg-code-font-family", fontFamilyStack(codeFont, CODE_FALLBACK));
+    } else {
+      document.documentElement.removeAttribute("data-code-font-family");
+      document.documentElement.style.setProperty("--codeg-code-font-family", CODE_FALLBACK);
+    }
 
     // 在 next-themes 水合之前同步检测暗色模式，防止白色闪屏。
     // next-themes 使用 localStorage key "theme"，attribute="class"。

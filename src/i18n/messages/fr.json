@@ -84,6 +84,16 @@
         "violet": "Violet"
       }
     },
+    "fontFamily": {
+      "sectionTitle": "Polices",
+      "sectionDescription": "Choisissez les polices utilisées pour l’interface et les zones de code.",
+      "uiFont": "Police de l’interface",
+      "codeFont": "Police du code",
+      "placeholder": "Sélectionner une police",
+      "default": "Par défaut",
+      "systemFallbackHint": "En mode web, seules les options sûres de polices génériques sont affichées.",
+      "loadFailed": "Échec du chargement des polices système : {message}"
+    },
     "zoomLevel": {
       "sectionTitle": "Zoom de la fenêtre",
       "sectionDescription": "Met à l'échelle toute l'interface. S'applique immédiatement et est enregistré par appareil.",
@@ -92,7 +102,7 @@
       "current": "Zoom actuel : {zoom}%"
     },
     "resetToDefaults": "Réinitialiser",
-    "resetHint": "Réinitialise la couleur du thème et le zoom de la fenêtre."
+    "resetHint": "Réinitialise la couleur du thème, le zoom de la fenêtre et les polices."
   },
   "SystemSettings": {
     "loading": "Chargement...",

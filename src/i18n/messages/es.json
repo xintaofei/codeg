@@ -84,6 +84,16 @@
         "violet": "Violet"
       }
     },
+    "fontFamily": {
+      "sectionTitle": "Fuentes",
+      "sectionDescription": "Elige las fuentes usadas en la interfaz y las áreas de código.",
+      "uiFont": "Fuente de UI",
+      "codeFont": "Fuente de código",
+      "placeholder": "Selecciona una fuente",
+      "default": "Predeterminada",
+      "systemFallbackHint": "En modo web solo se muestran opciones seguras de fuentes genéricas.",
+      "loadFailed": "No se pudieron cargar las fuentes del sistema: {message}"
+    },
     "zoomLevel": {
       "sectionTitle": "Zoom de ventana",
       "sectionDescription": "Escala toda la interfaz. Se aplica al instante y se guarda por dispositivo.",
@@ -92,7 +102,7 @@
       "current": "Zoom actual: {zoom}%"
     },
     "resetToDefaults": "Restablecer valores",
-    "resetHint": "Restablece el color del tema y el zoom de ventana a los valores predeterminados."
+    "resetHint": "Restablece el color del tema, el zoom de ventana y las fuentes a los valores predeterminados."
   },
   "SystemSettings": {
     "loading": "Cargando...",

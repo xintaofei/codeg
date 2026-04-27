@@ -21,9 +21,10 @@ pub use message::{
     AgentExecutionStats, AgentToolCall, ContentBlock, MessageRole, MessageTurn, TurnRole,
     TurnUsage, UnifiedMessage,
 };
+#[cfg(feature = "tauri-runtime")]
+pub use system::{SystemFontSettings, SystemRenderingSettings};
 pub use system::{
     GitCredentials, GitDetectResult, GitHubAccountsSettings, GitHubTokenValidation, GitSettings,
-    SystemLanguageSettings, SystemProxySettings,
+    SystemFontFamily, SystemFontFamilyList, SystemFontFamilySource, SystemLanguageSettings,
+    SystemProxySettings,
 };
-#[cfg(feature = "tauri-runtime")]
-pub use system::SystemRenderingSettings;

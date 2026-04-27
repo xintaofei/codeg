@@ -1,5 +1,6 @@
 "use client"
 
+import { useEffect, useMemo, useState } from "react"
 import { Monitor, Moon, RotateCcw, Sun, Type } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useTheme } from "next-themes"
@@ -12,25 +13,190 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { useThemeColor, useZoomLevel } from "@/hooks/use-appearance"
+import {
+  useCodeFontFamily,
+  useThemeColor,
+  useUiFontFamily,
+  useZoomLevel,
+} from "@/hooks/use-appearance"
+import { listSystemFontFamilies } from "@/lib/api"
+import { toErrorMessage } from "@/lib/app-error"
 import { cn } from "@/lib/utils"
 import {
+  BUILT_IN_CODE_FONT_FAMILIES,
+  DEFAULT_CODE_FONT_FAMILY,
   DEFAULT_THEME_COLOR,
+  DEFAULT_UI_FONT_FAMILY,
   DEFAULT_ZOOM_LEVEL,
   THEME_COLOR_PREVIEW,
   THEME_COLORS,
   ZOOM_LEVELS,
+  isBuiltInFontFamilyOption,
+  normalizeFontFamilyPreference,
+  type FontFamilyPreference,
   type ThemeColor,
   type ZoomLevel,
 } from "@/lib/theme-presets"
+import type { SystemFontFamily, SystemFontFamilyList } from "@/lib/types"
 
 type ThemeMode = "system" | "light" | "dark"
+type FontSelectValue = string
+
+const DEFAULT_FONT_SELECT_VALUE = "__default__"
+
+const FALLBACK_FONT_LIST: SystemFontFamilyList = {
+  source: "fallback",
+  families: [
+    { family: "system-ui", monospace: false },
+    { family: "ui-sans-serif", monospace: false },
+    { family: "Arial", monospace: false },
+    { family: "Helvetica", monospace: false },
+    { family: "sans-serif", monospace: false },
+    { family: "ui-monospace", monospace: true },
+    { family: "Menlo", monospace: true },
+    { family: "Monaco", monospace: true },
+    { family: "Courier New", monospace: true },
+    { family: "monospace", monospace: true },
+  ],
+}
+
+function normalizeFontList(value: SystemFontFamilyList): SystemFontFamilyList {
+  const byKey = new Map<string, SystemFontFamily>()
+  for (const option of [...value.families, ...FALLBACK_FONT_LIST.families]) {
+    const family = normalizeFontFamilyPreference(option.family)
+    if (!family) continue
+    const key = family.toLowerCase()
+    const existing = byKey.get(key)
+    if (existing) {
+      byKey.set(key, {
+        family: existing.family,
+        monospace: existing.monospace || option.monospace,
+      })
+    } else {
+      byKey.set(key, { family, monospace: option.monospace })
+    }
+  }
+
+  const families = Array.from(byKey.values()).sort((a, b) =>
+    a.family.localeCompare(b.family, undefined, { sensitivity: "base" })
+  )
+
+  return { source: value.source, families }
+}
+
+function isKnownFontFamily(
+  fontFamily: FontFamilyPreference,
+  families: SystemFontFamily[]
+): boolean {
+  if (!fontFamily) return true
+  const key = fontFamily.toLowerCase()
+  return (
+    isBuiltInFontFamilyOption(fontFamily) ||
+    families.some((option) => option.family.toLowerCase() === key)
+  )
+}
+
+function isKnownCodeFontFamily(
+  fontFamily: FontFamilyPreference,
+  families: SystemFontFamily[]
+): boolean {
+  if (!fontFamily) return true
+  const key = fontFamily.toLowerCase()
+  return (
+    BUILT_IN_CODE_FONT_FAMILIES.some(
+      (family) => family.toLowerCase() === key
+    ) ||
+    families.some(
+      (option) => option.monospace && option.family.toLowerCase() === key
+    )
+  )
+}
+
+function toSelectValue(fontFamily: FontFamilyPreference): FontSelectValue {
+  return fontFamily ?? DEFAULT_FONT_SELECT_VALUE
+}
+
+function fromSelectValue(value: FontSelectValue): FontFamilyPreference {
+  return value === DEFAULT_FONT_SELECT_VALUE
+    ? null
+    : normalizeFontFamilyPreference(value)
+}
 
 export function AppearanceSettings() {
   const t = useTranslations("AppearanceSettings")
   const { theme, resolvedTheme, setTheme } = useTheme()
   const { themeColor, setThemeColor } = useThemeColor()
   const { zoomLevel, setZoomLevel } = useZoomLevel()
+  const { uiFontFamily, setUiFontFamily } = useUiFontFamily()
+  const { codeFontFamily, setCodeFontFamily } = useCodeFontFamily()
+  const [fontList, setFontList] = useState<SystemFontFamilyList>(
+    normalizeFontList(FALLBACK_FONT_LIST)
+  )
+  const [fontListLoaded, setFontListLoaded] = useState(false)
+  const [fontListError, setFontListError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    listSystemFontFamilies()
+      .then((result) => {
+        if (cancelled) return
+        setFontList(normalizeFontList(result))
+        setFontListLoaded(true)
+        setFontListError(null)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setFontList(normalizeFontList(FALLBACK_FONT_LIST))
+        setFontListLoaded(true)
+        setFontListError(toErrorMessage(err))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const uiFontOptions = fontList.families
+  const codeFontOptions = useMemo(() => {
+    const monospaceOptions = fontList.families.filter((font) => font.monospace)
+    const byKey = new Map<string, SystemFontFamily>()
+    for (const option of monospaceOptions) {
+      byKey.set(option.family.toLowerCase(), option)
+    }
+    for (const family of BUILT_IN_CODE_FONT_FAMILIES) {
+      const key = family.toLowerCase()
+      const existing = byKey.get(key)
+      byKey.set(key, { family, monospace: existing?.monospace ?? true })
+    }
+    return Array.from(byKey.values()).sort((a, b) =>
+      a.family.localeCompare(b.family, undefined, { sensitivity: "base" })
+    )
+  }, [fontList.families])
+
+  useEffect(() => {
+    if (!fontListLoaded || fontListError) return
+    if (!isKnownFontFamily(uiFontFamily, uiFontOptions)) {
+      setUiFontFamily(DEFAULT_UI_FONT_FAMILY)
+    }
+  }, [
+    fontListError,
+    fontListLoaded,
+    setUiFontFamily,
+    uiFontFamily,
+    uiFontOptions,
+  ])
+
+  useEffect(() => {
+    if (!fontListLoaded || fontListError) return
+    if (!isKnownCodeFontFamily(codeFontFamily, codeFontOptions)) {
+      setCodeFontFamily(DEFAULT_CODE_FONT_FAMILY)
+    }
+  }, [
+    codeFontFamily,
+    codeFontOptions,
+    fontListError,
+    fontListLoaded,
+    setCodeFontFamily,
+  ])
 
   const resolvedThemeLabel =
     resolvedTheme === "dark"
@@ -40,11 +206,16 @@ export function AppearanceSettings() {
         : t("resolvedTheme.unknown")
 
   const isAtDefaults =
-    themeColor === DEFAULT_THEME_COLOR && zoomLevel === DEFAULT_ZOOM_LEVEL
+    themeColor === DEFAULT_THEME_COLOR &&
+    zoomLevel === DEFAULT_ZOOM_LEVEL &&
+    uiFontFamily === DEFAULT_UI_FONT_FAMILY &&
+    codeFontFamily === DEFAULT_CODE_FONT_FAMILY
 
   const handleResetToDefaults = () => {
     setThemeColor(DEFAULT_THEME_COLOR)
     setZoomLevel(DEFAULT_ZOOM_LEVEL)
+    setUiFontFamily(DEFAULT_UI_FONT_FAMILY)
+    setCodeFontFamily(DEFAULT_CODE_FONT_FAMILY)
   }
 
   return (
@@ -163,6 +334,85 @@ export function AppearanceSettings() {
               color: t(`themeColor.options.${themeColor}`),
             })}
           </p>
+        </section>
+
+        {/* ===== Font family ===== */}
+        <section className="rounded-xl border bg-card p-4 space-y-4">
+          <div className="flex items-center gap-2">
+            <Type className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold">
+              {t("fontFamily.sectionTitle")}
+            </h2>
+          </div>
+
+          <p className="text-xs text-muted-foreground leading-5">
+            {t("fontFamily.sectionDescription")}
+          </p>
+
+          <div className="space-y-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <label className="text-xs font-medium text-muted-foreground">
+                {t("fontFamily.uiFont")}
+              </label>
+              <Select
+                value={toSelectValue(uiFontFamily)}
+                onValueChange={(value) =>
+                  setUiFontFamily(fromSelectValue(value))
+                }
+              >
+                <SelectTrigger className="w-full sm:w-64">
+                  <SelectValue placeholder={t("fontFamily.placeholder")} />
+                </SelectTrigger>
+                <SelectContent align="end" className="max-h-72">
+                  <SelectItem value={DEFAULT_FONT_SELECT_VALUE}>
+                    {t("fontFamily.default")}
+                  </SelectItem>
+                  {uiFontOptions.map((font) => (
+                    <SelectItem key={font.family} value={font.family}>
+                      {font.family}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <label className="text-xs font-medium text-muted-foreground">
+                {t("fontFamily.codeFont")}
+              </label>
+              <Select
+                value={toSelectValue(codeFontFamily)}
+                onValueChange={(value) =>
+                  setCodeFontFamily(fromSelectValue(value))
+                }
+              >
+                <SelectTrigger className="w-full sm:w-64">
+                  <SelectValue placeholder={t("fontFamily.placeholder")} />
+                </SelectTrigger>
+                <SelectContent align="end" className="max-h-72">
+                  <SelectItem value={DEFAULT_FONT_SELECT_VALUE}>
+                    {t("fontFamily.default")}
+                  </SelectItem>
+                  {codeFontOptions.map((font) => (
+                    <SelectItem key={font.family} value={font.family}>
+                      {font.family}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {fontList.source === "fallback" && (
+            <p className="text-[11px] text-muted-foreground">
+              {t("fontFamily.systemFallbackHint")}
+            </p>
+          )}
+          {fontListError && (
+            <p className="text-[11px] text-muted-foreground">
+              {t("fontFamily.loadFailed", { message: fontListError })}
+            </p>
+          )}
         </section>
 
         {/* ===== Zoom Level (new) ===== */}

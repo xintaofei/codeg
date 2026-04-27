@@ -84,6 +84,16 @@
         "violet": "Violet"
       }
     },
+    "fontFamily": {
+      "sectionTitle": "الخطوط",
+      "sectionDescription": "اختر الخطوط المستخدمة في الواجهة ومناطق الكود.",
+      "uiFont": "خط الواجهة",
+      "codeFont": "خط الكود",
+      "placeholder": "اختر خطًا",
+      "default": "افتراضي",
+      "systemFallbackHint": "في وضع الويب، يتم عرض خيارات خطوط عامة آمنة فقط.",
+      "loadFailed": "فشل تحميل خطوط النظام: {message}"
+    },
     "zoomLevel": {
       "sectionTitle": "تكبير النافذة",
       "sectionDescription": "تكبير أو تصغير الواجهة بالكامل. يتم تطبيقه فوراً ويُحفظ لكل جهاز على حدة.",
@@ -92,7 +102,7 @@
       "current": "التكبير الحالي: {zoom}%"
     },
     "resetToDefaults": "إعادة الضبط",
-    "resetHint": "إعادة ضبط لون السمة وتكبير النافذة إلى الإعدادات الافتراضية."
+    "resetHint": "إعادة ضبط لون السمة وتكبير النافذة والخطوط إلى الإعدادات الافتراضية."
   },
   "SystemSettings": {
     "loading": "جارٍ التحميل...",

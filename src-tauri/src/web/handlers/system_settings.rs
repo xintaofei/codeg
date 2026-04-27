@@ -32,6 +32,10 @@ pub struct UpdateLanguageSettingsParams {
 // Read handlers
 // ---------------------------------------------------------------------------
 
+pub async fn list_system_font_families() -> Result<Json<SystemFontFamilyList>, AppCommandError> {
+    Ok(Json(settings_commands::fallback_system_font_families()))
+}
+
 pub async fn get_system_proxy_settings(
     Extension(state): Extension<Arc<AppState>>,
 ) -> Result<Json<SystemProxySettings>, AppCommandError> {

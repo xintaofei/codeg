@@ -84,6 +84,16 @@
         "violet": "Violet"
       }
     },
+    "fontFamily": {
+      "sectionTitle": "Fonts",
+      "sectionDescription": "Choose the fonts used for the interface and code areas.",
+      "uiFont": "UI font",
+      "codeFont": "Code font",
+      "placeholder": "Select font",
+      "default": "Default",
+      "systemFallbackHint": "Web mode shows only safe generic font options.",
+      "loadFailed": "Failed to load system fonts: {message}"
+    },
     "zoomLevel": {
       "sectionTitle": "Window zoom",
       "sectionDescription": "Scale the entire interface. Applies immediately and persists per device.",
@@ -92,7 +102,7 @@
       "current": "Current zoom: {zoom}%"
     },
     "resetToDefaults": "Reset to defaults",
-    "resetHint": "Reset theme color and window zoom to defaults."
+    "resetHint": "Reset theme color, window zoom, and fonts to defaults."
   },
   "SystemSettings": {
     "loading": "Loading...",

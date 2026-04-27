@@ -691,6 +691,23 @@ export interface ExpertInstallStatus {
   copyMode: boolean
 }
 
+export type SystemFontFamilySource = "system" | "fallback"
+
+export interface SystemFontFamily {
+  family: string
+  monospace: boolean
+}
+
+export interface SystemFontFamilyList {
+  families: SystemFontFamily[]
+  source: SystemFontFamilySource
+}
+
+export interface SystemFontSettings {
+  ui_font_family: string | null
+  code_font_family: string | null
+}
+
 export interface SystemProxySettings {
   enabled: boolean
   proxy_url: string | null

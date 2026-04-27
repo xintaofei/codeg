@@ -84,6 +84,16 @@
         "violet": "Violet"
       }
     },
+    "fontFamily": {
+      "sectionTitle": "字体",
+      "sectionDescription": "选择界面和代码区域使用的字体。",
+      "uiFont": "UI 字体",
+      "codeFont": "代码字体",
+      "placeholder": "请选择字体",
+      "default": "默认",
+      "systemFallbackHint": "Web 模式下仅显示安全的通用字体选项。",
+      "loadFailed": "加载系统字体失败：{message}"
+    },
     "zoomLevel": {
       "sectionTitle": "窗口缩放",
       "sectionDescription": "整体放大或缩小界面，立即生效，按设备分别保存。",
@@ -92,7 +102,7 @@
       "current": "当前缩放：{zoom}%"
     },
     "resetToDefaults": "恢复默认",
-    "resetHint": "将主题颜色和窗口缩放恢复到默认值。"
+    "resetHint": "将主题颜色、窗口缩放和字体恢复到默认值。"
   },
   "SystemSettings": {
     "loading": "加载中...",

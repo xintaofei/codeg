@@ -84,6 +84,16 @@
         "violet": "Violet"
       }
     },
+    "fontFamily": {
+      "sectionTitle": "フォント",
+      "sectionDescription": "インターフェイスとコード領域で使用するフォントを選択します。",
+      "uiFont": "UI フォント",
+      "codeFont": "コードフォント",
+      "placeholder": "フォントを選択",
+      "default": "デフォルト",
+      "systemFallbackHint": "Web モードでは安全な汎用フォントオプションのみ表示されます。",
+      "loadFailed": "システムフォントの読み込みに失敗しました: {message}"
+    },
     "zoomLevel": {
       "sectionTitle": "ウィンドウズーム",
       "sectionDescription": "インターフェイス全体を拡大・縮小します。すぐに反映され、デバイスごとに保存されます。",
@@ -92,7 +102,7 @@
       "current": "現在のズーム：{zoom}%"
     },
     "resetToDefaults": "デフォルトに戻す",
-    "resetHint": "テーマカラーとウィンドウズームをデフォルトに戻します。"
+    "resetHint": "テーマカラー、ウィンドウズーム、フォントをデフォルトに戻します。"
   },
   "SystemSettings": {
     "loading": "読み込み中...",

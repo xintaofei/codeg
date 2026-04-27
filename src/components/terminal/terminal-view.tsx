@@ -8,7 +8,7 @@ import {
   terminalResize,
   terminalKill,
 } from "@/lib/api"
-import { useZoomLevel } from "@/hooks/use-appearance"
+import { useCodeFontFamily, useZoomLevel } from "@/hooks/use-appearance"
 import { detectPlatform } from "@/hooks/use-platform"
 import type { TerminalEvent } from "@/lib/types"
 import type { ITheme, Terminal as XTermTerminal } from "@xterm/xterm"
@@ -97,6 +97,29 @@ function getTerminalTheme(container: HTMLDivElement | null): ITheme {
   }
 }
 
+function refitTerminalAfterMetricsChange({
+  container,
+  fit,
+  refresh,
+}: {
+  container: HTMLDivElement | null
+  fit: (() => void) | undefined
+  refresh?: () => void
+}) {
+  requestAnimationFrame(() => {
+    refresh?.()
+    requestAnimationFrame(() => {
+      if (
+        container &&
+        container.clientWidth > 0 &&
+        container.clientHeight > 0
+      ) {
+        fit?.()
+      }
+    })
+  })
+}
+
 interface TerminalViewProps {
   terminalId: string
   workingDir: string
@@ -122,7 +145,9 @@ export function TerminalView({
   const isVisibleRef = useRef(isVisible)
   const onProcessExitedRef = useRef(onProcessExited)
   const { zoomLevel } = useZoomLevel()
+  const { codeFontFamilyStack } = useCodeFontFamily()
   const zoomLevelRef = useRef(zoomLevel)
+  const codeFontFamilyStackRef = useRef(codeFontFamilyStack)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -151,7 +176,7 @@ export function TerminalView({
       const term = new Terminal({
         cursorBlink: true,
         fontSize: computeTerminalFontSize(zoomLevelRef.current),
-        fontFamily: "Menlo, Monaco, 'Courier New', monospace",
+        fontFamily: codeFontFamilyStackRef.current,
         theme: getTerminalTheme(containerRef.current),
         allowProposedApi: true,
       })
@@ -348,15 +373,26 @@ export function TerminalView({
     const term = termRef.current
     if (!term) return
     term.options.fontSize = computeTerminalFontSize(zoomLevel)
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const el = containerRef.current
-        if (el && el.clientWidth > 0 && el.clientHeight > 0) {
-          fitAddonRef.current?.fit()
-        }
-      })
+    refitTerminalAfterMetricsChange({
+      container: containerRef.current,
+      fit: () => fitAddonRef.current?.fit(),
+      refresh: () => term.refresh(0, Math.max(term.rows - 1, 0)),
     })
   }, [zoomLevel])
+
+  // React to code font changes. xterm needs its font option updated explicitly;
+  // CSS variables alone do not update mounted canvas/DOM renderer metrics.
+  useEffect(() => {
+    codeFontFamilyStackRef.current = codeFontFamilyStack
+    const term = termRef.current
+    if (!term) return
+    term.options.fontFamily = codeFontFamilyStack
+    refitTerminalAfterMetricsChange({
+      container: containerRef.current,
+      fit: () => fitAddonRef.current?.fit(),
+      refresh: () => term.refresh(0, Math.max(term.rows - 1, 0)),
+    })
+  }, [codeFontFamilyStack])
 
   return (
     <div
