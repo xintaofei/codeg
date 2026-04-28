@@ -132,6 +132,7 @@ function compareByCreatedAtDesc(
 // Sentinel stored in the DB that resolves to the current sidebar foreground
 // color — the swatch then always reads as the folder name does, across themes.
 const FOREGROUND_SWATCH = "foreground"
+const AUTO_IMPORT_MIN_INTERVAL_MS = 30_000
 
 // Kept in sync with Rust-side `FOLDER_COLOR_PALETTE` in
 // `src-tauri/src/db/service/folder_service.rs`. Nine well-separated hues
@@ -1083,6 +1084,34 @@ export function SidebarConversationList({
     },
     [importing, addTask, updateTask, refreshConversations, t]
   )
+
+  // Remote folder auto-import: when the user activates a remote folder,
+  // proxy a quiet `import_local_conversations` so the sidebar list isn't
+  // empty until they remember to right-click → Import. Throttled per
+  // folder; manual import button still works for explicit refresh.
+  const lastAutoImportRef = useRef<Map<number, number>>(new Map())
+  const inflightAutoImportRef = useRef<Set<number>>(new Set())
+  useEffect(() => {
+    const folderId = activeFolder?.id
+    if (folderId == null) return
+    if (!activeFolder?.connection_id) return
+    const last = lastAutoImportRef.current.get(folderId) ?? 0
+    if (Date.now() - last < AUTO_IMPORT_MIN_INTERVAL_MS) return
+    if (inflightAutoImportRef.current.has(folderId)) return
+    inflightAutoImportRef.current.add(folderId)
+    void (async () => {
+      try {
+        await importLocalConversations(folderId)
+        lastAutoImportRef.current.set(folderId, Date.now())
+        await refreshConversations()
+      } catch (e) {
+        // Quiet on auto-fire; the manual import button surfaces errors.
+        console.warn("[sidebar] auto-import remote folder failed", folderId, e)
+      } finally {
+        inflightAutoImportRef.current.delete(folderId)
+      }
+    })()
+  }, [activeFolder?.id, activeFolder?.connection_id, refreshConversations])
 
   const persistReorder = useCallback(
     async (order: number[]) => {
