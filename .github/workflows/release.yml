@@ -361,6 +361,18 @@ jobs:
             runner: "windows-2022"
             target: "x86_64-pc-windows-msvc"
             artifact: "codeg-server-windows-x64"
+          - name: "Linux x64 (Remote daemon, musl)"
+            runner: "ubuntu-22.04"
+            target: "x86_64-unknown-linux-musl"
+            artifact: "codeg-remote-linux-x64-musl"
+            is_remote_daemon: true
+            use_zigbuild: true
+          - name: "Linux arm64 (Remote daemon, musl)"
+            runner: "ubuntu-22.04"
+            target: "aarch64-unknown-linux-musl"
+            artifact: "codeg-remote-linux-arm64-musl"
+            is_remote_daemon: true
+            use_zigbuild: true
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -375,6 +387,16 @@ jobs:
         with:
           workspaces: "./src-tauri -> target"
           shared-key: server-${{ matrix.target }}
+
+      - name: Setup Zig (for musl cross)
+        if: matrix.use_zigbuild == true
+        uses: mlugg/setup-zig@v1
+        with:
+          version: "0.13.0"
+
+      - name: Install cargo-zigbuild
+        if: matrix.use_zigbuild == true
+        run: cargo install --locked cargo-zigbuild
 
       - name: Install Linux arm64 cross compiler
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -409,28 +431,37 @@ jobs:
           echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc-ar" >> "$GITHUB_ENV"
 
       - name: Setup pnpm
+        if: matrix.is_remote_daemon != true
         uses: pnpm/action-setup@v4
         with:
           version: 10
           run_install: false
 
       - name: Setup Node
+        if: matrix.is_remote_daemon != true
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: "pnpm"
 
       - name: Build frontend
+        if: matrix.is_remote_daemon != true
         run: |
           pnpm install --frozen-lockfile
           pnpm build
 
-      - name: Build server binary
+      - name: Build server binary (cargo)
+        if: matrix.use_zigbuild != true
         working-directory: src-tauri
         run: cargo build --release --bin codeg-server --no-default-features --target ${{ matrix.target }}
 
+      - name: Build server binary (zigbuild)
+        if: matrix.use_zigbuild == true
+        working-directory: src-tauri
+        run: cargo zigbuild --release --bin codeg-server --no-default-features --target ${{ matrix.target }}
+
       - name: Package (Unix)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && matrix.is_remote_daemon != true
         run: |
           mkdir -p dist/${{ matrix.artifact }}
           cp src-tauri/target/${{ matrix.target }}/release/codeg-server dist/${{ matrix.artifact }}/
@@ -438,7 +469,7 @@ jobs:
           cd dist && tar czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
 
       - name: Package (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && matrix.is_remote_daemon != true
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist/${{ matrix.artifact }}
@@ -446,25 +477,113 @@ jobs:
           Copy-Item -Recurse out dist/${{ matrix.artifact }}/web
           Compress-Archive -Path dist/${{ matrix.artifact }} -DestinationPath dist/${{ matrix.artifact }}.zip
 
-      - name: Upload artifact for Docker build (Linux only)
-        if: startsWith(matrix.target, 'x86_64-unknown-linux') || startsWith(matrix.target, 'aarch64-unknown-linux')
+      - name: Package remote daemon (slim, musl)
+        if: matrix.is_remote_daemon == true
+        shell: bash
+        run: |
+          mkdir -p dist/${{ matrix.artifact }}
+          cp src-tauri/target/${{ matrix.target }}/release/codeg-server dist/${{ matrix.artifact }}/
+          if command -v strip >/dev/null 2>&1; then
+            strip dist/${{ matrix.artifact }}/codeg-server || true
+          fi
+          cd dist
+          tar czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
+          sha256sum ${{ matrix.artifact }}.tar.gz | awk '{print $1}' > ${{ matrix.artifact }}.tar.gz.sha256
+          stat -c %s ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.size 2>/dev/null \
+            || stat -f %z ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.size
+
+      - name: Package remote daemon (slim, non-musl)
+        if: matrix.is_remote_daemon != true && matrix.target != 'x86_64-unknown-linux-gnu' && matrix.target != 'aarch64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          case "${{ matrix.target }}" in
+            "x86_64-apple-darwin")    PLATFORM="darwin-x64"; EXT="tar.gz" ;;
+            "aarch64-apple-darwin")   PLATFORM="darwin-arm64"; EXT="tar.gz" ;;
+            "x86_64-pc-windows-msvc") PLATFORM="windows-x64"; EXT="zip" ;;
+            *) echo "Unknown target ${{ matrix.target }}, skipping slim package"; exit 0 ;;
+          esac
+          REMOTE_ARTIFACT="codeg-remote-${PLATFORM}"
+          mkdir -p dist/${REMOTE_ARTIFACT}
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cp src-tauri/target/${{ matrix.target }}/release/codeg-server.exe dist/${REMOTE_ARTIFACT}/
+            cd dist && powershell -Command "Compress-Archive -Path ${REMOTE_ARTIFACT} -DestinationPath ${REMOTE_ARTIFACT}.zip"
+            ARCHIVE="${REMOTE_ARTIFACT}.zip"
+          else
+            cp src-tauri/target/${{ matrix.target }}/release/codeg-server dist/${REMOTE_ARTIFACT}/
+            if command -v strip >/dev/null 2>&1; then
+              strip dist/${REMOTE_ARTIFACT}/codeg-server || true
+            fi
+            cd dist && tar czf "${REMOTE_ARTIFACT}.tar.gz" "${REMOTE_ARTIFACT}"
+            ARCHIVE="${REMOTE_ARTIFACT}.tar.gz"
+          fi
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${ARCHIVE}" | awk '{print $1}' > "${ARCHIVE}.sha256"
+          else
+            shasum -a 256 "${ARCHIVE}" | awk '{print $1}' > "${ARCHIVE}.sha256"
+          fi
+          stat -c %s "${ARCHIVE}" > "${ARCHIVE}.size" 2>/dev/null \
+            || stat -f %z "${ARCHIVE}" > "${ARCHIVE}.size"
+          echo "REMOTE_ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
+          echo "REMOTE_ARTIFACT_DIR=${REMOTE_ARTIFACT}" >> "$GITHUB_ENV"
+
+      - name: Upload artifact for Docker build (Linux gnu only)
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}
           retention-days: 1
 
+      - name: Upload remote daemon meta (musl)
+        if: matrix.is_remote_daemon == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-meta
+          path: |
+            dist/${{ matrix.artifact }}.tar.gz
+            dist/${{ matrix.artifact }}.tar.gz.sha256
+            dist/${{ matrix.artifact }}.tar.gz.size
+          retention-days: 1
+
+      - name: Upload remote daemon meta (non-musl)
+        if: matrix.is_remote_daemon != true && matrix.target != 'x86_64-unknown-linux-gnu' && matrix.target != 'aarch64-unknown-linux-gnu' && env.REMOTE_ARCHIVE != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.REMOTE_ARTIFACT_DIR }}-meta
+          path: |
+            dist/${{ env.REMOTE_ARCHIVE }}
+            dist/${{ env.REMOTE_ARCHIVE }}.sha256
+            dist/${{ env.REMOTE_ARCHIVE }}.size
+          retention-days: 1
+
       - name: Upload to release (Unix)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && matrix.is_remote_daemon != true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ github.ref_name }}" dist/${{ matrix.artifact }}.tar.gz --clobber
 
       - name: Upload to release (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && matrix.is_remote_daemon != true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ github.ref_name }}" dist/${{ matrix.artifact }}.zip --clobber
+
+      - name: Upload remote daemon to release (musl)
+        if: matrix.is_remote_daemon == true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.ref_name }}" dist/${{ matrix.artifact }}.tar.gz --clobber
+          gh release upload "${{ github.ref_name }}" dist/${{ matrix.artifact }}.tar.gz.sha256 --clobber
+
+      - name: Upload remote daemon to release (non-musl)
+        if: matrix.is_remote_daemon != true && matrix.target != 'x86_64-unknown-linux-gnu' && matrix.target != 'aarch64-unknown-linux-gnu' && env.REMOTE_ARCHIVE != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh release upload "${{ github.ref_name }}" "dist/${REMOTE_ARCHIVE}" --clobber
+          gh release upload "${{ github.ref_name }}" "dist/${REMOTE_ARCHIVE}.sha256" --clobber
 
   build-docker:
     needs:
@@ -534,13 +653,43 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/codeg:${{ steps.version.outputs.version }}
             ${{ secrets.DOCKERHUB_USERNAME }}/codeg:latest
 
+  generate-manifest:
+    needs:
+      - create-draft-release
+      - build-server
+    name: Generate codeg-remote-manifest.json
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download remote daemon artifact metadata
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "codeg-remote-*-meta"
+          path: artifacts/
+          merge-multiple: true
+
+      - name: Generate manifest
+        env:
+          VERSION: ${{ github.ref_name }}
+          GITHUB_REPO: ${{ github.repository }}
+        run: bash scripts/generate-remote-manifest.sh
+
+      - name: Upload manifest to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" codeg-remote-manifest.json --clobber
+
   publish-release:
     needs:
       - create-draft-release
       - build-tauri
       - build-server
       - build-docker
-    if: ${{ needs.build-tauri.result == 'success' && needs.build-server.result == 'success' && needs.build-docker.result == 'success' }}
+      - generate-manifest
+    if: ${{ needs.build-tauri.result == 'success' && needs.build-server.result == 'success' && needs.build-docker.result == 'success' && needs.generate-manifest.result == 'success' }}
     runs-on: ubuntu-22.04
     permissions:
       contents: write

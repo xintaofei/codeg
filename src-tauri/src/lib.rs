@@ -14,6 +14,7 @@ mod parsers;
 #[cfg(feature = "tauri-runtime")]
 pub mod preferences;
 pub mod process;
+pub mod remote;
 mod terminal;
 pub mod web;
 pub mod workspace_state;

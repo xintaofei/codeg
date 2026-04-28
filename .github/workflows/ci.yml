@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+env:
+  RUST_BACKTRACE: short
+  HUSKY: 0
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-check:
+    name: Rust check (desktop + server)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          shared-key: "ci-rust-check"
+
+      - name: Install Linux deps for Tauri
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: cargo check (desktop, default features)
+        working-directory: src-tauri
+        run: cargo check --all-targets
+
+      - name: cargo check (server, no default features)
+        working-directory: src-tauri
+        run: cargo check --bin codeg-server --no-default-features
+
+      - name: cargo clippy (desktop)
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo clippy (server)
+        working-directory: src-tauri
+        run: cargo clippy --bin codeg-server --no-default-features -- -D warnings
+
+      - name: cargo test (lib, no default features)
+        working-directory: src-tauri
+        run: cargo test --lib --no-default-features
+
+  daemon-musl-smoke:
+    name: Daemon musl smoke build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          shared-key: "ci-musl-smoke"
+
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: "0.13.0"
+
+      - name: Install cargo-zigbuild
+        run: cargo install --locked cargo-zigbuild
+
+      - name: Build daemon (musl)
+        working-directory: src-tauri
+        run: cargo zigbuild --release --bin codeg-server --no-default-features --target x86_64-unknown-linux-musl
+
+      - name: Verify musl binary is statically linked
+        shell: bash
+        run: |
+          BIN=src-tauri/target/x86_64-unknown-linux-musl/release/codeg-server
+          file "${BIN}"
+          # musl static binaries should not declare a dynamic interpreter
+          if file "${BIN}" | grep -q "dynamically linked"; then
+            echo "ERROR: musl binary is dynamically linked"
+            exit 1
+          fi
+          echo "Musl binary is statically linked: OK"
+          "${BIN}" --version
+
+      # NOTE: Daemon spawn smoke test (--listen + --bootstrap-stdio handshake)
+      # will be added in CG-002.3 once those flags are implemented.
+
+  frontend-check:
+    name: Frontend (lint + build)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm eslint .
+
+      - name: Build (Next.js static export)
+        run: pnpm build
+
+  scripts-shellcheck:
+    name: Shellcheck CI scripts
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get install -y shellcheck
+      - name: Lint generate-remote-manifest.sh
+        run: shellcheck scripts/generate-remote-manifest.sh
