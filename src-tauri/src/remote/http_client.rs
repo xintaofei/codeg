@@ -11,7 +11,8 @@ use crate::acp::types::{ForkResultInfo, PromptInputBlock};
 use crate::acp::LiveSessionSnapshot;
 use crate::commands::folders::{
     FileEditContent, FilePreviewContent, FileSaveResult, GitBranchList, GitCommitResult,
-    GitLogResult, GitPullResult, GitPushInfo, GitPushResult, GitRemote, GitStatusEntry,
+    GitLogResult, GitPullResult, GitPushInfo, GitPushResult, GitRemote, GitStashEntry,
+    GitStatusEntry,
 };
 use crate::models::{AgentType, ConversationDetail, ConversationSummary, GitCredentials};
 
@@ -660,6 +661,147 @@ impl DaemonClient {
         Ok(())
     }
 
+    pub async fn git_new_branch(
+        &self,
+        path: String,
+        branch_name: String,
+        start_point: Option<String>,
+    ) -> Result<(), ClientError> {
+        let url = format!("{}/api/git_new_branch", self.base_url);
+        let body = GitNewBranchBody {
+            path,
+            branch_name,
+            start_point,
+        };
+        let _: serde_json::Value = self.post_json(&url, &body).await?;
+        Ok(())
+    }
+
+    pub async fn git_worktree_add(
+        &self,
+        path: String,
+        branch_name: String,
+        worktree_path: String,
+    ) -> Result<(), ClientError> {
+        let url = format!("{}/api/git_worktree_add", self.base_url);
+        let body = GitWorktreeAddBody {
+            path,
+            branch_name,
+            worktree_path,
+        };
+        let _: serde_json::Value = self.post_json(&url, &body).await?;
+        Ok(())
+    }
+
+    pub async fn git_delete_branch(
+        &self,
+        path: String,
+        branch_name: String,
+        force: bool,
+    ) -> Result<String, ClientError> {
+        let url = format!("{}/api/git_delete_branch", self.base_url);
+        let body = GitDeleteBranchBody {
+            path,
+            branch_name,
+            force,
+        };
+        self.post_json(&url, &body).await
+    }
+
+    pub async fn git_delete_remote_branch(
+        &self,
+        path: String,
+        remote: String,
+        branch: String,
+        credentials: Option<GitCredentials>,
+    ) -> Result<String, ClientError> {
+        let url = format!("{}/api/git_delete_remote_branch", self.base_url);
+        let body = GitDeleteRemoteBranchBody {
+            path,
+            remote,
+            branch,
+            credentials,
+        };
+        self.post_json(&url, &body).await
+    }
+
+    pub async fn git_stash_push(
+        &self,
+        path: String,
+        message: Option<String>,
+        keep_index: bool,
+    ) -> Result<String, ClientError> {
+        let url = format!("{}/api/git_stash_push", self.base_url);
+        let body = GitStashPushBody {
+            path,
+            message,
+            keep_index,
+        };
+        self.post_json(&url, &body).await
+    }
+
+    pub async fn git_stash_pop(
+        &self,
+        path: String,
+        stash_ref: Option<String>,
+    ) -> Result<String, ClientError> {
+        let url = format!("{}/api/git_stash_pop", self.base_url);
+        let body = GitStashPopBody { path, stash_ref };
+        self.post_json(&url, &body).await
+    }
+
+    pub async fn git_stash_list(&self, path: String) -> Result<Vec<GitStashEntry>, ClientError> {
+        let url = format!("{}/api/git_stash_list", self.base_url);
+        let body = GitPathBody { path };
+        self.post_json(&url, &body).await
+    }
+
+    pub async fn git_stash_apply(
+        &self,
+        path: String,
+        stash_ref: String,
+    ) -> Result<String, ClientError> {
+        let url = format!("{}/api/git_stash_apply", self.base_url);
+        let body = GitStashRefBody { path, stash_ref };
+        self.post_json(&url, &body).await
+    }
+
+    pub async fn git_stash_drop(
+        &self,
+        path: String,
+        stash_ref: String,
+    ) -> Result<String, ClientError> {
+        let url = format!("{}/api/git_stash_drop", self.base_url);
+        let body = GitStashRefBody { path, stash_ref };
+        self.post_json(&url, &body).await
+    }
+
+    pub async fn git_stash_clear(&self, path: String) -> Result<String, ClientError> {
+        let url = format!("{}/api/git_stash_clear", self.base_url);
+        let body = GitPathBody { path };
+        self.post_json(&url, &body).await
+    }
+
+    pub async fn git_stash_show(
+        &self,
+        path: String,
+        stash_ref: String,
+    ) -> Result<Vec<GitStatusEntry>, ClientError> {
+        let url = format!("{}/api/git_stash_show", self.base_url);
+        let body = GitStashRefBody { path, stash_ref };
+        self.post_json(&url, &body).await
+    }
+
+    pub async fn git_commit_branches(
+        &self,
+        path: String,
+        commit: String,
+    ) -> Result<Vec<String>, ClientError> {
+        let url = format!("{}/api/git_commit_branches", self.base_url);
+        let body = GitCommitBranchesBody { path, commit };
+        self.post_json(&url, &body).await
+    }
+
     async fn post_json<B: serde::Serialize, R: for<'de> serde::Deserialize<'de>>(
         &self,
         url: &str,
@@ -932,6 +1074,68 @@ struct GitPathNameUrlBody {
     path: String,
     name: String,
     url: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitNewBranchBody {
+    path: String,
+    branch_name: String,
+    start_point: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitWorktreeAddBody {
+    path: String,
+    branch_name: String,
+    worktree_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitDeleteBranchBody {
+    path: String,
+    branch_name: String,
+    force: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitDeleteRemoteBranchBody {
+    path: String,
+    remote: String,
+    branch: String,
+    credentials: Option<GitCredentials>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitStashPushBody {
+    path: String,
+    message: Option<String>,
+    keep_index: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitStashPopBody {
+    path: String,
+    stash_ref: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitStashRefBody {
+    path: String,
+    stash_ref: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitCommitBranchesBody {
+    path: String,
+    commit: String,
 }
 
 #[derive(Debug, thiserror::Error)]

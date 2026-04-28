@@ -100,7 +100,7 @@ pub struct GitCommitBranchesParams {
 pub async fn git_commit_branches(
     Json(params): Json<GitCommitBranchesParams>,
 ) -> Result<Json<Vec<String>>, AppCommandError> {
-    let result = folder_commands::git_commit_branches(params.path, params.commit).await?;
+    let result = folder_commands::git_commit_branches_local(params.path, params.commit).await?;
     Ok(Json(result))
 }
 
@@ -209,7 +209,8 @@ pub struct GitNewBranchParams {
 pub async fn git_new_branch(
     Json(params): Json<GitNewBranchParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    folder_commands::git_new_branch(params.path, params.branch_name, params.start_point).await?;
+    folder_commands::git_new_branch_local(params.path, params.branch_name, params.start_point)
+        .await?;
     Ok(Json(()))
 }
 
@@ -224,7 +225,7 @@ pub struct GitWorktreeAddParams {
 pub async fn git_worktree_add(
     Json(params): Json<GitWorktreeAddParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    folder_commands::git_worktree_add(params.path, params.branch_name, params.worktree_path)
+    folder_commands::git_worktree_add_local(params.path, params.branch_name, params.worktree_path)
         .await?;
     Ok(Json(()))
 }
@@ -268,7 +269,8 @@ pub async fn git_stash_push(
     Json(params): Json<GitStashPushParams>,
 ) -> Result<Json<String>, AppCommandError> {
     let result =
-        folder_commands::git_stash_push(params.path, params.message, params.keep_index).await?;
+        folder_commands::git_stash_push_local(params.path, params.message, params.keep_index)
+            .await?;
     Ok(Json(result))
 }
 
@@ -282,42 +284,42 @@ pub struct GitStashPopParams {
 pub async fn git_stash_pop(
     Json(params): Json<GitStashPopParams>,
 ) -> Result<Json<String>, AppCommandError> {
-    let result = folder_commands::git_stash_pop(params.path, params.stash_ref).await?;
+    let result = folder_commands::git_stash_pop_local(params.path, params.stash_ref).await?;
     Ok(Json(result))
 }
 
 pub async fn git_stash_list(
     Json(params): Json<PathParams>,
 ) -> Result<Json<Vec<folder_commands::GitStashEntry>>, AppCommandError> {
-    let result = folder_commands::git_stash_list(params.path).await?;
+    let result = folder_commands::git_stash_list_local(params.path).await?;
     Ok(Json(result))
 }
 
 pub async fn git_stash_apply(
     Json(params): Json<PathStashRefParams>,
 ) -> Result<Json<String>, AppCommandError> {
-    let result = folder_commands::git_stash_apply(params.path, params.stash_ref).await?;
+    let result = folder_commands::git_stash_apply_local(params.path, params.stash_ref).await?;
     Ok(Json(result))
 }
 
 pub async fn git_stash_drop(
     Json(params): Json<PathStashRefParams>,
 ) -> Result<Json<String>, AppCommandError> {
-    let result = folder_commands::git_stash_drop(params.path, params.stash_ref).await?;
+    let result = folder_commands::git_stash_drop_local(params.path, params.stash_ref).await?;
     Ok(Json(result))
 }
 
 pub async fn git_stash_clear(
     Json(params): Json<PathParams>,
 ) -> Result<Json<String>, AppCommandError> {
-    let result = folder_commands::git_stash_clear(params.path).await?;
+    let result = folder_commands::git_stash_clear_local(params.path).await?;
     Ok(Json(result))
 }
 
 pub async fn git_stash_show(
     Json(params): Json<PathStashRefParams>,
 ) -> Result<Json<Vec<folder_commands::GitStatusEntry>>, AppCommandError> {
-    let result = folder_commands::git_stash_show(params.path, params.stash_ref).await?;
+    let result = folder_commands::git_stash_show_local(params.path, params.stash_ref).await?;
     Ok(Json(result))
 }
 
@@ -429,7 +431,8 @@ pub async fn git_delete_branch(
     Json(params): Json<GitDeleteBranchParams>,
 ) -> Result<Json<String>, AppCommandError> {
     let result =
-        folder_commands::git_delete_branch(params.path, params.branch_name, params.force).await?;
+        folder_commands::git_delete_branch_local(params.path, params.branch_name, params.force)
+            .await?;
     Ok(Json(result))
 }
 
@@ -445,9 +448,9 @@ pub struct GitDeleteRemoteBranchParams {
 pub async fn git_delete_remote_branch(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<GitDeleteRemoteBranchParams>,
-) -> Result<Json<()>, AppCommandError> {
+) -> Result<Json<String>, AppCommandError> {
     let db = &state.db;
-    folder_commands::git_delete_remote_branch_core(
+    let result = folder_commands::git_delete_remote_branch_core(
         &params.path,
         &params.remote,
         &params.branch,
@@ -456,7 +459,7 @@ pub async fn git_delete_remote_branch(
         &state.data_dir,
     )
     .await?;
-    Ok(Json(()))
+    Ok(Json(result))
 }
 
 pub async fn git_list_conflicts(
