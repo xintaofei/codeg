@@ -133,14 +133,6 @@
     "proxyRequired": "プロキシ有効時はプロキシ URL が必要です",
     "saveSuccess": "システムプロキシ設定を保存しました",
     "saveFailed": "保存に失敗しました: {message}",
-    "openTargetTitle": "ファイルを開く",
-    "defaultOpenTarget": "デフォルトの開き先",
-    "defaultOpenTargetDescription": "ファイルとフォルダーを開くデフォルトの場所",
-    "openTargetDesktopOnly": "ネイティブエディターでファイルを開く機能はデスクトップアプリでのみ利用できます。",
-    "openTargetSaveFailed": "開き先設定の保存に失敗しました: {message}",
-    "openTargets": {
-      "vscode": "VS Code"
-    },
     "languageTitle": "言語",
     "languageDescription": "アプリの言語を設定します。システムに従う場合、未対応言語は英語にフォールバックします。",
     "appLanguage": "アプリ言語",

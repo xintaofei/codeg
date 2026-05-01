@@ -59,10 +59,6 @@ fn normalize_proxy_settings(
     })
 }
 
-fn normalize_open_target_settings(settings: SystemOpenTargetSettings) -> SystemOpenTargetSettings {
-    settings
-}
-
 #[cfg(feature = "tauri-runtime")]
 struct ResolvedWorkspacePath {
     root: PathBuf,
@@ -278,19 +274,17 @@ pub(crate) async fn load_system_open_target_settings(
         return Ok(SystemOpenTargetSettings::default());
     };
 
-    let parsed = serde_json::from_str::<SystemOpenTargetSettings>(&raw).map_err(|e| {
+    serde_json::from_str::<SystemOpenTargetSettings>(&raw).map_err(|e| {
         AppCommandError::configuration_invalid("Failed to parse stored open target settings")
             .with_detail(e.to_string())
-    })?;
-    Ok(normalize_open_target_settings(parsed))
+    })
 }
 
 pub(crate) async fn update_system_open_target_settings_core(
     conn: &DatabaseConnection,
     settings: SystemOpenTargetSettings,
 ) -> Result<SystemOpenTargetSettings, AppCommandError> {
-    let normalized = normalize_open_target_settings(settings);
-    let serialized = serde_json::to_string(&normalized).map_err(|e| {
+    let serialized = serde_json::to_string(&settings).map_err(|e| {
         AppCommandError::invalid_input("Failed to serialize open target settings")
             .with_detail(e.to_string())
     })?;
@@ -299,7 +293,7 @@ pub(crate) async fn update_system_open_target_settings_core(
         .await
         .map_err(AppCommandError::from)?;
 
-    Ok(normalized)
+    Ok(settings)
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -309,16 +303,12 @@ pub(crate) async fn open_path_with_target_core(
     target: Option<SystemOpenTarget>,
     conn: &DatabaseConnection,
 ) -> Result<(), AppCommandError> {
-    let settings = match target {
-        Some(target) => SystemOpenTargetSettings {
-            target,
-            ..SystemOpenTargetSettings::default()
-        },
-        None => load_system_open_target_settings(conn).await?,
+    let target = match target {
+        Some(target) => target,
+        None => load_system_open_target_settings(conn).await?.target,
     };
-    let normalized = normalize_open_target_settings(settings);
 
-    match normalized.target {
+    match target {
         SystemOpenTarget::Vscode => {
             let resolved_path = resolve_workspace_relative_path(&folder_path, &relative_path)?;
             open_path_in_vscode(&resolved_path.root, &resolved_path.target)?;

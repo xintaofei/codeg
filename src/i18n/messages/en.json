@@ -133,14 +133,6 @@
     "proxyRequired": "Proxy URL is required when proxy is enabled",
     "saveSuccess": "System proxy settings saved",
     "saveFailed": "Save failed: {message}",
-    "openTargetTitle": "File opening",
-    "defaultOpenTarget": "Default open target",
-    "defaultOpenTargetDescription": "Default location for opening files and folders",
-    "openTargetDesktopOnly": "Opening files in a native editor is available in the desktop app.",
-    "openTargetSaveFailed": "Failed to save open target settings: {message}",
-    "openTargets": {
-      "vscode": "VS Code"
-    },
     "languageTitle": "Language",
     "languageDescription": "Set app language. When following system locale, unsupported languages fall back to English.",
     "appLanguage": "App language",

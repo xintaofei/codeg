@@ -133,14 +133,6 @@
     "proxyRequired": "L’URL du proxy est requise lorsque le proxy est activé",
     "saveSuccess": "Les paramètres du proxy système ont été enregistrés",
     "saveFailed": "Échec de l’enregistrement : {message}",
-    "openTargetTitle": "Ouverture de fichiers",
-    "defaultOpenTarget": "Cible d’ouverture par défaut",
-    "defaultOpenTargetDescription": "Emplacement par défaut pour ouvrir les fichiers et dossiers",
-    "openTargetDesktopOnly": "L’ouverture dans un éditeur natif est disponible uniquement dans l’app de bureau.",
-    "openTargetSaveFailed": "Échec de l’enregistrement de la cible d’ouverture : {message}",
-    "openTargets": {
-      "vscode": "VS Code"
-    },
     "languageTitle": "Langue",
     "languageDescription": "Définissez la langue de l’app. En mode système, les langues non prises en charge reviennent à l’anglais.",
     "appLanguage": "Langue de l’app",

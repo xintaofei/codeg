@@ -133,14 +133,6 @@
     "proxyRequired": "啟用代理時必須填寫代理位址",
     "saveSuccess": "系統代理設定已儲存",
     "saveFailed": "儲存失敗：{message}",
-    "openTargetTitle": "檔案開啟",
-    "defaultOpenTarget": "預設開啟目標",
-    "defaultOpenTargetDescription": "開啟檔案和資料夾的預設位置",
-    "openTargetDesktopOnly": "在原生編輯器中開啟檔案僅桌面應用程式可用。",
-    "openTargetSaveFailed": "開啟目標設定儲存失敗：{message}",
-    "openTargets": {
-      "vscode": "VS Code"
-    },
     "languageTitle": "語言",
     "languageDescription": "設定應用語言。跟隨系統時，若系統語言不受支援將回退為英文。",
     "appLanguage": "應用語言",

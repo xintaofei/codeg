@@ -55,14 +55,14 @@ interface SettingsNavItem {
 
 const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
   {
-    href: "/settings/appearance",
-    labelKey: "appearance",
-    icon: Palette,
-  },
-  {
     href: "/settings/general",
     labelKey: "general",
     icon: SlidersHorizontal,
+  },
+  {
+    href: "/settings/appearance",
+    labelKey: "appearance",
+    icon: Palette,
   },
   {
     href: "/settings/mcp",

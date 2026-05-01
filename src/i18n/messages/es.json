@@ -133,14 +133,6 @@
     "proxyRequired": "Se requiere URL del proxy cuando el proxy está activado",
     "saveSuccess": "La configuración del proxy del sistema se guardó",
     "saveFailed": "Error al guardar: {message}",
-    "openTargetTitle": "Apertura de archivos",
-    "defaultOpenTarget": "Destino predeterminado de apertura",
-    "defaultOpenTargetDescription": "Ubicación predeterminada para abrir archivos y carpetas",
-    "openTargetDesktopOnly": "Abrir archivos en un editor nativo solo está disponible en la app de escritorio.",
-    "openTargetSaveFailed": "No se pudo guardar el destino de apertura: {message}",
-    "openTargets": {
-      "vscode": "VS Code"
-    },
     "languageTitle": "Idioma",
     "languageDescription": "Configura el idioma de la app. Al seguir el idioma del sistema, los no compatibles vuelven a inglés.",
     "appLanguage": "Idioma de la app",

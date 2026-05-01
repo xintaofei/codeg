@@ -133,14 +133,6 @@
     "proxyRequired": "عنوان URL للوكيل مطلوب عند تفعيل الوكيل",
     "saveSuccess": "تم حفظ إعدادات وكيل النظام",
     "saveFailed": "فشل الحفظ: {message}",
-    "openTargetTitle": "فتح الملفات",
-    "defaultOpenTarget": "هدف الفتح الافتراضي",
-    "defaultOpenTargetDescription": "الموقع الافتراضي لفتح الملفات والمجلدات",
-    "openTargetDesktopOnly": "فتح الملفات في محرر أصلي متاح فقط في تطبيق سطح المكتب.",
-    "openTargetSaveFailed": "فشل حفظ هدف الفتح: {message}",
-    "openTargets": {
-      "vscode": "VS Code"
-    },
     "languageTitle": "اللغة",
     "languageDescription": "حدد لغة التطبيق. عند اتباع لغة النظام، ستعود اللغات غير المدعومة إلى الإنجليزية.",
     "appLanguage": "لغة التطبيق",
