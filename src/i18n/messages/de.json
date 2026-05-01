@@ -91,7 +91,7 @@
       "codeFont": "Code-Schriftart",
       "placeholder": "Schriftart auswählen",
       "default": "Standard",
-      "systemFallbackHint": "Im Webmodus werden nur sichere generische Schriftoptionen angezeigt.",
+      "systemFallbackHint": "Im Web-/Servermodus können die auf dem Browsergerät installierten Schriftarten nicht ermittelt werden, daher zeigt diese Liste absichtlich nur sichere generische Optionen an.",
       "loadFailed": "Systemschriftarten konnten nicht geladen werden: {message}"
     },
     "zoomLevel": {

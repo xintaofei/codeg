@@ -22,9 +22,9 @@ pub use message::{
     TurnUsage, UnifiedMessage,
 };
 #[cfg(feature = "tauri-runtime")]
-pub use system::{SystemFontSettings, SystemRenderingSettings};
+pub use system::SystemRenderingSettings;
 pub use system::{
     GitCredentials, GitDetectResult, GitHubAccountsSettings, GitHubTokenValidation, GitSettings,
-    SystemFontFamily, SystemFontFamilyList, SystemFontFamilySource, SystemLanguageSettings,
-    SystemProxySettings,
+    SystemFontFamily, SystemFontFamilyList, SystemFontFamilySource, SystemFontSettings,
+    SystemLanguageSettings, SystemProxySettings,
 };

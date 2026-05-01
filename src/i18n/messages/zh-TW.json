@@ -91,7 +91,7 @@
       "codeFont": "程式碼字型",
       "placeholder": "請選擇字型",
       "default": "預設",
-      "systemFallbackHint": "Web 模式下僅顯示安全的通用字型選項。",
+      "systemFallbackHint": "Web/伺服器模式無法讀取目前瀏覽器裝置已安裝的字型，因此這裡會刻意只顯示安全的通用字型選項。",
       "loadFailed": "載入系統字型失敗：{message}"
     },
     "zoomLevel": {

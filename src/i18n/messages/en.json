@@ -91,7 +91,7 @@
       "codeFont": "Code font",
       "placeholder": "Select font",
       "default": "Default",
-      "systemFallbackHint": "Web mode shows only safe generic font options.",
+      "systemFallbackHint": "Web/server mode cannot inspect the browser device's installed fonts, so this list intentionally shows only safe generic options.",
       "loadFailed": "Failed to load system fonts: {message}"
     },
     "zoomLevel": {

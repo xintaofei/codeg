@@ -91,7 +91,7 @@
       "codeFont": "Police du code",
       "placeholder": "Sélectionner une police",
       "default": "Par défaut",
-      "systemFallbackHint": "En mode web, seules les options sûres de polices génériques sont affichées.",
+      "systemFallbackHint": "En mode web/serveur, il n'est pas possible d'inspecter les polices installées sur l'appareil du navigateur ; cette liste affiche donc volontairement uniquement des options génériques sûres.",
       "loadFailed": "Échec du chargement des polices système : {message}"
     },
     "zoomLevel": {

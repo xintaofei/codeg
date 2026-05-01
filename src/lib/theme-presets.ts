@@ -1,5 +1,7 @@
 // src/lib/theme-presets.ts
 
+import type { SystemFontFamily, SystemFontFamilyList } from "./types"
+
 /**
  * 12 个 shadcn 官方主题预设的标识符。
  * 实际 CSS 变量值定义在 src/app/globals.css 的 [data-theme="..."] 选择器中。
@@ -93,6 +95,22 @@ export const BUILT_IN_FONT_FAMILY_OPTIONS = [
   ...BUILT_IN_CODE_FONT_FAMILIES,
 ] as const
 
+export const FALLBACK_SYSTEM_FONT_FAMILY_LIST: SystemFontFamilyList = {
+  source: "fallback",
+  families: [
+    { family: "system-ui", monospace: false },
+    { family: "ui-sans-serif", monospace: false },
+    { family: "Arial", monospace: false },
+    { family: "Helvetica", monospace: false },
+    { family: "sans-serif", monospace: false },
+    { family: "ui-monospace", monospace: true },
+    { family: "Menlo", monospace: true },
+    { family: "Monaco", monospace: true },
+    { family: "Courier New", monospace: true },
+    { family: "monospace", monospace: true },
+  ],
+}
+
 const CSS_GENERIC_FONT_FAMILIES = new Set<string>([
   "sans-serif",
   "monospace",
@@ -158,4 +176,94 @@ export function buildCodeFontFamilyStack(
   selectedFont: FontFamilyPreference
 ): string {
   return buildFontFamilyStack(selectedFont, CODE_FONT_FALLBACK_STACK)
+}
+
+export function normalizeSystemFontFamilyList(
+  value: SystemFontFamilyList
+): SystemFontFamilyList {
+  const byKey = new Map<string, SystemFontFamily>()
+
+  for (const option of [
+    ...value.families,
+    ...FALLBACK_SYSTEM_FONT_FAMILY_LIST.families,
+  ]) {
+    const family = normalizeFontFamilyPreference(option.family)
+    if (!family) continue
+
+    const key = family.toLowerCase()
+    const existing = byKey.get(key)
+    if (existing) {
+      byKey.set(key, {
+        family: existing.family,
+        monospace: existing.monospace || option.monospace,
+      })
+      continue
+    }
+
+    byKey.set(key, {
+      family,
+      monospace: option.monospace,
+    })
+  }
+
+  return {
+    source: value.source,
+    families: Array.from(byKey.values()).sort((a, b) =>
+      a.family.localeCompare(b.family, undefined, { sensitivity: "base" })
+    ),
+  }
+}
+
+export function buildCodeFontOptions(
+  families: SystemFontFamily[]
+): SystemFontFamily[] {
+  const byKey = new Map<string, SystemFontFamily>()
+
+  for (const option of families) {
+    if (!option.monospace) continue
+    byKey.set(option.family.toLowerCase(), option)
+  }
+
+  for (const family of BUILT_IN_CODE_FONT_FAMILIES) {
+    const key = family.toLowerCase()
+    const existing = byKey.get(key)
+    byKey.set(key, {
+      family,
+      monospace: existing?.monospace ?? true,
+    })
+  }
+
+  return Array.from(byKey.values()).sort((a, b) =>
+    a.family.localeCompare(b.family, undefined, { sensitivity: "base" })
+  )
+}
+
+export function isKnownFontFamily(
+  fontFamily: FontFamilyPreference,
+  families: SystemFontFamily[]
+): boolean {
+  if (!fontFamily) return true
+
+  const key = fontFamily.toLowerCase()
+  return (
+    isBuiltInFontFamilyOption(fontFamily) ||
+    families.some((option) => option.family.toLowerCase() === key)
+  )
+}
+
+export function isKnownCodeFontFamily(
+  fontFamily: FontFamilyPreference,
+  families: SystemFontFamily[]
+): boolean {
+  if (!fontFamily) return true
+
+  const key = fontFamily.toLowerCase()
+  return (
+    BUILT_IN_CODE_FONT_FAMILIES.some(
+      (family) => family.toLowerCase() === key
+    ) ||
+    families.some(
+      (option) => option.monospace && option.family.toLowerCase() === key
+    )
+  )
 }

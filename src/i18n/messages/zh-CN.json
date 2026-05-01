@@ -91,7 +91,7 @@
       "codeFont": "代码字体",
       "placeholder": "请选择字体",
       "default": "默认",
-      "systemFallbackHint": "Web 模式下仅显示安全的通用字体选项。",
+      "systemFallbackHint": "Web/服务器模式无法读取当前浏览器设备已安装的字体，因此这里会刻意只显示安全的通用字体选项。",
       "loadFailed": "加载系统字体失败：{message}"
     },
     "zoomLevel": {

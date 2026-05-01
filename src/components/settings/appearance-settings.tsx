@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo } from "react"
 import { Monitor, Moon, RotateCcw, Sun, Type } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useTheme } from "next-themes"
@@ -14,103 +14,34 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
+  useAppearanceFontList,
   useCodeFontFamily,
   useThemeColor,
   useUiFontFamily,
   useZoomLevel,
 } from "@/hooks/use-appearance"
-import { listSystemFontFamilies } from "@/lib/api"
-import { toErrorMessage } from "@/lib/app-error"
 import { cn } from "@/lib/utils"
 import {
-  BUILT_IN_CODE_FONT_FAMILIES,
+  buildCodeFontOptions,
   DEFAULT_CODE_FONT_FAMILY,
   DEFAULT_THEME_COLOR,
   DEFAULT_UI_FONT_FAMILY,
   DEFAULT_ZOOM_LEVEL,
+  isKnownCodeFontFamily,
+  isKnownFontFamily,
   THEME_COLOR_PREVIEW,
   THEME_COLORS,
   ZOOM_LEVELS,
-  isBuiltInFontFamilyOption,
   normalizeFontFamilyPreference,
   type FontFamilyPreference,
   type ThemeColor,
   type ZoomLevel,
 } from "@/lib/theme-presets"
-import type { SystemFontFamily, SystemFontFamilyList } from "@/lib/types"
 
 type ThemeMode = "system" | "light" | "dark"
 type FontSelectValue = string
 
 const DEFAULT_FONT_SELECT_VALUE = "__default__"
-
-const FALLBACK_FONT_LIST: SystemFontFamilyList = {
-  source: "fallback",
-  families: [
-    { family: "system-ui", monospace: false },
-    { family: "ui-sans-serif", monospace: false },
-    { family: "Arial", monospace: false },
-    { family: "Helvetica", monospace: false },
-    { family: "sans-serif", monospace: false },
-    { family: "ui-monospace", monospace: true },
-    { family: "Menlo", monospace: true },
-    { family: "Monaco", monospace: true },
-    { family: "Courier New", monospace: true },
-    { family: "monospace", monospace: true },
-  ],
-}
-
-function normalizeFontList(value: SystemFontFamilyList): SystemFontFamilyList {
-  const byKey = new Map<string, SystemFontFamily>()
-  for (const option of [...value.families, ...FALLBACK_FONT_LIST.families]) {
-    const family = normalizeFontFamilyPreference(option.family)
-    if (!family) continue
-    const key = family.toLowerCase()
-    const existing = byKey.get(key)
-    if (existing) {
-      byKey.set(key, {
-        family: existing.family,
-        monospace: existing.monospace || option.monospace,
-      })
-    } else {
-      byKey.set(key, { family, monospace: option.monospace })
-    }
-  }
-
-  const families = Array.from(byKey.values()).sort((a, b) =>
-    a.family.localeCompare(b.family, undefined, { sensitivity: "base" })
-  )
-
-  return { source: value.source, families }
-}
-
-function isKnownFontFamily(
-  fontFamily: FontFamilyPreference,
-  families: SystemFontFamily[]
-): boolean {
-  if (!fontFamily) return true
-  const key = fontFamily.toLowerCase()
-  return (
-    isBuiltInFontFamilyOption(fontFamily) ||
-    families.some((option) => option.family.toLowerCase() === key)
-  )
-}
-
-function isKnownCodeFontFamily(
-  fontFamily: FontFamilyPreference,
-  families: SystemFontFamily[]
-): boolean {
-  if (!fontFamily) return true
-  const key = fontFamily.toLowerCase()
-  return (
-    BUILT_IN_CODE_FONT_FAMILIES.some(
-      (family) => family.toLowerCase() === key
-    ) ||
-    families.some(
-      (option) => option.monospace && option.family.toLowerCase() === key
-    )
-  )
-}
 
 function toSelectValue(fontFamily: FontFamilyPreference): FontSelectValue {
   return fontFamily ?? DEFAULT_FONT_SELECT_VALUE
@@ -129,55 +60,23 @@ export function AppearanceSettings() {
   const { zoomLevel, setZoomLevel } = useZoomLevel()
   const { uiFontFamily, setUiFontFamily } = useUiFontFamily()
   const { codeFontFamily, setCodeFontFamily } = useCodeFontFamily()
-  const [fontList, setFontList] = useState<SystemFontFamilyList>(
-    normalizeFontList(FALLBACK_FONT_LIST)
-  )
-  const [fontListLoaded, setFontListLoaded] = useState(false)
-  const [fontListError, setFontListError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    listSystemFontFamilies()
-      .then((result) => {
-        if (cancelled) return
-        setFontList(normalizeFontList(result))
-        setFontListLoaded(true)
-        setFontListError(null)
-      })
-      .catch((err) => {
-        if (cancelled) return
-        setFontList(normalizeFontList(FALLBACK_FONT_LIST))
-        setFontListLoaded(true)
-        setFontListError(toErrorMessage(err))
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  const { fontList, fontListLoaded, fontListError } = useAppearanceFontList()
 
   const uiFontOptions = fontList.families
-  const codeFontOptions = useMemo(() => {
-    const monospaceOptions = fontList.families.filter((font) => font.monospace)
-    const byKey = new Map<string, SystemFontFamily>()
-    for (const option of monospaceOptions) {
-      byKey.set(option.family.toLowerCase(), option)
-    }
-    for (const family of BUILT_IN_CODE_FONT_FAMILIES) {
-      const key = family.toLowerCase()
-      const existing = byKey.get(key)
-      byKey.set(key, { family, monospace: existing?.monospace ?? true })
-    }
-    return Array.from(byKey.values()).sort((a, b) =>
-      a.family.localeCompare(b.family, undefined, { sensitivity: "base" })
-    )
-  }, [fontList.families])
+  const codeFontOptions = useMemo(
+    () => buildCodeFontOptions(fontList.families),
+    [fontList.families]
+  )
 
   useEffect(() => {
-    if (!fontListLoaded || fontListError) return
+    if (!fontListLoaded || fontListError || fontList.source === "fallback") {
+      return
+    }
     if (!isKnownFontFamily(uiFontFamily, uiFontOptions)) {
       setUiFontFamily(DEFAULT_UI_FONT_FAMILY)
     }
   }, [
+    fontList.source,
     fontListError,
     fontListLoaded,
     setUiFontFamily,
@@ -186,13 +85,16 @@ export function AppearanceSettings() {
   ])
 
   useEffect(() => {
-    if (!fontListLoaded || fontListError) return
+    if (!fontListLoaded || fontListError || fontList.source === "fallback") {
+      return
+    }
     if (!isKnownCodeFontFamily(codeFontFamily, codeFontOptions)) {
       setCodeFontFamily(DEFAULT_CODE_FONT_FAMILY)
     }
   }, [
     codeFontFamily,
     codeFontOptions,
+    fontList.source,
     fontListError,
     fontListLoaded,
     setCodeFontFamily,
@@ -221,7 +123,6 @@ export function AppearanceSettings() {
   return (
     <ScrollArea className="h-full">
       <div className="w-full space-y-4 p-3 md:p-4">
-        {/* ===== Theme Mode (existing) ===== */}
         <section className="rounded-xl border bg-card p-4 space-y-4">
           <div className="flex items-center gap-2">
             <Sun className="h-4 w-4 text-muted-foreground" />
@@ -240,13 +141,12 @@ export function AppearanceSettings() {
               value={theme ?? "system"}
               onValueChange={(value) => {
                 setTheme(value as ThemeMode)
-                // Persist to Tauri DB so native window background matches on next open
                 if (
                   typeof window !== "undefined" &&
                   "__TAURI_INTERNALS__" in window
                 ) {
-                  import("@/lib/tauri").then((t) =>
-                    t.updateAppearanceMode(value).catch(() => {})
+                  import("@/lib/tauri").then((tauriApi) =>
+                    tauriApi.updateAppearanceMode(value).catch(() => {})
                   )
                 }
               }}
@@ -284,7 +184,6 @@ export function AppearanceSettings() {
           </div>
         </section>
 
-        {/* ===== Theme Color (new) ===== */}
         <section className="rounded-xl border bg-card p-4 space-y-4">
           <div className="flex items-center gap-2">
             <span
@@ -336,7 +235,6 @@ export function AppearanceSettings() {
           </p>
         </section>
 
-        {/* ===== Font family ===== */}
         <section className="rounded-xl border bg-card p-4 space-y-4">
           <div className="flex items-center gap-2">
             <Type className="h-4 w-4 text-muted-foreground" />
@@ -403,8 +301,8 @@ export function AppearanceSettings() {
             </div>
           </div>
 
-          {fontList.source === "fallback" && (
-            <p className="text-[11px] text-muted-foreground">
+          {fontList.source === "fallback" && !fontListError && (
+            <p className="text-[11px] leading-5 text-muted-foreground">
               {t("fontFamily.systemFallbackHint")}
             </p>
           )}
@@ -415,7 +313,6 @@ export function AppearanceSettings() {
           )}
         </section>
 
-        {/* ===== Zoom Level (new) ===== */}
         <section className="rounded-xl border bg-card p-4 space-y-4">
           <div className="flex items-center gap-2">
             <Type className="h-4 w-4 text-muted-foreground" />
@@ -455,7 +352,6 @@ export function AppearanceSettings() {
           </div>
         </section>
 
-        {/* ===== Reset to defaults (new) ===== */}
         <div className="flex justify-end">
           <Button
             variant="outline"

@@ -91,7 +91,7 @@
       "codeFont": "コードフォント",
       "placeholder": "フォントを選択",
       "default": "デフォルト",
-      "systemFallbackHint": "Web モードでは安全な汎用フォントオプションのみ表示されます。",
+      "systemFallbackHint": "Web/サーバーモードでは、このブラウザー端末にインストールされているフォントを取得できないため、ここでは安全な汎用フォントのみを意図的に表示します。",
       "loadFailed": "システムフォントの読み込みに失敗しました: {message}"
     },
     "zoomLevel": {

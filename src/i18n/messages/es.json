@@ -91,7 +91,7 @@
       "codeFont": "Fuente de código",
       "placeholder": "Selecciona una fuente",
       "default": "Predeterminada",
-      "systemFallbackHint": "En modo web solo se muestran opciones seguras de fuentes genéricas.",
+      "systemFallbackHint": "En modo web/servidor no es posible inspeccionar las fuentes instaladas en el dispositivo del navegador, por lo que esta lista muestra intencionalmente solo opciones genéricas seguras.",
       "loadFailed": "No se pudieron cargar las fuentes del sistema: {message}"
     },
     "zoomLevel": {

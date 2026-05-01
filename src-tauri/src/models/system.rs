@@ -19,7 +19,6 @@ pub struct SystemFontFamilyList {
     pub source: SystemFontFamilySource,
 }
 
-#[cfg(feature = "tauri-runtime")]
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(default)]
 pub struct SystemFontSettings {

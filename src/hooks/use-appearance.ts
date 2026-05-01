@@ -35,3 +35,9 @@ export function useCodeFontFamily() {
     useAppearance()
   return { codeFontFamily, setCodeFontFamily, codeFontFamilyStack }
 }
+
+/** 字体设置页使用：共享 Provider 已加载的字体列表状态 */
+export function useAppearanceFontList() {
+  const { fontList, fontListLoaded, fontListError } = useAppearance()
+  return { fontList, fontListLoaded, fontListError }
+}

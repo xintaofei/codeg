@@ -91,7 +91,7 @@
       "codeFont": "코드 글꼴",
       "placeholder": "글꼴 선택",
       "default": "기본값",
-      "systemFallbackHint": "웹 모드에서는 안전한 일반 글꼴 옵션만 표시됩니다.",
+      "systemFallbackHint": "웹/서버 모드에서는 현재 브라우저 기기에 설치된 글꼴을 읽을 수 없으므로 여기서는 안전한 일반 글꼴 옵션만 의도적으로 표시합니다.",
       "loadFailed": "시스템 글꼴을 불러오지 못했습니다: {message}"
     },
     "zoomLevel": {
