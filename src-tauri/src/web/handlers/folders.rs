@@ -223,14 +223,13 @@ pub async fn open_settings_window(
     Json(params): Json<OpenSettingsWindowParams>,
 ) -> Result<Json<SettingsNavigationResult>, AppCommandError> {
     let route = match params.section.as_deref() {
-        Some("general") => "settings/general",
         Some("appearance") => "settings/appearance",
         Some("agents") => "settings/agents",
         Some("mcp") => "settings/mcp",
         Some("skills") => "settings/skills",
         Some("shortcuts") => "settings/shortcuts",
         Some("system") => "settings/system",
-        _ => "settings/general",
+        _ => "settings/system",
     };
 
     let path = if route == "settings/agents" {

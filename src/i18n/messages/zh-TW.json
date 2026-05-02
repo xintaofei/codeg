@@ -37,7 +37,6 @@
     "title": "設定",
     "preferences": "偏好設定",
     "nav": {
-      "general": "常規",
       "appearance": "外觀",
       "agents": "智能體",
       "mcp": "MCP",
@@ -50,29 +49,6 @@
       "model_providers": "模型供應商",
       "experts": "專家",
       "quick_messages": "快捷訊息"
-    }
-  },
-  "GeneralSettings": {
-    "loading": "載入中...",
-    "sectionTitle": "常規",
-    "sectionDescription": "配置應用程式的一般偏好設定。",
-    "loadFailed": "載入失敗：{message}",
-    "openTargetTitle": "檔案開啟",
-    "defaultOpenTarget": "預設開啟目標",
-    "defaultOpenTargetDescription": "開啟檔案和資料夾的預設位置",
-    "openTargetDesktopOnly": "在原生編輯器中開啟檔案僅桌面應用程式可用。",
-    "openTargetSaveFailed": "開啟目標設定儲存失敗：{message}",
-    "webFileOpenMethod": "網頁檔案開啟方式",
-    "webFileOpenMethodDescription": "HTML 等檔案的預設開啟方式",
-    "webFileOpenMethodSaveFailed": "網頁檔案開啟方式儲存失敗：{message}",
-    "openTargets": {
-      "vscode": "VS Code",
-      "file_manager": "檔案管理器",
-      "terminal": "終端"
-    },
-    "webFileOpenMethods": {
-      "browser": "在瀏覽器中開啟",
-      "editor": "使用預設開啟目標"
     }
   },
   "AppearanceSettings": {
@@ -122,6 +98,23 @@
     "loading": "載入中...",
     "sectionTitle": "系統管理",
     "sectionDescription": "管理網路代理、應用升級與語言偏好。",
+    "openTargetTitle": "檔案開啟",
+    "defaultOpenTarget": "預設開啟目標",
+    "defaultOpenTargetDescription": "開啟檔案和資料夾的預設位置",
+    "openTargetDesktopOnly": "在原生編輯器中開啟檔案僅桌面應用程式可用。",
+    "openTargetSaveFailed": "開啟目標設定儲存失敗：{message}",
+    "webFileOpenMethod": "網頁檔案開啟方式",
+    "webFileOpenMethodDescription": "HTML 等檔案的預設開啟方式",
+    "webFileOpenMethodSaveFailed": "網頁檔案開啟方式儲存失敗：{message}",
+    "openTargets": {
+      "vscode": "VS Code",
+      "file_manager": "檔案管理器",
+      "terminal": "終端"
+    },
+    "webFileOpenMethods": {
+      "browser": "在瀏覽器中開啟",
+      "editor": "使用預設開啟目標"
+    },
     "proxyTitle": "網路代理",
     "proxyDescription": "啟用後，後續網路請求將優先走該代理（包含 ACP 對話、Agent 安裝、Git 遠端操作等）。",
     "loadFailed": "載入失敗：{message}",

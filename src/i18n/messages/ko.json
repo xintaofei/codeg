@@ -37,7 +37,6 @@
     "title": "설정",
     "preferences": "환경설정",
     "nav": {
-      "general": "일반",
       "appearance": "외관",
       "agents": "에이전트",
       "mcp": "MCP",
@@ -50,29 +49,6 @@
       "model_providers": "모델 제공업체",
       "experts": "전문가",
       "quick_messages": "빠른 메시지"
-    }
-  },
-  "GeneralSettings": {
-    "loading": "로딩 중...",
-    "sectionTitle": "일반",
-    "sectionDescription": "앱의 일반 환경설정을 구성합니다.",
-    "loadFailed": "불러오기 실패: {message}",
-    "openTargetTitle": "파일 열기",
-    "defaultOpenTarget": "기본 열기 대상",
-    "defaultOpenTargetDescription": "파일과 폴더를 열 기본 위치",
-    "openTargetDesktopOnly": "네이티브 편집기에서 파일 열기는 데스크톱 앱에서만 사용할 수 있습니다.",
-    "openTargetSaveFailed": "열기 대상 설정 저장 실패: {message}",
-    "webFileOpenMethod": "웹 파일 열기 방식",
-    "webFileOpenMethodDescription": "HTML 등 파일의 기본 열기 방식",
-    "webFileOpenMethodSaveFailed": "웹 파일 열기 설정 저장 실패: {message}",
-    "openTargets": {
-      "vscode": "VS Code",
-      "file_manager": "파일 관리자",
-      "terminal": "터미널"
-    },
-    "webFileOpenMethods": {
-      "browser": "브라우저에서 열기",
-      "editor": "기본 열기 대상 사용"
     }
   },
   "AppearanceSettings": {
@@ -122,6 +98,23 @@
     "loading": "로딩 중...",
     "sectionTitle": "시스템 관리",
     "sectionDescription": "네트워크 프록시, 앱 업데이트, 언어 설정을 관리합니다.",
+    "openTargetTitle": "파일 열기",
+    "defaultOpenTarget": "기본 열기 대상",
+    "defaultOpenTargetDescription": "파일과 폴더를 열 기본 위치",
+    "openTargetDesktopOnly": "네이티브 편집기에서 파일 열기는 데스크톱 앱에서만 사용할 수 있습니다.",
+    "openTargetSaveFailed": "열기 대상 설정 저장 실패: {message}",
+    "webFileOpenMethod": "웹 파일 열기 방식",
+    "webFileOpenMethodDescription": "HTML 등 파일의 기본 열기 방식",
+    "webFileOpenMethodSaveFailed": "웹 파일 열기 설정 저장 실패: {message}",
+    "openTargets": {
+      "vscode": "VS Code",
+      "file_manager": "파일 관리자",
+      "terminal": "터미널"
+    },
+    "webFileOpenMethods": {
+      "browser": "브라우저에서 열기",
+      "editor": "기본 열기 대상 사용"
+    },
     "proxyTitle": "네트워크 프록시",
     "proxyDescription": "활성화하면 이후 네트워크 요청에서 이 프록시를 우선 사용합니다(ACP 채팅, 에이전트 설치, Git 원격 작업 포함).",
     "loadFailed": "불러오기 실패: {message}",

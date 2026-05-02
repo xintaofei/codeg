@@ -37,7 +37,6 @@
     "title": "設定",
     "preferences": "環境設定",
     "nav": {
-      "general": "一般",
       "appearance": "外観",
       "agents": "エージェント",
       "mcp": "MCP",
@@ -50,29 +49,6 @@
       "model_providers": "モデルプロバイダー",
       "experts": "エキスパート",
       "quick_messages": "クイックメッセージ"
-    }
-  },
-  "GeneralSettings": {
-    "loading": "読み込み中...",
-    "sectionTitle": "一般",
-    "sectionDescription": "アプリの一般設定を構成します。",
-    "loadFailed": "読み込みに失敗しました: {message}",
-    "openTargetTitle": "ファイルを開く",
-    "defaultOpenTarget": "デフォルトの開き先",
-    "defaultOpenTargetDescription": "ファイルとフォルダーを開くデフォルトの場所",
-    "openTargetDesktopOnly": "ネイティブエディターでファイルを開く機能はデスクトップアプリでのみ利用できます。",
-    "openTargetSaveFailed": "開き先設定の保存に失敗しました: {message}",
-    "webFileOpenMethod": "Web ファイルの開き方",
-    "webFileOpenMethodDescription": "HTML などのファイルを開く既定の方法",
-    "webFileOpenMethodSaveFailed": "Web ファイルの開き方設定の保存に失敗しました: {message}",
-    "openTargets": {
-      "vscode": "VS Code",
-      "file_manager": "ファイルマネージャー",
-      "terminal": "ターミナル"
-    },
-    "webFileOpenMethods": {
-      "browser": "ブラウザーで開く",
-      "editor": "デフォルトの開き先を使用"
     }
   },
   "AppearanceSettings": {
@@ -122,6 +98,23 @@
     "loading": "読み込み中...",
     "sectionTitle": "システム管理",
     "sectionDescription": "ネットワークプロキシ、アプリ更新、言語設定を管理します。",
+    "openTargetTitle": "ファイルを開く",
+    "defaultOpenTarget": "デフォルトの開き先",
+    "defaultOpenTargetDescription": "ファイルとフォルダーを開くデフォルトの場所",
+    "openTargetDesktopOnly": "ネイティブエディターでファイルを開く機能はデスクトップアプリでのみ利用できます。",
+    "openTargetSaveFailed": "開き先設定の保存に失敗しました: {message}",
+    "webFileOpenMethod": "Web ファイルの開き方",
+    "webFileOpenMethodDescription": "HTML などのファイルを開く既定の方法",
+    "webFileOpenMethodSaveFailed": "Web ファイルの開き方設定の保存に失敗しました: {message}",
+    "openTargets": {
+      "vscode": "VS Code",
+      "file_manager": "ファイルマネージャー",
+      "terminal": "ターミナル"
+    },
+    "webFileOpenMethods": {
+      "browser": "ブラウザーで開く",
+      "editor": "デフォルトの開き先を使用"
+    },
     "proxyTitle": "ネットワークプロキシ",
     "proxyDescription": "有効にすると、以降のネットワークリクエストはこのプロキシを優先して使用します（ACP チャット、エージェントのインストール、Git リモート操作を含む）。",
     "loadFailed": "読み込みに失敗しました: {message}",

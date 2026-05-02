@@ -37,7 +37,6 @@
     "title": "Settings",
     "preferences": "Preferences",
     "nav": {
-      "general": "General",
       "appearance": "Appearance",
       "agents": "Agents",
       "mcp": "MCP",
@@ -50,29 +49,6 @@
       "model_providers": "Model Providers",
       "experts": "Experts",
       "quick_messages": "Quick Messages"
-    }
-  },
-  "GeneralSettings": {
-    "loading": "Loading...",
-    "sectionTitle": "General",
-    "sectionDescription": "Configure default app preferences.",
-    "loadFailed": "Load failed: {message}",
-    "openTargetTitle": "File opening",
-    "defaultOpenTarget": "Default open target",
-    "defaultOpenTargetDescription": "Default location for opening files and folders",
-    "openTargetDesktopOnly": "Opening files in a native editor is available in the desktop app.",
-    "openTargetSaveFailed": "Failed to save open target settings: {message}",
-    "webFileOpenMethod": "Web file opening",
-    "webFileOpenMethodDescription": "Default method for opening HTML and other web files",
-    "webFileOpenMethodSaveFailed": "Failed to save web file opening settings: {message}",
-    "openTargets": {
-      "vscode": "VS Code",
-      "file_manager": "File manager",
-      "terminal": "Terminal"
-    },
-    "webFileOpenMethods": {
-      "browser": "Open in browser",
-      "editor": "Use default open target"
     }
   },
   "AppearanceSettings": {
@@ -122,6 +98,23 @@
     "loading": "Loading...",
     "sectionTitle": "System Management",
     "sectionDescription": "Manage network proxy, app updates and language preferences.",
+    "openTargetTitle": "File opening",
+    "defaultOpenTarget": "Default open target",
+    "defaultOpenTargetDescription": "Default location for opening files and folders",
+    "openTargetDesktopOnly": "Opening files in a native editor is available in the desktop app.",
+    "openTargetSaveFailed": "Failed to save open target settings: {message}",
+    "webFileOpenMethod": "Web file opening",
+    "webFileOpenMethodDescription": "Default method for opening HTML and other web files",
+    "webFileOpenMethodSaveFailed": "Failed to save web file opening settings: {message}",
+    "openTargets": {
+      "vscode": "VS Code",
+      "file_manager": "File manager",
+      "terminal": "Terminal"
+    },
+    "webFileOpenMethods": {
+      "browser": "Open in browser",
+      "editor": "Use default open target"
+    },
     "proxyTitle": "Network Proxy",
     "proxyDescription": "When enabled, subsequent network requests prefer this proxy (including ACP chat, agent installation and Git remote operations).",
     "loadFailed": "Load failed: {message}",

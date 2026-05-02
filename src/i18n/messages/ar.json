@@ -37,7 +37,6 @@
     "title": "الإعدادات",
     "preferences": "التفضيلات",
     "nav": {
-      "general": "عام",
       "appearance": "المظهر",
       "agents": "الوكلاء",
       "mcp": "MCP",
@@ -50,29 +49,6 @@
       "model_providers": "مزودو النماذج",
       "experts": "الخبراء",
       "quick_messages": "رسائل سريعة"
-    }
-  },
-  "GeneralSettings": {
-    "loading": "جارٍ التحميل...",
-    "sectionTitle": "عام",
-    "sectionDescription": "اضبط التفضيلات العامة للتطبيق.",
-    "loadFailed": "فشل التحميل: {message}",
-    "openTargetTitle": "فتح الملفات",
-    "defaultOpenTarget": "هدف الفتح الافتراضي",
-    "defaultOpenTargetDescription": "الموقع الافتراضي لفتح الملفات والمجلدات",
-    "openTargetDesktopOnly": "فتح الملفات في محرر أصلي متاح فقط في تطبيق سطح المكتب.",
-    "openTargetSaveFailed": "فشل حفظ هدف الفتح: {message}",
-    "webFileOpenMethod": "طريقة فتح ملفات الويب",
-    "webFileOpenMethodDescription": "الطريقة الافتراضية لفتح ملفات HTML وملفات الويب الأخرى",
-    "webFileOpenMethodSaveFailed": "فشل حفظ إعدادات فتح ملفات الويب: {message}",
-    "openTargets": {
-      "vscode": "VS Code",
-      "file_manager": "مدير الملفات",
-      "terminal": "الطرفية"
-    },
-    "webFileOpenMethods": {
-      "browser": "فتح في المتصفح",
-      "editor": "استخدام هدف الفتح الافتراضي"
     }
   },
   "AppearanceSettings": {
@@ -122,6 +98,23 @@
     "loading": "جارٍ التحميل...",
     "sectionTitle": "إدارة النظام",
     "sectionDescription": "إدارة وكيل الشبكة وتحديثات التطبيق وتفضيلات اللغة.",
+    "openTargetTitle": "فتح الملفات",
+    "defaultOpenTarget": "هدف الفتح الافتراضي",
+    "defaultOpenTargetDescription": "الموقع الافتراضي لفتح الملفات والمجلدات",
+    "openTargetDesktopOnly": "فتح الملفات في محرر أصلي متاح فقط في تطبيق سطح المكتب.",
+    "openTargetSaveFailed": "فشل حفظ هدف الفتح: {message}",
+    "webFileOpenMethod": "طريقة فتح ملفات الويب",
+    "webFileOpenMethodDescription": "الطريقة الافتراضية لفتح ملفات HTML وملفات الويب الأخرى",
+    "webFileOpenMethodSaveFailed": "فشل حفظ إعدادات فتح ملفات الويب: {message}",
+    "openTargets": {
+      "vscode": "VS Code",
+      "file_manager": "مدير الملفات",
+      "terminal": "الطرفية"
+    },
+    "webFileOpenMethods": {
+      "browser": "فتح في المتصفح",
+      "editor": "استخدام هدف الفتح الافتراضي"
+    },
     "proxyTitle": "وكيل الشبكة",
     "proxyDescription": "عند التفعيل، ستُفضَّل إعدادات هذا الوكيل في طلبات الشبكة اللاحقة (بما في ذلك دردشة ACP وتثبيت الوكلاء وعمليات Git البعيدة).",
     "loadFailed": "فشل التحميل: {message}",

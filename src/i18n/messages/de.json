@@ -37,7 +37,6 @@
     "title": "Einstellungen",
     "preferences": "Präferenzen",
     "nav": {
-      "general": "Allgemein",
       "appearance": "Darstellung",
       "agents": "Agenten",
       "mcp": "MCP",
@@ -50,29 +49,6 @@
       "model_providers": "Modellanbieter",
       "experts": "Experten",
       "quick_messages": "Schnellnachrichten"
-    }
-  },
-  "GeneralSettings": {
-    "loading": "Wird geladen...",
-    "sectionTitle": "Allgemein",
-    "sectionDescription": "Allgemeine App-Einstellungen konfigurieren.",
-    "loadFailed": "Laden fehlgeschlagen: {message}",
-    "openTargetTitle": "Dateien öffnen",
-    "defaultOpenTarget": "Standardziel zum Öffnen",
-    "defaultOpenTargetDescription": "Standardort zum Öffnen von Dateien und Ordnern",
-    "openTargetDesktopOnly": "Das Öffnen in einem nativen Editor ist nur in der Desktop-App verfügbar.",
-    "openTargetSaveFailed": "Öffnungsziel konnte nicht gespeichert werden: {message}",
-    "webFileOpenMethod": "Webdateien öffnen",
-    "webFileOpenMethodDescription": "Standardmethode zum Öffnen von HTML- und anderen Webdateien",
-    "webFileOpenMethodSaveFailed": "Einstellungen zum Öffnen von Webdateien konnten nicht gespeichert werden: {message}",
-    "openTargets": {
-      "vscode": "VS Code",
-      "file_manager": "Dateimanager",
-      "terminal": "Terminal"
-    },
-    "webFileOpenMethods": {
-      "browser": "Im Browser öffnen",
-      "editor": "Standard-Öffnungsziel verwenden"
     }
   },
   "AppearanceSettings": {
@@ -122,6 +98,23 @@
     "loading": "Wird geladen...",
     "sectionTitle": "Systemverwaltung",
     "sectionDescription": "Verwalte Netzwerk-Proxy, App-Updates und Spracheinstellungen.",
+    "openTargetTitle": "Dateien öffnen",
+    "defaultOpenTarget": "Standardziel zum Öffnen",
+    "defaultOpenTargetDescription": "Standardort zum Öffnen von Dateien und Ordnern",
+    "openTargetDesktopOnly": "Das Öffnen in einem nativen Editor ist nur in der Desktop-App verfügbar.",
+    "openTargetSaveFailed": "Öffnungsziel konnte nicht gespeichert werden: {message}",
+    "webFileOpenMethod": "Webdateien öffnen",
+    "webFileOpenMethodDescription": "Standardmethode zum Öffnen von HTML- und anderen Webdateien",
+    "webFileOpenMethodSaveFailed": "Einstellungen zum Öffnen von Webdateien konnten nicht gespeichert werden: {message}",
+    "openTargets": {
+      "vscode": "VS Code",
+      "file_manager": "Dateimanager",
+      "terminal": "Terminal"
+    },
+    "webFileOpenMethods": {
+      "browser": "Im Browser öffnen",
+      "editor": "Standard-Öffnungsziel verwenden"
+    },
     "proxyTitle": "Netzwerk-Proxy",
     "proxyDescription": "Wenn aktiviert, werden nachfolgende Netzwerkanfragen bevorzugt über diesen Proxy ausgeführt (einschließlich ACP-Chat, Agent-Installation und Git-Remote-Operationen).",
     "loadFailed": "Laden fehlgeschlagen: {message}",
