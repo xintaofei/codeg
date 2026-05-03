@@ -721,8 +721,11 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
 mod tests {
     use super::resolve_gemini_base_dir_from;
     use super::GeminiParser;
-    use crate::models::ContentBlock;
-    use crate::parsers::AgentParser;
+    use chrono::{DateTime, Utc};
+    use crate::models::{ContentBlock, MessageRole, UnifiedMessage};
+    use crate::parsers::{
+        stable_user_anchor_id_from_message, stable_user_anchor_id_from_parts, AgentParser,
+    };
     use std::env;
     use std::fs;
     use std::path::PathBuf;

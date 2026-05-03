@@ -108,6 +108,23 @@ pub async fn update_external_id(
     Ok(())
 }
 
+pub async fn update_external_id_if_missing(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+    external_id: String,
+) -> Result<bool, DbError> {
+    use sea_orm::sea_query::Expr;
+    let result = conversation::Entity::update_many()
+        .col_expr(conversation::Column::ExternalId, Expr::value(external_id))
+        .col_expr(conversation::Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(conversation::Column::Id.eq(conversation_id))
+        .filter(conversation::Column::DeletedAt.is_null())
+        .filter(conversation::Column::ExternalId.is_null())
+        .exec(conn)
+        .await?;
+    Ok(result.rows_affected > 0)
+}
+
 pub async fn soft_delete(conn: &DatabaseConnection, conversation_id: i32) -> Result<(), DbError> {
     let conv = conversation::Entity::find_by_id(conversation_id)
         .filter(conversation::Column::DeletedAt.is_null())

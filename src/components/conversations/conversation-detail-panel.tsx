@@ -176,6 +176,7 @@ const ConversationTabView = memo(function ConversationTabView({
     setExternalId,
     setLiveMessage,
     setPendingCleanup,
+    setRecoveryConversationId,
     setSyncState,
   } = useConversationRuntime()
 
@@ -275,6 +276,10 @@ const ConversationTabView = memo(function ConversationTabView({
     }
     return buildNewConversationDraftStorageKey()
   }, [dbConversationId])
+
+  useEffect(() => {
+    setRecoveryConversationId(effectiveConversationId, dbConversationId)
+  }, [dbConversationId, effectiveConversationId, setRecoveryConversationId])
   // Use the per-tab workingDir (derived from the tab's own folderId by the
   // parent) rather than the active folder's path — otherwise switching tabs
   // briefly exposes the previous folder's path to the ACP auto-connect
@@ -361,7 +366,8 @@ const ConversationTabView = memo(function ConversationTabView({
     prevConnStatusRef.current = connStatus
     if (!wasPrompting || connStatus === "prompting") return
 
-    // Turn completed — promote liveMessage + optimisticTurns to localTurns
+    // Turn ended (success, cancel, or error) — promote liveMessage +
+    // optimisticTurns so reload/refetch does not drop the user turn.
     completeTurn(effectiveConversationId)
 
     // Cancel previous metadata sync (handles rapid consecutive turns)

@@ -97,8 +97,12 @@ pub(crate) async fn handle_event(
             };
             let conversation_id = state_arc.read().await.conversation_id;
             if let Some(cid) = conversation_id {
-                conversation_service::update_external_id(db_conn, cid, session_id.clone())
-                    .await?;
+                conversation_service::update_external_id_if_missing(
+                    db_conn,
+                    cid,
+                    session_id.clone(),
+                )
+                .await?;
             }
             Ok(())
         }
@@ -364,6 +368,40 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(reloaded.external_id.as_deref(), Some("ext-99"));
+    }
+
+    #[tokio::test]
+    async fn handle_event_does_not_overwrite_existing_external_id() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/test-existing-ext").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        conversation_service::update_external_id(&db.conn, conv.id, "ext-existing".into())
+            .await
+            .unwrap();
+
+        let mgr = ConnectionManager::new();
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert(
+                "c1".to_string(),
+                fake_connection_with_state("c1", Some(conv.id)),
+            );
+        }
+        let env = EventEnvelope {
+            seq: 1,
+            connection_id: "c1".to_string(),
+            payload: AcpEvent::SessionStarted {
+                session_id: "ext-new".into(),
+            },
+        };
+        handle_event(&db.conn, &mgr, &env).await.unwrap();
+        let reloaded = conversation_service::get_by_id(&db.conn, conv.id)
+            .await
+            .unwrap();
+        assert_eq!(reloaded.external_id.as_deref(), Some("ext-existing"));
     }
 
     #[tokio::test]
