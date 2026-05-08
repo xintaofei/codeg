@@ -16,7 +16,7 @@ use crate::models::FolderDetail;
 #[cfg(target_os = "macos")]
 const TRAFFIC_LIGHT_X: f64 = 12.0;
 #[cfg(target_os = "macos")]
-const TRAFFIC_LIGHT_Y: f64 = 14.0;
+const TRAFFIC_LIGHT_Y: f64 = 18.0;
 
 #[cfg(target_os = "macos")]
 static CURRENT_ZOOM: AtomicU32 = AtomicU32::new(100);

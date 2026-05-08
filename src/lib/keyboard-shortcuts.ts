@@ -1,3 +1,5 @@
+import { detectPlatform } from "@/hooks/use-platform"
+
 export type ShortcutActionId =
   | "toggle_search"
   | "toggle_sidebar"
@@ -88,6 +90,7 @@ export const SHORTCUTS_UPDATED_EVENT = "codeg:shortcuts-updated"
 
 const FUNCTION_KEY_PATTERN = /^f\d{1,2}$/
 const MODIFIER_KEY_SET = new Set(["shift", "meta", "control", "alt"])
+const IS_MAC = detectPlatform() === "macos"
 
 const SPECIAL_KEY_ALIASES: Record<string, string> = {
   " ": "space",
@@ -167,6 +170,7 @@ export function normalizeShortcut(rawShortcut: string): string | null {
   if (parts.length === 0) return null
 
   let mod = false
+  let control = false
   let alt = false
   let shift = false
   let keyToken: string | null = null
@@ -176,11 +180,18 @@ export function normalizeShortcut(rawShortcut: string): string | null {
       part === "mod" ||
       part === "cmd" ||
       part === "command" ||
-      part === "meta" ||
-      part === "ctrl" ||
-      part === "control"
+      part === "meta"
     ) {
       mod = true
+      continue
+    }
+
+    if (part === "ctrl" || part === "control") {
+      if (IS_MAC) {
+        control = true
+      } else {
+        mod = true
+      }
       continue
     }
 
@@ -206,6 +217,7 @@ export function normalizeShortcut(rawShortcut: string): string | null {
 
   const normalizedParts: string[] = []
   if (mod) normalizedParts.push("mod")
+  if (control) normalizedParts.push("control")
   if (alt) normalizedParts.push("alt")
   if (shift) normalizedParts.push("shift")
   normalizedParts.push(keyToken)
@@ -258,7 +270,12 @@ export function shortcutFromKeyboardEvent(
   }
 
   const parts: string[] = []
-  if (event.metaKey || event.ctrlKey) parts.push("mod")
+  if (IS_MAC) {
+    if (event.metaKey) parts.push("mod")
+    if (event.ctrlKey) parts.push("control")
+  } else {
+    if (event.metaKey || event.ctrlKey) parts.push("mod")
+  }
   if (event.altKey) parts.push("alt")
   if (event.shiftKey) parts.push("shift")
   parts.push(keyToken)
@@ -286,8 +303,11 @@ export function matchShortcutEvent(
   if (!actualKey) return false
   if (actualKey !== keyToken) return false
 
-  const hasMod = event.metaKey || event.ctrlKey
+  const needsControl = parts.includes("control")
+  const hasMod = IS_MAC ? event.metaKey : event.metaKey || event.ctrlKey
+  const hasControl = IS_MAC && event.ctrlKey
   if (hasMod !== needsMod) return false
+  if (hasControl !== needsControl) return false
   if (event.altKey !== needsAlt) return false
   if (event.shiftKey !== needsShift) return false
 
@@ -313,6 +333,7 @@ export function formatShortcutLabel(shortcut: string, isMac: boolean): string {
 
   const modifiers: string[] = []
   if (parts.includes("mod")) modifiers.push(isMac ? "⌘" : "Ctrl")
+  if (parts.includes("control")) modifiers.push("⌃")
   if (parts.includes("alt")) modifiers.push(isMac ? "⌥" : "Alt")
   if (parts.includes("shift")) modifiers.push(isMac ? "⇧" : "Shift")
 
