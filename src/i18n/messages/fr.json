@@ -90,9 +90,7 @@
       "placeholder": "Sélectionnez le niveau de zoom",
       "default": "Par défaut",
       "current": "Zoom actuel : {zoom}%"
-    },
-    "resetToDefaults": "Réinitialiser",
-    "resetHint": "Réinitialise la couleur du thème et le zoom de la fenêtre."
+    }
   },
   "SystemSettings": {
     "loading": "Chargement...",
@@ -150,6 +148,7 @@
     "updating": "Installation...",
     "downloading": "Téléchargement...",
     "upgradeTo": "Mettre à jour vers v{version}",
+    "viewRelease": "Voir la version v{version}",
     "foundUpdate": "Nouvelle version v{version} trouvée",
     "alreadyLatest": "Vous utilisez déjà la dernière version",
     "checkUpdateFailed": "Échec de la recherche de mises à jour : {message}",
@@ -1867,8 +1866,8 @@
         "toolGroup": {
           "search": "{count, plural, one {A exploré # recherche} other {A exploré # recherches}}",
           "command": "{count, plural, one {A exécuté # commande} other {A exécuté # commandes}}",
-          "read": "{count, plural, one {A lu # fichier} other {A lu # fichiers}}",
-          "edit": "{count, plural, one {A modifié # fichier} other {A modifié # fichiers}}",
+          "read": "{count, plural, one {A lu des fichiers # fois} other {A lu des fichiers # fois}}",
+          "edit": "{count, plural, one {A modifié des fichiers # fois} other {A modifié des fichiers # fois}}",
           "fetch": "{count, plural, one {A récupéré # ressource} other {A récupéré # ressources}}",
           "think": "{count, plural, one {A réfléchi # fois} other {A réfléchi # fois}}",
           "todo": "{count, plural, one {A mis à jour # tâche} other {A mis à jour # tâches}}",
@@ -2240,6 +2239,64 @@
       "created": "Message rapide créé",
       "saved": "Message rapide enregistré",
       "deleted": "Message rapide supprimé"
+    }
+  },
+  "Pet": {
+    "menu": {
+      "scale": "Échelle",
+      "openManager": "Gérer les mascottes",
+      "close": "Fermer"
+    },
+    "loadError": "Échec du chargement de la mascotte",
+    "missingPetIdParam": "Aucune mascotte sélectionnée",
+    "summonButton": "Mascotte",
+    "manager": {
+      "title": "Mascottes",
+      "description": "Compagnons flottants de bureau avec des sprites compatibles Codex.",
+      "addPet": "Ajouter une mascotte",
+      "importFromCodex": "Importer depuis Codex",
+      "noPets": "Aucune mascotte. Ajoutez-en ou importez depuis Codex.",
+      "setActive": "Activer",
+      "active": "Active",
+      "edit": "Modifier",
+      "delete": "Supprimer",
+      "deleteConfirm": "Supprimer cette mascotte ? Elle sera retirée du disque.",
+      "summon": "Invoquer la fenêtre de la mascotte",
+      "openCodexHelp": "Les mascottes Codex doivent être dans ~/.codex/pets/. Aucune trouvée.",
+      "specRequirement": "Le sprite doit être un PNG/WebP 1536x1872 avec transparence.",
+      "form": {
+        "id": "ID mascotte",
+        "idHelp": "Lettres minuscules, chiffres, '-' et '_'. Max 64 caractères.",
+        "displayName": "Nom affiché",
+        "description": "Description (facultative)",
+        "spritesheet": "Sprite",
+        "chooseFile": "Choisir un fichier",
+        "replaceFile": "Remplacer le sprite",
+        "saveCreate": "Ajouter la mascotte",
+        "saveUpdate": "Enregistrer",
+        "cancel": "Annuler"
+      },
+      "errors": {
+        "missingId": "ID requis",
+        "missingName": "Nom requis",
+        "missingSpritesheet": "Sprite requis",
+        "addFailed": "Ajout impossible",
+        "updateFailed": "Mise à jour impossible",
+        "deleteFailed": "Suppression impossible",
+        "loadFailed": "Chargement impossible"
+      }
+    },
+    "import": {
+      "title": "Importer depuis Codex",
+      "subtitle": "Mascottes disponibles sous ~/.codex/pets/.",
+      "selectAll": "Tout sélectionner",
+      "alreadyImported": "Déjà importée",
+      "renameOnConflict": "Renommer en -imported en cas de conflit",
+      "import": "Importer la sélection",
+      "noneFound": "Aucune mascotte Codex importable.",
+      "imported": "Import réussi",
+      "failed": "Import échoué",
+      "close": "Fermer"
     }
   }
 }

@@ -767,6 +767,235 @@ pub async fn open_project_boot_window(
     Ok(())
 }
 
+// ─── Desktop pet window ─────────────────────────────────────────────────
+
+const PET_WINDOW_LABEL: &str = "pet";
+const PET_HOVER_ENTER_EVENT: &str = "pet://hover-enter";
+const PET_HOVER_LEAVE_EVENT: &str = "pet://hover-leave";
+/// Single-frame logical pixel dimensions, locked to the Codex sprite-sheet
+/// contract. The window is sized as one frame × user scale, with no extra
+/// chrome — DPR handling lives inside the webview.
+const PET_BASE_WIDTH: f64 = 192.0;
+const PET_BASE_HEIGHT: f64 = 208.0;
+
+/// Apply the pet-window-specific platform style. Deliberately separate from
+/// `apply_platform_window_style`: that helper sets a solid background color
+/// for the main / settings / git windows, which would defeat the
+/// transparent + chromeless pet window. The pet builder needs only
+/// borderless decoration; transparency itself is set by the caller.
+fn apply_pet_window_style<'a, R, M>(
+    builder: WebviewWindowBuilder<'a, R, M>,
+) -> WebviewWindowBuilder<'a, R, M>
+where
+    R: tauri::Runtime,
+    M: tauri::Manager<R>,
+{
+    #[cfg(target_os = "macos")]
+    {
+        builder
+            .title_bar_style(tauri::TitleBarStyle::Transparent)
+            .hidden_title(true)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        builder.decorations(false)
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        builder
+    }
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn open_pet_window(
+    app: AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+) -> Result<(), AppCommandError> {
+    let mut config =
+        crate::commands::pet::pet_get_settings_core(&db.conn).await?;
+    let pet_id = config
+        .active_pet_id
+        .clone()
+        .ok_or_else(|| AppCommandError::configuration_missing("No active pet selected."))?;
+
+    // Validate the pet still exists; otherwise fail loudly so the caller
+    // can route the user to the picker rather than open an empty window.
+    {
+        let id = pet_id.clone();
+        tokio::task::spawn_blocking(move || crate::pets::get_pet(&id))
+            .await
+            .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))??;
+    }
+
+    if let Some(existing) = app.get_webview_window(PET_WINDOW_LABEL) {
+        let _ = existing.unminimize();
+        existing
+            .set_focus()
+            .map_err(|e| AppCommandError::window("Failed to focus pet window", e.to_string()))?;
+        return Ok(());
+    }
+
+    let scale = config.scale.clamp(0.5, 3.0);
+    config.scale = scale;
+    config.enabled = true;
+    crate::commands::pet::pet_save_window_state_core(
+        &db.conn,
+        crate::models::pet::PetWindowStatePatch {
+            x: None,
+            y: None,
+            scale: Some(scale),
+            always_on_top: None,
+            enabled: Some(true),
+        },
+    )
+    .await?;
+
+    let url = WebviewUrl::App(format!("pet?petId={pet_id}").into());
+    let mut builder = WebviewWindowBuilder::new(&app, PET_WINDOW_LABEL, url)
+        .title("codeg pet")
+        .inner_size(PET_BASE_WIDTH * scale, PET_BASE_HEIGHT * scale)
+        .min_inner_size(PET_BASE_WIDTH * 0.5, PET_BASE_HEIGHT * 0.5)
+        .max_inner_size(PET_BASE_WIDTH * 3.0, PET_BASE_HEIGHT * 3.0)
+        .resizable(false)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(config.always_on_top)
+        .skip_taskbar(true)
+        .shadow(false)
+        // Don't steal focus from the user's IDE/terminal on summon, and let
+        // the first click on an inactive pet window hit the webview directly
+        // (so drag works without a "click once to activate" cycle).
+        .focused(false)
+        .accept_first_mouse(true);
+
+    builder = builder.center();
+
+    apply_pet_window_style(builder)
+        .build()
+        .map_err(|e| AppCommandError::window("Failed to open pet window", e.to_string()))?;
+
+    spawn_pet_hover_watcher(app.clone());
+
+    Ok(())
+}
+
+/// Polls the global cursor position and emits `pet://hover-enter` whenever
+/// the cursor crosses into the pet window's bounds. Native webviews on
+/// macOS don't reliably deliver mouse events to non-key windows, so we
+/// detect "cursor over the pet" in Rust and let the frontend trigger the
+/// waving animation in response. The task ends when the pet window is
+/// closed.
+fn spawn_pet_hover_watcher(app: AppHandle) {
+    use std::time::Duration;
+    use tauri::Emitter;
+
+    // Bounds change only on drag or scale; refreshing every N ticks cuts
+    // `outer_position`/`outer_size` IPC by ~80% in the steady state. The
+    // false hover-enter that cache staleness produces during a drag is
+    // suppressed on the JS side via a pointer-down guard (see PetWindow).
+    const BOUNDS_REFRESH_TICKS: u8 = 5;
+
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(80));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut was_inside = false;
+        let mut bounds: Option<(f64, f64, f64, f64)> = None;
+        let mut ticks_since_refresh: u8 = BOUNDS_REFRESH_TICKS;
+        loop {
+            interval.tick().await;
+            let Some(window) = app.get_webview_window(PET_WINDOW_LABEL) else {
+                break;
+            };
+
+            if ticks_since_refresh >= BOUNDS_REFRESH_TICKS {
+                let Ok(pos) = window.outer_position() else {
+                    continue;
+                };
+                let Ok(size) = window.outer_size() else {
+                    continue;
+                };
+                let x_min = pos.x as f64;
+                let y_min = pos.y as f64;
+                bounds = Some((
+                    x_min,
+                    x_min + size.width as f64,
+                    y_min,
+                    y_min + size.height as f64,
+                ));
+                ticks_since_refresh = 0;
+            } else {
+                ticks_since_refresh += 1;
+            }
+
+            let Some((x_min, x_max, y_min, y_max)) = bounds else {
+                continue;
+            };
+            let Ok(cursor) = app.cursor_position() else {
+                continue;
+            };
+            let inside = cursor.x >= x_min
+                && cursor.x < x_max
+                && cursor.y >= y_min
+                && cursor.y < y_max;
+            if inside && !was_inside {
+                let _ = app.emit(PET_HOVER_ENTER_EVENT, ());
+            } else if !inside && was_inside {
+                let _ = app.emit(PET_HOVER_LEAVE_EVENT, ());
+            }
+            was_inside = inside;
+        }
+    });
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn close_pet_window(
+    app: AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+) -> Result<(), AppCommandError> {
+    if let Some(existing) = app.get_webview_window(PET_WINDOW_LABEL) {
+        let _ = existing.close();
+    }
+    let _ = crate::commands::pet::pet_save_window_state_core(
+        &db.conn,
+        crate::models::pet::PetWindowStatePatch {
+            x: None,
+            y: None,
+            scale: None,
+            always_on_top: None,
+            enabled: Some(false),
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+/// Persist the pet window's last-known position. Called by the pet renderer
+/// when the user finishes dragging.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn pet_window_record_position(
+    db: tauri::State<'_, AppDatabase>,
+    x: f64,
+    y: f64,
+) -> Result<(), AppCommandError> {
+    crate::commands::pet::pet_save_window_state_core(
+        &db.conn,
+        crate::models::pet::PetWindowStatePatch {
+            x: Some(x),
+            y: Some(y),
+            scale: None,
+            always_on_top: None,
+            enabled: None,
+        },
+    )
+    .await?;
+    Ok(())
+}
+
 /// Store the current zoom level and persist it to DB so the next launch
 /// creates windows with the correct traffic-light position.
 /// Existing windows are NOT repositioned at runtime.

@@ -581,23 +581,37 @@ export function SystemNetworkSettings() {
                   {t("checking")}
                 </Button>
               ) : availableUpdate ? (
-                <Button
-                  size="sm"
-                  onClick={installUpdate}
-                  disabled={installingUpdate}
-                >
-                  {installingUpdate ? (
-                    <>
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      {t("updating")}
-                    </>
-                  ) : (
-                    <>
-                      <ArrowUpCircle className="h-3.5 w-3.5" />
-                      {t("upgradeTo", { version: availableUpdate.version })}
-                    </>
-                  )}
-                </Button>
+                isDesktop() ? (
+                  <Button
+                    size="sm"
+                    onClick={installUpdate}
+                    disabled={installingUpdate}
+                  >
+                    {installingUpdate ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        {t("updating")}
+                      </>
+                    ) : (
+                      <>
+                        <ArrowUpCircle className="h-3.5 w-3.5" />
+                        {t("upgradeTo", { version: availableUpdate.version })}
+                      </>
+                    )}
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    onClick={() =>
+                      openUrl(
+                        "https://github.com/xintaofei/codeg/releases/latest"
+                      )
+                    }
+                  >
+                    <ArrowUpCircle className="h-3.5 w-3.5" />
+                    {t("viewRelease", { version: availableUpdate.version })}
+                  </Button>
+                )
               ) : (
                 <Button
                   key="check-update"

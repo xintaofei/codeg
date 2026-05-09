@@ -90,9 +90,7 @@
       "placeholder": "확대/축소 단계 선택",
       "default": "기본값",
       "current": "현재 확대/축소: {zoom}%"
-    },
-    "resetToDefaults": "기본값으로 재설정",
-    "resetHint": "테마 색상과 창 확대/축소를 기본값으로 재설정합니다."
+    }
   },
   "SystemSettings": {
     "loading": "로딩 중...",
@@ -150,6 +148,7 @@
     "updating": "설치 중...",
     "downloading": "다운로드 중...",
     "upgradeTo": "v{version}로 업그레이드",
+    "viewRelease": "v{version} 릴리스 보기",
     "foundUpdate": "새 버전 v{version}을 찾았습니다",
     "alreadyLatest": "이미 최신 버전입니다",
     "checkUpdateFailed": "업데이트 확인 실패: {message}",
@@ -1867,8 +1866,8 @@
         "toolGroup": {
           "search": "{count}회 검색",
           "command": "명령 {count}개 실행",
-          "read": "파일 {count}개 읽기",
-          "edit": "파일 {count}개 편집",
+          "read": "파일 {count}회 읽기",
+          "edit": "파일 {count}회 편집",
           "fetch": "리소스 {count}개 가져오기",
           "think": "{count}회 사고",
           "todo": "할 일 {count}개 업데이트",
@@ -2240,6 +2239,64 @@
       "created": "빠른 메시지가 생성되었습니다",
       "saved": "빠른 메시지가 저장되었습니다",
       "deleted": "빠른 메시지가 삭제되었습니다"
+    }
+  },
+  "Pet": {
+    "menu": {
+      "scale": "크기",
+      "openManager": "펫 관리",
+      "close": "닫기"
+    },
+    "loadError": "펫을 불러오지 못했습니다",
+    "missingPetIdParam": "선택된 펫이 없습니다",
+    "summonButton": "펫",
+    "manager": {
+      "title": "데스크톱 펫",
+      "description": "Codex 호환 스프라이트 시트로 동작하는 데스크톱 동반자.",
+      "addPet": "펫 추가",
+      "importFromCodex": "Codex 에서 가져오기",
+      "noPets": "펫이 아직 없습니다. 새로 추가하거나 Codex 에서 가져오세요.",
+      "setActive": "활성화",
+      "active": "활성",
+      "edit": "편집",
+      "delete": "삭제",
+      "deleteConfirm": "이 펫을 삭제할까요? 디스크에서도 함께 제거됩니다.",
+      "summon": "펫 창 호출",
+      "openCodexHelp": "Codex 펫은 ~/.codex/pets/ 아래에 설치되어야 합니다. 찾을 수 없습니다.",
+      "specRequirement": "스프라이트 시트는 1536x1872 PNG 또는 WebP(투명) 이어야 합니다.",
+      "form": {
+        "id": "펫 ID",
+        "idHelp": "소문자/숫자/'-'/'_' 만 가능. 최대 64자.",
+        "displayName": "표시 이름",
+        "description": "설명 (선택)",
+        "spritesheet": "스프라이트 시트",
+        "chooseFile": "파일 선택",
+        "replaceFile": "스프라이트 교체",
+        "saveCreate": "펫 추가",
+        "saveUpdate": "변경 저장",
+        "cancel": "취소"
+      },
+      "errors": {
+        "missingId": "펫 ID 는 필수입니다",
+        "missingName": "표시 이름은 필수입니다",
+        "missingSpritesheet": "스프라이트 시트는 필수입니다",
+        "addFailed": "펫 추가에 실패했습니다",
+        "updateFailed": "펫 갱신에 실패했습니다",
+        "deleteFailed": "펫 삭제에 실패했습니다",
+        "loadFailed": "펫 목록 로드에 실패했습니다"
+      }
+    },
+    "import": {
+      "title": "Codex 에서 가져오기",
+      "subtitle": "~/.codex/pets/ 에서 발견된 펫 목록입니다.",
+      "selectAll": "전체 선택",
+      "alreadyImported": "이미 가져옴",
+      "renameOnConflict": "충돌 시 -imported 접미어로 이름 변경",
+      "import": "선택 항목 가져오기",
+      "noneFound": "가져올 수 있는 Codex 펫이 없습니다.",
+      "imported": "가져오기 완료",
+      "failed": "가져오기 실패",
+      "close": "닫기"
     }
   }
 }

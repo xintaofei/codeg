@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main", "commit-*", "merge-*", "stash-*", "push-*", "settings", "project-boot"],
+  "windows": ["main", "commit-*", "merge-*", "stash-*", "push-*", "settings", "project-boot", "pet"],
   "permissions": [
     "core:default",
     "core:window:default",
@@ -11,6 +11,9 @@
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-unmaximize",
+    "core:window:allow-outer-position",
+    "core:window:allow-set-position",
+    "core:window:allow-scale-factor",
     "opener:default",
     {
       "identifier": "opener:allow-open-path",

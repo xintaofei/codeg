@@ -90,9 +90,7 @@
       "placeholder": "اختر مستوى التكبير",
       "default": "افتراضي",
       "current": "التكبير الحالي: {zoom}%"
-    },
-    "resetToDefaults": "إعادة الضبط",
-    "resetHint": "إعادة ضبط لون السمة وتكبير النافذة إلى الإعدادات الافتراضية."
+    }
   },
   "SystemSettings": {
     "loading": "جارٍ التحميل...",
@@ -150,6 +148,7 @@
     "updating": "جارٍ التثبيت...",
     "downloading": "جارٍ التنزيل...",
     "upgradeTo": "الترقية إلى v{version}",
+    "viewRelease": "عرض إصدار v{version}",
     "foundUpdate": "تم العثور على إصدار جديد v{version}",
     "alreadyLatest": "أنت على أحدث إصدار",
     "checkUpdateFailed": "فشل التحقق من التحديثات: {message}",
@@ -1867,8 +1866,8 @@
         "toolGroup": {
           "search": "{count, plural, zero {بحث صفر مرة} one {بحث مرة واحدة} two {بحث مرتين} few {بحث # مرات} many {بحث # مرة} other {بحث # مرة}}",
           "command": "{count, plural, zero {تنفيذ صفر أمر} one {تنفيذ أمر واحد} two {تنفيذ أمرين} few {تنفيذ # أوامر} many {تنفيذ # أمراً} other {تنفيذ # أمر}}",
-          "read": "{count, plural, zero {قراءة صفر ملف} one {قراءة ملف واحد} two {قراءة ملفين} few {قراءة # ملفات} many {قراءة # ملفاً} other {قراءة # ملف}}",
-          "edit": "{count, plural, zero {تعديل صفر ملف} one {تعديل ملف واحد} two {تعديل ملفين} few {تعديل # ملفات} many {تعديل # ملفاً} other {تعديل # ملف}}",
+          "read": "{count, plural, zero {قراءة ملفات صفر مرة} one {قراءة ملفات مرة واحدة} two {قراءة ملفات مرتين} few {قراءة ملفات # مرات} many {قراءة ملفات # مرة} other {قراءة ملفات # مرة}}",
+          "edit": "{count, plural, zero {تعديل ملفات صفر مرة} one {تعديل ملفات مرة واحدة} two {تعديل ملفات مرتين} few {تعديل ملفات # مرات} many {تعديل ملفات # مرة} other {تعديل ملفات # مرة}}",
           "fetch": "{count, plural, zero {جلب صفر مورد} one {جلب مورد واحد} two {جلب موردين} few {جلب # موارد} many {جلب # مورداً} other {جلب # مورد}}",
           "think": "{count, plural, zero {تفكير صفر مرة} one {تفكير مرة واحدة} two {تفكير مرتين} few {تفكير # مرات} many {تفكير # مرة} other {تفكير # مرة}}",
           "todo": "{count, plural, zero {تحديث صفر مهمة} one {تحديث مهمة واحدة} two {تحديث مهمتين} few {تحديث # مهام} many {تحديث # مهمة} other {تحديث # مهمة}}",
@@ -2240,6 +2239,64 @@
       "created": "تم إنشاء الرسالة السريعة",
       "saved": "تم حفظ الرسالة السريعة",
       "deleted": "تم حذف الرسالة السريعة"
+    }
+  },
+  "Pet": {
+    "menu": {
+      "scale": "الحجم",
+      "openManager": "إدارة الحيوانات الأليفة",
+      "close": "إغلاق"
+    },
+    "loadError": "فشل تحميل الحيوان الأليف",
+    "missingPetIdParam": "لم يتم اختيار حيوان أليف",
+    "summonButton": "حيوان أليف",
+    "manager": {
+      "title": "حيوانات سطح المكتب",
+      "description": "رفقاء عائمون لسطح المكتب باستخدام صفائح سبرايت متوافقة مع Codex.",
+      "addPet": "إضافة حيوان",
+      "importFromCodex": "استيراد من Codex",
+      "noPets": "لا يوجد حيوان أليف. أضف واحدًا أو استورد من Codex.",
+      "setActive": "تفعيل",
+      "active": "نشط",
+      "edit": "تعديل",
+      "delete": "حذف",
+      "deleteConfirm": "حذف هذا الحيوان؟ سيُحذف من القرص.",
+      "summon": "استدعاء نافذة الحيوان",
+      "openCodexHelp": "يجب أن توجد حيوانات Codex داخل ~/.codex/pets/. لم يُعثر على شيء.",
+      "specRequirement": "يجب أن يكون السبرايت PNG أو WebP بحجم 1536x1872 مع شفافية.",
+      "form": {
+        "id": "معرف الحيوان",
+        "idHelp": "حروف صغيرة، أرقام، '-' و '_' فقط. حد أقصى 64 حرفًا.",
+        "displayName": "اسم العرض",
+        "description": "الوصف (اختياري)",
+        "spritesheet": "صفيحة السبرايت",
+        "chooseFile": "اختر ملفًا",
+        "replaceFile": "استبدال السبرايت",
+        "saveCreate": "إضافة الحيوان",
+        "saveUpdate": "حفظ التغييرات",
+        "cancel": "إلغاء"
+      },
+      "errors": {
+        "missingId": "المعرف مطلوب",
+        "missingName": "الاسم مطلوب",
+        "missingSpritesheet": "السبرايت مطلوب",
+        "addFailed": "فشل الإضافة",
+        "updateFailed": "فشل التحديث",
+        "deleteFailed": "فشل الحذف",
+        "loadFailed": "فشل تحميل قائمة الحيوانات"
+      }
+    },
+    "import": {
+      "title": "استيراد من Codex",
+      "subtitle": "الحيوانات الأليفة المتاحة ضمن ~/.codex/pets/.",
+      "selectAll": "تحديد الكل",
+      "alreadyImported": "تم استيراده مسبقًا",
+      "renameOnConflict": "تسمية المتعارضين بإلحاق -imported",
+      "import": "استيراد المحدد",
+      "noneFound": "لا توجد حيوانات Codex قابلة للاستيراد.",
+      "imported": "تم الاستيراد بنجاح",
+      "failed": "فشل الاستيراد",
+      "close": "إغلاق"
     }
   }
 }

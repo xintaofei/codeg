@@ -43,7 +43,7 @@ required-features = []
 tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
-tauri = { version = "2", features = [], optional = true }
+tauri = { version = "2", features = ["macos-private-api"], optional = true }
 tauri-plugin-opener = { version = "2", optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
 async-trait = "0.1"
@@ -83,7 +83,7 @@ futures-util = "0.3"
 prost = "0.13"
 rand = "0.8"
 qrcode = "0.14"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "webp"] }
 include_dir = "0.7"
 sha2 = "0.10"
 
@@ -102,6 +102,9 @@ junction = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
 
 [patch.crates-io]
 sacp-tokio = { path = "vendor/sacp-tokio" }

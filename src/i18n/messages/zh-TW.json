@@ -90,9 +90,7 @@
       "placeholder": "請選擇縮放檔位",
       "default": "預設",
       "current": "目前縮放：{zoom}%"
-    },
-    "resetToDefaults": "恢復預設",
-    "resetHint": "將主題顏色和視窗縮放恢復到預設值。"
+    }
   },
   "SystemSettings": {
     "loading": "載入中...",
@@ -150,6 +148,7 @@
     "updating": "升級中...",
     "downloading": "下載中...",
     "upgradeTo": "升級到 v{version}",
+    "viewRelease": "查看 v{version} 發布",
     "foundUpdate": "發現新版本 v{version}",
     "alreadyLatest": "目前已是最新版本",
     "checkUpdateFailed": "檢查更新失敗：{message}",
@@ -1867,8 +1866,8 @@
         "toolGroup": {
           "search": "搜尋 {count} 次",
           "command": "執行 {count} 個指令",
-          "read": "讀取 {count} 個檔案",
-          "edit": "編輯 {count} 個檔案",
+          "read": "讀取 {count} 次檔案",
+          "edit": "編輯 {count} 次檔案",
           "fetch": "抓取 {count} 個資源",
           "think": "思考 {count} 次",
           "todo": "更新 {count} 項待辦",
@@ -2240,6 +2239,64 @@
       "created": "已建立快捷訊息",
       "saved": "已儲存快捷訊息",
       "deleted": "已刪除快捷訊息"
+    }
+  },
+  "Pet": {
+    "menu": {
+      "scale": "縮放",
+      "openManager": "管理寵物",
+      "close": "關閉"
+    },
+    "loadError": "載入寵物失敗",
+    "missingPetIdParam": "未選中任何寵物",
+    "summonButton": "寵物",
+    "manager": {
+      "title": "桌面寵物",
+      "description": "懸浮在桌面上的夥伴,使用與 Codex 相容的精靈圖。",
+      "addPet": "新增寵物",
+      "importFromCodex": "從 Codex 匯入",
+      "noPets": "暫無寵物。可以新增一隻,或從 Codex 匯入。",
+      "setActive": "設為使用中",
+      "active": "使用中",
+      "edit": "編輯",
+      "delete": "刪除",
+      "deleteConfirm": "確認刪除此寵物?會從磁碟上一併移除。",
+      "summon": "召喚寵物視窗",
+      "openCodexHelp": "Codex 寵物需位於 ~/.codex/pets/ 目錄下,但未找到。",
+      "specRequirement": "精靈圖必須是 1536x1872 像素帶透明通道的 PNG 或 WebP。",
+      "form": {
+        "id": "寵物 ID",
+        "idHelp": "僅允許小寫字母、數字、'-' 和 '_',最多 64 字元。",
+        "displayName": "顯示名稱",
+        "description": "描述 (選填)",
+        "spritesheet": "精靈圖",
+        "chooseFile": "選擇檔案",
+        "replaceFile": "替換精靈圖",
+        "saveCreate": "新增寵物",
+        "saveUpdate": "儲存變更",
+        "cancel": "取消"
+      },
+      "errors": {
+        "missingId": "寵物 ID 不能為空",
+        "missingName": "顯示名稱不能為空",
+        "missingSpritesheet": "必須選擇一個精靈圖",
+        "addFailed": "新增寵物失敗",
+        "updateFailed": "更新寵物失敗",
+        "deleteFailed": "刪除寵物失敗",
+        "loadFailed": "載入寵物列表失敗"
+      }
+    },
+    "import": {
+      "title": "從 Codex 匯入",
+      "subtitle": "在 ~/.codex/pets/ 下找到以下可匯入的寵物。",
+      "selectAll": "全選",
+      "alreadyImported": "已匯入",
+      "renameOnConflict": "衝突時自動加上 -imported 後綴",
+      "import": "匯入所選",
+      "noneFound": "未找到可匯入的 Codex 寵物。",
+      "imported": "匯入完成",
+      "failed": "匯入失敗",
+      "close": "關閉"
     }
   }
 }

@@ -54,6 +54,10 @@ export async function installAppUpdate(
   update: NonNullable<Update>,
   onEvent?: (progress: DownloadEvent) => void
 ): Promise<void> {
+  // Web mode: server returns metadata only; downloadAndInstall is unavailable.
+  // The browser-side user can't trigger a server-side install, so the caller
+  // is expected to surface a "view release" affordance instead.
+  if (typeof update?.downloadAndInstall !== "function") return
   await update.downloadAndInstall(onEvent)
 }
 
@@ -65,6 +69,7 @@ export async function relaunchApp(): Promise<void> {
 export async function closeAppUpdate(
   update: NonNullable<Update>
 ): Promise<void> {
+  if (typeof update?.close !== "function") return
   await update.close()
 }
 

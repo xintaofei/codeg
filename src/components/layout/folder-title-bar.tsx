@@ -15,12 +15,14 @@ import {
   MessageSquare,
   PanelLeft,
   PanelRight,
+  PawPrint,
   Search,
   Settings,
   SquareTerminal,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { openSettingsWindow } from "@/lib/api"
+import { getPetSettings, openPetWindow } from "@/lib/pet/api"
 import { useAppWorkspace } from "@/contexts/app-workspace-context"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { isDesktop, openFileDialog } from "@/lib/platform"
@@ -72,6 +74,7 @@ const MODE_TABS = [
 export function FolderTitleBar() {
   const tModes = useTranslations("Folder.modes")
   const tTitleBar = useTranslations("Folder.folderTitleBar")
+  const tPet = useTranslations("Pet")
   const { openFolder } = useAppWorkspace()
   const { activeFolder } = useActiveFolder()
   const { isOpen, toggle } = useSidebarContext()
@@ -83,6 +86,25 @@ export function FolderTitleBar() {
   const { shortcuts } = useShortcutSettings()
   const [searchOpen, setSearchOpen] = useState(false)
   const [browserOpen, setBrowserOpen] = useState(false)
+
+  const handleOpenPet = useCallback(async () => {
+    if (!isDesktop()) return
+    try {
+      const settings = await getPetSettings()
+      if (!settings.activePetId) {
+        await openSettingsWindow("appearance")
+        return
+      }
+      await openPetWindow()
+    } catch {
+      // No active pet or window error — route the user to the manager.
+      try {
+        await openSettingsWindow("appearance")
+      } catch (err) {
+        console.warn("[Pet] open settings failed:", err)
+      }
+    }
+  }, [])
 
   const handleOpenFolder = useCallback(async () => {
     if (isDesktop()) {
@@ -317,6 +339,15 @@ export function FolderTitleBar() {
                   <PanelLeft className="h-3.5 w-3.5" />
                 </Button>
                 <NewFolderDropdown />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 hover:text-foreground/80"
+                  onClick={handleOpenPet}
+                  title={tPet("manager.summon")}
+                >
+                  <PawPrint className="h-3.5 w-3.5" />
+                </Button>
               </div>
               <BranchDropdown />
               <div data-tauri-drag-region className="h-8 flex-1" />

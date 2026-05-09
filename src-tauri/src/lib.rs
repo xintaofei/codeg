@@ -11,6 +11,9 @@ pub mod keyring_store;
 mod models;
 mod network;
 mod parsers;
+pub mod paths;
+pub mod pet_state_mapper;
+pub mod pets;
 #[cfg(feature = "tauri-runtime")]
 pub mod preferences;
 pub mod process;
@@ -35,8 +38,8 @@ mod tauri_app {
     use crate::commands::{
         acp as acp_commands, chat_channel as chat_channel_commands, conversations,
         experts as experts_commands, file_io, folder_commands, folders, mcp as mcp_commands,
-        model_provider as model_provider_commands, notification, project_boot,
-        quick_messages as quick_messages_commands, system_settings,
+        model_provider as model_provider_commands, notification, pet as pet_commands,
+        project_boot, quick_messages as quick_messages_commands, system_settings,
         terminal as terminal_commands, version_control, windows,
         workspace_state as workspace_state_commands,
     };
@@ -186,6 +189,22 @@ mod tauri_app {
                     });
                 }
 
+                // Spawn the desktop pet state mapper: subscribes to ACP events
+                // and emits `pet://state` whenever the aggregated pet state
+                // changes. The renderer in the floating pet window listens
+                // for these events to drive its sprite animation row.
+                {
+                    let broadcaster = app
+                        .state::<std::sync::Arc<web::event_bridge::WebEventBroadcaster>>()
+                        .inner()
+                        .clone();
+                    let emitter = web::event_bridge::EventEmitter::Tauri(app.handle().clone());
+                    tauri::async_runtime::spawn(crate::pet_state_mapper::pet_state_subscriber_task(
+                        broadcaster,
+                        emitter,
+                    ));
+                }
+
                 // Spawn the LifecycleSubscriber: persists cross-connection DB state
                 // (currently `external_id` on conversation rows when SessionStarted fires)
                 // off the emit hot path. `subscribe()` runs synchronously inside
@@ -279,6 +298,36 @@ mod tauri_app {
                     tauri::async_runtime::spawn(async move {
                         windows::cleanup_dangling_merge(&app_clone, &label_clone).await;
                     });
+                }
+
+                if label == "pet"
+                    && matches!(
+                        event,
+                        tauri::WindowEvent::CloseRequested { .. }
+                            | tauri::WindowEvent::Destroyed
+                    )
+                {
+                    // Persist `enabled = false` so the next launch doesn't
+                    // race-open the pet before the user asks for it. We
+                    // intentionally do NOT clear `active_pet_id` — the user
+                    // chose that pet, they want it back next time they open
+                    // the window.
+                    if let Some(db) = window.app_handle().try_state::<db::AppDatabase>() {
+                        let conn = db.conn.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = crate::commands::pet::pet_save_window_state_core(
+                                &conn,
+                                crate::models::pet::PetWindowStatePatch {
+                                    x: None,
+                                    y: None,
+                                    scale: None,
+                                    always_on_top: None,
+                                    enabled: Some(false),
+                                },
+                            )
+                            .await;
+                        });
+                    }
                 }
 
                 if label == "main" && matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
@@ -392,8 +441,24 @@ mod tauri_app {
                 windows::open_stash_window,
                 windows::open_push_window,
                 windows::open_project_boot_window,
+                windows::open_pet_window,
+                windows::close_pet_window,
+                windows::pet_window_record_position,
                 windows::update_traffic_light_position,
                 windows::update_appearance_mode,
+                pet_commands::pet_list,
+                pet_commands::pet_get,
+                pet_commands::pet_read_spritesheet,
+                pet_commands::pet_add,
+                pet_commands::pet_update_meta,
+                pet_commands::pet_replace_sprite,
+                pet_commands::pet_delete,
+                pet_commands::pet_list_importable_codex,
+                pet_commands::pet_import_codex,
+                pet_commands::pet_codex_import_available,
+                pet_commands::pet_get_settings,
+                pet_commands::pet_set_active,
+                pet_commands::pet_save_window_state,
                 project_boot::detect_package_manager,
                 project_boot::create_shadcn_project,
                 system_settings::get_system_proxy_settings,

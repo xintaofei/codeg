@@ -90,9 +90,7 @@
       "placeholder": "Selecciona el nivel de zoom",
       "default": "Predeterminado",
       "current": "Zoom actual: {zoom}%"
-    },
-    "resetToDefaults": "Restablecer valores",
-    "resetHint": "Restablece el color del tema y el zoom de ventana a los valores predeterminados."
+    }
   },
   "SystemSettings": {
     "loading": "Cargando...",
@@ -150,6 +148,7 @@
     "updating": "Instalando...",
     "downloading": "Descargando...",
     "upgradeTo": "Actualizar a v{version}",
+    "viewRelease": "Ver lanzamiento v{version}",
     "foundUpdate": "Nueva versión v{version} encontrada",
     "alreadyLatest": "Ya tienes la versión más reciente",
     "checkUpdateFailed": "No se pudo buscar actualizaciones: {message}",
@@ -1867,8 +1866,8 @@
         "toolGroup": {
           "search": "{count, plural, one {Exploró # búsqueda} other {Exploró # búsquedas}}",
           "command": "{count, plural, one {Ejecutó # comando} other {Ejecutó # comandos}}",
-          "read": "{count, plural, one {Leyó # archivo} other {Leyó # archivos}}",
-          "edit": "{count, plural, one {Editó # archivo} other {Editó # archivos}}",
+          "read": "{count, plural, one {Leyó archivos # vez} other {Leyó archivos # veces}}",
+          "edit": "{count, plural, one {Editó archivos # vez} other {Editó archivos # veces}}",
           "fetch": "{count, plural, one {Recuperó # recurso} other {Recuperó # recursos}}",
           "think": "{count, plural, one {Pensó # vez} other {Pensó # veces}}",
           "todo": "{count, plural, one {Actualizó # tarea} other {Actualizó # tareas}}",
@@ -2240,6 +2239,64 @@
       "created": "Mensaje rápido creado",
       "saved": "Mensaje rápido guardado",
       "deleted": "Mensaje rápido eliminado"
+    }
+  },
+  "Pet": {
+    "menu": {
+      "scale": "Escala",
+      "openManager": "Gestionar mascotas",
+      "close": "Cerrar"
+    },
+    "loadError": "No se pudo cargar la mascota",
+    "missingPetIdParam": "No hay mascota seleccionada",
+    "summonButton": "Mascota",
+    "manager": {
+      "title": "Mascotas",
+      "description": "Compañeros flotantes de escritorio con sprites compatibles con Codex.",
+      "addPet": "Añadir mascota",
+      "importFromCodex": "Importar desde Codex",
+      "noPets": "No hay mascotas. Añade una o impórtala desde Codex.",
+      "setActive": "Activar",
+      "active": "Activa",
+      "edit": "Editar",
+      "delete": "Eliminar",
+      "deleteConfirm": "¿Eliminar esta mascota? Se borrará del disco.",
+      "summon": "Invocar ventana de la mascota",
+      "openCodexHelp": "Las mascotas de Codex deben estar en ~/.codex/pets/. No se encontraron.",
+      "specRequirement": "El sprite debe ser PNG o WebP de 1536x1872 con transparencia.",
+      "form": {
+        "id": "ID de mascota",
+        "idHelp": "Letras minúsculas, dígitos, '-' y '_'. Máx 64 chars.",
+        "displayName": "Nombre",
+        "description": "Descripción (opcional)",
+        "spritesheet": "Sprite",
+        "chooseFile": "Elegir archivo",
+        "replaceFile": "Reemplazar sprite",
+        "saveCreate": "Añadir mascota",
+        "saveUpdate": "Guardar cambios",
+        "cancel": "Cancelar"
+      },
+      "errors": {
+        "missingId": "Se requiere ID de mascota",
+        "missingName": "Se requiere nombre",
+        "missingSpritesheet": "Se requiere sprite",
+        "addFailed": "Error al añadir la mascota",
+        "updateFailed": "Error al actualizar",
+        "deleteFailed": "Error al eliminar",
+        "loadFailed": "Error al cargar mascotas"
+      }
+    },
+    "import": {
+      "title": "Importar desde Codex",
+      "subtitle": "Mascotas disponibles bajo ~/.codex/pets/.",
+      "selectAll": "Seleccionar todo",
+      "alreadyImported": "Ya importada",
+      "renameOnConflict": "Renombrar conflictos con sufijo -imported",
+      "import": "Importar selección",
+      "noneFound": "No hay mascotas Codex importables.",
+      "imported": "Importación correcta",
+      "failed": "Importación fallida",
+      "close": "Cerrar"
     }
   }
 }

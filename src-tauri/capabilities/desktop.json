@@ -12,7 +12,8 @@
     "stash-*",
     "push-*",
     "settings",
-    "project-boot"
+    "project-boot",
+    "pet"
   ],
   "permissions": [
     "window-state:default"

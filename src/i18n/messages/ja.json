@@ -90,9 +90,7 @@
       "placeholder": "ズームレベルを選択",
       "default": "デフォルト",
       "current": "現在のズーム：{zoom}%"
-    },
-    "resetToDefaults": "デフォルトに戻す",
-    "resetHint": "テーマカラーとウィンドウズームをデフォルトに戻します。"
+    }
   },
   "SystemSettings": {
     "loading": "読み込み中...",
@@ -150,6 +148,7 @@
     "updating": "インストール中...",
     "downloading": "ダウンロード中...",
     "upgradeTo": "v{version} にアップグレード",
+    "viewRelease": "v{version} のリリースを表示",
     "foundUpdate": "新しいバージョン v{version} が見つかりました",
     "alreadyLatest": "すでに最新バージョンです",
     "checkUpdateFailed": "更新確認に失敗しました: {message}",
@@ -1867,8 +1866,8 @@
         "toolGroup": {
           "search": "{count} 件を検索",
           "command": "{count} 件のコマンドを実行",
-          "read": "{count} 件のファイルを読み取り",
-          "edit": "{count} 件のファイルを編集",
+          "read": "ファイルを {count} 回読み取り",
+          "edit": "ファイルを {count} 回編集",
           "fetch": "{count} 件のリソースを取得",
           "think": "{count} 回思考",
           "todo": "{count} 件の TODO を更新",
@@ -2240,6 +2239,64 @@
       "created": "クイックメッセージを作成しました",
       "saved": "クイックメッセージを保存しました",
       "deleted": "クイックメッセージを削除しました"
+    }
+  },
+  "Pet": {
+    "menu": {
+      "scale": "拡大率",
+      "openManager": "ペット管理",
+      "close": "閉じる"
+    },
+    "loadError": "ペットの読み込みに失敗",
+    "missingPetIdParam": "ペットが選択されていません",
+    "summonButton": "ペット",
+    "manager": {
+      "title": "デスクトップペット",
+      "description": "Codex 互換のスプライトシートで動く、デスクトップ常駐のお供。",
+      "addPet": "ペットを追加",
+      "importFromCodex": "Codex から取り込む",
+      "noPets": "ペットがありません。追加するか、Codex から取り込んでください。",
+      "setActive": "アクティブにする",
+      "active": "アクティブ",
+      "edit": "編集",
+      "delete": "削除",
+      "deleteConfirm": "このペットを削除しますか?ディスクからも削除されます。",
+      "summon": "ペットウィンドウを呼び出す",
+      "openCodexHelp": "Codex ペットは ~/.codex/pets/ 配下に配置する必要があります。見つかりません。",
+      "specRequirement": "スプライトシートは 1536x1872 ピクセル、透過 PNG / WebP 形式である必要があります。",
+      "form": {
+        "id": "ペット ID",
+        "idHelp": "英小文字、数字、'-'、'_' のみ。最大 64 文字。",
+        "displayName": "表示名",
+        "description": "説明 (任意)",
+        "spritesheet": "スプライトシート",
+        "chooseFile": "ファイルを選択",
+        "replaceFile": "スプライトを差し替え",
+        "saveCreate": "ペットを追加",
+        "saveUpdate": "変更を保存",
+        "cancel": "キャンセル"
+      },
+      "errors": {
+        "missingId": "ペット ID は必須です",
+        "missingName": "表示名は必須です",
+        "missingSpritesheet": "スプライトシートは必須です",
+        "addFailed": "ペットの追加に失敗しました",
+        "updateFailed": "ペットの更新に失敗しました",
+        "deleteFailed": "ペットの削除に失敗しました",
+        "loadFailed": "ペット一覧の取得に失敗しました"
+      }
+    },
+    "import": {
+      "title": "Codex から取り込む",
+      "subtitle": "~/.codex/pets/ 配下に見つかったペット一覧。",
+      "selectAll": "すべて選択",
+      "alreadyImported": "取り込み済み",
+      "renameOnConflict": "ID が重複した場合は -imported を付与",
+      "import": "選択したものを取り込む",
+      "noneFound": "取り込み可能な Codex ペットが見つかりません。",
+      "imported": "取り込みに成功",
+      "failed": "取り込みに失敗",
+      "close": "閉じる"
     }
   }
 }

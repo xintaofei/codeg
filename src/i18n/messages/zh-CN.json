@@ -90,9 +90,7 @@
       "placeholder": "请选择缩放档位",
       "default": "默认",
       "current": "当前缩放：{zoom}%"
-    },
-    "resetToDefaults": "恢复默认",
-    "resetHint": "将主题颜色和窗口缩放恢复到默认值。"
+    }
   },
   "SystemSettings": {
     "loading": "加载中...",
@@ -150,6 +148,7 @@
     "updating": "升级中...",
     "downloading": "下载中...",
     "upgradeTo": "升级到 v{version}",
+    "viewRelease": "查看 v{version} 发布",
     "foundUpdate": "发现新版本 v{version}",
     "alreadyLatest": "当前已经是最新版本",
     "checkUpdateFailed": "检查更新失败：{message}",
@@ -1867,8 +1866,8 @@
         "toolGroup": {
           "search": "搜索 {count} 次",
           "command": "运行 {count} 个命令",
-          "read": "读取 {count} 个文件",
-          "edit": "编辑 {count} 个文件",
+          "read": "读取 {count} 次文件",
+          "edit": "编辑 {count} 次文件",
           "fetch": "抓取 {count} 个资源",
           "think": "思考 {count} 次",
           "todo": "更新 {count} 项待办",
@@ -2240,6 +2239,64 @@
       "created": "已创建快捷消息",
       "saved": "已保存快捷消息",
       "deleted": "已删除快捷消息"
+    }
+  },
+  "Pet": {
+    "menu": {
+      "scale": "缩放",
+      "openManager": "管理宠物",
+      "close": "关闭"
+    },
+    "loadError": "加载宠物失败",
+    "missingPetIdParam": "未选中任何宠物",
+    "summonButton": "宠物",
+    "manager": {
+      "title": "桌面宠物",
+      "description": "悬浮在桌面上的伴侣,使用与 Codex 兼容的精灵图。",
+      "addPet": "添加宠物",
+      "importFromCodex": "从 Codex 导入",
+      "noPets": "暂无宠物。可以添加一只,或从 Codex 导入。",
+      "setActive": "设为活跃",
+      "active": "当前活跃",
+      "edit": "编辑",
+      "delete": "删除",
+      "deleteConfirm": "确认删除此宠物?会从磁盘上一并移除。",
+      "summon": "召唤宠物窗口",
+      "openCodexHelp": "Codex 宠物需位于 ~/.codex/pets/ 目录下,但未找到。",
+      "specRequirement": "精灵图必须是 1536x1872 像素的带透明通道 PNG 或 WebP。",
+      "form": {
+        "id": "宠物 ID",
+        "idHelp": "仅允许小写字母、数字、'-' 和 '_',最多 64 字符。",
+        "displayName": "显示名称",
+        "description": "描述 (可选)",
+        "spritesheet": "精灵图",
+        "chooseFile": "选择文件",
+        "replaceFile": "替换精灵图",
+        "saveCreate": "添加宠物",
+        "saveUpdate": "保存修改",
+        "cancel": "取消"
+      },
+      "errors": {
+        "missingId": "宠物 ID 不能为空",
+        "missingName": "显示名称不能为空",
+        "missingSpritesheet": "必须选择一个精灵图",
+        "addFailed": "添加宠物失败",
+        "updateFailed": "更新宠物失败",
+        "deleteFailed": "删除宠物失败",
+        "loadFailed": "加载宠物列表失败"
+      }
+    },
+    "import": {
+      "title": "从 Codex 导入",
+      "subtitle": "在 ~/.codex/pets/ 下找到以下可导入的宠物。",
+      "selectAll": "全选",
+      "alreadyImported": "已导入",
+      "renameOnConflict": "冲突时自动添加 -imported 后缀",
+      "import": "导入所选",
+      "noneFound": "未找到可导入的 Codex 宠物。",
+      "imported": "导入完成",
+      "failed": "导入失败",
+      "close": "关闭"
     }
   }
 }

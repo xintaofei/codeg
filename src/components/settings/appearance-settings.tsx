@@ -1,9 +1,8 @@
 "use client"
 
-import { Monitor, Moon, RotateCcw, Sun, Type } from "lucide-react"
+import { Monitor, Moon, Sun, Type } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useTheme } from "next-themes"
-import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Select,
@@ -15,7 +14,6 @@ import {
 import { useThemeColor, useZoomLevel } from "@/hooks/use-appearance"
 import { cn } from "@/lib/utils"
 import {
-  DEFAULT_THEME_COLOR,
   DEFAULT_ZOOM_LEVEL,
   THEME_COLOR_PREVIEW,
   THEME_COLORS,
@@ -23,6 +21,7 @@ import {
   type ThemeColor,
   type ZoomLevel,
 } from "@/lib/theme-presets"
+import { PetManagerSection } from "./pet-manager-section"
 
 type ThemeMode = "system" | "light" | "dark"
 
@@ -39,18 +38,10 @@ export function AppearanceSettings() {
         ? t("resolvedTheme.light")
         : t("resolvedTheme.unknown")
 
-  const isAtDefaults =
-    themeColor === DEFAULT_THEME_COLOR && zoomLevel === DEFAULT_ZOOM_LEVEL
-
-  const handleResetToDefaults = () => {
-    setThemeColor(DEFAULT_THEME_COLOR)
-    setZoomLevel(DEFAULT_ZOOM_LEVEL)
-  }
-
   return (
     <ScrollArea className="h-full">
       <div className="w-full space-y-4 p-3 md:p-4">
-        {/* ===== Theme Mode (existing) ===== */}
+        {/* ===== Theme Mode ===== */}
         <section className="rounded-xl border bg-card p-4 space-y-4">
           <div className="flex items-center gap-2">
             <Sun className="h-4 w-4 text-muted-foreground" />
@@ -69,7 +60,6 @@ export function AppearanceSettings() {
               value={theme ?? "system"}
               onValueChange={(value) => {
                 setTheme(value as ThemeMode)
-                // Persist to Tauri DB so native window background matches on next open
                 if (
                   typeof window !== "undefined" &&
                   "__TAURI_INTERNALS__" in window
@@ -113,7 +103,7 @@ export function AppearanceSettings() {
           </div>
         </section>
 
-        {/* ===== Theme Color (new) ===== */}
+        {/* ===== Theme Color ===== */}
         <section className="rounded-xl border bg-card p-4 space-y-4">
           <div className="flex items-center gap-2">
             <span
@@ -165,7 +155,7 @@ export function AppearanceSettings() {
           </p>
         </section>
 
-        {/* ===== Zoom Level (new) ===== */}
+        {/* ===== Zoom Level ===== */}
         <section className="rounded-xl border bg-card p-4 space-y-4">
           <div className="flex items-center gap-2">
             <Type className="h-4 w-4 text-muted-foreground" />
@@ -205,19 +195,8 @@ export function AppearanceSettings() {
           </div>
         </section>
 
-        {/* ===== Reset to defaults (new) ===== */}
-        <div className="flex justify-end">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={isAtDefaults}
-            onClick={handleResetToDefaults}
-            title={t("resetHint")}
-          >
-            <RotateCcw className="mr-2 h-3.5 w-3.5" />
-            {t("resetToDefaults")}
-          </Button>
-        </div>
+        {/* ===== Desktop Pet ===== */}
+        <PetManagerSection />
       </div>
     </ScrollArea>
   )
