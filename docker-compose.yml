@@ -2,18 +2,27 @@ services:
   codeg:
     build: .
     # Or use a pre-built image:
-    # image: xintaofei/codeg:latest
+    # image: xintaofei/codeg:latest 
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
     ports:
       - "3080:3080"
     volumes:
-      - codeg-data:/data
+      - ./data/cache:/root/.cache
+      - ./data/config:/root/.config
+      - ./data/local:/root/.local
+      - ./data/gitconfig:/root/.gitconfig
+      - ./data/ssh:/root/.ssh
+      - ./data/codex:/root/.codex
+      - ./data/codeg:/root/.codeg
       # Mount your project directories (optional):
       # - /path/to/projects:/projects
     environment:
       - CODEG_TOKEN=${CODEG_TOKEN:-}
+      - CODEG_DATA_DIR=/root/.local/share/codeg
       - CODEG_PORT=3080
       - CODEG_HOST=0.0.0.0
     restart: unless-stopped
-
-volumes:
-  codeg-data:
