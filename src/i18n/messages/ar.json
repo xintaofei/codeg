@@ -1427,6 +1427,7 @@
       "newDirectory": "مجلد",
       "openIn": "فتح في",
       "openInTerminal": "فتح في الطرفية",
+      "openInVsCode": "فتح في VS Code",
       "actions": {
         "select": "تحديد",
         "unselect": "إلغاء التحديد",

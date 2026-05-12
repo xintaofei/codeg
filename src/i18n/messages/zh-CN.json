@@ -1427,6 +1427,7 @@
       "newDirectory": "目录",
       "openIn": "打开于",
       "openInTerminal": "在终端打开",
+      "openInVsCode": "在VS Code中打开",
       "actions": {
         "select": "选择",
         "unselect": "取消选择",

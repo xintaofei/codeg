@@ -1427,6 +1427,7 @@
       "newDirectory": "目錄",
       "openIn": "開啟於",
       "openInTerminal": "在終端開啟",
+      "openInVsCode": "在VS Code中開啟",
       "actions": {
         "select": "選擇",
         "unselect": "取消選擇",

@@ -1427,6 +1427,7 @@
       "newDirectory": "디렉터리",
       "openIn": "열기",
       "openInTerminal": "터미널에서 열기",
+      "openInVsCode": "VS Code 에서 열기",
       "actions": {
         "select": "선택",
         "unselect": "선택 해제",

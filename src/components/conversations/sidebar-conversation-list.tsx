@@ -36,6 +36,7 @@ import { useTerminalContext } from "@/contexts/terminal-context"
 import { useZoomLevel } from "@/hooks/use-appearance"
 import {
   importLocalConversations,
+  openInVsCode,
   openProjectBootWindow,
   updateConversationTitle,
   updateConversationStatus,
@@ -172,6 +173,7 @@ const FolderHeader = memo(function FolderHeader({
   onChangeColor,
   onOpenInSystemExplorer,
   onOpenInTerminal,
+  onOpenInVsCode,
   isDragging,
   dragControls,
   t,
@@ -191,6 +193,7 @@ const FolderHeader = memo(function FolderHeader({
   onChangeColor: (folderId: number, color: string) => void
   onOpenInSystemExplorer: (folderId: number) => void
   onOpenInTerminal: (folderId: number) => void
+  onOpenInVsCode: (folderId: number) => void
   isDragging?: boolean
   dragControls: DragControls
   t: ReturnType<typeof useTranslations>
@@ -329,6 +332,12 @@ const FolderHeader = memo(function FolderHeader({
             <ContextMenuItem onSelect={() => onOpenInTerminal(folderId)}>
               {tFileTree("openInTerminal")}
             </ContextMenuItem>
+            <ContextMenuItem
+              disabled={!isDesktopMode}
+              onSelect={() => onOpenInVsCode(folderId)}
+            >
+              {tFileTree("openInVsCode")}
+            </ContextMenuItem>
           </ContextMenuSubContent>
         </ContextMenuSub>
         <ContextMenuSeparator />
@@ -400,6 +409,7 @@ interface FolderGroupItemProps {
   onChangeColor: (folderId: number, color: string) => void
   onOpenInSystemExplorer: (folderId: number) => void
   onOpenInTerminal: (folderId: number) => void
+  onOpenInVsCode: (folderId: number) => void
   onSelect: (id: number, agentType: string) => void
   onDoubleClick: (id: number, agentType: string) => void
   onRename: (id: number, newTitle: string) => Promise<void>
@@ -436,6 +446,7 @@ function FolderGroupItem({
   onChangeColor,
   onOpenInSystemExplorer,
   onOpenInTerminal,
+  onOpenInVsCode,
   onSelect,
   onDoubleClick,
   onRename,
@@ -512,6 +523,7 @@ function FolderGroupItem({
             onChangeColor={onChangeColor}
             onOpenInSystemExplorer={onOpenInSystemExplorer}
             onOpenInTerminal={onOpenInTerminal}
+            onOpenInVsCode={onOpenInVsCode}
             isDragging={dragging}
             dragControls={dragControls}
             t={t}
@@ -692,6 +704,18 @@ export function SidebarConversationList({
       }
     },
     [folderIndex, createTerminalInDirectory, tFileTree]
+  )
+
+  const handleOpenFolderInVsCode = useCallback(
+    (folderId: number) => {
+      const folder = folderIndex.get(folderId)
+      if (!folder) return
+      void openInVsCode(folder.path).catch((err) => {
+        console.error("[openInVsCode] failed:", err)
+        toast.error(tFileTree("toasts.openDirectoryFailed"))
+      })
+    },
+    [folderIndex, tFileTree]
   )
 
   const scrollRootRef = useRef<OverlayScrollbarsComponentRef>(null)
@@ -1166,6 +1190,7 @@ export function SidebarConversationList({
                           handleOpenFolderInSystemExplorer
                         }
                         onOpenInTerminal={handleOpenFolderInTerminal}
+                        onOpenInVsCode={handleOpenFolderInVsCode}
                         onSelect={handleSelect}
                         onDoubleClick={handleDoubleClick}
                         onRename={handleRename}
