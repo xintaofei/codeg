@@ -158,10 +158,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
 
               <span
                 className={cn(
-                  "relative min-w-0 flex-1 truncate text-[0.875rem]",
-                  isSelected
-                    ? "font-semibold tracking-[-0.00625rem]"
-                    : "font-normal",
+                  "relative min-w-0 flex-1 truncate text-[0.875rem] font-normal",
                   isOpenInTab && "text-primary"
                 )}
               >
