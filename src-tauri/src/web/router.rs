@@ -490,6 +490,10 @@ pub fn build_router(
             post(handlers::acp::acp_prepare_npx_agent),
         )
         .route(
+            "/acp_prepare_local_agent",
+            post(handlers::acp::acp_prepare_local_agent),
+        )
+        .route(
             "/acp_uninstall_agent",
             post(handlers::acp::acp_uninstall_agent),
         )

@@ -30,6 +30,8 @@ const NPM_PREFIX_TIMEOUT: Duration = Duration::from_millis(1500);
 
 static NPM_GLOBAL_PREFIX_CACHE: tokio::sync::OnceCell<PathBuf> = tokio::sync::OnceCell::const_new();
 
+const GROK_CLI_BASE_URL: &str = "https://storage.googleapis.com/grok-build-public-artifacts/cli";
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "snake_case")]
 struct AcpAgentsUpdatedEventPayload {
@@ -140,6 +142,21 @@ pub(crate) async fn resolve_npx_command(cmd: &str) -> Option<PathBuf> {
         return Some(path);
     }
     resolve_npx_command_from_current_npm_prefix(cmd).await
+}
+
+pub(crate) fn resolve_local_command(cmd: &str) -> Option<PathBuf> {
+    if let Some(path) = resolve_command_on_path(cmd) {
+        return Some(path);
+    }
+
+    let home = dirs::home_dir()?;
+    let candidates = [
+        home.join(".local").join("bin").join(cmd),
+        home.join(".grok").join("bin").join(cmd),
+    ];
+    candidates
+        .into_iter()
+        .find(|path| is_executable_command_candidate(path))
 }
 
 #[derive(Default)]
@@ -256,6 +273,16 @@ fn is_npm_command_candidate(path: &Path) -> bool {
 
 #[cfg(not(windows))]
 fn is_npm_command_candidate(path: &Path) -> bool {
+    is_executable_command_candidate(path)
+}
+
+#[cfg(windows)]
+fn is_executable_command_candidate(path: &Path) -> bool {
+    path.is_file()
+}
+
+#[cfg(not(windows))]
+fn is_executable_command_candidate(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
 
     path.is_file()
@@ -278,6 +305,15 @@ fn is_npm_command_candidate(path: &Path) -> bool {
 pub(crate) async fn verify_agent_installed(agent_type: AgentType) -> Result<(), AcpError> {
     let meta = registry::get_agent_meta(agent_type);
     match meta.distribution {
+        registry::AgentDistribution::LocalCommand { cmd, .. } => {
+            if resolve_local_command(cmd).is_none() {
+                return Err(AcpError::SdkNotInstalled(format!(
+                    "{} is not installed. Please install it in Agent Settings.",
+                    meta.name
+                )));
+            }
+            Ok(())
+        }
         registry::AgentDistribution::Npx { cmd, .. } => {
             if !is_cmd_available(cmd).await {
                 // INVARIANT: the substring "is not installed" is matched
@@ -369,6 +405,25 @@ async fn npm_list_version(
 async fn detect_local_version(agent_type: AgentType) -> Option<String> {
     let meta = registry::get_agent_meta(agent_type);
     match meta.distribution {
+        registry::AgentDistribution::LocalCommand {
+            cmd, version_args, ..
+        } => {
+            let command_path = resolve_local_command(cmd)?;
+            let mut command = crate::process::tokio_command(command_path);
+            for arg in version_args {
+                command.arg(arg);
+            }
+            let output = command.output().await.ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            stdout
+                .split_whitespace()
+                .chain(stderr.split_whitespace())
+                .find_map(normalize_version_candidate)
+        }
         registry::AgentDistribution::Npx { cmd, package, .. } => {
             if !is_cmd_available(cmd).await {
                 return None;
@@ -383,6 +438,46 @@ async fn detect_local_version(agent_type: AgentType) -> Option<String> {
                 .flatten()
         }
     }
+}
+
+async fn detect_registry_version(agent_type: AgentType) -> Option<String> {
+    let meta = registry::get_agent_meta(agent_type);
+    match meta.distribution {
+        registry::AgentDistribution::LocalCommand { cmd, .. } if agent_type == AgentType::Grok => {
+            if let Some(command_path) = resolve_local_command(cmd) {
+                let output = crate::process::tokio_command(command_path)
+                    .arg("update")
+                    .arg("--check")
+                    .arg("--json")
+                    .output()
+                    .await
+                    .ok()?;
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let json: serde_json::Value = serde_json::from_str(&stdout).ok()?;
+                    if let Some(version) = json
+                        .get("latestVersion")
+                        .and_then(|value| value.as_str())
+                        .and_then(normalize_version_candidate)
+                    {
+                        return Some(version);
+                    }
+                }
+            }
+            fetch_grok_channel_version("stable").await
+        }
+        _ => meta.registry_version().map(ToString::to_string),
+    }
+}
+
+async fn fetch_grok_channel_version(channel: &str) -> Option<String> {
+    let url = format!("{GROK_CLI_BASE_URL}/{channel}");
+    let resp = reqwest::get(url).await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body = resp.text().await.ok()?;
+    normalize_version_candidate(body.trim())
 }
 
 /// Official npm registry URL – used to bypass local mirror configurations that
@@ -455,6 +550,73 @@ async fn run_npm_streaming(
         .wait()
         .await
         .map_err(|e| AcpError::protocol(format!("failed to wait for npm process: {e}")))?;
+
+    Ok((status.success(), collected_stderr))
+}
+
+async fn run_shell_streaming(
+    command: &str,
+    task_id: &str,
+    emitter: &EventEmitter,
+) -> Result<(bool, String), AcpError> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let mut cmd = crate::process::tokio_command("bash");
+    cmd.arg("-lc")
+        .arg(command)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| AcpError::protocol(format!("failed to spawn shell command: {e}")))?;
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let emitter_clone = emitter.clone();
+    let task_id_owned = task_id.to_string();
+
+    let stdout_handle = tokio::spawn({
+        let emitter = emitter_clone.clone();
+        let task_id = task_id_owned.clone();
+        async move {
+            if let Some(out) = stdout {
+                let reader = BufReader::new(out);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    emit_agent_install_event(&emitter, &task_id, AgentInstallEventKind::Log, &line);
+                }
+            }
+        }
+    });
+
+    let stderr_handle = tokio::spawn({
+        let emitter = emitter_clone;
+        let task_id = task_id_owned;
+        async move {
+            let mut collected = String::new();
+            if let Some(err) = stderr {
+                let reader = BufReader::new(err);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    emit_agent_install_event(&emitter, &task_id, AgentInstallEventKind::Log, &line);
+                    if !collected.is_empty() {
+                        collected.push('\n');
+                    }
+                    collected.push_str(&line);
+                }
+            }
+            collected
+        }
+    });
+
+    let (_, stderr_result) = tokio::join!(stdout_handle, stderr_handle);
+    let collected_stderr = stderr_result.unwrap_or_default();
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| AcpError::protocol(format!("failed to wait for shell command: {e}")))?;
 
     Ok((status.success(), collected_stderr))
 }
@@ -716,6 +878,151 @@ async fn uninstall_npm_from_user_prefix(package_name: &str) -> Result<(), AcpErr
     }
 
     Ok(())
+}
+
+const GROK_INSTALL_COMMAND: &str = "curl -fsSL https://x.ai/cli/install.sh | bash";
+
+async fn prepare_local_command_agent(
+    agent_type: AgentType,
+    cmd: &str,
+    force_reinstall: bool,
+    task_id: &str,
+    emitter: &EventEmitter,
+) -> Result<String, AcpError> {
+    if agent_type != AgentType::Grok {
+        return Err(AcpError::protocol(format!(
+            "local install is not supported for {}",
+            registry::get_agent_meta(agent_type).name
+        )));
+    }
+
+    if resolve_local_command(cmd).is_some() {
+        let update_command = if force_reinstall {
+            "grok update --force-reinstall"
+        } else {
+            "grok update"
+        };
+        emit_agent_install_event(
+            emitter,
+            task_id,
+            AgentInstallEventKind::Log,
+            format!("$ {update_command}"),
+        );
+        let (success, stderr) = run_shell_streaming(update_command, task_id, emitter).await?;
+        if !success {
+            let err = stderr.trim();
+            return Err(AcpError::protocol(if err.is_empty() {
+                "failed to update Grok CLI".to_string()
+            } else {
+                format!("failed to update Grok CLI: {err}")
+            }));
+        }
+    } else {
+        emit_agent_install_event(
+            emitter,
+            task_id,
+            AgentInstallEventKind::Log,
+            format!("$ {GROK_INSTALL_COMMAND}"),
+        );
+        let (success, stderr) = run_shell_streaming(GROK_INSTALL_COMMAND, task_id, emitter).await?;
+        if !success {
+            let err = stderr.trim();
+            return Err(AcpError::protocol(if err.is_empty() {
+                "failed to install Grok CLI".to_string()
+            } else {
+                format!("failed to install Grok CLI: {err}")
+            }));
+        }
+    }
+
+    detect_local_version(agent_type)
+        .await
+        .ok_or_else(|| AcpError::protocol("Grok CLI installed but version could not be detected"))
+}
+
+fn remove_local_command_agent(agent_type: AgentType, cmd: &str) -> Result<(), AcpError> {
+    if agent_type != AgentType::Grok {
+        return Err(AcpError::protocol(format!(
+            "local uninstall is not supported for {}",
+            registry::get_agent_meta(agent_type).name
+        )));
+    }
+
+    let home =
+        dirs::home_dir().ok_or_else(|| AcpError::protocol("failed to determine home directory"))?;
+    let grok_bin = home.join(".grok").join("bin");
+    let grok_downloads = home.join(".grok").join("downloads");
+    let local_bin = home.join(".local").join("bin");
+    let candidates = [
+        grok_bin.join(cmd),
+        grok_bin.join("agent"),
+        local_bin.join(cmd),
+        local_bin.join("agent"),
+        PathBuf::from("/usr/local/bin").join(cmd),
+        PathBuf::from("/usr/local/bin").join("agent"),
+    ];
+    let mut removed_any = false;
+    for path in candidates {
+        if is_grok_installer_link(&path, &grok_bin)? {
+            fs::remove_file(&path).map_err(|e| {
+                AcpError::protocol(format!("failed to remove {}: {e}", path.display()))
+            })?;
+            removed_any = true;
+        }
+    }
+
+    if grok_downloads.exists() {
+        for entry in fs::read_dir(&grok_downloads).map_err(|e| {
+            AcpError::protocol(format!("failed to read {}: {e}", grok_downloads.display()))
+        })? {
+            let path = entry
+                .map_err(|e| AcpError::protocol(format!("failed to read Grok download: {e}")))?
+                .path();
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if file_name.starts_with("grok-") {
+                fs::remove_file(&path).map_err(|e| {
+                    AcpError::protocol(format!("failed to remove {}: {e}", path.display()))
+                })?;
+                removed_any = true;
+            }
+        }
+    }
+
+    if !removed_any && resolve_local_command(cmd).is_some() {
+        return Err(AcpError::protocol(format!(
+            "{cmd} is installed outside the managed Grok CLI paths; remove it manually"
+        )));
+    }
+
+    Ok(())
+}
+
+fn is_grok_installer_link(path: &Path, grok_bin: &Path) -> Result<bool, AcpError> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    if path.starts_with(grok_bin) {
+        return Ok(true);
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|e| {
+        AcpError::protocol(format!("failed to inspect {}: {e}", path.display()))
+    })?;
+    if !metadata.file_type().is_symlink() {
+        return Ok(false);
+    }
+    let target = fs::read_link(path).map_err(|e| {
+        AcpError::protocol(format!("failed to inspect {}: {e}", path.display()))
+    })?;
+    let absolute_target = if target.is_absolute() {
+        target
+    } else {
+        path.parent()
+            .map(|parent| parent.join(&target))
+            .unwrap_or(target)
+    };
+    Ok(absolute_target.starts_with(grok_bin))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1579,6 +1886,14 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
                 ".claude/skills",
             ],
         }),
+        AgentType::Grok => Some(SkillStorageSpec {
+            kind: SkillStorageKind::SkillDirectoryOnly,
+            global_dirs: vec![
+                home_dir_or_default().join(".grok").join("skills"),
+                home_dir_or_default().join(".agents").join("skills"),
+            ],
+            project_rel_dirs: vec![".grok/skills", ".agents/skills"],
+        }),
     }
 }
 
@@ -2069,7 +2384,7 @@ fn cascade_update_agent_config(
                 serde_json::to_string(&patch).map_err(|e| AcpError::protocol(e.to_string()))?;
             persist_agent_local_config_json(agent_type, Some(&patch_str))?;
         }
-        AgentType::Cline => {}
+        AgentType::Cline | AgentType::Grok => {}
     }
     Ok(())
 }
@@ -2366,6 +2681,15 @@ pub(crate) async fn acp_get_agent_status_core(
         .map_err(|e| AcpError::protocol(e.to_string()))?;
 
     let (available, installed_version) = match &meta.distribution {
+        registry::AgentDistribution::LocalCommand { cmd, .. } => {
+            let available = resolve_local_command(cmd).is_some();
+            let detected = if available {
+                detect_local_version(agent_type).await
+            } else {
+                None
+            };
+            (available, detected)
+        }
         registry::AgentDistribution::Npx { cmd, .. } => (
             true,
             resolve_npx_command(cmd)
@@ -2426,6 +2750,15 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
         let setting = settings_map.get(&agent_type);
         let meta = registry::get_agent_meta(agent_type);
         let (available, dist_type, local_installed_version) = match &meta.distribution {
+            registry::AgentDistribution::LocalCommand { cmd, .. } => {
+                let available = resolve_local_command(cmd).is_some();
+                let detected = if available {
+                    detect_local_version(agent_type).await
+                } else {
+                    None
+                };
+                (available, "local", detected)
+            }
             registry::AgentDistribution::Npx { cmd, .. } => {
                 // Keep the list path bounded: each list request probes npm
                 // global prefix at most once, then reuses the result across
@@ -2477,8 +2810,9 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
             }
         }
         let sort_order = setting.map(|m| m.sort_order).unwrap_or(idx as i32);
-        // Persist detected version to DB for binary agents (npx written during install/upgrade)
-        if dist_type == "binary" {
+        let registry_version = detect_registry_version(agent_type).await;
+        // Persist detected version to DB for binary/local agents (npx written during install/upgrade)
+        if dist_type == "binary" || dist_type == "local" {
             let _ = agent_setting_service::set_installed_version(
                 &db.conn,
                 agent_type,
@@ -2510,7 +2844,7 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
         agents.push(AcpAgentInfo {
             agent_type,
             registry_id: registry::registry_id_for(agent_type).to_string(),
-            registry_version: meta.registry_version().map(ToString::to_string),
+            registry_version,
             name: meta.name.to_string(),
             description: meta.description.to_string(),
             available,
@@ -2892,7 +3226,8 @@ pub(crate) async fn acp_download_agent_binary_core(
             emit_acp_agents_updated(emitter, "binary_downloaded", Some(agent_type));
             Ok(())
         }
-        registry::AgentDistribution::Npx { .. } => Err(AcpError::protocol(
+        registry::AgentDistribution::Npx { .. }
+        | registry::AgentDistribution::LocalCommand { .. } => Err(AcpError::protocol(
             "download is only supported for binary agents",
         )),
     };
@@ -3049,7 +3384,8 @@ pub(crate) async fn acp_prepare_npx_agent_core(
             emit_acp_agents_updated(emitter, "npx_prepared", Some(agent_type));
             Ok(resolved)
         }
-        registry::AgentDistribution::Binary { .. } => Err(AcpError::protocol(
+        registry::AgentDistribution::Binary { .. }
+        | registry::AgentDistribution::LocalCommand { .. } => Err(AcpError::protocol(
             "prepare is only supported for npx agents",
         )),
     };
@@ -3114,6 +3450,95 @@ pub async fn acp_prepare_npx_agent(
     .await
 }
 
+pub(crate) async fn acp_prepare_local_agent_core(
+    agent_type: AgentType,
+    force_reinstall: bool,
+    task_id: String,
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+) -> Result<String, AcpError> {
+    emit_agent_install_event(emitter, &task_id, AgentInstallEventKind::Started, "");
+
+    let meta = registry::get_agent_meta(agent_type);
+    let result = match meta.distribution {
+        registry::AgentDistribution::LocalCommand { cmd, .. } => {
+            let default = agent_setting_service::AgentDefaultInput {
+                agent_type,
+                registry_id: registry::registry_id_for(agent_type).to_string(),
+                default_sort_order: i32::MAX / 2,
+            };
+            agent_setting_service::ensure_defaults(&db.conn, &[default])
+                .await
+                .map_err(|e| AcpError::protocol(e.to_string()))?;
+
+            emit_agent_install_event(
+                emitter,
+                &task_id,
+                AgentInstallEventKind::Log,
+                format!("Preparing {} local CLI...", meta.name),
+            );
+            let resolved =
+                prepare_local_command_agent(agent_type, cmd, force_reinstall, &task_id, emitter)
+                    .await?;
+
+            agent_setting_service::set_installed_version(
+                &db.conn,
+                agent_type,
+                Some(resolved.clone()),
+            )
+            .await
+            .map_err(|e| AcpError::protocol(e.to_string()))?;
+            emit_acp_agents_updated(emitter, "local_prepared", Some(agent_type));
+            Ok(resolved)
+        }
+        registry::AgentDistribution::Npx { .. } | registry::AgentDistribution::Binary { .. } => {
+            Err(AcpError::protocol(
+                "prepare local is only supported for local command agents",
+            ))
+        }
+    };
+
+    match &result {
+        Ok(version) => {
+            emit_agent_install_event(
+                emitter,
+                &task_id,
+                AgentInstallEventKind::Completed,
+                format!("{} v{version} is ready", meta.name),
+            );
+        }
+        Err(e) => {
+            emit_agent_install_event(
+                emitter,
+                &task_id,
+                AgentInstallEventKind::Failed,
+                e.to_string(),
+            );
+        }
+    }
+    result
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_prepare_local_agent(
+    agent_type: AgentType,
+    force_reinstall: Option<bool>,
+    task_id: String,
+    db: State<'_, AppDatabase>,
+    app: tauri::AppHandle,
+) -> Result<String, AcpError> {
+    let emitter = EventEmitter::Tauri(app);
+    acp_prepare_local_agent_core(
+        agent_type,
+        force_reinstall.unwrap_or(false),
+        task_id,
+        &db,
+        &emitter,
+    )
+    .await
+}
+
 pub(crate) async fn acp_uninstall_agent_core(
     agent_type: AgentType,
     task_id: String,
@@ -3137,6 +3562,9 @@ pub(crate) async fn acp_uninstall_agent_core(
             }
             registry::AgentDistribution::Npx { package, .. } => {
                 uninstall_npm_global_package(package).await?;
+            }
+            registry::AgentDistribution::LocalCommand { cmd, .. } => {
+                remove_local_command_agent(agent_type, cmd)?;
             }
         }
 

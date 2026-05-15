@@ -171,6 +171,36 @@ async fn build_agent(
     debug_assert_eq!(meta.agent_type, agent_type);
 
     match meta.distribution {
+        AgentDistribution::LocalCommand { cmd, args, env, .. } => {
+            let merged_env = merge_agent_env(env, runtime_env);
+            let mut parts: Vec<String> = Vec::new();
+            for (k, v) in &merged_env {
+                parts.push(format!("{k}={v}"));
+            }
+            parts.push(
+                crate::commands::acp::resolve_local_command(cmd)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| {
+                        crate::process::normalized_program(cmd)
+                            .to_string_lossy()
+                            .to_string()
+                    }),
+            );
+            for a in args {
+                parts.push((*a).into());
+            }
+            let refs: Vec<&str> = parts.iter().map(|s| s.as_str()).collect();
+            let agent_name = meta.name.to_string();
+            AcpAgent::from_args(&refs)
+                .map(|a| {
+                    a.with_debug(move |line, dir| {
+                        if dir == sacp_tokio::LineDirection::Stderr {
+                            eprintln!("[ACP][{agent_name}][stderr] {line}");
+                        }
+                    })
+                })
+                .map_err(|e| AcpError::SpawnFailed(e.to_string()))
+        }
         AgentDistribution::Npx { cmd, args, env, .. } => {
             let merged_env = merge_agent_env(env, runtime_env);
             let mut parts: Vec<String> = Vec::new();

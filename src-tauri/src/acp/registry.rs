@@ -2,6 +2,12 @@ use crate::models::agent::AgentType;
 
 #[derive(Debug, Clone)]
 pub enum AgentDistribution {
+    LocalCommand {
+        cmd: &'static str,
+        args: &'static [&'static str],
+        env: &'static [(&'static str, &'static str)],
+        version_args: &'static [&'static str],
+    },
     Npx {
         version: &'static str,
         package: &'static str,
@@ -38,9 +44,9 @@ pub struct AcpAgentMeta {
 impl AcpAgentMeta {
     pub fn registry_version(&self) -> Option<&'static str> {
         match &self.distribution {
-            AgentDistribution::Npx { version, .. } | AgentDistribution::Binary { version, .. } => {
-                Some(*version)
-            }
+            AgentDistribution::Npx { version, .. }
+            | AgentDistribution::Binary { version, .. } => Some(*version),
+            AgentDistribution::LocalCommand { .. } => None,
         }
     }
 }
@@ -80,6 +86,7 @@ pub fn all_acp_agents() -> Vec<AgentType> {
         AgentType::OpenClaw,
         AgentType::OpenCode,
         AgentType::Cline,
+        AgentType::Grok,
     ]
 }
 
@@ -91,6 +98,7 @@ pub fn registry_id_for(agent_type: AgentType) -> &'static str {
         AgentType::OpenClaw => "openclaw-acp",
         AgentType::OpenCode => "opencode",
         AgentType::Cline => "cline",
+        AgentType::Grok => "grok",
     }
 }
 
@@ -102,6 +110,7 @@ pub fn from_registry_id(id: &str) -> Option<AgentType> {
         "openclaw-acp" => Some(AgentType::OpenClaw),
         "opencode" => Some(AgentType::OpenCode),
         "cline" => Some(AgentType::Cline),
+        "grok" => Some(AgentType::Grok),
         _ => None,
     }
 }
@@ -238,5 +247,41 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                 ],
             },
         },
+        AgentType::Grok => AcpAgentMeta {
+            agent_type,
+            name: "Grok",
+            description: "xAI's coding agent CLI",
+            distribution: AgentDistribution::LocalCommand {
+                cmd: "grok",
+                args: &["agent", "stdio"],
+                env: &[],
+                version_args: &["version"],
+            },
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grok_is_registered_as_local_stdio_agent() {
+        assert!(all_acp_agents().contains(&AgentType::Grok));
+        assert_eq!(registry_id_for(AgentType::Grok), "grok");
+        assert_eq!(from_registry_id("grok"), Some(AgentType::Grok));
+
+        let meta = get_agent_meta(AgentType::Grok);
+        assert_eq!(meta.name, "Grok");
+        assert_eq!(meta.registry_version(), None);
+
+        match meta.distribution {
+            AgentDistribution::LocalCommand { cmd, args, env, .. } => {
+                assert_eq!(cmd, "grok");
+                assert_eq!(args, &["agent", "stdio"]);
+                assert!(env.is_empty());
+            }
+            other => panic!("expected local command distribution, got {other:?}"),
+        }
     }
 }

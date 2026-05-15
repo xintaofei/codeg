@@ -173,6 +173,11 @@ pub async fn get_conversation(
             AgentType::Gemini => Box::new(GeminiParser::new()),
             AgentType::OpenClaw => Box::new(OpenClawParser::new()),
             AgentType::Cline => Box::new(ClineParser::new()),
+            AgentType::Grok => {
+                return Err(AppCommandError::invalid_input(
+                    "Grok transcript import is not supported yet",
+                ))
+            }
         };
 
         parser
@@ -288,6 +293,14 @@ pub async fn get_folder_conversation_core(
         .await
         .map_err(AppCommandError::from)?;
 
+    if summary.agent_type == AgentType::Grok {
+        return Ok(DbConversationDetail {
+            summary,
+            turns: vec![],
+            session_stats: None,
+        });
+    }
+
     let (turns, session_stats, resolved_ext_id) = if let Some(ref ext_id) = summary.external_id {
         let at = summary.agent_type;
         let eid = ext_id.clone();
@@ -307,6 +320,11 @@ pub async fn get_folder_conversation_core(
                 AgentType::Gemini => Box::new(GeminiParser::new()),
                 AgentType::OpenClaw => Box::new(OpenClawParser::new()),
                 AgentType::Cline => Box::new(ClineParser::new()),
+                AgentType::Grok => {
+                    return Err(AppCommandError::invalid_input(
+                        "Grok transcript import is not supported yet",
+                    ))
+                }
             };
             match parser.get_conversation(&eid) {
                 Ok(d) => Ok((d.turns, d.session_stats, None)),

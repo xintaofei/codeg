@@ -71,6 +71,7 @@ import {
   acpDownloadAgentBinary,
   acpListAgents,
   acpPreflight,
+  acpPrepareLocalAgent,
   acpPrepareNpxAgent,
   acpReorderAgents,
   acpUninstallAgent,
@@ -149,8 +150,11 @@ type RunningActionKind =
   | "upgrade_binary"
   | "install_npx"
   | "upgrade_npx"
+  | "install_local"
+  | "upgrade_local"
   | "uninstall_binary"
   | "uninstall_npx"
+  | "uninstall_local"
   | "redownload_binary"
 
 type UiFixAction =
@@ -162,8 +166,11 @@ type UiFixAction =
         | "upgrade_binary"
         | "install_npx"
         | "upgrade_npx"
+        | "install_local"
+        | "upgrade_local"
         | "uninstall_binary"
         | "uninstall_npx"
+        | "uninstall_local"
         | "install_opencode_plugins"
       payload: string
     }
@@ -2429,6 +2436,157 @@ function hasComparableVersion(
 }
 
 function buildVersionCheck(agent: AcpAgentInfo): UiCheckItem | null {
+  if (agent.distribution_type === "local") {
+    const remoteVersion = agent.registry_version ?? "unknown"
+    const localVersion =
+      agent.installed_version ??
+      acpText("version.notInstalled", "Not installed")
+    const versionText = acpText(
+      "version.remoteLocal",
+      "Remote: {remoteVersion} · Local: {localVersion}",
+      { remoteVersion, localVersion }
+    )
+
+    if (!agent.available) {
+      return {
+        check_id: "version_status",
+        label: acpText("version.statusLabel", "Version Status"),
+        status: "fail",
+        message: acpText(
+          "version.localCommandUnavailable",
+          "{versionText}. Local CLI command is not available.",
+          { versionText }
+        ),
+        fixes: [
+          {
+            label: acpText("actions.install", "Install"),
+            kind: "install_local",
+            payload: agent.agent_type,
+          },
+        ],
+      }
+    }
+
+    if (!agent.installed_version) {
+      return {
+        check_id: "version_status",
+        label: acpText("version.statusLabel", "Version Status"),
+        status: "fail",
+        message: acpText(
+          "version.clickInstall",
+          "{versionText}. Click Install on the right.",
+          { versionText }
+        ),
+        fixes: [
+          {
+            label: acpText("actions.install", "Install"),
+            kind: "install_local",
+            payload: agent.agent_type,
+          },
+        ],
+      }
+    }
+
+    if (
+      agent.registry_version &&
+      hasComparableVersion(agent.registry_version) &&
+      !hasComparableVersion(agent.installed_version)
+    ) {
+      return {
+        check_id: "version_status",
+        label: acpText("version.statusLabel", "Version Status"),
+        status: "warn",
+        message: acpText(
+          "version.localUnrecognized",
+          "{versionText}. Local version is not comparable; try upgrade to overwrite install.",
+          { versionText }
+        ),
+        fixes: [
+          {
+            label: acpText("actions.upgrade", "Upgrade"),
+            kind: "upgrade_local",
+            payload: agent.agent_type,
+          },
+          {
+            label: acpText("actions.uninstall", "Uninstall"),
+            kind: "uninstall_local",
+            payload: agent.agent_type,
+          },
+        ],
+      }
+    }
+
+    if (
+      hasComparableVersion(agent.registry_version) &&
+      hasComparableVersion(agent.installed_version) &&
+      compareVersion(agent.installed_version, agent.registry_version) < 0
+    ) {
+      return {
+        check_id: "version_status",
+        label: acpText("version.statusLabel", "Version Status"),
+        status: "warn",
+        message: acpText(
+          "version.upgradeAvailable",
+          "{versionText}. Upgrade available.",
+          { versionText }
+        ),
+        fixes: [
+          {
+            label: acpText("actions.upgrade", "Upgrade"),
+            kind: "upgrade_local",
+            payload: agent.agent_type,
+          },
+          {
+            label: acpText("actions.uninstall", "Uninstall"),
+            kind: "uninstall_local",
+            payload: agent.agent_type,
+          },
+        ],
+      }
+    }
+
+    if (!agent.registry_version) {
+      return {
+        check_id: "version_status",
+        label: acpText("version.statusLabel", "Version Status"),
+        status: "warn",
+        message: acpText(
+          "version.remoteUnavailable",
+          "{versionText}. Remote version is currently unavailable.",
+          { versionText }
+        ),
+        fixes: [
+          {
+            label: acpText("actions.upgrade", "Upgrade"),
+            kind: "upgrade_local",
+            payload: agent.agent_type,
+          },
+          {
+            label: acpText("actions.uninstall", "Uninstall"),
+            kind: "uninstall_local",
+            payload: agent.agent_type,
+          },
+        ],
+      }
+    }
+
+    return {
+      check_id: "version_status",
+      label: acpText("version.statusLabel", "Version Status"),
+      status: "pass",
+      message: acpText("version.latest", "{versionText}. Already latest.", {
+        versionText,
+      }),
+      fixes: [
+        {
+          label: acpText("actions.uninstall", "Uninstall"),
+          kind: "uninstall_local",
+          payload: agent.agent_type,
+        },
+      ],
+    }
+  }
+
   if (agent.distribution_type !== "binary" && agent.distribution_type !== "npx")
     return null
 
@@ -3235,6 +3393,88 @@ export function AcpAgentSettings() {
     [runPreflight, t, installStream.start]
   )
 
+  const runLocalAction = useCallback(
+    async (agent: AcpAgentInfo, mode: "install" | "upgrade") => {
+      if (busyActionRef.current.has(agent.agent_type)) return
+      busyActionRef.current.add(agent.agent_type)
+      setBusyBinaryAction((prev) => ({ ...prev, [agent.agent_type]: true }))
+      setRunningActionKind((prev) => ({
+        ...prev,
+        [agent.agent_type]:
+          mode === "install" ? "install_local" : "upgrade_local",
+      }))
+      const taskId = randomUUID()
+      setStreamAgentType(agent.agent_type)
+      await installStream.start(taskId)
+      try {
+        const installedVersion = await acpPrepareLocalAgent(
+          agent.agent_type,
+          taskId,
+          mode === "upgrade"
+        )
+        setAgents((prev) =>
+          prev.map((item) =>
+            item.agent_type === agent.agent_type
+              ? {
+                  ...item,
+                  available: true,
+                  installed_version: installedVersion,
+                }
+              : item
+          )
+        )
+        await runPreflight(agent.agent_type)
+        const detectedVersion = await acpDetectAgentLocalVersion(
+          agent.agent_type
+        )
+        if (detectedVersion && detectedVersion !== installedVersion) {
+          setAgents((prev) =>
+            prev.map((item) =>
+              item.agent_type === agent.agent_type
+                ? { ...item, installed_version: detectedVersion }
+                : item
+            )
+          )
+        }
+        const finalVersion = detectedVersion ?? installedVersion
+        toast.success(
+          t("toasts.agentActionCompleted", {
+            name: agent.name,
+            action:
+              mode === "upgrade" ? t("actions.upgrade") : t("actions.install"),
+          }),
+          {
+            description: finalVersion
+              ? t("toasts.localVersion", { version: finalVersion })
+              : t("toasts.installCompletedVersionLater"),
+          }
+        )
+      } catch (err) {
+        const message = toErrorMessage(err)
+        toast.error(
+          t("toasts.agentActionFailed", {
+            name: agent.name,
+            action:
+              mode === "upgrade" ? t("actions.upgrade") : t("actions.install"),
+          }),
+          {
+            description: message,
+          }
+        )
+        throw err
+      } finally {
+        busyActionRef.current.delete(agent.agent_type)
+        setBusyBinaryAction((prev) => ({ ...prev, [agent.agent_type]: false }))
+        setRunningActionKind((prev) => ({
+          ...prev,
+          [agent.agent_type]: undefined,
+        }))
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [runPreflight, t, installStream.start]
+  )
+
   const runUninstallAction = useCallback(
     async (agent: AcpAgentInfo) => {
       if (busyActionRef.current.has(agent.agent_type)) return
@@ -3245,7 +3485,9 @@ export function AcpAgentSettings() {
         [agent.agent_type]:
           agent.distribution_type === "binary"
             ? "uninstall_binary"
-            : "uninstall_npx",
+            : agent.distribution_type === "local"
+              ? "uninstall_local"
+              : "uninstall_npx",
       }))
       const taskId = randomUUID()
       setStreamAgentType(agent.agent_type)
@@ -3255,7 +3497,14 @@ export function AcpAgentSettings() {
         setAgents((prev) =>
           prev.map((item) =>
             item.agent_type === agent.agent_type
-              ? { ...item, installed_version: null }
+              ? {
+                  ...item,
+                  available:
+                    agent.distribution_type === "local"
+                      ? false
+                      : item.available,
+                  installed_version: null,
+                }
               : item
           )
         )
@@ -3309,7 +3558,19 @@ export function AcpAgentSettings() {
       await runNpxAction(agent, "upgrade")
       return
     }
-    if (action.kind === "uninstall_binary" || action.kind === "uninstall_npx") {
+    if (action.kind === "install_local") {
+      await runLocalAction(agent, "install")
+      return
+    }
+    if (action.kind === "upgrade_local") {
+      await runLocalAction(agent, "upgrade")
+      return
+    }
+    if (
+      action.kind === "uninstall_binary" ||
+      action.kind === "uninstall_npx" ||
+      action.kind === "uninstall_local"
+    ) {
       setUninstallConfirmAgent(agent)
       return
     }
@@ -3420,8 +3681,11 @@ export function AcpAgentSettings() {
                         "upgrade_binary",
                         "install_npx",
                         "upgrade_npx",
+                        "install_local",
+                        "upgrade_local",
                         "uninstall_binary",
                         "uninstall_npx",
+                        "uninstall_local",
                         "redownload_binary",
                         "install_opencode_plugins",
                       ].includes(fix.kind)
@@ -3435,14 +3699,17 @@ export function AcpAgentSettings() {
                     {runningActionKind[agent.agent_type] === fix.kind ? (
                       <Loader2 className="h-3 w-3 animate-spin" />
                     ) : fix.kind === "download_binary" ||
-                      fix.kind === "install_npx" ? (
+                      fix.kind === "install_npx" ||
+                      fix.kind === "install_local" ? (
                       <Download className="h-3 w-3" />
                     ) : fix.kind === "upgrade_binary" ||
                       fix.kind === "upgrade_npx" ||
+                      fix.kind === "upgrade_local" ||
                       fix.kind === "redownload_binary" ? (
                       <Wrench className="h-3 w-3" />
                     ) : fix.kind === "uninstall_binary" ||
-                      fix.kind === "uninstall_npx" ? (
+                      fix.kind === "uninstall_npx" ||
+                      fix.kind === "uninstall_local" ? (
                       <Trash2 className="h-3 w-3" />
                     ) : fix.kind === "install_opencode_plugins" ? (
                       <Download className="h-3 w-3" />
@@ -7176,7 +7443,7 @@ supports_websockets = true`}
                       </Button>
                     </div>
                   </div>
-                ) : (
+                ) : selectedAgent.agent_type === "grok" ? null : (
                   <div className="space-y-3 rounded-md border bg-muted/10 p-3">
                     <div>
                       <label className="text-xs font-medium">

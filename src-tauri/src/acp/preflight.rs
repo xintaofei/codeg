@@ -57,6 +57,7 @@ pub async fn run_preflight(agent_type: AgentType) -> PreflightResult {
     let meta = registry::get_agent_meta(agent_type);
     debug_assert_eq!(meta.agent_type, agent_type);
     let checks = match &meta.distribution {
+        AgentDistribution::LocalCommand { cmd, .. } => check_local_command_environment(cmd).await,
         AgentDistribution::Npx { node_required, .. } => check_npm_environment(*node_required).await,
         AgentDistribution::Binary {
             version,
@@ -76,6 +77,27 @@ pub async fn run_preflight(agent_type: AgentType) -> PreflightResult {
         passed,
         checks,
     }
+}
+
+async fn check_local_command_environment(cmd: &str) -> Vec<CheckItem> {
+    let command_check = match crate::commands::acp::resolve_local_command(cmd) {
+        Some(path) => CheckItem {
+            check_id: "local_command_available".into(),
+            label: "Command".into(),
+            status: CheckStatus::Pass,
+            message: format!("{} available at {}", cmd, path.display()),
+            fixes: vec![],
+        },
+        None => CheckItem {
+            check_id: "local_command_available".into(),
+            label: "Command".into(),
+            status: CheckStatus::Fail,
+            message: format!("{cmd} is not installed or not in PATH"),
+            fixes: vec![],
+        },
+    };
+
+    vec![command_check]
 }
 
 async fn check_npm_environment(node_required: Option<&str>) -> Vec<CheckItem> {

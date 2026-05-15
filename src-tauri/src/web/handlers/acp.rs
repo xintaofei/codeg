@@ -595,6 +595,33 @@ pub async fn acp_prepare_npx_agent(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AcpPrepareLocalAgentParams {
+    pub agent_type: AgentType,
+    #[serde(default)]
+    pub force_reinstall: bool,
+    pub task_id: String,
+}
+
+pub async fn acp_prepare_local_agent(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<AcpPrepareLocalAgentParams>,
+) -> Result<Json<String>, AppCommandError> {
+    let db = &state.db;
+    let emitter = state.emitter.clone();
+    let result = acp_commands::acp_prepare_local_agent_core(
+        params.agent_type,
+        params.force_reinstall,
+        params.task_id,
+        db,
+        &emitter,
+    )
+    .await
+    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(result))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AcpUninstallAgentParams {
     pub agent_type: AgentType,
     pub task_id: String,

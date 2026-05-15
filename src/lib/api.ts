@@ -259,6 +259,18 @@ export async function acpPrepareNpxAgent(
   })
 }
 
+export async function acpPrepareLocalAgent(
+  agentType: AgentType,
+  taskId: string,
+  forceReinstall: boolean = false
+): Promise<string> {
+  return getTransport().call("acp_prepare_local_agent", {
+    agentType,
+    taskId,
+    forceReinstall,
+  })
+}
+
 export async function acpUninstallAgent(
   agentType: AgentType,
   taskId: string

@@ -774,6 +774,7 @@ mod tauri_app {
                 acp_commands::acp_download_agent_binary,
                 acp_commands::acp_detect_agent_local_version,
                 acp_commands::acp_prepare_npx_agent,
+                acp_commands::acp_prepare_local_agent,
                 acp_commands::acp_uninstall_agent,
                 acp_commands::acp_update_agent_preferences,
                 acp_commands::acp_update_agent_env,
