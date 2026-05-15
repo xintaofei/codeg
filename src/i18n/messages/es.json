@@ -1658,7 +1658,8 @@
         "attachServerFile": "Seleccionar archivo del servidor",
         "attachUploadTooLarge": "{names} supera el límite de carga de {limit}MB y se omitió.",
         "attachUploadFailed": "Error al subir {names}.",
-        "attachUploadNotAFile": "{names} no es un archivo regular (directorio o archivo especial) y se omitió."
+        "attachUploadNotAFile": "{names} no es un archivo regular (directorio o archivo especial) y se omitió.",
+        "attachUploadQuotaExceeded": "El servidor se quedó sin espacio para subidas; no se pudo cargar {names}."
       },
       "messageQueue": {
         "addToQueue": "Agregar a la cola",

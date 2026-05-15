@@ -1658,7 +1658,8 @@
         "slashSearchEmpty": "没有匹配的命令",
         "attachUploadTooLarge": "{names} 超过 {limit}MB 上传上限，已跳过。",
         "attachUploadFailed": "上传失败：{names}。",
-        "attachUploadNotAFile": "{names} 不是常规文件（目录或特殊文件），已跳过。"
+        "attachUploadNotAFile": "{names} 不是常规文件（目录或特殊文件），已跳过。",
+        "attachUploadQuotaExceeded": "服务器上传空间已用尽，{names} 未能上传。"
       },
       "messageQueue": {
         "addToQueue": "加入队列",

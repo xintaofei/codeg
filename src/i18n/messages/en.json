@@ -1658,7 +1658,8 @@
         "slashSearchEmpty": "No matching commands",
         "attachUploadTooLarge": "{names} exceeds the {limit}MB upload limit and was skipped.",
         "attachUploadFailed": "Failed to upload {names}.",
-        "attachUploadNotAFile": "{names} isn't a regular file (directory or special file) and was skipped."
+        "attachUploadNotAFile": "{names} isn't a regular file (directory or special file) and was skipped.",
+        "attachUploadQuotaExceeded": "The server is out of upload storage; {names} couldn't be uploaded."
       },
       "messageQueue": {
         "addToQueue": "Queue message",

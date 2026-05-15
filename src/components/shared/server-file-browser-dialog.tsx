@@ -23,6 +23,7 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 import { getHomeDirectory, listDirectoryWithFiles } from "@/lib/api"
+import { parentFsPath } from "@/lib/path-utils"
 import type { DirectoryItem } from "@/lib/types"
 
 interface ServerFileBrowserDialogProps {
@@ -170,10 +171,8 @@ export function ServerFileBrowserDialog({
 
   const handleNavigateUp = useCallback(() => {
     if (!rootPath) return
-    const parts = rootPath.replace(/\/$/, "").split("/")
-    if (parts.length <= 1) return
-    parts.pop()
-    const parent = parts.join("/") || "/"
+    const parent = parentFsPath(rootPath)
+    if (!parent) return
     navigateTo(parent)
   }, [rootPath, navigateTo])
 

@@ -1658,7 +1658,8 @@
         "attachServerFile": "Serverdatei auswählen",
         "attachUploadTooLarge": "{names} überschreitet das Upload-Limit von {limit}MB und wurde übersprungen.",
         "attachUploadFailed": "Upload fehlgeschlagen: {names}.",
-        "attachUploadNotAFile": "{names} ist keine reguläre Datei (Verzeichnis oder Spezialdatei) und wurde übersprungen."
+        "attachUploadNotAFile": "{names} ist keine reguläre Datei (Verzeichnis oder Spezialdatei) und wurde übersprungen.",
+        "attachUploadQuotaExceeded": "Auf dem Server ist kein Upload-Speicher mehr verfügbar; {names} konnte nicht hochgeladen werden."
       },
       "messageQueue": {
         "addToQueue": "Zur Warteschlange",

@@ -50,6 +50,7 @@ import {
   UPLOAD_MAX_BYTES,
   UPLOAD_I18N_KEY_TOO_LARGE,
   UPLOAD_I18N_KEY_NOT_A_FILE,
+  UPLOAD_I18N_KEY_QUOTA_EXCEEDED,
 } from "@/lib/api"
 import { extractAppCommandError } from "@/lib/app-error"
 import { openFileDialog } from "@/lib/platform"
@@ -854,12 +855,9 @@ export function MessageInput({
       // Concurrent uploads — one failure doesn't block the rest. Cap at 3:
       // small enough to keep server load predictable, large enough to feel
       // responsive for a handful of files.
-      const results: Array<{
-        status: "fulfilled" | "rejected"
-        path?: string
-        name: string
-        reason?: unknown
-      }> = []
+      const uploaded: string[] = []
+      const failed: Array<{ name: string; reason: unknown }> = []
+      const quotaRejected: string[] = []
       const CONCURRENCY = 3
       let cursor = 0
       const workers = Array.from(
@@ -870,11 +868,7 @@ export function MessageInput({
             const file = accepted[idx]
             try {
               const r = await uploadAttachment(file, attachmentTabId ?? null)
-              results.push({
-                status: "fulfilled",
-                path: r.path,
-                name: file.name,
-              })
+              uploaded.push(r.path)
             } catch (error) {
               if (isEmptyAttachmentError(error)) {
                 // Empty files are explicitly dropped on the floor — log
@@ -884,24 +878,25 @@ export function MessageInput({
                 )
                 continue
               }
-              results.push({
-                status: "rejected",
-                name: file.name,
-                reason: error,
-              })
+              const appError = extractAppCommandError(error)
+              if (appError?.i18n_key === UPLOAD_I18N_KEY_QUOTA_EXCEEDED) {
+                quotaRejected.push(file.name)
+                continue
+              }
+              failed.push({ name: file.name, reason: error })
             }
           }
         }
       )
       await Promise.all(workers)
 
-      const uploaded = results
-        .filter(
-          (r): r is { status: "fulfilled"; path: string; name: string } =>
-            r.status === "fulfilled" && !!r.path
+      if (quotaRejected.length > 0) {
+        toast.error(
+          tAttach("attachUploadQuotaExceeded", {
+            names: quotaRejected.join(", "),
+          })
         )
-        .map((r) => r.path)
-      const failed = results.filter((r) => r.status === "rejected")
+      }
       if (failed.length > 0) {
         for (const f of failed) {
           console.error(
@@ -1155,6 +1150,7 @@ export function MessageInput({
       const failed: Array<{ name: string; reason: unknown }> = []
       const oversize: string[] = []
       const directories: string[] = []
+      const quotaRejected: string[] = []
 
       const CONCURRENCY = 3
       let cursor = 0
@@ -1194,6 +1190,8 @@ export function MessageInput({
                 // we even read bytes; surface a dedicated toast so the
                 // user understands why nothing was attached.
                 directories.push(name)
+              } else if (i18nKey === UPLOAD_I18N_KEY_QUOTA_EXCEEDED) {
+                quotaRejected.push(name)
               } else {
                 failed.push({ name, reason: error })
               }
@@ -1215,6 +1213,13 @@ export function MessageInput({
         toast.error(
           tAttach("attachUploadNotAFile", {
             names: directories.join(", "),
+          })
+        )
+      }
+      if (quotaRejected.length > 0) {
+        toast.error(
+          tAttach("attachUploadQuotaExceeded", {
+            names: quotaRejected.join(", "),
           })
         )
       }

@@ -1658,7 +1658,8 @@
         "attachServerFile": "اختيار ملف من الخادم",
         "attachUploadTooLarge": "{names} يتجاوز حد التحميل {limit}MB وتم تخطيه.",
         "attachUploadFailed": "فشل تحميل {names}.",
-        "attachUploadNotAFile": "{names} ليس ملفاً عادياً (مجلد أو ملف خاص) وتم تخطيه."
+        "attachUploadNotAFile": "{names} ليس ملفاً عادياً (مجلد أو ملف خاص) وتم تخطيه.",
+        "attachUploadQuotaExceeded": "نفدت مساحة التحميل على الخادم، تعذر رفع {names}."
       },
       "messageQueue": {
         "addToQueue": "إضافة للقائمة",

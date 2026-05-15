@@ -50,9 +50,13 @@ pub fn codeg_pets_root() -> PathBuf {
 /// 2. `$CODEG_DATA_DIR/uploads` (server-mode data directory)
 /// 3. `~/.codeg/uploads` (desktop default)
 ///
-/// Files in this directory are intentionally NOT garbage-collected — later
-/// conversations may still reference them via `file://` URIs embedded in
-/// session history.
+/// Files in this directory are not garbage-collected by codeg itself —
+/// later conversations may still reference them via `file://` URIs
+/// embedded in session history. To bound the long-term footprint on
+/// shared / multi-tenant servers, operators can set
+/// `CODEG_UPLOAD_MAX_TOTAL_BYTES` (see `web::handlers::files`): new
+/// uploads beyond the cap are rejected at the API boundary while
+/// existing files stay readable.
 pub fn codeg_uploads_root() -> PathBuf {
     if let Some(custom) = std::env::var_os("CODEG_HOME").filter(|s| !s.is_empty()) {
         return PathBuf::from(custom).join(UPLOADS_DIR_NAME);

@@ -5,7 +5,9 @@ use tokio::io::AsyncWriteExt;
 
 use std::collections::BTreeMap;
 
-use crate::app_error::{AppCommandError, UPLOAD_I18N_KEY_TOO_LARGE};
+use crate::app_error::{
+    AppCommandError, UPLOAD_I18N_KEY_QUOTA_EXCEEDED, UPLOAD_I18N_KEY_TOO_LARGE,
+};
 use crate::commands::folders as folder_commands;
 use crate::paths::codeg_uploads_root;
 
@@ -164,6 +166,111 @@ pub async fn create_file_tree_entry(
 /// limit change must not silently allow oversized writes to disk.
 pub const UPLOAD_MAX_BYTES: u64 = 2 * 1024 * 1024;
 
+/// Env-controlled soft cap on the *total* bytes resident under
+/// `uploads_root/`. Per-file `UPLOAD_MAX_BYTES` bounds one payload; this
+/// bounds long-term accumulation so a compromised or shared token can't
+/// repeatedly upload small files until the host runs out of disk. Unset
+/// or `0` disables the cap — preserves the original "no GC" behavior
+/// for operators who want it.
+///
+/// The check is intentionally conservative: it fires before any bytes
+/// are streamed to disk, assuming the worst-case `UPLOAD_MAX_BYTES`.
+/// That over-rejects in the last `UPLOAD_MAX_BYTES` of headroom (e.g. a
+/// 100 KB upload may get rejected when only 1 MB remains under the
+/// cap), but it keeps the code free of mid-stream cleanup races and
+/// gives operators a hard ceiling.
+const UPLOAD_TOTAL_BYTES_ENV: &str = "CODEG_UPLOAD_MAX_TOTAL_BYTES";
+
+fn upload_total_max_bytes_from_env() -> Option<u64> {
+    parse_upload_total_max_bytes(std::env::var(UPLOAD_TOTAL_BYTES_ENV).ok().as_deref())
+}
+
+/// Pure-function form of the env parser so unit tests don't need to
+/// mutate process-global state (which would race the test harness's
+/// concurrent runner).
+fn parse_upload_total_max_bytes(raw: Option<&str>) -> Option<u64> {
+    let parsed: u64 = raw?.trim().parse().ok()?;
+    if parsed == 0 {
+        None
+    } else {
+        Some(parsed)
+    }
+}
+
+/// Sum the size of every regular file under `uploads_root/` except the
+/// `.tmp/` staging directory. Walks at most one level of buckets — that
+/// is the structure produced by `stream_and_finalize` — but the inner
+/// walk follows whatever entries exist, so a hand-edited deeper tree
+/// is still counted faithfully.
+///
+/// Failures during the walk are logged and skipped: a permission error
+/// on one file shouldn't block the upload pipeline. The returned total
+/// is a lower bound in that case, which means the cap may admit one
+/// extra upload before tripping. That's strictly better than refusing
+/// to serve.
+async fn current_uploads_total_bytes(uploads_root: &std::path::Path) -> u64 {
+    let mut total: u64 = 0;
+    let mut bucket_iter = match tokio::fs::read_dir(uploads_root).await {
+        Ok(it) => it,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return 0,
+        Err(e) => {
+            eprintln!(
+                "[uploads] failed to enumerate uploads root {}: {}",
+                uploads_root.display(),
+                e
+            );
+            return 0;
+        }
+    };
+    while let Some(entry) = bucket_iter.next_entry().await.transpose() {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("[uploads] read_dir entry error: {e}");
+                continue;
+            }
+        };
+        let name = entry.file_name();
+        if name == ".tmp" {
+            // Staging files are unreferenced and purged at startup —
+            // exclude them so a partial upload doesn't inflate the
+            // counter and reject the very next request.
+            continue;
+        }
+        let file_type = match entry.file_type().await {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if file_type.is_file() {
+            // A loose file at the top level (legacy layout or admin
+            // copy-in) still counts.
+            if let Ok(meta) = entry.metadata().await {
+                total = total.saturating_add(meta.len());
+            }
+            continue;
+        }
+        if !file_type.is_dir() {
+            continue;
+        }
+        let mut file_iter = match tokio::fs::read_dir(entry.path()).await {
+            Ok(it) => it,
+            Err(_) => continue,
+        };
+        while let Some(f) = file_iter.next_entry().await.transpose() {
+            let f = match f {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            if let Ok(meta) = f.metadata().await {
+                if meta.is_file() {
+                    total = total.saturating_add(meta.len());
+                }
+            }
+        }
+    }
+    total
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UploadAttachmentResult {
@@ -284,6 +391,25 @@ pub async fn upload_attachment(
         AppCommandError::io_error("Failed to create uploads root")
             .with_detail(e.to_string())
     })?;
+
+    // Quota check, before staging any bytes. We assume the worst-case
+    // payload size (`UPLOAD_MAX_BYTES`) since the actual size isn't
+    // known until the multipart body is drained — admitting a request
+    // we'd reject mid-stream would waste disk and require cleanup races.
+    if let Some(cap) = upload_total_max_bytes_from_env() {
+        let used = current_uploads_total_bytes(&uploads_root).await;
+        let projected = used.saturating_add(UPLOAD_MAX_BYTES);
+        if projected > cap {
+            let mut params = BTreeMap::new();
+            params.insert("used".to_string(), used.to_string());
+            params.insert("limit".to_string(), cap.to_string());
+            return Err(AppCommandError::io_error(
+                "Upload quota exceeded for this server",
+            )
+            .with_detail(format!("used={used} limit={cap}"))
+            .with_i18n(UPLOAD_I18N_KEY_QUOTA_EXCEEDED, params));
+        }
+    }
 
     // Pre-stage the file under <uploads_root>/.tmp/<uuid>.part so we can
     // stream bytes to disk without knowing the final bucket up front (the
@@ -463,5 +589,80 @@ mod tests {
         assert_eq!(sanitize_session_bucket("../etc"), "etc");
         assert_eq!(sanitize_session_bucket("...."), "anon");
         assert_eq!(sanitize_session_bucket(""), "anon");
+    }
+
+    // ─── current_uploads_total_bytes ───────────────────────────────────
+
+    async fn write_bytes(path: &std::path::Path, n: usize) {
+        tokio::fs::create_dir_all(path.parent().expect("parent"))
+            .await
+            .unwrap();
+        tokio::fs::write(path, vec![0u8; n]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn current_uploads_total_bytes_is_zero_for_missing_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist");
+        assert_eq!(current_uploads_total_bytes(&missing).await, 0);
+    }
+
+    #[tokio::test]
+    async fn current_uploads_total_bytes_sums_files_under_buckets() {
+        let dir = tempfile::tempdir().unwrap();
+        write_bytes(&dir.path().join("session-a/file1"), 100).await;
+        write_bytes(&dir.path().join("session-a/file2"), 250).await;
+        write_bytes(&dir.path().join("session-b/file3"), 700).await;
+        assert_eq!(current_uploads_total_bytes(dir.path()).await, 1050);
+    }
+
+    #[tokio::test]
+    async fn current_uploads_total_bytes_skips_staging_tmp() {
+        // `.tmp/` holds in-flight uploads that get purged at server
+        // startup; including them in the running total would let a
+        // partially-streamed upload reject the very next request.
+        let dir = tempfile::tempdir().unwrap();
+        write_bytes(&dir.path().join(".tmp/staging.part"), 9999).await;
+        write_bytes(&dir.path().join("session-a/file"), 5).await;
+        assert_eq!(current_uploads_total_bytes(dir.path()).await, 5);
+    }
+
+    #[tokio::test]
+    async fn current_uploads_total_bytes_counts_loose_top_level_files() {
+        // Anything copied in by an admin or left by an older layout
+        // still counts toward the cap so the quota stays honest.
+        let dir = tempfile::tempdir().unwrap();
+        write_bytes(&dir.path().join("legacy.bin"), 42).await;
+        assert_eq!(current_uploads_total_bytes(dir.path()).await, 42);
+    }
+
+    // ─── parse_upload_total_max_bytes ─────────────────────────────────
+    //
+    // Tests the pure parser, NOT the env reader — mutating
+    // `CODEG_UPLOAD_MAX_TOTAL_BYTES` from a test would race the harness's
+    // parallel runner.
+
+    #[test]
+    fn parse_upload_total_max_bytes_handles_all_branches() {
+        assert_eq!(parse_upload_total_max_bytes(None), None, "unset → None");
+        assert_eq!(parse_upload_total_max_bytes(Some("")), None, "empty → None");
+        assert_eq!(parse_upload_total_max_bytes(Some("   ")), None, "whitespace → None");
+        assert_eq!(parse_upload_total_max_bytes(Some("0")), None, "zero → None");
+        assert_eq!(
+            parse_upload_total_max_bytes(Some("  1048576  ")),
+            Some(1_048_576),
+            "trim + parse"
+        );
+        assert_eq!(
+            parse_upload_total_max_bytes(Some("not-a-number")),
+            None,
+            "invalid → None"
+        );
+        // Negative numbers don't fit u64 — parse fails, falls through.
+        assert_eq!(
+            parse_upload_total_max_bytes(Some("-1")),
+            None,
+            "negative → None"
+        );
     }
 }

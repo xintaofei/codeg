@@ -1430,6 +1430,7 @@ function arrayBufferToBase64(buf: ArrayBuffer): string {
 // fails — that's the CI tripwire keeping the two languages aligned.
 export const UPLOAD_I18N_KEY_TOO_LARGE = "errors.upload.tooLarge"
 export const UPLOAD_I18N_KEY_NOT_A_FILE = "errors.upload.notAFile"
+export const UPLOAD_I18N_KEY_QUOTA_EXCEEDED = "errors.upload.quotaExceeded"
 
 // Structured error thrown by the upload functions when an attachment
 // would be empty (0 bytes). Callers should recognize it and silently
