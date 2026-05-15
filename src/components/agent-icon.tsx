@@ -4,7 +4,7 @@ import type { AgentType } from "@/lib/types"
 import { AGENT_COLORS } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
-import { Cline, GeminiCLI, OpenClaw, OpenCode } from "@lobehub/icons"
+import { Cline, GeminiCLI, Grok, OpenClaw, OpenCode } from "@lobehub/icons"
 
 interface AgentIconProps {
   agentType: AgentType
@@ -91,6 +91,7 @@ const COLOR_ICONS: Partial<Record<AgentType, AnyIcon>> = {
 const MONO_ICONS: Partial<Record<AgentType, AnyIcon>> = {
   open_code: OpenCode,
   cline: Cline,
+  grok: Grok,
 }
 
 // Text-color versions for Mono icons

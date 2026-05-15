@@ -2,6 +2,7 @@ pub mod claude;
 pub mod cline;
 pub mod codex;
 pub mod gemini;
+pub mod grok;
 pub mod openclaw;
 pub mod opencode;
 

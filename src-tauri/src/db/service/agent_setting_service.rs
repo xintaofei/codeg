@@ -34,6 +34,7 @@ fn default_enabled(agent_type: AgentType) -> bool {
             | AgentType::OpenCode
             | AgentType::OpenClaw
             | AgentType::Cline
+            | AgentType::Grok
     )
 }
 

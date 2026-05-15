@@ -54,6 +54,7 @@ pub enum McpAppType {
     OpenClaw,
     OpenCode,
     Cline,
+    Grok,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -367,6 +368,7 @@ pub async fn mcp_upsert_local_server(
         McpAppType::OpenClaw,
         McpAppType::OpenCode,
         McpAppType::Cline,
+        McpAppType::Grok,
     ];
 
     for app in all_apps {
@@ -421,6 +423,7 @@ pub async fn mcp_remove_server(
             McpAppType::OpenClaw,
             McpAppType::OpenCode,
             McpAppType::Cline,
+            McpAppType::Grok,
         ],
     };
 
@@ -637,6 +640,44 @@ fn cline_config_path() -> PathBuf {
         .join("cline_mcp_settings.json")
 }
 
+fn grok_config_path() -> PathBuf {
+    home_dir_or_default().join(".grok").join("config.toml")
+}
+
+fn read_toml_file(path: &Path) -> Result<toml::Value, AppCommandError> {
+    if !path.exists() {
+        return Ok(toml::Value::Table(toml::map::Map::new()));
+    }
+
+    let raw = fs::read_to_string(path).map_err(AppCommandError::io)?;
+    let parsed = raw.parse::<toml::Value>().map_err(|e| {
+        mcp_configuration_invalid(format!("invalid TOML at {}: {e}", path.display()))
+    })?;
+
+    if !parsed.is_table() {
+        return Err(mcp_configuration_invalid(format!(
+            "invalid TOML root at {}: expected table",
+            path.display()
+        )));
+    }
+
+    Ok(parsed)
+}
+
+fn write_toml_file(path: &Path, value: &toml::Value) -> Result<(), AppCommandError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(AppCommandError::io)?;
+    }
+
+    let serialized = toml::to_string_pretty(value).map_err(|e| {
+        mcp_configuration_invalid(format!(
+            "failed to serialize TOML for {}: {e}",
+            path.display()
+        ))
+    })?;
+    fs::write(path, format!("{serialized}\n")).map_err(AppCommandError::io)
+}
+
 fn read_json_file(path: &Path) -> Result<Value, AppCommandError> {
     if !path.exists() {
         return Ok(json!({}));
@@ -661,39 +702,11 @@ fn write_json_file(path: &Path, value: &Value) -> Result<(), AppCommandError> {
 }
 
 fn read_codex_root_toml() -> Result<toml::Value, AppCommandError> {
-    let path = codex_config_toml_path();
-    if !path.exists() {
-        return Ok(toml::Value::Table(toml::map::Map::new()));
-    }
-
-    let raw = fs::read_to_string(&path).map_err(AppCommandError::io)?;
-    let parsed = raw.parse::<toml::Value>().map_err(|e| {
-        mcp_configuration_invalid(format!("invalid TOML at {}: {e}", path.display()))
-    })?;
-
-    if !parsed.is_table() {
-        return Err(mcp_configuration_invalid(format!(
-            "invalid TOML root at {}: expected table",
-            path.display()
-        )));
-    }
-
-    Ok(parsed)
+    read_toml_file(&codex_config_toml_path())
 }
 
 fn write_codex_root_toml(root: &toml::Value) -> Result<(), AppCommandError> {
-    let path = codex_config_toml_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(AppCommandError::io)?;
-    }
-
-    let serialized = toml::to_string_pretty(root).map_err(|e| {
-        mcp_configuration_invalid(format!(
-            "failed to serialize TOML for {}: {e}",
-            path.display()
-        ))
-    })?;
-    fs::write(&path, format!("{serialized}\n")).map_err(AppCommandError::io)
+    write_toml_file(&codex_config_toml_path(), root)
 }
 
 fn obj_as_string_map(value: Option<&Value>) -> Option<Map<String, Value>> {
@@ -1410,6 +1423,27 @@ fn canonical_to_codex_entry(spec: &Value) -> Result<toml::Value, AppCommandError
     Ok(toml::Value::Table(table))
 }
 
+fn canonical_to_grok_entry(spec: &Value) -> Result<toml::Value, AppCommandError> {
+    let mut entry = canonical_to_codex_entry(spec)?;
+    let Some(table) = entry.as_table_mut() else {
+        return Ok(entry);
+    };
+
+    table.insert("enabled".to_string(), toml::Value::Boolean(true));
+
+    if let Some(headers) = table.remove("http_headers") {
+        table.insert("headers".to_string(), headers);
+    }
+
+    // `grok mcp add --command ...` writes stdio entries without an explicit
+    // `type`, while HTTP/SSE entries keep their transport type.
+    if table.get("type").and_then(toml::Value::as_str) == Some("stdio") {
+        table.remove("type");
+    }
+
+    Ok(entry)
+}
+
 fn read_claude_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
     let path = claude_config_path();
     let root = read_json_file(&path)?;
@@ -2027,6 +2061,87 @@ fn remove_cline_server(id: &str) -> Result<bool, AppCommandError> {
     Ok(removed)
 }
 
+// ---------------------------------------------------------------------------
+// Grok  (~/.grok/config.toml  →  [mcp_servers.<name>])
+// ---------------------------------------------------------------------------
+
+fn read_grok_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
+    let root = read_toml_file(&grok_config_path())?;
+    let mut out = BTreeMap::new();
+
+    let Some(servers) = root.get("mcp_servers").and_then(toml::Value::as_table) else {
+        return Ok(out);
+    };
+
+    for (id, entry) in servers {
+        match codex_entry_to_canonical(id, entry) {
+            Ok(normalized) => {
+                out.insert(id.to_string(), normalized);
+            }
+            Err(err) => {
+                eprintln!("[MCP] skip invalid Grok MCP entry id={id}: {err}");
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+fn upsert_grok_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
+    let path = grok_config_path();
+    let mut root = read_toml_file(&path)?;
+    let table = root.as_table_mut().ok_or_else(|| {
+        mcp_configuration_invalid(format!(
+            "invalid TOML root in {}: expected table",
+            path.display()
+        ))
+    })?;
+
+    if !table
+        .get("mcp_servers")
+        .map(toml::Value::is_table)
+        .unwrap_or(false)
+    {
+        table.insert(
+            "mcp_servers".to_string(),
+            toml::Value::Table(toml::map::Map::new()),
+        );
+    }
+
+    let servers = table
+        .get_mut("mcp_servers")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| {
+            mcp_configuration_invalid(format!("invalid mcp_servers in {}", path.display()))
+        })?;
+    servers.insert(id.to_string(), canonical_to_grok_entry(spec)?);
+
+    write_toml_file(&path, &root)
+}
+
+fn remove_grok_server(id: &str) -> Result<bool, AppCommandError> {
+    let path = grok_config_path();
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    let mut root = read_toml_file(&path)?;
+    let Some(table) = root.as_table_mut() else {
+        return Ok(false);
+    };
+    let removed = table
+        .get_mut("mcp_servers")
+        .and_then(toml::Value::as_table_mut)
+        .map(|servers| servers.remove(id).is_some())
+        .unwrap_or(false);
+
+    if removed {
+        write_toml_file(&path, &root)?;
+    }
+
+    Ok(removed)
+}
+
 fn scan_local_servers() -> Result<Vec<LocalMcpServer>, AppCommandError> {
     let mut merged: BTreeMap<String, (Value, BTreeSet<McpAppType>)> = BTreeMap::new();
 
@@ -2072,6 +2187,13 @@ fn scan_local_servers() -> Result<Vec<LocalMcpServer>, AppCommandError> {
         entry.1.insert(McpAppType::Cline);
     }
 
+    for (id, spec) in read_grok_servers()? {
+        let entry = merged
+            .entry(id)
+            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
+        entry.1.insert(McpAppType::Grok);
+    }
+
     Ok(merged
         .into_iter()
         .map(|(id, (spec, apps))| LocalMcpServer {
@@ -2095,6 +2217,7 @@ fn upsert_server_for_app(app: McpAppType, id: &str, spec: &Value) -> Result<(), 
         McpAppType::Gemini => upsert_gemini_server(id, spec),
         McpAppType::OpenClaw => upsert_openclaw_server(id, spec),
         McpAppType::Cline => upsert_cline_server(id, spec),
+        McpAppType::Grok => upsert_grok_server(id, spec),
     }
 }
 
@@ -2109,6 +2232,7 @@ pub fn read_servers_for_agent_type(
         AgentType::Gemini => read_gemini_servers(),
         AgentType::OpenClaw => read_openclaw_servers(),
         AgentType::Cline => read_cline_servers(),
+        AgentType::Grok => read_grok_servers(),
     }
 }
 
@@ -2120,6 +2244,7 @@ fn remove_server_for_app(app: McpAppType, id: &str) -> Result<bool, AppCommandEr
         McpAppType::Gemini => remove_gemini_server(id),
         McpAppType::OpenClaw => remove_openclaw_server(id),
         McpAppType::Cline => remove_cline_server(id),
+        McpAppType::Grok => remove_grok_server(id),
     }
 }
 
@@ -3980,6 +4105,48 @@ mod tests {
                 "raw {raw:?} should not be accepted by Codex pipeline",
             );
         }
+    }
+
+    #[test]
+    fn grok_entry_matches_cli_toml_shape() {
+        let stdio = serde_json::json!({
+            "type": "stdio",
+            "command": "node",
+            "args": ["server.js"],
+            "env": { "A": "B" },
+        });
+        let value = canonical_to_grok_entry(&stdio).expect("grok stdio entry");
+        let table = value.as_table().expect("grok stdio table");
+        assert_eq!(table.get("type"), None);
+        assert_eq!(
+            table.get("enabled").and_then(toml::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            table.get("command").and_then(toml::Value::as_str),
+            Some("node")
+        );
+
+        let remote = serde_json::json!({
+            "type": "http",
+            "url": "https://mcp.example.com/mcp",
+            "headers": { "Authorization": "Bearer token" },
+        });
+        let value = canonical_to_grok_entry(&remote).expect("grok http entry");
+        let table = value.as_table().expect("grok http table");
+        assert_eq!(
+            table.get("type").and_then(toml::Value::as_str),
+            Some("http")
+        );
+        assert_eq!(
+            table.get("enabled").and_then(toml::Value::as_bool),
+            Some(true)
+        );
+        assert!(table.get("http_headers").is_none());
+        assert!(table
+            .get("headers")
+            .and_then(toml::Value::as_table)
+            .is_some());
     }
 
     #[test]

@@ -13,6 +13,7 @@ use crate::parsers::claude::ClaudeParser;
 use crate::parsers::cline::ClineParser;
 use crate::parsers::codex::CodexParser;
 use crate::parsers::gemini::GeminiParser;
+use crate::parsers::grok::GrokParser;
 use crate::parsers::openclaw::OpenClawParser;
 use crate::parsers::opencode::OpenCodeParser;
 use crate::parsers::{path_eq_for_matching, AgentParser, ParseError};
@@ -72,6 +73,7 @@ fn list_conversations_sync(
         (AgentType::Gemini, Box::new(GeminiParser::new())),
         (AgentType::OpenClaw, Box::new(OpenClawParser::new())),
         (AgentType::Cline, Box::new(ClineParser::new())),
+        (AgentType::Grok, Box::new(GrokParser::new())),
     ];
 
     for (at, parser) in &parsers {
@@ -173,6 +175,7 @@ pub async fn get_conversation(
             AgentType::Gemini => Box::new(GeminiParser::new()),
             AgentType::OpenClaw => Box::new(OpenClawParser::new()),
             AgentType::Cline => Box::new(ClineParser::new()),
+            AgentType::Grok => Box::new(GrokParser::new()),
         };
 
         parser
@@ -307,6 +310,7 @@ pub async fn get_folder_conversation_core(
                 AgentType::Gemini => Box::new(GeminiParser::new()),
                 AgentType::OpenClaw => Box::new(OpenClawParser::new()),
                 AgentType::Cline => Box::new(ClineParser::new()),
+                AgentType::Grok => Box::new(GrokParser::new()),
             };
             match parser.get_conversation(&eid) {
                 Ok(d) => Ok((d.turns, d.session_stats, None)),
@@ -318,7 +322,10 @@ pub async fn get_folder_conversation_core(
                     // and started_at from the parsed conversation list.
                     if matches!(
                         at,
-                        AgentType::OpenClaw | AgentType::Cline | AgentType::Gemini
+                        AgentType::OpenClaw
+                            | AgentType::Cline
+                            | AgentType::Gemini
+                            | AgentType::Grok
                     ) {
                         if let Ok(all) = parser.list_conversations() {
                             // Filter by folder_path first, then find the closest

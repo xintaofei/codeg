@@ -80,6 +80,7 @@ pub fn all_acp_agents() -> Vec<AgentType> {
         AgentType::OpenClaw,
         AgentType::OpenCode,
         AgentType::Cline,
+        AgentType::Grok,
     ]
 }
 
@@ -91,6 +92,7 @@ pub fn registry_id_for(agent_type: AgentType) -> &'static str {
         AgentType::OpenClaw => "openclaw-acp",
         AgentType::OpenCode => "opencode",
         AgentType::Cline => "cline",
+        AgentType::Grok => "grok",
     }
 }
 
@@ -102,6 +104,7 @@ pub fn from_registry_id(id: &str) -> Option<AgentType> {
         "openclaw-acp" => Some(AgentType::OpenClaw),
         "opencode" => Some(AgentType::OpenCode),
         "cline" => Some(AgentType::Cline),
+        "grok" => Some(AgentType::Grok),
         _ => None,
     }
 }
@@ -238,5 +241,70 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                 ],
             },
         },
+        AgentType::Grok => AcpAgentMeta {
+            agent_type,
+            name: "Grok",
+            description: "xAI's coding agent CLI",
+            distribution: AgentDistribution::Binary {
+                version: "0.1.210",
+                cmd: "grok",
+                args: &["agent", "stdio"],
+                env: &[],
+                platforms: &[
+                    PlatformBinary {
+                        platform: "darwin-aarch64",
+                        url: "https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-0.1.210-macos-aarch64",
+                    },
+                    PlatformBinary {
+                        platform: "darwin-x86_64",
+                        url: "https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-0.1.210-macos-x86_64",
+                    },
+                    PlatformBinary {
+                        platform: "linux-aarch64",
+                        url: "https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-0.1.210-linux-aarch64",
+                    },
+                    PlatformBinary {
+                        platform: "linux-x86_64",
+                        url: "https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-0.1.210-linux-x86_64",
+                    },
+                    PlatformBinary {
+                        platform: "windows-x86_64",
+                        url: "https://storage.googleapis.com/grok-build-public-artifacts/cli/grok-0.1.210-windows-x86_64.exe",
+                    },
+                ],
+            },
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grok_is_registered_as_binary_stdio_agent() {
+        assert!(all_acp_agents().contains(&AgentType::Grok));
+        assert_eq!(registry_id_for(AgentType::Grok), "grok");
+        assert_eq!(from_registry_id("grok"), Some(AgentType::Grok));
+
+        let meta = get_agent_meta(AgentType::Grok);
+        assert_eq!(meta.name, "Grok");
+        assert_eq!(meta.registry_version(), Some("0.1.210"));
+
+        match meta.distribution {
+            AgentDistribution::Binary {
+                cmd,
+                args,
+                env,
+                platforms,
+                ..
+            } => {
+                assert_eq!(cmd, "grok");
+                assert_eq!(args, &["agent", "stdio"]);
+                assert!(env.is_empty());
+                assert!(platforms.iter().any(|p| p.platform == "darwin-aarch64"));
+            }
+            other => panic!("expected binary distribution, got {other:?}"),
+        }
     }
 }

@@ -7176,7 +7176,7 @@ supports_websockets = true`}
                       </Button>
                     </div>
                   </div>
-                ) : (
+                ) : selectedAgent.agent_type === "grok" ? null : (
                   <div className="space-y-3 rounded-md border bg-muted/10 p-3">
                     <div>
                       <label className="text-xs font-medium">

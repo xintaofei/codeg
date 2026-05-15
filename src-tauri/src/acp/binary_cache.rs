@@ -293,17 +293,29 @@ async fn ensure_binary_with_progress(
         std::fs::create_dir_all(&extract_dir)
             .map_err(|e| AcpError::DownloadFailed(format!("failed to create extract dir: {e}")))?;
 
-        on_progress("Extracting archive...");
+        let final_path = dir.join(&bin_name);
         if archive_url.ends_with(".tar.gz") || archive_url.ends_with(".tgz") {
+            on_progress("Extracting archive...");
             extract_tar_gz(&archive_path, &extract_dir)?;
         } else if archive_url.ends_with(".tar.bz2") || archive_url.ends_with(".tbz2") {
+            on_progress("Extracting archive...");
             extract_tar_bz2(&archive_path, &extract_dir)?;
         } else if archive_url.ends_with(".zip") {
+            on_progress("Extracting archive...");
             extract_zip(&archive_path, &extract_dir)?;
         } else {
-            return Err(AcpError::DownloadFailed(format!(
-                "unsupported archive format: {archive_url}"
-            )));
+            on_progress("Installing executable...");
+            std::fs::copy(&archive_path, &final_path)
+                .map_err(|e| AcpError::DownloadFailed(format!("failed to copy binary: {e}")))?;
+            if !is_binary_file_compatible(&final_path) {
+                let _ = std::fs::remove_file(&final_path);
+                return Err(AcpError::DownloadFailed(
+                    "downloaded binary format is invalid for current platform".into(),
+                ));
+            }
+            set_executable_permissions(&final_path)?;
+            on_progress("Binary installed successfully");
+            return Ok(final_path);
         }
 
         // Find the binary in extracted files and move to final location.
@@ -312,7 +324,6 @@ async fn ensure_binary_with_progress(
             AcpError::DownloadFailed(format!("binary '{bin_name}' not found in archive"))
         })?;
 
-        let final_path = dir.join(&bin_name);
         std::fs::copy(&extracted_bin, &final_path)
             .map_err(|e| AcpError::DownloadFailed(format!("failed to copy binary: {e}")))?;
 

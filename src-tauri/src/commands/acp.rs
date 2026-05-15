@@ -1579,6 +1579,14 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
                 ".claude/skills",
             ],
         }),
+        AgentType::Grok => Some(SkillStorageSpec {
+            kind: SkillStorageKind::SkillDirectoryOnly,
+            global_dirs: vec![
+                home_dir_or_default().join(".grok").join("skills"),
+                home_dir_or_default().join(".agents").join("skills"),
+            ],
+            project_rel_dirs: vec![".grok/skills", ".agents/skills"],
+        }),
     }
 }
 
@@ -2069,7 +2077,7 @@ fn cascade_update_agent_config(
                 serde_json::to_string(&patch).map_err(|e| AcpError::protocol(e.to_string()))?;
             persist_agent_local_config_json(agent_type, Some(&patch_str))?;
         }
-        AgentType::Cline => {}
+        AgentType::Cline | AgentType::Grok => {}
     }
     Ok(())
 }
@@ -2864,7 +2872,6 @@ pub(crate) async fn acp_download_agent_binary_core(
                         meta.name
                     ))
                 })?;
-
             emit_agent_install_event(
                 emitter,
                 &task_id,
