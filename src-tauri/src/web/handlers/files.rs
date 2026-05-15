@@ -12,6 +12,8 @@ use crate::app_error::{
 use crate::commands::folders as folder_commands;
 use crate::paths::codeg_uploads_root;
 
+use super::upload_jail;
+
 // ---------------------------------------------------------------------------
 // Param structs
 // ---------------------------------------------------------------------------
@@ -663,13 +665,39 @@ pub async fn upload_attachment(
         AppCommandError::io_error("Failed to create tmp directory")
             .with_detail(e.to_string())
     })?;
+    // Reject a symlinked `.tmp` for the same reason the bucket check
+    // below rejects a symlinked bucket: `create_dir_all` is a no-op when
+    // the target of a symlink already exists, so a pre-placed symlink
+    // would let staged bytes land outside the uploads root before the
+    // rename even runs (and a failed-stream cleanup would `remove_file`
+    // outside the jail too).
+    match tokio::fs::symlink_metadata(&tmp_dir).await {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(AppCommandError::io_error(
+                "Refusing to use a symlinked uploads tmp directory",
+            )
+            .with_detail(tmp_dir.to_string_lossy().to_string()));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return Err(AppCommandError::io_error(
+                "Failed to inspect uploads tmp directory",
+            )
+            .with_detail(e.to_string()));
+        }
+    }
+    ensure_path_inside(&tmp_dir, &uploads_root).await?;
     let staging_id = uuid::Uuid::new_v4().simple().to_string();
-    let staging_path = tmp_dir.join(format!("{staging_id}.part"));
+    let staging_name = format!("{staging_id}.part");
 
     // Wrap the streaming work so any early return cleans up the staged file.
-    let result = stream_and_finalize(&mut multipart, &uploads_root, &staging_path).await;
+    // Cleanup goes through `upload_jail::remove_staging_best_effort` so the
+    // unlink itself can't be redirected by a swap of `.tmp` between
+    // streaming and cleanup.
+    let result =
+        stream_and_finalize(&mut multipart, &uploads_root, &tmp_dir, &staging_name).await;
     if result.is_err() {
-        let _ = tokio::fs::remove_file(&staging_path).await;
+        upload_jail::remove_staging_best_effort(&tmp_dir, &staging_name).await;
     }
     // `_quota_guard` drops here regardless of `result`, releasing the
     // reservation for the next admission.
@@ -679,10 +707,18 @@ pub async fn upload_attachment(
 /// Drain the multipart body and produce the final upload result. Splits out
 /// of `upload_attachment` so a single staging-file cleanup wraps every early
 /// return.
+///
+/// The staging file is created via `upload_jail::create_staging_file` so a
+/// pre-placed symlink at `<tmp_dir>/<staging_name>` cannot redirect the
+/// write outside the jail (Unix `O_NOFOLLOW`); the final move into the
+/// bucket likewise goes through `upload_jail::finalize_into_bucket` which
+/// uses `renameat` with NOFOLLOW dirfds so a concurrent swap of either
+/// `tmp_dir` or `bucket` cannot land the file outside the root.
 async fn stream_and_finalize(
     multipart: &mut Multipart,
     uploads_root: &std::path::Path,
-    staging_path: &std::path::Path,
+    tmp_dir: &std::path::Path,
+    staging_name: &str,
 ) -> Result<UploadAttachmentResult, AppCommandError> {
     let mut session_id: Option<String> = None;
     let mut raw_name: Option<String> = None;
@@ -715,10 +751,12 @@ async fn stream_and_finalize(
                 raw_name = Some(field.file_name().unwrap_or("file").to_string());
                 mime_type = field.content_type().map(|s| s.to_string());
 
-                let mut out = tokio::fs::File::create(staging_path).await.map_err(|e| {
-                    AppCommandError::io_error("Failed to create staging file")
-                        .with_detail(e.to_string())
-                })?;
+                let mut out = upload_jail::create_staging_file(tmp_dir, staging_name)
+                    .await
+                    .map_err(|e| {
+                        AppCommandError::io_error("Failed to create staging file")
+                            .with_detail(e.to_string())
+                    })?;
                 while let Some(chunk) = field.chunk().await.map_err(|e| {
                     AppCommandError::io_error("Failed to read upload chunk")
                         .with_detail(e.to_string())
@@ -778,21 +816,62 @@ async fn stream_and_finalize(
             .with_detail(e.to_string())
     })?;
 
+    // Reject the bucket directory itself if it's a symlink — `create_dir_all`
+    // is a no-op when the target of a symlink already exists, so a pre-placed
+    // symlink at <uploads_root>/<bucket> would silently let the rename below
+    // land outside the jail. Filename sanitization can't help here because
+    // the bucket path is what's being subverted.
+    match tokio::fs::symlink_metadata(&dir).await {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(AppCommandError::io_error(
+                "Refusing to use a symlinked upload bucket",
+            )
+            .with_detail(dir.to_string_lossy().to_string()));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return Err(AppCommandError::io_error(
+                "Failed to inspect uploads bucket directory",
+            )
+            .with_detail(e.to_string()));
+        }
+    }
+    // And confirm the bucket canonicalizes inside the uploads root before
+    // the rename commits any bytes outside it. This is the load-bearing
+    // jail check; the post-rename `ensure_path_inside` below is kept as
+    // defense in depth.
+    ensure_path_inside(&dir, uploads_root).await?;
+
     let unique = uuid::Uuid::new_v4().simple().to_string();
     let final_name = format!("{}-{}", unique, safe_name);
     let final_path = dir.join(&final_name);
 
-    tokio::fs::rename(&staging_path, &final_path)
+    // TOCTOU-safe move: `finalize_into_bucket` opens both `tmp_dir` and
+    // `dir` as `O_NOFOLLOW` dirfds and uses `renameat`, so a concurrent
+    // symlink swap of either directory between the pre-checks above and
+    // this call cannot redirect the destination (the syscall fails
+    // instead). On non-Unix the implementation falls back to
+    // `tokio::fs::rename`; see `upload_jail` module docs.
+    upload_jail::finalize_into_bucket(tmp_dir, staging_name, &dir, &final_name)
         .await
         .map_err(|e| {
             AppCommandError::io_error("Failed to move staged upload into place")
                 .with_detail(e.to_string())
         })?;
 
-    // Defense in depth: even though every component above was sanitized, run
-    // the final canonical path through the jail check so any future relaxing
-    // of sanitization can't silently escape the uploads root.
-    let canon = ensure_path_inside(&final_path, uploads_root).await?;
+    // Defense in depth: even though every component above was sanitized AND
+    // the bucket dir was validated pre-rename AND the rename itself went
+    // through `O_NOFOLLOW` dirfds, run the final canonical path through the
+    // jail check too. If somehow this fires, the file is already on disk
+    // at `final_path` — clean it up so we don't leak data outside the
+    // jail just because we noticed late.
+    let canon = match ensure_path_inside(&final_path, uploads_root).await {
+        Ok(p) => p,
+        Err(err) => {
+            let _ = tokio::fs::remove_file(&final_path).await;
+            return Err(err);
+        }
+    };
 
     Ok(UploadAttachmentResult {
         path: canon.to_string_lossy().to_string(),

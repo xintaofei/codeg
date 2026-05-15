@@ -15,6 +15,31 @@ use super::ws_attach::{
 };
 use crate::app_state::AppState;
 
+/// One entry per live attach subscription. The `epoch` is the per-WS-session
+/// monotonic counter assigned at spawn time; it threads through the cleanup
+/// channel so a stale exit signal from a now-replaced handle cannot
+/// accidentally remove the fresh handle. See the `cleanup_tx` comment in
+/// `handle_ws_connection` for full rationale.
+struct ActiveSubscription {
+    handle: JoinHandle<()>,
+    epoch: u64,
+}
+
+/// Apply a forwarder self-cleanup signal: remove the handle for `sub_id`
+/// only if the stored epoch matches `signal_epoch`. Extracted from the
+/// select! branch so the epoch-matching invariant has a unit test.
+fn apply_cleanup_signal(
+    subscriptions: &mut HashMap<String, ActiveSubscription>,
+    sub_id: &str,
+    signal_epoch: u64,
+) {
+    if let Some(sub) = subscriptions.get(sub_id) {
+        if sub.epoch == signal_epoch {
+            subscriptions.remove(sub_id);
+        }
+    }
+}
+
 // MUST match `WS_READY_CHANNEL` in `src/lib/transport/constants.ts`.
 // Drift between the two values silently breaks the handshake (the client
 // keeps waiting and falls back to the timeout warning path after 5 s).
@@ -55,10 +80,30 @@ async fn handle_ws_connection(
     // `Snapshot`/`Replay`/`Pong` directly.
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<ServerMsg>(OUTBOUND_CAPACITY);
 
+    // Cleanup channel: forwarders signal `(subscription_id, epoch)` here
+    // when they self-exit (lagged / channel closed) so the main loop drops
+    // the now-completed `JoinHandle` from `subscriptions`. Without this,
+    // dead handles would sit in the map until socket close. Sized at
+    // OUTBOUND_CAPACITY which comfortably covers a burst of simultaneous
+    // forwarder exits; on overflow the forwarder's `try_send` no-ops and
+    // the socket-close drain still reaps everything.
+    //
+    // The epoch is what makes the cleanup race-free. `JoinHandle::is_finished()`
+    // looked tempting but is racy on multi-threaded Tokio — the cleanup
+    // signal can land before the runtime has marked the JoinHandle's slot
+    // finished. Instead, each Attach allocates a fresh u64 epoch (monotonic
+    // per WS session) and stores it alongside the handle. The cleanup
+    // branch only removes when the stored epoch matches the signal's
+    // epoch — re-attaching with the same subscription_id stamps a new
+    // epoch so any stale signal from the previous handle becomes a no-op.
+    let (cleanup_tx, mut cleanup_rx) = mpsc::channel::<(String, u64)>(OUTBOUND_CAPACITY);
+
     // Track active attach subscriptions on this socket so a `detach`
     // message can abort the matching forwarder task and so we can clean
-    // them all up on socket close.
-    let mut subscriptions: HashMap<String, JoinHandle<()>> = HashMap::new();
+    // them all up on socket close. Each entry stores the forwarder's
+    // epoch (see cleanup channel above) alongside the JoinHandle.
+    let mut subscriptions: HashMap<String, ActiveSubscription> = HashMap::new();
+    let mut next_epoch: u64 = 0;
 
     // Server→client ready handshake (legacy `__ready__` frame). Phase 1
     // keeps this so unmigrated transports still gate `acp_connect` on the
@@ -98,6 +143,19 @@ async fn handle_ws_connection(
                 }
                 let _ = socket.send(Message::Close(None)).await;
                 break;
+            }
+
+            // Forwarder self-cleanup: a per-attach task that exited (Lagged
+            // or broadcast Closed) reports `(sub_id, epoch)` so we can
+            // drop the dead JoinHandle. The epoch match guarantees we
+            // only remove the handle the signal was actually for —
+            // a re-attach between the dead forwarder's exit and this
+            // recv would have stamped a new epoch, making the stale
+            // signal a no-op.
+            cleanup = cleanup_rx.recv() => {
+                if let Some((sub_id, signal_epoch)) = cleanup {
+                    apply_cleanup_signal(&mut subscriptions, &sub_id, signal_epoch);
+                }
             }
 
             // Outbound queue (per-attach forwarders + main-loop direct sends).
@@ -155,7 +213,9 @@ async fn handle_ws_connection(
                                     cmsg,
                                     &state,
                                     &outbound_tx,
+                                    &cleanup_tx,
                                     &mut subscriptions,
+                                    &mut next_epoch,
                                 ).await;
                             }
                             Err(e) => {
@@ -174,8 +234,8 @@ async fn handle_ws_connection(
 
     // Cleanup: abort all active forwarder tasks. Their broadcast receivers
     // will be dropped, freeing the per-connection broadcaster slot.
-    for (_, handle) in subscriptions.drain() {
-        handle.abort();
+    for (_, sub) in subscriptions.drain() {
+        sub.handle.abort();
     }
 }
 
@@ -183,7 +243,9 @@ async fn handle_client_msg(
     msg: ClientMsg,
     state: &Arc<AppState>,
     outbound_tx: &mpsc::Sender<ServerMsg>,
-    subscriptions: &mut HashMap<String, JoinHandle<()>>,
+    cleanup_tx: &mpsc::Sender<(String, u64)>,
+    subscriptions: &mut HashMap<String, ActiveSubscription>,
+    next_epoch: &mut u64,
 ) {
     match msg {
         ClientMsg::Attach {
@@ -195,7 +257,7 @@ async fn handle_client_msg(
             // forwarder. Abort the old one first so its receiver drops
             // and we don't leak a broadcaster slot.
             if let Some(old) = subscriptions.remove(&subscription_id) {
-                old.abort();
+                old.handle.abort();
             }
 
             match ws_attach::handle_attach(
@@ -214,13 +276,25 @@ async fn handle_client_msg(
                     if outbound_tx.send(outcome.initial_msg).await.is_err() {
                         return;
                     }
+                    // Allocate a fresh epoch for this spawn. wrapping_add is
+                    // defensive — u64 overflow per WS session is impossible
+                    // in practice (would require ~10^19 attaches on one
+                    // socket) but the wrap behavior is well-defined and
+                    // matches our epoch-equality semantics.
+                    *next_epoch = next_epoch.wrapping_add(1);
+                    let epoch = *next_epoch;
                     let handle = ws_attach::spawn_forwarder(
                         subscription_id.clone(),
+                        epoch,
                         state.acp_event_bus.metrics().clone(),
                         outcome.receiver,
                         outbound_tx.clone(),
+                        cleanup_tx.clone(),
                     );
-                    subscriptions.insert(subscription_id, handle);
+                    subscriptions.insert(
+                        subscription_id,
+                        ActiveSubscription { handle, epoch },
+                    );
                 }
                 Err(reason) => {
                     let _ = outbound_tx
@@ -233,12 +307,66 @@ async fn handle_client_msg(
             }
         }
         ClientMsg::Detach { subscription_id } => {
-            if let Some(handle) = subscriptions.remove(&subscription_id) {
-                handle.abort();
+            if let Some(sub) = subscriptions.remove(&subscription_id) {
+                sub.handle.abort();
             }
         }
         ClientMsg::Ping => {
             let _ = outbound_tx.send(ServerMsg::Pong).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build an ActiveSubscription wrapping a no-op spawned task. The
+    /// JoinHandle is real so abort() in cleanup paths is realistic.
+    async fn dummy_sub(epoch: u64) -> ActiveSubscription {
+        let handle = tokio::spawn(async {
+            // Park forever; aborted by cleanup paths or dropped at test end.
+            std::future::pending::<()>().await;
+        });
+        ActiveSubscription { handle, epoch }
+    }
+
+    #[tokio::test]
+    async fn cleanup_signal_with_matching_epoch_removes_entry() {
+        let mut subs = HashMap::new();
+        subs.insert("sub-A".to_string(), dummy_sub(1).await);
+
+        apply_cleanup_signal(&mut subs, "sub-A", 1);
+
+        assert!(!subs.contains_key("sub-A"));
+    }
+
+    #[tokio::test]
+    async fn cleanup_signal_with_stale_epoch_keeps_fresh_handle() {
+        // Simulate the race: old forwarder exited with epoch=1; client
+        // re-attached and a new forwarder was spawned with epoch=2 in the
+        // same map slot. The old cleanup signal must NOT remove the fresh
+        // handle, otherwise the new forwarder is orphaned.
+        let mut subs = HashMap::new();
+        let fresh = dummy_sub(2).await;
+        subs.insert("sub-A".to_string(), fresh);
+
+        apply_cleanup_signal(&mut subs, "sub-A", 1);
+
+        assert!(
+            subs.contains_key("sub-A"),
+            "stale cleanup must not evict the freshly re-attached handle"
+        );
+        assert_eq!(subs.get("sub-A").unwrap().epoch, 2);
+    }
+
+    #[tokio::test]
+    async fn cleanup_signal_for_unknown_sub_id_is_noop() {
+        let mut subs = HashMap::new();
+        subs.insert("other".to_string(), dummy_sub(1).await);
+
+        apply_cleanup_signal(&mut subs, "missing", 1);
+
+        assert!(subs.contains_key("other"));
     }
 }

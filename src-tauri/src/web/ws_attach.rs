@@ -205,15 +205,34 @@ pub async fn handle_attach(
 /// receiver close (connection went away) or `Lagged` (slow consumer); in
 /// both cases sends a `Detached` frame so the client knows to re-attach.
 ///
+/// `cleanup_tx` carries `(subscription_id, epoch)` back to the WS main loop
+/// on every self-exit path so the loop can drop the now-completed
+/// `JoinHandle` from its `subscriptions` map. The `epoch` is critical: a
+/// stale signal arriving after the client has re-attached (which replaces
+/// the handle) would otherwise orphan the fresh forwarder. The main loop
+/// only removes when the stored epoch matches the signal's epoch — re-attach
+/// stamps a new epoch so old signals become no-ops. Without epoch matching,
+/// `JoinHandle::is_finished()` is racy on multi-threaded runtimes (the
+/// runtime may not have updated the JoinHandle slot yet when the cleanup
+/// signal is consumed).
+///
+/// Send is `try_send` so a saturated cleanup channel never blocks the
+/// exiting task; the socket-close `subscriptions.drain()` is the safety net.
+///
 /// `metrics` records `Lagged` exits so operators can correlate attach
 /// re-attachment storms with per-connection broadcast pressure.
 pub fn spawn_forwarder(
     subscription_id: String,
+    epoch: u64,
     metrics: Arc<EventBusMetrics>,
     mut receiver: tokio::sync::broadcast::Receiver<Arc<EventEnvelope>>,
     outbound: mpsc::Sender<ServerMsg>,
+    cleanup_tx: mpsc::Sender<(String, u64)>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        let signal_cleanup = || {
+            let _ = cleanup_tx.try_send((subscription_id.clone(), epoch));
+        };
         loop {
             match receiver.recv().await {
                 Ok(envelope) => {
@@ -222,7 +241,10 @@ pub fn spawn_forwarder(
                         envelope,
                     };
                     if outbound.send(msg).await.is_err() {
-                        // WS closed; nothing to forward to.
+                        // WS closed; nothing to forward to. Map cleanup
+                        // is handled by the main loop's drain on exit,
+                        // but the signal is harmless either way.
+                        signal_cleanup();
                         return;
                     }
                 }
@@ -240,6 +262,7 @@ pub fn spawn_forwarder(
                             reason: DetachReason::Lagged,
                         })
                         .await;
+                    signal_cleanup();
                     return;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -249,6 +272,7 @@ pub fn spawn_forwarder(
                             reason: DetachReason::ConnectionGone,
                         })
                         .await;
+                    signal_cleanup();
                     return;
                 }
             }

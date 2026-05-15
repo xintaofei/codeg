@@ -48,7 +48,15 @@ use tokio_tungstenite::tungstenite::{
 /// the same moment when the user opens several conversation tabs).
 const OUTBOUND_CAPACITY: usize = 64;
 
-use crate::app_error::{AppCommandError, UPLOAD_I18N_KEY_NOT_A_FILE, UPLOAD_I18N_KEY_TOO_LARGE};
+/// Maximum time `remote_ws_send_text` will wait for the outbound mpsc to
+/// accept a frame before failing. Under sustained backpressure we'd rather
+/// surface the failure to the JS side (which can reissue attaches) than
+/// silently drop or block the Tauri command worker indefinitely.
+const OUTBOUND_SEND_TIMEOUT: Duration = Duration::from_secs(2);
+
+use crate::app_error::{
+    AppCommandError, AppErrorCode, UPLOAD_I18N_KEY_NOT_A_FILE, UPLOAD_I18N_KEY_TOO_LARGE,
+};
 use crate::db::service::remote_workspace_connection_service;
 use crate::db::AppDatabase;
 
@@ -753,11 +761,17 @@ pub async fn remote_ws_subscribe(
 
 /// Send an arbitrary text frame over the existing WS to the remote server.
 /// Used by the JS-side `RemoteEventStream` to forward `attach` / `detach` /
-/// `ping` messages without owning the WS itself. Returns `Ok(())` whether
-/// or not the frame was actually queued (the proxy may not have an entry,
-/// or its WS may be currently down) — the frontend is responsible for
-/// re-issuing on the next `__ready__` signal so a transient gap recovers
-/// automatically.
+/// `ping` messages without owning the WS itself.
+///
+/// Returns `Err(NetworkError)` when the proxy has no entry for this
+/// `connection_id`, when the outbound channel is closed, or when the queue
+/// stays full for `OUTBOUND_SEND_TIMEOUT`. The JS side uses the failure
+/// as a signal to reissue active attach frames; previously we returned
+/// `Ok(())` on drop and the stream could stick on a missing snapshot until
+/// the next reconnect.
+///
+/// The Tauri command is a thin wrapper around `remote_ws_send_text_core`
+/// so the failure-mode logic is unit-testable without a Tauri runtime.
 #[tauri::command]
 pub async fn remote_ws_send_text(
     proxy: State<'_, Arc<RemoteProxyState>>,
@@ -765,22 +779,43 @@ pub async fn remote_ws_send_text(
     text: String,
 ) -> Result<(), AppCommandError> {
     let proxy_arc: Arc<RemoteProxyState> = (*proxy).clone();
+    remote_ws_send_text_core(&proxy_arc, connection_id, text).await
+}
+
+async fn remote_ws_send_text_core(
+    proxy: &Arc<RemoteProxyState>,
+    connection_id: i32,
+    text: String,
+) -> Result<(), AppCommandError> {
     let entry = {
-        let tasks = proxy_arc.tasks.lock().await;
+        let tasks = proxy.tasks.lock().await;
         tasks.get(&connection_id).cloned()
     };
     let Some(entry) = entry else {
-        return Ok(());
+        return Err(AppCommandError::new(
+            AppErrorCode::NetworkError,
+            format!("remote ws task not active for connection {connection_id}"),
+        ));
     };
-    // try_send rather than send: if the channel is full (slow remote, runaway
-    // sender) we'd rather drop the frame and warn than block the Tauri command
-    // queue. The frontend's reattach-on-ready loop converges anyway.
-    if let Err(e) = entry.outbound_tx.try_send(text) {
-        eprintln!(
-            "[RemoteProxy] outbound queue rejected text frame on connection {connection_id}: {e}"
-        );
+    // Bounded backpressure: prefer waiting briefly for the outbound queue
+    // to drain over silently dropping. Control frames (attach/detach) MUST
+    // surface failure so the JS side can reissue, and input frames benefit
+    // from backpressure too. The 2s ceiling protects the Tauri command
+    // worker from a permanently stuck WS.
+    match tokio::time::timeout(OUTBOUND_SEND_TIMEOUT, entry.outbound_tx.send(text)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err(AppCommandError::new(
+            AppErrorCode::NetworkError,
+            format!("remote ws outbound channel closed for connection {connection_id}"),
+        )),
+        Err(_) => Err(AppCommandError::new(
+            AppErrorCode::NetworkError,
+            format!(
+                "remote ws send timed out after {}s for connection {connection_id} (outbound queue full)",
+                OUTBOUND_SEND_TIMEOUT.as_secs()
+            ),
+        )),
     }
-    Ok(())
 }
 
 /// Unsubscribe one subscription by its opaque ID. Only removes the entry
@@ -1201,6 +1236,105 @@ mod tests {
             .contains("dead"));
         assert!(!proxy.tasks.lock().await.contains_key(&1));
         assert!(*shutdown_rx.borrow());
+    }
+
+    // ─── remote_ws_send_text failure surfacing ─────────────────────────
+    //
+    // Pre-fix, this command silently returned Ok(()) on no-entry / queue-
+    // full so a dropped attach frame would leave the JS-side subscription
+    // stuck waiting for a snapshot that never came. The tests pin the
+    // contract that every drop path now surfaces NetworkError so the JS
+    // reattach-on-failure loop can recover.
+    //
+    // For a description of the user-visible failure mode this protects
+    // against, see the comment on `remote_ws_send_text` in this file.
+    fn entry_with_outbound(capacity: usize) -> (Arc<WsTaskEntry>, mpsc::Receiver<String>) {
+        let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+        let (outbound_tx, outbound_rx) = mpsc::channel::<String>(capacity);
+        let entry = Arc::new(WsTaskEntry {
+            subscribers: Mutex::new(HashMap::new()),
+            ready: RwLock::new(false),
+            shutdown_tx,
+            outbound_tx,
+        });
+        (entry, outbound_rx)
+    }
+
+    #[tokio::test]
+    async fn send_text_no_entry_returns_network_error() {
+        let proxy = Arc::new(RemoteProxyState::new());
+        let err = remote_ws_send_text_core(&proxy, 42, "hi".to_string())
+            .await
+            .expect_err("expected Err when no entry exists");
+        assert!(matches!(err.code, AppErrorCode::NetworkError));
+        assert!(
+            err.message.contains("not active"),
+            "message should mention 'not active', got: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn send_text_happy_path_delivers_to_receiver() {
+        let proxy = Arc::new(RemoteProxyState::new());
+        let (entry, mut outbound_rx) = entry_with_outbound(8);
+        proxy.tasks.lock().await.insert(7, entry);
+
+        remote_ws_send_text_core(&proxy, 7, "hello".to_string())
+            .await
+            .expect("send should succeed");
+
+        let received = outbound_rx.recv().await.expect("frame should arrive");
+        assert_eq!(received, "hello");
+    }
+
+    #[tokio::test]
+    async fn send_text_closed_channel_returns_network_error() {
+        let proxy = Arc::new(RemoteProxyState::new());
+        let (entry, outbound_rx) = entry_with_outbound(8);
+        proxy.tasks.lock().await.insert(7, entry);
+        // Drop the receiver — outbound_tx.send will fail with SendError
+        // once try_send / send observes the closed channel.
+        drop(outbound_rx);
+
+        let err = remote_ws_send_text_core(&proxy, 7, "hi".to_string())
+            .await
+            .expect_err("expected Err when channel closed");
+        assert!(matches!(err.code, AppErrorCode::NetworkError));
+        assert!(
+            err.message.contains("closed"),
+            "message should mention 'closed', got: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn send_text_queue_full_times_out() {
+        let proxy = Arc::new(RemoteProxyState::new());
+        let (entry, _outbound_rx) = entry_with_outbound(1);
+        proxy.tasks.lock().await.insert(7, entry);
+
+        // Fill the single-slot queue so the next send must wait.
+        remote_ws_send_text_core(&proxy, 7, "first".to_string())
+            .await
+            .expect("first send fits the buffer");
+
+        let send_fut = remote_ws_send_text_core(&proxy, 7, "second".to_string());
+        // Advance virtual time past OUTBOUND_SEND_TIMEOUT so the inner
+        // tokio::time::timeout fires deterministically without the test
+        // actually sleeping.
+        let advance = OUTBOUND_SEND_TIMEOUT + Duration::from_millis(100);
+        let (res, _) = tokio::join!(send_fut, async {
+            tokio::time::sleep(advance).await;
+        });
+
+        let err = res.expect_err("queue-full second send should time out");
+        assert!(matches!(err.code, AppErrorCode::NetworkError));
+        assert!(
+            err.message.contains("timed out"),
+            "message should mention 'timed out', got: {}",
+            err.message
+        );
     }
 
     // ─── i18n key wire-format tripwire ─────────────────────────────────

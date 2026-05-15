@@ -116,6 +116,12 @@ export class RemoteDesktopTransport implements Transport {
   private wsOpen = false
   private wsReadyCallbacks = new Set<() => void>()
   private eventStreamInstance: WebEventStream | null = null
+  /// Debounce timer for the "send failed → reissue active attaches" path.
+  /// `sendWsFrame` is fire-and-forget over a Tauri invoke; if Rust reports
+  /// the frame was not queued (no entry / queue full / timeout) we kick the
+  /// `wsReadyCallbacks` after a short delay so `WebEventStream.reattachAll`
+  /// runs once per failure burst rather than once per failed frame.
+  private sendFailRetryTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(config: RemoteTransportConfig) {
     this.config = {
@@ -240,17 +246,42 @@ export class RemoteDesktopTransport implements Transport {
   private sendWsFrame(frame: object): boolean {
     if (!this.wsOpen) return false
     const text = JSON.stringify(frame)
-    // Fire-and-forget. The Rust side queues into the bounded outbound
-    // mpsc; if the queue is full it logs and drops. The frontend's
-    // attach-on-ready loop in WebEventStream re-issues attaches on every
-    // `__ready__`, so a transient drop converges automatically.
+    // Optimistic-true return preserves the sync-boolean contract from
+    // AttachTransportHost. Real delivery confirmation is async: the Rust
+    // proxy now returns Err if the frame couldn't be queued (no entry,
+    // closed channel, or 2s queue-full timeout). On failure we trigger
+    // the same reattach path that fires on natural reconnect — without
+    // this, a dropped attach would leave the subscription stuck waiting
+    // for a snapshot until the next WS reconnect.
     void invoke("remote_ws_send_text", {
       connectionId: this.config.id,
       text,
     }).catch((err) => {
       console.warn("[RemoteDesktopTransport] remote_ws_send_text failed:", err)
+      this.scheduleReattachAfterSendFailure()
     })
     return true
+  }
+
+  private scheduleReattachAfterSendFailure() {
+    if (this.destroyed || this.sendFailRetryTimer !== null) return
+    this.sendFailRetryTimer = setTimeout(() => {
+      this.sendFailRetryTimer = null
+      // If the WS dropped in the meantime, the natural __ready__ on
+      // reconnect will fire wsReadyCallbacks itself — skip to avoid a
+      // wasted attach-burst against a closed channel.
+      if (this.destroyed || !this.wsOpen) return
+      for (const cb of this.wsReadyCallbacks) {
+        try {
+          cb()
+        } catch (err) {
+          console.error(
+            "[RemoteDesktopTransport] wsReady callback threw on send-failure retry:",
+            err
+          )
+        }
+      }
+    }, 200)
   }
 
   private async startWs() {
@@ -363,6 +394,10 @@ export class RemoteDesktopTransport implements Transport {
   destroy() {
     this.destroyed = true
     this.wsOpen = false
+    if (this.sendFailRetryTimer !== null) {
+      clearTimeout(this.sendFailRetryTimer)
+      this.sendFailRetryTimer = null
+    }
     if (this.unlistenWsEvent) {
       this.unlistenWsEvent()
       this.unlistenWsEvent = null

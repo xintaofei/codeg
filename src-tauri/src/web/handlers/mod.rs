@@ -5,6 +5,7 @@ mod error;
 pub mod event_metrics;
 pub mod experts;
 pub mod files;
+mod upload_jail;
 pub mod folder_commands;
 pub mod folders;
 pub mod git;
