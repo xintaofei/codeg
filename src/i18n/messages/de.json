@@ -1429,6 +1429,7 @@
       "newDirectory": "Verzeichnis",
       "openIn": "Öffnen in",
       "openInTerminal": "Im Terminal öffnen",
+      "openInVsCode": "In VS Code öffnen",
       "actions": {
         "select": "Auswählen",
         "unselect": "Auswahl aufheben",

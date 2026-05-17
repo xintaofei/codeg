@@ -1429,6 +1429,7 @@
       "newDirectory": "Directorio",
       "openIn": "Abrir en",
       "openInTerminal": "Abrir en terminal",
+      "openInVsCode": "Abrir en VS Code",
       "actions": {
         "select": "Seleccionar",
         "unselect": "Deseleccionar",

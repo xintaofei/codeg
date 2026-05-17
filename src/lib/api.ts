@@ -748,6 +748,10 @@ export async function createFolderDirectory(path: string): Promise<void> {
   return getTransport().call("create_folder_directory", { path })
 }
 
+export async function openInVsCode(path: string): Promise<void> {
+  return getTransport().call("open_in_vscode", { path })
+}
+
 export async function cloneRepository(
   url: string,
   targetDir: string,

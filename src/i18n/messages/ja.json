@@ -1429,6 +1429,7 @@
       "newDirectory": "ディレクトリ",
       "openIn": "で開く",
       "openInTerminal": "ターミナルで開く",
+      "openInVsCode": "VS Code で開く",
       "actions": {
         "select": "選択",
         "unselect": "選択解除",

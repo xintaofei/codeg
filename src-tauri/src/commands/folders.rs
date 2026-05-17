@@ -3796,3 +3796,42 @@ async fn get_unpushed_hashes(
 
     Ok((Some(hashes), has_upstream))
 }
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn open_in_vscode(path: String) -> Result<(), AppCommandError> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = crate::process::tokio_command("open")
+            .args(["-a", "Visual Studio Code", &path])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await;
+
+        if let Ok(s) = status {
+            if s.success() {
+                return Ok(());
+            }
+        }
+    }
+
+    let status = crate::process::tokio_command("code")
+        .arg(&path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(
+            AppCommandError::dependency_missing("VS Code is not installed or available in PATH."),
+        ),
+        _ => Err(AppCommandError::dependency_missing(
+            "Failed to open VS Code.",
+        )),
+    }
+}
