@@ -3348,9 +3348,12 @@ async fn emit_conversation_update(
             let status = format!("{:?}", tc.status).to_lowercase();
             raw_output_cache.remove_if_final(&tool_call_id, Some(status.as_str()));
             let title = if is_opencode_subagent_invocation(agent_type, &raw_input) {
+                // Avoid logging `tc.title` — it can be a model-generated user
+                // task description (PII-adjacent) and would create noise in
+                // server-mode log sinks. The opaque tool_call_id is enough
+                // to correlate this event with downstream traces.
                 eprintln!(
-                    "[ACP][{agent_type}] rewrote tool title {:?} -> 'agent' (tool_call_id={tool_call_id}, subagent detected)",
-                    tc.title
+                    "[ACP][{agent_type}] subagent detected, rewrote tool title to 'agent' (tool_call_id={tool_call_id})"
                 );
                 "agent".to_string()
             } else {
@@ -3416,10 +3419,11 @@ async fn emit_conversation_update(
             // title — regardless of whether the update itself provides a title —
             // so the frontend reducer replaces any earlier non-agent title set
             // by the initial ToolCall (whose raw_input may have been empty).
+            // Logging mirrors the ToolCall arm: we deliberately omit the
+            // incoming title (user-generated content) to keep server logs clean.
             let title = if is_opencode_subagent_invocation(agent_type, &raw_input) {
                 eprintln!(
-                    "[ACP][{agent_type}] rewrote tool title {:?} -> 'agent' (tool_call_id={tool_call_id}, subagent detected on update)",
-                    tcu.fields.title.as_deref().unwrap_or("<unchanged>")
+                    "[ACP][{agent_type}] subagent detected, rewrote tool title to 'agent' (tool_call_id={tool_call_id}, on update)"
                 );
                 Some("agent".to_string())
             } else {
