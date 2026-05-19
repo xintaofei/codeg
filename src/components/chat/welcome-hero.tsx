@@ -103,7 +103,7 @@ export function WelcomeHero() {
       <div className="relative flex h-28 w-28 items-center justify-center">
         <div
           aria-hidden
-          className="pointer-events-none absolute h-72 w-[34rem] -rotate-45 blur-2xl"
+          className="pointer-events-none absolute h-60 w-[28rem] -rotate-45 blur-2xl"
           style={{
             background:
               "radial-gradient(ellipse at center, color-mix(in oklab, var(--primary) 55%, transparent) 0%, transparent 70%)",
@@ -111,7 +111,7 @@ export function WelcomeHero() {
         />
         <div
           aria-hidden
-          className="pointer-events-none absolute h-48 w-80 -rotate-45 blur-xl"
+          className="pointer-events-none absolute h-40 w-64 -rotate-45 blur-xl"
           style={{
             background:
               "radial-gradient(ellipse at center, color-mix(in oklab, var(--primary) 85%, transparent) 0%, transparent 65%)",
@@ -121,14 +121,14 @@ export function WelcomeHero() {
           aria-hidden
           className="pointer-events-none absolute h-28 w-72 -rotate-45 rounded-[50%] border"
           style={{
-            borderColor: "color-mix(in oklab, var(--primary) 14%, transparent)",
+            borderColor: "color-mix(in oklab, var(--primary) 9%, transparent)",
           }}
         />
         <div
           aria-hidden
           className="pointer-events-none absolute h-40 w-[26rem] -rotate-45 rounded-[50%] border"
           style={{
-            borderColor: "color-mix(in oklab, var(--primary) 8%, transparent)",
+            borderColor: "color-mix(in oklab, var(--primary) 5%, transparent)",
           }}
         />
         {/* eslint-disable-next-line @next/next/no-img-element */}
