@@ -2686,7 +2686,7 @@ export function MessageInput({
         )}
       </div>
       {hasFolderBranchPicker && (
-        <div className="mt-1.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+        <div className="mt-1.5 flex items-center gap-1.5 pl-[calc(0.5rem+1px)] text-xs text-muted-foreground">
           <ConversationFolderBranchPicker tabId={attachmentTabId} />
         </div>
       )}

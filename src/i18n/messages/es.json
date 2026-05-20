@@ -1709,7 +1709,7 @@
         "askAnythingPlaceholder": "Pregunta lo que sea..."
       },
       "welcomePanel": {
-        "title": "Bienvenido a Codeg",
+        "greeting": "¿Qué te gustaría hacer hoy?",
         "tips": {
           "tileTabs": "Haz clic derecho en una pestaña de conversación y elige Vista en mosaico para comparar varias sesiones lado a lado.",
           "pinTab": "Haz doble clic en una pestaña de conversación para fijarla y que una sesión nueva no la reemplace automáticamente.",

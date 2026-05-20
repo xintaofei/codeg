@@ -36,8 +36,8 @@ import { useTabContext } from "@/contexts/tab-context"
 import { useTaskContext } from "@/contexts/task-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
 import { useThemeColor, useZoomLevel } from "@/hooks/use-appearance"
+import { useSortedAvailableAgents } from "@/hooks/use-sorted-available-agents"
 import {
-  acpListAgents,
   importLocalConversations,
   openProjectBootWindow,
   updateConversationTitle,
@@ -46,7 +46,6 @@ import {
   updateFolderDefaultAgent,
   deleteConversation,
 } from "@/lib/api"
-import { disposeTauriListener } from "@/lib/tauri-listener"
 import { isDesktop, openFileDialog, revealItemInDir } from "@/lib/platform"
 import { getActiveRemoteConnectionId } from "@/lib/transport"
 import type {
@@ -760,7 +759,7 @@ export function SidebarConversationList({
   }, [tabs])
 
   const [importing, setImporting] = useState(false)
-  const [availableAgents, setAvailableAgents] = useState<AgentType[]>([])
+  const { sortedTypes: availableAgents } = useSortedAvailableAgents()
   const [folderExpanded, setFolderExpanded] = useState<Record<number, boolean>>(
     {}
   )
@@ -783,66 +782,6 @@ export function SidebarConversationList({
     // Hydrate from localStorage after mount to keep SSR/CSR markup consistent.
 
     setFolderExpanded(loadFolderExpanded())
-  }, [])
-
-  // Track the live list of enabled+available agents so the per-folder
-  // "Set default agent" submenu only offers agents that the conversation
-  // selector would actually accept. Mirrors AgentSelector's reload triggers
-  // (initial fetch + window focus + `app://acp-agents-updated`).
-  useEffect(() => {
-    let cancelled = false
-    let latestRequestId = 0
-
-    const reload = async () => {
-      const requestId = latestRequestId + 1
-      latestRequestId = requestId
-      try {
-        const list = await acpListAgents()
-        if (cancelled || requestId !== latestRequestId) return
-        const usable = [...list]
-          .filter((a) => a.enabled && a.available)
-          .sort(
-            (a, b) =>
-              a.sort_order - b.sort_order || a.name.localeCompare(b.name)
-          )
-          .map((a) => a.agent_type)
-        setAvailableAgents(usable)
-      } catch {
-        if (!cancelled && requestId === latestRequestId) {
-          setAvailableAgents([])
-        }
-      }
-    }
-
-    void reload()
-    const onWindowFocus = () => {
-      void reload()
-    }
-    window.addEventListener("focus", onWindowFocus)
-
-    let unlisten: (() => void) | null = null
-    void import("@tauri-apps/api/event")
-      .then(({ listen }) =>
-        listen("app://acp-agents-updated", () => {
-          void reload()
-        })
-      )
-      .then((dispose) => {
-        if (cancelled) {
-          disposeTauriListener(dispose, "SidebarConversationList.agentsUpdated")
-          return
-        }
-        unlisten = dispose
-      })
-      .catch(() => {
-        // Ignore when non-tauri runtime.
-      })
-
-    return () => {
-      cancelled = true
-      window.removeEventListener("focus", onWindowFocus)
-      disposeTauriListener(unlisten, "SidebarConversationList.agentsUpdated")
-    }
   }, [])
 
   const handleChangeFolderColor = useCallback(

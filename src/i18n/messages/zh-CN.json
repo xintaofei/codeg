@@ -1709,7 +1709,7 @@
         "askAnythingPlaceholder": "请开始输入..."
       },
       "welcomePanel": {
-        "title": "欢迎使用 Codeg",
+        "greeting": "今天准备做些什么呢？",
         "tips": {
           "tileTabs": "右键点击会话标签选择「平铺显示」，可同屏对比多个会话",
           "pinTab": "双击会话标签可将其固定，避免被新打开的会话自动替换",

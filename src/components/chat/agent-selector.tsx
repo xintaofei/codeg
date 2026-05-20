@@ -1,15 +1,12 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
-import { acpListAgents } from "@/lib/api"
-import { disposeTauriListener } from "@/lib/tauri-listener"
+import { useAcpAgents } from "@/hooks/use-acp-agents"
 import type { AgentType, AcpAgentInfo } from "@/lib/types"
 import { AGENT_LABELS } from "@/lib/types"
 import { AgentIcon } from "@/components/agent-icon"
 import { cn } from "@/lib/utils"
-
-const ACP_AGENTS_UPDATED_EVENT = "app://acp-agents-updated"
 
 interface AgentSelectorProps {
   defaultAgentType?: AgentType
@@ -27,13 +24,26 @@ export function AgentSelector({
   disabled = false,
 }: AgentSelectorProps) {
   const t = useTranslations("Folder.chat.agentSelector")
-  const [agents, setAgents] = useState<AcpAgentInfo[]>([])
-  const [selected, setSelected] = useState<AgentType | null>(
-    defaultAgentType ?? null
+  const { agents: rawAgents } = useAcpAgents()
+  const agents = useMemo<AcpAgentInfo[]>(
+    () => rawAgents.filter((a) => a.enabled),
+    [rawAgents]
   )
-  const selectedRef = useRef(selected)
   const onSelectRef = useRef(onSelect)
   const onAgentsLoadedRef = useRef(onAgentsLoaded)
+
+  // Effective selection. Priority: prop default (when still available) →
+  // first available. Derived so we don't have to call setState inside an
+  // effect. Click handling lives on the parent — `handleSelect` just
+  // forwards via `onSelect`, which patches `defaultAgentType` upstream.
+  const selected = useMemo<AgentType | null>(() => {
+    const found = defaultAgentType
+      ? agents.find((a) => a.agent_type === defaultAgentType && a.available)
+      : null
+    if (found) return found.agent_type
+    const first = agents.find((a) => a.available)
+    return first?.agent_type ?? null
+  }, [agents, defaultAgentType])
 
   // Sliding indicator state
   const containerRef = useRef<HTMLDivElement>(null)
@@ -96,80 +106,21 @@ export function AgentSelector({
     onAgentsLoadedRef.current = onAgentsLoaded
   }, [onAgentsLoaded])
 
+  // Notify parent when the agent list changes, and fire onSelect on
+  // fallback (when the requested preferred agent is unavailable and we
+  // had to pick a substitute). Selection itself is derived above, so this
+  // effect only emits side-effects — never calls setState.
   useEffect(() => {
-    let cancelled = false
-    let latestRequestId = 0
-
-    const reloadAgents = async () => {
-      const requestId = latestRequestId + 1
-      latestRequestId = requestId
-      try {
-        const list = await acpListAgents()
-        if (cancelled || requestId !== latestRequestId) return
-        const sorted = [...list].sort(
-          (a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name)
-        )
-        const visible = sorted.filter((a) => a.enabled)
-        setAgents(visible)
-        onAgentsLoadedRef.current?.(visible)
-        // Keep current selection if still available; otherwise pick first.
-        const preferred = defaultAgentType ?? selectedRef.current
-        const found = preferred
-          ? visible.find((a) => a.agent_type === preferred && a.available)
-          : null
-        if (found) {
-          setSelected(found.agent_type)
-          selectedRef.current = found.agent_type
-        } else {
-          const first = visible.find((a) => a.available)
-          if (first) {
-            setSelected(first.agent_type)
-            selectedRef.current = first.agent_type
-            onSelectRef.current(first.agent_type)
-          }
-        }
-      } catch {
-        if (!cancelled && requestId === latestRequestId) {
-          setAgents([])
-          onAgentsLoadedRef.current?.([])
-        }
-      }
-    }
-
-    void reloadAgents()
-    const onWindowFocus = () => {
-      void reloadAgents()
-    }
-    window.addEventListener("focus", onWindowFocus)
-
-    let unlisten: (() => void) | null = null
-    void import("@tauri-apps/api/event")
-      .then(({ listen }) =>
-        listen(ACP_AGENTS_UPDATED_EVENT, () => {
-          void reloadAgents()
-        })
-      )
-      .then((dispose) => {
-        if (cancelled) {
-          disposeTauriListener(dispose, "AgentSelector.agentsUpdated")
-          return
-        }
-        unlisten = dispose
-      })
-      .catch(() => {
-        // Ignore when non-tauri runtime.
-      })
-
-    return () => {
-      cancelled = true
-      window.removeEventListener("focus", onWindowFocus)
-      disposeTauriListener(unlisten, "AgentSelector.agentsUpdated")
-    }
-  }, [defaultAgentType])
+    onAgentsLoadedRef.current?.(agents)
+    const found = defaultAgentType
+      ? agents.find((a) => a.agent_type === defaultAgentType && a.available)
+      : null
+    if (found) return
+    const first = agents.find((a) => a.available)
+    if (first) onSelectRef.current(first.agent_type)
+  }, [agents, defaultAgentType])
 
   const handleSelect = (agentType: AgentType) => {
-    setSelected(agentType)
-    selectedRef.current = agentType
     onSelect(agentType)
   }
 

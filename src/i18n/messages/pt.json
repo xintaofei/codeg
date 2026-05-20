@@ -1709,7 +1709,7 @@
         "askAnythingPlaceholder": "Pergunte qualquer coisa..."
       },
       "welcomePanel": {
-        "title": "Bem-vindo ao Codeg",
+        "greeting": "O que você gostaria de fazer hoje?",
         "tips": {
           "tileTabs": "Clique com o botão direito em uma aba de conversa e escolha Exibir em mosaico para ver várias sessões lado a lado.",
           "pinTab": "Clique duas vezes em uma aba de conversa para fixá-la, evitando que uma nova sessão a substitua automaticamente.",

@@ -1709,7 +1709,7 @@
         "askAnythingPlaceholder": "Posez n'importe quelle question..."
       },
       "welcomePanel": {
-        "title": "Bienvenue sur Codeg",
+        "greeting": "Que souhaites-tu faire aujourd'hui ?",
         "tips": {
           "tileTabs": "Faites un clic droit sur un onglet de conversation et choisissez Affichage en mosaïque pour comparer plusieurs sessions côte à côte.",
           "pinTab": "Double-cliquez sur un onglet de conversation pour l'épingler : une nouvelle session ne le remplacera plus automatiquement.",

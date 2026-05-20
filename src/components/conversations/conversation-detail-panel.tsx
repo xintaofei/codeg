@@ -145,6 +145,7 @@ const ConversationTabView = memo(function ConversationTabView({
 }: ConversationTabViewProps) {
   const t = useTranslations("Folder.conversation")
   const tWelcome = useTranslations("Folder.chat.welcomeInputPanel")
+  const tWelcomePanel = useTranslations("Folder.chat.welcomePanel")
   const sharedT = useTranslations("Folder.chat.shared")
   const { activeFolder: folder, activeFolderId } = useActiveFolder()
   const { refreshConversations } = useAppWorkspace()
@@ -156,6 +157,7 @@ const ConversationTabView = memo(function ConversationTabView({
     pinTab,
     openNewConversationTab,
     closeTab,
+    confirmDraftAgent,
   } = useTabContext()
   const { setSessionStats } = useSessionStats()
   const {
@@ -725,14 +727,21 @@ const ConversationTabView = memo(function ConversationTabView({
   // a late-returning disconnect would dispatch CONNECTION_REMOVED by
   // contextKey and wipe the new connection's frontend state, leaving a
   // backend orphan.
-  const handleAgentSelect = useCallback((nextAgentType: AgentType) => {
-    if (nextAgentType === selectedAgentRef.current) return
-    if (dbConvIdRef.current) return
+  const handleAgentSelect = useCallback(
+    (nextAgentType: AgentType) => {
+      if (nextAgentType === selectedAgentRef.current) return
+      if (dbConvIdRef.current) return
 
-    setDraftAgentType(nextAgentType)
-    setModeId(getSavedModeId(nextAgentType))
-    setAgentConnectError(null)
-  }, [])
+      setDraftAgentType(nextAgentType)
+      setModeId(getSavedModeId(nextAgentType))
+      setAgentConnectError(null)
+      // Notify the tab provider so its provisional-default correction
+      // logic skips this tab — the agent is now a confirmed user choice
+      // (or an AgentSelector fallback, both equally final).
+      confirmDraftAgent(tabId, nextAgentType)
+    },
+    [confirmDraftAgent, tabId]
+  )
 
   const handleModeChange = useCallback(
     (newModeId: string) => {
@@ -913,65 +922,66 @@ const ConversationTabView = memo(function ConversationTabView({
     >
       {isWelcomeMode ? (
         <div className="flex h-full min-h-0 flex-col overflow-x-hidden overflow-y-auto">
-          <div className="m-auto flex w-full max-w-2xl flex-col gap-6 py-8">
-            <div className="px-4">
-              <WelcomeHero />
-            </div>
-            <div className="flex flex-col gap-4">
-              <div className="flex justify-center px-4">
-                <AgentSelector
-                  defaultAgentType={selectedAgent}
-                  onSelect={handleAgentSelect}
-                  onAgentsLoaded={(agents) => {
-                    setAgentsLoaded(true)
-                    setUsableAgentCount(
-                      agents.filter((agent) => agent.enabled && agent.available)
-                        .length
-                    )
-                  }}
-                  onOpenAgentsSettings={handleOpenAgentsSettings}
-                  disabled={isConnecting || dbConversationId != null}
-                />
-              </div>
-              {autoConnectError || agentConnectError ? (
-                <div className="px-4">
-                  <button
-                    type="button"
-                    onClick={handleOpenAgentsSettings}
-                    className="w-full cursor-pointer rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-center text-xs text-destructive transition-colors hover:bg-destructive/10"
-                  >
-                    <div
-                      className="overflow-hidden text-ellipsis whitespace-nowrap text-center"
-                      title={autoConnectError ?? agentConnectError ?? ""}
-                    >
-                      {autoConnectError ?? agentConnectError}
-                    </div>
-                  </button>
-                </div>
-              ) : null}
-              <ChatInput
-                status={connStatus}
-                promptCapabilities={conn.promptCapabilities}
-                defaultPath={workingDirForConnection}
-                agentName={AGENT_LABELS[selectedAgent]}
-                onFocus={handleFocus}
-                onSend={handleSend}
-                onCancel={handleCancel}
-                modes={connectionModes}
-                configOptions={connectionConfigOptions}
-                modeLoading={modeLoading}
-                configOptionsLoading={configOptionsLoading}
-                selectorsLoading={selectorsLoading}
-                selectedModeId={selectedModeId}
-                onModeChange={handleModeChange}
-                onConfigOptionChange={handleSetConfigOption}
-                agentType={selectedAgent}
-                availableCommands={connectionCommands}
-                attachmentTabId={tabId}
-                draftStorageKey={draftStorageKey}
-                isActive={isActive}
+          <div className="flex-1" />
+          <div className="mx-auto flex w-full max-w-2xl shrink-0 flex-col gap-6 px-4 py-4">
+            <h1 className="text-center text-3xl font-medium tracking-wide text-foreground">
+              {tWelcomePanel("greeting")}
+            </h1>
+            <div className="flex justify-center">
+              <AgentSelector
+                defaultAgentType={selectedAgent}
+                onSelect={handleAgentSelect}
+                onAgentsLoaded={(agents) => {
+                  setAgentsLoaded(true)
+                  setUsableAgentCount(
+                    agents.filter((agent) => agent.enabled && agent.available)
+                      .length
+                  )
+                }}
+                onOpenAgentsSettings={handleOpenAgentsSettings}
+                disabled={isConnecting || dbConversationId != null}
               />
             </div>
+            {autoConnectError || agentConnectError ? (
+              <button
+                type="button"
+                onClick={handleOpenAgentsSettings}
+                className="w-full cursor-pointer rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-center text-xs text-destructive transition-colors hover:bg-destructive/10"
+              >
+                <div
+                  className="overflow-hidden text-ellipsis whitespace-nowrap text-center"
+                  title={autoConnectError ?? agentConnectError ?? ""}
+                >
+                  {autoConnectError ?? agentConnectError}
+                </div>
+              </button>
+            ) : null}
+            <ChatInput
+              status={connStatus}
+              promptCapabilities={conn.promptCapabilities}
+              defaultPath={workingDirForConnection}
+              agentName={AGENT_LABELS[selectedAgent]}
+              onFocus={handleFocus}
+              onSend={handleSend}
+              onCancel={handleCancel}
+              modes={connectionModes}
+              configOptions={connectionConfigOptions}
+              modeLoading={modeLoading}
+              configOptionsLoading={configOptionsLoading}
+              selectorsLoading={selectorsLoading}
+              selectedModeId={selectedModeId}
+              onModeChange={handleModeChange}
+              onConfigOptionChange={handleSetConfigOption}
+              agentType={selectedAgent}
+              availableCommands={connectionCommands}
+              attachmentTabId={tabId}
+              draftStorageKey={draftStorageKey}
+              isActive={isActive}
+            />
+          </div>
+          <div className="flex-1" />
+          <div className="mx-auto w-full max-w-2xl shrink-0 px-4 pb-6">
+            <WelcomeHero />
           </div>
         </div>
       ) : showDraftHeader ? (

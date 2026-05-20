@@ -1709,7 +1709,7 @@
         "askAnythingPlaceholder": "請開始輸入..."
       },
       "welcomePanel": {
-        "title": "歡迎使用 Codeg",
+        "greeting": "今天打算做些什麼呢？",
         "tips": {
           "tileTabs": "右鍵點擊會話標籤選擇「平鋪顯示」，可同螢幕對比多個會話",
           "pinTab": "雙擊會話標籤可將其固定，避免被新開啟的會話自動取代",

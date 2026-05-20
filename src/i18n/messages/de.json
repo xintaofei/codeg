@@ -1709,7 +1709,7 @@
         "askAnythingPlaceholder": "Fragen Sie alles..."
       },
       "welcomePanel": {
-        "title": "Willkommen bei Codeg",
+        "greeting": "Was möchtest du heute machen?",
         "tips": {
           "tileTabs": "Klicke mit der rechten Maustaste auf einen Konversations-Tab und wähle Kachelansicht, um mehrere Sitzungen nebeneinander zu sehen.",
           "pinTab": "Doppelklicke auf einen Konversations-Tab, um ihn anzuheften – so wird er nicht von einer neuen Sitzung automatisch ersetzt.",

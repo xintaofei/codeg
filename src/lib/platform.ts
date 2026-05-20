@@ -24,6 +24,22 @@ export async function subscribe<T>(
 }
 
 /**
+ * Register a callback to fire after a WebSocket transport reconnects.
+ * Returns an unsubscribe function. Returns `null` on IPC-only transports
+ * (desktop Tauri) where there's no disconnect window to recover from —
+ * callers that re-fetch state on reconnect can safely no-op in that case.
+ *
+ * Use this alongside `subscribe()` for state that must be re-synced after
+ * a network blip: the broadcaster drops events while `receiver_count == 0`,
+ * so anything fired during the disconnect window is lost.
+ */
+export function onTransportReconnect(
+  callback: () => void
+): UnsubscribeFn | null {
+  return getTransport().onReconnect?.(callback) ?? null
+}
+
+/**
  * Per-connection Subscribe-with-Snapshot stream. Returns `null` only on
  * the desktop Tauri transport (which uses local IPC and is race-free, so
  * the legacy `subscribe()` flow stays as the fallback). Web and remote-

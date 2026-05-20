@@ -1709,7 +1709,7 @@
         "askAnythingPlaceholder": "Ask anything..."
       },
       "welcomePanel": {
-        "title": "Welcome to Codeg",
+        "greeting": "What would you like to do today?",
         "tips": {
           "tileTabs": "Right-click any conversation tab and choose Tile Display to see multiple sessions side by side.",
           "pinTab": "Double-click a conversation tab to pin it, so a newly opened session won't auto-replace it.",

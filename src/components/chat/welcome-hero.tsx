@@ -99,56 +99,11 @@ export function WelcomeHero() {
   )
 
   return (
-    <div className="flex w-full flex-col items-center gap-6">
-      <div className="relative flex h-28 w-28 items-center justify-center">
-        <div
-          aria-hidden
-          className="pointer-events-none absolute h-60 w-[28rem] -rotate-45 blur-2xl"
-          style={{
-            background:
-              "radial-gradient(ellipse at center, color-mix(in oklab, var(--primary) 55%, transparent) 0%, transparent 70%)",
-          }}
-        />
-        <div
-          aria-hidden
-          className="pointer-events-none absolute h-40 w-64 -rotate-45 blur-xl"
-          style={{
-            background:
-              "radial-gradient(ellipse at center, color-mix(in oklab, var(--primary) 85%, transparent) 0%, transparent 65%)",
-          }}
-        />
-        <div
-          aria-hidden
-          className="pointer-events-none absolute h-28 w-72 -rotate-45 rounded-[50%] border"
-          style={{
-            borderColor: "color-mix(in oklab, var(--primary) 9%, transparent)",
-          }}
-        />
-        <div
-          aria-hidden
-          className="pointer-events-none absolute h-40 w-[26rem] -rotate-45 rounded-[50%] border"
-          style={{
-            borderColor: "color-mix(in oklab, var(--primary) 5%, transparent)",
-          }}
-        />
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src="/icon.svg"
-          alt=""
-          className="relative h-16 w-16 rounded-[22%] shadow-2xl shadow-primary/40 ring-1 ring-foreground/10"
-          draggable={false}
-        />
-      </div>
-
-      <div className="flex w-full flex-col items-center gap-2">
-        <h1 className="text-3xl font-semibold tracking-tight">{t("title")}</h1>
-        <div className="flex max-w-full items-start gap-2 text-sm text-muted-foreground">
-          <span className="flex h-[1.375em] shrink-0 items-center">
-            <Lightbulb aria-hidden className="h-4 w-4 text-muted-foreground" />
-          </span>
-          <p className="min-w-0 leading-snug">{tipNode}</p>
-        </div>
-      </div>
+    <div className="flex max-w-full items-start justify-center gap-2 text-center text-sm text-muted-foreground">
+      <span className="flex h-[1.375em] shrink-0 items-center">
+        <Lightbulb aria-hidden className="h-4 w-4 text-primary" />
+      </span>
+      <p className="min-w-0 leading-snug">{tipNode}</p>
     </div>
   )
 }
