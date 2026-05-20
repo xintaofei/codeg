@@ -25,6 +25,12 @@ import type {
 import { inferLiveToolName } from "@/lib/tool-call-normalization"
 import { toErrorMessage } from "@/lib/app-error"
 
+const CONVERSATION_TURN_PAGE_SIZE = 20
+
+interface FetchDetailOptions {
+  paginated?: boolean
+}
+
 export type ConversationSyncState = "idle" | "awaiting_persist"
 
 export type ConversationTimelinePhase = "persisted" | "optimistic" | "streaming"
@@ -46,6 +52,8 @@ export interface ConversationRuntimeSession {
   detail: DbConversationDetail | null
   detailLoading: boolean
   detailError: string | null
+  olderTurnsLoading: boolean
+  hasOlderTurns: boolean
 
   // ACP `session/load` failed in a non-recoverable way (currently only when
   // the agent reports ResourceNotFound for the historical session_id). Set
@@ -94,6 +102,20 @@ type Action =
     }
   | {
       type: "FETCH_DETAIL_ERROR"
+      conversationId: number
+      error: string
+    }
+  | {
+      type: "FETCH_OLDER_TURNS_START"
+      conversationId: number
+    }
+  | {
+      type: "FETCH_OLDER_TURNS_SUCCESS"
+      conversationId: number
+      detail: DbConversationDetail
+    }
+  | {
+      type: "FETCH_OLDER_TURNS_ERROR"
       conversationId: number
       error: string
     }
@@ -184,6 +206,8 @@ function createEmptySession(
     detail: null,
     detailLoading: false,
     detailError: null,
+    olderTurnsLoading: false,
+    hasOlderTurns: false,
     acpLoadError: null,
     localTurns: [],
     optimisticTurns: [],
@@ -707,6 +731,8 @@ function reducer(
         detail: action.detail,
         detailLoading: false,
         detailError: null,
+        olderTurnsLoading: false,
+        hasOlderTurns: (action.detail.turns_offset ?? 0) > 0,
         externalId: nextExternalId ?? current.externalId,
         localTurns: [],
         sessionStats: action.detail.session_stats ?? current.sessionStats,
@@ -734,6 +760,48 @@ function reducer(
       return updateSessionInState(state, action.conversationId, (current) => ({
         ...current,
         detailLoading: false,
+        detailError: action.error,
+        olderTurnsLoading: false,
+      }))
+
+    case "FETCH_OLDER_TURNS_START":
+      return updateSessionInState(state, action.conversationId, (current) => ({
+        ...current,
+        olderTurnsLoading: true,
+        detailError: null,
+      }))
+
+    case "FETCH_OLDER_TURNS_SUCCESS":
+      return updateSessionInState(state, action.conversationId, (current) => {
+        if (!current.detail) {
+          return {
+            ...current,
+            detail: action.detail,
+            olderTurnsLoading: false,
+            hasOlderTurns: (action.detail.turns_offset ?? 0) > 0,
+          }
+        }
+
+        return {
+          ...current,
+          detail: {
+            ...current.detail,
+            turns: [...action.detail.turns, ...current.detail.turns],
+            turns_offset: action.detail.turns_offset,
+            total_turns: action.detail.total_turns,
+            session_stats:
+              action.detail.session_stats ?? current.detail.session_stats,
+          },
+          olderTurnsLoading: false,
+          hasOlderTurns: (action.detail.turns_offset ?? 0) > 0,
+          sessionStats: action.detail.session_stats ?? current.sessionStats,
+        }
+      })
+
+    case "FETCH_OLDER_TURNS_ERROR":
+      return updateSessionInState(state, action.conversationId, (current) => ({
+        ...current,
+        olderTurnsLoading: false,
         detailError: action.error,
       }))
 
@@ -995,8 +1063,9 @@ interface ConversationRuntimeContextValue {
   getSession: (conversationId: number) => ConversationRuntimeSession | null
   getConversationIdByExternalId: (externalId: string) => number | null
   getTimelineTurns: (conversationId: number) => ConversationTimelineTurn[]
-  fetchDetail: (conversationId: number) => void
-  refetchDetail: (conversationId: number) => void
+  fetchDetail: (conversationId: number, options?: FetchDetailOptions) => void
+  refetchDetail: (conversationId: number, options?: FetchDetailOptions) => void
+  loadOlderTurns: (conversationId: number) => Promise<void>
   completeTurn: (
     conversationId: number,
     liveMessage?: LiveMessage | null
@@ -1111,47 +1180,99 @@ export function ConversationRuntimeProvider({
     [state.byConversationId]
   )
 
-  const fetchDetail = useCallback((conversationId: number) => {
-    const session = stateRef.current.byConversationId.get(conversationId)
-    if (session?.detail || session?.detailLoading) return
+  const fetchDetail = useCallback(
+    (conversationId: number, options?: FetchDetailOptions) => {
+      const session = stateRef.current.byConversationId.get(conversationId)
+      if (session?.detail || session?.detailLoading) return
 
-    // Skip fetch if session has active data (ongoing conversation)
+      // Skip fetch if session has active data (ongoing conversation)
+      if (
+        session &&
+        (session.optimisticTurns.length > 0 ||
+          session.liveMessage !== null ||
+          session.localTurns.length > 0)
+      ) {
+        return
+      }
+
+      dispatch({ type: "FETCH_DETAIL_START", conversationId })
+      getFolderConversation(
+        conversationId,
+        options?.paginated
+          ? {
+              latest: true,
+              limit: CONVERSATION_TURN_PAGE_SIZE,
+            }
+          : undefined
+      )
+        .then((detail) => {
+          dispatch({ type: "FETCH_DETAIL_SUCCESS", conversationId, detail })
+        })
+        .catch((error: unknown) => {
+          dispatch({
+            type: "FETCH_DETAIL_ERROR",
+            conversationId,
+            error: toErrorMessage(error),
+          })
+        })
+    },
+    []
+  )
+
+  const refetchDetail = useCallback(
+    (conversationId: number, options?: FetchDetailOptions) => {
+      dispatch({ type: "FETCH_DETAIL_START", conversationId })
+      getFolderConversation(
+        conversationId,
+        options?.paginated
+          ? {
+              latest: true,
+              limit: CONVERSATION_TURN_PAGE_SIZE,
+            }
+          : undefined
+      )
+        .then((detail) => {
+          dispatch({ type: "FETCH_DETAIL_SUCCESS", conversationId, detail })
+        })
+        .catch((error: unknown) => {
+          dispatch({
+            type: "FETCH_DETAIL_ERROR",
+            conversationId,
+            error: toErrorMessage(error),
+          })
+        })
+    },
+    []
+  )
+
+  const loadOlderTurns = useCallback(async (conversationId: number) => {
+    const session = stateRef.current.byConversationId.get(conversationId)
+    const currentOffset = session?.detail?.turns_offset ?? 0
     if (
-      session &&
-      (session.optimisticTurns.length > 0 ||
-        session.liveMessage !== null ||
-        session.localTurns.length > 0)
+      !session?.detail ||
+      session.olderTurnsLoading ||
+      !session.hasOlderTurns ||
+      currentOffset <= 0
     ) {
       return
     }
 
-    dispatch({ type: "FETCH_DETAIL_START", conversationId })
-    getFolderConversation(conversationId)
-      .then((detail) => {
-        dispatch({ type: "FETCH_DETAIL_SUCCESS", conversationId, detail })
+    const limit = Math.min(CONVERSATION_TURN_PAGE_SIZE, currentOffset)
+    const offset = Math.max(0, currentOffset - limit)
+    dispatch({ type: "FETCH_OLDER_TURNS_START", conversationId })
+    try {
+      const detail = await getFolderConversation(conversationId, {
+        offset,
+        limit,
       })
-      .catch((error: unknown) => {
-        dispatch({
-          type: "FETCH_DETAIL_ERROR",
-          conversationId,
-          error: toErrorMessage(error),
-        })
+      dispatch({ type: "FETCH_OLDER_TURNS_SUCCESS", conversationId, detail })
+    } catch (error: unknown) {
+      dispatch({
+        type: "FETCH_OLDER_TURNS_ERROR",
+        conversationId,
+        error: toErrorMessage(error),
       })
-  }, [])
-
-  const refetchDetail = useCallback((conversationId: number) => {
-    dispatch({ type: "FETCH_DETAIL_START", conversationId })
-    getFolderConversation(conversationId)
-      .then((detail) => {
-        dispatch({ type: "FETCH_DETAIL_SUCCESS", conversationId, detail })
-      })
-      .catch((error: unknown) => {
-        dispatch({
-          type: "FETCH_DETAIL_ERROR",
-          conversationId,
-          error: toErrorMessage(error),
-        })
-      })
+    }
   }, [])
 
   const syncTurnMetadata = useCallback(
@@ -1393,6 +1514,7 @@ export function ConversationRuntimeProvider({
       getTimelineTurns,
       fetchDetail,
       refetchDetail,
+      loadOlderTurns,
       syncTurnMetadata,
       completeTurn,
       appendOptimisticTurn,
@@ -1411,6 +1533,7 @@ export function ConversationRuntimeProvider({
       getTimelineTurns,
       fetchDetail,
       refetchDetail,
+      loadOlderTurns,
       syncTurnMetadata,
       completeTurn,
       appendOptimisticTurn,

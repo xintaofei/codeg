@@ -69,6 +69,7 @@ interface MessageListViewProps {
   hideEmptyState?: boolean
   onReload?: () => void
   onNewSession?: () => void
+  onLoadOlder?: () => void
 }
 
 interface ResolvedMessageGroup {
@@ -415,6 +416,7 @@ export function MessageListView({
   hideEmptyState = false,
   onReload,
   onNewSession,
+  onLoadOlder,
 }: MessageListViewProps) {
   const t = useTranslations("Folder.chat.messageList")
   const sharedT = useTranslations("Folder.chat.shared")
@@ -422,6 +424,7 @@ export function MessageListView({
   const session = getSession(conversationId)
   const liveMessage = session?.liveMessage ?? null
   const timelineTurns = getTimelineTurns(conversationId)
+  const persistedOffset = session?.detail?.turns_offset ?? 0
 
   const { setSessionStats } = useSessionStats()
 
@@ -701,6 +704,12 @@ export function MessageListView({
           getItemKey={(item) => item.key}
           renderItem={renderThreadItem}
           emptyState={emptyState}
+          onNearTop={
+            session?.hasOlderTurns && !session.olderTurnsLoading
+              ? onLoadOlder
+              : undefined
+          }
+          preserveScrollOnPrependKey={persistedOffset}
         />
         <MessageThreadScrollButton />
       </MessageThread>

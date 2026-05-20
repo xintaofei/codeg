@@ -30,6 +30,7 @@ import { useSessionStats } from "@/contexts/session-stats-context"
 import { useTaskContext } from "@/contexts/task-context"
 import { cn, copyTextToClipboard, randomUUID } from "@/lib/utils"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
+import { useIsMobile } from "@/hooks/use-mobile"
 import { useMessageQueue, type QueuedMessage } from "@/hooks/use-message-queue"
 import { MessageListView } from "@/components/message/message-list-view"
 import { ConversationShell } from "@/components/chat/conversation-shell"
@@ -161,6 +162,7 @@ const ConversationTabView = memo(function ConversationTabView({
     appendOptimisticTurn,
     completeTurn,
     getSession,
+    loadOlderTurns,
     refetchDetail,
     syncTurnMetadata,
     removeConversation,
@@ -236,6 +238,11 @@ const ConversationTabView = memo(function ConversationTabView({
   const createConversationPendingRef = useRef(false)
   const sessionIdRef = useRef<string | null>(null)
   const syncCancelRef = useRef<(() => void) | null>(null)
+  const isMobile = useIsMobile()
+  const detailFetchOptions = useMemo(
+    () => (isMobile ? { paginated: true } : undefined),
+    [isMobile]
+  )
 
   useEffect(() => {
     dbConvIdRef.current = dbConversationId
@@ -265,7 +272,7 @@ const ConversationTabView = memo(function ConversationTabView({
     loading: detailLoading,
     error: detailError,
     acpLoadError,
-  } = useConversationDetail(effectiveConversationId)
+  } = useConversationDetail(effectiveConversationId, detailFetchOptions)
 
   const runtimeSession = getSession(effectiveConversationId)
   const effectiveSessionStats = runtimeSession?.sessionStats ?? null
@@ -498,8 +505,8 @@ const ConversationTabView = memo(function ConversationTabView({
       signal: reloadSignal,
       sawLoading: false,
     }
-    refetchDetail(dbConversationId)
-  }, [dbConversationId, reloadSignal, refetchDetail])
+    refetchDetail(dbConversationId, detailFetchOptions)
+  }, [dbConversationId, detailFetchOptions, reloadSignal, refetchDetail])
 
   useEffect(() => {
     const pending = pendingReloadState.current
@@ -811,8 +818,19 @@ const ConversationTabView = memo(function ConversationTabView({
     if (acpLoadError) {
       acpActions.clearAcpLoadError(tabId)
     }
-    refetchDetail(dbConversationId)
-  }, [acpActions, acpLoadError, dbConversationId, refetchDetail, tabId])
+    refetchDetail(dbConversationId, detailFetchOptions)
+  }, [
+    acpActions,
+    acpLoadError,
+    dbConversationId,
+    detailFetchOptions,
+    refetchDetail,
+    tabId,
+  ])
+  const handleLoadOlderTurns = useCallback(() => {
+    if (dbConversationId == null) return
+    void loadOlderTurns(dbConversationId)
+  }, [dbConversationId, loadOlderTurns])
   // Open (or re-activate) the singleton draft tab BEFORE closing the failing
   // tab. closeTab auto-creates a replacement draft when it removes the last
   // tab, and `openNewConversationTab` reads `rawTabsRef.current` which
@@ -842,6 +860,7 @@ const ConversationTabView = memo(function ConversationTabView({
       onNewSession={
         canShowDetailErrorActions ? handleOpenNewSession : undefined
       }
+      onLoadOlder={handleLoadOlderTurns}
     />
   )
 

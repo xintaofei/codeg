@@ -60,6 +60,10 @@ pub struct DbConversationDetail {
     pub summary: DbConversationSummary,
     pub turns: Vec<MessageTurn>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub turns_offset: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_turns: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub session_stats: Option<SessionStats>,
 }
 

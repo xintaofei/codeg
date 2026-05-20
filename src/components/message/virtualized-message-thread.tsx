@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useMemo, useRef } from "react"
+import { useCallback, useEffect, useMemo, useRef } from "react"
 import type { CSSProperties, ReactNode, RefObject } from "react"
 import { Virtualizer, type VirtualizerHandle } from "virtua"
 import { useStickToBottomContext } from "use-stick-to-bottom"
@@ -45,6 +45,8 @@ interface VirtualizedMessageThreadProps<T> {
   contentClassName?: string
   /** Extra props forwarded to MessageThreadContent. */
   contentProps?: Omit<MessageThreadContentProps, "children" | "className">
+  onNearTop?: () => void
+  preserveScrollOnPrependKey?: number | string | null
 }
 
 export function VirtualizedMessageThread<T>({
@@ -59,9 +61,17 @@ export function VirtualizedMessageThread<T>({
   className,
   contentClassName,
   contentProps,
+  onNearTop,
+  preserveScrollOnPrependKey,
 }: VirtualizedMessageThreadProps<T>) {
   const { scrollRef } = useStickToBottomContext()
   const virtualizerHandleRef = useRef<VirtualizerHandle>(null)
+  const beforePrependRef = useRef<{
+    key: number | string | null | undefined
+    scrollHeight: number
+    scrollTop: number
+  } | null>(null)
+  const nearTopLoadKeyRef = useRef<number | string | null | undefined>(null)
 
   const scrollToIndex = useCallback<MessageScrollContextValue["scrollToIndex"]>(
     (index, opts) => {
@@ -92,6 +102,36 @@ export function VirtualizedMessageThread<T>({
     if (index === total - 1) return styles.last
     return styles.middle
   }
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el || !onNearTop) return
+    const handleScroll = () => {
+      if (el.scrollTop > 240) return
+      if (nearTopLoadKeyRef.current === preserveScrollOnPrependKey) return
+      nearTopLoadKeyRef.current = preserveScrollOnPrependKey
+      beforePrependRef.current = {
+        key: preserveScrollOnPrependKey,
+        scrollHeight: el.scrollHeight,
+        scrollTop: el.scrollTop,
+      }
+      onNearTop()
+    }
+    el.addEventListener("scroll", handleScroll, { passive: true })
+    return () => el.removeEventListener("scroll", handleScroll)
+  }, [onNearTop, preserveScrollOnPrependKey, scrollRef])
+
+  useEffect(() => {
+    const snapshot = beforePrependRef.current
+    const el = scrollRef.current
+    if (!snapshot || !el) return
+    if (snapshot.key === preserveScrollOnPrependKey) return
+    beforePrependRef.current = null
+    nearTopLoadKeyRef.current = null
+    const heightDelta = el.scrollHeight - snapshot.scrollHeight
+    if (heightDelta <= 0) return
+    el.scrollTop = snapshot.scrollTop + heightDelta
+  }, [preserveScrollOnPrependKey, scrollRef])
 
   return (
     <MessageScrollProvider value={scrollContextValue}>

@@ -258,6 +258,8 @@ export interface ImportResult {
 export interface DbConversationDetail {
   summary: DbConversationSummary
   turns: MessageTurn[]
+  turns_offset?: number | null
+  total_turns?: number | null
   session_stats?: SessionStats | null
 }
 

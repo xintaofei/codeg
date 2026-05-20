@@ -283,6 +283,9 @@ pub async fn import_local_conversations(
 pub async fn get_folder_conversation_core(
     conn: &sea_orm::DatabaseConnection,
     conversation_id: i32,
+    offset: Option<usize>,
+    limit: Option<usize>,
+    latest: Option<bool>,
 ) -> Result<DbConversationDetail, AppCommandError> {
     let summary = conversation_service::get_by_id(conn, conversation_id)
         .await
@@ -370,11 +373,31 @@ pub async fn get_folder_conversation_core(
     }
 
     let mut summary = summary;
-    summary.message_count = turns.len() as u32;
+    let total_turns = turns.len();
+    summary.message_count = total_turns as u32;
+    let wants_page = offset.is_some() || limit.is_some() || latest.unwrap_or(false);
+    let page_limit = limit.unwrap_or(total_turns).min(total_turns);
+    let page_offset = if latest.unwrap_or(false) {
+        total_turns.saturating_sub(page_limit)
+    } else {
+        offset.unwrap_or(0).min(total_turns)
+    };
+    let turns = if wants_page {
+        let page_end = page_offset.saturating_add(page_limit).min(total_turns);
+        turns
+            .into_iter()
+            .skip(page_offset)
+            .take(page_end.saturating_sub(page_offset))
+            .collect()
+    } else {
+        turns
+    };
 
     Ok(DbConversationDetail {
         summary,
         turns,
+        turns_offset: wants_page.then_some(page_offset),
+        total_turns: wants_page.then_some(total_turns),
         session_stats,
     })
 }
@@ -384,8 +407,11 @@ pub async fn get_folder_conversation_core(
 pub async fn get_folder_conversation(
     db: tauri::State<'_, AppDatabase>,
     conversation_id: i32,
+    offset: Option<usize>,
+    limit: Option<usize>,
+    latest: Option<bool>,
 ) -> Result<DbConversationDetail, AppCommandError> {
-    get_folder_conversation_core(&db.conn, conversation_id).await
+    get_folder_conversation_core(&db.conn, conversation_id, offset, limit, latest).await
 }
 
 /// Core logic for creating a conversation with git branch detection.
