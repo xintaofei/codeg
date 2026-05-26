@@ -23,6 +23,20 @@ Codeg（Code Generation）是一个多智能体编码工作台，它将多个智
 
 ![gallery](../images/gallery.svg)
 
+## 赞助
+
+<table>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://www.compshare.cn/?ytag=GPU_YY_git_codeg" target="_blank"><img src="../images/compshare.png" alt="优云智算" width="160" /></a><br/>
+      <strong><a href="https://www.compshare.cn/?ytag=GPU_YY_git_codeg">优云智算</a></strong>
+    </td>
+    <td>感谢优云智算赞助了本项目！优云智算是 UCloud 旗下 AI 云平台，主打包月、按次的高性价比国模 agent Plan 套餐，低至 49 元/月起。同时提供官转稳定海外模型。支持接入 Claude Code、Codex 及 API 调用。支持企业高并发、7*24 技术支持、自助开票。通过<a href="https://www.compshare.cn/?ytag=GPU_YY_git_codeg">此链接</a>注册的用户，可得免费 5 元平台体验金！</td>
+  </tr>
+</table>
+
+> 想成为 Codeg 赞助商？[欢迎通过邮件与我们联系。](mailto:itpkcn@gmail.com)
+
 ## 主界面
 
 ![Codeg Light](../images/main-light.png#gh-light-mode-only)
