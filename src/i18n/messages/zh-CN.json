@@ -485,7 +485,17 @@
       "saving": "保存中…",
       "saved": "委托设置已保存",
       "saveFailed": "委托设置保存失败",
-      "loadFailed": "加载委托设置失败：{detail}"
+      "loadFailed": "加载委托设置失败：{detail}",
+      "tabGeneral": "通用",
+      "tabAgentDefaults": "子智能体配置",
+      "agentDefaultsDescription": "多智能体协同在为委托调用启动子智能体时使用这些覆盖项。下方选项通过实时探测获取，所选即所用。",
+      "probing": "正在加载该智能体的可用配置项…",
+      "probeFailed": "加载配置项失败：{detail}",
+      "retry": "重试",
+      "noConfigAvailable": "该智能体没有可配置项。",
+      "modeLabel": "模式",
+      "agentDefaultHint": "智能体默认：{value}",
+      "defaultOptionLabel": "默认（{value}）"
     },
     "actions": {
       "dragSort": "拖拽排序",

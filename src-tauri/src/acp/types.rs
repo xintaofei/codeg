@@ -285,6 +285,20 @@ pub struct SessionConfigOptionInfo {
     pub kind: SessionConfigKindInfo,
 }
 
+/// Read-only snapshot of the modes + config_options an agent advertises
+/// when it opens a new session. Used by `ConnectionManager::probe_agent_options`
+/// to give the delegation settings UI an authoritative view of what an
+/// agent will accept (no reliance on chat-side caches).
+///
+/// Both fields mirror `SessionState`: `modes` is `None` when the agent
+/// reports no mode catalog (e.g. some thin wrappers); `config_options` is
+/// empty when the agent advertises no configurable options.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentOptionsSnapshot {
+    pub modes: Option<SessionModeStateInfo>,
+    pub config_options: Vec<SessionConfigOptionInfo>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanEntryInfo {
     pub content: String,

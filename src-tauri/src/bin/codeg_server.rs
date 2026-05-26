@@ -151,7 +151,11 @@ async fn async_main() {
     let pet_state_handle = codeg_lib::pet_state_mapper::new_pet_state_handle();
     let connection_manager = codeg_lib::app_state::default_connection_manager();
     let (delegation_broker, delegation_tokens, delegation_socket_path) =
-        codeg_lib::app_state::build_delegation_stack(&connection_manager, db.conn.clone());
+        codeg_lib::app_state::build_delegation_stack(
+            &connection_manager,
+            db.conn.clone(),
+            data_dir.clone(),
+        );
     let state = Arc::new(AppState {
         db,
         connection_manager,

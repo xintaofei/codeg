@@ -10,9 +10,33 @@
 //! column types — keeping them strongly typed here saves us a parse-or-die step
 //! at every DB boundary.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::models::AgentType;
+
+/// Per-agent defaults applied when codeg-mcp spawns a subagent on behalf of a
+/// `delegate_to_agent` call. Mirrors the two knobs `ConnectionManager::spawn_agent`
+/// already accepts:
+///   * `mode_id` → forwarded as `preferred_mode_id`
+///   * `config_values` → forwarded as `preferred_config_values`
+///
+/// All fields are optional / may be empty; an absent entry means "no override —
+/// use whatever the agent advertises as the default."
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentDelegationDefaults {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode_id: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config_values: BTreeMap<String, String>,
+}
+
+impl AgentDelegationDefaults {
+    pub fn is_empty(&self) -> bool {
+        self.mode_id.is_none() && self.config_values.is_empty()
+    }
+}
 
 /// Everything the broker needs to dispatch a single delegation call.
 ///

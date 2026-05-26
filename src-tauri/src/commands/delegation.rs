@@ -13,6 +13,7 @@
 //! no longer applies a timeout; cancellation flows through MCP
 //! `notifications/cancelled` instead).
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 #[cfg(any(test, feature = "tauri-runtime"))]
 use std::sync::Arc;
@@ -21,11 +22,17 @@ use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 
 use crate::acp::delegation::broker::{DelegationBroker, DelegationConfig};
+use crate::acp::delegation::types::AgentDelegationDefaults;
 use crate::app_error::AppCommandError;
 use crate::db::service::app_metadata_service;
+use crate::models::AgentType;
 
 pub const KEY_DELEGATION_ENABLED: &str = "delegation.enabled";
 pub const KEY_DELEGATION_DEPTH: &str = "delegation.depth_limit";
+/// Single JSON-serialized key for the per-agent delegation overrides.
+/// Stored as one blob (rather than one row per agent×option) because the
+/// option set is dynamic and per-agent — flat keys can't enumerate it.
+pub const KEY_DELEGATION_AGENT_DEFAULTS: &str = "delegation.agent_defaults";
 
 pub const DEPTH_MIN: u32 = 1;
 pub const DEPTH_MAX: u32 = 8;
@@ -39,6 +46,11 @@ pub struct DelegationSocketPath(pub PathBuf);
 pub struct DelegationSettings {
     pub enabled: bool,
     pub depth_limit: u32,
+    /// Per-agent default overrides applied by the delegation broker when
+    /// codeg-mcp spawns a subagent. Empty map → no overrides anywhere,
+    /// which is the pre-existing behavior.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub agent_defaults: BTreeMap<AgentType, AgentDelegationDefaults>,
 }
 
 impl Default for DelegationSettings {
@@ -46,6 +58,7 @@ impl Default for DelegationSettings {
         Self {
             enabled: true,
             depth_limit: 2,
+            agent_defaults: BTreeMap::new(),
         }
     }
 }
@@ -55,6 +68,11 @@ impl DelegationSettings {
         Self {
             enabled: self.enabled,
             depth_limit: self.depth_limit.clamp(DEPTH_MIN, DEPTH_MAX),
+            agent_defaults: self
+                .agent_defaults
+                .into_iter()
+                .filter(|(_, v)| !v.is_empty())
+                .collect(),
         }
     }
 
@@ -62,6 +80,7 @@ impl DelegationSettings {
         DelegationConfig {
             enabled: self.enabled,
             depth_limit: self.depth_limit,
+            agent_defaults: self.agent_defaults,
         }
     }
 }
@@ -79,6 +98,17 @@ pub async fn load_delegation_settings(conn: &DatabaseConnection) -> DelegationSe
     if let Ok(Some(raw)) = app_metadata_service::get_value(conn, KEY_DELEGATION_DEPTH).await {
         if let Ok(v) = raw.parse::<u32>() {
             settings.depth_limit = v;
+        }
+    }
+    if let Ok(Some(raw)) =
+        app_metadata_service::get_value(conn, KEY_DELEGATION_AGENT_DEFAULTS).await
+    {
+        // Corrupt JSON → keep defaults (empty map). Matches the "never errors
+        // hard" contract on the other two keys above.
+        if let Ok(parsed) =
+            serde_json::from_str::<BTreeMap<AgentType, AgentDelegationDefaults>>(&raw)
+        {
+            settings.agent_defaults = parsed;
         }
     }
     settings.clamped()
@@ -107,6 +137,19 @@ pub async fn set_delegation_settings_core(
         conn,
         KEY_DELEGATION_DEPTH,
         &clamped.depth_limit.to_string(),
+    )
+    .await
+    .map_err(AppCommandError::from)?;
+    // Whole-blob replace semantics: save mirrors what the UI sent. Empty map
+    // serializes to "{}" — still write it so a user can clear all overrides
+    // back to the agent defaults.
+    let agent_defaults_json = serde_json::to_string(&clamped.agent_defaults).map_err(|e| {
+        AppCommandError::configuration_invalid(format!("serialize agent_defaults: {e}"))
+    })?;
+    app_metadata_service::upsert_value(
+        conn,
+        KEY_DELEGATION_AGENT_DEFAULTS,
+        &agent_defaults_json,
     )
     .await
     .map_err(AppCommandError::from)?;
@@ -178,6 +221,7 @@ mod tests {
         let s = DelegationSettings {
             enabled: true,
             depth_limit: 99,
+            ..DelegationSettings::default()
         }
         .clamped();
         assert_eq!(s.depth_limit, DEPTH_MAX);
@@ -198,6 +242,7 @@ mod tests {
         let desired = DelegationSettings {
             enabled: false,
             depth_limit: 3,
+            ..DelegationSettings::default()
         };
         let saved = set_delegation_settings_core(&db.conn, &broker, desired)
             .await
@@ -215,6 +260,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_defaults_round_trip_through_db_and_broker() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let broker = make_broker();
+
+        let mut claude_cfg = BTreeMap::new();
+        claude_cfg.insert("model".into(), "claude-sonnet-4-5".into());
+        let mut agent_defaults: BTreeMap<AgentType, AgentDelegationDefaults> = BTreeMap::new();
+        agent_defaults.insert(
+            AgentType::ClaudeCode,
+            AgentDelegationDefaults {
+                mode_id: Some("auto".into()),
+                config_values: claude_cfg.clone(),
+            },
+        );
+
+        let desired = DelegationSettings {
+            enabled: true,
+            depth_limit: 4,
+            agent_defaults: agent_defaults.clone(),
+        };
+        let saved = set_delegation_settings_core(&db.conn, &broker, desired)
+            .await
+            .unwrap();
+        assert_eq!(saved.agent_defaults, agent_defaults);
+
+        // Re-read from DB — the JSON blob should round-trip identically.
+        let loaded = load_delegation_settings(&db.conn).await;
+        assert_eq!(loaded.agent_defaults, agent_defaults);
+
+        // Broker should have the same map applied.
+        let cfg = broker.config_snapshot().await;
+        let entry = cfg.agent_defaults.get(&AgentType::ClaudeCode).unwrap();
+        assert_eq!(entry.mode_id.as_deref(), Some("auto"));
+        assert_eq!(entry.config_values, claude_cfg);
+    }
+
+    #[tokio::test]
+    async fn clamped_drops_empty_agent_defaults_entries() {
+        // Empty entries (no mode, no config_values) should be filtered out so
+        // the persisted JSON stays compact.
+        let mut agent_defaults: BTreeMap<AgentType, AgentDelegationDefaults> = BTreeMap::new();
+        agent_defaults.insert(AgentType::ClaudeCode, AgentDelegationDefaults::default());
+        agent_defaults.insert(
+            AgentType::Codex,
+            AgentDelegationDefaults {
+                mode_id: Some("auto".into()),
+                config_values: BTreeMap::new(),
+            },
+        );
+        let s = DelegationSettings {
+            enabled: true,
+            depth_limit: 2,
+            agent_defaults,
+        }
+        .clamped();
+        assert!(!s.agent_defaults.contains_key(&AgentType::ClaudeCode));
+        assert!(s.agent_defaults.contains_key(&AgentType::Codex));
+    }
+
+    #[tokio::test]
     async fn set_clamps_out_of_range_values() {
         let db = crate::db::test_helpers::fresh_in_memory_db().await;
         let broker = make_broker();
@@ -224,6 +329,7 @@ mod tests {
             DelegationSettings {
                 enabled: true,
                 depth_limit: 999,
+                ..DelegationSettings::default()
             },
         )
         .await

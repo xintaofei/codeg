@@ -485,7 +485,17 @@
       "saving": "Enregistrement…",
       "saved": "Paramètres de délégation enregistrés",
       "saveFailed": "Échec de l’enregistrement des paramètres de délégation",
-      "loadFailed": "Échec du chargement des paramètres de délégation : {detail}"
+      "loadFailed": "Échec du chargement des paramètres de délégation : {detail}",
+      "tabGeneral": "Général",
+      "tabAgentDefaults": "Valeurs par défaut du sous-agent",
+      "agentDefaultsDescription": "Remplacements par agent appliqués lorsque la Collaboration multi-agent démarre un sous-agent pour un appel de délégation. Les options affichées proviennent d’une sonde en direct : votre sélection correspond exactement à ce que l’agent acceptera.",
+      "probing": "Chargement des options disponibles depuis l’agent…",
+      "probeFailed": "Échec du chargement des options : {detail}",
+      "retry": "Réessayer",
+      "noConfigAvailable": "Cet agent n’a aucune option configurable.",
+      "modeLabel": "Mode",
+      "agentDefaultHint": "Valeur par défaut de l’agent : {value}",
+      "defaultOptionLabel": "Par défaut ({value})"
     },
     "actions": {
       "dragSort": "Glisser pour réordonner",

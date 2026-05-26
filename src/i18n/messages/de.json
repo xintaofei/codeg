@@ -485,7 +485,17 @@
       "saving": "Wird gespeichert…",
       "saved": "Delegationseinstellungen gespeichert",
       "saveFailed": "Delegationseinstellungen konnten nicht gespeichert werden",
-      "loadFailed": "Delegationseinstellungen konnten nicht geladen werden: {detail}"
+      "loadFailed": "Delegationseinstellungen konnten nicht geladen werden: {detail}",
+      "tabGeneral": "Allgemein",
+      "tabAgentDefaults": "Subagent-Standards",
+      "agentDefaultsDescription": "Pro-Agent-Überschreibungen, die angewendet werden, wenn die Multi-Agent-Zusammenarbeit einen Subagenten für einen Delegationsaufruf startet. Die hier gezeigten Optionen stammen aus einer Live-Abfrage – Ihre Auswahl ist exakt das, was der Agent akzeptiert.",
+      "probing": "Verfügbare Optionen vom Agenten werden geladen…",
+      "probeFailed": "Optionen konnten nicht geladen werden: {detail}",
+      "retry": "Erneut versuchen",
+      "noConfigAvailable": "Dieser Agent hat keine konfigurierbaren Optionen.",
+      "modeLabel": "Modus",
+      "agentDefaultHint": "Agent-Standard: {value}",
+      "defaultOptionLabel": "Standard ({value})"
     },
     "actions": {
       "dragSort": "Zum Neuordnen ziehen",

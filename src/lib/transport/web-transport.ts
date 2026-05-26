@@ -1,11 +1,22 @@
 import { WS_READY_CHANNEL } from "./constants"
 import type { AttachTransportHost } from "./web-event-stream"
 import { WebEventStream } from "./web-event-stream"
-import type { EventStream, Transport, UnsubscribeFn } from "./types"
+import type {
+  CallOptions,
+  EventStream,
+  Transport,
+  UnsubscribeFn,
+} from "./types"
 import { buildCodegWebSocketProtocols } from "./ws-auth"
 import { getCodegToken, redirectToCodegLogin } from "./web-auth"
 
-const WEB_CALL_TIMEOUT_MS = 30_000
+// 60s covers the worst-case ACP probe path: some agents (Gemini in
+// particular) burn 8–10s on the Initialize handshake before session/new
+// can even start. The backend probe timeout in `ConnectionManager::
+// probe_agent_options` is 60s, so the transport-level cap must be at
+// least that high — otherwise the UI aborts with "Request timed out"
+// while the backend is still holding a live probe process.
+const WEB_CALL_TIMEOUT_MS = 60_000
 // Upper bound on how long `subscribe()` will wait for the server `__ready__`
 // frame. Generous enough to cover slow local servers and remote round-trips
 // (typical: <100ms local, <1s WAN), but bounded so an older server (no
@@ -97,12 +108,22 @@ export class WebTransport implements Transport {
     }
   }
 
-  async call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  async call<T>(
+    command: string,
+    args?: Record<string, unknown>,
+    options?: CallOptions
+  ): Promise<T> {
     const token = getToken()
     const controller = new AbortController()
+    // Per-call override beats the transport-wide default. Used for
+    // commands whose backend handler has its own long deadline that
+    // would otherwise race with `WEB_CALL_TIMEOUT_MS` and surface
+    // "Request timed out" before the backend can return a structured
+    // error. See `describeAgentOptions` in `lib/api.ts`.
+    const effectiveTimeoutMs = options?.timeoutMs ?? WEB_CALL_TIMEOUT_MS
     const timeout = window.setTimeout(
       () => controller.abort(),
-      WEB_CALL_TIMEOUT_MS
+      effectiveTimeoutMs
     )
     let res: Response
     try {

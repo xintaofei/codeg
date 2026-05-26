@@ -486,6 +486,10 @@ pub fn build_router(
             "/acp_set_config_option",
             post(handlers::acp::acp_set_config_option),
         )
+        .route(
+            "/acp_describe_agent_options",
+            post(handlers::acp::acp_describe_agent_options),
+        )
         .route("/acp_cancel", post(handlers::acp::acp_cancel))
         .route("/acp_fork", post(handlers::acp::acp_fork))
         .route(

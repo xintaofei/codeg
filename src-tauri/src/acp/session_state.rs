@@ -139,6 +139,16 @@ pub struct PendingPermissionState {
 }
 
 /// 上下文 / 模型用量。
+/// Snapshot of the most recent `AcpEvent::Error`. Carried on
+/// `SessionState` so post-mortem readers (e.g. the delegation-settings
+/// probe) can surface the agent's own error after the connection task
+/// has already cleaned up.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionLastError {
+    pub message: String,
+    pub code: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UsageInfo {
     pub used: u64,
@@ -179,6 +189,17 @@ pub struct SessionState {
     /// on the snapshot so a frontend that reconnects after refresh can see
     /// "init complete" without waiting for an event that already fired.
     pub selectors_ready: bool,
+
+    /// Most recent `AcpEvent::Error` payload, or `None` if no error has
+    /// landed since the connection started. The probe path reads this
+    /// after `wait_for_session_options` errors so it can fold the
+    /// agent's own error message into the returned `AcpError` instead
+    /// of surfacing a generic "connection not found" once the
+    /// connection task has cleaned up its map entry.
+    ///
+    /// Not exposed on `to_snapshot()` today — chat-side error UX already
+    /// flows through the live `AcpEvent::Error` channel.
+    pub last_error: Option<SessionLastError>,
 
     /// Single-fire signal that fires when `SessionStarted` applies (i.e.
     /// `external_id` transitioned from None → Some). `ConnectionManager::
@@ -251,6 +272,7 @@ impl SessionState {
             available_commands: Vec::new(),
             usage: None,
             selectors_ready: false,
+            last_error: None,
             session_started_tx: None,
             event_seq: 0,
             last_activity_at: Utc::now(),
@@ -512,8 +534,18 @@ impl SessionState {
                 // already done — the event fires only once per connection.
                 self.selectors_ready = true;
             }
+            AcpEvent::Error { message, code, .. } => {
+                // Capture so post-mortem readers (probe path, debug
+                // snapshots) can surface the agent's own error message
+                // after the connection task has cleaned up its map
+                // entry. The same payload is independently emitted
+                // through the event channel for live chat-side UX.
+                self.last_error = Some(SessionLastError {
+                    message: message.clone(),
+                    code: code.clone(),
+                });
+            }
             AcpEvent::ClaudeSdkMessage { .. }
-            | AcpEvent::Error { .. }
             | AcpEvent::SessionLoadFailed { .. }
             | AcpEvent::DelegationStarted { .. }
             | AcpEvent::DelegationCompleted { .. } => {

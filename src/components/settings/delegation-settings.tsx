@@ -1,11 +1,14 @@
 "use client"
 
 /**
- * Multi-agent delegation settings panel. Owns the two knobs persisted by
- * `set_delegation_settings_core` on the Rust side:
+ * Multi-agent delegation settings panel. Two top-level concerns split into
+ * tabs:
  *
- *   * `enabled` — feature kill switch
- *   * `depth_limit` — bounds chain depth (1..=8)
+ *   * "General" — feature kill switch + chain depth limit. Persisted as
+ *     `delegation.enabled` / `delegation.depth_limit` on the Rust side.
+ *   * "Agent defaults" — per-agent overrides (mode + config_values) that
+ *     codeg-mcp uses when spawning a subagent for a `delegate_to_agent`
+ *     call. Persisted as `delegation.agent_defaults` (one JSON blob).
  *
  * Cancellation is handled out-of-band via MCP `notifications/cancelled`
  * forwarded from the parent agent CLI; there is no broker-side timeout to
@@ -25,11 +28,15 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   type DelegationSettings,
   getDelegationSettings,
   setDelegationSettings,
 } from "@/lib/api"
+import { toErrorMessage } from "@/lib/app-error"
+import type { AgentDelegationDefaults, AgentType } from "@/lib/types"
+import { DelegationAgentDefaultsPanel } from "./delegation-agent-defaults"
 
 const DEPTH_MIN = 1
 const DEPTH_MAX = 8
@@ -45,6 +52,9 @@ export function DelegationSettingsSection() {
   const [saving, setSaving] = useState(false)
   const [enabled, setEnabled] = useState(true)
   const [depth, setDepth] = useState<number>(2)
+  const [agentDefaults, setAgentDefaults] = useState<
+    Partial<Record<AgentType, AgentDelegationDefaults>>
+  >({})
   const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -54,11 +64,12 @@ export function DelegationSettingsSection() {
         if (cancelled) return
         setEnabled(s.enabled)
         setDepth(s.depth_limit)
+        setAgentDefaults(s.agent_defaults ?? {})
         setLoadError(null)
       })
       .catch((err: unknown) => {
         if (cancelled) return
-        setLoadError(err instanceof Error ? err.message : String(err))
+        setLoadError(toErrorMessage(err))
       })
       .finally(() => {
         if (cancelled) return
@@ -73,23 +84,25 @@ export function DelegationSettingsSection() {
     const payload: DelegationSettings = {
       enabled,
       depth_limit: clamp(depth, DEPTH_MIN, DEPTH_MAX),
+      agent_defaults: agentDefaults,
     }
     setSaving(true)
     try {
       const applied = await setDelegationSettings(payload)
-      // Mirror any server-side clamps back into the UI so the inputs reflect
-      // what was actually persisted.
+      // Mirror any server-side clamps / filter passes back into the UI so the
+      // inputs reflect what was actually persisted.
       setEnabled(applied.enabled)
       setDepth(applied.depth_limit)
+      setAgentDefaults(applied.agent_defaults ?? {})
       toast.success(t("saved"))
     } catch (err: unknown) {
       toast.error(t("saveFailed"), {
-        description: err instanceof Error ? err.message : String(err),
+        description: toErrorMessage(err),
       })
     } finally {
       setSaving(false)
     }
-  }, [enabled, depth, t])
+  }, [enabled, depth, agentDefaults, t])
 
   return (
     <section className="rounded-xl border bg-card p-4 space-y-4">
@@ -107,43 +120,63 @@ export function DelegationSettingsSection() {
         </p>
       )}
 
-      <div className="space-y-4">
-        <div className="flex items-center justify-between gap-3">
-          <div className="space-y-1">
-            <label htmlFor="delegation-enabled" className="text-sm font-medium">
-              {t("enable")}
-            </label>
-            <p className="text-xs text-muted-foreground">{t("enableHint")}</p>
-          </div>
-          <Switch
-            id="delegation-enabled"
-            checked={enabled}
-            onCheckedChange={setEnabled}
-            disabled={loading}
-          />
-        </div>
+      <Tabs defaultValue="general">
+        <TabsList>
+          <TabsTrigger value="general">{t("tabGeneral")}</TabsTrigger>
+          <TabsTrigger value="agentDefaults">
+            {t("tabAgentDefaults")}
+          </TabsTrigger>
+        </TabsList>
 
-        <div className="flex items-center justify-between gap-3">
-          <div className="space-y-1">
-            <label htmlFor="delegation-depth" className="text-sm font-medium">
-              {t("depthLimit")}
-            </label>
-            <p className="text-xs text-muted-foreground">
-              {t("depthHint", { min: DEPTH_MIN, max: DEPTH_MAX })}
-            </p>
+        <TabsContent value="general" className="space-y-4 pt-2">
+          <div className="flex items-center justify-between gap-3">
+            <div className="space-y-1">
+              <label
+                htmlFor="delegation-enabled"
+                className="text-sm font-medium"
+              >
+                {t("enable")}
+              </label>
+              <p className="text-xs text-muted-foreground">{t("enableHint")}</p>
+            </div>
+            <Switch
+              id="delegation-enabled"
+              checked={enabled}
+              onCheckedChange={setEnabled}
+              disabled={loading}
+            />
           </div>
-          <Input
-            id="delegation-depth"
-            type="number"
-            min={DEPTH_MIN}
-            max={DEPTH_MAX}
-            value={depth}
-            onChange={(e) => setDepth(Number(e.target.value))}
+
+          <div className="flex items-center justify-between gap-3">
+            <div className="space-y-1">
+              <label htmlFor="delegation-depth" className="text-sm font-medium">
+                {t("depthLimit")}
+              </label>
+              <p className="text-xs text-muted-foreground">
+                {t("depthHint", { min: DEPTH_MIN, max: DEPTH_MAX })}
+              </p>
+            </div>
+            <Input
+              id="delegation-depth"
+              type="number"
+              min={DEPTH_MIN}
+              max={DEPTH_MAX}
+              value={depth}
+              onChange={(e) => setDepth(Number(e.target.value))}
+              disabled={loading || !enabled}
+              className="w-24"
+            />
+          </div>
+        </TabsContent>
+
+        <TabsContent value="agentDefaults" className="pt-2">
+          <DelegationAgentDefaultsPanel
+            value={agentDefaults}
+            onChange={setAgentDefaults}
             disabled={loading || !enabled}
-            className="w-24"
           />
-        </div>
-      </div>
+        </TabsContent>
+      </Tabs>
 
       <div className="flex justify-end pt-2">
         <Button onClick={save} disabled={loading || saving} size="sm">

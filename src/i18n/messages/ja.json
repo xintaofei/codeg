@@ -485,7 +485,17 @@
       "saving": "保存中…",
       "saved": "委任設定を保存しました",
       "saveFailed": "委任設定の保存に失敗しました",
-      "loadFailed": "委任設定の読み込みに失敗しました: {detail}"
+      "loadFailed": "委任設定の読み込みに失敗しました: {detail}",
+      "tabGeneral": "一般",
+      "tabAgentDefaults": "サブエージェント設定",
+      "agentDefaultsDescription": "マルチエージェント連携が委任呼び出しのためにサブエージェントを起動するときに適用される上書き設定です。ここに表示されるオプションはライブプローブで取得しており、選択した内容がそのままエージェントに渡されます。",
+      "probing": "エージェントの利用可能な設定項目を読み込み中…",
+      "probeFailed": "設定項目の読み込みに失敗しました: {detail}",
+      "retry": "再試行",
+      "noConfigAvailable": "このエージェントには設定可能な項目がありません。",
+      "modeLabel": "モード",
+      "agentDefaultHint": "エージェント既定: {value}",
+      "defaultOptionLabel": "既定（{value}）"
     },
     "actions": {
       "dragSort": "ドラッグして並べ替え",

@@ -439,6 +439,16 @@ export interface SessionConfigOptionInfo {
   kind: SessionConfigKindInfo
 }
 
+export interface AgentOptionsSnapshot {
+  modes: SessionModeStateInfo | null
+  config_options: SessionConfigOptionInfo[]
+}
+
+export interface AgentDelegationDefaults {
+  mode_id?: string | null
+  config_values: Record<string, string>
+}
+
 export interface PlanEntryInfo {
   content: string
   priority: string

@@ -631,6 +631,7 @@ mod tests {
             .set_config(DelegationConfig {
                 enabled: true,
                 depth_limit: 8,
+                ..DelegationConfig::default()
             })
             .await;
         let tokens = Arc::new(TokenRegistry::default());

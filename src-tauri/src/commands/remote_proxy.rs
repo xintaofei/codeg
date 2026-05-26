@@ -67,10 +67,21 @@ use crate::workspace_transfer::{
     WORKSPACE_TRANSFER_PROGRESS_EVENT,
 };
 
-/// HTTP request timeout. Long enough to survive remote ACP prompts (which
-/// can stream for a while) but bounded so a hung remote can't lock a
-/// webview indefinitely. Matches the JS-side `REMOTE_CALL_TIMEOUT_MS`.
+/// Default HTTP request timeout. Long enough to survive remote ACP prompts
+/// (which can stream for a while) but bounded so a hung remote can't lock a
+/// webview indefinitely. Matches the JS-side `WEB_CALL_TIMEOUT_MS` ceiling
+/// for unannotated requests. Callers that need more (e.g. the 60s ACP
+/// `acp_describe_agent_options` probe) pass an explicit `timeout_ms` to
+/// `remote_http_call`, which then uses `RequestBuilder::timeout` to override
+/// this default for that single request.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Upper bound on per-request timeout overrides. Caps how much a caller can
+/// extend the default — protects against a buggy / malicious JS caller
+/// supplying a huge value and locking a Tauri command worker on a hung
+/// remote. 10 minutes is comfortably above every existing override (the
+/// longest today is 70s for `describeAgentOptions`).
+const HTTP_TIMEOUT_MAX: Duration = Duration::from_secs(600);
 
 /// Number of consecutive WS connect failures before we give up and emit
 /// `__unauthorized__`. Matches the JS-side `wsFailCount >= 3` threshold.
@@ -276,6 +287,7 @@ pub async fn remote_http_call(
     connection_id: i32,
     command: String,
     args: Option<Value>,
+    timeout_ms: Option<u64>,
 ) -> Result<Value, AppCommandError> {
     let conn = remote_workspace_connection_service::get(&db.conn, connection_id)
         .await
@@ -292,16 +304,22 @@ pub async fn remote_http_call(
 
     let body = args.unwrap_or(Value::Object(serde_json::Map::new()));
 
-    let response = proxy
+    let mut request = proxy
         .http
         .post(&url)
         .bearer_auth(conn.token.trim())
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| {
-            AppCommandError::network("Remote HTTP request failed").with_detail(e.to_string())
-        })?;
+        .json(&body);
+    // Per-request override beats the client-wide 30s default. Used by the
+    // ACP probe path (`describeAgentOptions`) whose backend deadline is
+    // longer than 30s — without this override, reqwest would abort here
+    // before the backend can return its structured `ProbeTimedOut`.
+    if let Some(ms) = timeout_ms {
+        let requested = Duration::from_millis(ms);
+        request = request.timeout(requested.min(HTTP_TIMEOUT_MAX));
+    }
+    let response = request.send().await.map_err(|e| {
+        AppCommandError::network("Remote HTTP request failed").with_detail(e.to_string())
+    })?;
 
     let status = response.status();
 

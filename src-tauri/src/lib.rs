@@ -372,8 +372,11 @@ mod tauri_app {
                 let broker_for_lifecycle = {
                     let cm_state = app.state::<ConnectionManager>();
                     let db_conn = app.state::<db::AppDatabase>().conn.clone();
-                    let (broker, tokens, socket_path) =
-                        crate::app_state::build_delegation_stack(&cm_state, db_conn.clone());
+                    let (broker, tokens, socket_path) = crate::app_state::build_delegation_stack(
+                        &cm_state,
+                        db_conn.clone(),
+                        effective_data_dir.clone(),
+                    );
                     app.manage(broker.clone());
                     app.manage(tokens.clone());
                     app.manage(crate::commands::delegation::DelegationSocketPath(
@@ -821,6 +824,7 @@ mod tauri_app {
                 acp_commands::acp_prompt,
                 acp_commands::acp_set_mode,
                 acp_commands::acp_set_config_option,
+                acp_commands::acp_describe_agent_options,
                 acp_commands::acp_cancel,
                 acp_commands::acp_fork,
                 acp_commands::acp_respond_permission,

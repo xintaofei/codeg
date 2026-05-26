@@ -485,7 +485,17 @@
       "saving": "Salvando…",
       "saved": "Configurações de delegação salvas",
       "saveFailed": "Falha ao salvar configurações de delegação",
-      "loadFailed": "Falha ao carregar configurações de delegação: {detail}"
+      "loadFailed": "Falha ao carregar configurações de delegação: {detail}",
+      "tabGeneral": "Geral",
+      "tabAgentDefaults": "Padrões do subagente",
+      "agentDefaultsDescription": "Substituições por agente aplicadas quando a Colaboração multiagente inicia um subagente para uma chamada de delegação. As opções mostradas vêm de uma sondagem ao vivo: o que você escolhe é exatamente o que o agente aceitará.",
+      "probing": "Carregando opções disponíveis do agente…",
+      "probeFailed": "Falha ao carregar opções: {detail}",
+      "retry": "Tentar novamente",
+      "noConfigAvailable": "Este agente não possui opções configuráveis.",
+      "modeLabel": "Modo",
+      "agentDefaultHint": "Padrão do agente: {value}",
+      "defaultOptionLabel": "Padrão ({value})"
     },
     "actions": {
       "dragSort": "Arraste para reordenar",

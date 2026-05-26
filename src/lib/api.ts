@@ -11,6 +11,8 @@ import { getCurrentEffectiveAppLocale } from "./i18n"
 import type { FolderThemeColor } from "./theme-presets"
 import type {
   AgentType,
+  AgentDelegationDefaults,
+  AgentOptionsSnapshot,
   ConversationSummary,
   ConversationDetail,
   DbConversationDetail,
@@ -2425,6 +2427,9 @@ export async function deleteModelProvider(id: number): Promise<void> {
 export interface DelegationSettings {
   enabled: boolean
   depth_limit: number
+  /** Optional per-agent overrides applied when codeg-mcp spawns a subagent.
+   * Keyed by `agent_type`. Missing entries mean "use agent defaults." */
+  agent_defaults?: Partial<Record<AgentType, AgentDelegationDefaults>>
 }
 
 export async function getDelegationSettings(): Promise<DelegationSettings> {
@@ -2435,4 +2440,30 @@ export async function setDelegationSettings(
   settings: DelegationSettings
 ): Promise<DelegationSettings> {
   return getTransport().call("set_delegation_settings", { settings })
+}
+
+/** Live probe — opens a transient ACP connection to `agent_type`, reads what
+ * it advertises (modes / config_options), and tears down. Used by the
+ * delegation-settings UI so the option set on screen matches exactly what
+ * codeg-mcp will receive when a subagent is spawned for delegation.
+ *
+ * Does NOT touch chat-side `selectorsCache` or `localStorage` preferences. */
+export async function describeAgentOptions(
+  agentType: AgentType,
+  workingDir?: string | null
+): Promise<AgentOptionsSnapshot> {
+  // The backend probe has its own 60s timeout (`ConnectionManager::
+  // probe_agent_options`) plus 500ms grace + poll/serialization
+  // overhead. The default transport timeout of 60s would race with
+  // that and surface "Request timed out" before the backend can
+  // return `ProbeTimedOut`. 70s gives the backend a clean margin to
+  // produce its structured error.
+  return getTransport().call(
+    "acp_describe_agent_options",
+    {
+      agentType,
+      workingDir: workingDir ?? null,
+    },
+    { timeoutMs: 70_000 }
+  )
 }

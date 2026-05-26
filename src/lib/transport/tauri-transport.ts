@@ -1,4 +1,4 @@
-import type { Transport, UnsubscribeFn } from "./types"
+import type { CallOptions, Transport, UnsubscribeFn } from "./types"
 
 type TauriEventListenersWindow = {
   __TAURI_EVENT_PLUGIN_INTERNALS__?: {
@@ -7,7 +7,15 @@ type TauriEventListenersWindow = {
 }
 
 export class TauriTransport implements Transport {
-  async call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  async call<T>(
+    command: string,
+    args?: Record<string, unknown>,
+    options?: CallOptions
+  ): Promise<T> {
+    // Tauri invoke() has no client-side timeout — the IPC channel runs
+    // for as long as the command needs. `options.timeoutMs` is part
+    // of the Transport contract for web-mode parity, ignored here.
+    void options
     const { invoke } = await import("@tauri-apps/api/core")
     return invoke(command, args)
   }

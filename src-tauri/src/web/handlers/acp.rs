@@ -13,7 +13,6 @@ use crate::acp::types::{
 use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::commands::acp as acp_commands;
-use crate::db::service::agent_setting_service;
 use crate::models::agent::AgentType;
 
 #[derive(Deserialize)]
@@ -62,49 +61,14 @@ pub async fn acp_connect(
     let db = &state.db;
     let manager = &state.connection_manager;
 
-    let setting = agent_setting_service::get_by_agent_type(&db.conn, params.agent_type)
-        .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
-    let disabled = setting
-        .as_ref()
-        .map(|model| !model.enabled)
-        .unwrap_or(false);
-    if disabled {
-        return Err(AppCommandError::task_execution_failed(format!(
-            "{} is disabled in settings",
-            params.agent_type
-        )));
-    }
-
-    let local_config_json = acp_commands::load_agent_local_config_json(params.agent_type);
-    let mut runtime_env = acp_commands::build_runtime_env_from_setting(
+    let runtime_env = acp_commands::build_session_runtime_env(
+        db,
         params.agent_type,
-        setting.as_ref(),
-        local_config_json.as_deref(),
-    );
-
-    // Resolve model provider credentials if configured.
-    acp_commands::apply_model_provider_env(
-        params.agent_type,
-        setting.as_ref(),
-        &mut runtime_env,
-        &db.conn,
+        params.session_id.as_deref(),
+        &state.data_dir,
     )
-    .await;
-
-    // Inject the codeg git credential helper so git invocations issued by
-    // the agent (or its child shells) authenticate against the GitHub
-    // accounts configured in Settings → Version Control, mirroring what
-    // the built-in terminal already does.
-    if let Some(cred_env) = crate::commands::terminal::prepare_credential_env(&state.data_dir) {
-        for (key, value) in cred_env {
-            runtime_env.insert(key, value);
-        }
-    }
-
-    if params.agent_type == AgentType::OpenClaw && params.session_id.is_none() {
-        runtime_env.insert("OPENCLAW_RESET_SESSION".into(), "1".into());
-    }
+    .await
+    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
 
     // Guard: the session page must never trigger a download or install.
     // If the agent isn't ready, return SdkNotInstalled here so the frontend
@@ -352,6 +316,30 @@ pub async fn acp_set_config_option(
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpDescribeAgentOptionsParams {
+    pub agent_type: crate::models::AgentType,
+    #[serde(default)]
+    pub working_dir: Option<String>,
+}
+
+pub async fn acp_describe_agent_options(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<AcpDescribeAgentOptionsParams>,
+) -> Result<Json<crate::acp::types::AgentOptionsSnapshot>, AppCommandError> {
+    let snapshot = crate::commands::acp::acp_describe_agent_options_core(
+        &state.connection_manager,
+        &state.db,
+        &state.data_dir,
+        params.agent_type,
+        params.working_dir,
+    )
+    .await
+    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(snapshot))
 }
 
 pub async fn acp_cancel(

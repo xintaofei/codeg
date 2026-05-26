@@ -4,6 +4,7 @@ import { WS_READY_CHANNEL } from "./constants"
 import type { AttachTransportHost } from "./web-event-stream"
 import { WebEventStream } from "./web-event-stream"
 import type {
+  CallOptions,
   EventStream,
   RemoteTransportConfig,
   Transport,
@@ -159,12 +160,21 @@ export class RemoteDesktopTransport implements Transport {
     }
   }
 
-  async call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  async call<T>(
+    command: string,
+    args?: Record<string, unknown>,
+    options?: CallOptions
+  ): Promise<T> {
     try {
+      // Forward `timeoutMs` through to `remote_http_call`. Without this,
+      // the Rust client's 30s default fires before the backend can answer
+      // — long-running commands (the 60s ACP probe in particular) would
+      // surface "Request timed out" before reaching their own deadline.
       const result = await invoke<T>("remote_http_call", {
         connectionId: this.config.id,
         command,
         args: args ?? {},
+        timeoutMs: options?.timeoutMs,
       })
       return result
     } catch (err) {

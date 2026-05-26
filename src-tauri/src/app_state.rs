@@ -68,6 +68,7 @@ pub fn default_chat_channel_manager() -> ChatChannelManager {
 pub fn build_delegation_stack(
     connection_manager: &ConnectionManager,
     db_conn: sea_orm::DatabaseConnection,
+    data_dir: PathBuf,
 ) -> (Arc<DelegationBroker>, Arc<TokenRegistry>, PathBuf) {
     use crate::acp::connection::DelegationInjection;
     use crate::acp::delegation::broker::{ConversationDepthLookup, DbDepthLookup};
@@ -86,6 +87,7 @@ pub fn build_delegation_stack(
     let spawner = Arc::new(ConnectionManagerSpawner {
         manager: cm_arc.clone(),
         db: db_arc.clone(),
+        data_dir: Arc::new(data_dir),
     }) as Arc<dyn ConnectionSpawner>;
     let depth_lookup = Arc::new(DbDepthLookup { db: db_arc }) as Arc<dyn ConversationDepthLookup>;
     let meta_writer = Arc::new(ConnectionManagerMetaWriter {
@@ -132,7 +134,7 @@ impl AppState {
 
         let connection_manager = default_connection_manager();
         let (delegation_broker, delegation_tokens, delegation_socket_path) =
-            build_delegation_stack(&connection_manager, db.conn.clone());
+            build_delegation_stack(&connection_manager, db.conn.clone(), data_dir.clone());
 
         Self {
             db,

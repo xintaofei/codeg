@@ -13,7 +13,8 @@ use sea_orm::{
 use crate::acp::connection::{spawn_agent_connection, AgentConnection, ConnectionCommand};
 use crate::acp::error::AcpError;
 use crate::acp::types::{
-    AcpEvent, ConnectionInfo, ConnectionStatus, ForkResultInfo, PromptInputBlock,
+    AcpEvent, AgentOptionsSnapshot, ConnectionInfo, ConnectionStatus, ForkResultInfo,
+    PromptInputBlock,
 };
 use crate::db::entities::conversation::{self, ConversationStatus};
 use crate::db::service::conversation_service;
@@ -112,6 +113,12 @@ pub struct ConnectionManager {
     /// init. `Arc<OnceLock>` so the inner `Self` cloned from `clone_ref` sees
     /// the install too — the lock is set once at startup and never mutated.
     delegation_injection: Arc<std::sync::OnceLock<crate::acp::connection::DelegationInjection>>,
+    /// Per-agent-type serialization for `probe_agent_options`. Without
+    /// this, rapid agent-tab clicks in the settings UI would fan out one
+    /// real CLI process per click — each one running up to 60s. The
+    /// mutex bounds concurrent probes for the same agent_type to one;
+    /// different agent_types remain parallel.
+    probe_locks: Arc<Mutex<HashMap<AgentType, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl Default for ConnectionManager {
@@ -127,6 +134,7 @@ impl ConnectionManager {
             spawn_locks: Arc::new(Mutex::new(HashMap::new())),
             spawn_handshake_timeout: spawn_handshake_timeout_from_env(),
             delegation_injection: Arc::new(std::sync::OnceLock::new()),
+            probe_locks: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -137,6 +145,7 @@ impl ConnectionManager {
             spawn_locks: self.spawn_locks.clone(),
             spawn_handshake_timeout: self.spawn_handshake_timeout,
             delegation_injection: self.delegation_injection.clone(),
+            probe_locks: self.probe_locks.clone(),
         }
     }
 
@@ -160,6 +169,7 @@ impl ConnectionManager {
             spawn_locks: Arc::new(Mutex::new(HashMap::new())),
             spawn_handshake_timeout: timeout,
             delegation_injection: Arc::new(std::sync::OnceLock::new()),
+            probe_locks: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -984,6 +994,171 @@ impl ConnectionManager {
         }
     }
 
+    /// Probe an agent for the modes / config_options it advertises on a fresh
+    /// session, then immediately disconnect. The probe runs with
+    /// `EventEmitter::Noop` so no event reaches the desktop webview, the
+    /// global `WebEventBroadcaster`, or the `InternalEventBus` — the events
+    /// land only in this probe connection's own (unsubscribed) per-connection
+    /// stream and in its `SessionState` (which is the read source here).
+    ///
+    /// Used by the delegation-settings UI to enumerate the options the user
+    /// can override, with the guarantee that what the UI shows is exactly
+    /// what `codeg-mcp` will pass through to `session/set_config_option`
+    /// when a delegation actually fires.
+    ///
+    /// Returns `Ok(snapshot)` even when the agent advertises no options
+    /// (empty `config_options`, `None` modes) — that's a valid outcome the
+    /// UI can render as "this agent has nothing to configure."
+    pub async fn probe_agent_options(
+        &self,
+        agent_type: AgentType,
+        working_dir: Option<String>,
+        runtime_env: BTreeMap<String, String>,
+    ) -> Result<AgentOptionsSnapshot, AcpError> {
+        // Owner window label is informational only (used for
+        // disconnect_by_owner_window), but worth being explicit so a probe
+        // connection that somehow leaks past the disconnect below is easy to
+        // identify in logs / debug snapshots.
+        let owner_window = "delegation-probe".to_string();
+        // Serialize concurrent probes for the same agent_type. Rapid tab
+        // switching in the settings UI would otherwise fan out one real
+        // CLI process per click — each one running up to 60s. The mutex
+        // bounds this to one in-flight probe per agent type; different
+        // agent_types still probe in parallel.
+        //
+        // The outer `probe_locks` guard MUST be dropped BEFORE the
+        // `.lock_owned().await` on the per-agent mutex. If we held it
+        // across the await, a probe queued behind another for the SAME
+        // agent_type would keep the outer map locked, blocking probes
+        // for every OTHER agent_type too — silently turning the
+        // per-agent serialization into a global one.
+        let per_agent_lock: Arc<tokio::sync::Mutex<()>> = {
+            let mut locks = self.probe_locks.lock().await;
+            locks
+                .entry(agent_type)
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        let _probe_guard = per_agent_lock.lock_owned().await;
+        let conn_id = self
+            .spawn_agent(
+                agent_type,
+                working_dir,
+                None, // brand-new session — no resume
+                runtime_env,
+                owner_window,
+                EventEmitter::Noop,
+                None,
+                BTreeMap::new(),
+            )
+            .await?;
+
+        // Hold an `Arc<RwLock<SessionState>>` alongside the manager's own
+        // entry so the state survives even if the connection task cleans
+        // up its map slot mid-handshake. Without this, an agent that
+        // errors during Initialize would trigger cleanup before the
+        // probe's poll loop sees the `AcpEvent::Error` payload, and
+        // `wait_for_session_options` would surface the unhelpful
+        // `ConnectionNotFound` instead of the agent's own error text.
+        let state_arc = self.get_state(&conn_id).await;
+
+        // Generous timeout because some agents (Gemini in particular) take
+        // 8-10s just to answer Initialize before session/new can even start;
+        // a tight cap here would consistently return an empty snapshot and
+        // make the settings UI claim those agents have nothing to configure.
+        // Matches the per-step Initialize timeout in `connection.rs`.
+        let probe_timeout = Duration::from_secs(60);
+        let raw_snapshot = self
+            .wait_for_session_options(&conn_id, probe_timeout)
+            .await;
+
+        // If the wait errored, prefer the agent's own captured error
+        // message over the generic ProbeTimedOut / ConnectionNotFound —
+        // an agent that died on Initialize already explained why.
+        let snapshot = match raw_snapshot {
+            Ok(s) => Ok(s),
+            Err(wait_err) => {
+                let captured = if let Some(state) = state_arc.as_ref() {
+                    state.read().await.last_error.clone()
+                } else {
+                    None
+                };
+                Err(match captured {
+                    Some(err) => AcpError::protocol(err.message),
+                    None => wait_err,
+                })
+            }
+        };
+
+        // Always disconnect — including on Err — so a failed probe doesn't
+        // leak an agent process. Ignore disconnect errors (best-effort
+        // cleanup; the agent will exit when its stdio is dropped anyway).
+        let _ = self.disconnect(&conn_id).await;
+        snapshot
+    }
+
+    /// Poll a connection's `SessionState` until the agent signals it has
+    /// finished publishing its initial selectors (`SelectorsReady`), then
+    /// give a small grace window for any tightly-following follow-up updates
+    /// before snapshotting. Waiting on `selectors_ready` — not just
+    /// `config_options.is_some()` — matters because some agents emit an
+    /// empty `SessionConfigOptions` first and then push the real options
+    /// in a subsequent update; returning on the first `Some(vec![])` would
+    /// race ahead of those updates and report the agent as having nothing
+    /// to configure.
+    ///
+    /// The `SessionConfigOptions` / `SelectorsReady` ACP events populate
+    /// `SessionState` via `apply_event` regardless of which `EventEmitter`
+    /// variant the connection uses — that's why the probe can rely on
+    /// `Noop` and still observe the values here.
+    ///
+    /// Returns `AcpError::ProbeTimedOut` when the timeout elapses without
+    /// `selectors_ready` ever flipping to `true`. Distinguishing that case
+    /// from a clean "ready with no options" snapshot lets the UI tell the
+    /// user "the agent never published its options — retry" instead of
+    /// silently claiming the agent has nothing to configure.
+    async fn wait_for_session_options(
+        &self,
+        conn_id: &str,
+        timeout: Duration,
+    ) -> Result<AgentOptionsSnapshot, AcpError> {
+        let start = std::time::Instant::now();
+        let poll_interval = Duration::from_millis(50);
+        // Grace window between `selectors_ready` flipping true and the
+        // snapshot we return. Lets a stragging `ConfigOptionUpdate` that
+        // an agent emits in the same tick land before we read.
+        let grace_period = Duration::from_millis(500);
+        let mut selectors_ready_at: Option<std::time::Instant> = None;
+        loop {
+            let (config_options, modes, selectors_ready) = {
+                let conns = self.connections.lock().await;
+                let conn = conns
+                    .get(conn_id)
+                    .ok_or_else(|| AcpError::ConnectionNotFound(conn_id.into()))?;
+                let s = conn.state.read().await;
+                (
+                    s.config_options.clone(),
+                    s.modes.clone(),
+                    s.selectors_ready,
+                )
+            };
+            if selectors_ready {
+                let ready_at = *selectors_ready_at
+                    .get_or_insert_with(std::time::Instant::now);
+                if ready_at.elapsed() >= grace_period {
+                    return Ok(AgentOptionsSnapshot {
+                        modes,
+                        config_options: config_options.unwrap_or_default(),
+                    });
+                }
+            }
+            if start.elapsed() >= timeout {
+                return Err(AcpError::ProbeTimedOut);
+            }
+            tokio::time::sleep(poll_interval).await;
+        }
+    }
+
     pub async fn disconnect_by_owner_window(&self, owner_window_label: &str) -> usize {
         let cmd_txs = {
             let mut connections = self.connections.lock().await;
@@ -1089,10 +1264,15 @@ impl ConnectionManager {
 /// happens inside `ConnectionManager::cancel`. The wrapper exists so the
 /// broker can depend on a small `dyn`-able interface instead of pulling
 /// in the full `AppState` graph.
+///
+/// `data_dir` is required so `spawn` can build a runtime env that
+/// includes the git credential helper — without it, delegated subagents
+/// fail any git command that depends on the codeg-injected helper.
 #[derive(Clone)]
 pub struct ConnectionManagerSpawner {
     pub manager: Arc<ConnectionManager>,
     pub db: Arc<AppDatabase>,
+    pub data_dir: Arc<PathBuf>,
 }
 
 #[async_trait::async_trait]
@@ -1102,6 +1282,8 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
         parent_connection_id: &str,
         agent_type: AgentType,
         working_dir: Option<String>,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
     ) -> Result<String, crate::acp::delegation::spawner::SpawnerError> {
         use crate::acp::delegation::spawner::SpawnerError;
         // Resolve the parent connection so we can inherit its emitter and
@@ -1128,16 +1310,30 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
             )
         };
         let effective_working_dir = working_dir.or(parent_working_dir);
+
+        // Build the same runtime env `acp_connect` would build for a
+        // user-initiated session — disabled check, settings overrides,
+        // model provider creds, git helper. Without this, delegated
+        // subagents would skip the user's configuration entirely.
+        let runtime_env = crate::commands::acp::build_session_runtime_env(
+            &self.db,
+            agent_type,
+            None,
+            self.data_dir.as_path(),
+        )
+        .await
+        .map_err(|e| SpawnerError::Spawn(e.to_string()))?;
+
         self.manager
             .spawn_agent(
                 agent_type,
                 effective_working_dir,
                 None,
-                BTreeMap::new(),
+                runtime_env,
                 owner_window,
                 emitter,
-                None,
-                BTreeMap::new(),
+                preferred_mode_id,
+                preferred_config_values,
             )
             .await
             .map_err(|e| SpawnerError::Spawn(e.to_string()))
@@ -2428,5 +2624,204 @@ mod tests {
             err.to_string().contains("linked conversation row"),
             "error should mention missing linkage, got: {err}"
         );
+    }
+
+    // --- wait_for_session_options polling ----------------------------------
+    //
+    // These tests exercise the probe's wait loop directly by hand-seeding
+    // `SessionState` on an injected connection. They avoid spawning a real
+    // agent (which is what `probe_agent_options` itself would do) — the goal
+    // is to lock in the three behaviors the public API depends on:
+    //   1. ready+grace → Ok(snapshot) reflecting current state
+    //   2. never-ready within timeout → Err(ProbeTimedOut), not Ok(empty)
+    //   3. selectors_ready=true with empty options → Ok(empty snapshot)
+
+    use crate::acp::types::{
+        SessionConfigKindInfo, SessionConfigOptionInfo, SessionConfigSelectInfo,
+        SessionModeInfo, SessionModeStateInfo,
+    };
+
+    fn sample_modes() -> SessionModeStateInfo {
+        SessionModeStateInfo {
+            current_mode_id: "default".into(),
+            available_modes: vec![
+                SessionModeInfo {
+                    id: "default".into(),
+                    name: "Default".into(),
+                    description: None,
+                },
+                SessionModeInfo {
+                    id: "yolo".into(),
+                    name: "YOLO".into(),
+                    description: None,
+                },
+            ],
+        }
+    }
+
+    fn sample_config_options() -> Vec<SessionConfigOptionInfo> {
+        vec![SessionConfigOptionInfo {
+            id: "model".into(),
+            name: "Model".into(),
+            description: None,
+            category: None,
+            kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
+                current_value: "sonnet".into(),
+                options: vec![],
+                groups: vec![],
+            }),
+        }]
+    }
+
+    #[tokio::test]
+    async fn wait_for_session_options_returns_snapshot_after_ready_plus_grace() {
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection(
+            "probe-1",
+            crate::models::agent::AgentType::ClaudeCode,
+            None,
+            EventEmitter::Noop,
+        )
+        .await;
+        // Seed the state the probe is waiting on. Done BEFORE the wait
+        // starts so the very first poll already sees ready=true and only
+        // the 500 ms grace period gates the return.
+        {
+            let state = mgr.get_state("probe-1").await.expect("state");
+            let mut s = state.write().await;
+            s.modes = Some(sample_modes());
+            s.config_options = Some(sample_config_options());
+            s.selectors_ready = true;
+        }
+
+        let start = std::time::Instant::now();
+        let snapshot = mgr
+            .wait_for_session_options("probe-1", Duration::from_secs(2))
+            .await
+            .expect("ready+grace path must return Ok");
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed >= Duration::from_millis(450),
+            "expected ~500ms grace, observed {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(1500),
+            "should NOT wait the full 2s timeout, observed {elapsed:?}"
+        );
+        assert_eq!(snapshot.config_options.len(), 1);
+        assert!(snapshot.modes.is_some());
+    }
+
+    #[tokio::test]
+    async fn wait_for_session_options_times_out_when_selectors_never_ready() {
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection(
+            "probe-2",
+            crate::models::agent::AgentType::ClaudeCode,
+            None,
+            EventEmitter::Noop,
+        )
+        .await;
+        // Critical guarantee: even though `config_options` is `Some(...)`,
+        // because `selectors_ready` is still false, the wait MUST timeout
+        // and return Err — never Ok(empty) which would mislead the UI.
+        {
+            let state = mgr.get_state("probe-2").await.expect("state");
+            let mut s = state.write().await;
+            s.config_options = Some(vec![]);
+            s.selectors_ready = false;
+        }
+
+        let err = mgr
+            .wait_for_session_options("probe-2", Duration::from_millis(300))
+            .await
+            .expect_err("timeout path must return Err");
+        assert!(
+            matches!(err, AcpError::ProbeTimedOut),
+            "expected ProbeTimedOut, got {err:?}"
+        );
+        assert_eq!(err.code(), Some("probe_timed_out"));
+    }
+
+    #[tokio::test]
+    async fn wait_for_session_options_returns_empty_when_ready_with_no_options() {
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection(
+            "probe-3",
+            crate::models::agent::AgentType::ClaudeCode,
+            None,
+            EventEmitter::Noop,
+        )
+        .await;
+        // Real outcome the UI renders as "agent has nothing to configure":
+        // selectors_ready=true, modes=None, config_options=None. Must
+        // succeed, not error — this is the path that distinguishes a
+        // legitimately empty agent from an unresponsive one.
+        {
+            let state = mgr.get_state("probe-3").await.expect("state");
+            let mut s = state.write().await;
+            s.modes = None;
+            s.config_options = None;
+            s.selectors_ready = true;
+        }
+
+        let snapshot = mgr
+            .wait_for_session_options("probe-3", Duration::from_secs(2))
+            .await
+            .expect("ready-empty path must return Ok, not Err");
+        assert!(snapshot.modes.is_none());
+        assert!(snapshot.config_options.is_empty());
+    }
+
+    #[tokio::test]
+    async fn wait_for_session_options_unknown_connection_errors_immediately() {
+        let mgr = ConnectionManager::new();
+        let err = mgr
+            .wait_for_session_options("does-not-exist", Duration::from_secs(5))
+            .await
+            .expect_err("missing connection must error");
+        assert!(
+            matches!(err, AcpError::ConnectionNotFound(_)),
+            "expected ConnectionNotFound, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_event_error_populates_last_error_snapshot() {
+        // Directly drives SessionState::apply_event to assert the Error
+        // arm now writes `last_error` (rather than being a no-op as it
+        // was before). The probe path reads this to surface the
+        // agent's own error message after cleanup runs.
+        use crate::acp::session_state::SessionState;
+        let mut s = SessionState::new(
+            "c1".into(),
+            crate::models::agent::AgentType::ClaudeCode,
+            None,
+            "test-window".into(),
+            None,
+        );
+        assert!(s.last_error.is_none(), "fresh state has no error");
+
+        s.apply_event(&AcpEvent::Error {
+            message: "agent exploded".into(),
+            agent_type: "claude_code".into(),
+            code: Some("sdk_not_installed".into()),
+        });
+        let captured = s.last_error.as_ref().expect("error must be captured");
+        assert_eq!(captured.message, "agent exploded");
+        assert_eq!(captured.code.as_deref(), Some("sdk_not_installed"));
+
+        // A second Error event overwrites — `last_error` is "latest",
+        // not "first". Keeps post-mortem reads aligned with what the
+        // user most recently observed on the event channel.
+        s.apply_event(&AcpEvent::Error {
+            message: "second failure".into(),
+            agent_type: "claude_code".into(),
+            code: None,
+        });
+        let captured = s.last_error.as_ref().unwrap();
+        assert_eq!(captured.message, "second failure");
+        assert!(captured.code.is_none());
     }
 }

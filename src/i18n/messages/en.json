@@ -485,7 +485,17 @@
       "saving": "Saving…",
       "saved": "Delegation settings saved",
       "saveFailed": "Failed to save delegation settings",
-      "loadFailed": "Failed to load delegation settings: {detail}"
+      "loadFailed": "Failed to load delegation settings: {detail}",
+      "tabGeneral": "General",
+      "tabAgentDefaults": "Agent defaults",
+      "agentDefaultsDescription": "Per-agent overrides applied when Multi-Agent Collaboration spawns a subagent for a delegation call. Options shown here come from a live probe — what you pick is exactly what the agent will accept.",
+      "probing": "Loading available options from the agent…",
+      "probeFailed": "Failed to load options: {detail}",
+      "retry": "Retry",
+      "noConfigAvailable": "This agent has no configurable options.",
+      "modeLabel": "Mode",
+      "agentDefaultHint": "Agent default: {value}",
+      "defaultOptionLabel": "Default ({value})"
     },
     "actions": {
       "dragSort": "Drag to reorder",

@@ -39,6 +39,7 @@ function settings(
   return {
     enabled: true,
     depth_limit: 2,
+    agent_defaults: {},
     ...overrides,
   }
 }
@@ -76,6 +77,7 @@ describe("DelegationSettingsSection", () => {
       expect(mockSetDelegationSettings).toHaveBeenCalledWith({
         enabled: true,
         depth_limit: 5,
+        agent_defaults: {},
       })
     })
   })

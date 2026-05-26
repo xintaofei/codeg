@@ -485,7 +485,17 @@
       "saving": "저장 중…",
       "saved": "위임 설정이 저장되었습니다",
       "saveFailed": "위임 설정 저장 실패",
-      "loadFailed": "위임 설정 로드 실패: {detail}"
+      "loadFailed": "위임 설정 로드 실패: {detail}",
+      "tabGeneral": "일반",
+      "tabAgentDefaults": "하위 에이전트 설정",
+      "agentDefaultsDescription": "다중 에이전트 협업이 위임 호출을 위해 하위 에이전트를 시작할 때 적용되는 재정의 항목입니다. 아래 옵션은 실시간 프로브로 가져오므로 선택한 항목이 그대로 에이전트에 전달됩니다.",
+      "probing": "에이전트에서 사용 가능한 옵션을 로드 중…",
+      "probeFailed": "옵션 로드 실패: {detail}",
+      "retry": "다시 시도",
+      "noConfigAvailable": "이 에이전트에는 구성 가능한 옵션이 없습니다.",
+      "modeLabel": "모드",
+      "agentDefaultHint": "에이전트 기본값: {value}",
+      "defaultOptionLabel": "기본값 ({value})"
     },
     "actions": {
       "dragSort": "드래그하여 순서 변경",

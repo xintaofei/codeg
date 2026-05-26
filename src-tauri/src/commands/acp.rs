@@ -2378,6 +2378,63 @@ pub async fn acp_preflight(
     Ok(preflight::run_preflight(agent_type).await)
 }
 
+/// Resolve the full runtime env every ACP spawn should receive — settings
+/// override, model provider credentials, git credential helper, OpenClaw
+/// reset flag. Returns `AcpError::protocol("...disabled in settings")` when
+/// the user has disabled the agent.
+///
+/// This is the **single source of truth** for "what env does an agent
+/// process see". Three call sites depend on it:
+///
+///   1. `acp_connect` — the user-initiated session entry point.
+///   2. `ConnectionManagerSpawner::spawn` — used by the delegation broker
+///      to spawn subagents. Before this helper existed, delegation passed
+///      `BTreeMap::new()`, silently bypassing settings/credentials and
+///      letting disabled agents still be invoked through delegation.
+///   3. `probe_agent_options` — the live settings-page probe. Must match
+///      delegation's env exactly so what the user sees in the panel is
+///      what `delegate_to_agent` will actually receive.
+///
+/// Diverging any of these from the others reintroduces the
+/// "[UI shows options] != [delegation gets options]" inconsistency that
+/// the multi-agent settings panel was designed to prevent.
+pub(crate) async fn build_session_runtime_env(
+    db: &AppDatabase,
+    agent_type: AgentType,
+    session_id: Option<&str>,
+    data_dir: &Path,
+) -> Result<BTreeMap<String, String>, AcpError> {
+    let setting = agent_setting_service::get_by_agent_type(&db.conn, agent_type)
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+    let disabled = setting
+        .as_ref()
+        .map(|model| !model.enabled)
+        .unwrap_or(false);
+    if disabled {
+        return Err(AcpError::protocol(format!(
+            "{agent_type} is disabled in settings"
+        )));
+    }
+
+    let local_config_json = load_agent_local_config_json(agent_type);
+    let mut runtime_env =
+        build_runtime_env_from_setting(agent_type, setting.as_ref(), local_config_json.as_deref());
+    apply_model_provider_env(agent_type, setting.as_ref(), &mut runtime_env, &db.conn).await;
+
+    if let Some(cred_env) = crate::commands::terminal::prepare_credential_env(data_dir) {
+        for (key, value) in cred_env {
+            runtime_env.insert(key, value);
+        }
+    }
+
+    if agent_type == AgentType::OpenClaw && session_id.is_none() {
+        runtime_env.insert("OPENCLAW_RESET_SESSION".into(), "1".into());
+    }
+
+    Ok(runtime_env)
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 #[allow(clippy::too_many_arguments)]
@@ -2392,48 +2449,18 @@ pub async fn acp_connect(
     app_handle: tauri::AppHandle,
     window: tauri::WebviewWindow,
 ) -> Result<String, AcpError> {
-    let setting = agent_setting_service::get_by_agent_type(&db.conn, agent_type)
-        .await
-        .map_err(|e| AcpError::protocol(e.to_string()))?;
-    let disabled = setting
-        .as_ref()
-        .map(|model| !model.enabled)
-        .unwrap_or(false);
-    if disabled {
-        return Err(AcpError::protocol(format!(
-            "{agent_type} is disabled in settings"
-        )));
-    }
-    let local_config_json = load_agent_local_config_json(agent_type);
-    let mut runtime_env =
-        build_runtime_env_from_setting(agent_type, setting.as_ref(), local_config_json.as_deref());
-
-    // Resolve model provider credentials if configured.
-    apply_model_provider_env(agent_type, setting.as_ref(), &mut runtime_env, &db.conn).await;
-
-    // Inject the codeg git credential helper so git invocations issued by
-    // the agent (or its child shells) authenticate against the GitHub
-    // accounts configured in Settings → Version Control, mirroring what
-    // the built-in terminal already does.
-    if let Ok(app_data_dir) = app_handle.path().app_data_dir() {
-        // Match `commands::terminal`: resolve through the effective
-        // data dir so a custom `CODEG_DATA_DIR` reaches the helper
-        // script the agent's git subprocess will execute.
-        let effective_data_dir = crate::paths::resolve_effective_data_dir(&app_data_dir);
-        if let Some(cred_env) =
-            crate::commands::terminal::prepare_credential_env(&effective_data_dir)
-        {
-            for (key, value) in cred_env {
-                runtime_env.insert(key, value);
-            }
-        }
-    }
-
-    // For OpenClaw: when creating a new conversation (no session_id to resume),
-    // signal that we want a fresh transcript via --reset-session.
-    if agent_type == AgentType::OpenClaw && session_id.is_none() {
-        runtime_env.insert("OPENCLAW_RESET_SESSION".into(), "1".into());
-    }
+    // Resolve through the effective data dir so a custom `CODEG_DATA_DIR`
+    // reaches the credential helper script the agent's git subprocess
+    // will execute. `acp_connect` may be called before the app data dir
+    // exists on disk (first launch); fall back to a sentinel that the
+    // credential helper treats as "no credentials configured".
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map(|p| crate::paths::resolve_effective_data_dir(&p))
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let runtime_env =
+        build_session_runtime_env(&db, agent_type, session_id.as_deref(), &app_data_dir).await?;
 
     // Guard: the session page must never trigger a download or install.
     // If the agent isn't ready, return SdkNotInstalled here so the frontend
@@ -2499,6 +2526,51 @@ pub async fn acp_set_config_option(
     manager
         .set_config_option(&connection_id, config_id, value_id)
         .await
+}
+
+/// Spawn a transient ACP connection for `agent_type` with a silent emitter,
+/// read whatever `SessionConfigOptions` / `SessionModes` the agent advertises,
+/// and tear it down. The returned snapshot drives the delegation-settings UI
+/// so the user picks from the exact option set the agent will accept when
+/// codeg-mcp later spawns a subagent.
+///
+/// Does NOT touch the chat-side `selectorsCache`, `localStorage` preferences,
+/// or any active connection state — see `ConnectionManager::probe_agent_options`
+/// for the isolation guarantees.
+pub async fn acp_describe_agent_options_core(
+    manager: &ConnectionManager,
+    db: &AppDatabase,
+    data_dir: &Path,
+    agent_type: AgentType,
+    working_dir: Option<String>,
+) -> Result<crate::acp::types::AgentOptionsSnapshot, AcpError> {
+    verify_agent_installed(agent_type).await?;
+    // Build the same runtime env delegation/acp_connect would build so
+    // probe sees exactly what `delegate_to_agent` will see at runtime.
+    // Without this, the settings UI could show options that the agent
+    // never advertises in production (settings override an API URL,
+    // model_provider injects a different model list, etc.).
+    let runtime_env = build_session_runtime_env(db, agent_type, None, data_dir).await?;
+    manager
+        .probe_agent_options(agent_type, working_dir, runtime_env)
+        .await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_describe_agent_options(
+    agent_type: AgentType,
+    working_dir: Option<String>,
+    manager: State<'_, ConnectionManager>,
+    db: State<'_, AppDatabase>,
+    app_handle: tauri::AppHandle,
+) -> Result<crate::acp::types::AgentOptionsSnapshot, AcpError> {
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map(|p| crate::paths::resolve_effective_data_dir(&p))
+        .unwrap_or_else(|_| PathBuf::from("."));
+    acp_describe_agent_options_core(&manager, &db, &app_data_dir, agent_type, working_dir).await
 }
 
 #[cfg(feature = "tauri-runtime")]

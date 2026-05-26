@@ -28,7 +28,7 @@
 //! [`DelegationBroker::cancel_by_parent`] which fans out cancel + disconnect
 //! to every pending child of that parent.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,8 +40,11 @@ use crate::acp::delegation::meta_writer::{
     build_delegation_meta, is_synthetic_parent_tool_use_id, DelegationMetaWriter, NoopMetaWriter,
 };
 use crate::acp::delegation::spawner::{ConnectionSpawner, DelegationLink};
-use crate::acp::delegation::types::{DelegationError, DelegationOutcome, DelegationRequest};
+use crate::acp::delegation::types::{
+    AgentDelegationDefaults, DelegationError, DelegationOutcome, DelegationRequest,
+};
 use crate::acp::types::DelegationResultSummary;
+use crate::models::AgentType;
 
 /// Lookup the `parent_id` for a conversation. Abstracted so the broker can be
 /// unit-tested against an in-memory chain without touching SeaORM.
@@ -57,6 +60,11 @@ pub struct DelegationConfig {
     /// the chain root → child → grandchild is allowed; the grandchild trying
     /// to spawn a great-grandchild is rejected. See spec §5.
     pub depth_limit: u32,
+    /// Per-agent overrides applied when spawning a delegation child. Keyed by
+    /// the target `agent_type`; missing entries mean "no override." Forwarded
+    /// to `ConnectionSpawner::spawn` as `preferred_mode_id` /
+    /// `preferred_config_values`.
+    pub agent_defaults: BTreeMap<AgentType, AgentDelegationDefaults>,
 }
 
 impl Default for DelegationConfig {
@@ -64,6 +72,7 @@ impl Default for DelegationConfig {
         Self {
             enabled: true,
             depth_limit: 2,
+            agent_defaults: BTreeMap::new(),
         }
     }
 }
@@ -406,12 +415,22 @@ impl DelegationBroker {
         }
 
         // --- Spawn child connection --------------------------------------------
+        // Pull per-agent overrides from the broker config (defaults to empty).
+        // Cloning is cheap — `AgentDelegationDefaults` is at most one Option<String>
+        // and a small BTreeMap, and the spawner consumes both fields by value.
+        let (preferred_mode_id, preferred_config_values) = cfg
+            .agent_defaults
+            .get(&req.agent_type)
+            .map(|d: &AgentDelegationDefaults| (d.mode_id.clone(), d.config_values.clone()))
+            .unwrap_or((None, BTreeMap::new()));
         let child_connection_id = match self
             .spawner
             .spawn(
                 &req.parent_connection_id,
                 req.agent_type,
                 req.working_dir.clone(),
+                preferred_mode_id,
+                preferred_config_values,
             )
             .await
         {
@@ -943,6 +962,7 @@ mod tests {
             .set_config(DelegationConfig {
                 enabled: false,
                 depth_limit: 5,
+                ..DelegationConfig::default()
             })
             .await;
         let got = broker.config_snapshot().await;
@@ -959,6 +979,7 @@ mod tests {
             .set_config(DelegationConfig {
                 enabled: false,
                 depth_limit: 2,
+                ..DelegationConfig::default()
             })
             .await;
         let outcome = broker.handle_request(request(1, "pt-1")).await;
@@ -1033,6 +1054,84 @@ mod tests {
             DelegationOutcome::Err { code, .. } => assert_eq!(code, "spawn_failed"),
             other => panic!("expected Err, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn agent_defaults_are_forwarded_to_spawner() {
+        // Configure broker with per-agent defaults for ClaudeCode and verify
+        // they reach the spawner. Other agent types should still get the
+        // empty/None defaults.
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-1".into())).await;
+        mock.queue_send(Err(SpawnerError::Send("stop after spawn".into())))
+            .await;
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+
+        let mut claude_cfg = BTreeMap::new();
+        claude_cfg.insert("model".into(), "claude-sonnet-4-5".into());
+        let mut agent_defaults = BTreeMap::new();
+        agent_defaults.insert(
+            AgentType::ClaudeCode,
+            AgentDelegationDefaults {
+                mode_id: Some("auto".into()),
+                config_values: claude_cfg.clone(),
+            },
+        );
+        broker
+            .set_config(DelegationConfig {
+                enabled: true,
+                depth_limit: 8,
+                agent_defaults,
+            })
+            .await;
+
+        let _ = broker.handle_request(request(1, "pt-1")).await;
+
+        let args = mock.spawn_args.lock().await;
+        assert_eq!(args.len(), 1);
+        let call = &args[0];
+        assert_eq!(call.agent_type, AgentType::ClaudeCode);
+        assert_eq!(call.preferred_mode_id.as_deref(), Some("auto"));
+        assert_eq!(call.preferred_config_values, claude_cfg);
+    }
+
+    #[tokio::test]
+    async fn agent_with_no_defaults_gets_empty_preferred_args() {
+        // ClaudeCode is configured in agent_defaults; a Codex request should
+        // still receive (None, empty) — no cross-contamination.
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-1".into())).await;
+        mock.queue_send(Err(SpawnerError::Send("stop after spawn".into())))
+            .await;
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+
+        let mut agent_defaults = BTreeMap::new();
+        agent_defaults.insert(
+            AgentType::ClaudeCode,
+            AgentDelegationDefaults {
+                mode_id: Some("auto".into()),
+                config_values: BTreeMap::new(),
+            },
+        );
+        broker
+            .set_config(DelegationConfig {
+                enabled: true,
+                depth_limit: 8,
+                agent_defaults,
+            })
+            .await;
+
+        let mut codex_req = request(1, "pt-1");
+        codex_req.agent_type = AgentType::Codex;
+        let _ = broker.handle_request(codex_req).await;
+
+        let args = mock.spawn_args.lock().await;
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0].agent_type, AgentType::Codex);
+        assert!(args[0].preferred_mode_id.is_none());
+        assert!(args[0].preferred_config_values.is_empty());
     }
 
     #[tokio::test]
@@ -1186,6 +1285,7 @@ mod tests {
             .set_config(DelegationConfig {
                 enabled: true,
                 depth_limit: 2,
+                ..DelegationConfig::default()
             })
             .await;
         let outcome = broker.handle_request(request(3, "pt-1")).await;
@@ -1378,6 +1478,7 @@ mod tests {
             .set_config(DelegationConfig {
                 enabled: true,
                 depth_limit: 2,
+                ..DelegationConfig::default()
             })
             .await;
 

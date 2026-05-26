@@ -485,7 +485,17 @@
       "saving": "儲存中…",
       "saved": "委派設定已儲存",
       "saveFailed": "委派設定儲存失敗",
-      "loadFailed": "載入委派設定失敗：{detail}"
+      "loadFailed": "載入委派設定失敗：{detail}",
+      "tabGeneral": "一般",
+      "tabAgentDefaults": "子智慧體設定",
+      "agentDefaultsDescription": "多智慧體協同在為委派呼叫啟動子智慧體時使用這些覆寫項。下方選項透過即時探測取得，所選即所用。",
+      "probing": "正在載入該智慧體的可用設定項…",
+      "probeFailed": "載入設定項失敗：{detail}",
+      "retry": "重試",
+      "noConfigAvailable": "該智慧體沒有可設定項。",
+      "modeLabel": "模式",
+      "agentDefaultHint": "智慧體預設：{value}",
+      "defaultOptionLabel": "預設（{value}）"
     },
     "actions": {
       "dragSort": "拖拽排序",

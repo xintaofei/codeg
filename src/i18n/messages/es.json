@@ -485,7 +485,17 @@
       "saving": "Guardando…",
       "saved": "Configuración de delegación guardada",
       "saveFailed": "Error al guardar la configuración de delegación",
-      "loadFailed": "Error al cargar la configuración de delegación: {detail}"
+      "loadFailed": "Error al cargar la configuración de delegación: {detail}",
+      "tabGeneral": "General",
+      "tabAgentDefaults": "Valores por defecto del agente",
+      "agentDefaultsDescription": "Anulaciones por agente que se aplican cuando Colaboración multiagente inicia un subagente para una llamada de delegación. Las opciones mostradas provienen de un sondeo en vivo: lo que selecciones es exactamente lo que el agente aceptará.",
+      "probing": "Cargando las opciones disponibles del agente…",
+      "probeFailed": "Error al cargar las opciones: {detail}",
+      "retry": "Reintentar",
+      "noConfigAvailable": "Este agente no tiene opciones configurables.",
+      "modeLabel": "Modo",
+      "agentDefaultHint": "Predeterminado del agente: {value}",
+      "defaultOptionLabel": "Predeterminado ({value})"
     },
     "actions": {
       "dragSort": "Arrastrar para reordenar",

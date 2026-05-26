@@ -75,11 +75,29 @@ export interface EventStream {
   ): EventStreamSubscription
 }
 
+export interface CallOptions {
+  /**
+   * Override the transport's default request timeout. Tauri ignores
+   * this (its invoke() has no timeout); WebTransport uses it instead
+   * of `WEB_CALL_TIMEOUT_MS` for this single call.
+   *
+   * Use only when a command has a backend-side deadline (e.g. a
+   * 60 s probe) that the default 60 s transport timeout would race
+   * with — leaving the user staring at "Request timed out" before the
+   * backend can return its own structured error.
+   */
+  timeoutMs?: number
+}
+
 export interface Transport {
   /**
    * Invoke a backend command (replaces Tauri's invoke()).
    */
-  call<T>(command: string, args?: Record<string, unknown>): Promise<T>
+  call<T>(
+    command: string,
+    args?: Record<string, unknown>,
+    options?: CallOptions
+  ): Promise<T>
 
   /**
    * Subscribe to a backend event stream (replaces Tauri's listen()).

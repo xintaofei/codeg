@@ -53,6 +53,7 @@ async fn end_to_end_uds_happy_path() {
         .set_config(DelegationConfig {
             enabled: true,
             depth_limit: 8,
+            ..DelegationConfig::default()
         })
         .await;
 
