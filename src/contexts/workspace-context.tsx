@@ -309,6 +309,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     setActivePaneState((prev) =>
       prev === "conversation" ? prev : "conversation"
     )
+    // Releasing the files overlay so a session opened from the sidebar (or any
+    // other path that activates the conversation pane) becomes visible instead
+    // of staying hidden behind a maximized files pane.
+    setFilesMaximized(false)
   }, [])
 
   const activateFilePane = useCallback(() => {

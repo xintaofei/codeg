@@ -47,6 +47,7 @@ function WorkspaceProbe() {
     closeFileTab,
     closeAllFileTabs,
     toggleFilesMaximized,
+    activateConversationPane,
   } = useWorkspaceContext()
 
   return (
@@ -83,6 +84,9 @@ function WorkspaceProbe() {
       </button>
       <button type="button" onClick={toggleFilesMaximized}>
         Toggle maximize
+      </button>
+      <button type="button" onClick={activateConversationPane}>
+        Activate conversation
       </button>
     </div>
   )
@@ -218,6 +222,31 @@ describe("WorkspaceProvider files-maximized", () => {
     })
     expect(screen.getByTestId("file-tab-count")).toHaveTextContent("0")
     expect(screen.getByTestId("files-maximized")).toHaveTextContent("false")
+  })
+
+  it("exits filesMaximized when activating the conversation pane while files stay open", () => {
+    renderWorkspace()
+
+    act(() => {
+      screen.getByRole("button", { name: "Open diff" }).click()
+    })
+    act(() => {
+      screen.getByRole("button", { name: "Toggle maximize" }).click()
+    })
+    expect(screen.getByTestId("files-maximized")).toHaveTextContent("true")
+    expect(screen.getByTestId("file-tab-count")).toHaveTextContent("1")
+
+    // Mirrors what happens when the user opens a session from the sidebar:
+    // TabContext.openTab -> activateConversationPane(). The overlay must
+    // release so the conversation becomes visible, but the file tab itself
+    // must remain so the user can return to it later.
+    act(() => {
+      screen.getByRole("button", { name: "Activate conversation" }).click()
+    })
+    expect(screen.getByTestId("files-maximized")).toHaveTextContent("false")
+    expect(screen.getByTestId("active-pane")).toHaveTextContent("conversation")
+    expect(screen.getByTestId("file-tab-count")).toHaveTextContent("1")
+    expect(screen.getByTestId("mode")).toHaveTextContent("fusion")
   })
 
   it("does not touch file tab data when toggling maximize", () => {
