@@ -762,7 +762,13 @@
     "restartRequired": "已保存，重启应用后生效。",
     "restartNow": "立即重启",
     "restartFailed": "重启失败：{message}",
-    "loadFailed": "加载失败：{message}"
+    "loadFailed": "加载失败：{message}",
+    "workspaceLayoutTitle": "工作区布局",
+    "workspaceLayoutDescription": "选择打开文件标签时工作区如何显示会话和文件。",
+    "workspaceLayoutFiles": "文件模式",
+    "workspaceLayoutFilesHint": "单视图：在会话和文件之间切换",
+    "workspaceLayoutFusion": "混合模式",
+    "workspaceLayoutFusionHint": "分屏视图：会话与文件并排显示"
   },
   "LoginPage": {
     "documentTitle": "登录 - codeg",

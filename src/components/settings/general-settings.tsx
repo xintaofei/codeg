@@ -1,7 +1,13 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { Loader2, MonitorCog, RefreshCw, SquareTerminal } from "lucide-react"
+import {
+  Columns2,
+  Loader2,
+  MonitorCog,
+  RefreshCw,
+  SquareTerminal,
+} from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 
@@ -26,6 +32,11 @@ import {
 import { isDesktop } from "@/lib/platform"
 import { getActiveRemoteConnectionId } from "@/lib/transport"
 import type { AvailableTerminalShells, TerminalShellOption } from "@/lib/types"
+import {
+  loadLayoutMode,
+  saveLayoutMode,
+  type WorkspaceLayoutMode,
+} from "@/lib/workspace-layout-mode-storage"
 import { usePlatform } from "@/hooks/use-platform"
 import { relaunchApp } from "@/lib/updater"
 import { toErrorMessage } from "@/lib/app-error"
@@ -61,6 +72,8 @@ export function GeneralSettings() {
   // for that single call site rather than casting at every use.
   const tDynamic = t as unknown as (key: string) => string
   const { isWindows } = usePlatform()
+  const [layoutMode, setLayoutMode] =
+    useState<WorkspaceLayoutMode>(loadLayoutMode)
 
   // Rendering settings are a local Tauri preference (preferences.json). They
   // are only meaningful when the active transport is the local Tauri shell —
@@ -234,6 +247,11 @@ export function GeneralSettings() {
     }
   }, [t])
 
+  const onLayoutModeChange = useCallback((nextMode: WorkspaceLayoutMode) => {
+    saveLayoutMode(nextMode)
+    setLayoutMode(nextMode)
+  }, [])
+
   if (loading) {
     return (
       <div className="h-full flex items-center justify-center text-sm text-muted-foreground gap-2">
@@ -258,6 +276,45 @@ export function GeneralSettings() {
             {t("loadFailed", { message: loadError })}
           </div>
         )}
+
+        <section className="rounded-xl border bg-card p-4 space-y-4">
+          <div className="flex items-center gap-2">
+            <Columns2 className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold">
+              {t("workspaceLayoutTitle")}
+            </h2>
+          </div>
+
+          <p className="text-xs text-muted-foreground leading-5">
+            {t("workspaceLayoutDescription")}
+          </p>
+
+          <div className="space-y-2">
+            <Select value={layoutMode} onValueChange={onLayoutModeChange}>
+              <SelectTrigger className="w-full sm:w-64">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="start">
+                <SelectItem value="fusion">
+                  <span className="flex flex-col">
+                    <span>{t("workspaceLayoutFusion")}</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {t("workspaceLayoutFusionHint")}
+                    </span>
+                  </span>
+                </SelectItem>
+                <SelectItem value="files">
+                  <span className="flex flex-col">
+                    <span>{t("workspaceLayoutFiles")}</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {t("workspaceLayoutFilesHint")}
+                    </span>
+                  </span>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </section>
 
         <section className="rounded-xl border bg-card p-4 space-y-4">
           <div className="flex items-center gap-2">

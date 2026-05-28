@@ -35,6 +35,7 @@ export function FileWorkspaceTabBar() {
   const t = useTranslations("Folder.fileWorkspace")
   const {
     mode,
+    layoutMode,
     activePane,
     fileTabs,
     activeFileTabId,
@@ -217,7 +218,7 @@ export function FileWorkspaceTabBar() {
           <ExternalLink className="h-4 w-4" />
         </button>
       )}
-      {!isMobile && mode === "fusion" && (
+      {!isMobile && mode === "fusion" && layoutMode === "fusion" && (
         <button
           type="button"
           onClick={toggleFilesMaximized}
