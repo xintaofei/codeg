@@ -762,7 +762,13 @@
     "restartRequired": "保存しました。再起動後に反映されます。",
     "restartNow": "今すぐ再起動",
     "restartFailed": "再起動に失敗しました: {message}",
-    "loadFailed": "読み込みに失敗しました: {message}"
+    "loadFailed": "読み込みに失敗しました: {message}",
+    "workspaceLayoutTitle": "ワークスペースレイアウト",
+    "workspaceLayoutDescription": "ファイルタブが開いているときのワークスペースの表示方法を選択します。",
+    "workspaceLayoutFiles": "ファイル",
+    "workspaceLayoutFilesHint": "単一表示：会話とファイルを切り替え",
+    "workspaceLayoutFusion": "ハイブリッド",
+    "workspaceLayoutFusionHint": "分割表示：会話とファイルを並べて表示"
   },
   "LoginPage": {
     "documentTitle": "ログイン - codeg",

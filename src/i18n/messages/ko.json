@@ -762,7 +762,13 @@
     "restartRequired": "저장되었습니다. 변경 사항을 적용하려면 앱을 다시 시작하세요.",
     "restartNow": "지금 다시 시작",
     "restartFailed": "다시 시작 실패: {message}",
-    "loadFailed": "불러오기 실패: {message}"
+    "loadFailed": "불러오기 실패: {message}",
+    "workspaceLayoutTitle": "워크스페이스 레이아웃",
+    "workspaceLayoutDescription": "파일 탭이 열려 있을 때 워크스페이스에서 대화와 파일을 표시하는 방식을 선택합니다.",
+    "workspaceLayoutFiles": "파일",
+    "workspaceLayoutFilesHint": "단일 보기: 대화와 파일 간 전환",
+    "workspaceLayoutFusion": "하이브리드",
+    "workspaceLayoutFusionHint": "분할 보기: 대화와 파일을 나란히 표시"
   },
   "LoginPage": {
     "documentTitle": "로그인 - codeg",
