@@ -39,6 +39,7 @@ const mockedApi = api as unknown as {
 function WorkspaceProbe() {
   const {
     mode,
+    layoutMode,
     activePane,
     fileTabs,
     activeFileTabId,
@@ -53,6 +54,7 @@ function WorkspaceProbe() {
   return (
     <div>
       <output data-testid="mode">{mode}</output>
+      <output data-testid="layout-mode">{layoutMode}</output>
       <output data-testid="file-tab-count">{fileTabs.length}</output>
       <output data-testid="active-pane">{activePane}</output>
       <output data-testid="files-maximized">{String(filesMaximized)}</output>
@@ -126,6 +128,24 @@ describe("WorkspaceProvider mode", () => {
 
     expect(screen.getByTestId("mode")).toHaveTextContent("conversation")
     expect(screen.getByTestId("file-tab-count")).toHaveTextContent("0")
+  })
+
+  it("syncs layoutMode from storage events fired by another window", () => {
+    renderWorkspace()
+
+    expect(screen.getByTestId("layout-mode")).toHaveTextContent("fusion")
+
+    act(() => {
+      localStorage.setItem("workspace:layout-mode", "files")
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: "workspace:layout-mode",
+          newValue: "files",
+        })
+      )
+    })
+
+    expect(screen.getByTestId("layout-mode")).toHaveTextContent("files")
   })
 })
 

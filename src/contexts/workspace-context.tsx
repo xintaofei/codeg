@@ -278,6 +278,20 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     fileTabsRef.current = fileTabs
   }, [fileTabs])
 
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    const onStorage = (event: StorageEvent) => {
+      if (event.key && event.key !== "workspace:layout-mode") return
+      setLayoutModeState(loadLayoutMode())
+    }
+
+    window.addEventListener("storage", onStorage)
+    return () => {
+      window.removeEventListener("storage", onStorage)
+    }
+  }, [])
+
   const mode: WorkspaceMode = fileTabs.length > 0 ? "fusion" : "conversation"
   const effectiveFilesMaximized = mode === "fusion" && filesMaximized
 

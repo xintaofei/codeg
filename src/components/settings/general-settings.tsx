@@ -291,25 +291,25 @@ export function GeneralSettings() {
 
           <div className="space-y-2">
             <Select value={layoutMode} onValueChange={onLayoutModeChange}>
-              <SelectTrigger className="w-full sm:w-64">
-                <SelectValue />
+              <SelectTrigger className="w-full text-left sm:w-64">
+                <SelectValue className="justify-start text-left" />
               </SelectTrigger>
               <SelectContent align="start">
                 <SelectItem value="fusion">
-                  <span className="flex flex-col">
+                  <div className="flex flex-col items-start text-left">
                     <span>{t("workspaceLayoutFusion")}</span>
-                    <span className="text-[10px] text-muted-foreground">
+                    <span className="text-left text-[10px] text-muted-foreground">
                       {t("workspaceLayoutFusionHint")}
                     </span>
-                  </span>
+                  </div>
                 </SelectItem>
                 <SelectItem value="files">
-                  <span className="flex flex-col">
+                  <div className="flex flex-col items-start text-left">
                     <span>{t("workspaceLayoutFiles")}</span>
-                    <span className="text-[10px] text-muted-foreground">
+                    <span className="text-left text-[10px] text-muted-foreground">
                       {t("workspaceLayoutFilesHint")}
                     </span>
-                  </span>
+                  </div>
                 </SelectItem>
               </SelectContent>
             </Select>
