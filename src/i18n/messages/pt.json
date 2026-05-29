@@ -527,7 +527,8 @@
       "deleting": "Excluindo...",
       "confirmDelete": "Confirmar exclusão",
       "confirmUninstall": "Confirmar desinstalação",
-      "saveClineConfig": "Salvar configuração do Cline"
+      "saveClineConfig": "Salvar configuração do Cline",
+      "customInstall": "Instalação personalizada"
     },
     "status": {
       "enabled": "Habilitado",
@@ -650,7 +651,12 @@
       "confirmDeleteProvider": "Excluir o provedor {providerId}?",
       "confirmDeleteProviderDescription": "A configuração do OpenCode e o auth JSON serão atualizados juntos. Esta ação não pode ser desfeita.",
       "confirmUninstall": "Desinstalar {name}?",
-      "confirmUninstallDescription": "Isso remove a versão instalada localmente. Você pode reinstalar depois."
+      "confirmUninstallDescription": "Isso remove a versão instalada localmente. Você pode reinstalar depois.",
+      "customInstallTitle": "Instalação personalizada de {name}",
+      "customInstallDescription": "Digite a versão a instalar. Isso reinstala e substitui a versão instalada atualmente.",
+      "customInstallVersionLabel": "Número da versão",
+      "customInstallInvalid": "Digite um número de versão válido, ex.: 1.2.3.",
+      "customInstallSubmit": "Instalar"
     },
     "errors": {
       "nativeJsonMustBeObject": "A configuração JSON nativa deve ser um objeto",

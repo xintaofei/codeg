@@ -527,7 +527,8 @@
       "deleting": "削除中...",
       "confirmDelete": "削除を確認",
       "confirmUninstall": "アンインストールを確認",
-      "saveClineConfig": "Cline設定を保存"
+      "saveClineConfig": "Cline設定を保存",
+      "customInstall": "カスタムインストール"
     },
     "status": {
       "enabled": "有効",
@@ -650,7 +651,12 @@
       "confirmDeleteProvider": "Provider {providerId} を削除しますか？",
       "confirmDeleteProviderDescription": "OpenCode config と auth JSON は同時に更新されます。この操作は元に戻せません。",
       "confirmUninstall": "{name} をアンインストールしますか？",
-      "confirmUninstallDescription": "ローカルにインストールされたバージョンを削除します。後で再インストールできます。"
+      "confirmUninstallDescription": "ローカルにインストールされたバージョンを削除します。後で再インストールできます。",
+      "customInstallTitle": "{name} をカスタムインストール",
+      "customInstallDescription": "インストールするバージョンを入力します。再インストールされ、現在インストールされているバージョンを置き換えます。",
+      "customInstallVersionLabel": "バージョン番号",
+      "customInstallInvalid": "有効なバージョン番号を入力してください（例: 1.2.3）。",
+      "customInstallSubmit": "インストール"
     },
     "errors": {
       "nativeJsonMustBeObject": "ネイティブJSON設定はオブジェクトである必要があります",

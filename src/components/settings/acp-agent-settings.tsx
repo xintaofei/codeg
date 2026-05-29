@@ -24,6 +24,7 @@ import {
   GripVertical,
   Loader2,
   Minus,
+  PackagePlus,
   RefreshCw,
   Save,
   Trash2,
@@ -153,6 +154,7 @@ type RunningActionKind =
   | "uninstall_binary"
   | "uninstall_npx"
   | "redownload_binary"
+  | "custom_install"
 
 type UiFixAction =
   | FixAction
@@ -166,6 +168,7 @@ type UiFixAction =
         | "uninstall_binary"
         | "uninstall_npx"
         | "install_opencode_plugins"
+        | "custom_install"
       payload: string
     }
 
@@ -2457,6 +2460,16 @@ function hasComparableVersion(
   return Boolean(value && /\d/.test(value) && value.includes("."))
 }
 
+// Mirror of the backend `sanitize_custom_version`: a custom install version
+// tolerates a leading `v`, must start with a digit, must be dotted (e.g.
+// `1.2.3`), and may only contain `[0-9A-Za-z.-+]` (semver pre-release/build +
+// calendar versions). Rejects npm dist-tags like `latest`, bare majors like
+// `2`, and anything with spaces / `@`.
+function isValidCustomVersion(value: string): boolean {
+  const normalized = value.trim().replace(/^[vV]/, "")
+  return /^[0-9][0-9A-Za-z.\-+]*$/.test(normalized) && normalized.includes(".")
+}
+
 function buildVersionCheck(agent: AcpAgentInfo): UiCheckItem | null {
   if (agent.distribution_type !== "binary" && agent.distribution_type !== "npx")
     return null
@@ -2490,6 +2503,19 @@ function buildVersionCheck(agent: AcpAgentInfo): UiCheckItem | null {
     }
   }
 
+  // Custom-version install is offered in every installable state (and stays
+  // available after a version is installed, so users can switch versions).
+  // Binary agents need the registry version present to template the download URL.
+  const supportsCustomInstall =
+    agent.distribution_type === "npx" || Boolean(agent.registry_version)
+  const customInstallFix: UiFixAction = {
+    label: acpText("actions.customInstall", "Custom install"),
+    kind: "custom_install",
+    payload: agent.agent_type,
+  }
+  const withCustomInstall = (fixes: UiFixAction[]): UiFixAction[] =>
+    supportsCustomInstall ? [...fixes, customInstallFix] : fixes
+
   if (!agent.installed_version) {
     return {
       check_id: "version_status",
@@ -2500,13 +2526,13 @@ function buildVersionCheck(agent: AcpAgentInfo): UiCheckItem | null {
         "{versionText}. Click Install on the right.",
         { versionText }
       ),
-      fixes: [
+      fixes: withCustomInstall([
         {
           label: acpText("actions.install", "Install"),
           kind: installAction,
           payload: agent.agent_type,
         },
-      ],
+      ]),
     }
   }
 
@@ -2524,7 +2550,7 @@ function buildVersionCheck(agent: AcpAgentInfo): UiCheckItem | null {
         "{versionText}. Local version is not comparable; try upgrade to overwrite install.",
         { versionText }
       ),
-      fixes: [
+      fixes: withCustomInstall([
         {
           label: acpText("actions.upgrade", "Upgrade"),
           kind: upgradeAction,
@@ -2535,7 +2561,7 @@ function buildVersionCheck(agent: AcpAgentInfo): UiCheckItem | null {
           kind: uninstallAction,
           payload: agent.agent_type,
         },
-      ],
+      ]),
     }
   }
 
@@ -2553,7 +2579,7 @@ function buildVersionCheck(agent: AcpAgentInfo): UiCheckItem | null {
         "{versionText}. Upgrade available.",
         { versionText }
       ),
-      fixes: [
+      fixes: withCustomInstall([
         {
           label: acpText("actions.upgrade", "Upgrade"),
           kind: upgradeAction,
@@ -2564,7 +2590,7 @@ function buildVersionCheck(agent: AcpAgentInfo): UiCheckItem | null {
           kind: uninstallAction,
           payload: agent.agent_type,
         },
-      ],
+      ]),
     }
   }
 
@@ -2578,13 +2604,13 @@ function buildVersionCheck(agent: AcpAgentInfo): UiCheckItem | null {
         "{versionText}. Remote version is currently unavailable.",
         { versionText }
       ),
-      fixes: [
+      fixes: withCustomInstall([
         {
           label: acpText("actions.uninstall", "Uninstall"),
           kind: uninstallAction,
           payload: agent.agent_type,
         },
-      ],
+      ]),
     }
   }
 
@@ -2595,13 +2621,13 @@ function buildVersionCheck(agent: AcpAgentInfo): UiCheckItem | null {
     message: acpText("version.latest", "{versionText}. Already latest.", {
       versionText,
     }),
-    fixes: [
+    fixes: withCustomInstall([
       {
         label: acpText("actions.uninstall", "Uninstall"),
         kind: uninstallAction,
         payload: agent.agent_type,
       },
-    ],
+    ]),
   }
 }
 
@@ -2718,6 +2744,9 @@ export function AcpAgentSettings() {
   const [modelProviders, setModelProviders] = useState<ModelProviderInfo[]>([])
   const [uninstallConfirmAgent, setUninstallConfirmAgent] =
     useState<AcpAgentInfo | null>(null)
+  const [customInstallAgent, setCustomInstallAgent] =
+    useState<AcpAgentInfo | null>(null)
+  const [customVersionInput, setCustomVersionInput] = useState("")
   const [pluginModalOpen, setPluginModalOpen] = useState(false)
   const [pluginModalAgent, setPluginModalAgent] = useState<AgentType | null>(
     null
@@ -3103,7 +3132,8 @@ export function AcpAgentSettings() {
     async (
       agent: AcpAgentInfo,
       mode: "download" | "upgrade",
-      kind?: RunningActionKind
+      kind?: RunningActionKind,
+      versionOverride?: string
     ) => {
       if (busyActionRef.current.has(agent.agent_type)) return
       busyActionRef.current.add(agent.agent_type)
@@ -3113,14 +3143,26 @@ export function AcpAgentSettings() {
         [agent.agent_type]:
           kind ?? (mode === "download" ? "download_binary" : "upgrade_binary"),
       }))
+      // A custom-version install must replace whatever is cached, otherwise a
+      // higher cached version would still win on connect.
+      const clearCache = mode === "upgrade" || Boolean(versionOverride)
+      const actionLabel = versionOverride
+        ? t("actions.customInstall")
+        : mode === "upgrade"
+          ? t("actions.upgrade")
+          : t("actions.install")
       const taskId = randomUUID()
       setStreamAgentType(agent.agent_type)
       await installStream.start(taskId)
       try {
-        if (mode === "upgrade") {
+        if (clearCache) {
           await acpClearBinaryCache(agent.agent_type)
         }
-        await acpDownloadAgentBinary(agent.agent_type, taskId)
+        await acpDownloadAgentBinary(
+          agent.agent_type,
+          taskId,
+          versionOverride ?? null
+        )
         await runPreflight(agent.agent_type)
         const detectedVersion = await acpDetectAgentLocalVersion(
           agent.agent_type
@@ -3135,8 +3177,7 @@ export function AcpAgentSettings() {
         toast.success(
           t("toasts.agentActionCompleted", {
             name: agent.name,
-            action:
-              mode === "upgrade" ? t("actions.upgrade") : t("actions.install"),
+            action: actionLabel,
           }),
           {
             description: detectedVersion
@@ -3149,13 +3190,32 @@ export function AcpAgentSettings() {
         toast.error(
           t("toasts.agentActionFailed", {
             name: agent.name,
-            action:
-              mode === "upgrade" ? t("actions.upgrade") : t("actions.install"),
+            action: actionLabel,
           }),
           {
             description: message,
           }
         )
+        if (clearCache) {
+          // The cache was cleared before downloading, so a failure here may
+          // have removed the previously working binary — resync local state so
+          // the UI doesn't keep showing a phantom version.
+          try {
+            const detected = await acpDetectAgentLocalVersion(agent.agent_type)
+            setAgents((prev) =>
+              prev.map((item) =>
+                item.agent_type === agent.agent_type
+                  ? { ...item, installed_version: detected ?? null }
+                  : item
+              )
+            )
+          } catch (detectErr) {
+            console.error(
+              "[Settings] failed to resync installed version after binary install failure:",
+              detectErr
+            )
+          }
+        }
         throw err
       } finally {
         busyActionRef.current.delete(agent.agent_type)
@@ -3171,14 +3231,30 @@ export function AcpAgentSettings() {
   )
 
   const runNpxAction = useCallback(
-    async (agent: AcpAgentInfo, mode: "install" | "upgrade") => {
+    async (
+      agent: AcpAgentInfo,
+      mode: "install" | "upgrade",
+      versionOverride?: string
+    ) => {
       if (busyActionRef.current.has(agent.agent_type)) return
       busyActionRef.current.add(agent.agent_type)
       setBusyBinaryAction((prev) => ({ ...prev, [agent.agent_type]: true }))
       setRunningActionKind((prev) => ({
         ...prev,
-        [agent.agent_type]: mode === "install" ? "install_npx" : "upgrade_npx",
+        [agent.agent_type]: versionOverride
+          ? "custom_install"
+          : mode === "install"
+            ? "install_npx"
+            : "upgrade_npx",
       }))
+      // A custom-version install forces a clean reinstall so the requested
+      // version replaces whatever is currently installed.
+      const cleanFirst = mode === "upgrade" || Boolean(versionOverride)
+      const actionLabel = versionOverride
+        ? t("actions.customInstall")
+        : mode === "upgrade"
+          ? t("actions.upgrade")
+          : t("actions.install")
       const taskId = randomUUID()
       setStreamAgentType(agent.agent_type)
       await installStream.start(taskId)
@@ -3187,7 +3263,8 @@ export function AcpAgentSettings() {
           agent.agent_type,
           agent.registry_version,
           taskId,
-          mode === "upgrade"
+          cleanFirst,
+          versionOverride ?? null
         )
         setAgents((prev) =>
           prev.map((item) =>
@@ -3213,8 +3290,7 @@ export function AcpAgentSettings() {
         toast.success(
           t("toasts.agentActionCompleted", {
             name: agent.name,
-            action:
-              mode === "upgrade" ? t("actions.upgrade") : t("actions.install"),
+            action: actionLabel,
           }),
           {
             description: finalVersion
@@ -3227,15 +3303,14 @@ export function AcpAgentSettings() {
         toast.error(
           t("toasts.agentActionFailed", {
             name: agent.name,
-            action:
-              mode === "upgrade" ? t("actions.upgrade") : t("actions.install"),
+            action: actionLabel,
           }),
           {
             description: message,
           }
         )
-        if (mode === "upgrade") {
-          // Clean upgrade may have removed the old install before failing —
+        if (cleanFirst) {
+          // Clean reinstall may have removed the old install before failing —
           // resync local state so the UI doesn't keep showing a phantom version.
           try {
             const detected = await acpDetectAgentLocalVersion(agent.agent_type)
@@ -3354,6 +3429,11 @@ export function AcpAgentSettings() {
       setPluginModalOpen(true)
       return
     }
+    if (action.kind === "custom_install") {
+      setCustomVersionInput("")
+      setCustomInstallAgent(agent)
+      return
+    }
     await runPreflight(agent.agent_type)
   }
 
@@ -3368,6 +3448,23 @@ export function AcpAgentSettings() {
         setUninstallConfirmAgent(null)
       })
   }, [runUninstallAction, uninstallConfirmAgent])
+
+  const confirmCustomInstall = useCallback(() => {
+    if (!customInstallAgent) return
+    const agent = customInstallAgent
+    const version = customVersionInput.trim()
+    if (!isValidCustomVersion(version)) return
+    // Close immediately; progress streams into the detail panel log, and any
+    // failure is surfaced via toast inside the run* actions.
+    const run =
+      agent.distribution_type === "binary"
+        ? runBinaryAction(agent, "upgrade", "custom_install", version)
+        : runNpxAction(agent, "upgrade", version)
+    run.catch((err) => {
+      console.error("[Settings] custom install failed:", err)
+    })
+    setCustomInstallAgent(null)
+  }, [customInstallAgent, customVersionInput, runBinaryAction, runNpxAction])
 
   const persistReorder = useCallback(
     async (order: AgentType[]) => {
@@ -3456,6 +3553,7 @@ export function AcpAgentSettings() {
                         "uninstall_npx",
                         "redownload_binary",
                         "install_opencode_plugins",
+                        "custom_install",
                       ].includes(fix.kind)
                     }
                     onClick={() => {
@@ -3478,6 +3576,8 @@ export function AcpAgentSettings() {
                       <Trash2 className="h-3 w-3" />
                     ) : fix.kind === "install_opencode_plugins" ? (
                       <Download className="h-3 w-3" />
+                    ) : fix.kind === "custom_install" ? (
+                      <PackagePlus className="h-3 w-3" />
                     ) : null}
                     {fix.label}
                   </Button>
@@ -7852,6 +7952,66 @@ supports_websockets = true`}
                   {t("actions.confirmUninstall")}
                 </>
               )}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={Boolean(customInstallAgent)}
+        onOpenChange={(open) => {
+          if (!open) setCustomInstallAgent(null)
+        }}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t("dialogs.customInstallTitle", {
+                name: customInstallAgent?.name ?? "Agent",
+              })}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("dialogs.customInstallDescription")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-1.5">
+            <label
+              htmlFor="custom-version-input"
+              className="text-xs font-medium"
+            >
+              {t("dialogs.customInstallVersionLabel")}
+            </label>
+            <Input
+              id="custom-version-input"
+              autoFocus
+              value={customVersionInput}
+              placeholder={customInstallAgent?.registry_version ?? "1.0.0"}
+              onChange={(e) => setCustomVersionInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (
+                  e.key === "Enter" &&
+                  isValidCustomVersion(customVersionInput)
+                ) {
+                  e.preventDefault()
+                  confirmCustomInstall()
+                }
+              }}
+            />
+            {customVersionInput.trim() !== "" &&
+              !isValidCustomVersion(customVersionInput) && (
+                <p className="text-[11px] text-red-500">
+                  {t("dialogs.customInstallInvalid")}
+                </p>
+              )}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("actions.cancel")}</AlertDialogCancel>
+            <Button
+              onClick={confirmCustomInstall}
+              disabled={!isValidCustomVersion(customVersionInput)}
+            >
+              <PackagePlus className="h-3.5 w-3.5" />
+              {t("dialogs.customInstallSubmit")}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>

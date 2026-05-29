@@ -528,6 +528,8 @@ pub async fn acp_update_agent_config(
 #[serde(rename_all = "camelCase")]
 pub struct AcpDownloadAgentBinaryParams {
     pub agent_type: AgentType,
+    #[serde(default)]
+    pub version: Option<String>,
     pub task_id: String,
 }
 
@@ -536,9 +538,14 @@ pub async fn acp_download_agent_binary(
     Json(params): Json<AcpDownloadAgentBinaryParams>,
 ) -> Result<Json<()>, AppCommandError> {
     let emitter = state.emitter.clone();
-    acp_commands::acp_download_agent_binary_core(params.agent_type, params.task_id, &emitter)
-        .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    acp_commands::acp_download_agent_binary_core(
+        params.agent_type,
+        params.version,
+        params.task_id,
+        &emitter,
+    )
+    .await
+    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(()))
 }
 
@@ -559,6 +566,8 @@ pub struct AcpPrepareNpxAgentParams {
     pub agent_type: AgentType,
     pub registry_version: Option<String>,
     #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
     pub clean_first: bool,
     pub task_id: String,
 }
@@ -572,6 +581,7 @@ pub async fn acp_prepare_npx_agent(
     let result = acp_commands::acp_prepare_npx_agent_core(
         params.agent_type,
         params.registry_version,
+        params.version,
         params.clean_first,
         params.task_id,
         db,

@@ -527,7 +527,8 @@
       "deleting": "삭제 중...",
       "confirmDelete": "삭제 확인",
       "confirmUninstall": "제거 확인",
-      "saveClineConfig": "Cline 설정 저장"
+      "saveClineConfig": "Cline 설정 저장",
+      "customInstall": "사용자 지정 설치"
     },
     "status": {
       "enabled": "활성화됨",
@@ -650,7 +651,12 @@
       "confirmDeleteProvider": "Provider {providerId}를 삭제하시겠습니까?",
       "confirmDeleteProviderDescription": "OpenCode config와 auth JSON이 함께 업데이트됩니다. 이 작업은 되돌릴 수 없습니다.",
       "confirmUninstall": "{name}을(를) 제거하시겠습니까?",
-      "confirmUninstallDescription": "로컬 설치 버전을 제거합니다. 나중에 다시 설치할 수 있습니다."
+      "confirmUninstallDescription": "로컬 설치 버전을 제거합니다. 나중에 다시 설치할 수 있습니다.",
+      "customInstallTitle": "{name} 사용자 지정 설치",
+      "customInstallDescription": "설치할 버전을 입력하세요. 다시 설치되며 현재 설치된 버전을 대체합니다.",
+      "customInstallVersionLabel": "버전 번호",
+      "customInstallInvalid": "유효한 버전 번호를 입력하세요. 예: 1.2.3",
+      "customInstallSubmit": "설치"
     },
     "errors": {
       "nativeJsonMustBeObject": "네이티브 JSON 구성은 객체여야 합니다",

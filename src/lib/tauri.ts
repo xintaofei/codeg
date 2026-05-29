@@ -181,9 +181,14 @@ export async function acpClearBinaryCache(agentType: AgentType): Promise<void> {
 
 export async function acpDownloadAgentBinary(
   agentType: AgentType,
-  taskId: string
+  taskId: string,
+  version?: string | null
 ): Promise<void> {
-  return invoke("acp_download_agent_binary", { agentType, taskId })
+  return invoke("acp_download_agent_binary", {
+    agentType,
+    version: version ?? null,
+    taskId,
+  })
 }
 
 export async function acpDetectAgentLocalVersion(
@@ -196,11 +201,13 @@ export async function acpPrepareNpxAgent(
   agentType: AgentType,
   registryVersion: string | null | undefined,
   taskId: string,
-  cleanFirst: boolean = false
+  cleanFirst: boolean = false,
+  version?: string | null
 ): Promise<string> {
   return invoke("acp_prepare_npx_agent", {
     agentType,
     registryVersion: registryVersion ?? null,
+    version: version ?? null,
     cleanFirst,
     taskId,
   })

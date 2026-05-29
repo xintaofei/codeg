@@ -527,7 +527,8 @@
       "deleting": "刪除中...",
       "confirmDelete": "確認刪除",
       "confirmUninstall": "確認卸載",
-      "saveClineConfig": "儲存 Cline 配置"
+      "saveClineConfig": "儲存 Cline 配置",
+      "customInstall": "自訂安裝"
     },
     "status": {
       "enabled": "啟用",
@@ -650,7 +651,12 @@
       "confirmDeleteProvider": "確認刪除 Provider {providerId}？",
       "confirmDeleteProviderDescription": "將同步更新 OpenCode 配置與認證 JSON 檔案，刪除後不可恢復。",
       "confirmUninstall": "確認卸載 {name}？",
-      "confirmUninstallDescription": "這會移除本地安裝版本，之後可隨時重新安裝。"
+      "confirmUninstallDescription": "這會移除本地安裝版本，之後可隨時重新安裝。",
+      "customInstallTitle": "自訂安裝 {name}",
+      "customInstallDescription": "輸入要安裝的版本號。將重新安裝並替換目前已安裝的版本。",
+      "customInstallVersionLabel": "版本號",
+      "customInstallInvalid": "請輸入有效的版本號，例如 1.2.3。",
+      "customInstallSubmit": "安裝"
     },
     "errors": {
       "nativeJsonMustBeObject": "原生 JSON 配置必須是物件",

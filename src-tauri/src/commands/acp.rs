@@ -124,6 +124,64 @@ fn package_name_from_spec(package: &str) -> String {
     normalized.to_string()
 }
 
+/// Validate and normalize a user-supplied custom version for install.
+///
+/// Stricter than [`normalize_version_candidate`]: tolerates a leading `v`/`V`,
+/// then requires the first character to be a digit and the rest to be drawn from
+/// `[0-9A-Za-z.-+]` (covers semver pre-release/build metadata and calendar
+/// versions like `2026.5.20`). This rejects npm dist-tags (`latest`, `next`) and
+/// anything containing whitespace, `@`, or path separators, so the result is
+/// safe to interpolate into an npm package spec (`name@<v>`) and to substitute
+/// into a binary download URL. Returns the version without the leading `v`.
+fn sanitize_custom_version(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    let normalized = trimmed
+        .strip_prefix('v')
+        .or_else(|| trimmed.strip_prefix('V'))
+        .unwrap_or(trimmed);
+    let mut chars = normalized.chars();
+    if !chars.next()?.is_ascii_digit() {
+        return None;
+    }
+    // Require a dotted version (e.g. `1.2.3`) so the validator agrees with the
+    // detection fallback `version_from_package_spec`, which needs a `.` — and so
+    // a "custom version" is a concrete version rather than an npm range (`2`).
+    if !normalized.contains('.') {
+        return None;
+    }
+    let all_allowed = normalized
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'));
+    all_allowed.then(|| normalized.to_string())
+}
+
+/// Build the `npm install -g` spec for an agent.
+///
+/// `version_override` of `None` or all-whitespace yields the registry-pinned
+/// `package` spec unchanged (current behavior). A non-empty override is
+/// validated via [`sanitize_custom_version`] and combined with the registry
+/// package *name* (its pinned version is dropped) to form `name@<version>`. An
+/// override that fails validation is rejected with an error.
+fn build_npm_install_spec(package: &str, version_override: Option<&str>) -> Result<String, AcpError> {
+    match version_override {
+        Some(raw) if !raw.trim().is_empty() => {
+            let version = sanitize_custom_version(raw)
+                .ok_or_else(|| AcpError::protocol(format!("invalid custom version: {}", raw.trim())))?;
+            Ok(format!("{}@{version}", package_name_from_spec(package)))
+        }
+        _ => Ok(package.to_string()),
+    }
+}
+
+/// Substitute a custom version into a registry binary download URL by replacing
+/// every occurrence of the registry version string. The registry version is
+/// embedded in the GitHub release URL (the path tag, and for some agents the
+/// asset filename), so a plain replace yields the URL for the requested version
+/// — assuming the upstream release reuses the same asset-naming convention.
+fn apply_custom_version_to_url(url: &str, registry_version: &str, custom_version: &str) -> String {
+    url.replace(registry_version, custom_version)
+}
+
 /// Check whether an NPX agent command is spawnable.
 /// Uses PATH first, then falls back to the current npm global prefix to handle
 /// GUI environments that don't inherit the user's shell PATH.
@@ -3242,6 +3300,7 @@ pub async fn acp_update_agent_config(
 
 pub(crate) async fn acp_download_agent_binary_core(
     agent_type: AgentType,
+    version_override: Option<String>,
     task_id: String,
     emitter: &EventEmitter,
 ) -> Result<(), AcpError> {
@@ -3255,6 +3314,16 @@ pub(crate) async fn acp_download_agent_binary_core(
             platforms,
             ..
         } => {
+            // A custom version substitutes into the pinned download URL and the
+            // cache key; `None`/empty keeps the registry-pinned version.
+            let custom = match version_override.as_deref() {
+                Some(raw) if !raw.trim().is_empty() => Some(sanitize_custom_version(raw)
+                    .ok_or_else(|| {
+                        AcpError::protocol(format!("invalid custom version: {}", raw.trim()))
+                    })?),
+                _ => None,
+            };
+
             let platform = registry::current_platform();
             let fallback = platforms
                 .iter()
@@ -3266,19 +3335,25 @@ pub(crate) async fn acp_download_agent_binary_core(
                     ))
                 })?;
 
+            let effective_version = custom.as_deref().unwrap_or(version);
+            let archive_url = match &custom {
+                Some(c) => apply_custom_version_to_url(fallback.url, version, c),
+                None => fallback.url.to_string(),
+            };
+
             emit_agent_install_event(
                 emitter,
                 &task_id,
                 AgentInstallEventKind::Log,
-                format!("Downloading {} v{version} for {platform}", meta.name),
+                format!("Downloading {} v{effective_version} for {platform}", meta.name),
             );
 
             let emitter_clone = emitter.clone();
             let task_id_clone = task_id.clone();
             let _ = binary_cache::ensure_binary_for_agent_with_progress(
                 agent_type,
-                version,
-                fallback.url,
+                effective_version,
+                &archive_url,
                 cmd,
                 move |msg| {
                     emit_agent_install_event(
@@ -3323,11 +3398,12 @@ pub(crate) async fn acp_download_agent_binary_core(
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn acp_download_agent_binary(
     agent_type: AgentType,
+    version: Option<String>,
     task_id: String,
     app: tauri::AppHandle,
 ) -> Result<(), AcpError> {
     let emitter = EventEmitter::Tauri(app);
-    acp_download_agent_binary_core(agent_type, task_id, &emitter).await
+    acp_download_agent_binary_core(agent_type, version, task_id, &emitter).await
 }
 
 pub(crate) async fn acp_detect_agent_local_version_core(
@@ -3340,6 +3416,22 @@ pub(crate) async fn acp_detect_agent_local_version_core(
             agent_setting_service::set_installed_version(conn, agent_type, Some(version.clone()))
                 .await;
         return Ok(Some(version));
+    }
+
+    // Binary agents detect their version purely from the on-disk cache, so a
+    // `None` here means the binary is genuinely absent (cleared cache, or a
+    // failed custom/upgrade install). Return `None` authoritatively rather than
+    // falling back to the DB, which would resurrect a removed version as a
+    // phantom that can no longer be launched. The returned value does NOT depend
+    // on the mirror write below, so a swallowed write cannot reintroduce the
+    // phantom. (NPX detection runs `npm list`, which can fail transiently, so
+    // for npx we keep the DB value as a best-effort fallback.)
+    if matches!(
+        registry::get_agent_meta(agent_type).distribution,
+        registry::AgentDistribution::Binary { .. }
+    ) {
+        let _ = agent_setting_service::set_installed_version(conn, agent_type, None).await;
+        return Ok(None);
     }
 
     let fallback = agent_setting_service::get_by_agent_type(conn, agent_type)
@@ -3362,6 +3454,7 @@ pub async fn acp_detect_agent_local_version(
 pub(crate) async fn acp_prepare_npx_agent_core(
     agent_type: AgentType,
     registry_version: Option<String>,
+    version_override: Option<String>,
     clean_first: bool,
     task_id: String,
     db: &AppDatabase,
@@ -3372,6 +3465,10 @@ pub(crate) async fn acp_prepare_npx_agent_core(
     let meta = registry::get_agent_meta(agent_type);
     let result = match meta.distribution {
         registry::AgentDistribution::Npx { package, .. } => {
+            // `version_override` of None/empty keeps the registry-pinned spec;
+            // a custom version installs `<name>@<version>` instead.
+            let install_spec = build_npm_install_spec(package, version_override.as_deref())?;
+
             let default = agent_setting_service::AgentDefaultInput {
                 agent_type,
                 registry_id: registry::registry_id_for(agent_type).to_string(),
@@ -3415,9 +3512,9 @@ pub(crate) async fn acp_prepare_npx_agent_core(
                 emitter,
                 &task_id,
                 AgentInstallEventKind::Log,
-                format!("Installing {} ({package})", meta.name),
+                format!("Installing {} ({install_spec})", meta.name),
             );
-            install_npm_global_package_streaming(package, &task_id, emitter).await?;
+            install_npm_global_package_streaming(&install_spec, &task_id, emitter).await?;
 
             emit_agent_install_event(
                 emitter,
@@ -3427,7 +3524,7 @@ pub(crate) async fn acp_prepare_npx_agent_core(
             );
             let resolved = detect_local_version(agent_type)
                 .await
-                .or_else(|| version_from_package_spec(package))
+                .or_else(|| version_from_package_spec(&install_spec))
                 .or_else(|| {
                     registry_version
                         .as_deref()
@@ -3498,6 +3595,7 @@ pub(crate) async fn acp_prepare_npx_agent_core(
 pub async fn acp_prepare_npx_agent(
     agent_type: AgentType,
     registry_version: Option<String>,
+    version: Option<String>,
     clean_first: Option<bool>,
     task_id: String,
     db: State<'_, AppDatabase>,
@@ -3507,6 +3605,7 @@ pub async fn acp_prepare_npx_agent(
     acp_prepare_npx_agent_core(
         agent_type,
         registry_version,
+        version,
         clean_first.unwrap_or(false),
         task_id,
         &db,
@@ -4075,6 +4174,92 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("codeg-acp-{name}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create test directory");
         dir
+    }
+
+    #[test]
+    fn sanitize_custom_version_accepts_version_like_inputs() {
+        assert_eq!(sanitize_custom_version("0.44.1").as_deref(), Some("0.44.1"));
+        assert_eq!(
+            sanitize_custom_version("  v1.2.3 ").as_deref(),
+            Some("1.2.3")
+        );
+        assert_eq!(
+            sanitize_custom_version("2026.5.20").as_deref(),
+            Some("2026.5.20")
+        );
+        assert_eq!(
+            sanitize_custom_version("1.2.3-beta.1").as_deref(),
+            Some("1.2.3-beta.1")
+        );
+        assert_eq!(
+            sanitize_custom_version("1.0.0+build.5").as_deref(),
+            Some("1.0.0+build.5")
+        );
+    }
+
+    #[test]
+    fn sanitize_custom_version_rejects_invalid_inputs() {
+        for bad in [
+            "",
+            "   ",
+            "latest",
+            "next",
+            "v",
+            "2",
+            "v9",
+            "1.2 .3",
+            "1.2.3@evil",
+            "../etc",
+        ] {
+            assert_eq!(sanitize_custom_version(bad), None, "expected {bad:?} rejected");
+        }
+    }
+
+    #[test]
+    fn build_npm_install_spec_uses_registry_when_no_override() {
+        assert_eq!(
+            build_npm_install_spec("@google/gemini-cli@0.44.1", None).unwrap(),
+            "@google/gemini-cli@0.44.1"
+        );
+        assert_eq!(
+            build_npm_install_spec("@google/gemini-cli@0.44.1", Some("  ")).unwrap(),
+            "@google/gemini-cli@0.44.1"
+        );
+    }
+
+    #[test]
+    fn build_npm_install_spec_applies_custom_version() {
+        assert_eq!(
+            build_npm_install_spec("@google/gemini-cli@0.44.1", Some("0.43.0")).unwrap(),
+            "@google/gemini-cli@0.43.0"
+        );
+        // Scoped/plain package name is preserved; a leading `v` is stripped.
+        assert_eq!(
+            build_npm_install_spec("cline@3.0.9", Some("v2.0.0")).unwrap(),
+            "cline@2.0.0"
+        );
+    }
+
+    #[test]
+    fn build_npm_install_spec_rejects_invalid_override() {
+        assert!(build_npm_install_spec("cline@3.0.9", Some("latest")).is_err());
+    }
+
+    #[test]
+    fn apply_custom_version_to_url_substitutes_all_occurrences() {
+        // Codex URL embeds the version twice (path tag + asset filename).
+        let codex = "https://github.com/zed-industries/codex-acp/releases/download/v0.15.0/codex-acp-0.15.0-aarch64-apple-darwin.tar.gz";
+        assert_eq!(
+            apply_custom_version_to_url(codex, "0.15.0", "0.14.0"),
+            "https://github.com/zed-industries/codex-acp/releases/download/v0.14.0/codex-acp-0.14.0-aarch64-apple-darwin.tar.gz"
+        );
+
+        // OpenCode URL embeds the version once (path tag only).
+        let opencode = "https://github.com/anomalyco/opencode/releases/download/v1.15.12/opencode-darwin-arm64.zip";
+        assert_eq!(
+            apply_custom_version_to_url(opencode, "1.15.12", "1.16.0"),
+            "https://github.com/anomalyco/opencode/releases/download/v1.16.0/opencode-darwin-arm64.zip"
+        );
     }
 
     #[test]
