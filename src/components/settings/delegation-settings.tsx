@@ -51,7 +51,7 @@ export function DelegationSettingsSection() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [enabled, setEnabled] = useState(false)
-  const [depth, setDepth] = useState<number>(2)
+  const [depth, setDepth] = useState<number>(1)
   const [agentDefaults, setAgentDefaults] = useState<
     Partial<Record<AgentType, AgentDelegationDefaults>>
   >({})

@@ -2525,7 +2525,7 @@ const ToolGroupPart = memo(function ToolGroupPart({
         <div className="mt-3 w-full space-y-3">
           {part.items.map((item, idx) => (
             <ToolCallPart
-              key={`grouped-tc-${item.toolCallId ?? idx}`}
+              key={`grouped-tc-${item.toolCallId ?? idx}-${idx}`}
               part={item}
             />
           ))}

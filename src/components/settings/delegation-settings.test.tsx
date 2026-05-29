@@ -42,7 +42,7 @@ function settings(
   // override explicitly.
   return {
     enabled: false,
-    depth_limit: 2,
+    depth_limit: 1,
     agent_defaults: {},
     ...overrides,
   }

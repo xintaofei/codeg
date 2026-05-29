@@ -57,7 +57,7 @@ impl Default for DelegationSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            depth_limit: 2,
+            depth_limit: 1,
             agent_defaults: BTreeMap::new(),
         }
     }
@@ -232,7 +232,7 @@ mod tests {
         let db = crate::db::test_helpers::fresh_in_memory_db().await;
         let settings = load_delegation_settings(&db.conn).await;
         assert!(!settings.enabled);
-        assert_eq!(settings.depth_limit, 2);
+        assert_eq!(settings.depth_limit, 1);
     }
 
     #[tokio::test]

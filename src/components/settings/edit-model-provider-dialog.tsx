@@ -246,7 +246,7 @@ export function EditModelProviderDialog({
                       reasoning: e.target.value,
                     }))
                   }
-                  placeholder="claude-opus-4-7"
+                  placeholder="claude-opus-4-8"
                 />
               </div>
               <div className="space-y-1.5">
@@ -291,7 +291,7 @@ export function EditModelProviderDialog({
                       opus: e.target.value,
                     }))
                   }
-                  placeholder="claude-opus-4-7"
+                  placeholder="claude-opus-4-8"
                 />
               </div>
             </div>
