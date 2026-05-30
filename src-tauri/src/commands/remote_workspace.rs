@@ -185,8 +185,8 @@ pub async fn open_remote_workspace(
     );
     let builder = WebviewWindowBuilder::new(&app, &label, url)
         .title(format!("Codeg - {}", connection.name))
-        .inner_size(1400.0, 900.0)
-        .min_inner_size(1100.0, 700.0)
+        .inner_size(1260.0, 860.0)
+        .min_inner_size(400.0, 600.0)
         .center();
     let window = crate::commands::windows::apply_platform_window_style(builder)
         .build()
