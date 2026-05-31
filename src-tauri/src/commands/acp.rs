@@ -162,11 +162,15 @@ fn sanitize_custom_version(input: &str) -> Option<String> {
 /// validated via [`sanitize_custom_version`] and combined with the registry
 /// package *name* (its pinned version is dropped) to form `name@<version>`. An
 /// override that fails validation is rejected with an error.
-fn build_npm_install_spec(package: &str, version_override: Option<&str>) -> Result<String, AcpError> {
+fn build_npm_install_spec(
+    package: &str,
+    version_override: Option<&str>,
+) -> Result<String, AcpError> {
     match version_override {
         Some(raw) if !raw.trim().is_empty() => {
-            let version = sanitize_custom_version(raw)
-                .ok_or_else(|| AcpError::protocol(format!("invalid custom version: {}", raw.trim())))?;
+            let version = sanitize_custom_version(raw).ok_or_else(|| {
+                AcpError::protocol(format!("invalid custom version: {}", raw.trim()))
+            })?;
             Ok(format!("{}@{version}", package_name_from_spec(package)))
         }
         _ => Ok(package.to_string()),
@@ -3326,10 +3330,11 @@ pub(crate) async fn acp_download_agent_binary_core(
             // A custom version substitutes into the pinned download URL and the
             // cache key; `None`/empty keeps the registry-pinned version.
             let custom = match version_override.as_deref() {
-                Some(raw) if !raw.trim().is_empty() => Some(sanitize_custom_version(raw)
-                    .ok_or_else(|| {
+                Some(raw) if !raw.trim().is_empty() => {
+                    Some(sanitize_custom_version(raw).ok_or_else(|| {
                         AcpError::protocol(format!("invalid custom version: {}", raw.trim()))
-                    })?),
+                    })?)
+                }
                 _ => None,
             };
 
@@ -3354,7 +3359,10 @@ pub(crate) async fn acp_download_agent_binary_core(
                 emitter,
                 &task_id,
                 AgentInstallEventKind::Log,
-                format!("Downloading {} v{effective_version} for {platform}", meta.name),
+                format!(
+                    "Downloading {} v{effective_version} for {platform}",
+                    meta.name
+                ),
             );
 
             let emitter_clone = emitter.clone();
@@ -4220,7 +4228,11 @@ mod tests {
             "1.2.3@evil",
             "../etc",
         ] {
-            assert_eq!(sanitize_custom_version(bad), None, "expected {bad:?} rejected");
+            assert_eq!(
+                sanitize_custom_version(bad),
+                None,
+                "expected {bad:?} rejected"
+            );
         }
     }
 

@@ -60,11 +60,7 @@ const BROKER_CANCEL_BUDGET: Duration = Duration::from_millis(500);
 /// cancel backstops (parent / child disconnect cascades) if this one
 /// misses.
 async fn send_broker_cancel(socket_path: &str, req: &BrokerCancelRequest) {
-    let _ = tokio::time::timeout(
-        BROKER_CANCEL_BUDGET,
-        client_cancel(socket_path, req),
-    )
-    .await;
+    let _ = tokio::time::timeout(BROKER_CANCEL_BUDGET, client_cancel(socket_path, req)).await;
 }
 
 /// Static MCP tool schema. Lives next to this module so codeg-mcp ships
@@ -762,7 +758,10 @@ mod tests {
         });
         let rendered = render_task_report(&report);
         assert_eq!(rendered["isError"], true);
-        assert_eq!(rendered["content"][0]["text"], "spawn failed: agent missing");
+        assert_eq!(
+            rendered["content"][0]["text"],
+            "spawn failed: agent missing"
+        );
         assert_eq!(rendered["structuredContent"]["error_code"], "spawn_failed");
     }
 

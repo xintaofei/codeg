@@ -28,6 +28,7 @@
 //!   * `cancel` — fire-and-forget [`BrokerCancelRequest`] from MCP
 //!     `notifications/cancelled`, targeting an in-flight `delegate_to_agent`
 //!     call by `external_handle`; gets a `Value::Null` ack.
+//!
 //! All arms are authenticated by the same per-launch `token`.
 //!
 //! ### Version coupling
@@ -187,10 +188,7 @@ where
 /// response, drop the connection. The three public helpers below differ only
 /// in which message they build, so the connect/write/read is shared here.
 #[cfg(unix)]
-async fn message_round_trip(
-    socket_path: &str,
-    msg: &BrokerMessage,
-) -> io::Result<BrokerResponse> {
+async fn message_round_trip(socket_path: &str, msg: &BrokerMessage) -> io::Result<BrokerResponse> {
     use tokio::net::UnixStream;
     let mut stream = UnixStream::connect(socket_path).await?;
     write_frame(&mut stream, msg).await?;
@@ -199,10 +197,7 @@ async fn message_round_trip(
 
 /// Windows path uses named pipes; the address format is `\\.\pipe\<name>`.
 #[cfg(windows)]
-async fn message_round_trip(
-    socket_path: &str,
-    msg: &BrokerMessage,
-) -> io::Result<BrokerResponse> {
+async fn message_round_trip(socket_path: &str, msg: &BrokerMessage) -> io::Result<BrokerResponse> {
     let mut stream = open_named_pipe_with_retry(socket_path)
         .await
         .map_err(|e| io::Error::other(format!("open pipe: {e}")))?;
@@ -290,10 +285,7 @@ async fn open_named_pipe_with_retry(
 /// race that loses to a completed response is fine, the companion will
 /// suppress the response per MCP spec either way.
 #[cfg(unix)]
-pub async fn client_cancel(
-    socket_path: &str,
-    req: &BrokerCancelRequest,
-) -> io::Result<()> {
+pub async fn client_cancel(socket_path: &str, req: &BrokerCancelRequest) -> io::Result<()> {
     use tokio::net::UnixStream;
     let mut stream = UnixStream::connect(socket_path).await?;
     let msg = BrokerMessage::Cancel(req.clone());
@@ -305,10 +297,7 @@ pub async fn client_cancel(
 }
 
 #[cfg(windows)]
-pub async fn client_cancel(
-    socket_path: &str,
-    req: &BrokerCancelRequest,
-) -> io::Result<()> {
+pub async fn client_cancel(socket_path: &str, req: &BrokerCancelRequest) -> io::Result<()> {
     let mut stream = open_named_pipe_with_retry(socket_path)
         .await
         .map_err(|e| io::Error::other(format!("open pipe: {e}")))?;

@@ -270,13 +270,7 @@ pub mod mock {
                 .unwrap();
             assert_eq!(r1, "child-1");
             let r2 = m
-                .spawn(
-                    "parent-1",
-                    AgentType::Codex,
-                    None,
-                    None,
-                    BTreeMap::new(),
-                )
+                .spawn("parent-1", AgentType::Codex, None, None, BTreeMap::new())
                 .await
                 .unwrap_err();
             assert!(matches!(r2, SpawnerError::Spawn(_)));

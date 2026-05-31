@@ -4336,9 +4336,7 @@ mod tests {
     // opts in via the settings panel.
     #[tokio::test]
     async fn inject_codeg_delegate_skipped_when_broker_disabled() {
-        use crate::acp::delegation::broker::{
-            ConversationDepthLookup, DelegationBroker,
-        };
+        use crate::acp::delegation::broker::{ConversationDepthLookup, DelegationBroker};
         use crate::acp::delegation::listener::TokenRegistry;
         use crate::acp::delegation::spawner::{mock::MockSpawner, ConnectionSpawner};
         use crate::acp::delegation::types::DelegationError;

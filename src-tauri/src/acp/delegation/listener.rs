@@ -168,9 +168,7 @@ impl DelegationListener {
         let resp = match msg {
             BrokerMessage::Call(req) => report_response(self.process(req).await)?,
             BrokerMessage::Status(req) => report_response(self.process_status(req).await)?,
-            BrokerMessage::CancelTask(req) => {
-                report_response(self.process_cancel_task(req).await)?
-            }
+            BrokerMessage::CancelTask(req) => report_response(self.process_cancel_task(req).await)?,
             BrokerMessage::Cancel(cancel) => {
                 self.process_cancel(cancel).await;
                 // Empty ack — the companion only uses this to detect the
@@ -234,7 +232,9 @@ impl DelegationListener {
         let Some(_entry) = self.tokens.lookup(&cancel.token).await else {
             return;
         };
-        let reason = cancel.reason.unwrap_or_else(|| "mcp client canceled".into());
+        let reason = cancel
+            .reason
+            .unwrap_or_else(|| "mcp client canceled".into());
         self.broker
             .cancel_by_external_handle(&cancel.external_handle, reason)
             .await;
@@ -387,10 +387,7 @@ pub fn default_socket_path(temp_dir: &Path) -> PathBuf {
 
 #[cfg(windows)]
 pub fn default_socket_path(_temp_dir: &Path) -> PathBuf {
-    PathBuf::from(format!(
-        r"\\.\pipe\codeg-delegation-{}",
-        std::process::id()
-    ))
+    PathBuf::from(format!(r"\\.\pipe\codeg-delegation-{}", std::process::id()))
 }
 
 #[cfg(test)]
@@ -486,8 +483,11 @@ mod tests {
                 },
             )
             .await;
-        let listener =
-            make_listener(make_broker(Arc::new(MockSpawner::new())).await, tokens, Some(1));
+        let listener = make_listener(
+            make_broker(Arc::new(MockSpawner::new())).await,
+            tokens,
+            Some(1),
+        );
         let report = listener
             .process(make_request(json!({"agent_type": "codex", "task": "x"})).await)
             .await;
@@ -508,7 +508,11 @@ mod tests {
             )
             .await;
         // parent_conversation = None: parent has no live conversation.
-        let listener = make_listener(make_broker(Arc::new(MockSpawner::new())).await, tokens, None);
+        let listener = make_listener(
+            make_broker(Arc::new(MockSpawner::new())).await,
+            tokens,
+            None,
+        );
         let report = listener
             .process(make_request(json!({"agent_type": "codex", "task": "x"})).await)
             .await;
@@ -528,8 +532,11 @@ mod tests {
                 },
             )
             .await;
-        let listener =
-            make_listener(make_broker(Arc::new(MockSpawner::new())).await, tokens, Some(1));
+        let listener = make_listener(
+            make_broker(Arc::new(MockSpawner::new())).await,
+            tokens,
+            Some(1),
+        );
         let report = listener
             .process(make_request(json!({"agent_type": "garbage", "task": "x"})).await)
             .await;

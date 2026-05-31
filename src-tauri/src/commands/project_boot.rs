@@ -118,10 +118,7 @@ mod tests {
             "foo\\bar",
             "..\\win",
         ] {
-            assert!(
-                validate_project_name(bad).is_err(),
-                "should reject {bad:?}"
-            );
+            assert!(validate_project_name(bad).is_err(), "should reject {bad:?}");
         }
     }
 
@@ -129,10 +126,7 @@ mod tests {
     fn rejects_leading_dash_option_injection() {
         // A leading '-' would be parsed as a flag by the scaffolding CLI.
         for bad in ["-x", "--help", "-", "--example", "-rf"] {
-            assert!(
-                validate_project_name(bad).is_err(),
-                "should reject {bad:?}"
-            );
+            assert!(validate_project_name(bad).is_err(), "should reject {bad:?}");
         }
     }
 }
@@ -465,9 +459,7 @@ pub async fn install_hyperframes_skills(agents: Vec<String>) -> Result<(), AppCo
     // `~/.agents/skills`, so one satisfied install covers all that read it.
     for &agent in &ran_ok {
         if !hyperframes_skill_installed(agent) {
-            eprintln!(
-                "[ProjectBoot] {agent}: install exited 0 but no HyperFrames skill detected"
-            );
+            eprintln!("[ProjectBoot] {agent}: install exited 0 but no HyperFrames skill detected");
             failures.push(format!(
                 "{agent}: install reported success but no HyperFrames skill was detected"
             ));

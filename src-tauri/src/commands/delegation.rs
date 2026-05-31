@@ -146,13 +146,9 @@ pub async fn set_delegation_settings_core(
     let agent_defaults_json = serde_json::to_string(&clamped.agent_defaults).map_err(|e| {
         AppCommandError::configuration_invalid(format!("serialize agent_defaults: {e}"))
     })?;
-    app_metadata_service::upsert_value(
-        conn,
-        KEY_DELEGATION_AGENT_DEFAULTS,
-        &agent_defaults_json,
-    )
-    .await
-    .map_err(AppCommandError::from)?;
+    app_metadata_service::upsert_value(conn, KEY_DELEGATION_AGENT_DEFAULTS, &agent_defaults_json)
+        .await
+        .map_err(AppCommandError::from)?;
     broker
         .set_config(clamped.clone().into_broker_config())
         .await;

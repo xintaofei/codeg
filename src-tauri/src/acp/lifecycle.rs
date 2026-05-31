@@ -528,8 +528,7 @@ fn is_delegation_invocation(title: &str, raw_input: Option<&str>) -> bool {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
             if let Some(args) = find_delegation_args(&v, 0) {
                 let has_task = args.get("task").and_then(|t| t.as_str()).is_some();
-                let has_agent_type =
-                    args.get("agent_type").and_then(|a| a.as_str()).is_some();
+                let has_agent_type = args.get("agent_type").and_then(|a| a.as_str()).is_some();
                 if has_task && has_agent_type {
                     return true;
                 }
@@ -560,8 +559,7 @@ fn extract_delegation_match_key(raw_input: Option<&str>) -> Option<DelegationMat
     let task = args.get("task").and_then(|v| v.as_str())?.to_string();
     // Parse `agent_type` through the same serde path the MCP listener uses,
     // so the stored enum equals `DelegationRequest::agent_type`.
-    let agent_type: AgentType =
-        serde_json::from_value(args.get("agent_type")?.clone()).ok()?;
+    let agent_type: AgentType = serde_json::from_value(args.get("agent_type")?.clone()).ok()?;
     let working_dir = args
         .get("working_dir")
         .and_then(|v| v.as_str())
@@ -690,8 +688,7 @@ mod delegation_title_tests {
     fn extract_match_key_peels_wrapper_layers() {
         // Codex-style: args nested under `params.input` (mirrors the
         // `findDelegationArgs` walker in delegated-sub-thread.tsx).
-        let nested =
-            r#"{"params":{"input":{"agent_type":"codex","task":"t","working_dir":"/w"}}}"#;
+        let nested = r#"{"params":{"input":{"agent_type":"codex","task":"t","working_dir":"/w"}}}"#;
         let key = extract_delegation_match_key(Some(nested)).expect("nested key parses");
         assert_eq!(key.agent_type, AgentType::Codex);
         assert_eq!(key.task, "t");
@@ -934,7 +931,11 @@ mod delegation_registration_tests {
         // tc-2's args arrive on an update → backfills its key.
         register_delegation_tool_call_from_event(
             &b,
-            &tool_call_update_event("tc-2", None, Some(r#"{"agent_type":"codex","task":"build"}"#)),
+            &tool_call_update_event(
+                "tc-2",
+                None,
+                Some(r#"{"agent_type":"codex","task":"build"}"#),
+            ),
         )
         .await;
         // In-loop claims are exact-match-only, so tc-2 is claimable purely
@@ -2298,8 +2299,7 @@ mod tests {
             DelegationOutcome::Err { code, message, .. } => {
                 assert_eq!(code, "canceled");
                 assert_eq!(
-                    message,
-                    "canceled: child session ended without TurnComplete: transport closed",
+                    message, "canceled: child session ended without TurnComplete: transport closed",
                     "terminal Error detail must reach the broker without waiting for Disconnected"
                 );
             }
@@ -2401,7 +2401,10 @@ mod tests {
         match &outcome {
             DelegationOutcome::Err { code, message, .. } => {
                 assert_eq!(code, "canceled");
-                assert_eq!(message, "canceled: child session ended without TurnComplete");
+                assert_eq!(
+                    message,
+                    "canceled: child session ended without TurnComplete"
+                );
             }
             other => panic!("expected Err{{canceled}}, got {other:?}"),
         }

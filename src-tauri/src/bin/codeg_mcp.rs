@@ -102,7 +102,10 @@ fn parse_args() -> Result<Args, String> {
 
 /// Serialize a `JsonRpcResponse` and append a newline; small enough to keep
 /// inline so the write-mutex critical section stays tight.
-async fn write_response(stdout: &Arc<Mutex<Stdout>>, resp: &JsonRpcResponse) -> std::io::Result<()> {
+async fn write_response(
+    stdout: &Arc<Mutex<Stdout>>,
+    resp: &JsonRpcResponse,
+) -> std::io::Result<()> {
     let serialized = serde_json::to_string(resp).map_err(|e| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
     })?;
@@ -137,12 +140,11 @@ async fn main() -> ExitCode {
     // main loop can race it against stdin reads via `tokio::select!`;
     // when no PID was provided we substitute a never-ready future, which
     // tokio's branch evaluation skips for free.
-    let watchdog: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> = match args
-        .parent_pid
-    {
-        Some(pid) => Box::pin(wait_for_parent_exit(pid, DEFAULT_POLL_INTERVAL)),
-        None => Box::pin(std::future::pending()),
-    };
+    let watchdog: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+        match args.parent_pid {
+            Some(pid) => Box::pin(wait_for_parent_exit(pid, DEFAULT_POLL_INTERVAL)),
+            None => Box::pin(std::future::pending()),
+        };
     tokio::pin!(watchdog);
 
     loop {

@@ -713,11 +713,7 @@ mod tests {
     // sub-agent children to the parent UI's read-only viewer.
     // ──────────────────────────────────────────────────────────────────────
 
-    fn summary_child(
-        id: i32,
-        parent_tool_use_id: &str,
-        status: &str,
-    ) -> DbConversationSummary {
+    fn summary_child(id: i32, parent_tool_use_id: &str, status: &str) -> DbConversationSummary {
         let now = chrono::Utc::now();
         DbConversationSummary {
             id,
@@ -774,7 +770,10 @@ mod tests {
         let inner = meta.get("codeg.delegation").expect("codeg.delegation key");
         assert_eq!(inner["status"], "completed");
         assert_eq!(inner["child_conversation_id"], 42);
-        assert!(inner.get("error_code").is_none(), "completed has no error_code");
+        assert!(
+            inner.get("error_code").is_none(),
+            "completed has no error_code"
+        );
     }
 
     #[test]
@@ -782,7 +781,10 @@ mod tests {
         let mut turns = vec![tool_use_turn(Some("tu-1"), "delegate_to_agent")];
         let children = vec![summary_child(7, "tu-1", "in_progress")];
         inject_delegation_meta(&mut turns, &children);
-        let inner = first_block_meta(&turns[0]).unwrap().get("codeg.delegation").unwrap();
+        let inner = first_block_meta(&turns[0])
+            .unwrap()
+            .get("codeg.delegation")
+            .unwrap();
         assert_eq!(inner["status"], "running");
         assert_eq!(inner["child_conversation_id"], 7);
     }
@@ -798,7 +800,10 @@ mod tests {
         let mut turns = vec![tool_use_turn(Some("tu-1"), "delegate_to_agent")];
         let children = vec![summary_child(11, "tu-1", "pending_review")];
         inject_delegation_meta(&mut turns, &children);
-        let inner = first_block_meta(&turns[0]).unwrap().get("codeg.delegation").unwrap();
+        let inner = first_block_meta(&turns[0])
+            .unwrap()
+            .get("codeg.delegation")
+            .unwrap();
         assert_eq!(inner["status"], "completed");
         assert_eq!(inner["child_conversation_id"], 11);
     }
@@ -814,7 +819,10 @@ mod tests {
         let mut turns = vec![tool_use_turn(Some("tu-1"), "delegate_to_agent")];
         let children = vec![summary_child(9, "tu-1", "cancelled")];
         inject_delegation_meta(&mut turns, &children);
-        let inner = first_block_meta(&turns[0]).unwrap().get("codeg.delegation").unwrap();
+        let inner = first_block_meta(&turns[0])
+            .unwrap()
+            .get("codeg.delegation")
+            .unwrap();
         assert_eq!(inner["status"], "failed");
         assert!(
             inner.get("error_code").is_none(),
@@ -864,7 +872,10 @@ mod tests {
         let children = vec![summary_child(42, "tu-1", "completed")];
         inject_delegation_meta(&mut turns, &children);
         // The 999 (broker-written) survives — DB-derived 42 is not used here.
-        let inner = first_block_meta(&turns[0]).unwrap().get("codeg.delegation").unwrap();
+        let inner = first_block_meta(&turns[0])
+            .unwrap()
+            .get("codeg.delegation")
+            .unwrap();
         assert_eq!(inner["child_conversation_id"], 999);
         assert_eq!(inner["status"], "running");
     }

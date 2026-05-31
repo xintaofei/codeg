@@ -227,8 +227,7 @@ async fn handle_acp_envelope(
                             .unwrap_or(false);
                     let channel_id = session.channel_id;
                     if is_delegation {
-                        let already_rendered =
-                            session.delegation_rendered.contains(tool_call_id);
+                        let already_rendered = session.delegation_rendered.contains(tool_call_id);
                         let report = parse_delegation_report(raw_output.as_deref());
                         if report.as_ref().is_some_and(|r| r.is_terminal()) {
                             // Terminal tool output (a fast-complete result, or a
@@ -275,10 +274,8 @@ async fn handle_acp_envelope(
                     } else {
                         let stored_input = session.tool_call_inputs.remove(tool_call_id);
                         let input_ref = stored_input.as_deref().or(raw_input.as_deref());
-                        let body = format!(
-                            ">> {}",
-                            format_tool_call_detail(effective_title, input_ref)
-                        );
+                        let body =
+                            format!(">> {}", format_tool_call_detail(effective_title, input_ref));
                         drop(guard);
                         let msg = RichMessage::info(body);
                         let _ = manager.send_to_channel(channel_id, &msg).await;
@@ -951,7 +948,12 @@ fn format_delegation_terminal(agent: &str, view: &DelegationReportView) -> Strin
             format!("✅ {agent}: {}", truncate_str(body, 200))
         };
     }
-    match view.message.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    match view
+        .message
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(message) => format!("❌ {agent} failed: {}", truncate_str(message, 200)),
         None => format!(
             "❌ {agent} failed ({})",
@@ -1068,8 +1070,9 @@ mod delegation_relay_tests {
             "❌ codex failed: delegation disabled"
         );
         // Falls back to the code when there's no message.
-        let view2 = parse_delegation_report(Some(r#"{"status":"failed","error_code":"depth_limit"}"#))
-            .unwrap();
+        let view2 =
+            parse_delegation_report(Some(r#"{"status":"failed","error_code":"depth_limit"}"#))
+                .unwrap();
         assert_eq!(
             format_delegation_terminal("gemini", &view2),
             "❌ gemini failed (depth_limit)"
@@ -1082,7 +1085,10 @@ mod delegation_relay_tests {
             duration_ms: 5,
             text_preview: Some("  hello world  ".into()),
         };
-        assert_eq!(format_delegation_result("codex", &r), "✅ codex: hello world");
+        assert_eq!(
+            format_delegation_result("codex", &r),
+            "✅ codex: hello world"
+        );
     }
 
     #[test]
@@ -1241,8 +1247,7 @@ mod async_relay_dedup_tests {
                 title: Some("delegate_to_agent".into()),
                 status: Some("completed".into()),
                 content: None,
-                raw_input: with_input
-                    .then(|| r#"{"agent_type":"codex","task":"x"}"#.to_string()),
+                raw_input: with_input.then(|| r#"{"agent_type":"codex","task":"x"}"#.to_string()),
                 raw_output: Some(raw_output.into()),
                 raw_output_append: None,
                 locations: None,
@@ -1284,8 +1289,14 @@ mod async_relay_dedup_tests {
         let (bridge, chat, rec) = harness().await;
         let conn = ConnectionManager::new();
         let db = test_helpers::fresh_in_memory_db().await;
-        handle_acp_envelope(&completed_update(FAST_COMPLETE, true), &bridge, &chat, &conn, &db.conn)
-            .await;
+        handle_acp_envelope(
+            &completed_update(FAST_COMPLETE, true),
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+        )
+        .await;
         let msgs = sent(&rec).await;
         assert_eq!(msgs.len(), 1, "exactly one line, got {msgs:?}");
         assert!(msgs[0].starts_with("✅ codex"), "got {:?}", msgs[0]);
@@ -1302,10 +1313,20 @@ mod async_relay_dedup_tests {
         handle_acp_envelope(&delegation_completed_ok(), &bridge, &chat, &conn, &db.conn).await;
         // The later terminal update carries raw_input (re-creating the old
         // input-map token) AND terminal output.
-        handle_acp_envelope(&completed_update(FAST_COMPLETE, true), &bridge, &chat, &conn, &db.conn)
-            .await;
+        handle_acp_envelope(
+            &completed_update(FAST_COMPLETE, true),
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+        )
+        .await;
         let msgs = sent(&rec).await;
-        assert_eq!(msgs.len(), 1, "must render exactly one result line, got {msgs:?}");
+        assert_eq!(
+            msgs.len(),
+            1,
+            "must render exactly one result line, got {msgs:?}"
+        );
         assert!(msgs[0].starts_with("✅ codex"), "got {:?}", msgs[0]);
     }
 
@@ -1316,7 +1337,14 @@ mod async_relay_dedup_tests {
         let (bridge, chat, rec) = harness().await;
         let conn = ConnectionManager::new();
         let db = test_helpers::fresh_in_memory_db().await;
-        handle_acp_envelope(&completed_update(ACK, false), &bridge, &chat, &conn, &db.conn).await;
+        handle_acp_envelope(
+            &completed_update(ACK, false),
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+        )
+        .await;
         handle_acp_envelope(&delegation_completed_ok(), &bridge, &chat, &conn, &db.conn).await;
         let msgs = sent(&rec).await;
         assert_eq!(msgs.len(), 2, "ack + result, got {msgs:?}");
@@ -1333,7 +1361,14 @@ mod async_relay_dedup_tests {
         let db = test_helpers::fresh_in_memory_db().await;
         handle_acp_envelope(&delegation_completed_ok(), &bridge, &chat, &conn, &db.conn).await;
         // Host re-emits the running ack after completion, with raw_input.
-        handle_acp_envelope(&completed_update(ACK, true), &bridge, &chat, &conn, &db.conn).await;
+        handle_acp_envelope(
+            &completed_update(ACK, true),
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+        )
+        .await;
         let msgs = sent(&rec).await;
         assert_eq!(msgs.len(), 1, "no stale ack after the result, got {msgs:?}");
         assert!(msgs[0].starts_with("✅ codex"));
@@ -1347,7 +1382,14 @@ mod async_relay_dedup_tests {
         let conn = ConnectionManager::new();
         let db = test_helpers::fresh_in_memory_db().await;
         let out = r#"{"structuredContent":{"status":"failed","error_code":"spawn_failed","message":"spawn failed: x"}}"#;
-        handle_acp_envelope(&completed_update(out, true), &bridge, &chat, &conn, &db.conn).await;
+        handle_acp_envelope(
+            &completed_update(out, true),
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+        )
+        .await;
         let msgs = sent(&rec).await;
         assert_eq!(msgs.len(), 1, "one failure line, got {msgs:?}");
         assert!(msgs[0].starts_with("❌ codex failed"), "got {:?}", msgs[0]);
