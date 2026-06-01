@@ -1885,6 +1885,7 @@
         "status": {
           "starting": "iniciando",
           "running": "en curso",
+          "waiting": "esperando aprobación",
           "ok": "completado",
           "err": {
             "default": "fallido",

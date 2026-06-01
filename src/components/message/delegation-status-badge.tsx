@@ -4,6 +4,7 @@ import {
   CheckCircleIcon,
   CircleDashed,
   Loader2,
+  ShieldAlert,
   XCircleIcon,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -14,7 +15,7 @@ export function StatusBadge({
   status,
   errorCode,
 }: {
-  status: "starting" | "running" | "ok" | "err"
+  status: "starting" | "running" | "waiting" | "ok" | "err"
   errorCode?: string
 }) {
   const t = useTranslations("Folder.chat.delegation.status")
@@ -23,6 +24,14 @@ export function StatusBadge({
       <Badge className="gap-1.5 rounded-full text-xs" variant="secondary">
         <CircleDashed className="animate-spin text-muted-foreground" />
         {t("starting")}
+      </Badge>
+    )
+  }
+  if (status === "waiting") {
+    return (
+      <Badge className="gap-1.5 rounded-full text-xs" variant="secondary">
+        <ShieldAlert className="text-amber-500" />
+        {t("waiting")}
       </Badge>
     )
   }

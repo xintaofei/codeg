@@ -1885,6 +1885,7 @@
         "status": {
           "starting": "시작 중",
           "running": "실행 중",
+          "waiting": "승인 대기 중",
           "ok": "완료",
           "err": {
             "default": "실패",

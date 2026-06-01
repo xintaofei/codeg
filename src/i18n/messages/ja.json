@@ -1885,6 +1885,7 @@
         "status": {
           "starting": "起動中",
           "running": "実行中",
+          "waiting": "承認待ち",
           "ok": "完了",
           "err": {
             "default": "失敗",

@@ -15,6 +15,7 @@ const mockFetchDetail = vi.fn()
 const mockRefetchDetail = vi.fn()
 const mockGetSession = vi.fn()
 const mockGetTimelineTurns = vi.fn(() => [])
+const mockRespondPermission = vi.fn()
 
 vi.mock("@/contexts/conversation-runtime-context", async () => {
   const actual = await vi.importActual<
@@ -68,8 +69,30 @@ vi.mock("@/contexts/acp-connections-context", async () => {
       getActiveKey: () => null,
       subscribeActiveKey: () => () => {},
     }),
+    useAcpActions: () => ({ respondPermission: mockRespondPermission }),
   }
 })
+
+// PermissionDialog has its own dependency graph (parsePermissionToolCall,
+// CodeBlock, UnifiedDiffPreview…). Stub it to a sentinel button that forwards
+// the response so we can assert the sheet surfaces + routes the child's prompt.
+vi.mock("@/components/chat/permission-dialog", () => ({
+  PermissionDialog: ({
+    permission,
+    onRespond,
+  }: {
+    permission: { request_id: string } | null
+    onRespond: (requestId: string, optionId: string) => void
+  }) =>
+    permission ? (
+      <button
+        data-testid="permission-dialog"
+        onClick={() => onRespond(permission.request_id, "approve")}
+      >
+        permission for {permission.request_id}
+      </button>
+    ) : null,
+}))
 
 // useConversationDetail drives the persisted-detail fetch. We don't need
 // to exercise the real fetch — just expose a controlled `loading` flag so
@@ -157,6 +180,7 @@ describe("SubAgentSessionSheet", () => {
     mockRefetchDetail.mockReset()
     mockGetSession.mockReset()
     mockGetTimelineTurns.mockClear()
+    mockRespondPermission.mockReset()
     mockChildConnection = undefined
     storeCallbacks = []
     mockDetailState = {
@@ -180,6 +204,44 @@ describe("SubAgentSessionSheet", () => {
     expect(screen.queryByTestId("message-list-view")).not.toBeInTheDocument()
     expect(mockSetLiveMessage).not.toHaveBeenCalled()
     expect(mockRemoveConversation).not.toHaveBeenCalled()
+  })
+
+  it("surfaces the child's pending permission and routes the response through the child connection id", () => {
+    mockChildConnection = makeConnState({
+      pendingPermission: {
+        request_id: "req-7",
+        tool_call: { title: "Run bash", kind: "execute" },
+        options: [{ optionId: "approve", name: "Approve", kind: "allow_once" }],
+      } as unknown as ConnectionState["pendingPermission"],
+    })
+    renderWithIntl(
+      <SubAgentSessionSheet
+        open
+        onOpenChange={() => {}}
+        childConversationId={99}
+        childConnectionId="c1"
+        agentType="codex"
+      />
+    )
+    const dialog = screen.getByTestId("permission-dialog")
+    expect(dialog).toHaveTextContent("permission for req-7")
+    fireEvent.click(dialog)
+    // Routed via the CHILD connection id (c1), not the parent.
+    expect(mockRespondPermission).toHaveBeenCalledWith("c1", "req-7", "approve")
+  })
+
+  it("renders no permission dialog when the child has no pending permission", () => {
+    mockChildConnection = makeConnState({ pendingPermission: null })
+    renderWithIntl(
+      <SubAgentSessionSheet
+        open
+        onOpenChange={() => {}}
+        childConversationId={99}
+        childConnectionId="c1"
+        agentType="codex"
+      />
+    )
+    expect(screen.queryByTestId("permission-dialog")).not.toBeInTheDocument()
   })
 
   it("renders a strictly read-only MessageListView (no input/send/reload props)", () => {

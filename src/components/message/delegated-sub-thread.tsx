@@ -1,47 +1,32 @@
 "use client"
 
 /**
- * Inline rendering of a delegated child sub-session under the parent's
+ * Inline header for a delegated child sub-session under the parent's
  * `delegate_to_agent` ToolCallBlock. Renders as a self-contained card —
  * never falls through the generic tool-call shell — so users see "Agent
  * delegating: task" instead of "mcp__codeg-delegate__delegate_to_agent: codex".
  *
- * Layout:
- *   * Header (always visible): AgentIcon + agent name · "delegated" label
- *     + status badge + chevron.
- *   * Task row: the prompt the parent sent to the child.
- *   * Expanded body: scrollable preview of the child's turns. Fetched
- *     lazily on first expand.
+ * The card is intentionally a status + navigation affordance ONLY: it does not
+ * render the child's output inline and does not expand. The child's result is
+ * delivered to the LLM via `get_delegation_status` and to the user by opening
+ * the child session ("查看会话" → SubAgentSessionSheet, which also hosts the
+ * child's permission prompts). When the child is awaiting a permission decision
+ * the status badge reflects it, cueing the user to open the session.
  */
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useReducer,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react"
-import { ChevronDown, ChevronRight, Eye, Loader2 } from "lucide-react"
+import { useCallback, useMemo, useState, useSyncExternalStore } from "react"
+import { Eye } from "lucide-react"
 import { useTranslations } from "next-intl"
 
 import { AgentIcon } from "@/components/agent-icon"
-import { MessageResponse } from "@/components/ai-elements/message"
 import { useDelegatedSubSession } from "@/hooks/use-delegated-sub-session"
 import { AGENT_LABELS, type AgentType } from "@/lib/types"
 import type { ToolCallState } from "@/lib/adapters/ai-elements-adapter"
+import { type DelegationStatus } from "@/contexts/delegation-context"
 import {
-  type DelegationStatus,
-  useDelegation,
-} from "@/contexts/delegation-context"
-import {
-  useAcpActions,
   useConnectionStore,
   type ConnectionState,
-  type PendingPermission as ChildPendingPermission,
 } from "@/contexts/acp-connections-context"
-import { PermissionDialog } from "@/components/chat/permission-dialog"
 import { StatusBadge } from "@/components/message/delegation-status-badge"
 import { SubAgentSessionSheet } from "@/components/message/sub-agent-session-sheet"
 
@@ -81,11 +66,6 @@ const KNOWN_AGENT_TYPES: ReadonlySet<string> = new Set<AgentType>([
   "open_claw",
 ])
 
-// Module-level empty map so the reducer's initial state has a stable
-// reference across mounts. New entries are always inserted into a
-// fresh `new Map(state)` copy, so the constant itself stays frozen.
-const EMPTY_TURN_MAP: ReadonlyMap<string, string> = new Map()
-
 /**
  * Subscribe to the child connection's `ConnectionState` (live message,
  * pending permission, etc.) from the shared connections store. Returns
@@ -117,10 +97,6 @@ type ParsedMeta = {
   childConnectionId: string | null
   childConversationId: number | null
   errorCode: string | null
-  /** Inline result preview written by the broker on the terminal `completed`
-   *  meta, so a post-refresh snapshot can render the result without the live
-   *  event. `null` for running/failed metas. */
-  resultPreview: string | null
 }
 
 /**
@@ -160,7 +136,6 @@ function parseDelegationMeta(
   const child_connection_id = obj["child_connection_id"]
   const child_conversation_id = obj["child_conversation_id"]
   const error_code = obj["error_code"]
-  const text_preview = obj["text_preview"]
   return {
     status,
     childConnectionId:
@@ -168,7 +143,6 @@ function parseDelegationMeta(
     childConversationId:
       typeof child_conversation_id === "number" ? child_conversation_id : null,
     errorCode: typeof error_code === "string" ? error_code : null,
-    resultPreview: typeof text_preview === "string" ? text_preview : null,
   }
 }
 
@@ -390,6 +364,44 @@ function interpretReport(
 }
 
 /**
+ * When an MCP `CallToolResult` lacks a usable `structuredContent`, the broker's
+ * `DelegationTaskReport` may still be inlined in `content[0]` — either as a
+ * structured `.json` object, or (Codex-style) as a JSON string in `.text`
+ * (optionally wrapped, e.g. `"Wall time: N seconds\nOutput:\n<json>_"`).
+ * Recognize it so a running ack yields `kind:"ack"` (not a premature "ok") and
+ * its `child_conversation_id` is preserved for the "查看会话" affordance. Returns
+ * null when no report can be recovered from the content array.
+ */
+function interpretMcpContentArray(
+  obj: Record<string, unknown>
+): ParsedToolOutput | null {
+  if (!Array.isArray(obj.content)) return null
+  const first = (obj.content as unknown[])[0]
+  if (!first || typeof first !== "object" || Array.isArray(first)) return null
+  const firstObj = first as Record<string, unknown>
+  // Some hosts attach a structured `json` field on the content item.
+  if (
+    firstObj.json &&
+    typeof firstObj.json === "object" &&
+    !Array.isArray(firstObj.json)
+  ) {
+    const interpreted = interpretReport(
+      firstObj.json as Record<string, unknown>
+    )
+    if (interpreted) return interpreted
+  }
+  // Codex-style: `content[0].text` is itself the serialized report.
+  if (typeof firstObj.text === "string") {
+    const embedded = extractEmbeddedJsonObject(firstObj.text)
+    if (embedded) {
+      const interpreted = interpretReport(embedded)
+      if (interpreted) return interpreted
+    }
+  }
+  return null
+}
+
+/**
  * Best-effort parse of the `delegate_to_agent` tool output into a
  * `ParsedToolOutput`. Mirrors the old unwrapping chain (direct JSON →
  * embedded-object scan → MCP `CallToolResult` envelope from
@@ -432,23 +444,39 @@ function parseToolOutput(
     }
   }
 
-  // MCP `CallToolResult` envelope. Prefer the inner `structuredContent` (the
-  // full report); fall back to `content[0].text` when it's missing/malformed.
-  if (
-    Array.isArray(obj.content) &&
-    obj.structuredContent &&
-    typeof obj.structuredContent === "object" &&
-    !Array.isArray(obj.structuredContent)
-  ) {
-    const inner = obj.structuredContent as Record<string, unknown>
-    const interpreted = interpretReport(inner)
-    if (interpreted) {
-      // Honor an outer `isError: true` the host already decided.
-      if (interpreted.kind === "outcome" && obj.isError === true) {
-        return { ...interpreted, isError: true }
+  // MCP `CallToolResult` envelope: `{ content: [...], structuredContent?, isError? }`.
+  if (Array.isArray(obj.content)) {
+    const inner =
+      obj.structuredContent &&
+      typeof obj.structuredContent === "object" &&
+      !Array.isArray(obj.structuredContent)
+        ? (obj.structuredContent as Record<string, unknown>)
+        : null
+    // 1. Prefer the full structured report.
+    if (inner) {
+      const interpreted = interpretReport(inner)
+      if (interpreted) {
+        // Honor an outer `isError: true` the host already decided.
+        if (interpreted.kind === "outcome" && obj.isError === true) {
+          return { ...interpreted, isError: true }
+        }
+        return interpreted
       }
-      return interpreted
     }
+    // 2. No usable `structuredContent` (e.g. a host that surfaces only the
+    //    content array): the report may be inlined in `content[0]`. Recognize a
+    //    running ack here so it isn't mis-rendered as a terminal "ok" and its
+    //    child id survives.
+    const fromContent = interpretMcpContentArray(obj)
+    if (fromContent) {
+      if (fromContent.kind === "outcome" && obj.isError === true) {
+        return { ...fromContent, isError: true }
+      }
+      return fromContent
+    }
+    // 3. Last resort: render `content[0].text` as opaque outcome text, carrying
+    //    any child id from `structuredContent` if it was present but
+    //    uninterpretable.
     const first = (obj.content as unknown[])[0]
     if (first && typeof first === "object" && !Array.isArray(first)) {
       const text = (first as Record<string, unknown>).text
@@ -457,7 +485,7 @@ function parseToolOutput(
           kind: "outcome",
           text,
           isError: obj.isError === true || forceError,
-          childConversationId: readChildConversationId(inner),
+          childConversationId: inner ? readChildConversationId(inner) : null,
         }
       }
     }
@@ -490,284 +518,100 @@ export function DelegatedSubThread({
 }: Props) {
   const t = useTranslations("Folder.chat.delegation")
   const [sheetOpen, setSheetOpen] = useState(false)
-  // expanded is driven by user click OR by the arrival of a child
-  // pending permission. useReducer (not useState) so the in-effect
-  // auto-expand dispatch on first permission appearance doesn't trip
-  // the `react-hooks/set-state-in-effect` lint rule — same pattern as
-  // `use-delegated-sub-session.ts`.
-  const [expanded, dispatchExpand] = useReducer(
-    (prev: boolean, action: "toggle" | "force-open"): boolean => {
-      if (action === "force-open") return true
-      return !prev
-    },
-    false
-  )
   const parsed = useMemo(() => parseInput(input), [input])
   const parsedMeta = useMemo(() => parseDelegationMeta(meta), [meta])
-  const { findByParentToolUseId } = useDelegation()
-  const { attachDelegationChild, respondPermission } = useAcpActions()
-  // `enabled: false` — we no longer surface the child conversation's
-  // intermediate turns in the parent UI (only the broker's final outcome
-  // text), so there's no reason to fetch the persisted detail. The hook
-  // is still useful for the `binding` it returns (agent type, status,
-  // child ids derived from the live `DelegationContext` map).
+  // `enabled: false` — the card never fetches the child's persisted detail; it
+  // only needs the live `binding` (agent type, status, child ids) from the
+  // DelegationContext map. The child's output is viewed via "查看会话".
   const { binding } = useDelegatedSubSession(parentToolUseId, {
     enabled: false,
   })
 
-  // Live view of the child connection's streaming state. Drives the
-  // expanded body's "streaming" branch — text/thinking/tool-call deltas
-  // reach this card the moment they arrive on the child's ACP stream,
-  // not just after the broker resolves.
-  const childConnectionId =
-    binding?.childConnectionId ?? parsedMeta?.childConnectionId ?? null
-  const childLive = useDelegationChildLive(childConnectionId)
-  const childPendingPermission = childLive?.pendingPermission ?? null
-
-  // Auto-expand the card the *first* time the child raises a permission
-  // request — the user has to act on it. Tracked via a ref so a user
-  // who deliberately collapses afterwards isn't forced back open on
-  // every reducer notify (the request_id stays the same across
-  // re-renders).
-  const lastSeenPermissionIdRef = useRef<string | null>(null)
-  useEffect(() => {
-    const reqId = childPendingPermission?.request_id ?? null
-    if (reqId && reqId !== lastSeenPermissionIdRef.current) {
-      lastSeenPermissionIdRef.current = reqId
-      dispatchExpand("force-open")
-    }
-    if (!reqId) {
-      lastSeenPermissionIdRef.current = null
-    }
-  }, [childPendingPermission])
-
-  // Inline approve/deny — dispatch via the child connection's id, not
-  // the parent's. PermissionDialog already routes via the connectionId
-  // passed at construction time; for delegation the only consumer is
-  // this card, so wiring the child's id directly here is sufficient.
-  const onRespondPermission = useCallback(
-    (requestId: string, optionId: string) => {
-      if (!childConnectionId) return
-      void respondPermission(childConnectionId, requestId, optionId)
-    },
-    [childConnectionId, respondPermission]
-  )
-
-  // Snapshot-recovery seed: when the parent's tool-call snapshot carries
-  // `meta["codeg.delegation"] = { status: "running", child_connection_id }`
-  // but the live `delegation_started` event has already been consumed
-  // (e.g. page refresh mid-delegation), pull the child connection into
-  // the reducer here so its streaming text reaches this card. Idempotent
-  // because `attachDelegationChild` early-returns when the synthetic
-  // entry already exists.
-  useEffect(() => {
-    const liveBinding = findByParentToolUseId(parentToolUseId)
-    if (!parsedMeta) return
-    if (parsedMeta.status !== "running") return
-    if (!parsedMeta.childConnectionId) return
-    if (liveBinding) return
-    if (!parsed.agentType) return
-    attachDelegationChild({
-      connectionId: parsedMeta.childConnectionId,
-      // We don't know the parent's connection_id at this layer (the
-      // ToolCallPart doesn't carry it). Pass an empty string — the
-      // synthetic ConnectionState only uses parentConnectionId for
-      // diagnostic / cascade-cancel hooks; the routing of incoming
-      // events is by child connection_id alone.
-      parentConnectionId: "",
-      parentToolUseId,
-      agentType: parsed.agentType,
-    })
-  }, [
-    attachDelegationChild,
-    findByParentToolUseId,
-    parentToolUseId,
-    parsed.agentType,
-    parsedMeta,
-  ])
-
-  // Prefer binding-derived state (live event stream) when present, then
-  // the persisted `meta["codeg.delegation"]` from the snapshot (page
-  // refresh recovery), then the parent ToolCall's own state/output as a
-  // last resort.
   // Parse the parent `delegate_to_agent` tool output once. Under async this is
   // a running *ack* (kind:"ack") while the child runs; a terminal kind:"outcome"
-  // only for a fast-complete (child finished during setup) or a legacy
-  // synchronous result. `errorText` (tool errored) is forced to an error
-  // outcome.
+  // only for a fast-complete or a legacy synchronous result. Used purely to
+  // derive the status badge and the child id for synthetic-id cards (which get
+  // no binding/meta) — never rendered inline.
   const toolOutput = useMemo<ParsedToolOutput | null>(() => {
     if (errorText) {
-      const parsed = parseToolOutput(errorText, true)
-      if (parsed) return parsed
+      const parsedErr = parseToolOutput(errorText, true)
+      if (parsedErr) return parsedErr
     }
     return parseToolOutput(output)
   }, [output, errorText])
 
-  const agentType: AgentType | null = binding?.agentType ?? parsed.agentType
-  const status: "starting" | "running" | "ok" | "err" = (() => {
-    if (binding) return binding.status
-    if (parsedMeta) return parsedMeta.status
-    if (state === "output-error" || errorText) return "err"
-    // Async: the parent output is a running ack while the child runs in the
-    // background — keep showing "running" rather than letting output-available
-    // prematurely flip the badge to "ok" (the result lands later via the
-    // event/meta). A terminal report (fast-complete / legacy sync) maps to
-    // ok/err directly.
-    if (toolOutput?.kind === "ack") return "running"
-    if (toolOutput?.kind === "outcome") return toolOutput.isError ? "err" : "ok"
-    if (state === "output-available") return "ok"
-    // No live binding, no persisted meta, and the parent tool call hasn't
-    // reached a terminal state yet: the sub-agent connection is still being
-    // set up (the broker is correlating the tool_call, spawning the agent,
-    // handshaking, and creating the child conversation) and the
-    // `delegation_started` event hasn't bound this card to a child session.
-    // Kept distinct from "running" so the card neither claims the sub-agent
-    // is already working nor offers an expand that could only show a spinner.
-    // Flips to "running"/"ok"/"err" the instant a binding, meta, or terminal
-    // output arrives.
-    return "starting"
-  })()
-  const errorCode = binding?.errorCode ?? parsedMeta?.errorCode ?? undefined
-  // Inline result preview: live event binding first, then the persisted
-  // terminal meta (post-refresh recovery). Rendered by the expanded body when
-  // there's no live child stream to show.
-  const resultPreview =
-    binding?.resultPreview ?? parsedMeta?.resultPreview ?? null
-  // The child session isn't bound yet in the "starting" state, so there is
-  // nothing meaningful to expand into — keep the header non-interactive
-  // (no toggle, no chevron) until a child session exists.
-  const expandable = status !== "starting"
-
-  // A terminal result to render in the expanded body. Only a kind:"outcome"
-  // tool output is a result; a running ack yields no inline outcome (the body
-  // falls back to the live child stream / preview instead).
-  const outcome = toolOutput?.kind === "outcome" ? toolOutput : null
-
-  // Real-time view of the child's assistant text — *all* text segments
-  // concatenated in arrival order, ACROSS turns. We deliberately strip:
-  //   - thinking blocks (internal reasoning, not the result)
-  //   - tool_call / plan blocks (intermediate steps)
-  // but we keep every text segment so the user sees the child's visible
-  // output grow append-only. Once the broker's outcome lands on
-  // `output`, `outcome.text` takes over.
-  //
-  // Cross-turn accumulation: the connections store resets
-  // `liveMessage.content` to `[]` on every `STATUS_CHANGED("prompting")`
-  // (one fires per child turn), wiping the previous turn's visible
-  // text. We keep an id-keyed `Map<turnId, text>` in reducer state so
-  // each turn contributes its final text exactly once. Map preserves
-  // insertion order, so concatenation matches arrival order. useReducer
-  // (not useState) so dispatching in effect doesn't trip the
-  // `react-hooks/set-state-in-effect` lint rule — same pattern as the
-  // auto-expand block above.
-  const [seenTurns, observeTurnText] = useReducer(
-    (
-      state: ReadonlyMap<string, string>,
-      action: { id: string; text: string }
-    ): ReadonlyMap<string, string> => {
-      if (state.get(action.id) === action.text) return state
-      const next = new Map(state)
-      next.set(action.id, action.text)
-      return next
-    },
-    EMPTY_TURN_MAP
-  )
-  useEffect(() => {
-    const liveMessage = childLive?.liveMessage
-    if (!liveMessage) return
-    const parts: string[] = []
-    for (const b of liveMessage.content) {
-      if (b.type === "text" && b.text.trim().length > 0) parts.push(b.text)
-    }
-    observeTurnText({ id: liveMessage.id, text: parts.join("") })
-  }, [childLive])
-
-  const liveStreamText = useMemo<string | null>(() => {
-    const turns: string[] = []
-    for (const text of seenTurns.values()) {
-      if (text.length > 0) turns.push(text)
-    }
-    if (turns.length === 0) return null
-    return turns.join("\n\n")
-  }, [seenTurns])
-
-  // Caller (ToolCallPart) already guarantees this is a `delegate_to_agent`
-  // tool, but a snapshot replay with an empty/unparseable input AND no live
-  // binding has no useful card to draw — fall through to the standard
-  // renderer instead of showing an "unknown sub-agent" stub. Placed AFTER
-  // all hooks so the hook order stays stable on re-render.
-  if (!binding && !parsed.agentType && !parsed.task) {
-    return null
-  }
-
-  // Final fallback: the broker's tool output carries `child_conversation_id`
-  // even when neither a live binding nor persisted meta exists — the
-  // synthetic-fallback case (the broker minted a `delegation-*` tool_use_id, so
-  // it skipped meta/event emits). Under async this id rides on the running ack,
-  // so reading it from `toolOutput` keeps the "Open detail" affordance working
-  // for those cards (their inline status can't auto-resolve, but the child
-  // session shows the true terminal result).
+  // The child id drives the "查看会话" button (and the sheet). Resolution order:
+  // live binding → persisted snapshot meta → the broker's ack output (the
+  // synthetic-id path that emits no binding/meta).
+  const childConnectionId =
+    binding?.childConnectionId ?? parsedMeta?.childConnectionId ?? null
   const childConversationId =
     binding?.childConversationId ??
     parsedMeta?.childConversationId ??
     toolOutput?.childConversationId ??
     null
 
-  // Header content (icon + agent name + status badge + task), shared between
-  // the interactive toggle (expandable card) and the static, non-interactive
-  // row shown in the "starting" state.
-  const headerContent = (
-    <>
-      <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border bg-background text-foreground">
-        {agentType ? (
-          <AgentIcon agentType={agentType} className="h-5 w-5" />
-        ) : (
-          <span className="h-2.5 w-2.5 rounded-sm bg-muted-foreground/60" />
-        )}
-      </span>
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-foreground">
-            {agentType ? AGENT_LABELS[agentType] : t("unknownAgent")}
-          </span>
-          <StatusBadge status={status} errorCode={errorCode} />
-        </div>
-        {parsed.task && (
-          <div className="text-xs text-muted-foreground whitespace-pre-wrap break-words line-clamp-1">
-            {parsed.task}
-          </div>
-        )}
-      </div>
-    </>
-  )
+  // Whether the child is blocked on a permission decision. The child is pulled
+  // into the store by DelegationProvider (live or snapshot-seeded), so this is
+  // a status read only — the prompt itself is answered inside the sheet.
+  const childLive = useDelegationChildLive(childConnectionId)
+  const childAwaitingPermission = childLive?.pendingPermission != null
+
+  const agentType: AgentType | null = binding?.agentType ?? parsed.agentType
+  const status: "starting" | "running" | "waiting" | "ok" | "err" = (() => {
+    // A child awaiting a permission decision is blocked until the user acts;
+    // surface it over the plain running state so the card cues opening "查看会话".
+    if (childAwaitingPermission) return "waiting"
+    if (binding) return binding.status
+    if (parsedMeta) return parsedMeta.status
+    if (state === "output-error" || errorText) return "err"
+    // Async: the parent output is a running ack while the child runs — keep
+    // "running" rather than letting output-available flip the badge to "ok".
+    if (toolOutput?.kind === "ack") return "running"
+    if (toolOutput?.kind === "outcome") return toolOutput.isError ? "err" : "ok"
+    if (state === "output-available") return "ok"
+    // No binding, no meta, parent tool call not yet terminal: the sub-agent
+    // connection is still being set up. Flips the instant a binding, meta, or
+    // terminal output arrives.
+    return "starting"
+  })()
+  const errorCode = binding?.errorCode ?? parsedMeta?.errorCode ?? undefined
+
+  // A snapshot replay with an empty/unparseable input AND no live binding has
+  // no useful card to draw — fall through to the standard renderer instead of
+  // an "unknown sub-agent" stub. Placed AFTER all hooks so hook order is stable.
+  if (!binding && !parsed.agentType && !parsed.task) {
+    return null
+  }
 
   return (
     <div
       data-testid="delegated-sub-thread"
       className="rounded-lg border border-border bg-card"
     >
-      <div className="flex w-full items-stretch rounded-t-lg overflow-hidden">
-        {expandable ? (
-          <button
-            type="button"
-            onClick={() => dispatchExpand("toggle")}
-            className="flex flex-1 min-w-0 items-center gap-3 px-3 py-2.5 text-left hover:bg-muted/40 transition-colors"
-            aria-expanded={expanded}
-          >
-            {headerContent}
-            <span className="shrink-0 text-muted-foreground">
-              {expanded ? (
-                <ChevronDown className="h-4 w-4" />
-              ) : (
-                <ChevronRight className="h-4 w-4" />
-              )}
-            </span>
-          </button>
-        ) : (
-          <div className="flex flex-1 min-w-0 items-center gap-3 px-3 py-2.5 text-left">
-            {headerContent}
+      <div className="flex w-full items-stretch rounded-lg overflow-hidden">
+        <div className="flex flex-1 min-w-0 items-center gap-3 px-3 py-2.5 text-left">
+          <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-border bg-background text-foreground">
+            {agentType ? (
+              <AgentIcon agentType={agentType} className="h-5 w-5" />
+            ) : (
+              <span className="h-2.5 w-2.5 rounded-sm bg-muted-foreground/60" />
+            )}
+          </span>
+          <div className="min-w-0 flex-1 space-y-0.5">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-foreground">
+                {agentType ? AGENT_LABELS[agentType] : t("unknownAgent")}
+              </span>
+              <StatusBadge status={status} errorCode={errorCode} />
+            </div>
+            {parsed.task && (
+              <div className="text-xs text-muted-foreground whitespace-pre-wrap break-words line-clamp-1">
+                {parsed.task}
+              </div>
+            )}
           </div>
-        )}
+        </div>
         {childConversationId != null && (
           <button
             type="button"
@@ -781,20 +625,6 @@ export function DelegatedSubThread({
           </button>
         )}
       </div>
-      {expandable && expanded && (
-        <div className="border-t border-border px-3 py-3 max-h-96 overflow-auto text-xs space-y-3">
-          <ExpandedBody
-            status={status}
-            outcome={outcome}
-            liveStreamText={liveStreamText}
-            resultPreview={resultPreview}
-            childPendingPermission={childPendingPermission}
-            onRespondPermission={onRespondPermission}
-            tSubAgentRunning={t("subAgentRunning")}
-            tNoDetail={t("noDetail")}
-          />
-        </div>
-      )}
       {childConversationId != null && (
         <SubAgentSessionSheet
           open={sheetOpen}
@@ -804,89 +634,6 @@ export function DelegatedSubThread({
           agentType={agentType}
         />
       )}
-    </div>
-  )
-}
-
-function ExpandedBody({
-  status,
-  outcome,
-  liveStreamText,
-  resultPreview,
-  childPendingPermission,
-  onRespondPermission,
-  tSubAgentRunning,
-  tNoDetail,
-}: {
-  status: "starting" | "running" | "ok" | "err"
-  outcome: { text: string; isError: boolean } | null
-  liveStreamText: string | null
-  resultPreview: string | null
-  childPendingPermission: ChildPendingPermission | null
-  onRespondPermission: (requestId: string, optionId: string) => void
-  tSubAgentRunning: string
-  tNoDetail: string
-}) {
-  const hasOutcome = !!outcome && outcome.text.length > 0
-  // The body text: the live child stream (accumulated across turns, and
-  // retained after the child detaches) takes priority; the recovered terminal
-  // preview backs the post-refresh case where no live stream exists.
-  const body = liveStreamText ?? resultPreview ?? null
-
-  // Priority:
-  //   1. pending permission — child can't progress until the user acts.
-  //   2. terminal outcome on the tool output (fast-complete / legacy sync).
-  //   3. running: show whatever text we have PLUS a trailing "sub-agent
-  //      running…" indicator. The indicator is appended, never substituted.
-  //   4. terminal (ok/err) with body text — the result (live full text, or the
-  //      recovered preview).
-  //   5. noDetail — terminal state with nothing to display.
-  if (childPendingPermission) {
-    return (
-      <PermissionDialog
-        permission={childPendingPermission}
-        onRespond={onRespondPermission}
-      />
-    )
-  }
-  if (hasOutcome) {
-    return (
-      <DelegationOutcomeText text={outcome!.text} isError={outcome!.isError} />
-    )
-  }
-  if (status === "running") {
-    return (
-      <div className="space-y-2">
-        {body && <DelegationOutcomeText text={body} isError={false} />}
-        <div className="flex items-center gap-2 text-muted-foreground">
-          <Loader2 className="h-3 w-3 animate-spin" />
-          <span>{tSubAgentRunning}</span>
-        </div>
-      </div>
-    )
-  }
-  if (body) {
-    return <DelegationOutcomeText text={body} isError={status === "err"} />
-  }
-  return <div className="text-muted-foreground">{tNoDetail}</div>
-}
-
-function DelegationOutcomeText({
-  text,
-  isError,
-}: {
-  text: string
-  isError: boolean
-}) {
-  return (
-    <div
-      className={
-        isError
-          ? 'text-destructive prose prose-sm dark:prose-invert max-w-none break-words [&_ul]:list-inside [&_ol]:list-inside [&_[data-streamdown="code-block-body"]]:max-h-96 [&_[data-streamdown="code-block-body"]]:overflow-auto'
-          : 'prose prose-sm dark:prose-invert max-w-none break-words [&_ul]:list-inside [&_ol]:list-inside [&_[data-streamdown="code-block-body"]]:max-h-96 [&_[data-streamdown="code-block-body"]]:overflow-auto'
-      }
-    >
-      <MessageResponse>{text}</MessageResponse>
     </div>
   )
 }
