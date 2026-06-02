@@ -744,6 +744,29 @@ fn running_ack(
     }
 }
 
+/// How long [`DelegationBroker::get_task_status`] may block before returning the
+/// current (possibly still-running) snapshot. Derived by the listener from the
+/// MCP tool's `wait_ms`: omitted → [`Immediate`], an explicit `0` → [`Infinite`],
+/// any positive value → [`Bounded`] (clamped to the listener's hard ceiling).
+///
+/// [`Immediate`]: StatusWait::Immediate
+/// [`Bounded`]: StatusWait::Bounded
+/// [`Infinite`]: StatusWait::Infinite
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusWait {
+    /// Return the current snapshot right away — the default poll.
+    Immediate,
+    /// Block up to this many milliseconds, then return whatever snapshot we have
+    /// (the child keeps running past the deadline; the caller re-issues to wait
+    /// more).
+    Bounded(u64),
+    /// Block until the task reaches a terminal state — never time out. Lets a
+    /// long-running child be awaited in a single call. A parent disconnect or
+    /// cancel also drives the task terminal (and fires the completion signal),
+    /// so this never outlives the task itself.
+    Infinite,
+}
+
 /// Status report for a still-running task.
 fn running_report(task_id: &str, task: &RunningTask) -> DelegationTaskReport {
     DelegationTaskReport {
@@ -2715,19 +2738,26 @@ impl DelegationBroker {
     }
 
     /// Backs the `get_delegation_status` tool. Resolves a task's status from the
-    /// completed-cache, then the running set (optionally blocking up to
-    /// `wait_ms` for it to finish), then the DB fallback. Scoped to the calling
-    /// parent: a task owned by a different parent reports `Unknown` rather than
-    /// leaking its existence. `parent_conversation_id` is the caller's current
-    /// conversation, used only to scope the DB fallback.
+    /// completed-cache, then the running set (optionally blocking per the
+    /// [`StatusWait`] mode — an immediate snapshot, a bounded long-poll, or an
+    /// unbounded wait until the task is terminal), then the DB fallback. Scoped
+    /// to the calling parent: a task owned by a different parent reports
+    /// `Unknown` rather than leaking its existence. `parent_conversation_id` is
+    /// the caller's current conversation, used only to scope the DB fallback.
     pub async fn get_task_status(
         &self,
         parent_connection_id: &str,
         parent_conversation_id: Option<i32>,
         task_id: &str,
-        wait_ms: u64,
+        wait: StatusWait,
     ) -> DelegationTaskReport {
-        let deadline = Instant::now() + Duration::from_millis(wait_ms);
+        // A bounded wait gets a single fixed deadline; Immediate and Infinite
+        // carry none — Immediate returns on the first pass, Infinite parks on
+        // `result_notify` until the task is terminal.
+        let deadline = match wait {
+            StatusWait::Bounded(ms) => Some(Instant::now() + Duration::from_millis(ms)),
+            StatusWait::Immediate | StatusWait::Infinite => None,
+        };
         loop {
             // Arm the notify BEFORE the check so a completion landing between the
             // check and the await isn't lost (enable() registers the waiter now).
@@ -2756,14 +2786,26 @@ impl DelegationBroker {
                 return self.status_from_db(parent_conversation_id, task_id).await;
             };
             // Running and owned. Decide whether to keep waiting.
-            let now = Instant::now();
-            if wait_ms == 0 || now >= deadline {
+            if matches!(wait, StatusWait::Immediate) {
                 return running_report;
             }
-            let remaining = deadline - now;
-            tokio::select! {
-                _ = &mut notified => {}
-                _ = tokio::time::sleep(remaining) => {}
+            let now = Instant::now();
+            if deadline.is_some_and(|d| now >= d) {
+                return running_report;
+            }
+            // Park until the next completion signal, bounded by the deadline
+            // when there is one (Infinite waits on the notify alone).
+            match deadline {
+                Some(d) => {
+                    let remaining = d - now;
+                    tokio::select! {
+                        _ = &mut notified => {}
+                        _ = tokio::time::sleep(remaining) => {}
+                    }
+                }
+                None => {
+                    notified.await;
+                }
             }
             // Loop: re-read (the task likely just completed, or the deadline
             // passed and the next pass returns the running snapshot).
@@ -2864,7 +2906,7 @@ impl DelegationBroker {
                     &parent_connection_id,
                     parent_conversation_id,
                     &task_id,
-                    3_600_000,
+                    StatusWait::Bounded(3_600_000),
                 )
                 .await;
             if report.status != TaskStatus::Running {
@@ -3140,6 +3182,67 @@ mod tests {
         assert_eq!(broker.pending_count().await, 0);
         // complete_call disconnects the child once.
         assert_eq!(mock.disconnects.lock().await.as_slice(), &["child-conn-1"]);
+    }
+
+    /// `StatusWait::Infinite` (the explicit `wait_ms = 0` escape hatch) must
+    /// park while the task is still running rather than returning the running
+    /// snapshot, then resolve to the terminal report once the task completes —
+    /// no matter how long the child takes.
+    #[tokio::test]
+    async fn infinite_wait_parks_until_terminal() {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-conn-1".into())).await;
+        mock.queue_send(Ok(42)).await;
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
+
+        let ack = broker.start_delegation(request(1, "pt-1")).await;
+        assert_eq!(ack.status, TaskStatus::Running);
+        let task_id = ack.task_id.clone().expect("running task carries an id");
+
+        // Infinite wait: parks on the completion signal instead of returning
+        // the still-running snapshot.
+        let waiter = {
+            let broker = broker.clone();
+            let task_id = task_id.clone();
+            tokio::spawn(async move {
+                broker
+                    .get_task_status("parent-conn", Some(1), &task_id, StatusWait::Infinite)
+                    .await
+            })
+        };
+
+        // Give the waiter a beat — it must still be parked, not finished.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            !waiter.is_finished(),
+            "infinite wait must park while the task is running"
+        );
+
+        let call_id = loop {
+            if let Some(id) = broker.peek_first_pending_call_id().await {
+                break id;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        broker
+            .complete_call(
+                &call_id,
+                DelegationOutcome::Ok(DelegationSuccess {
+                    text: "done".into(),
+                    child_conversation_id: 42,
+                    child_agent_type: AgentType::ClaudeCode,
+                    turn_count: 1,
+                    duration_ms: 5,
+                    token_usage: None,
+                }),
+            )
+            .await;
+
+        let report = waiter.await.unwrap();
+        assert_eq!(report.status, TaskStatus::Completed);
+        assert_eq!(report.text.as_deref(), Some("done"));
     }
 
     // -- Task 4.5: error paths ---------------------------------------------

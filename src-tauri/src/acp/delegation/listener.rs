@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 
-use crate::acp::delegation::broker::DelegationBroker;
+use crate::acp::delegation::broker::{DelegationBroker, StatusWait};
 use crate::acp::delegation::transport::{
     read_frame, write_frame, BrokerCancelRequest, BrokerCancelTaskRequest, BrokerMessage,
     BrokerRequest, BrokerResponse, BrokerStatusRequest,
@@ -24,9 +24,10 @@ use crate::acp::delegation::types::{DelegationRequest, DelegationTaskReport, Tas
 use crate::models::AgentType;
 use serde_json::Value;
 
-/// Hard ceiling on a `get_delegation_status` long-poll, so a single MCP tool
-/// call can't block the companion's round-trip unbounded. The child keeps
-/// running past this; the LLM simply re-issues the wait.
+/// Hard ceiling on a *positive* `get_delegation_status` long-poll, so a single
+/// MCP tool call can't block the companion's round-trip unbounded. The child
+/// keeps running past this; the LLM simply re-issues the wait. An explicit
+/// `wait_ms = 0` opts out of the ceiling and blocks until the task is terminal.
 const STATUS_WAIT_MAX_MS: u64 = 60_000;
 
 /// Pluggable "what conversation is this parent currently in?" lookup. The
@@ -167,7 +168,26 @@ impl DelegationListener {
         let msg: BrokerMessage = read_frame(conn).await?;
         let resp = match msg {
             BrokerMessage::Call(req) => report_response(self.process(req).await)?,
-            BrokerMessage::Status(req) => report_response(self.process_status(req).await)?,
+            BrokerMessage::Status(req) => {
+                // A status long-poll — especially `wait_ms = 0` (block until
+                // terminal) — can park for the whole lifetime of the child.
+                // Race it against peer-close on this one-shot connection so a
+                // companion that cancels and drops the request socket doesn't
+                // leave this task parked until the task happens to finish. A
+                // status query has no side effects (unlike a delegation), so
+                // abandoning the wait is safe and there's nothing to cancel
+                // broker-side. The companion never writes a second frame on
+                // this socket, so the probe read only resolves on EOF/error.
+                let status_fut = self.process_status(req);
+                tokio::pin!(status_fut);
+                let mut probe = [0u8; 1];
+                let report = tokio::select! {
+                    biased;
+                    report = &mut status_fut => report,
+                    _ = conn.read(&mut probe) => return Ok(()),
+                };
+                report_response(report)?
+            }
             BrokerMessage::CancelTask(req) => report_response(self.process_cancel_task(req).await)?,
             BrokerMessage::Cancel(cancel) => {
                 self.process_cancel(cancel).await;
@@ -183,10 +203,12 @@ impl DelegationListener {
     }
 
     /// Validate the token, resolve the caller's parent connection/conversation,
-    /// and query the task's status (optionally blocking up to a clamped
-    /// `wait_ms`). Backs the `get_delegation_status` tool. An invalid token
-    /// reports `Unknown` — the caller can't usefully distinguish it from a
-    /// genuinely unknown task, and we don't leak which.
+    /// and query the task's status (optionally blocking per the wire `wait_ms`:
+    /// omitted → immediate snapshot, explicit `0` → block until terminal, a
+    /// positive value → bounded long-poll clamped to [`STATUS_WAIT_MAX_MS`]).
+    /// Backs the `get_delegation_status` tool. An invalid token reports
+    /// `Unknown` — the caller can't usefully distinguish it from a genuinely
+    /// unknown task, and we don't leak which.
     async fn process_status(&self, req: BrokerStatusRequest) -> DelegationTaskReport {
         let Some(entry) = self.tokens.lookup(&req.token).await else {
             return unknown_report(&req.task_id);
@@ -195,13 +217,20 @@ impl DelegationListener {
             .parent_lookup
             .current_conversation_id(&entry.parent_connection_id)
             .await;
-        let wait_ms = req.wait_ms.unwrap_or(0).min(STATUS_WAIT_MAX_MS);
+        // Map the wire `wait_ms` to a wait mode: omitted → immediate poll, an
+        // explicit `0` → block with no timeout (long-running children), any
+        // positive value → bounded long-poll clamped to the hard ceiling.
+        let wait = match req.wait_ms {
+            None => StatusWait::Immediate,
+            Some(0) => StatusWait::Infinite,
+            Some(ms) => StatusWait::Bounded(ms.min(STATUS_WAIT_MAX_MS)),
+        };
         self.broker
             .get_task_status(
                 &entry.parent_connection_id,
                 parent_conversation_id,
                 &req.task_id,
-                wait_ms,
+                wait,
             )
             .await
     }
@@ -616,6 +645,152 @@ mod tests {
         assert_eq!(resp.outcome["status"], "completed");
         assert_eq!(resp.outcome["text"], "result-text");
         assert_eq!(resp.outcome["child_conversation_id"], 42);
+    }
+
+    /// Start a running task directly and return `(broker, tokens, task_id)`.
+    /// Shared setup for the `wait_ms` mapping tests below.
+    async fn running_task_fixture() -> (Arc<DelegationBroker>, Arc<TokenRegistry>, String) {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-conn".into())).await;
+        mock.queue_send(Ok(7)).await;
+        let broker = make_broker(mock).await;
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let ack = broker
+            .start_delegation(DelegationRequest {
+                parent_connection_id: "parent-conn".into(),
+                parent_conversation_id: 1,
+                parent_tool_use_id: "pt-1".into(),
+                agent_type: AgentType::Codex,
+                task: "do x".into(),
+                working_dir: None,
+                requested_working_dir: None,
+                external_handle: None,
+            })
+            .await;
+        let task_id = ack.task_id.clone().expect("running task carries an id");
+        (broker, tokens, task_id)
+    }
+
+    /// Omitted `wait_ms` (the safe default) maps to an immediate snapshot: the
+    /// status of a still-running task returns `running` right away rather than
+    /// blocking.
+    #[tokio::test]
+    async fn status_omitted_wait_returns_immediately() {
+        let (broker, tokens, task_id) = running_task_fixture().await;
+        let listener = make_listener(broker, tokens, Some(1));
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move { listener.serve_one(&mut server).await });
+
+        let status = BrokerMessage::Status(BrokerStatusRequest {
+            token: "tok".into(),
+            task_id,
+            wait_ms: None,
+        });
+        write_frame(&mut client, &status).await.unwrap();
+        // No completion ever happens — an immediate poll must still return.
+        let resp: BrokerResponse = tokio::time::timeout(Duration::from_secs(2), async {
+            read_frame::<_, BrokerResponse>(&mut client).await.unwrap()
+        })
+        .await
+        .expect("omitted wait_ms must return immediately");
+        server_task.await.unwrap().unwrap();
+        assert_eq!(resp.outcome["status"], "running");
+    }
+
+    /// An explicit `wait_ms = 0` maps to an unbounded wait: the call blocks
+    /// while the task is running and only resolves once it reaches a terminal
+    /// state, returning the completed report through the wire.
+    #[tokio::test]
+    async fn status_explicit_zero_blocks_until_terminal() {
+        let (broker, tokens, task_id) = running_task_fixture().await;
+        let listener = make_listener(broker.clone(), tokens, Some(1));
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move { listener.serve_one(&mut server).await });
+
+        let status = BrokerMessage::Status(BrokerStatusRequest {
+            token: "tok".into(),
+            task_id: task_id.clone(),
+            wait_ms: Some(0),
+        });
+        write_frame(&mut client, &status).await.unwrap();
+
+        // While the task runs, the wait must NOT resolve.
+        let early = tokio::time::timeout(Duration::from_millis(50), async {
+            read_frame::<_, BrokerResponse>(&mut client).await
+        })
+        .await;
+        assert!(
+            early.is_err(),
+            "wait_ms=0 must block while the task is still running"
+        );
+
+        // Resolving the task wakes the parked wait, which returns completed.
+        broker
+            .complete_call(
+                &task_id,
+                DelegationOutcome::Ok(DelegationSuccess {
+                    text: "done".into(),
+                    child_conversation_id: 7,
+                    child_agent_type: AgentType::Codex,
+                    turn_count: 1,
+                    duration_ms: 5,
+                    token_usage: None,
+                }),
+            )
+            .await;
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap().unwrap();
+        assert_eq!(resp.outcome["status"], "completed");
+        assert_eq!(resp.outcome["text"], "done");
+    }
+
+    /// A `wait_ms = 0` status call that the companion cancels (dropping the
+    /// request socket) must not leave `serve_one` parked until the task is
+    /// terminal. The peer-close race abandons the wait while leaving the task
+    /// itself untouched — there's no broker-side side effect from a status
+    /// query.
+    #[tokio::test]
+    async fn infinite_status_wait_abandoned_when_peer_closes() {
+        let (broker, tokens, task_id) = running_task_fixture().await;
+        let listener = make_listener(broker.clone(), tokens, Some(1));
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move { listener.serve_one(&mut server).await });
+
+        let status = BrokerMessage::Status(BrokerStatusRequest {
+            token: "tok".into(),
+            task_id,
+            wait_ms: Some(0),
+        });
+        write_frame(&mut client, &status).await.unwrap();
+
+        // Let the server park inside the unbounded wait.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            !server_task.is_finished(),
+            "server must be parked on the unbounded wait"
+        );
+
+        // Companion cancels: drop the request socket without completing the task.
+        drop(client);
+
+        // serve_one must observe the peer-close and return promptly instead of
+        // hanging until the (never-completing) task is terminal.
+        let result = tokio::time::timeout(Duration::from_secs(5), server_task)
+            .await
+            .expect("serve_one must return after the peer closes");
+        result.unwrap().unwrap();
+
+        // The task itself was not touched by the abandoned status query.
+        assert_eq!(broker.pending_count().await, 1);
     }
 
     /// `cancel_delegation` over the listener: a running task is canceled by id

@@ -1,7 +1,7 @@
 [
   {
     "name": "delegate_to_agent",
-    "description": "Delegate a self-contained task to another local AI agent. Returns IMMEDIATELY with a task_id; the sub-agent runs in the background. Collect the result with get_delegation_status(task_id) — pass wait_ms to block until it finishes, or wait_ms=0 to poll. You can fan out several delegate_to_agent calls first and then collect each. Use cancel_delegation(task_id) to stop one. The sub-agent runs in a separate session without access to the current conversation, so include all required context in `task`.",
+    "description": "Hand off a self-contained sub-task to a separate local AI agent that runs in its own session. ASYNCHRONOUS: returns a task_id right away and the sub-agent keeps working in the background — this call never blocks. So you can fan out several delegations at once and keep working, then collect each result later with get_delegation_status(task_id), or stop one early with cancel_delegation(task_id). The sub-agent CANNOT see this conversation, your open files, or earlier turns — it starts cold, so `task` must carry everything it needs. Best for independent, parallelizable work you can describe up front; not for steps that need your ongoing back-and-forth.",
     "inputSchema": {
       "type": "object",
       "required": ["agent_type", "task"],
@@ -16,22 +16,22 @@
             "cline",
             "open_claw"
           ],
-          "description": "Agent type to launch as the sub-agent for this delegated task."
+          "description": "Which local agent runs the sub-task. Pick the one best suited to the work."
         },
         "task": {
           "type": "string",
-          "description": "Complete task prompt for the sub-agent, including the goal, relevant context, constraints, and expected output. The sub-agent cannot see this conversation."
+          "description": "The complete, self-contained prompt for the sub-agent. It has no access to this conversation or your context, so spell out everything: the goal, the relevant background and absolute file paths, any constraints, and exactly what to return."
         },
         "working_dir": {
           "type": "string",
-          "description": "Absolute directory where the sub-agent should run. Defaults to the parent session's current working directory."
+          "description": "Absolute path the sub-agent runs in. Defaults to this session's working directory."
         }
       }
     }
   },
   {
     "name": "get_delegation_status",
-    "description": "Check the status of a delegated task by its task_id (returned by delegate_to_agent), and optionally block until it finishes. With wait_ms > 0 the call blocks up to that many milliseconds and returns the result as soon as the sub-agent finishes (capped at 60s — re-call to keep waiting); with wait_ms = 0 (default) it returns the current status immediately. A finished task returns its full result text; for a long result, open the child session for the complete output.",
+    "description": "Collect a delegated task's result — or check on it — by the task_id from delegate_to_agent. The wait_ms argument picks the mode: omit it for a non-blocking snapshot (poll), or pass wait_ms to wait for a terminal state — wait_ms>0 blocks up to that many ms (capped at 60000; re-call to keep waiting), wait_ms=0 blocks with no timeout for as long as the sub-agent runs. When you just need the result, prefer blocking over repeated polling. Reports the current state — running, or a terminal completed / failed / canceled (or unknown if the id isn't recognized). A finished task includes its full result text.",
     "inputSchema": {
       "type": "object",
       "required": ["task_id"],
@@ -43,14 +43,14 @@
         "wait_ms": {
           "type": "integer",
           "minimum": 0,
-          "description": "Max milliseconds to block waiting for the task to finish before returning the current status. 0 (default) returns immediately. Capped at 60000."
+          "description": "How long to wait for the task to finish. Omit for an immediate snapshot (poll). A positive value blocks up to that many milliseconds (capped at 60000). 0 means no timeout — block until the task reaches a terminal state, however long it takes."
         }
       }
     }
   },
   {
     "name": "cancel_delegation",
-    "description": "Cancel a running delegated task by its task_id (returned by delegate_to_agent). Stops the sub-agent. A task that already finished returns its terminal result instead.",
+    "description": "Stop a running delegated task by its task_id and tear down its sub-agent — use this only when you no longer want the result. Don't cancel just because a task is taking a while: substantial work can legitimately run for a long time, so prefer waiting on it (get_delegation_status with wait_ms) over canceling. If the task has already finished, nothing is canceled and its final result is returned instead.",
     "inputSchema": {
       "type": "object",
       "required": ["task_id"],

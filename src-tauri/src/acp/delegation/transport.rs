@@ -22,7 +22,9 @@
 //!     [`BrokerResponse`] wrapping a `DelegationTaskReport` (a `Running` ack, or
 //!     a terminal report).
 //!   * `status` — [`BrokerStatusRequest`] for `get_delegation_status` (with an
-//!     optional bounded `wait_ms` long-poll); returns a task report.
+//!     optional `wait_ms` long-poll — omitted is an immediate snapshot, an
+//!     explicit `0` blocks until the task is terminal, a positive value is a
+//!     bounded wait); returns a task report.
 //!   * `cancel_task` — [`BrokerCancelTaskRequest`] for `cancel_delegation`;
 //!     returns a task report.
 //!   * `cancel` — fire-and-forget [`BrokerCancelRequest`] from MCP
@@ -100,10 +102,12 @@ pub struct BrokerCancelRequest {
 pub struct BrokerStatusRequest {
     pub token: String,
     pub task_id: String,
-    /// Max milliseconds the listener may block waiting for the task to reach a
-    /// terminal state before returning the current (possibly still-running)
-    /// status. `None`/`0` returns an immediate snapshot. Clamped by the
-    /// listener to a hard ceiling so a single tool call can't hang unbounded.
+    /// How long the listener may block waiting for the task to reach a terminal
+    /// state before returning the current (possibly still-running) status.
+    /// `None` (omitted) returns an immediate snapshot; an explicit `0` blocks
+    /// with no timeout until the task finishes (long-running children); any
+    /// positive value is a long-poll the listener clamps to a hard ceiling so a
+    /// single bounded call can't hang unbounded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_ms: Option<u64>,
 }
