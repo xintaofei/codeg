@@ -1,4 +1,5 @@
 import type {
+  ActiveDelegationState,
   AvailableCommandInfo,
   ConnectionStatus,
   LiveContentBlock as WireLiveContentBlock,
@@ -44,6 +45,11 @@ export interface SnapshotPatch {
   selectorsReady: boolean
   supportsFork: boolean
   eventSeq: number
+  /** Live sub-agent delegations carried by the snapshot. Consumed directly at
+   *  the attach call sites to re-seed `DelegationProvider` bindings (see
+   *  `seedDelegationsFromSnapshot`); the reducer does not store this on
+   *  ConnectionState. `[]` when the server omitted the field. */
+  activeDelegations: ActiveDelegationState[]
 }
 
 const DEFAULT_PROMPT_CAPS: PromptCapabilitiesInfo = {
@@ -85,6 +91,7 @@ export function denormalizeSnapshot(wire: LiveSessionSnapshot): SnapshotPatch {
     selectorsReady: wire.selectors_ready,
     supportsFork: wire.fork_supported,
     eventSeq: wire.event_seq,
+    activeDelegations: wire.active_delegations ?? [],
   }
 }
 

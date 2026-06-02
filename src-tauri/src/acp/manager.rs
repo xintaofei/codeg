@@ -615,28 +615,6 @@ impl ConnectionManager {
                         },
                     )
                     .await;
-
-                    // Surface DelegationStarted on the child's stream so the
-                    // frontend can paint "Delegating to <agent>…" against the
-                    // parent's tool_use_id while the child's first turn runs.
-                    // The parent_connection_id isn't on the DelegationLink
-                    // payload — derive it via reverse lookup. (For v1 we leave
-                    // it empty; Phase 8's frontend grouper uses parent_tool_use_id
-                    // as the primary key.)
-                    if let Some(link) = delegation.as_ref() {
-                        emit_with_state(
-                            &state_arc,
-                            &emitter,
-                            AcpEvent::DelegationStarted {
-                                parent_connection_id: String::new(),
-                                parent_tool_use_id: link.parent_tool_use_id.clone(),
-                                child_connection_id: conn_id.to_string(),
-                                child_conversation_id: row.id,
-                                agent_type,
-                            },
-                        )
-                        .await;
-                    }
                 }
                 (None, None) => {
                     return Err(AcpError::protocol(
@@ -1068,9 +1046,7 @@ impl ConnectionManager {
         // make the settings UI claim those agents have nothing to configure.
         // Matches the per-step Initialize timeout in `connection.rs`.
         let probe_timeout = Duration::from_secs(60);
-        let raw_snapshot = self
-            .wait_for_session_options(&conn_id, probe_timeout)
-            .await;
+        let raw_snapshot = self.wait_for_session_options(&conn_id, probe_timeout).await;
 
         // If the wait errored, prefer the agent's own captured error
         // message over the generic ProbeTimedOut / ConnectionNotFound —
@@ -1136,15 +1112,10 @@ impl ConnectionManager {
                     .get(conn_id)
                     .ok_or_else(|| AcpError::ConnectionNotFound(conn_id.into()))?;
                 let s = conn.state.read().await;
-                (
-                    s.config_options.clone(),
-                    s.modes.clone(),
-                    s.selectors_ready,
-                )
+                (s.config_options.clone(), s.modes.clone(), s.selectors_ready)
             };
             if selectors_ready {
-                let ready_at = *selectors_ready_at
-                    .get_or_insert_with(std::time::Instant::now);
+                let ready_at = *selectors_ready_at.get_or_insert_with(std::time::Instant::now);
                 if ready_at.elapsed() >= grace_period {
                     return Ok(AgentOptionsSnapshot {
                         modes,
@@ -2637,8 +2608,8 @@ mod tests {
     //   3. selectors_ready=true with empty options → Ok(empty snapshot)
 
     use crate::acp::types::{
-        SessionConfigKindInfo, SessionConfigOptionInfo, SessionConfigSelectInfo,
-        SessionModeInfo, SessionModeStateInfo,
+        SessionConfigKindInfo, SessionConfigOptionInfo, SessionConfigSelectInfo, SessionModeInfo,
+        SessionModeStateInfo,
     };
 
     fn sample_modes() -> SessionModeStateInfo {

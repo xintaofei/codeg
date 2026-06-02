@@ -5275,18 +5275,23 @@ export function AcpAgentSettings() {
                   })
                 : draft.envText
             try {
-              await Promise.all([
-                persistEnv(
-                  "codex",
-                  draft.enabled,
-                  codexEnvText,
-                  draft.modelProviderId
-                ),
-                persistConfig("codex", draft.configText, {
-                  codexAuthJsonText: authJson,
-                  codexConfigTomlText: draft.codexConfigTomlText,
-                }),
-              ])
+              // Persist sequentially, never in parallel: persistEnv
+              // (acp_update_agent_env) rewrites ~/.codex/config.toml to sync the
+              // root `model`, while persistConfig writes the full config.toml
+              // (including base_url). Running both at once races two
+              // read-modify-write cycles on the same file, letting the model
+              // sync clobber the just-written base_url. persistConfig runs last
+              // so its authoritative config.toml wins.
+              await persistEnv(
+                "codex",
+                draft.enabled,
+                codexEnvText,
+                draft.modelProviderId
+              )
+              await persistConfig("codex", draft.configText, {
+                codexAuthJsonText: authJson,
+                codexConfigTomlText: draft.codexConfigTomlText,
+              })
             } catch (err) {
               const msg = toErrorMessage(err)
               toast.error(t("codex.loginSaveFailed"), {
@@ -6080,24 +6085,34 @@ supports_websockets = true`}
                                   OPENAI_BASE_URL: "",
                                 })
                               : selectedDraft.envText
-                          Promise.all([
-                            persistEnv(
-                              selectedAgent.agent_type,
-                              selectedDraft.enabled,
-                              codexEnvText,
-                              selectedDraft.modelProviderId
-                            ),
-                            persistConfig(
-                              selectedAgent.agent_type,
-                              selectedDraft.configText,
-                              {
-                                codexAuthJsonText:
-                                  selectedDraft.codexAuthJsonText,
-                                codexConfigTomlText:
-                                  selectedDraft.codexConfigTomlText,
-                              }
-                            ),
-                          ])
+                          // Persist sequentially, never in parallel: persistEnv
+                          // (acp_update_agent_env) rewrites ~/.codex/config.toml
+                          // to sync the root `model`, while persistConfig writes
+                          // the full config.toml including base_url. Running both
+                          // at once races two read-modify-write cycles on the same
+                          // file, letting the model sync clobber the just-written
+                          // base_url (the API key in auth.json is unaffected, so
+                          // the key saves but the URL silently does not).
+                          // persistConfig runs last so its authoritative
+                          // config.toml wins.
+                          persistEnv(
+                            selectedAgent.agent_type,
+                            selectedDraft.enabled,
+                            codexEnvText,
+                            selectedDraft.modelProviderId
+                          )
+                            .then(() =>
+                              persistConfig(
+                                selectedAgent.agent_type,
+                                selectedDraft.configText,
+                                {
+                                  codexAuthJsonText:
+                                    selectedDraft.codexAuthJsonText,
+                                  codexConfigTomlText:
+                                    selectedDraft.codexConfigTomlText,
+                                }
+                              )
+                            )
                             .then(() => {
                               toast.success(t("toasts.codexSaved"), {
                                 description: t("toasts.configSavedHint"),

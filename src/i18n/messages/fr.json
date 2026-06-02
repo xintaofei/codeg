@@ -481,6 +481,8 @@
       "enableHint": "Lorsque cette option est désactivée, l’outil delegate_to_agent est masqué du catalogue d’outils MCP de l’agent.",
       "depthLimit": "Profondeur maximale de délégation",
       "depthHint": "Plage autorisée : {min}–{max}. Limite la profondeur de récursion d’une chaîne de délégation (racine → enfant → petit-enfant …).",
+      "completedCacheLabel": "Cache des résultats terminés (MB)",
+      "completedCacheHint": "Cache en mémoire des résultats terminés des sous-agents, conservé uniquement tant que la session de délégation est en cours et libéré automatiquement à la fin de cette session. Au-delà de ce budget, les résultats les plus anciens sont supprimés de la mémoire en premier (toujours consultables dans la session du sous-agent) ; 0 = illimité (libéré quand même à la fin de la session).",
       "save": "Enregistrer",
       "saving": "Enregistrement…",
       "saved": "Paramètres de délégation enregistrés",
@@ -1888,8 +1890,15 @@
         "openDetail": "Voir la conversation",
         "detailTitle": "Conversation du sous-agent",
         "detailDescription": "Vue en lecture seule de la conversation du sous-agent délégué.",
+        "waitForResult": "En attente du résultat de la tâche {task}",
+        "waitForResultNoTask": "En attente du résultat de la tâche",
+        "cancelTask": "Annulation de la tâche {task}",
+        "cancelTaskNoTask": "Annulation de la tâche",
         "status": {
+          "starting": "démarrage",
           "running": "en cours",
+          "checked": "vérifié",
+          "waiting": "en attente d'approbation",
           "ok": "terminé",
           "err": {
             "default": "échec",
@@ -1904,7 +1913,8 @@
             "child_max_tokens": "sous-agent : limite de jetons",
             "child_max_turn_requests": "sous-agent : limite de requêtes",
             "child_empty": "sous-agent sans sortie",
-            "child_unknown": "sous-agent : erreur"
+            "child_unknown": "sous-agent : erreur",
+            "unknown": "tâche inconnue"
           }
         }
       },
@@ -2060,7 +2070,21 @@
   "ProjectBoot": {
     "title": "Lanceur de projet",
     "tabs": {
-      "shadcn": "shadcn"
+      "shadcn": "shadcn",
+      "hyperframes": "HyperFrames"
+    },
+    "hyperframes": {
+      "title": "Projet vidéo HyperFrames",
+      "subtitle": "Générez un projet HTML-vers-vidéo. L'agent de l'espace de travail peut ensuite l'écrire et le rendre.",
+      "resolution": "Résolution",
+      "skillsTitle": "Skills des agents",
+      "skillsDesc": "Installe globalement les skills HyperFrames (lien symbolique) pour les agents sélectionnés, afin qu'ils puissent créer et rendre des vidéos.",
+      "recheck": "Revérifier",
+      "installedBadge": "Installé",
+      "skillsInstall": "Installer / mettre à jour les skills",
+      "skillsInstalling": "Installation des skills…",
+      "skillsInstalled": "Skills HyperFrames installées",
+      "skillsInstallFailed": "Impossible d'installer les skills HyperFrames"
     },
     "config": {
       "base": "Base",
@@ -2106,7 +2130,8 @@
     },
     "toasts": {
       "createFailed": "Échec de la création du projet",
-      "createSuccess": "Projet créé avec succès"
+      "createSuccess": "Projet créé avec succès",
+      "openWorkspaceFailed": "Projet créé, mais impossible de l'ouvrir dans l'espace de travail"
     },
     "errors": {
       "directoryExists": "Le répertoire cible existe déjà",

@@ -51,6 +51,7 @@ interface AppWorkspaceContextValue {
   getBranch: (folderId: number) => string | null | undefined
   setBranch: (folderId: number, branch: string | null) => void
 
+  upsertFolder: (detail: FolderDetail) => void
   openFolder: (path: string) => Promise<FolderDetail>
   addFolderToWorkspaceById: (folderId: number) => Promise<FolderDetail>
   removeFolderFromWorkspace: (folderId: number) => Promise<void>
@@ -387,6 +388,7 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
       branches,
       getBranch,
       setBranch,
+      upsertFolder,
       openFolder,
       addFolderToWorkspaceById,
       removeFolderFromWorkspace,
@@ -410,6 +412,7 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
       branches,
       getBranch,
       setBranch,
+      upsertFolder,
       openFolder,
       addFolderToWorkspaceById,
       removeFolderFromWorkspace,

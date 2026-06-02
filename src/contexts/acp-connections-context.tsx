@@ -30,10 +30,12 @@ import {
   acpGetSessionSnapshot,
 } from "@/lib/api"
 import { denormalizeSnapshot } from "@/lib/snapshot-denormalize"
+import { buildDelegationSeedEnvelopes } from "@/lib/delegation-seed"
 import type {
   AgentType,
   AcpAgentStatus,
   AcpEvent,
+  ActiveDelegationState,
   AvailableCommandInfo,
   ConnectionStatus,
   EventEnvelope,
@@ -2586,6 +2588,46 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     [dispatch, handleMappedEvent]
   )
 
+  // Re-seed `DelegationProvider` bindings from a snapshot's active_delegations.
+  // `delegation_started` / `delegation_completed` are transient — they mutate
+  // no SessionState field, so they are NOT in `to_snapshot()` and (on the
+  // snapshot attach path) are never replayed. Without this, a web/server client
+  // that cold-attaches, re-attaches after a broadcast lag, or refreshes
+  // mid-delegation never establishes the live binding: the card shows a
+  // premature "completed" and no "查看会话" until the child finally finishes.
+  // We synthesize the same envelopes the broker emits live and fan them ONLY to
+  // the JS event subscribers (DelegationProvider), bypassing applyMappedEnvelope
+  // so we neither run the store reducer (which has no case for these) nor touch
+  // `lastAppliedSeq` / trip the seq-dedup. Idempotent with any live/replayed
+  // event for the same `parent_tool_use_id` (DelegationProvider overwrites the
+  // binding and `attachDelegationChild` early-returns when already attached).
+  const seedDelegationsFromSnapshot = useCallback(
+    (
+      connectionId: string,
+      activeDelegations: ActiveDelegationState[],
+      eventSeq: number
+    ) => {
+      const envelopes = buildDelegationSeedEnvelopes(
+        connectionId,
+        activeDelegations,
+        eventSeq
+      )
+      for (const envelope of envelopes) {
+        for (const ref of eventSubscribersRef.current) {
+          try {
+            ref.current(envelope)
+          } catch (err) {
+            console.error(
+              "[acp-context] delegation seed subscriber threw:",
+              err
+            )
+          }
+        }
+      }
+    },
+    []
+  )
+
   // Open a Subscribe-with-Snapshot stream for `connectionId` and route its
   // frames into the store under `contextKey`. Returns the subscription
   // handle for cleanup, or `null` when the active transport doesn't
@@ -2613,6 +2655,15 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           const patch = denormalizeSnapshot(snapshot)
           dispatch({ type: "HYDRATE_FROM_SNAPSHOT", contextKey, patch })
           lastActivityRef.current.set(contextKey, Date.now())
+          // Recover delegation bindings the snapshot carries but the transient
+          // events don't (the load-bearing fix for the web-only "running shows
+          // completed / no 查看会话" bug). Uses the snapshot's own connection_id
+          // as the parent id.
+          seedDelegationsFromSnapshot(
+            patch.connectionId,
+            patch.activeDelegations,
+            patch.eventSeq
+          )
         },
         onReplay: (events) => {
           for (const envelope of events) {
@@ -2651,7 +2702,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       attachSubscriptionsRef.current.set(contextKey, activeSub)
       return activeSub
     },
-    [applyMappedEnvelope, dispatch]
+    [applyMappedEnvelope, dispatch, seedDelegationsFromSnapshot]
   )
 
   // Tear down an attach subscription: detach the WS subscription so the
@@ -3112,6 +3163,15 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               contextKey,
               patch: snapshotPatch,
             })
+            // Recover delegation bindings from the snapshot here too. On
+            // Tauri the firehose also delivers the events (so this is an
+            // idempotent no-op), but it keeps RemoteDesktop and the legacy
+            // path symmetric with the attach path above.
+            seedDelegationsFromSnapshot(
+              snapshotPatch.connectionId,
+              snapshotPatch.activeDelegations,
+              snapshotPatch.eventSeq
+            )
           }
 
           reverseMapRef.current.set(connectionId, contextKey)
@@ -3191,6 +3251,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       consumeBufferedEvents,
       dispatch,
       resolveConnectBlockState,
+      seedDelegationsFromSnapshot,
       setActiveKey,
       setupAttachSubscription,
       t,

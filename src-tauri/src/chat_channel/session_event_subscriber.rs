@@ -11,7 +11,9 @@ use super::session_bridge::{PendingPermission, SessionBridge};
 use super::types::{MessageLevel, RichMessage};
 use crate::acp::internal_bus::InternalEventBus;
 use crate::acp::manager::ConnectionManager;
-use crate::acp::types::{AcpEvent, ConnectionStatus, EventEnvelope, PromptInputBlock};
+use crate::acp::types::{
+    AcpEvent, ConnectionStatus, DelegationResultSummary, EventEnvelope, PromptInputBlock,
+};
 
 use crate::db::service::{app_metadata_service, conversation_service, sender_context_service};
 
@@ -212,23 +214,108 @@ async fn handle_acp_envelope(
                 }
 
                 if status.as_deref() == Some("completed") {
-                    let stored_input = session.tool_call_inputs.remove(tool_call_id);
                     let effective_title = title.as_deref().unwrap_or("tool");
-                    let input_ref = stored_input.as_deref().or(raw_input.as_deref());
-                    let channel_id = session.channel_id;
-
-                    let body = if is_delegation_title(effective_title)
-                        || input_ref
+                    let is_delegation = is_delegation_title(effective_title)
+                        || session
+                            .tool_call_inputs
+                            .get(tool_call_id)
                             .map(|s| extract_agent_type(s).is_some())
                             .unwrap_or(false)
-                    {
-                        format_delegation_outcome(input_ref, raw_output.as_deref())
+                        || raw_input
+                            .as_deref()
+                            .map(|s| extract_agent_type(s).is_some())
+                            .unwrap_or(false);
+                    let channel_id = session.channel_id;
+                    if is_delegation {
+                        let already_rendered = session.delegation_rendered.contains(tool_call_id);
+                        let report = parse_delegation_report(raw_output.as_deref());
+                        if report.as_ref().is_some_and(|r| r.is_terminal()) {
+                            // Terminal tool output (a fast-complete result, or a
+                            // setup failure). Render it EXACTLY ONCE, gated on the
+                            // `delegation_rendered` marker (NOT the input map,
+                            // which `raw_input` updates re-populate). This is the
+                            // only surface for setup failures and synthetic-id
+                            // fast-completes (neither emits `DelegationCompleted`),
+                            // and it no-ops when the completion event already
+                            // rendered first.
+                            if !already_rendered {
+                                let agent = session
+                                    .tool_call_inputs
+                                    .get(tool_call_id)
+                                    .map(String::as_str)
+                                    .or(raw_input.as_deref())
+                                    .and_then(extract_agent_type)
+                                    .unwrap_or_else(|| "agent".to_string());
+                                let body =
+                                    format_delegation_terminal(&agent, report.as_ref().unwrap());
+                                session.delegation_rendered.insert(tool_call_id.clone());
+                                session.tool_call_inputs.remove(tool_call_id);
+                                drop(guard);
+                                let msg = RichMessage::info(body);
+                                let _ = manager.send_to_channel(channel_id, &msg).await;
+                            }
+                        } else if !already_rendered {
+                            // Running ack (or unparseable output): announce the
+                            // background task. KEEP the stored input — the eventual
+                            // `DelegationCompleted` render needs the agent_type.
+                            // Suppressed once the result has rendered, so a late
+                            // re-emitted ack can't appear after the result.
+                            let agent = session
+                                .tool_call_inputs
+                                .get(tool_call_id)
+                                .map(String::as_str)
+                                .or(raw_input.as_deref())
+                                .and_then(extract_agent_type)
+                                .unwrap_or_else(|| "agent".to_string());
+                            drop(guard);
+                            let msg = RichMessage::info(format_delegation_ack(&agent));
+                            let _ = manager.send_to_channel(channel_id, &msg).await;
+                        }
                     } else {
-                        format!(">> {}", format_tool_call_detail(effective_title, input_ref))
-                    };
-                    drop(guard);
+                        let stored_input = session.tool_call_inputs.remove(tool_call_id);
+                        let input_ref = stored_input.as_deref().or(raw_input.as_deref());
+                        let body =
+                            format!(">> {}", format_tool_call_detail(effective_title, input_ref));
+                        drop(guard);
+                        let msg = RichMessage::info(body);
+                        let _ = manager.send_to_channel(channel_id, &msg).await;
+                    }
+                }
+            }
+        }
 
-                    let msg = RichMessage::info(body);
+        // The async delegation result for the normal (slow) case: the tool
+        // output was a running ack (handled above), and the child's final
+        // outcome surfaces here. Rendered EXACTLY ONCE via the same stored-input
+        // dedup token — if a terminal `ToolCallUpdate` already rendered (and
+        // removed it), skip. (A synthetic `parent_tool_use_id` never reaches a
+        // bridged session's stored input, so this arm no-ops for synthetic ids,
+        // which is correct — the terminal `ToolCallUpdate` is their surface.)
+        AcpEvent::DelegationCompleted {
+            parent_tool_use_id,
+            result,
+            ..
+        } => {
+            let mut guard = bridge.lock().await;
+            if let Some(session) = guard.get_mut(connection_id) {
+                // Render EXACTLY ONCE, gated on the `delegation_rendered` marker:
+                // if a terminal `ToolCallUpdate` already rendered this task's
+                // result, skip. (A synthetic `parent_tool_use_id` is never emitted
+                // here at all, so this arm naturally no-ops for synthetic ids —
+                // the terminal `ToolCallUpdate` is their surface.)
+                if !session.delegation_rendered.contains(parent_tool_use_id) {
+                    let agent = session
+                        .tool_call_inputs
+                        .remove(parent_tool_use_id)
+                        .as_deref()
+                        .and_then(extract_agent_type)
+                        .unwrap_or_else(|| "sub-agent".to_string());
+                    session
+                        .delegation_rendered
+                        .insert(parent_tool_use_id.clone());
+                    let channel_id = session.channel_id;
+                    drop(guard);
+                    let msg = RichMessage::info(format_delegation_result(&agent, result));
                     let _ = manager.send_to_channel(channel_id, &msg).await;
                 }
             }
@@ -767,47 +854,132 @@ fn extract_agent_type(raw_input: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Build the chat-channel summary for a finished `delegate_to_agent` call.
-/// Receives the broker's wire payload (already a JSON-serialized
-/// `DelegationOutcome`) and renders a compact ✅/❌ line plus the short
-/// preview text the user can act on.
-fn format_delegation_outcome(raw_input: Option<&str>, raw_output: Option<&str>) -> String {
-    let agent = raw_input
-        .and_then(extract_agent_type)
-        .unwrap_or_else(|| "agent".to_string());
+/// Ack line for a `delegate_to_agent` call: under async delegation the tool
+/// output is just a task id, so the channel shows that the sub-agent started
+/// and is running in the background. The result lands later via
+/// [`format_delegation_result`] on `DelegationCompleted`.
+fn format_delegation_ack(agent: &str) -> String {
+    format!("🚀 Delegated to {agent}; running in background")
+}
 
-    // Try to parse the MCP-style structured output Phase 5 emits:
-    //   `{ "kind": "ok", "text": "…", … }` or `{ "kind": "err", "code": "…" }`.
-    // Fall back to the plain text body if the agent already collapsed it.
-    if let Some(out) = raw_output {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(out) {
-            let kind = value.get("kind").and_then(|v| v.as_str());
-            match kind {
-                Some("ok") => {
-                    let text = value
-                        .get("text")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .trim();
-                    if text.is_empty() {
-                        return format!("✅ {agent} done");
-                    }
-                    let preview = truncate_str(text, 200);
-                    return format!("✅ {agent}: {preview}");
-                }
-                Some("err") => {
-                    let code = value.get("code").and_then(|v| v.as_str()).unwrap_or("err");
-                    return format!("❌ {agent} failed ({code})");
-                }
-                _ => {}
-            }
+/// A `delegate_to_agent` tool output parsed into the fields the chat relay
+/// needs to classify it (running ack vs terminal) and render the terminal line.
+struct DelegationReportView {
+    status: Option<String>,
+    error_code: Option<String>,
+    message: Option<String>,
+    text: Option<String>,
+}
+
+impl DelegationReportView {
+    fn is_terminal(&self) -> bool {
+        matches!(
+            self.status.as_deref(),
+            Some("completed") | Some("failed") | Some("canceled")
+        )
+    }
+}
+
+/// Parse a `delegate_to_agent` tool output into a [`DelegationReportView`],
+/// unwrapping the MCP `CallToolResult` envelope's `structuredContent` and
+/// tolerating host wrappers — notably Codex, which serializes MCP output as
+/// `"Wall time: N seconds\nOutput:\n<json>"` (sometimes with a trailing cursor
+/// char). Mirrors the frontend's lenient extraction so terminal detection works
+/// across hosts. Returns `None` when no JSON object can be recovered.
+fn parse_delegation_report(raw_output: Option<&str>) -> Option<DelegationReportView> {
+    let value = parse_json_lenient(raw_output?)?;
+    let report = value.get("structuredContent").unwrap_or(&value);
+    Some(DelegationReportView {
+        status: report
+            .get("status")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        error_code: report
+            .get("error_code")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        message: report
+            .get("message")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        text: report
+            .get("text")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    })
+}
+
+/// Parse JSON tolerant of a textual prefix/suffix around the object (Codex
+/// wrapping): try a direct parse, then scan back from the last `}` to the first
+/// `{` until a balanced span parses. Bounded by the count of `}` characters.
+fn parse_json_lenient(s: &str) -> Option<serde_json::Value> {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(s.trim()) {
+        return Some(v);
+    }
+    let start = s.find('{')?;
+    let mut end = s.rfind('}')?;
+    while end > start {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s[start..=end]) {
+            return Some(v);
         }
-        let preview = truncate_str(out.trim(), 200);
-        if !preview.is_empty() {
-            return format!("✅ {agent}: {preview}");
+        match s[start..end].rfind('}') {
+            Some(rel) => end = start + rel,
+            None => break,
         }
     }
-    format!("✅ {agent} done")
+    None
+}
+
+/// Render a TERMINAL delegation tool output (a fast-complete result, or a setup
+/// failure: delegation disabled / depth rejected / spawn failed). Used when the
+/// terminal line surfaces via the tool output rather than `DelegationCompleted`
+/// (setup failures and synthetic-id fast-completes emit no `DelegationCompleted`).
+fn format_delegation_terminal(agent: &str, view: &DelegationReportView) -> String {
+    if view.status.as_deref() == Some("completed") {
+        let body = view
+            .text
+            .as_deref()
+            .or(view.message.as_deref())
+            .unwrap_or("")
+            .trim();
+        return if body.is_empty() {
+            format!("✅ {agent} done")
+        } else {
+            format!("✅ {agent}: {}", truncate_str(body, 200))
+        };
+    }
+    match view
+        .message
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(message) => format!("❌ {agent} failed: {}", truncate_str(message, 200)),
+        None => format!(
+            "❌ {agent} failed ({})",
+            view.error_code.as_deref().unwrap_or("error")
+        ),
+    }
+}
+
+/// Result line for a finished delegation, from the `DelegationCompleted`
+/// summary: a compact ✅/❌ with the bounded preview the broker attached.
+fn format_delegation_result(agent: &str, result: &DelegationResultSummary) -> String {
+    match result {
+        DelegationResultSummary::Ok { text_preview, .. } => {
+            match text_preview
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                Some(preview) => format!("✅ {agent}: {}", truncate_str(preview, 200)),
+                None => format!("✅ {agent} done"),
+            }
+        }
+        DelegationResultSummary::Err { error_code } => {
+            format!("❌ {agent} failed ({error_code})")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -838,41 +1010,390 @@ mod delegation_relay_tests {
     }
 
     #[test]
-    fn format_delegation_outcome_renders_ok_with_preview() {
-        let out = r#"{"kind":"ok","text":"  hello world  "}"#;
-        let body = format_delegation_outcome(Some(r#"{"agent_type":"codex"}"#), Some(out));
-        assert_eq!(body, "✅ codex: hello world");
+    fn format_delegation_ack_announces_background() {
+        assert_eq!(
+            format_delegation_ack("codex"),
+            "🚀 Delegated to codex; running in background"
+        );
     }
 
     #[test]
-    fn format_delegation_outcome_renders_err_with_code() {
-        let out = r#"{"kind":"err","code":"timeout"}"#;
-        let body = format_delegation_outcome(Some(r#"{"agent_type":"gemini"}"#), Some(out));
-        assert_eq!(body, "❌ gemini failed (timeout)");
+    fn parse_delegation_report_classifies_running_vs_terminal() {
+        // Running ack (envelope) → not terminal.
+        let running = parse_delegation_report(Some(
+            r#"{"structuredContent":{"status":"running","child_conversation_id":7}}"#,
+        ))
+        .unwrap();
+        assert!(!running.is_terminal());
+        // Fast-complete (envelope) → terminal.
+        let done = parse_delegation_report(Some(
+            r#"{"structuredContent":{"status":"completed","child_conversation_id":7,"text":"ok"}}"#,
+        ))
+        .unwrap();
+        assert!(done.is_terminal());
+        // Setup failure (top-level report) → terminal.
+        let failed = parse_delegation_report(Some(
+            r#"{"status":"failed","error_code":"spawn_failed","message":"spawn failed: x"}"#,
+        ))
+        .unwrap();
+        assert!(failed.is_terminal());
+        // Unparseable / absent → None (treated as a running ack by the caller).
+        assert!(parse_delegation_report(Some("plain text")).is_none());
+        assert!(parse_delegation_report(None).is_none());
     }
 
     #[test]
-    fn format_delegation_outcome_falls_back_to_plain_text() {
-        let body =
-            format_delegation_outcome(Some(r#"{"agent_type":"cline"}"#), Some("plain reply body"));
-        assert_eq!(body, "✅ cline: plain reply body");
+    fn parse_delegation_report_unwraps_codex_text_wrapping() {
+        // Codex serializes MCP output as "Wall time: N seconds\nOutput:\n<json>"
+        // (with a possible trailing cursor char). Terminal detection must see
+        // through the textual wrapper.
+        for status in ["completed", "failed", "canceled"] {
+            let wrapped = format!(
+                "Wall time: 2 seconds\nOutput:\n{{\"content\":[{{\"type\":\"text\",\"text\":\"x\"}}],\"isError\":false,\"structuredContent\":{{\"status\":\"{status}\",\"child_conversation_id\":9}}}}_"
+            );
+            let view = parse_delegation_report(Some(&wrapped))
+                .unwrap_or_else(|| panic!("should parse wrapped {status}"));
+            assert!(view.is_terminal(), "{status} should be terminal");
+        }
     }
 
     #[test]
-    fn format_delegation_outcome_empty_output_marks_done() {
-        let body = format_delegation_outcome(Some(r#"{"agent_type":"open_code"}"#), None);
-        assert_eq!(body, "✅ open_code done");
+    fn format_delegation_setup_terminal_renders_failure_line() {
+        // A setup failure (no child, no DelegationCompleted) must surface a
+        // failure line rather than being dropped.
+        let view = parse_delegation_report(Some(
+            r#"{"status":"canceled","error_code":"canceled","message":"delegation disabled"}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            format_delegation_terminal("codex", &view),
+            "❌ codex failed: delegation disabled"
+        );
+        // Falls back to the code when there's no message.
+        let view2 =
+            parse_delegation_report(Some(r#"{"status":"failed","error_code":"depth_limit"}"#))
+                .unwrap();
+        assert_eq!(
+            format_delegation_terminal("gemini", &view2),
+            "❌ gemini failed (depth_limit)"
+        );
     }
 
     #[test]
-    fn format_delegation_outcome_truncates_long_ok_text() {
-        let long_text = "x".repeat(400);
-        let out = format!(r#"{{"kind":"ok","text":"{long_text}"}}"#);
-        let body = format_delegation_outcome(Some(r#"{"agent_type":"codex"}"#), Some(&out));
+    fn format_delegation_result_ok_with_preview() {
+        let r = DelegationResultSummary::Ok {
+            duration_ms: 5,
+            text_preview: Some("  hello world  ".into()),
+        };
+        assert_eq!(
+            format_delegation_result("codex", &r),
+            "✅ codex: hello world"
+        );
+    }
+
+    #[test]
+    fn format_delegation_result_ok_no_preview_marks_done() {
+        let r = DelegationResultSummary::Ok {
+            duration_ms: 5,
+            text_preview: None,
+        };
+        assert_eq!(format_delegation_result("gemini", &r), "✅ gemini done");
+    }
+
+    #[test]
+    fn format_delegation_result_err_with_code() {
+        let r = DelegationResultSummary::Err {
+            error_code: "timeout".into(),
+        };
+        assert_eq!(
+            format_delegation_result("gemini", &r),
+            "❌ gemini failed (timeout)"
+        );
+    }
+
+    #[test]
+    fn format_delegation_result_truncates_long_preview() {
+        let long = "x".repeat(400);
+        let r = DelegationResultSummary::Ok {
+            duration_ms: 5,
+            text_preview: Some(long),
+        };
+        let body = format_delegation_result("codex", &r);
         // 200-char cap + "..."
         assert!(body.len() < 300);
         assert!(body.starts_with("✅ codex: "));
         assert!(body.ends_with("..."));
+    }
+}
+
+/// End-to-end dedup coverage through the real `handle_acp_envelope`, driving a
+/// recording channel backend so the exact channel messages are observable. The
+/// terminal delegation line must render EXACTLY ONCE across the terminal
+/// `ToolCallUpdate` and `DelegationCompleted` arms — including the synthetic-id
+/// fast-complete (no `DelegationCompleted`), the setup failure (no child), the
+/// duplicate-after-`raw_input`-re-emit ordering, and a stale running-ack after
+/// the result. The `delegation_rendered` marker (not the re-populatable input
+/// map) is the dedup signal.
+#[cfg(test)]
+mod async_relay_dedup_tests {
+    use super::*;
+    use crate::acp::manager::ConnectionManager;
+    use crate::chat_channel::error::ChatChannelError;
+    use crate::chat_channel::manager::ChatChannelManager;
+    use crate::chat_channel::session_bridge::{ActiveSession, SessionBridge};
+    use crate::chat_channel::traits::ChatChannelBackend;
+    use crate::chat_channel::types::{
+        ChannelConnectionStatus, ChannelType, IncomingCommand, RichMessage, SentMessageId,
+    };
+    use crate::db::test_helpers;
+    use crate::models::agent::AgentType;
+    use async_trait::async_trait;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+    use std::time::Instant;
+    use tokio::sync::{mpsc, Mutex};
+
+    /// Channel backend that records every message body sent to it, so tests can
+    /// assert the EXACT number/content of channel lines (token consumption alone
+    /// can't catch a duplicate that re-creates the token).
+    #[derive(Clone, Default)]
+    struct Recorder {
+        msgs: Arc<Mutex<Vec<String>>>,
+    }
+    struct RecordingBackend {
+        rec: Recorder,
+    }
+
+    #[async_trait]
+    impl ChatChannelBackend for RecordingBackend {
+        fn channel_type(&self) -> ChannelType {
+            ChannelType::Telegram
+        }
+        async fn start(
+            &self,
+            _command_tx: mpsc::Sender<IncomingCommand>,
+        ) -> Result<(), ChatChannelError> {
+            Ok(())
+        }
+        async fn stop(&self) -> Result<(), ChatChannelError> {
+            Ok(())
+        }
+        async fn status(&self) -> ChannelConnectionStatus {
+            ChannelConnectionStatus::Connected
+        }
+        async fn send_message(&self, text: &str) -> Result<SentMessageId, ChatChannelError> {
+            self.rec.msgs.lock().await.push(text.to_string());
+            Ok(SentMessageId("1".into()))
+        }
+        async fn send_rich_message(
+            &self,
+            message: &RichMessage,
+        ) -> Result<SentMessageId, ChatChannelError> {
+            self.rec.msgs.lock().await.push(message.body.clone());
+            Ok(SentMessageId("1".into()))
+        }
+        async fn test_connection(&self) -> Result<(), ChatChannelError> {
+            Ok(())
+        }
+    }
+
+    /// Build a bridge seeded with one delegate session + a manager wired to a
+    /// recording backend on channel 7. Returns the message recorder.
+    async fn harness() -> (Arc<Mutex<SessionBridge>>, ChatChannelManager, Recorder) {
+        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        let mut inputs = HashMap::new();
+        inputs.insert(
+            "tc-1".to_string(),
+            r#"{"agent_type":"codex","task":"x"}"#.to_string(),
+        );
+        bridge.lock().await.register(
+            "conn".into(),
+            ActiveSession {
+                channel_id: 7,
+                sender_id: "u".into(),
+                conversation_id: 1,
+                connection_id: "conn".into(),
+                agent_type: AgentType::ClaudeCode,
+                content_buffer: String::new(),
+                tool_calls: Vec::new(),
+                tool_call_inputs: inputs,
+                delegation_rendered: HashSet::new(),
+                last_flushed: Instant::now(),
+                pending_prompt: None,
+                permission_pending: None,
+            },
+        );
+        let chat = ChatChannelManager::new();
+        let rec = Recorder::default();
+        chat.add_channel(
+            7,
+            "test".into(),
+            ChannelType::Telegram,
+            Box::new(RecordingBackend { rec: rec.clone() }),
+        )
+        .await
+        .unwrap();
+        (bridge, chat, rec)
+    }
+
+    /// A `ToolCallUpdate(completed)` for the delegate tool, optionally carrying
+    /// `raw_input` (to exercise the input-re-population path).
+    fn completed_update(raw_output: &str, with_input: bool) -> EventEnvelope {
+        EventEnvelope {
+            seq: 1,
+            connection_id: "conn".into(),
+            payload: AcpEvent::ToolCallUpdate {
+                tool_call_id: "tc-1".into(),
+                title: Some("delegate_to_agent".into()),
+                status: Some("completed".into()),
+                content: None,
+                raw_input: with_input.then(|| r#"{"agent_type":"codex","task":"x"}"#.to_string()),
+                raw_output: Some(raw_output.into()),
+                raw_output_append: None,
+                locations: None,
+                meta: None,
+                images: None,
+            },
+        }
+    }
+
+    fn delegation_completed_ok() -> EventEnvelope {
+        EventEnvelope {
+            seq: 1,
+            connection_id: "conn".into(),
+            payload: AcpEvent::DelegationCompleted {
+                parent_connection_id: "conn".into(),
+                parent_tool_use_id: "tc-1".into(),
+                child_connection_id: "child".into(),
+                child_conversation_id: 5,
+                agent_type: AgentType::Codex,
+                result: DelegationResultSummary::Ok {
+                    duration_ms: 3,
+                    text_preview: Some("done".into()),
+                },
+            },
+        }
+    }
+
+    async fn sent(rec: &Recorder) -> Vec<String> {
+        rec.msgs.lock().await.clone()
+    }
+
+    const ACK: &str =
+        r#"{"structuredContent":{"task_id":"x","status":"running","child_conversation_id":5}}"#;
+    const FAST_COMPLETE: &str = r#"{"content":[{"type":"text","text":"done"}],"isError":false,"structuredContent":{"task_id":"x","status":"completed","child_conversation_id":5,"text":"done"}}"#;
+
+    /// Synthetic-id fast-complete: terminal tool output, NO DelegationCompleted.
+    /// Exactly one ✅ result line, from the terminal ToolCallUpdate.
+    #[tokio::test]
+    async fn synthetic_fast_complete_renders_one_result() {
+        let (bridge, chat, rec) = harness().await;
+        let conn = ConnectionManager::new();
+        let db = test_helpers::fresh_in_memory_db().await;
+        handle_acp_envelope(
+            &completed_update(FAST_COMPLETE, true),
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+        )
+        .await;
+        let msgs = sent(&rec).await;
+        assert_eq!(msgs.len(), 1, "exactly one line, got {msgs:?}");
+        assert!(msgs[0].starts_with("✅ codex"), "got {:?}", msgs[0]);
+    }
+
+    /// Non-synthetic fast-complete in the `DelegationCompleted → ToolCallUpdate
+    /// (WITH raw_input)` order: the completion renders, the later update
+    /// re-populates the input map but must NOT produce a second result line.
+    #[tokio::test]
+    async fn dedup_survives_raw_input_repopulation() {
+        let (bridge, chat, rec) = harness().await;
+        let conn = ConnectionManager::new();
+        let db = test_helpers::fresh_in_memory_db().await;
+        handle_acp_envelope(&delegation_completed_ok(), &bridge, &chat, &conn, &db.conn).await;
+        // The later terminal update carries raw_input (re-creating the old
+        // input-map token) AND terminal output.
+        handle_acp_envelope(
+            &completed_update(FAST_COMPLETE, true),
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+        )
+        .await;
+        let msgs = sent(&rec).await;
+        assert_eq!(
+            msgs.len(),
+            1,
+            "must render exactly one result line, got {msgs:?}"
+        );
+        assert!(msgs[0].starts_with("✅ codex"), "got {:?}", msgs[0]);
+    }
+
+    /// Slow async: running ack first, then DelegationCompleted. Exactly two
+    /// lines — the ack and the result.
+    #[tokio::test]
+    async fn slow_async_emits_ack_then_result() {
+        let (bridge, chat, rec) = harness().await;
+        let conn = ConnectionManager::new();
+        let db = test_helpers::fresh_in_memory_db().await;
+        handle_acp_envelope(
+            &completed_update(ACK, false),
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+        )
+        .await;
+        handle_acp_envelope(&delegation_completed_ok(), &bridge, &chat, &conn, &db.conn).await;
+        let msgs = sent(&rec).await;
+        assert_eq!(msgs.len(), 2, "ack + result, got {msgs:?}");
+        assert!(msgs[0].contains("running in background"));
+        assert!(msgs[1].starts_with("✅ codex"));
+    }
+
+    /// A late running-ack `ToolCallUpdate` (with raw_input) arriving AFTER the
+    /// result must NOT emit a stale "running in background" line.
+    #[tokio::test]
+    async fn stale_ack_after_result_is_suppressed() {
+        let (bridge, chat, rec) = harness().await;
+        let conn = ConnectionManager::new();
+        let db = test_helpers::fresh_in_memory_db().await;
+        handle_acp_envelope(&delegation_completed_ok(), &bridge, &chat, &conn, &db.conn).await;
+        // Host re-emits the running ack after completion, with raw_input.
+        handle_acp_envelope(
+            &completed_update(ACK, true),
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+        )
+        .await;
+        let msgs = sent(&rec).await;
+        assert_eq!(msgs.len(), 1, "no stale ack after the result, got {msgs:?}");
+        assert!(msgs[0].starts_with("✅ codex"));
+    }
+
+    /// Setup failure (terminal report, NO child, NO DelegationCompleted): one
+    /// ❌ failure line from the terminal ToolCallUpdate.
+    #[tokio::test]
+    async fn setup_failure_renders_one_failure_line() {
+        let (bridge, chat, rec) = harness().await;
+        let conn = ConnectionManager::new();
+        let db = test_helpers::fresh_in_memory_db().await;
+        let out = r#"{"structuredContent":{"status":"failed","error_code":"spawn_failed","message":"spawn failed: x"}}"#;
+        handle_acp_envelope(
+            &completed_update(out, true),
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+        )
+        .await;
+        let msgs = sent(&rec).await;
+        assert_eq!(msgs.len(), 1, "one failure line, got {msgs:?}");
+        assert!(msgs[0].starts_with("❌ codex failed"), "got {:?}", msgs[0]);
     }
 }
 
@@ -926,6 +1447,7 @@ mod error_terminal_gate_tests {
                 content_buffer: String::new(),
                 tool_calls: Vec::new(),
                 tool_call_inputs: std::collections::HashMap::new(),
+                delegation_rendered: std::collections::HashSet::new(),
                 last_flushed: Instant::now(),
                 pending_prompt: None,
                 permission_pending: None,

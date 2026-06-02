@@ -5,8 +5,12 @@
 //! The companion speaks newline-delimited JSON-RPC 2.0 on stdio:
 //! one request → one response per line, with concurrent dispatch so
 //! `notifications/cancelled` can race an in-flight `tools/call`. It exposes
-//! exactly one tool — `delegate_to_agent` — whose schema is embedded at
-//! compile time from [`TOOL_SCHEMA_JSON`].
+//! three tools — `delegate_to_agent` (async; returns a `task_id` ack),
+//! `get_delegation_status` (poll/long-poll for the result), and
+//! `cancel_delegation` — whose schemas are embedded at compile time from
+//! [`TOOL_SCHEMA_JSON`]. Only `delegate_to_agent` registers a broker-side
+//! cancel handle; canceling a status/cancel round-trip merely suppresses its
+//! response.
 //!
 //! Notifications (id = None) produce no response, matching MCP's expectation
 //! that `notifications/initialized` etc. are fire-and-forget.
@@ -34,7 +38,9 @@ use serde_json::{json, Value};
 use tokio::sync::{oneshot, Mutex};
 
 use crate::acp::delegation::transport::{
-    client_cancel, client_round_trip, BrokerCancelRequest, BrokerRequest,
+    client_cancel, client_cancel_task_round_trip, client_round_trip, client_status_round_trip,
+    BrokerCancelRequest, BrokerCancelTaskRequest, BrokerRequest, BrokerResponse,
+    BrokerStatusRequest,
 };
 
 /// Upper bound on one broker-side cancel round-trip. Bounds both
@@ -54,11 +60,7 @@ const BROKER_CANCEL_BUDGET: Duration = Duration::from_millis(500);
 /// cancel backstops (parent / child disconnect cascades) if this one
 /// misses.
 async fn send_broker_cancel(socket_path: &str, req: &BrokerCancelRequest) {
-    let _ = tokio::time::timeout(
-        BROKER_CANCEL_BUDGET,
-        client_cancel(socket_path, req),
-    )
-    .await;
+    let _ = tokio::time::timeout(BROKER_CANCEL_BUDGET, client_cancel(socket_path, req)).await;
 }
 
 /// Static MCP tool schema. Lives next to this module so codeg-mcp ships
@@ -131,8 +133,14 @@ pub struct CompanionContext {
 /// JSON-RPC `id` can wake the round-trip task and trigger a broker-side
 /// cancel.
 pub struct InflightEntry {
-    /// Companion-minted opaque handle threaded through the broker.
-    external_handle: String,
+    /// Companion-minted opaque handle threaded through the broker, for the
+    /// `delegate_to_agent` tool ONLY — a `notifications/cancelled` during its
+    /// setup must tear down the just-started child via the broker's
+    /// `cancel_by_external_handle`. `None` for `get_delegation_status` /
+    /// `cancel_delegation`: canceling those round-trips only suppresses the
+    /// response (no broker-side cancel — the query/cancel itself must not touch
+    /// the task).
+    external_handle: Option<String>,
     /// Tripped by the cancel handler to wake the round-trip task.
     cancel_tx: oneshot::Sender<()>,
 }
@@ -243,7 +251,8 @@ pub async fn dispatch_line(
             }),
         )),
         "tools/list" => {
-            let tool: Value = match serde_json::from_str(TOOL_SCHEMA_JSON) {
+            // The embedded schema is a JSON array of the three delegation tools.
+            let tools: Value = match serde_json::from_str(TOOL_SCHEMA_JSON) {
                 Ok(v) => v,
                 Err(e) => {
                     return LineAction::Respond(err(
@@ -253,7 +262,7 @@ pub async fn dispatch_line(
                     ));
                 }
             };
-            LineAction::Respond(ok(id, json!({ "tools": [tool] })))
+            LineAction::Respond(ok(id, json!({ "tools": tools })))
         }
         "tools/call" => build_tools_call_spawn(ctx.clone(), inflight, id, req.params).await,
         _ => LineAction::Respond(err(id, -32601, format!("method not found: {}", req.method))),
@@ -269,74 +278,126 @@ async fn build_tools_call_spawn(
     id: Value,
     params: Value,
 ) -> LineAction {
-    let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-    if name != "delegate_to_agent" {
-        return LineAction::Respond(err(id, -32602, format!("unknown tool: {name}")));
-    }
-    let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
-    // MCP clients (Codex / Claude Code) generally do NOT populate
-    // `_meta.tool_use_id` when calling an MCP server. We still surface it
-    // when present (it's the most precise binding), but a missing one is
-    // expected — the broker falls back to claiming the most recent
-    // `delegate_to_agent` tool_call_id observed on the parent's ACP event
-    // stream.
-    let tool_use_id = params
-        .get("_meta")
-        .and_then(|m| m.get("tool_use_id"))
+    let name = params
+        .get("name")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
+    let socket = ctx.socket_path.clone();
+    match name.as_str() {
+        "delegate_to_agent" => {
+            // MCP clients (Codex / Claude Code) generally do NOT populate
+            // `_meta.tool_use_id` when calling an MCP server. We still surface it
+            // when present (the most precise binding), but a missing one is
+            // expected — the broker falls back to claiming the most recent
+            // `delegate_to_agent` tool_call_id observed on the parent's ACP
+            // event stream.
+            let tool_use_id = params
+                .get("_meta")
+                .and_then(|m| m.get("tool_use_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            // Mint an external_handle so a `notifications/cancelled` during setup
+            // tears down the just-started child via `cancel_by_external_handle`.
+            let external_handle = uuid::Uuid::new_v4().to_string();
+            let req = BrokerRequest {
+                token: ctx.token.clone(),
+                parent_connection_id: ctx.parent_connection_id.clone(),
+                parent_tool_use_id: tool_use_id,
+                external_handle: Some(external_handle.clone()),
+                input: arguments,
+            };
+            let round_trip = Box::pin(async move { client_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, Some(external_handle), round_trip).await
+        }
+        "get_delegation_status" => {
+            let task_id = match arguments.get("task_id").and_then(|v| v.as_str()) {
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => {
+                    return LineAction::Respond(err(
+                        id,
+                        -32602,
+                        "get_delegation_status requires a non-empty string task_id",
+                    ));
+                }
+            };
+            let wait_ms = arguments.get("wait_ms").and_then(|v| v.as_u64());
+            let req = BrokerStatusRequest {
+                token: ctx.token.clone(),
+                task_id,
+                wait_ms,
+            };
+            // No external_handle: canceling a status query only suppresses its
+            // response — it must not touch the task itself.
+            let round_trip = Box::pin(async move { client_status_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip).await
+        }
+        "cancel_delegation" => {
+            let task_id = match arguments.get("task_id").and_then(|v| v.as_str()) {
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => {
+                    return LineAction::Respond(err(
+                        id,
+                        -32602,
+                        "cancel_delegation requires a non-empty string task_id",
+                    ));
+                }
+            };
+            let req = BrokerCancelTaskRequest {
+                token: ctx.token.clone(),
+                task_id,
+            };
+            let round_trip =
+                Box::pin(async move { client_cancel_task_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip).await
+        }
+        other => LineAction::Respond(err(id, -32602, format!("unknown tool: {other}"))),
+    }
+}
 
-    let external_handle = uuid::Uuid::new_v4().to_string();
-    let req = BrokerRequest {
-        token: ctx.token.clone(),
-        parent_connection_id: ctx.parent_connection_id.clone(),
-        parent_tool_use_id: tool_use_id,
-        external_handle: Some(external_handle.clone()),
-        input: arguments,
-    };
-
+/// Register the inflight entry and build the [`SpawnedCall`] that races the
+/// broker round-trip against the cancel signal. `external_handle` is `Some` only
+/// for `delegate_to_agent` (so a cancel during setup tears the child down);
+/// `None` for status/cancel queries (a cancel only suppresses the response).
+async fn register_and_spawn(
+    inflight: Arc<InflightCalls>,
+    id: Value,
+    external_handle: Option<String>,
+    round_trip: futures_util::future::BoxFuture<'static, std::io::Result<BrokerResponse>>,
+) -> LineAction {
     let (cancel_tx, cancel_rx) = oneshot::channel();
     let id_key = request_id_key(&id);
     inflight
         .register(
             id_key.clone(),
             InflightEntry {
-                external_handle: external_handle.clone(),
+                external_handle,
                 cancel_tx,
             },
         )
         .await;
 
-    let ctx_for_task = ctx.clone();
     let id_for_response = id.clone();
     let id_key_for_task = id_key.clone();
     let inflight_for_task = inflight.clone();
-    // The external_handle is only needed to write the inflight registry
-    // entry above; the cancel BrokerMessage is dispatched by
-    // `handle_cancel_notification`, not by the task. Keeping it bound
-    // here would be dead-store noise — drop it via the `_` discard.
-    let _ = external_handle;
     let future = Box::pin(async move {
         // Race the UDS round-trip against the cancel signal. Cancel wins →
-        // suppress the response per MCP spec; the cancel notification
-        // handler is responsible for dispatching `BrokerMessage::Cancel`
-        // to the listener. Doing it from BOTH sites caused the broker's
-        // `pre_canceled_handles` set to leak entries for handles that
-        // were already drained by the first cancel.
+        // suppress the response per MCP spec; for `delegate_to_agent` the cancel
+        // notification handler is responsible for dispatching the broker-side
+        // `Cancel` (status/cancel queries carry no external_handle, so nothing
+        // is dispatched).
         tokio::select! {
             biased;
             _ = cancel_rx => {
-                // The cancel handler already pulled the inflight entry;
-                // this is a defensive re-take in case some other path
-                // dropped `cancel_tx` without going through the handler.
                 let _ = inflight_for_task.take(&id_key_for_task).await;
                 None
             }
-            rt = client_round_trip(&ctx_for_task.socket_path, &req) => {
+            rt = round_trip => {
                 let _ = inflight_for_task.take(&id_key_for_task).await;
                 match rt {
-                    Ok(resp) => Some(ok(id_for_response, render_tool_result(&resp.outcome))),
+                    Ok(resp) => Some(ok(id_for_response, render_task_report(&resp.outcome))),
                     Err(e) => Some(err(
                         id_for_response,
                         -32603,
@@ -371,6 +432,13 @@ async fn handle_cancel_notification(
         return;
     };
     let _ = entry.cancel_tx.send(());
+    // Only `delegate_to_agent` carries an external_handle. For
+    // `get_delegation_status` / `cancel_delegation` there is nothing to cancel
+    // broker-side — suppressing the (possibly long-poll) response is the whole
+    // effect, and dispatching a broker `Cancel` would wrongly target a task.
+    let Some(external_handle) = entry.external_handle else {
+        return;
+    };
     // Single broker-side cancel per notification: the round-trip task
     // observes `cancel_rx` and only suppresses its response. If we ALSO
     // dispatched a cancel from the task we'd hit the broker twice — the
@@ -385,7 +453,7 @@ async fn handle_cancel_notification(
     // before the next stdin line is read.
     let cancel_req = BrokerCancelRequest {
         token: ctx.token.clone(),
-        external_handle: entry.external_handle,
+        external_handle,
         reason: params
             .get("reason")
             .and_then(|v| v.as_str())
@@ -410,38 +478,57 @@ pub async fn drain_and_cancel_all(
         // Wake the round-trip task if it's still scheduled, so it can
         // exit promptly when the runtime tears down.
         let _ = entry.cancel_tx.send(());
+        // Only delegate_to_agent entries hold an external_handle worth a
+        // broker-side cancel; status/cancel queries have nothing to tear down.
+        let Some(external_handle) = entry.external_handle else {
+            continue;
+        };
         let cancel_req = BrokerCancelRequest {
             token: ctx.token.clone(),
-            external_handle: entry.external_handle,
+            external_handle,
             reason: Some(reason.to_string()),
         };
         send_broker_cancel(&ctx.socket_path, &cancel_req).await;
     }
 }
 
-/// Map a serialized [`super::types::DelegationOutcome`] into MCP `tools/call`
-/// result content. Kept as a separate function so unit tests can assert the
-/// mapping without a real socket.
-pub fn render_tool_result(outcome: &Value) -> Value {
-    let kind = outcome.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-    let is_error = kind == "err";
-    let text = if is_error {
-        outcome
-            .get("message")
+/// Map a serialized [`super::types::DelegationTaskReport`] into MCP `tools/call`
+/// result content. Shared by all three delegation tools. Kept separate so unit
+/// tests can assert the mapping without a real socket.
+///
+/// The human-readable `content` text is the result for a `completed` task and
+/// the `message` (status note / failure reason) otherwise. `isError` is set
+/// ONLY for `failed` — `running` (ack), `canceled` (a successful cancel or a
+/// canceled task), and `unknown` are all valid tool results the LLM should read
+/// rather than treat as errors. The full report rides along in
+/// `structuredContent` so the frontend can read `status` + the child ids.
+pub fn render_task_report(report: &Value) -> Value {
+    let status = report.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    let is_error = status == "failed";
+    let report_str = |key: &str| {
+        report
+            .get(key)
             .and_then(|v| v.as_str())
-            .unwrap_or("delegation failed")
+            .filter(|s| !s.is_empty())
+    };
+    let text = if status == "completed" {
+        // Prefer the result text; fall back to `message` so the DB-fallback note
+        // ("Result no longer cached; open child session N…") for an evicted
+        // result isn't rendered as empty content.
+        report_str("text")
+            .or_else(|| report_str("message"))
+            .unwrap_or("")
             .to_string()
     } else {
-        outcome
-            .get("text")
-            .and_then(|v| v.as_str())
+        report_str("message")
+            .or_else(|| report_str("text"))
             .unwrap_or("")
             .to_string()
     };
     json!({
         "content": [{ "type": "text", "text": text }],
         "isError": is_error,
-        "structuredContent": outcome.clone(),
+        "structuredContent": report.clone(),
     })
 }
 
@@ -479,22 +566,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_returns_delegate_to_agent() {
+    async fn tools_list_returns_three_delegation_tools() {
         let line = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
         let resp = unwrap_respond(dispatch_for_test(line).await);
         let result = resp.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0]["name"], "delegate_to_agent");
-        // Schema enumerates all 6 agent types.
-        let agents = tools[0]["inputSchema"]["properties"]["agent_type"]["enum"]
+        assert_eq!(tools.len(), 3);
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"delegate_to_agent"));
+        assert!(names.contains(&"get_delegation_status"));
+        assert!(names.contains(&"cancel_delegation"));
+        // delegate_to_agent schema still enumerates all 6 agent types.
+        let delegate = tools
+            .iter()
+            .find(|t| t["name"] == "delegate_to_agent")
+            .unwrap();
+        let agents = delegate["inputSchema"]["properties"]["agent_type"]["enum"]
             .as_array()
             .unwrap();
         assert_eq!(agents.len(), 6);
-        // No more timeout_seconds property on the tool schema.
-        assert!(tools[0]["inputSchema"]["properties"]
-            .get("timeout_seconds")
-            .is_none());
+        // get_delegation_status takes task_id + wait_ms.
+        let status = tools
+            .iter()
+            .find(|t| t["name"] == "get_delegation_status")
+            .unwrap();
+        assert!(status["inputSchema"]["properties"]["task_id"].is_object());
+        assert!(status["inputSchema"]["properties"]["wait_ms"].is_object());
+    }
+
+    #[tokio::test]
+    async fn get_delegation_status_without_task_id_rejected() {
+        let line = r#"{
+            "jsonrpc":"2.0",
+            "id":11,
+            "method":"tools/call",
+            "params": { "name": "get_delegation_status", "arguments": {} }
+        }"#;
+        let resp = unwrap_respond(dispatch_for_test(line).await);
+        let e = resp.error.unwrap();
+        assert_eq!(e.code, -32602);
+        assert!(e.message.contains("task_id"));
     }
 
     #[tokio::test]
@@ -575,7 +686,7 @@ mod tests {
             .register(
                 request_id_key(&Value::from(7)),
                 InflightEntry {
-                    external_handle: "h-7".into(),
+                    external_handle: Some("h-7".into()),
                     cancel_tx,
                 },
             )
@@ -610,24 +721,80 @@ mod tests {
     }
 
     #[test]
-    fn render_tool_result_maps_ok_outcome() {
-        let outcome = json!({"kind": "ok", "text": "hi", "child_conversation_id": 42});
-        let rendered = render_tool_result(&outcome);
+    fn render_task_report_running_ack_is_not_error() {
+        let report = json!({
+            "task_id": "t1",
+            "status": "running",
+            "child_conversation_id": 42,
+            "message": "running in background"
+        });
+        let rendered = render_task_report(&report);
         assert_eq!(rendered["isError"], false);
-        assert_eq!(rendered["content"][0]["text"], "hi");
+        assert_eq!(rendered["content"][0]["text"], "running in background");
+        assert_eq!(rendered["structuredContent"]["status"], "running");
         assert_eq!(rendered["structuredContent"]["child_conversation_id"], 42);
     }
 
     #[test]
-    fn render_tool_result_maps_err_outcome() {
-        let outcome = json!({
-            "kind": "err",
-            "code": "canceled",
-            "message": "canceled: user requested"
+    fn render_task_report_completed_surfaces_text() {
+        let report = json!({
+            "task_id": "t1",
+            "status": "completed",
+            "child_conversation_id": 42,
+            "text": "the result"
         });
-        let rendered = render_tool_result(&outcome);
+        let rendered = render_task_report(&report);
+        assert_eq!(rendered["isError"], false);
+        assert_eq!(rendered["content"][0]["text"], "the result");
+        assert_eq!(rendered["structuredContent"]["status"], "completed");
+    }
+
+    #[test]
+    fn render_task_report_failed_is_error() {
+        let report = json!({
+            "status": "failed",
+            "error_code": "spawn_failed",
+            "message": "spawn failed: agent missing"
+        });
+        let rendered = render_task_report(&report);
         assert_eq!(rendered["isError"], true);
-        assert_eq!(rendered["content"][0]["text"], "canceled: user requested");
-        assert_eq!(rendered["structuredContent"]["code"], "canceled");
+        assert_eq!(
+            rendered["content"][0]["text"],
+            "spawn failed: agent missing"
+        );
+        assert_eq!(rendered["structuredContent"]["error_code"], "spawn_failed");
+    }
+
+    #[test]
+    fn render_task_report_canceled_is_not_error() {
+        // A successful cancel (or a canceled task) is a valid result, not an
+        // error the LLM should treat as a failure.
+        let report = json!({
+            "task_id": "t1",
+            "status": "canceled",
+            "error_code": "canceled",
+            "message": "canceled: canceled by request"
+        });
+        let rendered = render_task_report(&report);
+        assert_eq!(rendered["isError"], false);
+        assert_eq!(rendered["structuredContent"]["status"], "canceled");
+    }
+
+    #[test]
+    fn render_task_report_completed_without_text_falls_back_to_message() {
+        // DB-fallback for an evicted completed result: status completed, no
+        // text, only a message. The content must not be empty.
+        let report = json!({
+            "task_id": "t1",
+            "status": "completed",
+            "child_conversation_id": 7,
+            "message": "Result no longer cached; open child session 7 for the full output."
+        });
+        let rendered = render_task_report(&report);
+        assert_eq!(rendered["isError"], false);
+        assert_eq!(
+            rendered["content"][0]["text"],
+            "Result no longer cached; open child session 7 for the full output."
+        );
     }
 }

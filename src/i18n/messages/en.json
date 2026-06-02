@@ -481,6 +481,8 @@
       "enableHint": "When off, the delegate_to_agent tool is hidden from the agent's MCP catalog.",
       "depthLimit": "Maximum delegation depth",
       "depthHint": "Allowed range: {min}–{max}. Caps how deep a chain (root → child → grandchild …) can recurse.",
+      "completedCacheLabel": "Completed-result cache (MB)",
+      "completedCacheHint": "In-memory cache of finished sub-agent results, held only while the delegating session is running and cleared automatically when it ends. Over this budget the oldest results are dropped from memory first (still viewable in the sub-agent's own session); 0 = unlimited (still cleared when the session ends).",
       "save": "Save",
       "saving": "Saving…",
       "saved": "Delegation settings saved",
@@ -1888,8 +1890,15 @@
         "openDetail": "Open conversation",
         "detailTitle": "Sub-agent conversation",
         "detailDescription": "Read-only view of the delegated sub-agent's conversation.",
+        "waitForResult": "Waiting for task {task} result",
+        "waitForResultNoTask": "Waiting for task result",
+        "cancelTask": "Canceling task {task}",
+        "cancelTaskNoTask": "Canceling task",
         "status": {
+          "starting": "starting",
           "running": "running",
+          "checked": "checked",
+          "waiting": "awaiting approval",
           "ok": "done",
           "err": {
             "default": "failed",
@@ -1904,7 +1913,8 @@
             "child_max_tokens": "subagent token limit",
             "child_max_turn_requests": "subagent request limit",
             "child_empty": "subagent no output",
-            "child_unknown": "subagent unknown error"
+            "child_unknown": "subagent unknown error",
+            "unknown": "unknown task"
           }
         }
       },
@@ -2060,7 +2070,21 @@
   "ProjectBoot": {
     "title": "Project Boot",
     "tabs": {
-      "shadcn": "shadcn"
+      "shadcn": "shadcn",
+      "hyperframes": "HyperFrames"
+    },
+    "hyperframes": {
+      "title": "HyperFrames Video Project",
+      "subtitle": "Scaffold an HTML-to-video project. Your workspace agent can then write and render it.",
+      "resolution": "Resolution",
+      "skillsTitle": "Agent Skills",
+      "skillsDesc": "Globally install the HyperFrames skills (symlinked) for the selected agents so they can author and render video.",
+      "recheck": "Re-check",
+      "installedBadge": "Installed",
+      "skillsInstall": "Install / update skills",
+      "skillsInstalling": "Installing skills…",
+      "skillsInstalled": "HyperFrames skills installed",
+      "skillsInstallFailed": "Couldn't install HyperFrames skills"
     },
     "config": {
       "base": "Base",
@@ -2106,7 +2130,8 @@
     },
     "toasts": {
       "createFailed": "Failed to create project",
-      "createSuccess": "Project created successfully"
+      "createSuccess": "Project created successfully",
+      "openWorkspaceFailed": "Project created, but couldn't open it in the workspace"
     },
     "errors": {
       "directoryExists": "Target directory already exists",

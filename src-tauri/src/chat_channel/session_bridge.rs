@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use crate::acp::types::PermissionOptionInfo;
@@ -22,6 +22,14 @@ pub struct ActiveSession {
     pub tool_calls: Vec<String>,
     /// Stores raw_input by tool_call_id for detail extraction on completion.
     pub tool_call_inputs: HashMap<String, String>,
+    /// `tool_call_id`s of delegations whose terminal result line was already
+    /// rendered to the channel. The dedup marker for async delegation: the
+    /// result can surface via the terminal `ToolCallUpdate` OR the
+    /// `DelegationCompleted` event (whichever fires for a given task), and this
+    /// set guarantees exactly one result line. Kept separate from
+    /// `tool_call_inputs` because that map is re-populated by every `raw_input`
+    /// update and so can't serve as a one-shot token. Cleared with the session.
+    pub delegation_rendered: HashSet<String>,
     pub last_flushed: Instant,
     pub pending_prompt: Option<String>,
     pub permission_pending: Option<PendingPermission>,

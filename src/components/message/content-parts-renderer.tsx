@@ -38,6 +38,8 @@ import {
 } from "@/components/ai-elements/reasoning"
 import { AgentToolCallPart } from "./agent-tool-call"
 import { DelegatedSubThread } from "./delegated-sub-thread"
+import { DelegationStatusCard } from "./delegation-status-card"
+import { DelegationStatusGroupCard } from "./delegation-status-group-card"
 import { GeneratedImagesBlock } from "./generated-images-block"
 import {
   FileTextIcon,
@@ -2319,6 +2321,33 @@ const ToolCallPart = memo(function ToolCallPart({
     )
   }
 
+  // Multi-agent delegation companion tools: render compact status cards
+  // consistent with DelegatedSubThread instead of the generic tool shell.
+  // `normalizeToolName` has already collapsed any host-specific server prefix
+  // (`mcp__<server>__…`) to these canonical names.
+  if (toolNameLower === "get_delegation_status") {
+    return (
+      <DelegationStatusCard
+        kind="status"
+        input={part.input ?? null}
+        output={part.output ?? null}
+        errorText={part.errorText ?? null}
+        state={part.state}
+      />
+    )
+  }
+  if (toolNameLower === "cancel_delegation") {
+    return (
+      <DelegationStatusCard
+        kind="cancel"
+        input={part.input ?? null}
+        output={part.output ?? null}
+        errorText={part.errorText ?? null}
+        state={part.state}
+      />
+    )
+  }
+
   // Cline: attempt_completion — render as an expanded card with result + progress
   if (toolNameLower === "attempt_completion") {
     const parsedCompletion = tryParseJson(part.input ?? "")
@@ -2565,6 +2594,12 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
 
         if (part.type === "tool-group") {
           return <ToolGroupPart key={`tg-${i}`} part={part} />
+        }
+
+        if (part.type === "delegation-status-group") {
+          return (
+            <DelegationStatusGroupCard key={`dsg-${i}`} polls={part.polls} />
+          )
         }
 
         if (part.type === "tool-result") {

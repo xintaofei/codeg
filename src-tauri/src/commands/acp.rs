@@ -162,11 +162,15 @@ fn sanitize_custom_version(input: &str) -> Option<String> {
 /// validated via [`sanitize_custom_version`] and combined with the registry
 /// package *name* (its pinned version is dropped) to form `name@<version>`. An
 /// override that fails validation is rejected with an error.
-fn build_npm_install_spec(package: &str, version_override: Option<&str>) -> Result<String, AcpError> {
+fn build_npm_install_spec(
+    package: &str,
+    version_override: Option<&str>,
+) -> Result<String, AcpError> {
     match version_override {
         Some(raw) if !raw.trim().is_empty() => {
-            let version = sanitize_custom_version(raw)
-                .ok_or_else(|| AcpError::protocol(format!("invalid custom version: {}", raw.trim())))?;
+            let version = sanitize_custom_version(raw).ok_or_else(|| {
+                AcpError::protocol(format!("invalid custom version: {}", raw.trim()))
+            })?;
             Ok(format!("{}@{version}", package_name_from_spec(package)))
         }
         _ => Ok(package.to_string()),
@@ -1605,11 +1609,20 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
         }),
         AgentType::OpenCode => Some(SkillStorageSpec {
             kind: SkillStorageKind::SkillDirectoryOnly,
-            global_dirs: vec![home_dir_or_default()
-                .join(".config")
-                .join("opencode")
-                .join("skills")],
-            project_rel_dirs: vec![".opencode/skills"],
+            // OpenCode is a "universal" agent for the `skills` CLI (its
+            // skillsDir is `.agents/skills`): a global `skills add` writes the
+            // real skill into the shared `~/.agents/skills` store and does NOT
+            // create a `~/.config/opencode/skills` symlink. OpenCode reads both
+            // locations, so probe both — otherwise CLI-installed skills are
+            // invisible here and in Settings → Skills.
+            global_dirs: vec![
+                home_dir_or_default()
+                    .join(".config")
+                    .join("opencode")
+                    .join("skills"),
+                home_dir_or_default().join(".agents").join("skills"),
+            ],
+            project_rel_dirs: vec![".agents/skills", ".opencode/skills"],
         }),
         AgentType::Gemini => Some(SkillStorageSpec {
             kind: SkillStorageKind::SkillDirectoryOnly,
@@ -1878,7 +1891,7 @@ pub(crate) fn remove_skill_entry(path: &Path) -> std::io::Result<()> {
     fs::remove_file(path)
 }
 
-fn list_skills_from_dir(
+pub(crate) fn list_skills_from_dir(
     scope: AgentSkillScope,
     dir: &Path,
     kind: SkillStorageKind,
@@ -3317,10 +3330,11 @@ pub(crate) async fn acp_download_agent_binary_core(
             // A custom version substitutes into the pinned download URL and the
             // cache key; `None`/empty keeps the registry-pinned version.
             let custom = match version_override.as_deref() {
-                Some(raw) if !raw.trim().is_empty() => Some(sanitize_custom_version(raw)
-                    .ok_or_else(|| {
+                Some(raw) if !raw.trim().is_empty() => {
+                    Some(sanitize_custom_version(raw).ok_or_else(|| {
                         AcpError::protocol(format!("invalid custom version: {}", raw.trim()))
-                    })?),
+                    })?)
+                }
                 _ => None,
             };
 
@@ -3345,7 +3359,10 @@ pub(crate) async fn acp_download_agent_binary_core(
                 emitter,
                 &task_id,
                 AgentInstallEventKind::Log,
-                format!("Downloading {} v{effective_version} for {platform}", meta.name),
+                format!(
+                    "Downloading {} v{effective_version} for {platform}",
+                    meta.name
+                ),
             );
 
             let emitter_clone = emitter.clone();
@@ -4211,7 +4228,11 @@ mod tests {
             "1.2.3@evil",
             "../etc",
         ] {
-            assert_eq!(sanitize_custom_version(bad), None, "expected {bad:?} rejected");
+            assert_eq!(
+                sanitize_custom_version(bad),
+                None,
+                "expected {bad:?} rejected"
+            );
         }
     }
 

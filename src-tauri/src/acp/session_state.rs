@@ -155,6 +155,39 @@ pub struct UsageInfo {
     pub size: u64,
 }
 
+/// Snapshot-recoverable record of an IN-FLIGHT (running) sub-agent delegation,
+/// keyed (in `SessionState.active_delegations`) by the parent's
+/// `parent_tool_use_id`.
+///
+/// This is the live "currently delegating" SET, not a history log:
+/// `DelegationStarted` inserts an entry; `DelegationCompleted` REMOVES it. So
+/// its size tracks live concurrency (bounded by what the machine actually runs)
+/// — there is no cap and no cumulative growth over the parent connection's
+/// lifetime.
+///
+/// Completed delegations are recovered without this field: a live page keeps the
+/// binding in `DelegationProvider` for its lifetime, and a cold load / refresh
+/// rebuilds `meta["codeg.delegation"]` (status + child id) from the child's
+/// persisted DB row via `commands::conversations::inject_delegation_meta`
+/// (authoritative, uncapped). The snapshot only has to recover the *running*
+/// binding, which the transient `DelegationStarted` event cannot supply on the
+/// snapshot attach path (cold attach, lagged re-attach, refresh) — that gap is
+/// exactly what this field closes.
+///
+/// UNLIKE `active_tool_calls`, entries are NOT cleared on `TurnComplete`: an
+/// async delegation's child runs in the background long after the parent's
+/// `delegate_to_agent` tool call returns and the parent turn completes. The
+/// broker emits `DelegationStarted`/`DelegationCompleted` only for a REAL
+/// (non-synthetic) `parent_tool_use_id`, so synthetic-fallback cards never
+/// create a phantom entry here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ActiveDelegationState {
+    pub parent_tool_use_id: String,
+    pub child_connection_id: String,
+    pub child_conversation_id: i32,
+    pub agent_type: AgentType,
+}
+
 /// 后端权威的会话状态。每个 AgentConnection 持有一个 Arc<RwLock<SessionState>>。
 ///
 /// 字段范围：仅当前 turn 的 in-flight 数据 + 元信息 + 协商出的能力。
@@ -175,6 +208,17 @@ pub struct SessionState {
     pub live_message: Option<LiveMessage>,
     pub active_tool_calls: BTreeMap<String, ToolCallState>,
     pub pending_permission: Option<PendingPermissionState>,
+
+    /// In-flight (running) sub-agent delegations keyed by `parent_tool_use_id`.
+    /// `DelegationStarted` inserts; `DelegationCompleted` removes. UNLIKE
+    /// `active_tool_calls`, NOT cleared on `TurnComplete` (an async delegation
+    /// outlives the parent turn). Carried on `to_snapshot()` so a web/server
+    /// attach on the snapshot path (cold attach, lagged re-attach, refresh) can
+    /// recover the running parent↔child binding the transient `DelegationStarted`
+    /// event can't supply there. Size tracks live concurrency — no cap, no
+    /// cumulative growth; completed delegations are recovered from the child's
+    /// persisted DB row, not from here. See `ActiveDelegationState`.
+    pub active_delegations: BTreeMap<String, ActiveDelegationState>,
 
     // ACP 协商出的能力
     pub modes: Option<SessionModeStateInfo>,
@@ -264,6 +308,7 @@ impl SessionState {
             live_message: None,
             active_tool_calls: BTreeMap::new(),
             pending_permission: None,
+            active_delegations: BTreeMap::new(),
             modes: None,
             current_mode: None,
             config_options: None,
@@ -474,14 +519,24 @@ impl SessionState {
                 }
             }
             AcpEvent::TurnComplete { .. } => {
-                // Snapshot the assistant text from the just-finished turn so
-                // the delegation subscriber can surface it as the child
-                // outcome. Concatenate all Text blocks in order; skip
-                // Thinking/ToolCallRef/Plan — they're either non-final or
-                // structurally separate.
+                // Snapshot the just-finished turn's FINAL assistant text — what
+                // `get_delegation_status` returns as the child result. We take
+                // the Text blocks that follow the LAST tool call (the agent's
+                // concluding answer), skipping any trailing Thinking/Plan blocks:
+                // a `PlanUpdate` is always re-appended at the end of content, so a
+                // trailing-only scan would wrongly drop the answer sitting before
+                // it. No tool calls → all the turn's text. A turn ending on a tool
+                // call (no concluding text) → empty, which CLEARS the field so a
+                // prior turn's text can't leak as this turn's result; the LLM
+                // reads the full result by opening the child session instead.
                 if let Some(live) = self.live_message.as_ref() {
-                    let assembled: String = live
+                    let after_last_tool_call = live
                         .content
+                        .iter()
+                        .rposition(|b| matches!(b, LiveContentBlock::ToolCallRef { .. }))
+                        .map(|i| i + 1)
+                        .unwrap_or(0);
+                    let assembled: String = live.content[after_last_tool_call..]
                         .iter()
                         .filter_map(|b| match b {
                             LiveContentBlock::Text { text } => Some(text.as_str()),
@@ -489,12 +544,20 @@ impl SessionState {
                         })
                         .collect::<Vec<&str>>()
                         .join("");
-                    if !assembled.is_empty() {
-                        self.last_assistant_text = Some(assembled);
-                    }
+                    self.last_assistant_text = if assembled.trim().is_empty() {
+                        None
+                    } else {
+                        Some(assembled)
+                    };
                 }
                 self.live_message = None;
                 self.active_tool_calls.clear();
+                // NOTE: `active_delegations` is intentionally NOT cleared here.
+                // A running delegation's child runs in the background long after
+                // the parent's `delegate_to_agent` tool call returns and this
+                // turn completes; clearing it would drop the running binding from
+                // the snapshot the instant the parent turn ends (the original
+                // web-only bug). It's removed per-entry by `DelegationCompleted`.
                 self.pending_permission = None;
                 self.status = ConnectionStatus::Connected;
             }
@@ -545,16 +608,43 @@ impl SessionState {
                     code: code.clone(),
                 });
             }
-            AcpEvent::ClaudeSdkMessage { .. }
-            | AcpEvent::SessionLoadFailed { .. }
-            | AcpEvent::DelegationStarted { .. }
-            | AcpEvent::DelegationCompleted { .. } => {
+            AcpEvent::DelegationStarted {
+                parent_tool_use_id,
+                child_connection_id,
+                child_conversation_id,
+                agent_type,
+                ..
+            } => {
+                // Record the running delegation so the binding is snapshot-
+                // recoverable (survives this connection's TurnComplete and any
+                // re-attach on the snapshot path). The broker only emits this for
+                // a REAL (non-synthetic) parent_tool_use_id, so synthetic-fallback
+                // cards never create a phantom entry here — they rely on the
+                // parent tool output (see DelegatedSubThread's ack fallback).
+                self.active_delegations.insert(
+                    parent_tool_use_id.clone(),
+                    ActiveDelegationState {
+                        parent_tool_use_id: parent_tool_use_id.clone(),
+                        child_connection_id: child_connection_id.clone(),
+                        child_conversation_id: *child_conversation_id,
+                        agent_type: *agent_type,
+                    },
+                );
+            }
+            AcpEvent::DelegationCompleted {
+                parent_tool_use_id, ..
+            } => {
+                // A running delegation finished: drop it from the live set. Its
+                // terminal status/result reaches the LLM via
+                // `get_delegation_status` and the UI via the live
+                // `DelegationCompleted` event (DelegationProvider) or, on a cold
+                // load, the child's persisted DB row (`inject_delegation_meta`).
+                // Retaining it would turn this map into an unbounded history log;
+                // it is deliberately only the in-flight set.
+                self.active_delegations.remove(parent_tool_use_id);
+            }
+            AcpEvent::ClaudeSdkMessage { .. } | AcpEvent::SessionLoadFailed { .. } => {
                 // 这些事件不直接修改 SessionState 的可见字段。
-                // Delegation events: parent/child bookkeeping happens in
-                // DelegationBroker; SessionState only mirrors the in-flight
-                // `delegate_to_agent` tool call through `ToolCallState.meta`
-                // (key `codeg.delegation`), updated by the ToolCall /
-                // ToolCallUpdate handlers above.
             }
         }
         self.last_activity_at = Utc::now();
@@ -709,6 +799,7 @@ impl SessionState {
             live_message: self.live_message.clone(),
             active_tool_calls: self.active_tool_calls.values().cloned().collect(),
             pending_permission: self.pending_permission.clone(),
+            active_delegations: self.active_delegations.values().cloned().collect(),
             modes: self.modes.clone(),
             current_mode: self.current_mode.clone(),
             config_options: self.config_options.clone(),
@@ -733,6 +824,13 @@ pub struct LiveSessionSnapshot {
     pub live_message: Option<LiveMessage>,
     pub active_tool_calls: Vec<ToolCallState>,
     pub pending_permission: Option<PendingPermissionState>,
+    /// Running sub-agent delegations recoverable from the snapshot (see
+    /// `SessionState.active_delegations`). `#[serde(default)]` so older server
+    /// payloads without this field still deserialize; `skip_serializing_if` so
+    /// the common no-delegation case keeps the wire shape byte-identical and
+    /// doesn't bloat every snapshot with an empty array.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_delegations: Vec<ActiveDelegationState>,
     pub modes: Option<SessionModeStateInfo>,
     pub current_mode: Option<String>,
     pub config_options: Option<Vec<SessionConfigOptionInfo>>,
@@ -810,8 +908,9 @@ fn extract_tool_call_id(tool_call: &serde_json::Value) -> String {
 mod tests {
     use super::*;
     use crate::acp::types::{
-        AcpEvent, ConnectionStatus, EventEnvelope, PromptCapabilitiesInfo, SessionConfigKindInfo,
-        SessionConfigOptionInfo, SessionConfigSelectInfo, SessionModeInfo, SessionModeStateInfo,
+        AcpEvent, ConnectionStatus, DelegationResultSummary, EventEnvelope, PromptCapabilitiesInfo,
+        SessionConfigKindInfo, SessionConfigOptionInfo, SessionConfigSelectInfo, SessionModeInfo,
+        SessionModeStateInfo,
     };
 
     fn fresh_state() -> SessionState {
@@ -1194,6 +1293,313 @@ mod tests {
         assert!(s.active_tool_calls.is_empty());
         assert!(s.pending_permission.is_none());
         assert_eq!(s.status, ConnectionStatus::Connected);
+    }
+
+    // --- active_delegations: running-only, snapshot-recoverable binding ---
+
+    fn delegation_started(parent_tool_use_id: &str, child_conv: i32) -> AcpEvent {
+        AcpEvent::DelegationStarted {
+            parent_connection_id: "conn-test".into(),
+            parent_tool_use_id: parent_tool_use_id.into(),
+            child_connection_id: "child-conn-1".into(),
+            child_conversation_id: child_conv,
+            agent_type: AgentType::Codex,
+        }
+    }
+
+    fn delegation_completed(parent_tool_use_id: &str, child_conv: i32) -> AcpEvent {
+        AcpEvent::DelegationCompleted {
+            parent_connection_id: "conn-test".into(),
+            parent_tool_use_id: parent_tool_use_id.into(),
+            child_connection_id: "child-conn-1".into(),
+            child_conversation_id: child_conv,
+            agent_type: AgentType::Codex,
+            result: DelegationResultSummary::Ok {
+                duration_ms: 1,
+                text_preview: None,
+            },
+        }
+    }
+
+    #[test]
+    fn delegation_started_populates_active_delegations_and_snapshot() {
+        let mut s = fresh_state();
+        s.apply_event(&delegation_started("pt-1", 99));
+
+        let d = s
+            .active_delegations
+            .get("pt-1")
+            .expect("active delegation recorded");
+        assert_eq!(d.child_conversation_id, 99);
+        assert_eq!(d.child_connection_id, "child-conn-1");
+        assert_eq!(d.agent_type, AgentType::Codex);
+
+        // Surfaced on the snapshot, and survives the JSON round-trip the web
+        // client hydrates from.
+        let snap = s.to_snapshot();
+        assert_eq!(snap.active_delegations.len(), 1);
+        let json = serde_json::to_string(&snap).unwrap();
+        let back: LiveSessionSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.active_delegations.len(), 1);
+        assert_eq!(back.active_delegations[0].parent_tool_use_id, "pt-1");
+        assert_eq!(back.active_delegations[0].child_conversation_id, 99);
+    }
+
+    #[test]
+    fn active_delegations_survives_turn_complete() {
+        // Core regression for the web-only bug: an async delegation's child runs
+        // in the background AFTER the parent's `delegate_to_agent` tool call
+        // returns and the parent turn completes. TurnComplete clears
+        // live_message / active_tool_calls but MUST NOT clear active_delegations
+        // — otherwise the running binding vanishes from the snapshot the instant
+        // the parent turn ends, and a web/server attach (snapshot path) can't
+        // recover it.
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::ToolCall {
+            tool_call_id: "pt-1".into(),
+            title: "delegate_to_agent".into(),
+            kind: "other".into(),
+            status: "in_progress".into(),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            locations: None,
+            meta: None,
+            images: None,
+        });
+        s.apply_event(&delegation_started("pt-1", 99));
+        assert!(s.active_tool_calls.contains_key("pt-1"));
+        assert!(s.active_delegations.contains_key("pt-1"));
+
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "ext".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "claude_code".into(),
+        });
+
+        assert!(
+            s.active_tool_calls.is_empty(),
+            "TurnComplete still clears in-flight tool calls"
+        );
+        assert!(
+            s.active_delegations.contains_key("pt-1"),
+            "running delegation binding must survive TurnComplete"
+        );
+        assert_eq!(
+            s.to_snapshot().active_delegations.len(),
+            1,
+            "binding still on the snapshot a post-turn attach would receive"
+        );
+    }
+
+    #[test]
+    fn delegation_completed_removes_entry() {
+        // Completed delegations are NOT retained here — their terminal state is
+        // recovered from the child's persisted DB row (inject_delegation_meta)
+        // and the live DelegationProvider binding, not from this in-flight set.
+        let mut s = fresh_state();
+        s.apply_event(&delegation_started("pt-1", 99));
+        assert!(s.active_delegations.contains_key("pt-1"));
+        s.apply_event(&delegation_completed("pt-1", 99));
+        assert!(
+            !s.active_delegations.contains_key("pt-1"),
+            "completed delegation removed from the in-flight set"
+        );
+        assert!(s.to_snapshot().active_delegations.is_empty());
+    }
+
+    #[test]
+    fn delegation_completed_without_started_is_noop() {
+        // A stream that only delivered the completion (started never observed on
+        // this connection) must not synthesize a phantom entry: removing an
+        // absent key is a no-op, and there is no running child to bind.
+        let mut s = fresh_state();
+        s.apply_event(&delegation_completed("pt-unknown", 7));
+        assert!(s.active_delegations.is_empty());
+    }
+
+    #[test]
+    fn active_delegations_unbounded_by_running_fanout() {
+        // No cap: a parent fanning out far past any old soft bound keeps every
+        // running binding (size tracks live concurrency, not an artificial
+        // limit). Completing them drains the set back to empty.
+        let mut s = fresh_state();
+        let n: i32 = 200;
+        for i in 0..n {
+            s.apply_event(&delegation_started(&format!("pt-{i}"), 1000 + i));
+        }
+        assert_eq!(s.active_delegations.len(), n as usize);
+        assert_eq!(s.to_snapshot().active_delegations.len(), n as usize);
+        for i in 0..n {
+            s.apply_event(&delegation_completed(&format!("pt-{i}"), 1000 + i));
+        }
+        assert!(s.active_delegations.is_empty());
+    }
+
+    #[test]
+    fn delegation_binding_survives_snapshot_split_like_live() {
+        // Path A (live): apply started + completed straight through.
+        // Path B (reconnect): apply started, snapshot round-trip mid-flight,
+        // then apply completed. Both must converge — proving a running
+        // delegation recovered from the snapshot ends identically to one tracked
+        // live. This is the exact web-attach path the original bug broke.
+        let mut a = fresh_state();
+        a.apply_event(&delegation_started("tc-1", 99));
+        a.apply_event(&delegation_completed("tc-1", 99));
+
+        let mut b = fresh_state();
+        b.apply_event(&delegation_started("tc-1", 99));
+        // Snapshot round-trip while the child is still running: the running
+        // binding must ride along on the wire shape the web client hydrates from.
+        let snap = b.to_snapshot();
+        assert_eq!(snap.active_delegations.len(), 1);
+        assert_eq!(snap.active_delegations[0].parent_tool_use_id, "tc-1");
+        let wire = serde_json::to_string(&snap).unwrap();
+        let _back: LiveSessionSnapshot = serde_json::from_str(&wire).unwrap();
+        b.apply_event(&delegation_completed("tc-1", 99));
+
+        assert_eq!(
+            serde_json::to_value(a.to_snapshot().active_delegations).unwrap(),
+            serde_json::to_value(b.to_snapshot().active_delegations).unwrap(),
+            "snapshot-recovered delegation must match the live-tracked one"
+        );
+    }
+
+    #[test]
+    fn turn_complete_captures_only_trailing_text_block() {
+        // last_assistant_text (the delegation result text surfaced by
+        // get_delegation_status) keeps only the final text run — the answer
+        // after the last tool call — not intermediate narration.
+        let mut s = fresh_state();
+        s.live_message = Some(LiveMessage {
+            id: "m1".into(),
+            role: MessageRole::Assistant,
+            content: vec![
+                LiveContentBlock::Text {
+                    text: "let me check ".into(),
+                },
+                LiveContentBlock::ToolCallRef {
+                    tool_call_id: "tc".into(),
+                },
+                LiveContentBlock::Text {
+                    text: "the answer is 42".into(),
+                },
+            ],
+            started_at: Utc::now(),
+        });
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "ext".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "codex".into(),
+        });
+        assert_eq!(s.last_assistant_text.as_deref(), Some("the answer is 42"));
+    }
+
+    #[test]
+    fn turn_complete_no_tool_calls_captures_full_text() {
+        // With no tool call to split on, the trailing run is the whole answer.
+        let mut s = fresh_state();
+        s.live_message = Some(LiveMessage {
+            id: "m1".into(),
+            role: MessageRole::Assistant,
+            content: vec![
+                LiveContentBlock::Text { text: "part 1 ".into() },
+                LiveContentBlock::Text { text: "part 2".into() },
+            ],
+            started_at: Utc::now(),
+        });
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "ext".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "codex".into(),
+        });
+        assert_eq!(s.last_assistant_text.as_deref(), Some("part 1 part 2"));
+    }
+
+    #[test]
+    fn turn_complete_trailing_tool_call_captures_no_text() {
+        // A turn ending on a tool call has no concluding text block; the result
+        // text stays unset (the LLM opens the child session for detail).
+        let mut s = fresh_state();
+        s.live_message = Some(LiveMessage {
+            id: "m1".into(),
+            role: MessageRole::Assistant,
+            content: vec![
+                LiveContentBlock::Text {
+                    text: "running a tool".into(),
+                },
+                LiveContentBlock::ToolCallRef {
+                    tool_call_id: "tc".into(),
+                },
+            ],
+            started_at: Utc::now(),
+        });
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "ext".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "codex".into(),
+        });
+        assert_eq!(s.last_assistant_text, None);
+    }
+
+    #[test]
+    fn turn_complete_keeps_final_text_before_a_trailing_plan_block() {
+        // `PlanUpdate` re-appends a Plan block at the END of content, so the
+        // agent's concluding answer often sits BEFORE a trailing Plan. The
+        // result must still be the text after the last tool call, not empty.
+        let mut s = fresh_state();
+        s.live_message = Some(LiveMessage {
+            id: "m1".into(),
+            role: MessageRole::Assistant,
+            content: vec![
+                LiveContentBlock::Text {
+                    text: "let me check".into(),
+                },
+                LiveContentBlock::ToolCallRef {
+                    tool_call_id: "tc".into(),
+                },
+                LiveContentBlock::Text {
+                    text: "the answer is 42".into(),
+                },
+                LiveContentBlock::Plan {
+                    entries: serde_json::json!([]),
+                },
+            ],
+            started_at: Utc::now(),
+        });
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "ext".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "codex".into(),
+        });
+        assert_eq!(s.last_assistant_text.as_deref(), Some("the answer is 42"));
+    }
+
+    #[test]
+    fn turn_complete_clears_stale_last_assistant_text() {
+        // A turn that ends with no concluding text must CLEAR any prior value
+        // rather than leak it as this turn's delegation result.
+        let mut s = fresh_state();
+        s.last_assistant_text = Some("stale text from an earlier turn".into());
+        s.live_message = Some(LiveMessage {
+            id: "m1".into(),
+            role: MessageRole::Assistant,
+            content: vec![
+                LiveContentBlock::Text {
+                    text: "working".into(),
+                },
+                LiveContentBlock::ToolCallRef {
+                    tool_call_id: "tc".into(),
+                },
+            ],
+            started_at: Utc::now(),
+        });
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "ext".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "codex".into(),
+        });
+        assert_eq!(s.last_assistant_text, None);
     }
 
     #[test]

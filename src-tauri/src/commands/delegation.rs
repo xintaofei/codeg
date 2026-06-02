@@ -1,12 +1,15 @@
 //! Delegation settings persistence + Tauri/HTTP command surface.
 //!
-//! Two knobs survive across restarts:
+//! These knobs survive across restarts:
 //!   * `delegation.enabled` — feature kill switch (default false)
 //!   * `delegation.depth_limit` — max chain depth a child is allowed to sit at
+//!   * `delegation.agent_defaults` — per-agent spawn overrides (JSON blob)
+//!   * `delegation.completed_cache_max_mb` — per-parent byte budget (in MB) for
+//!     the broker's in-memory cache of completed result text (`0` = unlimited)
 //!
-//! On startup `apply_persisted_config` reads both keys from `app_metadata`
+//! On startup `apply_persisted_config` reads these keys from `app_metadata`
 //! and pushes them into the live `DelegationBroker`. On UI save,
-//! `set_delegation_settings_core` writes the two keys and immediately
+//! `set_delegation_settings_core` writes these keys and immediately
 //! re-applies — the broker has no concept of "pending config", it just
 //! owns the current `DelegationConfig`. The previously-persisted
 //! `delegation.default_timeout_seconds` key is ignored on read (the broker
@@ -33,9 +36,20 @@ pub const KEY_DELEGATION_DEPTH: &str = "delegation.depth_limit";
 /// Stored as one blob (rather than one row per agent×option) because the
 /// option set is dynamic and per-agent — flat keys can't enumerate it.
 pub const KEY_DELEGATION_AGENT_DEFAULTS: &str = "delegation.agent_defaults";
+/// Per-parent completed-result cache budget, in MB. `0` = unlimited.
+pub const KEY_DELEGATION_COMPLETED_CACHE_MB: &str = "delegation.completed_cache_max_mb";
 
 pub const DEPTH_MIN: u32 = 1;
 pub const DEPTH_MAX: u32 = 8;
+
+/// Product default for the completed-result cache budget, in MB. Used by
+/// `DelegationSettings::default()` and as the serde fallback when a payload
+/// omits the field (absent ≠ unlimited).
+pub const DEFAULT_COMPLETED_CACHE_MB: u32 = 512;
+
+fn default_completed_cache_max_mb() -> u32 {
+    DEFAULT_COMPLETED_CACHE_MB
+}
 
 /// Newtype so the Tauri managed-state lookup can distinguish the delegation
 /// UDS path from other `PathBuf`s in the state graph.
@@ -51,6 +65,12 @@ pub struct DelegationSettings {
     /// which is the pre-existing behavior.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub agent_defaults: BTreeMap<AgentType, AgentDelegationDefaults>,
+    /// Per-parent byte budget (in MB) for the broker's in-memory cache of
+    /// completed sub-agent result text. `0` = unlimited. Converted to bytes in
+    /// `into_broker_config`. Absent in a payload → the product default (not
+    /// unlimited), so an older client can't silently disable the valve.
+    #[serde(default = "default_completed_cache_max_mb")]
+    pub completed_cache_max_mb: u32,
 }
 
 impl Default for DelegationSettings {
@@ -59,6 +79,7 @@ impl Default for DelegationSettings {
             enabled: false,
             depth_limit: 1,
             agent_defaults: BTreeMap::new(),
+            completed_cache_max_mb: DEFAULT_COMPLETED_CACHE_MB,
         }
     }
 }
@@ -73,6 +94,9 @@ impl DelegationSettings {
                 .into_iter()
                 .filter(|(_, v)| !v.is_empty())
                 .collect(),
+            // No upper clamp: the cache budget is a user memory choice, not a
+            // safety rail. `0` stays `0` (unlimited).
+            completed_cache_max_mb: self.completed_cache_max_mb,
         }
     }
 
@@ -81,6 +105,10 @@ impl DelegationSettings {
             enabled: self.enabled,
             depth_limit: self.depth_limit,
             agent_defaults: self.agent_defaults,
+            // MB → bytes. `saturating_mul` guards a pathologically large MB
+            // value from wrapping on 32-bit `usize` targets.
+            completed_cache_cap_bytes: (self.completed_cache_max_mb as usize)
+                .saturating_mul(1024 * 1024),
         }
     }
 }
@@ -98,6 +126,13 @@ pub async fn load_delegation_settings(conn: &DatabaseConnection) -> DelegationSe
     if let Ok(Some(raw)) = app_metadata_service::get_value(conn, KEY_DELEGATION_DEPTH).await {
         if let Ok(v) = raw.parse::<u32>() {
             settings.depth_limit = v;
+        }
+    }
+    if let Ok(Some(raw)) =
+        app_metadata_service::get_value(conn, KEY_DELEGATION_COMPLETED_CACHE_MB).await
+    {
+        if let Ok(v) = raw.parse::<u32>() {
+            settings.completed_cache_max_mb = v;
         }
     }
     if let Ok(Some(raw)) =
@@ -140,19 +175,22 @@ pub async fn set_delegation_settings_core(
     )
     .await
     .map_err(AppCommandError::from)?;
+    app_metadata_service::upsert_value(
+        conn,
+        KEY_DELEGATION_COMPLETED_CACHE_MB,
+        &clamped.completed_cache_max_mb.to_string(),
+    )
+    .await
+    .map_err(AppCommandError::from)?;
     // Whole-blob replace semantics: save mirrors what the UI sent. Empty map
     // serializes to "{}" — still write it so a user can clear all overrides
     // back to the agent defaults.
     let agent_defaults_json = serde_json::to_string(&clamped.agent_defaults).map_err(|e| {
         AppCommandError::configuration_invalid(format!("serialize agent_defaults: {e}"))
     })?;
-    app_metadata_service::upsert_value(
-        conn,
-        KEY_DELEGATION_AGENT_DEFAULTS,
-        &agent_defaults_json,
-    )
-    .await
-    .map_err(AppCommandError::from)?;
+    app_metadata_service::upsert_value(conn, KEY_DELEGATION_AGENT_DEFAULTS, &agent_defaults_json)
+        .await
+        .map_err(AppCommandError::from)?;
     broker
         .set_config(clamped.clone().into_broker_config())
         .await;
@@ -279,6 +317,7 @@ mod tests {
             enabled: true,
             depth_limit: 4,
             agent_defaults: agent_defaults.clone(),
+            ..DelegationSettings::default()
         };
         let saved = set_delegation_settings_core(&db.conn, &broker, desired)
             .await
@@ -313,6 +352,7 @@ mod tests {
             enabled: true,
             depth_limit: 2,
             agent_defaults,
+            ..DelegationSettings::default()
         }
         .clamped();
         assert!(!s.agent_defaults.contains_key(&AgentType::ClaudeCode));
@@ -335,5 +375,47 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(saved.depth_limit, DEPTH_MAX);
+    }
+
+    #[tokio::test]
+    async fn completed_cache_mb_round_trips_and_converts_to_bytes() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let broker = make_broker();
+        let desired = DelegationSettings {
+            enabled: true,
+            depth_limit: 1,
+            completed_cache_max_mb: 8,
+            ..DelegationSettings::default()
+        };
+        let saved = set_delegation_settings_core(&db.conn, &broker, desired)
+            .await
+            .unwrap();
+        assert_eq!(saved.completed_cache_max_mb, 8);
+
+        // Persisted + reloaded identically.
+        let loaded = load_delegation_settings(&db.conn).await;
+        assert_eq!(loaded.completed_cache_max_mb, 8);
+
+        // Broker received the MB → bytes conversion.
+        let cfg = broker.config_snapshot().await;
+        assert_eq!(cfg.completed_cache_cap_bytes, 8 * 1024 * 1024);
+    }
+
+    #[test]
+    fn completed_cache_mb_zero_means_unlimited_and_is_not_clamped() {
+        let s = DelegationSettings {
+            completed_cache_max_mb: 0,
+            ..DelegationSettings::default()
+        }
+        .clamped();
+        assert_eq!(s.completed_cache_max_mb, 0);
+        assert_eq!(s.into_broker_config().completed_cache_cap_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn load_returns_default_completed_cache_when_unset() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let settings = load_delegation_settings(&db.conn).await;
+        assert_eq!(settings.completed_cache_max_mb, DEFAULT_COMPLETED_CACHE_MB);
     }
 }

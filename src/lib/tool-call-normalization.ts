@@ -55,10 +55,12 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   close_agent: "task",
   update_plan: "task",
   request_user_input: "question",
-  // codeg multi-agent delegation MCP tool (varies by server prefix)
+  // codeg multi-agent delegation MCP tools (server prefix varies by host)
   delegate_to_agent: "delegate_to_agent",
   "mcp__codeg-delegate__delegate_to_agent": "delegate_to_agent",
   mcp__codeg__delegate_to_agent: "delegate_to_agent",
+  get_delegation_status: "get_delegation_status",
+  cancel_delegation: "cancel_delegation",
   // OpenCode
   delegate_task: "task",
   call_omo_agent: "agent",
@@ -260,12 +262,15 @@ export function normalizeToolName(toolName: string): string {
   const alias = EXACT_TOOL_NAME_ALIASES[canonical]
   if (alias) return alias
 
-  // Multi-agent delegation MCP tool. Server prefix AND separator both
-  // vary by host: Claude Code uses `mcp__<server>__delegate_to_agent`,
-  // Codex live ACP exposes `<server>/delegate_to_agent`, others use `.`
-  // or `:`. Match `delegate_to_agent` after any non-alphanumeric
-  // separator so every form collapses to the same canonical name.
+  // Multi-agent delegation MCP tools. Server prefix AND separator both
+  // vary by host: Claude Code uses `mcp__<server>__<tool>`, Codex live ACP
+  // exposes `<server>/<tool>`, others use `.` or `:`. Match the bare tool
+  // name after any non-alphanumeric separator so every form collapses to
+  // the same canonical name the renderer dispatches on.
   if (/[^a-z0-9]delegate_to_agent$/.test(canonical)) return "delegate_to_agent"
+  if (/[^a-z0-9]get_delegation_status$/.test(canonical))
+    return "get_delegation_status"
+  if (/[^a-z0-9]cancel_delegation$/.test(canonical)) return "cancel_delegation"
 
   const freeform = inferFromFreeformName(trimmed)
   if (freeform) return freeform
@@ -278,6 +283,15 @@ export function normalizeToolName(toolName: string): string {
 
   return trimmed
 }
+
+// Canonical names of the codeg-mcp delegation companion tools. Each has a
+// dedicated card renderer, so its identity must win over input-shape
+// heuristics during live streaming (see `inferLiveToolName`).
+const DELEGATION_COMPANION_TOOLS: ReadonlySet<string> = new Set([
+  "delegate_to_agent",
+  "get_delegation_status",
+  "cancel_delegation",
+])
 
 export function inferLiveToolName(params: {
   title?: string | null
@@ -299,6 +313,22 @@ export function inferLiveToolName(params: {
   // config") as an Agent card before raw_input is even consulted.
   if ((params.title ?? "").trim().toLowerCase() === "agent") return "agent"
 
+  // The codeg-mcp delegation companion tools carry their authoritative identity
+  // in `meta.claudeCode.toolName` — claude-agent-acp sets it to the raw
+  // `mcp__<server>__<tool>` name for every MCP call. Resolve them FIRST, ahead
+  // of `inferFromInput`, so the live stream routes into the same delegation
+  // cards the historical path resolves from the raw tool name. Without this,
+  // `get_delegation_status` / `cancel_delegation` (input `{task_id}`) get
+  // misclassified as the generic "task" tool (shown as "任务" with no detail).
+  // Scoped to these three so the documented input-shape-first ordering below
+  // (notably Claude Code's `Task` → "agent" via `subagent_type`, whose meta
+  // name is "Task" — not a delegation tool) is preserved for everything else.
+  const metaToolName = extractClaudeCodeToolName(params.meta)
+  if (metaToolName) {
+    const normalizedMeta = normalizeToolName(metaToolName)
+    if (DELEGATION_COMPANION_TOOLS.has(normalizedMeta)) return normalizedMeta
+  }
+
   // Input-shape detection runs FIRST so cross-agent heuristics (Claude Code
   // `Task` tool routed via `subagent_type`, OpenCode sub-agent calls, etc.)
   // keep priority. The meta-tool-name override below only kicks in when the
@@ -306,13 +336,12 @@ export function inferLiveToolName(params: {
   const byInput = inferFromInput(params.rawInput, params.kind, params.title)
   if (byInput) return byInput
 
-  // Claude-Code-only override: claude-agent-acp >=0.37 embeds the SDK tool
-  // name under `_meta.claudeCode.toolName`. We only need it for synthesized
-  // events like `memory_recall` (kind="read" + title="Recalled N memories"),
-  // where neither the input shape nor the human title carries the real
-  // identity. Placed below `inferFromInput` so the more specific
-  // subagent_type / patch / command heuristics keep winning when present.
-  const metaToolName = extractClaudeCodeToolName(params.meta)
+  // Claude-Code override: claude-agent-acp embeds the SDK tool name under
+  // `_meta.claudeCode.toolName`. We need it for synthesized events like
+  // `memory_recall` (kind="read" + title="Recalled N memories"), where neither
+  // the input shape nor the human title carries the real identity. Placed below
+  // `inferFromInput` so the more specific subagent_type / patch / command
+  // heuristics keep winning when present.
   if (metaToolName) return metaToolName
 
   const byTitle = normalizeToolName(params.title ?? "")

@@ -43,6 +43,7 @@ function settings(
   return {
     enabled: false,
     depth_limit: 1,
+    completed_cache_max_mb: 512,
     agent_defaults: {},
     ...overrides,
   }
@@ -63,8 +64,57 @@ describe("DelegationSettingsSection", () => {
       await screen.findByLabelText("Maximum delegation depth")
     ).toBeInTheDocument()
     expect(screen.getByLabelText("Enable delegation")).toBeInTheDocument()
+    expect(
+      screen.getByLabelText("Completed-result cache (MB)")
+    ).toBeInTheDocument()
     // No timeout knob anymore — cancel flows through MCP notifications.
     expect(screen.queryByLabelText(/timeout/i)).not.toBeInTheDocument()
+  })
+
+  it("saves the completed-result cache budget (MB); 0 means unlimited", async () => {
+    mockGetDelegationSettings.mockResolvedValue(settings({ enabled: true }))
+    mockSetDelegationSettings.mockImplementation(async (next) => next)
+
+    renderWithIntl()
+
+    const cacheInput = await screen.findByLabelText(
+      "Completed-result cache (MB)"
+    )
+    fireEvent.change(cacheInput, { target: { value: "0" } })
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+
+    await waitFor(() => {
+      expect(mockSetDelegationSettings).toHaveBeenCalledWith({
+        enabled: true,
+        depth_limit: 1,
+        completed_cache_max_mb: 0,
+        agent_defaults: {},
+      })
+    })
+  })
+
+  it("clearing the cache input falls back to the default, not unlimited", async () => {
+    mockGetDelegationSettings.mockResolvedValue(
+      settings({ enabled: true, completed_cache_max_mb: 256 })
+    )
+    mockSetDelegationSettings.mockImplementation(async (next) => next)
+
+    renderWithIntl()
+
+    const cacheInput = await screen.findByLabelText(
+      "Completed-result cache (MB)"
+    )
+    fireEvent.change(cacheInput, { target: { value: "" } })
+    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+
+    await waitFor(() => {
+      expect(mockSetDelegationSettings).toHaveBeenCalledWith({
+        enabled: true,
+        depth_limit: 1,
+        completed_cache_max_mb: 512,
+        agent_defaults: {},
+      })
+    })
   })
 
   it("saves the depth_limit and enabled flag", async () => {
@@ -83,6 +133,7 @@ describe("DelegationSettingsSection", () => {
       expect(mockSetDelegationSettings).toHaveBeenCalledWith({
         enabled: true,
         depth_limit: 5,
+        completed_cache_max_mb: 512,
         agent_defaults: {},
       })
     })

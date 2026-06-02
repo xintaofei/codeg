@@ -56,6 +56,61 @@ describe("inferLiveToolName meta.claudeCode.toolName override", () => {
     ).toBe("agent")
   })
 
+  it("resolves delegation companion tools from meta over the task_id input heuristic", () => {
+    // Regression guard for Task B: get_delegation_status / cancel_delegation
+    // take `{ task_id }` input, which inferFromInput would otherwise classify
+    // as the generic "task" tool (rendered as "任务" with no detail). The
+    // authoritative meta.claudeCode.toolName (the raw mcp__ name) must win.
+    expect(
+      inferLiveToolName({
+        title: "mcp__codeg-delegate__get_delegation_status",
+        kind: "other",
+        rawInput: JSON.stringify({ task_id: "t1", wait_ms: 1000 }),
+        meta: {
+          claudeCode: {
+            toolName: "mcp__codeg-delegate__get_delegation_status",
+          },
+        },
+      })
+    ).toBe("get_delegation_status")
+
+    expect(
+      inferLiveToolName({
+        title: "mcp__codeg-delegate__cancel_delegation",
+        kind: "other",
+        rawInput: JSON.stringify({ task_id: "t1" }),
+        meta: {
+          claudeCode: { toolName: "mcp__codeg-delegate__cancel_delegation" },
+        },
+      })
+    ).toBe("cancel_delegation")
+
+    expect(
+      inferLiveToolName({
+        title: "mcp__codeg-delegate__delegate_to_agent",
+        kind: "other",
+        rawInput: JSON.stringify({ agent_type: "codex", task: "do it" }),
+        meta: {
+          claudeCode: { toolName: "mcp__codeg-delegate__delegate_to_agent" },
+        },
+      })
+    ).toBe("delegate_to_agent")
+  })
+
+  it("still classifies a {task_id} tool as task when no Claude Code meta is present", () => {
+    // Non-Claude agents (no meta.claudeCode.toolName) keep the legacy
+    // input-shape behavior — the fix is meta-driven, not a removal of the
+    // task_id heuristic.
+    expect(
+      inferLiveToolName({
+        title: "Some task",
+        kind: "other",
+        rawInput: JSON.stringify({ task_id: "t1" }),
+        meta: null,
+      })
+    ).toBe("task")
+  })
+
   it("ignores meta when claudeCode is missing or malformed", () => {
     expect(
       inferLiveToolName({
@@ -107,6 +162,39 @@ describe("normalizeToolName collapses delegate_to_agent across hosts", () => {
   it("does not match suffixes without a separator", () => {
     expect(normalizeToolName("xdelegate_to_agent")).not.toBe(
       "delegate_to_agent"
+    )
+  })
+})
+
+describe("normalizeToolName collapses delegation companion tools across hosts", () => {
+  it.each([
+    "get_delegation_status",
+    "mcp__codeg-delegate__get_delegation_status",
+    "mcp__codeg__get_delegation_status",
+    "codeg-delegate/get_delegation_status",
+    "codeg-delegate.get_delegation_status",
+    "codeg-delegate:get_delegation_status",
+  ])("%s -> get_delegation_status", (input) => {
+    expect(normalizeToolName(input)).toBe("get_delegation_status")
+  })
+
+  it.each([
+    "cancel_delegation",
+    "mcp__codeg-delegate__cancel_delegation",
+    "mcp__codeg__cancel_delegation",
+    "codeg-delegate/cancel_delegation",
+    "codeg-delegate.cancel_delegation",
+    "codeg-delegate:cancel_delegation",
+  ])("%s -> cancel_delegation", (input) => {
+    expect(normalizeToolName(input)).toBe("cancel_delegation")
+  })
+
+  it("does not match suffixes without a separator", () => {
+    expect(normalizeToolName("xget_delegation_status")).not.toBe(
+      "get_delegation_status"
+    )
+    expect(normalizeToolName("xcancel_delegation")).not.toBe(
+      "cancel_delegation"
     )
   })
 })

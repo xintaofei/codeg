@@ -2937,22 +2937,26 @@ async fn run_conversation_loop<'a>(
                                     // max_tokens / max_turn_requests / empty /
                                     // unknown) means the parent will never
                                     // consume the in-flight result, so the
-                                    // child must be torn down.
+                                    // child must be torn down. The connection
+                                    // stays alive (only the turn ended), so use
+                                    // the turn-scoped cancel that keeps the
+                                    // parent's `consumed` tool_call memory — a
+                                    // late re-emit must not re-register and
+                                    // mis-bind the next same-key delegation.
                                     //
-                                    // Fire-and-forget: the cascade per child
-                                    // does spawner.cancel + spawner.disconnect,
-                                    // which can block on slow agents — keep the
-                                    // parent's message loop unblocked and rely
-                                    // on the broker's idempotent drain so the
-                                    // cleanup-guard cascade at run_connection
-                                    // exit can't race-double-drain.
+                                    // Await inline: the fast tracker +
+                                    // parked-call drain MUST finish before the
+                                    // loop accepts the next prompt so it stays
+                                    // scoped to the just-ended turn. The broker
+                                    // backgrounds the slow child teardown
+                                    // (spawner.cancel/disconnect) internally, so
+                                    // this won't block on slow agents; its
+                                    // idempotent drain also lets the cleanup-
+                                    // guard cascade at run_connection exit run
+                                    // without race-double-drain.
                                     if reason_str != "end_turn" {
                                         if let Some(inj) = delegation_injection {
-                                            let broker = inj.broker.clone();
-                                            let parent_id = conn_id.to_string();
-                                            tokio::spawn(async move {
-                                                broker.cancel_by_parent(&parent_id).await;
-                                            });
+                                            inj.broker.cancel_by_parent_turn(conn_id).await;
                                         }
                                     }
                                     break;
@@ -2999,15 +3003,14 @@ async fn run_conversation_loop<'a>(
                             // cascade-cancel on any non-`end_turn` reason
                             // so in-flight delegations don't dangle when
                             // the parent's turn ended without consuming
-                            // their result. Fire-and-forget for the same
-                            // reason as the StopReason branch — see above.
+                            // their result. Turn-scoped (connection stays
+                            // alive → keep `consumed`) and awaited inline
+                            // (fast drain before the next prompt; broker
+                            // backgrounds the slow child teardown) for the
+                            // same reasons as that branch — see above.
                             if reason_str != "end_turn" {
                                 if let Some(inj) = delegation_injection {
-                                    let broker = inj.broker.clone();
-                                    let parent_id = conn_id.to_string();
-                                    tokio::spawn(async move {
-                                        broker.cancel_by_parent(&parent_id).await;
-                                    });
+                                    inj.broker.cancel_by_parent_turn(conn_id).await;
                                 }
                             }
                             break;
@@ -3141,20 +3144,27 @@ async fn run_conversation_loop<'a>(
                                     // running indefinitely (broker no longer applies a
                                     // timeout; only an MCP `notifications/cancelled` or
                                     // a parent/child disconnect would otherwise tear
-                                    // the delegation down).
+                                    // the delegation down). Turn-scoped: the
+                                    // connection stays alive after a prompt cancel,
+                                    // so keep the parent's `consumed` tool_call
+                                    // memory (a re-emit must not mis-bind the next
+                                    // same-key delegation); the cleanup-guard
+                                    // teardown still clears everything when the
+                                    // connection finally goes away.
                                     //
-                                    // Fire-and-forget so the user-visible Cancel
-                                    // path doesn't wait on (potentially slow)
-                                    // child agent teardown — the user already
-                                    // sees the parent's TurnComplete above and
-                                    // the broker's drain-first lock guarantees
-                                    // no double DelegationCompleted emit.
+                                    // Await inline so the fast tracker +
+                                    // parked-call drain is ordered before the
+                                    // next prompt (keeping it scoped to the
+                                    // just-ended turn); the broker backgrounds
+                                    // the slow child teardown internally, so the
+                                    // user-visible Cancel path doesn't wait on
+                                    // (potentially slow) child agent teardown.
+                                    // The user already saw the parent's
+                                    // TurnComplete above, and the broker's
+                                    // drain-first lock guarantees no double
+                                    // DelegationCompleted emit.
                                     if let Some(inj) = delegation_injection {
-                                        let broker = inj.broker.clone();
-                                        let parent_id = conn_id.to_string();
-                                        tokio::spawn(async move {
-                                            broker.cancel_by_parent(&parent_id).await;
-                                        });
+                                        inj.broker.cancel_by_parent_turn(conn_id).await;
                                     }
                                     // Drain the prompt response in the background so
                                     // the SACP library doesn't log "receiver dropped"
@@ -3283,15 +3293,16 @@ async fn run_conversation_loop<'a>(
                 // inner Cancel handler covers mid-prompt. Both must trigger
                 // because the per-prompt cancel path doesn't tear down the
                 // parent connection, so the cleanup-guard cancel_by_parent
-                // at run_connection's exit wouldn't fire.
+                // at run_connection's exit wouldn't fire. Turn-scoped for that
+                // same reason: the connection stays alive, so keep the parent's
+                // `consumed` tool_call memory (a re-emit must not mis-bind the
+                // next same-key delegation).
                 //
-                // Fire-and-forget: see inner Cancel handler above for rationale.
+                // Awaited inline (fast drain before the next prompt; broker
+                // backgrounds the slow child teardown): see inner Cancel
+                // handler above for rationale.
                 if let Some(inj) = delegation_injection {
-                    let broker = inj.broker.clone();
-                    let parent_id = conn_id.to_string();
-                    tokio::spawn(async move {
-                        broker.cancel_by_parent(&parent_id).await;
-                    });
+                    inj.broker.cancel_by_parent_turn(conn_id).await;
                 }
             }
             Some(ConnectionCommand::Fork { reply }) => {
@@ -4325,9 +4336,7 @@ mod tests {
     // opts in via the settings panel.
     #[tokio::test]
     async fn inject_codeg_delegate_skipped_when_broker_disabled() {
-        use crate::acp::delegation::broker::{
-            ConversationDepthLookup, DelegationBroker,
-        };
+        use crate::acp::delegation::broker::{ConversationDepthLookup, DelegationBroker};
         use crate::acp::delegation::listener::TokenRegistry;
         use crate::acp::delegation::spawner::{mock::MockSpawner, ConnectionSpawner};
         use crate::acp::delegation::types::DelegationError;

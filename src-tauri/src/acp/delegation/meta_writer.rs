@@ -167,6 +167,7 @@ pub fn build_delegation_meta(
     child_connection_id: Option<&str>,
     child_conversation_id: Option<i32>,
     error_code: Option<&str>,
+    text_preview: Option<&str>,
 ) -> serde_json::Value {
     let mut inner = serde_json::Map::new();
     inner.insert(
@@ -191,6 +192,16 @@ pub fn build_delegation_meta(
             serde_json::Value::String(code.to_string()),
         );
     }
+    // Inline result preview so a parent-side snapshot replay after a refresh can
+    // render the completed result without the live `delegation_completed` event
+    // (which carries the same preview). Only set on the terminal `completed`
+    // write; `None` everywhere else.
+    if let Some(preview) = text_preview {
+        inner.insert(
+            "text_preview".to_string(),
+            serde_json::Value::String(preview.to_string()),
+        );
+    }
     let mut outer = serde_json::Map::new();
     outer.insert(
         DELEGATION_META_KEY.to_string(),
@@ -213,7 +224,7 @@ mod tests {
 
     #[test]
     fn build_meta_includes_provided_fields() {
-        let v = build_delegation_meta("running", Some("conn-1"), Some(42), None);
+        let v = build_delegation_meta("running", Some("conn-1"), Some(42), None, None);
         let inner = v.get(DELEGATION_META_KEY).unwrap().as_object().unwrap();
         assert_eq!(inner.get("status").unwrap().as_str().unwrap(), "running");
         assert_eq!(
@@ -233,7 +244,7 @@ mod tests {
 
     #[test]
     fn build_meta_with_error_code() {
-        let v = build_delegation_meta("failed", None, Some(7), Some("timeout"));
+        let v = build_delegation_meta("failed", None, Some(7), Some("timeout"), None);
         let inner = v.get(DELEGATION_META_KEY).unwrap().as_object().unwrap();
         assert_eq!(inner.get("status").unwrap().as_str().unwrap(), "failed");
         assert_eq!(

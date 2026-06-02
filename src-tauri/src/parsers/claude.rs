@@ -52,6 +52,90 @@ fn strip_system_tags(text: &str) -> Option<String> {
     }
 }
 
+/// Regex capturing the inner text of a `<command-name>...</command-name>` tag.
+fn command_name_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?s)<command-name>(.*?)</command-name>").unwrap())
+}
+
+/// Regex capturing the inner text of a `<command-args>...</command-args>` tag.
+fn command_args_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?s)<command-args>(.*?)</command-args>").unwrap())
+}
+
+/// Render a user-typed slash command for display.
+///
+/// Claude Code persists a slash command (e.g. `/init`, `/brainstorming`) as a
+/// user message whose string content holds `<command-name>`, `<command-message>`
+/// and `<command-args>` tags. Reconstruct the original input as `/name args`
+/// (e.g. `/init 初始化`). Returns `None` when no `<command-name>` tag is present.
+fn slash_command_display(text: &str) -> Option<String> {
+    let name = command_name_regex()
+        .captures(text)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().trim())
+        .filter(|n| n.starts_with('/'))?;
+
+    let args = command_args_regex()
+        .captures(text)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().trim())
+        .unwrap_or("");
+
+    if args.is_empty() {
+        Some(name.to_string())
+    } else {
+        Some(format!("{name} {args}"))
+    }
+}
+
+/// A user JSONL entry's slash command, if its string content carries command
+/// tags. Returns `(display, promptId)`.
+fn slash_command_value_display(value: &serde_json::Value) -> Option<(String, Option<String>)> {
+    let text = value
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())?;
+    let display = slash_command_display(text)?;
+    let prompt_id = value
+        .get("promptId")
+        .and_then(|p| p.as_str())
+        .map(|s| s.to_string());
+    Some((display, prompt_id))
+}
+
+/// Whether `value` is the expanded-prompt entry Claude Code writes immediately
+/// after a prompt-expanding slash command (`/init`, custom commands, …): an
+/// `isMeta` user message sharing the command's `promptId`. Client-side commands
+/// (`/model`, `/compact`) are instead followed by `<local-command-stdout>` and
+/// never match, so they stay hidden.
+fn is_slash_command_expansion(value: &serde_json::Value, prompt_id: Option<&str>) -> bool {
+    if value.get("type").and_then(|t| t.as_str()) != Some("user") {
+        return false;
+    }
+    if !is_meta_message(value) {
+        return false;
+    }
+    // The expanded prompt is always array content; a string-content isMeta entry
+    // (e.g. a `<local-command-caveat>`) is never an expansion. This also keeps
+    // the promptId-less adjacency fallback below from confirming such entries.
+    if !value
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .map(|c| c.is_array())
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    match (prompt_id, value.get("promptId").and_then(|p| p.as_str())) {
+        // Both present: require a match. Otherwise fall back to adjacency
+        // (the expansion always immediately follows its command).
+        (Some(cmd), Some(next)) => cmd == next,
+        _ => true,
+    }
+}
+
 /// Check if a JSONL entry is a system meta message (isMeta: true).
 /// Rebuild a standard unified diff from `toolUseResult.structuredPatch`.
 ///
@@ -491,6 +575,11 @@ impl ClaudeParser {
         let mut title: Option<String> = None;
         let mut first_timestamp: Option<DateTime<Utc>> = None;
         let mut last_timestamp: Option<DateTime<Utc>> = None;
+        // A prompt-expanding slash command is buffered (with its promptId) until
+        // the next entry confirms it expanded into a real prompt — see
+        // `is_slash_command_expansion`. Client commands (`/model`) never confirm
+        // and are dropped, so they stay hidden as before.
+        let mut pending_command: Option<(UnifiedMessage, Option<String>)> = None;
 
         for line in reader.lines() {
             let line = match line {
@@ -510,6 +599,15 @@ impl ClaudeParser {
 
             if msg_type == "file-history-snapshot" || msg_type == "progress" {
                 continue;
+            }
+
+            // Resolve a buffered slash command against this entry: emit it only
+            // if this entry is its expanded prompt, otherwise drop it (a client
+            // command like `/model` that produced no model turn).
+            if let Some((command_msg, prompt_id)) = pending_command.take() {
+                if is_slash_command_expansion(&value, prompt_id.as_deref()) {
+                    messages.push(command_msg);
+                }
             }
 
             // Skip system meta messages
@@ -536,6 +634,35 @@ impl ClaudeParser {
                         first_timestamp = Some(ts);
                     }
                     last_timestamp = Some(ts);
+                }
+            }
+
+            // Buffer a user-typed slash command and decide on the next entry
+            // whether it drove a real prompt (keep it) or was a client command
+            // (drop it). The command's own string content strips to empty, so it
+            // would otherwise vanish and make adjacent assistant turns look merged.
+            if msg_type == "user" {
+                if let Some((display, prompt_id)) = slash_command_value_display(&value) {
+                    let timestamp = parse_timestamp(&value).unwrap_or_else(Utc::now);
+                    let uuid = value
+                        .get("uuid")
+                        .and_then(|u| u.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    pending_command = Some((
+                        UnifiedMessage {
+                            id: uuid,
+                            role: MessageRole::User,
+                            content: vec![ContentBlock::Text { text: display }],
+                            timestamp,
+                            usage: None,
+                            duration_ms: None,
+                            model: None,
+                            completed_at: Some(timestamp),
+                        },
+                        prompt_id,
+                    ));
+                    continue;
                 }
             }
 
@@ -1702,6 +1829,223 @@ mod tests {
         assert_eq!(stats.context_window_max_tokens, Some(1_000_000));
         let total = stats.total_tokens.expect("total tokens");
         assert_eq!(total, 1900); // 1000 + 200 + 300 + 400
+    }
+
+    #[test]
+    fn slash_command_display_reconstructs_command() {
+        // command-message-first ordering with args (as written for /init)
+        assert_eq!(
+            slash_command_display(
+                "<command-message>init</command-message>\n<command-name>/init</command-name>\n<command-args>初始化</command-args>"
+            ),
+            Some("/init 初始化".to_string())
+        );
+        // command-name-first ordering, indented, empty args (as written for /compact)
+        assert_eq!(
+            slash_command_display(
+                "<command-name>/compact</command-name>\n            <command-message>compact</command-message>\n            <command-args></command-args>"
+            ),
+            Some("/compact".to_string())
+        );
+        // plain user text is not a command
+        assert_eq!(slash_command_display("just a normal message"), None);
+        // a non-slash <command-name> is not treated as a command
+        assert_eq!(
+            slash_command_display("<command-name>init</command-name><command-args>x</command-args>"),
+            None
+        );
+    }
+
+    #[test]
+    fn is_slash_command_expansion_only_matches_meta_array_prompts() {
+        let array_meta = |pid: Option<&str>| {
+            let mut v = json!({
+                "type": "user",
+                "isMeta": true,
+                "message": { "content": [{"type": "text", "text": "expanded"}] }
+            });
+            if let Some(p) = pid {
+                v["promptId"] = json!(p);
+            }
+            v
+        };
+
+        // isMeta + array + matching promptId -> the expansion
+        assert!(is_slash_command_expansion(
+            &array_meta(Some("p1")),
+            Some("p1")
+        ));
+        // promptId absent on the entry -> adjacency fallback accepts it
+        assert!(is_slash_command_expansion(&array_meta(None), Some("p1")));
+        // mismatched promptId -> rejected
+        assert!(!is_slash_command_expansion(
+            &array_meta(Some("p2")),
+            Some("p1")
+        ));
+        // isMeta but STRING content (e.g. a caveat) -> not an expansion even
+        // when the command had a promptId and the caveat has none (fallback path)
+        let string_meta = json!({
+            "type": "user",
+            "isMeta": true,
+            "message": { "content": "<local-command-caveat>Caveat...</local-command-caveat>" }
+        });
+        assert!(!is_slash_command_expansion(&string_meta, Some("p1")));
+        // non-meta entry (e.g. local-command-stdout) -> not an expansion
+        let stdout = json!({
+            "type": "user",
+            "message": { "content": "<local-command-stdout>ok</local-command-stdout>" }
+        });
+        assert!(!is_slash_command_expansion(&stdout, Some("p1")));
+        // assistant entry -> not an expansion
+        let assistant = json!({
+            "type": "assistant",
+            "isMeta": true,
+            "message": { "content": [{"type": "text", "text": "x"}] }
+        });
+        assert!(!is_slash_command_expansion(&assistant, Some("p1")));
+    }
+
+    #[test]
+    fn slash_command_keeps_user_turn_between_assistant_turns() {
+        let path = std::env::temp_dir().join(format!(
+            "codeg-claude-slash-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
+        let mut file = fs::File::create(&path).expect("create temp jsonl");
+        // Client command /model: followed by stdout, no model turn -> stays hidden
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "type": "user",
+                "sessionId": "slash-test",
+                "timestamp": "2026-06-01T11:59:59Z",
+                "uuid": "m1",
+                "cwd": "/tmp/demo",
+                "promptId": "p-model",
+                "message": { "content": "<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>default</command-args>" }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "type": "user",
+                "sessionId": "slash-test",
+                "timestamp": "2026-06-01T11:59:59Z",
+                "uuid": "m2",
+                "message": { "content": "<local-command-stdout>Set model to claude-opus-4-8</local-command-stdout>" }
+            })
+        )
+        .unwrap();
+        // Real first user message
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "type": "user",
+                "sessionId": "slash-test",
+                "timestamp": "2026-06-01T12:00:00Z",
+                "uuid": "u1",
+                "cwd": "/tmp/demo",
+                "message": { "content": [{"type": "text", "text": "hi"}] }
+            })
+        )
+        .unwrap();
+        // Assistant reply to "hi"
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "type": "assistant",
+                "sessionId": "slash-test",
+                "timestamp": "2026-06-01T12:00:01Z",
+                "uuid": "a1",
+                "message": { "model": "claude-opus-4-8", "content": [{"type": "text", "text": "Hi! What can I help you with today?"}] }
+            })
+        )
+        .unwrap();
+        // Slash command the user typed (command tags, string content)
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "type": "user",
+                "sessionId": "slash-test",
+                "timestamp": "2026-06-01T12:00:08Z",
+                "uuid": "u2",
+                "promptId": "p-init",
+                "message": { "content": "<command-message>init</command-message>\n<command-name>/init</command-name>\n<command-args>初始化</command-args>" }
+            })
+        )
+        .unwrap();
+        // Expanded prompt injected by the CLI (isMeta -> must stay hidden)
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "type": "user",
+                "sessionId": "slash-test",
+                "timestamp": "2026-06-01T12:00:08Z",
+                "uuid": "u3",
+                "isMeta": true,
+                "promptId": "p-init",
+                "message": { "content": [{"type": "text", "text": "EXPANDED_INIT_PROMPT_SENTINEL: long instructions injected by the CLI"}] }
+            })
+        )
+        .unwrap();
+        // Assistant reply to the slash command
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "type": "assistant",
+                "sessionId": "slash-test",
+                "timestamp": "2026-06-01T12:00:09Z",
+                "uuid": "a2",
+                "message": { "model": "claude-opus-4-8", "content": [{"type": "text", "text": "I'll analyze the codebase to create a CLAUDE.md file."}] }
+            })
+        )
+        .unwrap();
+
+        let parser = ClaudeParser {
+            base_dir: PathBuf::new(),
+        };
+        let detail = parser
+            .parse_conversation_detail(&path, "slash-test")
+            .expect("parse detail");
+        fs::remove_file(&path).unwrap();
+
+        // user "hi" / assistant / user "/init 初始化" / assistant — the command
+        // turn separates the two assistant turns instead of dropping out.
+        let roles: Vec<_> = detail
+            .turns
+            .iter()
+            .map(|t| match t.role {
+                TurnRole::User => "user",
+                TurnRole::Assistant => "assistant",
+                TurnRole::System => "system",
+            })
+            .collect();
+        assert_eq!(roles, vec!["user", "assistant", "user", "assistant"]);
+        assert!(matches!(
+            &detail.turns[2].blocks[0],
+            ContentBlock::Text { text } if text == "/init 初始化"
+        ));
+        // The huge isMeta expanded prompt must not leak into the transcript.
+        assert!(!detail.turns.iter().any(|t| t
+            .blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("EXPANDED_INIT_PROMPT_SENTINEL")))));
+        // The client command /model (followed only by stdout) stays hidden, so
+        // it neither renders as a turn nor becomes the title.
+        assert!(!detail.turns.iter().any(|t| t
+            .blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("/model")))));
+        // Title comes from the first real prompt, not any slash command.
+        assert_eq!(detail.summary.title.as_deref(), Some("hi"));
     }
 
     #[test]

@@ -17,11 +17,17 @@ use tokio::sync::RwLock;
 
 use crate::acp::delegation::broker::DelegationBroker;
 use crate::acp::delegation::transport::{
-    read_frame, write_frame, BrokerCancelRequest, BrokerMessage, BrokerRequest, BrokerResponse,
+    read_frame, write_frame, BrokerCancelRequest, BrokerCancelTaskRequest, BrokerMessage,
+    BrokerRequest, BrokerResponse, BrokerStatusRequest,
 };
-use crate::acp::delegation::types::{DelegationOutcome, DelegationRequest};
+use crate::acp::delegation::types::{DelegationRequest, DelegationTaskReport, TaskStatus};
 use crate::models::AgentType;
 use serde_json::Value;
+
+/// Hard ceiling on a `get_delegation_status` long-poll, so a single MCP tool
+/// call can't block the companion's round-trip unbounded. The child keeps
+/// running past this; the LLM simply re-issues the wait.
+const STATUS_WAIT_MAX_MS: u64 = 60_000;
 
 /// Pluggable "what conversation is this parent currently in?" lookup. The
 /// production impl wraps `ConnectionManager.get_state`; tests use an
@@ -160,17 +166,9 @@ impl DelegationListener {
     {
         let msg: BrokerMessage = read_frame(conn).await?;
         let resp = match msg {
-            BrokerMessage::Call(req) => {
-                let outcome = self.process(req).await;
-                BrokerResponse {
-                    outcome: serde_json::to_value(&outcome).map_err(|e| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("encode: {e}"),
-                        )
-                    })?,
-                }
-            }
+            BrokerMessage::Call(req) => report_response(self.process(req).await)?,
+            BrokerMessage::Status(req) => report_response(self.process_status(req).await)?,
+            BrokerMessage::CancelTask(req) => report_response(self.process_cancel_task(req).await)?,
             BrokerMessage::Cancel(cancel) => {
                 self.process_cancel(cancel).await;
                 // Empty ack — the companion only uses this to detect the
@@ -184,6 +182,49 @@ impl DelegationListener {
         Ok(())
     }
 
+    /// Validate the token, resolve the caller's parent connection/conversation,
+    /// and query the task's status (optionally blocking up to a clamped
+    /// `wait_ms`). Backs the `get_delegation_status` tool. An invalid token
+    /// reports `Unknown` — the caller can't usefully distinguish it from a
+    /// genuinely unknown task, and we don't leak which.
+    async fn process_status(&self, req: BrokerStatusRequest) -> DelegationTaskReport {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
+            return unknown_report(&req.task_id);
+        };
+        let parent_conversation_id = self
+            .parent_lookup
+            .current_conversation_id(&entry.parent_connection_id)
+            .await;
+        let wait_ms = req.wait_ms.unwrap_or(0).min(STATUS_WAIT_MAX_MS);
+        self.broker
+            .get_task_status(
+                &entry.parent_connection_id,
+                parent_conversation_id,
+                &req.task_id,
+                wait_ms,
+            )
+            .await
+    }
+
+    /// Validate the token, resolve the caller's parent, and cancel the task.
+    /// Backs the `cancel_delegation` tool.
+    async fn process_cancel_task(&self, req: BrokerCancelTaskRequest) -> DelegationTaskReport {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
+            return unknown_report(&req.task_id);
+        };
+        let parent_conversation_id = self
+            .parent_lookup
+            .current_conversation_id(&entry.parent_connection_id)
+            .await;
+        self.broker
+            .cancel_task_by_id(
+                &entry.parent_connection_id,
+                parent_conversation_id,
+                &req.task_id,
+            )
+            .await
+    }
+
     /// Validate token + dispatch cancel to the broker. Unknown tokens and
     /// parent-mismatched cancels are silently dropped — there's no LLM on
     /// the receiving end of this method to react to errors.
@@ -191,13 +232,15 @@ impl DelegationListener {
         let Some(_entry) = self.tokens.lookup(&cancel.token).await else {
             return;
         };
-        let reason = cancel.reason.unwrap_or_else(|| "mcp client canceled".into());
+        let reason = cancel
+            .reason
+            .unwrap_or_else(|| "mcp client canceled".into());
         self.broker
             .cancel_by_external_handle(&cancel.external_handle, reason)
             .await;
     }
 
-    async fn process(&self, req: BrokerRequest) -> DelegationOutcome {
+    async fn process(&self, req: BrokerRequest) -> DelegationTaskReport {
         // 1. Token + parent_connection_id consistency check. Treat both as
         //    "canceled" since the LLM can't usefully react to either —
         //    the parent has either been torn down or is impersonating.
@@ -232,18 +275,19 @@ impl DelegationListener {
         let task = match req.input.get("task").and_then(|v| v.as_str()) {
             Some(s) if !s.trim().is_empty() => s.to_string(),
             _ => {
-                return DelegationOutcome::Err {
-                    code: "invalid_working_dir".into(),
-                    message: "missing or empty task".into(),
-                    child_conversation_id: None,
-                }
+                return report_failed("invalid_working_dir", "missing or empty task");
             }
         };
-        let working_dir = req
+        // The `working_dir` the LLM explicitly passed (before defaulting),
+        // used by the broker's correlation key. `None` when omitted —
+        // symmetric with the ACP `raw_input`, which also omits it then.
+        let requested_working_dir = req
             .input
             .get("working_dir")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+            .map(|s| s.to_string());
+        let working_dir = requested_working_dir
+            .clone()
             .or_else(|| Some(entry.working_dir.to_string_lossy().to_string()));
 
         let delegation_req = DelegationRequest {
@@ -253,29 +297,75 @@ impl DelegationListener {
             agent_type,
             task,
             working_dir,
+            requested_working_dir,
             external_handle: req.external_handle,
         };
-        self.broker.handle_request(delegation_req).await
+        self.broker.start_delegation(delegation_req).await
     }
 }
 
-fn cancel(message: &str) -> DelegationOutcome {
-    DelegationOutcome::Err {
-        code: "canceled".into(),
-        message: message.into(),
+/// Serialize a [`DelegationTaskReport`] into a [`BrokerResponse`] for the wire.
+fn report_response(report: DelegationTaskReport) -> std::io::Result<BrokerResponse> {
+    Ok(BrokerResponse {
+        outcome: serde_json::to_value(&report).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
+        })?,
+    })
+}
+
+/// A `Canceled` report for a setup-side rejection the LLM can't react to (bad
+/// token, parent gone). Mirrors the old `cancel(..)` DelegationOutcome.
+fn report_canceled(message: &str) -> DelegationTaskReport {
+    DelegationTaskReport {
+        task_id: None,
+        status: TaskStatus::Canceled,
         child_conversation_id: None,
+        agent_type: None,
+        text: None,
+        error_code: Some("canceled".into()),
+        message: Some(message.into()),
+        duration_ms: None,
     }
 }
 
-fn invalid_agent_type(raw: &str) -> DelegationOutcome {
-    DelegationOutcome::Err {
-        code: "invalid_agent_type".into(),
-        message: if raw.is_empty() {
-            "missing agent_type".into()
-        } else {
-            format!("invalid agent_type: {raw}")
-        },
+/// A `Failed` report carrying a wire-stable `error_code` for a bad argument.
+fn report_failed(error_code: &str, message: &str) -> DelegationTaskReport {
+    DelegationTaskReport {
+        task_id: None,
+        status: TaskStatus::Failed,
         child_conversation_id: None,
+        agent_type: None,
+        text: None,
+        error_code: Some(error_code.into()),
+        message: Some(message.into()),
+        duration_ms: None,
+    }
+}
+
+/// An `Unknown` report — used when a status/cancel request fails the token
+/// check (we don't leak whether the task exists).
+fn unknown_report(task_id: &str) -> DelegationTaskReport {
+    DelegationTaskReport {
+        task_id: Some(task_id.to_string()),
+        status: TaskStatus::Unknown,
+        child_conversation_id: None,
+        agent_type: None,
+        text: None,
+        error_code: None,
+        message: Some("unknown task id".into()),
+        duration_ms: None,
+    }
+}
+
+fn cancel(message: &str) -> DelegationTaskReport {
+    report_canceled(message)
+}
+
+fn invalid_agent_type(raw: &str) -> DelegationTaskReport {
+    if raw.is_empty() {
+        report_failed("invalid_agent_type", "missing agent_type")
+    } else {
+        report_failed("invalid_agent_type", &format!("invalid agent_type: {raw}"))
     }
 }
 
@@ -297,10 +387,7 @@ pub fn default_socket_path(temp_dir: &Path) -> PathBuf {
 
 #[cfg(windows)]
 pub fn default_socket_path(_temp_dir: &Path) -> PathBuf {
-    PathBuf::from(format!(
-        r"\\.\pipe\codeg-delegation-{}",
-        std::process::id()
-    ))
+    PathBuf::from(format!(r"\\.\pipe\codeg-delegation-{}", std::process::id()))
 }
 
 #[cfg(test)]
@@ -308,7 +395,7 @@ mod tests {
     use super::*;
     use crate::acp::delegation::broker::{ConversationDepthLookup, DelegationConfig};
     use crate::acp::delegation::spawner::{mock::MockSpawner, ConnectionSpawner, SpawnerError};
-    use crate::acp::delegation::types::{DelegationError, DelegationSuccess};
+    use crate::acp::delegation::types::{DelegationError, DelegationOutcome, DelegationSuccess};
     use serde_json::json;
     use std::time::Duration;
     use tokio::io::duplex;
@@ -376,16 +463,12 @@ mod tests {
             Arc::new(TokenRegistry::default()),
             Some(1),
         );
-        let outcome = listener
+        let report = listener
             .process(make_request(json!({"agent_type": "codex", "task": "x"})).await)
             .await;
-        match outcome {
-            DelegationOutcome::Err { code, message, .. } => {
-                assert_eq!(code, "canceled");
-                assert!(message.contains("invalid token"));
-            }
-            _ => panic!("expected canceled"),
-        }
+        assert_eq!(report.status, TaskStatus::Canceled);
+        assert_eq!(report.error_code.as_deref(), Some("canceled"));
+        assert!(report.message.unwrap().contains("invalid token"));
     }
 
     #[tokio::test]
@@ -400,18 +483,16 @@ mod tests {
                 },
             )
             .await;
-        let listener =
-            make_listener(make_broker(Arc::new(MockSpawner::new())).await, tokens, Some(1));
-        let outcome = listener
+        let listener = make_listener(
+            make_broker(Arc::new(MockSpawner::new())).await,
+            tokens,
+            Some(1),
+        );
+        let report = listener
             .process(make_request(json!({"agent_type": "codex", "task": "x"})).await)
             .await;
-        match outcome {
-            DelegationOutcome::Err { code, message, .. } => {
-                assert_eq!(code, "canceled");
-                assert!(message.contains("does not match"));
-            }
-            _ => panic!("expected canceled"),
-        }
+        assert_eq!(report.status, TaskStatus::Canceled);
+        assert!(report.message.unwrap().contains("does not match"));
     }
 
     #[tokio::test]
@@ -427,17 +508,16 @@ mod tests {
             )
             .await;
         // parent_conversation = None: parent has no live conversation.
-        let listener = make_listener(make_broker(Arc::new(MockSpawner::new())).await, tokens, None);
-        let outcome = listener
+        let listener = make_listener(
+            make_broker(Arc::new(MockSpawner::new())).await,
+            tokens,
+            None,
+        );
+        let report = listener
             .process(make_request(json!({"agent_type": "codex", "task": "x"})).await)
             .await;
-        match outcome {
-            DelegationOutcome::Err { code, message, .. } => {
-                assert_eq!(code, "canceled");
-                assert!(message.contains("no active conversation"));
-            }
-            _ => panic!("expected canceled"),
-        }
+        assert_eq!(report.status, TaskStatus::Canceled);
+        assert!(report.message.unwrap().contains("no active conversation"));
     }
 
     #[tokio::test]
@@ -452,19 +532,23 @@ mod tests {
                 },
             )
             .await;
-        let listener =
-            make_listener(make_broker(Arc::new(MockSpawner::new())).await, tokens, Some(1));
-        let outcome = listener
+        let listener = make_listener(
+            make_broker(Arc::new(MockSpawner::new())).await,
+            tokens,
+            Some(1),
+        );
+        let report = listener
             .process(make_request(json!({"agent_type": "garbage", "task": "x"})).await)
             .await;
-        match outcome {
-            DelegationOutcome::Err { code, .. } => assert_eq!(code, "invalid_agent_type"),
-            _ => panic!("expected invalid_agent_type"),
-        }
+        assert_eq!(report.status, TaskStatus::Failed);
+        assert_eq!(report.error_code.as_deref(), Some("invalid_agent_type"));
     }
 
+    /// Full async round-trip through the listener: `delegate_to_agent` returns a
+    /// Running ack, the lifecycle resolves the child via `complete_call`, and a
+    /// follow-up `get_delegation_status` collects the Completed result.
     #[tokio::test]
-    async fn happy_path_via_duplex_stream() {
+    async fn happy_path_ack_then_status_collects_result() {
         let mock = Arc::new(MockSpawner::new());
         mock.queue_spawn(Ok("child-conn".into())).await;
         mock.queue_send(Ok(42)).await;
@@ -479,40 +563,13 @@ mod tests {
                 },
             )
             .await;
-        let listener = make_listener(broker.clone(), tokens, Some(1));
 
-        // Make broker resolve from another task once the call lands.
-        let completer = {
-            let broker = broker.clone();
-            tokio::spawn(async move {
-                loop {
-                    if let Some(id) = broker.peek_first_pending_call_id().await {
-                        broker
-                            .complete_call(
-                                &id,
-                                DelegationOutcome::Ok(DelegationSuccess {
-                                    text: "result-text".into(),
-                                    child_conversation_id: 42,
-                                    child_agent_type: AgentType::Codex,
-                                    turn_count: 1,
-                                    duration_ms: 5,
-                                    token_usage: None,
-                                }),
-                            )
-                            .await;
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
-            })
-        };
-
-        // Drive the listener over a duplex pair.
+        // 1. delegate_to_agent → Running ack carrying the child conversation id.
+        let listener = make_listener(broker.clone(), tokens.clone(), Some(1));
         let (mut client, mut server) = duplex(16 * 1024);
         let server_task = tokio::spawn(async move {
             listener.serve_one(&mut server).await.unwrap();
         });
-
         let msg = BrokerMessage::Call(BrokerRequest {
             token: "tok".into(),
             parent_connection_id: "parent-conn".into(),
@@ -521,13 +578,93 @@ mod tests {
             input: json!({"agent_type": "codex", "task": "do x"}),
         });
         write_frame(&mut client, &msg).await.unwrap();
-        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
-        completer.await.unwrap();
+        let ack: BrokerResponse = read_frame(&mut client).await.unwrap();
         server_task.await.unwrap();
+        assert_eq!(ack.outcome["status"], "running");
+        assert_eq!(ack.outcome["child_conversation_id"], 42);
+        let task_id = ack.outcome["task_id"].as_str().unwrap().to_string();
 
-        assert_eq!(resp.outcome["kind"], "ok");
+        // 2. The lifecycle resolves the child on TurnComplete.
+        broker
+            .complete_call(
+                &task_id,
+                DelegationOutcome::Ok(DelegationSuccess {
+                    text: "result-text".into(),
+                    child_conversation_id: 42,
+                    child_agent_type: AgentType::Codex,
+                    turn_count: 1,
+                    duration_ms: 5,
+                    token_usage: None,
+                }),
+            )
+            .await;
+
+        // 3. get_delegation_status → Completed with the result text.
+        let listener = make_listener(broker.clone(), tokens, Some(1));
+        let (mut client, mut server) = duplex(16 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let status = BrokerMessage::Status(BrokerStatusRequest {
+            token: "tok".into(),
+            task_id: task_id.clone(),
+            wait_ms: Some(1_000),
+        });
+        write_frame(&mut client, &status).await.unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+        assert_eq!(resp.outcome["status"], "completed");
         assert_eq!(resp.outcome["text"], "result-text");
         assert_eq!(resp.outcome["child_conversation_id"], 42);
+    }
+
+    /// `cancel_delegation` over the listener: a running task is canceled by id
+    /// and reports `canceled`.
+    #[tokio::test]
+    async fn cancel_task_by_id_over_listener() {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-conn".into())).await;
+        mock.queue_send(Ok(7)).await;
+        let broker = make_broker(mock.clone()).await;
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        // Start a task directly so we hold its id.
+        let ack = broker
+            .start_delegation(DelegationRequest {
+                parent_connection_id: "parent-conn".into(),
+                parent_conversation_id: 1,
+                parent_tool_use_id: "pt-1".into(),
+                agent_type: AgentType::Codex,
+                task: "do x".into(),
+                working_dir: None,
+                requested_working_dir: None,
+                external_handle: None,
+            })
+            .await;
+        let task_id = ack.task_id.clone().unwrap();
+
+        let listener = make_listener(broker.clone(), tokens, Some(1));
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let cancel = BrokerMessage::CancelTask(BrokerCancelTaskRequest {
+            token: "tok".into(),
+            task_id: task_id.clone(),
+        });
+        write_frame(&mut client, &cancel).await.unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+        assert_eq!(resp.outcome["status"], "canceled");
+        assert_eq!(broker.pending_count().await, 0);
     }
 
     #[tokio::test]
@@ -559,6 +696,7 @@ mod tests {
                     agent_type: AgentType::Codex,
                     task: "do x".into(),
                     working_dir: None,
+                    requested_working_dir: None,
                     external_handle: Some("h-1".into()),
                 };
                 broker.handle_request(req).await
@@ -662,12 +800,10 @@ mod tests {
             .await;
         let listener = make_listener(broker, tokens, Some(1));
 
-        let outcome = listener
+        let report = listener
             .process(make_request(json!({"agent_type": "codex", "task": "x"})).await)
             .await;
-        match outcome {
-            DelegationOutcome::Err { code, .. } => assert_eq!(code, "spawn_failed"),
-            _ => panic!("expected spawn_failed"),
-        }
+        assert_eq!(report.status, TaskStatus::Failed);
+        assert_eq!(report.error_code.as_deref(), Some("spawn_failed"));
     }
 }

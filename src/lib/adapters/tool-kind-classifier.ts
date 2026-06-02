@@ -28,20 +28,46 @@ export const TOOL_KIND_ORDER: ToolKindLabel[] = [
  * (e.g. AgentToolCallPart, DelegatedSubThread). These should not be folded
  * into a tool-group; they each break the run and render standalone.
  *
- * The delegation MCP tool surfaces with a host-specific server prefix and
- * separator: Claude Code emits `mcp__<server>__delegate_to_agent`, Codex
- * live ACP exposes it as `<server>/delegate_to_agent`, and other hosts may
- * use `.` or `:`. Match the suffix after any non-alphanumeric separator so
- * every form lands on the same code path.
+ * The delegation MCP tools surface with a host-specific server prefix and
+ * separator: Claude Code emits `mcp__<server>__<tool>`, Codex live ACP
+ * exposes them as `<server>/<tool>`, and other hosts may use `.` or `:`.
+ * Match the suffix after any non-alphanumeric separator so every form lands
+ * on the same code path. The bare-name comparisons cover the live-streaming
+ * path (where `inferLiveToolName` has already collapsed to the canonical
+ * name); the suffix regexes cover the historical path (raw tool name).
  */
 const DELEGATE_TO_AGENT_SUFFIX_RE = /[^a-z0-9]delegate_to_agent$/
+const GET_DELEGATION_STATUS_SUFFIX_RE = /[^a-z0-9]get_delegation_status$/
+const CANCEL_DELEGATION_SUFFIX_RE = /[^a-z0-9]cancel_delegation$/
 
 export function isAgentLikeToolName(toolName: string): boolean {
   const name = toolName.toLowerCase().trim()
   if (name === "agent") return true
-  if (name === "delegate_to_agent") return true
+  if (
+    name === "delegate_to_agent" ||
+    name === "get_delegation_status" ||
+    name === "cancel_delegation"
+  )
+    return true
   if (DELEGATE_TO_AGENT_SUFFIX_RE.test(name)) return true
+  if (GET_DELEGATION_STATUS_SUFFIX_RE.test(name)) return true
+  if (CANCEL_DELEGATION_SUFFIX_RE.test(name)) return true
   return false
+}
+
+/**
+ * Specifically the `get_delegation_status` companion tool, in either the bare
+ * canonical form (live streaming, post-`inferLiveToolName`) or any host-
+ * prefixed form (historical raw name: `mcp__<server>__get_delegation_status`,
+ * `<server>/get_delegation_status`, …). Used to collapse a run of consecutive
+ * status polls into a single merged card.
+ */
+export function isDelegationStatusToolName(toolName: string): boolean {
+  const name = toolName.toLowerCase().trim()
+  return (
+    name === "get_delegation_status" ||
+    GET_DELEGATION_STATUS_SUFFIX_RE.test(name)
+  )
 }
 
 export function classifyToolKind(toolName: string): ToolKindLabel {

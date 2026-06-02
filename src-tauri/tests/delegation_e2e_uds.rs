@@ -1,6 +1,8 @@
-//! End-to-end Phase 6 integration: drive a real UDS round-trip from a
+//! End-to-end Phase 6 integration: drive real UDS round-trips from a
 //! companion-style client through the listener → broker → mock spawner →
-//! `complete_call`, and assert the outcome is delivered to the wire.
+//! `complete_call`. Under the async protocol `delegate_to_agent` returns a
+//! Running ack and the terminal result is collected by a follow-up
+//! `get_delegation_status` round-trip — both asserted over the wire.
 //!
 //! Skipped on non-unix targets (named-pipe windows path tested separately).
 
@@ -18,7 +20,9 @@ use codeg_lib::acp::delegation::listener::{
     DelegationListener, ParentSessionLookup, TokenEntry, TokenRegistry,
 };
 use codeg_lib::acp::delegation::spawner::{mock::MockSpawner, ConnectionSpawner};
-use codeg_lib::acp::delegation::transport::{client_round_trip, BrokerRequest};
+use codeg_lib::acp::delegation::transport::{
+    client_round_trip, client_status_round_trip, BrokerRequest, BrokerStatusRequest,
+};
 use codeg_lib::acp::delegation::types::{DelegationError, DelegationOutcome, DelegationSuccess};
 use codeg_lib::models::AgentType;
 use serde_json::json;
@@ -91,31 +95,9 @@ async fn end_to_end_uds_happy_path() {
     }
     assert!(socket.exists(), "listener never bound the socket");
 
-    // Drive completion from a parallel task so the client send→recv races
-    // against the broker registration.
-    let broker_for_completion = broker.clone();
-    let completer = tokio::spawn(async move {
-        loop {
-            if let Some(call_id) = broker_for_completion.peek_first_pending_call_id().await {
-                broker_for_completion
-                    .complete_call(
-                        &call_id,
-                        DelegationOutcome::Ok(DelegationSuccess {
-                            text: "uds-result".into(),
-                            child_conversation_id: 77,
-                            child_agent_type: AgentType::Codex,
-                            turn_count: 1,
-                            duration_ms: 12,
-                            token_usage: None,
-                        }),
-                    )
-                    .await;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    });
-
+    // 1. delegate_to_agent → Running ack carrying the child conversation id and
+    //    a task_id to follow up on. Under the async protocol the call returns
+    //    immediately instead of blocking for the result.
     let req = BrokerRequest {
         token: "tok".into(),
         parent_connection_id: "p1".into(),
@@ -123,14 +105,45 @@ async fn end_to_end_uds_happy_path() {
         external_handle: None,
         input: json!({"agent_type": "codex", "task": "do x"}),
     };
-    let resp = client_round_trip(&socket.to_string_lossy(), &req)
+    let ack = client_round_trip(&socket.to_string_lossy(), &req)
         .await
         .expect("client round-trip");
+    assert_eq!(ack.outcome["status"], "running");
+    assert_eq!(ack.outcome["child_conversation_id"], 77);
+    let task_id = ack.outcome["task_id"]
+        .as_str()
+        .expect("running ack carries a task_id")
+        .to_string();
 
-    completer.await.unwrap();
+    // 2. The lifecycle resolves the child on TurnComplete. The ack already
+    //    returned, so the task is registered and `complete_call` migrates it to
+    //    completed deterministically — no race against registration.
+    broker
+        .complete_call(
+            &task_id,
+            DelegationOutcome::Ok(DelegationSuccess {
+                text: "uds-result".into(),
+                child_conversation_id: 77,
+                child_agent_type: AgentType::Codex,
+                turn_count: 1,
+                duration_ms: 12,
+                token_usage: None,
+            }),
+        )
+        .await;
+
+    // 3. get_delegation_status → Completed with the result text, over the wire.
+    let status_req = BrokerStatusRequest {
+        token: "tok".into(),
+        task_id,
+        wait_ms: Some(1_000),
+    };
+    let resp = client_status_round_trip(&socket.to_string_lossy(), &status_req)
+        .await
+        .expect("status round-trip");
     listener_task.abort();
 
-    assert_eq!(resp.outcome["kind"], "ok");
+    assert_eq!(resp.outcome["status"], "completed");
     assert_eq!(resp.outcome["text"], "uds-result");
     assert_eq!(resp.outcome["child_conversation_id"], 77);
 }
@@ -176,6 +189,6 @@ async fn end_to_end_uds_invalid_token_rejected() {
         .expect("client round-trip");
     listener_task.abort();
 
-    assert_eq!(resp.outcome["kind"], "err");
-    assert_eq!(resp.outcome["code"], "canceled");
+    assert_eq!(resp.outcome["status"], "canceled");
+    assert_eq!(resp.outcome["error_code"], "canceled");
 }

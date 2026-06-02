@@ -6,6 +6,7 @@ import { ContentPartsRenderer } from "./content-parts-renderer"
 import {
   createMessageTurnAdapter,
   mergeAdjacentToolGroups,
+  mergeAdjacentDelegationStatusGroups,
   type AdaptedContentPart,
   type AdaptedMessage,
   type MessageTurnAdapter,
@@ -184,7 +185,12 @@ function mergeConsecutiveAssistantTurns(
       result.push(buffer[0])
     } else {
       const allParts = buffer.flatMap((it) => it.group.parts)
-      const mergedParts = mergeAdjacentToolGroups(allParts)
+      // Fold tool-groups straddling the turn boundary, then collapse runs of
+      // single-poll delegation-status groups (each polling round is its own
+      // turn) into one merged status card.
+      const mergedParts = mergeAdjacentDelegationStatusGroups(
+        mergeAdjacentToolGroups(allParts)
+      )
       const last = buffer[buffer.length - 1]
       const first = buffer[0]
 

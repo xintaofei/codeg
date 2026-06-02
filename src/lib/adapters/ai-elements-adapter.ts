@@ -6,7 +6,10 @@ import type {
   AgentExecutionStats,
   ToolCallStatus,
 } from "@/lib/types"
-import { isAgentLikeToolName } from "@/lib/adapters/tool-kind-classifier"
+import {
+  isAgentLikeToolName,
+  isDelegationStatusToolName,
+} from "@/lib/adapters/tool-kind-classifier"
 
 /**
  * Adapted content part types for AI SDK Elements components
@@ -71,6 +74,18 @@ export type AdaptedContentPart =
       type: "tool-group"
       items: AdaptedToolCallPart[]
       isStreaming: boolean
+    }
+  /**
+   * A run of consecutive `get_delegation_status` poll cards, merged into one
+   * card. When a delegated task runs longer than the 60s status-wait cap, the
+   * agent re-polls repeatedly; rather than stack N near-identical cards, the
+   * renderer collapses the run and (grouping by `task_id`) shows the latest
+   * poll per task — so parallel waits surface as one row each. Non-consecutive
+   * polls are NOT merged (text / other tools break the run).
+   */
+  | {
+      type: "delegation-status-group"
+      polls: AdaptedToolCallPart[]
     }
   | AdaptedGeneratedImagePart
 
@@ -720,6 +735,72 @@ export function groupConsecutiveToolCalls(
 }
 
 /**
+ * Wrap each run of consecutive `get_delegation_status` poll parts into a single
+ * `delegation-status-group` part. Runs after `groupConsecutiveToolCalls`, which
+ * leaves delegation (agent-like) tool calls standalone — so the status polls
+ * arrive here as bare `tool-call` parts. Any non-status part (text, reasoning,
+ * tool-group, the `delegate_to_agent` / `cancel_delegation` cards, …) breaks
+ * the run, so only genuinely consecutive polls collapse. Even a single poll is
+ * wrapped, so the merged-card status resolution (a returned "running" poll
+ * reads as a settled snapshot, not a spinner) applies uniformly.
+ */
+export function groupConsecutiveDelegationStatus(
+  parts: AdaptedContentPart[]
+): AdaptedContentPart[] {
+  const result: AdaptedContentPart[] = []
+  let buffer: AdaptedToolCallPart[] = []
+
+  const flush = () => {
+    if (buffer.length === 0) return
+    const polls = buffer
+    buffer = []
+    result.push({ type: "delegation-status-group", polls })
+  }
+
+  for (const part of parts) {
+    if (
+      part.type === "tool-call" &&
+      isDelegationStatusToolName(part.toolName)
+    ) {
+      buffer.push(part)
+      continue
+    }
+    flush()
+    result.push(part)
+  }
+  flush()
+
+  return result
+}
+
+/**
+ * Merge adjacent `delegation-status-group` parts into one. Mirrors
+ * `mergeAdjacentToolGroups`: used for cross-turn merging, where each polling
+ * round is its own assistant turn and the concatenated parts land two
+ * single-poll groups next to each other.
+ */
+export function mergeAdjacentDelegationStatusGroups(
+  parts: AdaptedContentPart[]
+): AdaptedContentPart[] {
+  const result: AdaptedContentPart[] = []
+  for (const part of parts) {
+    const last = result[result.length - 1]
+    if (
+      part.type === "delegation-status-group" &&
+      last?.type === "delegation-status-group"
+    ) {
+      result[result.length - 1] = {
+        type: "delegation-status-group",
+        polls: [...last.polls, ...part.polls],
+      }
+    } else {
+      result.push(part)
+    }
+  }
+  return result
+}
+
+/**
  * Build a map of tool_use_id → tool_result ContentBlock from content blocks.
  * Used to correlate tool calls with their results.
  */
@@ -872,7 +953,9 @@ export function adaptMessageTurn(
 
   const groupedContent =
     turn.role === "assistant"
-      ? groupConsecutiveToolCalls(adaptedContent)
+      ? groupConsecutiveDelegationStatus(
+          groupConsecutiveToolCalls(adaptedContent)
+        )
       : adaptedContent
 
   const userSplit =

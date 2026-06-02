@@ -52,6 +52,7 @@ import { FileWorkspaceTabBar } from "@/components/files/file-workspace-tab-bar"
 import { FileWorkspacePanel } from "@/components/files/file-workspace-panel"
 import { AppToaster } from "@/components/ui/app-toaster"
 import { DeepLinkBootstrap } from "@/components/workspace/deep-link-bootstrap"
+import { WorkspaceOpenFolderListener } from "@/components/workspace/workspace-open-folder-listener"
 import {
   ResizableHandle,
   ResizablePanel,
@@ -810,6 +811,7 @@ function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
                         <WorkspaceDocumentTitle />
                         <TabKeysSync />
                         <DeepLinkBootstrap />
+                        <WorkspaceOpenFolderListener />
                         <SessionStatsProvider>
                           <SidebarProvider>
                             <AuxPanelProvider>

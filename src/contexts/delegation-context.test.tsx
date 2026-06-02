@@ -8,21 +8,11 @@ import {
 } from "@/contexts/delegation-context"
 import type { EventEnvelope } from "@/lib/types"
 
-// Capture the envelope handler the provider passes to `subscribe()` so each
-// test can drive the provider with synthetic acp://event envelopes. The
-// provider awaits `subscribe`, so the assignment lands a microtask after
-// mount — tests `await` waitFor to absorb that.
+// Capture the envelope handler the provider registers via `useAcpEvent` so
+// each test can drive the provider with synthetic acp://event envelopes.
+// `useAcpEvent` runs during render, so the handler is captured synchronously
+// on mount.
 let capturedHandler: ((envelope: EventEnvelope) => void) | null = null
-const mockUnsubscribe = vi.fn()
-
-vi.mock("@/lib/platform", () => ({
-  subscribe: vi.fn(
-    async (_channel: string, handler: (e: EventEnvelope) => void) => {
-      capturedHandler = handler
-      return mockUnsubscribe
-    }
-  ),
-}))
 
 const mockAttach = vi.fn()
 const mockDetach = vi.fn()
@@ -32,6 +22,9 @@ vi.mock("@/contexts/acp-connections-context", () => ({
     attachDelegationChild: mockAttach,
     detachDelegationChild: mockDetach,
   }),
+  useAcpEvent: (handler: (e: EventEnvelope) => void) => {
+    capturedHandler = handler
+  },
 }))
 
 /** Render-side probe that exposes the binding lookup as text so tests can
@@ -46,6 +39,7 @@ function BindingProbe({ parentToolUseId }: { parentToolUseId: string }) {
       <div data-testid="status">{binding.status}</div>
       <div data-testid="error-code">{binding.errorCode ?? "-"}</div>
       <div data-testid="duration">{binding.durationMs ?? "-"}</div>
+      <div data-testid="agent">{binding.agentType}</div>
     </div>
   )
 }
@@ -59,9 +53,9 @@ function renderProvider(children: ReactNode = null) {
   )
 }
 
-/** Wait until the provider's async subscribe call resolves and the
- *  handler is captured. Must run with REAL timers so the internal
- *  waitFor polling can fire. */
+/** Wait until the provider has registered its `useAcpEvent` handler. The
+ *  capture is synchronous on mount, so this resolves on the first check; it
+ *  stays a waitFor for resilience and must run with REAL timers. */
 async function awaitHandlerCaptured() {
   await waitFor(() => expect(capturedHandler).not.toBeNull())
 }
@@ -86,7 +80,6 @@ describe("DelegationProvider", () => {
     // subscribe-handler capture has resolved. Doing it in beforeEach
     // breaks waitFor (which polls via setTimeout) and stalls every test.
     capturedHandler = null
-    mockUnsubscribe.mockReset()
     mockAttach.mockReset()
     mockDetach.mockReset()
   })
@@ -128,6 +121,7 @@ describe("DelegationProvider", () => {
       parent_tool_use_id: "pt-1",
       child_connection_id: "c1",
       child_conversation_id: 99,
+      agent_type: "codex",
       result: { kind: "err", error_code: "canceled" },
     } as unknown as EventEnvelope)
     expect(screen.getByTestId("status")).toHaveTextContent("err")
@@ -164,6 +158,7 @@ describe("DelegationProvider", () => {
       parent_tool_use_id: "pt-1",
       child_connection_id: "c1",
       child_conversation_id: 99,
+      agent_type: "codex",
       result: { kind: "ok", duration_ms: 1234 },
     } as unknown as EventEnvelope)
     expect(screen.getByTestId("status")).toHaveTextContent("ok")
@@ -188,10 +183,15 @@ describe("DelegationProvider", () => {
       parent_tool_use_id: "pt-1",
       child_connection_id: "c1",
       child_conversation_id: 99,
+      agent_type: "codex",
       result: { kind: "err", error_code: "timeout" },
     } as unknown as EventEnvelope)
     expect(screen.getByTestId("status")).toHaveTextContent("err")
     expect(screen.getByTestId("error-code")).toHaveTextContent("timeout")
+    // Regression lock (Medium): with no prior delegation_started, the binding
+    // must take the agent_type the completion now carries — not a hardcoded
+    // default — so the card shows the correct agent icon/label.
+    expect(screen.getByTestId("agent")).toHaveTextContent("codex")
   })
 
   it("cancels a pending detach when delegation_started replays for the same parent_tool_use_id", async () => {
@@ -216,6 +216,7 @@ describe("DelegationProvider", () => {
       parent_tool_use_id: "pt-1",
       child_connection_id: "c1",
       child_conversation_id: 99,
+      agent_type: "codex",
       result: { kind: "ok", duration_ms: 100 },
     } as unknown as EventEnvelope)
     // Re-emit started before grace period expires

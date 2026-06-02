@@ -68,6 +68,7 @@ import type {
   GitCredentials,
   GitDetectResult,
   PackageManagerInfo,
+  HyperframesSkillAgent,
   GitSettings,
   GitHubAccountsSettings,
   GitHubTokenValidation,
@@ -1266,6 +1267,22 @@ export async function openProjectBootWindow(source?: string): Promise<void> {
   }
 }
 
+// Cross-window handoff for the project launcher, which lives in its own
+// window/tab and can't reach the workspace's React state directly. The
+// backend upserts the folder and emits `folder://open-in-workspace` carrying
+// the FolderDetail through the shared EventEmitter; the transport layer routes
+// that to the right workspace window in every runtime (local Tauri bus, the
+// server's WebSocket broadcaster for web, and the remote server's broadcaster
+// for remote desktop), so only windows talking to this backend react. The
+// workspace subscribes via WorkspaceOpenFolderListener.
+export const FOLDER_OPEN_IN_WORKSPACE_EVENT = "folder://open-in-workspace"
+
+export async function openFolderInWorkspace(
+  path: string
+): Promise<FolderDetail> {
+  return getTransport().call("open_folder_in_workspace", { path })
+}
+
 export async function detectPackageManager(
   name: string
 ): Promise<PackageManagerInfo> {
@@ -1286,6 +1303,55 @@ export async function createShadcnProject(params: {
     packageManager: params.packageManager,
     targetDir: params.targetDir,
   })
+}
+
+/**
+ * Detect, per codeg-supported agent, whether the HyperFrames skills are already
+ * installed globally. Cheap filesystem check, so no long timeout is needed.
+ */
+export async function detectHyperframesSkills(): Promise<
+  HyperframesSkillAgent[]
+> {
+  return getTransport().call(
+    "detect_hyperframes_skills",
+    {},
+    { timeoutMs: 30_000 }
+  )
+}
+
+/**
+ * Install the HyperFrames agent skills globally (symlinked) for the given
+ * agents. Clones from GitHub, so allow a few minutes. Re-running is idempotent
+ * (acts as an update for agents that already have the skills).
+ */
+export async function installHyperframesSkills(
+  agents: string[]
+): Promise<void> {
+  await getTransport().call(
+    "install_hyperframes_skills",
+    { agents },
+    { timeoutMs: 600_000 }
+  )
+}
+
+export async function createHyperframesProject(params: {
+  projectName: string
+  example: string
+  resolution: string
+  packageManager: string
+  targetDir: string
+}): Promise<string> {
+  return getTransport().call(
+    "create_hyperframes_project",
+    {
+      projectName: params.projectName,
+      example: params.example,
+      resolution: params.resolution,
+      packageManager: params.packageManager,
+      targetDir: params.targetDir,
+    },
+    { timeoutMs: 600_000 }
+  )
 }
 
 // Conversation CRUD commands
@@ -2434,6 +2500,9 @@ export async function deleteModelProvider(id: number): Promise<void> {
 export interface DelegationSettings {
   enabled: boolean
   depth_limit: number
+  /** Per-parent byte budget (in MB) for the broker's in-memory cache of
+   * completed sub-agent result text. `0` = unlimited. */
+  completed_cache_max_mb: number
   /** Optional per-agent overrides applied when codeg-mcp spawns a subagent.
    * Keyed by `agent_type`. Missing entries mean "use agent defaults." */
   agent_defaults?: Partial<Record<AgentType, AgentDelegationDefaults>>

@@ -18,7 +18,9 @@ use codeg_lib::acp::delegation::listener::{
     DelegationListener, ParentSessionLookup, TokenEntry, TokenRegistry,
 };
 use codeg_lib::acp::delegation::spawner::{mock::MockSpawner, ConnectionSpawner};
-use codeg_lib::acp::delegation::transport::{client_round_trip, BrokerRequest, BrokerResponse};
+use codeg_lib::acp::delegation::transport::{
+    client_round_trip, client_status_round_trip, BrokerRequest, BrokerResponse, BrokerStatusRequest,
+};
 use codeg_lib::acp::delegation::types::{DelegationError, DelegationOutcome, DelegationSuccess};
 use codeg_lib::models::AgentType;
 use serde_json::json;
@@ -71,6 +73,26 @@ async fn client_round_trip_with_retry(
     Err(last_err.unwrap_or_else(|| std::io::Error::other("client_round_trip retries exhausted")))
 }
 
+/// `client_round_trip_with_retry` for the `get_delegation_status` follow-up
+/// (collects the terminal result under the async protocol).
+async fn client_status_round_trip_with_retry(
+    pipe: &str,
+    req: &BrokerStatusRequest,
+) -> std::io::Result<BrokerResponse> {
+    let mut last_err = None;
+    for _ in 0..50 {
+        match client_status_round_trip(pipe, req).await {
+            Ok(resp) => return Ok(resp),
+            Err(e) => {
+                last_err = Some(e);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    }
+    Err(last_err
+        .unwrap_or_else(|| std::io::Error::other("client_status_round_trip retries exhausted")))
+}
+
 #[tokio::test]
 async fn end_to_end_named_pipe_happy_path() {
     let mock = Arc::new(MockSpawner::new());
@@ -112,29 +134,8 @@ async fn end_to_end_named_pipe_happy_path() {
         let _ = listener.run(pipe_for_listener).await;
     });
 
-    let broker_for_completion = broker.clone();
-    let completer = tokio::spawn(async move {
-        loop {
-            if let Some(call_id) = broker_for_completion.peek_first_pending_call_id().await {
-                broker_for_completion
-                    .complete_call(
-                        &call_id,
-                        DelegationOutcome::Ok(DelegationSuccess {
-                            text: "pipe-result".into(),
-                            child_conversation_id: 77,
-                            child_agent_type: AgentType::Codex,
-                            turn_count: 1,
-                            duration_ms: 12,
-                            token_usage: None,
-                        }),
-                    )
-                    .await;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    });
-
+    // 1. delegate_to_agent → Running ack carrying the child conversation id and
+    //    a task_id to follow up on.
     let req = BrokerRequest {
         token: "tok".into(),
         parent_connection_id: "p1".into(),
@@ -142,14 +143,44 @@ async fn end_to_end_named_pipe_happy_path() {
         external_handle: None,
         input: json!({"agent_type": "codex", "task": "do x"}),
     };
-    let resp = client_round_trip_with_retry(&pipe, &req)
+    let ack = client_round_trip_with_retry(&pipe, &req)
         .await
         .expect("client round-trip");
+    assert_eq!(ack.outcome["status"], "running");
+    assert_eq!(ack.outcome["child_conversation_id"], 77);
+    let task_id = ack.outcome["task_id"]
+        .as_str()
+        .expect("running ack carries a task_id")
+        .to_string();
 
-    completer.await.unwrap();
+    // 2. The lifecycle resolves the child on TurnComplete; the task is already
+    //    registered, so complete_call migrates it to completed deterministically.
+    broker
+        .complete_call(
+            &task_id,
+            DelegationOutcome::Ok(DelegationSuccess {
+                text: "pipe-result".into(),
+                child_conversation_id: 77,
+                child_agent_type: AgentType::Codex,
+                turn_count: 1,
+                duration_ms: 12,
+                token_usage: None,
+            }),
+        )
+        .await;
+
+    // 3. get_delegation_status → Completed with the result text, over the pipe.
+    let status_req = BrokerStatusRequest {
+        token: "tok".into(),
+        task_id,
+        wait_ms: Some(1_000),
+    };
+    let resp = client_status_round_trip_with_retry(&pipe, &status_req)
+        .await
+        .expect("status round-trip");
     listener_task.abort();
 
-    assert_eq!(resp.outcome["kind"], "ok");
+    assert_eq!(resp.outcome["status"], "completed");
     assert_eq!(resp.outcome["text"], "pipe-result");
     assert_eq!(resp.outcome["child_conversation_id"], 77);
 }
@@ -237,7 +268,10 @@ async fn end_to_end_named_pipe_back_to_back_requests() {
         let resp = client_round_trip_with_retry(&pipe, &req)
             .await
             .unwrap_or_else(|e| panic!("round-trip {i} failed: {e}"));
-        assert_eq!(resp.outcome["kind"], "ok", "round-trip {i}");
+        // Async protocol: each call returns a Running ack (the completer
+        // resolves the task afterward). The point of this test is the pipe
+        // re-accepting a second connection, not the terminal shape.
+        assert_eq!(resp.outcome["status"], "running", "round-trip {i}");
     }
 
     completer.await.unwrap();

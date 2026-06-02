@@ -1,6 +1,13 @@
 "use client"
 
-import { CheckCircleIcon, Loader2, XCircleIcon } from "lucide-react"
+import {
+  CheckCircleIcon,
+  CircleDashed,
+  Clock,
+  Loader2,
+  ShieldAlert,
+  XCircleIcon,
+} from "lucide-react"
 import { useTranslations } from "next-intl"
 
 import { Badge } from "@/components/ui/badge"
@@ -9,15 +16,41 @@ export function StatusBadge({
   status,
   errorCode,
 }: {
-  status: "running" | "ok" | "err"
+  status: "starting" | "running" | "waiting" | "ok" | "err" | "checked"
   errorCode?: string
 }) {
   const t = useTranslations("Folder.chat.delegation.status")
+  if (status === "starting") {
+    return (
+      <Badge className="gap-1.5 rounded-full text-xs" variant="secondary">
+        <CircleDashed className="animate-spin text-muted-foreground" />
+        {t("starting")}
+      </Badge>
+    )
+  }
+  if (status === "waiting") {
+    return (
+      <Badge className="gap-1.5 rounded-full text-xs" variant="secondary">
+        <ShieldAlert className="text-amber-500" />
+        {t("waiting")}
+      </Badge>
+    )
+  }
   if (status === "running") {
     return (
       <Badge className="gap-1.5 rounded-full text-xs" variant="secondary">
         <Loader2 className="animate-spin" />
         {t("running")}
+      </Badge>
+    )
+  }
+  if (status === "checked") {
+    // A poll returned "still running" — a settled snapshot, not live work.
+    // Neutral, non-spinning, so a superseded check stops spinning.
+    return (
+      <Badge className="gap-1.5 rounded-full text-xs" variant="secondary">
+        <Clock className="text-muted-foreground" />
+        {t("checked")}
       </Badge>
     )
   }
@@ -68,6 +101,8 @@ function ErrorLabel({ code }: { code?: string }) {
       return <>{t("child_empty")}</>
     case "child_unknown":
       return <>{t("child_unknown")}</>
+    case "unknown":
+      return <>{t("unknown")}</>
     default:
       return <>{t("default")}</>
   }

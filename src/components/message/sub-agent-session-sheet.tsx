@@ -1,13 +1,16 @@
 "use client"
 
 /**
- * Read-only viewer for a delegated sub-agent's full conversation.
+ * Viewer for a delegated sub-agent's full conversation.
  *
  * Opens from `DelegatedSubThread`'s header and renders the same
  * `MessageListView` used by the main conversation panel, but without
  * the input bar, send signal, or reload/new-session handlers — so the
- * user can scroll the transcript but cannot interact with the child
- * session.
+ * user can scroll the transcript without driving the child's turns. The
+ * one interaction it hosts is the child's permission prompt: when the
+ * child (running at the user's configured permission level) requests
+ * approval, the dialog is surfaced here to allow/deny, since the parent
+ * card itself is non-interactive (it only badges "awaiting approval").
  *
  * Streaming: while the sheet is open, the child connection's live
  * message and status (from `acp-connections-context`) are mirrored
@@ -32,9 +35,11 @@ import {
 import { useConversationDetail } from "@/hooks/use-conversation-detail"
 import { useConversationRuntime } from "@/contexts/conversation-runtime-context"
 import {
+  useAcpActions,
   useConnectionStore,
   type ConnectionState,
 } from "@/contexts/acp-connections-context"
+import { PermissionDialog } from "@/components/chat/permission-dialog"
 import { AGENT_LABELS, type AgentType } from "@/lib/types"
 
 interface Props {
@@ -230,6 +235,20 @@ function SubAgentSessionBody({
 
   const connStatus = childConn?.status ?? null
 
+  // The child runs with the user's configured permission level, so it may
+  // raise a permission request. The parent card no longer answers it inline
+  // (it only badges "awaiting approval"); this sheet is where the user
+  // resolves it. Route the response through the CHILD connection id.
+  const { respondPermission } = useAcpActions()
+  const childPendingPermission = childConn?.pendingPermission ?? null
+  const onRespondPermission = useCallback(
+    (requestId: string, optionId: string) => {
+      if (!childConnectionId) return
+      void respondPermission(childConnectionId, requestId, optionId)
+    },
+    [childConnectionId, respondPermission]
+  )
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-3 px-5 py-2.5 border-b border-border pr-12">
@@ -244,6 +263,14 @@ function SubAgentSessionBody({
           {agentType ? AGENT_LABELS[agentType] : t("unknownAgent")}
         </span>
       </div>
+      {childPendingPermission && (
+        <div className="border-b border-border px-4 py-3">
+          <PermissionDialog
+            permission={childPendingPermission}
+            onRespond={onRespondPermission}
+          />
+        </div>
+      )}
       <div className="flex-1 min-h-0 px-4 py-3">
         <MessageListView
           conversationId={childConversationId}

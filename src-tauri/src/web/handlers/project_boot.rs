@@ -23,6 +23,21 @@ pub struct CreateShadcnProjectParams {
     pub target_dir: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateHyperframesProjectParams {
+    pub project_name: String,
+    pub example: String,
+    pub resolution: String,
+    pub package_manager: String,
+    pub target_dir: String,
+}
+
+#[derive(Deserialize)]
+pub struct InstallHyperframesSkillsParams {
+    pub agents: Vec<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -41,6 +56,31 @@ pub async fn create_shadcn_project(
         params.project_name,
         params.template,
         params.preset_code,
+        params.package_manager,
+        params.target_dir,
+    )
+    .await?;
+    Ok(Json(result))
+}
+
+pub async fn detect_hyperframes_skills() -> Json<Vec<pb_commands::HyperframesSkillAgent>> {
+    Json(pb_commands::detect_hyperframes_skills().await)
+}
+
+pub async fn install_hyperframes_skills(
+    Json(params): Json<InstallHyperframesSkillsParams>,
+) -> Result<Json<()>, AppCommandError> {
+    pb_commands::install_hyperframes_skills(params.agents).await?;
+    Ok(Json(()))
+}
+
+pub async fn create_hyperframes_project(
+    Json(params): Json<CreateHyperframesProjectParams>,
+) -> Result<Json<String>, AppCommandError> {
+    let result = pb_commands::create_hyperframes_project(
+        params.project_name,
+        params.example,
+        params.resolution,
         params.package_manager,
         params.target_dir,
     )

@@ -64,12 +64,28 @@ describe("isAgentLikeToolName", () => {
     expect(isAgentLikeToolName("codeg-delegate:delegate_to_agent")).toBe(true)
   })
 
+  it("matches the delegation companion tools across host naming conventions", () => {
+    for (const tool of ["get_delegation_status", "cancel_delegation"]) {
+      // Bare canonical form (live-streaming path, post-inferLiveToolName)
+      expect(isAgentLikeToolName(tool)).toBe(true)
+      // Claude Code style (historical path: raw host-prefixed name)
+      expect(isAgentLikeToolName(`mcp__codeg-delegate__${tool}`)).toBe(true)
+      expect(isAgentLikeToolName(`mcp__codeg__${tool}`)).toBe(true)
+      // Codex live ACP + dot/colon separated forms
+      expect(isAgentLikeToolName(`codeg-delegate/${tool}`)).toBe(true)
+      expect(isAgentLikeToolName(`codeg-delegate.${tool}`)).toBe(true)
+      expect(isAgentLikeToolName(`codeg-delegate:${tool}`)).toBe(true)
+    }
+  })
+
   it("does not match other tools", () => {
     expect(isAgentLikeToolName("task")).toBe(false)
     expect(isAgentLikeToolName("subagent")).toBe(false)
     expect(isAgentLikeToolName("")).toBe(false)
     // No separator before the suffix — must not match.
     expect(isAgentLikeToolName("xdelegate_to_agent")).toBe(false)
+    expect(isAgentLikeToolName("xget_delegation_status")).toBe(false)
+    expect(isAgentLikeToolName("xcancel_delegation")).toBe(false)
   })
 })
 

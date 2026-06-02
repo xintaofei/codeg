@@ -197,6 +197,24 @@ pub async fn get_by_id(
     Ok(conv_to_summary(conv))
 }
 
+/// Look up a child conversation by its `delegation_call_id` (the broker's
+/// `task_id`). Returns `Ok(None)` when no row matches — used by the broker's
+/// `ChildStatusLookup` DB fallback to recover a delegation task's terminal
+/// status after its in-memory result was evicted from the completed-cache.
+/// Unlike [`get_by_id`] this never errors hard on "not found": a missing row
+/// is a legitimate "unknown task" answer.
+pub async fn get_by_delegation_call_id(
+    conn: &DatabaseConnection,
+    delegation_call_id: &str,
+) -> Result<Option<DbConversationSummary>, DbError> {
+    let conv = conversation::Entity::find()
+        .filter(conversation::Column::DelegationCallId.eq(delegation_call_id))
+        .filter(conversation::Column::DeletedAt.is_null())
+        .one(conn)
+        .await?;
+    Ok(conv.map(conv_to_summary))
+}
+
 pub async fn list_by_folder(
     conn: &DatabaseConnection,
     folder_id: i32,

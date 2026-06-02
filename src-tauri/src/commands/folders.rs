@@ -518,6 +518,23 @@ pub async fn open_folder_core(
         .ok_or_else(|| AppCommandError::not_found("Folder not found after add"))
 }
 
+/// Open a folder into the workspace and announce it so the workspace window
+/// can surface it. Used by the project launcher, which lives in its own
+/// window/tab and can't reach the workspace's React state directly. Emitting
+/// through the shared `EventEmitter` routes the signal correctly in every
+/// runtime — Tauri events (desktop), the WebSocket broadcaster (server), and
+/// the remote server's broadcaster (remote desktop) — so only windows talking
+/// to this same backend react.
+pub async fn open_folder_in_workspace_core(
+    emitter: &EventEmitter,
+    db: &AppDatabase,
+    path: String,
+) -> Result<FolderDetail, AppCommandError> {
+    let detail = open_folder_core(db, path).await?;
+    crate::web::event_bridge::emit_event(emitter, "folder://open-in-workspace", &detail);
+    Ok(detail)
+}
+
 pub async fn open_folder_by_id_core(
     db: &AppDatabase,
     folder_id: i32,
@@ -634,6 +651,17 @@ pub async fn open_folder(
     path: String,
 ) -> Result<FolderDetail, AppCommandError> {
     open_folder_core(&db, path).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn open_folder_in_workspace(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    path: String,
+) -> Result<FolderDetail, AppCommandError> {
+    let emitter = EventEmitter::Tauri(app);
+    open_folder_in_workspace_core(&emitter, &db, path).await
 }
 
 #[cfg(feature = "tauri-runtime")]

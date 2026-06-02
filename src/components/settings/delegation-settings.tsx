@@ -40,10 +40,19 @@ import { DelegationAgentDefaultsPanel } from "./delegation-agent-defaults"
 
 const DEPTH_MIN = 1
 const DEPTH_MAX = 8
+const DEFAULT_CACHE_MB = 512
 
 function clamp(n: number, lo: number, hi: number): number {
   if (!Number.isFinite(n)) return lo
   return Math.min(hi, Math.max(lo, Math.trunc(n)))
+}
+
+/** Cache budget in MB: floor at 0 (= unlimited), drop fractional MB, no upper
+ * bound (it's a memory choice, not a safety rail). NaN (cleared/garbage input)
+ * falls back to the product default rather than silently disabling the valve. */
+function clampCacheMb(n: number): number {
+  if (!Number.isFinite(n)) return DEFAULT_CACHE_MB
+  return Math.max(0, Math.trunc(n))
 }
 
 export function DelegationSettingsSection() {
@@ -52,6 +61,7 @@ export function DelegationSettingsSection() {
   const [saving, setSaving] = useState(false)
   const [enabled, setEnabled] = useState(false)
   const [depth, setDepth] = useState<number>(1)
+  const [cacheMb, setCacheMb] = useState<number>(DEFAULT_CACHE_MB)
   const [agentDefaults, setAgentDefaults] = useState<
     Partial<Record<AgentType, AgentDelegationDefaults>>
   >({})
@@ -64,6 +74,7 @@ export function DelegationSettingsSection() {
         if (cancelled) return
         setEnabled(s.enabled)
         setDepth(s.depth_limit)
+        setCacheMb(s.completed_cache_max_mb)
         setAgentDefaults(s.agent_defaults ?? {})
         setLoadError(null)
       })
@@ -84,6 +95,7 @@ export function DelegationSettingsSection() {
     const payload: DelegationSettings = {
       enabled,
       depth_limit: clamp(depth, DEPTH_MIN, DEPTH_MAX),
+      completed_cache_max_mb: clampCacheMb(cacheMb),
       agent_defaults: agentDefaults,
     }
     setSaving(true)
@@ -93,6 +105,7 @@ export function DelegationSettingsSection() {
       // inputs reflect what was actually persisted.
       setEnabled(applied.enabled)
       setDepth(applied.depth_limit)
+      setCacheMb(applied.completed_cache_max_mb)
       setAgentDefaults(applied.agent_defaults ?? {})
       toast.success(t("saved"))
     } catch (err: unknown) {
@@ -102,7 +115,7 @@ export function DelegationSettingsSection() {
     } finally {
       setSaving(false)
     }
-  }, [enabled, depth, agentDefaults, t])
+  }, [enabled, depth, cacheMb, agentDefaults, t])
 
   return (
     <section className="rounded-xl border bg-card p-4 space-y-4">
@@ -130,7 +143,7 @@ export function DelegationSettingsSection() {
 
         <TabsContent value="general" className="space-y-4 pt-2">
           <div className="flex items-center justify-between gap-3">
-            <div className="space-y-1">
+            <div className="space-y-1 min-w-0">
               <label
                 htmlFor="delegation-enabled"
                 className="text-sm font-medium"
@@ -144,11 +157,12 @@ export function DelegationSettingsSection() {
               checked={enabled}
               onCheckedChange={setEnabled}
               disabled={loading}
+              className="shrink-0"
             />
           </div>
 
           <div className="flex items-center justify-between gap-3">
-            <div className="space-y-1">
+            <div className="space-y-1 min-w-0">
               <label htmlFor="delegation-depth" className="text-sm font-medium">
                 {t("depthLimit")}
               </label>
@@ -164,7 +178,37 @@ export function DelegationSettingsSection() {
               value={depth}
               onChange={(e) => setDepth(Number(e.target.value))}
               disabled={loading || !enabled}
-              className="w-24"
+              className="w-28 shrink-0"
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-3">
+            <div className="space-y-1 min-w-0">
+              <label
+                htmlFor="delegation-cache-mb"
+                className="text-sm font-medium"
+              >
+                {t("completedCacheLabel")}
+              </label>
+              <p className="text-xs text-muted-foreground">
+                {t("completedCacheHint")}
+              </p>
+            </div>
+            <Input
+              id="delegation-cache-mb"
+              type="number"
+              min={0}
+              step={1}
+              value={Number.isNaN(cacheMb) ? "" : cacheMb}
+              onChange={(e) => {
+                const raw = e.target.value
+                // Empty (cleared) → NaN so `clampCacheMb` restores the default
+                // on save, instead of `Number("") === 0` silently persisting
+                // 0 (= unlimited). Explicit "0" still means unlimited.
+                setCacheMb(raw === "" ? NaN : Number(raw))
+              }}
+              disabled={loading || !enabled}
+              className="w-28 shrink-0"
             />
           </div>
         </TabsContent>

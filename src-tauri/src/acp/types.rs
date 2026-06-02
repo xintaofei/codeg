@@ -233,6 +233,12 @@ pub enum AcpEvent {
         parent_tool_use_id: String,
         child_connection_id: String,
         child_conversation_id: i32,
+        /// Child agent type. Carried so a frontend that missed the
+        /// `DelegationStarted` event (context mounted mid-flight, reconnect,
+        /// or web/server snapshot replay that only re-delivered the completion)
+        /// can synthesize the binding with the correct agent instead of a
+        /// hardcoded default. Mirrors `DelegationStarted.agent_type`.
+        agent_type: crate::models::agent::AgentType,
         result: DelegationResultSummary,
     },
 }
@@ -240,8 +246,19 @@ pub enum AcpEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DelegationResultSummary {
-    Ok { duration_ms: u64 },
-    Err { error_code: String },
+    Ok {
+        duration_ms: u64,
+        /// Bounded preview (≤ ~2 KiB) of the child's final assistant text, so
+        /// the parent UI can render the result inline on the live
+        /// `delegation_completed` event without re-fetching the child session,
+        /// and the chat-channel relay can echo it. `None` for older payloads /
+        /// when the child produced no text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text_preview: Option<String>,
+    },
+    Err {
+        error_code: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

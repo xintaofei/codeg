@@ -481,6 +481,8 @@
       "enableHint": "عند الإيقاف، يتم إخفاء أداة delegate_to_agent من قائمة أدوات MCP الخاصة بالوكيل.",
       "depthLimit": "أقصى عمق للتفويض",
       "depthHint": "النطاق المسموح: {min}–{max}. يحدّ من عمق سلسلة التفويض (جذر ← فرعي ← حفيد …).",
+      "completedCacheLabel": "ذاكرة التخزين المؤقت للنتائج المكتملة (MB)",
+      "completedCacheHint": "ذاكرة تخزين مؤقتة في الذاكرة لنتائج الوكلاء الفرعيين المكتملة، تُحفظ فقط أثناء تشغيل جلسة التفويض وتُحرَّر تلقائيًا عند انتهاء تلك الجلسة. وعند تجاوز هذه الميزانية، تُسقَط أقدم النتائج من الذاكرة أولًا (تظل قابلة للعرض في جلسة الوكيل الفرعي نفسه)؛ 0 = غير محدود (وتُحرَّر مع ذلك عند انتهاء الجلسة).",
       "save": "حفظ",
       "saving": "جارٍ الحفظ…",
       "saved": "تم حفظ إعدادات التفويض",
@@ -1888,8 +1890,15 @@
         "openDetail": "عرض المحادثة",
         "detailTitle": "محادثة الوكيل الفرعي",
         "detailDescription": "عرض للقراءة فقط لمحادثة الوكيل الفرعي المُفوَّض.",
+        "waitForResult": "في انتظار نتيجة المهمة {task}",
+        "waitForResultNoTask": "في انتظار نتيجة المهمة",
+        "cancelTask": "جارٍ إلغاء المهمة {task}",
+        "cancelTaskNoTask": "جارٍ إلغاء المهمة",
         "status": {
+          "starting": "قيد البدء",
           "running": "قيد التشغيل",
+          "checked": "تم الفحص",
+          "waiting": "في انتظار الموافقة",
           "ok": "اكتمل",
           "err": {
             "default": "فشل",
@@ -1904,7 +1913,8 @@
             "child_max_tokens": "الوكيل الفرعي: حد الرموز",
             "child_max_turn_requests": "الوكيل الفرعي: حد الطلبات",
             "child_empty": "الوكيل الفرعي بدون استجابة",
-            "child_unknown": "الوكيل الفرعي: خطأ"
+            "child_unknown": "الوكيل الفرعي: خطأ",
+            "unknown": "مهمة غير معروفة"
           }
         }
       },
@@ -2060,7 +2070,21 @@
   "ProjectBoot": {
     "title": "مُنشئ المشروع",
     "tabs": {
-      "shadcn": "shadcn"
+      "shadcn": "shadcn",
+      "hyperframes": "HyperFrames"
+    },
+    "hyperframes": {
+      "title": "مشروع فيديو HyperFrames",
+      "subtitle": "أنشئ مشروعًا لتحويل HTML إلى فيديو. يمكن لوكيل مساحة العمل بعد ذلك كتابته وعرضه.",
+      "resolution": "الدقة",
+      "skillsTitle": "مهارات الوكلاء",
+      "skillsDesc": "ثبّت مهارات HyperFrames عامًّا (رابط رمزي) للوكلاء المحددين حتى يتمكنوا من إنشاء الفيديو وعرضه.",
+      "recheck": "إعادة الفحص",
+      "installedBadge": "مثبّت",
+      "skillsInstall": "تثبيت / تحديث المهارات",
+      "skillsInstalling": "جارٍ تثبيت المهارات…",
+      "skillsInstalled": "تم تثبيت مهارات HyperFrames",
+      "skillsInstallFailed": "تعذّر تثبيت مهارات HyperFrames"
     },
     "config": {
       "base": "الأساس",
@@ -2106,7 +2130,8 @@
     },
     "toasts": {
       "createFailed": "فشل إنشاء المشروع",
-      "createSuccess": "تم إنشاء المشروع بنجاح"
+      "createSuccess": "تم إنشاء المشروع بنجاح",
+      "openWorkspaceFailed": "تم إنشاء المشروع، ولكن تعذّر فتحه في مساحة العمل"
     },
     "errors": {
       "directoryExists": "الدليل الهدف موجود بالفعل",
