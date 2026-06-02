@@ -85,6 +85,11 @@ const initialState: ConversationRuntimeState = {
   conversationIdByExternalId: new Map(),
 }
 
+// Shared stable reference for the "no session" timeline result, so callers
+// memoizing on the returned array (MessageListView's `threadItems`) don't see
+// a fresh array on every render for conversations that don't exist yet.
+const EMPTY_TIMELINE: ConversationTimelineTurn[] = []
+
 type Action =
   | {
       type: "FETCH_DETAIL_START"
@@ -1093,10 +1098,34 @@ export function ConversationRuntimeProvider({
     [state.conversationIdByExternalId]
   )
 
+  // Timeline cache keyed by the session OBJECT (not the id). `updateSessionInState`
+  // always allocates a fresh session object for the conversation it touches and
+  // preserves the reference for every other conversation, so an unrelated
+  // dispatch (e.g. another tab's streaming token) leaves this conversation's
+  // session ref untouched — returning the identical timeline array then lets
+  // MessageListView's `threadItems` useMemo short-circuit instead of re-running
+  // the adapt/merge/scan pipeline on every cross-tab broadcast render.
+  //
+  // A WeakMap is used so a cache entry is collected automatically once its
+  // session object is no longer referenced by state (the session is replaced on
+  // update, or dropped on REMOVE_CONVERSATION / RESET / migration). The value
+  // can transitively retain a full transcript (detail.turns, live message,
+  // images, diffs), so a plain Map keyed by id would leak those indefinitely in
+  // a long-lived desktop provider as conversations are opened and closed.
+  // Keying by session is sound because each session object belongs to exactly
+  // one conversation id (no reducer path aliases a session across ids), so the
+  // conversation id baked into the result's keys is always consistent.
+  const timelineCacheRef = useRef(
+    new WeakMap<ConversationRuntimeSession, ConversationTimelineTurn[]>()
+  )
+
   const getTimelineTurns = useCallback(
     (conversationId: number): ConversationTimelineTurn[] => {
       const session = state.byConversationId.get(conversationId)
-      if (!session) return []
+      if (!session) return EMPTY_TIMELINE
+
+      const cached = timelineCacheRef.current.get(session)
+      if (cached) return cached
 
       // Phase 1: DB historical turns
       const persisted: ConversationTimelineTurn[] = (
@@ -1143,6 +1172,7 @@ export function ConversationRuntimeProvider({
         }
       }
 
+      timelineCacheRef.current.set(session, result)
       return result
     },
     [state.byConversationId]

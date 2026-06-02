@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useMemo, useRef } from "react"
+import { memo, useCallback, useMemo, useRef } from "react"
 import type { CSSProperties, ReactNode, RefObject } from "react"
 import { Virtualizer, type VirtualizerHandle } from "virtua"
 import { useStickToBottomContext } from "use-stick-to-bottom"
@@ -47,7 +47,7 @@ interface VirtualizedMessageThreadProps<T> {
   contentProps?: Omit<MessageThreadContentProps, "children" | "className">
 }
 
-export function VirtualizedMessageThread<T>({
+function VirtualizedMessageThreadImpl<T>({
   items,
   getItemKey,
   renderItem,
@@ -125,3 +125,14 @@ export function VirtualizedMessageThread<T>({
     </MessageScrollProvider>
   )
 }
+
+// Memoized so a cross-tab broadcast render of MessageListView with an
+// unchanged `items` reference (see getTimelineTurns memoization) skips the
+// per-row React element creation entirely. The streaming tab's `items`
+// reference changes every flush, so it re-renders as before. `getItemKey` /
+// `renderItem` are stabilized by the caller; default shallow prop comparison
+// is sufficient. The `as` cast preserves the generic call signature that
+// `memo` would otherwise erase.
+export const VirtualizedMessageThread = memo(
+  VirtualizedMessageThreadImpl
+) as typeof VirtualizedMessageThreadImpl

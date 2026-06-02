@@ -33,13 +33,13 @@ import {
   vi,
   type MockInstance,
 } from "vitest"
-import type { ReactNode } from "react"
+import { useEffect, type ReactNode } from "react"
 
 import {
   ConversationRuntimeProvider,
   useConversationRuntime,
 } from "@/contexts/conversation-runtime-context"
-import type { DbConversationDetail } from "@/lib/types"
+import type { DbConversationDetail, MessageTurn } from "@/lib/types"
 
 vi.mock("@/lib/api", () => ({
   getFolderConversation: vi.fn(),
@@ -246,5 +246,81 @@ describe("ConversationRuntimeProvider fetch-generation guard", () => {
       await Promise.resolve()
     })
     expect(screen.getByTestId("title").textContent).toBe("fresh-B")
+  })
+})
+
+/**
+ * `getTimelineTurns` memoizes per conversation by session reference, so a
+ * dispatch that updates conversation A leaves conversation B's timeline array
+ * referentially identical. This is what lets MessageListView's `threadItems`
+ * useMemo short-circuit for every tab except the one whose session actually
+ * changed — neutralizing the cross-tab broadcast fan-out without unmounting
+ * any session (tile mode keeps every active conversation mounted).
+ */
+describe("ConversationRuntimeProvider getTimelineTurns memoization", () => {
+  const runtimeHolder: {
+    current: ReturnType<typeof useConversationRuntime> | undefined
+  } = { current: undefined }
+
+  function RuntimeCapture() {
+    const runtime = useConversationRuntime()
+    useEffect(() => {
+      runtimeHolder.current = runtime
+    })
+    return null
+  }
+
+  function userTurn(id: string): MessageTurn {
+    return {
+      id,
+      role: "user",
+      blocks: [{ type: "text", text: id }],
+      timestamp: "2026-05-28T00:00:00.000Z",
+    }
+  }
+
+  beforeEach(() => {
+    runtimeHolder.current = undefined
+  })
+
+  it("returns a stable reference for a conversation untouched by an unrelated update, and a fresh reference for the one that changed", () => {
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+
+    // Seed two independent conversations.
+    act(() => {
+      api().appendOptimisticTurn(1, userTurn("a1"), "a1")
+    })
+    act(() => {
+      api().appendOptimisticTurn(2, userTurn("b1"), "b1")
+    })
+
+    // Prime the cache for both.
+    const timeline1Before = api().getTimelineTurns(1)
+    const timeline2Before = api().getTimelineTurns(2)
+    expect(timeline1Before).toHaveLength(1)
+    expect(timeline2Before).toHaveLength(1)
+
+    // Update only conversation 1.
+    act(() => {
+      api().appendOptimisticTurn(1, userTurn("a2"), "a2")
+    })
+
+    const timeline1After = api().getTimelineTurns(1)
+    const timeline2After = api().getTimelineTurns(2)
+
+    // Conversation 2 was untouched → identical array reference (cache hit).
+    expect(timeline2After).toBe(timeline2Before)
+    // Conversation 1 changed → new reference and new content.
+    expect(timeline1After).not.toBe(timeline1Before)
+    expect(timeline1After).toHaveLength(2)
+  })
+
+  it("returns a stable empty-array reference for an unknown conversation", () => {
+    renderProvider(<RuntimeCapture />)
+    const first = runtimeHolder.current!.getTimelineTurns(12345)
+    const second = runtimeHolder.current!.getTimelineTurns(67890)
+    expect(first).toHaveLength(0)
+    expect(second).toBe(first)
   })
 })

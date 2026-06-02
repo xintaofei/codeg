@@ -107,6 +107,10 @@ type ThreadRenderItem =
       kind: "typing"
     }
 
+// Module-scope so the reference is stable across renders — lets the memoized
+// VirtualizedMessageThread bail out when `items` is unchanged.
+const getThreadItemKey = (item: ThreadRenderItem) => item.key
+
 const CollapsibleSystemMessage = memo(function CollapsibleSystemMessage({
   group,
 }: {
@@ -709,7 +713,7 @@ export function MessageListView({
         <AutoScrollOnSend signal={sendSignal} />
         <VirtualizedMessageThread
           items={threadItems}
-          getItemKey={(item) => item.key}
+          getItemKey={getThreadItemKey}
           renderItem={renderThreadItem}
           emptyState={emptyState}
         />
