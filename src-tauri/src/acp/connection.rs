@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -43,6 +44,7 @@ use crate::network::proxy;
 use crate::web::event_bridge::{emit_with_state, EventEmitter};
 
 const DEFAULT_COMMAND_COLOR_ENV: [(&str, &str); 1] = [("CLICOLOR_FORCE", "1")];
+const CLAUDE_CONTEXT_1M_BETA: &str = "context-1m-2025-08-07";
 
 fn merge_agent_env(
     env: &[(&'static str, &'static str)],
@@ -463,6 +465,7 @@ pub async fn spawn_agent_connection(
             cmd_rx,
             emitter_clone.clone(),
             Arc::clone(&state_clone),
+            runtime_env,
             terminal_base_env,
             preferred_mode_id,
             preferred_config_values,
@@ -757,8 +760,105 @@ fn resolve_working_dir(working_dir: Option<&str>) -> PathBuf {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ClaudeAutoCompactWindowConfig {
+    value: Option<i64>,
+}
+
+fn resolve_claude_auto_compact_window_config(
+    runtime_env: &BTreeMap<String, String>,
+) -> ClaudeAutoCompactWindowConfig {
+    let Some(raw_value) = runtime_env.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW") else {
+        return ClaudeAutoCompactWindowConfig { value: None };
+    };
+    let raw = raw_value.trim();
+    if raw.is_empty() {
+        return ClaudeAutoCompactWindowConfig { value: None };
+    }
+
+    let Ok(value) = raw.parse::<i64>() else {
+        return ClaudeAutoCompactWindowConfig { value: None };
+    };
+
+    if (100_000..=1_000_000).contains(&value) {
+        ClaudeAutoCompactWindowConfig { value: Some(value) }
+    } else {
+        ClaudeAutoCompactWindowConfig { value: None }
+    }
+}
+
+fn read_claude_code_user_options(
+    runtime_env: &BTreeMap<String, String>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let Some(settings_path) = runtime_env
+        .get("CODEG_TEST_CLAUDE_SETTINGS_PATH")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".claude").join("settings.json")))
+    else {
+        return serde_json::Map::new();
+    };
+
+    let Some(options) = fs::read_to_string(settings_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|value| {
+            value
+                .get("_meta")
+                .and_then(|meta| meta.get("claudeCode"))
+                .and_then(|claude_code| claude_code.get("options"))
+                .and_then(|options| options.as_object())
+                .cloned()
+        })
+    else {
+        return serde_json::Map::new();
+    };
+
+    options
+}
+
+fn merge_json_objects(
+    target: &mut serde_json::Map<String, serde_json::Value>,
+    patch: serde_json::Map<String, serde_json::Value>,
+) {
+    for (key, value) in patch {
+        match (target.get_mut(&key), value) {
+            (
+                Some(serde_json::Value::Object(target_object)),
+                serde_json::Value::Object(patch_object),
+            ) => {
+                merge_json_objects(target_object, patch_object);
+            }
+            (_, value) => {
+                target.insert(key, value);
+            }
+        }
+    }
+}
+
+fn merge_claude_context_beta(options: &mut serde_json::Map<String, serde_json::Value>) {
+    match options.get_mut("betas") {
+        Some(serde_json::Value::Array(betas)) => {
+            if !betas
+                .iter()
+                .any(|value| value.as_str() == Some(CLAUDE_CONTEXT_1M_BETA))
+            {
+                betas.push(serde_json::Value::String(
+                    CLAUDE_CONTEXT_1M_BETA.to_string(),
+                ));
+            }
+        }
+        _ => {
+            options.insert(
+                "betas".to_string(),
+                serde_json::json!([CLAUDE_CONTEXT_1M_BETA]),
+            );
+        }
+    }
+}
+
 fn claude_raw_sdk_session_meta(
     agent_type: AgentType,
+    runtime_env: &BTreeMap<String, String>,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
     if agent_type != AgentType::ClaudeCode {
         return None;
@@ -769,6 +869,26 @@ fn claude_raw_sdk_session_meta(
         "emitRawSDKMessages".to_string(),
         serde_json::Value::Bool(true),
     );
+
+    let auto_compact_config = resolve_claude_auto_compact_window_config(runtime_env);
+    if let Some(auto_compact_window) = auto_compact_config.value {
+        let mut options = read_claude_code_user_options(runtime_env);
+        merge_json_objects(
+            &mut options,
+            serde_json::json!({
+                "settings": {
+                    "autoCompactWindow": auto_compact_window,
+                },
+            })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+        );
+        if auto_compact_window > 200_000 {
+            merge_claude_context_beta(&mut options);
+        }
+        claude_code.insert("options".to_string(), serde_json::Value::Object(options));
+    }
 
     let mut meta = serde_json::Map::new();
     meta.insert(
@@ -782,9 +902,10 @@ fn build_new_session_request(
     agent_type: AgentType,
     cwd: &Path,
     mcp_servers: Vec<McpServer>,
+    runtime_env: &BTreeMap<String, String>,
 ) -> NewSessionRequest {
     let mut req = NewSessionRequest::new(cwd.to_path_buf());
-    if let Some(meta) = claude_raw_sdk_session_meta(agent_type) {
+    if let Some(meta) = claude_raw_sdk_session_meta(agent_type, runtime_env) {
         req = req.meta(meta);
     }
     if !mcp_servers.is_empty() {
@@ -798,9 +919,10 @@ fn build_load_session_request(
     session_id: SessionId,
     cwd: &Path,
     mcp_servers: Vec<McpServer>,
+    runtime_env: &BTreeMap<String, String>,
 ) -> LoadSessionRequest {
     let mut req = LoadSessionRequest::new(session_id, cwd.to_path_buf());
-    if let Some(meta) = claude_raw_sdk_session_meta(agent_type) {
+    if let Some(meta) = claude_raw_sdk_session_meta(agent_type, runtime_env) {
         req = req.meta(meta);
     }
     if !mcp_servers.is_empty() {
@@ -1087,6 +1209,7 @@ async fn run_connection(
     mut cmd_rx: mpsc::Receiver<ConnectionCommand>,
     emitter: EventEmitter,
     state: Arc<RwLock<SessionState>>,
+    runtime_env: BTreeMap<String, String>,
     terminal_base_env: BTreeMap<String, String>,
     preferred_mode_id: Option<String>,
     preferred_config_values: BTreeMap<String, String>,
@@ -1369,6 +1492,7 @@ async fn run_connection(
                     SessionId::new(sid.clone()),
                     &cwd,
                     mcp_servers.clone(),
+                    &runtime_env,
                 );
                 let load_result = cx.send_request_to(Agent, load_req).block_task().await;
 
@@ -1566,6 +1690,7 @@ async fn run_connection(
                                     agent_type,
                                     &cwd,
                                     mcp_servers.clone(),
+                                    &runtime_env,
                                 ),
                             )
                             .block_task()
@@ -1640,7 +1765,7 @@ async fn run_connection(
                 let new_resp = cx
                     .send_request_to(
                         Agent,
-                        build_new_session_request(agent_type, &cwd, mcp_servers.clone()),
+                        build_new_session_request(agent_type, &cwd, mcp_servers.clone(), &runtime_env),
                     )
                     .block_task()
                     .await?;
@@ -3841,7 +3966,8 @@ mod tests {
 
     #[test]
     fn claude_raw_sdk_meta_enabled_only_for_claude() {
-        let claude_meta = claude_raw_sdk_session_meta(AgentType::ClaudeCode)
+        let runtime_env = BTreeMap::new();
+        let claude_meta = claude_raw_sdk_session_meta(AgentType::ClaudeCode, &runtime_env)
             .expect("Claude must have raw SDK meta");
         assert_eq!(
             claude_meta
@@ -3851,7 +3977,7 @@ mod tests {
             Some(true)
         );
 
-        assert!(claude_raw_sdk_session_meta(AgentType::Codex).is_none());
+        assert!(claude_raw_sdk_session_meta(AgentType::Codex, &runtime_env).is_none());
     }
 
     #[test]
@@ -3915,7 +4041,8 @@ mod tests {
     #[test]
     fn build_new_session_request_sets_claude_raw_meta() {
         let cwd = std::path::PathBuf::from("/tmp/codeg");
-        let req = build_new_session_request(AgentType::ClaudeCode, &cwd, Vec::new());
+        let runtime_env = BTreeMap::new();
+        let req = build_new_session_request(AgentType::ClaudeCode, &cwd, Vec::new(), &runtime_env);
 
         assert_eq!(
             req.meta
@@ -3928,13 +4055,205 @@ mod tests {
     }
 
     #[test]
+    fn build_new_session_request_forwards_claude_auto_compact_window_as_sdk_setting() {
+        let cwd = std::path::PathBuf::from("/tmp/codeg");
+        let runtime_env = BTreeMap::from([(
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW".to_string(),
+            "1000000".to_string(),
+        )]);
+        let req = build_new_session_request(AgentType::ClaudeCode, &cwd, Vec::new(), &runtime_env);
+
+        assert_eq!(
+            req.meta
+                .as_ref()
+                .and_then(|m| m.get("claudeCode"))
+                .and_then(|v| v.get("options"))
+                .and_then(|v| v.get("settings"))
+                .and_then(|v| v.get("autoCompactWindow"))
+                .and_then(|v| v.as_i64()),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            req.meta
+                .as_ref()
+                .and_then(|m| m.get("claudeCode"))
+                .and_then(|v| v.get("options"))
+                .and_then(|v| v.get("betas"))
+                .and_then(|v| v.as_array())
+                .and_then(|values| values.first())
+                .and_then(|v| v.as_str()),
+            Some(CLAUDE_CONTEXT_1M_BETA)
+        );
+    }
+
+    #[test]
+    fn build_new_session_request_preserves_user_claude_options_and_betas() {
+        let dir =
+            std::env::temp_dir().join(format!("codeg-claude-settings-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create settings dir");
+        let settings_path = dir.join("settings.json");
+        std::fs::write(
+            &settings_path,
+            r#"{
+              "_meta": {
+                "claudeCode": {
+                  "options": {
+                    "betas": ["existing-beta"],
+                    "settings": {
+                      "permissions": {"allow": ["Bash(git status:*)"]}
+                    },
+                    "extraOption": true
+                  }
+                }
+              }
+            }"#,
+        )
+        .expect("write settings");
+        let cwd = std::path::PathBuf::from("/tmp/codeg");
+        let runtime_env = BTreeMap::from([
+            (
+                "CLAUDE_CODE_AUTO_COMPACT_WINDOW".to_string(),
+                "1000000".to_string(),
+            ),
+            (
+                "CODEG_TEST_CLAUDE_SETTINGS_PATH".to_string(),
+                settings_path.to_string_lossy().to_string(),
+            ),
+        ]);
+        let req = build_new_session_request(AgentType::ClaudeCode, &cwd, Vec::new(), &runtime_env);
+        let options = req
+            .meta
+            .as_ref()
+            .and_then(|m| m.get("claudeCode"))
+            .and_then(|v| v.get("options"))
+            .expect("claude options");
+
+        assert_eq!(
+            options
+                .get("settings")
+                .and_then(|v| v.get("autoCompactWindow"))
+                .and_then(|v| v.as_i64()),
+            Some(1_000_000)
+        );
+        assert!(options
+            .get("settings")
+            .and_then(|v| v.get("permissions"))
+            .is_some());
+        assert_eq!(
+            options.get("extraOption").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        let betas = options
+            .get("betas")
+            .and_then(|v| v.as_array())
+            .expect("betas array");
+        assert_eq!(
+            betas
+                .iter()
+                .filter(|value| value.as_str() == Some(CLAUDE_CONTEXT_1M_BETA))
+                .count(),
+            1
+        );
+        assert!(betas
+            .iter()
+            .any(|value| value.as_str() == Some("existing-beta")));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn build_new_session_request_ignores_invalid_claude_auto_compact_window_meta() {
+        let cwd = std::path::PathBuf::from("/tmp/codeg");
+        let runtime_env = BTreeMap::from([(
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW".to_string(),
+            "1M".to_string(),
+        )]);
+        let req = build_new_session_request(AgentType::ClaudeCode, &cwd, Vec::new(), &runtime_env);
+
+        assert!(req
+            .meta
+            .as_ref()
+            .and_then(|m| m.get("claudeCode"))
+            .and_then(|v| v.get("options"))
+            .is_none());
+    }
+
+    #[test]
+    fn build_load_session_request_forwards_claude_auto_compact_window_as_sdk_setting() {
+        let cwd = std::path::PathBuf::from("/tmp/codeg");
+        let runtime_env = BTreeMap::from([(
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW".to_string(),
+            "300000".to_string(),
+        )]);
+        let req = build_load_session_request(
+            AgentType::ClaudeCode,
+            SessionId::new("abc".to_string()),
+            &cwd,
+            Vec::new(),
+            &runtime_env,
+        );
+
+        assert_eq!(
+            req.meta
+                .as_ref()
+                .and_then(|m| m.get("claudeCode"))
+                .and_then(|v| v.get("options"))
+                .and_then(|v| v.get("settings"))
+                .and_then(|v| v.get("autoCompactWindow"))
+                .and_then(|v| v.as_i64()),
+            Some(300_000)
+        );
+    }
+
+    #[test]
+    fn build_new_session_request_skips_context_beta_at_default_claude_window() {
+        let cwd = std::path::PathBuf::from("/tmp/codeg");
+        let runtime_env = BTreeMap::from([(
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW".to_string(),
+            "200000".to_string(),
+        )]);
+        let req = build_new_session_request(AgentType::ClaudeCode, &cwd, Vec::new(), &runtime_env);
+
+        assert_eq!(
+            req.meta
+                .as_ref()
+                .and_then(|m| m.get("claudeCode"))
+                .and_then(|v| v.get("options"))
+                .and_then(|v| v.get("settings"))
+                .and_then(|v| v.get("autoCompactWindow"))
+                .and_then(|v| v.as_i64()),
+            Some(200_000)
+        );
+        assert!(req
+            .meta
+            .as_ref()
+            .and_then(|m| m.get("claudeCode"))
+            .and_then(|v| v.get("options"))
+            .and_then(|v| v.get("betas"))
+            .is_none());
+    }
+
+    #[test]
+    fn build_new_session_request_skips_auto_compact_meta_for_non_claude() {
+        let cwd = std::path::PathBuf::from("/tmp/codeg");
+        let runtime_env = BTreeMap::from([(
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW".to_string(),
+            "1000000".to_string(),
+        )]);
+        let req = build_new_session_request(AgentType::Codex, &cwd, Vec::new(), &runtime_env);
+
+        assert!(req.meta.is_none());
+    }
+
+    #[test]
     fn build_load_session_request_skips_meta_for_non_claude() {
         let cwd = std::path::PathBuf::from("/tmp/codeg");
+        let runtime_env = BTreeMap::new();
         let req = build_load_session_request(
             AgentType::Codex,
             SessionId::new("abc".to_string()),
             &cwd,
             Vec::new(),
+            &runtime_env,
         );
 
         assert!(req.meta.is_none());

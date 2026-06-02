@@ -1,10 +1,11 @@
 "use client"
 
-import { useCallback, useSyncExternalStore } from "react"
+import { useCallback, useMemo, useSyncExternalStore } from "react"
 import { Coins } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useSessionStats } from "@/contexts/session-stats-context"
 import { useConnectionStore } from "@/contexts/acp-connections-context"
+import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { formatTokenCount } from "@/lib/token-format"
 import {
   Popover,
@@ -22,10 +23,21 @@ function formatPercent(percent: number | null): string {
   return `${percent.toFixed(1)}%`
 }
 
+function parseClaudeAutoCompactWindow(
+  value: string | undefined
+): number | null {
+  const raw = value?.trim()
+  if (!raw || !/^\+?\d+$/.test(raw)) return null
+  const parsed = Number(raw)
+  if (parsed < 100_000 || parsed > 1_000_000) return null
+  return parsed
+}
+
 export function StatusBarTokens() {
   const t = useTranslations("Folder.statusBar.tokens")
   const store = useConnectionStore()
   const { sessionStats } = useSessionStats()
+  const { agents } = useAcpAgents()
   const usage = sessionStats?.total_usage
 
   const subscribeActiveKey = useCallback(
@@ -56,6 +68,16 @@ export function StatusBarTokens() {
     getConnSnapshot
   )
 
+  const activeAgent = useMemo(
+    () => agents.find((agent) => agent.agent_type === activeConn?.agentType),
+    [agents, activeConn?.agentType]
+  )
+  const configuredAutoCompactWindow =
+    activeConn?.agentType === "claude_code"
+      ? parseClaudeAutoCompactWindow(
+          activeAgent?.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
+        )
+      : null
   const rawLiveUsed = activeConn?.usage?.used ?? null
   const rawLiveSize = activeConn?.usage?.size ?? null
   // Treat live used=0 as "no data" so we fall back to sessionStats —
@@ -68,14 +90,16 @@ export function StatusBarTokens() {
   const contextUsed =
     liveContextUsed ?? sessionStats?.context_window_used_tokens ?? null
   const contextMax =
-    liveContextMax ?? sessionStats?.context_window_max_tokens ?? null
+    configuredAutoCompactWindow ??
+    liveContextMax ??
+    sessionStats?.context_window_max_tokens ??
+    null
   const contextPercentRaw =
-    (liveContextUsed != null && liveContextMax != null && liveContextMax > 0
-      ? (liveContextUsed / liveContextMax) * 100
-      : sessionStats?.context_window_usage_percent) ??
     (contextUsed != null && contextMax != null && contextMax > 0
       ? (contextUsed / contextMax) * 100
-      : null)
+      : configuredAutoCompactWindow == null
+        ? sessionStats?.context_window_usage_percent
+        : null) ?? null
   const contextPercent =
     contextPercentRaw == null
       ? null
