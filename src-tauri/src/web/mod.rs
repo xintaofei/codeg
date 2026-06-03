@@ -125,6 +125,47 @@ async fn resolve_web_service_token(
     }
 }
 
+/// Resolve the access token for the **standalone** server, persisting a
+/// generated one so it survives restarts. This matters for self-update: the
+/// upgrade restarts the process, and if the token rotated, the already
+/// authenticated frontend would start getting 401s and could no longer tell a
+/// successful upgrade from an auto-rollback. Resolution mirrors the desktop web
+/// service — a non-empty `CODEG_TOKEN` override wins; otherwise reuse the value
+/// persisted in `AppMetadata`; otherwise generate one and persist it. An empty
+/// or whitespace override is treated as unset (never accepted as a real token).
+/// `*generated` is set when a fresh token was created, so the caller can show
+/// it to the operator.
+pub async fn resolve_persisted_server_token(
+    conn: &DatabaseConnection,
+    override_token: Option<String>,
+    generated: &mut bool,
+) -> String {
+    *generated = false;
+
+    if let Some(value) = override_token
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        return value;
+    }
+
+    if let Ok(Some(saved)) = app_metadata_service::get_value(conn, WEB_SERVICE_TOKEN_KEY).await {
+        if !saved.trim().is_empty() {
+            return saved;
+        }
+    }
+
+    let token = generate_random_token();
+    *generated = true;
+    if let Err(e) = app_metadata_service::upsert_value(conn, WEB_SERVICE_TOKEN_KEY, &token).await {
+        eprintln!(
+            "[SERVER][WARN] could not persist the generated access token ({e}); it will rotate on \
+             restart and self-update success detection may be unreliable — set CODEG_TOKEN to pin it"
+        );
+    }
+    token
+}
+
 async fn resolve_web_service_port(
     conn: &DatabaseConnection,
     override_port: Option<u16>,
