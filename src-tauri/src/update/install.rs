@@ -272,6 +272,18 @@ pub async fn perform_update(
     let manifest = version::fetch_latest_manifest().await?;
     let new_version = version::trim_v_prefix(&manifest.version).to_string();
 
+    // Refuse a non-newer target before touching the network or disk. A stale
+    // client (whose cached "update available" predates another client already
+    // upgrading this server) or a direct API call could otherwise re-install
+    // the running version over itself — which moves the *current* binary into
+    // `.bak`, destroying the genuine previous version that rollback depends on,
+    // for no benefit. The check mirrors `check_app_update`'s availability test.
+    if !version::is_newer(&manifest.version, env!("CARGO_PKG_VERSION")) {
+        return Err(AppCommandError::already_exists(
+            "The server is already running the latest version",
+        ));
+    }
+
     let ext = archive_ext();
     let archive_url = format!("{}/{}{}", version::RELEASE_DOWNLOAD_BASE, asset, ext);
     let sig_url = format!("{archive_url}.sig");
