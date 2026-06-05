@@ -1294,14 +1294,46 @@ export function MessageInput({
   )
 
   const handlePaste = useCallback(
-    (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    async (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
       if (disabled) return
       const files = filesFromClipboard(event.clipboardData)
-      if (files.length === 0) return
-      event.preventDefault()
-      void appendFilesFromInput(files).catch((error) => {
-        console.error("[MessageInput] paste files failed:", error)
-      })
+      if (files.length > 0) {
+        event.preventDefault()
+        void appendFilesFromInput(files).catch((error) => {
+          console.error("[MessageInput] paste files failed:", error)
+        })
+        return
+      }
+
+      // Fallback for Linux/Tauri webview where DataTransfer API doesn't
+      // expose screenshot images (e.g. WeChat screenshot). The async
+      // Clipboard API can read raw image blobs when the sync paste event
+      // yields nothing.
+      if (navigator.clipboard?.read) {
+        try {
+          const items = await navigator.clipboard.read()
+          const imageFiles: File[] = []
+          for (const item of items) {
+            for (const type of item.types) {
+              if (type.startsWith("image/")) {
+                const blob = await item.getType(type)
+                const ext = type.split("/")[1] || "png"
+                imageFiles.push(
+                  new File([blob], `clipboard-image.${ext}`, { type })
+                )
+              }
+            }
+          }
+          if (imageFiles.length > 0) {
+            event.preventDefault()
+            void appendFilesFromInput(imageFiles).catch((error) => {
+              console.error("[MessageInput] paste files failed:", error)
+            })
+          }
+        } catch {
+          // Clipboard API may be blocked by permissions; silently fall through.
+        }
+      }
     },
     [appendFilesFromInput, disabled]
   )
