@@ -647,6 +647,13 @@ fn build_lark_card(msg: &RichMessage) -> serde_json::Value {
     }
 
     if !msg.fields.is_empty() {
+        // Render each field as PLAIN TEXT, never `lark_md`. A field VALUE can carry
+        // untrusted content — `permission_request` puts the proposed tool operation
+        // (e.g. a Bash command) here, and `error` puts the agent's error string —
+        // which `lark_md` would interpret, letting embedded `<at>` mentions, links
+        // and markdown inject into the card. The label is our own i18n constant, so
+        // the only injectable part is the value; plain_text neutralizes both. We
+        // drop the bold label styling (cosmetic) for safety, mirroring the body.
         let field_elements: Vec<serde_json::Value> = msg
             .fields
             .iter()
@@ -654,8 +661,8 @@ fn build_lark_card(msg: &RichMessage) -> serde_json::Value {
                 serde_json::json!({
                     "is_short": true,
                     "text": {
-                        "tag": "lark_md",
-                        "content": format!("**{}**\n{}", k, v),
+                        "tag": "plain_text",
+                        "content": format!("{}\n{}", k, v),
                     }
                 })
             })
@@ -707,6 +714,42 @@ mod tests {
         assert!(
             elements.iter().all(|e| e["tag"] != "markdown"),
             "no element may render the body as markdown"
+        );
+    }
+
+    /// Field VALUES carry untrusted content (a permission tool command, an agent
+    /// error string), so they must render as `plain_text` — never `lark_md`,
+    /// which would interpret embedded `<at>` / links / markdown. Guards against a
+    /// regression back to the lark_md field rendering.
+    #[test]
+    fn fields_render_as_plain_text_not_lark_md() {
+        let injected = "Bash: echo [x](http://e.test) <at id=all></at> **b**";
+        let msg = RichMessage {
+            title: Some("Permission Request".into()),
+            body: "An agent is waiting for approval.".into(),
+            fields: vec![("Operation".into(), injected.into())],
+            level: MessageLevel::Warning,
+        };
+        let card = build_lark_card(&msg);
+
+        let elements = card["elements"].as_array().expect("elements array");
+        let field_el = elements
+            .iter()
+            .find(|e| e.get("fields").is_some())
+            .expect("a div element carrying fields");
+        let fields = field_el["fields"].as_array().expect("fields array");
+        assert_eq!(
+            fields[0]["text"]["tag"], "plain_text",
+            "field text must be plain_text, not lark_md"
+        );
+        // The injected value is preserved verbatim, with no markup interpretation.
+        let content = fields[0]["text"]["content"].as_str().unwrap();
+        assert!(content.contains(injected), "got {content:?}");
+        assert!(
+            elements
+                .iter()
+                .all(|e| e["text"]["tag"] != "lark_md" && e["tag"] != "lark_md"),
+            "no element may render content as lark_md"
         );
     }
 }
