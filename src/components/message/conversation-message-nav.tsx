@@ -153,15 +153,10 @@ export function ConversationMessageNav({
 
   if (entries.length === 0) return null
 
-  // The rail sits in the right gutter beside the centered max-w-3xl message
-  // column, horizontally centered within it: the column's right edge is at
-  // 50% + 24rem, so the gutter's centre is 75% + 12rem (clamped to stay
-  // on-screen when the gutter is narrow). Keeps the dots off the message text.
+  // Float near the conversation's right edge; the dots are small enough to sit
+  // clear of the centered message column's text.
   return (
-    <div
-      className="group absolute top-1/2 z-20 flex max-h-[80%] -translate-x-1/2 -translate-y-1/2 flex-col items-center"
-      style={{ left: "min(75% + 12rem, 100% - 1rem)" }}
-    >
+    <div className="group absolute right-2 top-1/2 z-20 flex max-h-[80%] -translate-y-1/2 flex-col items-center">
       <button
         type="button"
         aria-label={expanded ? t("collapse") : t("expand")}
