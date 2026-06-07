@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef } from "react"
 import { useTranslations } from "next-intl"
+import { AnimatePresence, motion } from "motion/react"
 import { Inbox, X } from "lucide-react"
 import { closePetPanel, resizePetPanel } from "@/lib/pet/api"
 import { isDesktop } from "@/lib/transport"
@@ -129,9 +130,19 @@ export function PetPanel() {
             className="overflow-y-auto py-1"
             style={{ maxHeight: LIST_MAX_HEIGHT_PX }}
           >
-            {sorted.map((session) => (
-              <SessionRow key={session.connectionId} session={session} />
-            ))}
+            <AnimatePresence initial={false}>
+              {sorted.map((session) => (
+                <motion.li
+                  key={session.connectionId}
+                  layout
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.2, ease: "easeOut" }}
+                  style={{ overflow: "hidden" }}
+                >
+                  <SessionRow session={session} />
+                </motion.li>
+              ))}
+            </AnimatePresence>
           </ul>
         )}
       </div>

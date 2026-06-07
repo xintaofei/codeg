@@ -1460,10 +1460,9 @@ fn open_pet_panel_window(app: &AppHandle) -> Result<(), AppCommandError> {
         .resizable(false)
         .decorations(false)
         .transparent(true)
+        .shadow(false)
         .always_on_top(true)
         .skip_taskbar(true)
-        // Focus it so click-away blur can dismiss it and buttons are clickable
-        // on the first click.
         .focused(true)
         .accept_first_mouse(true);
 

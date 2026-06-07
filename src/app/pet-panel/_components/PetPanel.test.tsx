@@ -12,10 +12,13 @@ vi.mock("@/lib/pet/api", () => ({
 vi.mock("../../pet/_hooks/usePetSessions", () => ({
   usePetSessions: vi.fn(),
 }))
-// Stub SessionRow so the list branch renders without pulling its deps.
+vi.mock("motion/react", () => ({
+  AnimatePresence: ({ children }: { children: React.ReactNode }) => children,
+  motion: { li: "li" },
+}))
 vi.mock("./SessionRow", () => ({
   SessionRow: ({ session }: { session: { connectionId: string } }) => (
-    <li data-testid="session-row">{session.connectionId}</li>
+    <div data-testid="session-row">{session.connectionId}</div>
   ),
 }))
 

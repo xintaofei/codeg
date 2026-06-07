@@ -12,6 +12,7 @@
     "project-boot",
     "remote-project-boot-*",
     "pet",
+    "pet-panel",
     "remote-workspace-*",
     "remote-settings-*",
     "remote-commit-*",

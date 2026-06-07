@@ -46,7 +46,7 @@ export function SessionRow({ session }: SessionRowProps) {
         : t("panel.statusRunning")
 
   return (
-    <li className="px-2 py-1.5">
+    <div className="px-2 py-1.5">
       <button
         type="button"
         onClick={jump}
@@ -78,6 +78,6 @@ export function SessionRow({ session }: SessionRowProps) {
           permission={session.pending}
         />
       ) : null}
-    </li>
+    </div>
   )
 }
