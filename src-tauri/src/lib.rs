@@ -839,6 +839,7 @@ mod tauri_app {
                 windows::pet_show_context_menu,
                 windows::toggle_pet_panel,
                 windows::close_pet_panel,
+                windows::resize_pet_panel,
                 windows::focus_conversation,
                 windows::update_traffic_light_position,
                 windows::update_appearance_mode,

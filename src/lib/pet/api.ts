@@ -158,6 +158,14 @@ export async function closePetPanel(): Promise<void> {
   return getTransport().call("close_pet_panel")
 }
 
+// Resize the open session panel to fit its measured content height (logical
+// px) and re-anchor it to the sprite. Tauri-only; the panel renderer calls
+// this after layout so the window hugs its content instead of leaving dead
+// space. No-op on the backend if the panel isn't open.
+export async function resizePetPanel(height: number): Promise<void> {
+  return getTransport().call("resize_pet_panel", { height })
+}
+
 // Bring the main workspace forward and focus a conversation, without reloading
 // it (the main window's PetFocusBridge calls openTab). `agent` is the
 // snake_case AgentType. Tauri-only.
