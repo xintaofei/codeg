@@ -75,70 +75,57 @@ export function PetPanel() {
   }, [])
 
   return (
-    <>
-      {/* Pre-paint: override root layout backgrounds so the transparent window
-          never flashes a solid frame before React hydrates. */}
-      <style
-        dangerouslySetInnerHTML={{
-          __html:
-            "html,body{background:transparent!important;overflow:hidden!important}",
-        }}
-      />
-      <div
-        ref={wrapperRef}
-        className="w-screen p-1"
-        style={{ background: "transparent" }}
-      >
-        <div className="flex w-full flex-col overflow-hidden rounded-xl border border-border/50 bg-card/80">
-          <header className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-2">
-            <div className="text-sm font-semibold">
-              {t("panel.title")}
-              {sorted.length > 0 ? (
-                <span className="ml-1 font-normal text-muted-foreground">
-                  ({sorted.length})
-                </span>
-              ) : null}
-            </div>
-            <button
-              type="button"
-              aria-label={t("menu.close")}
-              onClick={() => void closePetPanel().catch(() => {})}
-              className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </header>
-
-          {sorted.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-2 px-6 py-8 text-center">
-              <Inbox className="h-8 w-8 text-muted-foreground/50" />
-              <div className="text-sm font-medium">{t("panel.empty")}</div>
-              <div className="text-xs text-muted-foreground">
-                {t("panel.emptyHint")}
-              </div>
-            </div>
-          ) : (
-            <ul
-              className="overflow-y-auto py-1"
-              style={{ maxHeight: LIST_MAX_HEIGHT_PX }}
-            >
-              <AnimatePresence initial={false}>
-                {sorted.map((session) => (
-                  <motion.li
-                    key={session.connectionId}
-                    layout
-                    exit={{ opacity: 0, height: 0 }}
-                    transition={{ duration: 0.2, ease: "easeOut" }}
-                    style={{ overflow: "hidden" }}
-                  >
-                    <SessionRow session={session} />
-                  </motion.li>
-                ))}
-              </AnimatePresence>
-            </ul>
-          )}
+    <div
+      ref={wrapperRef}
+      className="flex w-screen flex-col border border-border"
+    >
+      <header className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
+        <div className="text-sm font-semibold">
+          {t("panel.title")}
+          {sorted.length > 0 ? (
+            <span className="ml-1 font-normal text-muted-foreground">
+              ({sorted.length})
+            </span>
+          ) : null}
         </div>
-      </div>
-    </>
+        <button
+          type="button"
+          aria-label={t("menu.close")}
+          onClick={() => void closePetPanel().catch(() => {})}
+          className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </header>
+
+      {sorted.length === 0 ? (
+        <div className="flex flex-col items-center justify-center gap-2 px-6 py-8 text-center">
+          <Inbox className="h-8 w-8 text-muted-foreground/50" />
+          <div className="text-sm font-medium">{t("panel.empty")}</div>
+          <div className="text-xs text-muted-foreground">
+            {t("panel.emptyHint")}
+          </div>
+        </div>
+      ) : (
+        <ul
+          className="overflow-y-auto py-1"
+          style={{ maxHeight: LIST_MAX_HEIGHT_PX }}
+        >
+          <AnimatePresence initial={false}>
+            {sorted.map((session) => (
+              <motion.li
+                key={session.connectionId}
+                layout
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2, ease: "easeOut" }}
+                style={{ overflow: "hidden" }}
+              >
+                <SessionRow session={session} />
+              </motion.li>
+            ))}
+          </AnimatePresence>
+        </ul>
+      )}
+    </div>
   )
 }
