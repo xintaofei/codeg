@@ -1,0 +1,73 @@
+import { describe, expect, it } from "vitest"
+import {
+  filterTopLevelFolders,
+  resolveFolderDisplayName,
+  resolvePickerSelectedFolderId,
+} from "@/lib/folder-display"
+
+const folders = [
+  { id: 1, name: "myproject" },
+  { id: 2, name: "myproject-feature-x" },
+]
+
+describe("resolveFolderDisplayName", () => {
+  it("returns the folder's own name for a top-level (non-worktree) folder", () => {
+    expect(
+      resolveFolderDisplayName({ name: "myproject", parent_id: null }, folders)
+    ).toBe("myproject")
+  })
+
+  it("returns the parent (root repo) name for a worktree folder", () => {
+    expect(
+      resolveFolderDisplayName(
+        { name: "myproject-feature-x", parent_id: 1 },
+        folders
+      )
+    ).toBe("myproject")
+  })
+
+  it("falls back to the folder's own name when the parent is absent", () => {
+    expect(
+      resolveFolderDisplayName(
+        { name: "myproject-feature-x", parent_id: 99 },
+        folders
+      )
+    ).toBe("myproject-feature-x")
+  })
+
+  it("falls back when the folder list is empty", () => {
+    expect(resolveFolderDisplayName({ name: "wt", parent_id: 1 }, [])).toBe(
+      "wt"
+    )
+  })
+})
+
+describe("filterTopLevelFolders", () => {
+  it("keeps only folders without a parent_id (drops worktrees)", () => {
+    const list = [
+      { id: 1, parent_id: null },
+      { id: 2, parent_id: 1 },
+      { id: 3, parent_id: null },
+      { id: 4, parent_id: 3 },
+    ]
+    expect(filterTopLevelFolders(list).map((f) => f.id)).toEqual([1, 3])
+  })
+
+  it("returns all folders when none are worktrees", () => {
+    const list = [
+      { id: 1, parent_id: null },
+      { id: 2, parent_id: null },
+    ]
+    expect(filterTopLevelFolders(list)).toHaveLength(2)
+  })
+})
+
+describe("resolvePickerSelectedFolderId", () => {
+  it("returns the folder's own id for a top-level folder", () => {
+    expect(resolvePickerSelectedFolderId({ id: 5, parent_id: null })).toBe(5)
+  })
+
+  it("returns the parent id for a worktree folder", () => {
+    expect(resolvePickerSelectedFolderId({ id: 7, parent_id: 3 })).toBe(3)
+  })
+})

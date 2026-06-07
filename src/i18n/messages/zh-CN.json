@@ -1156,7 +1156,9 @@
         "upstreamSet": "已设置远程跟踪分支",
         "upstreamSetAndPushed": "已设置远程跟踪分支并推送 {count} 个提交",
         "noCommitsToPush": "没有可推送的提交",
-        "pushedCommits": "已推送 {count} 个提交"
+        "pushedCommits": "已推送 {count} 个提交",
+        "switchedToFolder": "已切换到 {name}",
+        "switchFailed": "切换分支失败"
       },
       "tasks": {
         "newBranch": "新建分支 {name}",

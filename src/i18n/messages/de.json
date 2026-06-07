@@ -1156,7 +1156,9 @@
         "upstreamSet": "Upstream-Branch wurde gesetzt",
         "upstreamSetAndPushed": "Upstream-Branch gesetzt und {count, plural, one {# Commit} other {# Commits}} gepusht",
         "noCommitsToPush": "Keine Commits zum Pushen",
-        "pushedCommits": "{count, plural, one {# Commit gepusht} other {# Commits gepusht}}"
+        "pushedCommits": "{count, plural, one {# Commit gepusht} other {# Commits gepusht}}",
+        "switchedToFolder": "Zu {name} gewechselt",
+        "switchFailed": "Branch konnte nicht gewechselt werden"
       },
       "tasks": {
         "newBranch": "Branch {name} erstellen",

@@ -1231,6 +1231,19 @@ export interface GitBranchList {
   worktree_branches: string[]
 }
 
+/**
+ * Where a branch is checked out, resolved against registered folders (mirrors
+ * Rust `WorktreeResolution`). `path` is the canonical worktree/main-tree path
+ * hosting the branch, or null when it is not checked out in any worktree.
+ * `folder_id` is the registered folder owning that path, or null for an
+ * external/unregistered worktree. Drives the branch selector's navigate-vs-
+ * checkout decision.
+ */
+export interface WorktreeResolution {
+  path: string | null
+  folder_id: number | null
+}
+
 export interface GitConflictInfo {
   has_conflicts: boolean
   conflicted_files: string[]

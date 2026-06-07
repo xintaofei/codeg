@@ -138,6 +138,10 @@ pub fn build_router(
             post(handlers::folders::open_worktree_folder),
         )
         .route(
+            "/resolve_worktree_folder",
+            post(handlers::folders::resolve_worktree_folder),
+        )
+        .route(
             "/open_folder_in_workspace",
             post(handlers::folders::open_folder_in_workspace),
         )

@@ -27,6 +27,12 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 import { toErrorMessage } from "@/lib/app-error"
+import {
+  filterTopLevelFolders,
+  resolveFolderDisplayName,
+  resolvePickerSelectedFolderId,
+} from "@/lib/folder-display"
+import { useSwitchToBranch } from "@/hooks/use-switch-to-branch"
 
 interface ConversationContextBarProps {
   extraContent?: React.ReactNode
@@ -112,6 +118,7 @@ export const ConversationFolderBranchPicker = memo(
     const { folders, allFolders, branches, setBranch, refreshFolder } =
       useAppWorkspace()
     const { addTask, updateTask } = useTaskContext()
+    const switchToBranch = useSwitchToBranch()
 
     const ownTab = useMemo(() => {
       const lookupId = tabId ?? activeTabId
@@ -126,20 +133,36 @@ export const ConversationFolderBranchPicker = memo(
       [ownTab, allFolders]
     )
 
+    // The folder picker lists only top-level repos — worktree folders
+    // (`parent_id != null`) are reached through the branch picker, not here, so
+    // they're hidden to keep this picker a clean repo switcher.
+    const topLevelFolders = useMemo(
+      () => filterTopLevelFolders(folders),
+      [folders]
+    )
+
     if (!ownTab || !ownFolder) return null
 
     const isNewConversation = ownTab.conversationId == null
     const currentBranch =
       branches.get(ownFolder.id) ?? ownFolder.git_branch ?? null
     const showBranchPicker = currentBranch != null
+    // Worktree folders surface their parent (root repo) name here; the picker's
+    // own list below keeps real folder names/paths for selection, and every
+    // git/path operation still uses `ownFolder` (the worktree) unchanged.
+    const displayFolderName = resolveFolderDisplayName(ownFolder, allFolders)
+    // When the conversation lives in a worktree, the picker highlights its
+    // parent repo (the worktree itself isn't listed). Display-only — the tab's
+    // real folder/working dir is untouched.
+    const pickerSelectedId = resolvePickerSelectedFolderId(ownFolder)
 
     return (
       <>
         <FolderPicker
-          folders={folders}
-          currentFolderId={ownFolder.id}
-          currentFolderName={ownFolder.name}
-          title={`${t("folderTitle")}: ${ownFolder.name}`}
+          folders={topLevelFolders}
+          currentFolderId={pickerSelectedId}
+          currentFolderName={displayFolderName}
+          title={`${t("folderTitle")}: ${displayFolderName}`}
           editable={isNewConversation}
           onSelect={async (folderId) => {
             const target = folders.find((f) => f.id === folderId)
@@ -174,7 +197,21 @@ export const ConversationFolderBranchPicker = memo(
             folderPath={ownFolder.path}
             currentBranch={currentBranch}
             title={`${t("branchTitle")}: ${currentBranch ?? t("noBranch")}`}
-            onCheckout={async (branchName) => {
+            onCheckout={async (branchName, isRemote) => {
+              // Draft conversation: route through the shared switch logic so a
+              // worktree branch navigates to its folder instead of a doomed
+              // in-place checkout.
+              if (isNewConversation) {
+                await switchToBranch({
+                  activeFolder: ownFolder,
+                  branchName,
+                  currentBranch,
+                  isRemote,
+                })
+                return
+              }
+              // Existing conversation: check out in place in its own folder —
+              // never navigate away from a live conversation's working dir.
               const taskId = `checkout-${ownFolder.id}-${Date.now()}`
               addTask(taskId, tBd("tasks.checkoutTo", { branchName }))
               updateTask(taskId, { status: "running" })
@@ -312,7 +349,7 @@ interface BranchPickerProps {
   folderPath: string
   currentBranch: string | null
   title: string
-  onCheckout: (branchName: string) => Promise<void>
+  onCheckout: (branchName: string, isRemote: boolean) => Promise<void>
 }
 
 const BranchPicker = memo(function BranchPicker({
@@ -384,7 +421,7 @@ const BranchPicker = memo(function BranchPicker({
                         value={`local ${b}`}
                         onSelect={() => {
                           setOpen(false)
-                          if (b !== currentBranch) void onCheckout(b)
+                          if (b !== currentBranch) void onCheckout(b, false)
                         }}
                       >
                         <GitBranch className="h-4 w-4" />
@@ -411,7 +448,7 @@ const BranchPicker = memo(function BranchPicker({
                           onSelect={() => {
                             setOpen(false)
                             if (localName !== currentBranch)
-                              void onCheckout(localName)
+                              void onCheckout(localName, true)
                           }}
                         >
                           <GitBranch className="h-4 w-4 opacity-60" />

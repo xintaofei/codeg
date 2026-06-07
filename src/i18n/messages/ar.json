@@ -1156,7 +1156,9 @@
         "upstreamSet": "تم تعيين فرع upstream",
         "upstreamSetAndPushed": "تم تعيين فرع upstream ودفع {count, plural, one {# التزام} other {# التزامات}}",
         "noCommitsToPush": "لا توجد التزامات للدفع",
-        "pushedCommits": "تم دفع {count, plural, one {# التزام} other {# التزامات}}"
+        "pushedCommits": "تم دفع {count, plural, one {# التزام} other {# التزامات}}",
+        "switchedToFolder": "تم التبديل إلى {name}",
+        "switchFailed": "فشل تبديل الفرع"
       },
       "tasks": {
         "newBranch": "إنشاء الفرع {name}",

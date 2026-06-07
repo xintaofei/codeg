@@ -1156,7 +1156,9 @@
         "upstreamSet": "アップストリームブランチを設定しました",
         "upstreamSetAndPushed": "アップストリームブランチを設定し、{count, plural, one {# 件のコミット} other {# 件のコミット}}をプッシュしました",
         "noCommitsToPush": "プッシュするコミットはありません",
-        "pushedCommits": "{count, plural, one {# 件のコミットをプッシュ} other {# 件のコミットをプッシュ}}"
+        "pushedCommits": "{count, plural, one {# 件のコミットをプッシュ} other {# 件のコミットをプッシュ}}",
+        "switchedToFolder": "{name} に切り替えました",
+        "switchFailed": "ブランチの切り替えに失敗しました"
       },
       "tasks": {
         "newBranch": "ブランチ {name} を作成",

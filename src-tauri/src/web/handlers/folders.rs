@@ -80,6 +80,25 @@ pub async fn open_worktree_folder(
     ))
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveWorktreeFolderParams {
+    pub repo_path: String,
+    pub branch: String,
+}
+
+/// Resolve where a branch is checked out (worktree path + owning folder).
+/// See `resolve_worktree_folder_core`.
+pub async fn resolve_worktree_folder(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<ResolveWorktreeFolderParams>,
+) -> Result<Json<folder_commands::WorktreeResolution>, AppCommandError> {
+    Ok(Json(
+        folder_commands::resolve_worktree_folder_core(&state.db, params.repo_path, params.branch)
+            .await?,
+    ))
+}
+
 /// Open a folder into the workspace and broadcast it to workspace clients so
 /// the (separate) launcher tab's handoff lands. See
 /// `open_folder_in_workspace_core`.

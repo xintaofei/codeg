@@ -1156,7 +1156,9 @@
         "upstreamSet": "La rama upstream se ha configurado",
         "upstreamSetAndPushed": "Rama upstream configurada y se enviaron {count, plural, one {# commit} other {# commits}}",
         "noCommitsToPush": "No hay commits para enviar",
-        "pushedCommits": "Se enviaron {count, plural, one {# commit} other {# commits}}"
+        "pushedCommits": "Se enviaron {count, plural, one {# commit} other {# commits}}",
+        "switchedToFolder": "Cambiado a {name}",
+        "switchFailed": "No se pudo cambiar de rama"
       },
       "tasks": {
         "newBranch": "Crear rama {name}",

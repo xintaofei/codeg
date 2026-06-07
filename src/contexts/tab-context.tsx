@@ -106,7 +106,10 @@ interface TabContextValue {
   openNewConversationTab: (
     folderId: number,
     workingDir: string,
-    options?: { inheritFromActive?: boolean }
+    options?: {
+      inheritFromActive?: boolean
+      folderDefaultAgent?: AgentType | null
+    }
   ) => void
   /**
    * Mark a draft tab's agent as user-confirmed. Patches `agentType` on
@@ -341,11 +344,19 @@ export function TabProvider({ children }: TabProviderProps) {
   const resolveAgentForFolder = useCallback(
     (
       folderId: number,
-      inherit: AgentType | null
+      inherit: AgentType | null,
+      // Caller-supplied folder default. Pass this when opening a tab for a
+      // folder that may have just been (re)opened — `foldersRef` only updates
+      // after the next render commit, so a fresh lookup here would miss the
+      // folder's saved default. `undefined` = look it up; `null` = explicitly
+      // no folder default.
+      folderDefaultOverride?: AgentType | null
     ): { agentType: AgentType; provisional: boolean } => {
       const folderDefault =
-        foldersRef.current.find((f) => f.id === folderId)?.default_agent_type ??
-        null
+        folderDefaultOverride !== undefined
+          ? folderDefaultOverride
+          : (foldersRef.current.find((f) => f.id === folderId)
+              ?.default_agent_type ?? null)
       return resolveDefaultAgent({
         folderDefault,
         inherit,
@@ -1154,7 +1165,13 @@ export function TabProvider({ children }: TabProviderProps) {
     (
       folderId: number,
       workingDir: string,
-      options?: { inheritFromActive?: boolean }
+      options?: {
+        inheritFromActive?: boolean
+        // The target folder's saved default agent, supplied by callers that
+        // just (re)opened the folder so it resolves before `foldersRef` catches
+        // up on the next render. `undefined` falls back to a `foldersRef` lookup.
+        folderDefaultAgent?: AgentType | null
+      }
     ) => {
       // Pick the agent for the new conversation via the shared resolver.
       // Only inherit from the active tab when the caller opted in. The
@@ -1185,7 +1202,8 @@ export function TabProvider({ children }: TabProviderProps) {
       }
       const { agentType: targetAgent, provisional } = resolveAgentForFolder(
         folderId,
-        inherit
+        inherit,
+        options?.folderDefaultAgent
       )
 
       const tabId = makeNewConversationTabId()

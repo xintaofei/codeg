@@ -36,6 +36,7 @@ import type {
   ExpertInstallStatus,
   FolderHistoryEntry,
   FolderDetail,
+  WorktreeResolution,
   DbConversationSummary,
   ImportResult,
   OpenedTab,
@@ -1254,6 +1255,20 @@ export async function openWorktreeFolder(
   sourceFolderId: number
 ): Promise<FolderDetail> {
   return getTransport().call("open_worktree_folder", { path, sourceFolderId })
+}
+
+/**
+ * Resolve where `branch` is checked out across the repo's worktrees. Returns the
+ * canonical worktree path (or null if the branch isn't checked out anywhere) and
+ * the registered folder id owning that path (or null for an external worktree).
+ * Path matching is canonicalized on the host that runs git, so it is correct for
+ * symlinked and remote-workspace paths the webview cannot resolve.
+ */
+export async function resolveWorktreeFolder(
+  repoPath: string,
+  branch: string
+): Promise<WorktreeResolution> {
+  return getTransport().call("resolve_worktree_folder", { repoPath, branch })
 }
 
 export async function openCommitWindow(folderId: number): Promise<void> {

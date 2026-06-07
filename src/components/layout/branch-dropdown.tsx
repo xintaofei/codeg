@@ -67,7 +67,6 @@ import {
   gitFetch,
   gitNewBranch,
   gitWorktreeAdd,
-  gitCheckout,
   gitListAllBranches,
   gitMerge,
   gitRebase,
@@ -84,6 +83,8 @@ import { ConflictDialog } from "@/components/layout/conflict-dialog"
 import { StashDialog } from "@/components/layout/stash-dialog"
 import { DirectoryBrowserDialog } from "@/components/shared/directory-browser-dialog"
 import { toErrorMessage } from "@/lib/app-error"
+import { resolveFolderDisplayName } from "@/lib/folder-display"
+import { useSwitchToBranch } from "@/hooks/use-switch-to-branch"
 import type { GitBranchList, GitConflictInfo } from "@/lib/types"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspace } from "@/contexts/app-workspace-context"
@@ -121,11 +122,13 @@ export function BranchDropdown() {
   const t = useTranslations("Folder.branchDropdown")
   const tCommon = useTranslations("Folder.common")
   const { activeFolder } = useActiveFolder()
-  const { branches, refreshFolder, openWorktreeFolder } = useAppWorkspace()
+  const { allFolders, branches, refreshFolder, openWorktreeFolder } =
+    useAppWorkspace()
   const { openNewConversationTab } = useTabContext()
   const { addTask, updateTask, removeTask } = useTaskContext()
   const { pushAlert } = useAlertContext()
   const { withCredentialRetry } = useGitCredential()
+  const switchToBranch = useSwitchToBranch()
 
   const folderPath = activeFolder?.path ?? ""
   const folderId = activeFolder?.id ?? 0
@@ -297,18 +300,21 @@ export function BranchDropdown() {
   }
 
   async function handleCheckout(branchName: string) {
+    if (!activeFolder) return
     setDropdownOpen(false)
-    await runGitTask(t("tasks.checkoutTo", { branchName }), () =>
-      gitCheckout(folderPath, branchName)
-    )
+    await switchToBranch({ activeFolder, branchName, currentBranch: branch })
   }
 
   async function handleCheckoutRemote(remoteBranch: string) {
+    if (!activeFolder) return
     const localName = remoteBranch.replace(/^[^/]+\//, "")
     setDropdownOpen(false)
-    await runGitTask(t("tasks.checkoutTo", { branchName: localName }), () =>
-      gitCheckout(folderPath, localName)
-    )
+    await switchToBranch({
+      activeFolder,
+      branchName: localName,
+      currentBranch: branch,
+      isRemote: true,
+    })
   }
 
   async function handleNewBranch() {
@@ -582,7 +588,9 @@ export function BranchDropdown() {
 
   if (!activeFolder) return null
 
-  const folderName = activeFolder.name
+  // Worktree folders display their parent (root repo) name; paths/ids/git ops
+  // below still use `activeFolder` (the worktree) unchanged.
+  const folderName = resolveFolderDisplayName(activeFolder, allFolders)
 
   if (branch === null) {
     return (

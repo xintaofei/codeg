@@ -144,6 +144,18 @@ pub struct GitBranchList {
     pub worktree_branches: Vec<String>,
 }
 
+/// Where a given branch is checked out, resolved against the registered folders.
+/// `path` is the canonical filesystem path of the worktree (or main working
+/// tree) hosting the branch — `None` when the branch is not checked out in any
+/// worktree. `folder_id` is the registered folder whose canonicalized path
+/// matches `path` — `None` for an external/unregistered worktree. Drives the
+/// branch selector's "navigate vs checkout" decision.
+#[derive(Debug, Serialize)]
+pub struct WorktreeResolution {
+    pub path: Option<String>,
+    pub folder_id: Option<i32>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct GitConflictInfo {
     pub has_conflicts: bool,
@@ -2122,6 +2134,105 @@ pub async fn git_list_all_branches(path: String) -> Result<GitBranchList, AppCom
         remote,
         worktree_branches,
     })
+}
+
+/// Parse `git worktree list --porcelain` into `(worktree_path, branch)` pairs.
+/// Each porcelain block starts with a `worktree <path>` line and is terminated
+/// by a blank line; a `branch refs/heads/<name>` line carries the checked-out
+/// branch (absent for detached/bare worktrees → `None`). Trailing blocks with
+/// no terminating blank line are flushed at EOF.
+fn parse_worktrees(stdout: &str) -> Vec<(String, Option<String>)> {
+    let mut entries: Vec<(String, Option<String>)> = Vec::new();
+    let mut current_path: Option<String> = None;
+    let mut current_branch: Option<String> = None;
+
+    for line in stdout.lines() {
+        if let Some(p) = line.strip_prefix("worktree ") {
+            // Defensive flush in case a block wasn't blank-line terminated.
+            if let Some(path) = current_path.take() {
+                entries.push((path, current_branch.take()));
+            }
+            current_path = Some(p.trim().to_string());
+            current_branch = None;
+        } else if let Some(b) = line.strip_prefix("branch refs/heads/") {
+            current_branch = Some(b.trim().to_string());
+        } else if line.is_empty() {
+            if let Some(path) = current_path.take() {
+                entries.push((path, current_branch.take()));
+            }
+            current_branch = None;
+        }
+    }
+    if let Some(path) = current_path.take() {
+        entries.push((path, current_branch.take()));
+    }
+    entries
+}
+
+/// Resolve where `branch` is checked out and which registered folder owns that
+/// directory. Canonicalizes both the worktree path (from git) and every folder
+/// path (from the DB) so symlinked / non-canonical paths still match — this
+/// can only be done on the host that runs git, which is why it lives in the
+/// backend rather than the webview.
+pub async fn resolve_worktree_folder_core(
+    db: &AppDatabase,
+    repo_path: String,
+    branch: String,
+) -> Result<WorktreeResolution, AppCommandError> {
+    ensure_git_repo(&repo_path)?;
+
+    let output = crate::process::tokio_command("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(&repo_path)
+        .output()
+        .await
+        .map_err(AppCommandError::io)?;
+    if !output.status.success() {
+        return Err(git_command_error("worktree list", &output.stderr));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let wt_path = parse_worktrees(&stdout)
+        .into_iter()
+        .find(|(_, b)| b.as_deref() == Some(branch.as_str()))
+        .map(|(p, _)| p);
+
+    let Some(wt_path) = wt_path else {
+        // Branch is not checked out in any worktree → caller checks it out in root.
+        return Ok(WorktreeResolution {
+            path: None,
+            folder_id: None,
+        });
+    };
+
+    let canonical_wt = std::fs::canonicalize(&wt_path).unwrap_or_else(|_| PathBuf::from(&wt_path));
+
+    let folders = folder_service::list_all_folder_details(&db.conn)
+        .await
+        .map_err(AppCommandError::from)?;
+    let folder_id = folders
+        .into_iter()
+        .find(|f| {
+            let canon =
+                std::fs::canonicalize(&f.path).unwrap_or_else(|_| PathBuf::from(&f.path));
+            canon == canonical_wt
+        })
+        .map(|f| f.id);
+
+    Ok(WorktreeResolution {
+        path: Some(canonical_wt.to_string_lossy().to_string()),
+        folder_id,
+    })
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn resolve_worktree_folder(
+    db: tauri::State<'_, AppDatabase>,
+    repo_path: String,
+    branch: String,
+) -> Result<WorktreeResolution, AppCommandError> {
+    resolve_worktree_folder_core(&db, repo_path, branch).await
 }
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
@@ -4231,6 +4342,59 @@ mod tests {
             wt.parent_id, None,
             "non-positive / unknown source degrades to a top-level folder"
         );
+    }
+
+    #[test]
+    fn parse_worktrees_extracts_path_branch_pairs() {
+        // Main tree + a linked worktree + a detached worktree, trailing blank line.
+        let stdout = "\
+worktree /repo/main
+HEAD aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+branch refs/heads/main
+
+worktree /repo/wt-feature
+HEAD bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+branch refs/heads/feature-x
+
+worktree /repo/wt-detached
+HEAD cccccccccccccccccccccccccccccccccccccccc
+detached
+
+";
+        let entries = parse_worktrees(stdout);
+        assert_eq!(
+            entries,
+            vec![
+                ("/repo/main".to_string(), Some("main".to_string())),
+                (
+                    "/repo/wt-feature".to_string(),
+                    Some("feature-x".to_string())
+                ),
+                ("/repo/wt-detached".to_string(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_worktrees_flushes_trailing_block_without_blank_line() {
+        // No terminating blank line on the last block (git omits it at EOF here).
+        let stdout = "\
+worktree /repo/main
+HEAD aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+branch refs/heads/main";
+        let entries = parse_worktrees(stdout);
+        assert_eq!(
+            entries,
+            vec![("/repo/main".to_string(), Some("main".to_string()))]
+        );
+    }
+
+    #[test]
+    fn parse_worktrees_handles_empty_and_bare() {
+        assert!(parse_worktrees("").is_empty());
+        // A bare repo entry carries no branch.
+        let entries = parse_worktrees("worktree /repo/bare\nbare\n\n");
+        assert_eq!(entries, vec![("/repo/bare".to_string(), None)]);
     }
 
     #[tokio::test]

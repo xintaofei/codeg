@@ -1156,7 +1156,9 @@
         "upstreamSet": "La branche upstream a été définie",
         "upstreamSetAndPushed": "Branche upstream définie et {count, plural, one {# commit} other {# commits}} poussé(s)",
         "noCommitsToPush": "Aucun commit à pousser",
-        "pushedCommits": "{count, plural, one {# commit poussé} other {# commits poussés}}"
+        "pushedCommits": "{count, plural, one {# commit poussé} other {# commits poussés}}",
+        "switchedToFolder": "Basculé vers {name}",
+        "switchFailed": "Échec du changement de branche"
       },
       "tasks": {
         "newBranch": "Créer la branche {name}",

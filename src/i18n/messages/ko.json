@@ -1156,7 +1156,9 @@
         "upstreamSet": "업스트림 브랜치가 설정되었습니다",
         "upstreamSetAndPushed": "업스트림 브랜치를 설정하고 {count, plural, one {#개 커밋} other {#개 커밋}}을 푸시했습니다",
         "noCommitsToPush": "푸시할 커밋이 없습니다",
-        "pushedCommits": "{count, plural, one {#개 커밋 푸시됨} other {#개 커밋 푸시됨}}"
+        "pushedCommits": "{count, plural, one {#개 커밋 푸시됨} other {#개 커밋 푸시됨}}",
+        "switchedToFolder": "{name}(으)로 전환했습니다",
+        "switchFailed": "브랜치 전환에 실패했습니다"
       },
       "tasks": {
         "newBranch": "브랜치 {name} 생성",

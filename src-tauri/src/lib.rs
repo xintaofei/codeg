@@ -736,6 +736,7 @@ mod tauri_app {
                 folders::list_all_folder_details,
                 folders::open_folder,
                 folders::open_worktree_folder,
+                folders::resolve_worktree_folder,
                 folders::open_folder_in_workspace,
                 folders::open_folder_by_id,
                 folders::remove_folder_from_workspace,
