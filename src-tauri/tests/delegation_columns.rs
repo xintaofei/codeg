@@ -22,6 +22,7 @@ async fn delegation_columns_round_trip() {
         id: NotSet,
         folder_id: Set(folder_id),
         title: Set(Some("delegation child".to_string())),
+        title_locked: Set(false),
         agent_type: Set(agent_type_str),
         status: Set(conversation::ConversationStatus::InProgress),
         model: Set(None),
