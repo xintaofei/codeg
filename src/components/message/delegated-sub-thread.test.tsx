@@ -31,13 +31,13 @@ vi.mock("@/contexts/acp-connections-context", async () => {
   }
 })
 
-// SubAgentSessionSheet pulls in MessageListView + useConversationRuntime, which
+// SubAgentSessionDialog pulls in MessageListView + useConversationRuntime, which
 // would require the full runtime provider tree. Stub it to a sentinel exposing
 // the open state + child id so we can assert the "Open conversation" button
-// toggles it with the right target. The sheet's own behavior (live bridge,
+// toggles it with the right target. The dialog's own behavior (live bridge,
 // permission rendering) is covered by its dedicated test file.
-vi.mock("@/components/message/sub-agent-session-sheet", () => ({
-  SubAgentSessionSheet: ({
+vi.mock("@/components/message/sub-agent-session-dialog", () => ({
+  SubAgentSessionDialog: ({
     open,
     childConversationId,
   }: {
@@ -46,7 +46,7 @@ vi.mock("@/components/message/sub-agent-session-sheet", () => ({
   }) =>
     open ? (
       <div
-        data-testid="sub-agent-session-sheet"
+        data-testid="sub-agent-session-dialog"
         data-conversation-id={childConversationId}
       />
     ) : null,
@@ -156,7 +156,7 @@ describe("DelegatedSubThread", () => {
     expect(screen.getByText("set things up")).toBeInTheDocument()
   })
 
-  it("renders the open-conversation button when the child id is known and toggles the sheet on click", () => {
+  it("renders the open-conversation button when the child id is known and toggles the dialog on click", () => {
     mockedHook.mockReturnValue({
       binding: bindingOf({ status: "running" }),
       detail: null,
@@ -165,13 +165,13 @@ describe("DelegatedSubThread", () => {
     })
     renderWithIntl(<DelegatedSubThread parentToolUseId="pt-1" />)
     expect(
-      screen.queryByTestId("sub-agent-session-sheet")
+      screen.queryByTestId("sub-agent-session-dialog")
     ).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Open conversation" }))
-    const sheet = screen.getByTestId("sub-agent-session-sheet")
-    expect(sheet).toBeInTheDocument()
-    // The sheet receives the binding's childConversationId — not the parent's.
-    expect(sheet).toHaveAttribute("data-conversation-id", "99")
+    const dialog = screen.getByTestId("sub-agent-session-dialog")
+    expect(dialog).toBeInTheDocument()
+    // The dialog receives the binding's childConversationId — not the parent's.
+    expect(dialog).toHaveAttribute("data-conversation-id", "99")
   })
 
   it("hides the open-conversation button when the child id is unknown", () => {
@@ -203,7 +203,7 @@ describe("DelegatedSubThread", () => {
       />
     )
     fireEvent.click(screen.getByRole("button", { name: "Open conversation" }))
-    expect(screen.getByTestId("sub-agent-session-sheet")).toHaveAttribute(
+    expect(screen.getByTestId("sub-agent-session-dialog")).toHaveAttribute(
       "data-conversation-id",
       "1234"
     )
@@ -231,7 +231,7 @@ describe("DelegatedSubThread", () => {
       />
     )
     fireEvent.click(screen.getByRole("button", { name: "Open conversation" }))
-    expect(screen.getByTestId("sub-agent-session-sheet")).toHaveAttribute(
+    expect(screen.getByTestId("sub-agent-session-dialog")).toHaveAttribute(
       "data-conversation-id",
       "4321"
     )
@@ -277,7 +277,7 @@ describe("DelegatedSubThread", () => {
     ).not.toBeInTheDocument()
   })
 
-  it("badges 'awaiting approval' when the child has a pending permission (answered in the sheet, not inline)", () => {
+  it("badges 'awaiting approval' when the child has a pending permission (answered in the dialog, not inline)", () => {
     mockedHook.mockReturnValue({
       binding: bindingOf({ status: "running" }),
       detail: null,
@@ -293,7 +293,7 @@ describe("DelegatedSubThread", () => {
     // The waiting cue overrides the running badge.
     expect(screen.getByText("awaiting approval")).toBeInTheDocument()
     expect(screen.queryByText("running")).not.toBeInTheDocument()
-    // No inline permission UI on the card — it lives in the sheet.
+    // No inline permission UI on the card — it lives in the dialog.
     expect(screen.queryByTestId("permission-dialog")).not.toBeInTheDocument()
     // The open-conversation button is still the way in.
     expect(
@@ -406,7 +406,7 @@ describe("DelegatedSubThread (async ack semantics)", () => {
     expect(screen.getByText("running")).toBeInTheDocument()
     expect(screen.queryByText("done")).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Open conversation" }))
-    expect(screen.getByTestId("sub-agent-session-sheet")).toHaveAttribute(
+    expect(screen.getByTestId("sub-agent-session-dialog")).toHaveAttribute(
       "data-conversation-id",
       "4242"
     )
@@ -431,7 +431,8 @@ describe("DelegatedSubThread (async ack semantics)", () => {
     // Live wire: only the CallToolResult content text is forwarded.
     const output =
       "Delegated; the sub-agent is running in the background. " +
-      "task_id=abcdef12-3456-7890. Call get_delegation_status with this task_id."
+      "task_id=abcdef12-3456-7890. Call get_delegation_status with this id in " +
+      "the task_ids array."
     renderWithIntl(
       <DelegatedSubThread
         parentToolUseId="pt-1"
@@ -464,7 +465,7 @@ describe("DelegatedSubThread (async ack semantics)", () => {
     )
     expect(screen.getByText("running")).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Open conversation" }))
-    expect(screen.getByTestId("sub-agent-session-sheet")).toHaveAttribute(
+    expect(screen.getByTestId("sub-agent-session-dialog")).toHaveAttribute(
       "data-conversation-id",
       "909"
     )

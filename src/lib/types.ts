@@ -232,6 +232,12 @@ export interface FolderDetail {
   last_opened_at: string
   sort_order: number
   color: string
+  /**
+   * Root folder this one was created under (worktree folders only); null for
+   * top-level folders. Flattened — a worktree of a worktree still points at the
+   * original root. Drives the sidebar merge and worktree-branch detection.
+   */
+  parent_id: number | null
 }
 
 export interface OpenedTab {
@@ -261,6 +267,53 @@ export interface DbConversationSummary {
   delegation_call_id?: string | null
 }
 
+/** Payload for the global `conversation://changed` side-channel that keeps
+ *  every client's sidebar list/status in sync across desktop + browsers.
+ *  Mirrors the Rust `ConversationChange` enum (serde `tag = "kind"`). */
+export type ConversationChange =
+  | { kind: "upsert"; summary: DbConversationSummary }
+  | { kind: "deleted"; id: number }
+  | { kind: "status"; id: number; status: string }
+
+export const CONVERSATION_CHANGED_EVENT = "conversation://changed"
+
+/** Global side-channel announcing a live-feedback enable/disable (payload is
+ *  `FeedbackSettings`). The settings UI runs in a separate window, so the
+ *  conversation feedback bar converges on this backend broadcast rather than a
+ *  frontend-only cache. Mirrors the Rust `FEEDBACK_SETTINGS_CHANGED_EVENT`. */
+export const FEEDBACK_SETTINGS_CHANGED_EVENT = "feedback-settings://changed"
+
+/** Payload for the global `tabs://changed` side-channel that keeps every
+ *  client's open-tab set in sync across desktop + browsers. Mirrors the Rust
+ *  `TabsChanged` struct. The full conversation-bound tab set is sent as a
+ *  snapshot (idempotent apply); `is_active` marks the focused tab, which is
+ *  mirrored across clients. `origin` is echoed so the originator ignores its
+ *  own broadcast; the sentinel `"server"` marks cascade changes every client
+ *  applies. */
+export interface TabsChanged {
+  version: number
+  origin: string
+  tabs: OpenedTab[]
+}
+
+export const TABS_CHANGED_EVENT = "tabs://changed"
+
+/** Response of `list_opened_tabs`: the persisted set + current workspace tab
+ *  version (clients seed their compare-and-set / echo logic from it). */
+export interface OpenedTabsSnapshot {
+  items: OpenedTab[]
+  version: number
+}
+
+/** Response of the `save_opened_tabs` compare-and-set. When `accepted` is false
+ *  the save was stale (another client won) and `tabs` is the current truth to
+ *  reconcile against. */
+export interface SaveTabsOutcome {
+  accepted: boolean
+  version: number
+  tabs: OpenedTab[]
+}
+
 export interface ImportResult {
   imported: number
   skipped: number
@@ -270,6 +323,14 @@ export interface DbConversationDetail {
   summary: DbConversationSummary
   turns: MessageTurn[]
   session_stats?: SessionStats | null
+  /**
+   * Id of the persisted user turn the backend identified as the in-flight prompt
+   * (present only while a turn is running on this conversation's connection). The
+   * timeline uses it to locate — and, while the live reply is in hand, hide — the
+   * partial assistant turn some agents (OpenCode, Gemini) persist after the prompt
+   * mid-stream, which would otherwise double-render against the live reply.
+   */
+  in_flight_user_turn_id?: string | null
 }
 
 export type ConversationStatus =
@@ -534,6 +595,12 @@ export type AcpEvent =
       stop_reason: string
     }
   | {
+      // Synthetic notification-only event (chat-channel "user message" push).
+      // The frontend reducer has no case for it — it is consumed backend-side.
+      type: "user_prompt_sent"
+      text_preview: string
+    }
+  | {
       type: "session_started"
       session_id: string
     }
@@ -632,6 +699,45 @@ export type AcpEvent =
       agent_type: AgentType
       result: DelegationResultSummary
     }
+  /**
+   * The user's submitted prompt, broadcast on the connection stream so OTHER
+   * clients viewing this conversation synthesize the user turn in real time.
+   * The sending client renders its own optimistic turn and ignores this echo.
+   * Emitted only for root sends (delegation children synthesize kickoff text
+   * separately).
+   */
+  | {
+      type: "user_message"
+      message_id: string
+      blocks: UserMessageBlock[]
+    }
+  /**
+   * The user submitted a live-feedback note while the agent is mid-turn (the
+   * `check_user_feedback` steering path). Broadcast so every client viewing
+   * this conversation renders the pending note; also captured in the snapshot.
+   */
+  | {
+      type: "feedback_submitted"
+      item: FeedbackItem
+    }
+  /**
+   * The agent read one or more pending feedback notes via `check_user_feedback`.
+   * Carries the note ids + the delivery instant; clients flip those notes to
+   * `delivered` (they already hold the text from `feedback_submitted` / snapshot).
+   */
+  | {
+      type: "feedback_consumed"
+      ids: string[]
+      delivered_at: string
+    }
+
+/** A block of a broadcast user prompt (mirror of Rust `UserMessageBlock`).
+ *  Narrower than the persisted `ContentBlock`: only what a viewer needs to
+ *  render the user turn. Resource/resource-link prompt blocks are folded into
+ *  `text` markdown links backend-side. */
+export type UserMessageBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mime_type: string }
 
 /**
  * Mirror of Rust `DelegationResultSummary`. `kind` discriminates Ok vs Err;
@@ -748,6 +854,22 @@ export interface ActiveDelegationState {
   agent_type: AgentType
 }
 
+/** Lifecycle of a live-feedback note (mirror of Rust `FeedbackStatus`). */
+export type FeedbackStatus = "pending" | "delivered"
+
+/**
+ * A user-submitted live-feedback ("steering") note (mirror of Rust
+ * `FeedbackItem`). Turn-scoped: the backend clears the set when the next turn's
+ * `user_message` arrives. `delivered_at` is set once the agent reads it.
+ */
+export interface FeedbackItem {
+  id: string
+  text: string
+  created_at: string
+  status: FeedbackStatus
+  delivered_at?: string | null
+}
+
 export interface LiveSessionSnapshot {
   connection_id: string
   conversation_id: number | null
@@ -757,9 +879,22 @@ export interface LiveSessionSnapshot {
   live_message: LiveMessage | null
   active_tool_calls: ToolCallState[]
   pending_permission: PendingPermissionState | null
+  /** In-flight user prompt for the current turn — lets a client attaching
+   *  mid-turn render the user turn. Absent (omitted) when no turn is in flight. */
+  pending_user_message?: {
+    message_id: string
+    blocks: UserMessageBlock[]
+  } | null
   /** Live sub-agent delegations recoverable from the snapshot. May be absent
    *  on older server payloads (then treated as `[]`). */
   active_delegations?: ActiveDelegationState[]
+  /** Live-feedback notes for the current turn. Absent on older payloads /
+   *  when empty (then treated as `[]`). */
+  feedback?: FeedbackItem[]
+  /** Whether this agent has the `check_user_feedback` tool (fixed at launch).
+   *  The frontend gates the feedback bar on this — the agent's real capability —
+   *  not the (possibly later-toggled) global setting. Absent → `false`. */
+  feedback_tool_available?: boolean
   modes: SessionModeStateInfo | null
   current_mode: string | null
   config_options: SessionConfigOptionInfo[] | null
@@ -776,6 +911,16 @@ export interface ConnectionInfo {
   id: string
   agent_type: AgentType
   status: ConnectionStatus
+}
+
+// Live connection bound to a conversation, returned by
+// acp_find_connection_for_conversation. `null` means no live connection (read
+// persisted detail instead of attaching). `event_seq` is the connection's
+// progress at discovery time — informational only; viewers always cold-attach
+// (full snapshot, no cursor), since they've applied no prior events.
+export interface ConversationConnectionInfo {
+  connection_id: string
+  event_seq: number
 }
 
 // ACP agent info returned by acp_list_agents
@@ -1086,6 +1231,19 @@ export interface GitBranchList {
   worktree_branches: string[]
 }
 
+/**
+ * Where a branch is checked out, resolved against registered folders (mirrors
+ * Rust `WorktreeResolution`). `path` is the canonical worktree/main-tree path
+ * hosting the branch, or null when it is not checked out in any worktree.
+ * `folder_id` is the registered folder owning that path, or null for an
+ * external/unregistered worktree. Drives the branch selector's navigate-vs-
+ * checkout decision.
+ */
+export interface WorktreeResolution {
+  path: string | null
+  folder_id: number | null
+}
+
 export interface GitConflictInfo {
   has_conflicts: boolean
   conflicted_files: string[]
@@ -1346,6 +1504,12 @@ export interface AgentInstallEvent {
 // ─── Chat Channels ───
 
 export type ChannelType = "lark" | "telegram" | "weixin"
+
+/** One configured event-notification webhook sink. */
+export interface WebhookConfig {
+  url: string
+  enabled: boolean
+}
 
 export type ChannelConnectionStatus =
   | "connected"

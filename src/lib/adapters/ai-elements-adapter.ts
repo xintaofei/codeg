@@ -10,6 +10,7 @@ import {
   isAgentLikeToolName,
   isDelegationStatusToolName,
 } from "@/lib/adapters/tool-kind-classifier"
+import { normalizeToolName } from "@/lib/tool-call-normalization"
 
 /**
  * Adapted content part types for AI SDK Elements components
@@ -59,6 +60,14 @@ export type AdaptedGeneratedImagePart = {
   status: ToolCallStatus | null
 }
 
+export type AdaptedGoalRunPart = {
+  type: "goal-run"
+  start: AdaptedToolCallPart
+  end: AdaptedToolCallPart | null
+  items: AdaptedContentPart[]
+  isRunning: boolean
+}
+
 export type AdaptedContentPart =
   | { type: "text"; text: string }
   | AdaptedToolCallPart
@@ -87,6 +96,7 @@ export type AdaptedContentPart =
       type: "delegation-status-group"
       polls: AdaptedToolCallPart[]
     }
+  | AdaptedGoalRunPart
   | AdaptedGeneratedImagePart
 
 export interface UserResourceDisplay {
@@ -132,6 +142,7 @@ type InlineToolSegment =
   | { kind: "tool_call" | "tool_result"; value: string }
 
 const INLINE_TOOL_TAG_RE = /<(tool_call|tool_result)>\s*([\s\S]*?)\s*<\/\1>/gi
+const GOAL_UPDATE_MARKER_RE = /Goal updated \(([^)]+)\):\s*/g
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -420,6 +431,191 @@ function expandInlineToolText(
     inlineCounter += 1
   }
 
+  return parts
+}
+
+function normalizeGoalStatusText(status: string): string {
+  return status
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_")
+}
+
+function createSyntheticGoalToolPart(
+  status: string,
+  objective: string,
+  messageId: string,
+  blockIndex: number,
+  goalIndex: number
+): AdaptedToolCallPart {
+  const normalizedStatus = normalizeGoalStatusText(status)
+  const isActive = normalizedStatus === "active"
+  const goal = {
+    objective,
+    status: normalizedStatus,
+  }
+
+  return {
+    type: "tool-call",
+    toolCallId: `${messageId}-goal-${blockIndex}-${goalIndex}`,
+    toolName: isActive ? "create_goal" : "update_goal",
+    input: JSON.stringify(
+      isActive ? { objective } : { status: normalizedStatus }
+    ),
+    state: "output-available",
+    output: JSON.stringify({ goal }),
+  }
+}
+
+const GOAL_TRAILING_PROSE_START_PATTERNS: RegExp[] = [
+  /我(?:也|会|先|已经|将|再|接下来|现在|继续|顺手|把|已)/g,
+  /已(?:完成|分析|读取|检查|修复|更新)/g,
+  /\bI(?:'ll| will| also| have| just| checked| read| updated| fixed)\b/g,
+]
+
+function inferObjectiveFromGoalPayload(payload: string): string {
+  const firstLine = payload.split(/\r?\n/)[0]?.trim() ?? ""
+  if (firstLine.length === 0) return ""
+
+  let proseStart = firstLine.length
+  for (const pattern of GOAL_TRAILING_PROSE_START_PATTERNS) {
+    pattern.lastIndex = 0
+    for (const match of firstLine.matchAll(pattern)) {
+      const index = match.index ?? -1
+      if (index > 0 && index < proseStart) {
+        proseStart = index
+      }
+    }
+  }
+
+  return firstLine.slice(0, proseStart).trim()
+}
+
+function expandGoalUpdateText(
+  text: string,
+  messageId: string,
+  blockIndex: number,
+  toolCallFailedText: string,
+  objectiveHints: readonly string[] = []
+): AdaptedContentPart[] | null {
+  type GoalUpdateMarker = {
+    start: number
+    payloadStart: number
+    payloadEnd: number
+    status: string
+    payload: string
+  }
+
+  GOAL_UPDATE_MARKER_RE.lastIndex = 0
+  const markers: GoalUpdateMarker[] = []
+  for (const match of text.matchAll(GOAL_UPDATE_MARKER_RE)) {
+    const start = match.index ?? -1
+    const status = match[1]?.trim() ?? ""
+    if (start < 0 || status.length === 0) continue
+    markers.push({
+      start,
+      payloadStart: start + match[0].length,
+      payloadEnd: text.length,
+      status,
+      payload: "",
+    })
+  }
+
+  if (markers.length === 0) return null
+
+  for (let index = 0; index < markers.length; index += 1) {
+    const next = markers[index + 1]
+    markers[index].payloadEnd = next ? next.start : text.length
+    markers[index].payload = text.slice(
+      markers[index].payloadStart,
+      markers[index].payloadEnd
+    )
+  }
+
+  const payloadFirstLines = markers
+    .map((marker) => marker.payload.replace(/^\s+/, "").split(/\r?\n/)[0])
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .sort((a, b) => a.length - b.length)
+  const sharedObjective =
+    markers.length > 1
+      ? (payloadFirstLines.find((candidate) =>
+          payloadFirstLines.every((line) => line.startsWith(candidate))
+        ) ?? null)
+      : null
+  const sortedObjectiveHints = objectiveHints
+    .map((hint) => hint.trim())
+    .filter((hint) => hint.length > 0)
+    .sort((a, b) => b.length - a.length)
+
+  const parts: AdaptedContentPart[] = []
+  let textBuffer = ""
+  let goalCounter = 0
+  let textSegmentCounter = 0
+
+  const flushText = () => {
+    const cleaned = textBuffer.replace(/^\n+|\n+$/g, "")
+    textBuffer = ""
+    if (cleaned.trim().length === 0) return
+
+    const expanded = expandInlineToolText(
+      cleaned,
+      messageId,
+      blockIndex * 100 + textSegmentCounter,
+      toolCallFailedText
+    )
+    textSegmentCounter += 1
+
+    if (expanded) {
+      parts.push(...expanded)
+    } else {
+      parts.push({ type: "text", text: cleaned })
+    }
+  }
+
+  let cursor = 0
+  for (const marker of markers) {
+    if (marker.start > cursor) {
+      textBuffer += text.slice(cursor, marker.start)
+    }
+
+    const payloadWithoutLeading = marker.payload.replace(/^\s+/, "")
+    const fallbackObjective = inferObjectiveFromGoalPayload(
+      payloadWithoutLeading
+    )
+    const hintedObjective =
+      sortedObjectiveHints.find((hint) =>
+        payloadWithoutLeading.startsWith(hint)
+      ) ?? null
+    const objective = sharedObjective ?? hintedObjective ?? fallbackObjective
+    if (marker.status.length === 0 || objective.length === 0) {
+      textBuffer += text.slice(marker.start, marker.payloadEnd)
+      cursor = marker.payloadEnd
+      continue
+    }
+    const trailingText = payloadWithoutLeading.startsWith(objective)
+      ? payloadWithoutLeading.slice(objective.length)
+      : ""
+
+    flushText()
+    parts.push(
+      createSyntheticGoalToolPart(
+        marker.status,
+        objective,
+        messageId,
+        blockIndex,
+        goalCounter
+      )
+    )
+    goalCounter += 1
+    textBuffer += trailingText
+    cursor = marker.payloadEnd
+  }
+
+  if (cursor < text.length) {
+    textBuffer += text.slice(cursor)
+  }
+  flushText()
   return parts
 }
 
@@ -800,6 +996,231 @@ export function mergeAdjacentDelegationStatusGroups(
   return result
 }
 
+function isGoalStartPart(
+  part: AdaptedContentPart
+): part is AdaptedToolCallPart {
+  return (
+    part.type === "tool-call" &&
+    normalizeToolName(part.toolName) === "create_goal"
+  )
+}
+
+function isGoalEndPart(part: AdaptedContentPart): part is AdaptedToolCallPart {
+  return (
+    part.type === "tool-call" &&
+    normalizeToolName(part.toolName) === "update_goal"
+  )
+}
+
+function isRunningToolCall(part: AdaptedToolCallPart): boolean {
+  return part.state === "input-streaming" || part.state === "input-available"
+}
+
+function parseJsonRecord(
+  raw: string | null | undefined
+): Record<string, unknown> | null {
+  if (!raw) return null
+  try {
+    return asRecord(JSON.parse(raw))
+  } catch {
+    return null
+  }
+}
+
+function nestedRecord(
+  obj: Record<string, unknown> | null,
+  key: string
+): Record<string, unknown> | null {
+  return asRecord(obj?.[key])
+}
+
+function stringProperty(
+  obj: Record<string, unknown> | null,
+  key: string
+): string | null {
+  const value = obj?.[key]
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : null
+}
+
+function goalObjectiveKeyFromTool(part: AdaptedToolCallPart): string | null {
+  const input = parseJsonRecord(part.input)
+  const output = parseJsonRecord(part.output ?? part.errorText)
+  const outputGoal = nestedRecord(output, "goal")
+  const objective =
+    stringProperty(outputGoal, "objective") ??
+    stringProperty(input, "objective")
+  return objective ? objective.trim() : null
+}
+
+function goalObjectiveKeyFromRun(part: AdaptedGoalRunPart): string | null {
+  return (
+    (part.end ? goalObjectiveKeyFromTool(part.end) : null) ??
+    goalObjectiveKeyFromTool(part.start)
+  )
+}
+
+function collectGoalObjectives(parts: AdaptedContentPart[]): string[] {
+  const objectives: string[] = []
+  const seen = new Set<string>()
+
+  const add = (objective: string | null) => {
+    if (!objective || seen.has(objective)) return
+    seen.add(objective)
+    objectives.push(objective)
+  }
+
+  for (const part of parts) {
+    if (part.type === "goal-run") {
+      add(goalObjectiveKeyFromRun(part))
+      for (const item of collectGoalObjectives(part.items)) {
+        add(item)
+      }
+    } else if (part.type === "tool-call") {
+      add(goalObjectiveKeyFromTool(part))
+    }
+  }
+
+  return objectives
+}
+
+function mergeGoalObjectiveHints(
+  existing: readonly string[] | undefined,
+  incoming: readonly string[]
+): string[] {
+  const merged = new Set(existing ?? [])
+  for (const objective of incoming) {
+    if (objective.trim().length > 0) merged.add(objective.trim())
+  }
+  return Array.from(merged).sort((a, b) => b.length - a.length)
+}
+
+/**
+ * Wrap a Codex `/goal` lifecycle into one card-style part:
+ * `create_goal` starts the run, every intervening adapted part becomes card
+ * body content, and `update_goal` closes the run. An unfinished run remains
+ * wrapped with `isRunning=true` so the renderer can shimmer the title while the
+ * agent is still working.
+ */
+export function groupGoalRuns(
+  parts: AdaptedContentPart[]
+): AdaptedContentPart[] {
+  const result: AdaptedContentPart[] = []
+  let active: {
+    start: AdaptedToolCallPart
+    items: AdaptedContentPart[]
+  } | null = null
+  const completedGoalObjectives = new Set<string>()
+
+  const rememberCompletedGoal = (
+    start: AdaptedToolCallPart,
+    end: AdaptedToolCallPart | null
+  ) => {
+    const objective =
+      (end ? goalObjectiveKeyFromTool(end) : null) ??
+      goalObjectiveKeyFromTool(start)
+    if (objective) completedGoalObjectives.add(objective)
+  }
+
+  const isStaleActiveGoal = (part: AdaptedToolCallPart): boolean => {
+    const objective = goalObjectiveKeyFromTool(part)
+    return Boolean(objective && completedGoalObjectives.has(objective))
+  }
+
+  const flushActive = () => {
+    if (!active) return
+    result.push({
+      type: "goal-run",
+      start: active.start,
+      end: null,
+      items: [...active.items],
+      isRunning: true,
+    })
+    active = null
+  }
+
+  for (const part of parts) {
+    if (part.type === "goal-run") {
+      const objective = goalObjectiveKeyFromRun(part)
+      const isStaleUnfinished =
+        part.end === null &&
+        Boolean(objective && completedGoalObjectives.has(objective))
+
+      if (!active) {
+        if (isStaleUnfinished) {
+          result.push(...part.items)
+        } else if (part.end === null) {
+          active = { start: part.start, items: [...part.items] }
+        } else {
+          result.push({
+            ...part,
+            items: [...part.items],
+          })
+          rememberCompletedGoal(part.start, part.end)
+        }
+        continue
+      }
+
+      if (isStaleUnfinished) {
+        active.items.push(...part.items)
+        continue
+      }
+
+      active.start = part.start
+      if (part.end === null) {
+        active.items.push(...part.items)
+      } else {
+        result.push({
+          type: "goal-run",
+          start: active.start,
+          end: part.end,
+          items: [...active.items, ...part.items],
+          isRunning: part.isRunning,
+        })
+        rememberCompletedGoal(active.start, part.end)
+        active = null
+      }
+      continue
+    }
+
+    if (isGoalStartPart(part)) {
+      if (!active && isStaleActiveGoal(part)) {
+        continue
+      }
+      if (active) {
+        active.start = part
+        continue
+      }
+      flushActive()
+      active = { start: part, items: [] }
+      continue
+    }
+
+    if (active && isGoalEndPart(part)) {
+      result.push({
+        type: "goal-run",
+        start: active.start,
+        end: part,
+        items: [...active.items],
+        isRunning: isRunningToolCall(part),
+      })
+      rememberCompletedGoal(active.start, part)
+      active = null
+      continue
+    }
+
+    if (active) {
+      active.items.push(part)
+    } else {
+      result.push(part)
+    }
+  }
+
+  flushActive()
+  return result
+}
+
 /**
  * Build a map of tool_use_id → tool_result ContentBlock from content blocks.
  * Used to correlate tool calls with their results.
@@ -831,7 +1252,8 @@ export function adaptMessageTurn(
   turn: MessageTurn,
   text: AdapterMessageText,
   isStreaming: boolean = false,
-  inProgressToolCallIds?: Set<string>
+  inProgressToolCallIds?: Set<string>,
+  goalObjectiveHints?: readonly string[]
 ): AdaptedMessage {
   const adaptedContent: AdaptedContentPart[] = []
   const resultMap = buildToolResultMap(turn.blocks)
@@ -844,6 +1266,18 @@ export function adaptMessageTurn(
     const block = turn.blocks[index]
 
     if (turn.role === "assistant" && block.type === "text") {
+      const goalExpandedParts = expandGoalUpdateText(
+        block.text,
+        turn.id,
+        index,
+        text.toolCallFailed,
+        goalObjectiveHints
+      )
+      if (goalExpandedParts) {
+        adaptedContent.push(...goalExpandedParts)
+        continue
+      }
+
       const expandedParts = expandInlineToolText(
         block.text,
         turn.id,
@@ -953,8 +1387,10 @@ export function adaptMessageTurn(
 
   const groupedContent =
     turn.role === "assistant"
-      ? groupConsecutiveDelegationStatus(
-          groupConsecutiveToolCalls(adaptedContent)
+      ? groupGoalRuns(
+          groupConsecutiveDelegationStatus(
+            groupConsecutiveToolCalls(adaptedContent)
+          )
         )
       : adaptedContent
 
@@ -1056,6 +1492,7 @@ export interface MessageTurnAdapter {
  */
 export function createMessageTurnAdapter(): MessageTurnAdapter {
   const cache = new Map<string, TurnCacheEntry>()
+  const goalObjectiveHints = new Map<string, string[]>()
 
   return {
     adapt(turns, text, streamingIndices, inProgressToolCallIdsByIndex) {
@@ -1089,8 +1526,22 @@ export function createMessageTurnAdapter(): MessageTurnAdapter {
           }
         }
 
-        const adapted = adaptMessageTurn(turn, text, isStreaming, inProgress)
+        const adapted = adaptMessageTurn(
+          turn,
+          text,
+          isStreaming,
+          inProgress,
+          goalObjectiveHints.get(turn.id)
+        )
         out[i] = adapted
+
+        const objectives = collectGoalObjectives(adapted.content)
+        if (objectives.length > 0) {
+          goalObjectiveHints.set(
+            turn.id,
+            mergeGoalObjectiveHints(goalObjectiveHints.get(turn.id), objectives)
+          )
+        }
 
         if (cacheable) {
           cache.set(turn.id, {
@@ -1115,11 +1566,17 @@ export function createMessageTurnAdapter(): MessageTurnAdapter {
           if (!seen.has(id)) cache.delete(id)
         }
       }
+      if (goalObjectiveHints.size > seen.size) {
+        for (const id of goalObjectiveHints.keys()) {
+          if (!seen.has(id)) goalObjectiveHints.delete(id)
+        }
+      }
 
       return out
     },
     clear() {
       cache.clear()
+      goalObjectiveHints.clear()
     },
   }
 }

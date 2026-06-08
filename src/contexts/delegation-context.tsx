@@ -44,7 +44,6 @@ export interface DelegationBinding {
   agentType: AgentType
   status: DelegationStatus
   errorCode?: string
-  durationMs?: number
 }
 
 interface DelegationContextValue {
@@ -156,7 +155,6 @@ export function DelegationProvider({ children }: { children: ReactNode }) {
               ? {
                   ...base,
                   status: "ok",
-                  durationMs: envelope.result.duration_ms,
                 }
               : {
                   ...base,

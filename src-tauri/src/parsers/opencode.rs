@@ -619,7 +619,7 @@ impl AgentParser for OpenCodeParser {
     }
 }
 
-fn resolve_opencode_base_dir() -> PathBuf {
+pub(crate) fn resolve_opencode_base_dir() -> PathBuf {
     resolve_xdg_data_home(std::env::var_os("XDG_DATA_HOME"), dirs::home_dir())
         .map(|xdg_data_home| xdg_data_home.join("opencode"))
         .unwrap_or_else(|| PathBuf::from("opencode"))

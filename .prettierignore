@@ -1,0 +1,6 @@
+src-tauri/target/
+src-tauri/vendor/
+src-tauri/gen/
+src-tauri/experts/
+docs/
+pnpm-lock.yaml

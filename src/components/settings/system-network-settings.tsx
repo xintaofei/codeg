@@ -7,6 +7,7 @@ import {
   Languages,
   Loader2,
   RefreshCw,
+  RotateCcw,
   Wifi,
 } from "lucide-react"
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -16,6 +17,17 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { toast } from "sonner"
 import { useAppI18n } from "@/components/i18n-provider"
+import { BackupSettings } from "@/components/settings/backup-settings"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -31,17 +43,17 @@ import {
   updateSystemLanguageSettings,
   updateSystemProxySettings,
 } from "@/lib/api"
-import { isDesktop, openUrl } from "@/lib/platform"
+import { openUrl } from "@/lib/platform"
 import type { AppLocale } from "@/lib/types"
 import {
   checkAppUpdate,
   closeAppUpdate,
   getCurrentAppVersion,
-  installAppUpdate,
+  getServerUpdateStatus,
   normalizeAppUpdateError,
-  relaunchApp,
+  usesTauriUpdater,
 } from "@/lib/updater"
-import type { DownloadEvent } from "@/lib/updater"
+import { useAppUpdate } from "@/components/providers/update-provider"
 import { APP_LOCALES } from "@/lib/i18n"
 import { toErrorMessage } from "@/lib/app-error"
 
@@ -94,14 +106,68 @@ export function SystemNetworkSettings() {
   const [currentVersion, setCurrentVersion] = useState<string>("")
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
-  const [installingUpdate, setInstallingUpdate] = useState(false)
   const [updateError, setUpdateError] = useState<string | null>(null)
   const [lastCheckedAt, setLastCheckedAt] = useState<Date | null>(null)
-  const [downloadProgress, setDownloadProgress] = useState<{
-    downloaded: number
-    total: number | null
-    phase: "downloading" | "installing"
-  } | null>(null)
+  // Server/Docker self-update capability reported by `check_app_update`
+  // (absent in desktop mode). Drives whether the upgrade button performs a
+  // real in-place update or just links to the release page.
+  const [serverSelfUpdate, setServerSelfUpdate] = useState(false)
+  // Whether the (remote) server speaks the detached app_update_state protocol.
+  // Absent on servers older than this feature — a newer client must fall back
+  // to the "view release" link rather than driving the new in-place flow
+  // against the old blocking endpoint. Irrelevant in desktop mode.
+  const [serverLiveProgress, setServerLiveProgress] = useState(false)
+  const [serverRuntime, setServerRuntime] = useState<string | undefined>(
+    undefined
+  )
+  // Whether a previous version is kept on the server (as `.bak`) and can be
+  // restored — drives the manual "roll back" affordance, which covers
+  // regressions the trial-window auto-rollback can't (they surface later).
+  const [serverRollbackAvailable, setServerRollbackAvailable] = useState(false)
+  const [rollbackConfirmOpen, setRollbackConfirmOpen] = useState(false)
+
+  // The in-flight download / install / restart lifecycle now lives in the
+  // app-wide UpdateProvider (settings/layout.tsx wraps this page), so its
+  // progress survives navigating between settings pages or closing the page —
+  // this page is just one subscriber to it. It is always mounted inside the
+  // provider, hence the non-null assertion.
+  const update = useAppUpdate()!
+  const {
+    state: updateState,
+    isUpdating,
+    restartCountdown,
+    isRollingBack,
+    hydrated: updateHydrated,
+    isBusy,
+    startUpdate,
+    restart,
+    rollback,
+  } = update
+  const updateReady = updateState.status === "ready_to_restart"
+  // Rollback is only safe from a settled lifecycle (never while an upgrade is
+  // downloading/installing/staged/restarting — that conflicts with the
+  // "Restart to update" prompt). For a server that speaks the live-progress
+  // protocol, wait for the authoritative snapshot to hydrate before trusting
+  // the status (the default is a placeholder `idle`); older servers don't
+  // hydrate, so they're allowed through on their reported availability.
+  const canRollback =
+    serverSelfUpdate &&
+    serverRollbackAvailable &&
+    !usesTauriUpdater() &&
+    (updateState.status === "idle" || updateState.status === "error") &&
+    (updateHydrated || !serverLiveProgress)
+  // A determinate bar needs a known content length; the install phase (and a
+  // length-less download) fall back to an indeterminate pulse.
+  const downloadDeterminate =
+    updateState.status === "downloading" &&
+    !!updateState.total &&
+    updateState.total > 0
+  const downloadPercent = downloadDeterminate
+    ? Math.min(
+        100,
+        ((updateState.downloaded ?? 0) / (updateState.total as number)) * 100
+      )
+    : 0
 
   const [appLanguage, setAppLanguage] = useState<LanguageSelectValue>(
     languageSettings.mode === "system" ? "system" : languageSettings.language
@@ -155,11 +221,11 @@ export function SystemNetworkSettings() {
 
   const updateStatusMessage = useMemo(() => {
     if (checkingUpdate) return t("checking")
-    if (installingUpdate) return t("updating")
+    if (isUpdating) return t("updating")
     if (availableUpdate) return null
     if (lastCheckedAt) return t("alreadyLatest")
     return null
-  }, [availableUpdate, checkingUpdate, installingUpdate, lastCheckedAt, t])
+  }, [availableUpdate, checkingUpdate, isUpdating, lastCheckedAt, t])
 
   const loadSettings = useCallback(async () => {
     setLoading(true)
@@ -189,6 +255,9 @@ export function SystemNetworkSettings() {
     })
     checkForUpdates().catch((err) => {
       console.error("[Settings] auto check update failed:", err)
+    })
+    loadServerUpdateStatus().catch((err) => {
+      console.error("[Settings] load server update status failed:", err)
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -270,6 +339,14 @@ export function SystemNetworkSettings() {
     [t]
   )
 
+  // A failure inside the detached backend download/install task lands in the
+  // shared update state rather than as a thrown error here, so surface it the
+  // same way as a check error — and it stays visible after navigating back.
+  const lifecycleError =
+    updateState.status === "error" && updateState.error
+      ? formatUpdateError(updateState.error, "install")
+      : null
+
   const checkForUpdates = useCallback(async () => {
     setCheckingUpdate(true)
     setUpdateError(null)
@@ -279,6 +356,13 @@ export function SystemNetworkSettings() {
       const result = await checkAppUpdate()
       setCurrentVersion(result.currentVersion)
       setLastCheckedAt(new Date())
+
+      // Server-mode capability (undefined in desktop, where Tauri's updater
+      // handles installs and these fields aren't present).
+      setServerSelfUpdate(result.selfUpdateSupported ?? false)
+      setServerLiveProgress(result.liveProgress ?? false)
+      setServerRuntime(result.runtime)
+      setServerRollbackAvailable(result.rollbackAvailable ?? false)
 
       if (result.update) {
         setAvailableUpdate(result.update)
@@ -299,54 +383,51 @@ export function SystemNetworkSettings() {
     }
   }, [availableUpdate, formatUpdateError, t])
 
-  const installUpdate = useCallback(async () => {
-    if (!availableUpdate) return
-
-    setInstallingUpdate(true)
-    setUpdateError(null)
-    setDownloadProgress(null)
-
-    let downloaded = 0
-
+  // Populate the local self-update capability (incl. rollback availability)
+  // independent of the manifest-dependent update check, so the rollback button
+  // stays reachable even when the update source is down. No-op on a genuine
+  // local desktop window (it updates via the Tauri plugin).
+  const loadServerUpdateStatus = useCallback(async () => {
     try {
-      await installAppUpdate(availableUpdate, (event: DownloadEvent) => {
-        switch (event.event) {
-          case "Started":
-            setDownloadProgress({
-              downloaded: 0,
-              total: event.data.contentLength ?? null,
-              phase: "downloading",
-            })
-            break
-          case "Progress":
-            downloaded += event.data.chunkLength
-            setDownloadProgress((prev) => ({
-              downloaded,
-              total: prev?.total ?? null,
-              phase: "downloading",
-            }))
-            break
-          case "Finished":
-            setDownloadProgress((prev) => ({
-              downloaded: prev?.downloaded ?? downloaded,
-              total: prev?.total ?? null,
-              phase: "installing",
-            }))
-            break
-        }
-      })
-      toast.success(t("installSuccess"))
-      await relaunchApp()
+      const status = await getServerUpdateStatus()
+      if (!status) return
+      setCurrentVersion(status.currentVersion)
+      setServerSelfUpdate(status.selfUpdateSupported)
+      setServerLiveProgress(status.liveProgress ?? false)
+      setServerRollbackAvailable(status.rollbackAvailable)
+      setServerRuntime(status.runtime)
     } catch (err) {
-      const message = formatUpdateError(err, "install")
-      setUpdateError(message)
-      toast.error(t("installFailed", { message }))
-      console.error("[Settings] install app update failed:", err)
-    } finally {
-      setInstallingUpdate(false)
-      setDownloadProgress(null)
+      console.error("[Settings] load server update status failed:", err)
     }
-  }, [availableUpdate, formatUpdateError, t])
+  }, [])
+
+  // Refresh the local rollback availability whenever an in-flight update ends
+  // in error: a failed attempt may have left a fresh `.bak`. A success reloads
+  // the page, so only the failure path needs covering here.
+  useEffect(() => {
+    if (updateState.status === "error") {
+      void loadServerUpdateStatus()
+    }
+  }, [updateState.status, loadServerUpdateStatus])
+
+  // Close a stale rollback confirm dialog if the lifecycle leaves a
+  // rollback-able state — e.g. another window staged an update while the dialog
+  // sat open — so it can't fire a now-conflicting rollback. The backend also
+  // rejects such a rollback; this avoids the user even reaching it.
+  useEffect(() => {
+    if (rollbackConfirmOpen && !canRollback) {
+      setRollbackConfirmOpen(false)
+    }
+  }, [rollbackConfirmOpen, canRollback])
+
+  // Manual rollback runs through the provider (it owns the restart + verify
+  // flow); afterwards refresh the rollback affordance — a single-generation
+  // `.bak` is consumed by a successful rollback (which also reloads the page).
+  const handleRollback = useCallback(async () => {
+    setRollbackConfirmOpen(false)
+    await rollback()
+    void loadServerUpdateStatus()
+  }, [rollback, loadServerUpdateStatus])
 
   if (loading) {
     return (
@@ -411,24 +492,36 @@ export function SystemNetworkSettings() {
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   {t("checking")}
                 </Button>
+              ) : updateReady ? (
+                // Download finished in the background — relaunch into it
+                // (IDE-style "Restart to update").
+                <Button
+                  size="sm"
+                  onClick={() => void restart()}
+                  disabled={isBusy}
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  {t("restartToUpdate")}
+                </Button>
+              ) : isBusy ? (
+                <Button
+                  size="sm"
+                  disabled
+                  aria-busy="true"
+                  className="w-[9.5rem] justify-center transition-none"
+                >
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  {t("updating")}
+                </Button>
               ) : availableUpdate ? (
-                isDesktop() ? (
-                  <Button
-                    size="sm"
-                    onClick={installUpdate}
-                    disabled={installingUpdate}
-                  >
-                    {installingUpdate ? (
-                      <>
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        {t("updating")}
-                      </>
-                    ) : (
-                      <>
-                        <ArrowUpCircle className="h-3.5 w-3.5" />
-                        {t("upgradeTo", { version: availableUpdate.version })}
-                      </>
-                    )}
+                // In-place upgrade only when this client can actually drive it:
+                // desktop (Tauri plugin) or a server speaking the live-progress
+                // protocol. An older remote server falls back to "view release".
+                usesTauriUpdater() ||
+                (serverSelfUpdate && serverLiveProgress) ? (
+                  <Button size="sm" onClick={() => void startUpdate()}>
+                    <ArrowUpCircle className="h-3.5 w-3.5" />
+                    {t("upgradeTo", { version: availableUpdate.version })}
                   </Button>
                 ) : (
                   <Button
@@ -448,7 +541,7 @@ export function SystemNetworkSettings() {
                   key="check-update"
                   size="sm"
                   onClick={checkForUpdates}
-                  disabled={installingUpdate}
+                  disabled={isBusy}
                   className="w-[9.5rem] justify-center transition-none"
                 >
                   <RefreshCw className="h-3.5 w-3.5" />
@@ -463,38 +556,86 @@ export function SystemNetworkSettings() {
               </p>
             )}
 
-            {updateStatusMessage && !downloadProgress && (
+            {updateStatusMessage && !isUpdating && (
               <p className="text-muted-foreground">{updateStatusMessage}</p>
             )}
 
-            {downloadProgress && (
+            {isUpdating && (
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between text-muted-foreground">
                   <span>
-                    {downloadProgress.phase === "downloading"
+                    {updateState.status === "downloading"
                       ? t("downloading")
                       : t("updating")}
                   </span>
-                  <span>
-                    {formatBytes(downloadProgress.downloaded)}
-                    {downloadProgress.total
-                      ? ` / ${formatBytes(downloadProgress.total)}`
-                      : ""}
-                  </span>
+                  {updateState.status === "downloading" && (
+                    <span>
+                      {formatBytes(updateState.downloaded ?? 0)}
+                      {updateState.total
+                        ? ` / ${formatBytes(updateState.total)}`
+                        : ""}
+                    </span>
+                  )}
                 </div>
                 <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                  <div
-                    className="h-full rounded-full bg-primary transition-all duration-300"
-                    style={{
-                      width:
-                        downloadProgress.total && downloadProgress.total > 0
-                          ? `${Math.min(100, (downloadProgress.downloaded / downloadProgress.total) * 100)}%`
-                          : "30%",
-                    }}
-                  />
+                  {downloadDeterminate ? (
+                    <div
+                      className="h-full rounded-full bg-primary transition-all duration-300"
+                      style={{ width: `${downloadPercent}%` }}
+                    />
+                  ) : (
+                    <div className="h-full w-1/3 rounded-full bg-primary animate-pulse" />
+                  )}
                 </div>
               </div>
             )}
+
+            {updateReady && (
+              <p className="text-muted-foreground">{t("updateReadyHint")}</p>
+            )}
+
+            {restartCountdown !== null && (
+              <p className="flex items-center gap-2 text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                {restartCountdown > 0
+                  ? t("restartingIn", { seconds: restartCountdown })
+                  : t("waitingForServer")}
+              </p>
+            )}
+
+            {canRollback && (
+              <div className="flex items-center justify-between gap-3 pt-1">
+                <span className="text-muted-foreground/80 text-[11px] leading-5">
+                  {t("rollbackDescription")}
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setRollbackConfirmOpen(true)}
+                  disabled={isBusy}
+                >
+                  {isRollingBack ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      {t("rollingBack")}
+                    </>
+                  ) : (
+                    <>
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      {t("rollbackButton")}
+                    </>
+                  )}
+                </Button>
+              </div>
+            )}
+
+            {availableUpdate &&
+              serverSelfUpdate &&
+              serverRuntime === "docker" && (
+                <p className="text-muted-foreground/80 text-[11px] leading-5">
+                  {t("dockerUpgradeHint")}
+                </p>
+              )}
 
             {availableUpdate && (
               <div className="space-y-2 pt-2 border-t border-border/70">
@@ -535,9 +676,11 @@ export function SystemNetworkSettings() {
             )}
           </div>
 
-          {updateError && (
+          {(updateError || lifecycleError) && (
             <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-400">
-              {t("updateError", { message: updateError })}
+              {t("updateError", {
+                message: updateError || lifecycleError || "",
+              })}
             </div>
           )}
         </section>
@@ -659,6 +802,37 @@ export function SystemNetworkSettings() {
             </Select>
           </div>
         </section>
+
+        <BackupSettings />
+
+        <AlertDialog
+          open={rollbackConfirmOpen}
+          onOpenChange={(open) => {
+            if (!isRollingBack) setRollbackConfirmOpen(open)
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{t("rollbackConfirmTitle")}</AlertDialogTitle>
+              <AlertDialogDescription>
+                {t("rollbackConfirmDescription")}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={isRollingBack}>
+                {t("rollbackCancel")}
+              </AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(event) => {
+                  event.preventDefault()
+                  void handleRollback()
+                }}
+              >
+                {t("rollbackConfirm")}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </ScrollArea>
   )

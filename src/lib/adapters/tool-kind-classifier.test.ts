@@ -52,12 +52,14 @@ describe("isAgentLikeToolName", () => {
 
   it("matches delegate_to_agent across host naming conventions", () => {
     expect(isAgentLikeToolName("delegate_to_agent")).toBe(true)
-    // Claude Code style
+    // Claude Code style (current + legacy server names)
+    expect(isAgentLikeToolName("mcp__codeg-mcp__delegate_to_agent")).toBe(true)
     expect(isAgentLikeToolName("mcp__codeg-delegate__delegate_to_agent")).toBe(
       true
     )
     expect(isAgentLikeToolName("mcp__codeg__delegate_to_agent")).toBe(true)
     // Codex live ACP style (server/tool)
+    expect(isAgentLikeToolName("codeg-mcp/delegate_to_agent")).toBe(true)
     expect(isAgentLikeToolName("codeg-delegate/delegate_to_agent")).toBe(true)
     // Dot- and colon-separated forms other hosts may emit
     expect(isAgentLikeToolName("codeg-delegate.delegate_to_agent")).toBe(true)
@@ -68,14 +70,23 @@ describe("isAgentLikeToolName", () => {
     for (const tool of ["get_delegation_status", "cancel_delegation"]) {
       // Bare canonical form (live-streaming path, post-inferLiveToolName)
       expect(isAgentLikeToolName(tool)).toBe(true)
-      // Claude Code style (historical path: raw host-prefixed name)
+      // Claude Code style (current + legacy server names)
+      expect(isAgentLikeToolName(`mcp__codeg-mcp__${tool}`)).toBe(true)
       expect(isAgentLikeToolName(`mcp__codeg-delegate__${tool}`)).toBe(true)
       expect(isAgentLikeToolName(`mcp__codeg__${tool}`)).toBe(true)
       // Codex live ACP + dot/colon separated forms
+      expect(isAgentLikeToolName(`codeg-mcp/${tool}`)).toBe(true)
       expect(isAgentLikeToolName(`codeg-delegate/${tool}`)).toBe(true)
       expect(isAgentLikeToolName(`codeg-delegate.${tool}`)).toBe(true)
       expect(isAgentLikeToolName(`codeg-delegate:${tool}`)).toBe(true)
     }
+  })
+
+  it("matches Codex goal tools as standalone card tools", () => {
+    expect(isAgentLikeToolName("create_goal")).toBe(true)
+    expect(isAgentLikeToolName("update_goal")).toBe(true)
+    expect(isAgentLikeToolName("functions.create_goal")).toBe(true)
+    expect(isAgentLikeToolName("functions.update_goal")).toBe(true)
   })
 
   it("does not match other tools", () => {

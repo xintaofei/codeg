@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl"
 import { useAcpActions } from "@/contexts/acp-connections-context"
 import { useTaskContext } from "@/contexts/task-context"
 import { useConnection, type UseConnectionReturn } from "@/hooks/use-connection"
+import { TurnBusyError } from "@/lib/turn-busy"
 import { AGENT_LABELS, type AgentType, type PromptDraft } from "@/lib/types"
 
 interface UseConnectionLifecycleOptions {
@@ -13,6 +14,12 @@ interface UseConnectionLifecycleOptions {
   isActive: boolean
   workingDir?: string
   sessionId?: string
+  /**
+   * Persisted conversation id (when known). Passed to `connect()` so it can
+   * discover and attach to a live connection another client already owns
+   * (cross-client viewing) instead of always spawning a fresh agent.
+   */
+  conversationId?: number
 }
 
 export interface UseConnectionLifecycleReturn {
@@ -25,7 +32,17 @@ export interface UseConnectionLifecycleReturn {
   handleSend: (
     draft: PromptDraft,
     modeId?: string | null,
-    opts?: { folderId?: number | null; conversationId?: number | null }
+    opts?: {
+      folderId?: number | null
+      conversationId?: number | null
+      clientMessageId?: string | null
+      /**
+       * Called when the backend rejected the send because a turn was already
+       * in flight (a second, concurrent prompt). The caller re-queues the
+       * draft instead of treating it as an error.
+       */
+      onTurnInProgress?: () => void
+    }
   ) => void
   handleSetConfigOption: (configId: string, valueId: string) => void
   handleCancel: () => void
@@ -48,6 +65,7 @@ export function useConnectionLifecycle({
   isActive,
   workingDir,
   sessionId,
+  conversationId,
 }: UseConnectionLifecycleOptions): UseConnectionLifecycleReturn {
   const t = useTranslations("Folder.chat.connectionLifecycle")
   const { setActiveKey, touchActivity } = useAcpActions()
@@ -103,6 +121,10 @@ export function useConnectionLifecycle({
   useEffect(() => {
     statusRef.current = status
   }, [status])
+  const isViewerRef = useRef(conn.isViewer)
+  useEffect(() => {
+    isViewerRef.current = conn.isViewer
+  }, [conn.isViewer])
   const contextKeyRef = useRef(contextKey)
   useEffect(() => {
     contextKeyRef.current = contextKey
@@ -115,6 +137,10 @@ export function useConnectionLifecycle({
   useEffect(() => {
     sessionIdRef.current = sessionId
   }, [sessionId])
+  const conversationIdRef = useRef(conversationId)
+  useEffect(() => {
+    conversationIdRef.current = conversationId
+  }, [conversationId])
   const modeIdRef = useRef<string | null>(modes?.current_mode_id ?? null)
   useEffect(() => {
     modeIdRef.current = modes?.current_mode_id ?? null
@@ -140,7 +166,12 @@ export function useConnectionLifecycle({
     if (!workingDir) return
     let cancelled = false
     connConnectRef
-      .current(agentType, workingDir, sessionIdRef.current)
+      .current(
+        agentType,
+        workingDir,
+        sessionIdRef.current,
+        conversationIdRef.current
+      )
       .then(() => {
         if (!cancelled) {
           setLastAutoConnectError(null)
@@ -253,7 +284,14 @@ export function useConnectionLifecycle({
   // will clean it up once it transitions back to "connected".
   useEffect(() => {
     return () => {
-      if (statusRef.current !== "prompting") {
+      // Owners keep a prompting agent alive in the background to finish the
+      // turn (the idle sweep reclaims it once it returns to "connected").
+      // Viewers are different: disconnect() only DETACHES them (it never
+      // acpDisconnects — that belongs to the owner), so tearing a viewer down
+      // mid-turn is safe and leaves the owner's agent untouched. And it's
+      // necessary: the idle sweep skips viewers, so a viewer left attached
+      // here would leak its WS subscription until the whole provider unmounts.
+      if (statusRef.current !== "prompting" || isViewerRef.current) {
         connDisconnectRef.current().catch(() => {})
       }
       if (taskIdRef.current) {
@@ -271,17 +309,20 @@ export function useConnectionLifecycle({
     touchActivity(contextKey)
     if (!status || status === "disconnected" || status === "error") {
       setLastAutoConnectError(null)
-      connConnect(agentType, workingDir, sessionId).catch((e: unknown) => {
-        if (!isExpectedConnectError(e)) {
-          console.error("[ConnLifecycle] connect:", e)
+      connConnect(agentType, workingDir, sessionId, conversationId).catch(
+        (e: unknown) => {
+          if (!isExpectedConnectError(e)) {
+            console.error("[ConnLifecycle] connect:", e)
+          }
         }
-      })
+      )
     }
   }, [
     isActive,
     agentType,
     workingDir,
     sessionId,
+    conversationId,
     status,
     connConnect,
     contextKey,
@@ -302,9 +343,15 @@ export function useConnectionLifecycle({
     (
       draft: PromptDraft,
       modeId?: string | null,
-      opts?: { folderId?: number | null; conversationId?: number | null }
+      opts?: {
+        folderId?: number | null
+        conversationId?: number | null
+        clientMessageId?: string | null
+        onTurnInProgress?: () => void
+      }
     ) => {
       touchActivity(contextKey)
+      const onTurnInProgress = opts?.onTurnInProgress
       void (async () => {
         const currentModeId = modeIdRef.current
         if (modeId && modeId !== currentModeId) {
@@ -314,9 +361,17 @@ export function useConnectionLifecycle({
           modeIdRef.current = modeId
         }
         await sendPrompt(draft.blocks, opts)
-      })().catch((e: unknown) =>
+      })().catch((e: unknown) => {
+        if (e instanceof TurnBusyError) {
+          // A turn was already in flight on the connection (another
+          // co-controlling client, or a "prompting" status this client hadn't
+          // observed yet). Not an error — the draft is re-queued by the caller
+          // so it auto-sends when the current turn finishes.
+          onTurnInProgress?.()
+          return
+        }
         console.error("[ConnLifecycle] sendPrompt:", e)
-      )
+      })
     },
     [connSetMode, sendPrompt, contextKey, touchActivity]
   )

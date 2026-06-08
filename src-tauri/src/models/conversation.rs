@@ -73,6 +73,14 @@ pub struct DbConversationDetail {
     pub turns: Vec<MessageTurn>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_stats: Option<SessionStats>,
+    /// Id of the persisted user turn the live-correlation pass identified as the
+    /// in-flight prompt (only present while a turn is running on this
+    /// conversation's connection; `None` otherwise). The frontend uses it to
+    /// locate — and, while the live reply is in hand, hide — the partial
+    /// assistant turn some agents (OpenCode, Gemini) persist after the prompt
+    /// mid-stream, which would otherwise double-render against the live reply.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub in_flight_user_turn_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

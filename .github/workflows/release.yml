@@ -556,17 +556,51 @@ jobs:
           path: dist/${{ matrix.artifact }}
           retention-days: 1
 
+      # Sign the server bundle with the SAME minisign key the desktop
+      # updater uses (`tauri signer sign` writes `<file>.sig`). The server's
+      # `update::verify` module verifies this signature against the embedded
+      # public key before installing — see src-tauri/src/update/verify.rs.
+      - name: Sign and checksum bundle (Unix)
+        if: runner.os != 'Windows'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          pnpm tauri signer sign "dist/${{ matrix.artifact }}.tar.gz"
+          test -f "dist/${{ matrix.artifact }}.tar.gz.sig"
+          ( cd dist && shasum -a 256 "${{ matrix.artifact }}.tar.gz" > "${{ matrix.artifact }}.tar.gz.sha256" )
+
+      - name: Sign and checksum bundle (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          pnpm tauri signer sign "dist/${{ matrix.artifact }}.zip"
+          if (-not (Test-Path "dist/${{ matrix.artifact }}.zip.sig")) {
+            throw "signature not produced for ${{ matrix.artifact }}.zip"
+          }
+          $hash = (Get-FileHash -Algorithm SHA256 "dist/${{ matrix.artifact }}.zip").Hash.ToLower()
+          "$hash  ${{ matrix.artifact }}.zip" | Out-File -Encoding ascii "dist/${{ matrix.artifact }}.zip.sha256"
+
       - name: Upload to release (Unix)
         if: runner.os != 'Windows'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ github.ref_name }}" dist/${{ matrix.artifact }}.tar.gz --clobber
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            "dist/${{ matrix.artifact }}.tar.gz" \
+            "dist/${{ matrix.artifact }}.tar.gz.sig" \
+            "dist/${{ matrix.artifact }}.tar.gz.sha256" \
+            --clobber
 
       - name: Upload to release (Windows)
         if: runner.os == 'Windows'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ github.ref_name }}" dist/${{ matrix.artifact }}.zip --clobber
+        run: gh release upload "${{ github.ref_name }}" "dist/${{ matrix.artifact }}.zip" "dist/${{ matrix.artifact }}.zip.sig" "dist/${{ matrix.artifact }}.zip.sha256" --clobber
 
   build-docker:
     needs:

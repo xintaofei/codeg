@@ -2,6 +2,12 @@
 // in their own file so the animation runtime can import them without pulling
 // in the API layer.
 
+import type {
+  AgentType,
+  ConnectionStatus,
+  PermissionOptionInfo,
+} from "@/lib/types"
+
 export interface PetSummary {
   id: string
   displayName: string
@@ -122,4 +128,36 @@ export interface MarketplaceInstallRequest {
 
 export interface MarketplaceInstallResponse {
   pet: PetSummary
+}
+
+// ─── active-session list (pet panel) ────────────────────────────────────
+
+/** Compact pending-permission view shown in the pet panel. `toolCall` is the
+ *  agent's raw JSON (same as the main dialog) so `parsePermissionToolCall` can
+ *  render the command / diff / plan preview. Mirrors Rust `PetPermissionSummary`. */
+export interface PetPermissionSummary {
+  requestId: string
+  toolCall: unknown
+  options: PermissionOptionInfo[]
+}
+
+/** One active agent session row. Mirrors Rust `PetSessionEntry`. */
+export interface PetSessionEntry {
+  connectionId: string
+  conversationId: number
+  folderId: number
+  agentType: AgentType
+  title: string
+  status: ConnectionStatus
+  pending?: PetPermissionSummary
+}
+
+/** Aggregate payload for the `pet://sessions` event + `pet_list_active_sessions`
+ *  snapshot. Counts follow the ambient precedence (a permission-blocked session
+ *  is `waiting`, not `running`). Mirrors Rust `PetSessionsPayload`. */
+export interface PetSessionsPayload {
+  runningCount: number
+  waitingCount: number
+  errorCount: number
+  sessions: PetSessionEntry[]
 }

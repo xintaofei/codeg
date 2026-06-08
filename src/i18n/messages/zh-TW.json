@@ -132,6 +132,25 @@
     "checkUpdateFailed": "檢查更新失敗：{message}",
     "installSuccess": "升級包已安裝，正在重新啟動應用",
     "installFailed": "升級失敗：{message}",
+    "upgradeSuccess": "升級完成，正在重新載入...",
+    "restartTimeout": "服務未能即時恢復，請檢查容器或服務記錄。",
+    "restartingIn": "將在 {seconds} 秒後重新啟動...",
+    "waitingForServer": "正在等待服務恢復...",
+    "restartToUpdate": "重新啟動以更新",
+    "updateReadyHint": "新版本已下載，重新啟動以完成更新。",
+    "restarting": "正在重新啟動…",
+    "dockerUpgradeHint": "現在升級的是正在執行的容器。容器一旦被重新建立即遺失——如需保留，請拉取或建置新版本映像後重新建立容器。",
+    "upgradeRolledBack": "升級失敗，伺服器已自動回復到上一版本。",
+    "serverUnreachable": "無法連線到伺服器以開始升級。請確認伺服器正在執行後重試。",
+    "rollbackButton": "復原",
+    "rollingBack": "復原中...",
+    "rollbackDescription": "還原至上次升級前安裝的版本。",
+    "rollbackConfirmTitle": "復原到上一個版本？",
+    "rollbackConfirmDescription": "伺服器將重新啟動並執行上次升級前安裝的版本。較新的版本仍可再次安裝。",
+    "rollbackConfirm": "復原",
+    "rollbackCancel": "取消",
+    "rollbackSuccess": "已復原到上一個版本，正在重新載入……",
+    "rollbackFailed": "復原失敗，請檢查伺服器日誌。",
     "updateErrors": {
       "sourceUnavailable": "無法連線更新來源，請檢查網路或代理設定後重試。",
       "network": "網路連線異常，請檢查網路或代理設定後重試。",
@@ -264,6 +283,14 @@
       "close_all_file_tabs": {
         "title": "關閉全部檔案分頁",
         "description": "當檔案面板處於作用中狀態時關閉所有開啟的檔案分頁"
+      },
+      "next_tab": {
+        "title": "下一個標籤頁",
+        "description": "切換到下一個會話或檔案標籤頁"
+      },
+      "prev_tab": {
+        "title": "上一個標籤頁",
+        "description": "切換到上一個會話或檔案標籤頁"
       },
       "send_message": {
         "title": "傳送訊息",
@@ -1043,7 +1070,6 @@
     },
     "auxPanel": {
       "tabs": {
-        "diff": "差異",
         "files": "檔案",
         "changes": "變更",
         "commits": "提交"
@@ -1088,16 +1114,6 @@
       "hideTerminal": "隱藏終端（{shortcut}）",
       "openFolderFirst": "請先開啟一個資料夾"
     },
-    "sessionFiles": {
-      "currentResponse": "目前回應",
-      "noDiffDataAvailable": "找不到 {filePath} 的差異資料",
-      "loading": "載入中...",
-      "noFileChangesInConversation": "此會話未發現檔案變更",
-      "openConversationToSeeChanges": "打開會話以查看檔案變更",
-      "remove": "移除",
-      "changeCount": "{count} 處變更",
-      "fileCount": "{count} 個檔案"
-    },
     "folderNameDropdown": {
       "fallbackFolderName": "資料夾",
       "openFolder": "打開資料夾",
@@ -1125,7 +1141,10 @@
       "loadingEditor": "編輯器載入中...",
       "imageZoomIn": "放大",
       "imageZoomOut": "縮小",
-      "imageZoomReset": "重設縮放"
+      "imageZoomReset": "重設縮放",
+      "htmlPreviewTitle": "HTML 預覽",
+      "htmlPreviewTrust": "執行指令碼",
+      "htmlPreviewTrustHint": "執行此檔案的指令碼並允許網路存取。僅對信任的檔案啟用。"
     },
     "branchDropdown": {
       "toasts": {
@@ -1143,7 +1162,9 @@
         "upstreamSet": "已設定遠端追蹤分支",
         "upstreamSetAndPushed": "已設定遠端追蹤分支並推送 {count} 個提交",
         "noCommitsToPush": "沒有可推送的提交",
-        "pushedCommits": "已推送 {count} 個提交"
+        "pushedCommits": "已推送 {count} 個提交",
+        "switchedToFolder": "已切換到 {name}",
+        "switchFailed": "切換分支失敗"
       },
       "tasks": {
         "newBranch": "新增分支 {name}",
@@ -1473,6 +1494,7 @@
       "newDirectory": "目錄",
       "openIn": "開啟於",
       "openInTerminal": "在終端開啟",
+      "copyPath": "複製路徑",
       "upload": "上傳檔案/目錄",
       "download": "下載檔案",
       "downloadAsZip": "下載為 ZIP",
@@ -1506,7 +1528,9 @@
         "watchStartFailed": "檔案監聽啟動失敗",
         "createFailed": "建立失敗",
         "downloadFailed": "下載 {name} 失敗",
-        "downloadSaved": "已下載 {name}"
+        "downloadSaved": "已下載 {name}",
+        "pathCopied": "已複製路徑",
+        "copyPathFailed": "複製路徑失敗"
       },
       "createDialog": {
         "newFile": "新建檔案",
@@ -1715,6 +1739,8 @@
         "quickMessagesEmpty": "尚無快捷訊息",
         "quickMessagesLoading": "載入中...",
         "quickMessageUntitled": "未命名",
+        "liveFeedback": "即時回饋",
+        "liveFeedbackDisabledHint": "智能體工作時可傳送",
         "dropFilesToAttach": "拖曳檔案到此處附加",
         "loadingSettings": "正在載入設定...",
         "loadingMode": "正在載入模式...",
@@ -1774,6 +1800,12 @@
       "agentSelector": {
         "noEnabledAgents": "暫無已啟用的 Agent",
         "openAgentsSettings": "開啟 Agents 設定"
+      },
+      "subAgentOverlay": {
+        "title": "子智能體",
+        "collapsedSummary": "子智能體 {count}",
+        "collapseAria": "摺疊子智能體",
+        "expandAria": "展開子智能體"
       },
       "agentPlanOverlay": {
         "title": "計畫任務",
@@ -1894,6 +1926,10 @@
         "waitForResultNoTask": "等待任務執行結果",
         "cancelTask": "取消 {task} 任務",
         "cancelTaskNoTask": "取消任務",
+        "resultPageOf": "{current} / {total}",
+        "prevResult": "上一個結果",
+        "nextResult": "下一個結果",
+        "noResultText": "本次檢查暫無結果",
         "status": {
           "starting": "啟動中",
           "running": "執行中",
@@ -1947,11 +1983,31 @@
         "agentPromptLabel": "提示詞",
         "agentModelLabel": "模型",
         "agentRunning": "執行中...",
+        "agentFallbackTitle": "子智能體啟動中…",
         "agentStatsBash": "命令",
         "agentStatsRead": "讀取檔案",
         "agentStatsSearch": "搜尋",
         "agentStatsEdit": "編輯",
         "agentStatsOther": "其他",
+        "goal": {
+          "title": "目標：",
+          "titleWithStatus": "目標{status}",
+          "objective": "目標",
+          "statusLabel": "狀態",
+          "tokensUsed": "已用 tokens",
+          "budget": "預算",
+          "remaining": "剩餘",
+          "elapsed": "耗時",
+          "tokens": "tokens",
+          "status": {
+            "active": "進行中",
+            "paused": "已暫停",
+            "blocked": "受阻",
+            "usageLimited": "用量受限",
+            "budgetLimited": "預算受限",
+            "complete": "已完成"
+          }
+        },
         "field": {
           "file": "檔案",
           "notebook": "筆記本",
@@ -2021,6 +2077,15 @@
           "errorSuffix": "{count} 個失敗",
           "joiner": " · "
         }
+      },
+      "messageNav": {
+        "title": "訊息導覽",
+        "expand": "展開訊息導覽",
+        "collapse": "收合訊息導覽",
+        "jumpToMessage": "跳至：{label}",
+        "fileCount": "{count} 個檔案",
+        "remove": "移除",
+        "noDiffDataAvailable": "找不到 {filePath} 的差異資料"
       }
     },
     "diffPreview": {
@@ -2139,6 +2204,7 @@
     }
   },
   "WebServiceSettings": {
+    "addressSwitchHint": "切換只會改變這裡顯示與開啟的位址；服務會監聽所有網路介面，每個位址都可存取。",
     "sectionTitle": "Web 服務",
     "sectionDescription": "啟用後可透過瀏覽器遠端存取 Codeg",
     "port": "連接埠",
@@ -2157,6 +2223,9 @@
     "hide": "隱藏",
     "show": "顯示",
     "copy": "複製",
+    "qrcode": "QR 碼",
+    "qrcodeTitle": "掃碼開啟",
+    "qrcodeHint": "用手機掃描，在瀏覽器中開啟 Codeg",
     "addressLabel": "存取位址",
     "tokenLabel": "存取 Token",
     "tokenHint": "Web 用戶端首次存取時需輸入此 Token",
@@ -2268,8 +2337,35 @@
       "turnCompleteDesc": "代理回合結束時",
       "error": "代理錯誤",
       "errorDesc": "代理遇到錯誤時",
+      "permissionRequest": "權限請求",
+      "permissionRequestDesc": "智慧代理請求操作權限時",
+      "userPromptSent": "使用者訊息",
+      "userPromptSentDesc": "當你傳送訊息時——通知中會包含訊息內容",
       "saved": "事件篩選已更新。",
-      "saveFailed": "儲存事件篩選失敗。"
+      "saveFailed": "儲存事件篩選失敗。",
+      "loadFailed": "載入設定失敗。",
+      "retry": "重試",
+      "webhooksTitle": "Webhook",
+      "webhooksDescription": "事件觸發時，向一個或多個位址 POST 一份 JSON。上方的事件篩選同樣作用於 Webhook。",
+      "webhookUrlPlaceholder": "https://example.com/webhook",
+      "addWebhook": "新增 Webhook",
+      "removeWebhook": "刪除 Webhook",
+      "webhookSave": "儲存",
+      "webhooksSaved": "Webhook 已儲存。",
+      "webhooksSaveFailed": "儲存 Webhook 失敗。",
+      "webhookInvalidUrl": "請輸入有效的 http(s) 位址。",
+      "docsTitle": "請求格式",
+      "docsMethod": "請求方式",
+      "docsContentType": "內容類型",
+      "docsNote": "每個啟用的事件都會投遞到所有位址。Webhook 不做去抖；上方的事件篩選仍然生效。",
+      "editWebhook": "編輯 Webhook",
+      "enableWebhook": "啟用 Webhook",
+      "webhookDuplicate": "該位址已設定。",
+      "cancel": "取消",
+      "webhooksEmpty": "尚未設定 Webhook。",
+      "deleteWebhookTitle": "刪除 Webhook",
+      "deleteWebhookMessage": "刪除此 Webhook？事件將不再傳送到該網址。",
+      "delete": "刪除"
     },
     "language": {
       "title": "訊息語言",
@@ -2416,6 +2512,19 @@
     }
   },
   "Pet": {
+    "badge": {
+      "running": "{count} 個執行中",
+      "waiting": "{count} 個待核准",
+      "error": "{count} 個發生錯誤"
+    },
+    "panel": {
+      "title": "活動工作階段",
+      "empty": "沒有活動工作階段",
+      "emptyHint": "正在執行或需要你處理的工作階段會顯示在這裡。",
+      "statusRunning": "執行中",
+      "statusWaiting": "等待中",
+      "statusError": "發生錯誤"
+    },
     "menu": {
       "scale": "縮放",
       "openManager": "管理寵物",
@@ -2567,5 +2676,119 @@
     "emptyDirectory": "此目錄為空",
     "errorLoadingDir": "載入目錄失敗",
     "selectedCount": "已選 {count} 項"
+  },
+  "BackupSettings": {
+    "title": "備份與還原",
+    "description": "匯出一份可攜的 codeg 資料備份，或從備份還原。",
+    "tabs": {
+      "backup": "備份",
+      "restore": "還原"
+    },
+    "export": {
+      "includeExternal": "包含對話內容",
+      "includeExternalHint": "一併打包各 CLI 的對話記錄（Claude、Codex、Gemini 等），體積更大。",
+      "passphrase": "通行碼（選填）",
+      "passphrasePlaceholder": "留空則產生未加密的封存檔",
+      "passphraseConfirm": "確認通行碼",
+      "passphraseMismatch": "兩次輸入的通行碼不一致。",
+      "noPassphraseWarning": "此備份將以明文包含密鑰（API key、token）。請妥善保管。",
+      "passphraseLossWarning": "將以此通行碼加密。通行碼一旦遺失，備份將無法還原。",
+      "button": "匯出備份",
+      "inProgress": "正在建立備份…",
+      "success": "備份已建立。",
+      "started": "已開始下載備份。"
+    },
+    "restore": {
+      "selectFile": "選擇備份檔案",
+      "passphrasePrompt": "此備份已加密，請輸入其通行碼。",
+      "unlock": "解鎖",
+      "preview": {
+        "title": "備份詳情",
+        "encrypted": "已加密",
+        "compatible": "相容",
+        "incompatible": "不相容",
+        "createdAt": "建立時間：{value}",
+        "appVersion": "應用程式版本：{value}",
+        "incompatibleHint": "此備份由較新版本的 codeg 建立，無法還原。"
+      },
+      "replaceWarning": "還原將取代目前全部 codeg 資料（資料庫與上傳檔案）。目前資料會先做快照以便復原。",
+      "keyringNote": "桌面端的 GitHub/聊天 token 存於系統鑰匙圈，不包含在備份中；還原後需重新填寫。",
+      "button": "還原",
+      "staging": "正在準備還原…",
+      "staged": "還原已就緒，正在重新啟動…",
+      "restarting": "還原已就緒，正在重新啟動服務…",
+      "restartTimeout": "服務未能及時恢復。待其啟動後請重新整理頁面。",
+      "externalSideLocation": "對話記錄已還原至 {path}",
+      "confirmTitle": "取代全部資料？",
+      "confirmBody": "這將以備份取代目前的 codeg 資料庫與上傳檔案，然後重新啟動。目前資料會先做快照。",
+      "cancel": "取消",
+      "confirmAction": "取代並重新啟動",
+      "external": {
+        "title": "對話內容",
+        "hint": "此備份包含各 CLI 的對話記錄。請選擇還原到何處。",
+        "modeSkip": "不還原",
+        "modeSide": "還原到安全的旁路資料夾",
+        "modeOriginal": "還原到 CLI 的原始位置",
+        "forceOverwrite": "覆寫已存在的檔案",
+        "forceOverwriteHint": "取代 CLI 資料夾中已存在的檔案。",
+        "scanning": "正在檢查衝突…",
+        "noConflicts": "不會覆寫任何已存在的檔案。",
+        "conflictCount": "將影響 {count} 個已存在的檔案。",
+        "conflictSkipNote": "未啟用覆寫時，已存在的檔案將被保留（略過）。"
+      },
+      "restartFailed": "還原已就緒，但伺服器未能重新啟動。請手動重新啟動以套用此次還原。"
+    },
+    "remoteUnsupported": "備份與還原作用於執行 codeg 的那台機器上的資料。你目前連線的是遠端工作區——請直接在該伺服器上管理其備份。"
+  },
+  "backup": {
+    "restore": {
+      "error": {
+        "badPassphrase": "通行碼錯誤或備份已損毀。",
+        "corrupted": "備份封存檔已損毀。",
+        "unknownFormat": "此檔案不是可識別的 codeg 備份。",
+        "newerVersion": "此備份由 codeg {backupVersion} 建立，比目前版本（{appVersion}）更新。",
+        "alreadyPending": "已有一個還原在等待生效。請先重新啟動套用它，再暫存新的還原。"
+      }
+    },
+    "error": {
+      "diskSpace": "磁碟空間不足，無法完成操作。",
+      "cancelled": "操作已取消。"
+    }
+  },
+  "WebConnection": {
+    "disconnectedTitle": "連線已中斷",
+    "reconnectingDescription": "正在嘗試重新連線伺服器，通常會在幾秒內自動恢復。",
+    "reconnectNow": "立即重新連線",
+    "sessionExpiredTitle": "工作階段已過期",
+    "sessionExpiredDescription": "登入狀態已失效，請重新登入以繼續。",
+    "goToLogin": "前往登入"
+  },
+  "SessionFeedbackSettings": {
+    "title": "即時回饋",
+    "description": "在智能體工作過程中向它傳送提醒和修正。啟用後，智能體會取得一個查看即時回饋的工具，對話中也會出現留言入口。提示：智能體通常只在你的提示詞中提及時才會主動查看回饋——例如在訊息中加上「工作過程中定期查看我的即時回饋」，智能體才會主動讀取。",
+    "enable": "啟用即時回饋",
+    "enableHint": "為啟用之後啟動的智能體注入查看回饋工具。預設關閉。",
+    "save": "儲存",
+    "saving": "儲存中…",
+    "saved": "回饋設定已儲存",
+    "saveFailed": "儲存回饋設定失敗",
+    "loadFailed": "載入失敗：{detail}"
+  },
+  "LiveFeedback": {
+    "placeholder": "在 {agent} 工作時給它留言…",
+    "agentFallback": "智能體",
+    "ariaLabel": "即時回饋留言",
+    "dialogTitle": "即時回饋",
+    "dialogDescription": "在智能體工作時給它留言。它會在下次檢查時讀取，不會打斷當前步驟。",
+    "send": "送出",
+    "cancel": "取消",
+    "pending": "等待中",
+    "delivered": "已收到",
+    "turnEndedUnread": "智能體在讀取你的回饋前已結束本輪。",
+    "sendAsMessage": "作為新訊息送出",
+    "dismiss": "忽略",
+    "turnEndedResent": "本輪已結束——已改為作為新訊息送出。",
+    "turnEnded": "本輪已結束。",
+    "submitFailed": "留言送出失敗"
   }
 }

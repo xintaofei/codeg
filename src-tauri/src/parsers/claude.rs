@@ -460,7 +460,7 @@ impl ClaudeParser {
     }
 }
 
-fn resolve_claude_config_dir() -> PathBuf {
+pub(crate) fn resolve_claude_config_dir() -> PathBuf {
     resolve_claude_config_dir_from(std::env::var_os("CLAUDE_CONFIG_DIR"), dirs::home_dir())
 }
 
@@ -1851,7 +1851,9 @@ mod tests {
         assert_eq!(slash_command_display("just a normal message"), None);
         // a non-slash <command-name> is not treated as a command
         assert_eq!(
-            slash_command_display("<command-name>init</command-name><command-args>x</command-args>"),
+            slash_command_display(
+                "<command-name>init</command-name><command-args>x</command-args>"
+            ),
             None
         );
     }
@@ -1907,10 +1909,8 @@ mod tests {
 
     #[test]
     fn slash_command_keeps_user_turn_between_assistant_turns() {
-        let path = std::env::temp_dir().join(format!(
-            "codeg-claude-slash-{}.jsonl",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("codeg-claude-slash-{}.jsonl", uuid::Uuid::new_v4()));
         let mut file = fs::File::create(&path).expect("create temp jsonl");
         // Client command /model: followed by stdout, no model turn -> stays hidden
         writeln!(

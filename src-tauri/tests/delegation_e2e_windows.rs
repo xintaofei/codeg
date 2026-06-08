@@ -41,6 +41,19 @@ impl ParentSessionLookup for FixedParent {
     }
 }
 
+/// No-op feedback access — this e2e suite exercises delegation, not feedback.
+struct NoFeedback;
+#[async_trait]
+impl codeg_lib::acp::feedback::SessionFeedbackAccess for NoFeedback {
+    async fn read_pending_feedback(
+        &self,
+        _parent_connection_id: &str,
+    ) -> Vec<codeg_lib::acp::feedback::PendingFeedback> {
+        Vec::new()
+    }
+    async fn commit_feedback_delivered(&self, _parent_connection_id: &str, _ids: Vec<String>) {}
+}
+
 fn unique_pipe(tag: &str) -> String {
     format!(
         r"\\.\pipe\codeg-e2e-{}-{}-{}",
@@ -126,6 +139,7 @@ async fn end_to_end_named_pipe_happy_path() {
         broker.clone(),
         tokens,
         Arc::new(FixedParent(1)) as Arc<dyn ParentSessionLookup>,
+        Arc::new(NoFeedback) as Arc<dyn codeg_lib::acp::feedback::SessionFeedbackAccess>,
     );
 
     let pipe = unique_pipe("happy");
@@ -170,9 +184,10 @@ async fn end_to_end_named_pipe_happy_path() {
         .await;
 
     // 3. get_delegation_status → Completed with the result text, over the pipe.
+    //    The Status arm returns a `{ tasks: [..] }` envelope; one id → one entry.
     let status_req = BrokerStatusRequest {
         token: "tok".into(),
-        task_id,
+        task_ids: vec![task_id],
         wait_ms: Some(1_000),
     };
     let resp = client_status_round_trip_with_retry(&pipe, &status_req)
@@ -180,9 +195,9 @@ async fn end_to_end_named_pipe_happy_path() {
         .expect("status round-trip");
     listener_task.abort();
 
-    assert_eq!(resp.outcome["status"], "completed");
-    assert_eq!(resp.outcome["text"], "pipe-result");
-    assert_eq!(resp.outcome["child_conversation_id"], 77);
+    assert_eq!(resp.outcome["tasks"][0]["status"], "completed");
+    assert_eq!(resp.outcome["tasks"][0]["text"], "pipe-result");
+    assert_eq!(resp.outcome["tasks"][0]["child_conversation_id"], 77);
 }
 
 #[tokio::test]
@@ -223,6 +238,7 @@ async fn end_to_end_named_pipe_back_to_back_requests() {
         broker.clone(),
         tokens,
         Arc::new(FixedParent(1)) as Arc<dyn ParentSessionLookup>,
+        Arc::new(NoFeedback) as Arc<dyn codeg_lib::acp::feedback::SessionFeedbackAccess>,
     );
 
     let pipe = unique_pipe("repeat");

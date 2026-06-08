@@ -1,10 +1,6 @@
 {
   "identifier": "desktop-capability",
-  "platforms": [
-    "macOS",
-    "windows",
-    "linux"
-  ],
+  "platforms": ["macOS", "windows", "linux"],
   "windows": [
     "main",
     "commit-*",
@@ -15,6 +11,7 @@
     "project-boot",
     "remote-project-boot-*",
     "pet",
+    "pet-panel",
     "remote-workspace-*",
     "remote-settings-*",
     "remote-commit-*",
@@ -22,7 +19,5 @@
     "remote-stash-*",
     "remote-push-*"
   ],
-  "permissions": [
-    "window-state:default"
-  ]
+  "permissions": ["window-state:default"]
 }

@@ -150,6 +150,25 @@ async fn open_folder_then_list_open_folders_shows_it() {
     );
 }
 
+#[tokio::test]
+async fn acp_find_connection_for_conversation_returns_null_when_none_live() {
+    // No live ACP connection is bound to any conversation on a fresh server, so
+    // discovery returns JSON `null` (Option::None) with 200 — the frontend
+    // reads this as "no live owner, open the persisted detail instead".
+    let (server, _data, _static) = build_test_server().await;
+    let resp = server
+        .post("/api/acp_find_connection_for_conversation")
+        .add_header("authorization", format!("Bearer {TEST_TOKEN}"))
+        .json(&json!({"conversationId": 999, "agentType": "claude_code"}))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body: {}", resp.text());
+    let body: Value = resp.json();
+    assert!(
+        body.is_null(),
+        "expected null for an unbound conversation, got {body}"
+    );
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Field naming sanity (snake_case ↔ camelCase boundary)
 // ────────────────────────────────────────────────────────────────────────────
@@ -180,3 +199,41 @@ async fn unknown_endpoint_returns_501_with_typed_error() {
     assert_eq!(body["code"], "not_implemented");
     assert!(body["message"].is_string());
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Live feedback settings + submit gate
+// ────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn feedback_settings_round_trip_defaults_off() {
+    let (server, _data, _static) = build_test_server().await;
+    // Default is OFF (opt-in feature).
+    let resp = server
+        .post("/api/get_feedback_settings")
+        .add_header("authorization", format!("Bearer {TEST_TOKEN}"))
+        .json(&json!({}))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    assert_eq!(resp.json::<Value>()["enabled"], false);
+
+    // Enable it.
+    let resp = server
+        .post("/api/set_feedback_settings")
+        .add_header("authorization", format!("Bearer {TEST_TOKEN}"))
+        .json(&json!({ "settings": { "enabled": true } }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    assert_eq!(resp.json::<Value>()["enabled"], true);
+
+    // Reads back enabled.
+    let resp = server
+        .post("/api/get_feedback_settings")
+        .add_header("authorization", format!("Bearer {TEST_TOKEN}"))
+        .json(&json!({}))
+        .await;
+    assert_eq!(resp.json::<Value>()["enabled"], true);
+}
+
+// The submit gate is per-connection (the agent's actual `check_user_feedback`
+// capability), unit-tested in `ConnectionManager::submit_feedback`
+// (`submit_feedback_rejected_when_tool_unavailable`), not via the global setting.

@@ -95,6 +95,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton"
 import { joinFsPath } from "@/lib/path-utils"
 import { toErrorMessage } from "@/lib/app-error"
+import { copyTextFromMenu } from "@/lib/utils"
 
 function parentDir(filePath: string): string {
   const slashIndex = filePath.lastIndexOf("/")
@@ -113,6 +114,20 @@ function parentDir(filePath: string): string {
 
 function baseName(path: string): string {
   return path.split(/[/\\]/).pop() || path
+}
+
+async function copyPathToClipboard(
+  absolutePath: string,
+  messages: { success: string; failure: string }
+) {
+  // copyTextFromMenu defers the write until this context menu has closed, so
+  // the execCommand clipboard fallback works in non-secure web contexts.
+  const ok = await copyTextFromMenu(absolutePath)
+  if (ok) {
+    toast.success(messages.success)
+  } else {
+    toast.error(messages.failure)
+  }
 }
 
 const FILE_TREE_ROOT_PATH = "__workspace_root__"
@@ -651,6 +666,16 @@ function RenderNode({
               </ContextMenuItem>
             </ContextMenuSubContent>
           </ContextMenuSub>
+          <ContextMenuItem
+            onSelect={() =>
+              void copyPathToClipboard(absolutePath, {
+                success: t("toasts.pathCopied"),
+                failure: t("toasts.copyPathFailed"),
+              })
+            }
+          >
+            {t("copyPath")}
+          </ContextMenuItem>
           {webMode && (
             <>
               <ContextMenuItem
@@ -828,6 +853,16 @@ function RenderNode({
             </ContextMenuItem>
           </ContextMenuSubContent>
         </ContextMenuSub>
+        <ContextMenuItem
+          onSelect={() =>
+            void copyPathToClipboard(absolutePath, {
+              success: t("toasts.pathCopied"),
+              failure: t("toasts.copyPathFailed"),
+            })
+          }
+        >
+          {t("copyPath")}
+        </ContextMenuItem>
         {webMode && (
           <>
             <ContextMenuItem onSelect={() => onRequestUpload(node.path)}>
@@ -2645,6 +2680,16 @@ export function FileTreeTab() {
                         </ContextMenuItem>
                       </ContextMenuSubContent>
                     </ContextMenuSub>
+                    <ContextMenuItem
+                      onSelect={() =>
+                        void copyPathToClipboard(folder.path, {
+                          success: t("toasts.pathCopied"),
+                          failure: t("toasts.copyPathFailed"),
+                        })
+                      }
+                    >
+                      {t("copyPath")}
+                    </ContextMenuItem>
                     {webMode && (
                       <>
                         <ContextMenuItem

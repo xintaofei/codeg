@@ -28,7 +28,8 @@ import {
   useState,
 } from "react"
 import { Streamdown, defaultRemarkPlugins } from "streamdown"
-import { useStreamdownLinkSafety } from "./link-safety"
+import remarkBreaks from "remark-breaks"
+import { markdownLinkComponents } from "./markdown-link"
 import { remarkRewriteFileUriLinks } from "./remark-file-uri-links"
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
@@ -40,7 +41,7 @@ export const Message = ({ className, from, ...props }: MessageProps) => (
     className={cn(
       "group flex w-full flex-col gap-2",
       from === "user"
-        ? "is-user ml-auto justify-end max-w-[80%]"
+        ? "is-user ml-auto justify-end max-w-[88%]"
         : "is-assistant",
       className
     )}
@@ -325,7 +326,15 @@ export const MessageBranchPage = ({
   )
 }
 
-export type MessageResponseProps = ComponentProps<typeof Streamdown>
+export type MessageResponseProps = ComponentProps<typeof Streamdown> & {
+  /**
+   * Render single newlines as hard line breaks (GitHub-comment flavor). Used
+   * for user-authored messages so their literal line breaks survive Markdown
+   * rendering. Assistant output leaves this off so it follows standard
+   * Markdown, where soft breaks collapse to spaces.
+   */
+  softBreaks?: boolean
+}
 
 const math = createMathPlugin({ singleDollarTextMath: true })
 
@@ -372,12 +381,15 @@ const remarkPlugins = [
   remarkRewriteFileUriLinks,
 ]
 
+// User messages opt in to this set so single newlines render as <br>.
+const remarkPluginsWithBreaks = [...remarkPlugins, remarkBreaks]
+
 function MessageResponseImpl({
   className,
   children,
+  softBreaks = false,
   ...props
 }: MessageResponseProps) {
-  const linkSafety = useStreamdownLinkSafety()
   const normalized = useMemo(
     () =>
       typeof children === "string"
@@ -389,13 +401,15 @@ function MessageResponseImpl({
   return (
     <Streamdown
       className={cn(
-        "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+        "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_ul]:list-disc [&_ol]:list-decimal [&_ul]:pl-3 [&_ol]:pl-3",
         className
       )}
-      linkSafety={linkSafety}
       plugins={streamdownPlugins}
-      remarkPlugins={remarkPlugins}
+      remarkPlugins={softBreaks ? remarkPluginsWithBreaks : remarkPlugins}
       {...props}
+      // Merge after spreading props so a caller can still override other
+      // elements, but the link icon + safety routing on `a` always wins.
+      components={{ ...props.components, ...markdownLinkComponents }}
     >
       {normalized}
     </Streamdown>
@@ -404,7 +418,9 @@ function MessageResponseImpl({
 
 export const MessageResponse = memo(
   MessageResponseImpl,
-  (prevProps, nextProps) => prevProps.children === nextProps.children
+  (prevProps, nextProps) =>
+    prevProps.children === nextProps.children &&
+    prevProps.softBreaks === nextProps.softBreaks
 )
 
 MessageResponse.displayName = "MessageResponse"

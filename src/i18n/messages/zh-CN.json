@@ -132,6 +132,25 @@
     "checkUpdateFailed": "检查更新失败：{message}",
     "installSuccess": "升级包已安装，正在重启应用",
     "installFailed": "升级失败：{message}",
+    "upgradeSuccess": "升级完成，正在重新加载...",
+    "restartTimeout": "服务未能按时恢复，请检查容器或服务日志。",
+    "restartingIn": "将在 {seconds} 秒后重启...",
+    "waitingForServer": "正在等待服务恢复...",
+    "restartToUpdate": "重启以更新",
+    "updateReadyHint": "新版本已下载，重启以完成更新。",
+    "restarting": "正在重启…",
+    "dockerUpgradeHint": "现在升级的是正在运行的容器。容器一旦被重建即丢失——如需保留，请拉取或构建新版本镜像后重建容器。",
+    "upgradeRolledBack": "升级失败，服务器已自动回滚到上一版本。",
+    "serverUnreachable": "无法连接到服务器以开始升级。请确认服务器正在运行后重试。",
+    "rollbackButton": "回滚",
+    "rollingBack": "回滚中...",
+    "rollbackDescription": "恢复到上次升级前安装的版本。",
+    "rollbackConfirmTitle": "回滚到上一个版本？",
+    "rollbackConfirmDescription": "服务器将重启并运行上次升级前安装的版本。更新的版本仍可再次安装。",
+    "rollbackConfirm": "回滚",
+    "rollbackCancel": "取消",
+    "rollbackSuccess": "已回滚到上一个版本，正在重新加载……",
+    "rollbackFailed": "回滚失败，请检查服务器日志。",
     "updateErrors": {
       "sourceUnavailable": "无法连接更新源，请检查网络或代理设置后重试。",
       "network": "网络连接异常，请检查网络或代理设置后重试。",
@@ -264,6 +283,14 @@
       "close_all_file_tabs": {
         "title": "关闭全部文件标签",
         "description": "当文件面板处于活动状态时关闭所有打开的文件标签"
+      },
+      "next_tab": {
+        "title": "下一个标签页",
+        "description": "切换到下一个会话或文件标签页"
+      },
+      "prev_tab": {
+        "title": "上一个标签页",
+        "description": "切换到上一个会话或文件标签页"
       },
       "send_message": {
         "title": "发送消息",
@@ -1043,7 +1070,6 @@
     },
     "auxPanel": {
       "tabs": {
-        "diff": "差异",
         "files": "文件",
         "changes": "变更",
         "commits": "提交"
@@ -1088,16 +1114,6 @@
       "hideTerminal": "隐藏终端（{shortcut}）",
       "openFolderFirst": "请先打开一个文件夹"
     },
-    "sessionFiles": {
-      "currentResponse": "当前响应",
-      "noDiffDataAvailable": "未找到 {filePath} 的差异数据",
-      "loading": "加载中...",
-      "noFileChangesInConversation": "该会话未发现文件变更",
-      "openConversationToSeeChanges": "打开会话以查看文件变更",
-      "remove": "移除",
-      "changeCount": "{count} 处变更",
-      "fileCount": "{count} 个文件"
-    },
     "folderNameDropdown": {
       "fallbackFolderName": "文件夹",
       "openFolder": "打开文件夹",
@@ -1125,7 +1141,10 @@
       "loadingEditor": "编辑器加载中...",
       "imageZoomIn": "放大",
       "imageZoomOut": "缩小",
-      "imageZoomReset": "重置缩放"
+      "imageZoomReset": "重置缩放",
+      "htmlPreviewTitle": "HTML 预览",
+      "htmlPreviewTrust": "运行脚本",
+      "htmlPreviewTrustHint": "运行此文件的脚本并允许网络访问。仅对可信任的文件启用。"
     },
     "branchDropdown": {
       "toasts": {
@@ -1143,7 +1162,9 @@
         "upstreamSet": "已设置远程跟踪分支",
         "upstreamSetAndPushed": "已设置远程跟踪分支并推送 {count} 个提交",
         "noCommitsToPush": "没有可推送的提交",
-        "pushedCommits": "已推送 {count} 个提交"
+        "pushedCommits": "已推送 {count} 个提交",
+        "switchedToFolder": "已切换到 {name}",
+        "switchFailed": "切换分支失败"
       },
       "tasks": {
         "newBranch": "新建分支 {name}",
@@ -1473,6 +1494,7 @@
       "newDirectory": "目录",
       "openIn": "打开于",
       "openInTerminal": "在终端打开",
+      "copyPath": "复制路径",
       "upload": "上传文件/目录",
       "download": "下载文件",
       "downloadAsZip": "下载为 ZIP",
@@ -1506,7 +1528,9 @@
         "watchStartFailed": "文件监听启动失败",
         "createFailed": "创建失败",
         "downloadFailed": "下载 {name} 失败",
-        "downloadSaved": "已下载 {name}"
+        "downloadSaved": "已下载 {name}",
+        "pathCopied": "已复制路径",
+        "copyPathFailed": "复制路径失败"
       },
       "createDialog": {
         "newFile": "新建文件",
@@ -1717,6 +1741,8 @@
         "quickMessagesEmpty": "暂无快捷消息",
         "quickMessagesLoading": "加载中...",
         "quickMessageUntitled": "未命名",
+        "liveFeedback": "实时反馈",
+        "liveFeedbackDisabledHint": "智能体工作时可发送",
         "dropFilesToAttach": "拖拽文件到此处附加",
         "loadingSettings": "正在加载设置...",
         "loadingMode": "正在加载模式...",
@@ -1774,6 +1800,12 @@
       "agentSelector": {
         "noEnabledAgents": "暂无已启用的 Agent",
         "openAgentsSettings": "打开 Agents 设置"
+      },
+      "subAgentOverlay": {
+        "title": "子智能体",
+        "collapsedSummary": "子智能体 {count}",
+        "collapseAria": "折叠子智能体",
+        "expandAria": "展开子智能体"
       },
       "agentPlanOverlay": {
         "title": "计划任务",
@@ -1894,6 +1926,10 @@
         "waitForResultNoTask": "等待任务执行结果",
         "cancelTask": "取消 {task} 任务",
         "cancelTaskNoTask": "取消任务",
+        "resultPageOf": "{current} / {total}",
+        "prevResult": "上一个结果",
+        "nextResult": "下一个结果",
+        "noResultText": "本次检查暂无结果",
         "status": {
           "starting": "启动中",
           "running": "运行中",
@@ -1947,11 +1983,31 @@
         "agentPromptLabel": "提示词",
         "agentModelLabel": "模型",
         "agentRunning": "运行中...",
+        "agentFallbackTitle": "子智能体启动中…",
         "agentStatsBash": "命令",
         "agentStatsRead": "读取文件",
         "agentStatsSearch": "搜索",
         "agentStatsEdit": "编辑",
         "agentStatsOther": "其他",
+        "goal": {
+          "title": "目标：",
+          "titleWithStatus": "目标{status}",
+          "objective": "目标",
+          "statusLabel": "状态",
+          "tokensUsed": "已用 tokens",
+          "budget": "预算",
+          "remaining": "剩余",
+          "elapsed": "耗时",
+          "tokens": "tokens",
+          "status": {
+            "active": "进行中",
+            "paused": "已暂停",
+            "blocked": "受阻",
+            "usageLimited": "用量受限",
+            "budgetLimited": "预算受限",
+            "complete": "已完成"
+          }
+        },
         "field": {
           "file": "文件",
           "notebook": "笔记本",
@@ -2021,6 +2077,15 @@
           "errorSuffix": "{count} 个失败",
           "joiner": " · "
         }
+      },
+      "messageNav": {
+        "title": "消息导航",
+        "expand": "展开消息导航",
+        "collapse": "收起消息导航",
+        "jumpToMessage": "跳转到：{label}",
+        "fileCount": "{count} 个文件",
+        "remove": "移除",
+        "noDiffDataAvailable": "未找到 {filePath} 的差异数据"
       }
     },
     "diffPreview": {
@@ -2139,6 +2204,7 @@
     }
   },
   "WebServiceSettings": {
+    "addressSwitchHint": "切换只改变这里显示和打开的地址；服务监听所有网卡，每个地址都可访问。",
     "sectionTitle": "Web 服务",
     "sectionDescription": "启用后可通过浏览器远程访问 Codeg",
     "port": "端口",
@@ -2157,6 +2223,9 @@
     "hide": "隐藏",
     "show": "显示",
     "copy": "复制",
+    "qrcode": "二维码",
+    "qrcodeTitle": "扫码打开",
+    "qrcodeHint": "用手机扫描，在浏览器中打开 Codeg",
     "addressLabel": "访问地址",
     "tokenLabel": "访问 Token",
     "tokenHint": "Web 客户端首次访问时需输入此 Token",
@@ -2280,8 +2349,35 @@
       "turnCompleteDesc": "代理回合结束时",
       "error": "代理错误",
       "errorDesc": "代理遇到错误时",
+      "permissionRequest": "权限请求",
+      "permissionRequestDesc": "智能体请求操作权限时",
+      "userPromptSent": "用户消息",
+      "userPromptSentDesc": "当你发送消息时——通知中会包含消息内容",
       "saved": "事件过滤已更新。",
-      "saveFailed": "保存事件过滤失败。"
+      "saveFailed": "保存事件过滤失败。",
+      "loadFailed": "加载设置失败。",
+      "retry": "重试",
+      "webhooksTitle": "Webhook",
+      "webhooksDescription": "事件触发时，向一个或多个地址 POST 一份 JSON。上方的事件过滤同样作用于 Webhook。",
+      "webhookUrlPlaceholder": "https://example.com/webhook",
+      "addWebhook": "添加 Webhook",
+      "removeWebhook": "删除 Webhook",
+      "webhookSave": "保存",
+      "webhooksSaved": "Webhook 已保存。",
+      "webhooksSaveFailed": "保存 Webhook 失败。",
+      "webhookInvalidUrl": "请输入有效的 http(s) 地址。",
+      "docsTitle": "请求格式",
+      "docsMethod": "请求方式",
+      "docsContentType": "内容类型",
+      "docsNote": "每个启用的事件都会投递到所有地址。Webhook 不做去抖；上方的事件过滤仍然生效。",
+      "editWebhook": "编辑 Webhook",
+      "enableWebhook": "启用 Webhook",
+      "webhookDuplicate": "该地址已配置。",
+      "cancel": "取消",
+      "webhooksEmpty": "尚未配置 Webhook。",
+      "deleteWebhookTitle": "删除 Webhook",
+      "deleteWebhookMessage": "删除此 Webhook？事件将不再投递到该地址。",
+      "delete": "删除"
     },
     "language": {
       "title": "消息语言",
@@ -2428,6 +2524,19 @@
     }
   },
   "Pet": {
+    "badge": {
+      "running": "{count} 个运行中",
+      "waiting": "{count} 个待批准",
+      "error": "{count} 个出错"
+    },
+    "panel": {
+      "title": "活动会话",
+      "empty": "没有活动会话",
+      "emptyHint": "正在运行或需要你处理的会话会显示在这里。",
+      "statusRunning": "运行中",
+      "statusWaiting": "等待中",
+      "statusError": "出错"
+    },
     "menu": {
       "scale": "缩放",
       "openManager": "管理宠物",
@@ -2567,5 +2676,119 @@
     "openFailed": "打开远端工作区失败",
     "connectionLoadFailed": "加载远端连接失败：{message}",
     "connectionExpired": "远端连接“{name}”已失效。请更新 Token 后重新加载此窗口。"
+  },
+  "BackupSettings": {
+    "title": "备份与恢复",
+    "description": "导出一份可移植的 codeg 数据备份，或从备份中恢复。",
+    "tabs": {
+      "backup": "备份",
+      "restore": "恢复"
+    },
+    "export": {
+      "includeExternal": "包含会话内容",
+      "includeExternalHint": "同时打包各 CLI 的会话记录（Claude、Codex、Gemini 等），体积更大。",
+      "passphrase": "口令（可选）",
+      "passphrasePlaceholder": "留空则生成未加密的归档",
+      "passphraseConfirm": "确认口令",
+      "passphraseMismatch": "两次输入的口令不一致。",
+      "noPassphraseWarning": "该备份将以明文包含密钥（API key、token）。请妥善保管。",
+      "passphraseLossWarning": "将使用此口令加密。口令一旦丢失，备份将无法恢复。",
+      "button": "导出备份",
+      "inProgress": "正在创建备份…",
+      "success": "备份已创建。",
+      "started": "已开始下载备份。"
+    },
+    "restore": {
+      "selectFile": "选择备份文件",
+      "passphrasePrompt": "该备份已加密，请输入其口令。",
+      "unlock": "解锁",
+      "preview": {
+        "title": "备份详情",
+        "encrypted": "已加密",
+        "compatible": "兼容",
+        "incompatible": "不兼容",
+        "createdAt": "创建时间：{value}",
+        "appVersion": "应用版本：{value}",
+        "incompatibleHint": "该备份由更新版本的 codeg 创建，无法恢复。"
+      },
+      "replaceWarning": "恢复将替换当前全部 codeg 数据（数据库与上传文件）。当前数据会先做快照以便回退。",
+      "keyringNote": "桌面端的 GitHub/聊天 token 存于系统钥匙串，不包含在备份中；恢复后需重新填写。",
+      "button": "恢复",
+      "staging": "正在准备恢复…",
+      "staged": "恢复已就绪，正在重启…",
+      "restarting": "恢复已就绪，正在重启服务…",
+      "restartTimeout": "服务未能及时恢复。待其启动后请刷新页面。",
+      "externalSideLocation": "会话记录已恢复到 {path}",
+      "confirmTitle": "替换全部数据？",
+      "confirmBody": "这将用备份替换当前的 codeg 数据库与上传文件，然后重启。当前数据会先做快照。",
+      "cancel": "取消",
+      "confirmAction": "替换并重启",
+      "external": {
+        "title": "会话内容",
+        "hint": "该备份包含各 CLI 的会话记录。请选择恢复到何处。",
+        "modeSkip": "不恢复",
+        "modeSide": "恢复到安全的旁路目录",
+        "modeOriginal": "恢复到 CLI 的原始位置",
+        "forceOverwrite": "覆盖已存在的文件",
+        "forceOverwriteHint": "替换 CLI 目录中已存在的文件。",
+        "scanning": "正在检查冲突…",
+        "noConflicts": "不会覆盖任何已存在的文件。",
+        "conflictCount": "将影响 {count} 个已存在的文件。",
+        "conflictSkipNote": "未启用覆盖时，已存在的文件将被保留（跳过）。"
+      },
+      "restartFailed": "恢复已就绪，但服务未能重启。请手动重启以应用此次恢复。"
+    },
+    "remoteUnsupported": "备份与恢复作用于运行 codeg 的那台机器上的数据。你当前连接的是远程工作区——请直接在该服务器上管理其备份。"
+  },
+  "backup": {
+    "restore": {
+      "error": {
+        "badPassphrase": "口令错误或备份已损坏。",
+        "corrupted": "备份归档已损坏。",
+        "unknownFormat": "该文件不是可识别的 codeg 备份。",
+        "newerVersion": "该备份由 codeg {backupVersion} 创建，比当前版本（{appVersion}）更新。",
+        "alreadyPending": "已有一个恢复在等待生效。请先重启应用它，再暂存新的恢复。"
+      }
+    },
+    "error": {
+      "diskSpace": "磁盘空间不足，无法完成操作。",
+      "cancelled": "操作已取消。"
+    }
+  },
+  "WebConnection": {
+    "disconnectedTitle": "连接已断开",
+    "reconnectingDescription": "正在尝试重新连接服务器，通常会在几秒内自动恢复。",
+    "reconnectNow": "立即重连",
+    "sessionExpiredTitle": "会话已过期",
+    "sessionExpiredDescription": "登录状态已失效，请重新登录以继续。",
+    "goToLogin": "前往登录"
+  },
+  "SessionFeedbackSettings": {
+    "title": "实时反馈",
+    "description": "在智能体工作过程中向它发送提醒和纠正。开启后，智能体会获得一个查看实时反馈的工具，会话中也会出现留言入口。提示：智能体通常只在你的提示词中提及时才会主动查看反馈——例如在消息中加上「工作过程中定期查看我的实时反馈」，智能体才会主动读取。",
+    "enable": "启用实时反馈",
+    "enableHint": "为开启之后启动的智能体注入查看反馈工具。默认关闭。",
+    "save": "保存",
+    "saving": "保存中…",
+    "saved": "反馈设置已保存",
+    "saveFailed": "保存反馈设置失败",
+    "loadFailed": "加载失败：{detail}"
+  },
+  "LiveFeedback": {
+    "placeholder": "在 {agent} 工作时给它留言…",
+    "agentFallback": "智能体",
+    "ariaLabel": "实时反馈留言",
+    "dialogTitle": "实时反馈",
+    "dialogDescription": "在智能体工作时给它留言。它会在下次检查时读取，不会打断当前步骤。",
+    "send": "发送",
+    "cancel": "取消",
+    "pending": "等待中",
+    "delivered": "已收到",
+    "turnEndedUnread": "智能体在读取你的反馈前已结束本轮。",
+    "sendAsMessage": "作为新消息发送",
+    "dismiss": "忽略",
+    "turnEndedResent": "本轮已结束——已改为作为新消息发送。",
+    "turnEnded": "本轮已结束。",
+    "submitFailed": "留言发送失败"
   }
 }

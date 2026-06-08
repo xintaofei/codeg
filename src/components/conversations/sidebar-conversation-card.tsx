@@ -43,12 +43,12 @@ interface SidebarConversationCardProps {
   isSelected: boolean
   isOpenInTab?: boolean
   timeLabel?: string
-  onSelect: (id: number, agentType: string) => void
-  onDoubleClick?: (id: number, agentType: string) => void
+  onSelect: (id: number, agentType: string, folderId: number) => void
+  onDoubleClick?: (id: number, agentType: string, folderId: number) => void
   onRename: (id: number, newTitle: string) => Promise<void>
-  onDelete: (id: number, agentType: string) => Promise<void>
+  onDelete: (id: number, agentType: string, folderId: number) => Promise<void>
   onStatusChange: (id: number, status: ConversationStatus) => Promise<void>
-  onNewConversation?: () => void
+  onNewConversation?: (folderId: number) => void
 }
 
 export const SidebarConversationCard = memo(function SidebarConversationCard({
@@ -71,12 +71,26 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   const [renameValue, setRenameValue] = useState("")
 
   const handleClick = useCallback(() => {
-    onSelect(conversation.id, conversation.agent_type)
-  }, [onSelect, conversation.id, conversation.agent_type])
+    onSelect(conversation.id, conversation.agent_type, conversation.folder_id)
+  }, [
+    onSelect,
+    conversation.id,
+    conversation.agent_type,
+    conversation.folder_id,
+  ])
 
   const handleDblClick = useCallback(() => {
-    onDoubleClick?.(conversation.id, conversation.agent_type)
-  }, [onDoubleClick, conversation.id, conversation.agent_type])
+    onDoubleClick?.(
+      conversation.id,
+      conversation.agent_type,
+      conversation.folder_id
+    )
+  }, [
+    onDoubleClick,
+    conversation.id,
+    conversation.agent_type,
+    conversation.folder_id,
+  ])
 
   const handleRenameOpen = useCallback(() => {
     setRenameValue(conversation.title || "")
@@ -92,9 +106,18 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   }, [renameValue, conversation.id, conversation.title, onRename])
 
   const handleDeleteConfirm = useCallback(async () => {
-    await onDelete(conversation.id, conversation.agent_type)
+    await onDelete(
+      conversation.id,
+      conversation.agent_type,
+      conversation.folder_id
+    )
     setDeleteOpen(false)
-  }, [conversation.id, conversation.agent_type, onDelete])
+  }, [
+    conversation.id,
+    conversation.agent_type,
+    conversation.folder_id,
+    onDelete,
+  ])
 
   const status = conversation.status as ConversationStatus
   const isRunning = status === "in_progress"
@@ -206,7 +229,9 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
         <ContextMenuContent>
           {onNewConversation && (
             <>
-              <ContextMenuItem onSelect={onNewConversation}>
+              <ContextMenuItem
+                onSelect={() => onNewConversation(conversation.folder_id)}
+              >
                 <Plus className="h-4 w-4" />
                 {t("newConversation")}
               </ContextMenuItem>

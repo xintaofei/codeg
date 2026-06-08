@@ -6,8 +6,10 @@ import {
   isRemoteDesktopMode,
   notifyRemoteDesktopUnauthorized,
 } from "./transport"
-import { getCodegToken, redirectToCodegLogin } from "./transport/web-auth"
+import { getCodegToken } from "./transport/web-auth"
+import { notifyWebUnauthorized } from "./transport/web-connection-store"
 import { getCurrentEffectiveAppLocale } from "./i18n"
+import { TurnBusyError, isTurnInProgressRejection } from "./turn-busy"
 import type { FolderThemeColor } from "./theme-presets"
 import type {
   AgentType,
@@ -20,7 +22,9 @@ import type {
   AgentStats,
   SidebarData,
   ConnectionInfo,
+  ConversationConnectionInfo,
   LiveSessionSnapshot,
+  FeedbackItem,
   AcpAgentInfo,
   AcpAgentStatus,
   AgentSkillScope,
@@ -32,9 +36,12 @@ import type {
   ExpertInstallStatus,
   FolderHistoryEntry,
   FolderDetail,
+  WorktreeResolution,
   DbConversationSummary,
   ImportResult,
   OpenedTab,
+  OpenedTabsSnapshot,
+  SaveTabsOutcome,
   GitStatusEntry,
   GitBranchList,
   GitPullResult,
@@ -80,6 +87,7 @@ import type {
   ChatChannelInfo,
   ChannelStatusInfo,
   ChatChannelMessageLog,
+  WebhookConfig,
   ModelProviderInfo,
   PluginCheckSummary,
   QuickMessage,
@@ -140,14 +148,21 @@ export async function acpPrompt(
   connectionId: string,
   blocks: PromptInputBlock[],
   folderId: number | null = null,
-  conversationId: number | null = null
+  conversationId: number | null = null,
+  clientMessageId: string | null = null
 ): Promise<void> {
-  return getTransport().call("acp_prompt", {
-    connectionId,
-    blocks,
-    folderId,
-    conversationId,
-  })
+  try {
+    await getTransport().call("acp_prompt", {
+      connectionId,
+      blocks,
+      folderId,
+      conversationId,
+      clientMessageId,
+    })
+  } catch (e) {
+    if (isTurnInProgressRejection(e)) throw new TurnBusyError()
+    throw e
+  }
 }
 
 export async function acpSetMode(
@@ -180,7 +195,15 @@ export interface ForkResult {
 }
 
 export async function acpFork(connectionId: string): Promise<ForkResult> {
-  return getTransport().call("acp_fork", { connectionId })
+  try {
+    return await getTransport().call("acp_fork", { connectionId })
+  } catch (e) {
+    // A fork is serialized with prompts on the backend: it returns
+    // TurnInProgress while a turn is in flight. Surface it as TurnBusyError so
+    // callers can treat it as transient (re-queue) rather than a fork failure.
+    if (isTurnInProgressRejection(e)) throw new TurnBusyError()
+    throw e
+  }
 }
 
 export async function acpRespondPermission(
@@ -220,6 +243,18 @@ export async function acpGetSessionSnapshotByConversation(
 ): Promise<LiveSessionSnapshot | null> {
   return getTransport().call("acp_get_session_snapshot_by_conversation", {
     conversationId,
+  })
+}
+
+export async function acpFindConnectionForConversation(
+  conversationId: number,
+  sessionId: string | undefined,
+  agentType: AgentType
+): Promise<ConversationConnectionInfo | null> {
+  return getTransport().call("acp_find_connection_for_conversation", {
+    conversationId,
+    sessionId,
+    agentType,
   })
 }
 
@@ -713,12 +748,20 @@ export async function listChildConversations(
   })
 }
 
-export async function listOpenedTabs(): Promise<OpenedTab[]> {
+export async function listOpenedTabs(): Promise<OpenedTabsSnapshot> {
   return getTransport().call("list_opened_tabs")
 }
 
-export async function saveOpenedTabs(items: OpenedTab[]): Promise<void> {
-  return getTransport().call("save_opened_tabs", { items })
+export async function saveOpenedTabs(
+  items: OpenedTab[],
+  expectedVersion: number,
+  origin: string
+): Promise<SaveTabsOutcome> {
+  return getTransport().call("save_opened_tabs", {
+    items,
+    expectedVersion,
+    origin,
+  })
 }
 
 export async function listOpenFolderDetails(): Promise<FolderDetail[]> {
@@ -1201,6 +1244,33 @@ export async function openFolder(path: string): Promise<FolderDetail> {
   return getTransport().call("open_folder", { path })
 }
 
+/**
+ * Open a freshly created git worktree directory as a folder, recording the root
+ * folder it descends from (`sourceFolderId` is the folder the worktree was
+ * created from; the backend flattens to the root). Lets the worktree folder be
+ * merged under its parent in the sidebar.
+ */
+export async function openWorktreeFolder(
+  path: string,
+  sourceFolderId: number
+): Promise<FolderDetail> {
+  return getTransport().call("open_worktree_folder", { path, sourceFolderId })
+}
+
+/**
+ * Resolve where `branch` is checked out across the repo's worktrees. Returns the
+ * canonical worktree path (or null if the branch isn't checked out anywhere) and
+ * the registered folder id owning that path (or null for an external worktree).
+ * Path matching is canonicalized on the host that runs git, so it is correct for
+ * symlinked and remote-workspace paths the webview cannot resolve.
+ */
+export async function resolveWorktreeFolder(
+  repoPath: string,
+  branch: string
+): Promise<WorktreeResolution> {
+  return getTransport().call("resolve_worktree_folder", { repoPath, branch })
+}
+
 export async function openCommitWindow(folderId: number): Promise<void> {
   const locale = getCurrentEffectiveAppLocale()
   if (isDesktop()) {
@@ -1620,7 +1690,7 @@ export async function uploadAttachment(
     body: form,
   })
   if (res.status === 401) {
-    redirectToCodegLogin()
+    notifyWebUnauthorized()
     throw new Error("Unauthorized")
   }
   if (!res.ok) {
@@ -1722,7 +1792,7 @@ async function workspaceFileFetch(
     body,
   })
   if (res.status === 401) {
-    redirectToCodegLogin()
+    notifyWebUnauthorized()
     throw new Error("Unauthorized")
   }
   if (!res.ok) {
@@ -1793,7 +1863,7 @@ export async function uploadWorkspaceFile(
 
     xhr.onload = () => {
       if (xhr.status === 401) {
-        redirectToCodegLogin()
+        notifyWebUnauthorized()
         reject(new Error("Unauthorized"))
         return
       }
@@ -2112,6 +2182,21 @@ export async function readFileBase64(
   })
 }
 
+// Workspace-confined base64 read: `path` is relative to `rootPath` and is
+// canonicalized server-side (resolving symlinks), so it can never read outside
+// the workspace. Used by the HTML preview to inline local sub-resources safely.
+export async function readWorkspaceFileBase64(
+  rootPath: string,
+  path: string,
+  maxBytes?: number
+): Promise<string> {
+  return getTransport().call("read_workspace_file_base64", {
+    rootPath,
+    path,
+    maxBytes: maxBytes ?? null,
+  })
+}
+
 export async function readFilePreview(
   rootPath: string,
   path: string
@@ -2423,6 +2508,16 @@ export async function setChatEventFilter(
   return getTransport().call("set_chat_event_filter", { filter })
 }
 
+export async function getChatEventWebhooks(): Promise<WebhookConfig[]> {
+  return getTransport().call("get_chat_event_webhooks")
+}
+
+export async function setChatEventWebhooks(
+  webhooks: WebhookConfig[]
+): Promise<void> {
+  return getTransport().call("set_chat_event_webhooks", { webhooks })
+}
+
 export async function getChatMessageLanguage(): Promise<string> {
   return getTransport().call("get_chat_message_language")
 }
@@ -2518,6 +2613,39 @@ export async function setDelegationSettings(
   return getTransport().call("set_delegation_settings", { settings })
 }
 
+// ─── Live feedback settings + submit ───────────────────────────────────
+
+/** Mirror of Rust `FeedbackSettings`. */
+export interface FeedbackSettings {
+  enabled: boolean
+}
+
+export async function getFeedbackSettings(): Promise<FeedbackSettings> {
+  return getTransport().call("get_feedback_settings")
+}
+
+export async function setFeedbackSettings(
+  settings: FeedbackSettings
+): Promise<FeedbackSettings> {
+  return getTransport().call("set_feedback_settings", { settings })
+}
+
+/**
+ * Submit a live-feedback note to a running connection (the `check_user_feedback`
+ * steering path). Returns the stored note (it also arrives via the
+ * `feedback_submitted` event). Rejects when no turn is in flight — callers
+ * detect that with `isNoActiveTurnRejection` and fall back to a normal prompt.
+ */
+export async function submitSessionFeedback(
+  connectionId: string,
+  text: string
+): Promise<FeedbackItem> {
+  return getTransport().call("submit_session_feedback", {
+    connectionId,
+    text,
+  })
+}
+
 /** Live probe — opens a transient ACP connection to `agent_type`, reads what
  * it advertises (modes / config_options), and tears down. Used by the
  * delegation-settings UI so the option set on screen matches exactly what
@@ -2541,5 +2669,272 @@ export async function describeAgentOptions(
       workingDir: workingDir ?? null,
     },
     { timeoutMs: 70_000 }
+  )
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Backup & restore
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface BackupManifestEntry {
+  path: string
+  size: number
+  sha256: string
+}
+
+export interface BackupManifest {
+  formatVersion: number
+  kind: string
+  createdAt: string
+  appVersion: string
+  latestMigration: string
+  runtime: string
+  includesExternalTranscripts: boolean
+  includesSecrets: boolean
+  entries: BackupManifestEntry[]
+}
+
+export type BackupPhase =
+  | "snapshotting"
+  | "archiving"
+  | "encrypting"
+  | "decrypting"
+  | "extracting"
+  | "verifying"
+  | "swapping"
+  | "done"
+  | "cancelled"
+  | "error"
+
+export interface BackupProgress {
+  opId: string
+  phase: BackupPhase
+  processedBytes: number
+  totalBytes: number | null
+  currentPath?: string | null
+  error?: string | null
+}
+
+export interface BackupPreview {
+  encrypted: boolean
+  needsPassphrase: boolean
+  manifest?: BackupManifest | null
+  compatible: boolean
+  rejectReason?: string | null
+}
+
+export interface StagedRestore {
+  stagingDir: string
+  manifest: BackupManifest
+  restoredExternalPath?: string | null
+  skippedConflicts: string[]
+}
+
+/** Where (if anywhere) external agent transcripts are restored. */
+export type ExternalRestoreMode =
+  | { mode: "skip" }
+  | { mode: "side_location" }
+  | { mode: "original_locations"; on_conflict: "overwrite" | "skip_existing" }
+
+export interface BackupExportOptions {
+  includeExternalTranscripts: boolean
+  passphrase?: string | null
+}
+
+/**
+ * Subscribe to backup/restore progress. Works in both runtimes: the backend
+ * emits through the unified event bridge (Tauri webview + WS broadcaster).
+ */
+export async function listenBackupProgress(
+  handler: (event: BackupProgress) => void
+): Promise<() => void> {
+  return getTransport().subscribe<BackupProgress>("backup://progress", handler)
+}
+
+export async function cancelBackup(opId: string): Promise<boolean> {
+  return getTransport().call<boolean>("backup_cancel", { opId })
+}
+
+/** Desktop export: native save dialog → write the archive to the chosen path. */
+export async function exportBackupDesktop(
+  opts: BackupExportOptions
+): Promise<BackupManifest | null> {
+  const { save } = await import("@tauri-apps/plugin-dialog")
+  const encrypted = !!opts.passphrase
+  const ext = encrypted ? "codegbak" : "codeg.zip"
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")
+  const destPath = await save({
+    defaultPath: `codeg-backup-${stamp}.${ext}`,
+    filters: [{ name: "Codeg backup", extensions: [ext] }],
+  })
+  if (!destPath) return null
+  return getTransport().call<BackupManifest>("backup_create", {
+    options: {
+      includeExternalTranscripts: opts.includeExternalTranscripts,
+      passphrase: opts.passphrase ?? null,
+    },
+    destPath,
+  })
+}
+
+// Backup create/inspect/stage can legitimately run far longer than the
+// default 60s web transport timeout (large archives, encrypted decrypt,
+// extract+verify). Use a very generous client bound so the UI doesn't abort
+// while the backend is still working (and possibly committing a restore).
+const BACKUP_LONG_CALL_TIMEOUT_MS = 60 * 60_000
+
+/** Web export: build server-side, then trigger a browser download via ticket. */
+export async function exportBackupWeb(
+  opts: BackupExportOptions
+): Promise<void> {
+  const ticket = await getTransport().call<{ url: string; filename: string }>(
+    "backup_create_ticket",
+    {
+      includeExternalTranscripts: opts.includeExternalTranscripts,
+      passphrase: opts.passphrase ?? null,
+    },
+    { timeoutMs: BACKUP_LONG_CALL_TIMEOUT_MS }
+  )
+  const a = document.createElement("a")
+  a.href = `${window.location.origin}${ticket.url}`
+  a.download = ticket.filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}
+
+/** Web restore step 1: upload the archive once; returns an opaque upload id. */
+export async function uploadBackupWeb(
+  file: File,
+  onProgress?: (loaded: number, total: number) => void
+): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const token = getCodegToken()
+    const xhr = new XMLHttpRequest()
+    xhr.open("POST", `${window.location.origin}/api/backup_upload`)
+    xhr.setRequestHeader("Authorization", `Bearer ${token}`)
+    if (onProgress) {
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress(event.loaded, event.total)
+      }
+    }
+    xhr.onload = () => {
+      if (xhr.status === 401) {
+        notifyWebUnauthorized()
+        reject(new Error("Unauthorized"))
+        return
+      }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        let err: unknown
+        try {
+          err = JSON.parse(xhr.responseText) as unknown
+        } catch {
+          err = { code: "network_error", message: `HTTP ${xhr.status}` }
+        }
+        reject(err)
+        return
+      }
+      try {
+        const res = JSON.parse(xhr.responseText) as { uploadId: string }
+        resolve(res.uploadId)
+      } catch (e) {
+        reject(e instanceof Error ? e : new Error(String(e)))
+      }
+    }
+    xhr.onerror = () => reject(new Error("Network error during upload"))
+    const form = new FormData()
+    form.append("file", file, file.name)
+    xhr.send(form)
+  })
+}
+
+/** Validate a backup (desktop: by path). */
+export async function inspectBackupDesktop(
+  srcPath: string,
+  passphrase?: string | null
+): Promise<BackupPreview> {
+  return getTransport().call<BackupPreview>("backup_inspect", {
+    srcPath,
+    passphrase: passphrase ?? null,
+  })
+}
+
+/** Validate a backup (web: by upload id). */
+export async function inspectBackupWeb(
+  uploadId: string,
+  passphrase?: string | null
+): Promise<BackupPreview> {
+  return getTransport().call<BackupPreview>(
+    "backup_inspect",
+    {
+      uploadId,
+      passphrase: passphrase ?? null,
+    },
+    { timeoutMs: BACKUP_LONG_CALL_TIMEOUT_MS }
+  )
+}
+
+/** Stage a restore (desktop: by path). Applied on next app start. */
+export async function stageRestoreDesktop(args: {
+  srcPath: string
+  passphrase?: string | null
+  externalMode?: ExternalRestoreMode | null
+}): Promise<StagedRestore> {
+  return getTransport().call<StagedRestore>("backup_restore_stage", {
+    srcPath: args.srcPath,
+    passphrase: args.passphrase ?? null,
+    externalMode: args.externalMode ?? null,
+  })
+}
+
+export interface StageRestoreWebResult {
+  needsRestart: boolean
+  restartDelayMs: number
+  staged: StagedRestore
+}
+
+/** Stage a restore (web: by upload id). Applied on next server start. */
+export async function stageRestoreWeb(args: {
+  uploadId: string
+  passphrase?: string | null
+  externalMode?: ExternalRestoreMode | null
+}): Promise<StageRestoreWebResult> {
+  return getTransport().call<StageRestoreWebResult>(
+    "backup_restore_stage",
+    {
+      uploadId: args.uploadId,
+      passphrase: args.passphrase ?? null,
+      externalMode: args.externalMode ?? null,
+    },
+    { timeoutMs: BACKUP_LONG_CALL_TIMEOUT_MS }
+  )
+}
+
+export interface ExternalConflict {
+  agent: string
+  archivePath: string
+  targetPath: string
+  targetSize?: number | null
+}
+
+/** Scan a backup for external transcripts whose live target already exists. */
+export async function scanExternalConflictsDesktop(
+  srcPath: string,
+  passphrase?: string | null
+): Promise<ExternalConflict[]> {
+  return getTransport().call<ExternalConflict[]>(
+    "backup_scan_external_conflicts",
+    { srcPath, passphrase: passphrase ?? null }
+  )
+}
+
+export async function scanExternalConflictsWeb(
+  uploadId: string,
+  passphrase?: string | null
+): Promise<ExternalConflict[]> {
+  return getTransport().call<ExternalConflict[]>(
+    "backup_scan_external_conflicts",
+    { uploadId, passphrase: passphrase ?? null },
+    { timeoutMs: BACKUP_LONG_CALL_TIMEOUT_MS }
   )
 }

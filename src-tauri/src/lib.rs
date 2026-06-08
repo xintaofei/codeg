@@ -15,12 +15,15 @@ pub mod models;
 mod network;
 pub mod parsers;
 pub mod paths;
+pub mod pet_sessions;
 pub mod pet_state_mapper;
 pub mod pets;
 #[cfg(feature = "tauri-runtime")]
 pub mod preferences;
 pub mod process;
+pub mod supervise;
 mod terminal;
+pub mod update;
 pub mod web;
 pub mod workspace_state;
 pub mod workspace_transfer;
@@ -40,13 +43,14 @@ mod tauri_app {
     use crate::acp::manager::ConnectionManager;
     use crate::chat_channel::manager::ChatChannelManager;
     use crate::commands::{
-        acp as acp_commands, chat_channel as chat_channel_commands, conversations,
-        delegation as delegation_commands, experts as experts_commands, file_io, folder_commands,
-        folders, mcp as mcp_commands, model_provider as model_provider_commands, notification,
-        pet as pet_commands, project_boot, quick_messages as quick_messages_commands,
-        remote_proxy as remote_proxy_commands, remote_workspace as remote_workspace_commands,
-        system_settings, terminal as terminal_commands, version_control, windows,
-        workspace_state as workspace_state_commands,
+        acp as acp_commands, app_update as app_update_commands, backup,
+        chat_channel as chat_channel_commands, conversations, delegation as delegation_commands,
+        experts as experts_commands, feedback as feedback_commands, file_io, folder_commands,
+        folders, mcp as mcp_commands,
+        model_provider as model_provider_commands, notification, pet as pet_commands, project_boot,
+        quick_messages as quick_messages_commands, remote_proxy as remote_proxy_commands,
+        remote_workspace as remote_workspace_commands, system_settings, terminal as terminal_commands,
+        version_control, windows, workspace_state as workspace_state_commands,
     };
     use crate::terminal::manager::TerminalManager;
     use crate::{db, git_credential, network, paths, process, web};
@@ -186,6 +190,10 @@ mod tauri_app {
                 std::sync::Arc::new(crate::acp::InternalEventBus::new(metrics))
             })
             .manage(crate::pet_state_mapper::new_pet_state_handle())
+            // Source of truth for an in-flight app self-update. Shared with the
+            // embedded web server's AppState so HTTP and webview clients see the
+            // same download progress; lets the upgrade UI survive navigation.
+            .manage(crate::update::new_update_state_handle())
             .setup(|app| {
                 let app_data_dir = app.path().app_data_dir()?;
 
@@ -363,6 +371,36 @@ mod tauri_app {
                     );
                 }
 
+                // Spawn the pet panel active-session aggregator: rebuilds the
+                // `PetSessionsPayload` (running/waiting/error counts + per-
+                // session rows with titles and pending permissions) on ACP
+                // lifecycle events and emits `pet://sessions` for the sprite
+                // badge + panel window. Shares the same buses as the ambient
+                // mapper but is kept separate so the DB-free ambient task stays
+                // simple; desktop-only (server mode has no pet window).
+                {
+                    let bus = app
+                        .state::<std::sync::Arc<crate::acp::InternalEventBus>>()
+                        .inner()
+                        .clone();
+                    let broadcaster = app
+                        .state::<std::sync::Arc<web::event_bridge::WebEventBroadcaster>>()
+                        .inner()
+                        .clone();
+                    let emitter = web::event_bridge::EventEmitter::Tauri(app.handle().clone());
+                    let manager = app.state::<ConnectionManager>().inner().clone_ref();
+                    let db_conn = app.state::<db::AppDatabase>().conn.clone();
+                    tauri::async_runtime::spawn(
+                        crate::pet_sessions::pet_sessions_subscriber_task(
+                            bus,
+                            broadcaster,
+                            emitter,
+                            manager,
+                            db_conn,
+                        ),
+                    );
+                }
+
                 // Delegation broker + UDS listener. Built from the managed
                 // ConnectionManager + DB so spawn / depth-lookup work against
                 // live state. Managed alongside the existing per-resource
@@ -372,24 +410,33 @@ mod tauri_app {
                 let broker_for_lifecycle = {
                     let cm_state = app.state::<ConnectionManager>();
                     let db_conn = app.state::<db::AppDatabase>().conn.clone();
-                    let (broker, tokens, socket_path) = crate::app_state::build_delegation_stack(
-                        &cm_state,
-                        db_conn.clone(),
-                        effective_data_dir.clone(),
-                    );
+                    let (broker, tokens, socket_path, feedback_config) =
+                        crate::app_state::build_delegation_stack(
+                            &cm_state,
+                            db_conn.clone(),
+                            effective_data_dir.clone(),
+                        );
                     app.manage(broker.clone());
                     app.manage(tokens.clone());
+                    app.manage(feedback_config.clone());
                     app.manage(crate::commands::delegation::DelegationSocketPath(
                         socket_path.clone(),
                     ));
 
-                    // Push persisted settings into the broker before listener accept.
+                    // Push persisted settings into the broker + feedback config
+                    // before listener accept.
                     let broker_for_init = broker.clone();
                     let db_for_init = db_conn.clone();
+                    let feedback_for_init = feedback_config.clone();
                     tauri::async_runtime::block_on(async move {
                         delegation_commands::apply_persisted_config(
                             &db_for_init,
                             &broker_for_init,
+                        )
+                        .await;
+                        crate::commands::feedback::apply_persisted_feedback_config(
+                            &db_for_init,
+                            &feedback_for_init,
                         )
                         .await;
                     });
@@ -400,6 +447,11 @@ mod tauri_app {
                         tokens,
                         std::sync::Arc::new(
                             crate::acp::manager::ConnectionManagerParentLookup {
+                                manager: std::sync::Arc::new(cm_state.clone_ref()),
+                            },
+                        ),
+                        std::sync::Arc::new(
+                            crate::acp::manager::ConnectionManagerFeedbackLookup {
                                 manager: std::sync::Arc::new(cm_state.clone_ref()),
                             },
                         ),
@@ -609,6 +661,13 @@ mod tauri_app {
                     }
                 }
 
+                if label == windows::PET_PANEL_LABEL
+                    && matches!(event, tauri::WindowEvent::Focused(false))
+                {
+                    // Click-away dismiss for the session panel.
+                    windows::close_pet_panel_on_blur(window.app_handle());
+                }
+
                 if label == "main" {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         // The close button does one of two things, depending
@@ -676,6 +735,8 @@ mod tauri_app {
                 folders::list_open_folder_details,
                 folders::list_all_folder_details,
                 folders::open_folder,
+                folders::open_worktree_folder,
+                folders::resolve_worktree_folder,
                 folders::open_folder_in_workspace,
                 folders::open_folder_by_id,
                 folders::remove_folder_from_workspace,
@@ -738,6 +799,7 @@ mod tauri_app {
                 folders::list_directory_with_files,
                 folders::get_file_tree,
                 folders::read_file_base64,
+                folders::read_workspace_file_base64,
                 folders::read_file_preview,
                 folders::read_file_for_edit,
                 folders::save_file_content,
@@ -776,6 +838,10 @@ mod tauri_app {
                 windows::close_pet_window,
                 windows::pet_window_record_position,
                 windows::pet_show_context_menu,
+                windows::toggle_pet_panel,
+                windows::close_pet_panel,
+                windows::resize_pet_panel,
+                windows::focus_conversation,
                 windows::update_traffic_light_position,
                 windows::update_appearance_mode,
                 windows::set_tray_locale,
@@ -796,6 +862,10 @@ mod tauri_app {
                 pet_commands::pet_marketplace_install,
                 pet_commands::pet_celebrate,
                 pet_commands::pet_get_current_state,
+                pet_commands::pet_list_active_sessions,
+                app_update_commands::app_update_state,
+                app_update_commands::perform_app_update,
+                app_update_commands::restart_app,
                 project_boot::detect_package_manager,
                 project_boot::create_shadcn_project,
                 project_boot::detect_hyperframes_skills,
@@ -813,6 +883,9 @@ mod tauri_app {
                 system_settings::update_system_rendering_settings,
                 delegation_commands::get_delegation_settings,
                 delegation_commands::set_delegation_settings,
+                feedback_commands::get_feedback_settings,
+                feedback_commands::set_feedback_settings,
+                feedback_commands::submit_session_feedback,
                 version_control::detect_git,
                 version_control::test_git_path,
                 version_control::get_git_settings,
@@ -837,6 +910,7 @@ mod tauri_app {
                 acp_commands::acp_list_connections,
                 acp_commands::acp_get_session_snapshot,
                 acp_commands::acp_get_session_snapshot_by_conversation,
+                acp_commands::acp_find_connection_for_conversation,
                 acp_commands::acp_list_agents,
                 acp_commands::acp_get_agent_status,
                 acp_commands::acp_clear_binary_cache,
@@ -891,6 +965,11 @@ mod tauri_app {
                 notification::send_notification,
                 file_io::save_binary_file,
                 file_io::save_text_file,
+                backup::backup_create,
+                backup::backup_inspect,
+                backup::backup_scan_external_conflicts,
+                backup::backup_restore_stage,
+                backup::backup_cancel,
                 chat_channel_commands::list_chat_channels,
                 chat_channel_commands::create_chat_channel,
                 chat_channel_commands::update_chat_channel,
@@ -907,6 +986,8 @@ mod tauri_app {
                 chat_channel_commands::set_chat_command_prefix,
                 chat_channel_commands::get_chat_event_filter,
                 chat_channel_commands::set_chat_event_filter,
+                chat_channel_commands::get_chat_event_webhooks,
+                chat_channel_commands::set_chat_event_webhooks,
                 chat_channel_commands::get_chat_message_language,
                 chat_channel_commands::set_chat_message_language,
                 chat_channel_commands::weixin_get_qrcode,

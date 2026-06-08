@@ -15,7 +15,8 @@ use crate::commands::pet::{
 };
 use crate::models::pet::{
     ImportCodexPetsRequest, ImportCodexPetsResult, ImportablePet, NewPetInput, PetCelebrationKind,
-    PetDetail, PetSpriteAsset, PetState, PetSummary, PetWindowConfig, PetWindowStatePatch,
+    PetDetail, PetSessionsPayload, PetSpriteAsset, PetState, PetSummary, PetWindowConfig,
+    PetWindowStatePatch,
 };
 use crate::pets::marketplace::{
     MarketplaceInstallRequest, MarketplaceInstallResponse, MarketplaceListParams,
@@ -148,4 +149,12 @@ pub async fn pet_get_current_state(
     Ok(Json(pet_commands::pet_get_current_state_core(
         &state.pet_state,
     )))
+}
+
+pub async fn pet_list_active_sessions(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<PetSessionsPayload>, AppCommandError> {
+    pet_commands::pet_list_active_sessions_core(&state.connection_manager, &state.db.conn)
+        .await
+        .map(Json)
 }

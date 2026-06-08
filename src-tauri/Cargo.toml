@@ -1,6 +1,6 @@
 [package]
 name = "codeg"
-version = "0.14.10"
+version = "0.15.2"
 description = "Agent Code Generation App"
 authors = ["feitao"]
 edition = "2021"
@@ -64,6 +64,7 @@ serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 dirs = "6"
+if-addrs = "0.13"
 walkdir = "2"
 sacp = "11.0.0"
 sacp-tokio = "11.0.0"
@@ -101,7 +102,11 @@ qrcode = "0.14"
 image = { version = "0.25", default-features = false, features = ["png", "webp"] }
 include_dir = "0.7"
 sha2 = "0.10"
+aes-gcm = { version = "0.10", features = ["stream"] }
+argon2 = "0.5"
 tempfile = "3"
+minisign-verify = "0.2"
+semver = "1"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-window-state = { version = "2", optional = true }

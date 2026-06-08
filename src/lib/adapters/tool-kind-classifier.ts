@@ -39,6 +39,8 @@ export const TOOL_KIND_ORDER: ToolKindLabel[] = [
 const DELEGATE_TO_AGENT_SUFFIX_RE = /[^a-z0-9]delegate_to_agent$/
 const GET_DELEGATION_STATUS_SUFFIX_RE = /[^a-z0-9]get_delegation_status$/
 const CANCEL_DELEGATION_SUFFIX_RE = /[^a-z0-9]cancel_delegation$/
+const CREATE_GOAL_SUFFIX_RE = /[^a-z0-9]create_goal$/
+const UPDATE_GOAL_SUFFIX_RE = /[^a-z0-9]update_goal$/
 
 export function isAgentLikeToolName(toolName: string): boolean {
   const name = toolName.toLowerCase().trim()
@@ -46,12 +48,16 @@ export function isAgentLikeToolName(toolName: string): boolean {
   if (
     name === "delegate_to_agent" ||
     name === "get_delegation_status" ||
-    name === "cancel_delegation"
+    name === "cancel_delegation" ||
+    name === "create_goal" ||
+    name === "update_goal"
   )
     return true
   if (DELEGATE_TO_AGENT_SUFFIX_RE.test(name)) return true
   if (GET_DELEGATION_STATUS_SUFFIX_RE.test(name)) return true
   if (CANCEL_DELEGATION_SUFFIX_RE.test(name)) return true
+  if (CREATE_GOAL_SUFFIX_RE.test(name)) return true
+  if (UPDATE_GOAL_SUFFIX_RE.test(name)) return true
   return false
 }
 

@@ -61,6 +61,20 @@ export function TabBar() {
         mode === "conversation" ||
         (mode === "fusion" && activePane === "conversation" && !filesMaximized)
       if (!shouldHandleShortcut) return
+      const isNextTab = matchShortcutEvent(event, shortcuts.next_tab)
+      const isPrevTab = matchShortcutEvent(event, shortcuts.prev_tab)
+      if (isNextTab || isPrevTab) {
+        if (tabs.length < 2 || !activeTabId) return
+        const currentIndex = tabs.findIndex((tab) => tab.id === activeTabId)
+        if (currentIndex === -1) return
+
+        event.preventDefault()
+        const offset = isNextTab ? 1 : -1
+        const nextIndex = (currentIndex + offset + tabs.length) % tabs.length
+        switchTab(tabs[nextIndex].id)
+        return
+      }
+
       if (!matchShortcutEvent(event, shortcuts.close_current_tab)) return
       if (!activeTabId) return
 
@@ -79,6 +93,10 @@ export function TabBar() {
     filesMaximized,
     mode,
     shortcuts.close_current_tab,
+    shortcuts.next_tab,
+    shortcuts.prev_tab,
+    switchTab,
+    tabs,
   ])
 
   const handleReorder = useCallback(

@@ -45,13 +45,17 @@ import {
   useWorkspaceContext,
 } from "@/contexts/workspace-context"
 import { RemoteConnectionGate } from "@/contexts/remote-connection-context"
+import { UpdateProvider } from "@/components/providers/update-provider"
 import { TabBar } from "@/components/tabs/tab-bar"
 import { TerminalPanel } from "@/components/terminal/terminal-panel"
 import { AuxPanel } from "@/components/layout/aux-panel"
 import { FileWorkspaceTabBar } from "@/components/files/file-workspace-tab-bar"
 import { FileWorkspacePanel } from "@/components/files/file-workspace-panel"
 import { AppToaster } from "@/components/ui/app-toaster"
-import { DeepLinkBootstrap } from "@/components/workspace/deep-link-bootstrap"
+import {
+  DeepLinkBootstrap,
+  PetFocusBridge,
+} from "@/components/workspace/deep-link-bootstrap"
 import { WorkspaceOpenFolderListener } from "@/components/workspace/workspace-open-folder-listener"
 import {
   ResizableHandle,
@@ -811,6 +815,7 @@ function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
                         <WorkspaceDocumentTitle />
                         <TabKeysSync />
                         <DeepLinkBootstrap />
+                        <PetFocusBridge />
                         <WorkspaceOpenFolderListener />
                         <SessionStatsProvider>
                           <SidebarProvider>
@@ -844,7 +849,9 @@ export default function WorkspaceLayout({
   return (
     <Suspense>
       <RemoteConnectionGate>
-        <WorkspaceLayoutInner>{children}</WorkspaceLayoutInner>
+        <UpdateProvider>
+          <WorkspaceLayoutInner>{children}</WorkspaceLayoutInner>
+        </UpdateProvider>
       </RemoteConnectionGate>
     </Suspense>
   )

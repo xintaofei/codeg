@@ -48,6 +48,15 @@ interface ConversationShellProps {
   attachmentTabId?: string | null
   draftStorageKey?: string | null
   hideInput?: boolean
+  /** Optional read-only live-feedback notes list rendered just above the
+   *  composer (see `FeedbackNotesDisplay`). Renders nothing when there are no
+   *  notes for the current turn. */
+  feedbackList?: ReactNode
+  /** Open the live-feedback dialog from the composer "+" menu (hidden when
+   *  omitted / feature off). */
+  onAddFeedback?: () => void
+  /** Grey out the live-feedback "+" entry when a note can't be sent right now. */
+  feedbackAddDisabled?: boolean
   isActive?: boolean
   queue?: QueuedMessage[]
   onEnqueue?: (draft: PromptDraft, modeId: string | null) => void
@@ -90,6 +99,9 @@ export function ConversationShell({
   attachmentTabId,
   draftStorageKey,
   hideInput = false,
+  feedbackList,
+  onAddFeedback,
+  feedbackAddDisabled,
   isActive,
   queue,
   onEnqueue,
@@ -170,6 +182,10 @@ export function ConversationShell({
 
       <QuestionDialog question={pendingQuestion} onAnswer={onAnswerQuestion} />
 
+      {!hideInput && feedbackList && (
+        <div className="mx-auto w-full max-w-3xl px-4">{feedbackList}</div>
+      )}
+
       {!hideInput && (
         <div className="mx-auto w-full max-w-3xl">
           <ChatInput
@@ -204,6 +220,8 @@ export function ConversationShell({
             onSaveQueueEdit={onSaveQueueEdit}
             onCancelQueueEdit={onCancelQueueEdit}
             onForkSend={onForkSend}
+            onAddFeedback={onAddFeedback}
+            feedbackAddDisabled={feedbackAddDisabled}
           />
         </div>
       )}

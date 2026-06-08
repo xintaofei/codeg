@@ -29,15 +29,24 @@ export default function Page() {
       .then((res) => {
         if (res.ok) {
           router.replace("/workspace")
-        } else {
+          return
+        }
+        if (res.status === 401) {
+          // Token genuinely rejected → clear it and re-authenticate.
           localStorage.removeItem("codeg_token")
           router.replace("/login")
+          return
         }
+        // Server reachable but unhealthy (5xx / proxy error). Keep the token
+        // and enter the app; the in-app reconnect dialog handles recovery
+        // instead of bouncing a valid session to /login.
+        router.replace("/workspace")
       })
       .catch(() => {
-        // Server unreachable
-        localStorage.removeItem("codeg_token")
-        router.replace("/login")
+        // Server unreachable (restart, network blip, sleep/wake). The token is
+        // almost certainly still valid — don't discard it. Enter the workspace
+        // and let WebConnectionGuard surface the offline state and recover.
+        router.replace("/workspace")
       })
   }, [router])
   return null

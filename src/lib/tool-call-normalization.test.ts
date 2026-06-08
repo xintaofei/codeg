@@ -38,6 +38,38 @@ describe("inferLiveToolName meta.claudeCode.toolName override", () => {
     ).not.toBe("memory_recall")
   })
 
+  it("returns canonical lower-case 'agent' for the SDK Agent tool before rawInput streams in", () => {
+    // claude-agent-acp reports the Agent/Task tool as `Agent` (capitalised) and
+    // often emits the initial ToolCall before `rawInput` (which carries
+    // `subagent_type`) is available. The metaToolName fallback must return the
+    // canonical lower-case `agent` so the live agent-card nesting check
+    // (`getToolName(...) === "agent"`) recognises it and child tool calls nest
+    // under the card. A capitalised `Agent` slipped past that check, leaving the
+    // children un-nested and the card stuck on its placeholder title.
+    expect(
+      inferLiveToolName({
+        title: "Explore the codebase",
+        kind: "other",
+        rawInput: null,
+        meta: { claudeCode: { toolName: "Agent" } },
+      })
+    ).toBe("agent")
+  })
+
+  it("keeps memory_recall intact when lower-casing the metaToolName fallback", () => {
+    // Guard: the lower-case fix must NOT route metaToolName through
+    // `normalizeToolName`, whose live-title heuristic rewrites `memory_recall`
+    // to `memory_re`.
+    expect(
+      inferLiveToolName({
+        title: "Recalled 3 memories",
+        kind: "read",
+        rawInput: null,
+        meta: { claudeCode: { toolName: "memory_recall" } },
+      })
+    ).toBe("memory_recall")
+  })
+
   it("preserves sub-agent detection when rawInput carries subagent_type", () => {
     // Regression guard: meta.claudeCode.toolName="Task" must NOT override
     // input-shape detection. Otherwise Claude Code's Task tool stops
@@ -56,16 +88,18 @@ describe("inferLiveToolName meta.claudeCode.toolName override", () => {
     ).toBe("agent")
   })
 
-  it("resolves delegation companion tools from meta over the task_id input heuristic", () => {
-    // Regression guard for Task B: get_delegation_status / cancel_delegation
-    // take `{ task_id }` input, which inferFromInput would otherwise classify
-    // as the generic "task" tool (rendered as "任务" with no detail). The
-    // authoritative meta.claudeCode.toolName (the raw mcp__ name) must win.
+  it("resolves delegation companion tools from meta over the input-shape heuristic", () => {
+    // Regression guard for Task B: these companion tools must resolve from the
+    // authoritative meta.claudeCode.toolName (the raw mcp__ name), not from their
+    // input shape. get_delegation_status takes `{ task_ids }` and cancel_delegation
+    // takes `{ task_id }` — the latter would otherwise be classified by
+    // inferFromInput as the generic "task" tool (rendered as "任务" with no
+    // detail). meta must win.
     expect(
       inferLiveToolName({
         title: "mcp__codeg-delegate__get_delegation_status",
         kind: "other",
-        rawInput: JSON.stringify({ task_id: "t1", wait_ms: 1000 }),
+        rawInput: JSON.stringify({ task_ids: ["t1"], wait_ms: 1000 }),
         meta: {
           claudeCode: {
             toolName: "mcp__codeg-delegate__get_delegation_status",
@@ -149,8 +183,10 @@ describe("normalizeToolName collapses delegate_to_agent across hosts", () => {
   // canonical name so the renderer routes them into DelegatedSubThread.
   it.each([
     "delegate_to_agent",
+    "mcp__codeg-mcp__delegate_to_agent",
     "mcp__codeg-delegate__delegate_to_agent",
     "mcp__codeg__delegate_to_agent",
+    "codeg-mcp/delegate_to_agent",
     "codeg-delegate/delegate_to_agent",
     "codeg-delegate.delegate_to_agent",
     "codeg-delegate:delegate_to_agent",
@@ -169,8 +205,10 @@ describe("normalizeToolName collapses delegate_to_agent across hosts", () => {
 describe("normalizeToolName collapses delegation companion tools across hosts", () => {
   it.each([
     "get_delegation_status",
+    "mcp__codeg-mcp__get_delegation_status",
     "mcp__codeg-delegate__get_delegation_status",
     "mcp__codeg__get_delegation_status",
+    "codeg-mcp/get_delegation_status",
     "codeg-delegate/get_delegation_status",
     "codeg-delegate.get_delegation_status",
     "codeg-delegate:get_delegation_status",
@@ -180,8 +218,10 @@ describe("normalizeToolName collapses delegation companion tools across hosts", 
 
   it.each([
     "cancel_delegation",
+    "mcp__codeg-mcp__cancel_delegation",
     "mcp__codeg-delegate__cancel_delegation",
     "mcp__codeg__cancel_delegation",
+    "codeg-mcp/cancel_delegation",
     "codeg-delegate/cancel_delegation",
     "codeg-delegate.cancel_delegation",
     "codeg-delegate:cancel_delegation",
@@ -196,5 +236,38 @@ describe("normalizeToolName collapses delegation companion tools across hosts", 
     expect(normalizeToolName("xcancel_delegation")).not.toBe(
       "cancel_delegation"
     )
+  })
+})
+
+describe("normalizeToolName collapses Codex goal tools across wrappers", () => {
+  it.each([
+    ["create_goal", "create_goal"],
+    ["functions.create_goal", "create_goal"],
+    ["mcp__codeg__create_goal", "create_goal"],
+    ["Goal updated (active): 分析 README 文件", "create_goal"],
+    ["update_goal", "update_goal"],
+    ["functions.update_goal", "update_goal"],
+    ["mcp__codeg__update_goal", "update_goal"],
+    ["Goal updated (complete): 分析 README 文件", "update_goal"],
+  ])("%s -> %s", (input, expected) => {
+    expect(normalizeToolName(input)).toBe(expected)
+  })
+
+  it("infers live Codex goal updates from ACP titles", () => {
+    expect(
+      inferLiveToolName({
+        title: "Goal updated (active): 分析 README 文件",
+        kind: "other",
+        rawInput: JSON.stringify({ objective: "分析 README 文件" }),
+      })
+    ).toBe("create_goal")
+
+    expect(
+      inferLiveToolName({
+        title: "Goal updated (complete): 分析 README 文件",
+        kind: "other",
+        rawInput: JSON.stringify({ status: "complete" }),
+      })
+    ).toBe("update_goal")
   })
 })

@@ -1,6 +1,12 @@
 "use client"
 
-import { useState, useEffect, useCallback, useRef } from "react"
+import {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useCallback,
+  useRef,
+} from "react"
 import { useTranslations } from "next-intl"
 import {
   ChevronRight,
@@ -22,6 +28,7 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 import { getHomeDirectory, listDirectoryEntries } from "@/lib/api"
+import { parentFsPath } from "@/lib/path-utils"
 import type { DirectoryEntry } from "@/lib/types"
 
 interface DirectoryBrowserDialogProps {
@@ -31,6 +38,19 @@ interface DirectoryBrowserDialogProps {
   title?: string
   initialPath?: string
 }
+
+/**
+ * Strip trailing separators (POSIX `/` or Windows `\`) so otherwise-equivalent
+ * paths compare equal for the row highlight; an all-separator root is left
+ * intact rather than collapsed away.
+ */
+const normalizePath = (path: string) => path.replace(/[/\\]+$/, "") || path
+
+// Synchronous layout effect on the client (so the session/selection guards see
+// the latest committed values before any pending async work resolves), but a
+// passive effect during the static-export prerender to avoid the SSR warning.
+const useIsomorphicLayoutEffect =
+  typeof window !== "undefined" ? useLayoutEffect : useEffect
 
 export function DirectoryBrowserDialog({
   open,
@@ -47,32 +67,64 @@ export function DirectoryBrowserDialog({
     new Map()
   )
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
-  const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [loading, setLoading] = useState<Set<string>>(new Set())
   const [error, setError] = useState<string | null>(null)
+  const [confirming, setConfirming] = useState(false)
 
   const initialized = useRef(false)
+  // Monotonic session id, bumped synchronously on every real open/close
+  // transition. Async flows capture it before awaiting and discard their writes
+  // when it changes, so a slow request from a previous open can't clobber — or
+  // expose — state in a newer one. Guarding on the previous `open` keeps the
+  // bump idempotent under StrictMode's mount-time effect replay (which would
+  // otherwise bump again and strand the first init's in-flight writes).
+  const sessionGen = useRef(0)
+  const prevOpen = useRef(open)
+  useIsomorphicLayoutEffect(() => {
+    if (prevOpen.current !== open) {
+      prevOpen.current = open
+      sessionGen.current += 1
+    }
+  }, [open])
+  // Monotonic navigation id. Each navigateTo() bumps it and the open-time init()
+  // captures it, so within a single session a slower earlier navigation (or a
+  // late init) can't overwrite the destination of a newer one — the latest user
+  // intent always wins.
+  const navSeq = useRef(0)
+  // Latest committed pathInput, mirrored synchronously so a confirm validation
+  // can tell the selection moved (within the session) before its check resolved.
+  const pathInputRef = useRef(pathInput)
+  useIsomorphicLayoutEffect(() => {
+    pathInputRef.current = pathInput
+  }, [pathInput])
 
   const loadEntries = useCallback(
     async (path: string): Promise<DirectoryEntry[] | null> => {
       // Already cached
       if (entries.has(path)) return entries.get(path)!
 
+      const gen = sessionGen.current
       setLoading((prev) => new Set(prev).add(path))
       setError(null)
       try {
         const result = await listDirectoryEntries(path)
-        setEntries((prev) => new Map(prev).set(path, result))
+        // Skip writes if a close/reopen happened mid-flight — they belong to a
+        // session that no longer exists and would surface stale data.
+        if (gen === sessionGen.current) {
+          setEntries((prev) => new Map(prev).set(path, result))
+        }
         return result
       } catch {
-        setError(t("errorLoadingDir"))
+        if (gen === sessionGen.current) setError(t("errorLoadingDir"))
         return null
       } finally {
-        setLoading((prev) => {
-          const next = new Set(prev)
-          next.delete(path)
-          return next
-        })
+        if (gen === sessionGen.current) {
+          setLoading((prev) => {
+            const next = new Set(prev)
+            next.delete(path)
+            return next
+          })
+        }
       }
     },
     [entries, t]
@@ -80,12 +132,16 @@ export function DirectoryBrowserDialog({
 
   const navigateTo = useCallback(
     async (path: string) => {
+      const gen = sessionGen.current
+      const seq = (navSeq.current += 1)
       const result = await loadEntries(path)
+      // Discard if a newer navigation started, or the load outlived its session
+      // (close/reopen), so the most recent navigation wins.
+      if (gen !== sessionGen.current || seq !== navSeq.current) return
       if (result !== null) {
         setRootPath(path)
         setPathInput(path)
         setExpandedPaths(new Set())
-        setSelectedPath(null)
       }
     },
     [loadEntries]
@@ -100,21 +156,35 @@ export function DirectoryBrowserDialog({
     if (initialized.current) return
     initialized.current = true
 
+    const gen = sessionGen.current
+    const seq = navSeq.current
+
+    // Reset synchronously so a reopened dialog never shows — or lets the user
+    // confirm — the previous session's path while the start dir is loading.
+    setRootPath("")
+    setPathInput(initialPath ?? "")
+    setExpandedPaths(new Set())
+    setEntries(new Map())
+    setError(null)
+    setLoading(new Set())
+    setConfirming(false)
+
     const init = async () => {
       try {
         const startPath = initialPath || (await getHomeDirectory())
+        // Drop these writes if a close/reopen superseded this init, or the user
+        // already navigated somewhere else while the start dir was loading.
+        if (gen !== sessionGen.current || seq !== navSeq.current) return
         setRootPath(startPath)
         setPathInput(startPath)
-        setSelectedPath(null)
-        setExpandedPaths(new Set())
-        setEntries(new Map())
-        setError(null)
         setLoading(new Set([startPath]))
 
         const result = await listDirectoryEntries(startPath)
+        if (gen !== sessionGen.current || seq !== navSeq.current) return
         setEntries(new Map([[startPath, result]]))
         setLoading(new Set())
       } catch {
+        if (gen !== sessionGen.current || seq !== navSeq.current) return
         setError(t("errorLoadingDir"))
         setLoading(new Set())
       }
@@ -124,47 +194,65 @@ export function DirectoryBrowserDialog({
 
   const handleToggleExpand = useCallback(
     async (path: string) => {
-      const newExpanded = new Set(expandedPaths)
-      if (newExpanded.has(path)) {
-        newExpanded.delete(path)
-        setExpandedPaths(newExpanded)
-      } else {
-        await loadEntries(path)
-        newExpanded.add(path)
-        setExpandedPaths(newExpanded)
+      if (expandedPaths.has(path)) {
+        setExpandedPaths((prev) => {
+          const next = new Set(prev)
+          next.delete(path)
+          return next
+        })
+        return
       }
+      const gen = sessionGen.current
+      await loadEntries(path)
+      if (gen !== sessionGen.current) return
+      // Functional update so two folders expanded concurrently compose instead
+      // of overwriting each other with a stale snapshot.
+      setExpandedPaths((prev) => new Set(prev).add(path))
     },
     [expandedPaths, loadEntries]
   )
 
-  const handleSelect = useCallback(
-    (path: string) => {
-      setSelectedPath(path === selectedPath ? null : path)
-    },
-    [selectedPath]
-  )
+  const handleSelect = useCallback((path: string) => {
+    setPathInput(path)
+  }, [])
 
-  const handleConfirm = useCallback(() => {
-    if (selectedPath) {
-      onSelect(selectedPath)
+  const handleConfirm = useCallback(async () => {
+    const path = pathInput.trim()
+    if (!path || confirming) return
+    // Validate the path is a real, readable directory before committing.
+    // Visited dirs (clicked rows / navigated roots) are served from the
+    // entries cache, so this is instant in the common case; a typed path is
+    // verified here and keeps the dialog open with an error on failure.
+    const gen = sessionGen.current
+    setConfirming(true)
+    const result = await loadEntries(path)
+    // A stale confirm from a previous open must not touch the new session's
+    // state — not even its spinner — so bail before clearing `confirming`.
+    if (gen !== sessionGen.current) return
+    setConfirming(false)
+    // Within the session, still bail if the selection moved while validating
+    // (e.g. the user picked another directory after pressing Select).
+    if (pathInputRef.current.trim() !== path) return
+    if (result !== null) {
+      onSelect(path)
       onOpenChange(false)
     }
-  }, [selectedPath, onSelect, onOpenChange])
+  }, [pathInput, confirming, loadEntries, onSelect, onOpenChange])
 
   const handleNavigateUp = useCallback(() => {
-    if (!rootPath) return
-    const parts = rootPath.replace(/\/$/, "").split("/")
-    if (parts.length <= 1) return
-    parts.pop()
-    const parent = parts.join("/") || "/"
+    const parent = parentFsPath(pathInput.trim() || rootPath)
+    if (!parent) return
     navigateTo(parent)
-  }, [rootPath, navigateTo])
+  }, [pathInput, rootPath, navigateTo])
 
   const handleGoHome = useCallback(async () => {
+    const gen = sessionGen.current
     try {
       const home = await getHomeDirectory()
+      if (gen !== sessionGen.current) return
       navigateTo(home)
     } catch {
+      if (gen !== sessionGen.current) return
       setError(t("errorLoadingDir"))
     }
   }, [navigateTo, t])
@@ -217,7 +305,7 @@ export function DirectoryBrowserDialog({
 
     return children.map((entry) => {
       const isExpanded = expandedPaths.has(entry.path)
-      const isSelected = selectedPath === entry.path
+      const isSelected = normalizePath(entry.path) === normalizePath(pathInput)
 
       return (
         <div key={entry.path}>
@@ -319,12 +407,6 @@ export function DirectoryBrowserDialog({
               )}
             </div>
           </ScrollArea>
-
-          {selectedPath && (
-            <p className="truncate text-xs text-muted-foreground">
-              {selectedPath}
-            </p>
-          )}
         </div>
 
         <DialogFooter>
@@ -337,7 +419,7 @@ export function DirectoryBrowserDialog({
           </Button>
           <Button
             onClick={handleConfirm}
-            disabled={!selectedPath}
+            disabled={!pathInput.trim() || confirming}
             type="button"
           >
             {t("select")}

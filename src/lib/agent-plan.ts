@@ -167,6 +167,14 @@ function extractPlanEntriesFromPart(part: AdaptedContentPart): PlanEntryInfo[] {
     return []
   }
 
+  if (part.type === "goal-run") {
+    for (let i = part.items.length - 1; i >= 0; i -= 1) {
+      const entries = extractPlanEntriesFromPart(part.items[i])
+      if (entries.length > 0) return entries
+    }
+    return []
+  }
+
   if (part.type === "reasoning") {
     return parseEntriesFromReasoningText(part.content)
   }
@@ -177,17 +185,39 @@ function extractPlanEntriesFromPart(part: AdaptedContentPart): PlanEntryInfo[] {
 export function extractLatestPlanEntriesFromMessages(
   messages: AdaptedMessage[]
 ): PlanEntryInfo[] {
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
+  let planEntries: PlanEntryInfo[] = []
+  let planMessageIndex = -1
+
+  for (let i = messages.length - 1; i >= 0 && planMessageIndex === -1; i -= 1) {
     const message = messages[i]
     for (let j = message.content.length - 1; j >= 0; j -= 1) {
       const entries = extractPlanEntriesFromPart(message.content[j])
       if (entries.length > 0) {
-        return entries
+        planEntries = entries
+        planMessageIndex = i
+        break
       }
     }
   }
 
-  return []
+  if (planMessageIndex === -1) return []
+
+  // A fully completed plan that belongs to an earlier exchange is stale: once
+  // the user has sent another message after it, a new turn has begun, so the
+  // top-right overlay should only surface the plan of the latest agent reply.
+  // Consecutive assistant messages (no user message in between) still count as
+  // the same reply, matching how the UI merges adjacent assistant turns.
+  const allCompleted = planEntries.every(
+    (entry) => entry.status === "completed"
+  )
+  if (allCompleted) {
+    const hasUserReplyAfterPlan = messages
+      .slice(planMessageIndex + 1)
+      .some((message) => message.role === "user")
+    if (hasUserReplyAfterPlan) return []
+  }
+
+  return planEntries
 }
 
 export function buildPlanKey(entries: PlanEntryInfo[]): string | null {

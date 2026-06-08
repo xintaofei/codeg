@@ -55,7 +55,7 @@ pub async fn list_child_conversations(
 
 pub async fn list_opened_tabs(
     Extension(state): Extension<Arc<AppState>>,
-) -> Result<Json<Vec<OpenedTab>>, AppCommandError> {
+) -> Result<Json<OpenedTabsSnapshot>, AppCommandError> {
     Ok(Json(
         conv_commands::list_opened_tabs_core(&state.db.conn).await?,
     ))
@@ -65,14 +65,24 @@ pub async fn list_opened_tabs(
 #[serde(rename_all = "camelCase")]
 pub struct SaveOpenedTabsParams {
     pub items: Vec<OpenedTab>,
+    pub expected_version: i64,
+    pub origin: String,
 }
 
 pub async fn save_opened_tabs(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<SaveOpenedTabsParams>,
-) -> Result<Json<()>, AppCommandError> {
-    conv_commands::save_opened_tabs_core(&state.db.conn, params.items).await?;
-    Ok(Json(()))
+) -> Result<Json<SaveTabsOutcome>, AppCommandError> {
+    Ok(Json(
+        conv_commands::save_opened_tabs_core(
+            &state.db.conn,
+            &state.emitter,
+            params.items,
+            params.expected_version,
+            params.origin,
+        )
+        .await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -122,8 +132,12 @@ pub async fn get_folder_conversation(
     Json(params): Json<GetFolderConversationParams>,
 ) -> Result<Json<DbConversationDetail>, AppCommandError> {
     let db = &state.db;
-    let result =
-        conv_commands::get_folder_conversation_core(&db.conn, params.conversation_id).await?;
+    let result = conv_commands::get_folder_conversation_with_live_core(
+        &db.conn,
+        &state.connection_manager,
+        params.conversation_id,
+    )
+    .await?;
     Ok(Json(result))
 }
 
@@ -177,6 +191,7 @@ pub async fn create_conversation(
         params.title,
     )
     .await?;
+    conv_commands::emit_conversation_upsert(&state.emitter, &db.conn, result).await;
     Ok(Json(result))
 }
 
@@ -197,6 +212,8 @@ pub async fn update_conversation_status(
         params.status,
     )
     .await?;
+    conv_commands::emit_conversation_upsert(&state.emitter, &state.db.conn, params.conversation_id)
+        .await;
     Ok(Json(()))
 }
 
@@ -217,6 +234,8 @@ pub async fn update_conversation_title(
         params.title,
     )
     .await?;
+    conv_commands::emit_conversation_upsert(&state.emitter, &state.db.conn, params.conversation_id)
+        .await;
     Ok(Json(()))
 }
 
@@ -231,5 +250,12 @@ pub async fn delete_conversation(
     Json(params): Json<DeleteConversationParams>,
 ) -> Result<Json<()>, AppCommandError> {
     conv_commands::delete_conversation_core(&state.db.conn, params.conversation_id).await?;
+    conv_commands::emit_conversation_deleted(&state.emitter, params.conversation_id);
+    conv_commands::cleanup_tabs_for_deleted_conversation(
+        &state.emitter,
+        &state.db.conn,
+        params.conversation_id,
+    )
+    .await;
     Ok(Json(()))
 }

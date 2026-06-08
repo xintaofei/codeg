@@ -10,11 +10,12 @@ describe("detectEnvironment", () => {
 
   beforeEach(() => {
     hadInternals = "__TAURI_INTERNALS__" in window
-    originalInternals = (window as Record<string, unknown>).__TAURI_INTERNALS__
+    originalInternals = (window as unknown as Record<string, unknown>)
+      .__TAURI_INTERNALS__
   })
 
   afterEach(() => {
-    const w = window as Record<string, unknown>
+    const w = window as unknown as Record<string, unknown>
     if (hadInternals) {
       w.__TAURI_INTERNALS__ = originalInternals
     } else {
@@ -23,13 +24,13 @@ describe("detectEnvironment", () => {
   })
 
   it("returns 'web' by default in jsdom", () => {
-    const w = window as Record<string, unknown>
+    const w = window as unknown as Record<string, unknown>
     delete w.__TAURI_INTERNALS__
     expect(detectEnvironment()).toBe("web")
   })
 
   it("returns 'tauri' when __TAURI_INTERNALS__ is present", () => {
-    ;(window as Record<string, unknown>).__TAURI_INTERNALS__ = {
+    ;(window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {
       invoke: () => {},
     }
     expect(detectEnvironment()).toBe("tauri")

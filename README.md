@@ -143,10 +143,10 @@ sudo apt-get install -y \
 
 Codeg ships three Rust binaries from a single workspace:
 
-| Binary         | Role                                                                                                          | Build                                                                |
-| -------------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `codeg`        | Tauri desktop app (window, tray, updater)                                                                     | `pnpm tauri build` (release) / `pnpm tauri dev` (dev)                |
-| `codeg-server` | Standalone HTTP + WebSocket server for browser/headless deployments                                           | `pnpm server:build` / `pnpm server:dev`                              |
+| Binary         | Role                                                                                                         | Build                                                                       |
+| -------------- | ------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
+| `codeg`        | Tauri desktop app (window, tray, updater)                                                                    | `pnpm tauri build` (release) / `pnpm tauri dev` (dev)                       |
+| `codeg-server` | Standalone HTTP + WebSocket server for browser/headless deployments                                          | `pnpm server:build` / `pnpm server:dev`                                     |
 | `codeg-mcp`    | Per-launch stdio MCP companion that surfaces the `delegate_to_agent` tool to agent CLIs (multi-agent collab) | `pnpm tauri:prepare-sidecars` (auto-invoked by `tauri dev` / `tauri build`) |
 
 `codeg-mcp` must sit next to its parent binary at runtime — installers, the Docker image, and the Tauri sidecar bundler all place it next to `codeg` / `codeg-server`. Source builds and custom layouts can override the lookup with the `CODEG_MCP_BIN=/abs/path/codeg-mcp` env var. If the companion is missing, delegation is skipped (a single warning is logged) and the rest of the agent session keeps working.
@@ -253,6 +253,8 @@ cd codeg-server-linux-x64
 CODEG_STATIC_DIR=./web ./codeg-server
 ```
 
+> For unattended deployments, start it with `--supervise` so a failed in-place upgrade is automatically rolled back — see [In-place updates](#in-place-updates).
+
 #### Option 4: Docker
 
 ```bash
@@ -283,6 +285,20 @@ CODEG_STATIC_DIR=../out ./target/release/codeg-server          # codeg-mcp is pi
 ```
 
 If you keep the two binaries in separate directories, set `CODEG_MCP_BIN=/abs/path/to/codeg-mcp` so the runtime can still find the companion; without it, multi-agent delegation is silently disabled.
+
+#### In-place updates
+
+The server can update itself from **Settings → Software Update**: it downloads the signed release for its platform, swaps the binaries and web assets on disk, and restarts — no manual re-deploy. This is Linux/macOS only (disabled on Windows). The previous version is kept as a backup, so the same screen offers a **Roll back** action to return to it.
+
+**Run under the supervisor for auto-rollback.** Start the standalone server with `--supervise` so a freshly-upgraded process that fails to boot within the trial window is automatically reverted to the previous version:
+
+```bash
+CODEG_STATIC_DIR=./web ./codeg-server --supervise
+```
+
+Without `--supervise` the server still updates in place (it re-execs itself), but the upgrade is best-effort: there is no supervisor to auto-roll-back a version that can't start. The Docker image already runs under the supervisor.
+
+**Docker upgrades change the container, not the image.** An in-place upgrade rewrites the binaries and web assets inside the running container's writable layer, so they live only in that container. The `/data` volume persists, but the upgraded files do **not**: recreating the container — `docker compose up --force-recreate`, a fresh `docker run`, or recreating after a `docker pull` — starts from the image again and drops the in-place upgrade. (A `docker pull` on its own only refreshes the local image; nothing reverts until the container is recreated.) To make an upgrade permanent, build or pull an image at the new version and recreate the container from it.
 
 #### Configuration
 

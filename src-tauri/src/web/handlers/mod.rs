@@ -1,10 +1,13 @@
 pub mod acp;
+pub mod app_update;
+pub mod backup;
 pub mod chat_channel;
 pub mod conversations;
 pub mod delegation;
 mod error;
 pub mod event_metrics;
 pub mod experts;
+pub mod feedback;
 pub mod files;
 pub mod folder_commands;
 pub mod folders;

@@ -660,7 +660,10 @@ pub async fn download_workspace_file(
     stream_file_response(&target, &name).await
 }
 
-async fn stream_file_response(target: &Path, name: &str) -> Result<Response, AppCommandError> {
+pub(crate) async fn stream_file_response(
+    target: &Path,
+    name: &str,
+) -> Result<Response, AppCommandError> {
     let metadata = tokio::fs::metadata(&target)
         .await
         .map_err(AppCommandError::io)?;

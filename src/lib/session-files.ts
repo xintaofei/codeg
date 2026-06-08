@@ -713,15 +713,19 @@ function extractUserMessage(turn: MessageTurn): string {
 }
 
 export function extractSessionFilesGrouped(
-  turns: MessageTurn[]
+  turns: MessageTurn[],
+  opts: { includeEmpty?: boolean } = {}
 ): UserMessageGroup[] {
+  const { includeEmpty = false } = opts
   const groups: UserMessageGroup[] = []
   let currentUserTurn: MessageTurn | null = null
   let currentFiles: FileChangeStat[] = []
 
   const flushGroup = () => {
     if (!currentUserTurn) return
-    if (currentFiles.length === 0) return
+    // The message navigator needs a slot for every user turn (even ones with
+    // no edits); the sidebar-style callers keep the default that drops empties.
+    if (currentFiles.length === 0 && !includeEmpty) return
 
     groups.push({
       userTurnId: currentUserTurn.id,

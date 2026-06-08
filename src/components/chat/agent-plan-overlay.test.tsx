@@ -73,7 +73,9 @@ describe("AgentPlanOverlay", () => {
         },
       ],
     } as unknown as LiveMessage
-    renderWithIntl(<AgentPlanOverlay message={message} planKey="p-msg" />)
+    renderWithIntl(
+      <AgentPlanOverlay message={message} planKey="p-msg" defaultExpanded />
+    )
     expect(screen.getByText("fresh-1")).toBeInTheDocument()
     expect(screen.getByText("fresh-2")).toBeInTheDocument()
     expect(screen.queryByText("stale-1")).not.toBeInTheDocument()
@@ -113,5 +115,66 @@ describe("AgentPlanOverlay", () => {
     )
     fireEvent.click(screen.getByText("Plan 1/1").closest("button")!)
     expect(screen.getByText("Done A")).toBeInTheDocument()
+  })
+
+  it("auto-expands once when a plan is created live while streaming", () => {
+    // Streaming starts with no plan, then a plan_update lands. The overlay
+    // should pop open by itself the first time the plan appears.
+    const noPlan = {
+      id: "live-1",
+      content: [{ type: "text", text: "working" }],
+    } as unknown as LiveMessage
+    const withPlan = {
+      id: "live-1",
+      content: [
+        { type: "text", text: "working" },
+        {
+          type: "plan",
+          entries: [
+            { content: "Build step", priority: "high", status: "in_progress" },
+          ],
+        },
+      ],
+    } as unknown as LiveMessage
+
+    const { rerender } = renderWithIntl(
+      <AgentPlanOverlay message={noPlan} isStreaming />
+    )
+    expect(screen.queryByText("Build step")).not.toBeInTheDocument()
+
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <AgentPlanOverlay message={withPlan} isStreaming />
+      </NextIntlClientProvider>
+    )
+    expect(screen.getByText("Build step")).toBeInTheDocument()
+  })
+
+  it("stays collapsed when a streaming session is opened with a plan already present", () => {
+    // Plan exists on the very first render (opening a mid-stream session), so
+    // it must not auto-expand — only show the collapsed summary pill.
+    const withPlan = {
+      id: "live-2",
+      content: [
+        {
+          type: "plan",
+          entries: [
+            { content: "Build step", priority: "high", status: "in_progress" },
+          ],
+        },
+      ],
+    } as unknown as LiveMessage
+
+    renderWithIntl(<AgentPlanOverlay message={withPlan} isStreaming />)
+    expect(screen.getByText("Plan 0/1")).toBeInTheDocument()
+    expect(screen.queryByText("Build step")).not.toBeInTheDocument()
+  })
+
+  it("does not auto-expand a non-streaming plan (e.g. opening a session)", () => {
+    renderWithIntl(
+      <AgentPlanOverlay entries={sampleEntries} planKey="p-open" />
+    )
+    expect(screen.getByText("Plan 1/3")).toBeInTheDocument()
+    expect(screen.queryByText("First step")).not.toBeInTheDocument()
   })
 })

@@ -84,7 +84,7 @@ describe("DelegationStatusCard", () => {
         state="output-available"
       />
     )
-    // Result hidden until expanded; opens inline, not via a session sheet.
+    // Result hidden until expanded; opens inline, not via a session dialog.
     expect(
       screen.queryByText("The sub-agent finished the migration.")
     ).not.toBeInTheDocument()

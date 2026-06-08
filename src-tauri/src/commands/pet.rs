@@ -9,14 +9,15 @@
 use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 
+use crate::acp::manager::ConnectionManager;
 use crate::app_error::AppCommandError;
-use crate::db::service::app_metadata_service;
+use crate::db::service::{app_metadata_service, conversation_service};
 #[cfg(feature = "tauri-runtime")]
 use crate::db::AppDatabase;
 use crate::models::pet::{
     ImportCodexPetsRequest, ImportCodexPetsResult, ImportablePet, NewPetInput, PetCelebrationKind,
-    PetDetail, PetMetaPatch, PetSpriteAsset, PetState, PetSummary, PetWindowConfig,
-    PetWindowStatePatch,
+    PetDetail, PetMetaPatch, PetSessionEntry, PetSessionsPayload, PetSpriteAsset, PetState,
+    PetSummary, PetWindowConfig, PetWindowStatePatch,
 };
 use crate::pet_state_mapper::{read_pet_state, PetStateHandle};
 use crate::pets;
@@ -179,6 +180,41 @@ pub fn pet_celebrate_core(emitter: &EventEmitter, kind: PetCelebrationKind) {
 /// to fill in the gap.
 pub fn pet_get_current_state_core(handle: &PetStateHandle) -> PetState {
     read_pet_state(handle)
+}
+
+/// Snapshot of all active agent sessions for the pet panel: the connections
+/// that are prompting, awaiting a permission, or errored, joined with their
+/// conversation titles. Shared by the `pet_list_active_sessions` snapshot
+/// command (mount-time) and the `pet://sessions` aggregator (live updates), so
+/// the two never diverge. A missing/renamed conversation row degrades to an
+/// empty title rather than failing the whole payload.
+///
+/// Delegation sub-agent sessions (child conversations, i.e. `parent_id` set)
+/// are excluded: they are surfaced inline inside the parent's transcript, not
+/// as standalone user-facing sessions, so they must not inflate the sprite
+/// badge count or appear in the panel list. Filtering happens here — before
+/// `from_entries` — so the precomputed counts and the per-row list come from
+/// the same filtered set and can never disagree (the badge and the panel share
+/// this one payload).
+pub async fn pet_list_active_sessions_core(
+    manager: &ConnectionManager,
+    db: &DatabaseConnection,
+) -> Result<PetSessionsPayload, AppCommandError> {
+    let raw: Vec<PetSessionEntry> = manager.list_active_sessions().await;
+    let mut entries: Vec<PetSessionEntry> = Vec::with_capacity(raw.len());
+    for mut entry in raw {
+        // A readable row with a parent is a delegation sub-agent → drop it. A
+        // missing/renamed row (the `if let` doesn't match) falls through with an
+        // empty title — degrade, don't fail or drop.
+        if let Ok(summary) = conversation_service::get_by_id(db, entry.conversation_id).await {
+            if summary.parent_id.is_some() {
+                continue;
+            }
+            entry.title = summary.title.unwrap_or_default();
+        }
+        entries.push(entry);
+    }
+    Ok(PetSessionsPayload::from_entries(entries))
 }
 
 pub async fn pet_save_window_state_core(
@@ -416,6 +452,15 @@ pub async fn pet_get_current_state(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn pet_list_active_sessions(
+    manager: tauri::State<'_, ConnectionManager>,
+    db: tauri::State<'_, AppDatabase>,
+) -> Result<PetSessionsPayload, AppCommandError> {
+    pet_list_active_sessions_core(manager.inner(), &db.conn).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn pet_save_window_state(
     app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
@@ -525,5 +570,75 @@ mod tests {
             .await
             .expect("save 2");
         assert_eq!(cfg2.scale, 0.5, "scale clamped to lower bound");
+    }
+
+    #[tokio::test]
+    async fn pet_list_active_sessions_excludes_delegation_children() {
+        use crate::acp::delegation::spawner::DelegationLink;
+        use crate::acp::manager::ConnectionManager;
+        use crate::acp::types::ConnectionStatus;
+        use crate::db::service::conversation_service;
+        use crate::db::test_helpers;
+        use crate::models::agent::AgentType;
+        use crate::web::event_bridge::EventEmitter;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/pet-deleg").await;
+
+        // A top-level (parent) conversation and a delegated child of it.
+        let parent = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::ClaudeCode,
+            Some("Parent".into()),
+            None,
+        )
+        .await
+        .expect("create parent");
+        let child = conversation_service::create_with_delegation(
+            &db.conn,
+            folder_id,
+            AgentType::Codex,
+            Some("Child".into()),
+            None,
+            Some(DelegationLink {
+                parent_conversation_id: parent.id,
+                parent_tool_use_id: "tu-1".into(),
+                delegation_call_id: "call-1".into(),
+            }),
+        )
+        .await
+        .expect("create child");
+
+        // Two live connections, both prompting, bound to those conversations.
+        let manager = ConnectionManager::new();
+        for id in ["conn-parent", "conn-child"] {
+            manager
+                .insert_test_connection(id, AgentType::ClaudeCode, None, EventEmitter::Noop)
+                .await;
+        }
+        for (conn_id, conv_id) in [("conn-parent", parent.id), ("conn-child", child.id)] {
+            let state = manager.get_state(conn_id).await.expect("state");
+            let mut s = state.write().await;
+            s.conversation_id = Some(conv_id);
+            s.folder_id = Some(folder_id);
+            s.status = ConnectionStatus::Prompting;
+        }
+
+        let payload = pet_list_active_sessions_core(&manager, &db.conn)
+            .await
+            .expect("payload");
+
+        // The delegation child is filtered out: only the parent remains, and the
+        // precomputed counts follow the filtered list (badge ↔ panel agree).
+        assert_eq!(
+            payload.sessions.len(),
+            1,
+            "delegation child must be excluded from the active-session list"
+        );
+        assert_eq!(payload.sessions[0].conversation_id, parent.id);
+        assert_eq!(payload.running_count, 1);
+        assert_eq!(payload.waiting_count, 0);
+        assert_eq!(payload.error_count, 0);
     }
 }

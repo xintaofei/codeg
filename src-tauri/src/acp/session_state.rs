@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::acp::event_stream::{ConnectionEventStream, RecentEventsBuffer};
+use crate::acp::feedback::{FeedbackItem, FeedbackStatus};
 use crate::acp::types::{
     AcpEvent, AvailableCommandInfo, ConnectionStatus, EventEnvelope, PromptCapabilitiesInfo,
     SessionConfigOptionInfo, SessionModeStateInfo, ToolCallImageInfo,
@@ -188,6 +189,16 @@ pub struct ActiveDelegationState {
     pub agent_type: AgentType,
 }
 
+/// The in-flight user prompt for the current turn. Captured from
+/// `AcpEvent::UserMessage` into `SessionState.pending_user_message` and carried
+/// on `to_snapshot()` so a client attaching mid-turn can render the user turn
+/// even though the one-shot `UserMessage` event won't replay for it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PendingUserMessage {
+    pub message_id: String,
+    pub blocks: Vec<crate::acp::types::UserMessageBlock>,
+}
+
 /// 后端权威的会话状态。每个 AgentConnection 持有一个 Arc<RwLock<SessionState>>。
 ///
 /// 字段范围：仅当前 turn 的 in-flight 数据 + 元信息 + 协商出的能力。
@@ -219,6 +230,16 @@ pub struct SessionState {
     /// cumulative growth; completed delegations are recovered from the child's
     /// persisted DB row, not from here. See `ActiveDelegationState`.
     pub active_delegations: BTreeMap<String, ActiveDelegationState>,
+
+    /// Live user-feedback ("steering") notes for the current turn. Appended by
+    /// `FeedbackSubmitted` (a user note while the agent works), flipped to
+    /// `Delivered` by `FeedbackConsumed` (the agent read them via the
+    /// `check_user_feedback` MCP tool), and cleared on the next turn's
+    /// `UserMessage` (notes are turn-scoped steering, not durable history).
+    /// Carried on `to_snapshot()` so a client attaching mid-turn renders the
+    /// pending notes the one-shot `FeedbackSubmitted` event won't replay for it.
+    /// Size is human-bounded (one entry per note the user types this turn).
+    pub feedback: Vec<FeedbackItem>,
 
     // ACP 协商出的能力
     pub modes: Option<SessionModeStateInfo>,
@@ -276,16 +297,54 @@ pub struct SessionState {
     pub(crate) recent_events: RecentEventsBuffer,
 
     /// Per-launch token registered with the delegation broker's
-    /// `TokenRegistry` when `codeg-delegate` is injected at init.
+    /// `TokenRegistry` when `codeg-mcp` is injected at init.
     /// Revoked when the connection tears down so a leaked binary can't
     /// keep round-tripping after the parent session ends.
     pub delegation_token: Option<String>,
+
+    /// Whether the `check_user_feedback` MCP tool was exposed to THIS agent at
+    /// launch (the `feedback` feature was on when its companion was injected).
+    /// Fixed for the connection's lifetime — tool exposure can't change after
+    /// launch. The authoritative gate for both the submit path and the UI: a
+    /// session started before the feature was enabled has no tool, so notes
+    /// would strand; one started after has it. Carried on `to_snapshot()` so the
+    /// frontend gates the feedback bar on the agent's actual capability, not the
+    /// (possibly later-toggled) global setting.
+    pub feedback_tool_available: bool,
 
     /// Concatenated text content of the just-completed turn's assistant
     /// message. Captured at TurnComplete (just before live_message is
     /// cleared) so the lifecycle subscriber can surface it as the
     /// `delegation_call_id`-bound child outcome. Cleared on the next prompt.
     pub last_assistant_text: Option<String>,
+
+    /// The in-flight user prompt for the current turn, captured from
+    /// `AcpEvent::UserMessage` and cleared on `TurnComplete` (alongside
+    /// `live_message`). Carried on `to_snapshot()` so a client attaching
+    /// mid-turn renders the user turn even though no `UserMessage` event will
+    /// replay for it. `None` outside an active turn.
+    pub pending_user_message: Option<PendingUserMessage>,
+
+    /// Backend wall-clock instant the in-flight turn started, captured alongside
+    /// `pending_user_message` from `AcpEvent::UserMessage` and cleared on
+    /// `TurnComplete`. The detail endpoint uses it to tell the in-flight prompt
+    /// — persisted at/after this instant by the agent CLI, a local subprocess
+    /// sharing this machine's clock — apart from a prior identical prompt
+    /// persisted during an earlier turn (see `apply_in_flight_message_id`). Not
+    /// serialized: backend-internal, like `turn_in_flight`. `None` outside an
+    /// active turn.
+    pub pending_user_message_started_at: Option<DateTime<Utc>>,
+
+    /// True between a prompt being accepted (enqueued to the connection loop)
+    /// and that turn completing. Set by the manager BEFORE the enqueue (so it
+    /// is guaranteed set before the loop can dequeue) and cleared on
+    /// `TurnComplete`. The manager rejects a second prompt with
+    /// `AcpError::TurnInProgress` while this is set — otherwise the second
+    /// `Prompt` would queue behind the active turn and be silently dropped by
+    /// the loop's in-turn command handler (`_ => {}`), with the caller still
+    /// seeing success. Not serialized: it is a connection-loop liveness flag,
+    /// not part of the client-visible snapshot.
+    pub turn_in_flight: bool,
 }
 
 impl SessionState {
@@ -309,6 +368,7 @@ impl SessionState {
             active_tool_calls: BTreeMap::new(),
             pending_permission: None,
             active_delegations: BTreeMap::new(),
+            feedback: Vec::new(),
             modes: None,
             current_mode: None,
             config_options: None,
@@ -324,7 +384,11 @@ impl SessionState {
             event_stream: Arc::new(ConnectionEventStream::new()),
             recent_events: RecentEventsBuffer::new(),
             delegation_token: None,
+            feedback_tool_available: false,
             last_assistant_text: None,
+            pending_user_message: None,
+            pending_user_message_started_at: None,
+            turn_in_flight: false,
         }
     }
 
@@ -552,6 +616,17 @@ impl SessionState {
                 }
                 self.live_message = None;
                 self.active_tool_calls.clear();
+                // The turn's user prompt is no longer "in flight" — the
+                // assistant reply is done and the transcript is the source of
+                // truth. Clear it so a post-turn snapshot doesn't carry a stale
+                // pending user message into a fresh attach.
+                self.pending_user_message = None;
+                self.pending_user_message_started_at = None;
+                // Turn finished: release the concurrency gate so the next prompt
+                // is accepted. (All connection-alive turn endings — normal,
+                // cancel, stop-reason — emit TurnComplete; disconnect/error
+                // discard the state entirely, so no stale flag can outlive them.)
+                self.turn_in_flight = false;
                 // NOTE: `active_delegations` is intentionally NOT cleared here.
                 // A running delegation's child runs in the background long after
                 // the parent's `delegate_to_agent` tool call returns and this
@@ -560,6 +635,25 @@ impl SessionState {
                 // web-only bug). It's removed per-entry by `DelegationCompleted`.
                 self.pending_permission = None;
                 self.status = ConnectionStatus::Connected;
+            }
+            AcpEvent::UserMessage { message_id, blocks } => {
+                // Capture the in-flight user prompt so a client attaching
+                // mid-turn renders the user turn from the snapshot (the
+                // one-shot event won't replay for it). Cleared on TurnComplete.
+                self.pending_user_message = Some(PendingUserMessage {
+                    message_id: message_id.clone(),
+                    blocks: blocks.clone(),
+                });
+                // Reference instant for the in-flight prompt's recency check in
+                // `apply_in_flight_message_id`. Set here (not at manager enqueue)
+                // so it tracks `pending_user_message` exactly.
+                self.pending_user_message_started_at = Some(Utc::now());
+                // Live-feedback notes are turn-scoped steering: a new user turn
+                // starts with a clean slate. The previous turn's notes (read or
+                // not) are history at this point; the frontend's "agent didn't
+                // read your note → resend" fallback already had its post-turn
+                // window before this next prompt arrives.
+                self.feedback.clear();
             }
             AcpEvent::ConversationLinked {
                 conversation_id,
@@ -643,11 +737,131 @@ impl SessionState {
                 // it is deliberately only the in-flight set.
                 self.active_delegations.remove(parent_tool_use_id);
             }
-            AcpEvent::ClaudeSdkMessage { .. } | AcpEvent::SessionLoadFailed { .. } => {
+            AcpEvent::FeedbackSubmitted { item } => {
+                // Idempotent by id (replay / double-attach safe): append only if
+                // this note isn't already tracked. The authoritative append is
+                // here so snapshot replay reconstructs the same list the live
+                // node holds.
+                if !self.feedback.iter().any(|f| f.id == item.id) {
+                    self.feedback.push(item.clone());
+                }
+            }
+            AcpEvent::FeedbackConsumed { ids, delivered_at } => {
+                // Flip the named pending notes to Delivered. Idempotent: an id
+                // already Delivered (the emitting node marked it directly under
+                // the write lock; this re-apply is for replay/attach nodes) is
+                // skipped. Order-independent and safe to apply more than once.
+                for f in self.feedback.iter_mut() {
+                    if f.status == FeedbackStatus::Pending && ids.contains(&f.id) {
+                        f.status = FeedbackStatus::Delivered;
+                        f.delivered_at = Some(*delivered_at);
+                    }
+                }
+            }
+            AcpEvent::ClaudeSdkMessage { .. }
+            | AcpEvent::SessionLoadFailed { .. }
+            | AcpEvent::UserPromptSent { .. } => {
                 // 这些事件不直接修改 SessionState 的可见字段。
+                // UserPromptSent 是纯通知事件，仅供 chat-channel 推送消费。
             }
         }
         self.last_activity_at = Utc::now();
+    }
+
+    /// A single-line "what the sub-agent is doing right now" hint, used by the
+    /// delegation broker so `get_delegation_status` can prove a running child is
+    /// genuinely making progress instead of returning a bare "Running.".
+    ///
+    /// Reads the still-streaming `live_message` — unlike `last_assistant_text`,
+    /// which is only snapshotted at `TurnComplete` and so is empty/stale while a
+    /// turn is in flight. Preference order, each reduced to one trimmed line
+    /// capped at `max_chars` chars (char-based → never splits a UTF-8 codepoint;
+    /// an `…` marks truncation):
+    ///
+    /// 1. the answer-in-progress — `Text` after the last `ToolCallRef`, mirroring
+    ///    the `TurnComplete` answer extraction;
+    /// 2. else the latest `Thinking` block (`thinking: …`);
+    /// 3. else the most recent tool call's label (`running tool: …`).
+    ///
+    /// `None` when the turn hasn't produced anything renderable yet.
+    pub fn latest_live_reply(&self, max_chars: usize) -> Option<String> {
+        let live = self.live_message.as_ref()?;
+
+        // (1) Answer-in-progress: the `Text` after the last tool call.
+        //
+        // Consecutive text deltas merge into a single block (see
+        // `append_text_delta`), so this is almost always ONE block — borrow it
+        // and take its last non-empty line without copying a potentially large
+        // streaming answer on every poll (this runs under the `SessionState`
+        // read lock on the `get_delegation_status` path). Only when the answer
+        // is split across multiple `Text` blocks (a `Thinking` block interleaved
+        // mid-answer) do we stitch them, which is rare.
+        let after_last_tool_call = live
+            .content
+            .iter()
+            .rposition(|b| matches!(b, LiveContentBlock::ToolCallRef { .. }))
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let mut texts = live.content[after_last_tool_call..]
+            .iter()
+            .filter_map(|b| match b {
+                LiveContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            });
+        match (texts.next(), texts.next()) {
+            (None, _) => {}
+            (Some(only), None) => {
+                if let Some(line) = last_nonempty_line(only) {
+                    return Some(truncate_one_line(line, max_chars));
+                }
+            }
+            (Some(first), Some(second)) => {
+                let mut joined = String::with_capacity(first.len() + second.len());
+                joined.push_str(first);
+                joined.push_str(second);
+                for rest in texts {
+                    joined.push_str(rest);
+                }
+                if let Some(line) = last_nonempty_line(&joined) {
+                    return Some(truncate_one_line(line, max_chars));
+                }
+            }
+        }
+
+        // (2) Latest thinking block — the agent is reasoning, not silent.
+        if let Some(line) = live
+            .content
+            .iter()
+            .rev()
+            .find_map(|b| match b {
+                LiveContentBlock::Thinking { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .and_then(last_nonempty_line)
+        {
+            return Some(format!("thinking: {}", truncate_one_line(line, max_chars)));
+        }
+
+        // (3) Most recent tool call's label — work is happening in a tool.
+        if let Some(label) = live
+            .content
+            .iter()
+            .rev()
+            .find_map(|b| match b {
+                LiveContentBlock::ToolCallRef { tool_call_id } => Some(tool_call_id.as_str()),
+                _ => None,
+            })
+            .and_then(|id| self.active_tool_calls.get(id))
+            .map(|tc| tc.label.trim())
+            .filter(|l| !l.is_empty())
+        {
+            return Some(format!(
+                "running tool: {}",
+                truncate_one_line(label, max_chars)
+            ));
+        }
+
+        None
     }
 
     /// Lazily initialize `self.live_message` and return a mutable reference
@@ -799,7 +1013,10 @@ impl SessionState {
             live_message: self.live_message.clone(),
             active_tool_calls: self.active_tool_calls.values().cloned().collect(),
             pending_permission: self.pending_permission.clone(),
+            pending_user_message: self.pending_user_message.clone(),
             active_delegations: self.active_delegations.values().cloned().collect(),
+            feedback: self.feedback.clone(),
+            feedback_tool_available: self.feedback_tool_available,
             modes: self.modes.clone(),
             current_mode: self.current_mode.clone(),
             config_options: self.config_options.clone(),
@@ -824,6 +1041,12 @@ pub struct LiveSessionSnapshot {
     pub live_message: Option<LiveMessage>,
     pub active_tool_calls: Vec<ToolCallState>,
     pub pending_permission: Option<PendingPermissionState>,
+    /// The in-flight user prompt for the current turn (see
+    /// `SessionState.pending_user_message`). `#[serde(default)]` so older
+    /// payloads still deserialize; `skip_serializing_if` so the no-pending case
+    /// keeps the wire shape byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_user_message: Option<PendingUserMessage>,
     /// Running sub-agent delegations recoverable from the snapshot (see
     /// `SessionState.active_delegations`). `#[serde(default)]` so older server
     /// payloads without this field still deserialize; `skip_serializing_if` so
@@ -831,6 +1054,18 @@ pub struct LiveSessionSnapshot {
     /// doesn't bloat every snapshot with an empty array.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub active_delegations: Vec<ActiveDelegationState>,
+    /// Live user-feedback notes for the current turn (see `SessionState.feedback`).
+    /// `#[serde(default)]` so older server payloads without this field still
+    /// deserialize; `skip_serializing_if` keeps the common empty case off the
+    /// wire so every snapshot stays byte-identical with the pre-feature shape.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub feedback: Vec<FeedbackItem>,
+    /// Whether this agent has the `check_user_feedback` tool (see
+    /// `SessionState.feedback_tool_available`). `#[serde(default)]` so older
+    /// payloads deserialize to `false`; the frontend gates the feedback bar on
+    /// it. Always serialized (a plain bool) so the frontend can rely on it.
+    #[serde(default)]
+    pub feedback_tool_available: bool,
     pub modes: Option<SessionModeStateInfo>,
     pub current_mode: Option<String>,
     pub config_options: Option<Vec<SessionConfigOptionInfo>>,
@@ -840,6 +1075,25 @@ pub struct LiveSessionSnapshot {
     pub available_commands: Vec<AvailableCommandInfo>,
     pub selectors_ready: bool,
     pub event_seq: u64,
+}
+
+/// Last non-empty line of `s`, trimmed. `None` if every line is blank.
+fn last_nonempty_line(s: &str) -> Option<&str> {
+    s.lines().map(str::trim).rev().find(|l| !l.is_empty())
+}
+
+/// Cap `line` at `max_chars` characters, appending `…` when truncated. Operates
+/// on `char`s so multi-byte text never splits mid-codepoint. Expects an
+/// already single, trimmed line (see [`last_nonempty_line`]). Single-pass: takes
+/// at most `max_chars + 1` chars total, so a huge (e.g. MB) input line never
+/// triggers a second full scan to decide whether to mark truncation.
+fn truncate_one_line(line: &str, max_chars: usize) -> String {
+    let mut chars = line.chars();
+    let mut out: String = (&mut chars).take(max_chars).collect();
+    if chars.next().is_some() {
+        out.push('…');
+    }
+    out
 }
 
 fn parse_tool_kind(s: &str) -> ToolKind {
@@ -910,7 +1164,7 @@ mod tests {
     use crate::acp::types::{
         AcpEvent, ConnectionStatus, DelegationResultSummary, EventEnvelope, PromptCapabilitiesInfo,
         SessionConfigKindInfo, SessionConfigOptionInfo, SessionConfigSelectInfo, SessionModeInfo,
-        SessionModeStateInfo,
+        SessionModeStateInfo, UserMessageBlock,
     };
 
     fn fresh_state() -> SessionState {
@@ -935,6 +1189,191 @@ mod tests {
         assert!(!s.fork_supported);
         assert!(s.available_commands.is_empty());
         assert!(!s.selectors_ready);
+        assert!(s.pending_user_message.is_none());
+    }
+
+    fn text_user_message(id: &str, text: &str) -> AcpEvent {
+        AcpEvent::UserMessage {
+            message_id: id.to_string(),
+            blocks: vec![UserMessageBlock::Text {
+                text: text.to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn user_message_event_captures_pending_user_message() {
+        // The in-flight user prompt is captured so a mid-turn attacher renders
+        // the user turn from the snapshot (the one-shot event won't replay).
+        let mut s = fresh_state();
+        s.apply_event(&text_user_message("user-1", "hello agent"));
+        let pending = s.pending_user_message.as_ref().expect("pending set");
+        assert_eq!(pending.message_id, "user-1");
+        assert_eq!(
+            pending.blocks,
+            vec![UserMessageBlock::Text {
+                text: "hello agent".into()
+            }]
+        );
+        assert!(
+            s.pending_user_message_started_at.is_some(),
+            "the turn-start instant is captured alongside the pending prompt"
+        );
+    }
+
+    #[test]
+    fn turn_complete_clears_pending_user_message() {
+        let mut s = fresh_state();
+        s.apply_event(&text_user_message("user-1", "hi"));
+        assert!(s.pending_user_message.is_some());
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "sess".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "claude_code".into(),
+        });
+        assert!(
+            s.pending_user_message.is_none(),
+            "a completed turn must clear the pending user message (no stale snapshot)"
+        );
+        assert!(
+            s.pending_user_message_started_at.is_none(),
+            "the turn-start instant is cleared in lockstep with the pending prompt"
+        );
+    }
+
+    #[test]
+    fn to_snapshot_carries_pending_user_message() {
+        let mut s = fresh_state();
+        s.apply_event(&text_user_message("user-7", "snapshot me"));
+        let pending = s
+            .to_snapshot()
+            .pending_user_message
+            .expect("snapshot carries pending");
+        assert_eq!(pending.message_id, "user-7");
+    }
+
+    #[test]
+    fn snapshot_round_trips_pending_user_message_and_omits_when_absent() {
+        let mut s = fresh_state();
+        s.apply_event(&text_user_message("user-9", "round trip"));
+        let snap = s.to_snapshot();
+        let json = serde_json::to_string(&snap).expect("serialize");
+        let back: LiveSessionSnapshot = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.pending_user_message, snap.pending_user_message);
+        // No-pending snapshot keeps the field off the wire (byte-identical with
+        // the pre-feature shape).
+        let empty_json = serde_json::to_string(&fresh_state().to_snapshot()).expect("serialize");
+        assert!(
+            !empty_json.contains("pending_user_message"),
+            "no-pending snapshot must omit the field"
+        );
+    }
+
+    #[test]
+    fn latest_live_reply_prefers_answer_after_last_tool_call() {
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "let me check".into(),
+        });
+        s.apply_event(&AcpEvent::ToolCall {
+            tool_call_id: "tc-1".into(),
+            title: "ls".into(),
+            kind: "execute".into(),
+            status: "in_progress".into(),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            locations: None,
+            meta: None,
+            images: None,
+        });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "Found 3 files.\nDetails here".into(),
+        });
+        // Last non-empty line of the text that follows the final tool call.
+        assert_eq!(s.latest_live_reply(100).as_deref(), Some("Details here"));
+    }
+
+    #[test]
+    fn latest_live_reply_falls_back_to_thinking_then_tool() {
+        // Thinking only → `thinking:` prefix.
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::Thinking {
+            text: "pondering options".into(),
+        });
+        assert_eq!(
+            s.latest_live_reply(100).as_deref(),
+            Some("thinking: pondering options")
+        );
+
+        // A tool call with no trailing text / thinking → `running tool:` prefix.
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::ToolCall {
+            tool_call_id: "tc-9".into(),
+            title: "grep files".into(),
+            kind: "search".into(),
+            status: "in_progress".into(),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            locations: None,
+            meta: None,
+            images: None,
+        });
+        assert_eq!(
+            s.latest_live_reply(100).as_deref(),
+            Some("running tool: grep files")
+        );
+    }
+
+    #[test]
+    fn latest_live_reply_truncates_to_char_budget_and_handles_empty() {
+        // No live message yet → nothing to report.
+        assert_eq!(fresh_state().latest_live_reply(100), None);
+
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "0123456789abcdef".into(),
+        });
+        assert_eq!(s.latest_live_reply(10).as_deref(), Some("0123456789…"));
+    }
+
+    #[test]
+    fn latest_live_reply_extracts_last_line_from_large_multiline_and_truncates_utf8() {
+        let mut s = fresh_state();
+        // A large multi-line streamed answer, a final multi-byte line, then
+        // trailing blank lines (which must be skipped). The tail extraction must
+        // not copy the whole answer, and truncation must land on a codepoint
+        // boundary.
+        let huge = "x".repeat(5000);
+        let last = "résumé 完成 ▸ 配置已更新";
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: format!("{huge}\nintermediate\n{last}\n   \n"),
+        });
+        let out = s.latest_live_reply(8).unwrap();
+        // First 8 chars of `last` are r é s u m é <space> 完, then a truncation
+        // marker — codepoint-safe (8 multi-byte chars + the ellipsis), proving
+        // the cap counts chars, not bytes.
+        assert_eq!(out, "résumé 完…");
+        assert_eq!(out.chars().count(), 9);
+    }
+
+    #[test]
+    fn latest_live_reply_stitches_text_split_by_interleaved_thinking() {
+        // A Thinking block between two text deltas yields two separate Text
+        // blocks; their concatenation forms the single answer line.
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "Answer ".into(),
+        });
+        s.apply_event(&AcpEvent::Thinking { text: "hmm".into() });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "continues here".into(),
+        });
+        assert_eq!(
+            s.latest_live_reply(100).as_deref(),
+            Some("Answer continues here")
+        );
     }
 
     #[test]
@@ -1503,8 +1942,12 @@ mod tests {
             id: "m1".into(),
             role: MessageRole::Assistant,
             content: vec![
-                LiveContentBlock::Text { text: "part 1 ".into() },
-                LiveContentBlock::Text { text: "part 2".into() },
+                LiveContentBlock::Text {
+                    text: "part 1 ".into(),
+                },
+                LiveContentBlock::Text {
+                    text: "part 2".into(),
+                },
             ],
             started_at: Utc::now(),
         });
@@ -2318,5 +2761,94 @@ mod tests {
             AcpEvent::ContentDelta { text } => assert_eq!(text, "abc"),
             _ => panic!("expected ContentDelta"),
         }
+    }
+
+    // --- live feedback: apply_event + snapshot --------------------------
+
+    fn feedback_note(id: &str, text: &str) -> FeedbackItem {
+        FeedbackItem::new_pending(id.into(), text.into(), Utc::now())
+    }
+
+    #[test]
+    fn feedback_submitted_appends_idempotently() {
+        let mut s = fresh_state();
+        let item = feedback_note("f1", "use UserService");
+        s.apply_event(&AcpEvent::FeedbackSubmitted { item: item.clone() });
+        assert_eq!(s.feedback.len(), 1);
+        // Replay / double-attach: a second apply with the same id is a no-op.
+        s.apply_event(&AcpEvent::FeedbackSubmitted { item });
+        assert_eq!(s.feedback.len(), 1, "duplicate id must not append twice");
+        assert_eq!(s.feedback[0].status, FeedbackStatus::Pending);
+        // A different id appends.
+        s.apply_event(&AcpEvent::FeedbackSubmitted {
+            item: feedback_note("f2", "skip the migration"),
+        });
+        assert_eq!(s.feedback.len(), 2);
+    }
+
+    #[test]
+    fn feedback_consumed_marks_named_notes_delivered() {
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::FeedbackSubmitted {
+            item: feedback_note("f1", "a"),
+        });
+        s.apply_event(&AcpEvent::FeedbackSubmitted {
+            item: feedback_note("f2", "b"),
+        });
+        let at = Utc::now();
+        s.apply_event(&AcpEvent::FeedbackConsumed {
+            ids: vec!["f1".into()],
+            delivered_at: at,
+        });
+        let f1 = s.feedback.iter().find(|f| f.id == "f1").unwrap();
+        let f2 = s.feedback.iter().find(|f| f.id == "f2").unwrap();
+        assert_eq!(f1.status, FeedbackStatus::Delivered);
+        assert_eq!(f1.delivered_at, Some(at));
+        assert_eq!(f2.status, FeedbackStatus::Pending, "unnamed note untouched");
+        // Idempotent: re-applying the same consumption leaves f1 delivered and
+        // does not flip its delivered_at to a new instant.
+        s.apply_event(&AcpEvent::FeedbackConsumed {
+            ids: vec!["f1".into()],
+            delivered_at: Utc::now(),
+        });
+        let f1 = s.feedback.iter().find(|f| f.id == "f1").unwrap();
+        assert_eq!(f1.delivered_at, Some(at), "delivered_at must not change");
+    }
+
+    #[test]
+    fn user_message_clears_feedback_for_new_turn() {
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::FeedbackSubmitted {
+            item: feedback_note("f1", "a"),
+        });
+        assert_eq!(s.feedback.len(), 1);
+        // A new turn's user prompt resets the turn-scoped feedback set.
+        s.apply_event(&text_user_message("user-1", "next prompt"));
+        assert!(
+            s.feedback.is_empty(),
+            "feedback is turn-scoped; a new user_message clears it"
+        );
+    }
+
+    #[test]
+    fn snapshot_carries_feedback_and_omits_when_empty() {
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::FeedbackSubmitted {
+            item: feedback_note("f1", "snapshot me"),
+        });
+        let snap = s.to_snapshot();
+        assert_eq!(snap.feedback.len(), 1);
+        assert_eq!(snap.feedback[0].id, "f1");
+        // Round-trips through the wire shape the web client hydrates from.
+        let json = serde_json::to_string(&snap).unwrap();
+        let back: LiveSessionSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.feedback.len(), 1);
+        // The empty case keeps the NOTES array off the wire (the always-present
+        // `feedback_tool_available` bool is a separate field).
+        let empty = serde_json::to_string(&fresh_state().to_snapshot()).unwrap();
+        assert!(
+            !empty.contains("\"feedback\":"),
+            "no-feedback snapshot must omit the notes array"
+        );
     }
 }

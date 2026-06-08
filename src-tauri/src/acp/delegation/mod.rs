@@ -35,6 +35,7 @@ pub mod companion;
 pub mod depth;
 pub mod event_emitter;
 pub mod listener;
+pub mod live_reply;
 pub mod meta_writer;
 pub mod parent_watcher;
 pub mod spawner;

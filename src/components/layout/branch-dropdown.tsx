@@ -67,7 +67,6 @@ import {
   gitFetch,
   gitNewBranch,
   gitWorktreeAdd,
-  gitCheckout,
   gitListAllBranches,
   gitMerge,
   gitRebase,
@@ -84,9 +83,12 @@ import { ConflictDialog } from "@/components/layout/conflict-dialog"
 import { StashDialog } from "@/components/layout/stash-dialog"
 import { DirectoryBrowserDialog } from "@/components/shared/directory-browser-dialog"
 import { toErrorMessage } from "@/lib/app-error"
+import { resolveFolderDisplayName } from "@/lib/folder-display"
+import { useSwitchToBranch } from "@/hooks/use-switch-to-branch"
 import type { GitBranchList, GitConflictInfo } from "@/lib/types"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspace } from "@/contexts/app-workspace-context"
+import { useTabContext } from "@/contexts/tab-context"
 import { useTaskContext } from "@/contexts/task-context"
 import { useAlertContext } from "@/contexts/alert-context"
 import { useGitCredential } from "@/contexts/git-credential-context"
@@ -120,10 +122,13 @@ export function BranchDropdown() {
   const t = useTranslations("Folder.branchDropdown")
   const tCommon = useTranslations("Folder.common")
   const { activeFolder } = useActiveFolder()
-  const { branches, refreshFolder, openFolder } = useAppWorkspace()
+  const { allFolders, branches, refreshFolder, openWorktreeFolder } =
+    useAppWorkspace()
+  const { openNewConversationTab } = useTabContext()
   const { addTask, updateTask, removeTask } = useTaskContext()
   const { pushAlert } = useAlertContext()
   const { withCredentialRetry } = useGitCredential()
+  const switchToBranch = useSwitchToBranch()
 
   const folderPath = activeFolder?.path ?? ""
   const folderId = activeFolder?.id ?? 0
@@ -295,18 +300,21 @@ export function BranchDropdown() {
   }
 
   async function handleCheckout(branchName: string) {
+    if (!activeFolder) return
     setDropdownOpen(false)
-    await runGitTask(t("tasks.checkoutTo", { branchName }), () =>
-      gitCheckout(folderPath, branchName)
-    )
+    await switchToBranch({ activeFolder, branchName, currentBranch: branch })
   }
 
   async function handleCheckoutRemote(remoteBranch: string) {
+    if (!activeFolder) return
     const localName = remoteBranch.replace(/^[^/]+\//, "")
     setDropdownOpen(false)
-    await runGitTask(t("tasks.checkoutTo", { branchName: localName }), () =>
-      gitCheckout(folderPath, localName)
-    )
+    await switchToBranch({
+      activeFolder,
+      branchName: localName,
+      currentBranch: branch,
+      isRemote: true,
+    })
   }
 
   async function handleNewBranch() {
@@ -359,7 +367,13 @@ export function BranchDropdown() {
     setWorktreeOpen(false)
     await runGitTask(t("tasks.newWorktree", { name }), async () => {
       await gitWorktreeAdd(folderPath, name, wtPath)
-      await openFolder(wtPath)
+      // Register the worktree as a folder parented to this repo (flattened to
+      // the root), then open a draft conversation in it. Once child folders are
+      // merged under their parent in the sidebar, a worktree with no
+      // conversations would otherwise be unreachable; this also lands the new
+      // session with its cwd set to the worktree directory (detail.path).
+      const detail = await openWorktreeFolder(wtPath, folderId)
+      openNewConversationTab(detail.id, detail.path)
     })
   }
 
@@ -574,7 +588,9 @@ export function BranchDropdown() {
 
   if (!activeFolder) return null
 
-  const folderName = activeFolder.name
+  // Worktree folders display their parent (root repo) name; paths/ids/git ops
+  // below still use `activeFolder` (the worktree) unchanged.
+  const folderName = resolveFolderDisplayName(activeFolder, allFolders)
 
   if (branch === null) {
     return (

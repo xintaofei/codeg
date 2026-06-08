@@ -144,6 +144,18 @@ pub struct GitBranchList {
     pub worktree_branches: Vec<String>,
 }
 
+/// Where a given branch is checked out, resolved against the registered folders.
+/// `path` is the canonical filesystem path of the worktree (or main working
+/// tree) hosting the branch — `None` when the branch is not checked out in any
+/// worktree. `folder_id` is the registered folder whose canonicalized path
+/// matches `path` — `None` for an external/unregistered worktree. Drives the
+/// branch selector's "navigate vs checkout" decision.
+#[derive(Debug, Serialize)]
+pub struct WorktreeResolution {
+    pub path: Option<String>,
+    pub folder_id: Option<i32>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct GitConflictInfo {
     pub has_conflicts: bool,
@@ -518,6 +530,34 @@ pub async fn open_folder_core(
         .ok_or_else(|| AppCommandError::not_found("Folder not found after add"))
 }
 
+/// Open a freshly created git worktree directory as a folder, recording the
+/// *root* folder it descends from. Parents are flattened: a worktree created
+/// from another worktree still records the original root, so every worktree of a
+/// repo groups under that one repo folder. An unknown / non-positive
+/// `source_folder_id` degrades to a top-level folder (`parent_id = None`) rather
+/// than erroring.
+pub async fn open_worktree_folder_core(
+    db: &AppDatabase,
+    path: String,
+    source_folder_id: i32,
+) -> Result<FolderDetail, AppCommandError> {
+    let parent_id = if source_folder_id > 0 {
+        folder_service::get_folder_by_id(&db.conn, source_folder_id)
+            .await
+            .map_err(AppCommandError::from)?
+            .map(|src| src.parent_id.unwrap_or(src.id))
+    } else {
+        None
+    };
+    let entry = folder_service::add_folder_with_parent(&db.conn, &path, parent_id)
+        .await
+        .map_err(AppCommandError::from)?;
+    folder_service::get_folder_by_id(&db.conn, entry.id)
+        .await
+        .map_err(AppCommandError::from)?
+        .ok_or_else(|| AppCommandError::not_found("Folder not found after add"))
+}
+
 /// Open a folder into the workspace and announce it so the workspace window
 /// can surface it. Used by the project launcher, which lives in its own
 /// window/tab and can't reach the workspace's React state directly. Emitting
@@ -549,16 +589,36 @@ pub async fn open_folder_by_id_core(
 }
 
 pub async fn remove_folder_from_workspace_core(
+    emitter: &EventEmitter,
     db: &AppDatabase,
     folder_id: i32,
 ) -> Result<(), AppCommandError> {
     use crate::db::service::tab_service;
-    tab_service::delete_tabs_for_folder(&db.conn, folder_id)
-        .await
-        .map_err(AppCommandError::from)?;
     folder_service::set_folder_open(&db.conn, folder_id, false)
         .await
-        .map_err(AppCommandError::from)
+        .map_err(AppCommandError::from)?;
+
+    // Atomically drop this folder's open tabs + bump the version (always, as a
+    // barrier so a concurrent stale save can't resurrect them) + snapshot, in one
+    // transaction. Broadcast the new set only when a persisted tab actually
+    // changed (sentinel origin "server" so every client applies it); a zero-row
+    // removal just advances the barrier — an in-flight saver reconciles via its
+    // rejected CAS.
+    let inv = tab_service::delete_folder_tabs_and_bump(&db.conn, folder_id)
+        .await
+        .map_err(AppCommandError::from)?;
+    if let Some(tabs) = inv.emit {
+        crate::web::event_bridge::emit_event(
+            emitter,
+            crate::web::event_bridge::TABS_CHANGED_EVENT,
+            crate::web::event_bridge::TabsChanged {
+                version: inv.version,
+                origin: "server".to_string(),
+                tabs,
+            },
+        );
+    }
+    Ok(())
 }
 
 pub async fn reorder_folders_core(db: &AppDatabase, ids: Vec<i32>) -> Result<(), AppCommandError> {
@@ -655,6 +715,16 @@ pub async fn open_folder(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn open_worktree_folder(
+    db: tauri::State<'_, AppDatabase>,
+    path: String,
+    source_folder_id: i32,
+) -> Result<FolderDetail, AppCommandError> {
+    open_worktree_folder_core(&db, path, source_folder_id).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn open_folder_in_workspace(
     app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
@@ -676,10 +746,11 @@ pub async fn open_folder_by_id(
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn remove_folder_from_workspace(
+    app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     folder_id: i32,
 ) -> Result<(), AppCommandError> {
-    remove_folder_from_workspace_core(&db, folder_id).await
+    remove_folder_from_workspace_core(&EventEmitter::Tauri(app), &db, folder_id).await
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -2065,6 +2136,105 @@ pub async fn git_list_all_branches(path: String) -> Result<GitBranchList, AppCom
     })
 }
 
+/// Parse `git worktree list --porcelain` into `(worktree_path, branch)` pairs.
+/// Each porcelain block starts with a `worktree <path>` line and is terminated
+/// by a blank line; a `branch refs/heads/<name>` line carries the checked-out
+/// branch (absent for detached/bare worktrees → `None`). Trailing blocks with
+/// no terminating blank line are flushed at EOF.
+fn parse_worktrees(stdout: &str) -> Vec<(String, Option<String>)> {
+    let mut entries: Vec<(String, Option<String>)> = Vec::new();
+    let mut current_path: Option<String> = None;
+    let mut current_branch: Option<String> = None;
+
+    for line in stdout.lines() {
+        if let Some(p) = line.strip_prefix("worktree ") {
+            // Defensive flush in case a block wasn't blank-line terminated.
+            if let Some(path) = current_path.take() {
+                entries.push((path, current_branch.take()));
+            }
+            current_path = Some(p.trim().to_string());
+            current_branch = None;
+        } else if let Some(b) = line.strip_prefix("branch refs/heads/") {
+            current_branch = Some(b.trim().to_string());
+        } else if line.is_empty() {
+            if let Some(path) = current_path.take() {
+                entries.push((path, current_branch.take()));
+            }
+            current_branch = None;
+        }
+    }
+    if let Some(path) = current_path.take() {
+        entries.push((path, current_branch.take()));
+    }
+    entries
+}
+
+/// Resolve where `branch` is checked out and which registered folder owns that
+/// directory. Canonicalizes both the worktree path (from git) and every folder
+/// path (from the DB) so symlinked / non-canonical paths still match — this
+/// can only be done on the host that runs git, which is why it lives in the
+/// backend rather than the webview.
+pub async fn resolve_worktree_folder_core(
+    db: &AppDatabase,
+    repo_path: String,
+    branch: String,
+) -> Result<WorktreeResolution, AppCommandError> {
+    ensure_git_repo(&repo_path)?;
+
+    let output = crate::process::tokio_command("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(&repo_path)
+        .output()
+        .await
+        .map_err(AppCommandError::io)?;
+    if !output.status.success() {
+        return Err(git_command_error("worktree list", &output.stderr));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let wt_path = parse_worktrees(&stdout)
+        .into_iter()
+        .find(|(_, b)| b.as_deref() == Some(branch.as_str()))
+        .map(|(p, _)| p);
+
+    let Some(wt_path) = wt_path else {
+        // Branch is not checked out in any worktree → caller checks it out in root.
+        return Ok(WorktreeResolution {
+            path: None,
+            folder_id: None,
+        });
+    };
+
+    let canonical_wt = std::fs::canonicalize(&wt_path).unwrap_or_else(|_| PathBuf::from(&wt_path));
+
+    let folders = folder_service::list_all_folder_details(&db.conn)
+        .await
+        .map_err(AppCommandError::from)?;
+    let folder_id = folders
+        .into_iter()
+        .find(|f| {
+            let canon =
+                std::fs::canonicalize(&f.path).unwrap_or_else(|_| PathBuf::from(&f.path));
+            canon == canonical_wt
+        })
+        .map(|f| f.id);
+
+    Ok(WorktreeResolution {
+        path: Some(canonical_wt.to_string_lossy().to_string()),
+        folder_id,
+    })
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn resolve_worktree_folder(
+    db: tauri::State<'_, AppDatabase>,
+    repo_path: String,
+    branch: String,
+) -> Result<WorktreeResolution, AppCommandError> {
+    resolve_worktree_folder_core(&db, repo_path, branch).await
+}
+
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn git_list_remotes(path: String) -> Result<Vec<GitRemote>, AppCommandError> {
     ensure_git_repo(&path)?;
@@ -3094,6 +3264,109 @@ pub async fn read_file_base64(
     .await
 }
 
+/// Open a file for reading, refusing a final-component symlink (unix) so a
+/// path validated by canonicalization cannot be redirected through a symlink
+/// swapped in afterward.
+#[cfg(unix)]
+fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(windows)]
+fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    // FILE_FLAG_OPEN_REPARSE_POINT opens the reparse point itself instead of
+    // following it, so a symlink/junction swapped in after validation is opened
+    // (and then rejected by the is_file() check) rather than followed outside
+    // the workspace root.
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
+}
+
+/// Like `read_file_base64`, but confined to a workspace root: the path is
+/// relative to `root_path` and is canonicalized (resolving symlinks) so it can
+/// never read outside the workspace. Used by the HTML preview to inline local
+/// sub-resources without exposing the unconfined `read_file_base64` to crafted
+/// markup (e.g. a symlink pointing at `/etc/passwd`).
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn read_workspace_file_base64(
+    root_path: String,
+    path: String,
+    max_bytes: Option<usize>,
+) -> Result<String, AppCommandError> {
+    let root = PathBuf::from(&root_path);
+    if !root.exists() || !root.is_dir() {
+        return Err(AppCommandError::not_found("Folder does not exist"));
+    }
+
+    let target = resolve_tree_path(&root, &path)?;
+    if !target.exists() {
+        return Err(AppCommandError::not_found("File does not exist"));
+    }
+    if !target.is_file() {
+        return Err(AppCommandError::invalid_input("Path is not a file"));
+    }
+
+    let limit = max_bytes
+        .unwrap_or(FILE_BASE64_DEFAULT_MAX_BYTES)
+        .clamp(4_096, FILE_BASE64_MAX_BYTES);
+
+    run_file_io(move || {
+        use std::io::Read;
+        // Canonicalize and confine, then open a single handle (O_NOFOLLOW on
+        // unix) and do metadata + read on the fd. This closes the check-then-
+        // read race: the original `target` symlink can't be re-resolved (we use
+        // the canonical path), a final-component symlink swapped in after the
+        // check makes the open fail, and metadata/read never re-look-up the path.
+        let canonical_root =
+            std::fs::canonicalize(&root).map_err(AppCommandError::io)?;
+        let canonical_target =
+            std::fs::canonicalize(&target).map_err(AppCommandError::io)?;
+        if !canonical_target.starts_with(&canonical_root) {
+            return Err(AppCommandError::invalid_input(
+                "Path is outside workspace root",
+            ));
+        }
+        let mut file =
+            open_no_follow(&canonical_target).map_err(AppCommandError::io)?;
+        let metadata = file.metadata().map_err(AppCommandError::io)?;
+        if !metadata.is_file() {
+            return Err(AppCommandError::invalid_input("Path is not a file"));
+        }
+        if metadata.len() > limit as u64 {
+            return Err(
+                AppCommandError::invalid_input("File is too large to attach")
+                    .with_detail(format!("max_bytes={limit}")),
+            );
+        }
+        // take(limit + 1) bounds the read even if the file grows after fstat.
+        let mut bytes = Vec::new();
+        Read::take(&mut file, limit as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(AppCommandError::io)?;
+        if bytes.len() > limit {
+            return Err(
+                AppCommandError::invalid_input("File is too large to attach")
+                    .with_detail(format!("max_bytes={limit}")),
+            );
+        }
+        Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+    })
+    .await
+}
+
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn read_file_preview(
     root_path: String,
@@ -4020,6 +4293,154 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn open_worktree_folder_core_records_parent_as_root() {
+        let db = fresh_in_memory_db().await;
+        let root = open_folder_core(&db, "/tmp/codeg-wt-root".into())
+            .await
+            .expect("open root");
+        assert_eq!(root.parent_id, None, "root folder has no parent");
+
+        let wt = open_worktree_folder_core(&db, "/tmp/codeg-wt-a".into(), root.id)
+            .await
+            .expect("open worktree");
+        assert_eq!(
+            wt.parent_id,
+            Some(root.id),
+            "worktree records its source root folder"
+        );
+    }
+
+    #[tokio::test]
+    async fn open_worktree_folder_core_flattens_nested_worktrees() {
+        let db = fresh_in_memory_db().await;
+        let root = open_folder_core(&db, "/tmp/codeg-wt-flat-root".into())
+            .await
+            .expect("open root");
+        let child = open_worktree_folder_core(&db, "/tmp/codeg-wt-flat-1".into(), root.id)
+            .await
+            .expect("open child worktree");
+        // A worktree created *from* the child must still point at the root, not
+        // the intermediate child.
+        let grandchild = open_worktree_folder_core(&db, "/tmp/codeg-wt-flat-2".into(), child.id)
+            .await
+            .expect("open grandchild worktree");
+        assert_eq!(child.parent_id, Some(root.id));
+        assert_eq!(
+            grandchild.parent_id,
+            Some(root.id),
+            "worktree of a worktree flattens to the original root"
+        );
+    }
+
+    #[tokio::test]
+    async fn open_worktree_folder_core_unknown_source_is_root() {
+        let db = fresh_in_memory_db().await;
+        let wt = open_worktree_folder_core(&db, "/tmp/codeg-wt-orphan".into(), 0)
+            .await
+            .expect("open worktree with no source");
+        assert_eq!(
+            wt.parent_id, None,
+            "non-positive / unknown source degrades to a top-level folder"
+        );
+    }
+
+    #[test]
+    fn parse_worktrees_extracts_path_branch_pairs() {
+        // Main tree + a linked worktree + a detached worktree, trailing blank line.
+        let stdout = "\
+worktree /repo/main
+HEAD aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+branch refs/heads/main
+
+worktree /repo/wt-feature
+HEAD bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+branch refs/heads/feature-x
+
+worktree /repo/wt-detached
+HEAD cccccccccccccccccccccccccccccccccccccccc
+detached
+
+";
+        let entries = parse_worktrees(stdout);
+        assert_eq!(
+            entries,
+            vec![
+                ("/repo/main".to_string(), Some("main".to_string())),
+                (
+                    "/repo/wt-feature".to_string(),
+                    Some("feature-x".to_string())
+                ),
+                ("/repo/wt-detached".to_string(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_worktrees_flushes_trailing_block_without_blank_line() {
+        // No terminating blank line on the last block (git omits it at EOF here).
+        let stdout = "\
+worktree /repo/main
+HEAD aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+branch refs/heads/main";
+        let entries = parse_worktrees(stdout);
+        assert_eq!(
+            entries,
+            vec![("/repo/main".to_string(), Some("main".to_string()))]
+        );
+    }
+
+    #[test]
+    fn parse_worktrees_handles_empty_and_bare() {
+        assert!(parse_worktrees("").is_empty());
+        // A bare repo entry carries no branch.
+        let entries = parse_worktrees("worktree /repo/bare\nbare\n\n");
+        assert_eq!(entries, vec![("/repo/bare".to_string(), None)]);
+    }
+
+    #[tokio::test]
+    async fn open_folder_core_preserves_existing_worktree_parent() {
+        let db = fresh_in_memory_db().await;
+        let root = open_folder_core(&db, "/tmp/codeg-wt-preserve-root".into())
+            .await
+            .expect("open root");
+        let wt = open_worktree_folder_core(&db, "/tmp/codeg-wt-preserve".into(), root.id)
+            .await
+            .expect("open worktree");
+        assert_eq!(wt.parent_id, Some(root.id));
+        // A plain reopen of the same path must not clear the recorded parent.
+        let reopened = open_folder_core(&db, "/tmp/codeg-wt-preserve".into())
+            .await
+            .expect("reopen plain");
+        assert_eq!(
+            reopened.parent_id,
+            Some(root.id),
+            "plain open_folder must preserve an existing worktree parent"
+        );
+    }
+
+    #[tokio::test]
+    async fn open_worktree_folder_core_unknown_source_demotes_existing_to_root() {
+        let db = fresh_in_memory_db().await;
+        let root = open_folder_core(&db, "/tmp/codeg-wt-demote-root".into())
+            .await
+            .expect("open root");
+        let path = "/tmp/codeg-wt-demote".to_string();
+        let wt = open_worktree_folder_core(&db, path.clone(), root.id)
+            .await
+            .expect("open worktree");
+        assert_eq!(wt.parent_id, Some(root.id));
+        // Reopening the same path as a worktree with an unknown source writes the
+        // authoritative value (top-level) rather than keeping the stale parent.
+        let demoted = open_worktree_folder_core(&db, path, 0)
+            .await
+            .expect("reopen worktree with no source");
+        assert_eq!(
+            demoted.parent_id, None,
+            "explicit worktree open with unknown source demotes to top-level"
+        );
+    }
+
+    #[tokio::test]
     async fn update_folder_color_core_roundtrips() {
         let db = fresh_in_memory_db().await;
         let entry = add_folder_to_history_core(&db, "/tmp/codeg-color-test".into())
@@ -4047,5 +4468,56 @@ mod tests {
             .await
             .expect("clear agent");
         assert_eq!(cleared.default_agent_type, None);
+    }
+}
+
+// Symlink confinement that `read_workspace_file_base64` relies on. Unix-only
+// because it uses real filesystem symlinks.
+#[cfg(all(test, unix))]
+mod workspace_confinement_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[tokio::test]
+    async fn reads_in_root_file() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::write(root.path().join("a.txt"), b"hello").expect("write");
+        let b64 = read_workspace_file_base64(
+            root.path().to_string_lossy().into_owned(),
+            "a.txt".to_string(),
+            None,
+        )
+        .await
+        .expect("should read in-root file");
+        assert_eq!(b64, "aGVsbG8="); // base64("hello")
+    }
+
+    #[tokio::test]
+    async fn rejects_symlink_escaping_root() {
+        let root = tempfile::tempdir().expect("root");
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::write(outside.path().join("secret"), b"top").expect("write");
+        symlink(outside.path().join("secret"), root.path().join("link"))
+            .expect("symlink");
+        // The canonical target resolves outside the root, so the read is denied
+        // even though `root/link` is lexically inside the workspace.
+        let res = read_workspace_file_base64(
+            root.path().to_string_lossy().into_owned(),
+            "link".to_string(),
+            None,
+        )
+        .await;
+        assert!(res.is_err(), "symlink escaping the workspace must be rejected");
+    }
+
+    #[test]
+    fn ensure_path_in_workspace_rejects_symlink() {
+        let root = tempfile::tempdir().expect("root");
+        let outside = tempfile::tempdir().expect("outside");
+        let secret = outside.path().join("secret.txt");
+        std::fs::write(&secret, b"x").expect("write");
+        let link = root.path().join("asset.txt");
+        symlink(&secret, &link).expect("symlink");
+        assert!(ensure_path_in_workspace(root.path(), &link).is_err());
     }
 }

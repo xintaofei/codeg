@@ -28,7 +28,7 @@ import {
 import { Streamdown, defaultRemarkPlugins } from "streamdown"
 
 import { Shimmer } from "./shimmer"
-import { useStreamdownLinkSafety } from "./link-safety"
+import { markdownLinkComponents } from "./markdown-link"
 import { normalizeMathDelimiters } from "./message"
 import { remarkRewriteFileUriLinks } from "./remark-file-uri-links"
 
@@ -238,7 +238,6 @@ const remarkPlugins = [
 
 export const ReasoningContent = memo(
   ({ className, children, ...props }: ReasoningContentProps) => {
-    const linkSafety = useStreamdownLinkSafety()
     const normalized = useMemo(
       () => normalizeMathDelimiters(children),
       [children]
@@ -254,10 +253,11 @@ export const ReasoningContent = memo(
         {...props}
       >
         <Streamdown
-          linkSafety={linkSafety}
           plugins={streamdownPlugins}
           remarkPlugins={remarkPlugins}
           {...props}
+          // Enforce the link icon + safety override after spreading props.
+          components={markdownLinkComponents}
         >
           {normalized}
         </Streamdown>

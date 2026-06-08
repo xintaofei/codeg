@@ -6,6 +6,7 @@ use serde::Deserialize;
 use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::chat_channel::backends::weixin::{WeixinQrcodeInfo, WeixinQrcodeStatusPublic};
+use crate::chat_channel::webhook::WebhookConfig;
 use crate::commands::chat_channel as cc_commands;
 use crate::models::chat_channel::{ChannelStatusInfo, ChatChannelInfo, ChatChannelMessageLogInfo};
 
@@ -224,6 +225,27 @@ pub async fn set_chat_event_filter(
     Json(params): Json<SetEventFilterParams>,
 ) -> Result<Json<()>, AppCommandError> {
     cc_commands::set_chat_event_filter_core(&state.db, params.filter).await?;
+    Ok(Json(()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetEventWebhooksParams {
+    pub webhooks: Vec<WebhookConfig>,
+}
+
+pub async fn get_chat_event_webhooks(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<Vec<WebhookConfig>>, AppCommandError> {
+    let result = cc_commands::get_chat_event_webhooks_core(&state.db).await?;
+    Ok(Json(result))
+}
+
+pub async fn set_chat_event_webhooks(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<SetEventWebhooksParams>,
+) -> Result<Json<()>, AppCommandError> {
+    cc_commands::set_chat_event_webhooks_core(&state.db, params.webhooks).await?;
     Ok(Json(()))
 }
 

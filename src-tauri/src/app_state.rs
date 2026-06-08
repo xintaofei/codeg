@@ -39,11 +39,34 @@ pub struct AppState {
     pub delegation_broker: Arc<DelegationBroker>,
     /// Per-launch ephemeral tokens identifying parent ACP connections.
     /// Registered when `load_mcp_servers_for_agent` injects the
-    /// `codeg-delegate` MCP entry, revoked on parent teardown.
+    /// `codeg-mcp` MCP entry, revoked on parent teardown.
     pub delegation_tokens: Arc<TokenRegistry>,
     /// Absolute path of the UDS / named pipe the companion connects to.
     /// PID-scoped so multiple codeg processes on the same host don't fight.
     pub delegation_socket_path: PathBuf,
+    /// Hot-swappable live-feedback (`check_user_feedback`) enable flag. Shared
+    /// with the `DelegationInjection` so MCP injection reads it, and updated by
+    /// the feedback settings command on save. Populated at startup by
+    /// `apply_persisted_feedback_config`.
+    pub feedback_config: crate::acp::feedback::FeedbackRuntimeConfig,
+    /// Serializes mutually-exclusive system operations — in-place
+    /// self-update, restart, rollback — so a second click can't race a
+    /// download/swap already in flight. Handlers `try_lock` and reject when
+    /// held (an upgrade is already running).
+    pub system_op_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Source of truth for an in-flight / completed app self-update, shared by
+    /// the desktop (tauri-plugin-updater) and server (in-place swap) paths.
+    /// The upgrade UI subscribes to it and re-syncs from a snapshot on mount,
+    /// so download progress survives settings-page navigation and reloads.
+    pub update_state: crate::update::AppUpdateStateHandle,
+}
+
+pub fn default_system_op_lock() -> Arc<tokio::sync::Mutex<()>> {
+    Arc::new(tokio::sync::Mutex::new(()))
+}
+
+pub fn default_update_state() -> crate::update::AppUpdateStateHandle {
+    crate::update::new_update_state_handle()
 }
 
 pub fn default_connection_manager() -> ConnectionManager {
@@ -69,7 +92,12 @@ pub fn build_delegation_stack(
     connection_manager: &ConnectionManager,
     db_conn: sea_orm::DatabaseConnection,
     data_dir: PathBuf,
-) -> (Arc<DelegationBroker>, Arc<TokenRegistry>, PathBuf) {
+) -> (
+    Arc<DelegationBroker>,
+    Arc<TokenRegistry>,
+    PathBuf,
+    crate::acp::feedback::FeedbackRuntimeConfig,
+) {
     use crate::acp::connection::DelegationInjection;
     use crate::acp::delegation::broker::{
         ChildStatusLookup, ConversationDepthLookup, DbChildStatusLookup, DbDepthLookup,
@@ -78,6 +106,9 @@ pub fn build_delegation_stack(
         ConnectionManagerEventEmitter, DelegationEventEmitter,
     };
     use crate::acp::delegation::listener::default_socket_path;
+    use crate::acp::delegation::live_reply::{
+        ChildLiveReplyLookup, ConnectionManagerLiveReplyLookup,
+    };
     use crate::acp::delegation::meta_writer::{ConnectionManagerMetaWriter, DelegationMetaWriter};
     use crate::acp::delegation::spawner::ConnectionSpawner;
     use crate::acp::manager::ConnectionManagerSpawner;
@@ -97,14 +128,19 @@ pub fn build_delegation_stack(
     let meta_writer = Arc::new(ConnectionManagerMetaWriter {
         manager: cm_arc.clone(),
     }) as Arc<dyn DelegationMetaWriter>;
+    let live_reply_lookup = Arc::new(ConnectionManagerLiveReplyLookup {
+        manager: cm_arc.clone(),
+    }) as Arc<dyn ChildLiveReplyLookup>;
     let event_emitter = Arc::new(ConnectionManagerEventEmitter { manager: cm_arc })
         as Arc<dyn DelegationEventEmitter>;
     let broker = Arc::new(
         DelegationBroker::with_writers(spawner, depth_lookup, meta_writer, event_emitter)
-            .with_status_lookup(status_lookup),
+            .with_status_lookup(status_lookup)
+            .with_live_reply_lookup(live_reply_lookup),
     );
     let tokens = Arc::new(TokenRegistry::default());
     let socket_path = default_socket_path(&std::env::temp_dir());
+    let feedback = crate::acp::feedback::FeedbackRuntimeConfig::new();
 
     // Install the injection on the manager so spawn_agent picks it up
     // without an extra parameter at every call site.
@@ -112,9 +148,10 @@ pub fn build_delegation_stack(
         broker: broker.clone(),
         tokens: tokens.clone(),
         socket_path: socket_path.clone(),
+        feedback: feedback.clone(),
     });
 
-    (broker, tokens, socket_path)
+    (broker, tokens, socket_path, feedback)
 }
 
 impl AppState {
@@ -135,7 +172,7 @@ impl AppState {
         let emitter = EventEmitter::web_only(broadcaster.clone(), acp_event_bus.clone());
 
         let connection_manager = default_connection_manager();
-        let (delegation_broker, delegation_tokens, delegation_socket_path) =
+        let (delegation_broker, delegation_tokens, delegation_socket_path, feedback_config) =
             build_delegation_stack(&connection_manager, db.conn.clone(), data_dir.clone());
 
         Self {
@@ -157,6 +194,9 @@ impl AppState {
             delegation_broker,
             delegation_tokens,
             delegation_socket_path,
+            feedback_config,
+            system_op_lock: default_system_op_lock(),
+            update_state: default_update_state(),
         }
     }
 }

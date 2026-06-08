@@ -299,6 +299,9 @@ impl TerminalManager {
             .map_err(|e| TerminalError::SpawnFailed(e.to_string()))?;
 
         let terminal_id = opts.terminal_id;
+        // Boundary-, length-, and NUL-safe prefix for the PTY thread names; see
+        // `thread_name_prefix`. `terminal_id` is caller-supplied.
+        let short_id = thread_name_prefix(&terminal_id);
 
         let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>();
 
@@ -317,9 +320,8 @@ impl TerminalManager {
             .insert(terminal_id.clone(), instance);
 
         // Named writer thread
-        let id_for_writer = terminal_id.clone();
         std::thread::Builder::new()
-            .name(format!("pty-writer-{}", &terminal_id[..8]))
+            .name(format!("pty-writer-{short_id}"))
             .spawn(move || {
                 write_loop(writer, write_rx);
             })
@@ -329,7 +331,7 @@ impl TerminalManager {
         let id_for_reader = terminal_id.clone();
         let terminals_ref = self.terminals.clone();
         std::thread::Builder::new()
-            .name(format!("pty-reader-{}", &id_for_writer[..8]))
+            .name(format!("pty-reader-{short_id}"))
             .spawn(move || {
                 read_loop(reader, id_for_reader, &emitter, &terminals_ref);
             })
@@ -532,4 +534,55 @@ fn emit_terminal_exit_event(emitter: &EventEmitter, terminal_id: &str) {
         data: String::new(),
     };
     crate::web::event_bridge::emit_event(emitter, &exit_event, event.clone());
+}
+
+/// Build a thread-name-safe short prefix from a caller-supplied `terminal_id`.
+///
+/// `terminal_id` arrives from the frontend (Tauri/web spawn paths) and is not
+/// guaranteed to be ASCII, at least 8 bytes long, or free of NUL bytes. Naive
+/// `&terminal_id[..8]` panics on a short id or a multibyte char straddling
+/// byte 8, and `std::thread::Builder::spawn` panics if the resulting thread
+/// name contains an interior NUL. Take the first 8 Unicode scalar values
+/// (boundary- and length-safe) and replace NUL with `_`.
+fn thread_name_prefix(terminal_id: &str) -> String {
+    terminal_id
+        .chars()
+        .take(8)
+        .map(|c| if c == '\0' { '_' } else { c })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::thread_name_prefix;
+
+    #[test]
+    fn keeps_short_ascii_id() {
+        assert_eq!(thread_name_prefix("abc"), "abc");
+        assert_eq!(thread_name_prefix(""), "");
+    }
+
+    #[test]
+    fn truncates_to_first_eight_chars() {
+        assert_eq!(thread_name_prefix("0123456789"), "01234567");
+    }
+
+    #[test]
+    fn is_char_boundary_safe() {
+        // '密' occupies bytes 7..10, so `&s[..8]` would slice inside it and
+        // panic; taking 8 scalar values keeps the whole char.
+        assert_eq!(thread_name_prefix("abcdefg密钥"), "abcdefg密");
+    }
+
+    #[test]
+    fn sanitizes_interior_nul_so_thread_spawns() {
+        assert_eq!(thread_name_prefix("ab\0cd"), "ab_cd");
+        // The result must be usable as a real thread name without panicking.
+        std::thread::Builder::new()
+            .name(thread_name_prefix("ab\0cdefghij"))
+            .spawn(|| {})
+            .expect("spawn with sanitized name")
+            .join()
+            .expect("join");
+    }
 }

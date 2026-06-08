@@ -81,12 +81,61 @@ pub struct PetGlobalState {
     /// presence of *any* outstanding permission keeps ambient state at
     /// `Waiting` until the user resolves it.
     pending_permissions: HashMap<String, String>,
+    /// Connection ids of in-flight delegation sub-agents. Their status events
+    /// ride the parent's emitter onto this bus, but a sub-agent is not a
+    /// user-facing session — it's surfaced inline in its parent's transcript
+    /// and excluded from the pet badge/panel. We track child ids here and
+    /// ignore their ambient signals so the pet's busy state stays consistent
+    /// with the session list (otherwise the pet looks "running" while the
+    /// panel shows nothing). Populated by `DelegationStarted`, cleared by
+    /// `DelegationCompleted`.
+    delegation_children: HashSet<String>,
 }
 
 impl PetGlobalState {
     pub fn apply(&mut self, env: &EventEnvelope) {
         let conn = &env.connection_id;
         match &env.payload {
+            // A delegation sub-agent is not a user-facing session. Remember its
+            // connection id so its own ambient signals are ignored, and scrub
+            // anything those signals may have recorded already — the child's
+            // `StatusChanged{Prompting}` can reach the bus just before this
+            // event does. (These two events carry the *parent's* connection id
+            // in the envelope; the child id is in the payload.)
+            AcpEvent::DelegationStarted {
+                child_connection_id,
+                ..
+            } => {
+                self.delegation_children.insert(child_connection_id.clone());
+                self.prompting.remove(child_connection_id);
+                self.erroring.remove(child_connection_id);
+                self.pending_permissions
+                    .retain(|_, cid| cid != child_connection_id);
+            }
+            AcpEvent::DelegationCompleted {
+                child_connection_id,
+                ..
+            } => {
+                self.delegation_children.remove(child_connection_id);
+                self.prompting.remove(child_connection_id);
+                self.erroring.remove(child_connection_id);
+                self.pending_permissions
+                    .retain(|_, cid| cid != child_connection_id);
+            }
+            // A known sub-agent's signals never drive ambient state. When it
+            // disconnects, forget it so dead ids don't pile up — this also
+            // cleans up a `DelegationCompleted` that was dropped on a bus
+            // overrun (the child id is otherwise preserved across the reset).
+            _ if self.delegation_children.contains(conn) => {
+                if matches!(
+                    &env.payload,
+                    AcpEvent::StatusChanged {
+                        status: ConnectionStatus::Disconnected,
+                    }
+                ) {
+                    self.delegation_children.remove(conn);
+                }
+            }
             AcpEvent::StatusChanged { status } => match status {
                 ConnectionStatus::Prompting => {
                     self.prompting.insert(conn.clone());
@@ -140,6 +189,22 @@ impl PetGlobalState {
             _ => {}
         }
     }
+
+    /// Reset the volatile signal sets after a bus overrun. We can't reconstruct
+    /// `prompting` / `erroring` / `pending_permissions` from dropped events, so
+    /// we clear them and let the next `StatusChanged` batch reseed. Crucially
+    /// `delegation_children` is PRESERVED: an in-flight sub-agent won't
+    /// re-announce itself with another `DelegationStarted`, so dropping its
+    /// classification here would let its later events be mistaken for a real
+    /// session — the pet would look "running" while the badge/panel still
+    /// exclude it. A child whose `DelegationCompleted` was also dropped is
+    /// cleaned up when its connection disconnects (and is otherwise harmless —
+    /// connection ids are never reused).
+    fn reset_after_overrun(&mut self) {
+        self.prompting.clear();
+        self.erroring.clear();
+        self.pending_permissions.clear();
+    }
 }
 
 /// Pure function: aggregate → state. Order of checks defines priority.
@@ -185,6 +250,11 @@ fn is_acp_event_relevant(payload: &AcpEvent) -> bool {
             | AcpEvent::PermissionResolved { .. }
             | AcpEvent::TurnComplete { .. }
             | AcpEvent::ConversationStatusChanged { .. }
+            // Tracked so a sub-agent's connection can be filtered out of
+            // ambient state (it must not make the pet look "running" when the
+            // panel — which excludes sub-agents — shows nothing).
+            | AcpEvent::DelegationStarted { .. }
+            | AcpEvent::DelegationCompleted { .. }
     )
 }
 
@@ -349,7 +419,13 @@ pub fn pet_state_subscriber_task(
                                 "[Pet] internal bus lagged, dropped {skipped} events; resetting to idle"
                             );
                             metrics.lagged_count.fetch_add(skipped, Ordering::Relaxed);
-                            snapshot = PetGlobalState::default();
+                            // Clear the volatile signals (reseeded from the next
+                            // StatusChanged batch) but KEEP the delegation-child
+                            // classification — a running sub-agent won't re-fire
+                            // DelegationStarted, so forgetting it here would let
+                            // its events drive ambient state again (the bug this
+                            // exclusion fixes), under the overrun recovery path.
+                            snapshot.reset_after_overrun();
                             cancel_failed_recovery(&mut clear_task);
                             if last_state != PetState::Idle {
                                 last_state = PetState::Idle;
@@ -767,6 +843,188 @@ mod tests {
             },
         ));
         assert_eq!(compute_pet_state(&s), PetState::Idle);
+    }
+
+    fn delegation_started(parent: &str, child: &str) -> EventEnvelope {
+        env(
+            parent,
+            AcpEvent::DelegationStarted {
+                parent_connection_id: parent.into(),
+                parent_tool_use_id: "tu-1".into(),
+                child_connection_id: child.into(),
+                child_conversation_id: 1,
+                agent_type: crate::models::agent::AgentType::Codex,
+            },
+        )
+    }
+
+    fn delegation_completed(parent: &str, child: &str) -> EventEnvelope {
+        env(
+            parent,
+            AcpEvent::DelegationCompleted {
+                parent_connection_id: parent.into(),
+                parent_tool_use_id: "tu-1".into(),
+                child_connection_id: child.into(),
+                child_conversation_id: 1,
+                agent_type: crate::models::agent::AgentType::Codex,
+                result: crate::acp::types::DelegationResultSummary::Ok {
+                    duration_ms: 0,
+                    text_preview: None,
+                },
+            },
+        )
+    }
+
+    #[test]
+    fn delegation_child_prompting_does_not_make_pet_running() {
+        // A sub-agent's prompt must not drive the ambient state — it isn't a
+        // user-facing session (it's excluded from the badge/panel), so the pet
+        // would otherwise look busy while the panel shows nothing.
+        let mut s = PetGlobalState::default();
+        s.apply(&delegation_started("parent", "child"));
+        s.apply(&env(
+            "child",
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Prompting,
+            },
+        ));
+        assert_eq!(compute_pet_state(&s), PetState::Idle);
+    }
+
+    #[test]
+    fn delegation_child_prompting_before_started_is_scrubbed() {
+        // The child's StatusChanged can race ahead of DelegationStarted (they
+        // travel the same bus from different connections). Until we learn it's
+        // a child it counts; once DelegationStarted lands it's scrubbed.
+        let mut s = PetGlobalState::default();
+        s.apply(&env(
+            "child",
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Prompting,
+            },
+        ));
+        assert_eq!(compute_pet_state(&s), PetState::Running);
+
+        s.apply(&delegation_started("parent", "child"));
+        assert_eq!(
+            compute_pet_state(&s),
+            PetState::Idle,
+            "child must be scrubbed from prompting once known to be a sub-agent"
+        );
+    }
+
+    #[test]
+    fn delegation_child_error_does_not_fail_the_pet() {
+        let mut s = PetGlobalState::default();
+        s.apply(&delegation_started("parent", "child"));
+        s.apply(&env(
+            "child",
+            AcpEvent::Error {
+                message: "boom".into(),
+                agent_type: "codex".into(),
+                code: None,
+                terminal: true,
+            },
+        ));
+        assert_eq!(compute_pet_state(&s), PetState::Idle);
+    }
+
+    #[test]
+    fn parent_stays_running_through_its_childs_lifecycle() {
+        // The parent waiting on its delegation is a real running session and
+        // must keep the pet Running while the child is ignored throughout.
+        let mut s = PetGlobalState::default();
+        s.apply(&env(
+            "parent",
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Prompting,
+            },
+        ));
+        s.apply(&delegation_started("parent", "child"));
+        s.apply(&env(
+            "child",
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Prompting,
+            },
+        ));
+        assert_eq!(compute_pet_state(&s), PetState::Running);
+
+        s.apply(&delegation_completed("parent", "child"));
+        assert_eq!(
+            compute_pet_state(&s),
+            PetState::Running,
+            "the parent is still prompting after its child finishes"
+        );
+
+        s.apply(&env(
+            "parent",
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Connected,
+            },
+        ));
+        assert_eq!(compute_pet_state(&s), PetState::Idle);
+    }
+
+    #[test]
+    fn overrun_reset_preserves_delegation_child_classification() {
+        // Regression: a bus overrun clears the volatile signals but must NOT
+        // forget which connections are sub-agents — otherwise the child's
+        // later events drive ambient state again while the panel excludes it.
+        let mut s = PetGlobalState::default();
+        s.apply(&delegation_started("parent", "child"));
+        s.apply(&env(
+            "parent",
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Prompting,
+            },
+        ));
+        assert_eq!(compute_pet_state(&s), PetState::Running);
+
+        // Simulate the overrun recovery.
+        s.reset_after_overrun();
+        assert_eq!(compute_pet_state(&s), PetState::Idle);
+
+        // The child keeps prompting after the reset — still ignored.
+        s.apply(&env(
+            "child",
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Prompting,
+            },
+        ));
+        assert_eq!(
+            compute_pet_state(&s),
+            PetState::Idle,
+            "sub-agent must stay excluded across an overrun reset"
+        );
+
+        // The parent reseeds normally from its next event.
+        s.apply(&env(
+            "parent",
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Prompting,
+            },
+        ));
+        assert_eq!(compute_pet_state(&s), PetState::Running);
+    }
+
+    #[test]
+    fn delegation_child_forgotten_on_disconnect() {
+        // A child id is dropped when its connection disconnects, so the set
+        // can't accumulate dead ids (and a missed DelegationCompleted during
+        // an overrun is still cleaned up).
+        let mut s = PetGlobalState::default();
+        s.apply(&delegation_started("parent", "child"));
+        assert!(s.delegation_children.contains("child"));
+        s.apply(&env(
+            "child",
+            AcpEvent::StatusChanged {
+                status: ConnectionStatus::Disconnected,
+            },
+        ));
+        assert!(
+            !s.delegation_children.contains("child"),
+            "a disconnected sub-agent must be removed from the tracked set"
+        );
     }
 
     #[test]

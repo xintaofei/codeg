@@ -1,7 +1,7 @@
 [
   {
     "name": "delegate_to_agent",
-    "description": "Delegate a self-contained task to another local AI agent. Returns IMMEDIATELY with a task_id; the sub-agent runs in the background. Collect the result with get_delegation_status(task_id) — pass wait_ms to block until it finishes, or wait_ms=0 to poll. You can fan out several delegate_to_agent calls first and then collect each. Use cancel_delegation(task_id) to stop one. The sub-agent runs in a separate session without access to the current conversation, so include all required context in `task`.",
+    "description": "Hand off a self-contained sub-task to a separate local AI agent that runs in its own session. ASYNCHRONOUS: returns a task_id right away and the sub-agent keeps working in the background — this call never blocks. So you can fan out several delegations at once and keep working, then collect the results with get_delegation_status by passing the task_ids array (one id to poll a single task, or many at once to poll the whole fan-out in one call) — or stop one early with cancel_delegation(task_id). The sub-agent CANNOT see this conversation, your open files, or earlier turns — it starts cold, so `task` must carry everything it needs. Best for independent, parallelizable work you can describe up front; not for steps that need your ongoing back-and-forth.",
     "inputSchema": {
       "type": "object",
       "required": ["agent_type", "task"],
@@ -16,41 +16,43 @@
             "cline",
             "open_claw"
           ],
-          "description": "Agent type to launch as the sub-agent for this delegated task."
+          "description": "Which local agent runs the sub-task. Pick the one best suited to the work."
         },
         "task": {
           "type": "string",
-          "description": "Complete task prompt for the sub-agent, including the goal, relevant context, constraints, and expected output. The sub-agent cannot see this conversation."
+          "description": "The complete, self-contained prompt for the sub-agent. It has no access to this conversation or your context, so spell out everything: the goal, the relevant background and absolute file paths, any constraints, and exactly what to return."
         },
         "working_dir": {
           "type": "string",
-          "description": "Absolute directory where the sub-agent should run. Defaults to the parent session's current working directory."
+          "description": "Absolute path the sub-agent runs in. Defaults to this session's working directory."
         }
       }
     }
   },
   {
     "name": "get_delegation_status",
-    "description": "Check the status of a delegated task by its task_id (returned by delegate_to_agent), and optionally block until it finishes. With wait_ms > 0 the call blocks up to that many milliseconds and returns the result as soon as the sub-agent finishes (capped at 60s — re-call to keep waiting); with wait_ms = 0 (default) it returns the current status immediately. A finished task returns its full result text; for a long result, open the child session for the complete output.",
+    "description": "Collect delegated task results — or check on them — by the task_ids from delegate_to_agent. Pass a single id in the array to poll one task, or many at once to poll a whole fan-out in a single call. The response is ALWAYS a JSON object {\"tasks\":[...]} with one entry per id, in the order you asked — one entry for a single id, several for a fan-out; every entry carries that task's task_id and status, so you can always tell which task it is and where it stands. The wait_ms argument picks the mode: omit it for a non-blocking snapshot (poll), or pass wait_ms to wait — wait_ms>0 blocks up to that many ms (capped at 60000; re-call to keep waiting), wait_ms=0 blocks with no timeout for as long as the sub-agent runs. When polling several, the wait returns as soon as ANY requested task reaches a terminal state, so re-call to keep collecting the rest. When you just need the results, prefer blocking over repeated polling. Each task reports its current state — running, or a terminal completed / failed / canceled (or unknown if the id isn't recognized); a finished task includes its full result text. While tasks are still running and you are simply waiting, do NOT emit any user-facing message between calls — just call again silently. Skip status narration like \"still running\", \"not returned yet\", or \"continuing to wait\"; it fragments the conversation. Speak to the user only when there is a terminal result to report or something genuinely needs their input.",
     "inputSchema": {
       "type": "object",
-      "required": ["task_id"],
+      "required": ["task_ids"],
       "properties": {
-        "task_id": {
-          "type": "string",
-          "description": "The task_id returned by delegate_to_agent."
+        "task_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "One or more task_ids returned by delegate_to_agent — pass a single id to poll one task, or several to poll them together in one call. The response is always a JSON object {\"tasks\":[...]} with one entry per id (in this order) — one entry for a single id — and each entry carries that task's task_id and status. With wait_ms set, the call returns as soon as ANY of these tasks reaches a terminal state."
         },
         "wait_ms": {
           "type": "integer",
           "minimum": 0,
-          "description": "Max milliseconds to block waiting for the task to finish before returning the current status. 0 (default) returns immediately. Capped at 60000."
+          "description": "How long to wait. Omit for an immediate snapshot (poll). A positive value blocks up to that many milliseconds (capped at 60000). 0 means no timeout — block until a task reaches a terminal state, however long it takes. When several ids are given, the wait resolves as soon as ANY requested task becomes terminal."
         }
       }
     }
   },
   {
     "name": "cancel_delegation",
-    "description": "Cancel a running delegated task by its task_id (returned by delegate_to_agent). Stops the sub-agent. A task that already finished returns its terminal result instead.",
+    "description": "Stop a running delegated task by its task_id and tear down its sub-agent — use this only when you no longer want the result. Don't cancel just because a task is taking a while: substantial work can legitimately run for a long time, so prefer waiting on it (get_delegation_status with wait_ms) over canceling. If the task has already finished, nothing is canceled and its final result is returned instead.",
     "inputSchema": {
       "type": "object",
       "required": ["task_id"],
@@ -60,6 +62,14 @@
           "description": "The task_id returned by delegate_to_agent."
         }
       }
+    }
+  },
+  {
+    "name": "check_user_feedback",
+    "description": "IMPORTANT: This tool gives you the ability to receive the user's real-time guidance while you work, preventing you from going down the wrong path and wasting effort. The user can type corrections, new requirements, or hints at any time during your turn — but you will NEVER see them unless you call this tool. Without it, you could spend minutes on work the user has already tried to redirect.\n\nWhen to call:\n- After thinking through your approach but BEFORE starting implementation — the user may have clarified requirements.\n- Before making a significant decision (choosing an architecture, picking which files to modify, deciding on an approach) — the user may prefer a different direction.\n- After completing a sub-task and before moving to the next step — the user may want to adjust priorities.\n- When you pause to plan or organize your next steps — a natural checkpoint to read any pending guidance.\n\nThis is a quick, non-blocking snapshot that returns instantly. It either returns the user's messages (treat as HIGH-PRIORITY steering and adjust immediately) or an empty result (continue your current plan). Call it proactively — do not wait to be asked.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
     }
   }
 ]

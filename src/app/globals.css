@@ -101,7 +101,7 @@
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.87 0.00 0);
+  --primary: oklch(0.87 0 0);
   --primary-foreground: oklch(0.205 0 0);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
@@ -120,7 +120,7 @@
   --chart-5: oklch(0.424 0.199 265.638);
   --sidebar: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.87 0.00 0);
+  --sidebar-primary: oklch(0.87 0 0);
   --sidebar-primary-foreground: oklch(0.205 0 0);
   --sidebar-accent: oklch(0.28 0 0);
   --sidebar-accent-foreground: oklch(0.985 0 0);
@@ -136,7 +136,7 @@
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.87 0.00 0);
+  --primary: oklch(0.87 0 0);
   --primary-foreground: oklch(0.205 0 0);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
@@ -155,7 +155,7 @@
   --chart-5: oklch(0.424 0.199 265.638);
   --sidebar: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.87 0.00 0);
+  --sidebar-primary: oklch(0.87 0 0);
   --sidebar-primary-foreground: oklch(0.205 0 0);
   --sidebar-accent: oklch(0.28 0 0);
   --sidebar-accent-foreground: oklch(0.985 0 0);
@@ -919,7 +919,7 @@
     --card-foreground: oklch(0.985 0 0);
     --popover: oklch(0.205 0 0);
     --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.87 0.00 0);
+    --primary: oklch(0.87 0 0);
     --primary-foreground: oklch(0.205 0 0);
     --secondary: oklch(0.269 0 0);
     --secondary-foreground: oklch(0.985 0 0);
@@ -1038,13 +1038,28 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not(.light) [data-streamdown="code-block-body"] {
-    background-color: var(--shiki-dark-bg, var(--sdm-bg, transparent)) !important;
+    background-color: var(
+      --shiki-dark-bg,
+      var(--sdm-bg, transparent)
+    ) !important;
     color: var(--shiki-dark, var(--sdm-fg, inherit)) !important;
   }
 
   :root:not(.light) [data-streamdown="code-block-body"] code > span > span {
     color: var(--shiki-dark, var(--sdm-c, inherit)) !important;
   }
+}
+
+/* Streamdown loose-list markers.
+   Our markdown wrappers render lists with `list-style-position: inside`
+   ([&_ol]:list-inside / [&_ul]:list-inside). In a loose list, Streamdown wraps
+   each item's text in a block <p>; an inside marker followed by a block box is
+   forced onto its own line above the text. Streamdown bundles `[&>p]:inline`
+   on its <li> for this, but those utilities live in node_modules and are not
+   picked up by our Tailwind content scan, so re-create the rule here keyed on
+   Streamdown's stable list-item data attribute. */
+[data-streamdown="list-item"] > p {
+  display: inline;
 }
 
 /* Streamdown table overrides */
@@ -1089,7 +1104,6 @@
   width: var(--sd-line-number-width) !important;
   font-variant-numeric: tabular-nums;
 }
-
 
 /* Tool collapsible: fade-in on expand (height must change instantly for virtualizer) */
 .tool-collapsible-content[data-state="open"] > * {
@@ -1151,7 +1165,11 @@
   pointer-events: none;
 }
 
-.context-view .monaco-menu .monaco-action-bar.vertical .action-item .action-menu-item,
+.context-view
+  .monaco-menu
+  .monaco-action-bar.vertical
+  .action-item
+  .action-menu-item,
 .monaco-editor .suggest-widget .monaco-list-row,
 .monaco-editor .peekview-widget .monaco-list-row {
   border-radius: calc(var(--radius) - 2px);
@@ -1363,7 +1381,9 @@
   font-weight: 600;
   line-height: 1;
   opacity: 0.75;
-  transition: opacity 0.15s, background-color 0.15s;
+  transition:
+    opacity 0.15s,
+    background-color 0.15s;
 }
 
 .merge-gutter-arrow-btn:hover {

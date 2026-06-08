@@ -1,5 +1,7 @@
 //! `codeg-mcp` — the per-launch stdio MCP companion that an agent CLI runs
-//! to surface the `delegate_to_agent` tool to its LLM.
+//! to surface codeg's tools to its LLM: the multi-agent delegation tools
+//! (`delegate_to_agent` etc.) and/or `check_user_feedback` (pull the user's
+//! mid-turn steering notes), gated by the `--features` groups.
 //!
 //! The agent's MCP config (injected by codeg via `load_mcp_servers_for_agent`)
 //! spawns this binary with three required flags:
@@ -27,8 +29,8 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use codeg_lib::acp::delegation::companion::{
-    dispatch_line, drain_and_cancel_all, CompanionContext, InflightCalls, JsonRpcResponse,
-    LineAction,
+    dispatch_line, drain_and_cancel_all, CompanionContext, CompanionFeatures, InflightCalls,
+    JsonRpcResponse, LineAction, SpawnResult,
 };
 use codeg_lib::acp::delegation::parent_watcher::{wait_for_parent_exit, DEFAULT_POLL_INTERVAL};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Stdout};
@@ -44,6 +46,10 @@ struct Args {
     /// upgrade failure) or hold open a UDS / pipe nobody will ever read
     /// from. Omitted by older parents — backward compatible.
     parent_pid: Option<u32>,
+    /// Comma-joined tool groups to expose (e.g. `delegation,feedback`). Omitted
+    /// by parents that predate feature gating; see `CompanionFeatures::parse`
+    /// (defaults to delegation-only).
+    features: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -51,6 +57,7 @@ fn parse_args() -> Result<Args, String> {
     let mut socket_path = None;
     let mut token = None;
     let mut parent_pid = None;
+    let mut features = None;
 
     let mut iter = std::env::args().skip(1);
     while let Some(arg) = iter.next() {
@@ -82,9 +89,15 @@ fn parse_args() -> Result<Args, String> {
                         .map_err(|e| format!("--parent-pid must be a u32: {e}"))?,
                 );
             }
+            "--features" => {
+                features = Some(
+                    iter.next()
+                        .ok_or_else(|| "--features requires a value".to_string())?,
+                );
+            }
             "--help" | "-h" => {
                 println!(
-                    "codeg-mcp --parent-connection-id <uuid> --socket-path <path> --token <secret> [--parent-pid <pid>]"
+                    "codeg-mcp --parent-connection-id <uuid> --socket-path <path> --token <secret> [--parent-pid <pid>] [--features delegation,feedback]"
                 );
                 std::process::exit(0);
             }
@@ -97,6 +110,7 @@ fn parse_args() -> Result<Args, String> {
         socket_path: socket_path.ok_or_else(|| "missing --socket-path".to_string())?,
         token: token.ok_or_else(|| "missing --token".to_string())?,
         parent_pid,
+        features,
     })
 }
 
@@ -129,6 +143,7 @@ async fn main() -> ExitCode {
         parent_connection_id: args.parent_connection_id,
         socket_path: args.socket_path,
         token: args.token,
+        features: CompanionFeatures::parse(args.features.as_deref()),
     };
 
     let stdin = tokio::io::stdin();
@@ -209,13 +224,30 @@ async fn main() -> ExitCode {
                         // be a `notifications/cancelled` for THIS request.
                         let stdout = stdout.clone();
                         tokio::spawn(async move {
-                            if let Some(resp) = spawned.future.await {
-                                if let Err(e) = write_response(&stdout, &resp).await {
-                                    let _ = writeln!(
-                                        std::io::stderr(),
-                                        "codeg-mcp: write stdout: {e}"
-                                    );
-                                }
+                            let SpawnResult {
+                                response,
+                                after_relay,
+                            } = spawned.future.await;
+                            // `None` → cancellation won; suppress per MCP spec.
+                            let Some(resp) = response else {
+                                return;
+                            };
+                            if let Err(e) = write_response(&stdout, &resp).await {
+                                let _ = writeln!(
+                                    std::io::stderr(),
+                                    "codeg-mcp: write stdout: {e}"
+                                );
+                                // Relay failed (agent stdin gone) → skip any
+                                // post-relay action so feedback notes stay
+                                // pending for the next check (at-least-once).
+                                return;
+                            }
+                            // The response reached the agent's stdin. Only now
+                            // run any post-relay action — for
+                            // `check_user_feedback`, the delivery commit that
+                            // marks the pulled notes `Delivered`.
+                            if let Some(after) = after_relay {
+                                after.await;
                             }
                         });
                     }

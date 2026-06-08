@@ -146,6 +146,68 @@ impl EventEmitter {
     }
 }
 
+/// Global side-channel for cross-client conversation list/status sync.
+pub const CONVERSATION_CHANGED_EVENT: &str = "conversation://changed";
+
+/// Global side-channel announcing a live-feedback enable/disable. The settings
+/// UI runs in a SEPARATE window (`openSettingsWindow`), so the conversation
+/// feedback bar can't learn about a save through any frontend-only cache — it
+/// relies on this backend broadcast to converge across every window / WS client,
+/// exactly like [`CONVERSATION_CHANGED_EVENT`]. Payload: `FeedbackSettings`
+/// (`{ "enabled": bool }`).
+pub const FEEDBACK_SETTINGS_CHANGED_EVENT: &str = "feedback-settings://changed";
+
+/// Payload for the global [`CONVERSATION_CHANGED_EVENT`] side-channel. Drives
+/// cross-client sidebar sync (membership + status) independent of the
+/// per-connection ACP attach protocol, so clients that are NOT attached to a
+/// conversation's connection still see it appear / update / disappear / change
+/// state.
+///
+/// Delivered via [`emit_event`], so in desktop mode a single emit reaches both
+/// the Tauri webview (`app.emit`) and every WebSocket browser
+/// (`WebEventBroadcaster`); in standalone server mode it reaches all browsers.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ConversationChange {
+    /// Insert-or-replace by id. Covers create and field updates (e.g. title).
+    /// Carries the full summary so the frontend renders without a re-fetch.
+    /// Root conversations omit `parent_id` (serde skips `None`); delegation
+    /// children carry it and the frontend filters them out of the sidebar.
+    Upsert {
+        summary: crate::models::DbConversationSummary,
+    },
+    /// Remove by id (soft delete).
+    Deleted { id: i32 },
+    /// Lightweight running-state change. Emitted centrally from
+    /// [`emit_with_state`] whenever a `ConversationStatusChanged` ACP event
+    /// flows through, so the sidebar's status reaches every client (not just
+    /// those attached to the connection).
+    Status { id: i32, status: String },
+}
+
+/// Global side-channel for cross-client open-tab sync. Mirrors
+/// [`CONVERSATION_CHANGED_EVENT`]: a single [`emit_event`] reaches the Tauri
+/// webview and every WebSocket client.
+pub const TABS_CHANGED_EVENT: &str = "tabs://changed";
+
+/// Payload for the [`TABS_CHANGED_EVENT`] side-channel. Carries the full
+/// conversation-bound tab set (a snapshot, not a delta) so every client
+/// converges idempotently — matching the full-replacement save semantics.
+///
+/// - `version` — workspace-global logical clock; clients drop events at or
+///   below their last-applied version (except `origin == "server"`).
+/// - `origin` — the originating client's id, echoed back so the originator can
+///   ignore its own broadcast; the sentinel `"server"` marks cascade-originated
+///   changes (folder removal, conversation deletion) that every client applies.
+/// - `tabs` — the canonical persisted set; `is_active` marks the focused tab,
+///   which is mirrored across clients.
+#[derive(Debug, Clone, Serialize)]
+pub struct TabsChanged {
+    pub version: i64,
+    pub origin: String,
+    pub tabs: Vec<crate::models::OpenedTab>,
+}
+
 /// Unified event emission: serializes the payload exactly once and dispatches
 /// the shared `Arc<Value>` to both the Tauri webview and the web broadcaster.
 pub fn emit_event(emitter: &EventEmitter, event: &str, payload: impl Serialize) {
@@ -194,8 +256,33 @@ pub async fn emit_with_state(
     emitter: &EventEmitter,
     payload: AcpEvent,
 ) {
+    emit_with_state_gated(state, emitter, payload, |_| true).await;
+}
+
+/// Like [`emit_with_state`], but a `gate` predicate — evaluated under the SAME
+/// write lock, BEFORE `apply_event` — can veto the emit: returning `false`
+/// aborts with no mutation, no seq bump, no broadcast, and returns `false`.
+///
+/// The point is atomicity: the gate, the state mutation, and the seq assignment
+/// all happen in one critical section, so no other event can interleave between
+/// "decide to accept" and "apply + sequence". Used by feedback submit to gate on
+/// `turn_in_flight` together with the append (a `TurnComplete`/`UserMessage`
+/// can't slip in between to strand or re-add the note), and to assign the
+/// `FeedbackSubmitted` seq atomically with the append.
+pub async fn emit_with_state_gated<F>(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    payload: AcpEvent,
+    gate: F,
+) -> bool
+where
+    F: FnOnce(&SessionState) -> bool,
+{
     let (envelope_arc, stream, evicted) = {
         let mut s = state.write().await;
+        if !gate(&s) {
+            return false;
+        }
         s.apply_event(&payload);
         s.event_seq += 1;
         let envelope = Arc::new(EventEnvelope {
@@ -240,5 +327,129 @@ pub async fn emit_with_state(
             }
         }
         EventEmitter::Noop => {}
+    }
+
+    // Bridge conversation status transitions onto the global
+    // `conversation://changed` side-channel so clients NOT attached to this
+    // connection (only showing the sidebar, or a different browser entirely)
+    // still observe running-state changes live — the per-connection delivery
+    // above only reaches attached clients. One central hook here covers every
+    // `ConversationStatusChanged` emit site (manager + lifecycle). `status`
+    // serializes to the same snake_case string the DB stores (e.g.
+    // "in_progress"), matching `DbConversationSummary.status`.
+    if let AcpEvent::ConversationStatusChanged {
+        conversation_id,
+        status,
+    } = &envelope_arc.payload
+    {
+        if let Ok(serde_json::Value::String(status_str)) = serde_json::to_value(status) {
+            emit_event(
+                emitter,
+                CONVERSATION_CHANGED_EVENT,
+                ConversationChange::Status {
+                    id: *conversation_id,
+                    status: status_str,
+                },
+            );
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::entities::conversation::ConversationStatus;
+    use crate::models::AgentType;
+
+    fn fresh_state() -> Arc<RwLock<SessionState>> {
+        Arc::new(RwLock::new(SessionState::new(
+            "conn-test".to_string(),
+            AgentType::ClaudeCode,
+            None,
+            "win-test".to_string(),
+            None,
+        )))
+    }
+
+    #[tokio::test]
+    async fn emit_with_state_bridges_status_change_to_global_channel() {
+        // A ConversationStatusChanged ACP event must ALSO surface on the global
+        // `conversation://changed` channel so clients NOT attached to this
+        // connection (e.g. only viewing the sidebar) still observe the flip.
+        let state = fresh_state();
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+
+        emit_with_state(
+            &state,
+            &emitter,
+            AcpEvent::ConversationStatusChanged {
+                conversation_id: 7,
+                status: ConversationStatus::PendingReview,
+            },
+        )
+        .await;
+
+        let evt = rx
+            .try_recv()
+            .expect("status change should bridge to the global channel");
+        let p = &*evt.payload;
+        assert_eq!(evt.channel, CONVERSATION_CHANGED_EVENT);
+        assert_eq!(p["kind"], "status");
+        assert_eq!(p["id"], 7);
+        assert_eq!(p["status"], "pending_review");
+    }
+
+    #[tokio::test]
+    async fn emit_with_state_non_status_event_does_not_touch_global_channel() {
+        // High-frequency stream events (deltas, etc.) must NOT spam the global
+        // sidebar channel — only status transitions bridge.
+        let state = fresh_state();
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+
+        emit_with_state(
+            &state,
+            &emitter,
+            AcpEvent::ContentDelta {
+                text: "hello".to_string(),
+            },
+        )
+        .await;
+
+        assert!(
+            rx.try_recv().is_err(),
+            "non-status ACP events must not emit on conversation://changed"
+        );
+    }
+
+    #[test]
+    fn emit_event_broadcasts_tabs_changed_snapshot() {
+        // The open-tab set syncs via the same global side-channel as the
+        // sidebar: one `emit_event` on `tabs://changed` reaches every client,
+        // carrying version + origin (for echo suppression) + the full set.
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+
+        emit_event(
+            &emitter,
+            TABS_CHANGED_EVENT,
+            TabsChanged {
+                version: 6,
+                origin: "win-abc".to_string(),
+                tabs: vec![],
+            },
+        );
+
+        let evt = rx.try_recv().expect("tabs change should broadcast");
+        let p = &*evt.payload;
+        assert_eq!(evt.channel, TABS_CHANGED_EVENT);
+        assert_eq!(p["version"], 6);
+        assert_eq!(p["origin"], "win-abc");
+        assert!(p["tabs"].is_array(), "tabs must serialize as an array");
     }
 }

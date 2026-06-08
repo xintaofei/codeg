@@ -14,6 +14,7 @@ import {
   FileSearch,
   FolderSearch,
   GitFork,
+  MessageSquarePlus,
   MessageSquareText,
   Paperclip,
   Plus,
@@ -39,6 +40,11 @@ import {
 import { ImagePreviewDialog } from "@/components/ui/image-preview-dialog"
 import { AgentIcon } from "@/components/agent-icon"
 import { cn, randomUUID } from "@/lib/utils"
+import {
+  filesFromClipboard,
+  clipboardHasText,
+  imageFilesFromClipboardApi,
+} from "@/lib/clipboard-images"
 import { matchShortcutEvent } from "@/lib/keyboard-shortcuts"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import {
@@ -134,7 +140,16 @@ interface MessageInputProps {
   isEditingQueueItem?: boolean
   onSaveQueueEdit?: (draft: PromptDraft) => void
   onCancelQueueEdit?: () => void
+  /** Fork the session and send `draft`. Fire-and-forget: the input consumes the
+   *  draft synchronously (clears on click); the parent re-queues it if the fork
+   *  can't run, so it is never lost. */
   onForkSend?: (draft: PromptDraft, modeId?: string | null) => void
+  /** Open the live-feedback dialog (from the "+" menu). When omitted the entry
+   *  is hidden (feature off). */
+  onAddFeedback?: () => void
+  /** Grey out the live-feedback "+" entry when a note can't be sent right now
+   *  (no active turn / agent lacks the tool). */
+  feedbackAddDisabled?: boolean
 }
 
 interface ResourceInputAttachment {
@@ -357,6 +372,8 @@ export function MessageInput({
   onSaveQueueEdit,
   onCancelQueueEdit,
   onForkSend,
+  onAddFeedback,
+  feedbackAddDisabled,
 }: MessageInputProps) {
   const t = useTranslations("Folder.chat.messageInput")
   const tQueue = useTranslations("Folder.chat.messageQueue")
@@ -1276,12 +1293,33 @@ export function MessageInput({
   const handlePaste = useCallback(
     (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
       if (disabled) return
-      const files = Array.from(event.clipboardData?.files ?? [])
-      if (files.length === 0) return
-      event.preventDefault()
-      void appendFilesFromInput(files).catch((error) => {
-        console.error("[MessageInput] paste files failed:", error)
-      })
+      const files = filesFromClipboard(event.clipboardData)
+      if (files.length > 0) {
+        event.preventDefault()
+        void appendFilesFromInput(files).catch((error) => {
+          console.error("[MessageInput] paste files failed:", error)
+        })
+        return
+      }
+
+      // Linux/Tauri (WebKitGTK) fallback: screenshot tools (e.g. WeChat) write
+      // the image to the clipboard in a form the synchronous DataTransfer API
+      // can't read, so retry through the async Clipboard API. Only for a pure-
+      // image clipboard — when text is present we let the default paste run
+      // (mirroring `filesFromClipboard`) so copying a spreadsheet cell or rich
+      // web content isn't hijacked into an image attachment. Kept synchronous
+      // so `imageFilesFromClipboardApi` runs inside the paste user gesture.
+      // No `preventDefault()`: the default paste of a textless clipboard is a
+      // no-op anyway, and it can't be cancelled after the async boundary.
+      if (clipboardHasText(event.clipboardData)) return
+      void imageFilesFromClipboardApi()
+        .then((imageFiles) => {
+          if (imageFiles.length === 0) return
+          return appendFilesFromInput(imageFiles)
+        })
+        .catch((error) => {
+          console.error("[MessageInput] clipboard image paste failed:", error)
+        })
     },
     [appendFilesFromInput, disabled]
   )
@@ -1918,6 +1956,10 @@ export function MessageInput({
     if (!onForkSend) return
     const draft = buildDraft()
     if (!draft) return
+    // Fork-send consumes the draft synchronously, exactly like a normal send:
+    // fire-and-forget and clear the input immediately, so there is no in-flight
+    // editable window. If the fork can't run (queue non-empty / disconnected /
+    // failure) the parent re-queues the draft, so it is never lost.
     onForkSend(draft, showModeSelector ? effectiveModeId : null)
     if (effectiveDraftStorageKey) {
       clearMessageInputDraft(effectiveDraftStorageKey)
@@ -2498,6 +2540,20 @@ export function MessageInput({
                       )}
                     </DropdownMenuSubContent>
                   </DropdownMenuSub>
+                  {onAddFeedback && (
+                    <DropdownMenuItem
+                      disabled={feedbackAddDisabled}
+                      onClick={onAddFeedback}
+                      title={
+                        feedbackAddDisabled
+                          ? t("liveFeedbackDisabledHint")
+                          : undefined
+                      }
+                    >
+                      <MessageSquarePlus className="size-4" />
+                      {t("liveFeedback")}
+                    </DropdownMenuItem>
+                  )}
                   <DropdownMenuSub>
                     <DropdownMenuSubTrigger>
                       <Sparkles className="size-4" />

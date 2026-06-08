@@ -38,6 +38,14 @@ pub struct ReadFileBase64Params {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ReadWorkspaceFileBase64Params {
+    pub root_path: String,
+    pub path: String,
+    pub max_bytes: Option<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ReadFileForEditParams {
     pub root_path: String,
     pub path: String,
@@ -99,6 +107,18 @@ pub async fn read_file_base64(
     Json(params): Json<ReadFileBase64Params>,
 ) -> Result<Json<String>, AppCommandError> {
     let result = folder_commands::read_file_base64(params.path, params.max_bytes).await?;
+    Ok(Json(result))
+}
+
+pub async fn read_workspace_file_base64(
+    Json(params): Json<ReadWorkspaceFileBase64Params>,
+) -> Result<Json<String>, AppCommandError> {
+    let result = folder_commands::read_workspace_file_base64(
+        params.root_path,
+        params.path,
+        params.max_bytes,
+    )
+    .await?;
     Ok(Json(result))
 }
 

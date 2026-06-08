@@ -36,6 +36,17 @@ pub async fn init_database(
     let app_data_dir = app_data_dir.as_ref();
     std::fs::create_dir_all(app_data_dir)?;
 
+    // Apply any pending restore BEFORE opening a connection — swapping
+    // `codeg.db` under a live SQLite handle would corrupt it. A failure here
+    // aborts startup loudly (leaving the safety snapshot intact) rather than
+    // booting a half-restored data dir.
+    match crate::commands::backup::restore::apply_pending_restore_on_startup(app_data_dir) {
+        Ok(crate::commands::backup::restore::RestoreApplied::Applied { .. }) => {}
+        Ok(crate::commands::backup::restore::RestoreApplied::None) => {}
+        Err(e) => return Err(DbError::Io(e)),
+    }
+    crate::commands::backup::restore::cleanup_transient_dirs(app_data_dir);
+
     let db_path = app_data_dir.join(database_file_name());
     let db_url = format!(
         "sqlite:{}?mode=rwc",

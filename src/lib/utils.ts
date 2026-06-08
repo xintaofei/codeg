@@ -6,20 +6,11 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 /**
- * Write text to the clipboard. Falls back to a hidden textarea +
- * `document.execCommand("copy")` when the async Clipboard API is unavailable
- * (non-secure contexts such as HTTP over LAN).
+ * Legacy clipboard copy: a hidden `<textarea>` + `document.execCommand("copy")`.
+ * Works in non-secure contexts (HTTP over LAN) where the async Clipboard API is
+ * unavailable. Returns whether the copy succeeded.
  */
-export async function copyTextToClipboard(text: string): Promise<boolean> {
-  if (typeof window === "undefined") return false
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text)
-      return true
-    } catch {
-      // fall through to legacy path
-    }
-  }
+function legacyCopyText(text: string): boolean {
   try {
     const textarea = document.createElement("textarea")
     textarea.value = text
@@ -58,6 +49,93 @@ export async function copyTextToClipboard(text: string): Promise<boolean> {
     return ok
   } catch {
     return false
+  }
+}
+
+/**
+ * Write text to the clipboard. Falls back to `legacyCopyText` when the async
+ * Clipboard API is unavailable (non-secure contexts such as HTTP over LAN).
+ */
+export async function copyTextToClipboard(text: string): Promise<boolean> {
+  if (typeof window === "undefined") return false
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      // fall through to legacy path
+    }
+  }
+  return legacyCopyText(text)
+}
+
+/**
+ * Copy text to the clipboard from inside a Radix menu item
+ * (`ContextMenuItem` / `DropdownMenuItem`).
+ *
+ * Radix menus trap focus while open. `copyTextToClipboard`'s fallback (hidden
+ * textarea + `execCommand`, used in non-secure contexts such as the web build
+ * served over HTTP/LAN where `navigator.clipboard` is unavailable) must focus
+ * that textarea, which the focus trap steals back — so a copy fired straight
+ * from `onSelect`/`onClick` silently fails in the web build. Deferring to the
+ * next tick lets the menu close and release focus first, then the write
+ * succeeds. Plain buttons aren't focus-trapped — call `copyTextToClipboard`
+ * directly there. Resolves once the deferred write completes.
+ */
+export function copyTextFromMenu(text: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      void copyTextToClipboard(text).then(resolve)
+    }, 0)
+  })
+}
+
+/**
+ * Install a `navigator.clipboard.writeText` fallback for non-secure contexts.
+ *
+ * The web build served over plain HTTP/LAN is not a secure context, so
+ * `navigator.clipboard` is undefined. Third-party components that call
+ * `navigator.clipboard.writeText` directly with no fallback of their own —
+ * notably Streamdown's code-block copy button (`data-streamdown="code-block"`)
+ * and its link-safety dialog — then silently fail. Backing `writeText` with the
+ * legacy `execCommand` path makes those copies work. Idempotent, and a no-op
+ * when the native async Clipboard API is present (secure contexts, desktop
+ * Tauri) or when run off the client. Call once on client startup.
+ */
+export function installClipboardFallback(): void {
+  if (typeof navigator === "undefined" || typeof document === "undefined") {
+    return
+  }
+  // navigator.clipboard is undefined at runtime in non-secure contexts even
+  // though the DOM types claim it is always present, so guard with typeof.
+  if (typeof navigator.clipboard?.writeText === "function") return
+
+  const writeText = (text: string): Promise<void> =>
+    legacyCopyText(text)
+      ? Promise.resolve()
+      : Promise.reject(new Error("Copy command failed"))
+
+  // A clipboard object exists but lacks writeText: augment it in place so any
+  // other methods it carries (e.g. readText) are preserved.
+  if (navigator.clipboard) {
+    try {
+      Object.defineProperty(navigator.clipboard, "writeText", {
+        configurable: true,
+        value: writeText,
+      })
+      return
+    } catch {
+      // fall through to defining a fresh clipboard object
+    }
+  }
+
+  try {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    })
+  } catch {
+    // navigator.clipboard is a non-configurable getter here; nothing we can do.
   }
 }
 

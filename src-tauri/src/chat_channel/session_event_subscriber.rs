@@ -8,6 +8,7 @@ use tokio::task::JoinHandle;
 
 use super::i18n::Lang;
 use super::session_bridge::{PendingPermission, SessionBridge};
+use super::tool_detail::{format_tool_call_detail, truncate_str};
 use super::types::{MessageLevel, RichMessage};
 use crate::acp::internal_bus::InternalEventBus;
 use crate::acp::manager::ConnectionManager;
@@ -114,12 +115,36 @@ async fn handle_acp_envelope(
                 .await;
 
                 if let Some(prompt_text) = session.pending_prompt.take() {
-                    let blocks = vec![PromptInputBlock::Text { text: prompt_text }];
+                    // Clone so the prompt can be RESTORED (not dropped) if a turn
+                    // is already in flight — see the TurnInProgress arm below.
+                    let blocks = vec![PromptInputBlock::Text {
+                        text: prompt_text.clone(),
+                    }];
                     if let Err(e) = conn_mgr.send_prompt(connection_id, blocks).await {
-                        eprintln!("[SessionEventSub] failed to send pending prompt: {e}");
-                        let channel_id = session.channel_id;
-                        let msg = RichMessage::error(format!("Failed to send task: {e}"));
-                        let _ = manager.send_to_channel(channel_id, &msg).await;
+                        // A turn is already in flight on this shared connection
+                        // (another client raced this kickoff between
+                        // SessionStarted and here). Transient, not a failure —
+                        // RESTORE the pending prompt so the TurnComplete handler
+                        // retries the kickoff once the in-flight turn finishes,
+                        // instead of silently dropping the task's initial prompt.
+                        if matches!(e, crate::acp::error::AcpError::TurnInProgress) {
+                            session.pending_prompt = Some(prompt_text);
+                            eprintln!(
+                                "[SessionEventSub] kickoff deferred; a turn is already in \
+                                 progress, will retry on TurnComplete"
+                            );
+                            let channel_id = session.channel_id;
+                            let lang = get_lang(db).await;
+                            let msg = RichMessage::info(
+                                super::i18n::task_deferred_busy(lang).to_string(),
+                            );
+                            let _ = manager.send_to_channel(channel_id, &msg).await;
+                        } else {
+                            eprintln!("[SessionEventSub] failed to send pending prompt: {e}");
+                            let channel_id = session.channel_id;
+                            let msg = RichMessage::error(format!("Failed to send task: {e}"));
+                            let _ = manager.send_to_channel(channel_id, &msg).await;
+                        }
                     }
                 }
             }
@@ -417,6 +442,11 @@ async fn handle_acp_envelope(
                 let tool_count = session.tool_calls.len();
                 session.tool_calls.clear();
                 session.last_flushed = Instant::now();
+                // A kickoff prompt deferred by `SessionStarted` (the connection
+                // was already mid-turn for another client) waits here. Take it
+                // BEFORE dropping the guard so a second TurnComplete can't
+                // double-send it; retry below once the lock is released.
+                let deferred_kickoff = session.pending_prompt.take();
                 drop(guard);
 
                 let lang = get_lang(db).await;
@@ -445,6 +475,32 @@ async fn handle_acp_envelope(
                         crate::db::entities::conversation::ConversationStatus::Completed,
                     )
                     .await;
+                }
+
+                // Retry the deferred kickoff now the turn that blocked it ended.
+                // If yet ANOTHER turn slipped in (another client raced this
+                // TurnComplete), restore the prompt for the next TurnComplete —
+                // never drop it.
+                if let Some(prompt_text) = deferred_kickoff {
+                    let blocks = vec![PromptInputBlock::Text {
+                        text: prompt_text.clone(),
+                    }];
+                    if let Err(e) = conn_mgr.send_prompt(connection_id, blocks).await {
+                        if matches!(e, crate::acp::error::AcpError::TurnInProgress) {
+                            let mut g = bridge.lock().await;
+                            if let Some(s) = g.get_mut(connection_id) {
+                                s.pending_prompt = Some(prompt_text);
+                            }
+                            eprintln!(
+                                "[SessionEventSub] deferred kickoff still blocked; will retry on \
+                                 next TurnComplete"
+                            );
+                        } else {
+                            eprintln!("[SessionEventSub] failed to send deferred kickoff: {e}");
+                            let msg = RichMessage::error(format!("Failed to send task: {e}"));
+                            let _ = manager.send_to_channel(channel_id, &msg).await;
+                        }
+                    }
                 }
             }
         }
@@ -703,134 +759,6 @@ fn localize_stop_reason(reason: &str, lang: Lang) -> String {
     .to_string()
 }
 
-/// Extract a concise detail string from a tool call's `raw_input` JSON.
-///
-/// Returns a formatted string like `"Read: src/main.rs"` or `"Bash: npm test"`.
-/// Falls back to the original title if no detail can be extracted.
-fn format_tool_call_detail(title: &str, raw_input: Option<&str>) -> String {
-    let parsed = raw_input.and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
-
-    let normalized_title = title.to_lowercase().replace([' ', '-'], "_");
-
-    if let Some(ref obj) = parsed {
-        // File operations: read, edit, write, delete
-        if let Some(path) = obj
-            .get("file_path")
-            .or_else(|| obj.get("path"))
-            .or_else(|| obj.get("notebook_path"))
-            .and_then(|v| v.as_str())
-        {
-            let short = short_path(path);
-            let label = match normalized_title.as_str() {
-                s if s.contains("write") => "Write",
-                s if s.contains("edit") || s.contains("change") || s.contains("update") => "Edit",
-                s if s.contains("delete") => "Delete",
-                _ => "Read",
-            };
-            return format!("{label}: {short}");
-        }
-
-        // Bash / shell commands
-        if let Some(cmd) = obj
-            .get("command")
-            .or_else(|| obj.get("cmd"))
-            .and_then(|v| v.as_str())
-        {
-            let short = truncate_str(cmd.lines().next().unwrap_or(cmd), 80);
-            return format!("Bash: {short}");
-        }
-
-        // Grep / search
-        if let Some(pattern) = obj.get("pattern").and_then(|v| v.as_str()) {
-            let path = obj.get("path").and_then(|v| v.as_str());
-            return if let Some(p) = path {
-                format!(
-                    "Grep: \"{}\" in {}",
-                    truncate_str(pattern, 40),
-                    short_path(p)
-                )
-            } else {
-                format!("Grep: \"{}\"", truncate_str(pattern, 60))
-            };
-        }
-
-        // Glob
-        if let Some(pat) = obj.get("glob").and_then(|v| v.as_str()) {
-            return format!("Glob: {pat}");
-        }
-
-        // Agent / task
-        if obj.get("subagent_type").is_some()
-            || obj.get("task_id").is_some()
-            || obj.get("subject").is_some()
-        {
-            let desc = obj
-                .get("description")
-                .or_else(|| obj.get("subject"))
-                .or_else(|| obj.get("prompt"))
-                .and_then(|v| v.as_str());
-            if let Some(d) = desc {
-                return format!("Agent: {}", truncate_str(d, 60));
-            }
-        }
-
-        // Web fetch
-        if let Some(url) = obj.get("url").and_then(|v| v.as_str()) {
-            return format!("Fetch: {}", truncate_str(url, 80));
-        }
-
-        // Web search
-        if let Some(query) = obj.get("query").and_then(|v| v.as_str()) {
-            return format!("Search: {}", truncate_str(query, 60));
-        }
-
-        // TodoWrite
-        if obj.get("todos").is_some() {
-            return "TodoWrite".to_string();
-        }
-    }
-
-    // Fallback: if raw_input is a plain string (e.g. a bare command), use it directly
-    if let Some(raw) = raw_input {
-        if !raw.starts_with('{') && !raw.starts_with('[') {
-            let short = truncate_str(raw.lines().next().unwrap_or(raw), 80);
-            if normalized_title.contains("bash")
-                || normalized_title.contains("shell")
-                || normalized_title.contains("exec")
-            {
-                return format!("Bash: {short}");
-            }
-        }
-    }
-
-    title.to_string()
-}
-
-fn short_path(path: &str) -> &str {
-    // Show last 2 path components at most, or the full path if short enough
-    if path.len() <= 60 {
-        return path;
-    }
-    let parts: Vec<&str> = path.rsplitn(3, '/').collect();
-    if parts.len() >= 2 {
-        // e.g. "src/main.rs" from "/very/long/path/src/main.rs"
-        let tail = &path[path.len() - parts[0].len() - parts[1].len() - 1..];
-        if tail.len() < path.len() {
-            return tail;
-        }
-    }
-    path
-}
-
-fn truncate_str(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max.saturating_sub(3)).collect();
-        format!("{truncated}...")
-    }
-}
-
 /// Title-side match for `delegate_to_agent`. Title is free-form text the
 /// host agent composes; some hosts copy the bare MCP method, some prefix
 /// it with `mcp__<server>__`, some rephrase it. Match by substring so any
@@ -992,7 +920,7 @@ mod delegation_relay_tests {
         assert!(is_delegation_title("Delegate To Agent"));
         assert!(is_delegation_title("delegate-to-agent"));
         assert!(is_delegation_title(
-            "mcp__codeg-delegate__delegate_to_agent"
+            "mcp__codeg-mcp__delegate_to_agent"
         ));
         assert!(is_delegation_title("Run mcp__codeg__delegate_to_agent"));
         assert!(!is_delegation_title("agent"));
@@ -1394,6 +1322,108 @@ mod async_relay_dedup_tests {
         let msgs = sent(&rec).await;
         assert_eq!(msgs.len(), 1, "one failure line, got {msgs:?}");
         assert!(msgs[0].starts_with("❌ codex failed"), "got {:?}", msgs[0]);
+    }
+
+    /// Chat kickoff DEFERS (does not drop) when a turn is already in flight on a
+    /// shared connection: SessionStarted bounces with `TurnInProgress` → the
+    /// pending prompt is RESTORED and an info line is posted; `TurnComplete`
+    /// then retries it successfully. Regression for the silent kickoff-drop.
+    #[tokio::test]
+    async fn kickoff_defers_on_turn_in_progress_then_retries_on_turn_complete() {
+        use crate::acp::connection::ConnectionCommand;
+        use crate::web::event_bridge::EventEmitter;
+
+        let (bridge, chat, rec) = harness().await;
+        let db = test_helpers::fresh_in_memory_db().await;
+
+        // A LIVE connection (receiver kept) so `send_prompt` reaches the gate —
+        // a dropped receiver would fail `reserve()` with ProcessExited before it.
+        let conn = ConnectionManager::new();
+        let mut cmd_rx = conn
+            .insert_test_connection_live("conn", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        // Seed the kickoff prompt + simulate another client's turn in flight.
+        bridge.lock().await.get_mut("conn").unwrap().pending_prompt = Some("do the task".into());
+        conn.get_state("conn")
+            .await
+            .unwrap()
+            .write()
+            .await
+            .turn_in_flight = true;
+
+        // SessionStarted → kickoff bounces (turn in flight) and is DEFERRED.
+        let started = EventEnvelope {
+            seq: 1,
+            connection_id: "conn".into(),
+            payload: AcpEvent::SessionStarted {
+                session_id: "S1".into(),
+            },
+        };
+        handle_acp_envelope(&started, &bridge, &chat, &conn, &db.conn).await;
+
+        assert_eq!(
+            bridge
+                .lock()
+                .await
+                .get("conn")
+                .unwrap()
+                .pending_prompt
+                .as_deref(),
+            Some("do the task"),
+            "a deferred kickoff must be RESTORED, not dropped"
+        );
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "no Prompt should be enqueued while the turn is in flight"
+        );
+        assert!(
+            sent(&rec)
+                .await
+                .iter()
+                .any(|m| m.contains("start automatically")),
+            "the user should be told the task is deferred"
+        );
+
+        // Turn ends → kickoff retried and now succeeds.
+        conn.get_state("conn")
+            .await
+            .unwrap()
+            .write()
+            .await
+            .turn_in_flight = false;
+        let complete = EventEnvelope {
+            seq: 2,
+            connection_id: "conn".into(),
+            payload: AcpEvent::TurnComplete {
+                session_id: "S1".into(),
+                stop_reason: "end_turn".into(),
+                agent_type: "claude".into(),
+            },
+        };
+        handle_acp_envelope(&complete, &bridge, &chat, &conn, &db.conn).await;
+
+        assert!(
+            bridge
+                .lock()
+                .await
+                .get("conn")
+                .unwrap()
+                .pending_prompt
+                .is_none(),
+            "a retried kickoff must clear the pending prompt"
+        );
+        // The retried prompt landed on the connection's command channel.
+        let mut got_prompt = None;
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            if let ConnectionCommand::Prompt { blocks, .. } = cmd {
+                got_prompt = Some(blocks);
+            }
+        }
+        let blocks = got_prompt.expect("a Prompt command must be enqueued by the retry");
+        assert!(
+            matches!(blocks.as_slice(), [PromptInputBlock::Text { text }] if text == "do the task"),
+            "the retried prompt must carry the deferred text, got {blocks:?}"
+        );
     }
 }
 

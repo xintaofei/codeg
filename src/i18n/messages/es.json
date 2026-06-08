@@ -132,6 +132,25 @@
     "checkUpdateFailed": "No se pudo buscar actualizaciones: {message}",
     "installSuccess": "Actualización instalada. Reiniciando la app.",
     "installFailed": "La actualización falló: {message}",
+    "upgradeSuccess": "Actualización completada. Recargando...",
+    "restartTimeout": "El servidor no volvió a tiempo. Revisa los registros del contenedor o del servicio.",
+    "restartingIn": "Reiniciando en {seconds} s...",
+    "waitingForServer": "Esperando a que el servidor vuelva...",
+    "restartToUpdate": "Reiniciar para actualizar",
+    "updateReadyHint": "Actualización descargada: reinicia para aplicarla.",
+    "restarting": "Reiniciando...",
+    "dockerUpgradeHint": "Esto actualiza el contenedor en ejecución ahora. Se pierde si se recrea el contenedor: para conservarlo, descarga o crea una imagen con la nueva versión y recrea el contenedor.",
+    "upgradeRolledBack": "La actualización falló; el servidor volvió a la versión anterior.",
+    "serverUnreachable": "No se pudo conectar con el servidor para iniciar la actualización. Comprueba que esté en ejecución e inténtalo de nuevo.",
+    "rollbackButton": "Revertir",
+    "rollingBack": "Revirtiendo...",
+    "rollbackDescription": "Restaura la versión instalada antes de la última actualización.",
+    "rollbackConfirmTitle": "¿Revertir a la versión anterior?",
+    "rollbackConfirmDescription": "El servidor se reiniciará con la versión instalada antes de la última actualización. Una versión más reciente seguirá disponible para instalar de nuevo.",
+    "rollbackConfirm": "Revertir",
+    "rollbackCancel": "Cancelar",
+    "rollbackSuccess": "Se revirtió a la versión anterior. Recargando...",
+    "rollbackFailed": "Error al revertir. Revisa los registros del servidor.",
     "updateErrors": {
       "sourceUnavailable": "No se puede acceder al origen de actualización. Revisa tu red o proxy e inténtalo de nuevo.",
       "network": "Falló la conexión de red. Revisa tu red o proxy e inténtalo de nuevo.",
@@ -264,6 +283,14 @@
       "close_all_file_tabs": {
         "title": "Cerrar todas las pestañas de archivos",
         "description": "Cierra todas las pestañas de archivos abiertas cuando el panel de archivos está activo"
+      },
+      "next_tab": {
+        "title": "Pestaña siguiente",
+        "description": "Cambiar a la siguiente pestaña de conversación o archivo"
+      },
+      "prev_tab": {
+        "title": "Pestaña anterior",
+        "description": "Cambiar a la pestaña anterior de conversación o archivo"
       },
       "send_message": {
         "title": "Enviar mensaje",
@@ -1043,7 +1070,6 @@
     },
     "auxPanel": {
       "tabs": {
-        "diff": "Diferencias",
         "files": "Archivos",
         "changes": "Cambios",
         "commits": "Confirmaciones"
@@ -1088,16 +1114,6 @@
       "hideTerminal": "Ocultar terminal ({shortcut})",
       "openFolderFirst": "Abre primero una carpeta"
     },
-    "sessionFiles": {
-      "currentResponse": "Respuesta actual",
-      "noDiffDataAvailable": "No hay datos de diff disponibles para {filePath}",
-      "loading": "Cargando...",
-      "noFileChangesInConversation": "No se encontraron cambios de archivos en esta conversación",
-      "openConversationToSeeChanges": "Abre una conversación para ver sus cambios de archivos",
-      "remove": "Quitar",
-      "changeCount": "{count, plural, one {# cambio} other {# cambios}}",
-      "fileCount": "{count, plural, one {# archivo} other {# archivos}}"
-    },
     "folderNameDropdown": {
       "fallbackFolderName": "Carpeta",
       "openFolder": "Abrir carpeta",
@@ -1125,7 +1141,10 @@
       "loadingEditor": "Cargando editor...",
       "imageZoomIn": "Ampliar",
       "imageZoomOut": "Reducir",
-      "imageZoomReset": "Restablecer zoom"
+      "imageZoomReset": "Restablecer zoom",
+      "htmlPreviewTitle": "Vista previa HTML",
+      "htmlPreviewTrust": "Habilitar scripts",
+      "htmlPreviewTrustHint": "Ejecuta los scripts de este archivo y permite el acceso a la red. Actívalo solo para archivos de confianza."
     },
     "branchDropdown": {
       "toasts": {
@@ -1143,7 +1162,9 @@
         "upstreamSet": "La rama upstream se ha configurado",
         "upstreamSetAndPushed": "Rama upstream configurada y se enviaron {count, plural, one {# commit} other {# commits}}",
         "noCommitsToPush": "No hay commits para enviar",
-        "pushedCommits": "Se enviaron {count, plural, one {# commit} other {# commits}}"
+        "pushedCommits": "Se enviaron {count, plural, one {# commit} other {# commits}}",
+        "switchedToFolder": "Cambiado a {name}",
+        "switchFailed": "No se pudo cambiar de rama"
       },
       "tasks": {
         "newBranch": "Crear rama {name}",
@@ -1473,6 +1494,7 @@
       "newDirectory": "Directorio",
       "openIn": "Abrir en",
       "openInTerminal": "Abrir en terminal",
+      "copyPath": "Copiar ruta",
       "upload": "Subir archivos/carpeta",
       "download": "Descargar archivo",
       "downloadAsZip": "Descargar como ZIP",
@@ -1506,7 +1528,9 @@
         "watchStartFailed": "No se pudo iniciar la vigilancia de archivos",
         "createFailed": "Error al crear",
         "downloadFailed": "No se pudo descargar {name}",
-        "downloadSaved": "{name} descargado"
+        "downloadSaved": "{name} descargado",
+        "pathCopied": "Ruta copiada",
+        "copyPathFailed": "No se pudo copiar la ruta"
       },
       "createDialog": {
         "newFile": "Nuevo archivo",
@@ -1715,6 +1739,8 @@
         "quickMessagesEmpty": "Aún no hay mensajes rápidos",
         "quickMessagesLoading": "Cargando...",
         "quickMessageUntitled": "Sin título",
+        "liveFeedback": "Comentarios en vivo",
+        "liveFeedbackDisabledHint": "Disponible mientras el agente trabaja",
         "dropFilesToAttach": "Suelta archivos para adjuntar",
         "loadingSettings": "Cargando ajustes...",
         "loadingMode": "Cargando modo...",
@@ -1774,6 +1800,12 @@
       "agentSelector": {
         "noEnabledAgents": "No hay agentes habilitados",
         "openAgentsSettings": "Abrir ajustes de agentes"
+      },
+      "subAgentOverlay": {
+        "title": "Subagentes",
+        "collapsedSummary": "Subagentes {count}",
+        "collapseAria": "Contraer subagentes",
+        "expandAria": "Expandir subagentes"
       },
       "agentPlanOverlay": {
         "title": "Plan del agente",
@@ -1894,6 +1926,10 @@
         "waitForResultNoTask": "Esperando el resultado de la tarea",
         "cancelTask": "Cancelando la tarea {task}",
         "cancelTaskNoTask": "Cancelando la tarea",
+        "resultPageOf": "{current} / {total}",
+        "prevResult": "Resultado anterior",
+        "nextResult": "Resultado siguiente",
+        "noResultText": "Sin resultado en esta comprobación.",
         "status": {
           "starting": "iniciando",
           "running": "en curso",
@@ -1947,11 +1983,31 @@
         "agentPromptLabel": "Instrucción",
         "agentModelLabel": "Modelo",
         "agentRunning": "Ejecutando...",
+        "agentFallbackTitle": "Iniciando subagente…",
         "agentStatsBash": "Comandos",
         "agentStatsRead": "Archivos leídos",
         "agentStatsSearch": "Búsquedas",
         "agentStatsEdit": "Ediciones",
         "agentStatsOther": "Otros",
+        "goal": {
+          "title": "Objetivo:",
+          "titleWithStatus": "Objetivo {status}",
+          "objective": "Objetivo",
+          "statusLabel": "Estado",
+          "tokensUsed": "Tokens usados",
+          "budget": "Presupuesto",
+          "remaining": "Restante",
+          "elapsed": "Transcurrido",
+          "tokens": "tokens",
+          "status": {
+            "active": "activo",
+            "paused": "pausado",
+            "blocked": "bloqueado",
+            "usageLimited": "uso limitado",
+            "budgetLimited": "presupuesto limitado",
+            "complete": "completo"
+          }
+        },
         "field": {
           "file": "Archivo",
           "notebook": "Cuaderno",
@@ -2021,6 +2077,15 @@
           "errorSuffix": "{count, plural, one {# falló} other {# fallaron}}",
           "joiner": " · "
         }
+      },
+      "messageNav": {
+        "title": "Navegación de mensajes",
+        "expand": "Expandir navegación de mensajes",
+        "collapse": "Contraer navegación de mensajes",
+        "jumpToMessage": "Ir a: {label}",
+        "fileCount": "{count, plural, one {# archivo} other {# archivos}}",
+        "remove": "Quitar",
+        "noDiffDataAvailable": "No hay datos de diff disponibles para {filePath}"
       }
     },
     "diffPreview": {
@@ -2139,6 +2204,7 @@
     }
   },
   "WebServiceSettings": {
+    "addressSwitchHint": "Cambiar solo modifica la dirección que se muestra y se abre aquí; el servicio escucha en todas las interfaces y sigue accesible en cada dirección.",
     "sectionTitle": "Servicio Web",
     "sectionDescription": "Habilitar para acceder a Codeg de forma remota a través del navegador",
     "port": "Puerto",
@@ -2157,6 +2223,9 @@
     "hide": "Ocultar",
     "show": "Mostrar",
     "copy": "Copiar",
+    "qrcode": "Código QR",
+    "qrcodeTitle": "Escanear para abrir",
+    "qrcodeHint": "Escanea con tu teléfono para abrir Codeg en el navegador",
     "addressLabel": "Dirección de acceso",
     "tokenLabel": "Token de acceso",
     "tokenHint": "Ingrese este token al acceder al cliente Web por primera vez",
@@ -2268,8 +2337,35 @@
       "turnCompleteDesc": "Cuando finaliza un turno del agente",
       "error": "Error del agente",
       "errorDesc": "Cuando un agente encuentra un error",
+      "permissionRequest": "Solicitud de permiso",
+      "permissionRequestDesc": "Cuando un agente solicita permiso para actuar",
+      "userPromptSent": "Mensaje del usuario",
+      "userPromptSentDesc": "Cuando envías un mensaje (el texto del mensaje se incluye en la notificación)",
       "saved": "Filtro de eventos actualizado.",
-      "saveFailed": "Error al guardar el filtro de eventos."
+      "saveFailed": "Error al guardar el filtro de eventos.",
+      "loadFailed": "No se pudo cargar la configuración.",
+      "retry": "Reintentar",
+      "webhooksTitle": "Webhooks",
+      "webhooksDescription": "Envía una carga JSON por POST a una o varias URL cuando se activa un evento habilitado. El filtro de eventos anterior también se aplica a los webhooks.",
+      "webhookUrlPlaceholder": "https://example.com/webhook",
+      "addWebhook": "Agregar webhook",
+      "removeWebhook": "Eliminar webhook",
+      "webhookSave": "Guardar",
+      "webhooksSaved": "Webhooks guardados.",
+      "webhooksSaveFailed": "Error al guardar los webhooks.",
+      "webhookInvalidUrl": "Introduce URL http(s) válidas.",
+      "docsTitle": "Formato de solicitud",
+      "docsMethod": "Método",
+      "docsContentType": "Content-Type",
+      "docsNote": "Cada evento habilitado se entrega a todas las URL. Los webhooks no tienen antirrebote; el filtro de eventos anterior sigue aplicándose.",
+      "editWebhook": "Editar webhook",
+      "enableWebhook": "Activar webhook",
+      "webhookDuplicate": "Esta URL ya está configurada.",
+      "cancel": "Cancelar",
+      "webhooksEmpty": "Aún no hay webhooks configurados.",
+      "deleteWebhookTitle": "Eliminar webhook",
+      "deleteWebhookMessage": "¿Eliminar este webhook? Los eventos ya no se enviarán a esta URL.",
+      "delete": "Eliminar"
     },
     "language": {
       "title": "Idioma de mensajes",
@@ -2416,6 +2512,19 @@
     }
   },
   "Pet": {
+    "badge": {
+      "running": "{count} en ejecución",
+      "waiting": "{count} esperando aprobación",
+      "error": "{count} con error"
+    },
+    "panel": {
+      "title": "Sesiones activas",
+      "empty": "No hay sesiones activas",
+      "emptyHint": "Aquí aparecen los agentes en ejecución y los que te necesitan.",
+      "statusRunning": "En ejecución",
+      "statusWaiting": "En espera",
+      "statusError": "Error"
+    },
     "menu": {
       "scale": "Escala",
       "openManager": "Gestionar mascotas",
@@ -2567,5 +2676,119 @@
     "emptyDirectory": "Este directorio está vacío",
     "errorLoadingDir": "Error al cargar el directorio",
     "selectedCount": "{count} seleccionado(s)"
+  },
+  "BackupSettings": {
+    "title": "Copia de seguridad y restauración",
+    "description": "Exporta una copia de seguridad portátil de tus datos de codeg, o restaura desde una.",
+    "tabs": {
+      "backup": "Copia de seguridad",
+      "restore": "Restaurar"
+    },
+    "export": {
+      "includeExternal": "Incluir el contenido de las conversaciones",
+      "includeExternalHint": "También archiva las transcripciones de las CLI (Claude, Codex, Gemini, …). Aumenta el tamaño.",
+      "passphrase": "Frase de contraseña (opcional)",
+      "passphrasePlaceholder": "Déjala vacía para un archivo sin cifrar",
+      "passphraseConfirm": "Confirmar la frase de contraseña",
+      "passphraseMismatch": "Las frases de contraseña no coinciden.",
+      "noPassphraseWarning": "Esta copia contendrá secretos (claves de API, tokens) en texto plano. Guárdala en un lugar seguro.",
+      "passphraseLossWarning": "Cifrada con esta frase de contraseña. Si la pierdes, la copia no se podrá recuperar.",
+      "button": "Exportar copia",
+      "inProgress": "Creando copia de seguridad…",
+      "success": "Copia de seguridad creada.",
+      "started": "Descarga de la copia iniciada."
+    },
+    "restore": {
+      "selectFile": "Seleccionar archivo de copia",
+      "passphrasePrompt": "Esta copia está cifrada. Introduce su frase de contraseña.",
+      "unlock": "Desbloquear",
+      "preview": {
+        "title": "Detalles de la copia",
+        "encrypted": "Cifrada",
+        "compatible": "Compatible",
+        "incompatible": "Incompatible",
+        "createdAt": "Creada: {value}",
+        "appVersion": "Versión de la app: {value}",
+        "incompatibleHint": "Esta copia fue creada por una versión más reciente de codeg y no se puede restaurar."
+      },
+      "replaceWarning": "Restaurar reemplaza todos los datos actuales de codeg (base de datos y subidas). Tus datos actuales se guardan primero en una instantánea para poder recuperarlos.",
+      "keyringNote": "Los tokens de GitHub/chat del escritorio están en el llavero del sistema y no se incluyen; vuelve a introducirlos tras restaurar.",
+      "button": "Restaurar",
+      "staging": "Preparando la restauración…",
+      "staged": "Restauración preparada. Reiniciando…",
+      "restarting": "Restauración preparada. Reiniciando el servidor…",
+      "restartTimeout": "El servidor no volvió a tiempo. Recarga la página cuando esté activo.",
+      "externalSideLocation": "Las transcripciones de conversaciones se restauraron en {path}",
+      "confirmTitle": "¿Reemplazar todos los datos?",
+      "confirmBody": "Esto reemplazará tu base de datos y subidas actuales de codeg con la copia y luego reiniciará. Tus datos actuales se guardan primero en una instantánea.",
+      "cancel": "Cancelar",
+      "confirmAction": "Reemplazar y reiniciar",
+      "external": {
+        "title": "Contenido de las conversaciones",
+        "hint": "Esta copia incluye transcripciones de las CLI. Elige dónde restaurarlas.",
+        "modeSkip": "No restaurar",
+        "modeSide": "Restaurar en una carpeta aparte segura",
+        "modeOriginal": "Restaurar en las ubicaciones originales de las CLI",
+        "forceOverwrite": "Sobrescribir archivos existentes",
+        "forceOverwriteHint": "Reemplaza los archivos que ya existen en las carpetas de las CLI.",
+        "scanning": "Comprobando conflictos…",
+        "noConflicts": "No se sobrescribirá ningún archivo existente.",
+        "conflictCount": "Se verían afectados {count} archivo(s) existente(s).",
+        "conflictSkipNote": "Los archivos existentes se conservan (se omiten) salvo que actives la sobrescritura."
+      },
+      "restartFailed": "La restauración quedó preparada, pero el servidor no pudo reiniciarse. Reinícialo manualmente para aplicarla."
+    },
+    "remoteUnsupported": "La copia de seguridad y la restauración actúan sobre los datos de la máquina que ejecuta codeg. Estás conectado a un espacio de trabajo remoto: gestiona sus copias desde ese servidor directamente."
+  },
+  "backup": {
+    "restore": {
+      "error": {
+        "badPassphrase": "Frase de contraseña incorrecta o copia dañada.",
+        "corrupted": "El archivo de copia de seguridad está dañado.",
+        "unknownFormat": "Este archivo no es una copia de seguridad de codeg reconocida.",
+        "newerVersion": "Esta copia fue creada por codeg {backupVersion}, más reciente que esta versión ({appVersion}).",
+        "alreadyPending": "Ya hay una restauración preparada. Reinicia para aplicarla antes de preparar otra."
+      }
+    },
+    "error": {
+      "diskSpace": "No hay espacio en disco suficiente para completar la operación.",
+      "cancelled": "La operación fue cancelada."
+    }
+  },
+  "WebConnection": {
+    "disconnectedTitle": "Conexión perdida",
+    "reconnectingDescription": "Intentando volver a conectar con el servidor. Normalmente se recupera solo en unos segundos.",
+    "reconnectNow": "Volver a conectar ahora",
+    "sessionExpiredTitle": "Sesión caducada",
+    "sessionExpiredDescription": "Tu sesión ya no es válida. Inicia sesión de nuevo para continuar.",
+    "goToLogin": "Ir al inicio de sesión"
+  },
+  "SessionFeedbackSettings": {
+    "title": "Comentarios en vivo",
+    "description": "Envía notas y correcciones a un agente mientras trabaja. Cuando está activado, el agente obtiene una herramienta para consultar comentarios en vivo y las conversaciones muestran una entrada de notas. Consejo: el agente normalmente solo consulta los comentarios cuando lo mencionas en tu mensaje — por ejemplo, añade \"revisa mis comentarios en vivo periódicamente mientras trabajas\".",
+    "enable": "Activar comentarios en vivo",
+    "enableHint": "Inyecta una herramienta para consultar comentarios en los agentes iniciados después de activarlo. Desactivado por defecto.",
+    "save": "Guardar",
+    "saving": "Guardando…",
+    "saved": "Ajustes de comentarios guardados",
+    "saveFailed": "No se pudieron guardar los ajustes de comentarios",
+    "loadFailed": "Error al cargar: {detail}"
+  },
+  "LiveFeedback": {
+    "placeholder": "Envía una nota a {agent} mientras trabaja…",
+    "agentFallback": "el agente",
+    "ariaLabel": "Nota de comentarios en vivo",
+    "dialogTitle": "Comentarios en vivo",
+    "dialogDescription": "Envía una nota al agente mientras trabaja. La leerá en su próxima comprobación, sin interrumpir el paso actual.",
+    "send": "Enviar",
+    "cancel": "Cancelar",
+    "pending": "esperando",
+    "delivered": "recibida",
+    "turnEndedUnread": "El agente terminó antes de leer tus comentarios.",
+    "sendAsMessage": "Enviar como mensaje",
+    "dismiss": "Descartar",
+    "turnEndedResent": "El turno terminó: se envió como un mensaje nuevo.",
+    "turnEnded": "El turno ya terminó.",
+    "submitFailed": "No se pudo enviar tu nota"
   }
 }

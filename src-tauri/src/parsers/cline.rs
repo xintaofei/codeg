@@ -87,7 +87,7 @@ struct ApiTokenMetrics {
 // Parser
 // ---------------------------------------------------------------------------
 
-fn cline_data_dir() -> PathBuf {
+pub(crate) fn cline_data_dir() -> PathBuf {
     if let Ok(custom) = std::env::var("CLINE_DIR") {
         let trimmed = custom.trim();
         if !trimmed.is_empty() {

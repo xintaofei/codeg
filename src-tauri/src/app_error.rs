@@ -44,6 +44,30 @@ pub const UPLOAD_I18N_KEY_NOT_A_FILE: &str = "errors.upload.notAFile";
 /// Frontend params: `used`, `limit` (both byte counts as strings).
 pub const UPLOAD_I18N_KEY_QUOTA_EXCEEDED: &str = "errors.upload.quotaExceeded";
 
+// ─── Backup / restore i18n keys ──────────────────────────────────────
+//
+// Emitted by `commands::backup::*` and consumed by `BackupSettings` on the
+// frontend. MUST stay in lockstep with the TS constants in
+// `src/lib/api.ts`. No-param keys unless noted.
+
+/// Decryption failed the GCM tag — wrong passphrase or a tampered/corrupt
+/// archive (the two are cryptographically indistinguishable).
+pub const BACKUP_I18N_KEY_BAD_PASSPHRASE: &str = "backup.restore.error.badPassphrase";
+/// A backup entry's bytes did not match the manifest checksum.
+pub const BACKUP_I18N_KEY_CORRUPTED: &str = "backup.restore.error.corrupted";
+/// The file is not a codeg backup, or its `format_version` is newer than this
+/// binary understands.
+pub const BACKUP_I18N_KEY_UNKNOWN_FORMAT: &str = "backup.restore.error.unknownFormat";
+/// The backup was taken by a newer app version whose DB schema this binary
+/// cannot represent. Params: `backupVersion`, `appVersion`.
+pub const BACKUP_I18N_KEY_NEWER_VERSION: &str = "backup.restore.error.newerVersion";
+/// Ran out of disk space while writing the archive / staging a restore.
+pub const BACKUP_I18N_KEY_DISK_SPACE: &str = "backup.error.diskSpace";
+/// The operation was cancelled by the user.
+pub const BACKUP_I18N_KEY_CANCELLED: &str = "backup.error.cancelled";
+/// A restore is already staged and awaiting restart; only one at a time.
+pub const BACKUP_I18N_KEY_ALREADY_PENDING: &str = "backup.restore.error.alreadyPending";
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AppErrorCode {
@@ -62,6 +86,10 @@ pub enum AppErrorCode {
     ExternalCommandFailed,
     WindowOperationFailed,
     TaskExecutionFailed,
+    /// A prompt was rejected because a turn is already in flight on the
+    /// connection (a second, concurrent send). Maps to HTTP 409 — an expected,
+    /// recoverable condition in multi-client co-control, not a server fault.
+    TurnInProgress,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]

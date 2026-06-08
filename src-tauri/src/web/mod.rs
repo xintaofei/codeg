@@ -40,6 +40,10 @@ pub struct WebServerState {
     pub(crate) shutdown_signal: Arc<ShutdownSignal>,
     port: AtomicU16,
     token: Mutex<String>,
+    /// Address the listener is bound to (`0.0.0.0` for a wildcard bind).
+    /// Lets `get_web_server_status` advertise only reachable addresses: a
+    /// specific bind makes the other interfaces' IPs unreachable.
+    host: Mutex<String>,
     running: std::sync::atomic::AtomicBool,
 }
 
@@ -57,6 +61,7 @@ impl WebServerState {
             shutdown_signal: Arc::new(ShutdownSignal::new()),
             port: AtomicU16::new(0),
             token: Mutex::new(String::new()),
+            host: Mutex::new("0.0.0.0".to_string()),
             running: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -74,9 +79,10 @@ impl WebServerState {
     /// Note: handle/shutdown_tx are intentionally left `None` — the bin
     /// owns the serve task itself, not this state. `stop_web_server`
     /// uses that absence to detect web mode and reject the call.
-    pub fn mark_externally_running(&self, port: u16, token: String) {
+    pub fn mark_externally_running(&self, host: String, port: u16, token: String) {
         self.port.store(port, Ordering::Relaxed);
         *self.token.lock().unwrap() = token;
+        *self.host.lock().unwrap() = host;
         self.running.store(true, Ordering::Release);
     }
 
@@ -123,6 +129,47 @@ async fn resolve_web_service_token(
         Some(saved) if !saved.trim().is_empty() => Ok(saved),
         _ => Ok(generate_random_token()),
     }
+}
+
+/// Resolve the access token for the **standalone** server, persisting a
+/// generated one so it survives restarts. This matters for self-update: the
+/// upgrade restarts the process, and if the token rotated, the already
+/// authenticated frontend would start getting 401s and could no longer tell a
+/// successful upgrade from an auto-rollback. Resolution mirrors the desktop web
+/// service — a non-empty `CODEG_TOKEN` override wins; otherwise reuse the value
+/// persisted in `AppMetadata`; otherwise generate one and persist it. An empty
+/// or whitespace override is treated as unset (never accepted as a real token).
+/// `*generated` is set when a fresh token was created, so the caller can show
+/// it to the operator.
+pub async fn resolve_persisted_server_token(
+    conn: &DatabaseConnection,
+    override_token: Option<String>,
+    generated: &mut bool,
+) -> String {
+    *generated = false;
+
+    if let Some(value) = override_token
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        return value;
+    }
+
+    if let Ok(Some(saved)) = app_metadata_service::get_value(conn, WEB_SERVICE_TOKEN_KEY).await {
+        if !saved.trim().is_empty() {
+            return saved;
+        }
+    }
+
+    let token = generate_random_token();
+    *generated = true;
+    if let Err(e) = app_metadata_service::upsert_value(conn, WEB_SERVICE_TOKEN_KEY, &token).await {
+        eprintln!(
+            "[SERVER][WARN] could not persist the generated access token ({e}); it will rotate on \
+             restart and self-update success detection may be unreliable — set CODEG_TOKEN to pin it"
+        );
+    }
+    token
 }
 
 async fn resolve_web_service_port(
@@ -360,18 +407,110 @@ impl<'a> Drop for RunningGuard<'a> {
     }
 }
 
+/// Whether a local IPv4 is a useful, reachable target worth advertising.
+///
+/// Rejects loopback (added separately and always listed first), link-local
+/// (169.254.0.0/16, not routable for sharing), and the unspecified address
+/// (`0.0.0.0` is the bind sentinel, never a reachable target). Applied to
+/// both the interface-enumeration and the UDP-probe fallback paths so the
+/// advertised list upholds the same invariant regardless of which produced
+/// it.
+fn is_advertisable_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    !ip.is_loopback() && !ip.is_link_local() && !ip.is_unspecified()
+}
+
+/// Build the list of candidate URLs to advertise for the running web
+/// service. Loopback is always listed first (a safe default target), then
+/// every advertisable local IPv4 (see [`is_advertisable_ipv4`]).
+///
+/// In the desktop settings flow the listener binds `0.0.0.0`, so each
+/// advertised address is reachable and the UI lets the user pick which one
+/// to display / open — that choice is display-only and never changes what
+/// the service binds to. If interface enumeration is unavailable we fall
+/// back to the default-route UDP probe so the result never regresses below
+/// the previous single-LAN-IP behavior.
 pub fn get_local_addresses(port: u16) -> Vec<String> {
-    let mut addrs = vec![format!("http://127.0.0.1:{}", port)];
-    // Try to get LAN IPs
-    if let Ok(interfaces) = std::net::UdpSocket::bind("0.0.0.0:0") {
-        // Connect to a public DNS to determine local IP
-        if interfaces.connect("8.8.8.8:80").is_ok() {
-            if let Ok(local_addr) = interfaces.local_addr() {
-                addrs.push(format!("http://{}:{}", local_addr.ip(), port));
+    use std::net::{IpAddr, Ipv4Addr};
+
+    let mut lan: Vec<Ipv4Addr> = Vec::new();
+    if let Ok(interfaces) = if_addrs::get_if_addrs() {
+        for iface in interfaces {
+            if let IpAddr::V4(ip) = iface.ip() {
+                if is_advertisable_ipv4(ip) && !lan.contains(&ip) {
+                    lan.push(ip);
+                }
             }
         }
     }
+
+    // Fallback: derive the default-route source IP via the UDP-connect
+    // trick when enumeration yields nothing (restricted sandboxes, etc.).
+    // Same advertisability filter as above keeps the invariant intact.
+    if lan.is_empty() {
+        if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
+            if sock.connect("8.8.8.8:80").is_ok() {
+                if let Ok(local_addr) = sock.local_addr() {
+                    if let IpAddr::V4(ip) = local_addr.ip() {
+                        if is_advertisable_ipv4(ip) {
+                            lan.push(ip);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    lan.sort_unstable();
+
+    let mut addrs = vec![format!("http://127.0.0.1:{}", port)];
+    addrs.extend(lan.into_iter().map(|ip| format!("http://{}:{}", ip, port)));
     addrs
+}
+
+/// Normalize the host to advertise / store for a freshly bound listener.
+///
+/// Depending on the runtime, the configured host may not be a bare IP
+/// literal: the standalone `codeg-server` binds via `ToSocketAddrs`, so it
+/// also accepts `localhost` (DNS-resolved) and bracketed IPv6 (`[::1]`),
+/// whereas the desktop/web cores parse a `SocketAddr` and accept only IP
+/// literals (bare or bracketed IPv6, never a hostname). [`addresses_for_bind`]
+/// reasons over bare IPs, so preferring the listener's effective
+/// `local_addr()` IP collapses every accepted form to the concrete bound IP
+/// (`localhost` → its resolved loopback IP, e.g. `127.0.0.1` or `::1`;
+/// `[::1]` → `::1`); the advertised list then always matches what the socket
+/// is actually serving. Falls back to the
+/// configured host only when `local_addr()` is unavailable (near-impossible
+/// for a bound listener).
+pub fn advertise_host(local_addr: Option<std::net::SocketAddr>, configured_host: &str) -> String {
+    local_addr
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_else(|| configured_host.to_string())
+}
+
+/// Addresses to advertise for a server bound to `host` (a bare IP — see
+/// [`advertise_host`], which normalizes the configured host into one).
+///
+/// A specific (non-wildcard) bind address is the *only* reachable target,
+/// so advertise just that. A wildcard bind (`0.0.0.0` / `::`, or an
+/// unparseable value) serves every interface, so fall back to enumerating
+/// loopback + all local IPv4 via [`get_local_addresses`].
+pub fn addresses_for_bind(host: &str, port: u16) -> Vec<String> {
+    // Tolerate a bracketed IPv6 literal (`[::1]`): `IpAddr`'s parser rejects
+    // brackets, but the configured-host fallback (when `local_addr()` was
+    // unavailable) may still carry them.
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        if !ip.is_unspecified() {
+            // `SocketAddr`'s Display brackets IPv6 (`[::1]:port`) so the URL
+            // is well-formed for both families; a bare `format!("{ip}:{port}")`
+            // would emit the invalid `http://::1:port` for IPv6.
+            return vec![format!("http://{}", std::net::SocketAddr::new(ip, port))];
+        }
+    }
+    get_local_addresses(port)
 }
 
 // ── Core logic (shared by Tauri commands and web handlers) ──
@@ -456,7 +595,10 @@ pub(crate) async fn do_start_web_server_with_state(
         shutdown_signal.clone(),
     );
 
-    let actual_port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+    let local_addr = listener.local_addr().ok();
+    let actual_port = local_addr.map(|a| a.port()).unwrap_or(port);
+    // Advertise the IP the socket is actually bound to, not the raw config.
+    let advertised_host = advertise_host(local_addr, &host);
     eprintln!("[WEB] Starting web server on {}", addr);
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -473,10 +615,11 @@ pub(crate) async fn do_start_web_server_with_state(
     *ws.shutdown_tx.lock().unwrap() = Some(shutdown_tx);
     ws.port.store(actual_port, Ordering::Relaxed);
     *ws.token.lock().unwrap() = token.clone();
+    *ws.host.lock().unwrap() = advertised_host.clone();
     // running already true from compare_exchange; disarm guard so it doesn't flip back.
     guard.disarm();
 
-    let addresses = get_local_addresses(actual_port);
+    let addresses = addresses_for_bind(&advertised_host, actual_port);
     Ok(WebServerInfo {
         port: actual_port,
         token,
@@ -517,6 +660,7 @@ pub(crate) async fn do_stop_web_server(state: &WebServerState) {
     // so a concurrent start() cannot race into a bind() while the old socket lingers.
     state.port.store(0, Ordering::Relaxed);
     *state.token.lock().unwrap() = String::new();
+    *state.host.lock().unwrap() = "0.0.0.0".to_string();
     state.running.store(false, Ordering::Release);
     eprintln!("[WEB] Web server stopped");
 }
@@ -526,8 +670,9 @@ pub(crate) fn do_get_web_server_status(state: &WebServerState) -> Option<WebServ
         return None;
     }
     let port = state.port.load(Ordering::Relaxed);
+    let host = state.host.lock().unwrap().clone();
     let token = state.token.lock().unwrap().clone();
-    let addresses = get_local_addresses(port);
+    let addresses = addresses_for_bind(&host, port);
     Some(WebServerInfo {
         port,
         token,
@@ -667,6 +812,19 @@ pub(crate) async fn do_start_web_server_tauri(
             .state::<crate::commands::delegation::DelegationSocketPath>()
             .0
             .clone(),
+        // Reuse the same live-feedback config handle the desktop MCP injection
+        // reads, so HTTP-side feedback settings target the identical flag.
+        feedback_config: app
+            .state::<crate::acp::feedback::FeedbackRuntimeConfig>()
+            .inner()
+            .clone(),
+        system_op_lock: crate::app_state::default_system_op_lock(),
+        // Reuse the same handle the desktop `app_update` commands write to so
+        // HTTP and webview readers see the identical update snapshot.
+        update_state: app
+            .state::<crate::update::AppUpdateStateHandle>()
+            .inner()
+            .clone(),
     });
 
     // See do_start_web_server_with_state for rationale on the reset.
@@ -685,7 +843,10 @@ pub(crate) async fn do_start_web_server_tauri(
         shutdown_signal.clone(),
     );
 
-    let actual_port = listener.local_addr().map(|a| a.port()).unwrap_or(port_val);
+    let local_addr = listener.local_addr().ok();
+    let actual_port = local_addr.map(|a| a.port()).unwrap_or(port_val);
+    // Advertise the IP the socket is actually bound to, not the raw config.
+    let advertised_host = advertise_host(local_addr, &host_val);
     eprintln!("[WEB] Starting web server on {}", addr);
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -702,10 +863,11 @@ pub(crate) async fn do_start_web_server_tauri(
     *ws.shutdown_tx.lock().unwrap() = Some(shutdown_tx);
     ws.port.store(actual_port, Ordering::Relaxed);
     *ws.token.lock().unwrap() = token.clone();
+    *ws.host.lock().unwrap() = advertised_host.clone();
     // running already true from compare_exchange; disarm guard so it doesn't flip back.
     guard.disarm();
 
-    let addresses = get_local_addresses(actual_port);
+    let addresses = addresses_for_bind(&advertised_host, actual_port);
     Ok(WebServerInfo {
         port: actual_port,
         token,
@@ -766,4 +928,121 @@ pub async fn probe_web_service_port(
     port: Option<u16>,
 ) -> Result<WebServicePortProbe, AppCommandError> {
     do_probe_web_service_port(&db.conn, port).await
+}
+
+#[cfg(test)]
+mod local_address_tests {
+    use super::{
+        addresses_for_bind, advertise_host, get_local_addresses, is_advertisable_ipv4,
+    };
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    #[test]
+    fn advertisable_predicate_rejects_loopback_linklocal_and_unspecified() {
+        // Rejected: these must never reach the advertised list, on either the
+        // enumeration or the UDP-probe fallback path.
+        assert!(!is_advertisable_ipv4(Ipv4Addr::LOCALHOST)); // 127.0.0.1
+        assert!(!is_advertisable_ipv4(Ipv4Addr::new(169, 254, 3, 4))); // link-local
+        assert!(!is_advertisable_ipv4(Ipv4Addr::UNSPECIFIED)); // 0.0.0.0
+        // Accepted: ordinary private/LAN addresses the user may want to share.
+        assert!(is_advertisable_ipv4(Ipv4Addr::new(192, 168, 1, 5)));
+        assert!(is_advertisable_ipv4(Ipv4Addr::new(10, 0, 0, 4)));
+        assert!(is_advertisable_ipv4(Ipv4Addr::new(172, 16, 0, 9)));
+    }
+
+    #[test]
+    fn addresses_for_bind_specific_host_is_the_only_target() {
+        // A concrete bind address is the sole reachable URL — not loopback,
+        // not the other interfaces.
+        assert_eq!(
+            addresses_for_bind("127.0.0.1", 80),
+            vec!["http://127.0.0.1:80".to_string()]
+        );
+        assert_eq!(
+            addresses_for_bind("192.168.1.5", 8080),
+            vec!["http://192.168.1.5:8080".to_string()]
+        );
+        // A specific IPv6 bind must be bracketed to form a valid URL.
+        assert_eq!(
+            addresses_for_bind("::1", 3080),
+            vec!["http://[::1]:3080".to_string()]
+        );
+        // A wildcard bind advertises the full enumerated list (loopback first).
+        let wildcard = addresses_for_bind("0.0.0.0", 3080);
+        assert_eq!(
+            wildcard.first().map(String::as_str),
+            Some("http://127.0.0.1:3080")
+        );
+    }
+
+    #[test]
+    fn addresses_for_bind_tolerates_bracketed_ipv6() {
+        // The configured-host fallback may carry brackets (`[::1]`); the
+        // result must still be the single, well-formed bracketed URL — never
+        // a fall-through to the IPv4 enumeration.
+        assert_eq!(
+            addresses_for_bind("[::1]", 3080),
+            vec!["http://[::1]:3080".to_string()]
+        );
+    }
+
+    #[test]
+    fn advertise_host_prefers_effective_bound_ip() {
+        // `localhost` and bracketed IPv6 are accepted by the bind path but are
+        // not bare IPs; `local_addr()` resolves them to the concrete bound IP,
+        // which is exactly what must be advertised/stored.
+        assert_eq!(
+            advertise_host(
+                Some("127.0.0.1:3080".parse::<SocketAddr>().unwrap()),
+                "localhost"
+            ),
+            "127.0.0.1"
+        );
+        assert_eq!(
+            advertise_host(Some("[::1]:3080".parse::<SocketAddr>().unwrap()), "[::1]"),
+            "::1"
+        );
+        // A wildcard bind stays wildcard, so addresses_for_bind still enumerates.
+        assert_eq!(
+            advertise_host(Some("0.0.0.0:3080".parse::<SocketAddr>().unwrap()), "0.0.0.0"),
+            "0.0.0.0"
+        );
+        // End to end: a `localhost` config advertises only loopback, never LAN.
+        let bound = advertise_host(
+            Some("127.0.0.1:3080".parse::<SocketAddr>().unwrap()),
+            "localhost",
+        );
+        assert_eq!(
+            addresses_for_bind(&bound, 3080),
+            vec!["http://127.0.0.1:3080".to_string()]
+        );
+        // Only when `local_addr()` is unavailable do we fall back to config.
+        assert_eq!(advertise_host(None, "192.168.1.5"), "192.168.1.5");
+    }
+
+    #[test]
+    fn loopback_first_and_every_entry_is_a_well_formed_unique_url() {
+        let port = 54321;
+        let addrs = get_local_addresses(port);
+
+        // Loopback is always present and always first, so the UI has a safe
+        // default selection even on a host with no LAN interfaces.
+        assert_eq!(
+            addrs.first().map(String::as_str),
+            Some("http://127.0.0.1:54321")
+        );
+
+        // `0.0.0.0` is the bind address, never a reachable target — it must
+        // never leak into the list the UI offers for "open".
+        assert!(!addrs.iter().any(|a| a.contains("0.0.0.0")));
+
+        // Every entry uses the http scheme, carries the requested port, and
+        // is unique (enumeration de-dupes addresses seen on multiple ifaces).
+        let mut seen = std::collections::HashSet::new();
+        for addr in &addrs {
+            assert!(addr.starts_with("http://"), "bad scheme: {addr}");
+            assert!(addr.ends_with(&format!(":{port}")), "bad port: {addr}");
+            assert!(seen.insert(addr.clone()), "duplicate address: {addr}");
+        }
+    }
 }

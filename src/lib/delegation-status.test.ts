@@ -4,7 +4,9 @@ import {
   deriveBadge,
   formatDuration,
   parseStatusReport,
+  parseStatusReports,
   parseTaskId,
+  parseTaskIds,
 } from "./delegation-status"
 
 // Mirrors the MCP CallToolResult envelope the companion emits.
@@ -46,6 +48,135 @@ describe("parseTaskId", () => {
   })
 })
 
+describe("parseTaskIds", () => {
+  it("reads a task_ids array", () => {
+    expect(parseTaskIds(JSON.stringify({ task_ids: ["a", "b"] }))).toEqual([
+      "a",
+      "b",
+    ])
+  })
+
+  it("reads a legacy single task_id as a singleton", () => {
+    expect(parseTaskIds(JSON.stringify({ task_id: "x" }))).toEqual(["x"])
+  })
+
+  it("merges task_ids and a lone task_id, de-duping in order", () => {
+    expect(
+      parseTaskIds(JSON.stringify({ task_ids: ["a", "b"], task_id: "a" }))
+    ).toEqual(["a", "b"])
+  })
+
+  it("peels a host wrapper / double-encoded array", () => {
+    const input = JSON.stringify({
+      arguments: JSON.stringify({ task_ids: ["a", "b"] }),
+    })
+    expect(parseTaskIds(input)).toEqual(["a", "b"])
+  })
+
+  it("returns [] for unparseable / missing input", () => {
+    expect(parseTaskIds("not json")).toEqual([])
+    expect(parseTaskIds(null)).toEqual([])
+    expect(parseTaskIds(undefined)).toEqual([])
+  })
+})
+
+// A batch `{tasks:[...]}` MCP envelope: content text mirrors the structured
+// payload so a content-only host (Claude Code) can still recover it.
+function batchEnvelope(
+  tasks: Record<string, unknown>[],
+  isError = false
+): string {
+  return JSON.stringify({
+    content: [{ type: "text", text: JSON.stringify({ tasks }) }],
+    isError,
+    structuredContent: { tasks },
+  })
+}
+
+describe("parseStatusReports", () => {
+  it("returns a single report for a non-batch envelope", () => {
+    const reports = parseStatusReports(
+      envelope({ task_id: "t1", status: "completed", text: "hi" }),
+      null
+    )
+    expect(reports).toHaveLength(1)
+    expect(reports[0]).toMatchObject({ status: "completed", taskId: "t1" })
+  })
+
+  it("expands a structuredContent tasks array into one report per task", () => {
+    const reports = parseStatusReports(
+      batchEnvelope([
+        { task_id: "t1", status: "completed", text: "r1", duration_ms: 5 },
+        { task_id: "t2", status: "running", message: "Running." },
+      ]),
+      null
+    )
+    expect(reports).toHaveLength(2)
+    expect(reports[0]).toMatchObject({
+      status: "completed",
+      taskId: "t1",
+      text: "r1",
+      durationMs: 5,
+    })
+    expect(reports[1]).toMatchObject({ status: "running", taskId: "t2" })
+  })
+
+  it("recovers a tasks array from content-only JSON (no structuredContent)", () => {
+    // Hosts that persist only CallToolResult.content text get the JSON itself.
+    const text = JSON.stringify({
+      tasks: [
+        { task_id: "t1", status: "failed", error_code: "spawn_failed" },
+        { task_id: "t2", status: "completed", text: "ok" },
+      ],
+    })
+    const reports = parseStatusReports(text, null)
+    expect(reports).toHaveLength(2)
+    expect(reports[0]).toMatchObject({
+      status: "failed",
+      taskId: "t1",
+      errorCode: "spawn_failed",
+    })
+    expect(reports[1]).toMatchObject({ status: "completed", taskId: "t2" })
+  })
+
+  it("recovers a tasks array embedded in surrounding text (Codex)", () => {
+    const text = `Wall time: 1.2s\nOutput:\n${JSON.stringify({
+      tasks: [{ task_id: "t1", status: "completed", text: "done" }],
+    })}`
+    const reports = parseStatusReports(text, null)
+    expect(reports).toHaveLength(1)
+    expect(reports[0]).toMatchObject({ status: "completed", taskId: "t1" })
+  })
+
+  it("peels a double-encoded batch envelope (JSON-of-JSON)", () => {
+    // A host that re-stringifies the result text — the batch counterpart of the
+    // double-encoded INPUT path (see parseTaskIds). One peel must still surface
+    // every per-task report, not collapse to a single unstructured fallback.
+    const output = JSON.stringify(
+      batchEnvelope([
+        { task_id: "t1", status: "completed", text: "A done" },
+        { task_id: "t2", status: "failed", error_code: "timeout" },
+      ])
+    )
+    const reports = parseStatusReports(output, null)
+    expect(reports).toHaveLength(2)
+    expect(reports[0]).toMatchObject({ status: "completed", taskId: "t1" })
+    expect(reports[1]).toMatchObject({
+      status: "failed",
+      taskId: "t2",
+      errorCode: "timeout",
+    })
+  })
+
+  it("does NOT treat a tasks array of non-reports as a batch", () => {
+    // A child whose own output is {tasks:[...]} of non-report objects must not
+    // be misread — it falls back to the single-report path.
+    const text = JSON.stringify({ tasks: [{ foo: 1 }, { bar: 2 }] })
+    const reports = parseStatusReports(text, null)
+    expect(reports).toHaveLength(1)
+  })
+})
+
 describe("parseStatusReport", () => {
   it("recovers a structuredContent report (status + duration)", () => {
     const report = parseStatusReport(
@@ -69,6 +200,23 @@ describe("parseStatusReport", () => {
       null
     )
     expect(report.status).toBe("unknown")
+  })
+
+  it("peels a double-encoded report envelope (JSON-of-JSON)", () => {
+    // Symmetric with the batch path: a re-stringified single-task result must
+    // still recover its structured status rather than degrade to plain text.
+    const output = JSON.stringify(
+      envelope({
+        task_id: "abc12345",
+        status: "completed",
+        text: "All done.",
+        duration_ms: 1234,
+      })
+    )
+    const report = parseStatusReport(output, null)
+    expect(report.status).toBe("completed")
+    expect(report.taskId).toBe("abc12345")
+    expect(report.durationMs).toBe(1234)
   })
 
   it("does NOT treat a child's own JSON-with-status as a report (no task_id)", () => {
@@ -98,8 +246,67 @@ describe("parseStatusReport", () => {
     })
   })
 
+  it("reads the bare 'Running.' running message from content-only text", () => {
+    // Current backend baseline: running_report emits the bare "Running." On a
+    // content-only host (structuredContent dropped) this is the only signal,
+    // so it must resolve to running, not a false 'ok'.
+    const report = parseStatusReport("Running.", null)
+    expect(report.status).toBe("running")
+    expect(deriveBadge("status", report, "output-available", false)).toEqual({
+      status: "checked",
+    })
+  })
+
+  it("reads the two-line 'Running.\\nLatest sub-agent reply: …' upgraded message", () => {
+    // The live hint lands on its own line; the standalone first-line marker
+    // identifies "still running" and the child's reply text is preserved.
+    const report = parseStatusReport(
+      "Running.\nLatest sub-agent reply: Reading config.rs",
+      null
+    )
+    expect(report.status).toBe("running")
+    expect(report.text).toBe(
+      "Running.\nLatest sub-agent reply: Reading config.rs"
+    )
+  })
+
+  it("does NOT misread a completed single-line 'Running. Latest sub-agent reply: …' result as running", () => {
+    // A completed child answer whose text merely STARTS WITH the running phrase
+    // on one line (no standalone marker line) must resolve to a terminal status,
+    // not running — the reply text is child-controlled and never anchored on.
+    const report = parseStatusReport(
+      "Running. Latest sub-agent reply: I finished, nothing else is running.",
+      null
+    )
+    expect(report.status).toBeNull()
+  })
+
+  it("does NOT treat a completed result whose first line only starts with 'Running' as running", () => {
+    // Anchored on the WHOLE first line being exactly "Running.", so "Running…"
+    // variants or "Running. <more on the same line>" do not match.
+    expect(
+      parseStatusReport("Running the migration now.", null).status
+    ).toBeNull()
+    expect(
+      parseStatusReport(
+        "Running.\nAll tests pass and nothing is pending.",
+        null
+      ).status
+    ).toBeNull()
+  })
+
   it("does NOT treat an ordinary completion result as still-running", () => {
     const report = parseStatusReport("The migration finished cleanly.", null)
+    expect(report.status).toBeNull()
+  })
+
+  it("does NOT classify a result that merely mentions 'Running.' mid-text as running", () => {
+    // Anchored match, not a loose substring: a completed child can incidentally
+    // write the word.
+    const report = parseStatusReport(
+      "All checks passed. Running. tests are green now.",
+      null
+    )
     expect(report.status).toBeNull()
   })
 

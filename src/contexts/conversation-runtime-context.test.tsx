@@ -5,8 +5,8 @@
  *
  * The bug fixed by the generation counter:
  *
- *   1. Open sheet for child 99 → `refetchDetail(99)` issues fetch A.
- *   2. User closes the sheet → `removeConversation(99)` deletes state.
+ *   1. Open dialog for child 99 → `refetchDetail(99)` issues fetch A.
+ *   2. User closes the dialog → `removeConversation(99)` deletes state.
  *   3. Fetch A resolves AFTER the unmount → `FETCH_DETAIL_SUCCESS`
  *      reducer recreates the session with stale detail.
  *   4. User reopens → `useConversationDetail`'s active-data guard
@@ -33,13 +33,14 @@ import {
   vi,
   type MockInstance,
 } from "vitest"
-import type { ReactNode } from "react"
+import { useEffect, type ReactNode } from "react"
 
 import {
   ConversationRuntimeProvider,
   useConversationRuntime,
 } from "@/contexts/conversation-runtime-context"
-import type { DbConversationDetail } from "@/lib/types"
+import type { LiveMessage } from "@/contexts/acp-connections-context"
+import type { DbConversationDetail, MessageTurn } from "@/lib/types"
 
 vi.mock("@/lib/api", () => ({
   getFolderConversation: vi.fn(),
@@ -68,11 +69,25 @@ function detailWithTitle(title: string): DbConversationDetail {
   }
 }
 
+let preserveLiveFlag = false
+
+const LIVE_MSG: LiveMessage = {
+  id: "lm-1",
+  role: "assistant",
+  content: [],
+  startedAt: 0,
+}
+
 /** Probe component that exposes runtime actions to the test and lets it
  *  read back the session state via DOM attributes. */
 function Probe() {
-  const { refetchDetail, removeConversation, getSession } =
-    useConversationRuntime()
+  const {
+    refetchDetail,
+    removeConversation,
+    setLiveMessage,
+    setLiveOwnsActiveTurn,
+    getSession,
+  } = useConversationRuntime()
   const session = getSession(99)
   return (
     <div>
@@ -82,6 +97,27 @@ function Probe() {
         onClick={() => refetchDetail(99)}
       >
         refetch
+      </button>
+      <button
+        data-testid="refetch-preserve"
+        type="button"
+        onClick={() => refetchDetail(99, { preserveLive: preserveLiveFlag })}
+      >
+        refetch-preserve
+      </button>
+      <button
+        data-testid="set-live"
+        type="button"
+        onClick={() => setLiveMessage(99, LIVE_MSG, true)}
+      >
+        set-live
+      </button>
+      <button
+        data-testid="set-live-owns"
+        type="button"
+        onClick={() => setLiveOwnsActiveTurn(99, true)}
+      >
+        set-live-owns
       </button>
       <button
         data-testid="remove"
@@ -95,6 +131,10 @@ function Probe() {
       </div>
       <div data-testid="has-session">{session ? "yes" : "no"}</div>
       <div data-testid="loading">{session?.detailLoading ? "yes" : "no"}</div>
+      <div data-testid="has-live">{session?.liveMessage ? "yes" : "no"}</div>
+      <div data-testid="live-owns">
+        {session?.liveOwnsActiveTurn ? "yes" : "no"}
+      </div>
     </div>
   )
 }
@@ -111,6 +151,7 @@ describe("ConversationRuntimeProvider fetch-generation guard", () => {
 
   beforeEach(() => {
     mockGetFolderConversation.mockReset()
+    preserveLiveFlag = false
     originalConsoleError = console.error
     // Filter React's act() warnings produced when promise resolutions
     // commit asynchronously; the tests use act() correctly but the
@@ -139,7 +180,7 @@ describe("ConversationRuntimeProvider fetch-generation guard", () => {
     expect(screen.getByTestId("loading").textContent).toBe("yes")
 
     // Tear down the session BEFORE fetch A resolves — simulates the user
-    // closing the sheet while the detail is still loading.
+    // closing the dialog while the detail is still loading.
     await act(async () => {
       screen.getByTestId("remove").click()
     })
@@ -154,6 +195,70 @@ describe("ConversationRuntimeProvider fetch-generation guard", () => {
     })
     expect(screen.getByTestId("has-session").textContent).toBe("no")
     expect(screen.getByTestId("title").textContent).toBe("no-detail")
+  })
+
+  it("refetchDetail preserves a bridged live message when preserveLive:true, and wipes it on a plain load", async () => {
+    let resolveA!: (detail: DbConversationDetail) => void
+    let resolveB!: (detail: DbConversationDetail) => void
+    mockGetFolderConversation
+      .mockImplementationOnce(
+        () =>
+          new Promise<DbConversationDetail>((resolve) => {
+            resolveA = resolve
+          })
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<DbConversationDetail>((resolve) => {
+            resolveB = resolve
+          })
+      )
+
+    renderProvider()
+
+    // Bridge a live reply (isLive bypasses the SET_LIVE_MESSAGE guard).
+    await act(async () => {
+      screen.getByTestId("set-live").click()
+    })
+    expect(screen.getByTestId("has-live").textContent).toBe("yes")
+
+    // preserveLive=true (child still streaming) → the load folds in the
+    // persisted detail but keeps the bridged live reply.
+    preserveLiveFlag = true
+    await act(async () => {
+      screen.getByTestId("refetch-preserve").click()
+    })
+    await act(async () => {
+      resolveA(detailWithTitle("with-live"))
+      await Promise.resolve()
+    })
+    expect(screen.getByTestId("title").textContent).toBe("with-live")
+    expect(screen.getByTestId("has-live").textContent).toBe("yes")
+
+    // preserveLive=false (settled) → the next load is authoritative and wipes
+    // the (now-promoted) live reply, matching the default FETCH_DETAIL_SUCCESS
+    // behavior.
+    preserveLiveFlag = false
+    await act(async () => {
+      screen.getByTestId("refetch-preserve").click()
+    })
+    await act(async () => {
+      resolveB(detailWithTitle("no-live"))
+      await Promise.resolve()
+    })
+    expect(screen.getByTestId("title").textContent).toBe("no-live")
+    expect(screen.getByTestId("has-live").textContent).toBe("no")
+  })
+
+  it("setLiveOwnsActiveTurn marks the session so getTimelineTurns strips persisted assistant turns while liveMessage is present", () => {
+    renderProvider()
+    // Initially no session.
+    expect(screen.getByTestId("live-owns").textContent).toBe("no")
+    // After marking, the session is created and the flag is set.
+    act(() => {
+      screen.getByTestId("set-live-owns").click()
+    })
+    expect(screen.getByTestId("live-owns").textContent).toBe("yes")
   })
 
   it("drops a stale fetch resolution that arrives after a fresh refetchDetail (fresh-wins regardless of order)", async () => {
@@ -246,5 +351,1247 @@ describe("ConversationRuntimeProvider fetch-generation guard", () => {
       await Promise.resolve()
     })
     expect(screen.getByTestId("title").textContent).toBe("fresh-B")
+  })
+})
+
+/**
+ * `getTimelineTurns` memoizes per conversation by session reference, so a
+ * dispatch that updates conversation A leaves conversation B's timeline array
+ * referentially identical. This is what lets MessageListView's `threadItems`
+ * useMemo short-circuit for every tab except the one whose session actually
+ * changed — neutralizing the cross-tab broadcast fan-out without unmounting
+ * any session (tile mode keeps every active conversation mounted).
+ */
+describe("ConversationRuntimeProvider getTimelineTurns memoization", () => {
+  const runtimeHolder: {
+    current: ReturnType<typeof useConversationRuntime> | undefined
+  } = { current: undefined }
+
+  function RuntimeCapture() {
+    const runtime = useConversationRuntime()
+    useEffect(() => {
+      runtimeHolder.current = runtime
+    })
+    return null
+  }
+
+  function userTurn(id: string): MessageTurn {
+    return {
+      id,
+      role: "user",
+      blocks: [{ type: "text", text: id }],
+      timestamp: "2026-05-28T00:00:00.000Z",
+    }
+  }
+
+  beforeEach(() => {
+    runtimeHolder.current = undefined
+  })
+
+  it("returns a stable reference for a conversation untouched by an unrelated update, and a fresh reference for the one that changed", () => {
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+
+    // Seed two independent conversations.
+    act(() => {
+      api().appendOptimisticTurn(1, userTurn("a1"), "a1")
+    })
+    act(() => {
+      api().appendOptimisticTurn(2, userTurn("b1"), "b1")
+    })
+
+    // Prime the cache for both.
+    const timeline1Before = api().getTimelineTurns(1)
+    const timeline2Before = api().getTimelineTurns(2)
+    expect(timeline1Before).toHaveLength(1)
+    expect(timeline2Before).toHaveLength(1)
+
+    // Update only conversation 1.
+    act(() => {
+      api().appendOptimisticTurn(1, userTurn("a2"), "a2")
+    })
+
+    const timeline1After = api().getTimelineTurns(1)
+    const timeline2After = api().getTimelineTurns(2)
+
+    // Conversation 2 was untouched → identical array reference (cache hit).
+    expect(timeline2After).toBe(timeline2Before)
+    // Conversation 1 changed → new reference and new content.
+    expect(timeline1After).not.toBe(timeline1Before)
+    expect(timeline1After).toHaveLength(2)
+  })
+
+  it("returns a stable empty-array reference for an unknown conversation", () => {
+    renderProvider(<RuntimeCapture />)
+    const first = runtimeHolder.current!.getTimelineTurns(12345)
+    const second = runtimeHolder.current!.getTimelineTurns(67890)
+    expect(first).toHaveLength(0)
+    expect(second).toBe(first)
+  })
+})
+
+describe("ConversationRuntimeProvider removeOptimisticTurn (bounce rollback)", () => {
+  const runtimeHolder: {
+    current: ReturnType<typeof useConversationRuntime> | undefined
+  } = { current: undefined }
+
+  function RuntimeCapture() {
+    const runtime = useConversationRuntime()
+    useEffect(() => {
+      runtimeHolder.current = runtime
+    })
+    return null
+  }
+
+  function userTurn(id: string): MessageTurn {
+    return {
+      id,
+      role: "user",
+      blocks: [{ type: "text", text: id }],
+      timestamp: "2026-05-28T00:00:00.000Z",
+    }
+  }
+
+  beforeEach(() => {
+    runtimeHolder.current = undefined
+  })
+
+  it("removes the turn by id and resets syncState to idle when none remain", () => {
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+
+    act(() => {
+      api().appendOptimisticTurn(7, userTurn("t1"), "t1")
+    })
+    expect(api().getSession(7)?.optimisticTurns).toHaveLength(1)
+    expect(api().getSession(7)?.syncState).toBe("awaiting_persist")
+
+    act(() => {
+      api().removeOptimisticTurn(7, "t1")
+    })
+    // Optimistic turn rolled back, and awaiting_persist cleared so the next
+    // detail fetch reconciles cleanly instead of preserving a stale turn.
+    expect(api().getSession(7)?.optimisticTurns).toHaveLength(0)
+    expect(api().getSession(7)?.syncState).toBe("idle")
+  })
+
+  it("keeps awaiting_persist while another optimistic turn is still in flight", () => {
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+
+    act(() => {
+      api().appendOptimisticTurn(8, userTurn("a"), "a")
+    })
+    act(() => {
+      api().appendOptimisticTurn(8, userTurn("b"), "b")
+    })
+    act(() => {
+      api().removeOptimisticTurn(8, "a")
+    })
+    const session = api().getSession(8)
+    expect(session?.optimisticTurns.map((t) => t.id)).toEqual(["b"])
+    expect(session?.syncState).toBe("awaiting_persist")
+  })
+
+  it("is a no-op for an unknown id", () => {
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+
+    act(() => {
+      api().appendOptimisticTurn(9, userTurn("keep"), "keep")
+    })
+    act(() => {
+      api().removeOptimisticTurn(9, "does-not-exist")
+    })
+    const after = api().getSession(9)
+    expect(after?.optimisticTurns.map((t) => t.id)).toEqual(["keep"])
+    expect(after?.syncState).toBe("awaiting_persist")
+  })
+})
+
+/**
+ * Delegation-child viewer projection in `getTimelineTurns`. When the sub-agent
+ * dialog marks a session `liveOwnsActiveTurn` and supplies the kickoff task:
+ *   - the persisted copy of the reply is stripped while a live/local reply
+ *     owns the turn (no partial-plus-stream duplicate), and
+ *   - the kickoff USER turn is synthesized from the known task text while the
+ *     async JSONL transcript still lags — then automatically replaced by the
+ *     real persisted user turn once it lands (no duplicate, no cleanup).
+ */
+describe("ConversationRuntimeProvider delegation kickoff projection", () => {
+  const runtimeHolder: {
+    current: ReturnType<typeof useConversationRuntime> | undefined
+  } = { current: undefined }
+
+  function RuntimeCapture() {
+    const runtime = useConversationRuntime()
+    useEffect(() => {
+      runtimeHolder.current = runtime
+    })
+    return null
+  }
+
+  function assistantTurn(id: string): MessageTurn {
+    return {
+      id,
+      role: "assistant",
+      blocks: [{ type: "text", text: id }],
+      timestamp: "2026-05-28T00:00:00.000Z",
+    }
+  }
+
+  function userTurn(id: string): MessageTurn {
+    return {
+      id,
+      role: "user",
+      blocks: [{ type: "text", text: id }],
+      timestamp: "2026-05-28T00:00:00.000Z",
+    }
+  }
+
+  function detailWithTurns(turns: MessageTurn[]): DbConversationDetail {
+    return {
+      summary: {
+        id: 99,
+        folder_id: 1,
+        agent_type: "codex",
+        title: "child",
+        status: "in_progress",
+        model: null,
+        git_branch: null,
+        external_id: "ext-1",
+        message_count: turns.length,
+        created_at: "2026-05-28T00:00:00.000Z",
+        updated_at: "2026-05-28T00:00:00.000Z",
+      },
+      turns,
+      session_stats: null,
+    }
+  }
+
+  beforeEach(() => {
+    runtimeHolder.current = undefined
+    mockGetFolderConversation.mockReset()
+  })
+
+  it("synthesizes the kickoff user turn (and strips the persisted reply) while the transcript has no user turn yet", async () => {
+    // DB lags: only a partial assistant turn is persisted, no user turn.
+    mockGetFolderConversation.mockResolvedValueOnce(
+      detailWithTurns([assistantTurn("a1")])
+    )
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+
+    act(() => {
+      api().setLiveOwnsActiveTurn(99, true, "do the thing")
+    })
+    act(() => {
+      api().setLiveMessage(99, LIVE_MSG, true)
+    })
+    await act(async () => {
+      api().refetchDetail(99, { preserveLive: true })
+      await Promise.resolve()
+    })
+
+    const timeline = api().getTimelineTurns(99)
+    // First item is the synthesized kickoff user turn from the known task.
+    expect(timeline[0].key).toBe("kickoff-99")
+    expect(timeline[0].turn.role).toBe("user")
+    expect(timeline[0].turn.blocks[0]).toMatchObject({
+      type: "text",
+      text: "do the thing",
+    })
+    // The persisted partial assistant turn is stripped (live owns the reply).
+    expect(
+      timeline.some(
+        (t) => t.phase === "persisted" && t.turn.role === "assistant"
+      )
+    ).toBe(false)
+  })
+
+  it("uses the real persisted user turn instead of synthesizing once it has landed", async () => {
+    mockGetFolderConversation.mockResolvedValueOnce(
+      detailWithTurns([userTurn("u1"), assistantTurn("a1")])
+    )
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+
+    act(() => {
+      api().setLiveOwnsActiveTurn(99, true, "do the thing")
+    })
+    act(() => {
+      api().setLiveMessage(99, LIVE_MSG, true)
+    })
+    await act(async () => {
+      api().refetchDetail(99, { preserveLive: true })
+      await Promise.resolve()
+    })
+
+    const timeline = api().getTimelineTurns(99)
+    // Exactly one user turn, and it's the authentic persisted one — no synthetic.
+    const users = timeline.filter((t) => t.turn.role === "user")
+    expect(users).toHaveLength(1)
+    expect(users[0].turn.id).toBe("u1")
+    expect(timeline.some((t) => t.key === "kickoff-99")).toBe(false)
+  })
+
+  it("keeps the adopted local reply and dedupes the persisted copy once [user, assistant] lands (reopen-after-completion)", async () => {
+    // The persisted transcript catches up only after the adoption already ran.
+    mockGetFolderConversation.mockResolvedValueOnce(
+      detailWithTurns([userTurn("u1"), assistantTurn("a1")])
+    )
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+
+    // Simulate the adopt-settled-reply path the dialog runs on reopen: mark the
+    // viewer, bridge the retained reply as live, promote it to a completed
+    // local turn.
+    const liveReply: LiveMessage = {
+      id: "lr-1",
+      role: "assistant",
+      content: [{ type: "text", text: "final reply" }],
+      startedAt: 0,
+    }
+    act(() => {
+      api().setLiveOwnsActiveTurn(99, true, "do the thing")
+    })
+    act(() => {
+      api().setLiveMessage(99, liveReply, true)
+    })
+    act(() => {
+      api().completeTurn(99, liveReply)
+    })
+    await act(async () => {
+      api().refetchDetail(99, { preserveLive: true })
+      await Promise.resolve()
+    })
+
+    const timeline = api().getTimelineTurns(99)
+    const users = timeline.filter((t) => t.turn.role === "user")
+    const assistants = timeline.filter((t) => t.turn.role === "assistant")
+    // Exactly one user (the real persisted one) and one assistant (the adopted
+    // local reply; the persisted copy is stripped) — no duplication, no blank.
+    expect(users).toHaveLength(1)
+    expect(users[0].turn.id).toBe("u1")
+    expect(assistants).toHaveLength(1)
+    expect(timeline.some((t) => t.key === "kickoff-99")).toBe(false)
+  })
+
+  it("does not synthesize a kickoff for a normal (non-live-owned) session", async () => {
+    mockGetFolderConversation.mockResolvedValueOnce(
+      detailWithTurns([assistantTurn("a1")])
+    )
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+
+    // No setLiveOwnsActiveTurn → ordinary panel. Even with a kickoff-less
+    // assistant-only transcript, nothing is synthesized or stripped.
+    await act(async () => {
+      api().refetchDetail(99, { preserveLive: true })
+      await Promise.resolve()
+    })
+
+    const timeline = api().getTimelineTurns(99)
+    expect(timeline.some((t) => t.key === "kickoff-99")).toBe(false)
+    expect(timeline.some((t) => t.turn.role === "assistant")).toBe(true)
+  })
+})
+
+/**
+ * Streaming/local turn dedup in `getTimelineTurns`. A premature or duplicate
+ * COMPLETE_TURN (e.g. the background `turn_complete` listener in
+ * ConversationDetailPanel racing the panel's own promotion) promotes a snapshot
+ * of the in-flight turn into `localTurns` while the SAME liveMessage keeps
+ * streaming and is re-bridged. Both are built from that one liveMessage, so
+ * they share `live-<cid>-<liveMessageId>` turn ids. The timeline must surface
+ * the turn exactly once (the live copy wins), never duplicated — otherwise
+ * `mergeConsecutiveAssistantTurns` flat-maps the same parts twice and React
+ * throws `Encountered two children with the same key, tc-<toolCallId>`.
+ */
+describe("ConversationRuntimeProvider streaming/local turn dedup", () => {
+  const runtimeHolder: {
+    current: ReturnType<typeof useConversationRuntime> | undefined
+  } = { current: undefined }
+
+  function RuntimeCapture() {
+    const runtime = useConversationRuntime()
+    useEffect(() => {
+      runtimeHolder.current = runtime
+    })
+    return null
+  }
+
+  beforeEach(() => {
+    runtimeHolder.current = undefined
+  })
+
+  it("drops the promoted snapshot when the same liveMessage is still streaming (no duplicate turn id)", () => {
+    const liveMsg: LiveMessage = {
+      id: "lm-dup",
+      role: "assistant",
+      content: [{ type: "text", text: "streaming reply" }],
+      startedAt: 0,
+    }
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+
+    // Bridge the live turn, promote it (the premature COMPLETE_TURN), then the
+    // mirror effect re-bridges the SAME liveMessage while still "streaming".
+    act(() => {
+      api().setLiveMessage(99, liveMsg, true)
+    })
+    act(() => {
+      api().completeTurn(99, liveMsg)
+    })
+    act(() => {
+      api().setLiveMessage(99, liveMsg, true)
+    })
+
+    const timeline = api().getTimelineTurns(99)
+    const ids = timeline.map((t) => t.turn.id)
+    // The turn id appears exactly once; the duplicate localTurns snapshot is
+    // filtered out and the streaming copy survives.
+    expect(ids.filter((id) => id === "live-99-lm-dup")).toHaveLength(1)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(timeline.find((t) => t.turn.id === "live-99-lm-dup")?.phase).toBe(
+      "streaming"
+    )
+  })
+
+  it("keeps both turns when a completed turn and a different streaming turn coexist (distinct ids, no false dedup)", () => {
+    const turnA: LiveMessage = {
+      id: "lm-a",
+      role: "assistant",
+      content: [{ type: "text", text: "turn A" }],
+      startedAt: 0,
+    }
+    const turnB: LiveMessage = {
+      id: "lm-b",
+      role: "assistant",
+      content: [{ type: "text", text: "turn B" }],
+      startedAt: 0,
+    }
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+
+    // Turn A streams then completes (promoted to localTurns, liveMessage cleared
+    // by COMPLETE_TURN); turn B then starts streaming with a fresh liveMessage.
+    act(() => {
+      api().setLiveMessage(99, turnA, true)
+    })
+    act(() => {
+      api().completeTurn(99, turnA)
+    })
+    act(() => {
+      api().setLiveMessage(99, turnB, true)
+    })
+
+    const timeline = api().getTimelineTurns(99)
+    const assistantIds = timeline
+      .filter((t) => t.turn.role === "assistant")
+      .map((t) => t.turn.id)
+    // Both turns survive — distinct liveMessage ids never collide.
+    expect(assistantIds).toContain("live-99-lm-a")
+    expect(assistantIds).toContain("live-99-lm-b")
+    expect(new Set(assistantIds).size).toBe(assistantIds.length)
+  })
+
+  it("does not accumulate duplicate localTurns when the same live turn is re-promoted after a re-bridge (final completion, liveMessage cleared)", () => {
+    const liveMsg: LiveMessage = {
+      id: "lm-dup2",
+      role: "assistant",
+      content: [{ type: "text", text: "streaming reply" }],
+      startedAt: 0,
+    }
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+
+    // Premature promote, re-bridge of the SAME liveMessage, then a final
+    // promote. COMPLETE_TURN must not append a second copy of the turn, and the
+    // final promote clears liveMessage so there is no streaming turn left to
+    // filter against — the dedup has to already hold in localTurns.
+    act(() => {
+      api().setLiveMessage(99, liveMsg, true)
+    })
+    act(() => {
+      api().completeTurn(99, liveMsg)
+    })
+    act(() => {
+      api().setLiveMessage(99, liveMsg, true)
+    })
+    act(() => {
+      api().completeTurn(99, liveMsg)
+    })
+
+    const session = api().getSession(99)
+    // liveMessage is cleared by the final COMPLETE_TURN…
+    expect(session?.liveMessage).toBeNull()
+    // …and localTurns holds the turn exactly once (no re-promotion duplicate).
+    expect(
+      session?.localTurns.filter((t) => t.id === "live-99-lm-dup2")
+    ).toHaveLength(1)
+
+    const ids = api()
+      .getTimelineTurns(99)
+      .map((t) => t.turn.id)
+    expect(ids.filter((id) => id === "live-99-lm-dup2")).toHaveLength(1)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+})
+
+/**
+ * Cross-client VIEWER user-turn synthesis (Bug 2). When another client sends a
+ * prompt, this client (a viewer of the shared connection) only receives the
+ * assistant stream — `appendViewerUserTurn` synthesizes the sender's user turn
+ * so the reply doesn't render headless. It reuses the optimistic→local
+ * promotion machinery, is a no-op on the SENDER (which renders its own
+ * optimistic turn), and is idempotent by turn id.
+ */
+describe("ConversationRuntimeProvider viewer user-turn synthesis", () => {
+  const runtimeHolder: {
+    current: ReturnType<typeof useConversationRuntime> | undefined
+  } = { current: undefined }
+
+  function RuntimeCapture() {
+    const runtime = useConversationRuntime()
+    useEffect(() => {
+      runtimeHolder.current = runtime
+    })
+    return null
+  }
+
+  function userTurn(id: string): MessageTurn {
+    return {
+      id,
+      role: "user",
+      blocks: [{ type: "text", text: id }],
+      timestamp: "2026-05-28T00:00:00.000Z",
+    }
+  }
+
+  function assistantTurn(id: string): MessageTurn {
+    return {
+      id,
+      role: "assistant",
+      blocks: [{ type: "text", text: id }],
+      timestamp: "2026-05-28T00:00:00.000Z",
+    }
+  }
+
+  function detailWithTurns(turns: MessageTurn[]): DbConversationDetail {
+    return {
+      summary: {
+        id: 99,
+        folder_id: 1,
+        agent_type: "codex",
+        title: "c",
+        status: "in_progress",
+        model: null,
+        git_branch: null,
+        external_id: "ext-1",
+        message_count: turns.length,
+        created_at: "2026-05-28T00:00:00.000Z",
+        updated_at: "2026-05-28T00:00:00.000Z",
+      },
+      turns,
+      session_stats: null,
+    }
+  }
+
+  const LIVE: LiveMessage = {
+    id: "lm-v",
+    role: "assistant",
+    content: [],
+    startedAt: 0,
+  }
+
+  beforeEach(() => {
+    runtimeHolder.current = undefined
+    mockGetFolderConversation.mockReset()
+  })
+
+  it("synthesizes the sender's user turn for a viewer", () => {
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    act(() => {
+      api().appendViewerUserTurn(99, userTurn("user-c-5"))
+    })
+    const users = api()
+      .getTimelineTurns(99)
+      .filter((t) => t.turn.role === "user")
+    expect(users).toHaveLength(1)
+    expect(users[0].turn.id).toBe("user-c-5")
+  })
+
+  it("is a NO-OP on the sender — its echo shares the optimistic turn id (exact dedup)", () => {
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    // Sender appended its own optimistic turn on send; the UI threaded that id
+    // to the backend, which echoes it as the user_message message_id…
+    act(() => {
+      api().appendOptimisticTurn(99, userTurn("optimistic-x"), "tok")
+    })
+    // …so the broadcast echo (SAME id) dedups — no second user turn.
+    act(() => {
+      api().appendViewerUserTurn(99, userTurn("optimistic-x"))
+    })
+    const users = api()
+      .getTimelineTurns(99)
+      .filter((t) => t.turn.role === "user")
+    expect(users).toHaveLength(1)
+    expect(users[0].turn.id).toBe("optimistic-x")
+  })
+
+  it("does NOT suppress a different sender's prompt when this client has an unrelated optimistic turn (co-control)", () => {
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    // This client has its own in-flight optimistic turn (it sent something)…
+    act(() => {
+      api().appendOptimisticTurn(99, userTurn("mine-1"), "tok")
+    })
+    // …and ANOTHER client's user_message arrives with a DIFFERENT id. Exact-id
+    // dedup must NOT suppress it (a broad "has optimistic turns" guard would).
+    act(() => {
+      api().appendViewerUserTurn(99, userTurn("theirs-2"))
+    })
+    const users = api()
+      .getTimelineTurns(99)
+      .filter((t) => t.turn.role === "user")
+    expect(users.map((u) => u.turn.id)).toEqual(["mine-1", "theirs-2"])
+  })
+
+  it("is idempotent: a re-delivered user_message after promotion does not duplicate", () => {
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    act(() => {
+      api().appendViewerUserTurn(99, userTurn("user-c-5"))
+    })
+    // Turn completes → the synthesized user turn promotes into localTurns.
+    act(() => {
+      api().completeTurn(99, LIVE)
+    })
+    // A snapshot re-delivers the SAME user_message — dedups against localTurns.
+    act(() => {
+      api().appendViewerUserTurn(99, userTurn("user-c-5"))
+    })
+    const users = api()
+      .getTimelineTurns(99)
+      .filter((t) => t.turn.role === "user")
+    expect(users).toHaveLength(1)
+    expect(users[0].turn.id).toBe("user-c-5")
+  })
+
+  it("promotes the synthesized user turn to a local turn on completion (survives the live→local handoff)", () => {
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    act(() => {
+      api().appendViewerUserTurn(99, userTurn("user-c-5"))
+    })
+    act(() => {
+      api().completeTurn(99, LIVE)
+    })
+    const session = api().getSession(99)
+    expect(session?.optimisticTurns).toHaveLength(0)
+    expect(session?.localTurns.some((t) => t.id === "user-c-5")).toBe(true)
+  })
+
+  it("synthesizes the CURRENT turn's user message even when the persisted transcript already has prior user turns (multi-turn viewer)", async () => {
+    // Viewer cold-opened a conversation WITH history, then the owner sends a
+    // new turn. The prior persisted user turn must NOT suppress the synthesis —
+    // this is the multi-turn case a `!persistedHasUser` guard would break.
+    mockGetFolderConversation.mockResolvedValueOnce(
+      detailWithTurns([userTurn("u-old"), assistantTurn("a-old")])
+    )
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    await act(async () => {
+      api().refetchDetail(99)
+      await Promise.resolve()
+    })
+    act(() => {
+      api().appendViewerUserTurn(99, userTurn("user-c-9"))
+    })
+    const users = api()
+      .getTimelineTurns(99)
+      .filter((t) => t.turn.role === "user")
+    expect(users.map((u) => u.turn.id)).toEqual(["u-old", "user-c-9"])
+  })
+
+  it("suppresses the synthesized turn when the SAME prompt is already persisted under a different id (mid-stream cross-client duplicate)", async () => {
+    // The reported bug: a viewer opens the conversation mid-stream AFTER the
+    // owner's prompt was already written to the JSONL transcript. History
+    // (`detail.turns`) carries it under the parser-assigned id, while the live
+    // broadcast synthesizes the same prompt under the unrelated `message_id`.
+    // Same content, different ids → without content dedup the user message
+    // renders twice. The fetch lands BEFORE the synthesized turn here.
+    mockGetFolderConversation.mockResolvedValueOnce(
+      detailWithTurns([
+        {
+          id: "jsonl-xyz",
+          role: "user",
+          blocks: [{ type: "text", text: "hello" }],
+          timestamp: "2026-05-28T00:00:00.000Z",
+        },
+      ])
+    )
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    await act(async () => {
+      api().refetchDetail(99)
+      await Promise.resolve()
+    })
+    act(() => {
+      api().appendViewerUserTurn(99, {
+        id: "msg-abc",
+        role: "user",
+        blocks: [{ type: "text", text: "hello" }],
+        timestamp: "2026-05-28T00:00:01.000Z",
+      })
+    })
+    const users = api()
+      .getTimelineTurns(99)
+      .filter((t) => t.turn.role === "user")
+    expect(users).toHaveLength(1)
+    expect(users[0].turn.id).toBe("jsonl-xyz")
+  })
+
+  it("does not duplicate when the synthesized turn is added BEFORE the persisted copy lands (fetch clears the viewer's ephemeral turn)", async () => {
+    // The complementary ordering: the viewer synthesizes the user turn first
+    // (from the snapshot/event), THEN the history fetch resolves with the same
+    // prompt under its parser id. FETCH_DETAIL_SUCCESS clears the viewer's
+    // ephemeral optimistic turn (it never sets awaiting_persist), so the
+    // persisted copy cleanly replaces it — exactly one user turn remains.
+    mockGetFolderConversation.mockResolvedValueOnce(
+      detailWithTurns([
+        {
+          id: "jsonl-xyz",
+          role: "user",
+          blocks: [{ type: "text", text: "hello" }],
+          timestamp: "2026-05-28T00:00:00.000Z",
+        },
+      ])
+    )
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    act(() => {
+      api().appendViewerUserTurn(99, {
+        id: "msg-abc",
+        role: "user",
+        blocks: [{ type: "text", text: "hello" }],
+        timestamp: "2026-05-28T00:00:01.000Z",
+      })
+    })
+    await act(async () => {
+      api().refetchDetail(99)
+      await Promise.resolve()
+    })
+    const users = api()
+      .getTimelineTurns(99)
+      .filter((t) => t.turn.role === "user")
+    expect(users).toHaveLength(1)
+    expect(users[0].turn.id).toBe("jsonl-xyz")
+  })
+
+  it("keeps a NEW in-flight prompt visible when an earlier COMPLETED turn has identical text (repeated 'continue', not yet persisted)", async () => {
+    // Codex review case: a prior 'continue' was already answered (its assistant
+    // reply is persisted right after it), then the owner sends ANOTHER
+    // 'continue'. While that new prompt is still streaming, the transcript ends
+    // at the COMPLETED reply and has not captured the new prompt yet. The viewer
+    // must keep the synthesized turn — only a prompt sitting as the LAST turn is
+    // treated as the persisted copy, so a completed earlier twin never suppresses
+    // it. Suppressing here would hide a message the user actually sent.
+    mockGetFolderConversation.mockResolvedValueOnce(
+      detailWithTurns([
+        {
+          id: "jsonl-u1",
+          role: "user",
+          blocks: [{ type: "text", text: "continue" }],
+          timestamp: "2026-05-28T00:00:00.000Z",
+        },
+        {
+          id: "jsonl-a1",
+          role: "assistant",
+          blocks: [{ type: "text", text: "done" }],
+          timestamp: "2026-05-28T00:00:01.000Z",
+        },
+      ])
+    )
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    await act(async () => {
+      api().refetchDetail(99)
+      await Promise.resolve()
+    })
+    act(() => {
+      api().appendViewerUserTurn(99, {
+        id: "msg-new",
+        role: "user",
+        blocks: [{ type: "text", text: "continue" }],
+        timestamp: "2026-05-28T00:00:02.000Z",
+      })
+    })
+    const users = api()
+      .getTimelineTurns(99)
+      .filter((t) => t.turn.role === "user")
+    expect(users.map((u) => u.turn.id)).toEqual(["jsonl-u1", "msg-new"])
+  })
+
+  it("suppresses the synthesized copy of a repeated prompt once it is itself persisted as the trailing turn", async () => {
+    // The complement to the case above: the SAME 'continue' is repeated, but the
+    // new prompt has now landed in the transcript as the trailing user turn. The
+    // synthesized copy is redundant and must be dropped — even though an
+    // identical earlier 'continue' also exists in history — so the timeline shows
+    // the two persisted prompts and no third (synthesized) duplicate.
+    mockGetFolderConversation.mockResolvedValueOnce(
+      detailWithTurns([
+        {
+          id: "jsonl-u1",
+          role: "user",
+          blocks: [{ type: "text", text: "continue" }],
+          timestamp: "2026-05-28T00:00:00.000Z",
+        },
+        {
+          id: "jsonl-a1",
+          role: "assistant",
+          blocks: [{ type: "text", text: "done" }],
+          timestamp: "2026-05-28T00:00:01.000Z",
+        },
+        {
+          id: "jsonl-u2",
+          role: "user",
+          blocks: [{ type: "text", text: "continue" }],
+          timestamp: "2026-05-28T00:00:02.000Z",
+        },
+      ])
+    )
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    await act(async () => {
+      api().refetchDetail(99)
+      await Promise.resolve()
+    })
+    act(() => {
+      api().appendViewerUserTurn(99, {
+        id: "msg-new",
+        role: "user",
+        blocks: [{ type: "text", text: "continue" }],
+        timestamp: "2026-05-28T00:00:03.000Z",
+      })
+    })
+    const users = api()
+      .getTimelineTurns(99)
+      .filter((t) => t.turn.role === "user")
+    expect(users.map((u) => u.turn.id)).toEqual(["jsonl-u1", "jsonl-u2"])
+  })
+
+  it("dedups against a backend-stamped in-flight user turn that ends in a partial assistant (OpenCode/Gemini shape)", async () => {
+    // OpenCode/Gemini persist a PARTIAL assistant turn mid-stream, so the
+    // transcript tail is [user X, partial assistant Y] — the content guard
+    // (which only matches a trailing USER turn) can't see X. Instead the detail
+    // endpoint stamps the persisted in-flight user turn with the broadcast
+    // message_id (`apply_in_flight_message_id`), so the synthesized copy dedups
+    // by exact id and stays in its correct position BEFORE the partial reply.
+    mockGetFolderConversation.mockResolvedValueOnce(
+      detailWithTurns([
+        {
+          id: "msg-live",
+          role: "user",
+          blocks: [{ type: "text", text: "hello" }],
+          timestamp: "2026-05-28T00:00:00.000Z",
+        },
+        {
+          id: "jsonl-a1",
+          role: "assistant",
+          blocks: [{ type: "text", text: "partial…" }],
+          timestamp: "2026-05-28T00:00:01.000Z",
+        },
+      ])
+    )
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    await act(async () => {
+      api().refetchDetail(99)
+      await Promise.resolve()
+    })
+    act(() => {
+      api().appendViewerUserTurn(99, {
+        id: "msg-live",
+        role: "user",
+        blocks: [{ type: "text", text: "hello" }],
+        timestamp: "2026-05-28T00:00:02.000Z",
+      })
+    })
+    const timeline = api().getTimelineTurns(99)
+    const users = timeline.filter((t) => t.turn.role === "user")
+    expect(users).toHaveLength(1)
+    expect(users[0].turn.id).toBe("msg-live")
+    // Ordering preserved: the user turn renders before the partial reply.
+    expect(timeline.map((t) => t.turn.id)).toEqual(["msg-live", "jsonl-a1"])
+  })
+
+  it("keeps the SENDER's stamped prompt ordered before a partial reply when its optimistic copy is preserved across a mid-turn refetch", async () => {
+    // Sender path: the client sent the prompt, so it holds its OWN optimistic
+    // turn (id == the message_id it threaded to the backend) and is in
+    // `awaiting_persist`, which makes FETCH_DETAIL_SUCCESS PRESERVE optimistic
+    // turns. If a refetch lands mid-turn with OpenCode/Gemini stamped detail
+    // shaped [user id=M, partial assistant], the timeline holds the persisted
+    // user(M), the partial assistant, AND the preserved optimistic user(M). The
+    // role-aware dedup must keep the persisted (first) user copy so the prompt
+    // stays before its own streaming reply — not the later optimistic copy.
+    mockGetFolderConversation.mockResolvedValueOnce(
+      detailWithTurns([
+        {
+          id: "msg-M",
+          role: "user",
+          blocks: [{ type: "text", text: "hello" }],
+          timestamp: "2026-05-28T00:00:00.000Z",
+        },
+        {
+          id: "jsonl-a1",
+          role: "assistant",
+          blocks: [{ type: "text", text: "partial…" }],
+          timestamp: "2026-05-28T00:00:01.000Z",
+        },
+      ])
+    )
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    // Sender's own optimistic turn → syncState becomes awaiting_persist.
+    act(() => {
+      api().appendOptimisticTurn(
+        99,
+        {
+          id: "msg-M",
+          role: "user",
+          blocks: [{ type: "text", text: "hello" }],
+          timestamp: "2026-05-28T00:00:02.000Z",
+        },
+        "tok"
+      )
+    })
+    expect(api().getSession(99)?.syncState).toBe("awaiting_persist")
+    await act(async () => {
+      api().refetchDetail(99)
+      await Promise.resolve()
+    })
+    // Optimistic copy is preserved (awaiting_persist), so the collision is real.
+    expect(api().getSession(99)?.optimisticTurns).toHaveLength(1)
+    const timeline = api().getTimelineTurns(99)
+    const users = timeline.filter((t) => t.turn.role === "user")
+    expect(users).toHaveLength(1)
+    expect(timeline.map((t) => t.turn.id)).toEqual(["msg-M", "jsonl-a1"])
+  })
+
+  it("keeps a repeated identical prompt visible across an awaiting_persist refetch when the prior prompt predates the turn (no false backend stamp)", async () => {
+    // The repeated-'continue' case for the SENDER. A prior 'continue' was sent in
+    // an earlier turn, so the backend's recency check refuses to stamp that prior
+    // user turn — it stays under its parser id. The sender's new optimistic
+    // 'continue' (id=msg-new) therefore does NOT collide, and survives both the
+    // awaiting_persist refetch and the turn completion. (Were the prior turn
+    // wrongly stamped msg-new, keep-first would have hidden the new prompt.)
+    mockGetFolderConversation.mockResolvedValueOnce(
+      detailWithTurns([
+        {
+          id: "jsonl-u1",
+          role: "user",
+          blocks: [{ type: "text", text: "continue" }],
+          timestamp: "2026-05-28T00:00:00.000Z",
+        },
+        {
+          id: "jsonl-a1",
+          role: "assistant",
+          blocks: [{ type: "text", text: "done" }],
+          timestamp: "2026-05-28T00:00:01.000Z",
+        },
+      ])
+    )
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    act(() => {
+      api().appendOptimisticTurn(
+        99,
+        {
+          id: "msg-new",
+          role: "user",
+          blocks: [{ type: "text", text: "continue" }],
+          timestamp: "2026-05-28T00:00:02.000Z",
+        },
+        "tok"
+      )
+    })
+    await act(async () => {
+      api().refetchDetail(99)
+      await Promise.resolve()
+    })
+    // New prompt is visible right after the refetch…
+    expect(
+      api()
+        .getTimelineTurns(99)
+        .filter((t) => t.turn.role === "user")
+        .map((u) => u.turn.id)
+    ).toEqual(["jsonl-u1", "msg-new"])
+    // …and survives completion (promoted into localTurns, not dropped).
+    act(() => {
+      api().completeTurn(99, LIVE)
+    })
+    expect(
+      api()
+        .getTimelineTurns(99)
+        .filter((t) => t.turn.role === "user")
+        .map((u) => u.turn.id)
+    ).toEqual(["jsonl-u1", "msg-new"])
+  })
+
+  it("hides the persisted PARTIAL in-flight reply while the live stream shows it (no doubled first reasoning)", async () => {
+    // The OpenCode/Gemini viewer symptom: mid-stream the persisted tail is
+    // [user msg-M (stamped), partial assistant] where the partial holds only the
+    // first reasoning block. The live stream carries the same reply in full under
+    // a `live-…` id; rendered together, mergeConsecutiveAssistantTurns would show
+    // the first reasoning twice. While liveMessage is in hand the persisted
+    // partial is suppressed, so only the live reply renders.
+    mockGetFolderConversation.mockResolvedValueOnce({
+      // The backend stamped the in-flight prompt and reports its id.
+      ...detailWithTurns([
+        userTurn("msg-M"),
+        {
+          id: "jsonl-a1",
+          role: "assistant",
+          blocks: [{ type: "thinking", text: "Let me think about this…" }],
+          timestamp: "2026-05-28T00:00:01.000Z",
+        },
+      ]),
+      in_flight_user_turn_id: "msg-M",
+    })
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    await act(async () => {
+      api().refetchDetail(99)
+      await Promise.resolve()
+    })
+    // The viewer's synthesized prompt is suppressed here (the persisted copy
+    // already carries the broadcast id), so the suppression relies on the
+    // backend-reported id, not the optimistic turn.
+    act(() => {
+      api().appendViewerUserTurn(99, userTurn("msg-M"))
+    })
+    // The live reply is in hand (carries the same reasoning, plus the rest).
+    act(() => {
+      api().setLiveMessage(
+        99,
+        {
+          id: "lm-v",
+          role: "assistant",
+          content: [{ type: "thinking", text: "Let me think about this…" }],
+          startedAt: 0,
+        },
+        true
+      )
+    })
+    const timeline = api().getTimelineTurns(99)
+    // The persisted partial is gone; the prompt shows once and the live reply
+    // (a single `live-…` turn) carries the reasoning — not doubled.
+    expect(timeline.map((t) => t.turn.id)).toEqual(["msg-M", "live-99-lm-v"])
+  })
+
+  it("keeps an earlier COMPLETED reply visible when the new in-flight prompt is not yet persisted (anchors on the stamped prompt, not the last user turn)", async () => {
+    // The dangerous shape: the viewer's detail still ends at a PRIOR completed
+    // round [u-old, a-old] because the new prompt isn't persisted yet. The
+    // in-flight synthesized prompt (user-new) matches NO persisted user turn, so
+    // the suppression must not fire — dropping a-old here would hide a completed
+    // reply, the forbidden outcome.
+    mockGetFolderConversation.mockResolvedValueOnce(
+      detailWithTurns([userTurn("u-old"), assistantTurn("a-old")])
+    )
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    await act(async () => {
+      api().refetchDetail(99)
+      await Promise.resolve()
+    })
+    act(() => {
+      api().appendViewerUserTurn(99, userTurn("user-new"))
+    })
+    act(() => {
+      api().setLiveMessage(99, LIVE, true)
+    })
+    const ids = api()
+      .getTimelineTurns(99)
+      .map((t) => t.turn.id)
+    expect(ids).toContain("a-old")
+    expect(ids).toEqual(["u-old", "a-old", "user-new"])
+  })
+
+  it("does NOT hide the persisted reply when no live stream is in hand (never drops what it can't re-show)", async () => {
+    // Suppression is gated on liveMessage: with none in hand (e.g. the
+    // promote→refetch grace window, or a completed turn), the persisted reply is
+    // the only copy and must stay visible — at worst a transient visible
+    // duplicate, never a hidden turn.
+    mockGetFolderConversation.mockResolvedValueOnce({
+      ...detailWithTurns([userTurn("msg-M"), assistantTurn("jsonl-a1")]),
+      // Even though the backend reports the in-flight prompt id…
+      in_flight_user_turn_id: "msg-M",
+    })
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    await act(async () => {
+      api().refetchDetail(99)
+      await Promise.resolve()
+    })
+    act(() => {
+      api().appendViewerUserTurn(99, userTurn("msg-M"))
+    })
+    // …no setLiveMessage — liveMessage stays null, so the gate keeps it visible.
+    const ids = api()
+      .getTimelineTurns(99)
+      .map((t) => t.turn.id)
+    expect(ids).toContain("jsonl-a1")
+    expect(ids).toEqual(["msg-M", "jsonl-a1"])
+  })
+
+  it("never hides a completed reply when a STALE in_flight_user_turn_id meets a new live turn (self-heals via localTurns)", async () => {
+    // Staleness residual: detail from turn N still reports in_flight_user_turn_id
+    // = msg-M while a NEW turn (N+1) streams and detail hasn't been refetched. The
+    // suppression can still hide the STALE persisted partial after msg-M — but
+    // turn N's COMPLETED reply was promoted into localTurns, so it stays visible.
+    // The stale projection is at most a transient, never a hidden completed turn.
+    mockGetFolderConversation.mockResolvedValueOnce({
+      ...detailWithTurns([userTurn("msg-M"), assistantTurn("a-M")]),
+      in_flight_user_turn_id: "msg-M",
+    })
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    await act(async () => {
+      api().refetchDetail(99)
+      await Promise.resolve()
+    })
+    // Turn N streams, then completes → its full reply lands in localTurns.
+    const replyN: LiveMessage = {
+      id: "lm-N",
+      role: "assistant",
+      content: [{ type: "text", text: "done-N" }],
+      startedAt: 0,
+    }
+    act(() => {
+      api().setLiveMessage(99, replyN, true)
+    })
+    act(() => {
+      api().completeTurn(99, replyN)
+    })
+    expect(
+      api()
+        .getSession(99)
+        ?.localTurns.map((t) => t.id)
+    ).toContain("live-99-lm-N")
+    // A NEW turn (N+1) begins streaming; detail is still the stale turn-N copy.
+    act(() => {
+      api().setLiveMessage(
+        99,
+        {
+          id: "lm-N1",
+          role: "assistant",
+          content: [{ type: "text", text: "streaming-N1" }],
+          startedAt: 0,
+        },
+        true
+      )
+    })
+    const ids = api()
+      .getTimelineTurns(99)
+      .map((t) => t.turn.id)
+    // Turn N's COMPLETED reply (in localTurns) stays visible; only the stale
+    // persisted partial "a-M" is suppressed — no completed turn is hidden.
+    expect(ids).toContain("live-99-lm-N")
+    expect(ids).not.toContain("a-M")
+    expect(ids).toEqual(["msg-M", "live-99-lm-N", "live-99-lm-N1"])
+  })
+
+  it("does not let an id-colliding ASSISTANT turn suppress (or overwrite) a viewer prompt", async () => {
+    // An id collision is only reachable via a client id that slipped into another
+    // namespace, but it must never hide a prompt. The exact-id guard is role-
+    // scoped (an assistant turn with this id does NOT suppress the synth) and the
+    // timeline dedup keys by role+id (the two same-id turns are both kept).
+    mockGetFolderConversation.mockResolvedValueOnce(
+      detailWithTurns([assistantTurn("collide")])
+    )
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    await act(async () => {
+      api().refetchDetail(99)
+      await Promise.resolve()
+    })
+    act(() => {
+      api().appendViewerUserTurn(99, userTurn("collide"))
+    })
+    const timeline = api().getTimelineTurns(99)
+    expect(
+      timeline.filter((t) => t.turn.role === "user").map((t) => t.turn.id)
+    ).toEqual(["collide"])
+    // Both survive — neither role overwrites the other in the id dedup.
+    expect(timeline.map((t) => `${t.turn.role}:${t.turn.id}`)).toEqual([
+      "assistant:collide",
+      "user:collide",
+    ])
+  })
+
+  it("a stale in-flight detail landing after completion does not clear the promoted reply (no hidden completed turn)", async () => {
+    // turn N: in-flight detail loads, streams, completes → reply promoted into
+    // localTurns.
+    mockGetFolderConversation.mockResolvedValueOnce({
+      ...detailWithTurns([userTurn("msg-M"), assistantTurn("a-M")]),
+      in_flight_user_turn_id: "msg-M",
+    })
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+    await act(async () => {
+      api().refetchDetail(99)
+      await Promise.resolve()
+    })
+    const replyN: LiveMessage = {
+      id: "lm-N",
+      role: "assistant",
+      content: [{ type: "text", text: "done-N" }],
+      startedAt: 0,
+    }
+    act(() => {
+      api().setLiveMessage(99, replyN, true)
+    })
+    act(() => {
+      api().completeTurn(99, replyN)
+    })
+    // A STALE, still-in-flight-stamped detail (the turn-N mid-snapshot) resolves
+    // AFTER completion. Because it carries `in_flight_user_turn_id`, the reducer
+    // must preserve the live buffers rather than wipe the promoted reply.
+    mockGetFolderConversation.mockResolvedValueOnce({
+      ...detailWithTurns([userTurn("msg-M"), assistantTurn("a-M")]),
+      in_flight_user_turn_id: "msg-M",
+    })
+    await act(async () => {
+      api().refetchDetail(99)
+      await Promise.resolve()
+    })
+    expect(
+      api()
+        .getSession(99)
+        ?.localTurns.map((t) => t.id)
+    ).toContain("live-99-lm-N")
+    // A new live turn (N+1) starts; the stale id would suppress "a-M".
+    act(() => {
+      api().setLiveMessage(
+        99,
+        {
+          id: "lm-N1",
+          role: "assistant",
+          content: [{ type: "text", text: "streaming-N1" }],
+          startedAt: 0,
+        },
+        true
+      )
+    })
+    const ids = api()
+      .getTimelineTurns(99)
+      .map((t) => t.turn.id)
+    // The completed reply survives via localTurns; only the stale partial hides.
+    expect(ids).toContain("live-99-lm-N")
+    expect(ids).not.toContain("a-M")
   })
 })

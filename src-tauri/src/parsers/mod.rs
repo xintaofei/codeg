@@ -6,7 +6,90 @@ pub mod openclaw;
 pub mod opencode;
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::OnceLock;
+
+/// A root of external agent-CLI transcript data, archived under
+/// `external/<agent>/` by the optional "include conversation content" toggle.
+/// These paths are owned by the respective CLIs — codeg only reads them.
+#[derive(Clone)]
+pub struct ExternalSource {
+    /// Stable directory name inside the archive (`external/<agent>/`).
+    pub agent: &'static str,
+    /// Live source path (a directory, or a single file when `is_file`).
+    pub root: PathBuf,
+    pub is_file: bool,
+    /// When `Some`, only entries whose first path component (relative to
+    /// `root`) is in this allowlist are archived. Used to keep the backup to
+    /// transcript/session data and exclude sibling credential/config/cache
+    /// files in shared base dirs (e.g. `~/.gemini/oauth_creds.json`). `None`
+    /// means the whole root is already transcript-scoped.
+    pub include_top: Option<&'static [&'static str]>,
+}
+
+impl ExternalSource {
+    /// The base directory a `external/<agent>/<rest>` entry restores under.
+    /// For file sources that is the file's parent; for dir sources, the root.
+    pub fn restore_base(&self) -> PathBuf {
+        if self.is_file {
+            self.root
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| self.root.clone())
+        } else {
+            self.root.clone()
+        }
+    }
+}
+
+/// Enumerate every external transcript source, resolved against the current
+/// environment (honoring `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, etc.). Sources
+/// whose root does not exist are still listed; callers skip missing roots.
+pub fn external_transcript_sources() -> Vec<ExternalSource> {
+    let mut sources = vec![
+        ExternalSource {
+            agent: "claude",
+            root: claude::resolve_claude_config_dir().join("projects"),
+            is_file: false,
+            include_top: None,
+        },
+        ExternalSource {
+            agent: "codex",
+            root: codex::resolve_codex_home_dir().join("sessions"),
+            is_file: false,
+            include_top: None,
+        },
+        ExternalSource {
+            // Gemini's base dir mixes transcripts with credentials/config; only
+            // pack the transcript/session subtrees, never `oauth_creds.json` etc.
+            agent: "gemini",
+            root: gemini::resolve_gemini_base_dir(),
+            is_file: false,
+            include_top: Some(&["tmp", "history", "projects.json"]),
+        },
+        ExternalSource {
+            agent: "cline",
+            root: cline::cline_data_dir(),
+            is_file: false,
+            include_top: None,
+        },
+        ExternalSource {
+            agent: "opencode",
+            root: opencode::resolve_opencode_base_dir().join("opencode.db"),
+            is_file: true,
+            include_top: None,
+        },
+    ];
+    if let Some(home) = dirs::home_dir() {
+        sources.push(ExternalSource {
+            agent: "openclaw",
+            root: home.join(".openclaw").join("agents"),
+            is_file: false,
+            include_top: None,
+        });
+    }
+    sources
+}
 
 use regex::Regex;
 

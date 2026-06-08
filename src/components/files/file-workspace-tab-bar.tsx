@@ -14,6 +14,7 @@ import {
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { openPath } from "@/lib/platform"
+import { isHtmlPreviewable } from "@/lib/language-detect"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useWorkspaceContext } from "@/contexts/workspace-context"
 import type { FileWorkspaceTab } from "@/contexts/workspace-context"
@@ -123,9 +124,10 @@ export function FileWorkspaceTabBar() {
 
   const activeTab = fileTabs.find((tab) => tab.id === activeFileTabId)
   const canPreview =
-    activeTab?.kind === "file" && activeTab.language === "markdown"
+    activeTab?.kind === "file" &&
+    (activeTab.language === "markdown" || isHtmlPreviewable(activeTab.path))
   const canOpenInBrowser =
-    activeTab?.kind === "file" && activeTab.language === "html"
+    activeTab?.kind === "file" && isHtmlPreviewable(activeTab.path)
   const isPreviewActive =
     canPreview && activeFileTabId
       ? previewFileTabIds.has(activeFileTabId)

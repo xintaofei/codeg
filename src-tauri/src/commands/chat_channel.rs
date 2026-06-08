@@ -2,6 +2,7 @@ use crate::app_error::AppCommandError;
 use crate::chat_channel::backends::weixin::{WeixinQrcodeInfo, WeixinQrcodeStatusPublic};
 use crate::chat_channel::manager::ChatChannelManager;
 use crate::chat_channel::types::ChannelType;
+use crate::chat_channel::webhook::WebhookConfig;
 use crate::db::service::{chat_channel_message_log_service, chat_channel_service};
 use crate::db::AppDatabase;
 use crate::models::chat_channel::{ChannelStatusInfo, ChatChannelInfo, ChatChannelMessageLogInfo};
@@ -277,6 +278,7 @@ pub async fn set_chat_message_language_core(
     )
     .await
     .map_err(AppCommandError::from)?;
+    crate::chat_channel::event_subscriber::bump_event_config_epoch();
     Ok(())
 }
 
@@ -316,7 +318,9 @@ pub async fn set_chat_event_filter_core(
             .map_err(AppCommandError::from)?;
         }
         None => {
-            // null means all events enabled — remove the key
+            // null is the DEFAULT event set: every event EXCEPT the opt-in ones
+            // that export prompt text (see `event_subscriber::DEFAULT_OFF_EVENTS`,
+            // e.g. `user_prompt_sent`). Persist the sentinel "null".
             crate::db::service::app_metadata_service::upsert_value(
                 &db.conn,
                 EVENT_FILTER_KEY,
@@ -326,6 +330,61 @@ pub async fn set_chat_event_filter_core(
             .map_err(AppCommandError::from)?;
         }
     }
+    crate::chat_channel::event_subscriber::bump_event_config_epoch();
+    Ok(())
+}
+
+const EVENT_WEBHOOKS_KEY: &str = "chat_event_webhooks";
+
+pub async fn get_chat_event_webhooks_core(
+    db: &AppDatabase,
+) -> Result<Vec<WebhookConfig>, AppCommandError> {
+    let val = crate::db::service::app_metadata_service::get_value(&db.conn, EVENT_WEBHOOKS_KEY)
+        .await
+        .map_err(AppCommandError::from)?;
+    match val {
+        Some(json) => {
+            let hooks: Vec<WebhookConfig> = serde_json::from_str(&json)
+                .map_err(|e| AppCommandError::invalid_input(e.to_string()))?;
+            Ok(hooks)
+        }
+        None => Ok(Vec::new()),
+    }
+}
+
+pub async fn set_chat_event_webhooks_core(
+    db: &AppDatabase,
+    webhooks: Vec<WebhookConfig>,
+) -> Result<(), AppCommandError> {
+    // Trim, drop empty-URL rows, require http(s), dedup by URL (order-preserving,
+    // first `enabled` wins). Store the trimmed original (not reqwest's normalized
+    // form) so the user's input round-trips unchanged in the UI.
+    let mut cleaned: Vec<WebhookConfig> = Vec::new();
+    for w in webhooks {
+        let url = w.url.trim();
+        if url.is_empty() {
+            continue;
+        }
+        let parsed = reqwest::Url::parse(url)
+            .map_err(|_| AppCommandError::invalid_input(format!("Invalid webhook URL: {url}")))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(AppCommandError::invalid_input(format!(
+                "Webhook URL must use http or https: {url}"
+            )));
+        }
+        if !cleaned.iter().any(|c| c.url == url) {
+            cleaned.push(WebhookConfig {
+                url: url.to_string(),
+                enabled: w.enabled,
+            });
+        }
+    }
+    let json = serde_json::to_string(&cleaned)
+        .map_err(|e| AppCommandError::invalid_input(e.to_string()))?;
+    crate::db::service::app_metadata_service::upsert_value(&db.conn, EVENT_WEBHOOKS_KEY, &json)
+        .await
+        .map_err(AppCommandError::from)?;
+    crate::chat_channel::event_subscriber::bump_event_config_epoch();
     Ok(())
 }
 
@@ -355,7 +414,12 @@ pub async fn weixin_check_qrcode_core(
             result
                 .bot_token
                 .as_deref()
-                .map(|t| if t.len() > 8 { &t[..8] } else { t })
+                .map(|t| {
+                    // Char-boundary-safe prefix: `&t[..8]` panics if a multibyte
+                    // char straddles byte 8.
+                    let end = t.char_indices().nth(8).map_or(t.len(), |(i, _)| i);
+                    &t[..end]
+                })
                 .unwrap_or("None"),
             result.base_url.as_deref().unwrap_or("None"),
         );
@@ -565,6 +629,23 @@ pub async fn set_chat_event_filter(
 
 #[cfg(feature = "tauri-runtime")]
 #[tauri::command]
+pub async fn get_chat_event_webhooks(
+    db: tauri::State<'_, AppDatabase>,
+) -> Result<Vec<WebhookConfig>, AppCommandError> {
+    get_chat_event_webhooks_core(&db).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn set_chat_event_webhooks(
+    db: tauri::State<'_, AppDatabase>,
+    webhooks: Vec<WebhookConfig>,
+) -> Result<(), AppCommandError> {
+    set_chat_event_webhooks_core(&db, webhooks).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
 pub async fn get_chat_message_language(
     db: tauri::State<'_, AppDatabase>,
 ) -> Result<String, AppCommandError> {
@@ -726,5 +807,86 @@ mod tests {
             .expect("set none");
         let got_none = get_chat_event_filter_core(&db).await.expect("get none");
         assert!(got_none.is_none());
+    }
+
+    fn hook(url: &str, enabled: bool) -> WebhookConfig {
+        WebhookConfig {
+            url: url.to_string(),
+            enabled,
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_event_webhooks_empty_by_default() {
+        let db = fresh_in_memory_db().await;
+        let hooks = get_chat_event_webhooks_core(&db).await.expect("get");
+        assert!(hooks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn chat_event_webhooks_roundtrip_preserves_enabled() {
+        let db = fresh_in_memory_db().await;
+        set_chat_event_webhooks_core(
+            &db,
+            vec![
+                hook("https://example.com/hook", true),
+                hook("http://localhost:9000/in", false),
+            ],
+        )
+        .await
+        .expect("set");
+        let got = get_chat_event_webhooks_core(&db).await.expect("get");
+        assert_eq!(
+            got,
+            vec![
+                hook("https://example.com/hook", true),
+                hook("http://localhost:9000/in", false),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_event_webhooks_trims_drops_empty_and_dedups() {
+        let db = fresh_in_memory_db().await;
+        set_chat_event_webhooks_core(
+            &db,
+            vec![
+                hook("  https://a.test/h  ", true),
+                hook("", true),
+                hook("   ", false),
+                hook("https://a.test/h", false), // duplicate of the trimmed first; first wins
+                hook("https://b.test/h", true),
+            ],
+        )
+        .await
+        .expect("set");
+        let got = get_chat_event_webhooks_core(&db).await.expect("get");
+        assert_eq!(
+            got,
+            vec![
+                hook("https://a.test/h", true),
+                hook("https://b.test/h", true)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_event_webhooks_rejects_non_http_scheme() {
+        let db = fresh_in_memory_db().await;
+        assert!(
+            set_chat_event_webhooks_core(&db, vec![hook("ftp://x.test/h", true)])
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_event_webhooks_rejects_unparseable_url() {
+        let db = fresh_in_memory_db().await;
+        assert!(
+            set_chat_event_webhooks_core(&db, vec![hook("not a url", true)])
+                .await
+                .is_err()
+        );
     }
 }

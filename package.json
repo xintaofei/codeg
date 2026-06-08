@@ -1,7 +1,7 @@
 {
   "name": "codeg",
   "private": true,
-  "version": "0.14.10",
+  "version": "0.15.2",
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build",
@@ -53,11 +53,13 @@
     "overlayscrollbars": "^2.15.1",
     "overlayscrollbars-react": "^0.5.6",
     "postcss": "^8.5.6",
+    "qrcode.react": "^4.2.0",
     "radix-ui": "^1.4.3",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",
     "react-resizable-panels": "^2.1.9",
+    "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
     "shadcn": "^3.8.4",
     "shiki": "^3.22.0",

@@ -38,7 +38,6 @@ function BindingProbe({ parentToolUseId }: { parentToolUseId: string }) {
     <div>
       <div data-testid="status">{binding.status}</div>
       <div data-testid="error-code">{binding.errorCode ?? "-"}</div>
-      <div data-testid="duration">{binding.durationMs ?? "-"}</div>
       <div data-testid="agent">{binding.agentType}</div>
     </div>
   )
@@ -162,7 +161,6 @@ describe("DelegationProvider", () => {
       result: { kind: "ok", duration_ms: 1234 },
     } as unknown as EventEnvelope)
     expect(screen.getByTestId("status")).toHaveTextContent("ok")
-    expect(screen.getByTestId("duration")).toHaveTextContent("1234")
 
     act(() => {
       vi.advanceTimersByTime(2_000)

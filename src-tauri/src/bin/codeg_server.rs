@@ -4,15 +4,28 @@ use std::sync::Arc;
 use codeg_lib::app_state::AppState;
 use codeg_lib::web::event_bridge::{EventEmitter, WebEventBroadcaster};
 use codeg_lib::web::{
-    find_static_dir_standalone, generate_random_token, get_local_addresses, WebServerState,
+    addresses_for_bind, advertise_host, find_static_dir_standalone, resolve_persisted_server_token,
+    WebServerState,
 };
 
 fn main() {
+    // Capture our own executable path before anything can rename it (an
+    // in-place upgrade swaps the binary mid-run; `current_exe()` would then
+    // resolve to a `" (deleted)"` path on Linux). Cheap, single-shot.
+    codeg_lib::update::runtime::prime_self_exe();
+
     // Support --version flag
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return;
+    }
+
+    // `--supervise`: run as the process supervisor that owns the worker's
+    // lifecycle (PID 1 in Docker). It spawns `codeg-server` without this
+    // flag and relaunches it after an in-place upgrade. Never returns.
+    if args.iter().any(|a| a == "--supervise") {
+        codeg_lib::supervise::run();
     }
 
     // When invoked as a git credential helper (by the script written via
@@ -114,7 +127,6 @@ async fn async_main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(3080);
     let host = std::env::var("CODEG_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let token = std::env::var("CODEG_TOKEN").unwrap_or_else(|_| generate_random_token());
     // CODEG_DATA_DIR was already resolved and absolutized in `main()` so
     // all path resolvers across the process see the same root. Read it
     // back rather than re-deriving the default.
@@ -125,6 +137,34 @@ async fn async_main() {
     let static_dir = find_static_dir_standalone(static_dir_env.as_deref());
     let app_version = env!("CARGO_PKG_VERSION");
 
+    // Staged-upgrade marker lifecycle. The marker is a proof token: it stays on
+    // disk for the whole trial window so a second self-update is refused while
+    // this freshly-swapped version is still unproven (re-swapping would clobber
+    // the only good `.bak` and make a trial-failure rollback restore the
+    // unproven version).
+    if codeg_lib::update::runtime::is_supervised() {
+        // Supervised trial: if this launch is the trial of a freshly-swapped
+        // version (marker present), keep the marker until we have stayed up
+        // past the trial window — at which point the upgrade is proven and the
+        // marker is cleared so future updates are allowed again. The supervisor
+        // only peeks at the marker to set probation; clearing is the worker's
+        // job. If this version can't survive the window the supervisor rolls it
+        // back first (which clears the marker), so this task never fires.
+        if codeg_lib::update::install::upgrade_staged() {
+            let trial = codeg_lib::update::runtime::upgrade_trial_secs();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(trial)).await;
+                let _ = codeg_lib::update::install::take_upgrade_staged();
+            });
+        }
+    } else {
+        // Standalone (non-supervised) self-update re-execs this binary in place,
+        // with no supervisor and thus no trial/rollback. Clear the marker on
+        // startup so a re-exec'd upgrade doesn't leave it behind and block every
+        // future update with "already staged".
+        let _ = codeg_lib::update::install::take_upgrade_staged();
+    }
+
     eprintln!("[SERVER] codeg-server v{}", app_version);
     eprintln!("[SERVER] Data directory: {}", data_dir.display());
     eprintln!("[SERVER] Static directory: {}", static_dir.display());
@@ -133,6 +173,21 @@ async fn async_main() {
     let db = codeg_lib::db::init_database(&data_dir, app_version)
         .await
         .expect("Failed to initialize database");
+
+    // Resolve the access token *after* the DB is up so a generated token can be
+    // persisted and reused across restarts (a self-update restart must not
+    // rotate it). An empty/whitespace CODEG_TOKEN is treated as unset.
+    let mut token_generated = false;
+    let token = resolve_persisted_server_token(
+        &db.conn,
+        std::env::var("CODEG_TOKEN").ok(),
+        &mut token_generated,
+    )
+    .await;
+    if token_generated {
+        eprintln!("[SERVER] No CODEG_TOKEN set; generated an access token (persisted): {token}");
+        eprintln!("[SERVER] Pin your own by setting the CODEG_TOKEN environment variable.");
+    }
 
     // Restore and apply saved system proxy settings before any network operation.
     // reqwest clients (including the LazyLock in check_app_update) cache the proxy
@@ -150,7 +205,7 @@ async fn async_main() {
     // Build AppState
     let pet_state_handle = codeg_lib::pet_state_mapper::new_pet_state_handle();
     let connection_manager = codeg_lib::app_state::default_connection_manager();
-    let (delegation_broker, delegation_tokens, delegation_socket_path) =
+    let (delegation_broker, delegation_tokens, delegation_socket_path, feedback_config) =
         codeg_lib::app_state::build_delegation_stack(
             &connection_manager,
             db.conn.clone(),
@@ -173,6 +228,9 @@ async fn async_main() {
         delegation_broker: delegation_broker.clone(),
         delegation_tokens: delegation_tokens.clone(),
         delegation_socket_path: delegation_socket_path.clone(),
+        feedback_config: feedback_config.clone(),
+        system_op_lock: codeg_lib::app_state::default_system_op_lock(),
+        update_state: codeg_lib::app_state::default_update_state(),
     });
 
     // Apply persisted delegation settings (depth, enabled) before
@@ -182,6 +240,13 @@ async fn async_main() {
     // timeout to apply here.
     codeg_lib::commands::delegation::apply_persisted_config(&state.db.conn, &delegation_broker)
         .await;
+    // Same for the live-feedback enable flag, so the first companion launch
+    // sees the operator's configured behavior.
+    codeg_lib::commands::feedback::apply_persisted_feedback_config(
+        &state.db.conn,
+        &feedback_config,
+    )
+    .await;
 
     // Spawn the delegation listener so companion processes can round-trip
     // through the broker. Path is PID-scoped, so the listener owns it for
@@ -191,6 +256,9 @@ async fn async_main() {
             delegation_broker,
             delegation_tokens,
             Arc::new(codeg_lib::acp::manager::ConnectionManagerParentLookup {
+                manager: Arc::new(state.connection_manager.clone_ref()),
+            }),
+            Arc::new(codeg_lib::acp::manager::ConnectionManagerFeedbackLookup {
                 manager: Arc::new(state.connection_manager.clone_ref()),
             }),
         );
@@ -301,15 +369,19 @@ async fn async_main() {
         );
     }
 
-    let actual_port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+    let local_addr = listener.local_addr().ok();
+    let actual_port = local_addr.map(|a| a.port()).unwrap_or(port);
+    // `CODEG_HOST` may be `localhost` or a bracketed IPv6 (`[::1]`); advertise
+    // the concrete IP the socket bound to, not the raw config string.
+    let advertised_host = advertise_host(local_addr, &host);
 
     // Publish runtime state so the settings page (served by us) shows
     // the truth — running on `actual_port` with this token — instead of
     // the placeholder "stopped" that triggers the stale-port banner.
     state
         .web_server_state
-        .mark_externally_running(actual_port, token.clone());
-    let addresses = get_local_addresses(actual_port);
+        .mark_externally_running(advertised_host.clone(), actual_port, token.clone());
+    let addresses = addresses_for_bind(&advertised_host, actual_port);
 
     eprintln!("[SERVER] Token: {}", token);
     eprintln!("[SERVER] Listening on:");

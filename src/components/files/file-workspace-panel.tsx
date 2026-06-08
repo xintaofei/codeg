@@ -11,6 +11,8 @@ import {
   type FileWorkspaceTab,
 } from "@/contexts/workspace-context"
 import { ImagePreview } from "@/components/files/image-preview"
+import { HtmlPreview } from "@/components/files/html-preview"
+import { isHtmlPreviewable } from "@/lib/language-detect"
 import { DiffViewer } from "@/components/diff/diff-viewer"
 import { UnifiedDiffPreview } from "@/components/diff/unified-diff-preview"
 import {
@@ -1398,6 +1400,22 @@ export function FileWorkspacePanel() {
   // Image preview
   if (isFileTab && activeFileTab && activeFileTab.language === "image") {
     return <ImagePreview key={activeFileTab.id} tab={activeFileTab} />
+  }
+
+  // HTML preview (sandboxed iframe)
+  if (
+    isFileTab &&
+    activeFileTab &&
+    previewFileTabIds.has(activeFileTab.id) &&
+    isHtmlPreviewable(activeFileTab.path)
+  ) {
+    return (
+      <HtmlPreview
+        key={activeFileTab.id}
+        tab={activeFileTab}
+        folderPath={folderPath}
+      />
+    )
   }
 
   if (isPreviewMode && activeFileTab) {

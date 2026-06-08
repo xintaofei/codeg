@@ -54,9 +54,14 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   wait_agent: "task",
   close_agent: "task",
   update_plan: "task",
+  create_goal: "create_goal",
+  "functions.create_goal": "create_goal",
+  update_goal: "update_goal",
+  "functions.update_goal": "update_goal",
   request_user_input: "question",
   // codeg multi-agent delegation MCP tools (server prefix varies by host)
   delegate_to_agent: "delegate_to_agent",
+  "mcp__codeg-mcp__delegate_to_agent": "delegate_to_agent",
   "mcp__codeg-delegate__delegate_to_agent": "delegate_to_agent",
   mcp__codeg__delegate_to_agent: "delegate_to_agent",
   get_delegation_status: "get_delegation_status",
@@ -129,6 +134,44 @@ function extractToolNameFromLiveCallTitle(input: string): string | null {
     /^[:：'"`“”‘’\s]*([a-z0-9_.-]+)(?:\s*[:：])?\s*call[\w-]*['"`“”‘’\s]*$/i
   )
   return match?.[1] ?? null
+}
+
+const GOAL_UPDATE_TITLE_RE = /^goal updated\s*\(([^)]+)\)\s*[:：]\s*([\s\S]*)$/i
+
+export interface ParsedGoalUpdateTitle {
+  status: string
+  objective: string
+  toolName: "create_goal" | "update_goal"
+}
+
+function normalizeGoalStatus(status: string): string {
+  return status
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_")
+}
+
+function goalToolNameFromStatus(status: string): "create_goal" | "update_goal" {
+  return normalizeGoalStatus(status) === "active"
+    ? "create_goal"
+    : "update_goal"
+}
+
+export function parseGoalUpdateTitle(
+  input: string | null | undefined
+): ParsedGoalUpdateTitle | null {
+  const match = input?.trim().match(GOAL_UPDATE_TITLE_RE)
+  if (!match) return null
+
+  const status = normalizeGoalStatus(match[1] ?? "")
+  const objective = (match[2] ?? "").trim()
+  if (!status || !objective) return null
+
+  return {
+    status,
+    objective,
+    toolName: goalToolNameFromStatus(status),
+  }
 }
 
 function tryParseInputObject(rawInput: string | null | undefined) {
@@ -258,6 +301,9 @@ export function normalizeToolName(toolName: string): string {
   const exact = EXACT_TOOL_NAME_ALIASES[trimmed.toLowerCase()]
   if (exact) return exact
 
+  const goalUpdate = parseGoalUpdateTitle(trimmed)
+  if (goalUpdate) return goalUpdate.toolName
+
   const canonical = canonicalizeToolName(trimmed)
   const alias = EXACT_TOOL_NAME_ALIASES[canonical]
   if (alias) return alias
@@ -271,6 +317,8 @@ export function normalizeToolName(toolName: string): string {
   if (/[^a-z0-9]get_delegation_status$/.test(canonical))
     return "get_delegation_status"
   if (/[^a-z0-9]cancel_delegation$/.test(canonical)) return "cancel_delegation"
+  if (/[^a-z0-9]create_goal$/.test(canonical)) return "create_goal"
+  if (/[^a-z0-9]update_goal$/.test(canonical)) return "update_goal"
 
   const freeform = inferFromFreeformName(trimmed)
   if (freeform) return freeform
@@ -318,8 +366,10 @@ export function inferLiveToolName(params: {
   // `mcp__<server>__<tool>` name for every MCP call. Resolve them FIRST, ahead
   // of `inferFromInput`, so the live stream routes into the same delegation
   // cards the historical path resolves from the raw tool name. Without this,
-  // `get_delegation_status` / `cancel_delegation` (input `{task_id}`) get
-  // misclassified as the generic "task" tool (shown as "任务" with no detail).
+  // `cancel_delegation` (input `{task_id}`) gets misclassified by
+  // `inferFromInput` as the generic "task" tool (shown as "任务" with no detail),
+  // and `get_delegation_status` (input `{task_ids}`) falls through unclassified —
+  // both need meta to resolve to the canonical companion tool name.
   // Scoped to these three so the documented input-shape-first ordering below
   // (notably Claude Code's `Task` → "agent" via `subagent_type`, whose meta
   // name is "Task" — not a delegation tool) is preserved for everything else.
@@ -342,7 +392,16 @@ export function inferLiveToolName(params: {
   // the input shape nor the human title carries the real identity. Placed below
   // `inferFromInput` so the more specific subagent_type / patch / command
   // heuristics keep winning when present.
-  if (metaToolName) return metaToolName
+  //
+  // Lower-case it so the canonical name matches the rest of this function's
+  // returns (all lower-case). The SDK reports the Agent/Task tool as `Agent`
+  // (capitalised); before `rawInput` streams in, that is the only signal we
+  // have, and the live agent-card nesting check (`getToolName(...) === "agent"`
+  // in conversation-runtime-context) is case-sensitive — returning `"Agent"`
+  // there left child tool calls un-nested and the card stuck on its fallback
+  // title. We deliberately do NOT run `normalizeToolName` here: its live-title
+  // heuristic rewrites `memory_recall` to `memory_re`.
+  if (metaToolName) return metaToolName.toLowerCase()
 
   const byTitle = normalizeToolName(params.title ?? "")
   if (byTitle !== "tool") return byTitle

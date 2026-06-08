@@ -33,6 +33,15 @@ pub async fn upsert_value<C: ConnectionTrait>(
 }
 
 pub async fn get_value(conn: &DatabaseConnection, key: &str) -> Result<Option<String>, DbError> {
+    get_value_conn(conn, key).await
+}
+
+/// Generic-over-connection variant of [`get_value`] so callers can read a value
+/// inside a transaction (`&DatabaseTransaction`) and compose it with a write.
+pub async fn get_value_conn<C: ConnectionTrait>(
+    conn: &C,
+    key: &str,
+) -> Result<Option<String>, DbError> {
     let model = app_metadata::Entity::find()
         .filter(app_metadata::Column::Key.eq(key))
         .filter(app_metadata::Column::DeletedAt.is_null())

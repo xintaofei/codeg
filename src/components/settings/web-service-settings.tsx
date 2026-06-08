@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import {
   AlertTriangle,
   Check,
@@ -8,11 +8,26 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  QrCode,
   RefreshCw,
 } from "lucide-react"
+import { QRCodeSVG } from "qrcode.react"
 import { useTranslations } from "next-intl"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Switch } from "@/components/ui/switch"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   startWebServer,
   stopWebServer,
@@ -28,27 +43,169 @@ const DEFAULT_PORT = 3080
 import { openUrl } from "@/lib/platform"
 import { copyTextToClipboard } from "@/lib/utils"
 
-function AddressCard({ label, value }: { label: string; value: string }) {
+// Remembers which reachable address the user last chose to display/open.
+// Keyed by host (IP) only, so the choice survives a port change.
+const DISPLAY_HOST_STORAGE_KEY = "webService.displayHost"
+
+// Extract the host (IP) portion of an `http://ip:port` address.
+function addressHost(address: string): string {
+  try {
+    return new URL(address).hostname
+  } catch {
+    return address
+  }
+}
+
+// Read the remembered display host, tolerating environments where storage
+// access throws (blocked cookies / private mode) — same posture as the write.
+function readSavedDisplayHost(): string | null {
+  if (typeof window === "undefined") return null
+  try {
+    return window.localStorage.getItem(DISPLAY_HOST_STORAGE_KEY)
+  } catch {
+    return null
+  }
+}
+
+// Briefly flips a "copied" flag, auto-resetting after `resetMs`. The pending
+// reset is tracked in a ref so it is cleared on unmount (and coalesced when copy
+// is triggered repeatedly), avoiding a setState on an unmounted component.
+function useCopiedFlag(resetMs = 1500): [boolean, () => void] {
+  const [copied, setCopied] = useState(false)
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current)
+    }
+  }, [])
+
+  const markCopied = useCallback(() => {
+    setCopied(true)
+    if (timeoutRef.current) clearTimeout(timeoutRef.current)
+    timeoutRef.current = setTimeout(() => setCopied(false), resetMs)
+  }, [resetMs])
+
+  return [copied, markCopied]
+}
+
+const ADDRESS_ICON_BUTTON_CLASS =
+  "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-input text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+
+// The running address row: a selector (or read-only field when there is only
+// one reachable address) followed by circular copy / QR / open actions.
+function AddressBar({
+  address,
+  addresses,
+  hasMultiple,
+  onSelect,
+}: {
+  address: string
+  addresses: string[]
+  hasMultiple: boolean
+  onSelect: (address: string) => void
+}) {
+  const t = useTranslations("WebServiceSettings")
+  const [copied, markCopied] = useCopiedFlag()
+  const [qrOpen, setQrOpen] = useState(false)
+
+  async function handleCopy() {
+    const ok = await copyTextToClipboard(address)
+    if (!ok) return
+    markCopied()
+  }
+
+  return (
+    <>
+      <div className="flex items-center gap-2">
+        {hasMultiple ? (
+          <Select value={address} onValueChange={onSelect}>
+            <SelectTrigger className="min-w-0 flex-1">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="start">
+              {addresses.map((addr) => (
+                <SelectItem key={addr} value={addr}>
+                  {addr}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : (
+          <div className="flex h-9 min-w-0 flex-1 items-center rounded-4xl border border-input bg-input/30 px-3">
+            <code className="truncate text-sm select-all">{address}</code>
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={handleCopy}
+          className={ADDRESS_ICON_BUTTON_CLASS}
+          aria-label={t("copy")}
+          title={t("copy")}
+        >
+          {copied ? (
+            <Check className="h-4 w-4 text-green-500" />
+          ) : (
+            <Copy className="h-4 w-4" />
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={() => setQrOpen(true)}
+          className={ADDRESS_ICON_BUTTON_CLASS}
+          aria-label={t("qrcode")}
+          title={t("qrcode")}
+        >
+          <QrCode className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          onClick={() => openUrl(address)}
+          className={ADDRESS_ICON_BUTTON_CLASS}
+          aria-label={t("open")}
+          title={t("open")}
+        >
+          <ExternalLink className="h-4 w-4" />
+        </button>
+      </div>
+      <AddressQrcodeDialog
+        open={qrOpen}
+        address={address}
+        onOpenChange={setQrOpen}
+      />
+    </>
+  )
+}
+
+function AddressQrcodeDialog({
+  open,
+  address,
+  onOpenChange,
+}: {
+  open: boolean
+  address: string
+  onOpenChange: (open: boolean) => void
+}) {
   const t = useTranslations("WebServiceSettings")
   return (
-    <div className="space-y-1.5">
-      <div className="text-xs font-medium text-muted-foreground">{label}</div>
-      <div className="group relative flex items-center rounded-md border bg-muted/40 px-3 py-2">
-        <code className="min-w-0 flex-1 truncate text-sm select-all">
-          {value}
-        </code>
-        <div className="ml-2 flex shrink-0 items-center gap-1">
-          <button
-            type="button"
-            onClick={() => openUrl(value)}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-            title={t("open")}
-          >
-            <ExternalLink className="h-3.5 w-3.5" />
-          </button>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-xs">
+        <DialogHeader>
+          <DialogTitle>{t("qrcodeTitle")}</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col items-center gap-4 py-2">
+          <div className="rounded-lg bg-white p-3">
+            <QRCodeSVG value={address} size={208} marginSize={0} />
+          </div>
+          <code className="text-center text-xs break-all text-muted-foreground select-all">
+            {address}
+          </code>
+          <p className="text-center text-xs text-muted-foreground">
+            {t("qrcodeHint")}
+          </p>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -75,15 +232,14 @@ function TokenEditor({
   placeholder: string
 }) {
   const t = useTranslations("WebServiceSettings")
-  const [copied, setCopied] = useState(false)
+  const [copied, markCopied] = useCopiedFlag()
   const [revealed, setRevealed] = useState(false)
 
   async function handleCopy() {
     if (!value) return
     const ok = await copyTextToClipboard(value)
     if (!ok) return
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
+    markCopied()
   }
 
   return (
@@ -152,6 +308,7 @@ export function WebServiceSettings() {
   const [portProbe, setPortProbe] = useState<WebServicePortProbe | null>(null)
   const [autoStart, setAutoStart] = useState(false)
   const [configLoaded, setConfigLoaded] = useState(false)
+  const [selectedAddress, setSelectedAddress] = useState<string | null>(null)
 
   const probePort = useCallback(async (portNum: number) => {
     try {
@@ -201,6 +358,39 @@ export function WebServiceSettings() {
   useEffect(() => {
     fetchStatus()
   }, [fetchStatus])
+
+  // Pick which reachable address to display/open. Keep a still-valid prior
+  // choice; otherwise honor the remembered host, falling back to the first
+  // entry (loopback). Selection is display-only — the service always binds
+  // 0.0.0.0, so every listed address stays reachable regardless of choice.
+  useEffect(() => {
+    const addresses = status?.addresses ?? []
+    if (addresses.length === 0) {
+      setSelectedAddress(null)
+      return
+    }
+    setSelectedAddress((prev) => {
+      if (prev && addresses.includes(prev)) return prev
+      const savedHost = readSavedDisplayHost()
+      const matched = savedHost
+        ? addresses.find((addr) => addressHost(addr) === savedHost)
+        : undefined
+      return matched ?? addresses[0]
+    })
+  }, [status])
+
+  function handleSelectAddress(address: string) {
+    setSelectedAddress(address)
+    try {
+      window.localStorage.setItem(
+        DISPLAY_HOST_STORAGE_KEY,
+        addressHost(address)
+      )
+    } catch {
+      // Ignore storage failures (private mode / quota); the selection still
+      // applies for the current session.
+    }
+  }
 
   const persistWebServiceConfig = useCallback(
     async (nextAutoStart = autoStart) => {
@@ -300,6 +490,8 @@ export function WebServiceSettings() {
   }
 
   const isRunning = status !== null
+  const currentAddress = selectedAddress ?? status?.addresses[0] ?? null
+  const hasMultipleAddresses = (status?.addresses.length ?? 0) > 1
   const showStaleBanner =
     !isRunning &&
     portProbe !== null &&
@@ -402,16 +594,26 @@ export function WebServiceSettings() {
 
           {error && <p className="text-sm text-destructive">{error}</p>}
 
-          {/* Addresses (only when running) */}
-          {isRunning && (
-            <div className="space-y-3">
-              {status.addresses.map((addr) => (
-                <AddressCard
-                  key={addr}
-                  label={t("addressLabel")}
-                  value={addr}
-                />
-              ))}
+          {/* Address (only when running). The listener is bound to
+              0.0.0.0, so every local IP reaches the service; the selector
+              only changes which address is shown and opened by the arrow —
+              it never changes what the service actually listens on. */}
+          {isRunning && currentAddress && (
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-muted-foreground">
+                {t("addressLabel")}
+              </div>
+              <AddressBar
+                address={currentAddress}
+                addresses={status.addresses}
+                hasMultiple={hasMultipleAddresses}
+                onSelect={handleSelectAddress}
+              />
+              {hasMultipleAddresses && (
+                <p className="text-xs text-muted-foreground">
+                  {t("addressSwitchHint")}
+                </p>
+              )}
             </div>
           )}
         </div>

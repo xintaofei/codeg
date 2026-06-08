@@ -132,6 +132,25 @@
     "checkUpdateFailed": "更新確認に失敗しました: {message}",
     "installSuccess": "更新をインストールしました。アプリを再起動します。",
     "installFailed": "更新に失敗しました: {message}",
+    "upgradeSuccess": "アップグレードが完了しました。再読み込みしています...",
+    "restartTimeout": "サーバーが時間内に復帰しませんでした。コンテナまたはサービスのログを確認してください。",
+    "restartingIn": "{seconds} 秒後に再起動します...",
+    "waitingForServer": "サーバーの復帰を待っています...",
+    "restartToUpdate": "再起動して更新",
+    "updateReadyHint": "アップデートをダウンロードしました。再起動して適用してください。",
+    "restarting": "再起動しています…",
+    "dockerUpgradeHint": "いま実行中のコンテナを更新します。コンテナを再作成すると失われます。維持するには、新しいバージョンのイメージを取得またはビルドしてコンテナを再作成してください。",
+    "upgradeRolledBack": "アップグレードに失敗しました。サーバーは前のバージョンにロールバックしました。",
+    "serverUnreachable": "アップグレードを開始するためにサーバーに接続できませんでした。サーバーが稼働中であることを確認して再試行してください。",
+    "rollbackButton": "ロールバック",
+    "rollingBack": "ロールバック中...",
+    "rollbackDescription": "前回のアップグレード前にインストールされていたバージョンに戻します。",
+    "rollbackConfirmTitle": "以前のバージョンにロールバックしますか？",
+    "rollbackConfirmDescription": "サーバーは前回のアップグレード前のバージョンで再起動します。新しいリリースは引き続き再インストールできます。",
+    "rollbackConfirm": "ロールバック",
+    "rollbackCancel": "キャンセル",
+    "rollbackSuccess": "以前のバージョンにロールバックしました。再読み込みしています...",
+    "rollbackFailed": "ロールバックに失敗しました。サーバーのログを確認してください。",
     "updateErrors": {
       "sourceUnavailable": "更新ソースに接続できません。ネットワークまたはプロキシを確認して再試行してください。",
       "network": "ネットワーク接続に失敗しました。ネットワークまたはプロキシを確認して再試行してください。",
@@ -264,6 +283,14 @@
       "close_all_file_tabs": {
         "title": "すべてのファイルタブを閉じる",
         "description": "ファイルペインがアクティブなときに開いているすべてのファイルタブを閉じます"
+      },
+      "next_tab": {
+        "title": "次のタブ",
+        "description": "次の会話またはファイルタブに切り替える"
+      },
+      "prev_tab": {
+        "title": "前のタブ",
+        "description": "前の会話またはファイルタブに切り替える"
       },
       "send_message": {
         "title": "メッセージを送信",
@@ -1043,7 +1070,6 @@
     },
     "auxPanel": {
       "tabs": {
-        "diff": "差分",
         "files": "ファイル",
         "changes": "変更",
         "commits": "コミット"
@@ -1088,16 +1114,6 @@
       "hideTerminal": "ターミナルを隠す ({shortcut})",
       "openFolderFirst": "先にフォルダを開いてください"
     },
-    "sessionFiles": {
-      "currentResponse": "現在の応答",
-      "noDiffDataAvailable": "{filePath} の差分データがありません",
-      "loading": "読み込み中...",
-      "noFileChangesInConversation": "この会話にはファイル変更がありません",
-      "openConversationToSeeChanges": "会話を開いてファイル変更を表示してください",
-      "remove": "削除",
-      "changeCount": "{count, plural, one {# 件の変更} other {# 件の変更}}",
-      "fileCount": "{count, plural, one {# 個のファイル} other {# 個のファイル}}"
-    },
     "folderNameDropdown": {
       "fallbackFolderName": "フォルダ",
       "openFolder": "フォルダを開く",
@@ -1125,7 +1141,10 @@
       "loadingEditor": "エディターを読み込み中...",
       "imageZoomIn": "拡大",
       "imageZoomOut": "縮小",
-      "imageZoomReset": "ズームをリセット"
+      "imageZoomReset": "ズームをリセット",
+      "htmlPreviewTitle": "HTML プレビュー",
+      "htmlPreviewTrust": "スクリプトを有効化",
+      "htmlPreviewTrustHint": "このファイルのスクリプトを実行し、ネットワークアクセスを許可します。信頼できるファイルでのみ有効にしてください。"
     },
     "branchDropdown": {
       "toasts": {
@@ -1143,7 +1162,9 @@
         "upstreamSet": "アップストリームブランチを設定しました",
         "upstreamSetAndPushed": "アップストリームブランチを設定し、{count, plural, one {# 件のコミット} other {# 件のコミット}}をプッシュしました",
         "noCommitsToPush": "プッシュするコミットはありません",
-        "pushedCommits": "{count, plural, one {# 件のコミットをプッシュ} other {# 件のコミットをプッシュ}}"
+        "pushedCommits": "{count, plural, one {# 件のコミットをプッシュ} other {# 件のコミットをプッシュ}}",
+        "switchedToFolder": "{name} に切り替えました",
+        "switchFailed": "ブランチの切り替えに失敗しました"
       },
       "tasks": {
         "newBranch": "ブランチ {name} を作成",
@@ -1473,6 +1494,7 @@
       "newDirectory": "ディレクトリ",
       "openIn": "で開く",
       "openInTerminal": "ターミナルで開く",
+      "copyPath": "パスをコピー",
       "upload": "ファイル/フォルダをアップロード",
       "download": "ファイルをダウンロード",
       "downloadAsZip": "ZIP としてダウンロード",
@@ -1506,7 +1528,9 @@
         "watchStartFailed": "ファイル監視の開始に失敗しました",
         "createFailed": "作成に失敗しました",
         "downloadFailed": "{name} のダウンロードに失敗しました",
-        "downloadSaved": "{name} をダウンロードしました"
+        "downloadSaved": "{name} をダウンロードしました",
+        "pathCopied": "パスをコピーしました",
+        "copyPathFailed": "パスのコピーに失敗しました"
       },
       "createDialog": {
         "newFile": "新規ファイル",
@@ -1715,6 +1739,8 @@
         "quickMessagesEmpty": "クイックメッセージはありません",
         "quickMessagesLoading": "読み込み中...",
         "quickMessageUntitled": "無題",
+        "liveFeedback": "ライブフィードバック",
+        "liveFeedbackDisabledHint": "エージェントの作業中に送信できます",
         "dropFilesToAttach": "ファイルをドロップして添付",
         "loadingSettings": "設定を読み込み中...",
         "loadingMode": "モードを読み込み中...",
@@ -1774,6 +1800,12 @@
       "agentSelector": {
         "noEnabledAgents": "有効なエージェントがありません",
         "openAgentsSettings": "エージェント設定を開く"
+      },
+      "subAgentOverlay": {
+        "title": "サブエージェント",
+        "collapsedSummary": "サブエージェント {count}",
+        "collapseAria": "サブエージェントを折りたたむ",
+        "expandAria": "サブエージェントを展開"
       },
       "agentPlanOverlay": {
         "title": "エージェントプラン",
@@ -1894,6 +1926,10 @@
         "waitForResultNoTask": "タスクの実行結果を待機中",
         "cancelTask": "タスク {task} をキャンセル中",
         "cancelTaskNoTask": "タスクをキャンセル中",
+        "resultPageOf": "{current} / {total}",
+        "prevResult": "前の結果",
+        "nextResult": "次の結果",
+        "noResultText": "このチェックでは結果がありません",
         "status": {
           "starting": "起動中",
           "running": "実行中",
@@ -1947,11 +1983,31 @@
         "agentPromptLabel": "プロンプト",
         "agentModelLabel": "モデル",
         "agentRunning": "実行中...",
+        "agentFallbackTitle": "サブエージェント起動中…",
         "agentStatsBash": "コマンド",
         "agentStatsRead": "ファイル読取",
         "agentStatsSearch": "検索",
         "agentStatsEdit": "編集",
         "agentStatsOther": "その他",
+        "goal": {
+          "title": "目標：",
+          "titleWithStatus": "目標 {status}",
+          "objective": "目標",
+          "statusLabel": "ステータス",
+          "tokensUsed": "使用 tokens",
+          "budget": "予算",
+          "remaining": "残り",
+          "elapsed": "経過時間",
+          "tokens": "tokens",
+          "status": {
+            "active": "実行中",
+            "paused": "一時停止",
+            "blocked": "ブロック中",
+            "usageLimited": "使用量制限",
+            "budgetLimited": "予算制限",
+            "complete": "完了"
+          }
+        },
         "field": {
           "file": "ファイル",
           "notebook": "ノートブック",
@@ -2021,6 +2077,15 @@
           "errorSuffix": "{count} 件失敗",
           "joiner": " · "
         }
+      },
+      "messageNav": {
+        "title": "メッセージナビ",
+        "expand": "メッセージナビを開く",
+        "collapse": "メッセージナビを閉じる",
+        "jumpToMessage": "移動: {label}",
+        "fileCount": "{count, plural, one {# 個のファイル} other {# 個のファイル}}",
+        "remove": "削除",
+        "noDiffDataAvailable": "{filePath} の差分データがありません"
       }
     },
     "diffPreview": {
@@ -2139,6 +2204,7 @@
     }
   },
   "WebServiceSettings": {
+    "addressSwitchHint": "切り替えても、ここに表示され開くアドレスが変わるだけです。サービスはすべてのインターフェースで待ち受けており、どのアドレスからもアクセスできます。",
     "sectionTitle": "Webサービス",
     "sectionDescription": "有効にするとブラウザからCodegにリモートアクセスできます",
     "port": "ポート",
@@ -2157,6 +2223,9 @@
     "hide": "非表示",
     "show": "表示",
     "copy": "コピー",
+    "qrcode": "QRコード",
+    "qrcodeTitle": "スキャンして開く",
+    "qrcodeHint": "スマートフォンでスキャンして、ブラウザで Codeg を開きます",
     "addressLabel": "アクセスアドレス",
     "tokenLabel": "アクセストークン",
     "tokenHint": "Webクライアントの初回アクセス時にこのトークンを入力してください",
@@ -2268,8 +2337,35 @@
       "turnCompleteDesc": "エージェントのターンが終了した時",
       "error": "エージェントエラー",
       "errorDesc": "エージェントがエラーに遭遇した時",
+      "permissionRequest": "権限リクエスト",
+      "permissionRequestDesc": "エージェントが操作の権限を要求した時",
+      "userPromptSent": "ユーザーメッセージ",
+      "userPromptSentDesc": "メッセージを送信したとき（通知に本文が含まれます）",
       "saved": "イベントフィルターを更新しました。",
-      "saveFailed": "イベントフィルターの保存に失敗しました。"
+      "saveFailed": "イベントフィルターの保存に失敗しました。",
+      "loadFailed": "設定の読み込みに失敗しました。",
+      "retry": "再試行",
+      "webhooksTitle": "Webhook",
+      "webhooksDescription": "有効なイベントの発生時に、1 つ以上の URL へ JSON を POST します。上のイベントフィルターは Webhook にも適用されます。",
+      "webhookUrlPlaceholder": "https://example.com/webhook",
+      "addWebhook": "Webhook を追加",
+      "removeWebhook": "Webhook を削除",
+      "webhookSave": "保存",
+      "webhooksSaved": "Webhook を保存しました。",
+      "webhooksSaveFailed": "Webhook の保存に失敗しました。",
+      "webhookInvalidUrl": "有効な http(s) URL を入力してください。",
+      "docsTitle": "リクエスト形式",
+      "docsMethod": "メソッド",
+      "docsContentType": "Content-Type",
+      "docsNote": "有効な各イベントはすべての URL に配信されます。Webhook はデバウンスされず、上のイベントフィルターが適用されます。",
+      "editWebhook": "Webhook を編集",
+      "enableWebhook": "Webhook を有効化",
+      "webhookDuplicate": "この URL は既に設定されています。",
+      "cancel": "キャンセル",
+      "webhooksEmpty": "Webhook はまだ設定されていません。",
+      "deleteWebhookTitle": "Webhook を削除",
+      "deleteWebhookMessage": "この Webhook を削除しますか？このURLにイベントは配信されなくなります。",
+      "delete": "削除"
     },
     "language": {
       "title": "メッセージ言語",
@@ -2416,6 +2512,19 @@
     }
   },
   "Pet": {
+    "badge": {
+      "running": "実行中 {count} 件",
+      "waiting": "承認待ち {count} 件",
+      "error": "エラー {count} 件"
+    },
+    "panel": {
+      "title": "アクティブなセッション",
+      "empty": "アクティブなセッションはありません",
+      "emptyHint": "実行中、または対応が必要なセッションがここに表示されます。",
+      "statusRunning": "実行中",
+      "statusWaiting": "待機中",
+      "statusError": "エラー"
+    },
     "menu": {
       "scale": "拡大率",
       "openManager": "ペット管理",
@@ -2567,5 +2676,119 @@
     "emptyDirectory": "このディレクトリは空です",
     "errorLoadingDir": "ディレクトリの読み込みに失敗しました",
     "selectedCount": "{count} 件選択中"
+  },
+  "BackupSettings": {
+    "title": "バックアップと復元",
+    "description": "codeg データのポータブルなバックアップを書き出すか、バックアップから復元します。",
+    "tabs": {
+      "backup": "バックアップ",
+      "restore": "復元"
+    },
+    "export": {
+      "includeExternal": "会話内容を含める",
+      "includeExternalHint": "各 CLI の会話履歴（Claude、Codex、Gemini など）も保存します。サイズが増えます。",
+      "passphrase": "パスフレーズ（任意）",
+      "passphrasePlaceholder": "空欄の場合は暗号化されません",
+      "passphraseConfirm": "パスフレーズの確認",
+      "passphraseMismatch": "パスフレーズが一致しません。",
+      "noPassphraseWarning": "このバックアップには秘密情報（API キー、トークン）が平文で含まれます。安全に保管してください。",
+      "passphraseLossWarning": "このパスフレーズで暗号化します。紛失するとバックアップは復元できません。",
+      "button": "バックアップを書き出す",
+      "inProgress": "バックアップを作成中…",
+      "success": "バックアップを作成しました。",
+      "started": "バックアップのダウンロードを開始しました。"
+    },
+    "restore": {
+      "selectFile": "バックアップファイルを選択",
+      "passphrasePrompt": "このバックアップは暗号化されています。パスフレーズを入力してください。",
+      "unlock": "ロック解除",
+      "preview": {
+        "title": "バックアップの詳細",
+        "encrypted": "暗号化済み",
+        "compatible": "互換あり",
+        "incompatible": "互換なし",
+        "createdAt": "作成日時: {value}",
+        "appVersion": "アプリのバージョン: {value}",
+        "incompatibleHint": "このバックアップは新しいバージョンの codeg で作成されており、復元できません。"
+      },
+      "replaceWarning": "復元すると現在の codeg データ（データベースとアップロード）がすべて置き換えられます。現在のデータは先にスナップショットされ、復旧できます。",
+      "keyringNote": "デスクトップの GitHub/チャットのトークンは OS のキーチェーンに保存され、含まれません。復元後に再入力してください。",
+      "button": "復元",
+      "staging": "復元を準備中…",
+      "staged": "復元を準備しました。再起動します…",
+      "restarting": "復元を準備しました。サーバーを再起動します…",
+      "restartTimeout": "サーバーが時間内に復帰しませんでした。起動後にページを再読み込みしてください。",
+      "externalSideLocation": "会話履歴を {path} に復元しました",
+      "confirmTitle": "すべてのデータを置き換えますか？",
+      "confirmBody": "現在の codeg データベースとアップロードをバックアップで置き換えてから再起動します。現在のデータは先にスナップショットされます。",
+      "cancel": "キャンセル",
+      "confirmAction": "置き換えて再起動",
+      "external": {
+        "title": "会話内容",
+        "hint": "このバックアップには CLI の会話履歴が含まれます。復元先を選択してください。",
+        "modeSkip": "復元しない",
+        "modeSide": "安全な別フォルダーに復元",
+        "modeOriginal": "CLI の元の場所に復元",
+        "forceOverwrite": "既存のファイルを上書き",
+        "forceOverwriteHint": "CLI フォルダー内の既存ファイルを置き換えます。",
+        "scanning": "競合を確認中…",
+        "noConflicts": "既存のファイルは上書きされません。",
+        "conflictCount": "既存のファイル {count} 件が影響を受けます。",
+        "conflictSkipNote": "上書きを有効にしない限り、既存ファイルは保持（スキップ）されます。"
+      },
+      "restartFailed": "復元は準備できましたが、サーバーを再起動できませんでした。手動で再起動して復元を適用してください。"
+    },
+    "remoteUnsupported": "バックアップと復元は codeg を実行しているマシンのデータを対象とします。現在リモートワークスペースに接続中です。そのサーバー上で直接バックアップを管理してください。"
+  },
+  "backup": {
+    "restore": {
+      "error": {
+        "badPassphrase": "パスフレーズが正しくないか、バックアップが破損しています。",
+        "corrupted": "バックアップアーカイブが破損しています。",
+        "unknownFormat": "このファイルは認識可能な codeg バックアップではありません。",
+        "newerVersion": "このバックアップは codeg {backupVersion} で作成されており、現在のバージョン（{appVersion}）より新しいです。",
+        "alreadyPending": "適用待ちの復元が既にあります。先に再起動して適用してから、新しい復元を準備してください。"
+      }
+    },
+    "error": {
+      "diskSpace": "操作を完了するためのディスク容量が足りません。",
+      "cancelled": "操作はキャンセルされました。"
+    }
+  },
+  "WebConnection": {
+    "disconnectedTitle": "接続が切断されました",
+    "reconnectingDescription": "サーバーへの再接続を試みています。通常は数秒で自動的に復旧します。",
+    "reconnectNow": "今すぐ再接続",
+    "sessionExpiredTitle": "セッションの有効期限が切れました",
+    "sessionExpiredDescription": "セッションが無効になりました。続行するには再度サインインしてください。",
+    "goToLogin": "ログインへ移動"
+  },
+  "SessionFeedbackSettings": {
+    "title": "ライブフィードバック",
+    "description": "作業中のエージェントにメモや修正を送信できます。有効にすると、エージェントはライブフィードバックを確認するツールを取得し、会話にメモ入力が表示されます。ヒント：エージェントは通常、プロンプトで言及した場合にのみフィードバックを確認します。例えば「作業中に定期的にライブフィードバックを確認して」とメッセージに追加してください。",
+    "enable": "ライブフィードバックを有効にする",
+    "enableHint": "有効化後に起動したエージェントに、フィードバック確認ツールを注入します。既定はオフです。",
+    "save": "保存",
+    "saving": "保存中…",
+    "saved": "フィードバック設定を保存しました",
+    "saveFailed": "フィードバック設定の保存に失敗しました",
+    "loadFailed": "読み込みに失敗しました: {detail}"
+  },
+  "LiveFeedback": {
+    "placeholder": "{agent} の作業中にメモを送る…",
+    "agentFallback": "エージェント",
+    "ariaLabel": "ライブフィードバックのメモ",
+    "dialogTitle": "ライブフィードバック",
+    "dialogDescription": "エージェントの作業中にメモを送ります。現在のステップを中断せず、次の確認時に読み取られます。",
+    "send": "送信",
+    "cancel": "キャンセル",
+    "pending": "待機中",
+    "delivered": "受領済み",
+    "turnEndedUnread": "エージェントはフィードバックを読む前にターンを終了しました。",
+    "sendAsMessage": "新しいメッセージとして送信",
+    "dismiss": "閉じる",
+    "turnEndedResent": "ターンが終了したため、新しいメッセージとして送信しました。",
+    "turnEnded": "ターンはすでに終了しています。",
+    "submitFailed": "メモを送信できませんでした"
   }
 }

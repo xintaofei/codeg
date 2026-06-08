@@ -279,3 +279,43 @@ pub async fn delete_model_provider(
 ) -> Result<(), AppCommandError> {
     delete_model_provider_core(&db, id).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::test_helpers::fresh_in_memory_db;
+
+    /// Regression: an `api_key` containing a multibyte character (e.g. a
+    /// full-width char typed under a CJK IME) must not panic the masking in
+    /// `ModelProviderInfo::from`. Before the fix, `create` persisted the row
+    /// and then panicked, after which every `list_model_providers` call
+    /// panicked on that row — breaking the settings list and the agent
+    /// management provider dropdown until the row was removed.
+    #[tokio::test]
+    async fn create_and_list_tolerate_multibyte_api_key() {
+        let db = fresh_in_memory_db().await;
+
+        let created = create_model_provider_core(
+            &db,
+            "Provider".to_string(),
+            "https://api.example.com".to_string(),
+            "sk-密钥abcd1234".to_string(),
+            "codex".to_string(),
+            None,
+        )
+        .await;
+        assert!(
+            created.is_ok(),
+            "create panicked/failed: {:?}",
+            created.err()
+        );
+
+        let rows = list_model_providers_core(&db)
+            .await
+            .expect("list must not fail on a multibyte api_key");
+        assert_eq!(rows.len(), 1);
+        // The raw key round-trips; only the masked view is derived.
+        assert_eq!(rows[0].api_key, "sk-密钥abcd1234");
+        assert!(!rows[0].api_key_masked.is_empty());
+    }
+}

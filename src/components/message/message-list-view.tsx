@@ -5,6 +5,7 @@ import { useConversationRuntime } from "@/contexts/conversation-runtime-context"
 import { ContentPartsRenderer } from "./content-parts-renderer"
 import {
   createMessageTurnAdapter,
+  groupGoalRuns,
   mergeAdjacentToolGroups,
   mergeAdjacentDelegationStatusGroups,
   type AdaptedContentPart,
@@ -19,6 +20,10 @@ import { UserResourceLinks } from "./user-resource-links"
 import { UserImageAttachments } from "./user-image-attachments"
 import { useSessionStats } from "@/contexts/session-stats-context"
 import { AgentPlanOverlay } from "@/components/chat/agent-plan-overlay"
+import { SubAgentOverlay } from "@/components/chat/sub-agent-overlay"
+import { normalizeToolName } from "@/lib/tool-call-normalization"
+import { isDelegateToAgentToolName } from "@/lib/delegation-card"
+import type { DelegationCardSource } from "@/hooks/use-delegation-card-model"
 import {
   MessageThread,
   MessageThreadScrollButton,
@@ -48,6 +53,17 @@ import {
 import type { AgentType, ConnectionStatus, SessionStats } from "@/lib/types"
 import { copyTextToClipboard } from "@/lib/utils"
 import { VirtualizedMessageThread } from "@/components/message/virtualized-message-thread"
+import {
+  ConversationMessageNav,
+  type MessageNavEntry,
+} from "@/components/message/conversation-message-nav"
+import type { MessageScrollContextValue } from "@/components/message/message-scroll-context"
+import {
+  pickActiveThreadIndex,
+  reconcileActive,
+  type ActiveClickGuard,
+} from "@/lib/message-nav-active"
+import { extractSessionFilesGrouped } from "@/lib/session-files"
 import { useStickToBottomContext } from "use-stick-to-bottom"
 
 interface MessageListViewProps {
@@ -70,6 +86,11 @@ interface MessageListViewProps {
   hideEmptyState?: boolean
   onReload?: () => void
   onNewSession?: () => void
+  /**
+   * Renders the per-conversation message navigator rail. Enabled in the main
+   * conversation view; disabled in compact embeds (e.g. the sub-agent dialog).
+   */
+  showMessageNav?: boolean
 }
 
 interface ResolvedMessageGroup {
@@ -105,6 +126,62 @@ type ThreadRenderItem =
       key: string
       kind: "typing"
     }
+
+// Module-scope so the reference is stable across renders — lets the memoized
+// VirtualizedMessageThread bail out when `items` is unchanged.
+const getThreadItemKey = (item: ThreadRenderItem) => item.key
+
+// Stable empty reference so the SubAgentOverlay memo can bail out when there
+// are no delegations in the last reply.
+const EMPTY_DELEGATIONS: DelegationCardSource[] = []
+
+// Stable empty reference so the navigator memo / equality checks don't churn
+// when a conversation has no user messages.
+const EMPTY_NAV_ENTRIES: MessageNavEntry[] = []
+
+// How long a marker click keeps its tick active while the smooth scroll
+// settles. Released early once the scroll arrives (see reconcileActive); this
+// is only the safety net for bottom-clamped targets that never reach the top.
+const ACTIVE_CLICK_GUARD_MS = 1000
+
+// Collect the `delegate_to_agent` tool calls within a turn's adapted parts,
+// recursing through tool-groups and goal-runs (a delegate call is normally a
+// standalone part — `isAgentLikeToolName` keeps it out of tool-groups — but we
+// scan nested containers defensively so a delegation is never missed).
+function collectDelegationSources(
+  parts: AdaptedContentPart[],
+  out: DelegationCardSource[]
+): void {
+  for (const part of parts) {
+    if (part.type === "tool-call") {
+      if (
+        part.toolCallId &&
+        isDelegateToAgentToolName(normalizeToolName(part.toolName))
+      ) {
+        out.push({
+          parentToolUseId: part.toolCallId,
+          input: part.input ?? null,
+          output: part.output ?? null,
+          errorText: part.errorText ?? null,
+          state: part.state,
+          meta: part.meta ?? null,
+        })
+      }
+    } else if (part.type === "tool-group") {
+      collectDelegationSources(part.items, out)
+    } else if (part.type === "goal-run") {
+      collectDelegationSources(part.items, out)
+    }
+  }
+}
+
+function extractDelegationSources(
+  parts: AdaptedContentPart[]
+): DelegationCardSource[] {
+  const out: DelegationCardSource[] = []
+  collectDelegationSources(parts, out)
+  return out
+}
 
 const CollapsibleSystemMessage = memo(function CollapsibleSystemMessage({
   group,
@@ -143,8 +220,12 @@ const CollapsibleSystemMessage = memo(function CollapsibleSystemMessage({
 
 function extractTextFromParts(parts: AdaptedContentPart[]): string {
   return parts
-    .filter((p): p is { type: "text"; text: string } => p.type === "text")
-    .map((p) => p.text)
+    .flatMap((p): string[] => {
+      if (p.type === "text") return [p.text]
+      if (p.type === "goal-run") return [extractTextFromParts(p.items)]
+      return []
+    })
+    .filter((text) => text.length > 0)
     .join("\n")
 }
 
@@ -188,8 +269,8 @@ function mergeConsecutiveAssistantTurns(
       // Fold tool-groups straddling the turn boundary, then collapse runs of
       // single-poll delegation-status groups (each polling round is its own
       // turn) into one merged status card.
-      const mergedParts = mergeAdjacentDelegationStatusGroups(
-        mergeAdjacentToolGroups(allParts)
+      const mergedParts = groupGoalRuns(
+        mergeAdjacentDelegationStatusGroups(mergeAdjacentToolGroups(allParts))
       )
       const last = buffer[buffer.length - 1]
       const first = buffer[0]
@@ -421,6 +502,7 @@ export function MessageListView({
   hideEmptyState = false,
   onReload,
   onNewSession,
+  showMessageNav = true,
 }: MessageListViewProps) {
   const t = useTranslations("Folder.chat.messageList")
   const sharedT = useTranslations("Folder.chat.shared")
@@ -623,7 +705,127 @@ export function MessageListView({
     [hideEmptyState, t]
   )
 
-  const agentPlanOverlayKey = liveMessage?.id ?? `history-${conversationId}`
+  // Namespaced with `plan-` so this key can never equal `subAgentOverlayKey`
+  // below: the two overlays are siblings in one container, and both fall back
+  // to a per-conversation string when there's no live message / assistant reply
+  // yet (the state a freshly-opened sub-agent dialog starts in). Without
+  // disjoint namespaces those fallbacks collide → React "two children with the
+  // same key".
+  const agentPlanOverlayKey =
+    liveMessage?.id != null
+      ? `plan-${liveMessage.id}`
+      : `plan-history-${conversationId}`
+
+  // Sub-agents delegated in the LAST agent reply. Scan the merged timeline
+  // backward for the most recent assistant turn (the live streaming turn is
+  // merged in too, so this covers both live and historical), and pull its
+  // `delegate_to_agent` tool calls. The overlay shows only while the last reply
+  // carries delegation cards — a newer non-delegating reply clears it.
+  const lastAssistantGroup = useMemo(() => {
+    let group: ResolvedMessageGroup | null = null
+    for (let i = threadItems.length - 1; i >= 0; i -= 1) {
+      const item = threadItems[i]
+      if (item.kind === "turn" && item.group.role === "assistant") {
+        group = item.group
+        break
+      }
+    }
+    return group
+  }, [threadItems])
+  const lastAssistantDelegations = useMemo(
+    () =>
+      lastAssistantGroup
+        ? extractDelegationSources(lastAssistantGroup.parts)
+        : EMPTY_DELEGATIONS,
+    [lastAssistantGroup]
+  )
+  const subAgentOverlayKey = lastAssistantGroup
+    ? `subagents-${lastAssistantGroup.id}`
+    : `subagents-history-${conversationId}`
+
+  // --- Message navigator rail -------------------------------------------------
+  // Lifted scroll handle so the rail (a sibling outside the MessageScrollProvider
+  // subtree) can drive scrollToIndex.
+  const scrollApiRef = useRef<MessageScrollContextValue | null>(null)
+  const [activeThreadIndex, setActiveThreadIndex] = useState<number | null>(
+    null
+  )
+  // A marker click optimistically activates its tick; this guard stops the
+  // ensuing smooth-scroll readings from regressing it before the scroll lands.
+  const activeClickGuardRef = useRef<ActiveClickGuard | null>(null)
+
+  // One entry per user message — including ones with no edits (placeholders).
+  // `extractSessionFilesGrouped(..., {includeEmpty})` yields a group per user
+  // turn in order; we join the rendered threadItems index for scrolling.
+  const navEntries = useMemo<MessageNavEntry[]>(() => {
+    if (!showMessageNav) return EMPTY_NAV_ENTRIES
+    const turns = timelineTurns.map((item) => item.turn)
+    const groups = extractSessionFilesGrouped(turns, { includeEmpty: true })
+    if (groups.length === 0) return EMPTY_NAV_ENTRIES
+
+    const indexByTurnId = new Map<string, number>()
+    for (let i = 0; i < threadItems.length; i++) {
+      const item = threadItems[i]
+      if (item.kind === "turn" && item.group.role === "user") {
+        indexByTurnId.set(item.group.id, i)
+      }
+    }
+
+    const entries: MessageNavEntry[] = []
+    for (const group of groups) {
+      const threadIndex = indexByTurnId.get(group.userTurnId)
+      if (threadIndex == null) continue
+      let additions = 0
+      let deletions = 0
+      for (const file of group.files) {
+        additions += file.additions
+        deletions += file.deletions
+      }
+      entries.push({
+        threadIndex,
+        turnId: group.userTurnId,
+        ordinal: entries.length + 1,
+        label: group.userMessage,
+        additions,
+        deletions,
+        files: group.files,
+        hasChanges: group.files.length > 0,
+      })
+    }
+    return entries.length > 0 ? entries : EMPTY_NAV_ENTRIES
+  }, [showMessageNav, timelineTurns, threadItems])
+
+  // Optimistically activate the clicked tick and arm a guard so the smooth
+  // scroll that follows can't regress the highlight to the previous tick
+  // before it lands (and so bottom-clamped targets, which never reach the top,
+  // still light up — see reconcileActive).
+  const handleMarkerActivate = useCallback((threadIndex: number) => {
+    activeClickGuardRef.current = {
+      target: threadIndex,
+      releaseAfter: performance.now() + ACTIVE_CLICK_GUARD_MS,
+    }
+    setActiveThreadIndex(threadIndex)
+  }, [])
+
+  // navEntries is ascending by threadIndex; pick the last one at or above the
+  // viewport top, reconcile it with any pending click guard, and only setState
+  // when it changes (avoids a storm on every scroll frame). Depending on
+  // navEntries keeps this referentially stable while turns are unchanged, so
+  // the VirtualizedMessageThread memo still bails out on cross-tab broadcast
+  // re-renders.
+  const handleVisibleStartIndexChange = useCallback(
+    (startIndex: number) => {
+      const computed = pickActiveThreadIndex(navEntries, startIndex)
+      const { active, guard } = reconcileActive(
+        computed,
+        activeClickGuardRef.current,
+        performance.now()
+      )
+      activeClickGuardRef.current = guard
+      setActiveThreadIndex((prev) => (prev === active ? prev : active))
+    },
+    [navEntries]
+  )
 
   const hasRenderableContent = threadItems.length > 0 || Boolean(liveMessage)
 
@@ -696,35 +898,60 @@ export function MessageListView({
   }
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col">
-      <MessageThread
-        className="flex-1 min-h-0"
-        resize={shouldUseSmoothResize ? "smooth" : undefined}
-      >
-        <AutoScrollOnSend signal={sendSignal} />
-        <VirtualizedMessageThread
-          items={threadItems}
-          getItemKey={(item) => item.key}
-          renderItem={renderThreadItem}
-          emptyState={emptyState}
-        />
-        <MessageThreadScrollButton />
-      </MessageThread>
-      {liveMessage && connStatus === "prompting" && (
-        <LiveTurnStats
-          message={liveMessage}
-          agentType={agentType}
-          isStreaming={connStatus === "prompting"}
+    <div className="relative flex h-full min-h-0 flex-row">
+      <div className="relative flex h-full min-h-0 flex-1 flex-col">
+        <MessageThread
+          className="flex-1 min-h-0"
+          resize={shouldUseSmoothResize ? "smooth" : undefined}
+        >
+          <AutoScrollOnSend signal={sendSignal} />
+          <VirtualizedMessageThread
+            items={threadItems}
+            getItemKey={getThreadItemKey}
+            renderItem={renderThreadItem}
+            emptyState={emptyState}
+            scrollApiRef={scrollApiRef}
+            onVisibleStartIndexChange={
+              showMessageNav ? handleVisibleStartIndexChange : undefined
+            }
+          />
+          <MessageThreadScrollButton />
+        </MessageThread>
+        {liveMessage && connStatus === "prompting" && (
+          <LiveTurnStats
+            message={liveMessage}
+            agentType={agentType}
+            isStreaming={connStatus === "prompting"}
+          />
+        )}
+        {/* Shared overlay stack: the plan panel on top, the sub-agent panel
+            below it. A flex column keeps the order stable regardless of each
+            panel's expand/collapse height; empty panels render null and collapse
+            out. Positioning lives here (not in the child overlays). */}
+        <div className="pointer-events-none absolute right-8 top-4 z-20 flex max-w-[min(22rem,calc(100%-2rem))] flex-col items-end gap-2">
+          <AgentPlanOverlay
+            key={agentPlanOverlayKey}
+            message={liveMessage ?? null}
+            entries={historicalPlanEntries}
+            planKey={historicalPlanKey}
+            defaultExpanded={false}
+            isStreaming={connStatus === "prompting"}
+          />
+          <SubAgentOverlay
+            key={subAgentOverlayKey}
+            delegations={lastAssistantDelegations}
+            overlayKey={subAgentOverlayKey}
+          />
+        </div>
+      </div>
+      {showMessageNav && navEntries.length > 0 && (
+        <ConversationMessageNav
+          entries={navEntries}
+          scrollApiRef={scrollApiRef}
+          activeThreadIndex={activeThreadIndex}
+          onActivate={handleMarkerActivate}
         />
       )}
-      <AgentPlanOverlay
-        key={agentPlanOverlayKey}
-        message={liveMessage ?? null}
-        entries={historicalPlanEntries}
-        planKey={historicalPlanKey}
-        defaultExpanded={connStatus === "prompting"}
-        isStreaming={connStatus === "prompting"}
-      />
     </div>
   )
 }

@@ -13,6 +13,12 @@ services:
       - CODEG_TOKEN=${CODEG_TOKEN:-}
       - CODEG_PORT=3080
       - CODEG_HOST=0.0.0.0
+    # In-place upgrades (Settings → Software Update) rewrite the binaries and
+    # web assets inside this container's writable layer, not the image. The
+    # codeg-data volume persists, but an upgrade lives only in the running
+    # container: recreating it (`--force-recreate`, or recreating after a
+    # `docker pull`) starts from the image again and drops the upgrade. Build or
+    # pull an image at the new version and recreate to make it permanent.
     restart: unless-stopped
 
 volumes:

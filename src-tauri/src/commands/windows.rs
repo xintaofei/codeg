@@ -5,7 +5,10 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering as AtomicOrdering};
 use std::sync::Mutex;
 
 use sea_orm::DatabaseConnection;
-use tauri::{AppHandle, LogicalPosition, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    window::{Effect, EffectState, EffectsBuilder},
+    AppHandle, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder,
+};
 
 use crate::app_error::AppCommandError;
 use crate::db::service::app_metadata_service;
@@ -1264,6 +1267,281 @@ pub async fn pet_window_record_position(
     Ok(())
 }
 
+// ─── Pet session panel (click-to-open companion window) ─────────────────
+//
+// A second, focusable window anchored next to the sprite. The sprite window
+// itself is transparent / non-focusing / exact-fit and hostile to a scrollable
+// interactive list, so the list + inline permission actions live here. Tapping
+// the pet toggles it; clicking away (blur) dismisses it.
+
+pub const PET_PANEL_LABEL: &str = "pet-panel";
+const PET_PANEL_WIDTH: f64 = 300.0;
+/// First-frame window height (logical px). The panel reports its real content
+/// height via `resize_pet_panel` right after it mounts, so this is only the
+/// open-time size — tuned to the rendered empty-state card (header + "no active
+/// sessions" message + padding). Keeping it at the common (empty) height means
+/// the common path opens already-correct, with no resize flash.
+const PET_PANEL_DEFAULT_HEIGHT: f64 = 132.0;
+/// Floor for `resize_pet_panel`'s clamp — never collapse below a usable header.
+const PET_PANEL_MIN_HEIGHT: f64 = 80.0;
+const PET_PANEL_GAP: f64 = 8.0;
+
+/// Guards the toggle-vs-blur race. When the panel auto-closes on blur because
+/// the user clicked the pet, that same click also fires `toggle_pet_panel`;
+/// without this guard the toggle would immediately reopen the just-closed
+/// panel. The blur handler stamps the close instant here and `toggle_pet_panel`
+/// skips the reopen while the stamp is fresh.
+static PET_PANEL_BLUR_CLOSED_AT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+const PET_PANEL_REOPEN_SUPPRESS_MS: u128 = 300;
+
+/// Close the panel on blur (click-away dismiss) and record the time so a
+/// paired pet click doesn't reopen it. Invoked from the global window-event
+/// handler in `lib.rs`.
+#[cfg(feature = "tauri-runtime")]
+pub fn close_pet_panel_on_blur(app: &AppHandle) {
+    if let Some(panel) = app.get_webview_window(PET_PANEL_LABEL) {
+        if let Ok(mut guard) = PET_PANEL_BLUR_CLOSED_AT.lock() {
+            *guard = Some(std::time::Instant::now());
+        }
+        let _ = panel.close();
+    }
+}
+
+/// True (consuming the stamp) if the panel was blur-closed within the suppress
+/// window — i.e. the current toggle is the back half of a click that already
+/// dismissed the panel, so it must not reopen.
+fn pet_panel_reopen_suppressed() -> bool {
+    if let Ok(mut guard) = PET_PANEL_BLUR_CLOSED_AT.lock() {
+        if let Some(t) = *guard {
+            if t.elapsed().as_millis() < PET_PANEL_REOPEN_SUPPRESS_MS {
+                *guard = None;
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn toggle_pet_panel(app: AppHandle) -> Result<(), AppCommandError> {
+    // Already open → toggle off. (Covers the race where the pet click reaches
+    // this command before the panel's blur event has fired.)
+    if let Some(existing) = app.get_webview_window(PET_PANEL_LABEL) {
+        let _ = existing.close();
+        return Ok(());
+    }
+    // The click that closed it via blur must not reopen it.
+    if pet_panel_reopen_suppressed() {
+        return Ok(());
+    }
+    open_pet_panel_window(&app)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn close_pet_panel(app: AppHandle) -> Result<(), AppCommandError> {
+    if let Some(existing) = app.get_webview_window(PET_PANEL_LABEL) {
+        let _ = existing.close();
+    }
+    Ok(())
+}
+
+/// Compute the panel's top-left origin (logical px) from the pet window's
+/// logical rect (`px,py,pw,ph`), the current monitor's logical rect (`mon_*`),
+/// and the panel size. Prefers placement above the pet, drops below if that
+/// would clip the monitor's top edge, then clamps vertically into the monitor;
+/// horizontally aligns the panel's right edge with the pet's, clamped into the
+/// monitor. Pure (no Tauri handles) so the initial open and `resize_pet_panel`
+/// re-anchor identically — and so it's unit-testable. Re-running it with a
+/// larger `panel_h` is what keeps the panel attached as it grows.
+#[allow(clippy::too_many_arguments)]
+fn compute_pet_panel_origin(
+    px: f64,
+    py: f64,
+    pw: f64,
+    ph: f64,
+    mon_x: f64,
+    mon_y: f64,
+    mon_w: f64,
+    mon_h: f64,
+    panel_w: f64,
+    panel_h: f64,
+) -> (f64, f64) {
+    // Prefer above the pet; drop below if it would clip the top edge, then
+    // clamp into the monitor either way.
+    let mut panel_y = py - panel_h - PET_PANEL_GAP;
+    if panel_y < mon_y {
+        panel_y = py + ph + PET_PANEL_GAP;
+    }
+    let max_y = mon_y + mon_h - panel_h;
+    if panel_y > max_y {
+        panel_y = max_y.max(mon_y);
+    }
+
+    // Align the panel's right edge with the pet's, clamped horizontally.
+    let mut panel_x = (px + pw) - panel_w;
+    let max_x = mon_x + mon_w - panel_w;
+    if panel_x > max_x {
+        panel_x = max_x;
+    }
+    if panel_x < mon_x {
+        panel_x = mon_x;
+    }
+
+    (panel_x, panel_y)
+}
+
+/// Pet + monitor logical rects, the shared input to [`compute_pet_panel_origin`]:
+/// `(px, py, pw, ph, mon_x, mon_y, mon_w, mon_h)`.
+type PetAnchorGeometry = (f64, f64, f64, f64, f64, f64, f64, f64);
+
+/// Read the pet window's logical rect and its monitor's logical rect — the
+/// shared input to [`compute_pet_panel_origin`]. Returns `None` if the pet
+/// window isn't open. A missing monitor falls back to a generous default so
+/// placement still resolves. All math is in logical pixels for DPI independence.
+#[cfg(feature = "tauri-runtime")]
+fn read_pet_anchor_geometry(app: &AppHandle) -> Option<PetAnchorGeometry> {
+    let pet = app.get_webview_window(PET_WINDOW_LABEL)?;
+
+    let sf = pet.scale_factor().unwrap_or(1.0);
+    let (px, py, pw, ph) = match (pet.outer_position(), pet.outer_size()) {
+        (Ok(pos), Ok(size)) => (
+            pos.x as f64 / sf,
+            pos.y as f64 / sf,
+            size.width as f64 / sf,
+            size.height as f64 / sf,
+        ),
+        _ => (0.0, 0.0, PET_BASE_WIDTH, PET_BASE_HEIGHT),
+    };
+
+    let (mon_x, mon_y, mon_w, mon_h) = pet
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map(|m| {
+            let msf = m.scale_factor();
+            let mp = m.position();
+            let ms = m.size();
+            (
+                mp.x as f64 / msf,
+                mp.y as f64 / msf,
+                ms.width as f64 / msf,
+                ms.height as f64 / msf,
+            )
+        })
+        .unwrap_or((px, py - PET_PANEL_DEFAULT_HEIGHT, 1920.0, 1080.0));
+
+    Some((px, py, pw, ph, mon_x, mon_y, mon_w, mon_h))
+}
+
+/// Create the panel anchored to the sprite at the default (empty-state) height.
+/// The renderer measures its real content and calls `resize_pet_panel` to fit.
+#[cfg(feature = "tauri-runtime")]
+fn open_pet_panel_window(app: &AppHandle) -> Result<(), AppCommandError> {
+    let (px, py, pw, ph, mon_x, mon_y, mon_w, mon_h) = read_pet_anchor_geometry(app)
+        .ok_or_else(|| AppCommandError::window("Pet window not open", String::new()))?;
+
+    let (panel_x, panel_y) = compute_pet_panel_origin(
+        px,
+        py,
+        pw,
+        ph,
+        mon_x,
+        mon_y,
+        mon_w,
+        mon_h,
+        PET_PANEL_WIDTH,
+        PET_PANEL_DEFAULT_HEIGHT,
+    );
+
+    let url = WebviewUrl::App("pet-panel".into());
+    let builder = WebviewWindowBuilder::new(app, PET_PANEL_LABEL, url)
+        .title("codeg sessions")
+        .inner_size(PET_PANEL_WIDTH, PET_PANEL_DEFAULT_HEIGHT)
+        .position(panel_x, panel_y)
+        .resizable(false)
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .visible(false)
+        .effects(
+            EffectsBuilder::new()
+                .effect(Effect::Popover)
+                .state(EffectState::Active)
+                .build(),
+        )
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .focused(true)
+        .accept_first_mouse(true);
+
+    apply_pet_window_style(builder)
+        .build()
+        .map_err(|e| AppCommandError::window("Failed to open pet panel", e.to_string()))?;
+
+    Ok(())
+}
+
+/// Resize the open session panel to fit its measured content height (logical
+/// px, reported by the panel renderer after layout) and re-anchor it to the pet
+/// so it stays attached as the list grows or shrinks. No-op if the panel isn't
+/// open — it can race a blur / Esc close. `height` is clamped to a usable floor
+/// and a monitor-derived ceiling (never taller than the screen); the practical
+/// upper bound is the panel's own scrollable list, so this clamp is just a
+/// safety net for tiny displays.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn resize_pet_panel(app: AppHandle, height: f64) -> Result<(), AppCommandError> {
+    let Some(panel) = app.get_webview_window(PET_PANEL_LABEL) else {
+        return Ok(());
+    };
+    let Some((px, py, pw, ph, mon_x, mon_y, mon_w, mon_h)) = read_pet_anchor_geometry(&app) else {
+        return Ok(());
+    };
+
+    let max_h = (mon_h - PET_PANEL_GAP).max(PET_PANEL_MIN_HEIGHT);
+    let panel_h = height.clamp(PET_PANEL_MIN_HEIGHT, max_h);
+
+    let (panel_x, panel_y) = compute_pet_panel_origin(
+        px, py, pw, ph, mon_x, mon_y, mon_w, mon_h, PET_PANEL_WIDTH, panel_h,
+    );
+
+    // Size before reposition so the re-anchor uses the final height. Errors are
+    // non-fatal: the caller fires this and forgets, and a failed resize just
+    // leaves the panel at its previous size.
+    let _ = panel.set_size(LogicalSize::new(PET_PANEL_WIDTH, panel_h));
+    let _ = panel.set_position(LogicalPosition::new(panel_x, panel_y));
+    let _ = panel.show();
+    let _ = panel.set_focus();
+    Ok(())
+}
+
+/// Bring the main workspace to the foreground and ask it to focus a specific
+/// conversation. Uses an event (not a URL reload) so the in-memory tab/session
+/// state survives — `PetFocusBridge` in the main window calls `openTab`.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn focus_conversation(
+    app: AppHandle,
+    folder_id: i32,
+    conversation_id: i32,
+    agent: String,
+) -> Result<(), AppCommandError> {
+    use tauri::Emitter;
+    show_main_window(&app);
+    let payload = serde_json::json!({
+        "folderId": folder_id,
+        "conversationId": conversation_id,
+        "agent": agent,
+    });
+    app.emit_to("main", "workspace://focus-conversation", payload)
+        .map_err(|e| {
+            AppCommandError::window("Failed to signal main window", e.to_string())
+        })?;
+    Ok(())
+}
+
 // ─── Pet right-click context menu (native) ──────────────────────────────
 //
 // The pet window is intentionally tiny (a single sprite frame × user scale,
@@ -1684,4 +1962,91 @@ pub async fn set_tray_locale(
 ) -> Result<(), AppCommandError> {
     refresh_tray_menu(&app, locale)
         .map_err(|e| AppCommandError::window("Failed to refresh tray menu", e.to_string()))
+}
+
+#[cfg(test)]
+mod pet_panel_geometry_tests {
+    use super::{compute_pet_panel_origin, PET_PANEL_GAP, PET_PANEL_WIDTH};
+
+    // A roomy 1920×1080 monitor at the origin, with the pet near the bottom-right
+    // (the common resting spot). Sprite ≈ 144×156 logical px (0.75× of 192×208).
+    const MON: (f64, f64, f64, f64) = (0.0, 0.0, 1920.0, 1080.0);
+    const PET_W: f64 = 144.0;
+    const PET_H: f64 = 156.0;
+
+    fn origin(pet_x: f64, pet_y: f64, panel_h: f64) -> (f64, f64) {
+        compute_pet_panel_origin(
+            pet_x,
+            pet_y,
+            PET_W,
+            PET_H,
+            MON.0,
+            MON.1,
+            MON.2,
+            MON.3,
+            PET_PANEL_WIDTH,
+            panel_h,
+        )
+    }
+
+    #[test]
+    fn places_above_and_aligns_right_edge() {
+        // Pet low on screen: the panel sits above it, gap included.
+        let (x, y) = origin(1000.0, 900.0, 380.0);
+        assert_eq!(y, 900.0 - 380.0 - PET_PANEL_GAP, "panel bottom hugs pet top");
+        // Right edges align: panel_x = pet_right - panel_w.
+        assert_eq!(x, (1000.0 + PET_W) - PET_PANEL_WIDTH);
+    }
+
+    #[test]
+    fn drops_below_when_above_would_clip_top() {
+        // Pet near the top: above placement is off-screen, so drop below the pet.
+        let (_x, y) = origin(500.0, 20.0, 380.0);
+        assert_eq!(y, 20.0 + PET_H + PET_PANEL_GAP, "panel drops below the pet");
+    }
+
+    #[test]
+    fn taller_panel_anchored_above_grows_upward() {
+        // With an above-anchor, a taller panel's top moves further up while its
+        // bottom stays pinned near the pet — i.e. it grows upward.
+        let (_x, short) = origin(1000.0, 900.0, 200.0);
+        let (_x2, tall) = origin(1000.0, 900.0, 380.0);
+        assert!(tall < short, "taller panel has a higher (smaller-y) top");
+    }
+
+    #[test]
+    fn clamps_right_edge_into_monitor() {
+        // Pet at the far right: aligning right edges would push the panel off the
+        // monitor, so it clamps to the right work-area edge.
+        let (x, _y) = origin(1850.0, 900.0, 380.0);
+        assert_eq!(x, MON.2 - PET_PANEL_WIDTH, "clamped to right edge");
+    }
+
+    #[test]
+    fn clamps_left_edge_into_monitor() {
+        // Pet at the far left: right-edge alignment would yield a negative x, so
+        // it clamps to the left work-area edge.
+        let (x, _y) = origin(0.0, 900.0, 380.0);
+        assert_eq!(x, MON.0, "clamped to left edge");
+    }
+
+    #[test]
+    fn clamps_bottom_on_short_monitor() {
+        // Short monitor where neither above nor below fully fits: vertical clamp
+        // pins the panel into the monitor (and never above its top edge).
+        let short_mon = (0.0, 0.0, 1920.0, 300.0);
+        let (_x, y) = compute_pet_panel_origin(
+            500.0,
+            20.0,
+            PET_W,
+            PET_H,
+            short_mon.0,
+            short_mon.1,
+            short_mon.2,
+            short_mon.3,
+            PET_PANEL_WIDTH,
+            380.0,
+        );
+        assert_eq!(y, short_mon.1, "clamped to the monitor top, not above it");
+    }
 }

@@ -698,7 +698,7 @@ impl GeminiParser {
     }
 }
 
-fn resolve_gemini_base_dir() -> PathBuf {
+pub(crate) fn resolve_gemini_base_dir() -> PathBuf {
     resolve_gemini_base_dir_from(std::env::var_os("GEMINI_CLI_HOME"), dirs::home_dir())
 }
 

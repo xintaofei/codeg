@@ -61,6 +61,32 @@ function poll(
   }
 }
 
+// A batch `{tasks:[...]}` MCP envelope, mirroring the content text into
+// structuredContent so the content-only host path is also exercised.
+function batchEnvelope(tasks: Record<string, unknown>[]): string {
+  return JSON.stringify({
+    content: [{ type: "text", text: JSON.stringify({ tasks }) }],
+    isError: false,
+    structuredContent: { tasks },
+  })
+}
+
+// A single `get_delegation_status` poll that fanned out over many task_ids.
+function batchPoll(
+  taskIds: string[],
+  tasks: Record<string, unknown>[],
+  opts: { state?: ToolCallState } = {}
+): AdaptedToolCallPart {
+  return {
+    type: "tool-call",
+    toolCallId: `batch-${seq++}`,
+    toolName: "get_delegation_status",
+    input: JSON.stringify({ task_ids: taskIds }),
+    state: opts.state ?? "output-available",
+    output: batchEnvelope(tasks),
+  }
+}
+
 describe("DelegationStatusGroupCard", () => {
   it("collapses N polls of one task into a single row with its final outcome", () => {
     renderWithIntl(
@@ -82,16 +108,24 @@ describe("DelegationStatusGroupCard", () => {
         ]}
       />
     )
-    // One row only — the interim "running" snapshots are subsumed.
+    // All polls collapse into a single row per task.
     expect(
       screen.getAllByText("Waiting for task #abc12345 result")
     ).toHaveLength(1)
     expect(screen.getByText("done")).toBeInTheDocument()
-    // Poll-count hint reflects the collapsed run.
+    // ×N reflects the actual number of polls (3) and matches the pager total.
     expect(screen.getByText("×3")).toBeInTheDocument()
-    // Latest poll's result is revealed on expand.
     fireEvent.click(screen.getByRole("button"))
+    // Default page is the latest poll's result.
     expect(screen.getByText("All tests pass.")).toBeInTheDocument()
+    expect(screen.getByText("3 / 3")).toBeInTheDocument()
+    expect(screen.getByLabelText("Next result")).toBeDisabled()
+    // The interim polls returned no result text — they page to a placeholder.
+    fireEvent.click(screen.getByLabelText("Previous result"))
+    expect(
+      screen.getByText("No result captured for this check.")
+    ).toBeInTheDocument()
+    expect(screen.getByText("2 / 3")).toBeInTheDocument()
   })
 
   it("shows the neutral 'checked' badge (no spinner) when the latest poll returned still-running", () => {
@@ -155,6 +189,143 @@ describe("DelegationStatusGroupCard", () => {
       screen.getByText("Waiting for task #bbbb2222 result")
     ).toBeInTheDocument()
     expect(screen.getAllByText("done")).toHaveLength(2)
+  })
+
+  it("expands a single batch poll into one row per task", () => {
+    renderWithIntl(
+      <DelegationStatusGroupCard
+        polls={[
+          batchPoll(
+            ["aaaa1111", "bbbb2222"],
+            [
+              { task_id: "aaaa1111", status: "completed", text: "A done" },
+              { task_id: "bbbb2222", status: "running", message: "Running." },
+            ]
+          ),
+        ]}
+      />
+    )
+    expect(
+      screen.getByText("Waiting for task #aaaa1111 result")
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText("Waiting for task #bbbb2222 result")
+    ).toBeInTheDocument()
+    // A completed → done; B returned-running → neutral checked.
+    expect(screen.getByText("done")).toBeInTheDocument()
+    expect(screen.getByText("checked")).toBeInTheDocument()
+  })
+
+  it("renders a single-id poll's one-element {tasks:[..]} envelope as one clean row", () => {
+    // The unified companion output: even a single-id poll
+    // (`{ task_ids: ["x"] }`) now returns a one-element `{tasks:[..]}` envelope
+    // rather than a bare single report. It must still resolve to ONE row, with
+    // the task's badge + result, and no ×N (polled once).
+    renderWithIntl(
+      <DelegationStatusGroupCard
+        polls={[
+          batchPoll(
+            ["abc12345"],
+            [{ task_id: "abc12345", status: "completed", text: "All done." }]
+          ),
+        ]}
+      />
+    )
+    expect(
+      screen.getByText("Waiting for task #abc12345 result")
+    ).toBeInTheDocument()
+    expect(screen.getByText("done")).toBeInTheDocument()
+    expect(screen.queryByText(/^×/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button"))
+    expect(screen.getByText("All done.")).toBeInTheDocument()
+  })
+
+  it("groups a task across mixed batch + single polls and counts ×N", () => {
+    renderWithIntl(
+      <DelegationStatusGroupCard
+        polls={[
+          batchPoll(
+            ["aaaa1111", "bbbb2222"],
+            [
+              { task_id: "aaaa1111", status: "running", message: "Running." },
+              { task_id: "bbbb2222", status: "running", message: "Running." },
+            ]
+          ),
+          // A later single poll re-checks just task A, now completed.
+          poll("aaaa1111", {
+            output: envelope({
+              task_id: "aaaa1111",
+              status: "completed",
+              text: "A finished",
+            }),
+          }),
+        ]}
+      />
+    )
+    // Two rows; task A was checked twice (batch + single) → ×2 and completed.
+    expect(
+      screen.getByText("Waiting for task #aaaa1111 result")
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText("Waiting for task #bbbb2222 result")
+    ).toBeInTheDocument()
+    expect(screen.getByText("×2")).toBeInTheDocument()
+    expect(screen.getByText("done")).toBeInTheDocument()
+  })
+
+  it("keeps two un-attributable reports in one batch poll as separate rows", () => {
+    // Neither the input nor the per-task reports carry a task_id — keyed by
+    // toolCallId:index, they must not collapse into one row.
+    renderWithIntl(
+      <DelegationStatusGroupCard
+        polls={[
+          {
+            type: "tool-call",
+            toolCallId: "batch-x",
+            toolName: "get_delegation_status",
+            input: null,
+            state: "output-available",
+            output: JSON.stringify({
+              content: [{ type: "text", text: "" }],
+              isError: false,
+              structuredContent: {
+                tasks: [
+                  { status: "completed", text: "first" },
+                  { status: "failed", error_code: "timeout" },
+                ],
+              },
+            }),
+          },
+        ]}
+      />
+    )
+    expect(screen.getAllByText("Waiting for task result")).toHaveLength(2)
+  })
+
+  it("renders a row per requested task while a batch poll is still in flight", () => {
+    // No output yet: the poll references two task_ids but parses to a single
+    // empty report. Both tasks must still appear (as spinners) — not just the
+    // first — so a pending fan-out doesn't hide siblings until it resolves.
+    renderWithIntl(
+      <DelegationStatusGroupCard
+        polls={[
+          {
+            type: "tool-call",
+            toolCallId: "inflight-batch",
+            toolName: "get_delegation_status",
+            input: JSON.stringify({ task_ids: ["aaaa1111", "bbbb2222"] }),
+            state: "input-available",
+            output: null,
+          },
+        ]}
+      />
+    )
+    expect(
+      screen.getByText("Waiting for task #aaaa1111 result")
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText("Waiting for task #bbbb2222 result")
+    ).toBeInTheDocument()
   })
 
   it("shows the neutral 'checked' badge for a content-only returned-running poll", () => {
@@ -239,5 +410,174 @@ describe("DelegationStatusGroupCard", () => {
     expect(screen.getByTestId("delegation-status-group")).toHaveClass(
       "bg-destructive/5"
     )
+  })
+
+  it("paginates through distinct poll results, latest shown first", () => {
+    renderWithIntl(
+      <DelegationStatusGroupCard
+        polls={[
+          poll("abc12345", {
+            output: envelope({
+              task_id: "abc12345",
+              status: "running",
+              message: "Working on step 1",
+            }),
+          }),
+          poll("abc12345", {
+            output: envelope({
+              task_id: "abc12345",
+              status: "running",
+              message: "Working on step 2",
+            }),
+          }),
+          poll("abc12345", {
+            output: envelope({
+              task_id: "abc12345",
+              status: "completed",
+              text: "All done",
+            }),
+          }),
+        ]}
+      />
+    )
+    // Expand the single row (only one button before expansion).
+    fireEvent.click(screen.getByRole("button"))
+    // ×N header hint matches the pager total — both count the polls.
+    expect(screen.getByText("×3")).toBeInTheDocument()
+    // Latest result is shown first, behind a 3-of-3 pager; "next" is disabled
+    // at the last page.
+    expect(screen.getByText("All done")).toBeInTheDocument()
+    expect(screen.getByText("3 / 3")).toBeInTheDocument()
+    expect(screen.getByLabelText("Next result")).toBeDisabled()
+    // Step back through the earlier polls' results.
+    fireEvent.click(screen.getByLabelText("Previous result"))
+    expect(screen.getByText("Working on step 2")).toBeInTheDocument()
+    expect(screen.getByText("2 / 3")).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText("Previous result"))
+    expect(screen.getByText("Working on step 1")).toBeInTheDocument()
+    expect(screen.getByText("1 / 3")).toBeInTheDocument()
+    // "previous" is disabled at the first page (no wrap-around).
+    expect(screen.getByLabelText("Previous result")).toBeDisabled()
+    // Forward again.
+    fireEvent.click(screen.getByLabelText("Next result"))
+    expect(screen.getByText("Working on step 2")).toBeInTheDocument()
+    expect(screen.getByText("2 / 3")).toBeInTheDocument()
+  })
+
+  it("shows one page per poll — ×N is the check count, repeats included", () => {
+    renderWithIntl(
+      <DelegationStatusGroupCard
+        polls={[
+          poll("abc12345", {
+            output: envelope({
+              task_id: "abc12345",
+              status: "running",
+              message: "Still running",
+            }),
+          }),
+          // Same text as the previous poll — kept as its own page (a real,
+          // separate wait), NOT de-duplicated.
+          poll("abc12345", {
+            output: envelope({
+              task_id: "abc12345",
+              status: "running",
+              message: "Still running",
+            }),
+          }),
+          poll("abc12345", {
+            output: envelope({
+              task_id: "abc12345",
+              status: "completed",
+              text: "Finished",
+            }),
+          }),
+        ]}
+      />
+    )
+    // 3 polls → ×3 → 3 pages, even though two polls share the same text.
+    expect(screen.getByText("×3")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button"))
+    expect(screen.getByText("Finished")).toBeInTheDocument()
+    expect(screen.getByText("3 / 3")).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText("Previous result"))
+    expect(screen.getByText("Still running")).toBeInTheDocument()
+    expect(screen.getByText("2 / 3")).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText("Previous result"))
+    expect(screen.getByText("Still running")).toBeInTheDocument()
+    expect(screen.getByText("1 / 3")).toBeInTheDocument()
+    expect(screen.getByLabelText("Previous result")).toBeDisabled()
+  })
+
+  it("shows no pager and no ×N when the task was polled only once", () => {
+    renderWithIntl(
+      <DelegationStatusGroupCard
+        polls={[
+          poll("abc12345", {
+            output: envelope({
+              task_id: "abc12345",
+              status: "completed",
+              text: "Only result",
+            }),
+          }),
+        ]}
+      />
+    )
+    expect(screen.queryByText(/^×/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button"))
+    expect(screen.getByText("Only result")).toBeInTheDocument()
+    expect(screen.queryByLabelText("Previous result")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Next result")).not.toBeInTheDocument()
+  })
+
+  it("keeps the latest result as the default page when more polls stream in", () => {
+    // The row is keyed by task id and survives rerenders, so a default page
+    // pinned at mount would strand a row first seen with one result on 1/M.
+    const { rerender } = renderWithIntl(
+      <DelegationStatusGroupCard
+        polls={[
+          poll("abc12345", {
+            output: envelope({
+              task_id: "abc12345",
+              status: "running",
+              message: "Interim 1",
+            }),
+          }),
+        ]}
+      />
+    )
+    // More polls arrive for the SAME task before the user expands anything.
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <DelegationStatusGroupCard
+          polls={[
+            poll("abc12345", {
+              output: envelope({
+                task_id: "abc12345",
+                status: "running",
+                message: "Interim 1",
+              }),
+            }),
+            poll("abc12345", {
+              output: envelope({
+                task_id: "abc12345",
+                status: "running",
+                message: "Interim 2",
+              }),
+            }),
+            poll("abc12345", {
+              output: envelope({
+                task_id: "abc12345",
+                status: "completed",
+                text: "Final result",
+              }),
+            }),
+          ]}
+        />
+      </NextIntlClientProvider>
+    )
+    fireEvent.click(screen.getByRole("button"))
+    // Default page follows the latest result, not the stale initial index.
+    expect(screen.getByText("Final result")).toBeInTheDocument()
+    expect(screen.getByText("3 / 3")).toBeInTheDocument()
   })
 })

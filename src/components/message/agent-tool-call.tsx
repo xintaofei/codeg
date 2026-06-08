@@ -85,7 +85,12 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
   const subagentType = useMemo(
     () =>
       (parsed?.subagent_type as string | undefined) ??
-      (part.input ? extractJsonField(part.input, "subagent_type") : null),
+      // Codex's live `spawn_agent` payload labels the agent with `agent_type`
+      // instead of `subagent_type` (the historical parser already maps it
+      // across). Read both so the prefix shows during streaming too.
+      (parsed?.agent_type as string | undefined) ??
+      (part.input ? extractJsonField(part.input, "subagent_type") : null) ??
+      (part.input ? extractJsonField(part.input, "agent_type") : null),
     [parsed, part.input]
   )
 
@@ -111,9 +116,15 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
   )
 
   const title = useMemo(() => {
-    const prefix = subagentType ?? "Agent"
-    return description ? `${prefix}: ${description}` : prefix
-  }, [subagentType, description])
+    if (subagentType) {
+      return description ? `${subagentType}: ${description}` : subagentType
+    }
+    // The sub-agent type hasn't streamed in yet. Prefer the description if it
+    // has already arrived, and only fall back to the "starting…" placeholder
+    // when there's genuinely nothing to show — never prepend it to a title
+    // that already carries real content.
+    return description || t("agentFallbackTitle")
+  }, [subagentType, description, t])
 
   const statusLabel =
     part.state === "input-available"

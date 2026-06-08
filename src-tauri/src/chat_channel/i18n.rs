@@ -156,6 +156,70 @@ pub fn error_message_label(lang: Lang) -> &'static str {
     }
 }
 
+// ── Permission request (global event push) ──
+
+pub fn permission_request_title(lang: Lang) -> &'static str {
+    match lang {
+        Lang::ZhCn => "权限请求",
+        Lang::ZhTw => "權限請求",
+        Lang::Ja => "権限リクエスト",
+        Lang::Ko => "권한 요청",
+        Lang::Es => "Solicitud de permiso",
+        Lang::De => "Berechtigungsanfrage",
+        Lang::Fr => "Demande d'autorisation",
+        Lang::Pt => "Solicitação de permissão",
+        Lang::Ar => "طلب إذن",
+        Lang::En => "Permission Request",
+    }
+}
+
+pub fn permission_request_body(lang: Lang) -> &'static str {
+    match lang {
+        Lang::ZhCn => "智能体正在请求权限，请在 Codeg 中查看并批准。",
+        Lang::ZhTw => "智慧代理正在請求權限，請在 Codeg 中查看並批准。",
+        Lang::Ja => "エージェントが権限を要求しています。Codeg で確認して承認してください。",
+        Lang::Ko => "에이전트가 권한을 요청하고 있습니다. Codeg에서 확인하고 승인하세요.",
+        Lang::Es => "Un agente solicita permiso. Revísalo y apruébalo en Codeg.",
+        Lang::De => "Ein Agent fordert eine Berechtigung an. Bitte in Codeg prüfen und genehmigen.",
+        Lang::Fr => "Un agent demande une autorisation. Vérifiez-la et approuvez-la dans Codeg.",
+        Lang::Pt => "Um agente está solicitando permissão. Revise e aprove no Codeg.",
+        Lang::Ar => "يطلب أحد الوكلاء إذنًا. يرجى مراجعته والموافقة عليه في Codeg.",
+        Lang::En => "An agent is requesting permission. Review and approve it in Codeg.",
+    }
+}
+
+pub fn permission_operation_label(lang: Lang) -> &'static str {
+    match lang {
+        Lang::ZhCn => "请求操作",
+        Lang::ZhTw => "請求操作",
+        Lang::Ja => "要求された操作",
+        Lang::Ko => "요청된 작업",
+        Lang::Es => "Operación solicitada",
+        Lang::De => "Angeforderte Aktion",
+        Lang::Fr => "Opération demandée",
+        Lang::Pt => "Operação solicitada",
+        Lang::Ar => "العملية المطلوبة",
+        Lang::En => "Requested operation",
+    }
+}
+
+// ── User message (global event push) ──
+
+pub fn user_message_title(lang: Lang) -> &'static str {
+    match lang {
+        Lang::ZhCn => "用户消息",
+        Lang::ZhTw => "使用者訊息",
+        Lang::Ja => "ユーザーメッセージ",
+        Lang::Ko => "사용자 메시지",
+        Lang::Es => "Mensaje del usuario",
+        Lang::De => "Benutzernachricht",
+        Lang::Fr => "Message de l'utilisateur",
+        Lang::Pt => "Mensagem do usuário",
+        Lang::Ar => "رسالة المستخدم",
+        Lang::En => "User Message",
+    }
+}
+
 // ── Daily report ──
 
 pub fn daily_report_title(lang: Lang) -> &'static str {
@@ -1367,6 +1431,52 @@ pub fn message_sent(lang: Lang) -> &'static str {
         Lang::Pt => "Mensagem enviada.",
         Lang::Ar => "تم إرسال الرسالة.",
         Lang::En => "Message sent.",
+    }
+}
+
+/// Shown when a prompt is rejected because the agent is still processing the
+/// previous turn. Transient — the session stays alive; the user retries.
+pub fn agent_busy_retry(lang: Lang) -> &'static str {
+    match lang {
+        Lang::ZhCn => "智能体正在处理上一条消息，请稍后再发送。",
+        Lang::ZhTw => "智慧代理正在處理上一則訊息，請稍後再發送。",
+        Lang::Ja => "エージェントが前のメッセージを処理中です。少し待ってから再送信してください。",
+        Lang::Ko => "에이전트가 이전 메시지를 처리 중입니다. 잠시 후 다시 보내 주세요.",
+        Lang::Es => {
+            "El agente sigue procesando el mensaje anterior; vuelve a enviarlo en un momento."
+        }
+        Lang::De => {
+            "Der Agent verarbeitet noch die vorherige Nachricht – bitte gleich erneut senden."
+        }
+        Lang::Fr => "L'agent traite encore le message précédent ; renvoyez-le dans un instant.",
+        Lang::Pt => {
+            "O agente ainda está processando a mensagem anterior; envie novamente em instantes."
+        }
+        Lang::Ar => "لا يزال الوكيل يعالج الرسالة السابقة، يرجى إعادة الإرسال بعد قليل.",
+        Lang::En => {
+            "The agent is still processing the previous message — please send again in a moment."
+        }
+    }
+}
+
+/// Shown when a task's initial prompt arrives while another turn is already in
+/// flight on the same (shared) connection. Unlike `agent_busy_retry`, the user
+/// does NOT need to resend — the kickoff is deferred and runs automatically
+/// once the current turn finishes.
+pub fn task_deferred_busy(lang: Lang) -> &'static str {
+    match lang {
+        Lang::ZhCn => "智能体正忙，任务将在当前回合结束后自动开始。",
+        Lang::ZhTw => "智慧代理忙碌中，任務將在目前回合結束後自動開始。",
+        Lang::Ja => "エージェントがビジー状態です。現在のターンが終了すると、タスクが自動的に開始されます。",
+        Lang::Ko => "에이전트가 사용 중입니다. 현재 턴이 끝나면 작업이 자동으로 시작됩니다.",
+        Lang::Es => "El agente está ocupado; la tarea comenzará automáticamente cuando finalice el turno actual.",
+        Lang::De => "Der Agent ist beschäftigt; die Aufgabe startet automatisch, sobald der aktuelle Zug endet.",
+        Lang::Fr => "L'agent est occupé ; la tâche démarrera automatiquement à la fin du tour en cours.",
+        Lang::Pt => "O agente está ocupado; a tarefa começará automaticamente quando o turno atual terminar.",
+        Lang::Ar => "الوكيل مشغول؛ ستبدأ المهمة تلقائيًا عند انتهاء الجولة الحالية.",
+        Lang::En => {
+            "The agent is busy — your task will start automatically once the current turn finishes."
+        }
     }
 }
 

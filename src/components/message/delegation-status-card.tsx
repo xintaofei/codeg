@@ -24,13 +24,18 @@ import {
   parseStatusReport,
   parseTaskId,
 } from "@/lib/delegation-status"
-import type { ToolCallState } from "@/lib/adapters/ai-elements-adapter"
+import type {
+  AdaptedToolCallPart,
+  ToolCallState,
+} from "@/lib/adapters/ai-elements-adapter"
 import { DelegationStatusRow } from "@/components/message/delegation-status-row"
+import { DelegationStatusGroupCard } from "@/components/message/delegation-status-group-card"
 
 interface Props {
   /** Which companion tool this card represents — selects the label + icon. */
   kind: "status" | "cancel"
-  /** Raw JSON arguments sent to the tool (`{ task_id, wait_ms? }`). */
+  /** Raw JSON arguments sent to the tool — status: `{ task_ids, wait_ms? }` (or
+   *  a legacy `{ task_id }` in historical transcripts); cancel: `{ task_id }`. */
   input?: string | null
   output?: string | null
   errorText?: string | null
@@ -44,23 +49,50 @@ export function DelegationStatusCard({
   errorText,
   state,
 }: Props) {
-  const report = useMemo(
+  // Status: reuse the batch-aware `DelegationStatusGroupCard` (the real render
+  // path groups status polls into it upstream) so a stray ungrouped poll —
+  // single OR batch (`task_ids`) — renders identically. Wrapped as a stable
+  // one-poll array so the group card's memo holds across rerenders. The card's
+  // own `delegation-status-card` test id is preserved via `testId`.
+  const statusPolls = useMemo<AdaptedToolCallPart[]>(
+    () => [
+      {
+        type: "tool-call",
+        toolCallId: "status",
+        toolName: "get_delegation_status",
+        input: input ?? null,
+        state: state ?? "output-available",
+        output: output ?? null,
+        errorText: errorText ?? undefined,
+      },
+    ],
+    [input, output, errorText, state]
+  )
+
+  // Cancel: always a single task — keep the single-report path.
+  const cancelReport = useMemo(
     () => parseStatusReport(output, errorText),
     [output, errorText]
   )
-  // Prefer the call arguments; fall back to the structured report's own task_id
-  // (a historical row can drop the input while the output still carries it).
-  const taskId = useMemo(
-    () => parseTaskId(input) ?? report.taskId,
-    [input, report]
+  const cancelTaskId = useMemo(
+    () => parseTaskId(input) ?? cancelReport.taskId,
+    [input, cancelReport]
   )
-  const badge = useMemo(
-    () => deriveBadge(kind, report, state, !!errorText),
-    [kind, report, state, errorText]
+  const cancelBadge = useMemo(
+    () => deriveBadge("cancel", cancelReport, state, !!errorText),
+    [cancelReport, state, errorText]
   )
 
-  const isError = badge.status === "err"
+  if (kind === "status") {
+    return (
+      <DelegationStatusGroupCard
+        polls={statusPolls}
+        testId="delegation-status-card"
+      />
+    )
+  }
 
+  const isError = cancelBadge.status === "err"
   return (
     <div
       data-testid="delegation-status-card"
@@ -72,10 +104,10 @@ export function DelegationStatusCard({
       )}
     >
       <DelegationStatusRow
-        kind={kind}
-        taskId={taskId}
-        report={report}
-        badge={badge}
+        kind="cancel"
+        taskId={cancelTaskId}
+        report={cancelReport}
+        badge={cancelBadge}
       />
     </div>
   )

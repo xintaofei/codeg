@@ -168,6 +168,7 @@ pub fn build_delegation_meta(
     child_conversation_id: Option<i32>,
     error_code: Option<&str>,
     text_preview: Option<&str>,
+    duration_ms: Option<u64>,
 ) -> serde_json::Value {
     let mut inner = serde_json::Map::new();
     inner.insert(
@@ -202,6 +203,19 @@ pub fn build_delegation_meta(
             serde_json::Value::String(preview.to_string()),
         );
     }
+    // Carry the broker-measured elapsed time so a parent-side snapshot replay
+    // after a refresh shows the execution duration without the live
+    // `delegation_completed` event. Set on the terminal writes (completed /
+    // failed / canceled); `None` for the running write — same survival semantics
+    // as `text_preview` above. NOTE: the live event only carries duration on its
+    // `Ok` summary, so for failed/canceled the duration is meta-only (the live
+    // card shows none until refresh, when this meta supplies it).
+    if let Some(ms) = duration_ms {
+        inner.insert(
+            "duration_ms".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(ms)),
+        );
+    }
     let mut outer = serde_json::Map::new();
     outer.insert(
         DELEGATION_META_KEY.to_string(),
@@ -224,7 +238,7 @@ mod tests {
 
     #[test]
     fn build_meta_includes_provided_fields() {
-        let v = build_delegation_meta("running", Some("conn-1"), Some(42), None, None);
+        let v = build_delegation_meta("running", Some("conn-1"), Some(42), None, None, None);
         let inner = v.get(DELEGATION_META_KEY).unwrap().as_object().unwrap();
         assert_eq!(inner.get("status").unwrap().as_str().unwrap(), "running");
         assert_eq!(
@@ -240,11 +254,13 @@ mod tests {
             42
         );
         assert!(inner.get("error_code").is_none());
+        // No duration on the running write.
+        assert!(inner.get("duration_ms").is_none());
     }
 
     #[test]
     fn build_meta_with_error_code() {
-        let v = build_delegation_meta("failed", None, Some(7), Some("timeout"), None);
+        let v = build_delegation_meta("failed", None, Some(7), Some("timeout"), None, None);
         let inner = v.get(DELEGATION_META_KEY).unwrap().as_object().unwrap();
         assert_eq!(inner.get("status").unwrap().as_str().unwrap(), "failed");
         assert_eq!(
@@ -252,6 +268,13 @@ mod tests {
             "timeout"
         );
         assert!(inner.get("child_connection_id").is_none());
+    }
+
+    #[test]
+    fn build_meta_includes_duration_on_terminal_write() {
+        let v = build_delegation_meta("completed", Some("conn-1"), Some(42), None, None, Some(1234));
+        let inner = v.get(DELEGATION_META_KEY).unwrap().as_object().unwrap();
+        assert_eq!(inner.get("duration_ms").unwrap().as_u64().unwrap(), 1234);
     }
 
     #[test]

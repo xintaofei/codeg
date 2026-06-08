@@ -1,5 +1,4 @@
-use std::sync::{Arc, LazyLock};
-use std::time::Duration;
+use std::sync::Arc;
 
 use axum::{extract::Extension, Json};
 use serde::{Deserialize, Serialize};
@@ -110,42 +109,64 @@ pub struct AppUpdateInfo {
 pub struct AppUpdateCheckResult {
     pub current_version: String,
     pub update: Option<AppUpdateInfo>,
+    /// Whether *this* process can apply the update in place. True for the
+    /// standalone server build on a supported platform; false on desktop
+    /// (which updates via Tauri's own updater) and on unknown platforms.
+    /// When false the frontend falls back to a "view release" link.
+    pub self_update_supported: bool,
+    /// How a self-update would restart: `"supervised"` (our `--supervise`
+    /// parent relaunches) or `"reexec"` (the process re-execs itself).
+    pub capability: crate::update::runtime::UpdateCapability,
+    /// `"docker"` | `"standalone"` — drives the post-upgrade hint.
+    pub runtime: String,
+    /// Relaunch delay (ms) the frontend countdown should use after a
+    /// supervised restart.
+    pub restart_delay_ms: u64,
+    /// A previous version is staged in `.bak` and can be rolled back to.
+    pub rollback_available: bool,
+    /// This server speaks the detached `app_update_state` protocol (background
+    /// download + progress events + ready-to-restart snapshot). Always true on
+    /// this build; absent on older servers, which a newer client must treat as
+    /// unsupported rather than driving the new flow against the old blocking
+    /// `perform_app_update`.
+    pub live_progress: bool,
 }
 
-#[derive(Deserialize)]
-struct LatestManifest {
-    version: String,
-    #[serde(default)]
-    notes: Option<String>,
-    #[serde(default)]
-    pub_date: Option<String>,
+#[cfg(feature = "tauri-runtime")]
+fn server_self_update_supported() -> bool {
+    // Desktop builds self-update through `tauri-plugin-updater`; the embedded
+    // web server must never swap the desktop binary with a server tarball.
+    false
 }
 
-// Mirrors the `endpoints` entry in `tauri.conf.json` so desktop and server
-// modes consult the same source of truth.
-const UPDATE_MANIFEST_URL: &str =
-    "https://github.com/xintaofei/codeg/releases/latest/download/latest.json";
+#[cfg(not(feature = "tauri-runtime"))]
+fn server_self_update_supported() -> bool {
+    // Windows server self-update is intentionally disabled: swapping a running
+    // .exe and the standalone re-exec port rebind have not been validated on a
+    // real Windows host. Only Linux/macOS are supported for now. (The desktop
+    // Windows app is unaffected — it updates via tauri-plugin-updater.)
+    !cfg!(target_os = "windows") && crate::update::install::asset_basename().is_some()
+}
 
-// Built once on first use so we don't re-allocate the DNS resolver / TLS
-// context for every settings-page mount. Proxy env vars are sampled here, so
-// `init_proxy_from_db` must run before the first request — both startup paths
-// already do that.
-static UPDATE_HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(8))
-        .timeout(Duration::from_secs(15))
-        .user_agent(concat!("codeg/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| format!("failed to initialize update HTTP client: {e}"))
-});
+#[cfg(feature = "tauri-runtime")]
+fn server_rollback_available() -> bool {
+    false
+}
+
+#[cfg(not(feature = "tauri-runtime"))]
+fn server_rollback_available() -> bool {
+    crate::update::install::rollback_available()
+}
 
 pub async fn check_app_update() -> Result<Json<AppUpdateCheckResult>, AppCommandError> {
-    let current_version = env!("CARGO_PKG_VERSION").to_string();
-    let manifest = fetch_latest_manifest().await?;
+    use crate::update::{runtime, version};
 
-    let update = if is_newer_than(&manifest.version, &current_version) {
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+    let manifest = version::fetch_latest_manifest().await?;
+
+    let update = if version::is_newer(&manifest.version, &current_version) {
         Some(AppUpdateInfo {
-            version: trim_v_prefix(&manifest.version).to_string(),
+            version: version::trim_v_prefix(&manifest.version).to_string(),
             body: manifest.notes.unwrap_or_default(),
             date: manifest.pub_date,
         })
@@ -156,52 +177,54 @@ pub async fn check_app_update() -> Result<Json<AppUpdateCheckResult>, AppCommand
     Ok(Json(AppUpdateCheckResult {
         current_version,
         update,
+        self_update_supported: server_self_update_supported(),
+        capability: runtime::capability(),
+        runtime: runtime::runtime_label().to_string(),
+        restart_delay_ms: runtime::restart_delay_ms(),
+        rollback_available: server_rollback_available(),
+        live_progress: true,
     }))
 }
 
-async fn fetch_latest_manifest() -> Result<LatestManifest, AppCommandError> {
-    let client = UPDATE_HTTP_CLIENT.as_ref().map_err(|err| {
-        AppCommandError::network("Failed to initialize update HTTP client").with_detail(err.clone())
-    })?;
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerUpdateStatus {
+    /// The running binary's own version — read locally (no manifest), so the
+    /// settings page can show the current version even when the release source
+    /// is unreachable.
+    pub current_version: String,
+    /// Whether this process can apply an in-place update (server build on a
+    /// supported platform). Local — no network.
+    pub self_update_supported: bool,
+    /// How a self-update would restart: `"supervised"` or `"reexec"`.
+    pub capability: crate::update::runtime::UpdateCapability,
+    /// `"docker"` | `"standalone"` — drives the post-upgrade hint.
+    pub runtime: String,
+    /// Relaunch delay (ms) the frontend countdown should use.
+    pub restart_delay_ms: u64,
+    /// A previous version is staged in `.bak` and can be rolled back to.
+    pub rollback_available: bool,
+    /// This server speaks the detached `app_update_state` protocol. See
+    /// [`AppUpdateCheckResult::live_progress`].
+    pub live_progress: bool,
+}
 
-    let response = client.get(UPDATE_MANIFEST_URL).send().await.map_err(|e| {
-        AppCommandError::network("Failed to fetch update manifest").with_detail(e.to_string())
-    })?;
-
-    if !response.status().is_success() {
-        return Err(AppCommandError::network(format!(
-            "Update manifest returned status {}",
-            response.status()
-        )));
-    }
-
-    response.json::<LatestManifest>().await.map_err(|e| {
-        AppCommandError::network("Failed to parse update manifest").with_detail(e.to_string())
+/// Local-only counterpart to [`check_app_update`]: reports what this process
+/// can do (self-update capability, rollback availability) WITHOUT contacting
+/// the release source. The manual rollback affordance must stay reachable even
+/// when the update manifest is unreachable (proxy, outage, air-gap), since
+/// `rollback_app` is an entirely local operation — gating it behind the
+/// network-dependent update check would hide it exactly when recovery is most
+/// needed.
+pub async fn app_update_status() -> Json<ServerUpdateStatus> {
+    use crate::update::runtime;
+    Json(ServerUpdateStatus {
+        current_version: env!("CARGO_PKG_VERSION").to_string(),
+        self_update_supported: server_self_update_supported(),
+        capability: runtime::capability(),
+        runtime: runtime::runtime_label().to_string(),
+        restart_delay_ms: runtime::restart_delay_ms(),
+        rollback_available: server_rollback_available(),
+        live_progress: true,
     })
-}
-
-fn trim_v_prefix(v: &str) -> &str {
-    v.strip_prefix('v').unwrap_or(v)
-}
-
-/// Best-effort semver comparison. Falls back to inequality if either side is
-/// not a clean `X.Y.Z` triple — that way an unexpected manifest format still
-/// surfaces *something* rather than silently claiming "already latest".
-fn is_newer_than(latest: &str, current: &str) -> bool {
-    fn parse(v: &str) -> Option<(u64, u64, u64)> {
-        let core = trim_v_prefix(v).split(['-', '+']).next()?;
-        let parts: Vec<&str> = core.split('.').collect();
-        if parts.len() < 3 {
-            return None;
-        }
-        Some((
-            parts[0].parse().ok()?,
-            parts[1].parse().ok()?,
-            parts[2].parse().ok()?,
-        ))
-    }
-    match (parse(latest), parse(current)) {
-        (Some(l), Some(c)) => l > c,
-        _ => trim_v_prefix(latest) != trim_v_prefix(current),
-    }
 }

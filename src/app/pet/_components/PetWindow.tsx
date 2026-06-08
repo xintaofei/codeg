@@ -22,6 +22,7 @@ import { usePetOneShot } from "../_hooks/usePetOneShot"
 import { usePetDrag } from "../_hooks/usePetDrag"
 import { PetSprite } from "./PetSprite"
 import { PetMenu } from "./PetMenu"
+import { PetBadge } from "./PetBadge"
 
 export interface PetWindowProps {
   petId: string
@@ -102,6 +103,9 @@ export function PetWindow({ petId }: PetWindowProps) {
     handleDragDirection(null)
   }, [handleDragDirection])
 
+  // A tap (vs. drag) on the sprite is just tactile feedback — the jump. Opening
+  // the session panel is reserved for the status badge (see PetBadge); tapping
+  // the body of the pet must not pop the panel.
   const handleClick = useCallback(() => {
     playOneShot("jumping", JUMPING_DURATION_MS)
   }, [playOneShot])
@@ -332,6 +336,7 @@ export function PetWindow({ petId }: PetWindowProps) {
         scale={scale}
         label={pet.displayName}
       />
+      <PetBadge />
       <PetMenu onScaleChange={setScale} onOpenSettings={openManager} />
     </div>
   )

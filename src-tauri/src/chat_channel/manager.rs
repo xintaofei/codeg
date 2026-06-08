@@ -240,6 +240,7 @@ impl ChatChannelManager {
             bus.clone(),
             manager_for_events,
             db_conn.clone(),
+            bridge.clone(),
         );
 
         // Spawn session event subscriber (ACP event routing to channels)

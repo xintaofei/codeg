@@ -16,6 +16,7 @@ import type {
   LiveContentBlock as LocalLiveContentBlock,
   LiveMessage as LocalLiveMessage,
   PendingPermission,
+  PendingUserMessage,
   ToolCallInfo,
 } from "@/contexts/acp-connections-context"
 
@@ -41,6 +42,10 @@ export interface SnapshotPatch {
   usage: SessionUsageUpdateInfo | null
   liveMessage: LocalLiveMessage | null
   pendingPermission: PendingPermission | null
+  /** In-flight user prompt carried by the snapshot, so a client attaching
+   *  mid-turn can synthesize the user turn (Bug-2 / cross-client viewing).
+   *  `null` when no turn is in flight. */
+  pendingUserMessage: PendingUserMessage | null
   promptCapabilities: PromptCapabilitiesInfo | null
   selectorsReady: boolean
   supportsFork: boolean
@@ -85,6 +90,12 @@ export function denormalizeSnapshot(wire: LiveSessionSnapshot): SnapshotPatch {
           // after a refresh.
           tool_call: wire.pending_permission.tool_call,
           options: wire.pending_permission.options,
+        }
+      : null,
+    pendingUserMessage: wire.pending_user_message
+      ? {
+          messageId: wire.pending_user_message.message_id,
+          blocks: wire.pending_user_message.blocks,
         }
       : null,
     promptCapabilities: wire.prompt_capabilities ?? DEFAULT_PROMPT_CAPS,

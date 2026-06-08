@@ -176,7 +176,7 @@ impl CodexParser {
     }
 }
 
-fn resolve_codex_home_dir() -> PathBuf {
+pub(crate) fn resolve_codex_home_dir() -> PathBuf {
     resolve_codex_home_dir_from(std::env::var_os("CODEX_HOME"), dirs::home_dir())
 }
 

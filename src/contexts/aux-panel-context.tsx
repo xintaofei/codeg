@@ -15,7 +15,7 @@ import {
 } from "@/lib/panel-state-storage"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 
-export type AuxPanelTab = "file_tree" | "changes" | "git_log" | "session_files"
+export type AuxPanelTab = "file_tree" | "changes" | "git_log"
 
 const STORAGE_KEY = "workspace:right-sidebar"
 
@@ -64,7 +64,7 @@ export function AuxPanelProvider({ children }: AuxPanelProviderProps) {
   const [isOpen, setIsOpen] = useState(DEFAULT_IS_OPEN)
   const [width, setWidthState] = useState(DEFAULT_WIDTH)
   const [restored, setRestored] = useState(false)
-  const [activeTab, setActiveTab] = useState<AuxPanelTab>("session_files")
+  const [activeTab, setActiveTab] = useState<AuxPanelTab>("file_tree")
   const [pendingRevealPath, setPendingRevealPath] = useState<string | null>(
     null
   )

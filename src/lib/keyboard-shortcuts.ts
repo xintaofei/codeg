@@ -10,6 +10,8 @@ export type ShortcutActionId =
   | "open_settings"
   | "close_current_tab"
   | "close_all_file_tabs"
+  | "next_tab"
+  | "prev_tab"
   | "send_message"
   | "newline_in_message"
 
@@ -52,6 +54,12 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     id: "close_all_file_tabs",
   },
   {
+    id: "next_tab",
+  },
+  {
+    id: "prev_tab",
+  },
+  {
     id: "send_message",
   },
   {
@@ -79,6 +87,8 @@ export const DEFAULT_SHORTCUTS: ShortcutSettings = {
   open_settings: "mod+,",
   close_current_tab: "mod+w",
   close_all_file_tabs: "mod+shift+w",
+  next_tab: "mod+tab",
+  prev_tab: "mod+shift+tab",
   send_message: "enter",
   newline_in_message: "shift+enter",
 }

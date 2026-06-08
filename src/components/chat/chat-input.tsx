@@ -47,6 +47,8 @@ interface ChatInputProps {
   onSaveQueueEdit?: (draft: PromptDraft) => void
   onCancelQueueEdit?: () => void
   onForkSend?: (draft: PromptDraft, modeId?: string | null) => void
+  onAddFeedback?: () => void
+  feedbackAddDisabled?: boolean
 }
 
 export const ChatInput = memo(function ChatInput({
@@ -81,6 +83,8 @@ export const ChatInput = memo(function ChatInput({
   onSaveQueueEdit,
   onCancelQueueEdit,
   onForkSend,
+  onAddFeedback,
+  feedbackAddDisabled,
 }: ChatInputProps) {
   const t = useTranslations("Folder.chat.chatInput")
   const isConnected = status === "connected"
@@ -131,6 +135,8 @@ export const ChatInput = memo(function ChatInput({
         onSaveQueueEdit={onSaveQueueEdit}
         onCancelQueueEdit={onCancelQueueEdit}
         onForkSend={onForkSend}
+        onAddFeedback={onAddFeedback}
+        feedbackAddDisabled={feedbackAddDisabled}
         placeholder={
           isConnecting
             ? t("connecting")

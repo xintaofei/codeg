@@ -41,8 +41,15 @@ ENV CODEG_DATA_DIR=/data
 ENV CODEG_PORT=3080
 ENV CODEG_HOST=0.0.0.0
 ENV SHELL=/bin/bash
+# In-place self-update markers: tells the running server it is a container
+# (for the post-upgrade "also pull the image" hint) and how long the
+# supervisor waits before relaunching the worker after an upgrade.
+ENV CODEG_RUNTIME=docker
+ENV CODEG_RESTART_DELAY_MS=2000
 
 EXPOSE 3080
 VOLUME /data
 
-CMD ["codeg-server"]
+# Run under the built-in supervisor (PID 1) so an in-place upgrade can swap
+# the binary and have the worker relaunched without stopping the container.
+CMD ["codeg-server", "--supervise"]

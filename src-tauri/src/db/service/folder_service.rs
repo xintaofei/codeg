@@ -39,6 +39,7 @@ fn to_detail(m: folder::Model) -> FolderDetail {
         last_opened_at: m.last_opened_at,
         sort_order: m.sort_order,
         color: m.color,
+        parent_id: m.parent_id,
     }
 }
 
@@ -54,9 +55,43 @@ pub async fn get_folder_by_id(
     Ok(row.map(to_detail))
 }
 
+/// How [`add_folder_inner`] writes the `parent_id` column. The two callers want
+/// different semantics on reopen of an existing path, which a bare `Option<i32>`
+/// could not express (it conflates "no parent" with "don't touch the parent").
+enum ParentWrite {
+    /// Plain open: leave an existing row's `parent_id` untouched (insert NULL).
+    /// A plain reopen must never clear a worktree's recorded root.
+    Preserve,
+    /// Worktree open: write this exact value on both insert and reopen — so the
+    /// stored relationship always reflects the latest call (including `None` to
+    /// demote to a top-level folder) and can never go stale.
+    Set(Option<i32>),
+}
+
 pub async fn add_folder(
     conn: &DatabaseConnection,
     path: &str,
+) -> Result<FolderHistoryEntry, DbError> {
+    add_folder_inner(conn, path, ParentWrite::Preserve).await
+}
+
+/// Like [`add_folder`] but authoritatively sets `parent_id` — the *root* folder
+/// this path was created under (used by the worktree flow so a worktree folder
+/// remembers its originating repo folder). The value is written on both insert
+/// and reopen, so it always reflects the latest worktree relationship and never
+/// a stale one.
+pub async fn add_folder_with_parent(
+    conn: &DatabaseConnection,
+    path: &str,
+    parent_id: Option<i32>,
+) -> Result<FolderHistoryEntry, DbError> {
+    add_folder_inner(conn, path, ParentWrite::Set(parent_id)).await
+}
+
+async fn add_folder_inner(
+    conn: &DatabaseConnection,
+    path: &str,
+    parent: ParentWrite,
 ) -> Result<FolderHistoryEntry, DbError> {
     let now = Utc::now();
     let name = std::path::Path::new(path)
@@ -76,6 +111,11 @@ pub async fn add_folder(
         active.updated_at = Set(now);
         active.deleted_at = Set(None);
         active.is_open = Set(true);
+        // Plain reopen leaves the relationship as-is; the worktree flow writes
+        // the authoritative value (including NULL) so it can never go stale.
+        if let ParentWrite::Set(parent_id) = parent {
+            active.parent_id = Set(parent_id);
+        }
         active.update(conn).await?
     } else {
         let max_order = folder::Entity::find()
@@ -97,6 +137,10 @@ pub async fn add_folder(
             is_open: Set(true),
             sort_order: Set(max_order + 1),
             color: Set(DEFAULT_FOLDER_COLOR.to_string()),
+            parent_id: Set(match parent {
+                ParentWrite::Preserve => None,
+                ParentWrite::Set(parent_id) => parent_id,
+            }),
         };
         active.insert(conn).await?
     };

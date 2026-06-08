@@ -240,6 +240,93 @@ pub struct PetWindowStatePatch {
     pub enabled: Option<bool>,
 }
 
+// ─── active-session list (pet panel) ────────────────────────────────────
+
+/// Compact view of a pending permission request, surfaced to the pet panel so
+/// the user can approve/reject without switching to the main window.
+///
+/// `tool_call` is the agent's raw JSON forwarded verbatim — identical to what
+/// the main permission dialog receives — so the panel can reuse
+/// `parsePermissionToolCall` to render the shell command / diff / plan preview.
+/// The owning `connection_id` lives on the parent [`PetSessionEntry`] (one
+/// connection ↔ at most one pending permission), so it isn't duplicated here.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PetPermissionSummary {
+    pub request_id: String,
+    pub tool_call: serde_json::Value,
+    pub options: Vec<crate::acp::types::PermissionOptionInfo>,
+}
+
+impl From<&crate::acp::session_state::PendingPermissionState> for PetPermissionSummary {
+    fn from(p: &crate::acp::session_state::PendingPermissionState) -> Self {
+        Self {
+            request_id: p.request_id.clone(),
+            tool_call: p.tool_call.clone(),
+            options: p.options.clone(),
+        }
+    }
+}
+
+/// One active agent session as shown in the pet panel's list. "Active" means
+/// the connection is currently prompting, awaiting a permission, or errored —
+/// see `ConnectionManager::list_active_sessions`. `title` is resolved from the
+/// conversation row by the command layer; the manager leaves it empty.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PetSessionEntry {
+    pub connection_id: String,
+    pub conversation_id: i32,
+    pub folder_id: i32,
+    pub agent_type: crate::models::agent::AgentType,
+    pub title: String,
+    pub status: crate::acp::types::ConnectionStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending: Option<PetPermissionSummary>,
+}
+
+/// Aggregate payload for the `pet://sessions` event and the
+/// `pet_list_active_sessions` snapshot command. Counts are precomputed so the
+/// sprite-window badge can pick the right cue (number / clock / error) without
+/// walking the list, and they follow the same precedence as the ambient
+/// `compute_pet_state`: a session blocked on a permission counts as `waiting`,
+/// not `running`.
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PetSessionsPayload {
+    pub running_count: u32,
+    pub waiting_count: u32,
+    pub error_count: u32,
+    pub sessions: Vec<PetSessionEntry>,
+}
+
+impl PetSessionsPayload {
+    /// Build the payload from raw entries, computing the precedence-based
+    /// counts. Pure (no DB / manager access) so it is unit-testable and is the
+    /// single source of truth for how a session maps to a badge bucket.
+    pub fn from_entries(sessions: Vec<PetSessionEntry>) -> Self {
+        use crate::acp::types::ConnectionStatus;
+        let mut running_count = 0;
+        let mut waiting_count = 0;
+        let mut error_count = 0;
+        for s in &sessions {
+            if s.pending.is_some() {
+                waiting_count += 1;
+            } else if s.status == ConnectionStatus::Error {
+                error_count += 1;
+            } else if s.status == ConnectionStatus::Prompting {
+                running_count += 1;
+            }
+        }
+        Self {
+            running_count,
+            waiting_count,
+            error_count,
+            sessions,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,5 +372,57 @@ mod tests {
         let reserialized = serde_json::to_value(&manifest).unwrap();
         assert_eq!(reserialized["displayName"], "Dewey");
         assert_eq!(reserialized["spritesheetPath"], "spritesheet.webp");
+    }
+
+    fn session_entry(
+        status: crate::acp::types::ConnectionStatus,
+        pending: bool,
+    ) -> PetSessionEntry {
+        PetSessionEntry {
+            connection_id: "c".into(),
+            conversation_id: 1,
+            folder_id: 1,
+            agent_type: crate::models::agent::AgentType::ClaudeCode,
+            title: String::new(),
+            status,
+            pending: pending.then(|| PetPermissionSummary {
+                request_id: "r".into(),
+                tool_call: serde_json::json!({}),
+                options: vec![],
+            }),
+        }
+    }
+
+    #[test]
+    fn from_entries_counts_follow_waiting_over_running_precedence() {
+        use crate::acp::types::ConnectionStatus;
+        let payload = PetSessionsPayload::from_entries(vec![
+            session_entry(ConnectionStatus::Prompting, false), // running
+            session_entry(ConnectionStatus::Prompting, true), // waiting: pending outranks prompting
+            session_entry(ConnectionStatus::Error, false),     // error
+            session_entry(ConnectionStatus::Connected, false), // idle-ish: counted nowhere
+        ]);
+        assert_eq!(payload.running_count, 1);
+        assert_eq!(payload.waiting_count, 1);
+        assert_eq!(payload.error_count, 1);
+        assert_eq!(payload.sessions.len(), 4);
+    }
+
+    #[test]
+    fn pet_sessions_payload_serializes_camel_case() {
+        let payload = PetSessionsPayload::default();
+        let v = serde_json::to_value(&payload).unwrap();
+        assert_eq!(v["runningCount"], 0);
+        assert_eq!(v["waitingCount"], 0);
+        assert_eq!(v["errorCount"], 0);
+        assert!(v["sessions"].is_array());
+    }
+
+    #[test]
+    fn pet_session_entry_omits_pending_when_absent() {
+        let entry = session_entry(crate::acp::types::ConnectionStatus::Prompting, false);
+        let v = serde_json::to_value(&entry).unwrap();
+        assert!(v.get("pending").is_none(), "pending must be omitted when None");
+        assert_eq!(v["connectionId"], "c");
     }
 }

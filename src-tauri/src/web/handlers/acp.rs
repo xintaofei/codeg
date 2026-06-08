@@ -4,13 +4,14 @@ use std::sync::Arc;
 use axum::{extract::Extension, Json};
 use serde::Deserialize;
 
+use crate::acp::error::AcpError;
 use crate::acp::opencode_plugins::PluginCheckSummary;
 use crate::acp::preflight::PreflightResult;
 use crate::acp::types::{
     AcpAgentInfo, AcpAgentStatus, AgentSkillContent, AgentSkillLayout, AgentSkillScope,
     AgentSkillsListResult, ConnectionInfo, ForkResultInfo,
 };
-use crate::app_error::AppCommandError;
+use crate::app_error::{AppCommandError, AppErrorCode};
 use crate::app_state::AppState;
 use crate::commands::acp as acp_commands;
 use crate::models::agent::AgentType;
@@ -134,6 +135,8 @@ pub struct AcpPromptParams {
     pub blocks: Vec<crate::acp::types::PromptInputBlock>,
     pub folder_id: Option<i32>,
     pub conversation_id: Option<i32>,
+    #[serde(default)]
+    pub client_message_id: Option<String>,
 }
 
 pub async fn acp_prompt(
@@ -142,16 +145,28 @@ pub async fn acp_prompt(
 ) -> Result<Json<()>, AppCommandError> {
     state
         .connection_manager
-        .send_prompt_linked(
+        .send_prompt_linked_with_message_id(
             &state.db,
             &params.connection_id,
             params.blocks,
             params.folder_id,
             params.conversation_id,
             None,
+            params.client_message_id,
         )
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(|e| {
+            let message = e.to_string();
+            // A concurrent send while a turn is in flight is an expected,
+            // recoverable condition (409), not a server fault (500). The
+            // frontend re-queues the draft. Other errors stay 500.
+            match e {
+                AcpError::TurnInProgress => {
+                    AppCommandError::new(AppErrorCode::TurnInProgress, message)
+                }
+                _ => AppCommandError::task_execution_failed(message),
+            }
+        })?;
     Ok(Json(()))
 }
 
@@ -362,7 +377,18 @@ pub async fn acp_fork(
     let result = manager
         .fork_session(&state.db, &params.connection_id)
         .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+        .map_err(|e| {
+            let message = e.to_string();
+            // A fork requested while a turn is in flight is an expected,
+            // recoverable condition (409) — the frontend re-queues — not a
+            // server fault (500). Mirror `acp_prompt`. Other errors stay 500.
+            match e {
+                AcpError::TurnInProgress => {
+                    AppCommandError::new(AppErrorCode::TurnInProgress, message)
+                }
+                _ => AppCommandError::task_execution_failed(message),
+            }
+        })?;
     Ok(Json(result))
 }
 
@@ -430,6 +456,33 @@ pub async fn acp_get_session_snapshot_by_conversation(
     .await
     .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(snap))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpFindConnectionForConversationParams {
+    pub conversation_id: i32,
+    /// Optional session id (`external_id`) fallback, matched (with `agent_type`)
+    /// when no live connection is bound to `conversation_id` yet (pre-first-
+    /// prompt window).
+    #[serde(default)]
+    pub session_id: Option<String>,
+    pub agent_type: AgentType,
+}
+
+pub async fn acp_find_connection_for_conversation(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<AcpFindConnectionForConversationParams>,
+) -> Result<Json<Option<crate::acp::ConversationConnectionInfo>>, AppCommandError> {
+    let info = acp_commands::acp_find_connection_for_conversation_core(
+        &state.connection_manager,
+        params.conversation_id,
+        params.session_id.as_deref(),
+        params.agent_type,
+    )
+    .await
+    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(info))
 }
 
 // --- Pattern B+: Core function handlers ---

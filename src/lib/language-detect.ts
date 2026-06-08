@@ -170,6 +170,18 @@ const BASENAME_MAP: Record<string, string> = {
   ".inputrc": "shell",
 }
 
+// HTML documents we can render in the in-app sandboxed preview. Scoped to real
+// .html/.htm files — .vue/.svelte also map to the "html" language but are not
+// standalone, renderable documents.
+export function isHtmlPreviewable(path: string | null | undefined): boolean {
+  if (!path) return false
+  const basename = path.toLowerCase().split(/[\\/]/).pop() ?? ""
+  const dot = basename.lastIndexOf(".")
+  if (dot === -1) return false
+  const ext = basename.slice(dot + 1)
+  return ext === "html" || ext === "htm"
+}
+
 export function languageFromPath(path: string): string {
   const lower = path.toLowerCase()
   const basename = lower.split(/[\\/]/).pop() ?? lower

@@ -21,6 +21,8 @@ import type {
   DbConversationSummary,
   ImportResult,
   OpenedTab,
+  OpenedTabsSnapshot,
+  SaveTabsOutcome,
   GitStatusEntry,
   GitBranchList,
   GitPullResult,
@@ -543,12 +545,16 @@ export async function listChildConversations(
   })
 }
 
-export async function listOpenedTabs(): Promise<OpenedTab[]> {
+export async function listOpenedTabs(): Promise<OpenedTabsSnapshot> {
   return invoke("list_opened_tabs")
 }
 
-export async function saveOpenedTabs(items: OpenedTab[]): Promise<void> {
-  return invoke("save_opened_tabs", { items })
+export async function saveOpenedTabs(
+  items: OpenedTab[],
+  expectedVersion: number,
+  origin: string
+): Promise<SaveTabsOutcome> {
+  return invoke("save_opened_tabs", { items, expectedVersion, origin })
 }
 
 export async function listOpenFolderDetails(): Promise<FolderDetail[]> {

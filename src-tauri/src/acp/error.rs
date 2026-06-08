@@ -10,6 +10,32 @@ pub enum AcpError {
     Protocol(String),
     #[error("agent process exited unexpectedly")]
     ProcessExited,
+    /// A prompt arrived while this connection already had a turn in flight.
+    /// The connection loop processes one turn at a time; a second concurrent
+    /// prompt (e.g. two co-controlling clients sending near-simultaneously)
+    /// is rejected here rather than silently dropped after a false success.
+    /// The frontend recognizes this (via the stable Display text, carried as
+    /// the error message on both transports) and re-queues the draft in the
+    /// message queue above the input box instead of surfacing an error.
+    #[error("turn already in progress for this connection")]
+    TurnInProgress,
+    /// Live feedback was submitted while no turn was in flight. Feedback only
+    /// makes sense while the agent is working (it is pulled mid-turn via the
+    /// `check_user_feedback` MCP tool); with no active turn there is nothing to
+    /// steer. The frontend recognizes this (stable Display text) and falls back
+    /// to sending the text as an ordinary prompt instead.
+    #[error("no active turn to send feedback to")]
+    NoActiveTurn,
+    /// Live feedback was submitted while the feature is disabled. The settings
+    /// toggle gates both MCP tool injection and the UI affordance; this is the
+    /// backend's defense-in-depth for a direct/stale call.
+    #[error("live feedback is disabled")]
+    FeedbackDisabled,
+    /// The submitted feedback note is empty or exceeds the per-note size bound.
+    /// The full text rides in the broadcast event + snapshot + MCP response, so
+    /// a sanity bound keeps a single pathological note from bloating them.
+    #[error("invalid feedback: {0}")]
+    InvalidFeedback(String),
     #[error("binary download failed: {0}")]
     DownloadFailed(String),
     #[error("platform not supported: {0}")]
@@ -50,6 +76,10 @@ impl AcpError {
             Self::InitializeTimeout => Some("initialize_timeout"),
             Self::ProbeTimedOut => Some("probe_timed_out"),
             Self::ProcessExited => Some("process_exited"),
+            Self::TurnInProgress => Some("turn_in_progress"),
+            Self::NoActiveTurn => Some("no_active_turn"),
+            Self::FeedbackDisabled => Some("feedback_disabled"),
+            Self::InvalidFeedback(_) => Some("invalid_feedback"),
             Self::SpawnFailed(_) => Some("spawn_failed"),
             Self::DownloadFailed(_) => Some("download_failed"),
             Self::ConnectionNotFound(_) => Some("connection_not_found"),
