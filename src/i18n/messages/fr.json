@@ -2083,10 +2083,14 @@
       },
       "askQuestion": {
         "title": "L'agent attend votre choix",
+        "subtitle": "Répondez puis envoyez. Vous pouvez ignorer à tout moment.",
         "recommended": "Recommandé",
         "other": "Autre",
         "otherPlaceholder": "Saisissez votre réponse…",
+        "singleSelect": "Unique",
+        "multiSelect": "Multiple",
         "skip": "Ignorer",
+        "next": "Suivant",
         "submit": "Envoyer",
         "submitError": "Échec de l'envoi. Veuillez réessayer."
       }

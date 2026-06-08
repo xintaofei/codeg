@@ -2083,10 +2083,14 @@
       },
       "askQuestion": {
         "title": "O agente precisa da sua escolha",
+        "subtitle": "Responda e envie. Você pode pular a qualquer momento.",
         "recommended": "Recomendado",
         "other": "Outro",
         "otherPlaceholder": "Digite sua resposta…",
+        "singleSelect": "Única",
+        "multiSelect": "Múltipla",
         "skip": "Pular",
+        "next": "Próxima",
         "submit": "Enviar",
         "submitError": "Falha ao enviar. Tente novamente."
       }

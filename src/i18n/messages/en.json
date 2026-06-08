@@ -2083,10 +2083,14 @@
       },
       "askQuestion": {
         "title": "The agent needs your input",
+        "subtitle": "Answer below, then submit. You can skip anytime.",
         "recommended": "Recommended",
         "other": "Other",
         "otherPlaceholder": "Type your answer…",
+        "singleSelect": "Single",
+        "multiSelect": "Multiple",
         "skip": "Skip",
+        "next": "Next",
         "submit": "Submit",
         "submitError": "Couldn't submit. Please try again."
       }

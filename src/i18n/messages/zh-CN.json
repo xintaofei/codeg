@@ -2083,10 +2083,14 @@
       },
       "askQuestion": {
         "title": "智能体需要你的选择",
+        "subtitle": "回答后点击提交，可随时跳过",
         "recommended": "推荐",
         "other": "其他",
         "otherPlaceholder": "输入你的回答…",
+        "singleSelect": "单选",
+        "multiSelect": "多选",
         "skip": "跳过",
+        "next": "下一题",
         "submit": "提交",
         "submitError": "提交失败，请重试。"
       }

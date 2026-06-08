@@ -2083,10 +2083,14 @@
       },
       "askQuestion": {
         "title": "エージェントが選択を求めています",
+        "subtitle": "回答したら送信してください。いつでもスキップできます",
         "recommended": "推奨",
         "other": "その他",
         "otherPlaceholder": "回答を入力…",
+        "singleSelect": "単一選択",
+        "multiSelect": "複数選択",
         "skip": "スキップ",
+        "next": "次へ",
         "submit": "送信",
         "submitError": "送信できませんでした。もう一度お試しください。"
       }

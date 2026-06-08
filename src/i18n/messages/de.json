@@ -2083,10 +2083,14 @@
       },
       "askQuestion": {
         "title": "Der Agent benötigt deine Auswahl",
+        "subtitle": "Antworten und absenden. Du kannst jederzeit überspringen.",
         "recommended": "Empfohlen",
         "other": "Andere",
         "otherPlaceholder": "Antwort eingeben…",
+        "singleSelect": "Einfach",
+        "multiSelect": "Mehrfach",
         "skip": "Überspringen",
+        "next": "Weiter",
         "submit": "Senden",
         "submitError": "Senden fehlgeschlagen. Bitte versuche es erneut."
       }

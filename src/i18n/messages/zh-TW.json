@@ -2083,10 +2083,14 @@
       },
       "askQuestion": {
         "title": "智能體需要你的選擇",
+        "subtitle": "回答後點擊提交，可隨時跳過",
         "recommended": "推薦",
         "other": "其他",
         "otherPlaceholder": "輸入你的回答…",
+        "singleSelect": "單選",
+        "multiSelect": "多選",
         "skip": "略過",
+        "next": "下一題",
         "submit": "提交",
         "submitError": "提交失敗，請重試。"
       }

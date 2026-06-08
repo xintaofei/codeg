@@ -134,7 +134,7 @@ const twoMultiFirst: PendingQuestionState = {
 describe("AskQuestionCard", () => {
   it("submits a single-select choice keyed by question id", () => {
     const onAnswer = renderCard(single)
-    fireEvent.click(screen.getByText("Incremental"))
+    fireEvent.click(screen.getByRole("radio", { name: /Incremental/ }))
     fireEvent.click(screen.getByRole("button", { name: "Submit" }))
     expect(onAnswer).toHaveBeenCalledWith("q-1", {
       answers: [{ questionId: "qa", labels: ["Incremental"] }],
@@ -146,14 +146,25 @@ describe("AskQuestionCard", () => {
     renderCard(single)
     const submit = screen.getByRole("button", { name: "Submit" })
     expect(submit).toBeDisabled()
-    fireEvent.click(screen.getByText("Rewrite"))
+    fireEvent.click(screen.getByRole("radio", { name: /Rewrite/ }))
     expect(submit).not.toBeDisabled()
+  })
+
+  it("clears a single-select choice when the chosen option is clicked again", () => {
+    renderCard(single)
+    const submit = screen.getByRole("button", { name: "Submit" })
+    fireEvent.click(screen.getByRole("radio", { name: /Incremental/ }))
+    expect(submit).not.toBeDisabled()
+    // Re-clicking the already-selected option deselects it (radix won't fire
+    // onValueChange for the same value, so the card handles this via onClick).
+    fireEvent.click(screen.getByRole("radio", { name: /Incremental/ }))
+    expect(submit).toBeDisabled()
   })
 
   it("collects multiple labels in multi-select", () => {
     const onAnswer = renderCard(multi)
-    fireEvent.click(screen.getByText("auth"))
-    fireEvent.click(screen.getByText("billing"))
+    fireEvent.click(screen.getByRole("checkbox", { name: "auth" }))
+    fireEvent.click(screen.getByRole("checkbox", { name: "billing" }))
     fireEvent.click(screen.getByRole("button", { name: "Submit" }))
     expect(onAnswer).toHaveBeenCalledWith("q-2", {
       answers: [{ questionId: "qb", labels: ["auth", "billing"] }],
@@ -161,9 +172,26 @@ describe("AskQuestionCard", () => {
     })
   })
 
+  it("renders radio controls for single-select and checkboxes for multi-select", () => {
+    const { unmount } = render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <AskQuestionCard question={single} onAnswer={vi.fn()} />
+      </NextIntlClientProvider>
+    )
+    // Two real options + the host-injected "Other" row, all radios.
+    expect(screen.getAllByRole("radio")).toHaveLength(3)
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
+    unmount()
+
+    renderCard(multi)
+    // Three real options + "Other", all checkboxes.
+    expect(screen.getAllByRole("checkbox")).toHaveLength(4)
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument()
+  })
+
   it("submits the typed Other text as the answer label", () => {
     const onAnswer = renderCard(single)
-    fireEvent.click(screen.getByText("Other"))
+    fireEvent.click(screen.getByRole("radio", { name: "Other" }))
     fireEvent.change(screen.getByPlaceholderText("Type your answer…"), {
       target: { value: "a third way" },
     })
@@ -176,8 +204,8 @@ describe("AskQuestionCard", () => {
 
   it("single-select Other replaces a prior option choice", () => {
     const onAnswer = renderCard(single)
-    fireEvent.click(screen.getByText("Incremental"))
-    fireEvent.click(screen.getByText("Other"))
+    fireEvent.click(screen.getByRole("radio", { name: /Incremental/ }))
+    fireEvent.click(screen.getByRole("radio", { name: "Other" }))
     fireEvent.change(screen.getByPlaceholderText("Type your answer…"), {
       target: { value: "custom" },
     })
@@ -201,12 +229,12 @@ describe("AskQuestionCard", () => {
     const d = deferred()
     const onAnswer = vi.fn(() => d.promise)
     const { container } = renderWith(single, onAnswer)
-    fireEvent.click(screen.getByText("Incremental"))
+    fireEvent.click(screen.getByRole("radio", { name: /Incremental/ }))
     fireEvent.click(screen.getByRole("button", { name: "Submit" }))
     expect(onAnswer).toHaveBeenCalledTimes(1)
     expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled()
     expect(screen.getByRole("button", { name: "Skip" })).toBeDisabled()
-    expect(screen.getByText("Incremental").closest("button")).toBeDisabled()
+    expect(screen.getByRole("radio", { name: /Incremental/ })).toBeDisabled()
     expect(container.querySelector(".animate-spin")).not.toBeNull()
     d.resolve()
   })
@@ -215,7 +243,7 @@ describe("AskQuestionCard", () => {
     const d = deferred()
     const onAnswer = vi.fn(() => d.promise)
     renderWith(single, onAnswer)
-    fireEvent.click(screen.getByText("Incremental"))
+    fireEvent.click(screen.getByRole("radio", { name: /Incremental/ }))
     const submit = screen.getByRole("button", { name: "Submit" })
     fireEvent.click(submit)
     fireEvent.click(submit)
@@ -232,7 +260,7 @@ describe("AskQuestionCard", () => {
       .mockRejectedValueOnce(new Error("boom"))
       .mockResolvedValueOnce(undefined)
     renderWith(single, onAnswer)
-    fireEvent.click(screen.getByText("Rewrite"))
+    fireEvent.click(screen.getByRole("radio", { name: /Rewrite/ }))
     fireEvent.click(screen.getByRole("button", { name: "Submit" }))
     // The failure surfaces inline and every control re-enables for a retry.
     const alert = await screen.findByRole("alert")
@@ -264,10 +292,78 @@ describe("AskQuestionCard", () => {
     const onAnswer = renderCard(onlyRecommended)
     // The literal label is shown (not stripped to empty); selecting it submits
     // the verbatim label.
-    fireEvent.click(screen.getByText("(Recommended)"))
+    fireEvent.click(screen.getByRole("radio", { name: "(Recommended)" }))
     fireEvent.click(screen.getByRole("button", { name: "Submit" }))
     expect(onAnswer).toHaveBeenCalledWith("q-3", {
       answers: [{ questionId: "qc", labels: ["(Recommended)"] }],
+      declined: false,
+    })
+  })
+
+  it("treats a real option labeled like the Other sentinel as a normal choice", () => {
+    // The single-select RadioGroup uses index-based values, so an option whose
+    // label happens to equal the internal "Other" sentinel still selects as a
+    // real choice (no free-text input) and submits verbatim.
+    const sentinel: PendingQuestionState = {
+      question_id: "q-sentinel",
+      created_at: "2026-01-01T00:00:00Z",
+      questions: [
+        {
+          id: "qs",
+          question: "Pick one",
+          header: "Pick",
+          multi_select: false,
+          options: [
+            { label: "__other__", description: "a real option" },
+            { label: "Normal", description: "" },
+          ],
+        },
+      ],
+    }
+    const onAnswer = renderCard(sentinel)
+    fireEvent.click(screen.getByRole("radio", { name: /__other__/ }))
+    // The free-text path is NOT engaged: no Other input appears.
+    expect(
+      screen.queryByPlaceholderText("Type your answer…")
+    ).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }))
+    expect(onAnswer).toHaveBeenCalledWith("q-sentinel", {
+      answers: [{ questionId: "qs", labels: ["__other__"] }],
+      declined: false,
+    })
+  })
+
+  it("clears the in-flight guard so a reused instance can answer the next question", async () => {
+    // After a successful submit the card normally unmounts; but if the same
+    // instance is reused in place for a new question_id, the re-entrancy guard
+    // must not stay latched (otherwise the next Submit silently no-ops).
+    const dA = deferred()
+    const onAnswer = vi
+      .fn()
+      .mockReturnValueOnce(dA.promise)
+      .mockResolvedValue(undefined)
+    const { rerender } = render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <AskQuestionCard question={single} onAnswer={onAnswer} />
+      </NextIntlClientProvider>
+    )
+    fireEvent.click(screen.getByRole("radio", { name: /Incremental/ }))
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }))
+    expect(onAnswer).toHaveBeenCalledTimes(1)
+    // Resolve A; `run` clears the guard on the success path.
+    dA.resolve()
+    await dA.promise
+    // The same instance is reused for a different question set (new question_id).
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <AskQuestionCard question={multi} onAnswer={onAnswer} />
+      </NextIntlClientProvider>
+    )
+    fireEvent.click(screen.getByRole("checkbox", { name: "auth" }))
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }))
+    expect(onAnswer).toHaveBeenCalledTimes(2)
+    expect(onAnswer).toHaveBeenLastCalledWith("q-2", {
+      answers: [{ questionId: "qb", labels: ["auth"] }],
       declined: false,
     })
   })
@@ -283,8 +379,8 @@ describe("AskQuestionCard", () => {
       "aria-selected",
       "true"
     )
-    // Picking an option on the first tab moves focus to the second.
-    fireEvent.click(screen.getByText("X"))
+    // Picking an option on the first tab moves to the second.
+    fireEvent.click(screen.getByRole("radio", { name: "X" }))
     const tabs = screen.getAllByRole("tab")
     expect(tabs[1]).toHaveAttribute("aria-selected", "true")
     expect(tabs[0]).toHaveAttribute("aria-selected", "false")
@@ -294,7 +390,7 @@ describe("AskQuestionCard", () => {
 
   it("does not auto-advance on a multi-select pick", () => {
     renderCard(twoMultiFirst)
-    fireEvent.click(screen.getByText("X"))
+    fireEvent.click(screen.getByRole("checkbox", { name: "X" }))
     // Still on the first tab so further options can be picked.
     expect(screen.getAllByRole("tab")[0]).toHaveAttribute(
       "aria-selected",
@@ -309,23 +405,48 @@ describe("AskQuestionCard", () => {
       "data-answered",
       "false"
     )
-    fireEvent.click(screen.getByText("X"))
+    fireEvent.click(screen.getByRole("radio", { name: "X" }))
     expect(screen.getAllByRole("tab")[0]).toHaveAttribute(
       "data-answered",
       "true"
     )
   })
 
+  it("advances the active tab with the Next button", () => {
+    renderCard(twoSingle)
+    expect(screen.getAllByRole("tab")[0]).toHaveAttribute(
+      "aria-selected",
+      "true"
+    )
+    fireEvent.click(screen.getByRole("button", { name: /Next/ }))
+    const tabs = screen.getAllByRole("tab")
+    expect(tabs[1]).toHaveAttribute("aria-selected", "true")
+    // The last tab has no further tab, so Next is gone.
+    expect(
+      screen.queryByRole("button", { name: /Next/ })
+    ).not.toBeInTheDocument()
+  })
+
+  it("shows a progress counter that advances as questions are answered", () => {
+    renderCard(twoSingle)
+    expect(screen.getByText("0/2")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("radio", { name: "X" })) // auto-advances
+    expect(screen.getByText("1/2")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("radio", { name: "P" }))
+    expect(screen.getByText("2/2")).toBeInTheDocument()
+  })
+
   it("enables Submit only after every tab is answered, then submits all", () => {
     const onAnswer = renderCard(twoSingle)
-    const submit = screen.getByRole("button", { name: "Submit" })
+    const submit = screen.getByRole("button", { name: /Submit/ })
     expect(submit).toBeDisabled()
     // Answer tab 1 (auto-advances to tab 2), then answer tab 2.
-    fireEvent.click(screen.getByText("X"))
-    expect(submit).toBeDisabled()
-    fireEvent.click(screen.getByText("P"))
-    expect(submit).not.toBeDisabled()
-    fireEvent.click(submit)
+    fireEvent.click(screen.getByRole("radio", { name: "X" }))
+    expect(screen.getByRole("button", { name: /Submit/ })).toBeDisabled()
+    fireEvent.click(screen.getByRole("radio", { name: "P" }))
+    const enabled = screen.getByRole("button", { name: /Submit/ })
+    expect(enabled).not.toBeDisabled()
+    fireEvent.click(enabled)
     expect(onAnswer).toHaveBeenCalledWith("q-two", {
       answers: [
         { questionId: "qa", labels: ["X"] },
@@ -344,7 +465,7 @@ describe("AskQuestionCard", () => {
         <AskQuestionCard question={single} onAnswer={onAnswer} />
       </NextIntlClientProvider>
     )
-    fireEvent.click(screen.getByText("Incremental"))
+    fireEvent.click(screen.getByRole("radio", { name: /Incremental/ }))
     expect(screen.getByRole("button", { name: "Submit" })).not.toBeDisabled()
     // Swap in a different question set (new question_id) at the same position.
     rerender(
@@ -355,6 +476,6 @@ describe("AskQuestionCard", () => {
     // No stale selection carries over: the new set renders fresh and ungated.
     expect(screen.queryByText("Incremental")).not.toBeInTheDocument()
     expect(screen.getAllByRole("tab")).toHaveLength(2)
-    expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: /Submit/ })).toBeDisabled()
   })
 })

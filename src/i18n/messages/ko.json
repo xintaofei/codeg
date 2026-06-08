@@ -2083,10 +2083,14 @@
       },
       "askQuestion": {
         "title": "에이전트가 선택을 요청합니다",
+        "subtitle": "답변 후 제출하세요. 언제든 건너뛸 수 있습니다",
         "recommended": "추천",
         "other": "기타",
         "otherPlaceholder": "답변을 입력하세요…",
+        "singleSelect": "단일 선택",
+        "multiSelect": "다중 선택",
         "skip": "건너뛰기",
+        "next": "다음",
         "submit": "제출",
         "submitError": "제출하지 못했습니다. 다시 시도해 주세요."
       }

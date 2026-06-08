@@ -2,9 +2,18 @@
 
 import { useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
-import { Check, HelpCircle, Loader2 } from "lucide-react"
+import {
+  Check,
+  ChevronRight,
+  Loader2,
+  MessageCircleQuestionMark,
+} from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Progress } from "@/components/ui/progress"
+import { Label } from "@/components/ui/label"
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import type {
@@ -21,6 +30,10 @@ interface AskQuestionCardProps {
    *  in-flight state and surface a retryable error if the round-trip fails. */
   onAnswer: (questionId: string, answer: QuestionAnswer) => void | Promise<void>
 }
+
+/** Single-select sentinel value for the host-injected free-text "Other" choice,
+ *  so it can live inside the same `RadioGroup` as the real options. */
+const OTHER_VALUE = "__other__"
 
 /** Strip a trailing " (Recommended)" so it can render as a badge while the
  *  submitted value keeps the agent's original label verbatim. */
@@ -77,11 +90,23 @@ export function AskQuestionCard({ question, onAnswer }: AskQuestionCardProps) {
   // than relying on the caller to supply a fresh React key.
   const [renderedId, setRenderedId] = useState(question.question_id)
 
-  // Whether every question has at least one selection — the submit gate.
-  const complete = useMemo(
-    () => questions.every((q) => isAnswered(state[q.id])),
+  // How many questions are answered — drives the progress bar, the counter, and
+  // the submit gate (every question must be answered).
+  const answeredCount = useMemo(
+    () => questions.filter((q) => isAnswered(state[q.id])).length,
     [questions, state]
   )
+  const complete = answeredCount === questions.length
+
+  // Reserve one stable content height for the whole set so switching between a
+  // few-option tab and a many-option tab never resizes the card. Sized to the
+  // tallest question (its option count plus the always-present "Other" row),
+  // capped to the viewport; a taller-than-estimated tab scrolls internally.
+  const maxRows = useMemo(
+    () => questions.reduce((m, q) => Math.max(m, q.options.length + 1), 1),
+    [questions]
+  )
+  const bodyHeight = `min(${maxRows * 4 + 1}rem, 50svh)`
 
   if (question.question_id !== renderedId) {
     setRenderedId(question.question_id)
@@ -90,8 +115,9 @@ export function AskQuestionCard({ question, onAnswer }: AskQuestionCardProps) {
     setSubmitting(false)
     setError(false)
     // `inFlight` is intentionally not reset here — refs must not be written
-    // during render, and it is only ever true mid-submit. A resolved answer
-    // unmounts the card, so the ref is already idle on any real set change.
+    // during render. `run` clears it whenever the round-trip resolves (both the
+    // success and failure paths), so it is already idle by the time a replacement
+    // question set renders into this same instance.
   }
 
   const select = (q: QuestionSpec, label: string) => {
@@ -145,6 +171,30 @@ export function AskQuestionCard({ question, onAnswer }: AskQuestionCardProps) {
     })
   }
 
+  // Single-select: re-clicking the chosen option clears it. radix never fires
+  // onValueChange for the already-selected value, so this is wired via onClick.
+  const clearChosen = (q: QuestionSpec) => {
+    setState((prev) => {
+      const s = prev[q.id] ?? { chosen: [], otherActive: false, otherText: "" }
+      return { ...prev, [q.id]: { ...s, chosen: [] } }
+    })
+  }
+
+  // Single-select picks flow through the shared RadioGroup using index-based
+  // radix values ("0", "1", …) so a real option whose label happens to equal the
+  // "Other" sentinel can never collide with it. The sentinel turns on free text
+  // (no advance); a real index selects its option by verbatim label + advances.
+  const onRadioChange = (q: QuestionSpec, value: string) => {
+    if (value === OTHER_VALUE) {
+      // radix never fires this when "Other" is already the value, so toggleOther
+      // only ever switches it on here.
+      toggleOther(q)
+      return
+    }
+    const opt = q.options[Number(value)]
+    if (opt) select(q, opt.label)
+  }
+
   // Run an answer/skip round-trip, holding the card in an in-flight state until
   // it resolves. On success the backend's `question_resolved` clears
   // `pendingAskQuestion`, which unmounts this card — so we intentionally stay
@@ -157,6 +207,11 @@ export function AskQuestionCard({ question, onAnswer }: AskQuestionCardProps) {
     setError(false)
     try {
       await onAnswer(question.question_id, answer)
+      // Clear the re-entrancy guard on success too (symmetric with the catch).
+      // The card normally unmounts here, but if this instance is reused for the
+      // next question the guard must not stay latched. `submitting` stays true so
+      // the controls don't flash back on before the unmount/replacement.
+      inFlight.current = false
     } catch {
       setError(true)
       setSubmitting(false)
@@ -176,189 +231,279 @@ export function AskQuestionCard({ question, onAnswer }: AskQuestionCardProps) {
 
   const skip = () => void run({ answers: [], declined: true })
 
+  const isMulti = questions.length > 1
+  const activeIndex = questions.findIndex((q) => q.id === activeId)
+  const nextId =
+    activeIndex >= 0 && activeIndex < questions.length - 1
+      ? questions[activeIndex + 1].id
+      : null
+
+  // A selectable option card: the radix control state colors the card. The
+  // accent comes from our own selection state (not a radix data-attribute) so it
+  // is reliable regardless of the primitive's styling internals.
+  const cardClass = (selected: boolean) =>
+    cn(
+      "flex w-full items-start gap-2.5 rounded-lg border p-2.5 font-normal transition-colors",
+      selected ? "border-primary bg-primary/10" : "border-border/60",
+      submitting ? "cursor-not-allowed opacity-60" : "cursor-pointer",
+      !selected && !submitting && "hover:bg-muted/40"
+    )
+
+  const optionBody = (
+    text: string,
+    recommended: boolean,
+    description?: string
+  ) => (
+    <span className="min-w-0 flex-1">
+      <span className="flex flex-wrap items-center gap-1.5 text-sm font-medium">
+        {text}
+        {recommended && (
+          <Badge variant="secondary" className="text-[10px]">
+            {t("recommended")}
+          </Badge>
+        )}
+      </span>
+      {description && (
+        <span className="mt-0.5 block text-xs text-muted-foreground">
+          {description}
+        </span>
+      )}
+    </span>
+  )
+
   // The options + free-text "Other" block for one question, reused by the
   // single-question layout and each tab panel.
   const renderOptions = (q: QuestionSpec) => {
     const s = state[q.id]
     const otherId = `${q.id}-other`
+    const otherInput = s?.otherActive ? (
+      <input
+        id={otherId}
+        type="text"
+        autoFocus
+        aria-label={t("other")}
+        disabled={submitting}
+        value={s.otherText}
+        onChange={(e) => setOtherText(q, e.target.value)}
+        placeholder={t("otherPlaceholder")}
+        className="w-full rounded-md border border-border/60 bg-background px-2.5 py-1.5 text-sm outline-none focus:border-ring disabled:cursor-not-allowed disabled:opacity-60"
+      />
+    ) : null
+
+    if (q.multi_select) {
+      return (
+        <div className="space-y-1.5">
+          {q.options.map((opt) => {
+            const selected = s?.chosen.includes(opt.label) ?? false
+            const { text, recommended } = splitRecommended(opt.label)
+            return (
+              <Label key={opt.label} className={cardClass(selected)}>
+                <Checkbox
+                  checked={selected}
+                  disabled={submitting}
+                  onCheckedChange={() => select(q, opt.label)}
+                  className="mt-0.5"
+                />
+                {optionBody(text, recommended, opt.description)}
+              </Label>
+            )
+          })}
+          <Label className={cardClass(s?.otherActive ?? false)}>
+            <Checkbox
+              checked={s?.otherActive ?? false}
+              disabled={submitting}
+              onCheckedChange={() => toggleOther(q)}
+              className="mt-0.5"
+            />
+            <span className="text-sm font-medium">{t("other")}</span>
+          </Label>
+          {otherInput}
+        </div>
+      )
+    }
+
+    const selectedIdx = s?.chosen[0]
+      ? q.options.findIndex((o) => o.label === s.chosen[0])
+      : -1
+    const value = s?.otherActive
+      ? OTHER_VALUE
+      : selectedIdx >= 0
+        ? String(selectedIdx)
+        : ""
     return (
       <div className="space-y-1.5">
-        {q.options.map((opt) => {
-          const selected = s?.chosen.includes(opt.label) ?? false
-          const { text, recommended } = splitRecommended(opt.label)
-          return (
-            <button
-              key={opt.label}
-              type="button"
-              aria-pressed={selected}
-              disabled={submitting}
-              onClick={() => select(q, opt.label)}
-              className={cn(
-                "flex w-full items-start gap-2 rounded-md border p-2 text-left transition-colors",
-                "disabled:cursor-not-allowed disabled:opacity-60",
-                selected
-                  ? "border-blue-500/70 bg-blue-500/10"
-                  : "border-border/60 hover:bg-muted/40"
-              )}
-            >
-              <span
-                className={cn(
-                  "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center border",
-                  q.multi_select ? "rounded" : "rounded-full",
-                  selected
-                    ? "border-blue-500 bg-blue-500 text-white"
-                    : "border-muted-foreground/40"
-                )}
-              >
-                {selected && <Check className="h-3 w-3" />}
-              </span>
-              <span className="min-w-0">
-                <span className="flex items-center gap-1.5 text-sm font-medium">
-                  {text}
-                  {recommended && (
-                    <Badge variant="secondary" className="shrink-0 text-[10px]">
-                      {t("recommended")}
-                    </Badge>
-                  )}
-                </span>
-                {opt.description && (
-                  <span className="block text-xs text-muted-foreground">
-                    {opt.description}
-                  </span>
-                )}
-              </span>
-            </button>
-          )
-        })}
-
-        {/* Host-injected free-text "Other" — always available. */}
-        <button
-          type="button"
-          aria-pressed={s?.otherActive ?? false}
+        <RadioGroup
+          value={value}
+          onValueChange={(v) => onRadioChange(q, v)}
           disabled={submitting}
-          onClick={() => toggleOther(q)}
-          className={cn(
-            "flex w-full items-center gap-2 rounded-md border p-2 text-left transition-colors",
-            "disabled:cursor-not-allowed disabled:opacity-60",
-            s?.otherActive
-              ? "border-blue-500/70 bg-blue-500/10"
-              : "border-border/60 hover:bg-muted/40"
-          )}
+          className="gap-1.5"
         >
-          <span
-            className={cn(
-              "flex h-4 w-4 shrink-0 items-center justify-center border",
-              q.multi_select ? "rounded" : "rounded-full",
-              s?.otherActive
-                ? "border-blue-500 bg-blue-500 text-white"
-                : "border-muted-foreground/40"
-            )}
-          >
-            {s?.otherActive && <Check className="h-3 w-3" />}
-          </span>
-          <span className="text-sm font-medium">{t("other")}</span>
-        </button>
-        {s?.otherActive && (
-          <input
-            id={otherId}
-            type="text"
-            autoFocus
-            disabled={submitting}
-            value={s.otherText}
-            onChange={(e) => setOtherText(q, e.target.value)}
-            placeholder={t("otherPlaceholder")}
-            className="w-full rounded-md border border-border/60 bg-background px-2 py-1.5 text-sm outline-none focus:border-blue-500/70 disabled:cursor-not-allowed disabled:opacity-60"
-          />
-        )}
+          {q.options.map((opt, i) => {
+            const selected = s?.chosen.includes(opt.label) ?? false
+            const { text, recommended } = splitRecommended(opt.label)
+            return (
+              <Label key={opt.label} className={cardClass(selected)}>
+                <RadioGroupItem
+                  value={String(i)}
+                  onClick={() => {
+                    if (selected) clearChosen(q)
+                  }}
+                  className="mt-0.5 data-[state=checked]:border-primary data-[state=checked]:bg-primary"
+                />
+                {optionBody(text, recommended, opt.description)}
+              </Label>
+            )
+          })}
+          <Label className={cardClass(s?.otherActive ?? false)}>
+            <RadioGroupItem
+              value={OTHER_VALUE}
+              onClick={() => {
+                if (s?.otherActive) toggleOther(q)
+              }}
+              className="mt-0.5 data-[state=checked]:border-primary data-[state=checked]:bg-primary"
+            />
+            <span className="text-sm font-medium">{t("other")}</span>
+          </Label>
+        </RadioGroup>
+        {otherInput}
       </div>
     )
   }
 
-  const isMulti = questions.length > 1
+  const questionHeading = (q: QuestionSpec) => (
+    <div className="flex items-center gap-2">
+      <Badge variant="outline" className="shrink-0 text-[10px]">
+        {q.multi_select ? t("multiSelect") : t("singleSelect")}
+      </Badge>
+      <p className="text-sm text-foreground/90">{q.question}</p>
+    </div>
+  )
 
   return (
-    // Capped to the viewport (title + footer pinned, body scrolls) so a tall set
-    // — many questions, long localized text, or a short window — never covers
-    // the whole message list and always keeps Submit/Skip reachable.
-    <div className="mb-2 flex max-h-[88svh] flex-col rounded-xl border border-blue-500/30 bg-card p-3 shadow-lg">
-      <div className="flex shrink-0 items-center gap-1.5 text-sm font-medium">
-        <HelpCircle className="h-4 w-4 shrink-0 text-blue-500" />
-        <span>{t("title")}</span>
-      </div>
-
-      {isMulti ? (
-        <Tabs
-          value={activeId}
-          onValueChange={setActiveId}
-          className="mt-2 flex min-h-0 flex-1 flex-col"
-        >
-          <TabsList variant="line" className="w-full shrink-0 justify-start">
-            {questions.map((q) => {
-              const done = isAnswered(state[q.id])
-              return (
-                <TabsTrigger
-                  key={q.id}
-                  value={q.id}
-                  disabled={submitting}
-                  data-answered={done ? "true" : "false"}
-                  className="min-w-0 gap-1 data-[answered=true]:text-blue-600 dark:data-[answered=true]:text-blue-400"
-                >
-                  <span className="truncate">{q.header}</span>
-                  {done && (
-                    <Check className="size-3.5 shrink-0 text-blue-500" />
-                  )}
-                </TabsTrigger>
-              )
-            })}
-          </TabsList>
-          {questions.map((q) => (
-            <TabsContent
-              key={q.id}
-              value={q.id}
-              className="mt-2 min-h-0 flex-1 overflow-y-auto pr-1"
-            >
-              <div className="space-y-2 rounded-md border border-border/60 bg-muted/10 p-2.5">
-                <p className="text-sm text-foreground/90">{q.question}</p>
-                {renderOptions(q)}
-              </div>
-            </TabsContent>
-          ))}
-        </Tabs>
-      ) : (
-        <div className="mt-2 min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
-          {questions.map((q) => (
-            <div
-              key={q.id}
-              className="space-y-2 rounded-md border border-border/60 bg-muted/10 p-2.5"
-            >
-              <div className="flex items-start gap-2">
-                <Badge
-                  variant="outline"
-                  className="mt-0.5 shrink-0 text-[10px]"
-                >
-                  {q.header}
-                </Badge>
-                <p className="text-sm text-foreground/90">{q.question}</p>
-              </div>
-              {renderOptions(q)}
-            </div>
-          ))}
-        </div>
+    // Capped to the viewport (header + footer pinned, body scrolls) so a tall set
+    // never covers the whole message list and always keeps Submit/Skip reachable.
+    // `overflow-hidden` clips the full-bleed progress bar to the rounded corners.
+    <div className="mb-2 flex max-h-[88svh] flex-col overflow-hidden rounded-xl border border-primary/30 bg-card shadow-lg">
+      {isMulti && (
+        <Progress
+          value={(answeredCount / questions.length) * 100}
+          aria-label={t("title")}
+          aria-valuetext={`${answeredCount}/${questions.length}`}
+          className="h-1 shrink-0 rounded-none"
+        />
       )}
 
-      <div className="mt-3 flex shrink-0 items-center justify-end gap-2">
-        {error && (
-          <span role="alert" className="mr-auto text-xs text-destructive">
-            {t("submitError")}
+      <div className="flex min-h-0 flex-col gap-3 p-3">
+        {/* Header */}
+        <div className="flex shrink-0 items-start gap-2.5">
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-primary">
+            <MessageCircleQuestionMark className="size-4" />
           </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">{t("title")}</p>
+            <p className="text-xs text-muted-foreground">{t("subtitle")}</p>
+          </div>
+          {isMulti && (
+            <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+              {`${answeredCount}/${questions.length}`}
+            </span>
+          )}
+        </div>
+
+        {isMulti ? (
+          <Tabs
+            value={activeId}
+            onValueChange={setActiveId}
+            className="flex min-h-0 flex-col gap-2"
+          >
+            <TabsList className="w-full shrink-0">
+              {questions.map((q, i) => {
+                const done = isAnswered(state[q.id])
+                return (
+                  <TabsTrigger
+                    key={q.id}
+                    value={q.id}
+                    disabled={submitting}
+                    data-answered={done ? "true" : "false"}
+                    className="min-w-0 gap-1.5 data-[state=active]:bg-background data-[state=active]:shadow-sm data-[answered=true]:text-primary"
+                  >
+                    {done ? (
+                      <Check className="size-3.5 shrink-0 text-primary" />
+                    ) : (
+                      <span className="flex size-4 shrink-0 items-center justify-center rounded-full border border-current text-[10px] leading-none">
+                        {i + 1}
+                      </span>
+                    )}
+                    <span className="truncate">{q.header}</span>
+                  </TabsTrigger>
+                )
+              })}
+            </TabsList>
+            {questions.map((q) => (
+              <TabsContent
+                key={q.id}
+                value={q.id}
+                style={{ height: bodyHeight }}
+                className="mt-0 flex-none space-y-2.5 overflow-y-auto pr-1"
+              >
+                {questionHeading(q)}
+                {renderOptions(q)}
+              </TabsContent>
+            ))}
+          </Tabs>
+        ) : (
+          <div className="min-h-0 space-y-2.5 overflow-y-auto pr-1">
+            {questions.map((q) => (
+              <div key={q.id} className="space-y-2.5">
+                {questionHeading(q)}
+                {renderOptions(q)}
+              </div>
+            ))}
+          </div>
         )}
-        <Button variant="ghost" size="sm" onClick={skip} disabled={submitting}>
-          {t("skip")}
-        </Button>
-        <Button size="sm" disabled={!complete || submitting} onClick={submit}>
-          {submitting && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
-          {t("submit")}
-        </Button>
+
+        {/* Footer */}
+        <div className="flex shrink-0 items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={skip}
+            disabled={submitting}
+          >
+            {t("skip")}
+          </Button>
+          <div className="ml-auto flex items-center gap-2">
+            {error && (
+              <span role="alert" className="text-xs text-destructive">
+                {t("submitError")}
+              </span>
+            )}
+            {isMulti && nextId && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setActiveId(nextId)}
+                disabled={submitting}
+              >
+                {t("next")}
+                <ChevronRight className="ml-1 size-3.5" />
+              </Button>
+            )}
+            <Button
+              size="sm"
+              disabled={!complete || submitting}
+              onClick={submit}
+            >
+              {submitting && (
+                <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+              )}
+              {t("submit")}
+              {isMulti && (
+                <span className="ml-1 tabular-nums">{`(${answeredCount})`}</span>
+              )}
+            </Button>
+          </div>
+        </div>
       </div>
     </div>
   )

@@ -2083,10 +2083,14 @@
       },
       "askQuestion": {
         "title": "يحتاج الوكيل إلى اختيارك",
+        "subtitle": "أجب ثم أرسل. يمكنك التخطّي في أي وقت.",
         "recommended": "موصى به",
         "other": "أخرى",
         "otherPlaceholder": "اكتب إجابتك…",
+        "singleSelect": "اختيار واحد",
+        "multiSelect": "اختيار متعدد",
         "skip": "تخطّي",
+        "next": "التالي",
         "submit": "إرسال",
         "submitError": "تعذّر الإرسال. حاول مرة أخرى."
       }
