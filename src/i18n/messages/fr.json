@@ -2116,11 +2116,7 @@
         "title": "Question",
         "awaiting": "En attente de ta réponse…",
         "declined": "Tu as ignoré cette question — l’agent a utilisé son propre jugement.",
-        "noSelection": "Aucune sélection",
-        "other": "Autre",
-        "recommended": "Recommandé",
-        "single": "Unique",
-        "multiple": "Multiple"
+        "noSelection": "Aucune sélection"
       },
       "configStale": {
         "agentConfigTitle": "Paramètres de l'agent mis à jour",

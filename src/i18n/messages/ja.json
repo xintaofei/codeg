@@ -2116,11 +2116,7 @@
         "title": "質問",
         "awaiting": "回答をお待ちしています…",
         "declined": "この質問をスキップしました — エージェントが独自に判断して進めました。",
-        "noSelection": "選択なし",
-        "other": "その他",
-        "recommended": "推奨",
-        "single": "単一選択",
-        "multiple": "複数選択"
+        "noSelection": "選択なし"
       },
       "configStale": {
         "agentConfigTitle": "エージェント設定が更新されました",

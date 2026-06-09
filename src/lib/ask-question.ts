@@ -26,8 +26,9 @@ export interface AskQuestion {
 export interface AskQuestionAnswer {
   header: string
   question: string
-  /** Selected labels and any free-text "Other", merged (matches the backend). */
-  selected: string[]
+  /** Raw joined selection text from the result line ("" when nothing was
+   *  chosen); split against the offered options via `matchSelections`. */
+  selected: string
 }
 
 export interface AskQuestionOutcome {
@@ -141,23 +142,56 @@ export function parseAskQuestionOutcome(
       current = {
         header: header[1].trim(),
         question: header[2].trim(),
-        selected: [],
+        selected: "",
       }
       answers.push(current)
       continue
     }
-    const selected = line.match(SELECTED_LINE_RE)
-    if (selected && current) {
-      const joined = selected[1].trim()
-      current.selected =
-        joined && joined !== NO_SELECTION
-          ? joined
-              .split(", ")
-              .map((s) => s.trim())
-              .filter(Boolean)
-          : []
+    const selectedLine = line.match(SELECTED_LINE_RE)
+    if (selectedLine && current) {
+      const joined = selectedLine[1].trim()
+      current.selected = joined === NO_SELECTION ? "" : joined
       current = null
     }
   }
   return { declined: false, answers }
+}
+
+/**
+ * Split a result line's joined selection text against the question's offered
+ * option labels. Returns the matched option labels (`selected`) and any
+ * free-text "Other" answers (`other`), order-preserving. Matching whole option
+ * labels first means a label that itself contains ", " is recovered intact
+ * rather than mis-split — the naive `", "` split alone can't do that.
+ */
+export function matchSelections(
+  joined: string,
+  optionLabels: string[]
+): { selected: string[]; other: string[] } {
+  const text = joined.trim()
+  if (!text || text === NO_SELECTION) return { selected: [], other: [] }
+  // Longest option first so an option that is a prefix of another can't shadow it.
+  const labels = optionLabels
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length)
+  const selected: string[] = []
+  const other: string[] = []
+  let rest = text
+  while (rest.length > 0) {
+    const hit = labels.find((l) => rest === l || rest.startsWith(`${l}, `))
+    if (hit) {
+      selected.push(hit)
+      rest = rest === hit ? "" : rest.slice(hit.length + 2)
+      continue
+    }
+    const idx = rest.indexOf(", ")
+    if (idx === -1) {
+      other.push(rest)
+      rest = ""
+    } else {
+      other.push(rest.slice(0, idx))
+      rest = rest.slice(idx + 2)
+    }
+  }
+  return { selected, other }
 }

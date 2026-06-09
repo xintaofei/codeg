@@ -2116,11 +2116,7 @@
         "title": "Frage",
         "awaiting": "Warten auf deine Antwort…",
         "declined": "Du hast dies verworfen – der Agent hat nach eigenem Ermessen entschieden.",
-        "noSelection": "Keine Auswahl",
-        "other": "Andere",
-        "recommended": "Empfohlen",
-        "single": "Einfach",
-        "multiple": "Mehrfach"
+        "noSelection": "Keine Auswahl"
       },
       "configStale": {
         "agentConfigTitle": "Agent-Einstellungen aktualisiert",

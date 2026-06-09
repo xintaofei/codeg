@@ -2116,11 +2116,7 @@
         "title": "Question",
         "awaiting": "Waiting for your answer…",
         "declined": "You dismissed this — the agent used its own judgment.",
-        "noSelection": "No selection",
-        "other": "Other",
-        "recommended": "Recommended",
-        "single": "Single",
-        "multiple": "Multiple"
+        "noSelection": "No selection"
       },
       "configStale": {
         "agentConfigTitle": "Agent settings updated",

@@ -2116,11 +2116,7 @@
         "title": "提問",
         "awaiting": "等待你的回答…",
         "declined": "你已略過此問題 — 代理已自行判斷。",
-        "noSelection": "未選擇",
-        "other": "其他",
-        "recommended": "推薦",
-        "single": "單選",
-        "multiple": "多選"
+        "noSelection": "未選擇"
       },
       "configStale": {
         "agentConfigTitle": "智能體設定已更新",

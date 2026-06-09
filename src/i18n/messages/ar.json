@@ -2116,11 +2116,7 @@
         "title": "سؤال",
         "awaiting": "في انتظار إجابتك…",
         "declined": "لقد تجاهلت هذا — استخدم الوكيل حكمه الخاص.",
-        "noSelection": "لا يوجد اختيار",
-        "other": "أخرى",
-        "recommended": "موصى به",
-        "single": "اختيار واحد",
-        "multiple": "اختيار متعدد"
+        "noSelection": "لا يوجد اختيار"
       },
       "configStale": {
         "agentConfigTitle": "تم تحديث إعدادات الوكيل",

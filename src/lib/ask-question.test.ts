@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  matchSelections,
   parseAskQuestionInput,
   parseAskQuestionOutcome,
   splitRecommended,
@@ -143,15 +144,56 @@ describe("parseAskQuestionOutcome", () => {
         {
           header: "Approach",
           question: "Which approach?",
-          selected: ["Incremental", "Rewrite"],
+          selected: "Incremental, Rewrite",
         },
-        { header: "Format", question: "Output format?", selected: [] },
+        { header: "Format", question: "Output format?", selected: "" },
       ],
     })
   })
 
   it("treats (no selection) as an empty selection", () => {
     const output = "1. [H] Q\n   → (no selection)\n"
-    expect(parseAskQuestionOutcome(output)?.answers[0].selected).toEqual([])
+    expect(parseAskQuestionOutcome(output)?.answers[0].selected).toBe("")
+  })
+})
+
+describe("matchSelections", () => {
+  it("splits plain selections against the option labels", () => {
+    expect(
+      matchSelections("Incremental, Rewrite", ["Incremental", "Rewrite"])
+    ).toEqual({ selected: ["Incremental", "Rewrite"], other: [] })
+  })
+
+  it("recovers an option label that itself contains a comma", () => {
+    // Naive ", " splitting would break "Rewrite, then test" into two tokens;
+    // matching whole option labels first keeps it intact.
+    expect(
+      matchSelections("Rewrite, then test, Incremental", [
+        "Incremental",
+        "Rewrite, then test",
+      ])
+    ).toEqual({ selected: ["Rewrite, then test", "Incremental"], other: [] })
+  })
+
+  it("returns unmatched tokens as free-text Other answers", () => {
+    expect(matchSelections("Alpha, Custom thing", ["Alpha", "Beta"])).toEqual({
+      selected: ["Alpha"],
+      other: ["Custom thing"],
+    })
+  })
+
+  it("treats empty / (no selection) text as nothing chosen", () => {
+    expect(matchSelections("", ["A"])).toEqual({ selected: [], other: [] })
+    expect(matchSelections("(no selection)", ["A"])).toEqual({
+      selected: [],
+      other: [],
+    })
+  })
+
+  it("with no options, every token is an Other answer", () => {
+    expect(matchSelections("foo, bar", [])).toEqual({
+      selected: [],
+      other: ["foo", "bar"],
+    })
   })
 })

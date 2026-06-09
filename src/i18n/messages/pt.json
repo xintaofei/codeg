@@ -2116,11 +2116,7 @@
         "title": "Pergunta",
         "awaiting": "Aguardando sua resposta…",
         "declined": "Você ignorou isto — o agente usou o próprio julgamento.",
-        "noSelection": "Sem seleção",
-        "other": "Outro",
-        "recommended": "Recomendado",
-        "single": "Única",
-        "multiple": "Múltipla"
+        "noSelection": "Sem seleção"
       },
       "configStale": {
         "agentConfigTitle": "Configurações do agente atualizadas",

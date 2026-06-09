@@ -30,7 +30,20 @@ interface AskQuestionCardProps {
   /** Resolves the parked tool call. Returns a promise so the card can show an
    *  in-flight state and surface a retryable error if the round-trip fails. */
   onAnswer: (questionId: string, answer: QuestionAnswer) => void | Promise<void>
+  /** Read-only/answered view (the in-message record): controls are disabled,
+   *  the footer is dropped, and selections are seeded from `initialSelections`
+   *  rather than collected. Omit it for the live, interactive card. */
+  readOnly?: boolean
+  /** Pre-filled selections per question id, used only in the read-only view. */
+  initialSelections?: SeedSelections
+  /** Header overrides (already localized) for the read-only view. */
+  title?: string
+  subtitle?: string
 }
+
+/** Seeded selections for the read-only view: chosen real-option labels plus any
+ *  free-text "Other" answer, keyed by question id. */
+type SeedSelections = Record<string, { chosen: string[]; otherText: string }>
 
 /** Single-select sentinel value for the host-injected free-text "Other" choice,
  *  so it can live inside the same `RadioGroup` as the real options. */
@@ -43,10 +56,20 @@ interface QState {
   otherText: string
 }
 
-function initialState(questions: QuestionSpec[]): Record<string, QState> {
+function initialState(
+  questions: QuestionSpec[],
+  seed?: SeedSelections
+): Record<string, QState> {
   const out: Record<string, QState> = {}
   for (const q of questions) {
-    out[q.id] = { chosen: [], otherActive: false, otherText: "" }
+    const s = seed?.[q.id]
+    out[q.id] = s
+      ? {
+          chosen: s.chosen,
+          otherActive: s.otherText.trim().length > 0,
+          otherText: s.otherText,
+        }
+      : { chosen: [], otherActive: false, otherText: "" }
   }
   return out
 }
@@ -58,11 +81,18 @@ function isAnswered(s: QState | undefined): boolean {
   return s.chosen.length > 0 || hasOther
 }
 
-export function AskQuestionCard({ question, onAnswer }: AskQuestionCardProps) {
+export function AskQuestionCard({
+  question,
+  onAnswer,
+  readOnly = false,
+  initialSelections,
+  title,
+  subtitle,
+}: AskQuestionCardProps) {
   const t = useTranslations("Folder.chat.askQuestion")
   const questions = question.questions
   const [state, setState] = useState<Record<string, QState>>(() =>
-    initialState(questions)
+    initialState(questions, initialSelections)
   )
   // Active tab in the multi-question layout.
   const [activeId, setActiveId] = useState(() => questions[0]?.id ?? "")
@@ -96,7 +126,7 @@ export function AskQuestionCard({ question, onAnswer }: AskQuestionCardProps) {
 
   if (question.question_id !== renderedId) {
     setRenderedId(question.question_id)
-    setState(initialState(questions))
+    setState(initialState(questions, initialSelections))
     setActiveId(questions[0]?.id ?? "")
     setSubmitting(false)
     setError(false)
@@ -224,15 +254,22 @@ export function AskQuestionCard({ question, onAnswer }: AskQuestionCardProps) {
       ? questions[activeIndex + 1].id
       : null
 
+  // Every control is inert while a live answer is in flight (`submitting`) and in
+  // the read-only/answered view (`readOnly`). Tabs stay navigable in both.
+  const locked = submitting || readOnly
+
   // A selectable option card: the radix control state colors the card. The
   // accent comes from our own selection state (not a radix data-attribute) so it
-  // is reliable regardless of the primitive's styling internals.
+  // is reliable regardless of the primitive's styling internals. The read-only
+  // view keeps the selection crisp (no opacity dim) so the answer stands out.
   const cardClass = (selected: boolean) =>
     cn(
       "flex w-full items-start gap-2.5 rounded-lg border p-2.5 font-normal transition-colors",
       selected ? "border-primary bg-primary/10" : "border-border/60",
-      submitting ? "cursor-not-allowed opacity-60" : "cursor-pointer",
-      !selected && !submitting && "hover:bg-muted/40"
+      submitting && "cursor-not-allowed opacity-60",
+      readOnly && !submitting && "cursor-default",
+      !submitting && !readOnly && "cursor-pointer",
+      !selected && !submitting && !readOnly && "hover:bg-muted/40"
     )
 
   const optionBody = (
@@ -268,7 +305,7 @@ export function AskQuestionCard({ question, onAnswer }: AskQuestionCardProps) {
         type="text"
         autoFocus
         aria-label={t("other")}
-        disabled={submitting}
+        disabled={locked}
         value={s.otherText}
         onChange={(e) => setOtherText(q, e.target.value)}
         placeholder={t("otherPlaceholder")}
@@ -286,7 +323,7 @@ export function AskQuestionCard({ question, onAnswer }: AskQuestionCardProps) {
               <Label key={opt.label} className={cardClass(selected)}>
                 <Checkbox
                   checked={selected}
-                  disabled={submitting}
+                  disabled={locked}
                   onCheckedChange={() => select(q, opt.label)}
                   className="mt-0.5"
                 />
@@ -297,7 +334,7 @@ export function AskQuestionCard({ question, onAnswer }: AskQuestionCardProps) {
           <Label className={cardClass(s?.otherActive ?? false)}>
             <Checkbox
               checked={s?.otherActive ?? false}
-              disabled={submitting}
+              disabled={locked}
               onCheckedChange={() => toggleOther(q)}
               className="mt-0.5"
             />
@@ -321,7 +358,7 @@ export function AskQuestionCard({ question, onAnswer }: AskQuestionCardProps) {
         <RadioGroup
           value={value}
           onValueChange={(v) => onRadioChange(q, v)}
-          disabled={submitting}
+          disabled={locked}
           className="gap-1.5"
         >
           {q.options.map((opt, i) => {
@@ -376,8 +413,11 @@ export function AskQuestionCard({ question, onAnswer }: AskQuestionCardProps) {
     // `overflow-hidden` clips the full-bleed progress bar to the rounded corners.
     <div
       role="group"
-      aria-label={t("title")}
-      className="mb-2 flex max-h-[88svh] flex-col overflow-hidden rounded-xl border border-primary/30 bg-card shadow-lg"
+      aria-label={title ?? t("title")}
+      className={cn(
+        "mb-2 flex max-h-[88svh] flex-col overflow-hidden rounded-xl border border-primary/30 bg-card",
+        readOnly ? "shadow-sm" : "shadow-lg"
+      )}
     >
       {isMulti && (
         <Progress
@@ -395,8 +435,12 @@ export function AskQuestionCard({ question, onAnswer }: AskQuestionCardProps) {
             <MessageCircleQuestionMark className="size-4" />
           </span>
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium">{t("title")}</p>
-            <p className="text-xs text-muted-foreground">{t("subtitle")}</p>
+            <p className="text-sm font-medium">{title ?? t("title")}</p>
+            {(subtitle ?? t("subtitle")) && (
+              <p className="text-xs text-muted-foreground">
+                {subtitle ?? t("subtitle")}
+              </p>
+            )}
           </div>
           {isMulti && (
             <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
@@ -457,48 +501,50 @@ export function AskQuestionCard({ question, onAnswer }: AskQuestionCardProps) {
           </div>
         )}
 
-        {/* Footer */}
-        <div className="flex shrink-0 items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={skip}
-            disabled={submitting}
-          >
-            {t("skip")}
-          </Button>
-          <div className="ml-auto flex items-center gap-2">
-            {error && (
-              <span role="alert" className="text-xs text-destructive">
-                {t("submitError")}
-              </span>
-            )}
-            {isMulti && nextId && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setActiveId(nextId)}
-                disabled={submitting}
-              >
-                {t("next")}
-                <ChevronRight className="ml-1 size-3.5" />
-              </Button>
-            )}
+        {/* Footer — dropped in the read-only/answered view */}
+        {!readOnly && (
+          <div className="flex shrink-0 items-center gap-2">
             <Button
+              variant="ghost"
               size="sm"
-              disabled={!complete || submitting}
-              onClick={submit}
+              onClick={skip}
+              disabled={submitting}
             >
-              {submitting && (
-                <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-              )}
-              {t("submit")}
-              {isMulti && (
-                <span className="ml-1 tabular-nums">{`(${answeredCount})`}</span>
-              )}
+              {t("skip")}
             </Button>
+            <div className="ml-auto flex items-center gap-2">
+              {error && (
+                <span role="alert" className="text-xs text-destructive">
+                  {t("submitError")}
+                </span>
+              )}
+              {isMulti && nextId && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setActiveId(nextId)}
+                  disabled={submitting}
+                >
+                  {t("next")}
+                  <ChevronRight className="ml-1 size-3.5" />
+                </Button>
+              )}
+              <Button
+                size="sm"
+                disabled={!complete || submitting}
+                onClick={submit}
+              >
+                {submitting && (
+                  <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                )}
+                {t("submit")}
+                {isMulti && (
+                  <span className="ml-1 tabular-nums">{`(${answeredCount})`}</span>
+                )}
+              </Button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   )
