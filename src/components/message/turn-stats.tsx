@@ -17,14 +17,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { useMessageScroll } from "@/components/message/message-scroll-context"
+import { formatElapsedLabel } from "@/lib/format-elapsed"
 import { formatTokenCount } from "@/lib/token-format"
 import { cn, copyTextToClipboard } from "@/lib/utils"
 import type { TurnUsage } from "@/lib/types"
-
-function formatDuration(ms: number): string {
-  if (ms >= 60_000) return `${(ms / 60_000).toFixed(1)}m`
-  return `${(ms / 1_000).toFixed(1)}s`
-}
 
 interface TurnStatsProps {
   usage?: TurnUsage | null
@@ -53,6 +49,9 @@ export function TurnStats({
 }: TurnStatsProps) {
   const locale = useLocale()
   const t = useTranslations("Folder.chat.messageList")
+  // Reuse the live timer's elapsed-unit strings so the per-turn duration
+  // tooltip renders the exact same localized "Xh Ym Zs" format.
+  const tLive = useTranslations("Folder.chat.liveTurnStats")
   const scroll = useMessageScroll()
   const [isCopied, setIsCopied] = useState(false)
   const timeoutRef = useRef<number>(0)
@@ -223,7 +222,7 @@ export function TurnStats({
             </TooltipTrigger>
             <TooltipContent side="top">
               <span className="font-mono tabular-nums">
-                {formatDuration(duration_ms)}
+                {formatElapsedLabel(duration_ms, tLive)}
               </span>
             </TooltipContent>
           </Tooltip>

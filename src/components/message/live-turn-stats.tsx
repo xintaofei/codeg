@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 import { useLocale, useTranslations } from "next-intl"
 import type { LiveMessage } from "@/contexts/acp-connections-context"
 import { inferLiveToolName } from "@/lib/tool-call-normalization"
+import { formatElapsedLabel } from "@/lib/format-elapsed"
 import {
   countUnifiedDiffLineChanges,
   estimateChangedLineStats,
@@ -307,12 +308,7 @@ export function LiveTurnStats({
     message.content.length <= 1 &&
     lastBlock?.type === "thinking"
 
-  const elapsedLabel =
-    elapsed >= 3_600_000
-      ? `${t("elapsedHours", { value: Math.floor(elapsed / 3_600_000) })} ${t("elapsedMinutes", { value: Math.floor((elapsed % 3_600_000) / 60_000) })} ${t("elapsedSeconds", { value: Math.floor((elapsed % 60_000) / 1_000) })}`
-      : elapsed >= 60_000
-        ? `${t("elapsedMinutes", { value: Math.floor(elapsed / 60_000) })} ${t("elapsedSeconds", { value: Math.floor((elapsed % 60_000) / 1_000) })}`
-        : t("elapsedSeconds", { value: Math.floor(elapsed / 1_000) })
+  const elapsedLabel = formatElapsedLabel(elapsed, t)
 
   return (
     <div className="@container/turnstats shrink-0">
