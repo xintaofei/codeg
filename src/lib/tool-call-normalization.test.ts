@@ -239,6 +239,24 @@ describe("normalizeToolName collapses delegation companion tools across hosts", 
   })
 })
 
+describe("normalizeToolName collapses ask_user_question across hosts", () => {
+  it.each([
+    "question",
+    "ask_user_question",
+    "askuserquestion",
+    "mcp__codeg-mcp__ask_user_question",
+    "codeg-mcp/ask_user_question",
+    "codeg-mcp.ask_user_question",
+    "codeg-mcp:ask_user_question",
+  ])("%s -> question", (input) => {
+    expect(normalizeToolName(input)).toBe("question")
+  })
+
+  it("does not match a suffix without a separator", () => {
+    expect(normalizeToolName("xask_user_question")).not.toBe("question")
+  })
+})
+
 describe("normalizeToolName collapses Codex goal tools across wrappers", () => {
   it.each([
     ["create_goal", "create_goal"],

@@ -16,6 +16,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
+import { splitRecommended } from "@/lib/ask-question"
 import type {
   PendingQuestionState,
   QuestionAnswer,
@@ -34,21 +35,6 @@ interface AskQuestionCardProps {
 /** Single-select sentinel value for the host-injected free-text "Other" choice,
  *  so it can live inside the same `RadioGroup` as the real options. */
 const OTHER_VALUE = "__other__"
-
-/** Strip a trailing " (Recommended)" so it can render as a badge while the
- *  submitted value keeps the agent's original label verbatim. */
-function splitRecommended(label: string): {
-  text: string
-  recommended: boolean
-} {
-  const m = label.match(/^(.*?)\s*\(recommended\)\s*$/i)
-  const text = m?.[1].trim()
-  // Only treat "(Recommended)" as a suffix when real text precedes it — a bare
-  // "(Recommended)" label keeps its literal text rather than rendering empty.
-  return text
-    ? { text, recommended: true }
-    : { text: label, recommended: false }
-}
 
 interface QState {
   /** Selected real-option labels (verbatim). For single-select, ≤ 1. */

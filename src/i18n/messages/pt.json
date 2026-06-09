@@ -2112,6 +2112,16 @@
         "submit": "Enviar",
         "submitError": "Falha ao enviar. Tente novamente."
       },
+      "askQuestionResult": {
+        "title": "Pergunta",
+        "awaiting": "Aguardando sua resposta…",
+        "declined": "Você ignorou isto — o agente usou o próprio julgamento.",
+        "noSelection": "Sem seleção",
+        "other": "Outro",
+        "recommended": "Recomendado",
+        "single": "Única",
+        "multiple": "Múltipla"
+      },
       "configStale": {
         "agentConfigTitle": "Configurações do agente atualizadas",
         "modelProviderTitle": "Provedor de modelo atualizado",

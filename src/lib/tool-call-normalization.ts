@@ -78,6 +78,9 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   question: "question",
   ask_user_question: "question",
   askuserquestion: "question",
+  // codeg-mcp ask-user-question companion tool (server prefix varies by host;
+  // the suffix rule in `normalizeToolName` covers the other separators)
+  "mcp__codeg-mcp__ask_user_question": "question",
   lsp_diagnostics: "lsp",
   lsp_document_symbols: "lsp",
   lsp_goto_definition: "lsp",
@@ -247,7 +250,10 @@ function inferFromInput(
   if (hasPattern) return hasGlob ? "glob" : "grep"
   if (hasGlob) return "glob"
 
-  if (hasAnyKey(parsed, ["question"])) return "question"
+  // `question` (singular) covers Cline/Codex follow-up tools; `questions`
+  // (plural) is the codeg-mcp `ask_user_question` payload shape, so the live
+  // stream resolves to "question" before the tool result arrives.
+  if (hasAnyKey(parsed, ["question", "questions"])) return "question"
 
   if (hasAnyKey(parsed, ["subagent_type"])) {
     return "agent"
@@ -319,6 +325,13 @@ export function normalizeToolName(toolName: string): string {
   if (/[^a-z0-9]cancel_delegation$/.test(canonical)) return "cancel_delegation"
   if (/[^a-z0-9]create_goal$/.test(canonical)) return "create_goal"
   if (/[^a-z0-9]update_goal$/.test(canonical)) return "update_goal"
+
+  // codeg-mcp ask-user-question companion tool. Same host-prefix story as the
+  // delegation tools above (`mcp__<server>__ask_user_question`,
+  // `<server>/ask_user_question`, …) — the bare `ask_user_question` alias only
+  // catches the unprefixed form, so collapse every separator here. Note the
+  // freeform matcher below intentionally does NOT catch the underscore form.
+  if (/[^a-z0-9]ask_user_question$/.test(canonical)) return "question"
 
   const freeform = inferFromFreeformName(trimmed)
   if (freeform) return freeform

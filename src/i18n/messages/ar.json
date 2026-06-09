@@ -2112,6 +2112,16 @@
         "submit": "إرسال",
         "submitError": "تعذّر الإرسال. حاول مرة أخرى."
       },
+      "askQuestionResult": {
+        "title": "سؤال",
+        "awaiting": "في انتظار إجابتك…",
+        "declined": "لقد تجاهلت هذا — استخدم الوكيل حكمه الخاص.",
+        "noSelection": "لا يوجد اختيار",
+        "other": "أخرى",
+        "recommended": "موصى به",
+        "single": "اختيار واحد",
+        "multiple": "اختيار متعدد"
+      },
       "configStale": {
         "agentConfigTitle": "تم تحديث إعدادات الوكيل",
         "modelProviderTitle": "تم تحديث مزوّد النموذج",

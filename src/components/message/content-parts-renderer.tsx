@@ -39,6 +39,7 @@ import {
   ReasoningContent,
 } from "@/components/ai-elements/reasoning"
 import { AgentToolCallPart } from "./agent-tool-call"
+import { AskQuestionResultCard } from "./ask-question-result-card"
 import { DelegatedSubThread } from "./delegated-sub-thread"
 import { DelegationStatusCard } from "./delegation-status-card"
 import { DelegationStatusGroupCard } from "./delegation-status-group-card"
@@ -62,6 +63,7 @@ import {
   WrenchIcon,
   ChevronRightIcon,
   BrainIcon,
+  MessageCircleQuestionMarkIcon,
 } from "lucide-react"
 
 // ── helpers ────────────────────────────────────────────────────────────
@@ -848,6 +850,8 @@ function getToolIcon(
     return <ListTodoIcon className={ICON_CLASS} />
   if (name === "attempt_completion")
     return <CircleCheckIcon className={ICON_CLASS} />
+  if (name === "question")
+    return <MessageCircleQuestionMarkIcon className={ICON_CLASS} />
   return undefined
 }
 
@@ -2309,6 +2313,21 @@ const ToolCallPart = memo(function ToolCallPart({
     return (
       <DelegationStatusCard
         kind="cancel"
+        input={part.input ?? null}
+        output={part.output ?? null}
+        errorText={part.errorText ?? null}
+        state={part.state}
+      />
+    )
+  }
+
+  // codeg-mcp ask_user_question: render the asked question(s) and the user's
+  // selection as a dedicated read-only card instead of the generic tool shell.
+  // The live interactive answering is handled separately by the pinned
+  // AskQuestionCard; this is the in-stream record (historical + in-flight).
+  if (toolNameLower === "question") {
+    return (
+      <AskQuestionResultCard
         input={part.input ?? null}
         output={part.output ?? null}
         errorText={part.errorText ?? null}

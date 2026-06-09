@@ -2112,6 +2112,16 @@
         "submit": "Senden",
         "submitError": "Senden fehlgeschlagen. Bitte versuche es erneut."
       },
+      "askQuestionResult": {
+        "title": "Frage",
+        "awaiting": "Warten auf deine Antwort…",
+        "declined": "Du hast dies verworfen – der Agent hat nach eigenem Ermessen entschieden.",
+        "noSelection": "Keine Auswahl",
+        "other": "Andere",
+        "recommended": "Empfohlen",
+        "single": "Einfach",
+        "multiple": "Mehrfach"
+      },
       "configStale": {
         "agentConfigTitle": "Agent-Einstellungen aktualisiert",
         "modelProviderTitle": "Modellanbieter aktualisiert",

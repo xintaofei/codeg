@@ -89,6 +89,15 @@ describe("isAgentLikeToolName", () => {
     expect(isAgentLikeToolName("functions.update_goal")).toBe(true)
   })
 
+  it("matches ask_user_question across host naming conventions", () => {
+    expect(isAgentLikeToolName("question")).toBe(true)
+    expect(isAgentLikeToolName("ask_user_question")).toBe(true)
+    expect(isAgentLikeToolName("mcp__codeg-mcp__ask_user_question")).toBe(true)
+    expect(isAgentLikeToolName("codeg-mcp/ask_user_question")).toBe(true)
+    expect(isAgentLikeToolName("codeg-mcp.ask_user_question")).toBe(true)
+    expect(isAgentLikeToolName("codeg-mcp:ask_user_question")).toBe(true)
+  })
+
   it("does not match other tools", () => {
     expect(isAgentLikeToolName("task")).toBe(false)
     expect(isAgentLikeToolName("subagent")).toBe(false)
@@ -97,6 +106,7 @@ describe("isAgentLikeToolName", () => {
     expect(isAgentLikeToolName("xdelegate_to_agent")).toBe(false)
     expect(isAgentLikeToolName("xget_delegation_status")).toBe(false)
     expect(isAgentLikeToolName("xcancel_delegation")).toBe(false)
+    expect(isAgentLikeToolName("xask_user_question")).toBe(false)
   })
 })
 

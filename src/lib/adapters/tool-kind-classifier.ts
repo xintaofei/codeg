@@ -41,6 +41,7 @@ const GET_DELEGATION_STATUS_SUFFIX_RE = /[^a-z0-9]get_delegation_status$/
 const CANCEL_DELEGATION_SUFFIX_RE = /[^a-z0-9]cancel_delegation$/
 const CREATE_GOAL_SUFFIX_RE = /[^a-z0-9]create_goal$/
 const UPDATE_GOAL_SUFFIX_RE = /[^a-z0-9]update_goal$/
+const ASK_USER_QUESTION_SUFFIX_RE = /[^a-z0-9]ask_user_question$/
 
 export function isAgentLikeToolName(toolName: string): boolean {
   const name = toolName.toLowerCase().trim()
@@ -50,7 +51,14 @@ export function isAgentLikeToolName(toolName: string): boolean {
     name === "get_delegation_status" ||
     name === "cancel_delegation" ||
     name === "create_goal" ||
-    name === "update_goal"
+    name === "update_goal" ||
+    // codeg-mcp ask_user_question — owns the AskQuestionResultCard, so it must
+    // break the run and render standalone rather than fold into a tool-group.
+    // "question" is the canonical name (live path); the bare raw name plus the
+    // suffix RE below cover the historical `mcp__<server>__ask_user_question`
+    // forms, since this runs pre-normalize.
+    name === "question" ||
+    name === "ask_user_question"
   )
     return true
   if (DELEGATE_TO_AGENT_SUFFIX_RE.test(name)) return true
@@ -58,6 +66,7 @@ export function isAgentLikeToolName(toolName: string): boolean {
   if (CANCEL_DELEGATION_SUFFIX_RE.test(name)) return true
   if (CREATE_GOAL_SUFFIX_RE.test(name)) return true
   if (UPDATE_GOAL_SUFFIX_RE.test(name)) return true
+  if (ASK_USER_QUESTION_SUFFIX_RE.test(name)) return true
   return false
 }
 

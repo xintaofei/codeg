@@ -2112,6 +2112,16 @@
         "submit": "Envoyer",
         "submitError": "Échec de l'envoi. Veuillez réessayer."
       },
+      "askQuestionResult": {
+        "title": "Question",
+        "awaiting": "En attente de ta réponse…",
+        "declined": "Tu as ignoré cette question — l’agent a utilisé son propre jugement.",
+        "noSelection": "Aucune sélection",
+        "other": "Autre",
+        "recommended": "Recommandé",
+        "single": "Unique",
+        "multiple": "Multiple"
+      },
       "configStale": {
         "agentConfigTitle": "Paramètres de l'agent mis à jour",
         "modelProviderTitle": "Fournisseur de modèle mis à jour",
