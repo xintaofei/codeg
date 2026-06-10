@@ -139,7 +139,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                 "relative flex h-[1.9375rem] w-full items-center gap-[0.625rem] text-left outline-none",
                 "rounded-full text-sidebar-foreground",
                 "transition-colors duration-[120ms]",
-                "pr-[0.5rem] pl-7",
+                "pr-[0.5rem] pl-11",
                 isSelected
                   ? "bg-sidebar-primary/8"
                   : "hover:bg-[color-mix(in_oklab,var(--sidebar-accent),var(--sidebar-foreground)_2%)]"
@@ -153,7 +153,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                 style={{
                   top: "-0.0625rem",
                   bottom: "-0.0625rem",
-                  left: "var(--conv-rail-axis, 0.875rem)",
+                  left: "calc(1.125em + var(--conv-rail-axis, 0.875rem))",
                   width: "0.125rem",
                   transform: "translateX(-50%)",
                 }}
@@ -161,7 +161,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
               <div
                 className="pointer-events-none absolute top-1/2 z-10 flex items-center justify-center"
                 style={{
-                  left: "var(--conv-rail-axis, 0.875rem)",
+                  left: "calc(1.125em + var(--conv-rail-axis, 0.875rem))",
                   width: "0.875rem",
                   height: "0.875rem",
                   transform: "translate(-50%, -50%)",
