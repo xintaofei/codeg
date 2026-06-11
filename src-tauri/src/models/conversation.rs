@@ -40,6 +40,11 @@ pub struct DbConversationSummary {
     pub message_count: u32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Mirror of `conversation.pinned_at`: when set, the sidebar shows this row in
+    /// its "Pinned" section (sorted by this timestamp descending) instead of its
+    /// folder group. Serialized as `null` when absent so the frontend's
+    /// `pinned_at: string | null` always sees the field.
+    pub pinned_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -119,6 +119,10 @@ pub fn build_router(
             post(handlers::conversations::update_conversation_title),
         )
         .route(
+            "/update_conversation_pinned",
+            post(handlers::conversations::update_conversation_pinned),
+        )
+        .route(
             "/delete_conversation",
             post(handlers::conversations::delete_conversation),
         )

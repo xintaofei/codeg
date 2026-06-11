@@ -849,7 +849,9 @@ pub(crate) async fn emit_conversation_upsert(
             emit_event(
                 emitter,
                 CONVERSATION_CHANGED_EVENT,
-                ConversationChange::Upsert { summary },
+                ConversationChange::Upsert {
+                    summary: Box::new(summary),
+                },
             )
         }
         Err(e) => eprintln!(
@@ -1022,6 +1024,29 @@ pub async fn update_conversation_title(
     Ok(())
 }
 
+pub async fn update_conversation_pinned_core(
+    conn: &sea_orm::DatabaseConnection,
+    conversation_id: i32,
+    pinned: bool,
+) -> Result<(), AppCommandError> {
+    conversation_service::update_pin(conn, conversation_id, pinned)
+        .await
+        .map_err(AppCommandError::from)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn update_conversation_pinned(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    conversation_id: i32,
+    pinned: bool,
+) -> Result<(), AppCommandError> {
+    update_conversation_pinned_core(&db.conn, conversation_id, pinned).await?;
+    emit_conversation_upsert(&EventEmitter::Tauri(app), &db.conn, conversation_id).await;
+    Ok(())
+}
+
 pub async fn delete_conversation_core(
     conn: &sea_orm::DatabaseConnection,
     conversation_id: i32,
@@ -1115,6 +1140,7 @@ mod tests {
             message_count: 0,
             created_at: now,
             updated_at: now,
+            pinned_at: None,
             parent_id: Some(1),
             parent_tool_use_id: Some(parent_tool_use_id.into()),
             delegation_call_id: Some("call-1".into()),

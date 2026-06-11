@@ -247,6 +247,28 @@ pub async fn update_conversation_title(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UpdateConversationPinnedParams {
+    pub conversation_id: i32,
+    pub pinned: bool,
+}
+
+pub async fn update_conversation_pinned(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<UpdateConversationPinnedParams>,
+) -> Result<Json<()>, AppCommandError> {
+    conv_commands::update_conversation_pinned_core(
+        &state.db.conn,
+        params.conversation_id,
+        params.pinned,
+    )
+    .await?;
+    conv_commands::emit_conversation_upsert(&state.emitter, &state.db.conn, params.conversation_id)
+        .await;
+    Ok(Json(()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteConversationParams {
     pub conversation_id: i32,
 }

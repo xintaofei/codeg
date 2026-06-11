@@ -61,6 +61,7 @@ pub async fn create_with_delegation(
         created_at: Set(now),
         updated_at: Set(now),
         deleted_at: Set(None),
+        pinned_at: Set(None),
     };
     Ok(model.insert(conn).await?)
 }
@@ -161,6 +162,28 @@ pub async fn refresh_auto_title(
     Ok(res.rows_affected > 0)
 }
 
+/// Pin or unpin a conversation. Sets `pinned_at = now()` when pinning, `NULL`
+/// when unpinning. Only the `pinned_at` column is written — `updated_at` is
+/// deliberately left untouched (SeaORM updates only the `Set` field), because
+/// pinning is a view preference, not conversation activity, and must not float
+/// the row to the top of a recency-sorted sidebar (same reasoning as
+/// [`refresh_auto_title`]). The sidebar's "Pinned" section orders by `pinned_at`
+/// descending, so a freshly pinned conversation jumps to the top.
+pub async fn update_pin(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+    pinned: bool,
+) -> Result<(), DbError> {
+    let conv = conversation::Entity::find_by_id(conversation_id)
+        .one(conn)
+        .await?
+        .ok_or_else(|| DbError::Migration(format!("Conversation not found: {conversation_id}")))?;
+    let mut active: conversation::ActiveModel = conv.into();
+    active.pinned_at = Set(pinned.then(Utc::now));
+    active.update(conn).await?;
+    Ok(())
+}
+
 pub async fn update_external_id(
     conn: &DatabaseConnection,
     conversation_id: i32,
@@ -222,6 +245,7 @@ fn conv_to_summary(r: conversation::Model) -> DbConversationSummary {
         message_count: r.message_count as u32,
         created_at: r.created_at,
         updated_at: r.updated_at,
+        pinned_at: r.pinned_at,
         parent_id: r.parent_id,
         parent_tool_use_id: r.parent_tool_use_id,
         delegation_call_id: r.delegation_call_id,
@@ -486,6 +510,46 @@ mod tests {
         );
         assert_eq!(rows[0].id, child_a);
         assert_eq!(rows[0].parent_id, Some(parent_a));
+    }
+
+    #[tokio::test]
+    async fn update_pin_sets_and_clears_without_bumping_updated_at() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-update-pin").await;
+        let conv = create(&db.conn, folder, AgentType::ClaudeCode, Some("c".into()), None)
+            .await
+            .expect("create");
+
+        // Freshly created rows are unpinned, and the summary projection carries
+        // the field through (conv_to_summary mapping).
+        let before = get_by_id(&db.conn, conv.id).await.expect("get before");
+        assert!(
+            before.pinned_at.is_none(),
+            "new conversation must be unpinned"
+        );
+        let updated_at_before = before.updated_at;
+
+        // Pin → pinned_at populated; updated_at must NOT move (pin is a view
+        // preference, not activity).
+        update_pin(&db.conn, conv.id, true).await.expect("pin");
+        let pinned = get_by_id(&db.conn, conv.id).await.expect("get pinned");
+        assert!(pinned.pinned_at.is_some(), "pinned_at must be set after pin");
+        assert_eq!(
+            pinned.updated_at, updated_at_before,
+            "pinning must not bump updated_at"
+        );
+
+        // Unpin → pinned_at cleared back to NULL; updated_at still unchanged.
+        update_pin(&db.conn, conv.id, false).await.expect("unpin");
+        let unpinned = get_by_id(&db.conn, conv.id).await.expect("get unpinned");
+        assert!(
+            unpinned.pinned_at.is_none(),
+            "pinned_at must clear after unpin"
+        );
+        assert_eq!(
+            unpinned.updated_at, updated_at_before,
+            "unpinning must not bump updated_at"
+        );
     }
 
     #[tokio::test]

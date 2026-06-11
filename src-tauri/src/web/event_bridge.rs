@@ -180,8 +180,12 @@ pub enum ConversationChange {
     /// Carries the full summary so the frontend renders without a re-fetch.
     /// Root conversations omit `parent_id` (serde skips `None`); delegation
     /// children carry it and the frontend filters them out of the sidebar.
+    ///
+    /// Boxed so this variant doesn't bloat the whole enum (the summary is by far
+    /// the largest payload); serde serializes `Box<T>` transparently, so the wire
+    /// shape — `{ "kind": "upsert", "summary": { … } }` — is unchanged.
     Upsert {
-        summary: crate::models::DbConversationSummary,
+        summary: Box<crate::models::DbConversationSummary>,
     },
     /// Remove by id (soft delete).
     Deleted { id: i32 },

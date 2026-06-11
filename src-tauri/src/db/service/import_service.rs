@@ -161,6 +161,7 @@ async fn import_one(
         created_at: Set(created_at),
         updated_at: Set(updated_at),
         deleted_at: Set(None),
+        pinned_at: Set(None),
     };
     conv.insert(conn).await?;
     Ok(ImportOutcome::Imported)
@@ -371,6 +372,7 @@ mod tests {
             created_at: Set(now),
             updated_at: Set(now),
             deleted_at: Set(None),
+            pinned_at: Set(None),
         }
         .insert(&db.conn)
         .await
