@@ -11,11 +11,11 @@ import {
   Globe,
   Search,
 } from "lucide-react"
-import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { CodeBlock } from "@/components/ai-elements/code-block"
 import { UnifiedDiffPreview } from "@/components/diff/unified-diff-preview"
 import { MessageResponse } from "@/components/ai-elements/message"
+import { PermissionActions } from "@/components/chat/permission-actions"
 import type { PendingPermission } from "@/contexts/acp-connections-context"
 import { parsePermissionToolCall } from "@/lib/permission-request"
 
@@ -34,6 +34,7 @@ export function PermissionDialog({
   onRespond,
 }: PermissionDialogProps) {
   const t = useTranslations("Folder.chat.permissionDialog")
+
   const parsed = useMemo(
     () => parsePermissionToolCall(permission?.tool_call),
     [permission?.tool_call]
@@ -56,7 +57,7 @@ export function PermissionDialog({
     hasWeb
 
   return (
-    <div className="mx-4 mb-3 rounded-xl border border-border/70 bg-card/95 p-3 shadow-sm">
+    <div className="mx-4 mb-3 overflow-hidden rounded-xl border border-border/70 bg-card/95 p-3 shadow-sm">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 space-y-1">
           <div className="flex items-center gap-1.5 text-sm font-medium">
@@ -196,21 +197,10 @@ export function PermissionDialog({
         )}
       </div>
 
-      <div className="mt-3 flex flex-wrap gap-2">
-        {permission.options.map((opt) => {
-          const isReject = opt.kind.startsWith("reject")
-          return (
-            <Button
-              key={opt.option_id}
-              variant={isReject ? "outline" : "default"}
-              className="h-auto min-h-9 whitespace-normal break-words text-left"
-              onClick={() => onRespond(permission.request_id, opt.option_id)}
-            >
-              {opt.name}
-            </Button>
-          )
-        })}
-      </div>
+      <PermissionActions
+        options={permission.options}
+        onRespond={(optionId) => onRespond(permission.request_id, optionId)}
+      />
     </div>
   )
 }
