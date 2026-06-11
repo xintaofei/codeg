@@ -67,6 +67,9 @@ function detailWithTitle(title: string): DbConversationDetail {
       pinned_at: null,
     },
     turns: [],
+    has_more_history: false,
+    next_before_turn_index: null,
+    page_size: 30,
     session_stats: null,
   }
 }
@@ -569,6 +572,9 @@ describe("ConversationRuntimeProvider delegation kickoff projection", () => {
         pinned_at: null,
       },
       turns,
+      has_more_history: false,
+      next_before_turn_index: null,
+      page_size: 30,
       session_stats: null,
     }
   }
@@ -900,6 +906,9 @@ describe("ConversationRuntimeProvider viewer user-turn synthesis", () => {
         pinned_at: null,
       },
       turns,
+      has_more_history: false,
+      next_before_turn_index: null,
+      page_size: 30,
       session_stats: null,
     }
   }

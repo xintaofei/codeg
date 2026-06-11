@@ -48,6 +48,7 @@ export interface ConversationRuntimeSession {
   // DB data (cold open only)
   detail: DbConversationDetail | null
   detailLoading: boolean
+  detailLoadingMore: boolean
   detailError: string | null
 
   // ACP `session/load` failed in a non-recoverable way (currently only when
@@ -112,11 +113,13 @@ type Action =
   | {
       type: "FETCH_DETAIL_START"
       conversationId: number
+      appendHistory?: boolean
     }
   | {
       type: "FETCH_DETAIL_SUCCESS"
       conversationId: number
       detail: DbConversationDetail
+      appendHistory?: boolean
       /**
        * Keep `liveMessage` / `optimisticTurns` / `localTurns` across this
        * detail load even though `syncState` isn't "awaiting_persist". The
@@ -250,6 +253,7 @@ function createEmptySession(
     externalId: null,
     detail: null,
     detailLoading: false,
+    detailLoadingMore: false,
     detailError: null,
     acpLoadError: null,
     localTurns: [],
@@ -808,7 +812,8 @@ function reducer(
     case "FETCH_DETAIL_START":
       return updateSessionInState(state, action.conversationId, (current) => ({
         ...current,
-        detailLoading: true,
+        detailLoading: !action.appendHistory,
+        detailLoadingMore: Boolean(action.appendHistory),
         detailError: null,
       }))
 
@@ -843,13 +848,22 @@ function reducer(
       const keepAllLiveBuffers =
         action.preserveLive === true || detailIsInFlight
 
+      const nextDetail =
+        action.appendHistory && current.detail
+          ? {
+              ...action.detail,
+              turns: [...action.detail.turns, ...current.detail.turns],
+            }
+          : action.detail
+
       const nextSession: ConversationRuntimeSession = {
         ...current,
-        detail: action.detail,
+        detail: nextDetail,
         detailLoading: false,
+        detailLoadingMore: false,
         detailError: null,
         externalId: nextExternalId ?? current.externalId,
-        sessionStats: action.detail.session_stats ?? current.sessionStats,
+        sessionStats: nextDetail.session_stats ?? current.sessionStats,
         ...(isActivelyInteracting
           ? keepAllLiveBuffers
             ? {}
@@ -876,6 +890,7 @@ function reducer(
       return updateSessionInState(state, action.conversationId, (current) => ({
         ...current,
         detailLoading: false,
+        detailLoadingMore: false,
         detailError: action.error,
       }))
 
@@ -1288,6 +1303,7 @@ interface ConversationRuntimeContextValue {
   getConversationIdByExternalId: (externalId: string) => number | null
   getTimelineTurns: (conversationId: number) => ConversationTimelineTurn[]
   fetchDetail: (conversationId: number) => void
+  fetchOlderDetail: (conversationId: number) => void
   /**
    * Re-fetch persisted detail, bypassing the active-data guard.
    * `options.preserveLive` (default false) keeps the current `liveMessage`,
@@ -1702,6 +1718,44 @@ export function ConversationRuntimeProvider({
     [bumpFetchGeneration, isLatestGeneration]
   )
 
+  const fetchOlderDetail = useCallback(
+    (conversationId: number) => {
+      const session = stateRef.current.byConversationId.get(conversationId)
+      const detail = session?.detail
+      if (!detail || session.detailLoading || session.detailLoadingMore) return
+      if (!detail.has_more_history || detail.next_before_turn_index == null) return
+
+      const generation = bumpFetchGeneration(conversationId)
+      dispatch({
+        type: "FETCH_DETAIL_START",
+        conversationId,
+        appendHistory: true,
+      })
+      getFolderConversation(conversationId, {
+        beforeTurnIndex: detail.next_before_turn_index,
+        pageSize: detail.page_size,
+      })
+        .then((nextDetail) => {
+          if (!isLatestGeneration(conversationId, generation)) return
+          dispatch({
+            type: "FETCH_DETAIL_SUCCESS",
+            conversationId,
+            detail: nextDetail,
+            appendHistory: true,
+          })
+        })
+        .catch((error: unknown) => {
+          if (!isLatestGeneration(conversationId, generation)) return
+          dispatch({
+            type: "FETCH_DETAIL_ERROR",
+            conversationId,
+            error: toErrorMessage(error),
+          })
+        })
+    },
+    [bumpFetchGeneration, isLatestGeneration]
+  )
+
   const syncTurnMetadata = useCallback(
     (
       dbConversationId: number,
@@ -1973,6 +2027,7 @@ export function ConversationRuntimeProvider({
       getConversationIdByExternalId,
       getTimelineTurns,
       fetchDetail,
+      fetchOlderDetail,
       refetchDetail,
       syncTurnMetadata,
       completeTurn,
@@ -1994,6 +2049,7 @@ export function ConversationRuntimeProvider({
       getConversationIdByExternalId,
       getTimelineTurns,
       fetchDetail,
+      fetchOlderDetail,
       refetchDetail,
       syncTurnMetadata,
       completeTurn,

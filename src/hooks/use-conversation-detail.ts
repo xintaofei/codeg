@@ -24,6 +24,7 @@ export function useConversationDetail(
 ): {
   detail: DbConversationDetail | null
   loading: boolean
+  loadingMore: boolean
   error: string | null
   acpLoadError: string | null
 } {
@@ -49,6 +50,7 @@ export function useConversationDetail(
   return {
     detail: session?.detail ?? null,
     loading: session ? session.detailLoading : !isVirtual,
+    loadingMore: session?.detailLoadingMore ?? false,
     error: session?.detailError ?? null,
     acpLoadError: session?.acpLoadError ?? null,
   }
