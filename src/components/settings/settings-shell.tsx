@@ -27,6 +27,7 @@ import { useTranslations } from "next-intl"
 import { usePathname } from "next/navigation"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { AppToaster } from "@/components/ui/app-toaster"
 import { cn } from "@/lib/utils"
 import { detectEnvironment } from "@/lib/transport/detect"
@@ -185,36 +186,38 @@ export function SettingsShell({ children }: SettingsShellProps) {
   )
 
   const navContent = (
-    <>
-      <div className="px-1 pb-2 text-[11px] font-medium text-muted-foreground">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="px-2 pb-2 text-[11px] font-medium text-muted-foreground">
         {t("preferences")}
       </div>
-      <nav className="space-y-1">
-        {filteredNavItems.map((item) => {
-          const Icon = item.icon
-          const translationKey = `nav.${item.labelKey}` as const
-          const active =
-            normalizedPathname === item.href ||
-            normalizedPathname.startsWith(`${item.href}/`)
-          return (
-            <Button
-              key={item.href}
-              variant={active ? "secondary" : "ghost"}
-              size="sm"
-              className={cn("w-full justify-start")}
-              type="button"
-              onClick={() => navigateTo(item.href)}
-              aria-current={active ? "page" : undefined}
-            >
-              <span className="inline-flex items-center gap-1">
-                <Icon className="h-3.5 w-3.5" />
-                {t(translationKey)}
-              </span>
-            </Button>
-          )
-        })}
-      </nav>
-    </>
+      <ScrollArea className="min-h-0 flex-1">
+        <nav className="space-y-1">
+          {filteredNavItems.map((item) => {
+            const Icon = item.icon
+            const translationKey = `nav.${item.labelKey}` as const
+            const active =
+              normalizedPathname === item.href ||
+              normalizedPathname.startsWith(`${item.href}/`)
+            return (
+              <Button
+                key={item.href}
+                variant={active ? "secondary" : "ghost"}
+                size="sm"
+                className={cn("w-full justify-start px-2")}
+                type="button"
+                onClick={() => navigateTo(item.href)}
+                aria-current={active ? "page" : undefined}
+              >
+                <span className="inline-flex items-center gap-1">
+                  <Icon className="h-3.5 w-3.5" />
+                  {t(translationKey)}
+                </span>
+              </Button>
+            )
+          })}
+        </nav>
+      </ScrollArea>
+    </div>
   )
 
   return (
@@ -240,7 +243,9 @@ export function SettingsShell({ children }: SettingsShellProps) {
       <div className="flex-1 min-h-0 flex">
         {/* Desktop sidebar */}
         {!isMobile && (
-          <aside className="w-56 shrink-0 border-r p-3">{navContent}</aside>
+          <aside className="flex min-h-0 w-56 shrink-0 flex-col border-r px-2 py-3">
+            {navContent}
+          </aside>
         )}
 
         {/* Mobile navigation Sheet */}
