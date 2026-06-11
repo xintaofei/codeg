@@ -1808,7 +1808,17 @@
         "attachUploadTooLarge": "{names} dépasse la limite de téléversement de {limit} Mo et a été ignoré.",
         "attachUploadFailed": "Échec du téléversement de {names}.",
         "attachUploadNotAFile": "{names} n'est pas un fichier régulier (répertoire ou fichier spécial) et a été ignoré.",
-        "attachUploadQuotaExceeded": "Le serveur n'a plus d'espace pour les téléversements ; {names} n'a pas pu être envoyé."
+        "attachUploadQuotaExceeded": "Le serveur n'a plus d'espace pour les téléversements ; {names} n'a pas pu être envoyé.",
+        "mentionEmpty": "Aucune correspondance",
+        "mentionLoading": "Recherche…",
+        "mentionListLabel": "Mentions",
+        "mentionMore": "Plus de résultats — continuez à taper pour filtrer",
+        "mentionCount": "{count, plural, one {# résultat} other {# résultats}}",
+        "mentionGroupFile": "Fichiers",
+        "mentionGroupAgent": "Agents",
+        "mentionGroupSession": "Sessions",
+        "mentionGroupCommit": "Commits",
+        "mentionGroupSkill": "Compétences"
       },
       "messageQueue": {
         "addToQueue": "Mettre en file",

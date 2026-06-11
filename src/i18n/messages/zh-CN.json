@@ -1808,7 +1808,17 @@
         "attachUploadTooLarge": "{names} 超过 {limit}MB 上传上限，已跳过。",
         "attachUploadFailed": "上传失败：{names}。",
         "attachUploadNotAFile": "{names} 不是常规文件（目录或特殊文件），已跳过。",
-        "attachUploadQuotaExceeded": "服务器上传空间已用尽，{names} 未能上传。"
+        "attachUploadQuotaExceeded": "服务器上传空间已用尽，{names} 未能上传。",
+        "mentionEmpty": "无匹配项",
+        "mentionLoading": "搜索中…",
+        "mentionListLabel": "提及",
+        "mentionMore": "还有更多结果，继续输入以筛选",
+        "mentionCount": "{count, plural, other {# 项结果}}",
+        "mentionGroupFile": "文件",
+        "mentionGroupAgent": "智能体",
+        "mentionGroupSession": "会话",
+        "mentionGroupCommit": "提交",
+        "mentionGroupSkill": "技能"
       },
       "messageQueue": {
         "addToQueue": "加入队列",

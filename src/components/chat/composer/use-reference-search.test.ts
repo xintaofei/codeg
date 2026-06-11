@@ -292,13 +292,34 @@ describe("buildReferenceGroups", () => {
     expect(itemsOf(groups, "skill")[0].reference.label).toBe("评审员")
   })
 
-  it("caps each group at 50 items", () => {
+  it("caps each group at 50 items and flags the overflow as truncated", () => {
     const files = Array.from({ length: 60 }, (_, i) => makeFile(`f${i}.ts`))
     const groups = buildReferenceGroups(
       "",
       emptySources({ files, workspaceRoot: "/repo" })
     )
-    expect(itemsOf(groups, "file")).toHaveLength(50)
+    const fileGroup = groups.find((g) => g.kind === "file")
+    expect(fileGroup?.items).toHaveLength(50)
+    expect(fileGroup?.truncated).toBe(true)
+  })
+
+  it("does not flag truncation when a group exactly fills the cap", () => {
+    const files = Array.from({ length: 50 }, (_, i) => makeFile(`f${i}.ts`))
+    const groups = buildReferenceGroups(
+      "",
+      emptySources({ files, workspaceRoot: "/repo" })
+    )
+    const fileGroup = groups.find((g) => g.kind === "file")
+    expect(fileGroup?.items).toHaveLength(50)
+    expect(fileGroup?.truncated).toBe(false)
+  })
+
+  it("flags truncation for slice-based groups (agents) as well", () => {
+    const agents = Array.from({ length: 51 }, (_, i) => makeAgent(`a${i}`))
+    const groups = buildReferenceGroups("", emptySources({ agents }))
+    const agentGroup = groups.find((g) => g.kind === "agent")
+    expect(agentGroup?.items).toHaveLength(50)
+    expect(agentGroup?.truncated).toBe(true)
   })
 
   it("returns everything for an empty query (whitespace-trimmed)", () => {

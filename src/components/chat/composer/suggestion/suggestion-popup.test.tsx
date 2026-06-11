@@ -320,4 +320,25 @@ describe("SuggestionPopup", () => {
     await within(panel).findByText("None")
     expect(onActiveOptionChange).toHaveBeenLastCalledWith(null)
   })
+
+  it("shows a non-selectable, aria-hidden hint for a truncated group", async () => {
+    const truncatedSearch: ReferenceSearch = () => [
+      {
+        kind: "file",
+        label: "Files",
+        items: [{ reference: fileRef, detail: "docs/alpha.md" }],
+        truncated: true,
+      },
+    ]
+    mountPopup({ search: truncatedSearch, moreLabel: "More — keep typing" })
+    await screen.findByText("alpha.md")
+    const panel = screen.getByTestId("mention-popup")
+    const hint = within(panel).getByText("More — keep typing")
+    // Decorative: hidden from AT (the live region announces truncation) and not
+    // an option, so arrow/Enter can never land on it.
+    expect(hint).toHaveAttribute("aria-hidden", "true")
+    expect(panel.querySelectorAll('[role="option"]')).toHaveLength(1)
+    // The polite live region also conveys truncation to screen readers.
+    expect(screen.getByRole("status")).toHaveTextContent("More — keep typing")
+  })
 })

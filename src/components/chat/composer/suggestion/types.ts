@@ -16,6 +16,29 @@ export interface SuggestionGroup {
   /** Display heading for the group. */
   label: string
   items: SuggestionItem[]
+  /**
+   * True when more items matched than the per-group cap, so the panel shows a
+   * non-selectable "keep typing to filter" hint rather than silently dropping
+   * the overflow.
+   */
+  truncated?: boolean
+}
+
+/**
+ * Localized chrome for the mention panel, injected by the host (English
+ * fallbacks live in the popup). Kept together so callers wire it in one place.
+ */
+export interface MentionUiLabels {
+  /** Shown when the query matches nothing. */
+  empty: string
+  /** Shown while a search is in flight. */
+  loading: string
+  /** Accessible name for the listbox. */
+  listbox: string
+  /** Per-group "more results, keep typing" hint. */
+  more: string
+  /** Builds the live-region result-count announcement (supports plurals). */
+  count: (count: number) => string
 }
 
 /**

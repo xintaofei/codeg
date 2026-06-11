@@ -1808,7 +1808,17 @@
         "attachUploadTooLarge": "{names} 超過 {limit}MB 上傳上限，已略過。",
         "attachUploadFailed": "上傳失敗：{names}。",
         "attachUploadNotAFile": "{names} 不是常規檔案（目錄或特殊檔案），已略過。",
-        "attachUploadQuotaExceeded": "伺服器上傳空間已用盡，{names} 未能上傳。"
+        "attachUploadQuotaExceeded": "伺服器上傳空間已用盡，{names} 未能上傳。",
+        "mentionEmpty": "無相符項目",
+        "mentionLoading": "搜尋中…",
+        "mentionListLabel": "提及",
+        "mentionMore": "還有更多結果，繼續輸入以篩選",
+        "mentionCount": "{count, plural, other {# 項結果}}",
+        "mentionGroupFile": "檔案",
+        "mentionGroupAgent": "智能體",
+        "mentionGroupSession": "工作階段",
+        "mentionGroupCommit": "提交",
+        "mentionGroupSkill": "技能"
       },
       "messageQueue": {
         "addToQueue": "加入佇列",

@@ -116,7 +116,11 @@ import {
   isComposerEmpty,
   restoreBlocksIntoEditor,
 } from "@/components/chat/composer/composer-commands"
-import { useReferenceSearch } from "@/components/chat/composer/use-reference-search"
+import {
+  useReferenceSearch,
+  type ReferenceGroupLabels,
+} from "@/components/chat/composer/use-reference-search"
+import type { MentionUiLabels } from "@/components/chat/composer/suggestion/types"
 import type {
   ImageInputAttachment,
   InputAttachment,
@@ -523,12 +527,35 @@ export function MessageInput({
     isPromptingRef.current = isPrompting
   }, [isPrompting])
 
+  // Localized group headings + panel chrome for the `@` mention panel.
+  const referenceGroupLabels = useMemo<ReferenceGroupLabels>(
+    () => ({
+      file: t("mentionGroupFile"),
+      agent: t("mentionGroupAgent"),
+      session: t("mentionGroupSession"),
+      commit: t("mentionGroupCommit"),
+      skill: t("mentionGroupSkill"),
+    }),
+    [t]
+  )
+  const mentionUiLabels = useMemo<MentionUiLabels>(
+    () => ({
+      empty: t("mentionEmpty"),
+      loading: t("mentionLoading"),
+      listbox: t("mentionListLabel"),
+      more: t("mentionMore"),
+      count: (count: number) => t("mentionCount", { count }),
+    }),
+    [t]
+  )
+
   // Live data sources for the unified `@` mention panel. Pre-warmed only while
   // this composer is the active one (`enabled`). Referentially stable.
   const referenceSearch = useReferenceSearch({
     defaultPath: defaultPath ?? null,
     agentType: agentType ?? null,
     enabled: isActive,
+    labels: referenceGroupLabels,
   })
 
   // Debounced v2 draft persistence. We snapshot the Tiptap *document* (JSON, not
@@ -2266,6 +2293,7 @@ export function MessageInput({
             ariaLabel={resolvedPlaceholder}
             autoFocus={autoFocus}
             referenceSearch={referenceSearch}
+            mentionUiLabels={mentionUiLabels}
             onChange={handleComposerChange}
             onReady={handleComposerReady}
             onSubmit={handleSend}

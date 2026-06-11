@@ -26,7 +26,11 @@ import {
   MENTION_LISTBOX_ID,
   SuggestionPopup,
 } from "./suggestion/suggestion-popup"
-import type { ReferenceSearch, SuggestionPopupHandle } from "./suggestion/types"
+import type {
+  MentionUiLabels,
+  ReferenceSearch,
+  SuggestionPopupHandle,
+} from "./suggestion/types"
 import type { ReferenceAttrs } from "./types"
 
 /**
@@ -102,6 +106,12 @@ export interface RichComposerProps {
    */
   referenceSearch?: ReferenceSearch
   /**
+   * Localized chrome for the `@` panel (empty / loading / listbox name / "more
+   * results" hint / result-count announcement). English fallbacks apply when
+   * omitted. Render-only — safe to pass a fresh object per render.
+   */
+  mentionUiLabels?: MentionUiLabels
+  /**
    * Key binding (matchShortcutEvent form) that sends the message. Default
    * `"enter"`. When set to a non-Enter binding, a plain Enter inserts a newline.
    */
@@ -152,6 +162,7 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
       onBlur,
       onReady,
       referenceSearch,
+      mentionUiLabels,
       submitShortcut,
       newlineShortcut,
       isExternalMenuOpen,
@@ -457,6 +468,11 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
             onSelect={handleReferenceSelect}
             onClose={closeMention}
             onActiveOptionChange={handleActiveOptionChange}
+            emptyLabel={mentionUiLabels?.empty}
+            loadingLabel={mentionUiLabels?.loading}
+            listboxLabel={mentionUiLabels?.listbox}
+            moreLabel={mentionUiLabels?.more}
+            countLabel={mentionUiLabels?.count}
           />
         )}
       </div>

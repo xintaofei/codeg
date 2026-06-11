@@ -1808,7 +1808,17 @@
         "attachUploadTooLarge": "{names} excede o limite de upload de {limit}MB e foi ignorado.",
         "attachUploadFailed": "Falha ao enviar {names}.",
         "attachUploadNotAFile": "{names} não é um arquivo regular (diretório ou arquivo especial) e foi ignorado.",
-        "attachUploadQuotaExceeded": "O servidor ficou sem espaço para uploads; {names} não pôde ser enviado."
+        "attachUploadQuotaExceeded": "O servidor ficou sem espaço para uploads; {names} não pôde ser enviado.",
+        "mentionEmpty": "Nenhuma correspondência",
+        "mentionLoading": "Pesquisando…",
+        "mentionListLabel": "Menções",
+        "mentionMore": "Mais resultados — continue digitando para filtrar",
+        "mentionCount": "{count, plural, one {# resultado} other {# resultados}}",
+        "mentionGroupFile": "Arquivos",
+        "mentionGroupAgent": "Agentes",
+        "mentionGroupSession": "Sessões",
+        "mentionGroupCommit": "Commits",
+        "mentionGroupSkill": "Habilidades"
       },
       "messageQueue": {
         "addToQueue": "Adicionar à fila",

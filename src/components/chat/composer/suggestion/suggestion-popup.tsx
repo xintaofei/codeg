@@ -59,6 +59,8 @@ export interface SuggestionPopupProps {
   listboxLabel?: string
   /** Builds the live-region result count announcement. */
   countLabel?: (count: number) => string
+  /** Non-selectable hint shown under a group whose matches were capped. */
+  moreLabel?: string
   /**
    * Reports the active option's element id (or null when nothing is
    * selectable), so the host can mirror it onto the editor's
@@ -91,6 +93,7 @@ export const SuggestionPopup = forwardRef<
     loadingLabel = "Searching…",
     listboxLabel = "Mentions",
     countLabel = (count) => `${count} results`,
+    moreLabel = "More results — keep typing to filter",
     onActiveOptionChange,
   },
   ref
@@ -236,11 +239,14 @@ export const SuggestionPopup = forwardRef<
     [flat, selectedIndex, onSelect, onClose, state.range]
   )
 
+  const anyTruncated = !stale && result.groups.some((group) => group.truncated)
   const liveStatus = stale
     ? loadingLabel
     : flat.length === 0
       ? emptyLabel
-      : countLabel(flat.length)
+      : anyTruncated
+        ? `${countLabel(flat.length)} ${moreLabel}`
+        : countLabel(flat.length)
   let rowIndex = -1
 
   return createPortal(
@@ -329,6 +335,18 @@ export const SuggestionPopup = forwardRef<
                       </button>
                     )
                   })}
+                  {group.truncated && (
+                    // aria-hidden: a visual "refine" affordance, not an option —
+                    // keeps the listbox owning only options (the live region
+                    // conveys truncation to AT). Never enters `flat`, so Enter
+                    // can't select it.
+                    <div
+                      aria-hidden
+                      className="px-2 py-1 text-xs italic text-muted-foreground"
+                    >
+                      {moreLabel}
+                    </div>
+                  )}
                 </div>
               )
             )}

@@ -109,37 +109,46 @@ export function buildReferenceGroups(
   const q = query.trim().toLowerCase()
 
   // Files: filter the (potentially large) list on its pre-lowered fields before
-  // paying to adapt the survivors.
+  // paying to adapt the survivors. `truncated` is a cheap boolean — set when a
+  // match is found past the cap — so we never scan the whole list for a count.
   const fileItems: SuggestionItem[] = []
+  let fileTruncated = false
   const root = sources.workspaceRoot
   if (root) {
     for (const entry of sources.files) {
       if (q && !entry.lowerName.includes(q) && !entry.lowerPath.includes(q)) {
         continue
       }
+      if (fileItems.length >= MAX_PER_GROUP) {
+        fileTruncated = true
+        break
+      }
       fileItems.push(fileToSuggestion(entry, root))
-      if (fileItems.length >= MAX_PER_GROUP) break
     }
   }
 
-  const agentItems = sources.agents
+  const agentMatches = sources.agents
     .map(agentToSuggestion)
     .filter((item) => suggestionMatches(item, q))
-    .slice(0, MAX_PER_GROUP)
+  const agentItems = agentMatches.slice(0, MAX_PER_GROUP)
 
-  const sessionItems = sources.sessions
+  const sessionMatches = sources.sessions
     .map(sessionToSuggestion)
     .filter((item) => suggestionMatches(item, q))
-    .slice(0, MAX_PER_GROUP)
+  const sessionItems = sessionMatches.slice(0, MAX_PER_GROUP)
 
   const commitItems: SuggestionItem[] = []
+  let commitTruncated = false
   if (sources.repoKey) {
     const repoKey = sources.repoKey
     for (const entry of sources.commits) {
       const item = commitToSuggestion(entry, repoKey)
       if (!suggestionMatches(item, q)) continue
+      if (commitItems.length >= MAX_PER_GROUP) {
+        commitTruncated = true
+        break
+      }
       commitItems.push(item)
-      if (commitItems.length >= MAX_PER_GROUP) break
     }
   }
 
@@ -147,6 +156,7 @@ export function buildReferenceGroups(
   // can surface from more than one source, so dedupe by reference id (skill id),
   // keeping the first occurrence, before filtering.
   const skillItems: SuggestionItem[] = []
+  let skillTruncated = false
   const seenSkillIds = new Set<string>()
   const skillCandidates: SuggestionItem[] = [
     ...sources.skills.map(skillToSuggestion),
@@ -157,16 +167,44 @@ export function buildReferenceGroups(
     if (seenSkillIds.has(item.reference.id)) continue
     seenSkillIds.add(item.reference.id)
     if (!suggestionMatches(item, q)) continue
+    if (skillItems.length >= MAX_PER_GROUP) {
+      skillTruncated = true
+      break
+    }
     skillItems.push(item)
-    if (skillItems.length >= MAX_PER_GROUP) break
   }
 
   return [
-    { kind: "file", label: labels.file, items: fileItems },
-    { kind: "agent", label: labels.agent, items: agentItems },
-    { kind: "session", label: labels.session, items: sessionItems },
-    { kind: "commit", label: labels.commit, items: commitItems },
-    { kind: "skill", label: labels.skill, items: skillItems },
+    {
+      kind: "file",
+      label: labels.file,
+      items: fileItems,
+      truncated: fileTruncated,
+    },
+    {
+      kind: "agent",
+      label: labels.agent,
+      items: agentItems,
+      truncated: agentMatches.length > MAX_PER_GROUP,
+    },
+    {
+      kind: "session",
+      label: labels.session,
+      items: sessionItems,
+      truncated: sessionMatches.length > MAX_PER_GROUP,
+    },
+    {
+      kind: "commit",
+      label: labels.commit,
+      items: commitItems,
+      truncated: commitTruncated,
+    },
+    {
+      kind: "skill",
+      label: labels.skill,
+      items: skillItems,
+      truncated: skillTruncated,
+    },
   ]
 }
 

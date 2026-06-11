@@ -1808,7 +1808,17 @@
         "attachUploadTooLarge": "{names} exceeds the {limit}MB upload limit and was skipped.",
         "attachUploadFailed": "Failed to upload {names}.",
         "attachUploadNotAFile": "{names} isn't a regular file (directory or special file) and was skipped.",
-        "attachUploadQuotaExceeded": "The server is out of upload storage; {names} couldn't be uploaded."
+        "attachUploadQuotaExceeded": "The server is out of upload storage; {names} couldn't be uploaded.",
+        "mentionEmpty": "No matches",
+        "mentionLoading": "Searching…",
+        "mentionListLabel": "Mentions",
+        "mentionMore": "More results — keep typing to filter",
+        "mentionCount": "{count, plural, one {# result} other {# results}}",
+        "mentionGroupFile": "Files",
+        "mentionGroupAgent": "Agents",
+        "mentionGroupSession": "Sessions",
+        "mentionGroupCommit": "Commits",
+        "mentionGroupSkill": "Skills"
       },
       "messageQueue": {
         "addToQueue": "Queue message",

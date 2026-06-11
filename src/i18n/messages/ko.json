@@ -1808,7 +1808,17 @@
         "attachUploadTooLarge": "{names}이(가) {limit}MB 업로드 한도를 초과하여 건너뛰었습니다.",
         "attachUploadFailed": "{names} 업로드 실패.",
         "attachUploadNotAFile": "{names} 은(는) 일반 파일이 아니므로(디렉터리 또는 특수 파일) 건너뛰었습니다.",
-        "attachUploadQuotaExceeded": "서버 업로드 저장 공간이 부족하여 {names} 을(를) 업로드하지 못했습니다."
+        "attachUploadQuotaExceeded": "서버 업로드 저장 공간이 부족하여 {names} 을(를) 업로드하지 못했습니다.",
+        "mentionEmpty": "일치하는 항목 없음",
+        "mentionLoading": "검색 중…",
+        "mentionListLabel": "멘션",
+        "mentionMore": "결과가 더 있습니다. 계속 입력하여 필터링하세요",
+        "mentionCount": "{count, plural, other {결과 #개}}",
+        "mentionGroupFile": "파일",
+        "mentionGroupAgent": "에이전트",
+        "mentionGroupSession": "세션",
+        "mentionGroupCommit": "커밋",
+        "mentionGroupSkill": "스킬"
       },
       "messageQueue": {
         "addToQueue": "대기열에 추가",

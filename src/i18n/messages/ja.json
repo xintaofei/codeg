@@ -1808,7 +1808,17 @@
         "attachUploadTooLarge": "{names} は {limit}MB のアップロード上限を超えたためスキップしました。",
         "attachUploadFailed": "{names} のアップロードに失敗しました。",
         "attachUploadNotAFile": "{names} は通常ファイルではなく（ディレクトリまたは特殊ファイル）、スキップされました。",
-        "attachUploadQuotaExceeded": "サーバーのアップロード容量が不足しているため、{names} をアップロードできませんでした。"
+        "attachUploadQuotaExceeded": "サーバーのアップロード容量が不足しているため、{names} をアップロードできませんでした。",
+        "mentionEmpty": "一致する項目がありません",
+        "mentionLoading": "検索中…",
+        "mentionListLabel": "メンション",
+        "mentionMore": "他にも結果があります。入力して絞り込んでください",
+        "mentionCount": "{count, plural, other {# 件の結果}}",
+        "mentionGroupFile": "ファイル",
+        "mentionGroupAgent": "エージェント",
+        "mentionGroupSession": "セッション",
+        "mentionGroupCommit": "コミット",
+        "mentionGroupSkill": "スキル"
       },
       "messageQueue": {
         "addToQueue": "キューに追加",

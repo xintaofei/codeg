@@ -1808,7 +1808,17 @@
         "attachUploadTooLarge": "{names} يتجاوز حد التحميل {limit}MB وتم تخطيه.",
         "attachUploadFailed": "فشل تحميل {names}.",
         "attachUploadNotAFile": "{names} ليس ملفاً عادياً (مجلد أو ملف خاص) وتم تخطيه.",
-        "attachUploadQuotaExceeded": "نفدت مساحة التحميل على الخادم، تعذر رفع {names}."
+        "attachUploadQuotaExceeded": "نفدت مساحة التحميل على الخادم، تعذر رفع {names}.",
+        "mentionEmpty": "لا توجد نتائج مطابقة",
+        "mentionLoading": "جارٍ البحث…",
+        "mentionListLabel": "الإشارات",
+        "mentionMore": "مزيد من النتائج — تابع الكتابة للتصفية",
+        "mentionCount": "{count, plural, zero {لا نتائج} one {نتيجة واحدة} two {نتيجتان} few {# نتائج} many {# نتيجة} other {# نتيجة}}",
+        "mentionGroupFile": "الملفات",
+        "mentionGroupAgent": "الوكلاء",
+        "mentionGroupSession": "الجلسات",
+        "mentionGroupCommit": "عمليات الإيداع",
+        "mentionGroupSkill": "المهارات"
       },
       "messageQueue": {
         "addToQueue": "إضافة للقائمة",
