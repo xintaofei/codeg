@@ -79,6 +79,9 @@ pub struct ConversationDetail {
 pub struct DbConversationDetail {
     pub summary: DbConversationSummary,
     pub turns: Vec<MessageTurn>,
+    pub has_more_history: bool,
+    pub next_before_turn_index: Option<usize>,
+    pub page_size: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_stats: Option<SessionStats>,
     /// Id of the persisted user turn the live-correlation pass identified as the

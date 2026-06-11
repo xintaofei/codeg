@@ -1934,7 +1934,9 @@
         "tokenCacheWrite": "Cache write",
         "duration": "Duration",
         "completedAt": "Completed at",
-        "jumpToPreviousUserMessage": "Jump to user message"
+        "jumpToPreviousUserMessage": "Jump to user message",
+        "loadEarlierMessages": "Load earlier messages",
+        "loadingEarlierMessages": "Loading earlier messages..."
       },
       "liveTurnStats": {
         "thinking": "Thinking...",

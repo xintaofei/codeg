@@ -198,6 +198,7 @@ const ConversationTabView = memo(function ConversationTabView({
     removeOptimisticTurn,
     appendViewerUserTurn,
     completeTurn,
+    fetchOlderDetail,
     getSession,
     refetchDetail,
     syncTurnMetadata,
@@ -301,12 +302,17 @@ const ConversationTabView = memo(function ConversationTabView({
   const {
     detail,
     loading: detailLoading,
+    loadingMore: detailLoadingMore,
     error: detailError,
     acpLoadError,
   } = useConversationDetail(effectiveConversationId)
 
   const runtimeSession = getSession(effectiveConversationId)
   const effectiveSessionStats = runtimeSession?.sessionStats ?? null
+  const handleLoadOlderMessages = useCallback(() => {
+    if (dbConversationId == null) return
+    fetchOlderDetail(dbConversationId)
+  }, [dbConversationId, fetchOlderDetail])
 
   useEffect(() => {
     if (!isActive) return
@@ -1081,6 +1087,11 @@ const ConversationTabView = memo(function ConversationTabView({
       sendSignal={sendSignal}
       sessionStats={effectiveSessionStats}
       detailLoading={detailLoading}
+      detailLoadingMore={detailLoadingMore}
+      hasMoreHistory={detail?.has_more_history ?? false}
+      onLoadOlder={
+        hasPersistedConversation ? handleLoadOlderMessages : undefined
+      }
       detailError={detailError}
       acpLoadError={acpLoadError}
       hideEmptyState={!hasPersistedConversation || hasSentMessage}

@@ -1934,7 +1934,9 @@
         "tokenCacheWrite": "缓存写入",
         "duration": "耗时",
         "completedAt": "完成时间",
-        "jumpToPreviousUserMessage": "跳转到上一条用户消息"
+        "jumpToPreviousUserMessage": "跳转到上一条用户消息",
+        "loadEarlierMessages": "加载更早消息",
+        "loadingEarlierMessages": "正在加载更早消息..."
       },
       "liveTurnStats": {
         "thinking": "思考中...",

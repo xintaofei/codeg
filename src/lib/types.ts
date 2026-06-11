@@ -342,6 +342,9 @@ export interface ImportResult {
 export interface DbConversationDetail {
   summary: DbConversationSummary
   turns: MessageTurn[]
+  has_more_history: boolean
+  next_before_turn_index?: number | null
+  page_size: number
   session_stats?: SessionStats | null
   /**
    * Id of the persisted user turn the backend identified as the in-flight prompt

@@ -74,6 +74,9 @@ interface MessageListViewProps {
   sendSignal?: number
   sessionStats?: SessionStats | null
   detailLoading?: boolean
+  detailLoadingMore?: boolean
+  hasMoreHistory?: boolean
+  onLoadOlder?: () => void
   detailError?: string | null
   /**
    * Set when the agent rejected `session/load` non-recoverably (e.g. the
@@ -497,6 +500,9 @@ export function MessageListView({
   sendSignal = 0,
   sessionStats = null,
   detailLoading = false,
+  detailLoadingMore = false,
+  hasMoreHistory = false,
+  onLoadOlder,
   detailError = null,
   acpLoadError = null,
   hideEmptyState = false,
@@ -903,9 +909,28 @@ export function MessageListView({
         <MessageThread
           className="flex-1 min-h-0"
           resize={shouldUseSmoothResize ? "smooth" : undefined}
-        >
-          <AutoScrollOnSend signal={sendSignal} />
-          <VirtualizedMessageThread
+      >
+        {(hasMoreHistory || detailLoadingMore) && (
+          <div className="flex justify-center px-4 pt-4">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onLoadOlder}
+              disabled={detailLoadingMore}
+            >
+              {detailLoadingMore ? (
+                <Loader2 className="me-1.5 h-4 w-4 animate-spin" />
+              ) : (
+                <ChevronDown className="me-1.5 h-4 w-4" />
+              )}
+              {detailLoadingMore
+                ? t("loadingEarlierMessages")
+                : t("loadEarlierMessages")}
+            </Button>
+          </div>
+        )}
+        <AutoScrollOnSend signal={sendSignal} />
+        <VirtualizedMessageThread
             items={threadItems}
             getItemKey={getThreadItemKey}
             renderItem={renderThreadItem}

@@ -14,6 +14,27 @@ use crate::parsers::hermes::HermesParser;
 use crate::parsers::openclaw::OpenClawParser;
 use crate::parsers::opencode::OpenCodeParser;
 use crate::parsers::{path_eq_for_matching, AgentParser, ParseError};
+
+const DEFAULT_CONVERSATION_TURNS_PAGE_SIZE: usize = 30;
+
+fn paginate_turns(
+    turns: Vec<MessageTurn>,
+    before_turn_index: Option<usize>,
+    page_size: Option<usize>,
+) -> (Vec<MessageTurn>, bool, Option<usize>, usize) {
+    let total = turns.len();
+    let page_size = page_size.unwrap_or(DEFAULT_CONVERSATION_TURNS_PAGE_SIZE).max(1);
+    let end = before_turn_index.unwrap_or(total).min(total);
+    let start = end.saturating_sub(page_size);
+    let has_more_history = start > 0;
+    let next_before_turn_index = has_more_history.then_some(start);
+    (
+        turns[start..end].to_vec(),
+        has_more_history,
+        next_before_turn_index,
+        page_size,
+    )
+}
 use crate::web::event_bridge::{
     emit_event, ConversationChange, EventEmitter, TabsChanged, CONVERSATION_CHANGED_EVENT,
     TABS_CHANGED_EVENT,
@@ -481,6 +502,8 @@ fn inject_delegation_meta(turns: &mut [MessageTurn], children: &[DbConversationS
 pub async fn get_folder_conversation_core(
     conn: &sea_orm::DatabaseConnection,
     conversation_id: i32,
+    before_turn_index: Option<usize>,
+    page_size: Option<usize>,
 ) -> Result<(DbConversationDetail, Option<String>), AppCommandError> {
     let summary = conversation_service::get_by_id(conn, conversation_id)
         .await
@@ -589,10 +612,16 @@ pub async fn get_folder_conversation_core(
         .unwrap_or_default();
     inject_delegation_meta(&mut turns, &children);
 
+    let (turns, has_more_history, next_before_turn_index, page_size) =
+        paginate_turns(turns, before_turn_index, page_size);
+
     Ok((
         DbConversationDetail {
             summary,
             turns,
+            has_more_history,
+            next_before_turn_index,
+            page_size,
             session_stats,
             in_flight_user_turn_id: None,
         },
@@ -762,8 +791,11 @@ pub async fn get_folder_conversation_with_live_core(
     manager: &crate::acp::manager::ConnectionManager,
     emitter: &EventEmitter,
     conversation_id: i32,
+    before_turn_index: Option<usize>,
+    page_size: Option<usize>,
 ) -> Result<DbConversationDetail, AppCommandError> {
-    let (mut detail, parsed_title) = get_folder_conversation_core(conn, conversation_id).await?;
+    let (mut detail, parsed_title) =
+        get_folder_conversation_core(conn, conversation_id, before_turn_index, page_size).await?;
 
     // Per-turn auto-title backfill. The parse `get_folder_conversation_core`
     // just did already produced the session-file title; adopt it (and broadcast
@@ -811,12 +843,16 @@ pub async fn get_folder_conversation(
     db: tauri::State<'_, AppDatabase>,
     manager: tauri::State<'_, crate::acp::manager::ConnectionManager>,
     conversation_id: i32,
+    before_turn_index: Option<usize>,
+    page_size: Option<usize>,
 ) -> Result<DbConversationDetail, AppCommandError> {
     get_folder_conversation_with_live_core(
         &db.conn,
         &manager,
         &EventEmitter::Tauri(app),
         conversation_id,
+        before_turn_index,
+        page_size,
     )
     .await
 }

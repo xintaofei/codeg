@@ -883,9 +883,17 @@ export async function importLocalConversations(
 }
 
 export async function getFolderConversation(
-  conversationId: number
+  conversationId: number,
+  options?: {
+    beforeTurnIndex?: number | null
+    pageSize?: number | null
+  }
 ): Promise<DbConversationDetail> {
-  return getTransport().call("get_folder_conversation", { conversationId })
+  return getTransport().call("get_folder_conversation", {
+    conversationId,
+    beforeTurnIndex: options?.beforeTurnIndex ?? null,
+    pageSize: options?.pageSize ?? null,
+  })
 }
 
 export async function removeFolderFromHistory(path: string): Promise<void> {
