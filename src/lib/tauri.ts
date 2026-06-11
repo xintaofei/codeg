@@ -5,6 +5,7 @@ import type {
   ConversationSummary,
   ConversationDetail,
   DbConversationDetail,
+  DbConversationDetailPage,
   FolderInfo,
   AgentStats,
   SidebarData,
@@ -589,6 +590,18 @@ export async function getFolderConversation(
   conversationId: number
 ): Promise<DbConversationDetail> {
   return invoke("get_folder_conversation", { conversationId })
+}
+
+export async function getFolderConversationPaginated(params: {
+  conversationId: number
+  beforeTurnIndex?: number | null
+  pageSize?: number | null
+}): Promise<DbConversationDetailPage> {
+  return invoke("get_folder_conversation_paginated", {
+    conversationId: params.conversationId,
+    beforeTurnIndex: params.beforeTurnIndex ?? null,
+    pageSize: params.pageSize ?? null,
+  })
 }
 
 export async function removeFolderFromHistory(path: string): Promise<void> {

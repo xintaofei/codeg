@@ -903,9 +903,9 @@ export function MessageListView({
         <MessageThread
           className="flex-1 min-h-0"
           resize={shouldUseSmoothResize ? "smooth" : undefined}
-        >
-          <AutoScrollOnSend signal={sendSignal} />
-          <VirtualizedMessageThread
+      >
+        <AutoScrollOnSend signal={sendSignal} />
+        <VirtualizedMessageThread
             items={threadItems}
             getItemKey={getThreadItemKey}
             renderItem={renderThreadItem}

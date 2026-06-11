@@ -353,6 +353,16 @@ export interface DbConversationDetail {
   in_flight_user_turn_id?: string | null
 }
 
+export interface DbConversationDetailPage {
+  summary: DbConversationSummary
+  turns: MessageTurn[]
+  has_more_history: boolean
+  next_before_turn_index?: number | null
+  page_size: number
+  session_stats?: SessionStats | null
+  in_flight_user_turn_id?: string | null
+}
+
 export type ConversationStatus =
   | "in_progress"
   | "pending_review"

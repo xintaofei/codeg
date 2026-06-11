@@ -14,6 +14,27 @@ use crate::parsers::hermes::HermesParser;
 use crate::parsers::openclaw::OpenClawParser;
 use crate::parsers::opencode::OpenCodeParser;
 use crate::parsers::{path_eq_for_matching, AgentParser, ParseError};
+
+const DEFAULT_CONVERSATION_TURNS_PAGE_SIZE: usize = 30;
+
+fn paginate_turns(
+    turns: Vec<MessageTurn>,
+    before_turn_index: Option<usize>,
+    page_size: Option<usize>,
+) -> (Vec<MessageTurn>, bool, Option<usize>, usize) {
+    let total = turns.len();
+    let page_size = page_size.unwrap_or(DEFAULT_CONVERSATION_TURNS_PAGE_SIZE).max(1);
+    let end = before_turn_index.unwrap_or(total).min(total);
+    let start = end.saturating_sub(page_size);
+    let has_more_history = start > 0;
+    let next_before_turn_index = has_more_history.then_some(start);
+    (
+        turns[start..end].to_vec(),
+        has_more_history,
+        next_before_turn_index,
+        page_size,
+    )
+}
 use crate::web::event_bridge::{
     emit_event, ConversationChange, EventEmitter, TabsChanged, CONVERSATION_CHANGED_EVENT,
     TABS_CHANGED_EVENT,
@@ -817,6 +838,50 @@ pub async fn get_folder_conversation(
         &manager,
         &EventEmitter::Tauri(app),
         conversation_id,
+    )
+    .await
+}
+
+pub async fn get_folder_conversation_paginated_core(
+    conn: &sea_orm::DatabaseConnection,
+    manager: &crate::acp::manager::ConnectionManager,
+    emitter: &EventEmitter,
+    conversation_id: i32,
+    before_turn_index: Option<usize>,
+    page_size: Option<usize>,
+) -> Result<DbConversationDetailPage, AppCommandError> {
+    let detail =
+        get_folder_conversation_with_live_core(conn, manager, emitter, conversation_id).await?;
+    let (turns, has_more_history, next_before_turn_index, page_size) =
+        paginate_turns(detail.turns, before_turn_index, page_size);
+    Ok(DbConversationDetailPage {
+        summary: detail.summary,
+        turns,
+        has_more_history,
+        next_before_turn_index,
+        page_size,
+        session_stats: detail.session_stats,
+        in_flight_user_turn_id: detail.in_flight_user_turn_id,
+    })
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn get_folder_conversation_paginated(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    manager: tauri::State<'_, crate::acp::manager::ConnectionManager>,
+    conversation_id: i32,
+    before_turn_index: Option<usize>,
+    page_size: Option<usize>,
+) -> Result<DbConversationDetailPage, AppCommandError> {
+    get_folder_conversation_paginated_core(
+        &db.conn,
+        &manager,
+        &EventEmitter::Tauri(app),
+        conversation_id,
+        before_turn_index,
+        page_size,
     )
     .await
 }
