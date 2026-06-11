@@ -14,8 +14,8 @@ pub use agent::AgentType;
 pub use chat_channel::{ChannelStatusInfo, ChatChannelInfo, ChatChannelMessageLogInfo};
 pub use conversation::{
     AgentConversationCount, AgentStats, ConversationDetail, ConversationSummary,
-    DbConversationDetail, DbConversationSummary, FolderInfo, ImportResult, SessionStats,
-    SidebarData,
+    DbConversationDetail, DbConversationDetailPage, DbConversationSummary, FolderInfo,
+    ImportResult, SessionStats, SidebarData,
 };
 pub use folder::{
     FolderCommandInfo, FolderDetail, FolderHistoryEntry, OpenedTab, OpenedTabsSnapshot,

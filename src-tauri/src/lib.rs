@@ -782,6 +782,7 @@ mod tauri_app {
                 conversations::save_opened_tabs,
                 conversations::import_local_conversations,
                 conversations::get_folder_conversation,
+                conversations::get_folder_conversation_paginated,
                 conversations::list_folders,
                 conversations::get_stats,
                 conversations::get_sidebar_data,

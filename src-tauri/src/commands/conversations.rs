@@ -14,6 +14,27 @@ use crate::parsers::hermes::HermesParser;
 use crate::parsers::openclaw::OpenClawParser;
 use crate::parsers::opencode::OpenCodeParser;
 use crate::parsers::{path_eq_for_matching, AgentParser, ParseError};
+
+const DEFAULT_CONVERSATION_TURNS_PAGE_SIZE: usize = 30;
+
+fn paginate_turns(
+    turns: Vec<MessageTurn>,
+    before_turn_index: Option<usize>,
+    page_size: Option<usize>,
+) -> (Vec<MessageTurn>, bool, Option<usize>, usize) {
+    let total = turns.len();
+    let page_size = page_size.unwrap_or(DEFAULT_CONVERSATION_TURNS_PAGE_SIZE).max(1);
+    let end = before_turn_index.unwrap_or(total).min(total);
+    let start = end.saturating_sub(page_size);
+    let has_more_history = start > 0;
+    let next_before_turn_index = has_more_history.then_some(start);
+    (
+        turns[start..end].to_vec(),
+        has_more_history,
+        next_before_turn_index,
+        page_size,
+    )
+}
 use crate::web::event_bridge::{
     emit_event, ConversationChange, EventEmitter, TabsChanged, CONVERSATION_CHANGED_EVENT,
     TABS_CHANGED_EVENT,
@@ -821,6 +842,50 @@ pub async fn get_folder_conversation(
     .await
 }
 
+pub async fn get_folder_conversation_paginated_core(
+    conn: &sea_orm::DatabaseConnection,
+    manager: &crate::acp::manager::ConnectionManager,
+    emitter: &EventEmitter,
+    conversation_id: i32,
+    before_turn_index: Option<usize>,
+    page_size: Option<usize>,
+) -> Result<DbConversationDetailPage, AppCommandError> {
+    let detail =
+        get_folder_conversation_with_live_core(conn, manager, emitter, conversation_id).await?;
+    let (turns, has_more_history, next_before_turn_index, page_size) =
+        paginate_turns(detail.turns, before_turn_index, page_size);
+    Ok(DbConversationDetailPage {
+        summary: detail.summary,
+        turns,
+        has_more_history,
+        next_before_turn_index,
+        page_size,
+        session_stats: detail.session_stats,
+        in_flight_user_turn_id: detail.in_flight_user_turn_id,
+    })
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn get_folder_conversation_paginated(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    manager: tauri::State<'_, crate::acp::manager::ConnectionManager>,
+    conversation_id: i32,
+    before_turn_index: Option<usize>,
+    page_size: Option<usize>,
+) -> Result<DbConversationDetailPage, AppCommandError> {
+    get_folder_conversation_paginated_core(
+        &db.conn,
+        &manager,
+        &EventEmitter::Tauri(app),
+        conversation_id,
+        before_turn_index,
+        page_size,
+    )
+    .await
+}
+
 /// Emit a `conversation://changed` Upsert for `conversation_id` so every
 /// client's sidebar inserts-or-replaces the row in real time. Re-fetches the
 /// fresh summary via `get_by_id`, which filters out soft-deleted rows — so an
@@ -1562,6 +1627,63 @@ mod tests {
             model: None,
             completed_at: completed.then_some(ts),
         }
+    }
+
+    fn pagination_turns(count: usize) -> Vec<MessageTurn> {
+        (0..count)
+            .map(|index| user_text_turn(&format!("turn-{index}"), "turn", at(index as i64)))
+            .collect()
+    }
+
+    #[test]
+    fn paginate_turns_returns_latest_default_page() {
+        let (page, has_more_history, next_before_turn_index, page_size) =
+            paginate_turns(pagination_turns(100), None, None);
+
+        assert_eq!(page.len(), 30);
+        assert_eq!(page.first().map(|turn| turn.id.as_str()), Some("turn-70"));
+        assert_eq!(page.last().map(|turn| turn.id.as_str()), Some("turn-99"));
+        assert!(has_more_history);
+        assert_eq!(next_before_turn_index, Some(70));
+        assert_eq!(page_size, 30);
+    }
+
+    #[test]
+    fn paginate_turns_returns_page_before_cursor() {
+        let (page, has_more_history, next_before_turn_index, page_size) =
+            paginate_turns(pagination_turns(100), Some(70), Some(30));
+
+        assert_eq!(page.len(), 30);
+        assert_eq!(page.first().map(|turn| turn.id.as_str()), Some("turn-40"));
+        assert_eq!(page.last().map(|turn| turn.id.as_str()), Some("turn-69"));
+        assert!(has_more_history);
+        assert_eq!(next_before_turn_index, Some(40));
+        assert_eq!(page_size, 30);
+    }
+
+    #[test]
+    fn paginate_turns_marks_first_page_as_complete_history() {
+        let (page, has_more_history, next_before_turn_index, page_size) =
+            paginate_turns(pagination_turns(12), Some(12), Some(30));
+
+        assert_eq!(page.len(), 12);
+        assert_eq!(page.first().map(|turn| turn.id.as_str()), Some("turn-0"));
+        assert_eq!(page.last().map(|turn| turn.id.as_str()), Some("turn-11"));
+        assert!(!has_more_history);
+        assert_eq!(next_before_turn_index, None);
+        assert_eq!(page_size, 30);
+    }
+
+    #[test]
+    fn paginate_turns_clamps_zero_page_size_to_one() {
+        let (page, has_more_history, next_before_turn_index, page_size) =
+            paginate_turns(pagination_turns(3), None, Some(0));
+
+        assert_eq!(page.len(), 1);
+        assert_eq!(page.first().map(|turn| turn.id.as_str()), Some("turn-2"));
+        assert!(has_more_history);
+        assert_eq!(next_before_turn_index, Some(2));
+        assert_eq!(page_size, 1);
     }
 
     fn pending_text(message_id: &str, text: &str) -> crate::acp::session_state::PendingUserMessage {
