@@ -2030,56 +2030,56 @@ fn remove_cline_server(id: &str) -> Result<bool, AppCommandError> {
     Ok(removed)
 }
 
+fn is_visible_mcp_server_id(id: &str) -> bool {
+    id.chars().any(|ch| {
+        !ch.is_whitespace() && !matches!(ch, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}')
+    })
+}
+
+fn merge_local_server(
+    merged: &mut BTreeMap<String, (Value, BTreeSet<McpAppType>)>,
+    app: McpAppType,
+    id: String,
+    spec: Value,
+) {
+    if !is_visible_mcp_server_id(&id) {
+        eprintln!("[MCP] skip local MCP entry with blank server id for {app:?}");
+        return;
+    }
+
+    let entry = merged.entry(id).or_insert_with(|| (spec, BTreeSet::new()));
+    entry.1.insert(app);
+}
+
 fn scan_local_servers() -> Result<Vec<LocalMcpServer>, AppCommandError> {
     let mut merged: BTreeMap<String, (Value, BTreeSet<McpAppType>)> = BTreeMap::new();
 
     for (id, spec) in read_claude_servers()? {
-        let entry = merged
-            .entry(id)
-            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        entry.1.insert(McpAppType::ClaudeCode);
+        merge_local_server(&mut merged, McpAppType::ClaudeCode, id, spec);
     }
 
     for (id, spec) in read_codex_servers()? {
-        let entry = merged
-            .entry(id)
-            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        entry.1.insert(McpAppType::Codex);
+        merge_local_server(&mut merged, McpAppType::Codex, id, spec);
     }
 
     for (id, spec) in read_opencode_servers()? {
-        let entry = merged
-            .entry(id)
-            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        entry.1.insert(McpAppType::OpenCode);
+        merge_local_server(&mut merged, McpAppType::OpenCode, id, spec);
     }
 
     for (id, spec) in read_gemini_servers()? {
-        let entry = merged
-            .entry(id)
-            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        entry.1.insert(McpAppType::Gemini);
+        merge_local_server(&mut merged, McpAppType::Gemini, id, spec);
     }
 
     for (id, spec) in read_openclaw_servers()? {
-        let entry = merged
-            .entry(id)
-            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        entry.1.insert(McpAppType::OpenClaw);
+        merge_local_server(&mut merged, McpAppType::OpenClaw, id, spec);
     }
 
     for (id, spec) in read_cline_servers()? {
-        let entry = merged
-            .entry(id)
-            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        entry.1.insert(McpAppType::Cline);
+        merge_local_server(&mut merged, McpAppType::Cline, id, spec);
     }
 
     for (id, spec) in read_hermes_servers()? {
-        let entry = merged
-            .entry(id)
-            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
-        entry.1.insert(McpAppType::Hermes);
+        merge_local_server(&mut merged, McpAppType::Hermes, id, spec);
     }
 
     Ok(merged
@@ -4162,6 +4162,27 @@ mod tests {
         assert!(normalize_mcp_type("   ").is_none());
         assert!(normalize_mcp_type("Foo").is_none());
         assert!(normalize_mcp_type("ws").is_none());
+    }
+
+    #[test]
+    fn local_mcp_merge_skips_blank_server_ids() {
+        let mut merged: BTreeMap<String, (Value, BTreeSet<McpAppType>)> = BTreeMap::new();
+
+        merge_local_server(
+            &mut merged,
+            McpAppType::Codex,
+            " \t\u{200B}\u{FEFF}".to_string(),
+            json!({"type": "stdio", "command": "npx"}),
+        );
+        merge_local_server(
+            &mut merged,
+            McpAppType::Codex,
+            "playwright".to_string(),
+            json!({"type": "stdio", "command": "npx"}),
+        );
+
+        assert_eq!(merged.len(), 1);
+        assert!(merged.contains_key("playwright"));
     }
 
     fn codex_entry(toml_src: &str) -> toml::Value {

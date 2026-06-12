@@ -242,6 +242,14 @@ function normalizeApps(apps: McpAppType[]): McpAppType[] {
   return [...new Set(apps)]
 }
 
+function hasVisibleServerId(server: Pick<LocalMcpServer, "id">): boolean {
+  return server.id.replace(/[\s\u200B-\u200D\uFEFF]/g, "").length > 0
+}
+
+function visibleLocalServers(servers: LocalMcpServer[]): LocalMcpServer[] {
+  return servers.filter(hasVisibleServerId)
+}
+
 function appsToDraft(apps: McpAppType[]): Record<McpAppType, boolean> {
   const appSet = new Set(apps)
   return {
@@ -400,7 +408,7 @@ export function McpSettings() {
   }, [installedServers, localFilter, mcpT])
 
   const refreshLocalServers = useCallback(async () => {
-    const servers = await mcpScanLocal()
+    const servers = visibleLocalServers(await mcpScanLocal())
     setInstalledServers(servers)
     return servers
   }, [])
@@ -414,14 +422,15 @@ export function McpSettings() {
         mcpScanLocal(),
         mcpListMarketplaces(),
       ])
-      setInstalledServers(servers)
+      const nextServers = visibleLocalServers(servers)
+      setInstalledServers(nextServers)
       setProviders(marketProviders)
       setSelectedProvider(
         (current) => current || marketProviders[0]?.id || "official_registry"
       )
 
-      if (servers[0]) {
-        setSelection({ kind: "local", id: servers[0].id })
+      if (nextServers[0]) {
+        setSelection({ kind: "local", id: nextServers[0].id })
       }
     } catch (err) {
       const message = toLocalizedErrorMessage(err, mcpT)
@@ -1019,11 +1028,11 @@ export function McpSettings() {
       </Dialog>
 
       <div className="h-full min-h-0 grid grid-cols-1 gap-4 p-3 md:p-4 lg:grid-cols-[360px_1fr]">
-        <section className="min-h-0 rounded-xl border bg-card p-3">
+        <section className="min-h-0 overflow-hidden rounded-xl border bg-card p-3">
           <Tabs
             value={leftTab}
             onValueChange={(value) => setLeftTab(value as LeftTab)}
-            className="h-full"
+            className="h-full min-h-0"
           >
             <TabsList className="w-full">
               <TabsTrigger value="local" className="flex-1">
@@ -1052,56 +1061,62 @@ export function McpSettings() {
                 </div>
               ) : null}
 
-              <div className="flex-1 min-h-0 overflow-auto space-y-1">
+              <div
+                data-testid="mcp-local-list-scroll"
+                className="min-h-0 flex-1 overflow-auto"
+              >
                 {filteredLocalServers.length === 0 ? (
                   <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
                     {t("local.empty")}
                   </div>
                 ) : (
-                  filteredLocalServers.map((server) => {
-                    const active =
-                      selection?.kind === "local" && selection.id === server.id
-                    const spec = isObject(server.spec) ? server.spec : {}
-                    return (
-                      <ContextMenu key={server.id}>
-                        <ContextMenuTrigger asChild>
-                          <button
-                            className={cn(
-                              "w-full rounded-md border p-2 text-left transition-colors",
-                              active
-                                ? "border-primary bg-primary/5"
-                                : "hover:bg-muted/60"
-                            )}
-                            onClick={() => {
-                              setSelection({ kind: "local", id: server.id })
-                            }}
-                          >
-                            <div className="text-sm font-medium break-all">
-                              {server.id}
-                            </div>
-                            <div className="text-xs text-muted-foreground line-clamp-2 break-all">
-                              {specSummary(spec, mcpT)}
-                            </div>
-                          </button>
-                        </ContextMenuTrigger>
-                        <ContextMenuContent>
-                          <ContextMenuItem
-                            variant="destructive"
-                            onClick={() => {
-                              uninstallServer(server.id).catch((err) => {
-                                console.error(
-                                  "[Settings] uninstall MCP failed:",
-                                  err
-                                )
-                              })
-                            }}
-                          >
-                            {t("actions.uninstall")}
-                          </ContextMenuItem>
-                        </ContextMenuContent>
-                      </ContextMenu>
-                    )
-                  })
+                  <div className="flex flex-col gap-1">
+                    {filteredLocalServers.map((server) => {
+                      const active =
+                        selection?.kind === "local" &&
+                        selection.id === server.id
+                      const spec = isObject(server.spec) ? server.spec : {}
+                      return (
+                        <ContextMenu key={server.id}>
+                          <ContextMenuTrigger asChild>
+                            <button
+                              className={cn(
+                                "w-full rounded-md border p-2 text-left transition-colors",
+                                active
+                                  ? "border-primary bg-primary/5"
+                                  : "hover:bg-muted/60"
+                              )}
+                              onClick={() => {
+                                setSelection({ kind: "local", id: server.id })
+                              }}
+                            >
+                              <div className="text-sm font-medium break-all">
+                                {server.id}
+                              </div>
+                              <div className="text-xs text-muted-foreground line-clamp-2 break-all">
+                                {specSummary(spec, mcpT)}
+                              </div>
+                            </button>
+                          </ContextMenuTrigger>
+                          <ContextMenuContent>
+                            <ContextMenuItem
+                              variant="destructive"
+                              onClick={() => {
+                                uninstallServer(server.id).catch((err) => {
+                                  console.error(
+                                    "[Settings] uninstall MCP failed:",
+                                    err
+                                  )
+                                })
+                              }}
+                            >
+                              {t("actions.uninstall")}
+                            </ContextMenuItem>
+                          </ContextMenuContent>
+                        </ContextMenu>
+                      )
+                    })}
+                  </div>
                 )}
               </div>
 
