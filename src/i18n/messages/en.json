@@ -842,7 +842,13 @@
     "restartRequired": "Saved. Restart the app for the change to take effect.",
     "restartNow": "Restart now",
     "restartFailed": "Failed to restart: {message}",
-    "loadFailed": "Load failed: {message}"
+    "loadFailed": "Load failed: {message}",
+    "workspaceLayoutTitle": "Workspace Layout",
+    "workspaceLayoutDescription": "Choose how the workspace displays conversations and files when file tabs are open.",
+    "workspaceLayoutFiles": "Files",
+    "workspaceLayoutFilesHint": "Single view: switch between conversation and files",
+    "workspaceLayoutFusion": "Hybrid",
+    "workspaceLayoutFusionHint": "Split view: conversation and files side by side"
   },
   "LoginPage": {
     "documentTitle": "Login - codeg",

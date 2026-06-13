@@ -842,7 +842,13 @@
     "restartRequired": "Guardado. Reinicia la aplicación para aplicar el cambio.",
     "restartNow": "Reiniciar ahora",
     "restartFailed": "No se pudo reiniciar: {message}",
-    "loadFailed": "Error al cargar: {message}"
+    "loadFailed": "Error al cargar: {message}",
+    "workspaceLayoutTitle": "Diseño del espacio de trabajo",
+    "workspaceLayoutDescription": "Elige cómo se muestran las conversaciones y los archivos cuando hay pestañas de archivo abiertas.",
+    "workspaceLayoutFiles": "Archivos",
+    "workspaceLayoutFilesHint": "Vista única: alternar entre conversación y archivos",
+    "workspaceLayoutFusion": "Híbrido",
+    "workspaceLayoutFusionHint": "Vista dividida: conversación y archivos lado a lado"
   },
   "LoginPage": {
     "documentTitle": "Iniciar sesión - codeg",

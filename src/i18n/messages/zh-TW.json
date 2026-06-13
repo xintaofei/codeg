@@ -842,7 +842,13 @@
     "restartRequired": "已儲存，需重新啟動應用程式才會生效。",
     "restartNow": "立即重新啟動",
     "restartFailed": "重新啟動失敗：{message}",
-    "loadFailed": "載入失敗：{message}"
+    "loadFailed": "載入失敗：{message}",
+    "workspaceLayoutTitle": "工作區佈局",
+    "workspaceLayoutDescription": "選擇開啟檔案標籤時工作區如何顯示對話和檔案。",
+    "workspaceLayoutFiles": "檔案模式",
+    "workspaceLayoutFilesHint": "單一視圖：在對話和檔案之間切換",
+    "workspaceLayoutFusion": "混合模式",
+    "workspaceLayoutFusionHint": "分割視圖：對話與檔案並排顯示"
   },
   "LoginPage": {
     "documentTitle": "登入 - codeg",

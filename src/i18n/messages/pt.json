@@ -842,7 +842,13 @@
     "restartRequired": "Salvo. Reinicie o aplicativo para aplicar a alteração.",
     "restartNow": "Reiniciar agora",
     "restartFailed": "Falha ao reiniciar: {message}",
-    "loadFailed": "Falha ao carregar: {message}"
+    "loadFailed": "Falha ao carregar: {message}",
+    "workspaceLayoutTitle": "Layout do espaço de trabalho",
+    "workspaceLayoutDescription": "Escolha como o espaço de trabalho exibe conversas e arquivos quando abas de arquivo estão abertas.",
+    "workspaceLayoutFiles": "Arquivos",
+    "workspaceLayoutFilesHint": "Visualização única: alternar entre conversa e arquivos",
+    "workspaceLayoutFusion": "Híbrido",
+    "workspaceLayoutFusionHint": "Visualização dividida: conversa e arquivos lado a lado"
   },
   "LoginPage": {
     "documentTitle": "Entrar - codeg",

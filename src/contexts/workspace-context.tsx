@@ -26,9 +26,15 @@ import {
 import type { FileEditContent } from "@/lib/types"
 import { languageFromPath } from "@/lib/language-detect"
 import { toErrorMessage } from "@/lib/app-error"
+import {
+  loadLayoutMode,
+  saveLayoutMode,
+  type WorkspaceLayoutMode,
+} from "@/lib/workspace-layout-mode-storage"
 
 export type WorkspaceMode = "conversation" | "fusion"
 export type WorkspacePane = "conversation" | "files"
+export type { WorkspaceLayoutMode } from "@/lib/workspace-layout-mode-storage"
 
 type FileWorkspaceTabKind = "file" | "diff" | "rich-diff"
 type FileSaveState = "idle" | "saving" | "error"
@@ -62,6 +68,8 @@ export interface FileWorkspaceTab {
 
 interface WorkspaceContextValue {
   mode: WorkspaceMode
+  layoutMode: WorkspaceLayoutMode
+  setLayoutMode: (mode: WorkspaceLayoutMode) => void
   activePane: WorkspacePane
   setActivePane: (pane: WorkspacePane) => void
   activateConversationPane: () => void
@@ -241,6 +249,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   void activeFolderId
   const [activePane, setActivePaneState] =
     useState<WorkspacePane>("conversation")
+  const [layoutMode, setLayoutModeState] =
+    useState<WorkspaceLayoutMode>(loadLayoutMode)
   const [fileTabs, setFileTabs] = useState<FileWorkspaceTab[]>([])
   const [activeFileTabId, setActiveFileTabId] = useState<string | null>(null)
   const [pendingFileReveal, setPendingFileReveal] = useState<{
@@ -267,6 +277,20 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   useEffect(() => {
     fileTabsRef.current = fileTabs
   }, [fileTabs])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    const onStorage = (event: StorageEvent) => {
+      if (event.key && event.key !== "workspace:layout-mode") return
+      setLayoutModeState(loadLayoutMode())
+    }
+
+    window.addEventListener("storage", onStorage)
+    return () => {
+      window.removeEventListener("storage", onStorage)
+    }
+  }, [])
 
   const mode: WorkspaceMode = fileTabs.length > 0 ? "fusion" : "conversation"
   const effectiveFilesMaximized = mode === "fusion" && filesMaximized
@@ -303,6 +327,11 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
 
   const setActivePane = useCallback((nextPane: WorkspacePane) => {
     setActivePaneState((prev) => (prev === nextPane ? prev : nextPane))
+  }, [])
+
+  const setLayoutMode = useCallback((nextMode: WorkspaceLayoutMode) => {
+    saveLayoutMode(nextMode)
+    setLayoutModeState(nextMode)
   }, [])
 
   const activateConversationPane = useCallback(() => {
@@ -1589,6 +1618,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   const value = useMemo<WorkspaceContextValue>(
     () => ({
       mode,
+      layoutMode,
+      setLayoutMode,
       activePane,
       setActivePane,
       activateConversationPane,
@@ -1624,6 +1655,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     }),
     [
       mode,
+      layoutMode,
+      setLayoutMode,
       activePane,
       setActivePane,
       activateConversationPane,

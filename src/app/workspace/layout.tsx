@@ -147,7 +147,8 @@ function resolvePanelSizeRange(
 }
 
 function WorkspaceContent({ children }: { children: React.ReactNode }) {
-  const { mode, setActivePane, filesMaximized } = useWorkspaceContext()
+  const { mode, layoutMode, setActivePane, filesMaximized } =
+    useWorkspaceContext()
   const panelGroupRef = useRef<ImperativePanelGroupHandle | null>(null)
   const fusionLayoutRef = useRef<[number, number]>(DEFAULT_FUSION_LAYOUT)
   const desiredLayoutRef = useRef<[number, number]>(DEFAULT_FUSION_LAYOUT)
@@ -184,10 +185,10 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
   }, [])
 
   useEffect(() => {
-    if (mode === "fusion") {
+    if (mode === "fusion" && layoutMode === "fusion") {
       applyLayout(fusionLayoutRef.current)
     }
-  }, [applyLayout, mode])
+  }, [applyLayout, mode, layoutMode])
 
   const handleLayout = useCallback(
     (layout: number[]) => {
@@ -210,6 +211,10 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
     },
     [applyLayout, mode]
   )
+
+  if (layoutMode === "files" && mode === "fusion") {
+    return <SinglePaneWorkspaceContent>{children}</SinglePaneWorkspaceContent>
+  }
 
   return (
     <div className="relative h-full min-h-0 overflow-hidden">
@@ -312,6 +317,8 @@ function MobileWorkspaceContent({ children }: { children: React.ReactNode }) {
     </div>
   )
 }
+
+const SinglePaneWorkspaceContent = MobileWorkspaceContent
 
 function MobileFolderWorkspaceShell({
   children,

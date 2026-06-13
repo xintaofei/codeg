@@ -842,7 +842,13 @@
     "restartRequired": "Enregistré. Redémarrez l’application pour appliquer la modification.",
     "restartNow": "Redémarrer maintenant",
     "restartFailed": "Échec du redémarrage : {message}",
-    "loadFailed": "Échec du chargement : {message}"
+    "loadFailed": "Échec du chargement : {message}",
+    "workspaceLayoutTitle": "Disposition de l'espace de travail",
+    "workspaceLayoutDescription": "Choisissez comment l'espace de travail affiche les conversations et les fichiers lorsque des onglets de fichiers sont ouverts.",
+    "workspaceLayoutFiles": "Fichiers",
+    "workspaceLayoutFilesHint": "Vue unique : basculer entre conversation et fichiers",
+    "workspaceLayoutFusion": "Hybride",
+    "workspaceLayoutFusionHint": "Vue partagée : conversation et fichiers côte à côte"
   },
   "LoginPage": {
     "documentTitle": "Connexion - codeg",
