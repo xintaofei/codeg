@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { IssueList } from "@/components/loops/issue-list"
 import { IssueDetail } from "@/components/loops/issue-detail"
+import { InboxPanel } from "@/components/loops/inbox-panel"
 
 type SpaceTab = "issues" | "iterations" | "artifacts" | "inbox" | "memory"
 
@@ -70,19 +71,24 @@ export function SpaceDetail({
           </div>
         </TabsContent>
 
-        {(["iterations", "artifacts", "inbox", "memory"] as const).map(
-          (key) => (
-            <TabsContent
-              key={key}
-              value={key}
-              className="min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden"
-            >
-              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                {t("comingSoon")}
-              </div>
-            </TabsContent>
-          )
-        )}
+        <TabsContent
+          value="inbox"
+          className="min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden"
+        >
+          <InboxPanel spaceId={space.id} />
+        </TabsContent>
+
+        {(["iterations", "artifacts", "memory"] as const).map((key) => (
+          <TabsContent
+            key={key}
+            value={key}
+            className="min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden"
+          >
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+              {t("comingSoon")}
+            </div>
+          </TabsContent>
+        ))}
       </Tabs>
     </div>
   )

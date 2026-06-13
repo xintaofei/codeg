@@ -3007,7 +3007,8 @@
       "issueCreateFailed": "创建议题失败：{message}",
       "issueDeleteFailed": "删除议题失败：{message}",
       "issueTriggered": "已触发 {title}",
-      "actionFailed": "操作失败：{message}"
+      "actionFailed": "操作失败：{message}",
+      "inboxResolved": "已处理。"
     },
     "common": {
       "cancel": "取消",
@@ -3034,6 +3035,27 @@
       "loading": "加载中…",
       "noContent": "暂无内容。",
       "revisionCount": "{count, plural, other {# 次修订}}"
+    },
+    "inbox": {
+      "title": "收件箱",
+      "empty": "暂无需要处理的事项。",
+      "issueLabel": "#{seq}",
+      "gateDesign": "设计批准",
+      "gateMerge": "合并批准",
+      "kindBlocked": "已阻塞",
+      "kindBudget": "预算耗尽",
+      "kindQuestion": "提问",
+      "designDesc": "设计已就绪，规划前需要你审阅。",
+      "mergeDesc": "结果已就绪，可合并到基准分支。",
+      "questionDesc": "智能体正在提问；打开其迭代以作答。",
+      "budgetDesc": "已使用 {used} / {budget} tokens。",
+      "approve": "批准",
+      "merge": "合并",
+      "reject": "驳回",
+      "cancelIssue": "取消议题",
+      "rejectTitle": "驳回",
+      "rejectPlaceholder": "原因（可选）",
+      "submitReject": "驳回"
     }
   }
 }

@@ -3007,7 +3007,8 @@
       "issueCreateFailed": "Failed to create issue: {message}",
       "issueDeleteFailed": "Failed to delete issue: {message}",
       "issueTriggered": "Triggered {title}",
-      "actionFailed": "Action failed: {message}"
+      "actionFailed": "Action failed: {message}",
+      "inboxResolved": "Terminé."
     },
     "common": {
       "cancel": "Cancel",
@@ -3034,6 +3035,27 @@
       "loading": "Loading…",
       "noContent": "No content yet.",
       "revisionCount": "{count, plural, one {# revision} other {# revisions}}"
+    },
+    "inbox": {
+      "title": "Boîte de réception",
+      "empty": "Rien ne requiert votre attention.",
+      "issueLabel": "#{seq}",
+      "gateDesign": "Approbation du design",
+      "gateMerge": "Approbation de la fusion",
+      "kindBlocked": "Bloqué",
+      "kindBudget": "Budget épuisé",
+      "kindQuestion": "Question",
+      "designDesc": "Le design est prêt à être examiné avant la planification.",
+      "mergeDesc": "Le résultat est prêt à être fusionné dans la branche de base.",
+      "questionDesc": "Un agent pose une question ; ouvrez son itération pour répondre.",
+      "budgetDesc": "{used} sur {budget} jetons utilisés.",
+      "approve": "Approuver",
+      "merge": "Fusionner",
+      "reject": "Rejeter",
+      "cancelIssue": "Annuler le ticket",
+      "rejectTitle": "Rejeter",
+      "rejectPlaceholder": "Motif (facultatif)",
+      "submitReject": "Rejeter"
     }
   }
 }

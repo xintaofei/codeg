@@ -26,7 +26,8 @@ use chrono::Utc;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ActiveEnum, ColumnTrait, EntityTrait, QueryFilter};
 
-use crate::db::entities::loop_artifact::ArtifactKind;
+use crate::db::entities::loop_artifact::{ArtifactKind, ArtifactStatus};
+use crate::db::entities::loop_artifact_revision::ActorKind;
 use crate::db::entities::loop_inbox_item::{self, InboxKind, InboxStatus};
 use crate::db::entities::loop_issue::{self, IssueStatus, PauseReason};
 use crate::db::entities::loop_iteration::{self, IterationStatus};
@@ -35,7 +36,7 @@ use crate::db::service::loop_service::{artifact, inbox, issue, space};
 use crate::models::loops::{IssueConfig, LoopChanged, LOOP_CHANGED_EVENT};
 use crate::web::event_bridge::emit_event;
 
-use crate::loop_engine::transitions::cas_issue_status;
+use crate::loop_engine::transitions::{cas_artifact_status, cas_issue_status};
 use crate::loop_engine::worktree::{self, MergeOutcome};
 use crate::loop_engine::{LoopEngine, LoopError};
 
@@ -299,7 +300,13 @@ impl LoopEngine {
             // a merged issue never restarts, so a stale folder/worktree is inert.
             let _ = worktree::remove_worktree(&repo_path, &worktree_path).await;
             let _ = folder_service::remove_folder(conn, &folder.path).await;
-            clear_merge_card(conn, issue_id, serde_json::json!({ "action": "merged" })).await?;
+            resolve_approval_card(
+                conn,
+                issue_id,
+                &format!("merge:{issue_id}"),
+                serde_json::json!({ "action": "merged" }),
+            )
+            .await?;
             let now = Utc::now();
             loop_issue::Entity::update_many()
                 .col_expr(
@@ -327,37 +334,137 @@ impl LoopEngine {
             .await?;
         }
 
-        emit_event(
-            &self.emitter,
-            LOOP_CHANGED_EVENT,
-            LoopChanged {
-                v: 1,
-                space_id: issue.space_id,
-                issue_id: Some(issue_id),
-                subject_kind: "issue".to_string(),
-                subject_id: issue_id,
-                kind: if merged { "merged" } else { "blocked" }.to_string(),
-            },
-        );
+        self.emit_changed(issue.space_id, issue_id, if merged { "merged" } else { "blocked" });
         // Nudge the driver: on a merge it re-ticks and stops (issue terminal); on
         // a block it re-ticks, sees a non-running status, and exits.
         self.wake(issue_id).await;
         Ok(())
     }
+
+    /// Approve the design gate (route=full): mark every design that is awaiting
+    /// approval `done` and wake the driver, which then advances to planning.
+    /// [`LoopError::Conflict`] when no design is awaiting (already approved /
+    /// rejected, or none produced).
+    pub async fn approve_design(&self, issue_id: i32) -> Result<(), LoopError> {
+        let conn = &self.db.conn;
+        let issue = issue::get_issue(conn, issue_id)
+            .await?
+            .ok_or_else(|| LoopError::NotFound(format!("issue {issue_id}")))?;
+        let awaiting = awaiting_design_ids(conn, issue_id).await?;
+        if awaiting.is_empty() {
+            return Err(LoopError::Conflict);
+        }
+        for id in &awaiting {
+            cas_artifact_status(conn, *id, ArtifactStatus::AwaitingApproval, ArtifactStatus::Done)
+                .await?;
+        }
+        resolve_approval_card(
+            conn,
+            issue_id,
+            &format!("design:{issue_id}"),
+            serde_json::json!({ "action": "approve" }),
+        )
+        .await?;
+        self.emit_changed(issue.space_id, issue_id, "design_approved");
+        self.wake(issue_id).await;
+        Ok(())
+    }
+
+    /// Reject the design gate: supersede every awaiting design (recording the
+    /// reviewer's comment as a human revision so the re-dispatched design isn't
+    /// blind) and wake the driver, which produces a fresh design. Conflict when
+    /// no design is awaiting.
+    pub async fn reject_design(
+        &self,
+        issue_id: i32,
+        comment: Option<String>,
+    ) -> Result<(), LoopError> {
+        let conn = &self.db.conn;
+        let issue = issue::get_issue(conn, issue_id)
+            .await?
+            .ok_or_else(|| LoopError::NotFound(format!("issue {issue_id}")))?;
+        let awaiting = awaiting_design_ids(conn, issue_id).await?;
+        if awaiting.is_empty() {
+            return Err(LoopError::Conflict);
+        }
+        let note = comment.unwrap_or_default();
+        for id in &awaiting {
+            cas_artifact_status(
+                conn,
+                *id,
+                ArtifactStatus::AwaitingApproval,
+                ArtifactStatus::Superseded,
+            )
+            .await?;
+            if !note.trim().is_empty() {
+                artifact::add_revision(
+                    conn,
+                    *id,
+                    &format!("[design rejected] {}", note.trim()),
+                    ActorKind::Human,
+                    None,
+                )
+                .await?;
+            }
+        }
+        resolve_approval_card(
+            conn,
+            issue_id,
+            &format!("design:{issue_id}"),
+            serde_json::json!({ "action": "reject", "comment": note }),
+        )
+        .await?;
+        self.emit_changed(issue.space_id, issue_id, "design_rejected");
+        self.wake(issue_id).await;
+        Ok(())
+    }
+
+    /// Emit the coarse `loop://changed` refetch signal for an issue.
+    fn emit_changed(&self, space_id: i32, issue_id: i32, kind: &str) {
+        emit_event(
+            &self.emitter,
+            LOOP_CHANGED_EVENT,
+            LoopChanged {
+                v: 1,
+                space_id,
+                issue_id: Some(issue_id),
+                subject_kind: "issue".to_string(),
+                subject_id: issue_id,
+                kind: kind.to_string(),
+            },
+        );
+    }
 }
 
-/// Mark a pending merge-approval inbox card (`kind=approval`, `merge:{issue_id}`)
-/// handled. No-op when no such card exists — the card is created by the approval
-/// gate (Task 2.7); auto-merge and direct calls run fine without one.
-async fn clear_merge_card(
+/// The issue's design artifacts currently `awaiting_approval`.
+async fn awaiting_design_ids(
     conn: &sea_orm::DatabaseConnection,
     issue_id: i32,
+) -> Result<Vec<i32>, LoopError> {
+    let dag = artifact::list_dag(conn, issue_id).await?;
+    Ok(dag
+        .artifacts
+        .iter()
+        .filter(|a| {
+            a.kind == ArtifactKind::Design && a.status == ArtifactStatus::AwaitingApproval
+        })
+        .map(|a| a.id)
+        .collect())
+}
+
+/// Mark the pending approval inbox card (`kind=approval`, `subject_key=subject`)
+/// for an issue handled. No-op when none exists — auto paths and direct calls
+/// run fine without a card.
+async fn resolve_approval_card(
+    conn: &sea_orm::DatabaseConnection,
+    issue_id: i32,
+    subject: &str,
     resolution: serde_json::Value,
 ) -> Result<(), LoopError> {
     if let Some(card) = loop_inbox_item::Entity::find()
         .filter(loop_inbox_item::Column::IssueId.eq(issue_id))
         .filter(loop_inbox_item::Column::Kind.eq(InboxKind::Approval))
-        .filter(loop_inbox_item::Column::SubjectKey.eq(format!("merge:{issue_id}")))
+        .filter(loop_inbox_item::Column::SubjectKey.eq(subject.to_string()))
         .filter(loop_inbox_item::Column::Status.eq(InboxStatus::Pending))
         .one(conn)
         .await?
@@ -707,5 +814,88 @@ mod tests {
             engine.merge_issue(issue_id).await,
             Err(LoopError::Conflict)
         ));
+    }
+
+    // ── Design approval gate ────────────────────────────────────────────────
+
+    /// Mint an `awaiting_approval` design + its inbox card on a running issue.
+    async fn seed_awaiting_design(conn: &sea_orm::DatabaseConnection, space_id: i32, issue_id: i32) -> i32 {
+        let d = artifact::create_artifact(
+            conn,
+            space_id,
+            issue_id,
+            ArtifactKind::Design,
+            "D1",
+            ArtifactStatus::AwaitingApproval,
+            ActorKind::Agent,
+            None,
+        )
+        .await
+        .unwrap();
+        artifact::add_revision(conn, d.id, "design body", ActorKind::Agent, None)
+            .await
+            .unwrap();
+        inbox::upsert_inbox(
+            conn,
+            space_id,
+            issue_id,
+            None,
+            InboxKind::Approval,
+            &format!("design:{issue_id}"),
+            serde_json::json!({ "gate": "design" }),
+        )
+        .await
+        .unwrap();
+        d.id
+    }
+
+    #[tokio::test]
+    async fn approve_design_marks_done_and_resolves_card() {
+        let (engine, conn, space_id, issue_id) = setup().await;
+        let design_id = seed_awaiting_design(&conn, space_id, issue_id).await;
+
+        engine.approve_design(issue_id).await.unwrap();
+
+        let detail = artifact::get_artifact_detail(&conn, design_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.row.status, ArtifactStatus::Done);
+        let pending = inbox::list_inbox(&conn, space_id, Some(InboxStatus::Pending))
+            .await
+            .unwrap();
+        assert!(!pending
+            .iter()
+            .any(|c| c.subject_key == format!("design:{issue_id}")));
+        // Nothing awaiting now → a second approve conflicts.
+        assert!(matches!(
+            engine.approve_design(issue_id).await,
+            Err(LoopError::Conflict)
+        ));
+    }
+
+    #[tokio::test]
+    async fn reject_design_supersedes_and_records_comment() {
+        let (engine, conn, space_id, issue_id) = setup().await;
+        let design_id = seed_awaiting_design(&conn, space_id, issue_id).await;
+
+        engine
+            .reject_design(issue_id, Some("needs more detail".into()))
+            .await
+            .unwrap();
+
+        let detail = artifact::get_artifact_detail(&conn, design_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.row.status, ArtifactStatus::Superseded);
+        assert!(detail.revisions.iter().any(|r| r.actor_kind == ActorKind::Human
+            && r.content.contains("needs more detail")));
+        let pending = inbox::list_inbox(&conn, space_id, Some(InboxStatus::Pending))
+            .await
+            .unwrap();
+        assert!(!pending
+            .iter()
+            .any(|c| c.subject_key == format!("design:{issue_id}")));
     }
 }

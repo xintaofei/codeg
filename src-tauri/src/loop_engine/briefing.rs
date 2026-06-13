@@ -25,6 +25,8 @@ use std::collections::{HashMap, HashSet};
 use sea_orm::DatabaseConnection;
 use serde_json::{json, Value};
 
+use crate::db::entities::loop_artifact::{ArtifactKind, ArtifactStatus};
+use crate::db::entities::loop_artifact_revision::ActorKind;
 use crate::db::entities::loop_iteration::Stage;
 use crate::db::entities::loop_link::LinkKind;
 use crate::db::entities::loop_memory::{self, MemoryKind};
@@ -367,6 +369,49 @@ pub async fn assemble_briefing(
                 ));
                 components.push(json!({ "section": "validation_result", "passed": run.passed }));
             }
+        }
+    }
+
+    // ⑤c Design rework feedback — on a design re-dispatched after a human
+    // rejection, surface the prior proposal and the reviewer's comment so the new
+    // design addresses it rather than repeating it.
+    if stage == Stage::Design {
+        let dag = loop_service::artifact::list_dag(conn, issue.id).await?;
+        let mut rejected = String::new();
+        for a in dag.artifacts.iter().filter(|a| {
+            a.kind == ArtifactKind::Design && a.status == ArtifactStatus::Superseded
+        }) {
+            if let Some(d) = loop_service::artifact::get_artifact_detail(conn, a.id).await? {
+                let body = d
+                    .revisions
+                    .iter()
+                    .rev()
+                    .find(|r| r.actor_kind == ActorKind::Agent)
+                    .map(|r| r.content.trim())
+                    .unwrap_or("");
+                let note = d
+                    .revisions
+                    .iter()
+                    .rev()
+                    .find(|r| r.actor_kind == ActorKind::Human)
+                    .map(|r| r.content.trim())
+                    .unwrap_or("");
+                rejected.push_str(&format!(
+                    "\n\n## {} (rejected)\n{}",
+                    d.row.title,
+                    first_paragraph(body)
+                ));
+                if !note.is_empty() {
+                    rejected.push_str(&format!("\n\nReviewer feedback: {note}"));
+                }
+            }
+        }
+        if !rejected.is_empty() {
+            sections.push(format!(
+                "# Previously rejected design\nA prior design was rejected. Address the \
+                 feedback below and propose a revised design.{rejected}"
+            ));
+            components.push(json!({ "section": "design_rework_feedback" }));
         }
     }
 

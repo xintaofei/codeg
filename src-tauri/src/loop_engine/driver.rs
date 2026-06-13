@@ -20,10 +20,11 @@ use sea_orm::{ActiveEnum, ColumnTrait, EntityTrait, QueryFilter};
 use tokio::sync::Notify;
 
 use crate::db::entities::loop_artifact::{ArtifactKind, ArtifactStatus};
+use crate::db::entities::loop_inbox_item::InboxKind;
 use crate::db::entities::loop_issue::{self, IssueRoute, IssueStatus};
 use crate::db::entities::loop_iteration::{self, IterationStatus, Stage};
 use crate::db::entities::loop_link::LinkKind;
-use crate::db::service::loop_service::{artifact, link};
+use crate::db::service::loop_service::{artifact, inbox, link};
 use crate::db::AppDatabase;
 use crate::models::agent::AgentType;
 use crate::models::loops::{IssueConfig, LoopArtifactRow, LoopDagView};
@@ -66,8 +67,20 @@ fn root_artifact_id(dag: &LoopDagView) -> Option<i32> {
         .map(|a| a.id)
 }
 
+/// Live artifacts of a kind — excludes `superseded` / `cancelled` nodes (e.g. a
+/// rejected design) so the frontier ignores dead branches and can re-dispatch
+/// the stage fresh.
 fn artifacts_of_kind(dag: &LoopDagView, kind: ArtifactKind) -> Vec<&LoopArtifactRow> {
-    dag.artifacts.iter().filter(|a| a.kind == kind).collect()
+    dag.artifacts
+        .iter()
+        .filter(|a| {
+            a.kind == kind
+                && !matches!(
+                    a.status,
+                    ArtifactStatus::Superseded | ArtifactStatus::Cancelled
+                )
+        })
+        .collect()
 }
 
 fn all_done(rows: &[&LoopArtifactRow]) -> bool {
@@ -203,6 +216,32 @@ async fn ensure_skip_provenance(
     Ok(())
 }
 
+/// Keep the design-approval inbox card filed while any design sits
+/// `awaiting_approval`. Idempotent (the upsert dedups), so it is safe to call
+/// every tick; the card is resolved by `approve_design` / `reject_design`.
+async fn ensure_design_gate_card(
+    db: &AppDatabase,
+    issue: &loop_issue::Model,
+    dag: &LoopDagView,
+) -> Result<(), LoopError> {
+    let awaiting = dag.artifacts.iter().any(|a| {
+        a.kind == ArtifactKind::Design && a.status == ArtifactStatus::AwaitingApproval
+    });
+    if awaiting {
+        inbox::upsert_inbox(
+            &db.conn,
+            issue.space_id,
+            issue.id,
+            None,
+            InboxKind::Approval,
+            &format!("design:{}", issue.id),
+            serde_json::json!({ "v": 1, "gate": "design" }),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 /// One scheduling tick for a single issue: ensure triage, then dispatch the
 /// ready frontier. Idempotent and side-effect-guarded by the DB leases, so it
 /// is safe to call repeatedly. Takes explicit handles (not `&LoopEngine`) so it
@@ -270,6 +309,9 @@ pub(crate) async fn tick_once(
 
     let dag = artifact::list_dag(conn, issue_id).await?;
     ensure_skip_provenance(db, issue.space_id, &dag, route).await?;
+    // Design approval gate (route=full): while a produced design awaits human
+    // approval, keep its inbox card filed; the read frontier idles until approved.
+    ensure_design_gate_card(db, &issue, &dag).await?;
 
     // Read pipeline first (triage → refine → design → plan). While it has work,
     // the write pipeline waits.
@@ -395,16 +437,36 @@ mod tests {
     use super::*;
     use crate::acp::error::AcpError;
     use crate::db::entities::loop_artifact::ArtifactKind;
+    use crate::db::entities::loop_inbox_item::InboxStatus;
     use crate::db::entities::loop_issue::IssuePriority;
     use crate::db::service::loop_service::{issue, space};
     use crate::db::test_helpers::{fresh_in_memory_db, seed_folder};
     use crate::loop_engine::dispatch::settle_iteration;
     use crate::loop_engine::ingest::ingest;
+    use crate::loop_engine::transitions::cas_artifact_status;
     use crate::models::loops::IssueConfig;
     use async_trait::async_trait;
     use sea_orm::sea_query::Expr;
     use serde_json::json;
     use std::path::PathBuf;
+
+    /// Simulate a human approving the design gate (route=full), so the read
+    /// pipeline can proceed past it. The gate's blocking behavior has its own test.
+    async fn approve_awaiting_designs(db: &AppDatabase, issue_id: i32) {
+        let dag = artifact::list_dag(&db.conn, issue_id).await.unwrap();
+        for a in dag.artifacts.iter().filter(|a| {
+            a.kind == ArtifactKind::Design && a.status == ArtifactStatus::AwaitingApproval
+        }) {
+            cas_artifact_status(
+                &db.conn,
+                a.id,
+                ArtifactStatus::AwaitingApproval,
+                ArtifactStatus::Done,
+            )
+            .await
+            .unwrap();
+        }
+    }
 
     /// Minimal spawner: records nothing, just hands back a connection id so
     /// dispatch can flip the lease to running. The "agent" is simulated by the
@@ -544,6 +606,8 @@ mod tests {
                 return; // read pipeline + skip provenance complete
             }
             respond_and_settle(db, route).await;
+            // A human approves the design gate so full-route pipelines advance.
+            approve_awaiting_designs(db, issue_id).await;
         }
         panic!("read pipeline did not reach implement within the iteration budget");
     }
@@ -622,6 +686,70 @@ mod tests {
         assert!(!iters
             .iter()
             .any(|it| matches!(it.stage, Stage::Refine | Stage::Design)));
+    }
+
+    #[tokio::test]
+    async fn design_gate_blocks_plan_until_approved() {
+        let (db, data_dir, issue_id) = setup().await;
+        let spawner = StubSpawner;
+        let space_id = loop_issue::Entity::find_by_id(issue_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap()
+            .space_id;
+
+        // Drive triage(full) → refine → design, settling each but NOT approving.
+        let mut awaiting = false;
+        for _ in 0..12 {
+            tick_once(&db, &data_dir, &spawner, &EventEmitter::Noop, issue_id)
+                .await
+                .unwrap();
+            respond_and_settle(&db, "full").await;
+            let dag = artifact::list_dag(&db.conn, issue_id).await.unwrap();
+            if dag.artifacts.iter().any(|a| {
+                a.kind == ArtifactKind::Design && a.status == ArtifactStatus::AwaitingApproval
+            }) {
+                awaiting = true;
+                break;
+            }
+        }
+        assert!(awaiting, "a design reached the approval gate");
+
+        // The gate holds: a card is filed and no task is dispatched, even on a
+        // further tick.
+        tick_once(&db, &data_dir, &spawner, &EventEmitter::Noop, issue_id)
+            .await
+            .unwrap();
+        let dag = artifact::list_dag(&db.conn, issue_id).await.unwrap();
+        assert_eq!(
+            kind_count(&dag, ArtifactKind::Task),
+            0,
+            "planning is blocked by the design gate"
+        );
+        let cards = inbox::list_inbox(&db.conn, space_id, Some(InboxStatus::Pending))
+            .await
+            .unwrap();
+        assert!(cards
+            .iter()
+            .any(|c| c.kind == InboxKind::Approval
+                && c.subject_key == format!("design:{issue_id}")));
+
+        // Approve → the pipeline advances and planning produces tasks.
+        approve_awaiting_designs(&db, issue_id).await;
+        let mut tasks = 0;
+        for _ in 0..12 {
+            tick_once(&db, &data_dir, &spawner, &EventEmitter::Noop, issue_id)
+                .await
+                .unwrap();
+            respond_and_settle(&db, "full").await;
+            approve_awaiting_designs(&db, issue_id).await;
+            tasks = kind_count(&artifact::list_dag(&db.conn, issue_id).await.unwrap(), ArtifactKind::Task);
+            if tasks > 0 {
+                break;
+            }
+        }
+        assert!(tasks > 0, "planning produced tasks after approval");
     }
 
     #[test]

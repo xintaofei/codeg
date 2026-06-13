@@ -3007,7 +3007,8 @@
       "issueCreateFailed": "建立議題失敗：{message}",
       "issueDeleteFailed": "刪除議題失敗：{message}",
       "issueTriggered": "已觸發 {title}",
-      "actionFailed": "操作失敗：{message}"
+      "actionFailed": "操作失敗：{message}",
+      "inboxResolved": "已處理。"
     },
     "common": {
       "cancel": "取消",
@@ -3034,6 +3035,27 @@
       "loading": "載入中…",
       "noContent": "暫無內容。",
       "revisionCount": "{count, plural, other {# 次修訂}}"
+    },
+    "inbox": {
+      "title": "收件匣",
+      "empty": "目前沒有需要處理的項目。",
+      "issueLabel": "#{seq}",
+      "gateDesign": "設計核准",
+      "gateMerge": "合併核准",
+      "kindBlocked": "已阻塞",
+      "kindBudget": "預算用盡",
+      "kindQuestion": "提問",
+      "designDesc": "設計已就緒，規劃前需要你審閱。",
+      "mergeDesc": "結果已就緒，可合併到基準分支。",
+      "questionDesc": "代理正在提問；開啟其迭代以回答。",
+      "budgetDesc": "已使用 {used} / {budget} tokens。",
+      "approve": "核准",
+      "merge": "合併",
+      "reject": "退回",
+      "cancelIssue": "取消議題",
+      "rejectTitle": "退回",
+      "rejectPlaceholder": "原因（選填）",
+      "submitReject": "退回"
     }
   }
 }

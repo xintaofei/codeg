@@ -222,6 +222,29 @@ pub async fn reject_loop_merge(
     Ok(Json(()))
 }
 
+pub async fn approve_loop_design(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(p): Json<IdParam>,
+) -> Result<Json<()>, AppCommandError> {
+    core::approve_loop_design_core(&state.db.conn, &state.emitter, &state.loop_engine, p.id).await?;
+    Ok(Json(()))
+}
+
+pub async fn reject_loop_design(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(p): Json<RejectMergeParams>,
+) -> Result<Json<()>, AppCommandError> {
+    core::reject_loop_design_core(
+        &state.db.conn,
+        &state.emitter,
+        &state.loop_engine,
+        p.id,
+        p.comment,
+    )
+    .await?;
+    Ok(Json(()))
+}
+
 // ─── Artifacts / DAG ───────────────────────────────────────────────────────
 
 #[derive(Deserialize)]

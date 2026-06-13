@@ -3007,7 +3007,8 @@
       "issueCreateFailed": "Failed to create issue: {message}",
       "issueDeleteFailed": "Failed to delete issue: {message}",
       "issueTriggered": "Triggered {title}",
-      "actionFailed": "Action failed: {message}"
+      "actionFailed": "Action failed: {message}",
+      "inboxResolved": "完了しました。"
     },
     "common": {
       "cancel": "Cancel",
@@ -3034,6 +3035,27 @@
       "loading": "Loading…",
       "noContent": "No content yet.",
       "revisionCount": "{count, plural, one {# revision} other {# revisions}}"
+    },
+    "inbox": {
+      "title": "受信トレイ",
+      "empty": "対応が必要な項目はありません。",
+      "issueLabel": "#{seq}",
+      "gateDesign": "設計の承認",
+      "gateMerge": "マージの承認",
+      "kindBlocked": "ブロック",
+      "kindBudget": "予算超過",
+      "kindQuestion": "質問",
+      "designDesc": "設計の準備ができました。計画の前に確認してください。",
+      "mergeDesc": "結果の準備ができました。ベースブランチへマージできます。",
+      "questionDesc": "エージェントが質問しています。イテレーションを開いて回答してください。",
+      "budgetDesc": "{used} / {budget} トークンを使用。",
+      "approve": "承認",
+      "merge": "マージ",
+      "reject": "却下",
+      "cancelIssue": "課題をキャンセル",
+      "rejectTitle": "却下",
+      "rejectPlaceholder": "理由（任意）",
+      "submitReject": "却下"
     }
   }
 }

@@ -3007,7 +3007,8 @@
       "issueCreateFailed": "Failed to create issue: {message}",
       "issueDeleteFailed": "Failed to delete issue: {message}",
       "issueTriggered": "Triggered {title}",
-      "actionFailed": "Action failed: {message}"
+      "actionFailed": "Action failed: {message}",
+      "inboxResolved": "완료되었습니다."
     },
     "common": {
       "cancel": "Cancel",
@@ -3034,6 +3035,27 @@
       "loading": "Loading…",
       "noContent": "No content yet.",
       "revisionCount": "{count, plural, one {# revision} other {# revisions}}"
+    },
+    "inbox": {
+      "title": "받은 편지함",
+      "empty": "처리할 항목이 없습니다.",
+      "issueLabel": "#{seq}",
+      "gateDesign": "설계 승인",
+      "gateMerge": "병합 승인",
+      "kindBlocked": "차단됨",
+      "kindBudget": "예산 소진",
+      "kindQuestion": "질문",
+      "designDesc": "설계가 준비되었습니다. 계획 전에 검토하세요.",
+      "mergeDesc": "결과가 준비되었습니다. 기준 브랜치로 병합할 수 있습니다.",
+      "questionDesc": "에이전트가 질문하고 있습니다. 반복을 열어 답변하세요.",
+      "budgetDesc": "{used} / {budget} 토큰 사용.",
+      "approve": "승인",
+      "merge": "병합",
+      "reject": "거부",
+      "cancelIssue": "이슈 취소",
+      "rejectTitle": "거부",
+      "rejectPlaceholder": "사유 (선택)",
+      "submitReject": "거부"
     }
   }
 }

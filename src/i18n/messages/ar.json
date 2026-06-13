@@ -3007,7 +3007,8 @@
       "issueCreateFailed": "Failed to create issue: {message}",
       "issueDeleteFailed": "Failed to delete issue: {message}",
       "issueTriggered": "Triggered {title}",
-      "actionFailed": "Action failed: {message}"
+      "actionFailed": "Action failed: {message}",
+      "inboxResolved": "تم."
     },
     "common": {
       "cancel": "Cancel",
@@ -3034,6 +3035,27 @@
       "loading": "Loading…",
       "noContent": "No content yet.",
       "revisionCount": "{count, plural, one {# revision} other {# revisions}}"
+    },
+    "inbox": {
+      "title": "صندوق الوارد",
+      "empty": "لا يوجد ما يتطلب انتباهك.",
+      "issueLabel": "#{seq}",
+      "gateDesign": "الموافقة على التصميم",
+      "gateMerge": "الموافقة على الدمج",
+      "kindBlocked": "متوقّف",
+      "kindBudget": "نفدت الميزانية",
+      "kindQuestion": "سؤال",
+      "designDesc": "التصميم جاهز للمراجعة قبل بدء التخطيط.",
+      "mergeDesc": "النتيجة جاهزة للدمج في الفرع الأساسي.",
+      "questionDesc": "هناك وكيل يطرح سؤالاً؛ افتح التكرار للإجابة.",
+      "budgetDesc": "تم استخدام {used} من {budget} رمزًا.",
+      "approve": "موافقة",
+      "merge": "دمج",
+      "reject": "رفض",
+      "cancelIssue": "إلغاء المهمة",
+      "rejectTitle": "رفض",
+      "rejectPlaceholder": "السبب (اختياري)",
+      "submitReject": "رفض"
     }
   }
 }

@@ -297,6 +297,33 @@ pub async fn reject_loop_merge_core(
     Ok(())
 }
 
+// ─── Design approval gate (route=full) ──────────────────────────────────────
+
+/// Approve the design gate: the engine marks the design done and advances the
+/// issue to planning (and emits the change event).
+pub async fn approve_loop_design_core(
+    _conn: &DatabaseConnection,
+    _emitter: &EventEmitter,
+    engine: &Arc<LoopEngine>,
+    id: i32,
+) -> Result<(), AppCommandError> {
+    engine.approve_design(id).await?;
+    Ok(())
+}
+
+/// Reject the design gate with a comment: the engine supersedes the design and
+/// re-runs design with the feedback (and emits the change event).
+pub async fn reject_loop_design_core(
+    _conn: &DatabaseConnection,
+    _emitter: &EventEmitter,
+    engine: &Arc<LoopEngine>,
+    id: i32,
+    comment: Option<String>,
+) -> Result<(), AppCommandError> {
+    engine.reject_design(id, comment).await?;
+    Ok(())
+}
+
 // ─── Artifacts / DAG ───────────────────────────────────────────────────────
 
 pub async fn get_loop_dag_core(
@@ -562,6 +589,29 @@ pub async fn reject_loop_merge(
     comment: Option<String>,
 ) -> Result<(), AppCommandError> {
     reject_loop_merge_core(&db.conn, &EventEmitter::Tauri(app), engine.inner(), id, comment).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn approve_loop_design(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    engine: tauri::State<'_, Arc<LoopEngine>>,
+    id: i32,
+) -> Result<(), AppCommandError> {
+    approve_loop_design_core(&db.conn, &EventEmitter::Tauri(app), engine.inner(), id).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn reject_loop_design(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    engine: tauri::State<'_, Arc<LoopEngine>>,
+    id: i32,
+    comment: Option<String>,
+) -> Result<(), AppCommandError> {
+    reject_loop_design_core(&db.conn, &EventEmitter::Tauri(app), engine.inner(), id, comment).await
 }
 
 #[cfg(feature = "tauri-runtime")]

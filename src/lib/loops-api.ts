@@ -104,6 +104,30 @@ export function cancelLoopIssue(id: number) {
   return getTransport().call<void>("cancel_loop_issue", { id })
 }
 
+// ─── Approval gates (design / merge) ────────────────────────────────────────
+
+export function approveLoopDesign(id: number) {
+  return getTransport().call<void>("approve_loop_design", { id })
+}
+
+export function rejectLoopDesign(id: number, comment?: string) {
+  return getTransport().call<void>("reject_loop_design", {
+    id,
+    comment: comment ?? null,
+  })
+}
+
+export function approveLoopMerge(id: number) {
+  return getTransport().call<void>("approve_loop_merge", { id })
+}
+
+export function rejectLoopMerge(id: number, comment?: string) {
+  return getTransport().call<void>("reject_loop_merge", {
+    id,
+    comment: comment ?? null,
+  })
+}
+
 // ─── Artifacts / DAG ───────────────────────────────────────────────────────
 
 export function getLoopDag(issueId: number) {

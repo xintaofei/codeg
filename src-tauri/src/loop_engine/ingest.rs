@@ -77,11 +77,14 @@ fn artifact_kind_for_stage(stage: Stage) -> Result<ArtifactKind, LoopError> {
     }
 }
 
-/// Tasks land `pending` (awaiting implement); requirement/design are accepted
-/// outputs (`done`). Approval gating refines design status in a later phase.
+/// Initial status by kind: tasks land `pending` (awaiting implement); a design
+/// lands `awaiting_approval` (the human design gate — the driver files the inbox
+/// card and planning waits until a person approves); requirement / result are
+/// accepted outputs (`done`).
 fn default_status_for_kind(kind: ArtifactKind) -> ArtifactStatus {
     match kind {
         ArtifactKind::Task => ArtifactStatus::Pending,
+        ArtifactKind::Design => ArtifactStatus::AwaitingApproval,
         _ => ArtifactStatus::Done,
     }
 }

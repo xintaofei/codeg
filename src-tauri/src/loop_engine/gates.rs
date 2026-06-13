@@ -796,10 +796,23 @@ pub(crate) async fn run_finalize(
     let worktree_path = Path::new(&folder.path);
 
     // Result already produced → commit any finalize worktree changes as the final
-    // checkpoint, then idle (the human merge gate is Task 2.6).
+    // checkpoint, then idle. With a human merge gate (auto_merge off) keep the
+    // approval inbox card filed; auto_merge lands via the driver instead.
     if dag.artifacts.iter().any(|a| a.kind == ArtifactKind::Result) {
         let message = format!("loop: finalize (issue #{})", issue.seq_no);
         worktree::checkpoint(worktree_path, &message).await?;
+        if !config.auto_merge {
+            loop_service::inbox::upsert_inbox(
+                &db.conn,
+                issue.space_id,
+                issue.id,
+                None,
+                InboxKind::Approval,
+                &format!("merge:{}", issue.id),
+                serde_json::json!({ "v": 1, "gate": "merge" }),
+            )
+            .await?;
+        }
         return Ok(false);
     }
 
