@@ -2975,7 +2975,8 @@
       "boardPlaceholder": "A read-only board view arrives with the engine.",
       "rootArtifact": "Issue",
       "noIterations": "No iterations yet.",
-      "noArtifacts": "Only the root issue artifact so far."
+      "noArtifacts": "Only the root issue artifact so far.",
+      "executingNow": "Executing now"
     },
     "status": {
       "pending": "Pending",
@@ -3011,6 +3012,28 @@
     "common": {
       "cancel": "Cancel",
       "delete": "Delete"
+    },
+    "artifactKind": {
+      "issue": "Issue",
+      "requirement": "Requirement",
+      "design": "Design",
+      "task": "Task",
+      "review": "Review",
+      "result": "Result"
+    },
+    "artifactStatus": {
+      "pending": "Pending",
+      "in_progress": "In progress",
+      "awaiting_approval": "Awaiting approval",
+      "done": "Done",
+      "blocked": "Blocked",
+      "superseded": "Superseded",
+      "cancelled": "Cancelled"
+    },
+    "artifactDrawer": {
+      "loading": "Loading…",
+      "noContent": "No content yet.",
+      "revisionCount": "{count, plural, one {# revision} other {# revisions}}"
     }
   }
 }

@@ -2975,7 +2975,8 @@
       "boardPlaceholder": "唯讀看板檢視將隨引擎一併提供。",
       "rootArtifact": "議題",
       "noIterations": "還沒有迭代。",
-      "noArtifacts": "目前只有根議題工件。"
+      "noArtifacts": "目前只有根議題工件。",
+      "executingNow": "本輪執行中"
     },
     "status": {
       "pending": "待觸發",
@@ -3011,6 +3012,28 @@
     "common": {
       "cancel": "取消",
       "delete": "刪除"
+    },
+    "artifactKind": {
+      "issue": "議題",
+      "requirement": "需求",
+      "design": "設計",
+      "task": "任務",
+      "review": "評審",
+      "result": "結果"
+    },
+    "artifactStatus": {
+      "pending": "待處理",
+      "in_progress": "進行中",
+      "awaiting_approval": "待審批",
+      "done": "完成",
+      "blocked": "受阻",
+      "superseded": "已取代",
+      "cancelled": "已取消"
+    },
+    "artifactDrawer": {
+      "loading": "載入中…",
+      "noContent": "暫無內容。",
+      "revisionCount": "{count, plural, other {# 次修訂}}"
     }
   }
 }

@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Ban, Loader2, Pause, Play, Settings2 } from "lucide-react"
 import { toast } from "sonner"
@@ -9,15 +9,23 @@ import {
   cancelLoopIssue,
   getLoopDag,
   getLoopIssue,
+  listLoopIterations,
   pauseLoopIssue,
   resumeLoopIssue,
   triggerLoopIssue,
 } from "@/lib/loops-api"
-import type { LoopArtifactRow, LoopIssueDetail } from "@/lib/types"
+import type {
+  LoopArtifactRow,
+  LoopIssueDetail,
+  LoopIterationRow,
+  LoopLinkRow,
+} from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
 import { useLoopChanged } from "@/hooks/use-loop-changed"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { DagGraph } from "@/components/loops/dag-graph"
+import { ArtifactDrawer } from "@/components/loops/artifact-drawer"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -42,14 +50,21 @@ export function IssueDetail({ issueId }: { issueId: number | null }) {
 
   const [issue, setIssue] = useState<LoopIssueDetail | null>(null)
   const [artifacts, setArtifacts] = useState<LoopArtifactRow[]>([])
+  const [links, setLinks] = useState<LoopLinkRow[]>([])
+  const [iterations, setIterations] = useState<LoopIterationRow[]>([])
   const [loading, setLoading] = useState(false)
   const [actionBusy, setActionBusy] = useState(false)
   const [cancelOpen, setCancelOpen] = useState(false)
+  const [selectedArtifactId, setSelectedArtifactId] = useState<number | null>(
+    null
+  )
 
   const refresh = useCallback(async () => {
     if (issueId == null) {
       setIssue(null)
       setArtifacts([])
+      setLinks([])
+      setIterations([])
       return
     }
     setLoading(true)
@@ -60,10 +75,33 @@ export function IssueDetail({ issueId }: { issueId: number | null }) {
       ])
       setIssue(detail)
       setArtifacts(dag.artifacts)
+      setLinks(dag.links)
+      // Iterations drive the "executing now" highlight (read-stage artifacts
+      // land done/pending, so status alone can't show a live node). A failure
+      // here is non-fatal — the graph still renders without the highlight.
+      const iters = detail
+        ? await listLoopIterations(detail.space_id, issueId).catch(
+            () => [] as LoopIterationRow[]
+          )
+        : []
+      setIterations(iters)
     } finally {
       setLoading(false)
     }
   }, [issueId])
+
+  // Artifact ids with a live iteration: a target node for non-triage stages, or
+  // the issue root while triage runs (triage targets the whole issue).
+  const executingIds = useMemo(() => {
+    const ids = new Set<number>()
+    const root = artifacts.find((a) => a.kind === "issue")
+    for (const it of iterations) {
+      if (it.status !== "queued" && it.status !== "running") continue
+      if (it.target_artifact_id != null) ids.add(it.target_artifact_id)
+      else if (it.stage === "triage" && root) ids.add(root.id)
+    }
+    return ids
+  }, [iterations, artifacts])
 
   useEffect(() => {
     void refresh()
@@ -217,12 +255,17 @@ export function IssueDetail({ issueId }: { issueId: number | null }) {
             value="graph"
             className="min-h-0 flex-1 overflow-auto p-5 data-[state=inactive]:hidden"
           >
-            <div className="flex flex-col items-center gap-4">
-              <ArtifactNode label={t("rootArtifact")} title={issue.title} />
-              <p className="text-center text-xs text-muted-foreground">
+            <DagGraph
+              artifacts={artifacts}
+              links={links}
+              executingIds={executingIds}
+              onSelect={setSelectedArtifactId}
+            />
+            {artifacts.length <= 1 && (
+              <p className="mt-4 text-center text-xs text-muted-foreground">
                 {t("graphPlaceholder")}
               </p>
-            </div>
+            )}
           </TabsContent>
           <TabsContent
             value="board"
@@ -309,17 +352,11 @@ export function IssueDetail({ issueId }: { issueId: number | null }) {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
-  )
-}
 
-function ArtifactNode({ label, title }: { label: string; title: string }) {
-  return (
-    <div className="flex min-w-40 max-w-xs flex-col gap-1 rounded-lg border bg-card px-3 py-2 shadow-sm">
-      <span className="text-[0.625rem] uppercase tracking-wide text-muted-foreground">
-        {label}
-      </span>
-      <span className="truncate text-sm font-medium">{title}</span>
+      <ArtifactDrawer
+        artifactId={selectedArtifactId}
+        onClose={() => setSelectedArtifactId(null)}
+      />
     </div>
   )
 }
