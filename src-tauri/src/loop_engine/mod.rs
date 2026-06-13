@@ -14,15 +14,20 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tokio::sync::{Mutex, Notify};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use tokio::sync::{broadcast, Mutex, Notify};
 use tokio::task::AbortHandle;
 
+use crate::acp::internal_bus::InternalEventBus;
 use crate::acp::manager::ConnectionManager;
+use crate::acp::types::AcpEvent;
+use crate::db::entities::loop_iteration::{self, IterationStatus};
 use crate::db::AppDatabase;
 use crate::web::event_bridge::EventEmitter;
 
 pub mod briefing;
 pub mod dispatch;
+pub mod driver;
 pub mod error;
 pub mod ingest;
 pub mod transitions;
@@ -47,7 +52,6 @@ pub struct LoopEngine {
     emitter: EventEmitter,
     /// Process-internal single-instance guard: at most one driver task per
     /// issue. NOT the concurrency authority — that is the DB dispatch lease.
-    #[allow(dead_code)]
     drivers: Mutex<HashMap<i32, DriverHandle>>,
 }
 
@@ -67,21 +71,114 @@ impl LoopEngine {
         })
     }
 
-    /// Start the per-issue driver task (no-op if one is already registered).
-    /// The tick loop lands in Task 1.6.
-    pub async fn start_issue(self: &Arc<Self>, _issue_id: i32) {}
+    /// Start the per-issue driver task (no-op if one is already registered —
+    /// the registry is the in-process single-instance guard). The task ticks,
+    /// then parks on its wake `Notify` until a completion or external nudge.
+    pub async fn start_issue(self: &Arc<Self>, issue_id: i32) {
+        let mut drivers = self.drivers.lock().await;
+        if drivers.contains_key(&issue_id) {
+            return;
+        }
+        let wake = Arc::new(Notify::new());
+        let engine = Arc::clone(self);
+        let wake_for_task = Arc::clone(&wake);
+        let join = tokio::spawn(async move {
+            driver::run_driver(engine, issue_id, wake_for_task).await;
+        });
+        drivers.insert(
+            issue_id,
+            DriverHandle {
+                abort: join.abort_handle(),
+                wake,
+            },
+        );
+    }
 
     /// Wake a running driver to re-tick after an iteration settles or a human
-    /// action lands. No-op when the issue has no driver. Implemented in Task 1.6.
-    pub fn wake(&self, _issue_id: i32) {}
+    /// action lands. No-op when the issue has no driver. `notify_one` buffers a
+    /// permit, so a wake that races ahead of the driver's `notified().await` is
+    /// not lost.
+    pub async fn wake(&self, issue_id: i32) {
+        let drivers = self.drivers.lock().await;
+        if let Some(handle) = drivers.get(&issue_id) {
+            handle.wake.notify_one();
+        }
+    }
 
-    /// Stop a running driver and drop its registry entry. Implemented alongside
-    /// cancel in Task 1.8.
-    pub async fn stop_issue(&self, _issue_id: i32) {}
+    /// Stop a running driver and drop its registry entry.
+    pub async fn stop_issue(&self, issue_id: i32) {
+        let mut drivers = self.drivers.lock().await;
+        if let Some(handle) = drivers.remove(&issue_id) {
+            handle.abort.abort();
+        }
+    }
+
+    /// Remove a driver's registry entry. Called by the driver task itself when
+    /// it exits cleanly (issue left `running`); idempotent with `stop_issue`.
+    pub(crate) async fn deregister_driver(&self, issue_id: i32) {
+        self.drivers.lock().await.remove(&issue_id);
+    }
 
     /// On boot, reconcile interrupted iterations and restart a driver for every
     /// still-`running` issue. Idempotent. Reconciliation lands in Task 1.7.
     pub async fn recover_on_boot(self: &Arc<Self>) {}
+
+    /// Subscribe to the in-process event bus and settle + wake loop iterations
+    /// as their turns complete. This is the engine's completion-awareness: a
+    /// separate, additive bus subscriber (it never touches the delegation
+    /// lifecycle path), reacting only to loop conversations.
+    pub fn spawn_completion_watcher(self: &Arc<Self>, bus: Arc<InternalEventBus>) {
+        let engine = Arc::clone(self);
+        let mut rx = bus.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(envelope) => {
+                        if matches!(envelope.payload, AcpEvent::TurnComplete { .. }) {
+                            engine.on_turn_complete(&envelope.connection_id).await;
+                        }
+                    }
+                    // Fell behind the broadcast buffer — keep going; a missed
+                    // TurnComplete is reconciled by crash recovery (Task 1.7).
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+
+    /// Settle the loop iteration backing a just-completed connection's turn,
+    /// then wake its issue driver to advance the DAG. No-op for any connection
+    /// that isn't a running loop iteration (e.g. ordinary or delegation turns).
+    pub async fn on_turn_complete(self: &Arc<Self>, connection_id: &str) {
+        // Resolve the conversation backing this connection (in-memory, same as
+        // the delegation lifecycle path).
+        let Some((state, _)) = self.manager.get_state_and_emitter(connection_id).await else {
+            return;
+        };
+        let conversation_id = state.read().await.conversation_id;
+        let Some(cid) = conversation_id else {
+            return;
+        };
+        // DB-authoritative: is this conversation a running loop iteration?
+        let iter = match loop_iteration::Entity::find()
+            .filter(loop_iteration::Column::ConversationId.eq(cid))
+            .filter(loop_iteration::Column::Status.eq(IterationStatus::Running))
+            .one(&self.db.conn)
+            .await
+        {
+            Ok(Some(it)) => it,
+            Ok(None) => return,
+            Err(e) => {
+                eprintln!("[loop] on_turn_complete iteration lookup failed: {e}");
+                return;
+            }
+        };
+        if let Err(e) = self.settle_iteration(iter.id).await {
+            eprintln!("[loop] settle iteration {} failed: {e}", iter.id);
+        }
+        self.wake(iter.issue_id).await;
+    }
 
     /// Run the §4.3 seven-step dispatch for a single frontier decision. Returns
     /// `Ok(None)` when the dispatch lease was already held (lost the race). The

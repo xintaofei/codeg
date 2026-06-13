@@ -52,7 +52,7 @@ pub enum PauseReason {
 /// Pipeline route decided by triage (or forced via config). `full` runs
 /// refine→design→plan; `skip_design` skips design; `direct` skips both refine
 /// and design (issue→plan). `undecided` until triage runs.
-#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
 #[sea_orm(rs_type = "String", db_type = "String(StringLen::None)")]
 #[serde(rename_all = "snake_case")]
 pub enum IssueRoute {

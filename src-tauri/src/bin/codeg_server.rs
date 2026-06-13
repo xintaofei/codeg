@@ -327,6 +327,9 @@ async fn async_main() {
             engine.recover_on_boot().await;
         });
     }
+    // React to loop iteration turn-completions via the in-process event bus
+    // (additive subscriber; never touches the delegation lifecycle path).
+    loop_engine.spawn_completion_watcher(state.acp_event_bus.clone());
 
     // Install bundled expert skills into the central store
     // (`~/.codeg/skills/`). Runs in the background; failures are logged

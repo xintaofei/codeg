@@ -519,6 +519,14 @@ mod tauri_app {
                         web::event_bridge::EventEmitter::Tauri(app.handle().clone()),
                     );
                     app.manage(loop_engine.clone());
+                    // React to loop iteration turn-completions via the in-process
+                    // event bus (additive subscriber; never touches the delegation
+                    // lifecycle path).
+                    let loop_bus = app
+                        .state::<std::sync::Arc<crate::acp::InternalEventBus>>()
+                        .inner()
+                        .clone();
+                    loop_engine.spawn_completion_watcher(loop_bus);
                     tauri::async_runtime::spawn(async move {
                         loop_engine.recover_on_boot().await;
                     });
