@@ -146,7 +146,7 @@ enum Conversation {
 #[cfg(test)]
 mod tests {
     use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
-    use sea_orm_migration::MigratorTrait;
+    use sea_orm_migration::{MigrationName, MigratorTrait};
 
     use crate::db::migration::Migrator;
 
@@ -171,8 +171,14 @@ mod tests {
     #[tokio::test]
     async fn backfills_folder_and_conversation_kind() {
         let conn = Database::connect("sqlite::memory:").await.expect("db");
-        let total = <Migrator as MigratorTrait>::migrations().len() as u32;
-        Migrator::up(&conn, Some(total - 1))
+        // Run every migration strictly *before* this one, then seed legacy rows.
+        // Pin to this migration's own index by name so appending later
+        // migrations (e.g. the loop tables) never shifts the cut point.
+        let idx = <Migrator as MigratorTrait>::migrations()
+            .iter()
+            .position(|m| m.name() == "m20260612_000001_conversation_folder_kind")
+            .expect("migration present") as u32;
+        Migrator::up(&conn, Some(idx))
             .await
             .expect("legacy migrations");
 
