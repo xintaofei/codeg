@@ -12,15 +12,6 @@ import { ChevronsDownUp, ChevronsUpDown, GitBranch } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import {
-  CommitFileAdditions,
-  CommitFileChanges,
-  CommitFileDeletions,
-  CommitFileIcon,
-  CommitFileInfo,
-  CommitFilePath,
-  CommitFileStatus,
-} from "@/components/ai-elements/commit"
-import {
   FileTree,
   FileTreeFile,
   FileTreeFolder,
@@ -362,14 +353,41 @@ function isUntrackedStatus(status: string): boolean {
   return status.trim().toUpperCase() === UNTRACKED_STATUS
 }
 
-function mapStatus(
-  status: string
-): "added" | "modified" | "deleted" | "renamed" {
+function getChangeStatusClassName(status: string): string {
+  const state = classifyGitFileState(status)
+  if (state === "untracked") return "text-red-400"
+  if (state === "conflicted") return "text-amber-400"
+  if (state === "deleted") return "text-orange-400"
+  if (state === "renamed") return "text-violet-400"
+  return "text-emerald-400"
+}
+
+function getChangeStatusPrefix(status: string) {
   const normalized = status.trim().toUpperCase()
-  if (normalized.includes("A")) return "added"
-  if (normalized.includes("R") || normalized.includes("C")) return "renamed"
-  if (normalized.includes("D")) return "deleted"
-  return "modified"
+  const label = normalized === UNTRACKED_STATUS ? "U" : normalized || "M"
+
+  return (
+    <span
+      className={`w-5 shrink-0 text-center text-[10px] font-semibold leading-6 ${getChangeStatusClassName(status)}`}
+      data-git-change-status={label}
+      title={status}
+    >
+      {label}
+    </span>
+  )
+}
+
+function getChangeSummary(change: WorkingTreeChange) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      {change.additions > 0 ? (
+        <span className="text-emerald-400">+{change.additions}</span>
+      ) : null}
+      {change.deletions > 0 ? (
+        <span className="text-red-400">-{change.deletions}</span>
+      ) : null}
+    </span>
+  )
 }
 
 function canOpenFile(status: string): boolean {
@@ -838,6 +856,8 @@ export function GitChangesTab() {
               <FileTreeFolder
                 path={node.path}
                 name={node.name}
+                showIcon={false}
+                nameClassName="text-foreground"
                 suffix={`(${node.fileCount})`}
                 suffixClassName="text-muted-foreground/45"
                 title={node.path}
@@ -906,27 +926,15 @@ export function GitChangesTab() {
             <FileTreeFile
               className="w-full min-w-0 cursor-pointer"
               name={node.name}
+              nameClassName="min-w-0 truncate text-foreground"
               onClick={() => {
                 void openWorkingTreeDiff(file.path)
               }}
               path={node.path}
+              prefix={getChangeStatusPrefix(file.status)}
+              suffix={getChangeSummary(file)}
               title={file.path}
-            >
-              <>
-                <span className="size-4 shrink-0" />
-                <CommitFileInfo className="flex-1 min-w-0 gap-1.5">
-                  <CommitFileStatus status={mapStatus(file.status)}>
-                    {file.status}
-                  </CommitFileStatus>
-                  <CommitFileIcon />
-                  <CommitFilePath title={file.path}>{node.name}</CommitFilePath>
-                </CommitFileInfo>
-                <CommitFileChanges>
-                  <CommitFileAdditions count={file.additions} />
-                  <CommitFileDeletions count={file.deletions} />
-                </CommitFileChanges>
-              </>
-            </FileTreeFile>
+            />
           </ContextMenuTrigger>
           <ContextMenuContent>
             <ContextMenuItem
@@ -1010,6 +1018,8 @@ export function GitChangesTab() {
               <FileTreeFolder
                 path={node.path}
                 name={node.name}
+                showIcon={false}
+                nameClassName="text-foreground"
                 suffix={`(${node.fileCount})`}
                 suffixClassName="text-muted-foreground/45"
                 title={node.path}
@@ -1081,20 +1091,14 @@ export function GitChangesTab() {
             <FileTreeFile
               className="w-full min-w-0 cursor-pointer"
               name={node.name}
+              nameClassName="min-w-0 truncate text-foreground"
               onClick={() => {
                 void openWorkingTreeDiff(file.path)
               }}
               path={node.path}
+              prefix={getChangeStatusPrefix(file.status)}
               title={file.path}
-            >
-              <>
-                <span className="size-4 shrink-0" />
-                <CommitFileInfo className="flex-1 min-w-0 gap-1.5">
-                  <CommitFileIcon />
-                  <CommitFilePath title={file.path}>{node.name}</CommitFilePath>
-                </CommitFileInfo>
-              </>
-            </FileTreeFile>
+            />
           </ContextMenuTrigger>
           <ContextMenuContent>
             <ContextMenuItem
@@ -1249,7 +1253,7 @@ export function GitChangesTab() {
                   </Button>
                 </div>
                 <FileTree
-                  className="rounded-none border-0 bg-transparent text-xs [&>div]:p-0"
+                  className="rounded-none border-0 bg-transparent text-[13px] [&>div]:p-0"
                   expanded={expandedTrackedPaths}
                   onExpandedChange={setExpandedTrackedPaths}
                 >
@@ -1258,6 +1262,8 @@ export function GitChangesTab() {
                       <FileTreeFolder
                         path={TRACKED_ROOT_PATH}
                         name={folderName}
+                        showIcon={false}
+                        nameClassName="text-foreground"
                         suffix={`(${trackedChanges.length})`}
                         suffixClassName="text-muted-foreground/45"
                         title={folderName}
@@ -1358,7 +1364,7 @@ export function GitChangesTab() {
                   </Button>
                 </div>
                 <FileTree
-                  className="rounded-none border-0 bg-transparent text-xs [&>div]:p-0"
+                  className="rounded-none border-0 bg-transparent text-[13px] [&>div]:p-0"
                   expanded={expandedUntrackedPaths}
                   onExpandedChange={setExpandedUntrackedPaths}
                 >
@@ -1367,6 +1373,8 @@ export function GitChangesTab() {
                       <FileTreeFolder
                         path={UNTRACKED_ROOT_PATH}
                         name={folderName}
+                        showIcon={false}
+                        nameClassName="text-foreground"
                         suffix={`(${untrackedChanges.length})`}
                         suffixClassName="text-muted-foreground/45"
                         title={folderName}

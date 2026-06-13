@@ -1534,6 +1534,8 @@
     "fileTreeTab": {
       "workspace": "مساحة العمل",
       "retry": "إعادة المحاولة",
+      "filterPlaceholder": "تصفية الملفات...",
+      "filterNoResults": "لا توجد ملفات مطابقة",
       "git": "Git",
       "openInFileManager": "فتح في مدير الملفات",
       "openInFinder": "فتح في Finder",

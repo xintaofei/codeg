@@ -29,6 +29,29 @@ describe("aux-panel-file-tree-tab external conflict reload wiring", () => {
   })
 })
 
+describe("aux-panel-file-tree-tab file tree presentation", () => {
+  it("uses a padded transparent tree surface in the aux panel", () => {
+    expect(source).toMatch(/<ScrollArea className="[^"]*px-2[^"]*py-1\.5/)
+    expect(source).toMatch(
+      /<FileTree[\s\S]*className="[^"]*bg-transparent[^"]*text-\[13px\]/
+    )
+  })
+
+  it("keeps the Codex-style workspace tree filter local to the aux panel", () => {
+    expect(source).toMatch(/placeholder=\{t\("filterPlaceholder"\)\}/)
+    expect(source).toMatch(/\bfilterFileTreeNodesForQuery\b/)
+    expect(source).not.toMatch(/file-workspace-panel/)
+    expect(source).not.toMatch(/monaco-editor/)
+  })
+
+  it("uses compact git status markers instead of coloring whole file rows", () => {
+    expect(source).toMatch(/prefix=\{getGitFileStateIndicator/)
+    expect(source).not.toMatch(
+      /<FileTreeFile[\s\S]*className=\{[\s\S]*getGitFileStateClassName/
+    )
+  })
+})
+
 describe("aux-panel-file-tree-tab external-change watcher coverage", () => {
   it("destructures the background-reload, stale, and prefetched-apply APIs", () => {
     // Catching external changes for non-active tabs requires these APIs;
