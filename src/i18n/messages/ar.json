@@ -3009,7 +3009,9 @@
       "issueTriggered": "Triggered {title}",
       "actionFailed": "Action failed: {message}",
       "inboxResolved": "تم.",
-      "configSaved": "تم حفظ الإعدادات."
+      "configSaved": "تم حفظ الإعدادات.",
+      "memorySaved": "تم الحفظ.",
+      "memoryDeleted": "تم الحذف."
     },
     "common": {
       "cancel": "Cancel",
@@ -3123,6 +3125,56 @@
       "implement": "التنفيذ",
       "review": "المراجعة",
       "finalize": "الإنهاء"
+    },
+    "iterationStatus": {
+      "queued": "في الانتظار",
+      "running": "قيد التشغيل",
+      "succeeded": "نجحت",
+      "failed": "فشلت",
+      "interrupted": "مقاطعة",
+      "cancelled": "أُلغيت"
+    },
+    "memoryKind": {
+      "constitution": "دستور",
+      "constraint": "قيد",
+      "decision": "قرار",
+      "preference": "تفضيل",
+      "pitfall": "مأزق"
+    },
+    "iterationList": {
+      "empty": "لا توجد تكرارات بعد.",
+      "expand": "توسيع",
+      "collapse": "طي",
+      "attempt": "المحاولة {n}",
+      "tokens": "{count} رمز",
+      "openConversation": "فتح المحادثة",
+      "producedArtifacts": "العناصر المنتَجة",
+      "nothingProduced": "لا إنتاج.",
+      "validationRuns": "عمليات التحقق",
+      "passed": "ناجح",
+      "failed": "فاشل"
+    },
+    "artifactList": {
+      "empty": "لا توجد عناصر بعد.",
+      "fromIteration": "تكرار #{id}"
+    },
+    "boardView": {
+      "empty": "لا توجد عناصر بعد."
+    },
+    "memory": {
+      "subtitle": "القيود والقرارات والمزالق المضمّنة في كل إحاطة.",
+      "add": "إضافة",
+      "addTitle": "ذاكرة جديدة",
+      "kindLabel": "النوع",
+      "titleLabel": "العنوان",
+      "titlePlaceholder": "ملخص قصير",
+      "contentLabel": "المحتوى",
+      "contentPlaceholder": "تفاصيل (اختياري)",
+      "create": "إنشاء",
+      "archive": "أرشفة",
+      "restore": "استعادة",
+      "archived": "مؤرشَفة",
+      "empty": "لا توجد ذاكرة بعد."
     }
   }
 }

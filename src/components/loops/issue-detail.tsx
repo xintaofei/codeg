@@ -27,6 +27,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DagGraph } from "@/components/loops/dag-graph"
 import { ArtifactDrawer } from "@/components/loops/artifact-drawer"
 import { IssueSettingsDialog } from "@/components/loops/issue-settings-dialog"
+import { BoardView } from "@/components/loops/board-view"
+import { IterationList } from "@/components/loops/iteration-list"
+import { ArtifactList } from "@/components/loops/artifact-list"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -278,9 +281,7 @@ export function IssueDetail({ issueId }: { issueId: number | null }) {
             value="board"
             className="min-h-0 flex-1 overflow-auto p-5 data-[state=inactive]:hidden"
           >
-            <p className="text-center text-xs text-muted-foreground">
-              {t("boardPlaceholder")}
-            </p>
+            <BoardView artifacts={artifacts} onSelect={setSelectedArtifactId} />
           </TabsContent>
         </Tabs>
       </div>
@@ -301,28 +302,17 @@ export function IssueDetail({ issueId }: { issueId: number | null }) {
             value="iterations"
             className="min-h-0 flex-1 overflow-y-auto px-5 py-2 data-[state=inactive]:hidden"
           >
-            <p className="text-xs text-muted-foreground">{t("noIterations")}</p>
+            <IterationList spaceId={issue.space_id} issueId={issue.id} />
           </TabsContent>
           <TabsContent
             value="artifacts"
             className="min-h-0 flex-1 overflow-y-auto px-5 py-2 data-[state=inactive]:hidden"
           >
-            {artifacts.length <= 1 ? (
-              <p className="text-xs text-muted-foreground">
-                {t("noArtifacts")}
-              </p>
-            ) : (
-              <ul className="space-y-1 text-sm">
-                {artifacts.map((a) => (
-                  <li key={a.id} className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground">
-                      {a.kind}
-                    </span>
-                    <span className="truncate">{a.title}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <ArtifactList
+              artifacts={artifacts}
+              onSelect={setSelectedArtifactId}
+              showIssue={false}
+            />
           </TabsContent>
         </Tabs>
       </div>

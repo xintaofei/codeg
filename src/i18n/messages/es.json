@@ -3009,7 +3009,9 @@
       "issueTriggered": "Triggered {title}",
       "actionFailed": "Action failed: {message}",
       "inboxResolved": "Hecho.",
-      "configSaved": "Configuración guardada."
+      "configSaved": "Configuración guardada.",
+      "memorySaved": "Guardado.",
+      "memoryDeleted": "Eliminado."
     },
     "common": {
       "cancel": "Cancel",
@@ -3123,6 +3125,56 @@
       "implement": "Implementar",
       "review": "Revisión",
       "finalize": "Finalizar"
+    },
+    "iterationStatus": {
+      "queued": "En cola",
+      "running": "En ejecución",
+      "succeeded": "Correcta",
+      "failed": "Fallida",
+      "interrupted": "Interrumpida",
+      "cancelled": "Cancelada"
+    },
+    "memoryKind": {
+      "constitution": "Constitución",
+      "constraint": "Restricción",
+      "decision": "Decisión",
+      "preference": "Preferencia",
+      "pitfall": "Trampa"
+    },
+    "iterationList": {
+      "empty": "Aún no hay iteraciones.",
+      "expand": "Expandir",
+      "collapse": "Contraer",
+      "attempt": "Intento {n}",
+      "tokens": "{count} tokens",
+      "openConversation": "Abrir conversación",
+      "producedArtifacts": "Artefactos producidos",
+      "nothingProduced": "Sin producción.",
+      "validationRuns": "Ejecuciones de validación",
+      "passed": "Aprobada",
+      "failed": "Fallida"
+    },
+    "artifactList": {
+      "empty": "Aún no hay artefactos.",
+      "fromIteration": "iter. n.º {id}"
+    },
+    "boardView": {
+      "empty": "Aún no hay artefactos."
+    },
+    "memory": {
+      "subtitle": "Restricciones, decisiones y trampas incluidas en cada informe.",
+      "add": "Añadir",
+      "addTitle": "Nueva memoria",
+      "kindLabel": "Tipo",
+      "titleLabel": "Título",
+      "titlePlaceholder": "Resumen breve",
+      "contentLabel": "Contenido",
+      "contentPlaceholder": "Detalles (opcional)",
+      "create": "Crear",
+      "archive": "Archivar",
+      "restore": "Restaurar",
+      "archived": "Archivada",
+      "empty": "Aún no hay memoria."
     }
   }
 }

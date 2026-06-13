@@ -3009,7 +3009,9 @@
       "issueTriggered": "Triggered {title}",
       "actionFailed": "Action failed: {message}",
       "inboxResolved": "完了しました。",
-      "configSaved": "設定を保存しました。"
+      "configSaved": "設定を保存しました。",
+      "memorySaved": "保存しました。",
+      "memoryDeleted": "削除しました。"
     },
     "common": {
       "cancel": "Cancel",
@@ -3123,6 +3125,56 @@
       "implement": "実装",
       "review": "レビュー",
       "finalize": "仕上げ"
+    },
+    "iterationStatus": {
+      "queued": "キュー待ち",
+      "running": "実行中",
+      "succeeded": "成功",
+      "failed": "失敗",
+      "interrupted": "中断",
+      "cancelled": "キャンセル済み"
+    },
+    "memoryKind": {
+      "constitution": "憲章",
+      "constraint": "制約",
+      "decision": "決定",
+      "preference": "設定",
+      "pitfall": "落とし穴"
+    },
+    "iterationList": {
+      "empty": "イテレーションはまだありません。",
+      "expand": "展開",
+      "collapse": "折りたたむ",
+      "attempt": "{n} 回目の試行",
+      "tokens": "{count} トークン",
+      "openConversation": "会話を開く",
+      "producedArtifacts": "生成された成果物",
+      "nothingProduced": "生成物なし。",
+      "validationRuns": "検証実行",
+      "passed": "合格",
+      "failed": "不合格"
+    },
+    "artifactList": {
+      "empty": "成果物はまだありません。",
+      "fromIteration": "イテレーション #{id}"
+    },
+    "boardView": {
+      "empty": "成果物はまだありません。"
+    },
+    "memory": {
+      "subtitle": "各ブリーフィングに渡される制約・決定・落とし穴。",
+      "add": "追加",
+      "addTitle": "新しいメモリ",
+      "kindLabel": "種類",
+      "titleLabel": "タイトル",
+      "titlePlaceholder": "短い要約",
+      "contentLabel": "内容",
+      "contentPlaceholder": "詳細（任意）",
+      "create": "作成",
+      "archive": "アーカイブ",
+      "restore": "復元",
+      "archived": "アーカイブ済み",
+      "empty": "メモリはまだありません。"
     }
   }
 }

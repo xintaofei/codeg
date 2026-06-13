@@ -3009,7 +3009,9 @@
       "issueTriggered": "Triggered {title}",
       "actionFailed": "Action failed: {message}",
       "inboxResolved": "Terminé.",
-      "configSaved": "Paramètres enregistrés."
+      "configSaved": "Paramètres enregistrés.",
+      "memorySaved": "Enregistré.",
+      "memoryDeleted": "Supprimé."
     },
     "common": {
       "cancel": "Cancel",
@@ -3123,6 +3125,56 @@
       "implement": "Implémenter",
       "review": "Relecture",
       "finalize": "Finaliser"
+    },
+    "iterationStatus": {
+      "queued": "En file",
+      "running": "En cours",
+      "succeeded": "Réussie",
+      "failed": "Échouée",
+      "interrupted": "Interrompue",
+      "cancelled": "Annulée"
+    },
+    "memoryKind": {
+      "constitution": "Constitution",
+      "constraint": "Contrainte",
+      "decision": "Décision",
+      "preference": "Préférence",
+      "pitfall": "Piège"
+    },
+    "iterationList": {
+      "empty": "Aucune itération pour le moment.",
+      "expand": "Développer",
+      "collapse": "Réduire",
+      "attempt": "Tentative {n}",
+      "tokens": "{count} jetons",
+      "openConversation": "Ouvrir la conversation",
+      "producedArtifacts": "Artefacts produits",
+      "nothingProduced": "Rien de produit.",
+      "validationRuns": "Exécutions de validation",
+      "passed": "Réussie",
+      "failed": "Échouée"
+    },
+    "artifactList": {
+      "empty": "Aucun artefact pour le moment.",
+      "fromIteration": "itér. n° {id}"
+    },
+    "boardView": {
+      "empty": "Aucun artefact pour le moment."
+    },
+    "memory": {
+      "subtitle": "Contraintes, décisions et pièges intégrés à chaque briefing.",
+      "add": "Ajouter",
+      "addTitle": "Nouvelle mémoire",
+      "kindLabel": "Type",
+      "titleLabel": "Titre",
+      "titlePlaceholder": "Résumé court",
+      "contentLabel": "Contenu",
+      "contentPlaceholder": "Détails (facultatif)",
+      "create": "Créer",
+      "archive": "Archiver",
+      "restore": "Restaurer",
+      "archived": "Archivée",
+      "empty": "Aucune mémoire pour le moment."
     }
   }
 }

@@ -3009,7 +3009,9 @@
       "issueTriggered": "Triggered {title}",
       "actionFailed": "Action failed: {message}",
       "inboxResolved": "Concluído.",
-      "configSaved": "Configurações salvas."
+      "configSaved": "Configurações salvas.",
+      "memorySaved": "Salvo.",
+      "memoryDeleted": "Excluído."
     },
     "common": {
       "cancel": "Cancel",
@@ -3123,6 +3125,56 @@
       "implement": "Implementar",
       "review": "Revisão",
       "finalize": "Finalizar"
+    },
+    "iterationStatus": {
+      "queued": "Na fila",
+      "running": "Em execução",
+      "succeeded": "Concluída",
+      "failed": "Falhou",
+      "interrupted": "Interrompida",
+      "cancelled": "Cancelada"
+    },
+    "memoryKind": {
+      "constitution": "Constituição",
+      "constraint": "Restrição",
+      "decision": "Decisão",
+      "preference": "Preferência",
+      "pitfall": "Armadilha"
+    },
+    "iterationList": {
+      "empty": "Ainda não há iterações.",
+      "expand": "Expandir",
+      "collapse": "Recolher",
+      "attempt": "Tentativa {n}",
+      "tokens": "{count} tokens",
+      "openConversation": "Abrir conversa",
+      "producedArtifacts": "Artefatos produzidos",
+      "nothingProduced": "Nada produzido.",
+      "validationRuns": "Execuções de validação",
+      "passed": "Aprovada",
+      "failed": "Falhou"
+    },
+    "artifactList": {
+      "empty": "Ainda não há artefatos.",
+      "fromIteration": "iter. nº {id}"
+    },
+    "boardView": {
+      "empty": "Ainda não há artefatos."
+    },
+    "memory": {
+      "subtitle": "Restrições, decisões e armadilhas incluídas em cada briefing.",
+      "add": "Adicionar",
+      "addTitle": "Nova memória",
+      "kindLabel": "Tipo",
+      "titleLabel": "Título",
+      "titlePlaceholder": "Resumo breve",
+      "contentLabel": "Conteúdo",
+      "contentPlaceholder": "Detalhes (opcional)",
+      "create": "Criar",
+      "archive": "Arquivar",
+      "restore": "Restaurar",
+      "archived": "Arquivada",
+      "empty": "Ainda não há memória."
     }
   }
 }

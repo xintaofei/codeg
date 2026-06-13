@@ -3009,7 +3009,9 @@
       "issueTriggered": "已觸發 {title}",
       "actionFailed": "操作失敗：{message}",
       "inboxResolved": "已處理。",
-      "configSaved": "設定已儲存。"
+      "configSaved": "設定已儲存。",
+      "memorySaved": "已儲存。",
+      "memoryDeleted": "已刪除。"
     },
     "common": {
       "cancel": "取消",
@@ -3123,6 +3125,56 @@
       "implement": "實作",
       "review": "評審",
       "finalize": "收尾"
+    },
+    "iterationStatus": {
+      "queued": "排隊中",
+      "running": "執行中",
+      "succeeded": "成功",
+      "failed": "失敗",
+      "interrupted": "已中斷",
+      "cancelled": "已取消"
+    },
+    "memoryKind": {
+      "constitution": "章程",
+      "constraint": "約束",
+      "decision": "決策",
+      "preference": "偏好",
+      "pitfall": "陷阱"
+    },
+    "iterationList": {
+      "empty": "暫無疊代。",
+      "expand": "展開",
+      "collapse": "收合",
+      "attempt": "第 {n} 次嘗試",
+      "tokens": "{count} tokens",
+      "openConversation": "開啟會話",
+      "producedArtifacts": "產出工件",
+      "nothingProduced": "無產出。",
+      "validationRuns": "驗證執行",
+      "passed": "通過",
+      "failed": "未通過"
+    },
+    "artifactList": {
+      "empty": "暫無工件。",
+      "fromIteration": "疊代 #{id}"
+    },
+    "boardView": {
+      "empty": "暫無工件。"
+    },
+    "memory": {
+      "subtitle": "注入每次簡報的約束、決策與陷阱。",
+      "add": "新增",
+      "addTitle": "新增記憶",
+      "kindLabel": "類型",
+      "titleLabel": "標題",
+      "titlePlaceholder": "簡短摘要",
+      "contentLabel": "內容",
+      "contentPlaceholder": "詳情（選填）",
+      "create": "建立",
+      "archive": "封存",
+      "restore": "還原",
+      "archived": "已封存",
+      "empty": "暫無記憶。"
     }
   }
 }

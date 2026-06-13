@@ -111,12 +111,14 @@ function IterationSessionBody({
 
   const { refetchDetail, setLiveOwnsActiveTurn } = useConversationRuntime()
 
-  // Viewer mode for this conversation: strip the persisted copy of the active
-  // reply while the live/local reply is present so the stream never duplicates.
-  // No kickoff text — the iteration's user turn (its briefing) is persisted.
+  // Viewer mode for this conversation: while a live connection is attached, strip
+  // the persisted copy of the active reply so the stream never duplicates. With no
+  // connection (a settled iteration opened from the list), there is no live reply
+  // to own the turn — keep the persisted transcript whole. No kickoff text either:
+  // the iteration's user turn (its briefing) is persisted.
   useEffect(() => {
-    setLiveOwnsActiveTurn(conversationId, true, null)
-  }, [conversationId, setLiveOwnsActiveTurn])
+    setLiveOwnsActiveTurn(conversationId, connectionId != null, null)
+  }, [conversationId, connectionId, setLiveOwnsActiveTurn])
 
   // Single persisted-detail fetch on mount, `preserveLive: true` so the bridged
   // reply is never wiped (the projection dedups against the persisted copy).

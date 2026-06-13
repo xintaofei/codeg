@@ -3009,7 +3009,9 @@
       "issueTriggered": "已触发 {title}",
       "actionFailed": "操作失败：{message}",
       "inboxResolved": "已处理。",
-      "configSaved": "设置已保存。"
+      "configSaved": "设置已保存。",
+      "memorySaved": "已保存。",
+      "memoryDeleted": "已删除。"
     },
     "common": {
       "cancel": "取消",
@@ -3123,6 +3125,56 @@
       "implement": "实现",
       "review": "评审",
       "finalize": "收尾"
+    },
+    "iterationStatus": {
+      "queued": "排队中",
+      "running": "运行中",
+      "succeeded": "成功",
+      "failed": "失败",
+      "interrupted": "已中断",
+      "cancelled": "已取消"
+    },
+    "memoryKind": {
+      "constitution": "章程",
+      "constraint": "约束",
+      "decision": "决策",
+      "preference": "偏好",
+      "pitfall": "陷阱"
+    },
+    "iterationList": {
+      "empty": "暂无迭代。",
+      "expand": "展开",
+      "collapse": "收起",
+      "attempt": "第 {n} 次尝试",
+      "tokens": "{count} tokens",
+      "openConversation": "打开会话",
+      "producedArtifacts": "产出工件",
+      "nothingProduced": "无产出。",
+      "validationRuns": "验证运行",
+      "passed": "通过",
+      "failed": "未通过"
+    },
+    "artifactList": {
+      "empty": "暂无工件。",
+      "fromIteration": "迭代 #{id}"
+    },
+    "boardView": {
+      "empty": "暂无工件。"
+    },
+    "memory": {
+      "subtitle": "注入每次简报的约束、决策与陷阱。",
+      "add": "添加",
+      "addTitle": "新建记忆",
+      "kindLabel": "类型",
+      "titleLabel": "标题",
+      "titlePlaceholder": "简短摘要",
+      "contentLabel": "内容",
+      "contentPlaceholder": "详情（可选）",
+      "create": "创建",
+      "archive": "归档",
+      "restore": "恢复",
+      "archived": "已归档",
+      "empty": "暂无记忆。"
     }
   }
 }

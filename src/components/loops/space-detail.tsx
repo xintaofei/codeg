@@ -1,16 +1,27 @@
 "use client"
 
-import { useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
 import { ChevronLeft } from "lucide-react"
 
-import type { AgentType, LoopInboxItemRow, LoopSpaceSummary } from "@/lib/types"
+import { listLoopArtifacts } from "@/lib/loops-api"
+import type {
+  AgentType,
+  LoopArtifactRow,
+  LoopInboxItemRow,
+  LoopSpaceSummary,
+} from "@/lib/types"
+import { useLoopChanged } from "@/hooks/use-loop-changed"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { IssueList } from "@/components/loops/issue-list"
 import { IssueDetail } from "@/components/loops/issue-detail"
 import { InboxPanel } from "@/components/loops/inbox-panel"
 import { IterationDialog } from "@/components/loops/iteration-dialog"
+import { IterationList } from "@/components/loops/iteration-list"
+import { ArtifactList } from "@/components/loops/artifact-list"
+import { MemoryPanel } from "@/components/loops/memory-panel"
+import { ArtifactDrawer } from "@/components/loops/artifact-drawer"
 
 type SpaceTab = "issues" | "iterations" | "artifacts" | "inbox" | "memory"
 
@@ -49,6 +60,27 @@ export function SpaceDetail({
   const [tab, setTab] = useState<SpaceTab>("issues")
   const [selectedIssueId, setSelectedIssueId] = useState<number | null>(null)
   const [openIteration, setOpenIteration] = useState<OpenIteration | null>(null)
+  const [artifacts, setArtifacts] = useState<LoopArtifactRow[]>([])
+  const [selectedArtifactId, setSelectedArtifactId] = useState<number | null>(
+    null
+  )
+
+  const refreshArtifacts = useCallback(() => {
+    // setState lives in the promise callback, never the synchronous effect body.
+    listLoopArtifacts(space.id)
+      .then(setArtifacts)
+      .catch(() => {
+        // non-fatal; the list's empty state covers it
+      })
+  }, [space.id])
+
+  useEffect(() => {
+    refreshArtifacts()
+  }, [refreshArtifacts])
+
+  useLoopChanged(() => {
+    refreshArtifacts()
+  }, space.id)
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
@@ -110,17 +142,29 @@ export function SpaceDetail({
           />
         </TabsContent>
 
-        {(["iterations", "artifacts", "memory"] as const).map((key) => (
-          <TabsContent
-            key={key}
-            value={key}
-            className="min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden"
-          >
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-              {t("comingSoon")}
-            </div>
-          </TabsContent>
-        ))}
+        <TabsContent
+          value="iterations"
+          className="min-h-0 flex-1 overflow-y-auto p-4 data-[state=inactive]:hidden"
+        >
+          <IterationList spaceId={space.id} />
+        </TabsContent>
+
+        <TabsContent
+          value="artifacts"
+          className="min-h-0 flex-1 overflow-y-auto p-4 data-[state=inactive]:hidden"
+        >
+          <ArtifactList
+            artifacts={artifacts}
+            onSelect={setSelectedArtifactId}
+          />
+        </TabsContent>
+
+        <TabsContent
+          value="memory"
+          className="min-h-0 flex-1 overflow-hidden p-4 data-[state=inactive]:hidden"
+        >
+          <MemoryPanel spaceId={space.id} />
+        </TabsContent>
       </Tabs>
 
       {openIteration && (
@@ -134,6 +178,11 @@ export function SpaceDetail({
           agentType={openIteration.agentType}
         />
       )}
+
+      <ArtifactDrawer
+        artifactId={selectedArtifactId}
+        onClose={() => setSelectedArtifactId(null)}
+      />
     </div>
   )
 }

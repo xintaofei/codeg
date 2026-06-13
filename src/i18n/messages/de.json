@@ -3009,7 +3009,9 @@
       "issueTriggered": "Triggered {title}",
       "actionFailed": "Action failed: {message}",
       "inboxResolved": "Erledigt.",
-      "configSaved": "Einstellungen gespeichert."
+      "configSaved": "Einstellungen gespeichert.",
+      "memorySaved": "Gespeichert.",
+      "memoryDeleted": "Gelöscht."
     },
     "common": {
       "cancel": "Cancel",
@@ -3123,6 +3125,56 @@
       "implement": "Umsetzen",
       "review": "Prüfung",
       "finalize": "Abschluss"
+    },
+    "iterationStatus": {
+      "queued": "In Warteschlange",
+      "running": "Läuft",
+      "succeeded": "Erfolgreich",
+      "failed": "Fehlgeschlagen",
+      "interrupted": "Unterbrochen",
+      "cancelled": "Abgebrochen"
+    },
+    "memoryKind": {
+      "constitution": "Verfassung",
+      "constraint": "Einschränkung",
+      "decision": "Entscheidung",
+      "preference": "Präferenz",
+      "pitfall": "Fallstrick"
+    },
+    "iterationList": {
+      "empty": "Noch keine Iterationen.",
+      "expand": "Aufklappen",
+      "collapse": "Zuklappen",
+      "attempt": "Versuch {n}",
+      "tokens": "{count} Tokens",
+      "openConversation": "Konversation öffnen",
+      "producedArtifacts": "Erzeugte Artefakte",
+      "nothingProduced": "Nichts erzeugt.",
+      "validationRuns": "Validierungsläufe",
+      "passed": "Bestanden",
+      "failed": "Fehlgeschlagen"
+    },
+    "artifactList": {
+      "empty": "Noch keine Artefakte.",
+      "fromIteration": "Iter. #{id}"
+    },
+    "boardView": {
+      "empty": "Noch keine Artefakte."
+    },
+    "memory": {
+      "subtitle": "Einschränkungen, Entscheidungen und Fallstricke für jedes Briefing.",
+      "add": "Hinzufügen",
+      "addTitle": "Neuer Eintrag",
+      "kindLabel": "Typ",
+      "titleLabel": "Titel",
+      "titlePlaceholder": "Kurze Zusammenfassung",
+      "contentLabel": "Inhalt",
+      "contentPlaceholder": "Details (optional)",
+      "create": "Erstellen",
+      "archive": "Archivieren",
+      "restore": "Wiederherstellen",
+      "archived": "Archiviert",
+      "empty": "Noch kein Speicher."
     }
   }
 }

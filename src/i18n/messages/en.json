@@ -3009,7 +3009,9 @@
       "issueTriggered": "Triggered {title}",
       "actionFailed": "Action failed: {message}",
       "inboxResolved": "Done.",
-      "configSaved": "Settings saved."
+      "configSaved": "Settings saved.",
+      "memorySaved": "Saved.",
+      "memoryDeleted": "Deleted."
     },
     "common": {
       "cancel": "Cancel",
@@ -3123,6 +3125,56 @@
       "implement": "Implement",
       "review": "Review",
       "finalize": "Finalize"
+    },
+    "iterationStatus": {
+      "queued": "Queued",
+      "running": "Running",
+      "succeeded": "Succeeded",
+      "failed": "Failed",
+      "interrupted": "Interrupted",
+      "cancelled": "Cancelled"
+    },
+    "memoryKind": {
+      "constitution": "Constitution",
+      "constraint": "Constraint",
+      "decision": "Decision",
+      "preference": "Preference",
+      "pitfall": "Pitfall"
+    },
+    "iterationList": {
+      "empty": "No iterations yet.",
+      "expand": "Expand",
+      "collapse": "Collapse",
+      "attempt": "Attempt {n}",
+      "tokens": "{count} tokens",
+      "openConversation": "Open conversation",
+      "producedArtifacts": "Produced artifacts",
+      "nothingProduced": "Nothing produced.",
+      "validationRuns": "Validation runs",
+      "passed": "Passed",
+      "failed": "Failed"
+    },
+    "artifactList": {
+      "empty": "No artifacts yet.",
+      "fromIteration": "iter #{id}"
+    },
+    "boardView": {
+      "empty": "No artifacts yet."
+    },
+    "memory": {
+      "subtitle": "Constraints, decisions and pitfalls fed into every briefing.",
+      "add": "Add",
+      "addTitle": "New memory",
+      "kindLabel": "Type",
+      "titleLabel": "Title",
+      "titlePlaceholder": "Short summary",
+      "contentLabel": "Content",
+      "contentPlaceholder": "Details (optional)",
+      "create": "Create",
+      "archive": "Archive",
+      "restore": "Restore",
+      "archived": "Archived",
+      "empty": "No memory yet."
     }
   }
 }

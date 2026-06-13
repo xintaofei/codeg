@@ -4,9 +4,11 @@ import { useTranslations } from "next-intl"
 
 import { Badge } from "@/components/ui/badge"
 import type {
+  LoopArtifactStatus,
   LoopIssuePriority,
   LoopIssueRoute,
   LoopIssueStatus,
+  LoopIterationStatus,
 } from "@/lib/types"
 
 type BadgeVariant =
@@ -50,4 +52,41 @@ export function IssueRouteBadge({ route }: { route: LoopIssueRoute }) {
   // The undecided route is the default pre-triage state — not worth a chip.
   if (route === "undecided") return null
   return <Badge variant="outline">{t(route)}</Badge>
+}
+
+const ITERATION_STATUS_VARIANT: Record<LoopIterationStatus, BadgeVariant> = {
+  queued: "outline",
+  running: "default",
+  succeeded: "secondary",
+  failed: "destructive",
+  interrupted: "ghost",
+  cancelled: "ghost",
+}
+
+export function IterationStatusBadge({
+  status,
+}: {
+  status: LoopIterationStatus
+}) {
+  const t = useTranslations("Loops.iterationStatus")
+  return <Badge variant={ITERATION_STATUS_VARIANT[status]}>{t(status)}</Badge>
+}
+
+const ARTIFACT_STATUS_VARIANT: Record<LoopArtifactStatus, BadgeVariant> = {
+  pending: "outline",
+  in_progress: "default",
+  awaiting_approval: "secondary",
+  done: "secondary",
+  blocked: "destructive",
+  superseded: "ghost",
+  cancelled: "ghost",
+}
+
+export function ArtifactStatusBadge({
+  status,
+}: {
+  status: LoopArtifactStatus
+}) {
+  const t = useTranslations("Loops.artifactStatus")
+  return <Badge variant={ARTIFACT_STATUS_VARIANT[status]}>{t(status)}</Badge>
 }

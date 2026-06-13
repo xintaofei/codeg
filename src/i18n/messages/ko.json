@@ -3009,7 +3009,9 @@
       "issueTriggered": "Triggered {title}",
       "actionFailed": "Action failed: {message}",
       "inboxResolved": "완료되었습니다.",
-      "configSaved": "설정이 저장되었습니다."
+      "configSaved": "설정이 저장되었습니다.",
+      "memorySaved": "저장되었습니다.",
+      "memoryDeleted": "삭제되었습니다."
     },
     "common": {
       "cancel": "Cancel",
@@ -3123,6 +3125,56 @@
       "implement": "구현",
       "review": "검토",
       "finalize": "마무리"
+    },
+    "iterationStatus": {
+      "queued": "대기 중",
+      "running": "실행 중",
+      "succeeded": "성공",
+      "failed": "실패",
+      "interrupted": "중단됨",
+      "cancelled": "취소됨"
+    },
+    "memoryKind": {
+      "constitution": "헌장",
+      "constraint": "제약",
+      "decision": "결정",
+      "preference": "선호",
+      "pitfall": "함정"
+    },
+    "iterationList": {
+      "empty": "아직 이터레이션이 없습니다.",
+      "expand": "펼치기",
+      "collapse": "접기",
+      "attempt": "{n}번째 시도",
+      "tokens": "토큰 {count}개",
+      "openConversation": "대화 열기",
+      "producedArtifacts": "생성된 산출물",
+      "nothingProduced": "생성물 없음.",
+      "validationRuns": "검증 실행",
+      "passed": "통과",
+      "failed": "실패"
+    },
+    "artifactList": {
+      "empty": "아직 산출물이 없습니다.",
+      "fromIteration": "이터레이션 #{id}"
+    },
+    "boardView": {
+      "empty": "아직 산출물이 없습니다."
+    },
+    "memory": {
+      "subtitle": "모든 브리핑에 전달되는 제약·결정·함정.",
+      "add": "추가",
+      "addTitle": "새 메모리",
+      "kindLabel": "유형",
+      "titleLabel": "제목",
+      "titlePlaceholder": "간단한 요약",
+      "contentLabel": "내용",
+      "contentPlaceholder": "세부 정보(선택)",
+      "create": "생성",
+      "archive": "보관",
+      "restore": "복원",
+      "archived": "보관됨",
+      "empty": "아직 메모리가 없습니다."
     }
   }
 }
