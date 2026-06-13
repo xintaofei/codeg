@@ -839,12 +839,15 @@ pub(crate) async fn emit_conversation_upsert(
 ) {
     match conversation_service::get_by_id(conn, conversation_id).await {
         Ok(summary) => {
-            // Sidebar shows ROOT conversations only — never broadcast a
-            // delegation child. The frontend also filters `parent_id != null`;
-            // this is the backend half of that invariant, so callers on agent
-            // paths (e.g. SessionStarted) can hand us any id without leaking
-            // child rows into every client's list.
-            if summary.parent_id.is_some() {
+            // Sidebar shows ROOT, non-loop conversations only — never broadcast a
+            // delegation child or a loop-engine iteration. The frontend also
+            // filters `parent_id != null` and `kind === "loop"`; this is the
+            // backend half of that invariant, so callers on agent paths (e.g.
+            // SessionStarted) can hand us any id without leaking hidden rows into
+            // every client's list.
+            if summary.parent_id.is_some()
+                || summary.kind == crate::db::entities::conversation::ConversationKind::Loop
+            {
                 return;
             }
             emit_event(
@@ -3080,6 +3083,29 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "delegation child must not broadcast a sidebar upsert"
+        );
+    }
+
+    #[tokio::test]
+    async fn emit_conversation_upsert_skips_loop_iteration() {
+        // Loop-engine iterations (kind = loop) are never sidebar rows.
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/codeg-sync-loop-skip").await;
+        let conv = conversation_service::create_loop(
+            &db.conn,
+            folder_id,
+            AgentType::ClaudeCode,
+            Some("loop run".into()),
+            None,
+        )
+        .await
+        .expect("loop conv");
+        let (broadcaster, emitter) = sync_test_emitter();
+        let mut rx = broadcaster.subscribe();
+        emit_conversation_upsert(&emitter, &db.conn, conv.id).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "loop iteration must not broadcast a sidebar upsert"
         );
     }
 }

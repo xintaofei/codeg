@@ -51,6 +51,28 @@ pub async fn create_chat(
     .await
 }
 
+/// Mirror of [`create`] for loop-engine iterations: `kind = 'loop'`, so the row
+/// is excluded from the sidebar entirely (see `list_all` and
+/// `emit_conversation_upsert`). Each iteration's worktree folder backs it.
+pub async fn create_loop(
+    conn: &DatabaseConnection,
+    folder_id: i32,
+    agent_type: AgentType,
+    title: Option<String>,
+    git_branch: Option<String>,
+) -> Result<conversation::Model, DbError> {
+    create_inner(
+        conn,
+        folder_id,
+        agent_type,
+        title,
+        git_branch,
+        None,
+        ConversationKind::Loop,
+    )
+    .await
+}
+
 /// Mirror of [`create`] plus optional delegation linkage. Used by the
 /// multi-agent broker when spawning a child sub-session — populates
 /// `parent_id` / `parent_tool_use_id` / `delegation_call_id` so the lifecycle

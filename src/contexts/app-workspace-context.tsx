@@ -242,12 +242,13 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
   // reused, so the tombstone is permanent; the set is FIFO-bounded.
   const deletedIdsRef = useRef<Set<number>>(new Set())
 
-  // Insert-or-replace a conversation by id (create + field updates). Root-only:
-  // delegation children (parent_id set) are not sidebar rows. New rows prepend
-  // (most-recent-first); existing rows replace in place to keep their position.
+  // Insert-or-replace a conversation by id (create + field updates). Root-only,
+  // non-loop: delegation children (parent_id set) and loop-engine iterations
+  // (kind === "loop") are not sidebar rows. New rows prepend (most-recent-first);
+  // existing rows replace in place to keep their position.
   const applyConversationUpsert = useCallback(
     (summary: DbConversationSummary) => {
-      if (summary.parent_id != null) return
+      if (summary.parent_id != null || summary.kind === "loop") return
       if (deletedIdsRef.current.has(summary.id)) return
       setConversations((prev) => {
         const idx = prev.findIndex((c) => c.id === summary.id)

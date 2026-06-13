@@ -194,6 +194,14 @@ describe("AppWorkspaceProvider conversation://changed sync", () => {
     expect(screen.getByTestId("count")).toHaveTextContent("1")
   })
 
+  it("ignores loop-engine iterations (kind === loop) — not sidebar rows", async () => {
+    await mountProvider()
+    emit({ kind: "upsert", summary: makeSummary({ id: 1 }) })
+    emit({ kind: "upsert", summary: makeSummary({ id: 7, kind: "loop" }) })
+    expect(screen.getByTestId("ids")).toHaveTextContent("1")
+    expect(screen.getByTestId("count")).toHaveTextContent("1")
+  })
+
   it("removes on deleted and is idempotent for an unknown id", async () => {
     await mountProvider()
     emit({ kind: "upsert", summary: makeSummary({ id: 1 }) })
