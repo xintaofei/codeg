@@ -5,10 +5,11 @@ use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set,
 };
 
-use crate::db::entities::loop_artifact::{ArtifactKind, ArtifactStatus};
+use crate::db::entities::loop_artifact::{ArtifactKind, ArtifactStatus, ReviewVerdict};
 use crate::db::entities::loop_artifact_revision::ActorKind;
+use crate::db::entities::loop_link::LinkKind;
 use crate::db::entities::{
-    loop_artifact, loop_artifact_revision, loop_criterion, loop_issue, loop_link,
+    loop_artifact, loop_artifact_revision, loop_criterion, loop_issue, loop_iteration, loop_link,
 };
 use crate::db::error::DbError;
 use crate::models::loops::{
@@ -254,4 +255,76 @@ pub async fn list_artifacts_for_space(
         .iter()
         .map(|m| to_artifact_row(m, *seqs.get(&m.issue_id).unwrap_or(&0)))
         .collect())
+}
+
+/// Findings text from the most recent FAIL-verdict reviews of a task — the round
+/// that triggered rework — newest first. Fed into the next implement briefing so
+/// the re-attempt addresses the reviewers' objections instead of repeating them.
+///
+/// "Most recent round" is scoped by the producing review iteration's `attempt`
+/// (reviews are dispatched at the task's attempt), so stale findings from an
+/// earlier round are excluded.
+pub async fn latest_failed_review_findings(
+    conn: &sea_orm::DatabaseConnection,
+    task_artifact_id: i32,
+) -> Result<Vec<String>, DbError> {
+    // Review artifacts that point at this task.
+    let review_ids: Vec<i32> = loop_link::Entity::find()
+        .filter(loop_link::Column::ToArtifactId.eq(task_artifact_id))
+        .filter(loop_link::Column::Kind.eq(LinkKind::Reviews))
+        .all(conn)
+        .await?
+        .into_iter()
+        .map(|l| l.from_artifact_id)
+        .collect();
+    if review_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut reviews = loop_artifact::Entity::find()
+        .filter(loop_artifact::Column::Id.is_in(review_ids))
+        .filter(loop_artifact::Column::Kind.eq(ArtifactKind::Review))
+        .filter(loop_artifact::Column::Verdict.eq(ReviewVerdict::Fail))
+        .all(conn)
+        .await?;
+    if reviews.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Scope to the latest round = highest producing-iteration attempt.
+    let iter_ids: Vec<i32> = reviews
+        .iter()
+        .filter_map(|r| r.produced_by_iteration_id)
+        .collect();
+    let attempt_of: HashMap<i32, i32> = loop_iteration::Entity::find()
+        .filter(loop_iteration::Column::Id.is_in(iter_ids))
+        .all(conn)
+        .await?
+        .into_iter()
+        .map(|i| (i.id, i.attempt))
+        .collect();
+    let attempt = |r: &loop_artifact::Model| {
+        r.produced_by_iteration_id
+            .and_then(|id| attempt_of.get(&id).copied())
+            .unwrap_or(0)
+    };
+    let max_attempt = reviews.iter().map(attempt).max().unwrap_or(0);
+    reviews.retain(|r| attempt(r) == max_attempt);
+    reviews.sort_by(|a, b| b.id.cmp(&a.id));
+
+    let mut out = Vec::new();
+    for r in reviews {
+        if let Some(rev) = loop_artifact_revision::Entity::find()
+            .filter(loop_artifact_revision::Column::ArtifactId.eq(r.id))
+            .order_by_desc(loop_artifact_revision::Column::Id)
+            .one(conn)
+            .await?
+        {
+            let findings = rev.content.trim();
+            if !findings.is_empty() {
+                out.push(findings.to_string());
+            }
+        }
+    }
+    Ok(out)
 }

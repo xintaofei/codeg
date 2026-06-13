@@ -304,7 +304,7 @@ pub(crate) async fn tick_once(
     // Read pipeline complete (tasks exist) → drive the write pipeline. A no-op
     // when there are no tasks yet (read stages still in flight), so it is safe
     // to call on every "frontier empty" tick.
-    let dispatched = gates::drive_implement(
+    let dispatched = gates::drive_active_task(
         db,
         data_dir,
         spawner,

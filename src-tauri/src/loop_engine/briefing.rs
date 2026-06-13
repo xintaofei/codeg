@@ -316,9 +316,9 @@ pub async fn assemble_briefing(
         }
     }
 
-    // ⑤a Rework feedback — on an implement retry, surface the most recent
-    // validation failure so the agent fixes forward instead of repeating it.
-    // (Review findings will join this section in Task 2.3.)
+    // ⑤a Rework feedback — on an implement retry, surface why the last attempt
+    // was rejected (validation failure and/or reviewer findings) so the agent
+    // fixes forward instead of repeating it.
     if stage == Stage::Implement {
         if let Some(target) = target_artifact_id {
             if let Some(run) = loop_service::validation::latest_for_task(conn, target).await? {
@@ -331,6 +331,41 @@ pub async fn assemble_briefing(
                     ));
                     components.push(json!({ "section": "validation_feedback", "run_id": run.id }));
                 }
+            }
+            let findings = loop_service::artifact::latest_failed_review_findings(conn, target).await?;
+            if !findings.is_empty() {
+                let mut body = String::from(
+                    "# Previous review findings\nReviewers rejected your last attempt. Address \
+                     every point below, then make the change again.",
+                );
+                for (i, f) in findings.iter().enumerate() {
+                    body.push_str(&format!("\n\n## Reviewer {}\n{}", i + 1, tail(f, 2000)));
+                }
+                sections.push(body);
+                components.push(json!({ "section": "review_feedback", "count": findings.len() }));
+            }
+        }
+    }
+
+    // ⑤b Review context — point reviewers at the committed work to inspect and at
+    // the validation result, so they review against the real changes.
+    if stage == Stage::Review {
+        if let Some(base) = issue.base_commit.as_deref() {
+            sections.push(format!(
+                "# What to review\nThe implementation is committed on this branch. Inspect the \
+                 changes since base commit `{base}` (e.g. `git diff {base}..HEAD`) and read the \
+                 affected files in the worktree."
+            ));
+            components.push(json!({ "section": "review_context", "base": base }));
+        }
+        if let Some(target) = target_artifact_id {
+            if let Some(run) = loop_service::validation::latest_for_task(conn, target).await? {
+                sections.push(format!(
+                    "# Validation result\nDeterministic validation {}.\n\n```\n{}\n```",
+                    if run.passed { "passed" } else { "did not pass" },
+                    tail(run.output.trim(), 2000)
+                ));
+                components.push(json!({ "section": "validation_result", "passed": run.passed }));
             }
         }
     }

@@ -18,6 +18,7 @@
 //! checkpoint bumps the task's rework counter and the next dispatch carries the
 //! new attempt.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
@@ -25,7 +26,7 @@ use chrono::Utc;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ActiveEnum, ColumnTrait, EntityTrait, QueryFilter};
 
-use crate::db::entities::loop_artifact::{self, ArtifactKind, ArtifactStatus};
+use crate::db::entities::loop_artifact::{self, ArtifactKind, ArtifactStatus, ReviewVerdict};
 use crate::db::entities::loop_inbox_item::InboxKind;
 use crate::db::entities::loop_issue;
 use crate::db::entities::loop_iteration::{self, IterationStatus, Stage};
@@ -37,7 +38,9 @@ use crate::web::event_bridge::EventEmitter;
 use crate::loop_engine::dispatch::{dispatch_iteration, DispatchInput, LoopAgentSpawner};
 use crate::loop_engine::driver::resolve_agent;
 use crate::loop_engine::error::LoopError;
-use crate::loop_engine::transitions::try_acquire_task_gate;
+use crate::loop_engine::transitions::{
+    cas_iteration_status, release_task_gate, try_acquire_task_gate,
+};
 use crate::loop_engine::validation::{self, ValidationOutcome};
 use crate::loop_engine::worktree;
 
@@ -54,13 +57,14 @@ enum ImplementOutcome {
     Blocked,
 }
 
-/// Drive the implement stage for one tick. Returns `true` when it dispatched a
-/// new implement iteration (the caller maps that to a `Dispatched` tick).
+/// Drive the active task through the write pipeline (implement → validate →
+/// review) for one tick. Returns `true` when it dispatched a new iteration (the
+/// caller maps that to a `Dispatched` tick).
 ///
 /// A no-op while no task exists yet (read stages still in flight), so the driver
 /// can call it on every "read frontier empty" tick.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn drive_implement(
+pub(crate) async fn drive_active_task(
     db: &AppDatabase,
     data_dir: &Path,
     spawner: &dyn LoopAgentSpawner,
@@ -120,9 +124,8 @@ fn next_pending_task(dag: &LoopDagView) -> Option<&LoopArtifactRow> {
         .min_by(|a, b| a.sort.cmp(&b.sort).then(a.id.cmp(&b.id)))
 }
 
-/// Advance the task currently holding the gate: wait while its implement
-/// iteration is in flight; checkpoint once it has settled; (re)dispatch when
-/// nothing is live.
+/// Route the gate-holding task to its write-pipeline stage by status: `pending`
+/// implements, `in_progress` (implemented + validated) reviews, terminal idles.
 #[allow(clippy::too_many_arguments)]
 async fn advance_active_task(
     db: &AppDatabase,
@@ -139,14 +142,34 @@ async fn advance_active_task(
         // Gate points at a node not in this DAG — nothing to drive.
         return Ok(false);
     };
-    // Implement only owns the pending → implemented transition. Once a task is
-    // `in_progress` (implemented, awaiting validation) or terminal, idle here —
-    // validate/review take over in later tasks.
-    if task.status != ArtifactStatus::Pending {
-        return Ok(false);
+    match task.status {
+        ArtifactStatus::Pending => {
+            advance_implement(db, data_dir, spawner, emitter, issue, config, worktree_folder_id, task)
+                .await
+        }
+        ArtifactStatus::InProgress => {
+            drive_reviews(db, data_dir, spawner, emitter, issue, config, worktree_folder_id, task)
+                .await
+        }
+        // Done (gate released on review pass), blocked, cancelled, etc. → idle.
+        _ => Ok(false),
     }
+}
 
-    let impls = implement_iterations(db, issue.id, active_task_id).await?;
+/// Advance a `pending` task's implement: wait while its iteration is in flight,
+/// checkpoint + validate once settled, or (re)dispatch when nothing is live.
+#[allow(clippy::too_many_arguments)]
+async fn advance_implement(
+    db: &AppDatabase,
+    data_dir: &Path,
+    spawner: &dyn LoopAgentSpawner,
+    emitter: &EventEmitter,
+    issue: &loop_issue::Model,
+    config: &IssueConfig,
+    worktree_folder_id: i32,
+    task: &LoopArtifactRow,
+) -> Result<bool, LoopError> {
+    let impls = implement_iterations(db, issue.id, task.id).await?;
     if impls
         .iter()
         .any(|it| matches!(it.status, IterationStatus::Queued | IterationStatus::Running))
@@ -381,6 +404,227 @@ async fn bump_rework(db: &AppDatabase, task_id: i32, sig: &str) -> Result<(), Lo
     Ok(())
 }
 
+// ---- Review stage (§4.7) ----
+
+/// The outcome of a review round under the configured pass rule.
+enum ReviewDecision {
+    /// Enough passes to accept the implementation — task is done.
+    Pass,
+    /// A reviewer rejected (or a passing quorum is no longer reachable) → rework.
+    Fail,
+    /// Not enough verdicts in yet — dispatch / await more reviewers.
+    Undecided,
+}
+
+/// Drive an `in_progress` (implemented + validated) task through its review
+/// round: ensure `reviewer_count` review slots run, aggregate their verdicts,
+/// then accept (task `done` + release the task gate) or reject (rework + cancel
+/// the remaining reviewers). Returns `true` only when it dispatched a reviewer.
+#[allow(clippy::too_many_arguments)]
+async fn drive_reviews(
+    db: &AppDatabase,
+    data_dir: &Path,
+    spawner: &dyn LoopAgentSpawner,
+    emitter: &EventEmitter,
+    issue: &loop_issue::Model,
+    config: &IssueConfig,
+    worktree_folder_id: i32,
+    task: &LoopArtifactRow,
+) -> Result<bool, LoopError> {
+    let reviewers = config.reviewer_count.max(1) as i32;
+    let iters = review_iterations(db, issue.id, task.id, task.attempt).await?;
+    let verdicts = review_verdicts(db, &iters).await?;
+
+    // Resolve each slot to a verdict (decided), in-flight, or needing dispatch.
+    let mut decided: Vec<ReviewVerdict> = Vec::new();
+    let mut missing_slots: Vec<i32> = Vec::new();
+    for slot in 0..reviewers {
+        let slot_iters: Vec<&loop_iteration::Model> =
+            iters.iter().filter(|it| it.slot_no == Some(slot)).collect();
+        if let Some(v) = slot_iters.iter().find_map(|it| verdicts.get(&it.id).copied()) {
+            decided.push(v);
+        } else if !slot_iters
+            .iter()
+            .any(|it| matches!(it.status, IterationStatus::Queued | IterationStatus::Running))
+        {
+            // No iteration, or only terminal ones without a verdict → (re)dispatch.
+            missing_slots.push(slot);
+        }
+    }
+
+    match aggregate(&config.review_pass_rule, reviewers, &decided) {
+        ReviewDecision::Pass => {
+            cancel_active_reviews(db, &iters).await?;
+            set_task_status(db, task.id, ArtifactStatus::Done).await?;
+            release_task_gate(&db.conn, issue.id, task.id).await?;
+            Ok(false)
+        }
+        ReviewDecision::Fail => {
+            cancel_active_reviews(db, &iters).await?;
+            // Defensive: clear any reviewer side-effects before re-implementing.
+            let folder = folder_service::get_folder_by_id(&db.conn, worktree_folder_id)
+                .await?
+                .ok_or_else(|| {
+                    LoopError::NotFound(format!("worktree folder {worktree_folder_id}"))
+                })?;
+            worktree::reset_to_head(Path::new(&folder.path)).await?;
+            bump_rework(db, task.id, "review_rejected:implement").await?;
+            set_task_status(db, task.id, ArtifactStatus::Pending).await?;
+            Ok(false)
+        }
+        ReviewDecision::Undecided => {
+            let mut dispatched = false;
+            for slot in missing_slots {
+                if dispatch_review(
+                    db,
+                    data_dir,
+                    spawner,
+                    emitter,
+                    issue,
+                    config,
+                    worktree_folder_id,
+                    task.id,
+                    slot,
+                    task.attempt,
+                )
+                .await?
+                {
+                    dispatched = true;
+                }
+            }
+            Ok(dispatched)
+        }
+    }
+}
+
+/// Aggregate review verdicts under the pass rule. `unanimous` fails fast on any
+/// fail and accepts only when all `n` slots pass; `majority` accepts on
+/// `pass*2 > n` and rejects once a passing majority is unreachable (an even
+/// split rejects).
+fn aggregate(rule: &str, n: i32, verdicts: &[ReviewVerdict]) -> ReviewDecision {
+    let pass = verdicts
+        .iter()
+        .filter(|v| matches!(v, ReviewVerdict::Pass))
+        .count() as i32;
+    let fail = verdicts.len() as i32 - pass;
+    if rule == "majority" {
+        if pass * 2 > n {
+            ReviewDecision::Pass
+        } else if fail * 2 >= n {
+            ReviewDecision::Fail
+        } else {
+            ReviewDecision::Undecided
+        }
+    } else if fail >= 1 {
+        // "unanimous" (default): any fail rejects; all-pass accepts.
+        ReviewDecision::Fail
+    } else if pass >= n {
+        ReviewDecision::Pass
+    } else {
+        ReviewDecision::Undecided
+    }
+}
+
+/// Dispatch one review slot. Returns `true` when a new iteration launched (the
+/// review-slot lease was free).
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_review(
+    db: &AppDatabase,
+    data_dir: &Path,
+    spawner: &dyn LoopAgentSpawner,
+    emitter: &EventEmitter,
+    issue: &loop_issue::Model,
+    config: &IssueConfig,
+    worktree_folder_id: i32,
+    task_id: i32,
+    slot: i32,
+    attempt: i32,
+) -> Result<bool, LoopError> {
+    let handle = dispatch_iteration(
+        db,
+        data_dir,
+        spawner,
+        emitter.clone(),
+        DispatchInput {
+            space_id: issue.space_id,
+            issue_id: issue.id,
+            stage: Stage::Review,
+            target_artifact_id: Some(task_id),
+            slot_no: Some(slot),
+            attempt,
+            agent_type: resolve_agent(config, Stage::Review),
+            worktree_folder_id,
+        },
+    )
+    .await?;
+    Ok(handle.is_some())
+}
+
+/// Invalidate any still-active reviewers (a decision was reached without them).
+/// CAS to `cancelled` voids the capability token — `ingest` rejects a submit
+/// from a non-running iteration — so a late verdict can't change the outcome.
+/// Killing the agent process is Task 2.6.
+async fn cancel_active_reviews(
+    db: &AppDatabase,
+    iters: &[loop_iteration::Model],
+) -> Result<(), LoopError> {
+    for it in iters {
+        if matches!(it.status, IterationStatus::Queued | IterationStatus::Running)
+            && cas_iteration_status(&db.conn, it.id, it.status, IterationStatus::Cancelled).await?
+        {
+            loop_iteration::Entity::update_many()
+                .col_expr(loop_iteration::Column::EndedAt, Expr::value(Utc::now()))
+                .filter(loop_iteration::Column::Id.eq(it.id))
+                .exec(&db.conn)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn review_iterations(
+    db: &AppDatabase,
+    issue_id: i32,
+    task_id: i32,
+    attempt: i32,
+) -> Result<Vec<loop_iteration::Model>, LoopError> {
+    Ok(loop_iteration::Entity::find()
+        .filter(loop_iteration::Column::IssueId.eq(issue_id))
+        .filter(loop_iteration::Column::Stage.eq(Stage::Review))
+        .filter(loop_iteration::Column::TargetArtifactId.eq(task_id))
+        .filter(loop_iteration::Column::Attempt.eq(attempt))
+        .all(&db.conn)
+        .await?)
+}
+
+/// Map each succeeded review iteration to the verdict of the review artifact it
+/// produced.
+async fn review_verdicts(
+    db: &AppDatabase,
+    iters: &[loop_iteration::Model],
+) -> Result<HashMap<i32, ReviewVerdict>, LoopError> {
+    let succeeded: Vec<i32> = iters
+        .iter()
+        .filter(|it| it.status == IterationStatus::Succeeded)
+        .map(|it| it.id)
+        .collect();
+    if succeeded.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut map = HashMap::new();
+    for art in loop_artifact::Entity::find()
+        .filter(loop_artifact::Column::Kind.eq(ArtifactKind::Review))
+        .filter(loop_artifact::Column::ProducedByIterationId.is_in(succeeded))
+        .all(&db.conn)
+        .await?
+    {
+        if let (Some(iter_id), Some(verdict)) = (art.produced_by_iteration_id, art.verdict) {
+            map.insert(iter_id, verdict);
+        }
+    }
+    Ok(map)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -535,7 +779,7 @@ mod tests {
     async fn drive(h: &Harness) -> bool {
         let issue = load_issue(h).await;
         let dag = artifact::list_dag(&h.db.conn, h.issue_id).await.unwrap();
-        drive_implement(
+        drive_active_task(
             &h.db,
             h.data.path(),
             &StubSpawner,
@@ -694,7 +938,7 @@ mod tests {
     async fn drive_with(h: &Harness, config: &IssueConfig) -> bool {
         let issue = load_issue(h).await;
         let dag = artifact::list_dag(&h.db.conn, h.issue_id).await.unwrap();
-        drive_implement(
+        drive_active_task(
             &h.db,
             h.data.path(),
             &StubSpawner,
@@ -811,5 +1055,164 @@ mod tests {
         );
         // The gate is still held by the task; no new implement was dispatched.
         assert_eq!(load_issue(&h).await.active_task_artifact_id, Some(task));
+    }
+
+    // ---- Task 2.3: review stage ----
+
+    fn config_reviewers(n: u32, rule: &str) -> IssueConfig {
+        IssueConfig {
+            reviewer_count: n,
+            review_pass_rule: rule.to_string(),
+            ..IssueConfig::default()
+        }
+    }
+
+    /// Drive a fresh task from pending to `in_progress` (implemented + validated)
+    /// so review tests can start at the review stage.
+    async fn implement_to_in_progress(h: &Harness, cfg: &IssueConfig, marker: &str) {
+        assert!(drive_with(h, cfg).await, "dispatch implement");
+        let iter_id = running_implement_id(h).await;
+        std::fs::write(h.worktree_path.join(marker), "code\n").unwrap();
+        settle_iteration(&h.db, &EventEmitter::Noop, iter_id)
+            .await
+            .unwrap();
+        assert!(!drive_with(h, cfg).await, "checkpoint + validate → in_progress");
+    }
+
+    async fn running_review(h: &Harness) -> i32 {
+        loop_iteration::Entity::find()
+            .filter(loop_iteration::Column::Stage.eq(Stage::Review))
+            .filter(loop_iteration::Column::Status.eq(IterationStatus::Running))
+            .one(&h.db.conn)
+            .await
+            .unwrap()
+            .expect("a running review iteration")
+            .id
+    }
+
+    async fn review_iters_of(h: &Harness, task: i32) -> Vec<loop_iteration::Model> {
+        let mut v = loop_iteration::Entity::find()
+            .filter(loop_iteration::Column::Stage.eq(Stage::Review))
+            .filter(loop_iteration::Column::TargetArtifactId.eq(task))
+            .all(&h.db.conn)
+            .await
+            .unwrap();
+        v.sort_by_key(|it| it.slot_no);
+        v
+    }
+
+    /// A reviewer submits its verdict through the real ingest path (token →
+    /// running iteration → review artifact + verdict + link).
+    async fn submit_verdict(h: &Harness, review_iter_id: i32, verdict: &str, findings: &str) {
+        let it = loop_iteration::Entity::find_by_id(review_iter_id)
+            .one(&h.db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        crate::loop_engine::ingest::ingest(
+            &h.db.conn,
+            &it.capability_token,
+            "loop_submit_review",
+            &serde_json::json!({ "verdict": verdict, "findings": findings }),
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Review passes → task done + the task gate is released for the next task.
+    #[tokio::test]
+    async fn review_pass_marks_done_and_releases_gate() {
+        let h = setup().await;
+        let task = add_task(&h, "Task 1").await;
+        let cfg = config_reviewers(1, "unanimous");
+        implement_to_in_progress(&h, &cfg, "feature.txt").await;
+        assert_eq!(task_node(&h, task).await.status, ArtifactStatus::InProgress);
+
+        // Dispatch the reviewer, who passes.
+        assert!(drive_with(&h, &cfg).await, "dispatches a reviewer");
+        let review = running_review(&h).await;
+        submit_verdict(&h, review, "pass", "looks good").await;
+        settle_iteration(&h.db, &EventEmitter::Noop, review)
+            .await
+            .unwrap();
+
+        // Aggregate → pass → task done + gate released.
+        assert!(!drive_with(&h, &cfg).await);
+        assert_eq!(task_node(&h, task).await.status, ArtifactStatus::Done);
+        assert_eq!(
+            load_issue(&h).await.active_task_artifact_id,
+            None,
+            "task gate released for the next task"
+        );
+    }
+
+    /// Review fails → rework (task pending, attempt++, findings recorded), gate
+    /// still held; the findings surface for the next implement briefing.
+    #[tokio::test]
+    async fn review_fail_reworks_with_findings() {
+        let h = setup().await;
+        let task = add_task(&h, "Task 1").await;
+        let cfg = config_reviewers(1, "unanimous");
+        implement_to_in_progress(&h, &cfg, "feature.txt").await;
+
+        assert!(drive_with(&h, &cfg).await);
+        let review = running_review(&h).await;
+        submit_verdict(&h, review, "fail", "missing error handling").await;
+        settle_iteration(&h.db, &EventEmitter::Noop, review)
+            .await
+            .unwrap();
+
+        // Aggregate → fail → rework.
+        assert!(!drive_with(&h, &cfg).await, "review fail reworks, not a dispatch");
+        let node = task_node(&h, task).await;
+        assert_eq!(node.status, ArtifactStatus::Pending);
+        assert_eq!(node.attempt, 1);
+        assert_eq!(
+            task_model(&h, task).await.last_failure_sig.as_deref(),
+            Some("review_rejected:implement")
+        );
+        assert_eq!(
+            load_issue(&h).await.active_task_artifact_id,
+            Some(task),
+            "gate held across rework"
+        );
+        let findings = loop_service::artifact::latest_failed_review_findings(&h.db.conn, task)
+            .await
+            .unwrap();
+        assert_eq!(findings, vec!["missing error handling".to_string()]);
+    }
+
+    /// Unanimous rule: one fail rejects immediately and cancels the still-running
+    /// reviewers (their late verdicts can no longer change the outcome).
+    #[tokio::test]
+    async fn unanimous_fail_fast_cancels_other_reviewers() {
+        let h = setup().await;
+        let task = add_task(&h, "Task 1").await;
+        let cfg = config_reviewers(2, "unanimous");
+        implement_to_in_progress(&h, &cfg, "feature.txt").await;
+
+        // Dispatch both review slots.
+        assert!(drive_with(&h, &cfg).await, "dispatches reviewers");
+        let reviews = review_iters_of(&h, task).await;
+        assert_eq!(reviews.len(), 2, "two review slots");
+
+        // Slot 0 fails; slot 1 is still running → unanimous fail-fast.
+        submit_verdict(&h, reviews[0].id, "fail", "regression").await;
+        settle_iteration(&h.db, &EventEmitter::Noop, reviews[0].id)
+            .await
+            .unwrap();
+
+        assert!(!drive_with(&h, &cfg).await, "fail-fast reworks");
+        assert_eq!(task_node(&h, task).await.status, ArtifactStatus::Pending);
+        let slot1 = loop_iteration::Entity::find_by_id(reviews[1].id)
+            .one(&h.db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            slot1.status,
+            IterationStatus::Cancelled,
+            "the other reviewer was cancelled"
+        );
     }
 }
