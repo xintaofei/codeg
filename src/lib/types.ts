@@ -395,8 +395,214 @@ export type ConversationStatus =
 export type ConversationKind = "regular" | "chat" | "loop" | "delegate"
 
 /** Mirrors Rust `FolderKind` (src-tauri/src/db/entities/folder.rs).
- *  `loop_worktree` is reserved for M2+ — add it here when the variant lands. */
-export type FolderKind = "regular" | "chat"
+ *  `loop_worktree` folders back per-issue engine worktrees (hidden like chat). */
+export type FolderKind = "regular" | "chat" | "loop_worktree"
+
+// ─── Loop engineering (mirrors src-tauri/src/models/loops.rs) ───────────────
+
+export const LOOP_CHANGED_EVENT = "loop://changed"
+
+export type LoopIssuePriority = "high" | "medium" | "low"
+export type LoopIssueStatus =
+  | "pending"
+  | "running"
+  | "paused"
+  | "blocked"
+  | "done"
+  | "cancelled"
+export type LoopPauseReason = "manual" | "budget"
+export type LoopIssueRoute = "undecided" | "full" | "skip_design" | "direct"
+export type LoopActorKind = "human" | "agent"
+export type LoopLaunchedBy = "engine" | "human"
+export type LoopStage =
+  | "triage"
+  | "refine"
+  | "design"
+  | "plan"
+  | "implement"
+  | "review"
+  | "finalize"
+export type LoopIterationStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "interrupted"
+  | "cancelled"
+export type LoopArtifactKind =
+  | "issue"
+  | "requirement"
+  | "design"
+  | "task"
+  | "review"
+  | "result"
+export type LoopArtifactStatus =
+  | "pending"
+  | "in_progress"
+  | "awaiting_approval"
+  | "done"
+  | "blocked"
+  | "superseded"
+  | "cancelled"
+export type LoopReviewVerdict = "pass" | "fail"
+export type LoopLinkKind = "derives_from" | "skips_to" | "reviews" | "results_from"
+export type LoopInboxKind = "approval" | "blocked" | "budget_exhausted" | "question"
+export type LoopInboxStatus = "pending" | "handled"
+export type LoopMemoryKind =
+  | "constitution"
+  | "constraint"
+  | "decision"
+  | "preference"
+  | "pitfall"
+export type LoopMemoryStatus = "active" | "archived"
+
+export interface IssueConfig {
+  v: number
+  agents: Record<string, AgentType>
+  validation_commands: string[]
+  reviewer_count: number
+  review_pass_rule: string
+  max_attempts: number
+  auto_merge: boolean
+  force_route: LoopIssueRoute | null
+  iteration_timeout_secs: number | null
+  token_budget_per_turn: number | null
+}
+
+export interface LoopSpaceSummary {
+  id: number
+  name: string
+  folder_id: number
+  folder_path: string | null
+  detached: boolean
+  issue_count: number
+  running_count: number
+  last_activity_at: string | null
+  created_at: string
+}
+
+export interface LoopIssueRow {
+  id: number
+  space_id: number
+  seq_no: number
+  title: string
+  priority: LoopIssuePriority
+  status: LoopIssueStatus
+  pause_reason: LoopPauseReason | null
+  route: LoopIssueRoute
+  token_used: number
+  token_budget: number | null
+  created_at: string
+  updated_at: string
+}
+
+/** Rust flattens `row` into the detail, so the row fields appear inline. */
+export interface LoopIssueDetail extends LoopIssueRow {
+  description: string
+  config: IssueConfig
+  worktree_folder_id: number | null
+  base_branch: string | null
+  base_commit: string | null
+  active_task_artifact_id: number | null
+}
+
+export interface LoopArtifactRow {
+  id: number
+  issue_id: number
+  issue_seq: number
+  kind: LoopArtifactKind
+  title: string
+  status: LoopArtifactStatus
+  origin: LoopActorKind
+  produced_by_iteration_id: number | null
+  verdict: LoopReviewVerdict | null
+  attempt: number
+  sort: number
+  updated_at: string
+}
+
+export interface LoopRevision {
+  id: number
+  seq: number
+  content: string
+  actor_kind: LoopActorKind
+  iteration_id: number | null
+  created_at: string
+}
+
+export interface LoopCriterionRow {
+  id: number
+  label: string
+  text: string
+  sort: number
+}
+
+export interface LoopLinkRow {
+  id: number
+  from_artifact_id: number
+  to_artifact_id: number
+  kind: LoopLinkKind
+}
+
+export interface LoopArtifactDetail extends LoopArtifactRow {
+  revisions: LoopRevision[]
+  criteria: LoopCriterionRow[]
+  links: LoopLinkRow[]
+}
+
+export interface LoopDagView {
+  artifacts: LoopArtifactRow[]
+  links: LoopLinkRow[]
+}
+
+export interface LoopIterationRow {
+  id: number
+  issue_id: number
+  issue_seq: number
+  stage: LoopStage
+  target_artifact_id: number | null
+  target_title: string | null
+  conversation_id: number | null
+  status: LoopIterationStatus
+  launched_by: LoopLaunchedBy
+  attempt: number
+  tokens_used: number
+  created_at: string
+  started_at: string | null
+  ended_at: string | null
+}
+
+export interface LoopInboxItemRow {
+  id: number
+  issue_id: number
+  issue_seq: number
+  iteration_id: number | null
+  kind: LoopInboxKind
+  subject_key: string
+  payload: unknown
+  status: LoopInboxStatus
+  created_at: string
+}
+
+export interface LoopMemoryRow {
+  id: number
+  kind: LoopMemoryKind
+  source: LoopActorKind
+  title: string
+  content: string
+  status: LoopMemoryStatus
+  created_at: string
+  updated_at: string
+}
+
+export interface LoopChanged {
+  v: number
+  space_id: number
+  issue_id: number | null
+  subject_kind: string
+  subject_id: number
+  kind: string
+}
 
 export const STATUS_ORDER: ConversationStatus[] = [
   "in_progress",
