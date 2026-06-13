@@ -3052,10 +3052,19 @@
       "approve": "Freigeben",
       "merge": "Mergen",
       "reject": "Ablehnen",
-      "cancelIssue": "Issue abbrechen",
       "rejectTitle": "Ablehnen",
       "rejectPlaceholder": "Grund (optional)",
-      "submitReject": "Ablehnen"
+      "submitReject": "Ablehnen",
+      "sectionBlocking": "Blockiert",
+      "sectionQuestions": "Fragen",
+      "sectionEmpty": "Nichts vorhanden.",
+      "retry": "Wiederholen",
+      "addBudget": "Budget erhöhen",
+      "stop": "Stoppen",
+      "addBudgetTitle": "Budget erhöhen",
+      "addBudgetPlaceholder": "Zusätzliche Tokens",
+      "submitAddBudget": "Hinzufügen",
+      "openConversation": "Konversation öffnen"
     }
   }
 }

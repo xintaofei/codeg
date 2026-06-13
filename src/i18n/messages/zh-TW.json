@@ -3052,10 +3052,19 @@
       "approve": "核准",
       "merge": "合併",
       "reject": "退回",
-      "cancelIssue": "取消議題",
       "rejectTitle": "退回",
       "rejectPlaceholder": "原因（選填）",
-      "submitReject": "退回"
+      "submitReject": "退回",
+      "sectionBlocking": "卡點",
+      "sectionQuestions": "追問",
+      "sectionEmpty": "目前沒有。",
+      "retry": "重試",
+      "addBudget": "追加預算",
+      "stop": "停止",
+      "addBudgetTitle": "追加預算",
+      "addBudgetPlaceholder": "追加的 tokens 數",
+      "submitAddBudget": "追加",
+      "openConversation": "開啟會話"
     }
   }
 }

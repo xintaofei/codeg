@@ -3052,10 +3052,19 @@
       "approve": "Approve",
       "merge": "Merge",
       "reject": "Reject",
-      "cancelIssue": "Cancel issue",
       "rejectTitle": "Reject",
       "rejectPlaceholder": "Reason (optional)",
-      "submitReject": "Reject"
+      "submitReject": "Reject",
+      "sectionBlocking": "Blocking",
+      "sectionQuestions": "Questions",
+      "sectionEmpty": "Nothing here.",
+      "retry": "Retry",
+      "addBudget": "Add budget",
+      "stop": "Stop",
+      "addBudgetTitle": "Add budget",
+      "addBudgetPlaceholder": "Additional tokens",
+      "submitAddBudget": "Add",
+      "openConversation": "Open conversation"
     }
   }
 }

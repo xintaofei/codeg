@@ -3052,10 +3052,19 @@
       "approve": "批准",
       "merge": "合并",
       "reject": "驳回",
-      "cancelIssue": "取消议题",
       "rejectTitle": "驳回",
       "rejectPlaceholder": "原因（可选）",
-      "submitReject": "驳回"
+      "submitReject": "驳回",
+      "sectionBlocking": "卡点",
+      "sectionQuestions": "追问",
+      "sectionEmpty": "暂无。",
+      "retry": "重试",
+      "addBudget": "追加预算",
+      "stop": "停止",
+      "addBudgetTitle": "追加预算",
+      "addBudgetPlaceholder": "追加的 tokens 数",
+      "submitAddBudget": "追加",
+      "openConversation": "打开会话"
     }
   }
 }

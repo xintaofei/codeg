@@ -3052,10 +3052,19 @@
       "approve": "موافقة",
       "merge": "دمج",
       "reject": "رفض",
-      "cancelIssue": "إلغاء المهمة",
       "rejectTitle": "رفض",
       "rejectPlaceholder": "السبب (اختياري)",
-      "submitReject": "رفض"
+      "submitReject": "رفض",
+      "sectionBlocking": "معوقات",
+      "sectionQuestions": "أسئلة",
+      "sectionEmpty": "لا يوجد شيء.",
+      "retry": "إعادة المحاولة",
+      "addBudget": "إضافة ميزانية",
+      "stop": "إيقاف",
+      "addBudgetTitle": "إضافة ميزانية",
+      "addBudgetPlaceholder": "رموز إضافية",
+      "submitAddBudget": "إضافة",
+      "openConversation": "فتح المحادثة"
     }
   }
 }

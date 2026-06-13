@@ -236,6 +236,32 @@ pub async fn cancel_loop_issue_core(
     Ok(())
 }
 
+/// Retry a blocked issue (inbox escape hatch): the engine re-arms the blocked
+/// tasks, marks the blocking cards handled, and resumes the issue — emitting the
+/// change itself, so this wrapper is thin.
+pub async fn retry_loop_issue_core(
+    _conn: &DatabaseConnection,
+    _emitter: &EventEmitter,
+    engine: &Arc<LoopEngine>,
+    id: i32,
+) -> Result<(), AppCommandError> {
+    engine.retry_issue(id).await?;
+    Ok(())
+}
+
+/// Add `additional` tokens to a budget-paused issue's budget and resume it (the
+/// engine emits the change).
+pub async fn add_loop_issue_budget_core(
+    _conn: &DatabaseConnection,
+    _emitter: &EventEmitter,
+    engine: &Arc<LoopEngine>,
+    id: i32,
+    additional: i64,
+) -> Result<(), AppCommandError> {
+    engine.add_budget(id, additional).await?;
+    Ok(())
+}
+
 // ─── Merge gate (approve / reject the result) ───────────────────────────────
 
 /// Approve a finalized issue's merge: the engine lands its loop branch on the
@@ -566,6 +592,30 @@ pub async fn cancel_loop_issue(
     id: i32,
 ) -> Result<(), AppCommandError> {
     cancel_loop_issue_core(&db.conn, &EventEmitter::Tauri(app), engine.inner(), id).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn retry_loop_issue(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    engine: tauri::State<'_, Arc<LoopEngine>>,
+    id: i32,
+) -> Result<(), AppCommandError> {
+    retry_loop_issue_core(&db.conn, &EventEmitter::Tauri(app), engine.inner(), id).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn add_loop_issue_budget(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    engine: tauri::State<'_, Arc<LoopEngine>>,
+    id: i32,
+    additional: i64,
+) -> Result<(), AppCommandError> {
+    add_loop_issue_budget_core(&db.conn, &EventEmitter::Tauri(app), engine.inner(), id, additional)
+        .await
 }
 
 #[cfg(feature = "tauri-runtime")]

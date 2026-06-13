@@ -3052,10 +3052,19 @@
       "approve": "승인",
       "merge": "병합",
       "reject": "거부",
-      "cancelIssue": "이슈 취소",
       "rejectTitle": "거부",
       "rejectPlaceholder": "사유 (선택)",
-      "submitReject": "거부"
+      "submitReject": "거부",
+      "sectionBlocking": "차단",
+      "sectionQuestions": "질문",
+      "sectionEmpty": "없습니다.",
+      "retry": "재시도",
+      "addBudget": "예산 추가",
+      "stop": "중지",
+      "addBudgetTitle": "예산 추가",
+      "addBudgetPlaceholder": "추가 토큰 수",
+      "submitAddBudget": "추가",
+      "openConversation": "대화 열기"
     }
   }
 }

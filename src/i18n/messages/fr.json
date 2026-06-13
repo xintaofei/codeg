@@ -3052,10 +3052,19 @@
       "approve": "Approuver",
       "merge": "Fusionner",
       "reject": "Rejeter",
-      "cancelIssue": "Annuler le ticket",
       "rejectTitle": "Rejeter",
       "rejectPlaceholder": "Motif (facultatif)",
-      "submitReject": "Rejeter"
+      "submitReject": "Rejeter",
+      "sectionBlocking": "Blocages",
+      "sectionQuestions": "Questions",
+      "sectionEmpty": "Rien ici.",
+      "retry": "Réessayer",
+      "addBudget": "Ajouter du budget",
+      "stop": "Arrêter",
+      "addBudgetTitle": "Ajouter du budget",
+      "addBudgetPlaceholder": "Jetons supplémentaires",
+      "submitAddBudget": "Ajouter",
+      "openConversation": "Ouvrir la conversation"
     }
   }
 }

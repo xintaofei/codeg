@@ -104,6 +104,16 @@ export function cancelLoopIssue(id: number) {
   return getTransport().call<void>("cancel_loop_issue", { id })
 }
 
+/** Retry a blocked issue: re-arm its blocked tasks and resume driving. */
+export function retryLoopIssue(id: number) {
+  return getTransport().call<void>("retry_loop_issue", { id })
+}
+
+/** Add `additional` tokens to a budget-paused issue's budget and resume it. */
+export function addLoopIssueBudget(id: number, additional: number) {
+  return getTransport().call<void>("add_loop_issue_budget", { id, additional })
+}
+
 // ─── Approval gates (design / merge) ────────────────────────────────────────
 
 export function approveLoopDesign(id: number) {

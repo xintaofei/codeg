@@ -3052,10 +3052,19 @@
       "approve": "承認",
       "merge": "マージ",
       "reject": "却下",
-      "cancelIssue": "課題をキャンセル",
       "rejectTitle": "却下",
       "rejectPlaceholder": "理由（任意）",
-      "submitReject": "却下"
+      "submitReject": "却下",
+      "sectionBlocking": "ブロック",
+      "sectionQuestions": "質問",
+      "sectionEmpty": "ありません。",
+      "retry": "再試行",
+      "addBudget": "予算を追加",
+      "stop": "停止",
+      "addBudgetTitle": "予算を追加",
+      "addBudgetPlaceholder": "追加するトークン数",
+      "submitAddBudget": "追加",
+      "openConversation": "会話を開く"
     }
   }
 }

@@ -26,7 +26,7 @@ use chrono::Utc;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ActiveEnum, ColumnTrait, EntityTrait, QueryFilter};
 
-use crate::db::entities::loop_artifact::{ArtifactKind, ArtifactStatus};
+use crate::db::entities::loop_artifact::{self, ArtifactKind, ArtifactStatus};
 use crate::db::entities::loop_artifact_revision::ActorKind;
 use crate::db::entities::loop_inbox_item::{self, InboxKind, InboxStatus};
 use crate::db::entities::loop_issue::{self, IssueStatus, PauseReason};
@@ -419,6 +419,87 @@ impl LoopEngine {
         Ok(())
     }
 
+    /// Retry a blocked issue — the inbox "retry" escape hatch. Re-arms every
+    /// blocked task for a fresh implement run, marks the blocking cards handled,
+    /// and puts the issue back to `running` under a fresh driver. Conflict when
+    /// the issue is not `blocked`.
+    ///
+    /// Each blocked task is reset `blocked → pending` with its failure signature
+    /// cleared, so the repeated-failure breaker won't trip on the first new run.
+    /// `attempt` is intentionally *kept*: a blocked task already sits one past its
+    /// last iteration, so the next dispatch is fresh — and each retry grants one
+    /// more attempt against `max_attempts` (raise it in per-issue settings for a
+    /// larger budget). Issue-level blocks (dirty finalize, merge fault/reject)
+    /// have no blocked task; retry simply re-drives so the engine re-evaluates.
+    pub async fn retry_issue(self: &Arc<Self>, issue_id: i32) -> Result<(), LoopError> {
+        let conn = &self.db.conn;
+        let issue = issue::get_issue(conn, issue_id)
+            .await?
+            .ok_or_else(|| LoopError::NotFound(format!("issue {issue_id}")))?;
+        if issue.status != IssueStatus::Blocked {
+            return Err(LoopError::Conflict);
+        }
+        loop_artifact::Entity::update_many()
+            .col_expr(
+                loop_artifact::Column::Status,
+                Expr::value(ArtifactStatus::Pending.to_value()),
+            )
+            .col_expr(
+                loop_artifact::Column::LastFailureSig,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(loop_artifact::Column::UpdatedAt, Expr::value(Utc::now()))
+            .filter(loop_artifact::Column::IssueId.eq(issue_id))
+            .filter(loop_artifact::Column::Kind.eq(ArtifactKind::Task))
+            .filter(loop_artifact::Column::Status.eq(ArtifactStatus::Blocked))
+            .exec(conn)
+            .await?;
+        resolve_cards_of_kind(
+            conn,
+            issue_id,
+            InboxKind::Blocked,
+            serde_json::json!({ "action": "retry" }),
+        )
+        .await?;
+        if !cas_issue_status(conn, issue_id, IssueStatus::Blocked, IssueStatus::Running).await? {
+            return Err(LoopError::Conflict);
+        }
+        self.emit_changed(issue.space_id, issue_id, "retried");
+        self.start_issue(issue_id).await;
+        Ok(())
+    }
+
+    /// Top up a budget-paused issue's token budget and resume it — the inbox
+    /// "add budget" escape hatch. `additional` (clamped to ≥ 0) is added to the
+    /// current `token_budget`; the budget card is marked handled and the issue
+    /// resumes under a fresh driver. Conflict when the issue is not `paused`.
+    pub async fn add_budget(self: &Arc<Self>, issue_id: i32, additional: i64) -> Result<(), LoopError> {
+        let conn = &self.db.conn;
+        let issue = issue::get_issue(conn, issue_id)
+            .await?
+            .ok_or_else(|| LoopError::NotFound(format!("issue {issue_id}")))?;
+        if issue.status != IssueStatus::Paused {
+            return Err(LoopError::Conflict);
+        }
+        let new_budget = issue.token_budget.unwrap_or(0).saturating_add(additional.max(0));
+        loop_issue::Entity::update_many()
+            .col_expr(loop_issue::Column::TokenBudget, Expr::value(new_budget))
+            .col_expr(loop_issue::Column::UpdatedAt, Expr::value(Utc::now()))
+            .filter(loop_issue::Column::Id.eq(issue_id))
+            .exec(conn)
+            .await?;
+        resolve_cards_of_kind(
+            conn,
+            issue_id,
+            InboxKind::BudgetExhausted,
+            serde_json::json!({ "action": "add_budget", "additional": additional }),
+        )
+        .await?;
+        self.emit_changed(issue.space_id, issue_id, "budget_added");
+        // Flip paused → running, clear the pause reason, and start a fresh driver.
+        self.resume_issue(issue_id).await
+    }
+
     /// Emit the coarse `loop://changed` refetch signal for an issue.
     fn emit_changed(&self, space_id: i32, issue_id: i32, kind: &str) {
         emit_event(
@@ -470,6 +551,27 @@ async fn resolve_approval_card(
         .await?
     {
         inbox::handle_inbox(conn, card.id, resolution).await?;
+    }
+    Ok(())
+}
+
+/// Mark every pending inbox card of `kind` for an issue handled. A blocked issue
+/// may carry more than one card (e.g. several `no_progress:{task}` keys), so the
+/// retry / add-budget escape hatches clear them all in one resolution.
+async fn resolve_cards_of_kind(
+    conn: &sea_orm::DatabaseConnection,
+    issue_id: i32,
+    kind: InboxKind,
+    resolution: serde_json::Value,
+) -> Result<(), LoopError> {
+    let cards = loop_inbox_item::Entity::find()
+        .filter(loop_inbox_item::Column::IssueId.eq(issue_id))
+        .filter(loop_inbox_item::Column::Kind.eq(kind))
+        .filter(loop_inbox_item::Column::Status.eq(InboxStatus::Pending))
+        .all(conn)
+        .await?;
+    for card in cards {
+        inbox::handle_inbox(conn, card.id, resolution.clone()).await?;
     }
     Ok(())
 }
@@ -671,6 +773,133 @@ mod tests {
                 .is_none(),
             "the agent process connection is killed on cancel"
         );
+    }
+
+    // ── Blocked / budget escape hatches ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn retry_rearms_blocked_task_and_resolves_cards() {
+        let (engine, conn, space_id, issue_id) = setup().await;
+        // A blocked task carrying a failure signature + its no-progress card.
+        let task = artifact::create_artifact(
+            &conn,
+            space_id,
+            issue_id,
+            ArtifactKind::Task,
+            "T",
+            ArtifactStatus::Blocked,
+            ActorKind::Agent,
+            None,
+        )
+        .await
+        .unwrap();
+        loop_artifact::Entity::update_many()
+            .col_expr(
+                loop_artifact::Column::LastFailureSig,
+                Expr::value("validation_failed:abc".to_string()),
+            )
+            .filter(loop_artifact::Column::Id.eq(task.id))
+            .exec(&conn)
+            .await
+            .unwrap();
+        cas_issue_status(&conn, issue_id, IssueStatus::Running, IssueStatus::Blocked)
+            .await
+            .unwrap();
+        inbox::upsert_inbox(
+            &conn,
+            space_id,
+            issue_id,
+            None,
+            InboxKind::Blocked,
+            &format!("no_progress:{}", task.id),
+            serde_json::json!({ "reason": "max_attempts" }),
+        )
+        .await
+        .unwrap();
+
+        engine.retry_issue(issue_id).await.unwrap();
+
+        let t = loop_artifact::Entity::find_by_id(task.id)
+            .one(&conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(t.status, ArtifactStatus::Pending, "blocked task re-armed");
+        assert!(t.last_failure_sig.is_none(), "failure signature cleared");
+        assert_eq!(
+            issue::get_issue(&conn, issue_id).await.unwrap().unwrap().status,
+            IssueStatus::Running
+        );
+        assert!(
+            inbox::list_inbox(&conn, space_id, Some(InboxStatus::Pending))
+                .await
+                .unwrap()
+                .is_empty(),
+            "blocking card resolved"
+        );
+        engine.stop_issue(issue_id).await;
+
+        // Retrying an issue that is no longer blocked is a conflict.
+        assert!(matches!(
+            engine.retry_issue(issue_id).await,
+            Err(LoopError::Conflict)
+        ));
+    }
+
+    #[tokio::test]
+    async fn add_budget_tops_up_and_resumes() {
+        let (engine, conn, space_id, issue_id) = setup().await;
+        // A budget-paused issue: budget set, paused(budget), card filed.
+        loop_issue::Entity::update_many()
+            .col_expr(loop_issue::Column::TokenBudget, Expr::value(1000_i64))
+            .filter(loop_issue::Column::Id.eq(issue_id))
+            .exec(&conn)
+            .await
+            .unwrap();
+        cas_issue_status(&conn, issue_id, IssueStatus::Running, IssueStatus::Paused)
+            .await
+            .unwrap();
+        loop_issue::Entity::update_many()
+            .col_expr(
+                loop_issue::Column::PauseReason,
+                Expr::value(PauseReason::Budget.to_value()),
+            )
+            .filter(loop_issue::Column::Id.eq(issue_id))
+            .exec(&conn)
+            .await
+            .unwrap();
+        inbox::upsert_inbox(
+            &conn,
+            space_id,
+            issue_id,
+            None,
+            InboxKind::BudgetExhausted,
+            &format!("budget:{issue_id}"),
+            serde_json::json!({ "token_used": 1200, "token_budget": 1000 }),
+        )
+        .await
+        .unwrap();
+
+        engine.add_budget(issue_id, 5000).await.unwrap();
+
+        let issue = issue::get_issue(&conn, issue_id).await.unwrap().unwrap();
+        assert_eq!(issue.token_budget, Some(6000), "budget topped up");
+        assert_eq!(issue.status, IssueStatus::Running, "issue resumed");
+        assert_eq!(issue.pause_reason, None, "pause reason cleared");
+        assert!(
+            inbox::list_inbox(&conn, space_id, Some(InboxStatus::Pending))
+                .await
+                .unwrap()
+                .is_empty(),
+            "budget card resolved"
+        );
+        engine.stop_issue(issue_id).await;
+
+        // Adding budget to a running (non-paused) issue is a conflict.
+        assert!(matches!(
+            engine.add_budget(issue_id, 1000).await,
+            Err(LoopError::Conflict)
+        ));
     }
 
     // ── Merge gate (real git repo) ──────────────────────────────────────────
