@@ -12,12 +12,14 @@
 //! transport / listener layers only ferry the `(token, tool, payload)` triple
 //! here.
 
+use async_trait::async_trait;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, IntoActiveModel, QueryFilter,
     Set,
 };
 use serde_json::{json, Value};
 
+use crate::acp::delegation::listener::LoopIngestAccess;
 use crate::db::entities::loop_artifact::{self, ArtifactKind, ArtifactStatus, ReviewVerdict};
 use crate::db::entities::loop_artifact_revision::ActorKind;
 use crate::db::entities::loop_inbox_item::InboxKind;
@@ -98,6 +100,29 @@ pub async fn ingest(
         "loop_report_blocked" => report_blocked(conn, &it, payload).await,
         "loop_record_memory" => record_memory(conn, &it, payload).await,
         other => Err(invalid(format!("unknown loop tool: {other}"))),
+    }
+}
+
+/// Production [`LoopIngestAccess`] over the shared database — the bridge the
+/// delegation listener calls for `loop_submit_*` traffic. Holds a cheap
+/// `DatabaseConnection` clone (a connection-pool handle) and wraps [`ingest`],
+/// flattening `LoopError` to its display string so the listener boundary stays
+/// free of the loop error type.
+pub struct DbLoopIngest {
+    pub conn: DatabaseConnection,
+}
+
+#[async_trait]
+impl LoopIngestAccess for DbLoopIngest {
+    async fn loop_ingest(
+        &self,
+        token: &str,
+        tool: &str,
+        payload: &Value,
+    ) -> Result<Value, String> {
+        ingest(&self.conn, token, tool, payload)
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 

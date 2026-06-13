@@ -494,6 +494,9 @@ mod tauri_app {
                                 manager: std::sync::Arc::new(cm_state.clone_ref()),
                             },
                         ),
+                        std::sync::Arc::new(crate::loop_engine::ingest::DbLoopIngest {
+                            conn: db_conn.clone(),
+                        }),
                     );
                     tauri::async_runtime::spawn(async move {
                         if let Err(e) = listener.run(socket_path).await {

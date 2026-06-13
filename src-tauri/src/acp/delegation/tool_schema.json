@@ -127,5 +127,115 @@
         }
       }
     }
+  },
+  {
+    "name": "loop_submit_route",
+    "description": "Loop engineering — TRIAGE stage only. Decide how this issue should flow through the loop and record it. Call exactly once after analyzing the issue. The route determines which downstream stages run.",
+    "inputSchema": {
+      "type": "object",
+      "required": ["route"],
+      "properties": {
+        "route": {
+          "type": "string",
+          "enum": ["full", "skip_design", "direct"],
+          "description": "full = requirements → design → tasks (use for non-trivial or design-bearing work); skip_design = requirements → tasks (clear scope, no design needed); direct = straight to a single task (a small, obvious change)."
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["high", "medium", "low"],
+          "description": "Optional re-prioritization of the issue based on what you learned during triage."
+        }
+      }
+    }
+  },
+  {
+    "name": "loop_submit_artifacts",
+    "description": "Loop engineering — produce the artifacts for the current stage (REFINE → requirements, DESIGN → designs, PLAN → tasks). Submit the complete batch in ONE call; the kind is inferred from your stage. Each artifact is linked to the node you were briefed on. Idempotent: re-calling returns the same ids.",
+    "inputSchema": {
+      "type": "object",
+      "required": ["artifacts"],
+      "properties": {
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "description": "One or more artifacts produced this stage.",
+          "items": {
+            "type": "object",
+            "required": ["title", "content"],
+            "properties": {
+              "title": {
+                "type": "string",
+                "description": "Short, specific title (e.g. a requirement statement or a task name)."
+              },
+              "content": {
+                "type": "string",
+                "description": "The full artifact body in markdown — the requirement detail, the design, or the task's implementation brief."
+              },
+              "criteria": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Optional acceptance criteria — each a single verifiable statement."
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "loop_submit_review",
+    "description": "Loop engineering — REVIEW stage only. Record your verdict on the task implementation you were briefed to review. Submit exactly once. A 'fail' verdict feeds your findings back to the implementer.",
+    "inputSchema": {
+      "type": "object",
+      "required": ["verdict"],
+      "properties": {
+        "verdict": {
+          "type": "string",
+          "enum": ["pass", "fail"],
+          "description": "pass = the implementation meets every acceptance criterion; fail = at least one defect or missing criterion (explain in findings)."
+        },
+        "findings": {
+          "type": "string",
+          "description": "Markdown findings. For a fail, be specific and actionable so the implementer can fix it on the next attempt."
+        }
+      }
+    }
+  },
+  {
+    "name": "loop_report_blocked",
+    "description": "Loop engineering — signal that you cannot make progress and need human intervention. Raises a blocked item in the issue's inbox. Use this instead of guessing when a hard external dependency, ambiguity you cannot resolve, or a missing prerequisite stops you.",
+    "inputSchema": {
+      "type": "object",
+      "required": ["reason"],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "description": "What is blocking you and what a human would need to do to unblock it."
+        }
+      }
+    }
+  },
+  {
+    "name": "loop_record_memory",
+    "description": "Loop engineering — record a durable lesson for this space that future iterations should know. Use sparingly for genuinely reusable knowledge (a constraint discovered, a decision made, a pitfall to avoid), not per-task notes.",
+    "inputSchema": {
+      "type": "object",
+      "required": ["content"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["constraint", "decision", "preference", "pitfall"],
+          "description": "constraint = a hard rule the code must obey; decision = a settled choice and its rationale; preference = a soft styling/approach preference; pitfall = a trap to avoid. Defaults to pitfall."
+        },
+        "title": {
+          "type": "string",
+          "description": "Short title for the memory."
+        },
+        "content": {
+          "type": "string",
+          "description": "The lesson, stated so a future agent can apply it without this context."
+        }
+      }
+    }
   }
 ]

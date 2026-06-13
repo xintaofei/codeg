@@ -15,7 +15,7 @@ use codeg_lib::acp::delegation::broker::{
     ConversationDepthLookup, DelegationBroker, DelegationConfig,
 };
 use codeg_lib::acp::delegation::listener::{
-    DelegationListener, ParentSessionLookup, TokenEntry, TokenRegistry,
+    DelegationListener, LoopIngestAccess, ParentSessionLookup, TokenEntry, TokenRegistry,
 };
 use codeg_lib::acp::delegation::spawner::{mock::MockSpawner, ConnectionSpawner};
 use codeg_lib::acp::delegation::transport::{
@@ -53,6 +53,20 @@ impl codeg_lib::acp::feedback::SessionFeedbackAccess for NoFeedback {
         Vec::new()
     }
     async fn commit_feedback_delivered(&self, _parent_connection_id: &str, _ids: Vec<String>) {}
+}
+
+/// No-op loop-ingest access — this e2e suite exercises delegation, not loops.
+struct NoLoopIngest;
+#[async_trait]
+impl LoopIngestAccess for NoLoopIngest {
+    async fn loop_ingest(
+        &self,
+        _token: &str,
+        _tool: &str,
+        _payload: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        Err("loop ingest not wired in this test".into())
+    }
 }
 
 /// No-op question access — this e2e suite exercises delegation, not asks.
@@ -157,6 +171,7 @@ async fn end_to_end_named_pipe_happy_path() {
         Arc::new(FixedParent(1)) as Arc<dyn ParentSessionLookup>,
         Arc::new(NoFeedback) as Arc<dyn codeg_lib::acp::feedback::SessionFeedbackAccess>,
         Arc::new(NoQuestions) as Arc<dyn SessionQuestionAccess>,
+        Arc::new(NoLoopIngest) as Arc<dyn LoopIngestAccess>,
     );
 
     let pipe = unique_pipe("happy");
@@ -257,6 +272,7 @@ async fn end_to_end_named_pipe_back_to_back_requests() {
         Arc::new(FixedParent(1)) as Arc<dyn ParentSessionLookup>,
         Arc::new(NoFeedback) as Arc<dyn codeg_lib::acp::feedback::SessionFeedbackAccess>,
         Arc::new(NoQuestions) as Arc<dyn SessionQuestionAccess>,
+        Arc::new(NoLoopIngest) as Arc<dyn LoopIngestAccess>,
     );
 
     let pipe = unique_pipe("repeat");

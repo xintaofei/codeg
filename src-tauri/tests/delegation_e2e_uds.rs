@@ -19,7 +19,7 @@ use codeg_lib::acp::delegation::broker::{
     ConversationDepthLookup, DelegationBroker, DelegationConfig,
 };
 use codeg_lib::acp::delegation::listener::{
-    DelegationListener, ParentSessionLookup, TokenEntry, TokenRegistry,
+    DelegationListener, LoopIngestAccess, ParentSessionLookup, TokenEntry, TokenRegistry,
 };
 use codeg_lib::acp::delegation::spawner::{mock::MockSpawner, ConnectionSpawner};
 use codeg_lib::acp::delegation::transport::{
@@ -62,6 +62,21 @@ impl codeg_lib::acp::feedback::SessionFeedbackAccess for NoFeedback {
         Vec::new()
     }
     async fn commit_feedback_delivered(&self, _parent_connection_id: &str, _ids: Vec<String>) {}
+}
+
+/// No-op loop-ingest access — this e2e suite exercises delegation/feedback/ask,
+/// not loop submissions. Passed as the 6th `DelegationListener::new` arg.
+struct NoLoopIngest;
+#[async_trait]
+impl LoopIngestAccess for NoLoopIngest {
+    async fn loop_ingest(
+        &self,
+        _token: &str,
+        _tool: &str,
+        _payload: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        Err("loop ingest not wired in this test".into())
+    }
 }
 
 /// Controllable question access for the ask round-trip test: `register_question`
@@ -150,6 +165,7 @@ async fn end_to_end_uds_happy_path() {
         Arc::new(FixedParent(1)) as Arc<dyn ParentSessionLookup>,
         Arc::new(NoFeedback) as Arc<dyn codeg_lib::acp::feedback::SessionFeedbackAccess>,
         Arc::new(StubQuestions::default()) as Arc<dyn SessionQuestionAccess>,
+        Arc::new(NoLoopIngest) as Arc<dyn LoopIngestAccess>,
     );
 
     // PID-scoped socket inside the OS temp dir — no clashes across test bins.
@@ -264,6 +280,7 @@ async fn end_to_end_uds_batch_status() {
         Arc::new(FixedParent(1)) as Arc<dyn ParentSessionLookup>,
         Arc::new(NoFeedback) as Arc<dyn codeg_lib::acp::feedback::SessionFeedbackAccess>,
         Arc::new(StubQuestions::default()) as Arc<dyn SessionQuestionAccess>,
+        Arc::new(NoLoopIngest) as Arc<dyn LoopIngestAccess>,
     );
 
     let dir = tempfile::tempdir().unwrap();
@@ -349,6 +366,7 @@ async fn end_to_end_uds_invalid_token_rejected() {
         Arc::new(FixedParent(1)) as Arc<dyn ParentSessionLookup>,
         Arc::new(NoFeedback) as Arc<dyn codeg_lib::acp::feedback::SessionFeedbackAccess>,
         Arc::new(StubQuestions::default()) as Arc<dyn SessionQuestionAccess>,
+        Arc::new(NoLoopIngest) as Arc<dyn LoopIngestAccess>,
     );
 
     let dir = tempfile::tempdir().unwrap();
@@ -413,6 +431,7 @@ async fn end_to_end_uds_ask_question_round_trip() {
         Arc::new(FixedParent(1)) as Arc<dyn ParentSessionLookup>,
         Arc::new(NoFeedback) as Arc<dyn codeg_lib::acp::feedback::SessionFeedbackAccess>,
         questions.clone() as Arc<dyn SessionQuestionAccess>,
+        Arc::new(NoLoopIngest) as Arc<dyn LoopIngestAccess>,
     );
 
     let dir = tempfile::tempdir().unwrap();
@@ -550,6 +569,7 @@ async fn end_to_end_uds_ask_revoked_after_register_declines() {
         Arc::new(FixedParent(1)) as Arc<dyn ParentSessionLookup>,
         Arc::new(NoFeedback) as Arc<dyn codeg_lib::acp::feedback::SessionFeedbackAccess>,
         questions as Arc<dyn SessionQuestionAccess>,
+        Arc::new(NoLoopIngest) as Arc<dyn LoopIngestAccess>,
     );
 
     let dir = tempfile::tempdir().unwrap();

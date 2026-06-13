@@ -50,6 +50,10 @@ struct Args {
     /// by parents that predate feature gating; see `CompanionFeatures::parse`
     /// (defaults to delegation-only).
     features: Option<String>,
+    /// Per-iteration loop capability token. Present ONLY for a loop-iteration
+    /// launch (`--features ...,loop`); the `loop_submit_*` tools send it so the
+    /// host can reverse-look-up the iteration. Omitted for ordinary launches.
+    capability_token: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -58,6 +62,7 @@ fn parse_args() -> Result<Args, String> {
     let mut token = None;
     let mut parent_pid = None;
     let mut features = None;
+    let mut capability_token = None;
 
     let mut iter = std::env::args().skip(1);
     while let Some(arg) = iter.next() {
@@ -95,9 +100,15 @@ fn parse_args() -> Result<Args, String> {
                         .ok_or_else(|| "--features requires a value".to_string())?,
                 );
             }
+            "--capability-token" => {
+                capability_token = Some(
+                    iter.next()
+                        .ok_or_else(|| "--capability-token requires a value".to_string())?,
+                );
+            }
             "--help" | "-h" => {
                 println!(
-                    "codeg-mcp --parent-connection-id <uuid> --socket-path <path> --token <secret> [--parent-pid <pid>] [--features delegation,feedback]"
+                    "codeg-mcp --parent-connection-id <uuid> --socket-path <path> --token <secret> [--parent-pid <pid>] [--features delegation,feedback,ask,loop] [--capability-token <token>]"
                 );
                 std::process::exit(0);
             }
@@ -111,6 +122,7 @@ fn parse_args() -> Result<Args, String> {
         token: token.ok_or_else(|| "missing --token".to_string())?,
         parent_pid,
         features,
+        capability_token,
     })
 }
 
@@ -144,6 +156,7 @@ async fn main() -> ExitCode {
         socket_path: args.socket_path,
         token: args.token,
         features: CompanionFeatures::parse(args.features.as_deref()),
+        capability_token: args.capability_token,
     };
 
     let stdin = tokio::io::stdin();

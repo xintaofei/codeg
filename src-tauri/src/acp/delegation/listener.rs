@@ -45,6 +45,28 @@ pub trait ParentSessionLookup: Send + Sync {
     async fn current_conversation_id(&self, parent_connection_id: &str) -> Option<i32>;
 }
 
+/// Host-side sink for loop-engineering submissions (`loop_submit_*` tools). The
+/// production impl wraps the loop engine's `ingest` over the shared database;
+/// tests use an in-memory stub. Kept as a trait (mirroring [`ParentSessionLookup`]
+/// / [`crate::acp::feedback::SessionFeedbackAccess`]) so the listener stays
+/// decoupled from the `loop_engine` module and is unit-testable without a DB.
+///
+/// Unlike the delegation arms, authentication is NOT via [`TokenRegistry`]: the
+/// `token` is a per-iteration capability token the impl reverse-looks-up in the
+/// database. The return is a flat `Result<Value, String>` — `Ok` is the
+/// persisted outcome, `Err` is an agent-actionable message (the listener wraps
+/// either into the wire `{ ok, .. }` envelope), so a `LoopError` never crosses
+/// this boundary.
+#[async_trait]
+pub trait LoopIngestAccess: Send + Sync {
+    async fn loop_ingest(
+        &self,
+        token: &str,
+        tool: &str,
+        payload: &Value,
+    ) -> Result<Value, String>;
+}
+
 /// Per-launch token entry. Bound at MCP injection time and revoked on parent
 /// connection teardown.
 #[derive(Debug, Clone)]
@@ -90,6 +112,9 @@ pub struct DelegationListener {
     /// Registers / cancels the blocking `ask_user_question` tool's pending
     /// questions. Same `tokens` registry and parent-connection scoping.
     pub questions: Arc<dyn SessionQuestionAccess>,
+    /// Persists loop-engineering submissions (`loop_submit_*` tools), authed by
+    /// per-iteration capability token (NOT the `tokens` registry).
+    pub loop_ingest: Arc<dyn LoopIngestAccess>,
 }
 
 impl DelegationListener {
@@ -99,6 +124,7 @@ impl DelegationListener {
         parent_lookup: Arc<dyn ParentSessionLookup>,
         feedback: Arc<dyn SessionFeedbackAccess>,
         questions: Arc<dyn SessionQuestionAccess>,
+        loop_ingest: Arc<dyn LoopIngestAccess>,
     ) -> Arc<Self> {
         Arc::new(Self {
             broker,
@@ -106,6 +132,7 @@ impl DelegationListener {
             parent_lookup,
             feedback,
             questions,
+            loop_ingest,
         })
     }
 
@@ -295,6 +322,17 @@ impl DelegationListener {
                 };
                 write_frame(conn, &resp).await?;
                 return Ok(());
+            }
+            BrokerMessage::LoopSubmit(req) => {
+                // No TokenRegistry check: the `ingest` impl reverse-looks-up the
+                // capability token in the DB and owns all validation. Both an
+                // accepted submission and an agent-actionable rejection come back
+                // as the same `{ ok, .. }` envelope so the LLM can correct itself.
+                let outcome = self
+                    .loop_ingest
+                    .loop_ingest(&req.token, &req.tool, &req.payload)
+                    .await;
+                loop_submit_response(outcome)
             }
             BrokerMessage::Cancel(cancel) => {
                 self.process_cancel(cancel).await;
@@ -534,6 +572,19 @@ fn ask_declined_response() -> std::io::Result<BrokerResponse> {
     })
 }
 
+/// Wrap a loop `ingest` outcome into the wire `{ ok, .. }` envelope. `Ok` carries
+/// the persisted result under `result`; `Err` carries the agent-actionable
+/// message under `error`. The companion's `render_loop_result` maps this to a
+/// `tools/call` result (flagging `isError` on the error path). Never fails —
+/// both branches are pure JSON construction.
+fn loop_submit_response(outcome: Result<Value, String>) -> BrokerResponse {
+    let envelope = match outcome {
+        Ok(result) => serde_json::json!({ "ok": true, "result": result }),
+        Err(error) => serde_json::json!({ "ok": false, "error": error }),
+    };
+    BrokerResponse { outcome: envelope }
+}
+
 /// A `Canceled` report for a setup-side rejection the LLM can't react to (bad
 /// token, parent gone). Mirrors the old `cancel(..)` DelegationOutcome.
 fn report_canceled(message: &str) -> DelegationTaskReport {
@@ -615,6 +666,7 @@ pub fn default_socket_path(_temp_dir: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use crate::acp::delegation::broker::{ConversationDepthLookup, DelegationConfig};
+    use crate::acp::delegation::transport::BrokerLoopSubmitRequest;
     use crate::acp::delegation::spawner::{mock::MockSpawner, ConnectionSpawner, SpawnerError};
     use crate::acp::delegation::types::{DelegationError, DelegationOutcome, DelegationSuccess};
     use serde_json::json;
@@ -715,6 +767,34 @@ mod tests {
         }
     }
 
+    /// In-memory loop-ingest stub. Records each `(token, tool, payload)` it sees;
+    /// by default echoes a success outcome, or returns the seeded error when
+    /// `fail_with` is set (to exercise the listener's error envelope). Default is
+    /// success (the delegation/feedback/ask tests don't exercise loop submits).
+    #[derive(Default)]
+    struct StubLoopIngest {
+        calls: tokio::sync::Mutex<Vec<(String, String, Value)>>,
+        fail_with: Option<String>,
+    }
+    #[async_trait]
+    impl LoopIngestAccess for StubLoopIngest {
+        async fn loop_ingest(
+            &self,
+            token: &str,
+            tool: &str,
+            payload: &Value,
+        ) -> Result<Value, String> {
+            self.calls
+                .lock()
+                .await
+                .push((token.to_string(), tool.to_string(), payload.clone()));
+            match &self.fail_with {
+                Some(e) => Err(e.clone()),
+                None => Ok(json!({ "ok": true, "echo_tool": tool })),
+            }
+        }
+    }
+
     use tokio::sync::oneshot;
 
     async fn make_broker(mock: Arc<MockSpawner>) -> Arc<DelegationBroker> {
@@ -746,6 +826,7 @@ mod tests {
             Arc::new(StaticParentLookup(parent_conversation)),
             Arc::new(StubFeedback::default()),
             Arc::new(StubQuestion::default()),
+            Arc::new(StubLoopIngest::default()),
         )
     }
 
@@ -765,6 +846,7 @@ mod tests {
             Arc::new(StaticParentLookup(Some(1))),
             feedback,
             Arc::new(StubQuestion::default()),
+            Arc::new(StubLoopIngest::default()),
         )
     }
 
@@ -785,6 +867,7 @@ mod tests {
             Arc::new(StaticParentLookup(Some(1))),
             Arc::new(StubFeedback::default()),
             questions,
+            Arc::new(StubLoopIngest::default()),
         )
     }
 
@@ -1402,6 +1485,82 @@ mod tests {
             .await;
         assert_eq!(report.status, TaskStatus::Failed);
         assert_eq!(report.error_code.as_deref(), Some("spawn_failed"));
+    }
+
+    // --- loop_submit_* over the listener -----------------------------------
+
+    fn make_loop_listener(loop_ingest: Arc<StubLoopIngest>) -> Arc<DelegationListener> {
+        let broker = Arc::new(DelegationBroker::new(
+            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+            Arc::new(AlwaysRootLookup) as Arc<dyn ConversationDepthLookup>,
+        ));
+        DelegationListener::new(
+            broker,
+            Arc::new(TokenRegistry::default()),
+            Arc::new(StaticParentLookup(Some(1))),
+            Arc::new(StubFeedback::default()),
+            Arc::new(StubQuestion::default()),
+            loop_ingest,
+        )
+    }
+
+    /// A loop submission forwards the capability token + tool + payload to the
+    /// ingest sink verbatim (no TokenRegistry gate stands between the agent and
+    /// `ingest`) and wraps the success outcome in the `{ ok:true, result }`
+    /// envelope.
+    #[tokio::test]
+    async fn loop_submit_forwards_to_ingest_and_wraps_ok() {
+        let ingest = Arc::new(StubLoopIngest::default());
+        let listener = make_loop_listener(ingest.clone());
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let msg = BrokerMessage::LoopSubmit(BrokerLoopSubmitRequest {
+            token: "cap-xyz".into(),
+            tool: "loop_submit_route".into(),
+            payload: json!({ "route": "full" }),
+        });
+        write_frame(&mut client, &msg).await.unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+        assert_eq!(resp.outcome["ok"], true);
+        assert_eq!(resp.outcome["result"]["echo_tool"], "loop_submit_route");
+        // The exact triple reached the sink, capability token included.
+        let calls = ingest.calls.lock().await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "cap-xyz");
+        assert_eq!(calls[0].1, "loop_submit_route");
+        assert_eq!(calls[0].2["route"], "full");
+    }
+
+    /// An ingest rejection (wrong stage / unknown token / etc.) comes back as the
+    /// `{ ok:false, error }` envelope so the companion can flag it `isError` and
+    /// the LLM can correct itself — never a transport error.
+    #[tokio::test]
+    async fn loop_submit_error_is_wrapped_not_failed() {
+        let ingest = Arc::new(StubLoopIngest {
+            fail_with: Some("loop_submit_route is only valid during triage".into()),
+            ..Default::default()
+        });
+        let listener = make_loop_listener(ingest);
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let msg = BrokerMessage::LoopSubmit(BrokerLoopSubmitRequest {
+            token: "cap-xyz".into(),
+            tool: "loop_submit_route".into(),
+            payload: json!({ "route": "full" }),
+        });
+        write_frame(&mut client, &msg).await.unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+        assert_eq!(resp.outcome["ok"], false);
+        assert!(resp.outcome["error"]
+            .as_str()
+            .unwrap()
+            .contains("only valid during triage"));
     }
 
     // --- check_user_feedback over the listener -----------------------------

@@ -307,6 +307,9 @@ async fn async_main() {
             Arc::new(codeg_lib::acp::manager::ConnectionManagerQuestionLookup {
                 manager: Arc::new(state.connection_manager.clone_ref()),
             }),
+            Arc::new(codeg_lib::loop_engine::ingest::DbLoopIngest {
+                conn: state.db.conn.clone(),
+            }),
         );
         let socket = delegation_socket_path.clone();
         tokio::spawn(async move {

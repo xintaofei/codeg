@@ -1072,8 +1072,9 @@ fn companion_features_arg(
     delegation_enabled: bool,
     feedback_enabled: bool,
     ask_enabled: bool,
+    loop_enabled: bool,
 ) -> Option<String> {
-    if !delegation_enabled && !feedback_enabled && !ask_enabled {
+    if !delegation_enabled && !feedback_enabled && !ask_enabled && !loop_enabled {
         return None;
     }
     let mut features: Vec<&str> = Vec::new();
@@ -1085,6 +1086,9 @@ fn companion_features_arg(
     }
     if ask_enabled {
         features.push("ask");
+    }
+    if loop_enabled {
+        features.push("loop");
     }
     Some(features.join(","))
 }
@@ -1102,17 +1106,25 @@ async fn inject_codeg_mcp(
     injection: &DelegationInjection,
     parent_connection_id: &str,
     working_dir: &Path,
+    loop_capability_token: Option<&str>,
 ) -> Option<CompanionInjection> {
-    // codeg-mcp carries BOTH the delegation tools and the live-feedback tool.
-    // Inject it when EITHER feature is enabled; the `--features` arg tells the
+    // codeg-mcp carries the delegation tools, the live-feedback tool, the
+    // ask-user-question tool, AND (for loop iterations) the loop-submit tools.
+    // Inject it when ANY feature is enabled; the `--features` arg tells the
     // companion which tool groups to expose so a disabled feature's tools never
     // surface to the LLM. (Historically this was gated on delegation alone.)
+    //
+    // The loop feature is per-spawn, not a hot-swappable setting: it is on iff a
+    // per-iteration `loop_capability_token` was threaded in by the dispatch
+    // path. That token is NOT registered in the `tokens` registry (unlike the
+    // delegation `--token`) — the host reverse-looks it up in the database.
     let delegation_enabled = injection.broker.config_snapshot().await.enabled;
     let feedback_enabled = injection.feedback.is_enabled().await;
     let ask_enabled = injection.ask.is_enabled().await;
+    let loop_enabled = loop_capability_token.is_some();
     // `None` (no feature enabled) short-circuits the whole injection.
     let features_arg =
-        companion_features_arg(delegation_enabled, feedback_enabled, ask_enabled)?;
+        companion_features_arg(delegation_enabled, feedback_enabled, ask_enabled, loop_enabled)?;
     let Some(binary_path) = locate_codeg_mcp_binary() else {
         eprintln!(
             "[delegation][WARN] codeg-mcp companion binary not found (checked CODEG_MCP_BIN, \
@@ -1134,7 +1146,7 @@ async fn inject_codeg_mcp(
         )
         .await;
     let mut server = McpServerStdio::new("codeg-mcp", binary_path);
-    server = server.args(vec![
+    let mut args = vec![
         "--parent-connection-id".to_string(),
         parent_connection_id.to_string(),
         "--socket-path".to_string(),
@@ -1147,10 +1159,17 @@ async fn inject_codeg_mcp(
         // (any platform).
         "--parent-pid".to_string(),
         std::process::id().to_string(),
-        // Tool groups to expose this launch (delegation and/or feedback).
+        // Tool groups to expose this launch (delegation / feedback / ask / loop).
         "--features".to_string(),
         features_arg,
-    ]);
+    ];
+    // Loop iterations also carry their per-iteration capability token so the
+    // `loop_submit_*` tools can authenticate to the host's `ingest`.
+    if let Some(cap) = loop_capability_token {
+        args.push("--capability-token".to_string());
+        args.push(cap.to_string());
+    }
+    server = server.args(args);
     servers.push(McpServer::Stdio(server));
     Some(CompanionInjection {
         token,
@@ -1508,7 +1527,10 @@ async fn run_connection(
             // filter needed. The returned token is stashed on the session
             // state so connection teardown can revoke it.
             let delegate_injection = if let Some(inj) = delegation_injection.as_ref() {
-                inject_codeg_mcp(&mut mcp_servers, inj, &conn_id, &cwd).await
+                // `loop_capability_token` is `None` here: ordinary sessions never
+                // expose the loop tools. The dispatch path (Task 1.5) threads a
+                // real token through this spawn site for loop iterations.
+                inject_codeg_mcp(&mut mcp_servers, inj, &conn_id, &cwd, None).await
             } else {
                 None
             };
@@ -4591,6 +4613,7 @@ mod tests {
             &injection,
             "parent-conn",
             std::path::Path::new("/tmp"),
+            None,
         )
         .await;
 
@@ -4617,27 +4640,33 @@ mod tests {
     #[test]
     fn companion_features_arg_inject_skip_decision() {
         // All off → no companion at all.
-        assert_eq!(companion_features_arg(false, false, false), None);
+        assert_eq!(companion_features_arg(false, false, false, false), None);
         // Delegation only.
         assert_eq!(
-            companion_features_arg(true, false, false),
+            companion_features_arg(true, false, false, false),
             Some("delegation".to_string())
         );
         // Feedback only — the decoupling: companion injected for feedback even
         // when delegation is off.
         assert_eq!(
-            companion_features_arg(false, true, false),
+            companion_features_arg(false, true, false, false),
             Some("feedback".to_string())
         );
         // Ask only — likewise injects the companion on its own.
         assert_eq!(
-            companion_features_arg(false, false, true),
+            companion_features_arg(false, false, true, false),
             Some("ask".to_string())
+        );
+        // Loop only — a loop iteration spawn injects the companion for the
+        // loop-submit tools even with every persisted feature off.
+        assert_eq!(
+            companion_features_arg(false, false, false, true),
+            Some("loop".to_string())
         );
         // All on → comma-joined, in declaration order.
         assert_eq!(
-            companion_features_arg(true, true, true),
-            Some("delegation,feedback,ask".to_string())
+            companion_features_arg(true, true, true, true),
+            Some("delegation,feedback,ask,loop".to_string())
         );
     }
 }

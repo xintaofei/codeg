@@ -41,9 +41,10 @@ use tokio::sync::{oneshot, Mutex};
 
 use crate::acp::delegation::transport::{
     client_ask_round_trip, client_cancel, client_cancel_task_round_trip, client_commit_feedback,
-    client_feedback_round_trip, client_round_trip, client_status_round_trip, BrokerAskRequest,
-    BrokerCancelRequest, BrokerCancelTaskRequest, BrokerCommitFeedbackRequest, BrokerFeedbackRequest,
-    BrokerRequest, BrokerResponse, BrokerStatusRequest,
+    client_feedback_round_trip, client_loop_submit_round_trip, client_round_trip,
+    client_status_round_trip, BrokerAskRequest, BrokerCancelRequest, BrokerCancelTaskRequest,
+    BrokerCommitFeedbackRequest, BrokerFeedbackRequest, BrokerLoopSubmitRequest, BrokerRequest,
+    BrokerResponse, BrokerStatusRequest,
 };
 use crate::acp::question::parse_questions;
 
@@ -133,32 +134,39 @@ pub struct CompanionFeatures {
     pub delegation: bool,
     pub feedback: bool,
     pub ask: bool,
+    /// Loop-engineering submission tools (`loop_submit_*` etc.). Enabled ONLY for
+    /// a loop-iteration companion launch, which also carries a per-iteration
+    /// `--capability-token`. Field is `loop_tools` because `loop` is a keyword.
+    pub loop_tools: bool,
 }
 
 impl CompanionFeatures {
-    /// Parse the comma-joined `--features` value (e.g. `delegation,feedback,ask`).
-    /// Unknown tokens are ignored. An absent value (`None`) defaults to
-    /// delegation-only — backward compatible with a parent that predates
-    /// feature gating (companion + listener ship together, so post-upgrade the
-    /// parent always passes an explicit `--features`).
+    /// Parse the comma-joined `--features` value (e.g.
+    /// `delegation,feedback,ask,loop`). Unknown tokens are ignored. An absent
+    /// value (`None`) defaults to delegation-only — backward compatible with a
+    /// parent that predates feature gating (companion + listener ship together,
+    /// so post-upgrade the parent always passes an explicit `--features`).
     pub fn parse(raw: Option<&str>) -> Self {
         let Some(s) = raw else {
             return Self {
                 delegation: true,
                 feedback: false,
                 ask: false,
+                loop_tools: false,
             };
         };
         let mut f = Self {
             delegation: false,
             feedback: false,
             ask: false,
+            loop_tools: false,
         };
         for tok in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
             match tok {
                 "delegation" => f.delegation = true,
                 "feedback" => f.feedback = true,
                 "ask" => f.ask = true,
+                "loop" => f.loop_tools = true,
                 _ => {}
             }
         }
@@ -171,6 +179,8 @@ impl CompanionFeatures {
             "check_user_feedback" => self.feedback,
             "ask_user_question" => self.ask,
             "delegate_to_agent" | "get_delegation_status" | "cancel_delegation" => self.delegation,
+            "loop_submit_route" | "loop_submit_artifacts" | "loop_submit_review"
+            | "loop_report_blocked" | "loop_record_memory" => self.loop_tools,
             _ => false,
         }
     }
@@ -185,6 +195,10 @@ pub struct CompanionContext {
     pub token: String,
     /// Tool groups this launch exposes (see [`CompanionFeatures`]).
     pub features: CompanionFeatures,
+    /// Per-iteration loop capability token (`--capability-token`), present ONLY
+    /// for a loop-iteration launch. The `loop_submit_*` tools send THIS token
+    /// (not [`Self::token`]) so the host can reverse-look-up the iteration.
+    pub capability_token: Option<String>,
 }
 
 /// Per-in-flight-call state. The companion stashes one of these per
@@ -499,6 +513,32 @@ async fn build_tools_call_spawn(
             // pending question down — no broker-side cancel to dispatch.
             let round_trip = Box::pin(async move { client_ask_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_ask_result).await
+        }
+        "loop_submit_route" | "loop_submit_artifacts" | "loop_submit_review"
+        | "loop_report_blocked" | "loop_record_memory" => {
+            // The loop tools authenticate with the per-iteration capability
+            // token, NOT the delegation launch token. Its absence means this
+            // companion wasn't launched for a loop iteration — a configuration
+            // bug, surfaced as an internal error rather than a tool the LLM can
+            // retry. The host (`ingest`) owns all further validation.
+            let Some(capability_token) = ctx.capability_token.clone() else {
+                return LineAction::Respond(err(
+                    id,
+                    -32603,
+                    "loop tools require a capability token, which this launch lacks",
+                ));
+            };
+            let req = BrokerLoopSubmitRequest {
+                token: capability_token,
+                tool: name.clone(),
+                payload: arguments,
+            };
+            // No external_handle: canceling a loop submission only suppresses the
+            // response. The submission is idempotent host-side, so a re-issue
+            // after a lost response is safe.
+            let round_trip =
+                Box::pin(async move { client_loop_submit_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_loop_result).await
         }
         other => LineAction::Respond(err(id, -32602, format!("unknown tool: {other}"))),
     }
@@ -959,6 +999,34 @@ pub fn render_task_report(report: &Value) -> Value {
     })
 }
 
+/// Map a loop-submission round-trip outcome (the host's `{ "ok": bool, .. }`
+/// envelope) into an MCP `tools/call` result. `ok=true` carries the persisted
+/// result under `result` (rendered as compact JSON the agent can read back, with
+/// the structured payload preserved); `ok=false` carries an agent-actionable
+/// message under `error` and flags `isError` so the LLM treats it as a failure
+/// to correct (e.g. wrong stage, empty batch) rather than a success.
+pub fn render_loop_result(outcome: &Value) -> Value {
+    let ok = outcome.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+    if ok {
+        let result = outcome.get("result").cloned().unwrap_or(Value::Null);
+        let text = serde_json::to_string(&result).unwrap_or_else(|_| "submitted".into());
+        json!({
+            "content": [{ "type": "text", "text": text }],
+            "isError": false,
+            "structuredContent": result,
+        })
+    } else {
+        let msg = outcome
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("loop submission failed");
+        json!({
+            "content": [{ "type": "text", "text": msg }],
+            "isError": true,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -970,6 +1038,7 @@ mod tests {
             delegation: true,
             feedback: false,
             ask: false,
+            loop_tools: false,
         })
     }
 
@@ -979,6 +1048,24 @@ mod tests {
             socket_path: "/tmp/codeg-mcp-companion-test-nope.sock".into(),
             token: "tok".into(),
             features,
+            capability_token: None,
+        }
+    }
+
+    /// A loop-iteration companion context: loop tools enabled + a capability
+    /// token present, so the `loop_submit_*` dispatch path is exercisable.
+    fn ctx_loop() -> CompanionContext {
+        CompanionContext {
+            parent_connection_id: "p1".into(),
+            socket_path: "/tmp/codeg-mcp-companion-test-nope.sock".into(),
+            token: "tok".into(),
+            features: CompanionFeatures {
+                delegation: false,
+                feedback: false,
+                ask: false,
+                loop_tools: true,
+            },
+            capability_token: Some("cap-tok".into()),
         }
     }
 
@@ -1436,16 +1523,25 @@ mod tests {
         delegation: false,
         feedback: true,
         ask: false,
+        loop_tools: false,
     };
     const BOTH: CompanionFeatures = CompanionFeatures {
         delegation: true,
         feedback: true,
         ask: false,
+        loop_tools: false,
     };
     const ASK_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
         feedback: false,
         ask: true,
+        loop_tools: false,
+    };
+    const LOOP_ONLY: CompanionFeatures = CompanionFeatures {
+        delegation: false,
+        feedback: false,
+        ask: false,
+        loop_tools: true,
     };
 
     fn list_tool_names(action: LineAction) -> Vec<String> {
@@ -1792,6 +1888,7 @@ mod tests {
             socket_path: sock,
             token: "tok".into(),
             features: FEEDBACK_ONLY,
+            capability_token: None,
         };
         let inflight = Arc::new(InflightCalls::new());
         // tools/call → Spawn (registers the inflight entry).
@@ -1825,5 +1922,109 @@ mod tests {
         server.abort();
         // Crucially: no commit was sent for a cancelled (undelivered) check.
         assert!(!*saw_commit.lock().await, "a cancelled check must not commit");
+    }
+
+    // -- loop-engineering tool gating + dispatch + rendering ----------------
+
+    #[test]
+    fn features_parse_recognizes_loop() {
+        let f = CompanionFeatures::parse(Some("delegation,loop"));
+        assert!(f.delegation && f.loop_tools);
+        assert!(!f.feedback && !f.ask);
+        // Absent default leaves loop off.
+        assert!(!CompanionFeatures::parse(None).loop_tools);
+    }
+
+    #[tokio::test]
+    async fn tools_list_includes_loop_only_when_enabled() {
+        let off = list_tool_names(
+            dispatch_for_test(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await,
+        );
+        assert!(!off.iter().any(|n| n.starts_with("loop_")));
+        let on = list_tool_names(
+            dispatch_with_features(LOOP_ONLY, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)
+                .await,
+        );
+        let mut loop_names: Vec<&str> = on.iter().map(String::as_str).collect();
+        loop_names.sort_unstable();
+        assert_eq!(
+            loop_names,
+            vec![
+                "loop_record_memory",
+                "loop_report_blocked",
+                "loop_submit_artifacts",
+                "loop_submit_review",
+                "loop_submit_route",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn loop_submit_spawns_when_enabled_with_token() {
+        let line = json!({
+            "jsonrpc": "2.0", "id": 50, "method": "tools/call",
+            "params": { "name": "loop_submit_route", "arguments": { "route": "full" } }
+        })
+        .to_string();
+        let action = dispatch_line(&ctx_loop(), Arc::new(InflightCalls::new()), &line).await;
+        assert!(matches!(action, LineAction::Spawn(_)));
+    }
+
+    #[tokio::test]
+    async fn loop_submit_rejected_as_unknown_when_feature_off() {
+        // Default ctx (delegation-only): loop tools are hidden + rejected
+        // uniformly as unknown, no leak that the feature exists but is off.
+        let line = json!({
+            "jsonrpc": "2.0", "id": 51, "method": "tools/call",
+            "params": { "name": "loop_submit_route", "arguments": { "route": "full" } }
+        })
+        .to_string();
+        let resp = unwrap_respond(dispatch_for_test(&line).await);
+        let e = resp.error.unwrap();
+        assert_eq!(e.code, -32602);
+        assert!(e.message.contains("unknown tool"));
+    }
+
+    #[tokio::test]
+    async fn loop_submit_without_capability_token_is_internal_error() {
+        // Loop feature enabled but no capability token (a misconfigured launch):
+        // the tool is allowed but cannot authenticate → internal error (-32603),
+        // distinct from the unknown-tool rejection above.
+        let ctx = CompanionContext {
+            parent_connection_id: "p1".into(),
+            socket_path: "/tmp/nope.sock".into(),
+            token: "tok".into(),
+            features: LOOP_ONLY,
+            capability_token: None,
+        };
+        let line = json!({
+            "jsonrpc": "2.0", "id": 52, "method": "tools/call",
+            "params": { "name": "loop_submit_route", "arguments": { "route": "full" } }
+        })
+        .to_string();
+        let action = dispatch_line(&ctx, Arc::new(InflightCalls::new()), &line).await;
+        let resp = unwrap_respond(action);
+        let e = resp.error.unwrap();
+        assert_eq!(e.code, -32603);
+        assert!(e.message.contains("capability token"));
+    }
+
+    #[test]
+    fn render_loop_result_ok_surfaces_result() {
+        let outcome = json!({ "ok": true, "result": { "ok": true, "ids": [1, 2] } });
+        let rendered = render_loop_result(&outcome);
+        assert_eq!(rendered["isError"], false);
+        assert_eq!(rendered["structuredContent"]["ids"][0], 1);
+        let text = rendered["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("ids"));
+    }
+
+    #[test]
+    fn render_loop_result_error_is_flagged() {
+        let outcome = json!({ "ok": false, "error": "loop_submit_route is only valid during triage" });
+        let rendered = render_loop_result(&outcome);
+        assert_eq!(rendered["isError"], true);
+        let text = rendered["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("only valid during triage"));
     }
 }

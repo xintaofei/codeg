@@ -165,6 +165,27 @@ pub struct BrokerAskRequest {
     pub questions: Vec<QuestionSpec>,
 }
 
+/// One loop-engineering submission forwarded from a loop-iteration companion to
+/// the main process. Backs the five `loop_submit_*` / `loop_report_*` /
+/// `loop_record_*` MCP tools. Unlike the delegation arms, this is NOT
+/// authenticated through the [`super::listener::TokenRegistry`]: the `token` is a
+/// per-iteration **capability token** the host reverse-looks-up in the database
+/// (`loop_iteration.capability_token`) — the host trusts no ids the agent sends,
+/// only the iteration the token resolves to. The listener hands the triple
+/// straight to `loop_engine::ingest`, which owns all validation (unknown / non
+/// running token, stage→tool allow-table, target ownership, idempotency).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerLoopSubmitRequest {
+    /// The iteration's capability token (from `--capability-token`), NOT the
+    /// delegation launch token.
+    pub token: String,
+    /// The MCP tool name (`loop_submit_route`, `loop_submit_artifacts`,
+    /// `loop_submit_review`, `loop_report_blocked`, `loop_record_memory`).
+    pub tool: String,
+    /// Raw `arguments` JSON from the `tools/call`; `ingest` parses per tool.
+    pub payload: Value,
+}
+
 /// Tagged top-level message dispatched by the listener. Adding new variants
 /// is the wire-stable way to grow the broker protocol without touching the
 /// frame layer.
@@ -178,6 +199,7 @@ pub enum BrokerMessage {
     Feedback(BrokerFeedbackRequest),
     CommitFeedback(BrokerCommitFeedbackRequest),
     Ask(BrokerAskRequest),
+    LoopSubmit(BrokerLoopSubmitRequest),
 }
 
 /// The wrapped outcome the main process returns over the same socket.
@@ -317,6 +339,18 @@ pub async fn client_ask_round_trip(
     message_round_trip(socket_path, &BrokerMessage::Ask(req.clone())).await
 }
 
+/// Dispatch a loop submission and read back the host's `ingest` outcome. The
+/// host always replies with a `{ "ok": bool, .. }` envelope: `ok=true` carries
+/// the persisted result under `result`, `ok=false` carries an agent-actionable
+/// message under `error`. Transport-level failures surface as `io::Error` and
+/// are rendered as a broker round-trip error to the agent.
+pub async fn client_loop_submit_round_trip(
+    socket_path: &str,
+    req: &BrokerLoopSubmitRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::LoopSubmit(req.clone())).await
+}
+
 /// Total budget for `open()` retries on Windows named pipes. Has to be
 /// short enough that it nests comfortably inside the companion's
 /// `BROKER_CANCEL_BUDGET` (500 ms) — leaving ≥ 300 ms for the actual
@@ -438,6 +472,26 @@ mod tests {
                 assert_eq!(req.reason.as_deref(), Some("user requested"));
             }
             other => panic!("expected Cancel variant, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn loop_submit_message_round_trip_in_memory() {
+        let (mut a, mut b) = duplex(8 * 1024);
+        let msg = BrokerMessage::LoopSubmit(BrokerLoopSubmitRequest {
+            token: "cap-tok".into(),
+            tool: "loop_submit_artifacts".into(),
+            payload: json!({ "artifacts": [{ "title": "Req", "content": "body" }] }),
+        });
+        write_frame(&mut a, &msg).await.unwrap();
+        let got: BrokerMessage = read_frame(&mut b).await.unwrap();
+        match got {
+            BrokerMessage::LoopSubmit(req) => {
+                assert_eq!(req.token, "cap-tok");
+                assert_eq!(req.tool, "loop_submit_artifacts");
+                assert_eq!(req.payload["artifacts"][0]["title"], "Req");
+            }
+            other => panic!("expected LoopSubmit variant, got {other:?}"),
         }
     }
 
