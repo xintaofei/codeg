@@ -3008,7 +3008,8 @@
       "issueDeleteFailed": "Failed to delete issue: {message}",
       "issueTriggered": "Triggered {title}",
       "actionFailed": "Action failed: {message}",
-      "inboxResolved": "Erledigt."
+      "inboxResolved": "Erledigt.",
+      "configSaved": "Einstellungen gespeichert."
     },
     "common": {
       "cancel": "Cancel",
@@ -3086,6 +3087,42 @@
     "actorKind": {
       "human": "Mensch",
       "agent": "Agent"
+    },
+    "issueSettings": {
+      "title": "Aufgabeneinstellungen",
+      "description": "Konfiguriere, wie die Engine diese Aufgabe ausführt.",
+      "runningHint": "Änderungen werden ab der nächsten Iteration wirksam.",
+      "defaultAgent": "Standard-Agent",
+      "stageAgents": "Agenten pro Phase",
+      "inherit": "Standard übernehmen",
+      "validationCommands": "Validierungsbefehle",
+      "validationHint": "Werden nach jeder Implementierung im Worktree ausgeführt.",
+      "addCommand": "Befehl hinzufügen",
+      "commandPlaceholder": "z. B. pnpm test",
+      "reviewerCount": "Prüfer pro Aufgabe",
+      "reviewPassRule": "Prüfungs-Bestehensregel",
+      "ruleUnanimous": "Einstimmig",
+      "ruleMajority": "Mehrheit",
+      "maxAttempts": "Maximale Versuche pro Aufgabe",
+      "maxAttemptsHint": "0 = unbegrenzt",
+      "autoMerge": "Ergebnis automatisch zusammenführen",
+      "autoMergeHint": "Ohne menschliche Freigabe zusammenführen.",
+      "forceRoute": "Route erzwingen",
+      "routeAuto": "Automatisch (Triage entscheidet)",
+      "iterationTimeout": "Iterations-Timeout (s)",
+      "tokenBudgetPerTurn": "Token-Budget pro Zug",
+      "tokenBudget": "Gesamtes Token-Budget",
+      "unlimitedPlaceholder": "Unbegrenzt",
+      "save": "Speichern"
+    },
+    "stage": {
+      "triage": "Triage",
+      "refine": "Verfeinern",
+      "design": "Entwurf",
+      "plan": "Plan",
+      "implement": "Umsetzen",
+      "review": "Prüfung",
+      "finalize": "Abschluss"
     }
   }
 }

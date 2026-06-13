@@ -3008,7 +3008,8 @@
       "issueDeleteFailed": "Failed to delete issue: {message}",
       "issueTriggered": "Triggered {title}",
       "actionFailed": "Action failed: {message}",
-      "inboxResolved": "Done."
+      "inboxResolved": "Done.",
+      "configSaved": "Settings saved."
     },
     "common": {
       "cancel": "Cancel",
@@ -3086,6 +3087,42 @@
     "actorKind": {
       "human": "Human",
       "agent": "Agent"
+    },
+    "issueSettings": {
+      "title": "Issue settings",
+      "description": "Configure how the engine runs this issue.",
+      "runningHint": "Changes take effect from the next iteration.",
+      "defaultAgent": "Default agent",
+      "stageAgents": "Per-stage agents",
+      "inherit": "Inherit default",
+      "validationCommands": "Validation commands",
+      "validationHint": "Run in the worktree after each implement.",
+      "addCommand": "Add command",
+      "commandPlaceholder": "e.g. pnpm test",
+      "reviewerCount": "Reviewers per task",
+      "reviewPassRule": "Review pass rule",
+      "ruleUnanimous": "Unanimous",
+      "ruleMajority": "Majority",
+      "maxAttempts": "Max attempts per task",
+      "maxAttemptsHint": "0 = unlimited",
+      "autoMerge": "Auto-merge result",
+      "autoMergeHint": "Merge without human approval.",
+      "forceRoute": "Force route",
+      "routeAuto": "Auto (triage decides)",
+      "iterationTimeout": "Iteration timeout (s)",
+      "tokenBudgetPerTurn": "Token budget per turn",
+      "tokenBudget": "Total token budget",
+      "unlimitedPlaceholder": "Unlimited",
+      "save": "Save"
+    },
+    "stage": {
+      "triage": "Triage",
+      "refine": "Refine",
+      "design": "Design",
+      "plan": "Plan",
+      "implement": "Implement",
+      "review": "Review",
+      "finalize": "Finalize"
     }
   }
 }

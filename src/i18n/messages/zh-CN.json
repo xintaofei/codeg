@@ -3008,7 +3008,8 @@
       "issueDeleteFailed": "删除议题失败：{message}",
       "issueTriggered": "已触发 {title}",
       "actionFailed": "操作失败：{message}",
-      "inboxResolved": "已处理。"
+      "inboxResolved": "已处理。",
+      "configSaved": "设置已保存。"
     },
     "common": {
       "cancel": "取消",
@@ -3086,6 +3087,42 @@
     "actorKind": {
       "human": "人工",
       "agent": "智能体"
+    },
+    "issueSettings": {
+      "title": "议题设置",
+      "description": "配置引擎运行该议题的方式。",
+      "runningHint": "改动将从下一次迭代起生效。",
+      "defaultAgent": "默认智能体",
+      "stageAgents": "按阶段指定智能体",
+      "inherit": "继承默认",
+      "validationCommands": "验证命令",
+      "validationHint": "每次实现后在工作树中运行。",
+      "addCommand": "添加命令",
+      "commandPlaceholder": "例如 pnpm test",
+      "reviewerCount": "每个任务的评审数",
+      "reviewPassRule": "评审通过规则",
+      "ruleUnanimous": "全体一致",
+      "ruleMajority": "多数通过",
+      "maxAttempts": "每个任务最大尝试次数",
+      "maxAttemptsHint": "0 = 不限",
+      "autoMerge": "自动合并成果",
+      "autoMergeHint": "无需人工批准即合并。",
+      "forceRoute": "强制路线",
+      "routeAuto": "自动（由分诊决定）",
+      "iterationTimeout": "单次迭代超时（秒）",
+      "tokenBudgetPerTurn": "每回合 Token 预算",
+      "tokenBudget": "总 Token 预算",
+      "unlimitedPlaceholder": "不限",
+      "save": "保存"
+    },
+    "stage": {
+      "triage": "分诊",
+      "refine": "细化",
+      "design": "设计",
+      "plan": "规划",
+      "implement": "实现",
+      "review": "评审",
+      "finalize": "收尾"
     }
   }
 }

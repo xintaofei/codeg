@@ -3008,7 +3008,8 @@
       "issueDeleteFailed": "Failed to delete issue: {message}",
       "issueTriggered": "Triggered {title}",
       "actionFailed": "Action failed: {message}",
-      "inboxResolved": "تم."
+      "inboxResolved": "تم.",
+      "configSaved": "تم حفظ الإعدادات."
     },
     "common": {
       "cancel": "Cancel",
@@ -3086,6 +3087,42 @@
     "actorKind": {
       "human": "إنسان",
       "agent": "وكيل"
+    },
+    "issueSettings": {
+      "title": "إعدادات المسألة",
+      "description": "اضبط كيفية تنفيذ المحرك لهذه المسألة.",
+      "runningHint": "تسري التغييرات بدءًا من التكرار التالي.",
+      "defaultAgent": "الوكيل الافتراضي",
+      "stageAgents": "وكلاء حسب المرحلة",
+      "inherit": "وراثة الافتراضي",
+      "validationCommands": "أوامر التحقق",
+      "validationHint": "تُنفّذ في شجرة العمل بعد كل تنفيذ.",
+      "addCommand": "إضافة أمر",
+      "commandPlaceholder": "مثل pnpm test",
+      "reviewerCount": "عدد المراجعين لكل مهمة",
+      "reviewPassRule": "قاعدة اجتياز المراجعة",
+      "ruleUnanimous": "بالإجماع",
+      "ruleMajority": "الأغلبية",
+      "maxAttempts": "أقصى عدد محاولات لكل مهمة",
+      "maxAttemptsHint": "0 = بلا حد",
+      "autoMerge": "دمج النتيجة تلقائيًا",
+      "autoMergeHint": "الدمج دون موافقة بشرية.",
+      "forceRoute": "فرض المسار",
+      "routeAuto": "تلقائي (يقرره الفرز)",
+      "iterationTimeout": "مهلة التكرار (ثانية)",
+      "tokenBudgetPerTurn": "ميزانية الرموز لكل دور",
+      "tokenBudget": "إجمالي ميزانية الرموز",
+      "unlimitedPlaceholder": "بلا حد",
+      "save": "حفظ"
+    },
+    "stage": {
+      "triage": "الفرز",
+      "refine": "التنقيح",
+      "design": "التصميم",
+      "plan": "التخطيط",
+      "implement": "التنفيذ",
+      "review": "المراجعة",
+      "finalize": "الإنهاء"
     }
   }
 }

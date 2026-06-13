@@ -3008,7 +3008,8 @@
       "issueDeleteFailed": "Failed to delete issue: {message}",
       "issueTriggered": "Triggered {title}",
       "actionFailed": "Action failed: {message}",
-      "inboxResolved": "완료되었습니다."
+      "inboxResolved": "완료되었습니다.",
+      "configSaved": "설정이 저장되었습니다."
     },
     "common": {
       "cancel": "Cancel",
@@ -3086,6 +3087,42 @@
     "actorKind": {
       "human": "사람",
       "agent": "에이전트"
+    },
+    "issueSettings": {
+      "title": "이슈 설정",
+      "description": "엔진이 이 이슈를 실행하는 방식을 구성합니다.",
+      "runningHint": "변경 사항은 다음 이터레이션부터 적용됩니다.",
+      "defaultAgent": "기본 에이전트",
+      "stageAgents": "단계별 에이전트",
+      "inherit": "기본값 상속",
+      "validationCommands": "검증 명령",
+      "validationHint": "각 구현 후 워크트리에서 실행됩니다.",
+      "addCommand": "명령 추가",
+      "commandPlaceholder": "예: pnpm test",
+      "reviewerCount": "작업당 검토자 수",
+      "reviewPassRule": "검토 통과 규칙",
+      "ruleUnanimous": "만장일치",
+      "ruleMajority": "다수결",
+      "maxAttempts": "작업당 최대 시도 횟수",
+      "maxAttemptsHint": "0 = 무제한",
+      "autoMerge": "결과 자동 병합",
+      "autoMergeHint": "사람 승인 없이 병합합니다.",
+      "forceRoute": "경로 강제",
+      "routeAuto": "자동(트리아지가 결정)",
+      "iterationTimeout": "이터레이션 제한 시간(초)",
+      "tokenBudgetPerTurn": "턴당 토큰 예산",
+      "tokenBudget": "총 토큰 예산",
+      "unlimitedPlaceholder": "무제한",
+      "save": "저장"
+    },
+    "stage": {
+      "triage": "트리아지",
+      "refine": "정제",
+      "design": "설계",
+      "plan": "계획",
+      "implement": "구현",
+      "review": "검토",
+      "finalize": "마무리"
     }
   }
 }

@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DagGraph } from "@/components/loops/dag-graph"
 import { ArtifactDrawer } from "@/components/loops/artifact-drawer"
+import { IssueSettingsDialog } from "@/components/loops/issue-settings-dialog"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -55,6 +56,7 @@ export function IssueDetail({ issueId }: { issueId: number | null }) {
   const [loading, setLoading] = useState(false)
   const [actionBusy, setActionBusy] = useState(false)
   const [cancelOpen, setCancelOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [selectedArtifactId, setSelectedArtifactId] = useState<number | null>(
     null
   )
@@ -237,7 +239,12 @@ export function IssueDetail({ issueId }: { issueId: number | null }) {
               {tList("cancel")}
             </Button>
           )}
-          <Button size="icon" variant="ghost" className="h-8 w-8" disabled>
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8"
+            onClick={() => setSettingsOpen(true)}
+          >
             <Settings2 className="h-4 w-4" />
             <span className="sr-only">{t("settings")}</span>
           </Button>
@@ -356,6 +363,12 @@ export function IssueDetail({ issueId }: { issueId: number | null }) {
       <ArtifactDrawer
         artifactId={selectedArtifactId}
         onClose={() => setSelectedArtifactId(null)}
+      />
+
+      <IssueSettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        issue={issue}
       />
     </div>
   )

@@ -3008,7 +3008,8 @@
       "issueDeleteFailed": "刪除議題失敗：{message}",
       "issueTriggered": "已觸發 {title}",
       "actionFailed": "操作失敗：{message}",
-      "inboxResolved": "已處理。"
+      "inboxResolved": "已處理。",
+      "configSaved": "設定已儲存。"
     },
     "common": {
       "cancel": "取消",
@@ -3086,6 +3087,42 @@
     "actorKind": {
       "human": "人工",
       "agent": "智能體"
+    },
+    "issueSettings": {
+      "title": "議題設定",
+      "description": "設定引擎執行該議題的方式。",
+      "runningHint": "變更將從下一次疊代起生效。",
+      "defaultAgent": "預設智能體",
+      "stageAgents": "依階段指定智能體",
+      "inherit": "繼承預設",
+      "validationCommands": "驗證命令",
+      "validationHint": "每次實作後在工作樹中執行。",
+      "addCommand": "新增命令",
+      "commandPlaceholder": "例如 pnpm test",
+      "reviewerCount": "每個任務的評審數",
+      "reviewPassRule": "評審通過規則",
+      "ruleUnanimous": "全體一致",
+      "ruleMajority": "多數通過",
+      "maxAttempts": "每個任務最大嘗試次數",
+      "maxAttemptsHint": "0 = 不限",
+      "autoMerge": "自動合併成果",
+      "autoMergeHint": "無需人工核准即合併。",
+      "forceRoute": "強制路線",
+      "routeAuto": "自動（由分診決定）",
+      "iterationTimeout": "單次疊代逾時（秒）",
+      "tokenBudgetPerTurn": "每回合 Token 預算",
+      "tokenBudget": "總 Token 預算",
+      "unlimitedPlaceholder": "不限",
+      "save": "儲存"
+    },
+    "stage": {
+      "triage": "分診",
+      "refine": "細化",
+      "design": "設計",
+      "plan": "規劃",
+      "implement": "實作",
+      "review": "評審",
+      "finalize": "收尾"
     }
   }
 }

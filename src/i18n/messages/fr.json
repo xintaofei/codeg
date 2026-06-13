@@ -3008,7 +3008,8 @@
       "issueDeleteFailed": "Failed to delete issue: {message}",
       "issueTriggered": "Triggered {title}",
       "actionFailed": "Action failed: {message}",
-      "inboxResolved": "Terminé."
+      "inboxResolved": "Terminé.",
+      "configSaved": "Paramètres enregistrés."
     },
     "common": {
       "cancel": "Cancel",
@@ -3086,6 +3087,42 @@
     "actorKind": {
       "human": "Humain",
       "agent": "Agent"
+    },
+    "issueSettings": {
+      "title": "Paramètres du problème",
+      "description": "Configurez la façon dont le moteur exécute ce problème.",
+      "runningHint": "Les modifications prennent effet à la prochaine itération.",
+      "defaultAgent": "Agent par défaut",
+      "stageAgents": "Agents par étape",
+      "inherit": "Hériter du défaut",
+      "validationCommands": "Commandes de validation",
+      "validationHint": "Exécutées dans l'arbre de travail après chaque implémentation.",
+      "addCommand": "Ajouter une commande",
+      "commandPlaceholder": "ex. pnpm test",
+      "reviewerCount": "Relecteurs par tâche",
+      "reviewPassRule": "Règle de validation de relecture",
+      "ruleUnanimous": "Unanime",
+      "ruleMajority": "Majorité",
+      "maxAttempts": "Tentatives max par tâche",
+      "maxAttemptsHint": "0 = illimité",
+      "autoMerge": "Fusionner le résultat automatiquement",
+      "autoMergeHint": "Fusionner sans approbation humaine.",
+      "forceRoute": "Forcer l'itinéraire",
+      "routeAuto": "Auto (le tri décide)",
+      "iterationTimeout": "Délai d'itération (s)",
+      "tokenBudgetPerTurn": "Budget de jetons par tour",
+      "tokenBudget": "Budget total de jetons",
+      "unlimitedPlaceholder": "Illimité",
+      "save": "Enregistrer"
+    },
+    "stage": {
+      "triage": "Tri",
+      "refine": "Affiner",
+      "design": "Conception",
+      "plan": "Plan",
+      "implement": "Implémenter",
+      "review": "Relecture",
+      "finalize": "Finaliser"
     }
   }
 }

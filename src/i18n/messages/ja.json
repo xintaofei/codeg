@@ -3008,7 +3008,8 @@
       "issueDeleteFailed": "Failed to delete issue: {message}",
       "issueTriggered": "Triggered {title}",
       "actionFailed": "Action failed: {message}",
-      "inboxResolved": "完了しました。"
+      "inboxResolved": "完了しました。",
+      "configSaved": "設定を保存しました。"
     },
     "common": {
       "cancel": "Cancel",
@@ -3086,6 +3087,42 @@
     "actorKind": {
       "human": "人間",
       "agent": "エージェント"
+    },
+    "issueSettings": {
+      "title": "課題の設定",
+      "description": "このループ課題をエンジンが実行する方法を設定します。",
+      "runningHint": "変更は次のイテレーションから反映されます。",
+      "defaultAgent": "デフォルトエージェント",
+      "stageAgents": "ステージ別エージェント",
+      "inherit": "デフォルトを継承",
+      "validationCommands": "検証コマンド",
+      "validationHint": "各実装後にワークツリーで実行します。",
+      "addCommand": "コマンドを追加",
+      "commandPlaceholder": "例: pnpm test",
+      "reviewerCount": "タスクごとのレビュー数",
+      "reviewPassRule": "レビュー合格ルール",
+      "ruleUnanimous": "全員一致",
+      "ruleMajority": "過半数",
+      "maxAttempts": "タスクごとの最大試行回数",
+      "maxAttemptsHint": "0 = 無制限",
+      "autoMerge": "結果を自動マージ",
+      "autoMergeHint": "人間の承認なしでマージします。",
+      "forceRoute": "ルートを強制",
+      "routeAuto": "自動（トリアージが決定）",
+      "iterationTimeout": "イテレーションのタイムアウト（秒）",
+      "tokenBudgetPerTurn": "ターンごとのトークン予算",
+      "tokenBudget": "トークン予算の合計",
+      "unlimitedPlaceholder": "無制限",
+      "save": "保存"
+    },
+    "stage": {
+      "triage": "トリアージ",
+      "refine": "要件詳細化",
+      "design": "設計",
+      "plan": "計画",
+      "implement": "実装",
+      "review": "レビュー",
+      "finalize": "仕上げ"
     }
   }
 }

@@ -3008,7 +3008,8 @@
       "issueDeleteFailed": "Failed to delete issue: {message}",
       "issueTriggered": "Triggered {title}",
       "actionFailed": "Action failed: {message}",
-      "inboxResolved": "Concluído."
+      "inboxResolved": "Concluído.",
+      "configSaved": "Configurações salvas."
     },
     "common": {
       "cancel": "Cancel",
@@ -3086,6 +3087,42 @@
     "actorKind": {
       "human": "Humano",
       "agent": "Agente"
+    },
+    "issueSettings": {
+      "title": "Configurações do problema",
+      "description": "Configure como o motor executa este problema.",
+      "runningHint": "As alterações entram em vigor a partir da próxima iteração.",
+      "defaultAgent": "Agente padrão",
+      "stageAgents": "Agentes por etapa",
+      "inherit": "Herdar padrão",
+      "validationCommands": "Comandos de validação",
+      "validationHint": "Executados na árvore de trabalho após cada implementação.",
+      "addCommand": "Adicionar comando",
+      "commandPlaceholder": "ex.: pnpm test",
+      "reviewerCount": "Revisores por tarefa",
+      "reviewPassRule": "Regra de aprovação da revisão",
+      "ruleUnanimous": "Unânime",
+      "ruleMajority": "Maioria",
+      "maxAttempts": "Máx. de tentativas por tarefa",
+      "maxAttemptsHint": "0 = ilimitado",
+      "autoMerge": "Mesclar resultado automaticamente",
+      "autoMergeHint": "Mesclar sem aprovação humana.",
+      "forceRoute": "Forçar rota",
+      "routeAuto": "Automático (triagem decide)",
+      "iterationTimeout": "Tempo limite da iteração (s)",
+      "tokenBudgetPerTurn": "Orçamento de tokens por turno",
+      "tokenBudget": "Orçamento total de tokens",
+      "unlimitedPlaceholder": "Ilimitado",
+      "save": "Salvar"
+    },
+    "stage": {
+      "triage": "Triagem",
+      "refine": "Refinar",
+      "design": "Design",
+      "plan": "Plano",
+      "implement": "Implementar",
+      "review": "Revisão",
+      "finalize": "Finalizar"
     }
   }
 }
