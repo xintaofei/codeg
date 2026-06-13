@@ -2,12 +2,14 @@
 
 import {
   Suspense,
+  lazy,
   useMemo,
   useCallback,
   useEffect,
   useRef,
   useState,
 } from "react"
+import { Loader2 } from "lucide-react"
 import type { ImperativePanelGroupHandle } from "react-resizable-panels"
 import { FolderTitleBar } from "@/components/layout/folder-title-bar"
 import { useIsActiveChatMode } from "@/hooks/use-is-active-chat-mode"
@@ -30,6 +32,7 @@ import {
 import { DelegationProvider } from "@/contexts/delegation-context"
 import { ConversationRuntimeProvider } from "@/contexts/conversation-runtime-context"
 import { TabProvider, useTabContext } from "@/contexts/tab-context"
+import { LoopsViewProvider, useLoopsView } from "@/contexts/loops-view-context"
 import { SessionStatsProvider } from "@/contexts/session-stats-context"
 import { SidebarProvider, useSidebarContext } from "@/contexts/sidebar-context"
 import { SearchDialogProvider } from "@/contexts/search-dialog-context"
@@ -77,6 +80,12 @@ function WorkspaceDocumentTitle() {
 
   return null
 }
+
+const LoopsWorkbench = lazy(() =>
+  import("@/components/loops/loops-workbench").then((m) => ({
+    default: m.LoopsWorkbench,
+  }))
+)
 
 const TOAST_DURATION_MS = 15000
 const WORKSPACE_PANEL_GROUP_ID = "workspace-panel-group"
@@ -396,6 +405,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
     maxHeight: terminalMaxHeight,
     setHeight: setTerminalHeight,
   } = useTerminalContext()
+  const { view: loopsView } = useLoopsView()
 
   const shellGroupRef = useRef<ImperativePanelGroupHandle | null>(null)
   const mainGroupRef = useRef<ImperativePanelGroupHandle | null>(null)
@@ -726,43 +736,66 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
             ref={mainContainerRef}
             className="flex h-full min-h-0 flex-col overflow-hidden"
           >
-            <ResizablePanelGroup
-              id={FOLDER_MAIN_GROUP_ID}
-              ref={mainGroupRef}
-              direction="vertical"
-              onLayout={handleMainLayout}
+            {/* Chat shell stays mounted (display:none) so tabs, terminals and
+                scroll positions survive a trip to the loop workbench. */}
+            <div
+              className={cn(
+                "flex min-h-0 flex-1 flex-col",
+                loopsView === "loops" && "hidden"
+              )}
             >
-              <ResizablePanel
-                id={FOLDER_MAIN_WORKSPACE_PANEL_ID}
-                order={1}
-                defaultSize={72}
-                minSize={15}
+              <ResizablePanelGroup
+                id={FOLDER_MAIN_GROUP_ID}
+                ref={mainGroupRef}
+                direction="vertical"
+                onLayout={handleMainLayout}
               >
-                <WorkspaceContent>{children}</WorkspaceContent>
-              </ResizablePanel>
+                <ResizablePanel
+                  id={FOLDER_MAIN_WORKSPACE_PANEL_ID}
+                  order={1}
+                  defaultSize={72}
+                  minSize={15}
+                >
+                  <WorkspaceContent>{children}</WorkspaceContent>
+                </ResizablePanel>
 
-              <ResizableHandle
-                withHandle
-                disabled={!terminalOpen}
-                className={
-                  terminalOpen
-                    ? ""
-                    : "pointer-events-none h-0 opacity-0 after:h-0"
-                }
-              />
+                <ResizableHandle
+                  withHandle
+                  disabled={!terminalOpen}
+                  className={
+                    terminalOpen
+                      ? ""
+                      : "pointer-events-none h-0 opacity-0 after:h-0"
+                  }
+                />
 
-              <ResizablePanel
-                id={FOLDER_MAIN_TERMINAL_PANEL_ID}
-                order={2}
-                defaultSize={28}
-                minSize={terminalOpen ? terminalSizeRange.minSize : 0}
-                maxSize={terminalOpen ? terminalSizeRange.maxSize : 0}
-              >
-                <div className="h-full min-h-0 overflow-hidden">
-                  <TerminalPanel />
-                </div>
-              </ResizablePanel>
-            </ResizablePanelGroup>
+                <ResizablePanel
+                  id={FOLDER_MAIN_TERMINAL_PANEL_ID}
+                  order={2}
+                  defaultSize={28}
+                  minSize={terminalOpen ? terminalSizeRange.minSize : 0}
+                  maxSize={terminalOpen ? terminalSizeRange.maxSize : 0}
+                >
+                  <div className="h-full min-h-0 overflow-hidden">
+                    <TerminalPanel />
+                  </div>
+                </ResizablePanel>
+              </ResizablePanelGroup>
+            </div>
+
+            {loopsView === "loops" ? (
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <Suspense
+                  fallback={
+                    <div className="flex flex-1 items-center justify-center text-muted-foreground">
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                    </div>
+                  }
+                >
+                  <LoopsWorkbench />
+                </Suspense>
+              </div>
+            ) : null}
           </main>
         </ResizablePanel>
 
@@ -787,6 +820,19 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
         </ResizablePanel>
       </ResizablePanelGroup>
     </div>
+  )
+}
+
+/**
+ * Bridges the active chat tab into the loops view context so that selecting a
+ * chat tab (the active id changing) flips the workspace back to the chat
+ * surface. Lives inside TabProvider so it can read the active tab id, and wraps
+ * the shell so both the sidebar entry and the workspace gate share the state.
+ */
+function LoopsViewBridge({ children }: { children: React.ReactNode }) {
+  const { activeTabId } = useTabContext()
+  return (
+    <LoopsViewProvider activeTabId={activeTabId}>{children}</LoopsViewProvider>
   )
 }
 
@@ -835,9 +881,11 @@ function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
                             <AuxPanelProvider>
                               <TerminalProvider>
                                 <SearchDialogProvider>
-                                  <FolderLayoutShell>
-                                    {children}
-                                  </FolderLayoutShell>
+                                  <LoopsViewBridge>
+                                    <FolderLayoutShell>
+                                      {children}
+                                    </FolderLayoutShell>
+                                  </LoopsViewBridge>
                                 </SearchDialogProvider>
                               </TerminalProvider>
                             </AuxPanelProvider>

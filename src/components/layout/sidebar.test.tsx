@@ -11,6 +11,7 @@ const spies = vi.hoisted(() => ({
   openNewConversationTab: vi.fn(),
   openChatModeTab: vi.fn(),
   setSearchOpen: vi.fn(),
+  setLoopsView: vi.fn(),
 }))
 const mockState = vi.hoisted(() => ({
   activeFolder: { id: 7, path: "/x" } as { id: number; path: string } | null,
@@ -35,6 +36,9 @@ vi.mock("@/contexts/tab-context", () => ({
 }))
 vi.mock("@/contexts/search-dialog-context", () => ({
   useSearchDialog: () => ({ open: false, setOpen: spies.setSearchOpen }),
+}))
+vi.mock("@/contexts/loops-view-context", () => ({
+  useLoopsView: () => ({ view: "chat", setView: spies.setLoopsView }),
 }))
 vi.mock("@/hooks/use-is-mac", () => ({ useIsMac: () => false }))
 vi.mock("@/hooks/use-shortcut-settings", () => ({
