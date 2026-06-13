@@ -35,6 +35,7 @@ use crate::acp::types::PromptInputBlock;
 use crate::commands::acp::build_session_runtime_env;
 use crate::commands::conversations::get_folder_conversation_core;
 use crate::db::entities::loop_inbox_item::InboxKind;
+use crate::db::entities::loop_issue::{IssueStatus, PauseReason};
 use crate::db::entities::loop_iteration::{self, IterationStatus, Stage};
 use crate::db::entities::{loop_artifact, loop_issue};
 use crate::db::service::conversation_service::create_loop;
@@ -47,7 +48,9 @@ use crate::web::event_bridge::{emit_event, EventEmitter};
 
 use crate::loop_engine::briefing::{assemble_briefing, BriefingOutput};
 use crate::loop_engine::error::LoopError;
-use crate::loop_engine::transitions::{cas_iteration_status, try_claim_iteration, IterationClaim};
+use crate::loop_engine::transitions::{
+    cas_issue_status, cas_iteration_status, try_claim_iteration, IterationClaim,
+};
 
 /// Emit the coarse `loop://changed` event so every client refetches the issue's
 /// DAG. The autonomous pipeline (dispatch + settle) is the engine's own write
@@ -494,6 +497,10 @@ pub async fn settle_iteration(
         }
     }
 
+    // Issue-level budget breaker: this iteration's tokens have now accumulated,
+    // so re-evaluate whether the issue has crossed its budget.
+    trip_budget_if_exhausted(conn, iter.issue_id, iteration_id).await?;
+
     // The iteration's outputs (new artifacts, route, token totals) have landed —
     // tell every client to refetch so the DAG grows in real time.
     emit_changed(
@@ -510,6 +517,54 @@ pub async fn settle_iteration(
         tokens_used,
         made_progress,
     })
+}
+
+/// Issue-level budget circuit breaker (§4.10). Once accumulated `token_used`
+/// crosses the issue's `token_budget` (`NULL` = unlimited, the default — no
+/// artificial cap), CAS the issue `running → paused`, stamp `pause_reason =
+/// budget`, and file a `budget_exhausted` card. The per-issue driver then stops
+/// dispatching on its next tick (status no longer `running`).
+///
+/// Idempotent: the CAS only fires on the `running → paused` edge, and the inbox
+/// upsert dedupes on `(issue, budget_exhausted, budget:{id})`.
+async fn trip_budget_if_exhausted(
+    conn: &sea_orm::DatabaseConnection,
+    issue_id: i32,
+    iteration_id: i32,
+) -> Result<(), LoopError> {
+    let Some(issue) = loop_issue::Entity::find_by_id(issue_id).one(conn).await? else {
+        return Ok(());
+    };
+    let Some(budget) = issue.token_budget else {
+        return Ok(());
+    };
+    if issue.token_used <= budget {
+        return Ok(());
+    }
+    if cas_issue_status(conn, issue.id, IssueStatus::Running, IssueStatus::Paused).await? {
+        loop_issue::Entity::update_many()
+            .col_expr(
+                loop_issue::Column::PauseReason,
+                Expr::value(PauseReason::Budget.to_value()),
+            )
+            .filter(loop_issue::Column::Id.eq(issue.id))
+            .exec(conn)
+            .await?;
+        inbox::upsert_inbox(
+            conn,
+            issue.space_id,
+            issue.id,
+            Some(iteration_id),
+            InboxKind::BudgetExhausted,
+            &format!("budget:{}", issue.id),
+            serde_json::json!({
+                "token_used": issue.token_used,
+                "token_budget": budget,
+            }),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Human-facing stage label for the loop conversation title.

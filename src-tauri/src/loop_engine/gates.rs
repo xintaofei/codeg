@@ -28,7 +28,7 @@ use sea_orm::{ActiveEnum, ColumnTrait, EntityTrait, QueryFilter};
 
 use crate::db::entities::loop_artifact::{self, ArtifactKind, ArtifactStatus, ReviewVerdict};
 use crate::db::entities::loop_inbox_item::InboxKind;
-use crate::db::entities::loop_issue;
+use crate::db::entities::loop_issue::{self, IssueStatus};
 use crate::db::entities::loop_iteration::{self, IterationStatus, Stage};
 use crate::db::service::{folder_service, loop_service};
 use crate::db::AppDatabase;
@@ -39,7 +39,7 @@ use crate::loop_engine::dispatch::{dispatch_iteration, DispatchInput, LoopAgentS
 use crate::loop_engine::driver::resolve_agent;
 use crate::loop_engine::error::LoopError;
 use crate::loop_engine::transitions::{
-    cas_iteration_status, release_task_gate, try_acquire_task_gate,
+    cas_issue_status, cas_iteration_status, release_task_gate, try_acquire_task_gate,
 };
 use crate::loop_engine::validation::{self, ValidationOutcome};
 use crate::loop_engine::worktree;
@@ -52,8 +52,10 @@ enum ImplementOutcome {
     /// Empty diff, or validation reported failures → rework counter bumped; the
     /// caller re-dispatches implement at the next attempt.
     NoProgress,
-    /// Validation could not run (missing tool / timeout) → task blocked + inbox
-    /// card filed; the caller idles until a human intervenes.
+    /// The task was blocked — either validation could not run (missing tool /
+    /// timeout) or a no-progress breaker tripped (max attempts / repeated
+    /// failure). An inbox card is filed; the caller idles until a human
+    /// intervenes.
     Blocked,
 }
 
@@ -245,11 +247,15 @@ async fn finish_implement(
             validate_after_implement(db, issue, config, worktree_path, task, iteration_id).await
         }
         None => {
-            // No diff to accept. Discard any stray uncommitted state and record
-            // a no-progress signature for the breaker (enforced in Task 2.4).
+            // No diff to accept. Discard any stray uncommitted state and record a
+            // no-progress rework; the breaker decides retry vs. block.
             worktree::reset_to_head(worktree_path).await?;
-            bump_rework(db, task.id, "empty_diff:implement").await?;
-            Ok(ImplementOutcome::NoProgress)
+            match record_rework(db, issue, config, task, Some(iteration_id), "empty_diff:implement")
+                .await?
+            {
+                ReworkOutcome::Retry => Ok(ImplementOutcome::NoProgress),
+                ReworkOutcome::Blocked => Ok(ImplementOutcome::Blocked),
+            }
         }
     }
 }
@@ -301,8 +307,16 @@ async fn validate_after_implement(
             Ok(ImplementOutcome::Advanced)
         }
         ValidationOutcome::Failed => {
-            bump_rework(db, task.id, "validation_failed:implement").await?;
-            Ok(ImplementOutcome::NoProgress)
+            // Fingerprint the failure so the breaker can tell "the same failure
+            // again" from a genuinely new one.
+            let sig = format!(
+                "validation_failed:{}",
+                sig_hash(&format!("{:?}\n{}", report.exit_codes, report.output))
+            );
+            match record_rework(db, issue, config, task, Some(iteration_id), &sig).await? {
+                ReworkOutcome::Retry => Ok(ImplementOutcome::NoProgress),
+                ReworkOutcome::Blocked => Ok(ImplementOutcome::Blocked),
+            }
         }
         ValidationOutcome::Unrunnable => {
             set_task_status(db, task.id, ArtifactStatus::Blocked).await?;
@@ -404,6 +418,105 @@ async fn bump_rework(db: &AppDatabase, task_id: i32, sig: &str) -> Result<(), Lo
     Ok(())
 }
 
+// ---- Circuit breakers (§4.10): no-progress + max-attempts ----
+
+/// Whether a recorded rework should retry or has tripped a breaker.
+enum ReworkOutcome {
+    /// The rework counter advanced; the caller may re-dispatch at the new attempt.
+    Retry,
+    /// A breaker tripped — the task + issue are now `blocked` and an inbox card is
+    /// filed. The caller must not re-dispatch.
+    Blocked,
+}
+
+/// Record one failed attempt against `task` and evaluate the no-progress
+/// breakers. Bumps the rework counter + failure signature, then blocks (task +
+/// issue → `blocked`, inbox card) when either:
+///
+/// - the task has exhausted `max_attempts` (`attempt >= max_attempts` after the
+///   bump; `0` = unlimited), or
+/// - this failure repeats the immediately-preceding signature — the agent is
+///   producing the identical failure, so further attempts won't help.
+///
+/// Returns [`ReworkOutcome::Retry`] otherwise.
+async fn record_rework(
+    db: &AppDatabase,
+    issue: &loop_issue::Model,
+    config: &IssueConfig,
+    task: &LoopArtifactRow,
+    iteration_id: Option<i32>,
+    sig: &str,
+) -> Result<ReworkOutcome, LoopError> {
+    let prev_sig = loop_artifact::Entity::find_by_id(task.id)
+        .one(&db.conn)
+        .await?
+        .and_then(|m| m.last_failure_sig);
+    let repeated = prev_sig.as_deref() == Some(sig);
+
+    bump_rework(db, task.id, sig).await?;
+    let attempt = task.attempt + 1;
+
+    let max = config.max_attempts as i32;
+    let exhausted = max > 0 && attempt >= max;
+    if exhausted || repeated {
+        let reason = if exhausted {
+            "max_attempts"
+        } else {
+            "repeated_failure"
+        };
+        mark_blocked(db, issue, task.id, iteration_id, reason, sig, attempt).await?;
+        Ok(ReworkOutcome::Blocked)
+    } else {
+        Ok(ReworkOutcome::Retry)
+    }
+}
+
+/// Block a stalled node: set the task `blocked`, CAS the issue `running →
+/// blocked` (so the driver stops on its next tick), and file a `blocked` inbox
+/// card keyed on the task (deduped on `no_progress:{task}`). A human resolves it
+/// via the inbox (M2.2 Task 2.7).
+#[allow(clippy::too_many_arguments)]
+async fn mark_blocked(
+    db: &AppDatabase,
+    issue: &loop_issue::Model,
+    task_id: i32,
+    iteration_id: Option<i32>,
+    reason: &str,
+    sig: &str,
+    attempt: i32,
+) -> Result<(), LoopError> {
+    set_task_status(db, task_id, ArtifactStatus::Blocked).await?;
+    cas_issue_status(&db.conn, issue.id, IssueStatus::Running, IssueStatus::Blocked).await?;
+    loop_service::inbox::upsert_inbox(
+        &db.conn,
+        issue.space_id,
+        issue.id,
+        iteration_id,
+        InboxKind::Blocked,
+        &format!("no_progress:{task_id}"),
+        serde_json::json!({
+            "task_artifact_id": task_id,
+            "reason": reason,
+            "failure_sig": sig,
+            "attempt": attempt,
+        }),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Stable 64-bit FNV-1a fingerprint (hex) of a failure's specifics, so the
+/// repeated-failure breaker can compare "same failure" without storing the full
+/// output in the signature column.
+fn sig_hash(s: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
 // ---- Review stage (§4.7) ----
 
 /// The outcome of a review round under the configured pass rule.
@@ -468,8 +581,18 @@ async fn drive_reviews(
                     LoopError::NotFound(format!("worktree folder {worktree_folder_id}"))
                 })?;
             worktree::reset_to_head(Path::new(&folder.path)).await?;
-            bump_rework(db, task.id, "review_rejected:implement").await?;
-            set_task_status(db, task.id, ArtifactStatus::Pending).await?;
+            // Fingerprint the rejecting findings so the breaker can tell "the same
+            // objection again" from a genuinely new one.
+            let findings =
+                loop_service::artifact::latest_failed_review_findings(&db.conn, task.id).await?;
+            let sig = format!("review_rejected:{}", sig_hash(&findings.join("\n---\n")));
+            match record_rework(db, issue, config, task, None, &sig).await? {
+                // Back to awaiting implement at the new attempt.
+                ReworkOutcome::Retry => set_task_status(db, task.id, ArtifactStatus::Pending).await?,
+                // Breaker tripped: `mark_blocked` already set the task + issue
+                // blocked; leave them as-is.
+                ReworkOutcome::Blocked => {}
+            }
             Ok(false)
         }
         ReviewDecision::Undecided => {
@@ -1001,9 +1124,14 @@ mod tests {
             ArtifactStatus::Pending,
             "back to awaiting implement"
         );
-        assert_eq!(
-            task_model(&h, task).await.last_failure_sig.as_deref(),
-            Some("validation_failed:implement")
+        assert!(
+            task_model(&h, task)
+                .await
+                .last_failure_sig
+                .as_deref()
+                .unwrap()
+                .starts_with("validation_failed:"),
+            "failure signature records a validation failure"
         );
         let runs = loop_service::validation::list_for_task(&h.db.conn, task)
             .await
@@ -1167,9 +1295,14 @@ mod tests {
         let node = task_node(&h, task).await;
         assert_eq!(node.status, ArtifactStatus::Pending);
         assert_eq!(node.attempt, 1);
-        assert_eq!(
-            task_model(&h, task).await.last_failure_sig.as_deref(),
-            Some("review_rejected:implement")
+        assert!(
+            task_model(&h, task)
+                .await
+                .last_failure_sig
+                .as_deref()
+                .unwrap()
+                .starts_with("review_rejected:"),
+            "failure signature records a review rejection"
         );
         assert_eq!(
             load_issue(&h).await.active_task_artifact_id,
@@ -1213,6 +1346,118 @@ mod tests {
             slot1.status,
             IterationStatus::Cancelled,
             "the other reviewer was cancelled"
+        );
+    }
+
+    // ---- Task 2.4: circuit breakers ----
+
+    /// `max_attempts` exhausted → the task and its issue are blocked and a card
+    /// is filed. With `max_attempts = 1` the first failure trips it immediately.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn breaker_max_attempts_blocks_task_and_issue() {
+        let h = setup().await;
+        let task = add_task(&h, "Task 1").await;
+        let cfg = IssueConfig {
+            max_attempts: 1,
+            ..config_with_validation(&["false"])
+        };
+
+        assert!(drive_with(&h, &cfg).await, "tick 1 dispatches implement");
+        let iter_id = running_implement_id(&h).await;
+        std::fs::write(h.worktree_path.join("feature.txt"), "code\n").unwrap();
+        settle_iteration(&h.db, &EventEmitter::Noop, iter_id)
+            .await
+            .unwrap();
+
+        // Tick 2: validation fails at attempt 0 → bump→1 ≥ max(1) → block.
+        assert!(!drive_with(&h, &cfg).await, "a breaker block is not a dispatch");
+        let node = task_node(&h, task).await;
+        assert_eq!(node.status, ArtifactStatus::Blocked, "task blocked");
+        assert_eq!(node.attempt, 1);
+        assert_eq!(load_issue(&h).await.status, IssueStatus::Blocked, "issue blocked");
+        let inbox = loop_service::inbox::list_inbox(&h.db.conn, h.space_id, None)
+            .await
+            .unwrap();
+        assert!(
+            inbox
+                .iter()
+                .any(|i| i.kind == InboxKind::Blocked
+                    && i.subject_key == format!("no_progress:{task}")),
+            "no-progress inbox card filed"
+        );
+    }
+
+    /// Two consecutive identical failures trip the repeated-failure breaker even
+    /// though `max_attempts` (default 6) is far from exhausted.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn breaker_repeated_failure_blocks() {
+        let h = setup().await;
+        let task = add_task(&h, "Task 1").await;
+        let cfg = config_with_validation(&["false"]); // default max_attempts = 6
+
+        // Attempt 0: implement → validation fails → retry (not yet blocked).
+        assert!(drive_with(&h, &cfg).await);
+        let iter0 = running_implement_id(&h).await;
+        std::fs::write(h.worktree_path.join("feature.txt"), "code\n").unwrap();
+        settle_iteration(&h.db, &EventEmitter::Noop, iter0)
+            .await
+            .unwrap();
+        assert!(drive_with(&h, &cfg).await, "attempt 0 failure retries");
+        assert_eq!(task_node(&h, task).await.attempt, 1);
+        assert_eq!(task_node(&h, task).await.status, ArtifactStatus::Pending);
+
+        // Attempt 1: an identical validation failure → repeated-failure breaker.
+        let iter1 = running_implement_id(&h).await;
+        std::fs::write(h.worktree_path.join("feature.txt"), "code2\n").unwrap();
+        settle_iteration(&h.db, &EventEmitter::Noop, iter1)
+            .await
+            .unwrap();
+        assert!(!drive_with(&h, &cfg).await, "the repeat trips the breaker");
+
+        let node = task_node(&h, task).await;
+        assert_eq!(node.status, ArtifactStatus::Blocked, "task blocked on repeat");
+        assert_eq!(node.attempt, 2);
+        assert_eq!(load_issue(&h).await.status, IssueStatus::Blocked);
+    }
+
+    /// Budget breaker: once accumulated `token_used` crosses `token_budget`,
+    /// settling any iteration pauses the issue (`pause_reason = budget`) and
+    /// files a `budget_exhausted` card.
+    #[tokio::test]
+    async fn breaker_budget_pause_on_exhaustion() {
+        let h = setup().await;
+        let _task = add_task(&h, "Task 1").await;
+
+        // Pre-seed accumulated usage already over a tight budget.
+        loop_issue::Entity::update_many()
+            .col_expr(loop_issue::Column::TokenUsed, Expr::value(1000_i64))
+            .col_expr(loop_issue::Column::TokenBudget, Expr::value(500_i64))
+            .filter(loop_issue::Column::Id.eq(h.issue_id))
+            .exec(&h.db.conn)
+            .await
+            .unwrap();
+
+        // Dispatch + settle any iteration; settlement evaluates the budget breaker.
+        assert!(drive(&h).await, "dispatch implement");
+        let iter_id = running_implement_id(&h).await;
+        settle_iteration(&h.db, &EventEmitter::Noop, iter_id)
+            .await
+            .unwrap();
+
+        let issue = load_issue(&h).await;
+        assert_eq!(issue.status, IssueStatus::Paused, "issue paused on budget");
+        assert_eq!(issue.pause_reason, Some(loop_issue::PauseReason::Budget));
+        let inbox = loop_service::inbox::list_inbox(&h.db.conn, h.space_id, None)
+            .await
+            .unwrap();
+        assert!(
+            inbox
+                .iter()
+                .any(|i| i.kind == InboxKind::BudgetExhausted
+                    && i.subject_key == format!("budget:{}", h.issue_id)),
+            "budget_exhausted card filed"
         );
     }
 }
