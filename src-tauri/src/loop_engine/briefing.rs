@@ -370,6 +370,7 @@ mod tests {
 
     /// Create an artifact + one revision + optional criteria + a DerivesFrom edge
     /// to `source`. Returns the new artifact id.
+    #[allow(clippy::too_many_arguments)]
     async fn add_node(
         db: &crate::db::AppDatabase,
         space_id: i32,

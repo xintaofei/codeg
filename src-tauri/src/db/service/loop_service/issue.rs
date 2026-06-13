@@ -28,7 +28,7 @@ pub fn to_issue_row(m: &loop_issue::Model) -> LoopIssueRow {
         priority: m.priority.clone(),
         status: m.status.clone(),
         pause_reason: m.pause_reason.clone(),
-        route: m.route.clone(),
+        route: m.route,
         token_used: m.token_used,
         token_budget: m.token_budget,
         created_at: m.created_at,

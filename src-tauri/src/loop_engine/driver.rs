@@ -61,7 +61,7 @@ fn root_artifact_id(dag: &LoopDagView) -> Option<i32> {
         .map(|a| a.id)
 }
 
-fn artifacts_of_kind<'a>(dag: &'a LoopDagView, kind: ArtifactKind) -> Vec<&'a LoopArtifactRow> {
+fn artifacts_of_kind(dag: &LoopDagView, kind: ArtifactKind) -> Vec<&LoopArtifactRow> {
     dag.artifacts.iter().filter(|a| a.kind == kind).collect()
 }
 
