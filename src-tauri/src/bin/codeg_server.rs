@@ -329,7 +329,7 @@ async fn async_main() {
     }
     // React to loop iteration turn-completions via the in-process event bus
     // (additive subscriber; never touches the delegation lifecycle path).
-    loop_engine.spawn_completion_watcher(state.acp_event_bus.clone());
+    tokio::spawn(loop_engine.completion_watcher_task(state.acp_event_bus.clone()));
 
     // Install bundled expert skills into the central store
     // (`~/.codeg/skills/`). Runs in the background; failures are logged

@@ -526,7 +526,9 @@ mod tauri_app {
                         .state::<std::sync::Arc<crate::acp::InternalEventBus>>()
                         .inner()
                         .clone();
-                    loop_engine.spawn_completion_watcher(loop_bus);
+                    // The setup callback runs outside any tokio runtime, so the
+                    // engine returns the watcher future and we spawn it here.
+                    tauri::async_runtime::spawn(loop_engine.completion_watcher_task(loop_bus));
                     tauri::async_runtime::spawn(async move {
                         loop_engine.recover_on_boot().await;
                     });

@@ -11,6 +11,7 @@
 //! below is only a single-instance guard, never the concurrency authority.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -138,14 +139,25 @@ impl LoopEngine {
         }
     }
 
-    /// Subscribe to the in-process event bus and settle + wake loop iterations
-    /// as their turns complete. This is the engine's completion-awareness: a
+    /// Subscribe to the in-process event bus synchronously and return the
+    /// completion-watcher loop future; the caller spawns it with the
+    /// mode-appropriate spawner (`tauri::async_runtime::spawn` from the desktop
+    /// `setup` hook, which runs outside any tokio runtime, or `tokio::spawn`
+    /// under the server runtime). This is the engine's completion-awareness: a
     /// separate, additive bus subscriber (it never touches the delegation
-    /// lifecycle path), reacting only to loop conversations.
-    pub fn spawn_completion_watcher(self: &Arc<Self>, bus: Arc<InternalEventBus>) {
+    /// lifecycle path), settling + waking loop iterations as their turns
+    /// complete, reacting only to loop conversations.
+    ///
+    /// `subscribe()` runs here, before the future is returned, so a
+    /// `TurnComplete` emitted between this call and the first poll is buffered
+    /// by the broadcast channel rather than dropped (subscribe-before-spawn).
+    pub fn completion_watcher_task(
+        self: &Arc<Self>,
+        bus: Arc<InternalEventBus>,
+    ) -> impl Future<Output = ()> + Send + 'static {
         let engine = Arc::clone(self);
         let mut rx = bus.subscribe();
-        tokio::spawn(async move {
+        async move {
             loop {
                 match rx.recv().await {
                     Ok(envelope) => {
@@ -159,7 +171,7 @@ impl LoopEngine {
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
-        });
+        }
     }
 
     /// Settle the loop iteration backing a just-completed connection's turn,
