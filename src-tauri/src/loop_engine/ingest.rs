@@ -64,13 +64,15 @@ async fn running_iteration(
     Ok(it)
 }
 
-/// Which artifact kind a stage is allowed to produce (the read stages). Other
-/// stages have no `loop_submit_artifacts` capability.
+/// Which artifact kind a stage is allowed to produce. The read stages produce
+/// their pipeline node; finalize produces the issue's `result`. Other stages
+/// have no `loop_submit_artifacts` capability.
 fn artifact_kind_for_stage(stage: Stage) -> Result<ArtifactKind, LoopError> {
     match stage {
         Stage::Refine => Ok(ArtifactKind::Requirement),
         Stage::Design => Ok(ArtifactKind::Design),
         Stage::Plan => Ok(ArtifactKind::Task),
+        Stage::Finalize => Ok(ArtifactKind::Result),
         other => Err(invalid(format!("stage {other:?} cannot submit artifacts"))),
     }
 }
@@ -190,16 +192,36 @@ async fn submit_artifacts(
         return Err(invalid("artifacts array is empty"));
     }
 
-    let target = it
-        .target_artifact_id
-        .ok_or_else(|| invalid("iteration has no target node"))?;
-    let target_row = loop_artifact::Entity::find_by_id(target)
-        .one(conn)
-        .await?
-        .ok_or_else(|| invalid("target node not found"))?;
-    if target_row.issue_id != it.issue_id {
-        return Err(invalid("target node belongs to another issue"));
-    }
+    // Edge wiring depends on kind: a `result` (finalize) fans out `results_from`
+    // to every task of the issue; read artifacts derive from the iteration's
+    // single target node.
+    let derive_target = if kind == ArtifactKind::Result {
+        None
+    } else {
+        let target = it
+            .target_artifact_id
+            .ok_or_else(|| invalid("iteration has no target node"))?;
+        let target_row = loop_artifact::Entity::find_by_id(target)
+            .one(conn)
+            .await?
+            .ok_or_else(|| invalid("target node not found"))?;
+        if target_row.issue_id != it.issue_id {
+            return Err(invalid("target node belongs to another issue"));
+        }
+        Some(target)
+    };
+    let result_targets: Vec<i32> = if kind == ArtifactKind::Result {
+        loop_artifact::Entity::find()
+            .filter(loop_artifact::Column::IssueId.eq(it.issue_id))
+            .filter(loop_artifact::Column::Kind.eq(ArtifactKind::Task))
+            .all(conn)
+            .await?
+            .into_iter()
+            .map(|t| t.id)
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let status = default_status_for_kind(kind);
     let mut ids = Vec::new();
@@ -232,15 +254,27 @@ async fn submit_artifacts(
                 }
             }
         }
-        // Canonical edge direction: from = derived node, to = its source.
-        loop_service::link::create_link(
-            conn,
-            it.space_id,
-            art.id,
-            target,
-            LinkKind::DerivesFrom,
-        )
-        .await?;
+        // Canonical edge direction: from = derived/result node, to = its source.
+        if let Some(target) = derive_target {
+            loop_service::link::create_link(
+                conn,
+                it.space_id,
+                art.id,
+                target,
+                LinkKind::DerivesFrom,
+            )
+            .await?;
+        }
+        for task_id in &result_targets {
+            loop_service::link::create_link(
+                conn,
+                it.space_id,
+                art.id,
+                *task_id,
+                LinkKind::ResultsFrom,
+            )
+            .await?;
+        }
         ids.push(art.id);
     }
 

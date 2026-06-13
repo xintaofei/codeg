@@ -211,6 +211,20 @@ pub async fn reset_to_head(worktree_path: &Path) -> Result<(), LoopError> {
     Ok(())
 }
 
+/// Whether the worktree has no uncommitted changes (tracked or untracked) — i.e.
+/// it equals its branch HEAD. Used to assert all accepted work is committed
+/// before finalize / merge.
+pub async fn is_clean(worktree_path: &Path) -> Result<bool, LoopError> {
+    let out = run_git(worktree_path, &["status", "--porcelain"]).await?;
+    if !out.status.success() {
+        return Err(LoopError::Git(format!(
+            "status --porcelain: {}",
+            stderr_of(&out)
+        )));
+    }
+    Ok(stdout_trimmed(&out).is_empty())
+}
+
 /// Remove the worktree directory and its administrative entry (best-effort
 /// `--force` to tolerate a dirty tree). The branch is left intact.
 pub async fn remove_worktree(repo_path: &Path, worktree_path: &Path) -> Result<(), LoopError> {

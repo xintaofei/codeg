@@ -748,6 +748,124 @@ async fn review_verdicts(
     Ok(map)
 }
 
+// ---- Finalize stage (§4.6): produce the result artifact ----
+
+/// Finalize the issue once the write pipeline is fully drained (every task `done`,
+/// gate free): assert the worktree is clean (all checkpoints committed), dispatch
+/// a finalize iteration — which submits the `result` artifact via ingest, fanning
+/// `results_from` edges to each task — and commit any finalize worktree changes as
+/// the final checkpoint. A dirty tree blocks the issue (a structural fault a human
+/// must resolve). A no-op until the pipeline is drained. Returns `true` only when
+/// it dispatched the finalize iteration.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_finalize(
+    db: &AppDatabase,
+    data_dir: &Path,
+    spawner: &dyn LoopAgentSpawner,
+    emitter: &EventEmitter,
+    issue: &loop_issue::Model,
+    dag: &LoopDagView,
+    config: &IssueConfig,
+    worktree_folder_id: i32,
+) -> Result<bool, LoopError> {
+    // Only finalize once every task is done and no task holds the gate.
+    let tasks: Vec<&LoopArtifactRow> = dag
+        .artifacts
+        .iter()
+        .filter(|a| a.kind == ArtifactKind::Task)
+        .collect();
+    if tasks.is_empty() || !tasks.iter().all(|t| t.status == ArtifactStatus::Done) {
+        return Ok(false);
+    }
+    if issue.active_task_artifact_id.is_some() {
+        return Ok(false);
+    }
+
+    let fins = finalize_iterations(db, issue.id).await?;
+    if fins
+        .iter()
+        .any(|it| matches!(it.status, IterationStatus::Queued | IterationStatus::Running))
+    {
+        // Finalize in flight — wait for its completion.
+        return Ok(false);
+    }
+
+    let folder = folder_service::get_folder_by_id(&db.conn, worktree_folder_id)
+        .await?
+        .ok_or_else(|| LoopError::NotFound(format!("worktree folder {worktree_folder_id}")))?;
+    let worktree_path = Path::new(&folder.path);
+
+    // Result already produced → commit any finalize worktree changes as the final
+    // checkpoint, then idle (the human merge gate is Task 2.6).
+    if dag.artifacts.iter().any(|a| a.kind == ArtifactKind::Result) {
+        let message = format!("loop: finalize (issue #{})", issue.seq_no);
+        worktree::checkpoint(worktree_path, &message).await?;
+        return Ok(false);
+    }
+
+    // No result yet. Assert the tree is clean (every task's checkpoint committed,
+    // no stray state) before launching finalize; a dirty tree is a structural
+    // fault a human must resolve, not something an agent should build a result on.
+    if !worktree::is_clean(worktree_path).await? {
+        cas_issue_status(&db.conn, issue.id, IssueStatus::Running, IssueStatus::Blocked).await?;
+        loop_service::inbox::upsert_inbox(
+            &db.conn,
+            issue.space_id,
+            issue.id,
+            None,
+            InboxKind::Blocked,
+            &format!("finalize_dirty:{}", issue.id),
+            serde_json::json!({ "reason": "worktree_dirty_before_finalize" }),
+        )
+        .await?;
+        return Ok(false);
+    }
+
+    dispatch_finalize(db, data_dir, spawner, emitter, issue, config, worktree_folder_id).await
+}
+
+/// Dispatch the finalize iteration (issue-level: `target = None`; the
+/// `uniq_active_write` lease admits one implement-or-finalize per issue).
+async fn dispatch_finalize(
+    db: &AppDatabase,
+    data_dir: &Path,
+    spawner: &dyn LoopAgentSpawner,
+    emitter: &EventEmitter,
+    issue: &loop_issue::Model,
+    config: &IssueConfig,
+    worktree_folder_id: i32,
+) -> Result<bool, LoopError> {
+    let handle = dispatch_iteration(
+        db,
+        data_dir,
+        spawner,
+        emitter.clone(),
+        DispatchInput {
+            space_id: issue.space_id,
+            issue_id: issue.id,
+            stage: Stage::Finalize,
+            target_artifact_id: None,
+            slot_no: None,
+            attempt: 0,
+            agent_type: resolve_agent(config, Stage::Finalize),
+            worktree_folder_id,
+        },
+    )
+    .await?;
+    Ok(handle.is_some())
+}
+
+async fn finalize_iterations(
+    db: &AppDatabase,
+    issue_id: i32,
+) -> Result<Vec<loop_iteration::Model>, LoopError> {
+    Ok(loop_iteration::Entity::find()
+        .filter(loop_iteration::Column::IssueId.eq(issue_id))
+        .filter(loop_iteration::Column::Stage.eq(Stage::Finalize))
+        .all(&db.conn)
+        .await?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1459,5 +1577,136 @@ mod tests {
                     && i.subject_key == format!("budget:{}", h.issue_id)),
             "budget_exhausted card filed"
         );
+    }
+
+    // ---- Task 2.5: finalize → result ----
+
+    async fn drive_finalize(h: &Harness, cfg: &IssueConfig) -> bool {
+        let issue = load_issue(h).await;
+        let dag = artifact::list_dag(&h.db.conn, h.issue_id).await.unwrap();
+        run_finalize(
+            &h.db,
+            h.data.path(),
+            &StubSpawner,
+            &EventEmitter::Noop,
+            &issue,
+            &dag,
+            cfg,
+            h.worktree_folder_id,
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn running_finalize(h: &Harness) -> loop_iteration::Model {
+        loop_iteration::Entity::find()
+            .filter(loop_iteration::Column::Stage.eq(Stage::Finalize))
+            .filter(loop_iteration::Column::Status.eq(IterationStatus::Running))
+            .one(&h.db.conn)
+            .await
+            .unwrap()
+            .expect("a running finalize iteration")
+    }
+
+    /// Drive a fresh task all the way to `done` via a passing review, freeing the
+    /// task gate so the issue is ready to finalize.
+    async fn complete_task(h: &Harness, cfg: &IssueConfig, marker: &str, task: i32) {
+        implement_to_in_progress(h, cfg, marker).await;
+        assert!(drive_with(h, cfg).await, "dispatch reviewer");
+        let review = running_review(h).await;
+        submit_verdict(h, review, "pass", "ok").await;
+        settle_iteration(&h.db, &EventEmitter::Noop, review)
+            .await
+            .unwrap();
+        assert!(!drive_with(h, cfg).await, "review pass → task done");
+        assert_eq!(task_node(h, task).await.status, ArtifactStatus::Done);
+    }
+
+    /// All tasks done → finalize dispatches; the agent submits a result; the DAG
+    /// gains a `result` artifact with a `results_from` edge to each task.
+    #[tokio::test]
+    async fn finalize_produces_result_and_results_from_edges() {
+        let h = setup().await;
+        let task = add_task(&h, "Task 1").await;
+        let cfg = config_reviewers(1, "unanimous");
+        complete_task(&h, &cfg, "feature.txt", task).await;
+        assert_eq!(
+            load_issue(&h).await.active_task_artifact_id,
+            None,
+            "task gate freed"
+        );
+
+        // Finalize dispatches (issue-level, target = None).
+        assert!(drive_finalize(&h, &cfg).await, "finalize dispatched");
+        let fin = running_finalize(&h).await;
+
+        // Simulate the finalize agent submitting the result summary via ingest.
+        crate::loop_engine::ingest::ingest(
+            &h.db.conn,
+            &fin.capability_token,
+            "loop_submit_artifacts",
+            &serde_json::json!({ "artifacts": [{ "title": "Result", "content": "shipped" }] }),
+        )
+        .await
+        .unwrap();
+        settle_iteration(&h.db, &EventEmitter::Noop, fin.id)
+            .await
+            .unwrap();
+
+        // Next tick: result exists → final checkpoint + idle (not a dispatch).
+        assert!(!drive_finalize(&h, &cfg).await, "finalize complete is not a dispatch");
+
+        let dag = artifact::list_dag(&h.db.conn, h.issue_id).await.unwrap();
+        let results: Vec<_> = dag
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == ArtifactKind::Result)
+            .collect();
+        assert_eq!(results.len(), 1, "one result artifact");
+        let result_id = results[0].id;
+        let edges = dag
+            .links
+            .iter()
+            .filter(|l| {
+                l.kind == LinkKind::ResultsFrom
+                    && l.from_artifact_id == result_id
+                    && l.to_artifact_id == task
+            })
+            .count();
+        assert_eq!(edges, 1, "results_from edge from result to the task");
+    }
+
+    /// A dirty worktree at finalize time (stray uncommitted state) blocks the
+    /// issue + files a card, and dispatches no finalize iteration.
+    #[tokio::test]
+    async fn finalize_dirty_tree_blocks() {
+        let h = setup().await;
+        let task = add_task(&h, "Task 1").await;
+        let cfg = config_reviewers(1, "unanimous");
+        complete_task(&h, &cfg, "feature.txt", task).await;
+
+        // Stray uncommitted file in the worktree.
+        std::fs::write(h.worktree_path.join("stray.txt"), "uncommitted\n").unwrap();
+
+        assert!(!drive_finalize(&h, &cfg).await, "dirty tree does not dispatch");
+        assert_eq!(
+            load_issue(&h).await.status,
+            IssueStatus::Blocked,
+            "issue blocked on a dirty tree"
+        );
+        let inbox = loop_service::inbox::list_inbox(&h.db.conn, h.space_id, None)
+            .await
+            .unwrap();
+        assert!(
+            inbox.iter().any(|i| i.kind == InboxKind::Blocked
+                && i.subject_key == format!("finalize_dirty:{}", h.issue_id)),
+            "finalize_dirty inbox card filed"
+        );
+        let fins = loop_iteration::Entity::find()
+            .filter(loop_iteration::Column::Stage.eq(Stage::Finalize))
+            .all(&h.db.conn)
+            .await
+            .unwrap();
+        assert!(fins.is_empty(), "no finalize iteration on a dirty tree");
     }
 }

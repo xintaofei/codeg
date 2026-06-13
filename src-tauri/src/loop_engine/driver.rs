@@ -315,7 +315,24 @@ pub(crate) async fn tick_once(
         worktree_folder_id,
     )
     .await?;
-    Ok(if dispatched {
+    if dispatched {
+        return Ok(TickOutcome::Dispatched);
+    }
+
+    // Write pipeline drained → finalize when every task is done (produce the
+    // result artifact). A no-op until then.
+    let finalized = gates::run_finalize(
+        db,
+        data_dir,
+        spawner,
+        emitter,
+        &issue,
+        &dag,
+        &config,
+        worktree_folder_id,
+    )
+    .await?;
+    Ok(if finalized {
         TickOutcome::Dispatched
     } else {
         TickOutcome::Idle
