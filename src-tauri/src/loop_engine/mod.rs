@@ -30,6 +30,7 @@ pub mod briefing;
 pub mod dispatch;
 pub mod driver;
 pub mod error;
+pub mod gates;
 pub mod ingest;
 pub mod recovery;
 pub mod transitions;

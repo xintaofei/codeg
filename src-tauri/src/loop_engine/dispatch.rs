@@ -473,7 +473,10 @@ pub async fn settle_iteration(
     .await?;
 
     let made_progress = !produced_artifact_ids.is_empty();
-    if !made_progress {
+    // Implement measures progress by the worktree diff (the agent submits no
+    // artifact), so its rework counter is owned by the gates checkpoint, not by
+    // this artifact-count heuristic — skip the bump for it here.
+    if !made_progress && iter.stage != Stage::Implement {
         if let Some(target) = iter.target_artifact_id {
             // No output → bump the node rework counter + record a failure
             // signature for the no-progress breaker (enforced in M2.2).
@@ -857,14 +860,16 @@ mod tests {
     #[tokio::test]
     async fn settle_without_artifact_bumps_node_attempt() {
         let (db, _data_dir, space_id, issue_id, _folder_id) = seed().await;
-        // A target node the iteration is meant to advance.
+        // An artifact-producing stage (implement is exempt — its progress is the
+        // worktree checkpoint, exercised in the gates tests). A design iteration
+        // that produces nothing bumps its target requirement's rework counter.
         let target = artifact::create_artifact(
             &db.conn,
             space_id,
             issue_id,
-            ArtifactKind::Task,
-            "T1",
-            ArtifactStatus::Pending,
+            ArtifactKind::Requirement,
+            "R1",
+            ArtifactStatus::Done,
             ActorKind::Agent,
             None,
         )
@@ -875,7 +880,7 @@ mod tests {
             IterationClaim {
                 space_id,
                 issue_id,
-                stage: Stage::Implement,
+                stage: Stage::Design,
                 target_artifact_id: Some(target.id),
                 slot_no: None,
                 capability_token: "t".into(),
@@ -904,9 +909,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(node.attempt, 1, "node rework counter bumped");
-        assert_eq!(
-            node.last_failure_sig.as_deref(),
-            Some("no_artifacts:implement")
-        );
+        assert_eq!(node.last_failure_sig.as_deref(), Some("no_artifacts:design"));
     }
 }

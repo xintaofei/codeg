@@ -31,6 +31,7 @@ use crate::web::event_bridge::EventEmitter;
 
 use crate::loop_engine::dispatch::{dispatch_iteration, DispatchInput, LoopAgentSpawner};
 use crate::loop_engine::error::LoopError;
+use crate::loop_engine::gates;
 use crate::loop_engine::LoopEngine;
 
 /// Result of a single tick.
@@ -143,7 +144,7 @@ pub(crate) fn ready_nodes(dag: &LoopDagView, route: IssueRoute) -> Vec<FrontierI
 
 /// Resolve the agent for a stage from the issue's Loop Contract: a stage-keyed
 /// override (e.g. `"review"`) falls back to `"default"`, then to Claude Code.
-fn resolve_agent(config: &IssueConfig, stage: Stage) -> AgentType {
+pub(crate) fn resolve_agent(config: &IssueConfig, stage: Stage) -> AgentType {
     let key = stage.to_value();
     config
         .agents
@@ -266,32 +267,55 @@ pub(crate) async fn tick_once(
     let dag = artifact::list_dag(conn, issue_id).await?;
     ensure_skip_provenance(db, issue.space_id, &dag, route).await?;
 
+    // Read pipeline first (triage → refine → design → plan). While it has work,
+    // the write pipeline waits.
     let frontier = ready_nodes(&dag, route);
-    let mut dispatched_any = false;
-    for item in frontier {
-        let handle = dispatch_iteration(
-            db,
-            data_dir,
-            spawner,
-            emitter.clone(),
-            DispatchInput {
-                space_id: issue.space_id,
-                issue_id,
-                stage: item.stage,
-                target_artifact_id: item.target_artifact_id,
-                slot_no: None,
-                attempt: item.attempt,
-                agent_type: resolve_agent(&config, item.stage),
-                worktree_folder_id,
-            },
-        )
-        .await?;
-        if handle.is_some() {
-            dispatched_any = true;
+    if !frontier.is_empty() {
+        let mut dispatched_any = false;
+        for item in frontier {
+            let handle = dispatch_iteration(
+                db,
+                data_dir,
+                spawner,
+                emitter.clone(),
+                DispatchInput {
+                    space_id: issue.space_id,
+                    issue_id,
+                    stage: item.stage,
+                    target_artifact_id: item.target_artifact_id,
+                    slot_no: None,
+                    attempt: item.attempt,
+                    agent_type: resolve_agent(&config, item.stage),
+                    worktree_folder_id,
+                },
+            )
+            .await?;
+            if handle.is_some() {
+                dispatched_any = true;
+            }
         }
+        return Ok(if dispatched_any {
+            TickOutcome::Dispatched
+        } else {
+            TickOutcome::Idle
+        });
     }
 
-    Ok(if dispatched_any {
+    // Read pipeline complete (tasks exist) → drive the write pipeline. A no-op
+    // when there are no tasks yet (read stages still in flight), so it is safe
+    // to call on every "frontier empty" tick.
+    let dispatched = gates::drive_implement(
+        db,
+        data_dir,
+        spawner,
+        emitter,
+        &issue,
+        &dag,
+        &config,
+        worktree_folder_id,
+    )
+    .await?;
+    Ok(if dispatched {
         TickOutcome::Dispatched
     } else {
         TickOutcome::Idle
@@ -447,31 +471,41 @@ mod tests {
                     .await
                     .unwrap();
                 }
-                other => panic!("unexpected stage dispatched in M2.1: {other:?}"),
+                other => panic!("read pipeline helper got non-read stage: {other:?}"),
             }
             settle_iteration(db, &EventEmitter::Noop, it.id).await.unwrap();
         }
     }
 
-    /// Drive `tick_once` to a fixpoint, simulating each dispatched iteration.
-    async fn drive_to_idle(db: &AppDatabase, data_dir: &Path, issue_id: i32, route: &str) {
+    /// Drive `tick_once` through the read pipeline, simulating each dispatched
+    /// read iteration, and stop at the first implement dispatch. That dispatch
+    /// happens on the post-plan tick — the same tick that applies skip
+    /// provenance once the read frontier empties — so on return the DAG is fully
+    /// grown (incl. skips_to). The implement iteration is left freshly running
+    /// (the gates tests own its checkpoint, which needs a real worktree).
+    async fn drive_through_read_pipeline(
+        db: &AppDatabase,
+        data_dir: &Path,
+        issue_id: i32,
+        route: &str,
+    ) {
         let spawner = StubSpawner;
         for _ in 0..30 {
-            let outcome = tick_once(db, data_dir, &spawner, &EventEmitter::Noop, issue_id)
+            let _ = tick_once(db, data_dir, &spawner, &EventEmitter::Noop, issue_id)
                 .await
                 .unwrap();
-            respond_and_settle(db, route).await;
-            // Fixpoint: nothing dispatched and nothing left running.
-            let still_running = loop_iteration::Entity::find()
-                .filter(loop_iteration::Column::Status.eq(IterationStatus::Running))
-                .all(&db.conn)
+            let into_implement = loop_iteration::Entity::find()
+                .filter(loop_iteration::Column::Stage.eq(Stage::Implement))
+                .one(&db.conn)
                 .await
-                .unwrap();
-            if outcome != TickOutcome::Dispatched && still_running.is_empty() {
-                return;
+                .unwrap()
+                .is_some();
+            if into_implement {
+                return; // read pipeline + skip provenance complete
             }
+            respond_and_settle(db, route).await;
         }
-        panic!("driver did not reach idle within the iteration budget");
+        panic!("read pipeline did not reach implement within the iteration budget");
     }
 
     fn kind_count(dag: &LoopDagView, kind: ArtifactKind) -> usize {
@@ -481,7 +515,7 @@ mod tests {
     #[tokio::test]
     async fn full_route_grows_dag_through_tasks() {
         let (db, data_dir, issue_id) = setup().await;
-        drive_to_idle(&db, &data_dir, issue_id, "full").await;
+        drive_through_read_pipeline(&db, &data_dir, issue_id, "full").await;
 
         let dag = artifact::list_dag(&db.conn, issue_id).await.unwrap();
         assert_eq!(kind_count(&dag, ArtifactKind::Issue), 1);
@@ -500,7 +534,8 @@ mod tests {
             "full route skips nothing"
         );
 
-        // Triage decided the route; the pipeline ran to completion.
+        // Triage decided the route; the read pipeline ran to completion. (The
+        // implement iteration just dispatched and is still running — excluded.)
         let settled = loop_iteration::Entity::find()
             .filter(loop_iteration::Column::IssueId.eq(issue_id))
             .all(&db.conn)
@@ -508,6 +543,7 @@ mod tests {
             .unwrap();
         assert!(settled
             .iter()
+            .filter(|it| it.stage != Stage::Implement)
             .all(|it| it.status == IterationStatus::Succeeded));
         assert_eq!(
             settled.iter().filter(|it| it.stage == Stage::Refine).count(),
@@ -523,7 +559,7 @@ mod tests {
     #[tokio::test]
     async fn direct_route_skips_refine_and_design_with_skips_to() {
         let (db, data_dir, issue_id) = setup().await;
-        drive_to_idle(&db, &data_dir, issue_id, "direct").await;
+        drive_through_read_pipeline(&db, &data_dir, issue_id, "direct").await;
 
         let dag = artifact::list_dag(&db.conn, issue_id).await.unwrap();
         assert_eq!(kind_count(&dag, ArtifactKind::Requirement), 0, "no requirements");
