@@ -22,6 +22,7 @@ use crate::db::AppDatabase;
 use crate::web::event_bridge::EventEmitter;
 
 pub mod error;
+pub mod ingest;
 pub mod transitions;
 pub mod worktree;
 
