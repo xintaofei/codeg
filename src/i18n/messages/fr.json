@@ -3034,7 +3034,16 @@
     "artifactDrawer": {
       "loading": "Loading…",
       "noContent": "No content yet.",
-      "revisionCount": "{count, plural, one {# revision} other {# revisions}}"
+      "revisionCount": "{count, plural, one {# revision} other {# revisions}}",
+      "contentHeading": "Contenu",
+      "criteriaHeading": "Critères d'acceptation",
+      "revisionsHeading": "Historique des révisions",
+      "revisionLabel": "Révision {seq}",
+      "noChanges": "Aucune modification.",
+      "linkedHeading": "Itération liée",
+      "producedBy": "Produit par l'itération n° {id}",
+      "gateDesignPrompt": "Cette conception attend votre approbation.",
+      "gateMergePrompt": "Ce résultat est prêt à être fusionné."
     },
     "inbox": {
       "title": "Boîte de réception",
@@ -3069,6 +3078,14 @@
     "iteration": {
       "title": "Session d'itération",
       "description": "Observez cette itération de boucle et répondez à ses questions."
+    },
+    "reviewVerdict": {
+      "pass": "Validé",
+      "fail": "Rejeté"
+    },
+    "actorKind": {
+      "human": "Humain",
+      "agent": "Agent"
     }
   }
 }

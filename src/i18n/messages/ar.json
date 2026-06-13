@@ -3034,7 +3034,16 @@
     "artifactDrawer": {
       "loading": "Loading…",
       "noContent": "No content yet.",
-      "revisionCount": "{count, plural, one {# revision} other {# revisions}}"
+      "revisionCount": "{count, plural, one {# revision} other {# revisions}}",
+      "contentHeading": "المحتوى",
+      "criteriaHeading": "معايير القبول",
+      "revisionsHeading": "سجل المراجعات",
+      "revisionLabel": "المراجعة {seq}",
+      "noChanges": "لا تغييرات.",
+      "linkedHeading": "التكرار المرتبط",
+      "producedBy": "أنتجها التكرار رقم {id}",
+      "gateDesignPrompt": "هذا التصميم بانتظار موافقتك.",
+      "gateMergePrompt": "هذه النتيجة جاهزة للدمج."
     },
     "inbox": {
       "title": "صندوق الوارد",
@@ -3069,6 +3078,14 @@
     "iteration": {
       "title": "جلسة التكرار",
       "description": "تابع هذه الدورة وأجب عن أسئلتها."
+    },
+    "reviewVerdict": {
+      "pass": "ناجح",
+      "fail": "راسب"
+    },
+    "actorKind": {
+      "human": "إنسان",
+      "agent": "وكيل"
     }
   }
 }

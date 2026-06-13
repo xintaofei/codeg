@@ -3034,7 +3034,16 @@
     "artifactDrawer": {
       "loading": "加载中…",
       "noContent": "暂无内容。",
-      "revisionCount": "{count, plural, other {# 次修订}}"
+      "revisionCount": "{count, plural, other {# 次修订}}",
+      "contentHeading": "内容",
+      "criteriaHeading": "验收标准",
+      "revisionsHeading": "修订历史",
+      "revisionLabel": "修订 {seq}",
+      "noChanges": "无改动。",
+      "linkedHeading": "关联迭代",
+      "producedBy": "由迭代 #{id} 产出",
+      "gateDesignPrompt": "该设计正在等待你的批准。",
+      "gateMergePrompt": "该成果已可合并。"
     },
     "inbox": {
       "title": "收件箱",
@@ -3069,6 +3078,14 @@
     "iteration": {
       "title": "迭代会话",
       "description": "查看该循环迭代并回答它的提问。"
+    },
+    "reviewVerdict": {
+      "pass": "通过",
+      "fail": "未通过"
+    },
+    "actorKind": {
+      "human": "人工",
+      "agent": "智能体"
     }
   }
 }

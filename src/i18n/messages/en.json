@@ -3034,7 +3034,16 @@
     "artifactDrawer": {
       "loading": "Loading…",
       "noContent": "No content yet.",
-      "revisionCount": "{count, plural, one {# revision} other {# revisions}}"
+      "revisionCount": "{count, plural, one {# revision} other {# revisions}}",
+      "contentHeading": "Content",
+      "criteriaHeading": "Acceptance criteria",
+      "revisionsHeading": "Revision history",
+      "revisionLabel": "Revision {seq}",
+      "noChanges": "No changes.",
+      "linkedHeading": "Linked iteration",
+      "producedBy": "Produced by iteration #{id}",
+      "gateDesignPrompt": "This design is awaiting your approval.",
+      "gateMergePrompt": "This result is ready to merge."
     },
     "inbox": {
       "title": "Inbox",
@@ -3069,6 +3078,14 @@
     "iteration": {
       "title": "Iteration session",
       "description": "Watch this loop iteration and answer its questions."
+    },
+    "reviewVerdict": {
+      "pass": "Pass",
+      "fail": "Fail"
+    },
+    "actorKind": {
+      "human": "Human",
+      "agent": "Agent"
     }
   }
 }

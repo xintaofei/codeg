@@ -3034,7 +3034,16 @@
     "artifactDrawer": {
       "loading": "Loading…",
       "noContent": "No content yet.",
-      "revisionCount": "{count, plural, one {# revision} other {# revisions}}"
+      "revisionCount": "{count, plural, one {# revision} other {# revisions}}",
+      "contentHeading": "내용",
+      "criteriaHeading": "수용 기준",
+      "revisionsHeading": "수정 이력",
+      "revisionLabel": "수정 {seq}",
+      "noChanges": "변경 없음.",
+      "linkedHeading": "연결된 이터레이션",
+      "producedBy": "이터레이션 #{id}에서 생성됨",
+      "gateDesignPrompt": "이 설계는 승인을 기다리고 있습니다.",
+      "gateMergePrompt": "이 결과는 병합할 준비가 되었습니다."
     },
     "inbox": {
       "title": "받은 편지함",
@@ -3069,6 +3078,14 @@
     "iteration": {
       "title": "이터레이션 세션",
       "description": "이 루프 이터레이션을 확인하고 질문에 답합니다."
+    },
+    "reviewVerdict": {
+      "pass": "통과",
+      "fail": "실패"
+    },
+    "actorKind": {
+      "human": "사람",
+      "agent": "에이전트"
     }
   }
 }

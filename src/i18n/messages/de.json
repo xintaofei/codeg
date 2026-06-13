@@ -3034,7 +3034,16 @@
     "artifactDrawer": {
       "loading": "Loading…",
       "noContent": "No content yet.",
-      "revisionCount": "{count, plural, one {# revision} other {# revisions}}"
+      "revisionCount": "{count, plural, one {# revision} other {# revisions}}",
+      "contentHeading": "Inhalt",
+      "criteriaHeading": "Akzeptanzkriterien",
+      "revisionsHeading": "Revisionsverlauf",
+      "revisionLabel": "Revision {seq}",
+      "noChanges": "Keine Änderungen.",
+      "linkedHeading": "Verknüpfte Iteration",
+      "producedBy": "Erzeugt von Iteration #{id}",
+      "gateDesignPrompt": "Dieser Entwurf wartet auf deine Freigabe.",
+      "gateMergePrompt": "Dieses Ergebnis kann zusammengeführt werden."
     },
     "inbox": {
       "title": "Posteingang",
@@ -3069,6 +3078,14 @@
     "iteration": {
       "title": "Iterationssitzung",
       "description": "Diese Schleifeniteration beobachten und ihre Fragen beantworten."
+    },
+    "reviewVerdict": {
+      "pass": "Bestanden",
+      "fail": "Durchgefallen"
+    },
+    "actorKind": {
+      "human": "Mensch",
+      "agent": "Agent"
     }
   }
 }

@@ -3034,7 +3034,16 @@
     "artifactDrawer": {
       "loading": "Loading…",
       "noContent": "No content yet.",
-      "revisionCount": "{count, plural, one {# revision} other {# revisions}}"
+      "revisionCount": "{count, plural, one {# revision} other {# revisions}}",
+      "contentHeading": "内容",
+      "criteriaHeading": "受け入れ基準",
+      "revisionsHeading": "改訂履歴",
+      "revisionLabel": "改訂 {seq}",
+      "noChanges": "変更なし。",
+      "linkedHeading": "関連イテレーション",
+      "producedBy": "イテレーション #{id} が生成",
+      "gateDesignPrompt": "この設計は承認待ちです。",
+      "gateMergePrompt": "この成果はマージ可能です。"
     },
     "inbox": {
       "title": "受信トレイ",
@@ -3069,6 +3078,14 @@
     "iteration": {
       "title": "イテレーションセッション",
       "description": "このループイテレーションを確認し、質問に回答します。"
+    },
+    "reviewVerdict": {
+      "pass": "合格",
+      "fail": "不合格"
+    },
+    "actorKind": {
+      "human": "人間",
+      "agent": "エージェント"
     }
   }
 }

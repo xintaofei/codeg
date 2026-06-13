@@ -3034,7 +3034,16 @@
     "artifactDrawer": {
       "loading": "載入中…",
       "noContent": "暫無內容。",
-      "revisionCount": "{count, plural, other {# 次修訂}}"
+      "revisionCount": "{count, plural, other {# 次修訂}}",
+      "contentHeading": "內容",
+      "criteriaHeading": "驗收標準",
+      "revisionsHeading": "修訂歷史",
+      "revisionLabel": "修訂 {seq}",
+      "noChanges": "無變更。",
+      "linkedHeading": "關聯疊代",
+      "producedBy": "由疊代 #{id} 產出",
+      "gateDesignPrompt": "該設計正在等待你的核准。",
+      "gateMergePrompt": "該成果已可合併。"
     },
     "inbox": {
       "title": "收件匣",
@@ -3069,6 +3078,14 @@
     "iteration": {
       "title": "疊代會話",
       "description": "檢視該循環疊代並回答它的提問。"
+    },
+    "reviewVerdict": {
+      "pass": "通過",
+      "fail": "未通過"
+    },
+    "actorKind": {
+      "human": "人工",
+      "agent": "智能體"
     }
   }
 }

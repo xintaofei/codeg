@@ -3034,7 +3034,16 @@
     "artifactDrawer": {
       "loading": "Loading…",
       "noContent": "No content yet.",
-      "revisionCount": "{count, plural, one {# revision} other {# revisions}}"
+      "revisionCount": "{count, plural, one {# revision} other {# revisions}}",
+      "contentHeading": "Contenido",
+      "criteriaHeading": "Criterios de aceptación",
+      "revisionsHeading": "Historial de revisiones",
+      "revisionLabel": "Revisión {seq}",
+      "noChanges": "Sin cambios.",
+      "linkedHeading": "Iteración vinculada",
+      "producedBy": "Producido por la iteración n.º {id}",
+      "gateDesignPrompt": "Este diseño está esperando tu aprobación.",
+      "gateMergePrompt": "Este resultado está listo para fusionarse."
     },
     "inbox": {
       "title": "Bandeja de entrada",
@@ -3069,6 +3078,14 @@
     "iteration": {
       "title": "Sesión de iteración",
       "description": "Observa esta iteración del bucle y responde sus preguntas."
+    },
+    "reviewVerdict": {
+      "pass": "Aprobado",
+      "fail": "Rechazado"
+    },
+    "actorKind": {
+      "human": "Humano",
+      "agent": "Agente"
     }
   }
 }

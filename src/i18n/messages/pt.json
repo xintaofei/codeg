@@ -3034,7 +3034,16 @@
     "artifactDrawer": {
       "loading": "Loading…",
       "noContent": "No content yet.",
-      "revisionCount": "{count, plural, one {# revision} other {# revisions}}"
+      "revisionCount": "{count, plural, one {# revision} other {# revisions}}",
+      "contentHeading": "Conteúdo",
+      "criteriaHeading": "Critérios de aceitação",
+      "revisionsHeading": "Histórico de revisões",
+      "revisionLabel": "Revisão {seq}",
+      "noChanges": "Sem alterações.",
+      "linkedHeading": "Iteração vinculada",
+      "producedBy": "Produzido pela iteração nº {id}",
+      "gateDesignPrompt": "Este design está aguardando sua aprovação.",
+      "gateMergePrompt": "Este resultado está pronto para ser mesclado."
     },
     "inbox": {
       "title": "Caixa de entrada",
@@ -3069,6 +3078,14 @@
     "iteration": {
       "title": "Sessão de iteração",
       "description": "Acompanhe esta iteração do loop e responda às suas perguntas."
+    },
+    "reviewVerdict": {
+      "pass": "Aprovado",
+      "fail": "Reprovado"
+    },
+    "actorKind": {
+      "human": "Humano",
+      "agent": "Agente"
     }
   }
 }
