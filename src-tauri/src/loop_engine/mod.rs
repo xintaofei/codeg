@@ -5,5 +5,6 @@
 //! lifecycle, briefing, recovery and MCP ingest modules arrive in later phases.
 
 pub mod error;
+pub mod transitions;
 
 pub use error::LoopError;
