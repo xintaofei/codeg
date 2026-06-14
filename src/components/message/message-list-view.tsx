@@ -200,7 +200,7 @@ const CollapsibleSystemMessage = memo(function CollapsibleSystemMessage({
       {expanded && (
         <div className="px-3 pb-3 border-t border-yellow-500/20">
           <div className="text-sm text-muted-foreground mt-2.5 max-h-96 overflow-auto">
-            <ContentPartsRenderer parts={group.parts} role={group.role} />
+            <ContentPartsRenderer parts={group.parts} role={group.role} model={group.model ?? undefined} />
           </div>
         </div>
       )}
@@ -413,12 +413,12 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
           <div className="group/user-msg flex w-fit ml-auto max-w-full items-start gap-1">
             <UserMessageCopyButton parts={group.parts} />
             <MessageContent>
-              <ContentPartsRenderer parts={group.parts} role={group.role} />
+              <ContentPartsRenderer parts={group.parts} role={group.role} model={group.model ?? undefined} />
             </MessageContent>
           </div>
         ) : (
           <MessageContent>
-            <ContentPartsRenderer parts={group.parts} role={group.role} />
+            <ContentPartsRenderer parts={group.parts} role={group.role} model={group.model ?? undefined} />
           </MessageContent>
         )}
         {group.role === "user" && group.resources.length > 0 ? (

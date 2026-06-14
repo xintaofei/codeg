@@ -47,6 +47,8 @@ import { DelegationStatusGroupCard } from "./delegation-status-group-card"
 import { GeneratedImagesBlock } from "./generated-images-block"
 import { GoalRunPart, GoalToolCallPart } from "./goal-tool-call"
 import { PlanCard, PlanEntriesList } from "./plan-card"
+import { AgentIcon } from "@/components/agent-icon"
+import type { AgentType } from "@/lib/types"
 import {
   FileTextIcon,
   FilePenLineIcon,
@@ -63,8 +65,8 @@ import {
   PlusIcon,
   WrenchIcon,
   ChevronRightIcon,
-  BrainIcon,
   MessageCircleQuestionMarkIcon,
+  BrainIcon,
 } from "lucide-react"
 
 // ── helpers ────────────────────────────────────────────────────────────
@@ -2460,16 +2462,41 @@ const ToolResultPart = memo(function ToolResultPart({
   )
 })
 
+/** Map a model/provider string to the closest AgentType for icon display. */
+function agentTypeFromModel(model: string | undefined): AgentType | undefined {
+  if (!model) return undefined
+  const m = model.toLowerCase()
+  if (m.includes("claude")) return "claude_code"
+  if (m.includes("gemini")) return "gemini"
+  if (m.includes("codex")) return "codex"
+  if (m.includes("cline")) return "cline"
+  if (m.includes("open code") || m.includes("opencode")) return "open_code"
+  if (m.includes("hermes")) return "hermes"
+  return undefined
+}
+
 const ReasoningPart = memo(function ReasoningPart({
   part,
+  model,
 }: {
   part: Extract<AdaptedContentPart, { type: "reasoning" }>
+  model?: string
 }) {
   const hasContent = part.content.trim().length > 0
   const expandable = hasContent || part.isStreaming
+  const agentType = agentTypeFromModel(model)
   return (
     <Reasoning isStreaming={part.isStreaming} expandable={expandable}>
-      <ReasoningTrigger />
+      <ReasoningTrigger
+        icon={
+          agentType ? (
+            <AgentIcon
+              agentType={agentType}
+              className="size-4 text-foreground/80"
+            />
+          ) : undefined
+        }
+      />
       {expandable && <ReasoningContent>{part.content}</ReasoningContent>}
     </Reasoning>
   )
@@ -2580,11 +2607,14 @@ const ToolGroupPart = memo(function ToolGroupPart({
 interface ContentPartsRendererProps {
   parts: AdaptedContentPart[]
   role?: MessageRole
+  /** Model/provider string, used to display the correct agent icon on reasoning blocks. */
+  model?: string
 }
 
 export const ContentPartsRenderer = memo(function ContentPartsRenderer({
   parts,
   role,
+  model,
 }: ContentPartsRendererProps) {
   const renderPart = (part: AdaptedContentPart, keyId: string): ReactNode => {
     if (part.type === "text") {
@@ -2628,7 +2658,7 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
     }
 
     if (part.type === "reasoning") {
-      return <ReasoningPart key={`reasoning-${keyId}`} part={part} />
+      return <ReasoningPart key={`reasoning-${keyId}`} part={part} model={model} />
     }
 
     if (part.type === "plan") {

@@ -411,7 +411,7 @@ export function getFileTreeFileIcon(name: string): ReactNode {
   )
 }
 
-export type FileTreeFileProps = HTMLAttributes<HTMLDivElement> & {
+export type FileTreeFileProps = Omit<HTMLAttributes<HTMLDivElement>, "prefix"> & {
   path: string
   name: string
   icon?: ReactNode
