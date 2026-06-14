@@ -1534,6 +1534,8 @@
     "fileTreeTab": {
       "workspace": "Arbeitsbereich",
       "retry": "Erneut versuchen",
+      "filterPlaceholder": "Dateien filtern...",
+      "filterNoResults": "Keine passenden Dateien",
       "git": "Git",
       "openInFileManager": "Im Dateimanager öffnen",
       "openInFinder": "In Finder öffnen",

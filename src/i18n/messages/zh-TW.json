@@ -1534,6 +1534,8 @@
     "fileTreeTab": {
       "workspace": "工作區",
       "retry": "重試",
+      "filterPlaceholder": "篩選檔案...",
+      "filterNoResults": "沒有符合的檔案",
       "git": "Git",
       "openInFileManager": "在檔案管理器開啟",
       "openInFinder": "在 Finder 開啟",

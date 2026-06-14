@@ -10,7 +10,7 @@ import {
 } from "react"
 import { revealItemInDir } from "@/lib/platform"
 import ignore from "ignore"
-import { Check, ChevronRight } from "lucide-react"
+import { Check, ChevronRight, Search } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { useActiveFolder } from "@/contexts/active-folder-context"
@@ -130,7 +130,7 @@ async function copyPathToClipboard(
   }
 }
 
-const FILE_TREE_ROOT_PATH = "__workspace_root__"
+export const FILE_TREE_ROOT_PATH = "__workspace_root__"
 const GITIGNORE_MUTED_CLASS = "text-muted-foreground/55"
 
 interface FileActionTarget {
@@ -164,6 +164,55 @@ function normalizeGitStatusPath(path: string): string {
 
 function normalizeComparePath(path: string): string {
   return path.replace(/\\/g, "/").replace(/\/+$/, "")
+}
+
+export function filterFileTreeNodesForQuery(
+  nodes: FileTreeNode[],
+  query: string
+): FileTreeNode[] {
+  const normalizedQuery = query.trim().toLowerCase()
+  if (!normalizedQuery) return nodes
+
+  const matches = (node: FileTreeNode) =>
+    node.name.toLowerCase().includes(normalizedQuery) ||
+    node.path.toLowerCase().includes(normalizedQuery)
+
+  const filterNode = (node: FileTreeNode): FileTreeNode | null => {
+    if (node.kind === "file") return matches(node) ? node : null
+
+    if (matches(node)) return node
+
+    const children = node.children
+      .map(filterNode)
+      .filter((child): child is FileTreeNode => child !== null)
+
+    if (children.length === 0) return null
+    return { ...node, children }
+  }
+
+  return nodes
+    .map(filterNode)
+    .filter((node): node is FileTreeNode => node !== null)
+}
+
+export function collectFilteredFileTreeExpandedPaths(
+  nodes: FileTreeNode[],
+  query: string
+): Set<string> {
+  const expanded = new Set<string>([FILE_TREE_ROOT_PATH])
+  if (!query.trim()) return expanded
+
+  const filteredNodes = filterFileTreeNodesForQuery(nodes, query)
+  const collect = (items: FileTreeNode[]) => {
+    for (const node of items) {
+      if (node.kind !== "dir") continue
+      expanded.add(node.path)
+      collect(node.children)
+    }
+  }
+
+  collect(filteredNodes)
+  return expanded
 }
 
 function prefixFileTreeNodePaths(
@@ -228,16 +277,37 @@ function classifyGitFileState(status: string): GitFileState | null {
   return null
 }
 
-function getGitFileStateClassName(status?: string): string {
-  if (!status) return ""
+function getGitFileStateIndicator(status?: string): ReactNode {
+  if (!status) return null
   const state = classifyGitFileState(status)
-  if (state === "untracked") return "text-red-500 dark:text-red-400"
-  if (state === "modified") return "text-emerald-600 dark:text-emerald-400"
-  if (state === "staged") return "text-emerald-500 dark:text-emerald-400"
-  if (state === "conflicted") return "text-amber-500 dark:text-amber-400"
-  if (state === "deleted") return "text-orange-500 dark:text-orange-400"
-  if (state === "renamed") return "text-violet-500 dark:text-violet-400"
-  return ""
+  if (!state) return null
+
+  const labelByState: Record<GitFileState, string> = {
+    conflicted: "!",
+    deleted: "D",
+    modified: "M",
+    renamed: "R",
+    staged: "M",
+    untracked: "U",
+  }
+  const classByState: Record<GitFileState, string> = {
+    conflicted: "text-amber-400",
+    deleted: "text-orange-400",
+    modified: "text-emerald-400",
+    renamed: "text-violet-400",
+    staged: "text-emerald-400",
+    untracked: "text-red-400",
+  }
+
+  return (
+    <span
+      className={`w-3.5 shrink-0 text-center text-[10px] font-semibold leading-6 ${classByState[state]}`}
+      data-git-file-state={state}
+      title={status}
+    >
+      {labelByState[state]}
+    </span>
+  )
 }
 
 function getParentPath(path: string): string | null {
@@ -572,11 +642,10 @@ function RenderNode({
           <FileTreeFile
             path={node.path}
             name={node.name}
-            className={
-              isGitignoreIgnored
-                ? GITIGNORE_MUTED_CLASS
-                : getGitFileStateClassName(gitStatusCode)
+            nameClassName={
+              isGitignoreIgnored ? GITIGNORE_MUTED_CLASS : undefined
             }
+            prefix={getGitFileStateIndicator(gitStatusCode)}
           />
         </ContextMenuTrigger>
         <ContextMenuContent>
@@ -731,12 +800,12 @@ function RenderNode({
         <FileTreeFolder
           path={node.path}
           name={node.name}
-          nameClassName={
-            isGitignoreIgnored
-              ? GITIGNORE_MUTED_CLASS
-              : dirHasChanges
-                ? "text-emerald-600 dark:text-emerald-400"
-                : undefined
+          showIcon={false}
+          nameClassName={isGitignoreIgnored ? GITIGNORE_MUTED_CLASS : undefined}
+          suffix={
+            dirHasChanges ? (
+              <span className="text-[10px] text-emerald-400">M</span>
+            ) : null
           }
           iconClassName={isGitignoreIgnored ? GITIGNORE_MUTED_CLASS : undefined}
         >
@@ -971,6 +1040,7 @@ export function FileTreeTab() {
   const [compareLocalOpen, setCompareLocalOpen] = useState(false)
   const [compareRemoteOpen, setCompareRemoteOpen] = useState(false)
   const [comparing, setComparing] = useState(false)
+  const [fileTreeFilter, setFileTreeFilter] = useState("")
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(
     () => new Set([FILE_TREE_ROOT_PATH])
   )
@@ -1423,6 +1493,16 @@ export function FileTreeTab() {
     }
     return dirs
   }, [gitStatusByPath, dirChildrenByPath])
+
+  const visibleNodes = useMemo(
+    () => filterFileTreeNodesForQuery(nodes, fileTreeFilter),
+    [nodes, fileTreeFilter]
+  )
+
+  const visibleExpandedPaths = useMemo(() => {
+    if (!fileTreeFilter.trim()) return expandedPaths
+    return collectFilteredFileTreeExpandedPaths(nodes, fileTreeFilter)
+  }, [expandedPaths, fileTreeFilter, nodes])
 
   const handleTreeSelect = useCallback(
     (path: string) => {
@@ -2523,194 +2603,86 @@ export function FileTreeTab() {
       )}
       <ContextMenu>
         <ContextMenuTrigger asChild>
-          <ScrollArea className="flex-1 min-h-0 pb-1" x="scroll">
-            <FileTree
-              key={folder?.path ?? "file-tree-empty"}
-              className="border-0 rounded-none bg-transparent w-max min-w-full"
-              expanded={expandedPaths}
-              onExpandedChange={setExpandedPaths}
-              selectedPath={activeFilePath ?? undefined}
-              onSelect={handleTreeSelect}
-            >
-              {folder?.path && (
-                <ContextMenu>
-                  <ContextMenuTrigger>
-                    <FileTreeFolder
-                      path={FILE_TREE_ROOT_PATH}
-                      name={rootNodeName}
-                      className="font-medium"
-                    >
-                      {nodes.map((node) => (
-                        <RenderNode
-                          key={node.path}
-                          node={node}
-                          expandedPaths={expandedPaths}
-                          workspacePath={folder.path}
-                          activeSessionTabId={activeSessionTabId}
-                          gitEnabled={gitEnabled}
-                          webMode={webMode}
-                          folderUploadSupported={folderUploadSupported}
-                          gitStatusByPath={gitStatusByPath}
-                          gitChangedDirPaths={gitChangedDirPaths}
-                          untrackedDirPaths={untrackedDirPaths}
-                          gitignoreIgnoredPaths={gitignoreIgnoredPaths}
-                          ancestorGitignoreIgnored={false}
-                          ancestorUntracked={false}
-                          onOpenFilePreview={(path) => {
-                            void openFilePreview(path)
-                          }}
-                          onOpenFileDiff={(path) => {
-                            void openWorkingTreeDiff(path)
-                          }}
-                          onOpenDirDiff={(path) => {
-                            void openWorkingTreeDiff(path, {
-                              mode: "overview",
-                            })
-                          }}
-                          onOpenCommitWindow={handleOpenCommitWindow}
-                          onRequestCompareWithBranch={
-                            handleRequestCompareWithBranch
-                          }
-                          onRequestRollback={handleRequestRollback}
-                          onOpenDirInTerminal={handleOpenDirInTerminal}
-                          onRequestCreate={handleRequestCreate}
-                          onRequestAddToVcs={handleAddToVcs}
-                          onRequestRename={handleRequestRename}
-                          onRequestDelete={handleRequestDelete}
-                          onRequestUpload={handleRequestUpload}
-                          onRequestDownloadFile={(target) =>
-                            void handleRequestDownloadFile(target)
-                          }
-                          onRequestDownloadDir={(target) =>
-                            void handleRequestDownloadDir(target)
-                          }
-                          onRefresh={fetchTree}
-                        />
-                      ))}
-                    </FileTreeFolder>
-                  </ContextMenuTrigger>
-                  <ContextMenuContent>
-                    <ContextMenuSub>
-                      <ContextMenuSubTrigger>{t("new")}</ContextMenuSubTrigger>
-                      <ContextMenuSubContent>
-                        <ContextMenuItem
-                          onSelect={() => handleRequestCreate("", "file")}
-                        >
-                          {t("newFile")}
-                        </ContextMenuItem>
-                        <ContextMenuItem
-                          onSelect={() => handleRequestCreate("", "dir")}
-                        >
-                          {t("newDirectory")}
-                        </ContextMenuItem>
-                      </ContextMenuSubContent>
-                    </ContextMenuSub>
-                    <ContextMenuSub>
-                      <ContextMenuSubTrigger disabled={!gitEnabled}>
-                        {t("git")}
-                      </ContextMenuSubTrigger>
-                      <ContextMenuSubContent>
-                        <ContextMenuItem
-                          onSelect={() => handleOpenCommitWindow()}
-                          disabled={!gitEnabled}
-                        >
-                          {t("actions.commitCode")}
-                        </ContextMenuItem>
-                        <ContextMenuItem
-                          onSelect={() => void handleAddToVcs(rootTarget)}
-                          disabled={!gitEnabled}
-                        >
-                          {t("actions.addToVcs")}
-                        </ContextMenuItem>
-                        <ContextMenuItem
-                          onSelect={() =>
-                            void openWorkingTreeDiff(".", {
-                              mode: "overview",
-                            })
-                          }
-                          disabled={!gitEnabled}
-                        >
-                          {tCommon("viewDiff")}
-                        </ContextMenuItem>
-                        <ContextMenuItem
-                          onSelect={() =>
-                            handleRequestCompareWithBranch(rootTarget)
-                          }
-                          disabled={!gitEnabled}
-                        >
-                          {t("compareWithBranch")}
-                        </ContextMenuItem>
-                        <ContextMenuItem
-                          variant="destructive"
-                          onSelect={() => handleRequestRollback(rootTarget)}
-                          disabled={!gitEnabled}
-                        >
-                          {t("actions.rollback")}
-                        </ContextMenuItem>
-                      </ContextMenuSubContent>
-                    </ContextMenuSub>
-                    <ContextMenuItem
-                      onSelect={() => {
-                        void fetchTree()
-                      }}
-                    >
-                      {t("reloadFromDisk")}
-                    </ContextMenuItem>
-                    <ContextMenuSub>
-                      <ContextMenuSubTrigger>
-                        {t("openIn")}
-                      </ContextMenuSubTrigger>
-                      <ContextMenuSubContent>
-                        <ContextMenuItem
-                          onSelect={() => {
-                            void revealItemInDir(folder.path)
-                          }}
-                        >
-                          {systemExplorerLabel}
-                        </ContextMenuItem>
-                        <ContextMenuItem
-                          onSelect={() => {
-                            void handleOpenDirInTerminal(
-                              folder.path,
-                              rootNodeName
-                            )
-                          }}
-                        >
-                          {t("openInTerminal")}
-                        </ContextMenuItem>
-                      </ContextMenuSubContent>
-                    </ContextMenuSub>
-                    <ContextMenuItem
-                      onSelect={() =>
-                        void copyPathToClipboard(folder.path, {
-                          success: t("toasts.pathCopied"),
-                          failure: t("toasts.copyPathFailed"),
-                        })
-                      }
-                    >
-                      {t("copyPath")}
-                    </ContextMenuItem>
-                    {webMode && (
-                      <>
-                        <ContextMenuItem
-                          onSelect={() => handleRequestUpload("")}
-                        >
-                          {t("upload")}
-                        </ContextMenuItem>
-                        <ContextMenuItem
-                          onSelect={() =>
-                            void handleRequestDownloadDir(rootTarget)
-                          }
-                        >
-                          {t("downloadAsZip")}
-                        </ContextMenuItem>
-                      </>
-                    )}
-                  </ContextMenuContent>
-                </ContextMenu>
-              )}
-            </FileTree>
-          </ScrollArea>
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="px-2 pt-2 pb-1">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/70" />
+                <Input
+                  value={fileTreeFilter}
+                  onChange={(event) => setFileTreeFilter(event.target.value)}
+                  placeholder={t("filterPlaceholder")}
+                  className="h-7 rounded-md border-border/70 bg-background/60 pl-7 pr-2 text-[13px] shadow-none placeholder:text-muted-foreground/65 focus-visible:ring-1 focus-visible:ring-ring/35"
+                />
+              </div>
+            </div>
+            <ScrollArea className="flex-1 min-h-0 px-2 py-1.5" x="scroll">
+              <FileTree
+                key={folder?.path ?? "file-tree-empty"}
+                className="w-max min-w-full bg-transparent text-[13px]"
+                expanded={visibleExpandedPaths}
+                onExpandedChange={setExpandedPaths}
+                selectedPath={activeFilePath ?? undefined}
+                onSelect={handleTreeSelect}
+              >
+                {folder?.path && (
+                  <>
+                    {visibleNodes.map((node) => (
+                      <RenderNode
+                        key={node.path}
+                        node={node}
+                        expandedPaths={visibleExpandedPaths}
+                        workspacePath={folder.path}
+                        activeSessionTabId={activeSessionTabId}
+                        gitEnabled={gitEnabled}
+                        webMode={webMode}
+                        folderUploadSupported={folderUploadSupported}
+                        gitStatusByPath={gitStatusByPath}
+                        gitChangedDirPaths={gitChangedDirPaths}
+                        untrackedDirPaths={untrackedDirPaths}
+                        gitignoreIgnoredPaths={gitignoreIgnoredPaths}
+                        ancestorGitignoreIgnored={false}
+                        ancestorUntracked={false}
+                        onOpenFilePreview={(path) => {
+                          void openFilePreview(path)
+                        }}
+                        onOpenFileDiff={(path) => {
+                          void openWorkingTreeDiff(path)
+                        }}
+                        onOpenDirDiff={(path) => {
+                          void openWorkingTreeDiff(path, {
+                            mode: "overview",
+                          })
+                        }}
+                        onOpenCommitWindow={handleOpenCommitWindow}
+                        onRequestCompareWithBranch={
+                          handleRequestCompareWithBranch
+                        }
+                        onRequestRollback={handleRequestRollback}
+                        onOpenDirInTerminal={handleOpenDirInTerminal}
+                        onRequestCreate={handleRequestCreate}
+                        onRequestAddToVcs={handleAddToVcs}
+                        onRequestRename={handleRequestRename}
+                        onRequestDelete={handleRequestDelete}
+                        onRequestUpload={handleRequestUpload}
+                        onRequestDownloadFile={(target) =>
+                          void handleRequestDownloadFile(target)
+                        }
+                        onRequestDownloadDir={(target) =>
+                          void handleRequestDownloadDir(target)
+                        }
+                        onRefresh={fetchTree}
+                      />
+                    ))}
+                    {fileTreeFilter.trim() && visibleNodes.length === 0 ? (
+                      <div className="px-1.5 py-6 text-center text-xs text-muted-foreground">
+                        {t("filterNoResults")}
+                      </div>
+                    ) : null}
+                  </>
+                )}
+              </FileTree>
+            </ScrollArea>
+          </div>
         </ContextMenuTrigger>
         <ContextMenuContent>
           <ContextMenuSub>
@@ -2721,6 +2693,48 @@ export function FileTreeTab() {
               </ContextMenuItem>
               <ContextMenuItem onSelect={() => handleRequestCreate("", "dir")}>
                 {t("newDirectory")}
+              </ContextMenuItem>
+            </ContextMenuSubContent>
+          </ContextMenuSub>
+          <ContextMenuSub>
+            <ContextMenuSubTrigger disabled={!gitEnabled}>
+              {t("git")}
+            </ContextMenuSubTrigger>
+            <ContextMenuSubContent>
+              <ContextMenuItem
+                onSelect={() => handleOpenCommitWindow()}
+                disabled={!gitEnabled}
+              >
+                {t("actions.commitCode")}
+              </ContextMenuItem>
+              <ContextMenuItem
+                onSelect={() => void handleAddToVcs(rootTarget)}
+                disabled={!gitEnabled}
+              >
+                {t("actions.addToVcs")}
+              </ContextMenuItem>
+              <ContextMenuItem
+                onSelect={() =>
+                  void openWorkingTreeDiff(".", {
+                    mode: "overview",
+                  })
+                }
+                disabled={!gitEnabled}
+              >
+                {tCommon("viewDiff")}
+              </ContextMenuItem>
+              <ContextMenuItem
+                onSelect={() => handleRequestCompareWithBranch(rootTarget)}
+                disabled={!gitEnabled}
+              >
+                {t("compareWithBranch")}
+              </ContextMenuItem>
+              <ContextMenuItem
+                variant="destructive"
+                onSelect={() => handleRequestRollback(rootTarget)}
+                disabled={!gitEnabled}
+              >
+                {t("actions.rollback")}
               </ContextMenuItem>
             </ContextMenuSubContent>
           </ContextMenuSub>
@@ -2736,6 +2750,42 @@ export function FileTreeTab() {
           >
             {t("reloadFromDisk")}
           </ContextMenuItem>
+          <ContextMenuSub>
+            <ContextMenuSubTrigger>{t("openIn")}</ContextMenuSubTrigger>
+            <ContextMenuSubContent>
+              <ContextMenuItem
+                onSelect={() => {
+                  void revealItemInDir(folder.path)
+                }}
+              >
+                {systemExplorerLabel}
+              </ContextMenuItem>
+              <ContextMenuItem
+                onSelect={() => {
+                  void handleOpenDirInTerminal(folder.path, rootNodeName)
+                }}
+              >
+                {t("openInTerminal")}
+              </ContextMenuItem>
+            </ContextMenuSubContent>
+          </ContextMenuSub>
+          <ContextMenuItem
+            onSelect={() =>
+              void copyPathToClipboard(folder.path, {
+                success: t("toasts.pathCopied"),
+                failure: t("toasts.copyPathFailed"),
+              })
+            }
+          >
+            {t("copyPath")}
+          </ContextMenuItem>
+          {webMode && (
+            <ContextMenuItem
+              onSelect={() => void handleRequestDownloadDir(rootTarget)}
+            >
+              {t("downloadAsZip")}
+            </ContextMenuItem>
+          )}
         </ContextMenuContent>
       </ContextMenu>
       {webMode && folder?.path && (

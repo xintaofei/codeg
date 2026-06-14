@@ -1534,6 +1534,8 @@
     "fileTreeTab": {
       "workspace": "작업 공간",
       "retry": "다시 시도",
+      "filterPlaceholder": "파일 필터...",
+      "filterNoResults": "일치하는 파일이 없습니다",
       "git": "Git",
       "openInFileManager": "파일 관리자에서 열기",
       "openInFinder": "Finder에서 열기",
