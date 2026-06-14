@@ -3201,7 +3201,9 @@
       "defaultOption": "Padrão ({value})",
       "probing": "Detectando opções…",
       "probeFailed": "Não foi possível carregar as opções deste agente.",
-      "noConfig": "Nenhuma opção configurável."
+      "noConfig": "Nenhuma opção configurável.",
+      "agentDefaultHint": "Padrão do agente: {value}",
+      "useDefaultHint": "Este revisor usa o agente padrão."
     },
     "spaceDefaults": {
       "button": "Padrões do espaço",

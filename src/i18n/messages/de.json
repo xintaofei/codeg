@@ -3201,7 +3201,9 @@
       "defaultOption": "Standard ({value})",
       "probing": "Optionen werden ermittelt…",
       "probeFailed": "Optionen dieses Agenten konnten nicht geladen werden.",
-      "noConfig": "Keine konfigurierbaren Optionen."
+      "noConfig": "Keine konfigurierbaren Optionen.",
+      "agentDefaultHint": "Agent-Standard: {value}",
+      "useDefaultHint": "Dieser Prüfer verwendet den Standard-Agenten."
     },
     "spaceDefaults": {
       "button": "Space-Standards",

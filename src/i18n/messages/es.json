@@ -3201,7 +3201,9 @@
       "defaultOption": "Predeterminado ({value})",
       "probing": "Detectando opciones…",
       "probeFailed": "No se pudieron cargar las opciones de este agente.",
-      "noConfig": "No hay opciones configurables."
+      "noConfig": "No hay opciones configurables.",
+      "agentDefaultHint": "Predeterminado del agente: {value}",
+      "useDefaultHint": "Este revisor usa el agente predeterminado."
     },
     "spaceDefaults": {
       "button": "Valores del espacio",

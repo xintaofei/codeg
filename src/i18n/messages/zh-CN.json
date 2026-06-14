@@ -3201,7 +3201,9 @@
       "defaultOption": "默认（{value}）",
       "probing": "正在探测选项…",
       "probeFailed": "无法加载该智能体的选项。",
-      "noConfig": "无可配置项。"
+      "noConfig": "无可配置项。",
+      "agentDefaultHint": "智能体默认：{value}",
+      "useDefaultHint": "此评审使用默认智能体。"
     },
     "spaceDefaults": {
       "button": "空间默认设置",

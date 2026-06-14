@@ -14,7 +14,7 @@ import {
   type IssueConfig,
   type LoopIssueRoute,
   type LoopStage,
-  type ReviewerSpec,
+  type ReviewerEntry,
   type SessionConfigOptionInfo,
 } from "@/lib/types"
 import { Button } from "@/components/ui/button"
@@ -53,6 +53,20 @@ const SINGLE_STAGES: LoopStage[] = [
   "finalize",
 ]
 
+// Sub-tab trigger order inside the Agents tab (after "default"): the pipeline in
+// execution order, with `review` sitting right after `implement` since review
+// acts on implementation output. Drives only the tab order; the review sub-tab's
+// body is the reviewers list, the rest are single-agent stages.
+const STAGE_SUBTABS: LoopStage[] = [
+  "triage",
+  "refine",
+  "design",
+  "plan",
+  "implement",
+  "review",
+  "finalize",
+]
+
 // Select can't carry an empty value, so these sentinels stand in for "no value".
 const INHERIT = "__inherit__" // a stage with no per-stage agent override
 const ROUTE_AUTO = "__auto__" // force_route = null (triage decides)
@@ -66,6 +80,14 @@ export interface AgentSpecForm {
   mode_id: string | null
   config_values: Record<string, string>
 }
+
+/** A reviewer in form state: a concrete agent spec, or "use default agent"
+ *  (`{ inherit: true }`), which resolves at dispatch to the issue's default
+ *  review agent — mirroring how a single stage can defer to the default. */
+export type ReviewerForm = AgentSpecForm | { inherit: true }
+
+const isInheritReviewer = (r: ReviewerForm): r is { inherit: true } =>
+  "inherit" in r
 
 /**
  * Form-state mirror of `IssueConfig`. Numeric fields are kept as strings so a
@@ -83,7 +105,7 @@ export interface LoopConfigFormState {
    *  stages in {@link SINGLE_STAGES} (the review stage is not here). */
   stageSpecs: Record<string, AgentSpecForm | typeof INHERIT>
   validationCommands: string[]
-  reviewers: ReviewerSpec[]
+  reviewers: ReviewerForm[]
   /** Preserved pass-through legacy fallback; used only when `reviewers` is empty. */
   reviewerCount: number
   reviewPassRule: string
@@ -143,11 +165,15 @@ export function configToFormState(c: IssueConfig): LoopConfigFormState {
     ),
     stageSpecs,
     validationCommands: [...c.validation_commands],
-    reviewers: (c.reviewers ?? []).map((r) => ({
-      agent: r.agent,
-      mode_id: r.mode_id ?? null,
-      config_values: { ...r.config_values },
-    })),
+    reviewers: (c.reviewers ?? []).map<ReviewerForm>((r) =>
+      "inherit" in r
+        ? { inherit: true }
+        : {
+            agent: r.agent,
+            mode_id: r.mode_id ?? null,
+            config_values: { ...r.config_values },
+          }
+    ),
     reviewerCount: c.reviewer_count ?? 1,
     reviewPassRule: c.review_pass_rule || "unanimous",
     maxAttempts: String(c.max_attempts ?? 0),
@@ -167,11 +193,15 @@ export function formStateToConfig(form: LoopConfigFormState): IssueConfig {
     const v = form.stageSpecs[s]
     if (v !== INHERIT) agents[s] = specFromForm(v)
   }
-  const reviewers: ReviewerSpec[] = form.reviewers.map((r) => ({
-    agent: r.agent,
-    ...(r.mode_id ? { mode_id: r.mode_id } : {}),
-    config_values: r.config_values,
-  }))
+  const reviewers: ReviewerEntry[] = form.reviewers.map((r) =>
+    isInheritReviewer(r)
+      ? { inherit: true }
+      : {
+          agent: r.agent,
+          ...(r.mode_id ? { mode_id: r.mode_id } : {}),
+          config_values: r.config_values,
+        }
+  )
   return {
     v: form.configVersion,
     agents,
@@ -251,12 +281,11 @@ export function LoopConfigForm({
           <Tabs defaultValue="default" className="flex flex-col">
             <TabsList className="h-auto flex-wrap self-start">
               <TabsTrigger value="default">{tCfg("subtabDefault")}</TabsTrigger>
-              {SINGLE_STAGES.map((s) => (
+              {STAGE_SUBTABS.map((s) => (
                 <TabsTrigger key={s} value={s}>
                   {tStage(s)}
                 </TabsTrigger>
               ))}
-              <TabsTrigger value="review">{tStage("review")}</TabsTrigger>
             </TabsList>
 
             <div className="mt-3">
@@ -706,13 +735,13 @@ function ReviewersEditor({
   onChange,
   disabled,
 }: {
-  value: ReviewerSpec[]
-  onChange: (reviewers: ReviewerSpec[]) => void
+  value: ReviewerForm[]
+  onChange: (reviewers: ReviewerForm[]) => void
   disabled?: boolean
 }) {
   const t = useTranslations("Loops.reviewers")
 
-  const setRow = (i: number, next: ReviewerSpec) =>
+  const setRow = (i: number, next: ReviewerForm) =>
     onChange(value.map((r, j) => (j === i ? next : r)))
   const addRow = () =>
     onChange([
@@ -762,12 +791,14 @@ function ReviewerRow({
   disabled,
 }: {
   index: number
-  spec: ReviewerSpec
-  onChange: (next: ReviewerSpec) => void
+  spec: ReviewerForm
+  onChange: (next: ReviewerForm) => void
   onRemove: () => void
   disabled?: boolean
 }) {
   const t = useTranslations("Loops.reviewers")
+  const tAgent = useTranslations("Loops.agentConfig")
+  const inherit = isInheritReviewer(spec)
 
   return (
     <div className="space-y-2 rounded-md border bg-card/50 p-2.5">
@@ -777,15 +808,16 @@ function ReviewerRow({
         </span>
         <div className="flex-1">
           <Select
-            value={spec.agent}
+            value={inherit ? INHERIT : spec.agent}
             onValueChange={(v) =>
               // Switching agent drops any prior mode/config (they were probed
-              // for the old agent and won't apply to the new one).
-              onChange({
-                agent: v as AgentType,
-                mode_id: null,
-                config_values: {},
-              })
+              // for the old agent and won't apply to the new one); INHERIT defers
+              // this reviewer to the issue's default review agent.
+              onChange(
+                v === INHERIT
+                  ? { inherit: true }
+                  : { agent: v as AgentType, mode_id: null, config_values: {} }
+              )
             }
             disabled={disabled}
           >
@@ -793,6 +825,7 @@ function ReviewerRow({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value={INHERIT}>{tAgent("useDefault")}</SelectItem>
               {AGENT_TYPES.map((a) => (
                 <SelectItem key={a} value={a}>
                   {AGENT_LABELS[a]}
@@ -814,15 +847,19 @@ function ReviewerRow({
         </Button>
       </div>
 
-      <AgentConfigBody
-        agent={spec.agent}
-        modeId={spec.mode_id ?? null}
-        configValues={spec.config_values}
-        onChange={({ mode_id, config_values }) =>
-          onChange({ ...spec, mode_id, config_values })
-        }
-        disabled={disabled}
-      />
+      {inherit ? (
+        <p className="text-xs text-muted-foreground">{t("useDefaultHint")}</p>
+      ) : (
+        <AgentConfigBody
+          agent={spec.agent}
+          modeId={spec.mode_id ?? null}
+          configValues={spec.config_values}
+          onChange={({ mode_id, config_values }) =>
+            onChange({ agent: spec.agent, mode_id, config_values })
+          }
+          disabled={disabled}
+        />
+      )}
     </div>
   )
 }
@@ -845,14 +882,19 @@ function AgentModeRow({
     modes.find((m) => m.id === agentDefaultModeId)?.name ?? agentDefaultModeId
   const selectValue = overrideModeId ?? DEFAULT_SENTINEL
   return (
-    <div className="flex items-center justify-between gap-2">
-      <span className="text-xs text-muted-foreground">{t("modeLabel")}</span>
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0 space-y-0.5">
+        <p className="text-sm font-medium">{t("modeLabel")}</p>
+        <p className="text-xs text-muted-foreground">
+          {t("agentDefaultHint", { value: agentDefaultName })}
+        </p>
+      </div>
       <Select
         value={selectValue}
         onValueChange={(v) => onChange(v === DEFAULT_SENTINEL ? null : v)}
         disabled={disabled}
       >
-        <SelectTrigger className="h-8 w-44">
+        <SelectTrigger size="sm" className="w-44 shrink-0">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -894,16 +936,19 @@ function AgentConfigRow({
   const selectValue = overrideValue ?? DEFAULT_SENTINEL
 
   return (
-    <div className="flex items-center justify-between gap-2">
-      <span className="min-w-0 truncate text-xs text-muted-foreground">
-        {option.name}
-      </span>
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0 space-y-0.5">
+        <p className="text-sm font-medium">{option.name}</p>
+        <p className="text-xs text-muted-foreground">
+          {t("agentDefaultHint", { value: agentDefaultLabel })}
+        </p>
+      </div>
       <Select
         value={selectValue}
         onValueChange={(v) => onChange(v === DEFAULT_SENTINEL ? null : v)}
         disabled={disabled}
       >
-        <SelectTrigger className="h-8 w-44">
+        <SelectTrigger size="sm" className="w-56 shrink-0">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>

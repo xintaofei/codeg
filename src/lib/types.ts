@@ -476,6 +476,16 @@ export interface AgentSpec {
 /** Historical name retained as an alias to avoid churn at reviewer call sites. */
 export type ReviewerSpec = AgentSpec
 
+/** A reviewer that defers to the issue's default review agent, resolved at
+ *  dispatch. Serialized as `{ "inherit": true }`. */
+export interface ReviewerInherit {
+  inherit: true
+}
+
+/** One entry in {@link IssueConfig.reviewers}: a concrete agent spec or an
+ *  inherit marker. */
+export type ReviewerEntry = AgentSpec | ReviewerInherit
+
 export interface IssueConfig {
   v: number
   /** Agent (with optional startup mode/config) per stage; `default` is the
@@ -489,9 +499,10 @@ export interface IssueConfig {
   force_route: LoopIssueRoute | null
   iteration_timeout_secs: number | null
   token_budget_per_turn: number | null
-  /** Reviewers to run per task (one review each). Empty = fall back to
+  /** Reviewers to run per task (one review each). Each is a concrete agent spec
+   *  or `{ inherit: true }` (use the default review agent). Empty = fall back to
    *  `reviewer_count` copies of the resolved review agent. */
-  reviewers: ReviewerSpec[]
+  reviewers: ReviewerEntry[]
   /** Opt-in watchdog: file a `stalled` inbox card when an iteration has been in
    *  flight this many seconds. null = off (never alerts, never kills). */
   stall_alert_secs: number | null

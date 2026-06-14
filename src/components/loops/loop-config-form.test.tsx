@@ -245,6 +245,34 @@ describe("LoopConfigForm", () => {
     expect(screen.getByTestId("reviewers").textContent).toBe("[]")
   })
 
+  it("switches a reviewer to use the default agent", () => {
+    const initial = configToFormState({
+      v: 1,
+      agents: { default: { agent: "claude_code", config_values: {} } },
+      validation_commands: [],
+      reviewer_count: 1,
+      review_pass_rule: "unanimous",
+      max_attempts: 6,
+      auto_merge: false,
+      force_route: null,
+      iteration_timeout_secs: null,
+      token_budget_per_turn: null,
+      stall_alert_secs: null,
+      // Use gemini (not codex) so probing this reviewer on mount doesn't pollute
+      // the module-scope snapshot cache the codex reviewer test below relies on.
+      reviewers: [{ agent: "gemini", mode_id: null, config_values: {} }],
+    })
+    render(<Harness initial={initial} />)
+    // The reviewer's agent picker is the only select currently on "gemini"
+    // (default is claude_code, stages are "use default"). Switch it to INHERIT.
+    const selects = screen.getAllByRole("combobox") as HTMLSelectElement[]
+    const reviewerSel = selects.find((s) => s.value === "gemini")!
+    fireEvent.change(reviewerSel, { target: { value: "__inherit__" } })
+    expect(JSON.parse(screen.getByTestId("reviewers").textContent!)).toEqual([
+      { inherit: true },
+    ])
+  })
+
   it("writes a reviewer's probed config value", async () => {
     // Only codex exposes the reasoning option, so "High" is unambiguous even
     // with every flattened sub-tab rendering at once.

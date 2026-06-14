@@ -3201,7 +3201,9 @@
       "defaultOption": "Default ({value})",
       "probing": "Probing options…",
       "probeFailed": "Couldn't load this agent's options.",
-      "noConfig": "No configurable options."
+      "noConfig": "No configurable options.",
+      "agentDefaultHint": "Agent default: {value}",
+      "useDefaultHint": "This reviewer uses the default agent."
     },
     "spaceDefaults": {
       "button": "Space defaults",

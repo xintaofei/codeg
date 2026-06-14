@@ -3201,7 +3201,9 @@
       "defaultOption": "既定（{value}）",
       "probing": "オプションを取得中…",
       "probeFailed": "このエージェントのオプションを読み込めませんでした。",
-      "noConfig": "設定可能な項目はありません。"
+      "noConfig": "設定可能な項目はありません。",
+      "agentDefaultHint": "エージェント既定: {value}",
+      "useDefaultHint": "このレビュアーは既定のエージェントを使用します。"
     },
     "spaceDefaults": {
       "button": "スペースの既定設定",

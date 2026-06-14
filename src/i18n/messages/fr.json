@@ -3201,7 +3201,9 @@
       "defaultOption": "Par défaut ({value})",
       "probing": "Détection des options…",
       "probeFailed": "Impossible de charger les options de cet agent.",
-      "noConfig": "Aucune option configurable."
+      "noConfig": "Aucune option configurable.",
+      "agentDefaultHint": "Valeur par défaut de l'agent : {value}",
+      "useDefaultHint": "Ce relecteur utilise l'agent par défaut."
     },
     "spaceDefaults": {
       "button": "Valeurs de l'espace",

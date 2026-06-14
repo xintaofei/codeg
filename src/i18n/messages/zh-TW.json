@@ -3201,7 +3201,9 @@
       "defaultOption": "預設（{value}）",
       "probing": "正在探測選項…",
       "probeFailed": "無法載入該智能體的選項。",
-      "noConfig": "無可設定項目。"
+      "noConfig": "無可設定項目。",
+      "agentDefaultHint": "智能體預設：{value}",
+      "useDefaultHint": "此評審使用預設智能體。"
     },
     "spaceDefaults": {
       "button": "空間預設設定",
