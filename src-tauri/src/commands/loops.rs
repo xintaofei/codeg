@@ -9,13 +9,15 @@ use sea_orm::DatabaseConnection;
 use crate::app_error::AppCommandError;
 use crate::db::entities::loop_artifact_revision::ActorKind;
 use crate::db::entities::loop_inbox_item::{InboxKind, InboxStatus};
-use crate::db::entities::loop_issue::{IssuePriority, IssueStatus};
+use crate::db::entities::loop_issue::{self, IssuePriority, IssueStatus};
 use crate::db::entities::loop_memory::{MemoryKind, MemoryStatus};
 use crate::db::service::folder_service;
 use crate::db::service::loop_service::{
     artifact, inbox, issue, iteration, memory, space, validation,
 };
 use crate::loop_engine::transitions::cas_issue_status;
+use crate::loop_engine::worktree;
+use std::path::Path;
 use crate::models::loops::{
     IssueConfig, LoopArtifactDetail, LoopArtifactRow, LoopChanged, LoopDagView, LoopInboxItemRow,
     LoopIssueDetail, LoopIterationRow, LoopMemoryRow, LoopSpaceSummary, LoopValidationRunRow,
@@ -104,9 +106,12 @@ pub async fn set_loop_space_default_config_core(
     conn: &DatabaseConnection,
     emitter: &EventEmitter,
     id: i32,
-    config: Option<IssueConfig>,
+    config: IssueConfig,
 ) -> Result<(), AppCommandError> {
-    space::set_default_config(conn, id, config.as_ref()).await?;
+    config
+        .validate()
+        .map_err(|m| AppCommandError::invalid_input(m.to_string()))?;
+    space::set_default_config(conn, id, &config).await?;
     emit_loop_changed(emitter, id, None, "space", id, "updated");
     Ok(())
 }
@@ -116,9 +121,47 @@ pub async fn delete_loop_space_core(
     emitter: &EventEmitter,
     id: i32,
 ) -> Result<(), AppCommandError> {
+    // Clean each issue's cross-subsystem artifacts (on-disk worktree, folder row,
+    // loop conversations) before the loop_* CASCADE removes the issues.
+    for issue_model in issue::list_models_for_space(conn, id).await? {
+        cleanup_issue_artifacts(conn, &issue_model).await;
+    }
     space::delete_space(conn, id).await?;
     emit_loop_changed(emitter, id, None, "space", id, "deleted");
     Ok(())
+}
+
+/// Best-effort cross-subsystem cleanup for a permanently deleted issue: remove
+/// the on-disk git worktree, then its worktree `folder` row and `kind = loop`
+/// conversations. The `loop_*` CASCADE never reaches the `folder`/`conversation`
+/// tables. (Cancellation deliberately keeps these rows for audit — see
+/// `LoopActions::cancel_issue`; deletion is permanent, so it removes them.)
+/// No-op for an issue that never acquired a worktree.
+async fn cleanup_issue_artifacts(conn: &DatabaseConnection, issue: &loop_issue::Model) {
+    let Some(worktree_folder_id) = issue.worktree_folder_id else {
+        return;
+    };
+    // On-disk worktree removal (best-effort; mirrors the cancel path).
+    if let Ok(Some(folder)) = folder_service::get_folder_by_id(conn, worktree_folder_id).await {
+        if Path::new(&folder.path).exists() {
+            if let Ok(Some(space_row)) = space::get_space(conn, issue.space_id).await {
+                if let Ok(Some(repo)) =
+                    folder_service::get_folder_by_id(conn, space_row.folder_id).await
+                {
+                    if let Err(e) =
+                        worktree::remove_worktree(Path::new(&repo.path), Path::new(&folder.path))
+                            .await
+                    {
+                        eprintln!("[loop] delete: remove worktree {} failed: {e}", folder.path);
+                    }
+                }
+            }
+        }
+    }
+    // DB orphans: the worktree folder row + its loop conversations.
+    if let Err(e) = issue::cleanup_worktree_rows(conn, worktree_folder_id).await {
+        eprintln!("[loop] delete: cleanup worktree rows ({worktree_folder_id}) failed: {e}");
+    }
 }
 
 async fn summary_for(
@@ -158,16 +201,15 @@ pub async fn create_loop_issue_core(
     priority: IssuePriority,
     config: Option<IssueConfig>,
 ) -> Result<LoopIssueDetail, AppCommandError> {
-    // No explicit config → the issue inherits the space default (resolved at
-    // read time); an explicit config makes it a custom issue.
-    let inherits = config.is_none();
-    let config = config.unwrap_or_default();
-    let mut detail =
-        issue::create_issue(conn, space_id, &title, &description, priority, &config).await?;
-    if inherits {
-        issue::set_config_inherits(conn, detail.row.id, true).await?;
-        detail.config_inherits = true;
+    // No explicit config → stored `config = NULL` → the issue inherits the space
+    // default (resolved at read time). An explicit config is validated and stored
+    // as the issue's own.
+    if let Some(c) = &config {
+        c.validate()
+            .map_err(|m| AppCommandError::invalid_input(m.to_string()))?;
     }
+    let detail =
+        issue::create_issue(conn, space_id, &title, &description, priority, config.as_ref()).await?;
     emit_loop_changed(emitter, space_id, Some(detail.row.id), "issue", detail.row.id, "created");
     Ok(detail)
 }
@@ -177,10 +219,13 @@ pub async fn delete_loop_issue_core(
     emitter: &EventEmitter,
     id: i32,
 ) -> Result<(), AppCommandError> {
-    let space_id = issue::get_issue(conn, id).await?.map(|i| i.space_id);
+    let issue_model = issue::get_issue(conn, id).await?;
+    if let Some(ref m) = issue_model {
+        cleanup_issue_artifacts(conn, m).await;
+    }
     issue::delete_issue(conn, id).await?;
-    if let Some(space_id) = space_id {
-        emit_loop_changed(emitter, space_id, Some(id), "issue", id, "deleted");
+    if let Some(m) = issue_model {
+        emit_loop_changed(emitter, m.space_id, Some(id), "issue", id, "deleted");
     }
     Ok(())
 }
@@ -189,12 +234,16 @@ pub async fn update_loop_issue_config_core(
     conn: &DatabaseConnection,
     emitter: &EventEmitter,
     id: i32,
-    config: IssueConfig,
+    config: Option<IssueConfig>,
     token_budget: Option<i64>,
-    config_inherits: bool,
 ) -> Result<(), AppCommandError> {
+    // `None` → store NULL (inherit the space default); `Some` is validated.
+    if let Some(c) = &config {
+        c.validate()
+            .map_err(|m| AppCommandError::invalid_input(m.to_string()))?;
+    }
     let space_id = issue::get_issue(conn, id).await?.map(|i| i.space_id);
-    issue::update_issue_config(conn, id, &config, token_budget, config_inherits).await?;
+    issue::update_issue_config(conn, id, config.as_ref(), token_budget).await?;
     if let Some(space_id) = space_id {
         emit_loop_changed(emitter, space_id, Some(id), "issue", id, "updated");
     }
@@ -511,7 +560,7 @@ pub async fn set_loop_space_default_config(
     app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     id: i32,
-    config: Option<IssueConfig>,
+    config: IssueConfig,
 ) -> Result<(), AppCommandError> {
     set_loop_space_default_config_core(&db.conn, &EventEmitter::Tauri(app), id, config).await
 }
@@ -584,19 +633,11 @@ pub async fn update_loop_issue_config(
     app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     id: i32,
-    config: IssueConfig,
+    config: Option<IssueConfig>,
     token_budget: Option<i64>,
-    config_inherits: bool,
 ) -> Result<(), AppCommandError> {
-    update_loop_issue_config_core(
-        &db.conn,
-        &EventEmitter::Tauri(app),
-        id,
-        config,
-        token_budget,
-        config_inherits,
-    )
-    .await
+    update_loop_issue_config_core(&db.conn, &EventEmitter::Tauri(app), id, config, token_budget)
+        .await
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -864,8 +905,9 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(detail.config_inherits, "no explicit config → inherits");
-        assert!(issue_row(&db, detail.row.id).await.config_inherits);
+        // No explicit config → DTO `config` None and stored column NULL.
+        assert!(detail.config.is_none(), "no explicit config → inherits");
+        assert!(issue_row(&db, detail.row.id).await.config.is_none());
     }
 
     #[tokio::test]
@@ -883,12 +925,12 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!detail.config_inherits, "explicit config → custom");
-        assert!(!issue_row(&db, detail.row.id).await.config_inherits);
+        assert!(detail.config.is_some(), "explicit config → custom");
+        assert!(issue_row(&db, detail.row.id).await.config.is_some());
     }
 
     #[tokio::test]
-    async fn update_config_toggles_inherit_and_preserves_custom() {
+    async fn update_config_toggles_between_inherit_and_custom() {
         let db = fresh_in_memory_db().await;
         let space_id = seed_space(&db).await;
         let detail = create_loop_issue_core(
@@ -907,47 +949,35 @@ mod tests {
         .unwrap();
         let id = detail.row.id;
 
-        // Switch to inherit: stored config is preserved, only the flag flips.
-        update_loop_issue_config_core(
-            &db.conn,
-            &EventEmitter::Noop,
-            id,
-            IssueConfig::default(),
-            None,
-            true,
-        )
-        .await
-        .unwrap();
-        let row = issue_row(&db, id).await;
-        assert!(row.config_inherits);
-        let preserved: IssueConfig = serde_json::from_str(&row.config).unwrap();
-        assert_eq!(
-            preserved.max_attempts, 42,
-            "custom config preserved while inheriting"
+        // Switch to inherit: the stored config becomes NULL (no preserved copy).
+        update_loop_issue_config_core(&db.conn, &EventEmitter::Noop, id, None, None)
+            .await
+            .unwrap();
+        assert!(
+            issue_row(&db, id).await.config.is_none(),
+            "inherit → NULL config"
         );
 
-        // Switch back to custom with a new config.
+        // Switch back to a custom config.
         update_loop_issue_config_core(
             &db.conn,
             &EventEmitter::Noop,
             id,
-            IssueConfig {
+            Some(IssueConfig {
                 max_attempts: 7,
                 ..IssueConfig::default()
-            },
+            }),
             None,
-            false,
         )
         .await
         .unwrap();
         let row = issue_row(&db, id).await;
-        assert!(!row.config_inherits);
-        let cfg: IssueConfig = serde_json::from_str(&row.config).unwrap();
+        let cfg: IssueConfig = serde_json::from_str(row.config.as_deref().unwrap()).unwrap();
         assert_eq!(cfg.max_attempts, 7);
     }
 
     #[tokio::test]
-    async fn set_and_clear_space_default_config() {
+    async fn set_and_reset_space_default_config() {
         let db = fresh_in_memory_db().await;
         let space_id = seed_space(&db).await;
 
@@ -955,20 +985,116 @@ mod tests {
             &db.conn,
             &EventEmitter::Noop,
             space_id,
-            Some(IssueConfig {
+            IssueConfig {
                 max_attempts: 13,
                 ..IssueConfig::default()
-            }),
+            },
         )
         .await
         .unwrap();
         let summary = summary_for(&db.conn, space_id).await.unwrap();
-        assert_eq!(summary.default_config.unwrap().max_attempts, 13);
+        assert_eq!(summary.default_config.max_attempts, 13);
 
-        set_loop_space_default_config_core(&db.conn, &EventEmitter::Noop, space_id, None)
+        // "Reset" = store the engine default.
+        set_loop_space_default_config_core(
+            &db.conn,
+            &EventEmitter::Noop,
+            space_id,
+            IssueConfig::default(),
+        )
+        .await
+        .unwrap();
+        let summary = summary_for(&db.conn, space_id).await.unwrap();
+        assert_eq!(
+            summary.default_config.max_attempts,
+            IssueConfig::default().max_attempts
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_issue_cleans_worktree_folder_and_loop_conversations() {
+        use crate::db::entities::{conversation, folder, loop_artifact};
+        use crate::db::service::conversation_service;
+        use sea_orm::{ActiveModelTrait, ColumnTrait, IntoActiveModel, QueryFilter, Set};
+
+        let db = fresh_in_memory_db().await;
+        let repo_folder_id = seed_folder(&db, "/tmp/loop-del-repo").await;
+        let space_id = space::create_space(&db.conn, "S", repo_folder_id)
+            .await
+            .unwrap()
+            .id;
+        let detail = create_loop_issue_core(
+            &db.conn,
+            &EventEmitter::Noop,
+            space_id,
+            "Issue".into(),
+            "body".into(),
+            IssuePriority::Medium,
+            None,
+        )
+        .await
+        .unwrap();
+        let issue_id = detail.row.id;
+
+        // Simulate an engine worktree: a folder row + a loop conversation in it,
+        // bound to the issue. The path does not exist on disk, so the best-effort
+        // git-worktree removal is skipped and only the DB cleanup is exercised.
+        let wt_id = folder_service::add_loop_worktree_folder(
+            &db.conn,
+            "/tmp/loop-del-repo/.codeg/wt-issue",
+            repo_folder_id,
+        )
+        .await
+        .unwrap()
+        .id;
+        let convo = conversation_service::create_loop(
+            &db.conn,
+            wt_id,
+            crate::models::agent::AgentType::ClaudeCode,
+            Some("iter".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        let mut active = issue_row(&db, issue_id).await.into_active_model();
+        active.worktree_folder_id = Set(Some(wt_id));
+        active.update(&db.conn).await.unwrap();
+
+        delete_loop_issue_core(&db.conn, &EventEmitter::Noop, issue_id)
             .await
             .unwrap();
-        let summary = summary_for(&db.conn, space_id).await.unwrap();
-        assert!(summary.default_config.is_none());
+
+        // Issue + its loop_* rows are gone (CASCADE); the worktree folder row and
+        // its loop conversation — which CASCADE does NOT reach — are gone too.
+        assert!(loop_issue::Entity::find_by_id(issue_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(
+            folder::Entity::find_by_id(wt_id)
+                .one(&db.conn)
+                .await
+                .unwrap()
+                .is_none(),
+            "worktree folder row removed"
+        );
+        assert!(
+            conversation::Entity::find_by_id(convo.id)
+                .one(&db.conn)
+                .await
+                .unwrap()
+                .is_none(),
+            "loop conversation removed"
+        );
+        assert!(
+            loop_artifact::Entity::find()
+                .filter(loop_artifact::Column::IssueId.eq(issue_id))
+                .all(&db.conn)
+                .await
+                .unwrap()
+                .is_empty(),
+            "loop_* rows CASCADE-removed"
+        );
     }
 }

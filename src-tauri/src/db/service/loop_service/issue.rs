@@ -4,10 +4,11 @@ use sea_orm::{
     TransactionTrait,
 };
 
+use crate::db::entities::conversation::{self, ConversationKind};
 use crate::db::entities::loop_artifact::{ArtifactKind, ArtifactStatus};
 use crate::db::entities::loop_artifact_revision::ActorKind;
 use crate::db::entities::loop_issue::{IssuePriority, IssueRoute, IssueStatus};
-use crate::db::entities::{loop_artifact, loop_artifact_revision, loop_issue};
+use crate::db::entities::{folder, loop_artifact, loop_artifact_revision, loop_issue};
 use crate::db::error::DbError;
 use crate::models::loops::{IssueConfig, LoopIssueDetail, LoopIssueRow};
 
@@ -15,8 +16,10 @@ fn not_found(id: i32) -> DbError {
     DbError::Database(sea_orm::DbErr::RecordNotFound(format!("loop_issue {id}")))
 }
 
-fn parse_config(raw: &str) -> IssueConfig {
-    serde_json::from_str(raw).unwrap_or_default()
+/// Map a serde error from config (de)serialization to a `DbError` so it
+/// propagates through the service layer like any other persistence failure.
+fn config_err(e: serde_json::Error) -> DbError {
+    DbError::Database(sea_orm::DbErr::Custom(format!("loop issue config: {e}")))
 }
 
 pub fn to_issue_row(m: &loop_issue::Model) -> LoopIssueRow {
@@ -36,10 +39,17 @@ pub fn to_issue_row(m: &loop_issue::Model) -> LoopIssueRow {
     }
 }
 
-pub fn to_issue_detail(m: loop_issue::Model) -> LoopIssueDetail {
-    let config = parse_config(&m.config);
+pub fn to_issue_detail(m: loop_issue::Model) -> Result<LoopIssueDetail, DbError> {
+    // `config = NULL` → inheriting (None). A malformed stored config is a real
+    // error, not a silent fall-back to inherit.
+    let config = m
+        .config
+        .as_deref()
+        .map(serde_json::from_str::<IssueConfig>)
+        .transpose()
+        .map_err(config_err)?;
     let row = to_issue_row(&m);
-    LoopIssueDetail {
+    Ok(LoopIssueDetail {
         row,
         description: m.description,
         config,
@@ -47,8 +57,7 @@ pub fn to_issue_detail(m: loop_issue::Model) -> LoopIssueDetail {
         base_branch: m.base_branch,
         base_commit: m.base_commit,
         active_task_artifact_id: m.active_task_artifact_id,
-        config_inherits: m.config_inherits,
-    }
+    })
 }
 
 /// Create an issue and its root `kind = issue` artifact (with a first revision
@@ -60,10 +69,14 @@ pub async fn create_issue(
     title: &str,
     description: &str,
     priority: IssuePriority,
-    config: &IssueConfig,
+    config: Option<&IssueConfig>,
 ) -> Result<LoopIssueDetail, DbError> {
     let now = Utc::now();
-    let config_json = serde_json::to_string(config).unwrap_or_else(|_| "{}".to_string());
+    // `None` → stored `config = NULL` (the issue inherits the space default).
+    let config_json = config
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(config_err)?;
 
     let txn = conn.begin().await?;
 
@@ -132,7 +145,7 @@ pub async fn create_issue(
     .await?;
 
     txn.commit().await?;
-    Ok(to_issue_detail(issue))
+    to_issue_detail(issue)
 }
 
 pub async fn get_issue(
@@ -146,10 +159,11 @@ pub async fn get_issue_detail(
     conn: &sea_orm::DatabaseConnection,
     id: i32,
 ) -> Result<Option<LoopIssueDetail>, DbError> {
-    Ok(loop_issue::Entity::find_by_id(id)
+    loop_issue::Entity::find_by_id(id)
         .one(conn)
         .await?
-        .map(to_issue_detail))
+        .map(to_issue_detail)
+        .transpose()
 }
 
 pub async fn list_issues(
@@ -178,45 +192,57 @@ pub async fn delete_issue(conn: &sea_orm::DatabaseConnection, id: i32) -> Result
     Ok(())
 }
 
+/// Set an issue's config. `Some(c)` stores `c` as the issue's own config;
+/// `None` stores `NULL` so it inherits the space default (resolved at read time).
 pub async fn update_issue_config(
     conn: &sea_orm::DatabaseConnection,
     id: i32,
-    config: &IssueConfig,
+    config: Option<&IssueConfig>,
     token_budget: Option<i64>,
-    config_inherits: bool,
 ) -> Result<(), DbError> {
     let row = loop_issue::Entity::find_by_id(id)
         .one(conn)
         .await?
         .ok_or_else(|| not_found(id))?;
     let mut active = row.into_active_model();
-    // When inheriting, keep the stored `config` as the last custom value so a
-    // later switch back to custom restores it; otherwise overwrite it.
-    if !config_inherits {
-        active.config = Set(serde_json::to_string(config).unwrap_or_else(|_| "{}".to_string()));
-    }
-    active.config_inherits = Set(config_inherits);
+    active.config = Set(config
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(config_err)?);
     active.token_budget = Set(token_budget);
     active.updated_at = Set(Utc::now());
     active.update(conn).await?;
     Ok(())
 }
 
-/// Flip an issue's `config_inherits` flag without touching its stored config.
-/// Used at creation to mark a no-explicit-config issue as inheriting the space
-/// default; the settings dialog uses [`update_issue_config`] instead.
-pub async fn set_config_inherits(
+/// All issue models for a space (full rows). Used at delete time, which needs
+/// each issue's `worktree_folder_id` for cross-subsystem cleanup.
+pub async fn list_models_for_space(
     conn: &sea_orm::DatabaseConnection,
-    id: i32,
-    inherits: bool,
+    space_id: i32,
+) -> Result<Vec<loop_issue::Model>, DbError> {
+    Ok(loop_issue::Entity::find()
+        .filter(loop_issue::Column::SpaceId.eq(space_id))
+        .all(conn)
+        .await?)
+}
+
+/// Hard-delete the cross-subsystem rows an issue's engine worktree left behind:
+/// its `kind = loop` conversations and the worktree `folder` row. The `loop_*`
+/// CASCADE never reaches these — they live in the `conversation` / `folder`
+/// tables, referenced only by plain (FK-less) columns. Call before deleting the
+/// issue/space row.
+pub async fn cleanup_worktree_rows(
+    conn: &sea_orm::DatabaseConnection,
+    worktree_folder_id: i32,
 ) -> Result<(), DbError> {
-    let row = loop_issue::Entity::find_by_id(id)
-        .one(conn)
-        .await?
-        .ok_or_else(|| not_found(id))?;
-    let mut active = row.into_active_model();
-    active.config_inherits = Set(inherits);
-    active.updated_at = Set(Utc::now());
-    active.update(conn).await?;
+    conversation::Entity::delete_many()
+        .filter(conversation::Column::FolderId.eq(worktree_folder_id))
+        .filter(conversation::Column::Kind.eq(ConversationKind::Loop))
+        .exec(conn)
+        .await?;
+    folder::Entity::delete_by_id(worktree_folder_id)
+        .exec(conn)
+        .await?;
     Ok(())
 }
