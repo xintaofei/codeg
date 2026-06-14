@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 
 use crate::acp::delegation::listener::LoopIngestAccess;
 use crate::db::entities::loop_artifact::{self, ArtifactKind, ArtifactStatus, ReviewVerdict};
-use crate::db::entities::loop_artifact_revision::ActorKind;
+use crate::db::entities::loop_artifact_revision::{self, ActorKind};
 use crate::db::entities::loop_inbox_item::InboxKind;
 use crate::db::entities::loop_issue::{self, IssuePriority, IssueRoute};
 use crate::db::entities::loop_iteration::{self, IterationStatus, Stage};
@@ -33,6 +33,14 @@ use crate::loop_engine::LoopError;
 /// Hard ceiling on any single persisted text field (defense against a runaway
 /// agent flooding the DB). Counted in characters.
 const MAX_CONTENT: usize = 200_000;
+
+/// Per-iteration write safety thresholds (§2.9). Generous — these defend the DB
+/// against a runaway agent, not against legitimate large runs ("no artificial
+/// limits"): a sane iteration produces a handful of artifacts well under these.
+/// `MAX_BYTES_PER_ITERATION` (4 MB) exceeds `MAX_CONTENT` (200 KB) so per-field
+/// truncation and the per-iteration budget stay independent guards.
+const MAX_ARTIFACTS_PER_ITERATION: usize = 200;
+const MAX_BYTES_PER_ITERATION: usize = 4_000_000;
 
 fn invalid(msg: impl Into<String>) -> LoopError {
     LoopError::InvalidInput(msg.into())
@@ -167,6 +175,30 @@ async fn submit_route(
     Ok(json!({ "ok": true, "route": route_str }))
 }
 
+/// Current persisted footprint of an iteration: (#artifacts it produced, total
+/// chars across all their revisions). Backs the §2.9 per-iteration write budget.
+async fn iteration_footprint(
+    conn: &DatabaseConnection,
+    iteration_id: i32,
+) -> Result<(usize, usize), LoopError> {
+    let arts = loop_artifact::Entity::find()
+        .filter(loop_artifact::Column::ProducedByIterationId.eq(iteration_id))
+        .all(conn)
+        .await?;
+    if arts.is_empty() {
+        return Ok((0, 0));
+    }
+    let ids: Vec<i32> = arts.iter().map(|a| a.id).collect();
+    let bytes: usize = loop_artifact_revision::Entity::find()
+        .filter(loop_artifact_revision::Column::ArtifactId.is_in(ids))
+        .all(conn)
+        .await?
+        .iter()
+        .map(|r| r.content.chars().count())
+        .sum();
+    Ok((arts.len(), bytes))
+}
+
 async fn submit_artifacts(
     conn: &DatabaseConnection,
     it: &loop_iteration::Model,
@@ -193,6 +225,42 @@ async fn submit_artifacts(
         .ok_or_else(|| invalid("missing artifacts array"))?;
     if items.is_empty() {
         return Err(invalid("artifacts array is empty"));
+    }
+
+    // §2.9 write-budget guard: reject a batch that would push this iteration over
+    // the per-iteration safety threshold, and surface it as a blocked card so the
+    // human sees it. Generous bounds — runaway defense, not a perf cap.
+    let (have_count, have_bytes) = iteration_footprint(conn, it.id).await?;
+    let add_bytes: usize = items
+        .iter()
+        .map(|i| {
+            i.get("content")
+                .and_then(|v| v.as_str())
+                .map(|s| s.chars().count())
+                .unwrap_or(0)
+        })
+        .sum();
+    if have_count + items.len() > MAX_ARTIFACTS_PER_ITERATION
+        || have_bytes + add_bytes > MAX_BYTES_PER_ITERATION
+    {
+        loop_service::inbox::upsert_inbox(
+            conn,
+            it.space_id,
+            it.issue_id,
+            Some(it.id),
+            InboxKind::Blocked,
+            &format!("write_budget_exceeded:{}", it.id),
+            json!({
+                "v": 1,
+                "reason": "write_budget_exceeded",
+                "have_artifacts": have_count,
+                "have_bytes": have_bytes,
+                "add_artifacts": items.len(),
+                "add_bytes": add_bytes,
+            }),
+        )
+        .await?;
+        return Err(invalid("iteration write budget exceeded"));
     }
 
     // Edge wiring depends on kind: a `result` (finalize) fans out `results_from`
@@ -515,6 +583,24 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, LoopError::InvalidInput(_)));
+    }
+
+    #[tokio::test]
+    async fn submit_artifacts_rejects_when_over_write_budget() {
+        let (db, space, issue, root) = seed().await;
+        let _ = running_iter(&db.conn, space, issue, Stage::Refine, Some(root), "tok").await;
+        // One artifact whose content exceeds MAX_BYTES_PER_ITERATION (chars).
+        let huge = "x".repeat(MAX_BYTES_PER_ITERATION + 1);
+        let payload = json!({ "artifacts": [ { "title": "Big", "content": huge } ] });
+        let err = ingest(&db.conn, "tok", "loop_submit_artifacts", &payload)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LoopError::InvalidInput(_)));
+        // A blocked card was filed for the human.
+        let items = loop_service::inbox::list_inbox(&db.conn, space, None)
+            .await
+            .unwrap();
+        assert!(items.iter().any(|i| matches!(i.kind, InboxKind::Blocked)));
     }
 
     #[tokio::test]
