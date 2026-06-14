@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use sea_orm::sea_query::Expr;
-use sea_orm::{ActiveEnum, ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 use crate::db::entities::loop_artifact::{self, ArtifactKind, ArtifactStatus, ReviewVerdict};
 use crate::db::entities::loop_inbox_item::InboxKind;
@@ -925,6 +925,7 @@ mod tests {
     use super::*;
     use crate::acp::error::AcpError;
     use crate::models::loops::{ReviewerEntry, ReviewerInherit};
+    use sea_orm::ActiveEnum; // for `*.to_value()` in the test helpers below
     use crate::db::entities::loop_artifact_revision::ActorKind;
     use crate::db::entities::loop_issue::{IssuePriority, IssueStatus};
     use crate::db::entities::loop_link::LinkKind;
