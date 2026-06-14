@@ -67,6 +67,21 @@ pub async fn update_loop_space(
     ))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetSpaceDefaultConfigParams {
+    pub id: i32,
+    pub config: Option<IssueConfig>,
+}
+
+pub async fn set_loop_space_default_config(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(p): Json<SetSpaceDefaultConfigParams>,
+) -> Result<Json<()>, AppCommandError> {
+    core::set_loop_space_default_config_core(&state.db.conn, &state.emitter, p.id, p.config).await?;
+    Ok(Json(()))
+}
+
 pub async fn delete_loop_space(
     Extension(state): Extension<Arc<AppState>>,
     Json(p): Json<IdParam>,
@@ -142,6 +157,7 @@ pub struct UpdateIssueConfigParams {
     pub id: i32,
     pub config: IssueConfig,
     pub token_budget: Option<i64>,
+    pub config_inherits: bool,
 }
 
 pub async fn update_loop_issue_config(
@@ -154,6 +170,7 @@ pub async fn update_loop_issue_config(
         p.id,
         p.config,
         p.token_budget,
+        p.config_inherits,
     )
     .await?;
     Ok(Json(()))

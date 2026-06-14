@@ -94,6 +94,7 @@ function fullConfig(): IssueConfig {
     force_route: "full",
     iteration_timeout_secs: 120,
     token_budget_per_turn: 1000,
+    reviewers: [],
   }
 }
 

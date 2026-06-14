@@ -1032,6 +1032,7 @@ mod tauri_app {
                 loops_commands::list_loop_spaces,
                 loops_commands::create_loop_space,
                 loops_commands::update_loop_space,
+                loops_commands::set_loop_space_default_config,
                 loops_commands::delete_loop_space,
                 loops_commands::list_loop_issues,
                 loops_commands::get_loop_issue,

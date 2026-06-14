@@ -79,8 +79,12 @@ pub struct Model {
     pub status: IssueStatus,
     pub pause_reason: Option<PauseReason>,
     pub route: IssueRoute,
-    /// JSON-encoded `models::loops::IssueConfig`.
+    /// JSON-encoded `models::loops::IssueConfig` (the issue's own config; used
+    /// when `config_inherits` is false).
     pub config: String,
+    /// When true, the effective config is resolved from the space's
+    /// `default_config` (or the engine default) instead of `config`.
+    pub config_inherits: bool,
     /// Engine-created worktree folder (`folder.id`, plain column).
     pub worktree_folder_id: Option<i32>,
     /// Merge baseline recorded at trigger time.

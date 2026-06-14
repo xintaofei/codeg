@@ -28,6 +28,7 @@ use crate::web::event_bridge::EventEmitter;
 
 pub mod actions;
 pub mod briefing;
+pub mod config_resolver;
 pub mod dispatch;
 pub mod driver;
 pub mod error;

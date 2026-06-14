@@ -25,7 +25,6 @@ use crate::db::entities::loop_iteration::{self, IterationStatus};
 use crate::db::service::loop_service::inbox;
 use crate::loop_engine::driver::resolve_agent;
 use crate::models::agent::AgentType;
-use crate::models::loops::IssueConfig;
 
 use super::LoopEngine;
 
@@ -70,7 +69,9 @@ impl LoopEngine {
             .await
         {
             Ok(Some(issue)) => {
-                let config: IssueConfig = serde_json::from_str(&issue.config).unwrap_or_default();
+                let config =
+                    crate::loop_engine::config_resolver::effective_config(&self.db.conn, &issue)
+                        .await;
                 resolve_agent(&config, iter.stage)
             }
             _ => AgentType::ClaudeCode,
@@ -142,6 +143,7 @@ mod tests {
     // loop_issue, IterationStatus, InboxKind/Status, AgentType, IssueConfig,
     // QuestionSpec, the sea_orm traits); the test adds only what's unique to it.
     use super::*;
+    use crate::models::loops::IssueConfig;
     use std::sync::Arc;
 
     use sea_orm::sea_query::Expr;

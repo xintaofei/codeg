@@ -33,7 +33,7 @@ use crate::db::entities::loop_issue::{self, IssueStatus, PauseReason};
 use crate::db::entities::loop_iteration::{self, IterationStatus};
 use crate::db::service::folder_service;
 use crate::db::service::loop_service::{artifact, inbox, issue, space};
-use crate::models::loops::{IssueConfig, LoopChanged, LOOP_CHANGED_EVENT};
+use crate::models::loops::{LoopChanged, LOOP_CHANGED_EVENT};
 use crate::web::event_bridge::emit_event;
 
 use crate::loop_engine::transitions::{cas_artifact_status, cas_issue_status};
@@ -276,7 +276,7 @@ impl LoopEngine {
             .base_commit
             .clone()
             .ok_or_else(|| LoopError::Git("issue has no recorded base commit".into()))?;
-        let config: IssueConfig = serde_json::from_str(&issue.config).unwrap_or_default();
+        let config = crate::loop_engine::config_resolver::effective_config(&self.db.conn, &issue).await;
 
         // Serialize merges per base repo: two issues sharing a repo must not race
         // their --no-ff landings on the base branch ref / working tree.

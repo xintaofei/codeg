@@ -11,6 +11,9 @@ pub struct Model {
     pub folder_id: i32,
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
+    /// Space default `IssueConfig` (JSON). NULL = engine default. Issues with
+    /// `config_inherits` resolve their config from this at read time.
+    pub default_config: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

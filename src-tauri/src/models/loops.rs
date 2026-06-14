@@ -20,6 +20,18 @@ fn config_version() -> u32 {
     1
 }
 
+/// One reviewer in a task's review round: which agent runs it, plus the same
+/// startup mode/config knobs the regular sub-agent settings expose. The number
+/// of configured reviewers is the number of concurrent reviews run per task.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReviewerSpec {
+    pub agent: AgentType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode_id: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub config_values: BTreeMap<String, String>,
+}
+
 /// Per-issue Loop Contract knobs (stored JSON-encoded in `loop_issue.config`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssueConfig {
@@ -44,6 +56,11 @@ pub struct IssueConfig {
     pub iteration_timeout_secs: Option<u64>,
     /// Optional per-turn token soft cap (none = unlimited).
     pub token_budget_per_turn: Option<i64>,
+    /// Reviewers to run per task (one review iteration each). When empty, falls
+    /// back to `reviewer_count` copies of the resolved review agent (see
+    /// [`IssueConfig::effective_reviewers`]) so pre-existing issues are unchanged.
+    #[serde(default)]
+    pub reviewers: Vec<ReviewerSpec>,
 }
 
 impl Default for IssueConfig {
@@ -61,7 +78,34 @@ impl Default for IssueConfig {
             force_route: None,
             iteration_timeout_secs: None,
             token_budget_per_turn: None,
+            reviewers: Vec::new(),
         }
+    }
+}
+
+impl IssueConfig {
+    /// The effective reviewer list: the explicit `reviewers` when non-empty,
+    /// else `reviewer_count` copies of the resolved review agent (a `"review"`
+    /// stage override, then `"default"`, then Claude Code) with no extra
+    /// mode/config. Keeps pre-`reviewers` issues working unchanged.
+    pub fn effective_reviewers(&self) -> Vec<ReviewerSpec> {
+        if !self.reviewers.is_empty() {
+            return self.reviewers.clone();
+        }
+        let agent = self
+            .agents
+            .get("review")
+            .or_else(|| self.agents.get("default"))
+            .copied()
+            .unwrap_or(AgentType::ClaudeCode);
+        let n = self.reviewer_count.max(1) as usize;
+        (0..n)
+            .map(|_| ReviewerSpec {
+                agent,
+                mode_id: None,
+                config_values: BTreeMap::new(),
+            })
+            .collect()
     }
 }
 
@@ -77,6 +121,9 @@ pub struct LoopSpaceSummary {
     pub running_count: i64,
     pub last_activity_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    /// Space default issue config (parsed). `None` = no default set (engine
+    /// default applies to inheriting issues).
+    pub default_config: Option<IssueConfig>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -105,6 +152,9 @@ pub struct LoopIssueDetail {
     pub base_branch: Option<String>,
     pub base_commit: Option<String>,
     pub active_task_artifact_id: Option<i32>,
+    /// When true the issue uses the space default config; `config` above is its
+    /// preserved last custom value.
+    pub config_inherits: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -234,3 +284,63 @@ pub struct LoopChanged {
 /// layer (CRUD writes) and the engine (autonomous dispatch/settle) emit the same
 /// channel without one depending on the other.
 pub const LOOP_CHANGED_EVENT: &str = "loop://changed";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effective_reviewers_falls_back_to_count() {
+        let cfg = IssueConfig {
+            reviewer_count: 2,
+            ..IssueConfig::default()
+        };
+        let r = cfg.effective_reviewers();
+        assert_eq!(r.len(), 2);
+        assert!(r.iter().all(|s| s.agent == AgentType::ClaudeCode));
+        assert!(r
+            .iter()
+            .all(|s| s.mode_id.is_none() && s.config_values.is_empty()));
+    }
+
+    #[test]
+    fn effective_reviewers_uses_review_stage_agent_for_fallback() {
+        let mut agents = BTreeMap::new();
+        agents.insert("review".to_string(), AgentType::Codex);
+        let cfg = IssueConfig {
+            agents,
+            reviewer_count: 1,
+            ..IssueConfig::default()
+        };
+        let r = cfg.effective_reviewers();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].agent, AgentType::Codex);
+    }
+
+    #[test]
+    fn effective_reviewers_prefers_explicit_list() {
+        let cfg = IssueConfig {
+            reviewer_count: 5, // ignored when `reviewers` is non-empty
+            reviewers: vec![ReviewerSpec {
+                agent: AgentType::Gemini,
+                mode_id: Some("auto".to_string()),
+                config_values: BTreeMap::new(),
+            }],
+            ..IssueConfig::default()
+        };
+        let r = cfg.effective_reviewers();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].agent, AgentType::Gemini);
+        assert_eq!(r[0].mode_id.as_deref(), Some("auto"));
+    }
+
+    #[test]
+    fn old_config_json_without_reviewers_deserializes() {
+        // A config JSON predating `reviewers` still parses (serde default) and
+        // falls back to `reviewer_count` reviewers.
+        let json = r#"{"v":1,"agents":{"default":"claude_code"},"validation_commands":[],"reviewer_count":3,"review_pass_rule":"unanimous","max_attempts":6,"auto_merge":false,"force_route":null,"iteration_timeout_secs":null,"token_budget_per_turn":null}"#;
+        let cfg: IssueConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.reviewers.is_empty());
+        assert_eq!(cfg.effective_reviewers().len(), 3);
+    }
+}

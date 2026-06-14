@@ -464,6 +464,14 @@ export type LoopMemoryKind =
   | "pitfall"
 export type LoopMemoryStatus = "active" | "archived"
 
+/** One reviewer in a task's review round: which agent runs it plus the same
+ *  startup mode/config knobs the regular sub-agent settings expose. */
+export interface ReviewerSpec {
+  agent: AgentType
+  mode_id?: string | null
+  config_values: Record<string, string>
+}
+
 export interface IssueConfig {
   v: number
   agents: Record<string, AgentType>
@@ -475,6 +483,9 @@ export interface IssueConfig {
   force_route: LoopIssueRoute | null
   iteration_timeout_secs: number | null
   token_budget_per_turn: number | null
+  /** Reviewers to run per task (one review each). Empty = fall back to
+   *  `reviewer_count` copies of the resolved review agent. */
+  reviewers: ReviewerSpec[]
 }
 
 export interface LoopSpaceSummary {

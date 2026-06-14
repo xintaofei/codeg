@@ -125,6 +125,7 @@ function issue(status: LoopIssueDetail["status"]): LoopIssueDetail {
       force_route: null,
       iteration_timeout_secs: null,
       token_budget_per_turn: null,
+      reviewers: [],
     },
     worktree_folder_id: null,
     base_branch: null,

@@ -47,6 +47,7 @@ pub fn to_issue_detail(m: loop_issue::Model) -> LoopIssueDetail {
         base_branch: m.base_branch,
         base_commit: m.base_commit,
         active_task_artifact_id: m.active_task_artifact_id,
+        config_inherits: m.config_inherits,
     }
 }
 
@@ -182,14 +183,39 @@ pub async fn update_issue_config(
     id: i32,
     config: &IssueConfig,
     token_budget: Option<i64>,
+    config_inherits: bool,
 ) -> Result<(), DbError> {
     let row = loop_issue::Entity::find_by_id(id)
         .one(conn)
         .await?
         .ok_or_else(|| not_found(id))?;
     let mut active = row.into_active_model();
-    active.config = Set(serde_json::to_string(config).unwrap_or_else(|_| "{}".to_string()));
+    // When inheriting, keep the stored `config` as the last custom value so a
+    // later switch back to custom restores it; otherwise overwrite it.
+    if !config_inherits {
+        active.config = Set(serde_json::to_string(config).unwrap_or_else(|_| "{}".to_string()));
+    }
+    active.config_inherits = Set(config_inherits);
     active.token_budget = Set(token_budget);
+    active.updated_at = Set(Utc::now());
+    active.update(conn).await?;
+    Ok(())
+}
+
+/// Flip an issue's `config_inherits` flag without touching its stored config.
+/// Used at creation to mark a no-explicit-config issue as inheriting the space
+/// default; the settings dialog uses [`update_issue_config`] instead.
+pub async fn set_config_inherits(
+    conn: &sea_orm::DatabaseConnection,
+    id: i32,
+    inherits: bool,
+) -> Result<(), DbError> {
+    let row = loop_issue::Entity::find_by_id(id)
+        .one(conn)
+        .await?
+        .ok_or_else(|| not_found(id))?;
+    let mut active = row.into_active_model();
+    active.config_inherits = Set(inherits);
     active.updated_at = Set(Utc::now());
     active.update(conn).await?;
     Ok(())

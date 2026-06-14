@@ -32,7 +32,7 @@ use crate::db::entities::loop_issue::{self, IssueStatus};
 use crate::db::entities::loop_iteration::{self, IterationStatus, Stage};
 use crate::db::service::{folder_service, loop_service};
 use crate::db::AppDatabase;
-use crate::models::loops::{IssueConfig, LoopArtifactRow, LoopDagView};
+use crate::models::loops::{IssueConfig, LoopArtifactRow, LoopDagView, ReviewerSpec};
 use crate::web::event_bridge::EventEmitter;
 
 use crate::loop_engine::dispatch::{dispatch_iteration, DispatchInput, LoopAgentSpawner};
@@ -367,6 +367,8 @@ async fn dispatch_implement(
             slot_no: None,
             attempt,
             agent_type: resolve_agent(config, Stage::Implement),
+            mode_id: None,
+            config_values: Default::default(),
             worktree_folder_id,
         },
     )
@@ -544,7 +546,8 @@ async fn drive_reviews(
     worktree_folder_id: i32,
     task: &LoopArtifactRow,
 ) -> Result<bool, LoopError> {
-    let reviewers = config.reviewer_count.max(1) as i32;
+    let reviewer_specs = config.effective_reviewers();
+    let reviewers = reviewer_specs.len() as i32;
     let iters = review_iterations(db, issue.id, task.id, task.attempt).await?;
     let verdicts = review_verdicts(db, &iters).await?;
 
@@ -604,11 +607,11 @@ async fn drive_reviews(
                     spawner,
                     emitter,
                     issue,
-                    config,
                     worktree_folder_id,
                     task.id,
                     slot,
                     task.attempt,
+                    &reviewer_specs[slot as usize],
                 )
                 .await?
                 {
@@ -657,11 +660,11 @@ async fn dispatch_review(
     spawner: &dyn LoopAgentSpawner,
     emitter: &EventEmitter,
     issue: &loop_issue::Model,
-    config: &IssueConfig,
     worktree_folder_id: i32,
     task_id: i32,
     slot: i32,
     attempt: i32,
+    spec: &ReviewerSpec,
 ) -> Result<bool, LoopError> {
     let handle = dispatch_iteration(
         db,
@@ -675,7 +678,9 @@ async fn dispatch_review(
             target_artifact_id: Some(task_id),
             slot_no: Some(slot),
             attempt,
-            agent_type: resolve_agent(config, Stage::Review),
+            agent_type: spec.agent,
+            mode_id: spec.mode_id.clone(),
+            config_values: spec.config_values.clone(),
             worktree_folder_id,
         },
     )
@@ -861,6 +866,8 @@ async fn dispatch_finalize(
             slot_no: None,
             attempt: 0,
             agent_type: resolve_agent(config, Stage::Finalize),
+            mode_id: None,
+            config_values: Default::default(),
             worktree_folder_id,
         },
     )
@@ -907,6 +914,8 @@ mod tests {
             _agent_type: AgentType,
             _working_dir: String,
             _emitter: EventEmitter,
+            _preferred_mode_id: Option<String>,
+            _preferred_config_values: std::collections::BTreeMap<String, String>,
             _capability_token: String,
         ) -> Result<String, AcpError> {
             Ok("loop-conn".to_string())
@@ -1402,6 +1411,51 @@ mod tests {
             load_issue(&h).await.active_task_artifact_id,
             None,
             "task gate released for the next task"
+        );
+    }
+
+    /// Each configured reviewer runs as its own slot with its own agent.
+    #[tokio::test]
+    async fn reviews_dispatch_per_reviewer_agent() {
+        use crate::db::entities::conversation;
+        let h = setup().await;
+        let task = add_task(&h, "Task 1").await;
+        // Two heterogeneous reviewers → two slots, each with its own agent.
+        let cfg = IssueConfig {
+            reviewers: vec![
+                ReviewerSpec {
+                    agent: AgentType::ClaudeCode,
+                    mode_id: None,
+                    config_values: Default::default(),
+                },
+                ReviewerSpec {
+                    agent: AgentType::Codex,
+                    mode_id: None,
+                    config_values: Default::default(),
+                },
+            ],
+            ..IssueConfig::default()
+        };
+        implement_to_in_progress(&h, &cfg, "feature.txt").await;
+
+        // One drive dispatches both review slots.
+        assert!(drive_with(&h, &cfg).await, "dispatches reviewers");
+        let reviews = review_iters_of(&h, task).await; // sorted by slot_no
+        assert_eq!(reviews.len(), 2, "one iteration per configured reviewer");
+
+        // Slot 0 → claude_code, slot 1 → codex (the conversation records the agent).
+        let mut agents = Vec::new();
+        for r in &reviews {
+            let conv = conversation::Entity::find_by_id(r.conversation_id.unwrap())
+                .one(&h.db.conn)
+                .await
+                .unwrap()
+                .unwrap();
+            agents.push(conv.agent_type);
+        }
+        assert_eq!(
+            agents,
+            vec!["claude_code".to_string(), "codex".to_string()]
         );
     }
 

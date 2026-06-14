@@ -132,6 +132,8 @@ function buildConfig(issue: LoopIssueDetail, form: FormState): IssueConfig {
         : (form.forceRoute as LoopIssueRoute),
     iteration_timeout_secs: parsePositiveOrNull(form.iterationTimeoutSecs),
     token_budget_per_turn: parsePositiveOrNull(form.tokenBudgetPerTurn),
+    // Preserved as-is here; the reviewers editor lands with the tabbed form.
+    reviewers: issue.config.reviewers ?? [],
   }
 }
 

@@ -100,6 +100,17 @@ pub async fn update_loop_space_core(
     summary_for(conn, id).await
 }
 
+pub async fn set_loop_space_default_config_core(
+    conn: &DatabaseConnection,
+    emitter: &EventEmitter,
+    id: i32,
+    config: Option<IssueConfig>,
+) -> Result<(), AppCommandError> {
+    space::set_default_config(conn, id, config.as_ref()).await?;
+    emit_loop_changed(emitter, id, None, "space", id, "updated");
+    Ok(())
+}
+
 pub async fn delete_loop_space_core(
     conn: &DatabaseConnection,
     emitter: &EventEmitter,
@@ -147,8 +158,16 @@ pub async fn create_loop_issue_core(
     priority: IssuePriority,
     config: Option<IssueConfig>,
 ) -> Result<LoopIssueDetail, AppCommandError> {
+    // No explicit config → the issue inherits the space default (resolved at
+    // read time); an explicit config makes it a custom issue.
+    let inherits = config.is_none();
     let config = config.unwrap_or_default();
-    let detail = issue::create_issue(conn, space_id, &title, &description, priority, &config).await?;
+    let mut detail =
+        issue::create_issue(conn, space_id, &title, &description, priority, &config).await?;
+    if inherits {
+        issue::set_config_inherits(conn, detail.row.id, true).await?;
+        detail.config_inherits = true;
+    }
     emit_loop_changed(emitter, space_id, Some(detail.row.id), "issue", detail.row.id, "created");
     Ok(detail)
 }
@@ -172,9 +191,10 @@ pub async fn update_loop_issue_config_core(
     id: i32,
     config: IssueConfig,
     token_budget: Option<i64>,
+    config_inherits: bool,
 ) -> Result<(), AppCommandError> {
     let space_id = issue::get_issue(conn, id).await?.map(|i| i.space_id);
-    issue::update_issue_config(conn, id, &config, token_budget).await?;
+    issue::update_issue_config(conn, id, &config, token_budget, config_inherits).await?;
     if let Some(space_id) = space_id {
         emit_loop_changed(emitter, space_id, Some(id), "issue", id, "updated");
     }
@@ -487,6 +507,17 @@ pub async fn update_loop_space(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn set_loop_space_default_config(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    id: i32,
+    config: Option<IssueConfig>,
+) -> Result<(), AppCommandError> {
+    set_loop_space_default_config_core(&db.conn, &EventEmitter::Tauri(app), id, config).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn delete_loop_space(
     app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
@@ -555,9 +586,17 @@ pub async fn update_loop_issue_config(
     id: i32,
     config: IssueConfig,
     token_budget: Option<i64>,
+    config_inherits: bool,
 ) -> Result<(), AppCommandError> {
-    update_loop_issue_config_core(&db.conn, &EventEmitter::Tauri(app), id, config, token_budget)
-        .await
+    update_loop_issue_config_core(
+        &db.conn,
+        &EventEmitter::Tauri(app),
+        id,
+        config,
+        token_budget,
+        config_inherits,
+    )
+    .await
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -785,4 +824,151 @@ pub async fn delete_loop_memory(
     id: i32,
 ) -> Result<(), AppCommandError> {
     delete_loop_memory_core(&db.conn, &EventEmitter::Tauri(app), space_id, id).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::entities::loop_issue;
+    use crate::db::test_helpers::{fresh_in_memory_db, seed_folder};
+    use sea_orm::EntityTrait;
+
+    async fn seed_space(db: &crate::db::AppDatabase) -> i32 {
+        let folder_id = seed_folder(db, "/tmp/loop-cmd").await;
+        space::create_space(&db.conn, "S", folder_id)
+            .await
+            .unwrap()
+            .id
+    }
+
+    async fn issue_row(db: &crate::db::AppDatabase, id: i32) -> loop_issue::Model {
+        loop_issue::Entity::find_by_id(id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn create_without_config_inherits_space_default() {
+        let db = fresh_in_memory_db().await;
+        let space_id = seed_space(&db).await;
+        let detail = create_loop_issue_core(
+            &db.conn,
+            &EventEmitter::Noop,
+            space_id,
+            "Issue".into(),
+            "body".into(),
+            IssuePriority::Medium,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(detail.config_inherits, "no explicit config → inherits");
+        assert!(issue_row(&db, detail.row.id).await.config_inherits);
+    }
+
+    #[tokio::test]
+    async fn create_with_config_is_custom() {
+        let db = fresh_in_memory_db().await;
+        let space_id = seed_space(&db).await;
+        let detail = create_loop_issue_core(
+            &db.conn,
+            &EventEmitter::Noop,
+            space_id,
+            "Issue".into(),
+            "body".into(),
+            IssuePriority::Medium,
+            Some(IssueConfig::default()),
+        )
+        .await
+        .unwrap();
+        assert!(!detail.config_inherits, "explicit config → custom");
+        assert!(!issue_row(&db, detail.row.id).await.config_inherits);
+    }
+
+    #[tokio::test]
+    async fn update_config_toggles_inherit_and_preserves_custom() {
+        let db = fresh_in_memory_db().await;
+        let space_id = seed_space(&db).await;
+        let detail = create_loop_issue_core(
+            &db.conn,
+            &EventEmitter::Noop,
+            space_id,
+            "Issue".into(),
+            "body".into(),
+            IssuePriority::Medium,
+            Some(IssueConfig {
+                max_attempts: 42,
+                ..IssueConfig::default()
+            }),
+        )
+        .await
+        .unwrap();
+        let id = detail.row.id;
+
+        // Switch to inherit: stored config is preserved, only the flag flips.
+        update_loop_issue_config_core(
+            &db.conn,
+            &EventEmitter::Noop,
+            id,
+            IssueConfig::default(),
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+        let row = issue_row(&db, id).await;
+        assert!(row.config_inherits);
+        let preserved: IssueConfig = serde_json::from_str(&row.config).unwrap();
+        assert_eq!(
+            preserved.max_attempts, 42,
+            "custom config preserved while inheriting"
+        );
+
+        // Switch back to custom with a new config.
+        update_loop_issue_config_core(
+            &db.conn,
+            &EventEmitter::Noop,
+            id,
+            IssueConfig {
+                max_attempts: 7,
+                ..IssueConfig::default()
+            },
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        let row = issue_row(&db, id).await;
+        assert!(!row.config_inherits);
+        let cfg: IssueConfig = serde_json::from_str(&row.config).unwrap();
+        assert_eq!(cfg.max_attempts, 7);
+    }
+
+    #[tokio::test]
+    async fn set_and_clear_space_default_config() {
+        let db = fresh_in_memory_db().await;
+        let space_id = seed_space(&db).await;
+
+        set_loop_space_default_config_core(
+            &db.conn,
+            &EventEmitter::Noop,
+            space_id,
+            Some(IssueConfig {
+                max_attempts: 13,
+                ..IssueConfig::default()
+            }),
+        )
+        .await
+        .unwrap();
+        let summary = summary_for(&db.conn, space_id).await.unwrap();
+        assert_eq!(summary.default_config.unwrap().max_attempts, 13);
+
+        set_loop_space_default_config_core(&db.conn, &EventEmitter::Noop, space_id, None)
+            .await
+            .unwrap();
+        let summary = summary_for(&db.conn, space_id).await.unwrap();
+        assert!(summary.default_config.is_none());
+    }
 }

@@ -32,6 +32,7 @@ use crate::models::agent::AgentType;
 use crate::models::loops::{IssueConfig, LoopArtifactRow, LoopDagView};
 use crate::web::event_bridge::EventEmitter;
 
+use crate::loop_engine::config_resolver::effective_config;
 use crate::loop_engine::dispatch::{
     dispatch_iteration, emit_changed, settle_iteration, DispatchInput, LoopAgentSpawner,
 };
@@ -302,7 +303,7 @@ pub(crate) async fn tick_once(
         return Ok(TickOutcome::Stop);
     }
 
-    let config: IssueConfig = serde_json::from_str(&issue.config).unwrap_or_default();
+    let config = effective_config(conn, &issue).await;
 
     let Some(worktree_folder_id) = issue.worktree_folder_id else {
         // No worktree yet (trigger sets it up before starting the driver). Can't
@@ -326,6 +327,8 @@ pub(crate) async fn tick_once(
                 slot_no: None,
                 attempt: 0,
                 agent_type: resolve_agent(&config, Stage::Triage),
+                mode_id: None,
+                config_values: Default::default(),
                 worktree_folder_id,
             },
         )
@@ -384,6 +387,8 @@ pub(crate) async fn tick_once(
                     slot_no: None,
                     attempt: item.attempt,
                     agent_type: resolve_agent(&config, item.stage),
+                    mode_id: None,
+                    config_values: Default::default(),
                     worktree_folder_id,
                 },
             )
@@ -494,6 +499,8 @@ async fn recover_undecided_triage(
                 slot_no: None,
                 attempt: attempts,
                 agent_type: resolve_agent(config, Stage::Triage),
+                mode_id: None,
+                config_values: Default::default(),
                 worktree_folder_id,
             },
         )
@@ -639,6 +646,8 @@ mod tests {
             _agent_type: AgentType,
             _working_dir: String,
             _emitter: EventEmitter,
+            _preferred_mode_id: Option<String>,
+            _preferred_config_values: std::collections::BTreeMap<String, String>,
             _capability_token: String,
         ) -> Result<String, AcpError> {
             Ok("loop-conn".to_string())

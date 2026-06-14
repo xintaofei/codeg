@@ -60,6 +60,10 @@ pub fn build_router(
         .route("/list_loop_spaces", post(handlers::loops::list_loop_spaces))
         .route("/create_loop_space", post(handlers::loops::create_loop_space))
         .route("/update_loop_space", post(handlers::loops::update_loop_space))
+        .route(
+            "/set_loop_space_default_config",
+            post(handlers::loops::set_loop_space_default_config),
+        )
         .route("/delete_loop_space", post(handlers::loops::delete_loop_space))
         .route("/list_loop_issues", post(handlers::loops::list_loop_issues))
         .route("/get_loop_issue", post(handlers::loops::get_loop_issue))

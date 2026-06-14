@@ -23,6 +23,7 @@ mod m20260610_000001_conversation_pinned_at;
 mod m20260611_000001_folder_is_chat;
 mod m20260612_000001_conversation_folder_kind;
 mod m20260613_000001_loop_tables;
+mod m20260614_000001_loop_space_default_config;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -52,6 +53,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260611_000001_folder_is_chat::Migration),
             Box::new(m20260612_000001_conversation_folder_kind::Migration),
             Box::new(m20260613_000001_loop_tables::Migration),
+            Box::new(m20260614_000001_loop_space_default_config::Migration),
         ]
     }
 }

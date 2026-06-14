@@ -8,7 +8,7 @@ use sea_orm::{
 use crate::db::entities::loop_issue::IssueStatus;
 use crate::db::entities::{folder, loop_issue, loop_space};
 use crate::db::error::DbError;
-use crate::models::loops::LoopSpaceSummary;
+use crate::models::loops::{IssueConfig, LoopSpaceSummary};
 
 fn not_found(id: i32) -> DbError {
     DbError::Database(sea_orm::DbErr::RecordNotFound(format!("loop_space {id}")))
@@ -43,6 +43,25 @@ pub async fn update_space(
     active.name = Set(name.to_string());
     active.updated_at = Set(Utc::now());
     Ok(active.update(conn).await?)
+}
+
+/// Set (or clear, with `None`) the space's default issue config (stored JSON).
+/// Inheriting issues resolve their config from this at read time.
+pub async fn set_default_config(
+    conn: &sea_orm::DatabaseConnection,
+    id: i32,
+    config: Option<&IssueConfig>,
+) -> Result<(), DbError> {
+    let json = config.map(|c| serde_json::to_string(c).unwrap_or_else(|_| "{}".to_string()));
+    let row = loop_space::Entity::find_by_id(id)
+        .one(conn)
+        .await?
+        .ok_or_else(|| not_found(id))?;
+    let mut active = row.into_active_model();
+    active.default_config = Set(json);
+    active.updated_at = Set(Utc::now());
+    active.update(conn).await?;
+    Ok(())
 }
 
 pub async fn get_space(
@@ -114,6 +133,10 @@ pub async fn list_spaces(
                 running_count,
                 last_activity_at,
                 created_at: s.created_at,
+                default_config: s
+                    .default_config
+                    .as_deref()
+                    .and_then(|j| serde_json::from_str(j).ok()),
             }
         })
         .collect();

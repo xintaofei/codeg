@@ -89,6 +89,12 @@ pub struct DispatchInput {
     pub slot_no: Option<i32>,
     pub attempt: i32,
     pub agent_type: AgentType,
+    /// Startup mode for the spawned agent (per-reviewer override); `None` for
+    /// stages that take the agent's own default.
+    pub mode_id: Option<String>,
+    /// Startup config values for the spawned agent (per-reviewer override);
+    /// empty for stages that take no extra config.
+    pub config_values: BTreeMap<String, String>,
     /// The issue's engine-created worktree folder (`folder.id`).
     pub worktree_folder_id: i32,
 }
@@ -118,6 +124,7 @@ pub struct SettleOutcome {
 /// tests never run it.
 #[async_trait]
 pub trait LoopAgentSpawner: Send + Sync {
+    #[allow(clippy::too_many_arguments)]
     async fn spawn_loop_agent(
         &self,
         db: &AppDatabase,
@@ -125,6 +132,8 @@ pub trait LoopAgentSpawner: Send + Sync {
         agent_type: AgentType,
         working_dir: String,
         emitter: EventEmitter,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
         capability_token: String,
     ) -> Result<String, AcpError>;
 
@@ -142,6 +151,7 @@ pub trait LoopAgentSpawner: Send + Sync {
 
 #[async_trait]
 impl LoopAgentSpawner for ConnectionManager {
+    #[allow(clippy::too_many_arguments)]
     async fn spawn_loop_agent(
         &self,
         db: &AppDatabase,
@@ -149,6 +159,8 @@ impl LoopAgentSpawner for ConnectionManager {
         agent_type: AgentType,
         working_dir: String,
         emitter: EventEmitter,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
         capability_token: String,
     ) -> Result<String, AcpError> {
         let runtime_env = build_session_runtime_env(db, agent_type, None, data_dir).await?;
@@ -159,8 +171,8 @@ impl LoopAgentSpawner for ConnectionManager {
             runtime_env,
             "loop-engine".to_string(),
             emitter,
-            None,
-            BTreeMap::new(),
+            preferred_mode_id,
+            preferred_config_values,
             Some(capability_token),
         )
         .await
@@ -310,6 +322,8 @@ async fn launch_claimed_iteration(
             input.agent_type,
             worktree_path.to_string(),
             emitter,
+            input.mode_id.clone(),
+            input.config_values.clone(),
             capability_token.to_string(),
         )
         .await
@@ -625,6 +639,8 @@ mod tests {
             agent_type: AgentType,
             working_dir: String,
             _emitter: EventEmitter,
+            _preferred_mode_id: Option<String>,
+            _preferred_config_values: BTreeMap<String, String>,
             capability_token: String,
         ) -> Result<String, AcpError> {
             if self.fail_spawn {
@@ -698,6 +714,8 @@ mod tests {
             slot_no: None,
             attempt: 0,
             agent_type: AgentType::ClaudeCode,
+            mode_id: None,
+            config_values: Default::default(),
             worktree_folder_id: folder_id,
         }
     }
