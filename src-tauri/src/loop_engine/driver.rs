@@ -17,6 +17,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::Utc;
 use sea_orm::{ActiveEnum, ColumnTrait, EntityTrait, QueryFilter};
 use tokio::sync::Notify;
 use tokio::time::{interval, Duration, MissedTickBehavior};
@@ -299,12 +300,30 @@ pub(crate) async fn reconcile_orphaned_iterations<L: IterationLiveness>(
         .filter(loop_iteration::Column::Status.eq(IterationStatus::Running))
         .all(&db.conn)
         .await?;
+    if running.is_empty() {
+        return Ok(());
+    }
+    // Opt-in stall watchdog threshold (None = off; the common case skips the
+    // config read entirely once there is nothing running anyway, handled above).
+    let stall_alert_secs = match loop_issue::Entity::find_by_id(issue_id).one(&db.conn).await? {
+        Some(issue) => effective_config(&db.conn, &issue).await.stall_alert_secs,
+        None => None,
+    };
     for it in running {
         let Some(cid) = it.conversation_id else {
             continue;
         };
         match liveness.turn_state(cid).await {
-            TurnLiveness::InFlight => { /* genuinely working — do not disturb */ }
+            TurnLiveness::InFlight => {
+                // Genuinely working — never disturbed here. If the operator armed
+                // the opt-in watchdog, surface a (idempotent) stall card so they
+                // can decide; the iteration itself is left untouched.
+                if let Some(threshold) = stall_alert_secs {
+                    if let Err(e) = maybe_file_stall_alert(db, emitter, &it, threshold).await {
+                        eprintln!("[loop][reconcile] stall alert for {} failed: {e}", it.id);
+                    }
+                }
+            }
             TurnLiveness::Idle => {
                 eprintln!(
                     "[loop][reconcile] settling idle-but-unsettled iteration {} (issue {issue_id}, conv {cid}): turn finished, event missed",
@@ -327,6 +346,46 @@ pub(crate) async fn reconcile_orphaned_iterations<L: IterationLiveness>(
             }
         }
     }
+    Ok(())
+}
+
+/// Opt-in stall watchdog: when an in-flight iteration has been running at least
+/// `threshold_secs` (measured from `started_at`), file an idempotent `stalled:{id}`
+/// inbox card so the human can decide whether to step in. Surface-only — it never
+/// settles or kills the iteration. A long turn is not necessarily a dead one, and
+/// "no artificial limits" means this timer reports, never enforces. The card
+/// dedups on `(issue, kind, stalled:{id})`, so re-running every reconcile tick is
+/// a no-op once the card is filed.
+async fn maybe_file_stall_alert(
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+    iter: &loop_iteration::Model,
+    threshold_secs: u64,
+) -> Result<(), LoopError> {
+    let Some(started) = iter.started_at else {
+        return Ok(()); // not actually started yet — nothing to time
+    };
+    let elapsed = (Utc::now() - started).num_seconds();
+    if elapsed < threshold_secs as i64 {
+        return Ok(());
+    }
+    inbox::upsert_inbox(
+        &db.conn,
+        iter.space_id,
+        iter.issue_id,
+        Some(iter.id),
+        InboxKind::Blocked,
+        &format!("stalled:{}", iter.id),
+        serde_json::json!({
+            "v": 1,
+            "reason": "stalled",
+            "stage": iter.stage,
+            "elapsed_secs": elapsed,
+            "threshold_secs": threshold_secs,
+        }),
+    )
+    .await?;
+    emit_changed(emitter, iter.space_id, iter.issue_id, iter.id, "stalled");
     Ok(())
 }
 
@@ -856,6 +915,90 @@ mod tests {
         assert_eq!(row.status, IterationStatus::Running);
     }
 
+    /// Overwrite an issue's config with `stall_alert_secs` set (config_inherits is
+    /// false after `create_issue`, so the issue's own config is what's resolved).
+    async fn set_stall_alert(db: &AppDatabase, issue_id: i32, secs: Option<u64>) {
+        let cfg = IssueConfig {
+            stall_alert_secs: secs,
+            ..IssueConfig::default()
+        };
+        loop_issue::Entity::update_many()
+            .col_expr(
+                loop_issue::Column::Config,
+                Expr::value(serde_json::to_string(&cfg).unwrap()),
+            )
+            .filter(loop_issue::Column::Id.eq(issue_id))
+            .exec(&db.conn)
+            .await
+            .unwrap();
+    }
+
+    /// Backdate an iteration's `started_at` so it reads as having run `secs` ago.
+    async fn backdate_started(db: &AppDatabase, iter_id: i32, secs: i64) {
+        loop_iteration::Entity::update_many()
+            .col_expr(
+                loop_iteration::Column::StartedAt,
+                Expr::value(Utc::now() - chrono::Duration::seconds(secs)),
+            )
+            .filter(loop_iteration::Column::Id.eq(iter_id))
+            .exec(&db.conn)
+            .await
+            .unwrap();
+    }
+
+    async fn stall_card(db: &AppDatabase, iter_id: i32) -> Option<loop_inbox_item::Model> {
+        loop_inbox_item::Entity::find()
+            .filter(loop_inbox_item::Column::SubjectKey.eq(format!("stalled:{iter_id}")))
+            .one(&db.conn)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn stall_alert_files_card_only_when_configured() {
+        // Configured: an in-flight iteration older than the threshold files a
+        // `stalled` card — but is never killed (surface-only watchdog).
+        let (db, data_dir, issue_id) = setup().await;
+        set_stall_alert(&db, issue_id, Some(1)).await;
+        let it = dispatch_one_running_triage(&db, &data_dir, issue_id).await;
+        backdate_started(&db, it.id, 10).await;
+        reconcile_orphaned_iterations(
+            &db,
+            &EventEmitter::Noop,
+            &StubLiveness(TurnLiveness::InFlight),
+            issue_id,
+        )
+        .await
+        .unwrap();
+        let row = loop_iteration::Entity::find_by_id(it.id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.status, IterationStatus::Running, "stall alert never kills");
+        let card = stall_card(&db, it.id).await.expect("configured → card filed");
+        assert_eq!(card.kind, InboxKind::Blocked);
+        assert_eq!(card.iteration_id, Some(it.id));
+
+        // Not configured (default None): the iteration may run arbitrarily long
+        // and no card is ever filed — honors "no artificial limits".
+        let (db2, data_dir2, issue_id2) = setup().await;
+        let it2 = dispatch_one_running_triage(&db2, &data_dir2, issue_id2).await;
+        backdate_started(&db2, it2.id, 100_000).await;
+        reconcile_orphaned_iterations(
+            &db2,
+            &EventEmitter::Noop,
+            &StubLiveness(TurnLiveness::InFlight),
+            issue_id2,
+        )
+        .await
+        .unwrap();
+        assert!(
+            stall_card(&db2, it2.id).await.is_none(),
+            "no threshold = no alert, ever"
+        );
+    }
+
     #[tokio::test]
     async fn undecided_triage_redispatches_then_blocks() {
         let (db, data_dir, issue_id) = setup().await;
@@ -961,6 +1104,90 @@ mod tests {
             IssueStatus::Blocked,
             "an abandoned triage must bound via recovery, not redispatch unbounded"
         );
+    }
+
+    /// Overwrite an issue's whole config (config_inherits is false after
+    /// `create_issue`, so its own config is what `effective_config` resolves).
+    async fn write_config(db: &AppDatabase, issue_id: i32, cfg: &IssueConfig) {
+        loop_issue::Entity::update_many()
+            .col_expr(
+                loop_issue::Column::Config,
+                Expr::value(serde_json::to_string(cfg).unwrap()),
+            )
+            .filter(loop_issue::Column::Id.eq(issue_id))
+            .exec(&db.conn)
+            .await
+            .unwrap();
+    }
+
+    /// Settle every running iteration WITHOUT ingesting any artifact — simulates a
+    /// read-stage agent whose turn ended having produced nothing (no-progress).
+    async fn settle_all_running_without_output(db: &AppDatabase) {
+        let running = loop_iteration::Entity::find()
+            .filter(loop_iteration::Column::Status.eq(IterationStatus::Running))
+            .all(&db.conn)
+            .await
+            .unwrap();
+        for it in running {
+            settle_iteration(db, &EventEmitter::Noop, it.id)
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn read_stage_no_output_blocks_at_max_attempts() {
+        let (db, data_dir, issue_id) = setup().await;
+        // Small cap so the breaker trips quickly. skip_design route → refine is the
+        // first read stage and targets the issue root, so the root node's attempt
+        // is what the breaker counts.
+        write_config(
+            &db,
+            issue_id,
+            &IssueConfig {
+                max_attempts: 2,
+                ..IssueConfig::default()
+            },
+        )
+        .await;
+        let spawner = StubSpawner;
+
+        // Get past triage with a decided route.
+        tick_once(&db, &data_dir, &spawner, &EventEmitter::Noop, issue_id)
+            .await
+            .unwrap();
+        respond_and_settle(&db, "skip_design").await;
+
+        // Refine now runs but produces nothing, repeatedly. The settle-time breaker
+        // bumps the root node attempt each pass and blocks once it hits the cap —
+        // it must terminate, never redispatch forever (the D5 bug).
+        let mut stopped = false;
+        for _ in 0..12 {
+            let out = tick_once(&db, &data_dir, &spawner, &EventEmitter::Noop, issue_id)
+                .await
+                .unwrap();
+            if out == TickOutcome::Stop {
+                stopped = true;
+                break; // issue already blocked; driver would exit
+            }
+            settle_all_running_without_output(&db).await;
+        }
+        assert!(stopped, "read-stage no-progress must stop, not loop forever");
+
+        let issue = loop_issue::Entity::find_by_id(issue_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(issue.status, IssueStatus::Blocked);
+        let card = loop_inbox_item::Entity::find()
+            .filter(loop_inbox_item::Column::IssueId.eq(issue_id))
+            .filter(loop_inbox_item::Column::Kind.eq(InboxKind::Blocked))
+            .filter(loop_inbox_item::Column::SubjectKey.starts_with("no_progress:"))
+            .one(&db.conn)
+            .await
+            .unwrap();
+        assert!(card.is_some(), "read-stage breaker files a no_progress card");
     }
 
     /// Simulate the dispatched iteration's agent: submit the stage-appropriate

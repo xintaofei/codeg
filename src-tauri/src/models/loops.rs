@@ -61,6 +61,14 @@ pub struct IssueConfig {
     /// [`IssueConfig::effective_reviewers`]) so pre-existing issues are unchanged.
     #[serde(default)]
     pub reviewers: Vec<ReviewerSpec>,
+    /// Optional watchdog: file a `stalled` inbox card when an iteration has been
+    /// in flight (turn running, not yet settled) for at least this many seconds.
+    /// `tokens_used` only lands at settle, so there is no mid-turn progress
+    /// counter to diff — elapsed-since-start is the honest in-flight signal. None
+    /// (default) = off = no alert (honors "no artificial limits"). Never
+    /// auto-cancels — only surfaces to the human, who decides whether to step in.
+    #[serde(default)]
+    pub stall_alert_secs: Option<u64>,
 }
 
 impl Default for IssueConfig {
@@ -79,6 +87,7 @@ impl Default for IssueConfig {
             iteration_timeout_secs: None,
             token_budget_per_turn: None,
             reviewers: Vec::new(),
+            stall_alert_secs: None,
         }
     }
 }

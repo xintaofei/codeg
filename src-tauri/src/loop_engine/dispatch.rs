@@ -47,6 +47,7 @@ use crate::models::loops::{LoopChanged, LOOP_CHANGED_EVENT};
 use crate::web::event_bridge::{emit_event, EventEmitter};
 
 use crate::loop_engine::briefing::{assemble_briefing, BriefingOutput};
+use crate::loop_engine::config_resolver::effective_config;
 use crate::loop_engine::error::LoopError;
 use crate::loop_engine::transitions::{
     cas_issue_status, cas_iteration_status, try_claim_iteration, IterationClaim,
@@ -75,6 +76,45 @@ pub(crate) fn emit_changed(
             kind: kind.to_string(),
         },
     );
+}
+
+/// Block an issue whose node burned `max_attempts` with no progress: CAS the
+/// issue `running → blocked` (so the driver stops on its next tick) and file an
+/// idempotent `no_progress:{node}` inbox card the human resolves via retry/cancel.
+/// This is the shared no-progress terminal for the settle-time read-stage / abandon
+/// breaker. The write pipeline files the same card kind and key shape for tasks,
+/// so the two dedupe naturally if they ever land on the same implement node.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn block_issue_no_progress(
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+    space_id: i32,
+    issue_id: i32,
+    node_artifact_id: i32,
+    iteration_id: Option<i32>,
+    reason: &str,
+    sig: &str,
+    attempt: i32,
+) -> Result<(), LoopError> {
+    cas_issue_status(&db.conn, issue_id, IssueStatus::Running, IssueStatus::Blocked).await?;
+    inbox::upsert_inbox(
+        &db.conn,
+        space_id,
+        issue_id,
+        iteration_id,
+        InboxKind::Blocked,
+        &format!("no_progress:{node_artifact_id}"),
+        serde_json::json!({
+            "v": 1,
+            "node_artifact_id": node_artifact_id,
+            "reason": reason,
+            "failure_sig": sig,
+            "attempt": attempt,
+        }),
+    )
+    .await?;
+    emit_changed(emitter, space_id, issue_id, issue_id, "blocked");
+    Ok(())
 }
 
 /// The frontier decision the driver hands to dispatch: which iteration to run
@@ -541,11 +581,43 @@ pub async fn settle_iteration_as(
                     loop_artifact::Column::Attempt,
                     Expr::col(loop_artifact::Column::Attempt).add(1),
                 )
-                .col_expr(loop_artifact::Column::LastFailureSig, Expr::value(sig))
+                .col_expr(
+                    loop_artifact::Column::LastFailureSig,
+                    Expr::value(sig.clone()),
+                )
                 .col_expr(loop_artifact::Column::UpdatedAt, Expr::value(Utc::now()))
                 .filter(loop_artifact::Column::Id.eq(target))
                 .exec(conn)
                 .await?;
+
+            // No-progress breaker — the read-stage / abandon analogue of the write
+            // pipeline's `record_rework`. The node lease guarantees no other
+            // iteration bumped this node between our dispatch and now, so its new
+            // attempt is exactly `iter.attempt + 1`. Once that reaches the issue's
+            // `max_attempts` (0 = unlimited → no breaker), stop redispatching:
+            // block the issue and file a `no_progress:{node}` card. Deliberately
+            // settle-time, not dispatch-time — a human "retry" does not reset node
+            // attempts, so gating *before* dispatch would make retry a no-op;
+            // gating *after* lets each retry burn one real attempt before the
+            // breaker re-trips, matching the write pipeline's retry contract.
+            let new_attempt = iter.attempt + 1;
+            if let Some(issue_row) = loop_issue::Entity::find_by_id(iter.issue_id).one(conn).await? {
+                let max = effective_config(conn, &issue_row).await.max_attempts as i32;
+                if max > 0 && new_attempt >= max {
+                    block_issue_no_progress(
+                        db,
+                        emitter,
+                        iter.space_id,
+                        iter.issue_id,
+                        target,
+                        Some(iteration_id),
+                        "max_attempts",
+                        &sig,
+                        new_attempt,
+                    )
+                    .await?;
+                }
+            }
         }
     }
 

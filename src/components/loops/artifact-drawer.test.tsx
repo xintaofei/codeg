@@ -126,6 +126,7 @@ function issue(status: LoopIssueDetail["status"]): LoopIssueDetail {
       iteration_timeout_secs: null,
       token_budget_per_turn: null,
       reviewers: [],
+      stall_alert_secs: null,
     },
     config_inherits: false,
     worktree_folder_id: null,

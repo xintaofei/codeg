@@ -79,6 +79,7 @@ export interface LoopConfigFormState {
   forceRoute: string
   iterationTimeoutSecs: string
   tokenBudgetPerTurn: string
+  stallAlertSecs: string
 }
 
 function intField(n: number | null | undefined): string {
@@ -118,6 +119,7 @@ export function configToFormState(c: IssueConfig): LoopConfigFormState {
     forceRoute: route && route !== "undecided" ? route : ROUTE_AUTO,
     iterationTimeoutSecs: intField(c.iteration_timeout_secs),
     tokenBudgetPerTurn: intField(c.token_budget_per_turn),
+    stallAlertSecs: intField(c.stall_alert_secs),
   }
 }
 
@@ -153,6 +155,7 @@ export function formStateToConfig(form: LoopConfigFormState): IssueConfig {
     iteration_timeout_secs: parsePositiveOrNull(form.iterationTimeoutSecs),
     token_budget_per_turn: parsePositiveOrNull(form.tokenBudgetPerTurn),
     reviewers,
+    stall_alert_secs: parsePositiveOrNull(form.stallAlertSecs),
   }
 }
 
@@ -427,6 +430,23 @@ export function LoopConfigForm({
                 disabled={disabled}
               />
             </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="stall-alert">{t("stallAlertSecs")}</Label>
+            <Input
+              id="stall-alert"
+              type="number"
+              min={1}
+              value={value.stallAlertSecs}
+              onChange={(e) => patch({ stallAlertSecs: e.target.value })}
+              placeholder={t("offPlaceholder")}
+              className="h-8"
+              disabled={disabled}
+            />
+            <p className="text-xs text-muted-foreground">
+              {t("stallAlertHint")}
+            </p>
           </div>
         </TabsContent>
       </div>

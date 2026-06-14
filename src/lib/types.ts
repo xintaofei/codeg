@@ -486,6 +486,9 @@ export interface IssueConfig {
   /** Reviewers to run per task (one review each). Empty = fall back to
    *  `reviewer_count` copies of the resolved review agent. */
   reviewers: ReviewerSpec[]
+  /** Opt-in watchdog: file a `stalled` inbox card when an iteration has been in
+   *  flight this many seconds. null = off (never alerts, never kills). */
+  stall_alert_secs: number | null
 }
 
 export interface LoopSpaceSummary {

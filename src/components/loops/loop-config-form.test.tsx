@@ -138,6 +138,7 @@ describe("loop-config-form helpers", () => {
       force_route: "full",
       iteration_timeout_secs: 120,
       token_budget_per_turn: 1000,
+      stall_alert_secs: 600,
       reviewers: [
         {
           agent: "claude_code",
@@ -164,6 +165,7 @@ describe("LoopConfigForm", () => {
       force_route: null,
       iteration_timeout_secs: null,
       token_budget_per_turn: null,
+      stall_alert_secs: null,
       reviewers: [],
     })
 
@@ -200,6 +202,7 @@ describe("LoopConfigForm", () => {
       force_route: null,
       iteration_timeout_secs: null,
       token_budget_per_turn: null,
+      stall_alert_secs: null,
       reviewers: [{ agent: "codex", mode_id: null, config_values: {} }],
     })
     render(<Harness initial={initial} />)
