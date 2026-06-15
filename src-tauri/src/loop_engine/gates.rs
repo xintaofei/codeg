@@ -140,18 +140,12 @@ pub(crate) async fn drive_active_task(
     };
 
     match active_task {
-        // A live task holds the gate → advance it.
+        // A live task holds the gate → advance it (in its own worktree under
+        // parallel mode, the shared issue worktree otherwise).
         Some(active) => {
+            let wt = task_worktree_folder(db, data_dir, issue, active, worktree_folder_id).await?;
             advance_active_task(
-                db,
-                data_dir,
-                spawner,
-                emitter,
-                issue,
-                dag,
-                config,
-                worktree_folder_id,
-                active,
+                db, data_dir, spawner, emitter, issue, dag, config, wt, active,
             )
             .await
         }
@@ -166,16 +160,10 @@ pub(crate) async fn drive_active_task(
                 return detect_dead_dependency(db, emitter, issue, dag).await;
             };
             if try_acquire_task_gate(&db.conn, issue.id, task.id).await? {
+                let wt =
+                    task_worktree_folder(db, data_dir, issue, task.id, worktree_folder_id).await?;
                 let dispatched = dispatch_implement(
-                    db,
-                    data_dir,
-                    spawner,
-                    emitter,
-                    issue,
-                    config,
-                    worktree_folder_id,
-                    task.id,
-                    task.attempt,
+                    db, data_dir, spawner, emitter, issue, config, wt, task.id, task.attempt,
                 )
                 .await?;
                 Ok(StepOutcome::from_dispatched(dispatched))
@@ -184,6 +172,27 @@ pub(crate) async fn drive_active_task(
                 Ok(StepOutcome::Idle)
             }
         }
+    }
+}
+
+/// The worktree folder a task's write-pipeline iterations (implement / review /
+/// checkpoint / validation) run in. Parallel-mode issues give each task its own
+/// worktree — ensured idempotently here so two tasks never share a tree;
+/// serial-mode issues share the issue worktree (behavior unchanged). Phase 1
+/// still serializes dispatch via the task gate; phase 2 unleashes concurrency
+/// over this.
+async fn task_worktree_folder(
+    db: &AppDatabase,
+    data_dir: &Path,
+    issue: &loop_issue::Model,
+    task_id: i32,
+    issue_worktree_folder_id: i32,
+) -> Result<i32, LoopError> {
+    if issue.execution_mode.as_deref() == Some("parallel") {
+        let ctx = worktree::ensure_task_worktree(&db.conn, data_dir, issue.id, task_id).await?;
+        Ok(ctx.worktree_folder_id)
+    } else {
+        Ok(issue_worktree_folder_id)
     }
 }
 
@@ -1491,6 +1500,48 @@ mod tests {
             inbox.iter().any(|i| i.kind == InboxKind::Blocked
                 && i.subject_key == format!("dependency_unsatisfiable:{}", h.issue_id)),
             "files a dependency_unsatisfiable card"
+        );
+    }
+
+    async fn set_execution_mode(h: &Harness, mode: &str) {
+        loop_issue::Entity::update_many()
+            .col_expr(loop_issue::Column::ExecutionMode, Expr::value(mode))
+            .filter(loop_issue::Column::Id.eq(h.issue_id))
+            .exec(&h.db.conn)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn parallel_task_implements_in_its_own_worktree() {
+        let h = setup().await;
+        set_execution_mode(&h, "parallel").await;
+        let task = add_task(&h, "T").await;
+
+        // Parallel mode: drive ensures the task's own worktree and dispatches
+        // implement there.
+        assert_eq!(drive(&h).await, StepOutcome::Dispatched);
+        let impl_id = running_implement_id(&h).await;
+
+        // The task worktree is distinct from the issue worktree.
+        let task_wt = worktree::ensure_task_worktree(&h.db.conn, h.data.path(), h.issue_id, task)
+            .await
+            .unwrap();
+        assert_ne!(task_wt.worktree_path, h.worktree_path);
+
+        // The agent edits the TASK worktree; settle; drive → checkpoint commits
+        // there (not the issue worktree).
+        std::fs::write(task_wt.worktree_path.join("feature.txt"), "work\n").unwrap();
+        settle_iteration(&h.db, &EventEmitter::Noop, impl_id)
+            .await
+            .unwrap();
+        assert_eq!(drive(&h).await, StepOutcome::Advanced);
+
+        assert_eq!(task_node(&h, task).await.status, ArtifactStatus::InProgress);
+        assert!(task_wt.worktree_path.join("feature.txt").exists());
+        assert!(
+            !h.worktree_path.join("feature.txt").exists(),
+            "parallel work stays off the issue worktree until fan-in"
         );
     }
 
