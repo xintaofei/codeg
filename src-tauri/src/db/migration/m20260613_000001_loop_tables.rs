@@ -54,6 +54,7 @@ const UP: &[&str] = &[
         base_commit TEXT,
         active_task_artifact_id INTEGER,
         fan_in_manifest TEXT,
+        fan_in_resolver_tip TEXT,
         token_used BIGINT NOT NULL DEFAULT 0,
         token_budget BIGINT,
         created_at TEXT NOT NULL,

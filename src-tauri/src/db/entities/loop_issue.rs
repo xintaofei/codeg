@@ -101,6 +101,12 @@ pub struct Model {
     /// result-stage integration. `NULL` = no active fan-in session. Distinct from
     /// the `uniq_active_finalize` agent lease.
     pub fan_in_manifest: Option<String>,
+    /// The integrate worktree tip at which a fan-in conflict resolver was last
+    /// dispatched. Lets the result-stage fan-in tell a crash-before-dispatch
+    /// `MERGE_HEAD` (re-dispatch a resolver) from a resolver that ran and left the
+    /// merge unresolved at the same tip (block). Cleared with the manifest at
+    /// session end; advances naturally as resolved conflicts move the tip.
+    pub fan_in_resolver_tip: Option<String>,
     pub token_used: i64,
     /// NULL = unlimited (no artificial budget cap by default).
     pub token_budget: Option<i64>,

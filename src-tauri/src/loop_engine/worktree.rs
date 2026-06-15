@@ -198,7 +198,7 @@ pub async fn ensure_worktree(
 
 /// Peel a ref / sha to a concrete commit OID (`<refspec>^{commit}`), erroring if
 /// it doesn't resolve.
-async fn resolve_oid(repo: &Path, refspec: &str) -> Result<String, LoopError> {
+pub async fn resolve_oid(repo: &Path, refspec: &str) -> Result<String, LoopError> {
     let out = run_git(
         repo,
         &["rev-parse", "--verify", &format!("{refspec}^{{commit}}")],
@@ -671,21 +671,46 @@ pub async fn fan_in_tasks(
         if anc.status.success() {
             continue;
         }
-        // `--no-edit` + `GIT_MERGE_AUTOEDIT=no`: never open an editor for the
-        // merge commit message (which would hang a headless engine).
+        // `--no-edit` + `GIT_MERGE_AUTOEDIT=no`: never open an editor for the merge
+        // commit message (which would hang a headless engine). `-c user.name/email`:
+        // a `--no-ff` merge writes a merge commit, which needs a committer identity —
+        // without it git would *fail the merge* in a checkout that has no configured
+        // user, which we must not misread as a conflict (see below).
+        let name_cfg = format!("user.name={ENGINE_NAME}");
+        let email_cfg = format!("user.email={ENGINE_EMAIL}");
         let merge = crate::process::tokio_command("git")
-            .args(["merge", "--no-ff", "--no-edit", sha.as_str()])
+            .args([
+                "-c",
+                &name_cfg,
+                "-c",
+                &email_cfg,
+                "merge",
+                "--no-ff",
+                "--no-edit",
+                sha.as_str(),
+            ])
             .current_dir(integrate_worktree)
             .env("GIT_MERGE_AUTOEDIT", "no")
             .output()
             .await
             .map_err(|e| LoopError::Git(format!("git merge {sha}: {e}")))?;
         if !merge.status.success() {
-            // Leave the in-progress merge for a resolution agent; DO NOT abort.
-            return Ok(FanInOutcome::Conflict {
-                task_id: *task_id,
-                detail: combined_output(&merge),
-            });
+            // A failed merge is only a *conflict* if it left a merge in progress
+            // (`MERGE_HEAD` + unmerged index). Other failures — a bad/missing object,
+            // unrelated histories, a rejecting hook — are NOT something a resolution
+            // agent can fix; dispatching one would spin (it would find nothing to
+            // resolve). Surface those as a hard error instead of a phantom conflict.
+            if integrate_in_progress(integrate_worktree).await {
+                // Leave the in-progress merge for a resolution agent; DO NOT abort.
+                return Ok(FanInOutcome::Conflict {
+                    task_id: *task_id,
+                    detail: combined_output(&merge),
+                });
+            }
+            return Err(LoopError::Git(format!(
+                "fan-in merge of task {task_id} ({sha}) failed without a conflict: {}",
+                combined_output(&merge)
+            )));
         }
     }
 
@@ -734,6 +759,36 @@ pub async fn cas_advance_branch(
 ) -> Result<bool, LoopError> {
     let refname = format!("refs/heads/{branch}");
     let out = run_git(repo_path, &["update-ref", &refname, new, expected_old]).await?;
+    if out.status.success() {
+        return Ok(true);
+    }
+    // A non-zero exit is NOT automatically a lost CAS — `update-ref` also fails on
+    // lock contention, a bad object, or ref corruption. Treating those as "the
+    // branch moved" would wrongly discard the whole integration (including any
+    // conflict-resolution commits). Disambiguate by re-reading the ref: only a tip
+    // that actually moved off `expected_old` is a genuine lost CAS (`Ok(false)`);
+    // anything else is a hard error the caller must surface, not swallow.
+    let cur = run_git(repo_path, &["rev-parse", "--verify", "--quiet", &refname]).await?;
+    let cur = stdout_trimmed(&cur);
+    if cur != expected_old {
+        Ok(false)
+    } else {
+        Err(LoopError::Git(format!(
+            "update-ref {branch} (ref still at expected tip): {}",
+            stderr_of(&out)
+        )))
+    }
+}
+
+/// Whether `ancestor` is an ancestor of `descendant` in `repo` (`merge-base
+/// --is-ancestor`: exit 0 = yes). Operates on the object store, so any path inside
+/// the repo works. Backs the fan-in's "already landed" detection.
+pub async fn is_ancestor(
+    repo: &Path,
+    ancestor: &str,
+    descendant: &str,
+) -> Result<bool, LoopError> {
+    let out = run_git(repo, &["merge-base", "--is-ancestor", ancestor, descendant]).await?;
     Ok(out.status.success())
 }
 
@@ -827,6 +882,15 @@ pub async fn reset_issue_subtree(repo_path: &Path, issue_worktree: &Path) -> Res
         if is_issue_subtree(&path, issue_worktree) {
             let p = Path::new(&path);
             if p.exists() {
+                // NEVER reset a worktree with a merge in progress: the integrate
+                // worktree's `MERGE_HEAD` (a fan-in conflict awaiting / under a
+                // resolver) IS the state to preserve, and this sweep runs OUTSIDE
+                // the fan-in's in-flight gate. `reset --hard` would discard the
+                // in-progress merge and force the whole conflict to be re-resolved.
+                // The fan-in's own recovery (`integrate_in_progress`) handles it.
+                if integrate_in_progress(p).await {
+                    continue;
+                }
                 let _ = reset_to_head(p).await;
             }
         }
@@ -1660,6 +1724,87 @@ mod tests {
         assert!(
             !task_ctx.worktree_path.join("scratch.txt").exists(),
             "uncommitted residue discarded"
+        );
+    }
+
+    #[tokio::test]
+    async fn fan_in_nonconflict_failure_is_hard_error() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let base = git_out(dir.path(), &["rev-parse", "HEAD"]);
+        git(dir.path(), &["checkout", "-q", "-b", "integrate", &base]);
+        // A merge of a non-existent object fails WITHOUT leaving a merge in progress
+        // (no MERGE_HEAD). That is NOT a conflict a resolver could fix — it must
+        // surface as a hard error, not a phantom `Conflict`.
+        let bogus = "0".repeat(40);
+        let out = fan_in_tasks(dir.path(), &[(7, bogus)], &[], None).await;
+        assert!(out.is_err(), "non-conflict merge failure is a hard error");
+        assert!(
+            !integrate_in_progress(dir.path()).await,
+            "no merge left in progress"
+        );
+    }
+
+    #[tokio::test]
+    async fn cas_advance_branch_hard_error_distinct_from_lost_cas() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let base = git_out(dir.path(), &["rev-parse", "HEAD"]);
+        git(dir.path(), &["branch", "target", &base]);
+        // `update-ref` fails (the new value is not a real object) but the ref is
+        // STILL at `expected_old` → a hard error, NOT a lost-CAS `Ok(false)` (which
+        // would wrongly discard a real integration over a transient git fault).
+        // (A non-zero hex — the all-zero OID is git's delete sentinel.)
+        let bogus = "deadbeef".repeat(5); // 40 hex chars, not a real object
+        let res = cas_advance_branch(dir.path(), "target", &bogus, &base).await;
+        assert!(res.is_err(), "bad-object update-ref is a hard error");
+        assert_eq!(
+            git_out(dir.path(), &["rev-parse", "target"]),
+            base,
+            "ref unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_issue_subtree_preserves_in_progress_merge() {
+        let (db, repo, data, issue_id, _space, _seq) = setup().await;
+        let issue_ctx = ensure_worktree(&db.conn, data.path(), issue_id).await.unwrap();
+        let integ =
+            ensure_integrate_worktree(&db.conn, data.path(), issue_id, &issue_ctx.base_commit)
+                .await
+                .unwrap();
+
+        // Two commits that edit the SAME file → merging the second into the
+        // integrate worktree conflicts and leaves MERGE_HEAD.
+        let base = issue_ctx.base_commit.clone();
+        git(repo.path(), &["checkout", "-q", "-b", "tmpA", &base]);
+        std::fs::write(repo.path().join("README.md"), "A\n").unwrap();
+        git(repo.path(), &["add", "-A"]);
+        git(repo.path(), &["commit", "-q", "-m", "A"]);
+        let a = git_out(repo.path(), &["rev-parse", "HEAD"]);
+        git(repo.path(), &["checkout", "-q", "-b", "tmpB", &base]);
+        std::fs::write(repo.path().join("README.md"), "B\n").unwrap();
+        git(repo.path(), &["add", "-A"]);
+        git(repo.path(), &["commit", "-q", "-m", "B"]);
+        let b = git_out(repo.path(), &["rev-parse", "HEAD"]);
+
+        let out = fan_in_tasks(&integ.worktree_path, &[(1, a), (2, b)], &[], None)
+            .await
+            .unwrap();
+        assert!(matches!(out, FanInOutcome::Conflict { .. }));
+        assert!(
+            integrate_in_progress(&integ.worktree_path).await,
+            "MERGE_HEAD set by the conflict"
+        );
+
+        // Boot recovery's subtree reset must PRESERVE the in-progress merge so the
+        // fan-in can recover it — a `reset --hard` would force a full re-resolve.
+        reset_issue_subtree(repo.path(), &issue_ctx.worktree_path)
+            .await
+            .unwrap();
+        assert!(
+            integrate_in_progress(&integ.worktree_path).await,
+            "in-progress merge preserved (not reset) across boot recovery"
         );
     }
 }

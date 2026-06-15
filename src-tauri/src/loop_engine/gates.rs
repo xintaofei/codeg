@@ -2552,6 +2552,104 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn parallel_resolver_left_unresolved_blocks() {
+        let h = setup().await;
+        set_execution_mode(&h, "parallel").await;
+        let cfg = config_reviewers(1, ReviewPassRule::Unanimous);
+        let t1 = add_task(&h, "T1").await;
+        let t2 = add_task(&h, "T2").await;
+        complete_parallel_task(&h, &cfg, "shared.txt", "A\n", t1).await;
+        complete_parallel_task(&h, &cfg, "shared.txt", "B\n", t2).await;
+
+        // Conflict → resolver dispatched (records fan_in_resolver_tip).
+        assert_eq!(drive_finalize(&h, &cfg).await, StepOutcome::Dispatched);
+        let resolver = running_finalize(&h).await;
+        let integ = integrate_path(&h).await;
+        assert!(worktree::integrate_in_progress(&integ).await);
+
+        // The resolver ends WITHOUT completing the merge — MERGE_HEAD still set at
+        // the recorded tip.
+        settle_iteration(&h.db, &EventEmitter::Noop, resolver.id)
+            .await
+            .unwrap();
+
+        // Re-drive: an unresolved MERGE_HEAD at the recorded resolver tip blocks the
+        // issue — NOT a re-dispatch loop, NOT a phantom finish. (Distinguishes this
+        // from a crash-before-dispatch, which would re-dispatch instead.)
+        assert_eq!(drive_finalize(&h, &cfg).await, StepOutcome::Advanced);
+        assert_eq!(load_issue(&h).await.status, IssueStatus::Blocked);
+        assert!(
+            worktree::integrate_in_progress(&integ).await,
+            "the in-progress merge is preserved for human diagnosis"
+        );
+    }
+
+    #[tokio::test]
+    async fn parallel_already_landed_recovers_without_revalidation() {
+        let h = setup().await;
+        set_execution_mode(&h, "parallel").await;
+        // A validation command that FAILS — proves the recovery path does NOT
+        // re-validate (else it would block instead of finishing).
+        let mut cfg = config_reviewers(1, ReviewPassRule::Unanimous);
+        let t1 = add_task(&h, "T1").await;
+        complete_parallel_task(&h, &cfg, "a.txt", "A\n", t1).await;
+
+        let base_old = git_head(&h.worktree_path);
+        let f1 = task_model(&h, t1).await.fan_in_commit.unwrap();
+        let seq = load_issue(&h).await.seq_no;
+        let issue_branch = format!("loop/{}/issue-{}", h.space_id, seq);
+
+        // Manually land the frozen commit onto the issue branch — simulating a
+        // fan-in that landed but crashed before synthesizing the result + clearing
+        // the session lock.
+        let integ = worktree::ensure_integrate_worktree(&h.db.conn, h.data.path(), h.issue_id, &base_old)
+            .await
+            .unwrap();
+        let landed = match worktree::fan_in_tasks(&integ.worktree_path, &[(t1, f1.clone())], &[], None)
+            .await
+            .unwrap()
+        {
+            worktree::FanInOutcome::Integrated { tip } => tip,
+            o => panic!("expected Integrated, got {o:?}"),
+        };
+        assert!(
+            worktree::cas_advance_branch(h._repo.path(), &issue_branch, &landed, &base_old)
+                .await
+                .unwrap(),
+            "manual land applied"
+        );
+
+        // Arm the session lock as if mid-flight, and make any re-validation FAIL.
+        cfg.validation_commands = vec!["git rev-parse --verify refs/heads/no-such-ref".to_string()];
+        let manifest = format!(
+            r#"{{"v":1,"issue_base_oid":"{base_old}","ordered":[{{"task_id":{t1},"sha":"{f1}"}}]}}"#
+        );
+        set_fan_in_manifest(&h, &manifest).await;
+
+        // Drive: already-landed detection finishes idempotently WITHOUT re-running
+        // the (now-failing) validation → result synthesized, issue not blocked.
+        assert_eq!(drive_finalize(&h, &cfg).await, StepOutcome::Advanced);
+        let dag = artifact::list_dag(&h.db.conn, h.issue_id).await.unwrap();
+        assert!(
+            dag.artifacts.iter().any(|a| a.kind == ArtifactKind::Result),
+            "result synthesized on already-landed recovery"
+        );
+        assert_eq!(
+            load_issue(&h).await.status,
+            IssueStatus::Running,
+            "not blocked by stale re-validation"
+        );
+        assert!(
+            load_issue(&h).await.fan_in_manifest.is_none(),
+            "session lock cleared"
+        );
+        assert!(
+            h.worktree_path.join("a.txt").exists(),
+            "issue worktree synced to the landed tip"
+        );
+    }
+
     /// All tasks done → finalize dispatches; the agent submits a result; the DAG
     /// gains a `result` artifact with a `results_from` edge to each task.
     #[tokio::test]

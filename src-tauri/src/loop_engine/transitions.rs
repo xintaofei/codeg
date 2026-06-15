@@ -207,13 +207,45 @@ pub async fn try_claim_fan_in(
     Ok(res.rows_affected == 1)
 }
 
-/// Clear the fan-in session lock (`fan_in_manifest → NULL`) once the session has
-/// landed or been abandoned, so a future re-trigger can claim a fresh one.
-pub async fn clear_fan_in(conn: &DatabaseConnection, issue_id: i32) -> Result<(), LoopError> {
+/// Clear the fan-in session lock (`fan_in_manifest`/`fan_in_resolver_tip → NULL`)
+/// once the session has landed or been abandoned, so a future re-trigger can claim
+/// a fresh one. CAS-guarded on the exact manifest we owned (`WHERE
+/// fan_in_manifest=?`): a stale driver replaying an old manifest must NOT erase a
+/// newer session another driver has since claimed — a miss is benign (nothing to do).
+pub async fn clear_fan_in(
+    conn: &DatabaseConnection,
+    issue_id: i32,
+    expected_manifest: &str,
+) -> Result<(), LoopError> {
     loop_issue::Entity::update_many()
         .col_expr(
             loop_issue::Column::FanInManifest,
             Expr::value(Option::<String>::None),
+        )
+        .col_expr(
+            loop_issue::Column::FanInResolverTip,
+            Expr::value(Option::<String>::None),
+        )
+        .col_expr(loop_issue::Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(loop_issue::Column::Id.eq(issue_id))
+        .filter(loop_issue::Column::FanInManifest.eq(expected_manifest))
+        .exec(conn)
+        .await?;
+    Ok(())
+}
+
+/// Record the integrate-worktree tip at which a fan-in conflict resolver is being
+/// dispatched (see `loop_issue.fan_in_resolver_tip`). Idempotent overwrite within
+/// a session; cleared by [`clear_fan_in`].
+pub async fn set_fan_in_resolver_tip(
+    conn: &DatabaseConnection,
+    issue_id: i32,
+    tip: &str,
+) -> Result<(), LoopError> {
+    loop_issue::Entity::update_many()
+        .col_expr(
+            loop_issue::Column::FanInResolverTip,
+            Expr::value(tip.to_string()),
         )
         .col_expr(loop_issue::Column::UpdatedAt, Expr::value(Utc::now()))
         .filter(loop_issue::Column::Id.eq(issue_id))
