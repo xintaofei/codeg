@@ -157,10 +157,12 @@ function ArtifactDrawerBody({ artifactId }: { artifactId: number }) {
     try {
       await fn()
       toast.success(tToasts("inboxResolved"))
-      refetch()
     } catch (err) {
       toast.error(tToasts("actionFailed", { message: toErrorMessage(err) }))
     } finally {
+      // Reconcile with backend truth after every action (success OR failure), so a
+      // stale gate / status converges even when the action was a no-op conflict.
+      refetch()
       setBusy(false)
     }
   }

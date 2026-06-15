@@ -147,10 +147,12 @@ export function InboxPanel({
     try {
       await fn()
       toast.success(tToasts("inboxResolved"))
-      refetch()
     } catch (err) {
       toast.error(tToasts("actionFailed", { message: toErrorMessage(err) }))
     } finally {
+      // Reconcile with backend truth after every action (success OR failure), so a
+      // stale card / status converges even when the action was a no-op conflict.
+      refetch()
       setBusyId(null)
     }
   }

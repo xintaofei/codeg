@@ -12,6 +12,11 @@ pub enum LoopError {
     IllegalTransition,
     #[error("conflicting concurrent update")]
     Conflict,
+    /// The issue is not in a state that can be merged (already terminal, blocked,
+    /// cancelled, paused, or finalize has not produced a result). Distinct from
+    /// `Conflict`: there is nothing transient to retry.
+    #[error("issue is not in a mergeable state")]
+    NotMergeable,
     #[error("loop space is detached from its folder")]
     Detached,
     #[error("folder is not a git repository")]
@@ -52,6 +57,13 @@ impl From<LoopError> for AppCommandError {
                 "Loop state changed concurrently; retry",
             )
             .with_i18n("Loops.conflictRetry", BTreeMap::new()),
+            // A non-retryable "can't do that" — the issue is already terminal /
+            // blocked / not finalized. `InvalidInput` (not `TurnInProgress`) so the
+            // frontend renders a plain failure, never the "retry" toast.
+            LoopError::NotMergeable => AppCommandError::new(
+                AppErrorCode::InvalidInput,
+                "This issue is no longer awaiting merge",
+            ),
             LoopError::Detached => AppCommandError::new(
                 AppErrorCode::InvalidInput,
                 "Loop space is detached from its folder",

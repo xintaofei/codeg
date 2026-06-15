@@ -17,7 +17,10 @@
 //! with an inbox card.
 //!
 //! Every transition is guarded: a miss (the issue is not in the expected source
-//! state) surfaces as [`LoopError::Conflict`], which the frontend retries.
+//! state) surfaces as [`LoopError::Conflict`], which the frontend retries. The
+//! merge gate is the exception — it is idempotent (already-`done` → `Ok`) and
+//! returns the non-retryable [`LoopError::NotMergeable`] for other non-mergeable
+//! states; see [`LoopEngine::merge_issue`].
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -236,21 +239,64 @@ impl LoopEngine {
     /// (auto-merge); both take the same per-repo lock and run the same stale-base
     /// checks. A clean landing closes the issue (`done`) and removes its
     /// worktree; any fault (conflict / dirty base / failed re-validation / missing
-    /// base) blocks the issue with an inbox card naming the cause. Returns
-    /// [`LoopError::Conflict`] when the issue is not in a mergeable state (not
-    /// running, or no `result` artifact has been produced yet).
+    /// base) blocks the issue with an inbox card naming the cause.
+    ///
+    /// **Idempotent and race-free.** Preconditions are evaluated *under* the
+    /// per-repo lock (not before it), so two actors — the human gate and the
+    /// driver's auto-merge, or two clicks across surfaces — cannot both pass the
+    /// gate and race the landing. A second call after the issue is already `done`
+    /// (a concurrent actor merged it) returns `Ok(())` and re-emits `merged`,
+    /// rather than the misleading `Conflict`/"retry". Any other non-`running` or
+    /// no-`result` state returns the non-retryable [`LoopError::NotMergeable`] and
+    /// emits a resync so a stale "running" view refetches the true status.
     pub async fn merge_issue(&self, issue_id: i32) -> Result<(), LoopError> {
         let conn = &self.db.conn;
+
+        // Resolve the base repo path first — ONLY to choose which per-repo lock to
+        // take. The authoritative precondition check happens after the lock (below),
+        // so this pre-lock read cannot cause a TOCTOU. The repo path is immutable
+        // for a space (folder paths have no mutation path; `space.folder_id` is
+        // set once), so both actors derive the same lock key.
+        let issue_probe = issue::get_issue(conn, issue_id)
+            .await?
+            .ok_or_else(|| LoopError::NotFound(format!("issue {issue_id}")))?;
+        let space_row = space::get_space(conn, issue_probe.space_id)
+            .await?
+            .ok_or_else(|| LoopError::NotFound(format!("space {}", issue_probe.space_id)))?;
+        let repo = folder_service::get_folder_by_id(conn, space_row.folder_id)
+            .await?
+            .ok_or(LoopError::Detached)?;
+        let repo_path = PathBuf::from(&repo.path);
+
+        // Serialize merges per base repo, THEN evaluate preconditions under the
+        // lock: two issues sharing a repo must not race their --no-ff landings, and
+        // two actors on the same issue must collapse to one effective merge.
+        let lock = self.repo_merge_lock(&repo_path).await;
+        let _guard = lock.lock().await;
+
+        // Authoritative re-read under the lock.
         let issue = issue::get_issue(conn, issue_id)
             .await?
             .ok_or_else(|| LoopError::NotFound(format!("issue {issue_id}")))?;
-        // Mergeable only while running with a produced result (finalize done).
-        if issue.status != IssueStatus::Running {
-            return Err(LoopError::Conflict);
+
+        // Idempotent: a concurrent actor (driver auto-merge or another click)
+        // already landed and closed this issue. `done` is written ONLY by the
+        // landing below and is terminal, so it unambiguously means "merged".
+        // Report success and re-emit so a stale view converges — never "retry".
+        if issue.status == IssueStatus::Done {
+            self.emit_changed(issue.space_id, issue_id, "merged");
+            return Ok(());
         }
+        // Not mergeable: any other non-running state (blocked / cancelled / paused
+        // / pending) or finalize has not produced a result. Emit a resync FIRST so
+        // a view still showing "running" refetches the true status (the original
+        // transition's event may have been missed), then return the non-retryable
+        // error.
         let dag = artifact::list_dag(conn, issue_id).await?;
-        if !dag.artifacts.iter().any(|a| a.kind == ArtifactKind::Result) {
-            return Err(LoopError::Conflict);
+        let has_result = dag.artifacts.iter().any(|a| a.kind == ArtifactKind::Result);
+        if issue.status != IssueStatus::Running || !has_result {
+            self.emit_changed(issue.space_id, issue_id, "merge_unavailable");
+            return Err(LoopError::NotMergeable);
         }
 
         let folder_id = issue
@@ -259,13 +305,6 @@ impl LoopEngine {
         let folder = folder_service::get_folder_by_id(conn, folder_id)
             .await?
             .ok_or(LoopError::Detached)?;
-        let space_row = space::get_space(conn, issue.space_id)
-            .await?
-            .ok_or_else(|| LoopError::NotFound(format!("space {}", issue.space_id)))?;
-        let repo = folder_service::get_folder_by_id(conn, space_row.folder_id)
-            .await?
-            .ok_or(LoopError::Detached)?;
-        let repo_path = PathBuf::from(&repo.path);
         let worktree_path = PathBuf::from(&folder.path);
         let branch = format!("loop/{}/issue-{}", issue.space_id, issue.seq_no);
         let base_branch = issue
@@ -278,11 +317,6 @@ impl LoopEngine {
             .ok_or_else(|| LoopError::Git("issue has no recorded base commit".into()))?;
         let config =
             crate::loop_engine::config_resolver::effective_config(&self.db.conn, &issue).await?;
-
-        // Serialize merges per base repo: two issues sharing a repo must not race
-        // their --no-ff landings on the base branch ref / working tree.
-        let lock = self.repo_merge_lock(&repo_path).await;
-        let _guard = lock.lock().await;
 
         let outcome = worktree::merge_issue(
             &repo_path,
@@ -313,7 +347,7 @@ impl LoopEngine {
             )
             .await?;
             let now = Utc::now();
-            loop_issue::Entity::update_many()
+            let landed = loop_issue::Entity::update_many()
                 .col_expr(
                     loop_issue::Column::Status,
                     Expr::value(IssueStatus::Done.to_value()),
@@ -324,6 +358,16 @@ impl LoopEngine {
                 .filter(loop_issue::Column::Status.eq(IssueStatus::Running))
                 .exec(conn)
                 .await?;
+            if landed.rows_affected != 1 {
+                // Unreachable under the lock (status was a freshly-confirmed
+                // `running` re-read); the git work already landed, so warn rather
+                // than fail — failing would falsely imply nothing merged.
+                tracing::warn!(
+                    issue_id,
+                    rows = landed.rows_affected,
+                    "merge: status CAS to done affected an unexpected row count after landing"
+                );
+            }
         } else {
             let (reason, detail) = describe_merge_fault(&outcome);
             cas_issue_status(conn, issue_id, IssueStatus::Running, IssueStatus::Blocked).await?;
@@ -442,6 +486,10 @@ impl LoopEngine {
             .await?
             .ok_or_else(|| LoopError::NotFound(format!("issue {issue_id}")))?;
         if issue.status != IssueStatus::Blocked {
+            // Stale action: the issue is no longer blocked (e.g. already terminal
+            // while a view still shows "running"). Nudge subscribers to refetch the
+            // true status, then report the conflict.
+            self.emit_changed(issue.space_id, issue_id, "retry_unavailable");
             return Err(LoopError::Conflict);
         }
         loop_artifact::Entity::update_many()
@@ -1035,7 +1083,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn merge_issue_without_result_conflicts() {
+    async fn merge_issue_without_result_not_mergeable() {
         let (engine, conn, _repo, _data, issue_id, _folder_id) = setup_repo().await;
         // Drop the result artifact to simulate "finalize not done".
         loop_artifact::Entity::delete_many()
@@ -1046,7 +1094,53 @@ mod tests {
             .unwrap();
         assert!(matches!(
             engine.merge_issue(issue_id).await,
-            Err(LoopError::Conflict)
+            Err(LoopError::NotMergeable)
+        ));
+    }
+
+    #[tokio::test]
+    async fn merge_issue_second_call_after_cleanup_is_idempotent_ok() {
+        let (engine, conn, _repo, _data, issue_id, folder_id) = setup_repo().await;
+        let worktree_path = PathBuf::from(
+            folder_service::get_folder_by_id(&conn, folder_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .path,
+        );
+
+        engine.merge_issue(issue_id).await.unwrap();
+        // First merge landed and tore the worktree down.
+        assert_eq!(
+            issue::get_issue(&conn, issue_id).await.unwrap().unwrap().status,
+            IssueStatus::Done
+        );
+        assert!(!worktree_path.exists(), "first merge removed the worktree");
+        assert!(folder_service::get_folder_by_id(&conn, folder_id)
+            .await
+            .unwrap()
+            .is_none());
+
+        // Second merge, with the worktree already removed, is a no-op SUCCESS —
+        // not LoopError::Conflict ("state changed concurrently; retry"). The
+        // idempotent branch returns at the post-lock `done` re-read before it ever
+        // touches the absent worktree.
+        engine.merge_issue(issue_id).await.unwrap();
+        assert_eq!(
+            issue::get_issue(&conn, issue_id).await.unwrap().unwrap().status,
+            IssueStatus::Done
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_issue_blocked_is_not_mergeable() {
+        let (engine, conn, _repo, _data, issue_id, _folder_id) = setup_repo().await;
+        cas_issue_status(&conn, issue_id, IssueStatus::Running, IssueStatus::Blocked)
+            .await
+            .unwrap();
+        assert!(matches!(
+            engine.merge_issue(issue_id).await,
+            Err(LoopError::NotMergeable)
         ));
     }
 
