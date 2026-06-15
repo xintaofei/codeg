@@ -20,7 +20,7 @@ import {
   ArtifactStatusBadge,
   IterationStatusBadge,
 } from "@/components/loops/issue-badges"
-import { IterationDialog } from "@/components/loops/iteration-dialog"
+import { useLoopOverlays } from "@/components/loops/loop-overlays-context"
 
 interface IterationListData {
   iterations: LoopIterationRow[]
@@ -50,10 +50,8 @@ export function IterationList({
   const t = useTranslations("Loops.iterationList")
   const tStage = useTranslations("Loops.stage")
 
+  const { openIteration } = useLoopOverlays()
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
-  const [openConversationId, setOpenConversationId] = useState<number | null>(
-    null
-  )
 
   // Iterations + their produced artifacts + validation runs, kept live by the
   // realtime provider. When scoped to one issue, match on its id; otherwise on
@@ -166,7 +164,9 @@ export function IterationList({
                     size="icon"
                     variant="ghost"
                     className="h-7 w-7 shrink-0"
-                    onClick={() => setOpenConversationId(it.conversation_id)}
+                    onClick={() =>
+                      openIteration({ conversationId: it.conversation_id! })
+                    }
                     aria-label={t("openConversation")}
                   >
                     <MessageSquare className="h-3.5 w-3.5" />
@@ -231,14 +231,6 @@ export function IterationList({
           )
         })}
       </ul>
-
-      <IterationDialog
-        open={openConversationId != null}
-        onOpenChange={(o) => {
-          if (!o) setOpenConversationId(null)
-        }}
-        conversationId={openConversationId ?? 0}
-      />
     </>
   )
 }

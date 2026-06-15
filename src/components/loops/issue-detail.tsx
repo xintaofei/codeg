@@ -23,10 +23,10 @@ import type {
 } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
 import { useLoopResource } from "@/hooks/use-loop-resource"
+import { useLoopNav } from "@/hooks/use-loop-nav"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DagGraph } from "@/components/loops/dag-graph"
-import { ArtifactDrawer } from "@/components/loops/artifact-drawer"
 import { IssueSettingsDialog } from "@/components/loops/issue-settings-dialog"
 import { BoardView } from "@/components/loops/board-view"
 import { IterationList } from "@/components/loops/iteration-list"
@@ -75,12 +75,10 @@ export function IssueDetail({
   const tCommon = useTranslations("Loops.common")
   const tToasts = useTranslations("Loops.toasts")
 
+  const { openArtifact } = useLoopNav()
   const [actionBusy, setActionBusy] = useState(false)
   const [cancelOpen, setCancelOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [selectedArtifactId, setSelectedArtifactId] = useState<number | null>(
-    null
-  )
 
   // Issue detail + DAG + this issue's iterations, kept live by the realtime
   // provider. Scope is the STABLE `issueId` prop — never derived from the async
@@ -279,7 +277,7 @@ export function IssueDetail({
               artifacts={artifacts}
               links={links}
               executingIds={executingIds}
-              onSelect={setSelectedArtifactId}
+              onSelect={openArtifact}
             />
             {artifacts.length <= 1 && (
               <p className="mt-4 text-center text-xs text-muted-foreground">
@@ -291,7 +289,7 @@ export function IssueDetail({
             value="board"
             className="min-h-0 flex-1 overflow-auto p-5 data-[state=inactive]:hidden"
           >
-            <BoardView artifacts={artifacts} onSelect={setSelectedArtifactId} />
+            <BoardView artifacts={artifacts} onSelect={openArtifact} />
           </TabsContent>
         </Tabs>
       </div>
@@ -320,7 +318,7 @@ export function IssueDetail({
           >
             <ArtifactList
               artifacts={artifacts}
-              onSelect={setSelectedArtifactId}
+              onSelect={openArtifact}
               showIssue={false}
             />
           </TabsContent>
@@ -359,11 +357,6 @@ export function IssueDetail({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      <ArtifactDrawer
-        artifactId={selectedArtifactId}
-        onClose={() => setSelectedArtifactId(null)}
-      />
 
       <IssueSettingsDialog
         open={settingsOpen}

@@ -40,14 +40,28 @@ import {
 import { SpaceFormDialog } from "@/components/loops/space-form-dialog"
 import { SpaceDetail } from "@/components/loops/space-detail"
 import { EngineHealthBadge } from "@/components/loops/engine-health-badge"
+import { LoopOverlaysProvider } from "@/components/loops/loop-overlays-context"
+import { ArtifactDrawer } from "@/components/loops/artifact-drawer"
 
-/** Roots the single loop realtime subscription for every loop surface below. */
+/** Roots the single loop realtime subscription for every loop surface below,
+ *  plus the single overlay owners: one IterationDialog (via the overlays
+ *  context) and one URL-driven ArtifactDrawer — every surface opens them by
+ *  dispatch/URL rather than mounting its own. */
 export function LoopsWorkbench() {
   return (
     <LoopRealtimeProvider>
-      <LoopsWorkbenchInner />
+      <LoopOverlaysProvider>
+        <LoopsWorkbenchInner />
+        <WorkbenchArtifactDrawer />
+      </LoopOverlaysProvider>
     </LoopRealtimeProvider>
   )
+}
+
+/** The single artifact drawer for the whole workbench, bound to `?artifact=`. */
+function WorkbenchArtifactDrawer() {
+  const { nav, closeArtifact } = useLoopNav()
+  return <ArtifactDrawer artifactId={nav.artifact} onClose={closeArtifact} />
 }
 
 function LoopsWorkbenchInner() {

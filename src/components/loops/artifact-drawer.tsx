@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { Loader2 } from "lucide-react"
@@ -115,20 +115,29 @@ function ArtifactDrawerBody({ artifactId }: { artifactId: number }) {
   const [rejecting, setRejecting] = useState<Gate | null>(null)
   const [comment, setComment] = useState("")
 
-  // The artifact (+ its issue for a result), kept live while open. `match` is
-  // `() => true`: this is one artifact, refetches are coalesced per frame, and
-  // any engine event could be the rework/approval that changed it — so the
-  // cheapest correct rule is to re-pull on every loop event while open.
+  // The artifact's issue is immutable, so narrow the match the instant we learn
+  // it — right after getLoopArtifact, BEFORE the optional getLoopIssue fetch.
+  // Broad before the first load (over-fetch, never a miss). A ref keeps the
+  // match closure free of an async-data dependency.
+  // EXCEPTION to useLoopResource's "never key the match on loaded data" rule:
+  // sound ONLY because issue_id is immutable for a given artifact — do not copy
+  // this for mutable scope.
+  const issueRef = useRef<number | null>(null)
   const { data, loading, refetch } = useLoopResource<ArtifactDrawerData>(
     async () => {
       const detail = await getLoopArtifact(artifactId)
+      if (detail) issueRef.current = detail.issue_id // immutable → narrow now
       let issue: LoopIssueDetail | null = null
       if (detail && detail.kind === "result") {
         issue = await getLoopIssue(detail.issue_id).catch(() => null)
       }
       return { detail, issue }
     },
-    { match: () => true, initial: EMPTY_DRAWER, deps: [artifactId] }
+    {
+      match: (e) => issueRef.current == null || e.issue_id === issueRef.current,
+      initial: EMPTY_DRAWER,
+      deps: [artifactId],
+    }
   )
   const detail = data.detail
   const issue = data.issue

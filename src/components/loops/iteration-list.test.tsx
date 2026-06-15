@@ -24,19 +24,11 @@ vi.mock("@/components/loops/loop-realtime-context", () => ({
   useLoopRealtime: () => ({ register: () => () => {} }),
 }))
 
-// The viewer is exercised by its own tests; here we only assert it is opened
-// with the right conversation id.
-vi.mock("@/components/loops/iteration-dialog", () => ({
-  IterationDialog: ({
-    open,
-    conversationId,
-  }: {
-    open: boolean
-    conversationId: number
-  }) =>
-    open ? (
-      <div data-testid="iter-dialog" data-cid={String(conversationId)} />
-    ) : null,
+// The single IterationDialog now lives in the overlays context; the list opens
+// it by dispatch, so we assert the opener is called with the right args.
+const openIteration = vi.fn()
+vi.mock("@/components/loops/loop-overlays-context", () => ({
+  useLoopOverlays: () => ({ openIteration }),
 }))
 
 function iter(over: Partial<LoopIterationRow>): LoopIterationRow {
@@ -121,8 +113,7 @@ describe("IterationList", () => {
     render(<IterationList spaceId={1} />)
 
     fireEvent.click(await screen.findByLabelText("openConversation"))
-    const dialog = await screen.findByTestId("iter-dialog")
-    expect(dialog).toHaveAttribute("data-cid", "55")
+    expect(openIteration).toHaveBeenCalledWith({ conversationId: 55 })
   })
 
   it("scopes the fetch to one issue when issueId is given", async () => {

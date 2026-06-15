@@ -16,14 +16,13 @@ import { useLoopNav } from "@/hooks/use-loop-nav"
 import type { LoopTab } from "@/lib/loop-nav"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { useLoopOverlays } from "@/components/loops/loop-overlays-context"
 import { IssueList } from "@/components/loops/issue-list"
 import { IssueDetail } from "@/components/loops/issue-detail"
 import { InboxPanel } from "@/components/loops/inbox-panel"
-import { IterationDialog } from "@/components/loops/iteration-dialog"
 import { IterationList } from "@/components/loops/iteration-list"
 import { ArtifactList } from "@/components/loops/artifact-list"
 import { MemoryPanel } from "@/components/loops/memory-panel"
-import { ArtifactDrawer } from "@/components/loops/artifact-drawer"
 import { SpaceDefaultsDialog } from "@/components/loops/space-defaults-dialog"
 
 /** The iteration session a `question` inbox card points at, parsed from its
@@ -59,14 +58,11 @@ export function SpaceDetail({
 }) {
   const t = useTranslations("Loops.spaceDetail")
   const tDefaults = useTranslations("Loops.spaceDefaults")
-  const { nav, setTab, selectIssue } = useLoopNav()
+  const { nav, setTab, selectIssue, openArtifact } = useLoopNav()
+  const { openIteration } = useLoopOverlays()
   const tab: LoopTab = nav.tab
   const selectedIssueId = nav.issue
   const [defaultsOpen, setDefaultsOpen] = useState(false)
-  const [openIteration, setOpenIteration] = useState<OpenIteration | null>(null)
-  const [selectedArtifactId, setSelectedArtifactId] = useState<number | null>(
-    null
-  )
 
   // The space-wide artifact list, kept live by the realtime provider.
   const { data: artifacts } = useLoopResource<LoopArtifactRow[]>(
@@ -143,7 +139,11 @@ export function SpaceDetail({
             spaceId={space.id}
             onOpenQuestion={(item) => {
               const target = openIterationFromCard(item)
-              if (target) setOpenIteration(target)
+              if (target)
+                openIteration({
+                  conversationId: target.conversationId,
+                  agentType: target.agentType,
+                })
             }}
           />
         </TabsContent>
@@ -159,10 +159,7 @@ export function SpaceDetail({
           value="artifacts"
           className="min-h-0 flex-1 overflow-y-auto p-4 data-[state=inactive]:hidden"
         >
-          <ArtifactList
-            artifacts={artifacts}
-            onSelect={setSelectedArtifactId}
-          />
+          <ArtifactList artifacts={artifacts} onSelect={openArtifact} />
         </TabsContent>
 
         <TabsContent
@@ -172,22 +169,6 @@ export function SpaceDetail({
           <MemoryPanel spaceId={space.id} />
         </TabsContent>
       </Tabs>
-
-      {openIteration && (
-        <IterationDialog
-          open={openIteration != null}
-          onOpenChange={(o) => {
-            if (!o) setOpenIteration(null)
-          }}
-          conversationId={openIteration.conversationId}
-          agentType={openIteration.agentType}
-        />
-      )}
-
-      <ArtifactDrawer
-        artifactId={selectedArtifactId}
-        onClose={() => setSelectedArtifactId(null)}
-      />
 
       <SpaceDefaultsDialog
         spaceId={space.id}
