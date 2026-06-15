@@ -68,6 +68,10 @@ pub(crate) enum TickOutcome {
     Stop,
     /// At least one iteration was dispatched this tick.
     Dispatched,
+    /// Durable state moved forward but nothing is in flight — the driver should
+    /// re-tick immediately (to dispatch the follow-on step, or observe the issue
+    /// leaving `running` and stop) rather than park on the no-timeout wake.
+    Advanced,
     /// Nothing to dispatch right now (frontier empty / all in-flight / lease
     /// held). The driver parks until the next completion or external wake.
     Idle,
@@ -525,7 +529,7 @@ pub(crate) async fn tick_once(
     // Read pipeline complete (tasks exist) → drive the write pipeline. A no-op
     // when there are no tasks yet (read stages still in flight), so it is safe
     // to call on every "frontier empty" tick.
-    let dispatched = gates::drive_active_task(
+    match gates::drive_active_task(
         db,
         data_dir,
         spawner,
@@ -535,14 +539,16 @@ pub(crate) async fn tick_once(
         &config,
         worktree_folder_id,
     )
-    .await?;
-    if dispatched {
-        return Ok(TickOutcome::Dispatched);
+    .await?
+    {
+        gates::StepOutcome::Dispatched => return Ok(TickOutcome::Dispatched),
+        gates::StepOutcome::Advanced => return Ok(TickOutcome::Advanced),
+        gates::StepOutcome::Idle => {}
     }
 
     // Write pipeline drained → finalize when every task is done (produce the
     // result artifact). A no-op until then.
-    let finalized = gates::run_finalize(
+    match gates::run_finalize(
         db,
         data_dir,
         spawner,
@@ -552,9 +558,11 @@ pub(crate) async fn tick_once(
         &config,
         worktree_folder_id,
     )
-    .await?;
-    if finalized {
-        return Ok(TickOutcome::Dispatched);
+    .await?
+    {
+        gates::StepOutcome::Dispatched => return Ok(TickOutcome::Dispatched),
+        gates::StepOutcome::Advanced => return Ok(TickOutcome::Advanced),
+        gates::StepOutcome::Idle => {}
     }
 
     // Result produced → merge gate. With `auto_merge` on, signal the driver to
@@ -653,7 +661,9 @@ async fn recover_undecided_triage(
     )
     .await?;
     emit_changed(emitter, issue.space_id, issue.id, issue.id, "blocked");
-    Ok(TickOutcome::Idle)
+    // Issue is now blocked → re-tick so the driver observes it and stops cleanly
+    // (a human retry then respawns the driver).
+    Ok(TickOutcome::Advanced)
 }
 
 /// Backstop cadence for the liveness reconcile. The happy path is event-driven
@@ -662,6 +672,13 @@ async fn recover_undecided_triage(
 /// is armed ONLY while the issue has in-flight iterations — an idle driver parks
 /// on `wake` alone and issues no periodic query.
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Diagnostic-only ceiling on *consecutive* `Advanced` re-ticks. The write
+/// pipeline is strictly forward-moving, so a correct engine converges in a few
+/// ticks; crossing this only signals a logic bug (a gate reporting `Advanced`
+/// with no durable progress). It logs — it never caps real work (honoring the
+/// "no artificial limits" rule).
+const ADVANCE_DIAG_THRESHOLD: u32 = 1000;
 
 /// The per-issue driver task body: tick, then park on the wake `Notify` until a
 /// completion (or external nudge) arrives. Exits when the issue leaves
@@ -672,6 +689,9 @@ pub(crate) async fn run_driver(engine: Arc<LoopEngine>, issue_id: i32, wake: Arc
     let mut heartbeat = interval(RECONCILE_INTERVAL);
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
     heartbeat.tick().await; // consume the immediate first fire
+    // Counts consecutive `Advanced` re-ticks for the diagnostic above; reset on
+    // any tick that parks or breaks.
+    let mut consecutive_advances: u32 = 0;
     loop {
         // DB-authoritative backstop before each tick: settle iterations whose
         // agent connection is gone (the event-driven settle alone can wedge).
@@ -704,6 +724,23 @@ pub(crate) async fn run_driver(engine: Arc<LoopEngine>, issue_id: i32, wake: Arc
         .await
         {
             Ok(TickOutcome::Stop) => break,
+            Ok(TickOutcome::Advanced) => {
+                // Durable progress with nothing in flight: re-tick now to dispatch
+                // the follow-on step, or observe a block and stop — instead of
+                // parking on the no-timeout wake (the wedge that used to need a
+                // manual pause→resume, and that left human retries ineffective).
+                // `yield_now` keeps the re-tick cooperative rather than a hot loop.
+                consecutive_advances += 1;
+                if consecutive_advances == ADVANCE_DIAG_THRESHOLD {
+                    tracing::warn!(
+                        issue_id,
+                        consecutive_advances,
+                        "driver: unusually long advance chain; possible non-progressing Advanced"
+                    );
+                }
+                tokio::task::yield_now().await;
+                continue;
+            }
             Ok(TickOutcome::AutoMerge) => {
                 // Land the finalized work without a human gate. On success, only
                 // re-tick immediately if the merge actually advanced the issue out
@@ -739,6 +776,8 @@ pub(crate) async fn run_driver(engine: Arc<LoopEngine>, issue_id: i32, wake: Arc
                 tracing::warn!(issue_id, error = %e, "driver: tick failed");
             }
         }
+        // A tick that parks (or errs) ends any advance chain.
+        consecutive_advances = 0;
         // Park until an iteration settles (the completion watcher fires `wake`)
         // or — only while work is actually in flight — the periodic heartbeat
         // elapses (which runs the reconcile above). An idle issue waits purely on
@@ -1158,11 +1197,12 @@ mod tests {
         assert_eq!(out, TickOutcome::Dispatched);
         settle_running_triage_without_route(&db).await;
 
-        // Tick 3: attempts hit max → block + inbox card.
+        // Tick 3: attempts hit max → block + inbox card. The block reports
+        // Advanced so the driver re-ticks and stops on the now-blocked issue.
         let out = tick_once(&db, &data_dir, &spawner, &EventEmitter::Noop, issue_id)
             .await
             .unwrap();
-        assert_eq!(out, TickOutcome::Idle);
+        assert_eq!(out, TickOutcome::Advanced);
         let issue = loop_issue::Entity::find_by_id(issue_id)
             .one(&db.conn)
             .await
@@ -1216,11 +1256,12 @@ mod tests {
         }
 
         // Tick 2: one Failed triage + undecided route + max_attempts=1 → block,
-        // NOT a fresh attempt-0 dispatch (the pre-fix bug).
+        // NOT a fresh attempt-0 dispatch (the pre-fix bug). The block reports
+        // Advanced (re-tick → stop), not a redispatch.
         let out = tick_once(&db, &data_dir, &spawner, &EventEmitter::Noop, issue_id)
             .await
             .unwrap();
-        assert_eq!(out, TickOutcome::Idle);
+        assert_eq!(out, TickOutcome::Advanced);
         let issue = loop_issue::Entity::find_by_id(issue_id)
             .one(&db.conn)
             .await

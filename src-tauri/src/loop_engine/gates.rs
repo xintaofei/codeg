@@ -60,9 +60,41 @@ enum ImplementOutcome {
     Blocked,
 }
 
+/// Result of one write-pipeline gate step — the driver uses it to decide whether
+/// to re-tick immediately or park.
+///
+/// * `Dispatched` — a new iteration was launched (now in flight). Park; its
+///   settlement wakes the driver.
+/// * `Advanced` — the engine's **durable** state moved forward (task promoted /
+///   task gate released / rework counter bumped / issue blocked) but **nothing**
+///   is in flight. The next tick must re-read state to dispatch the follow-on
+///   step, or observe the issue leaving `running` and stop. The driver therefore
+///   re-ticks immediately; otherwise it would park on the no-timeout wake and
+///   wedge. **Invariant: returning `Advanced` requires a real durable change** —
+///   otherwise a stale snapshot would re-enter the same arm and hot-spin.
+/// * `Idle` — nothing to do: an iteration is still in flight (await its wake), a
+///   human gate is open, or there is no pending work. Park.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StepOutcome {
+    Dispatched,
+    Advanced,
+    Idle,
+}
+
+impl StepOutcome {
+    /// Lift a raw "did it dispatch?" bool into a step outcome.
+    fn from_dispatched(dispatched: bool) -> Self {
+        if dispatched {
+            StepOutcome::Dispatched
+        } else {
+            StepOutcome::Idle
+        }
+    }
+}
+
 /// Drive the active task through the write pipeline (implement → validate →
-/// review) for one tick. Returns `true` when it dispatched a new iteration (the
-/// caller maps that to a `Dispatched` tick).
+/// review) for one tick. See [`StepOutcome`] for how the driver reacts to the
+/// return value.
 ///
 /// A no-op while no task exists yet (read stages still in flight), so the driver
 /// can call it on every "read frontier empty" tick.
@@ -76,7 +108,7 @@ pub(crate) async fn drive_active_task(
     dag: &LoopDagView,
     config: &IssueConfig,
     worktree_folder_id: i32,
-) -> Result<bool, LoopError> {
+) -> Result<StepOutcome, LoopError> {
     match issue.active_task_artifact_id {
         // A task already holds the gate → advance it.
         Some(active) => {
@@ -96,10 +128,10 @@ pub(crate) async fn drive_active_task(
         // Gate free → claim it for the next task awaiting implement and start.
         None => {
             let Some(task) = next_pending_task(dag) else {
-                return Ok(false);
+                return Ok(StepOutcome::Idle);
             };
             if try_acquire_task_gate(&db.conn, issue.id, task.id).await? {
-                dispatch_implement(
+                let dispatched = dispatch_implement(
                     db,
                     data_dir,
                     spawner,
@@ -110,10 +142,11 @@ pub(crate) async fn drive_active_task(
                     task.id,
                     task.attempt,
                 )
-                .await
+                .await?;
+                Ok(StepOutcome::from_dispatched(dispatched))
             } else {
                 // Lost the gate race to a concurrent driver tick — try next time.
-                Ok(false)
+                Ok(StepOutcome::Idle)
             }
         }
     }
@@ -140,10 +173,10 @@ async fn advance_active_task(
     config: &IssueConfig,
     worktree_folder_id: i32,
     active_task_id: i32,
-) -> Result<bool, LoopError> {
+) -> Result<StepOutcome, LoopError> {
     let Some(task) = dag.artifacts.iter().find(|a| a.id == active_task_id) else {
         // Gate points at a node not in this DAG — nothing to drive.
-        return Ok(false);
+        return Ok(StepOutcome::Idle);
     };
     match task.status {
         ArtifactStatus::Pending => {
@@ -154,8 +187,9 @@ async fn advance_active_task(
             drive_reviews(db, data_dir, spawner, emitter, issue, config, worktree_folder_id, task)
                 .await
         }
-        // Done (gate released on review pass), blocked, cancelled, etc. → idle.
-        _ => Ok(false),
+        // Done (gate released on review pass), blocked (awaiting a human retry),
+        // cancelled, etc. → idle.
+        _ => Ok(StepOutcome::Idle),
     }
 }
 
@@ -171,14 +205,14 @@ async fn advance_implement(
     config: &IssueConfig,
     worktree_folder_id: i32,
     task: &LoopArtifactRow,
-) -> Result<bool, LoopError> {
+) -> Result<StepOutcome, LoopError> {
     let impls = implement_iterations(db, issue.id, task.id).await?;
     if impls
         .iter()
         .any(|it| matches!(it.status, IterationStatus::Queued | IterationStatus::Running))
     {
         // Implement in flight — wait for its completion to wake us.
-        return Ok(false);
+        return Ok(StepOutcome::Idle);
     }
 
     // A succeeded implement at the current attempt is awaiting its checkpoint +
@@ -188,12 +222,19 @@ async fn advance_implement(
         .find(|it| it.status == IterationStatus::Succeeded && it.attempt == task.attempt);
     if let Some(settled) = settled {
         match finish_implement(db, issue, config, worktree_folder_id, task, settled.id).await? {
-            // Advanced (validated) or Blocked (validation can't run) both idle —
-            // review or a human takes over next.
-            ImplementOutcome::Advanced | ImplementOutcome::Blocked => Ok(false),
+            // Promoted to in_progress → re-tick to dispatch review.
+            ImplementOutcome::Advanced => Ok(StepOutcome::Advanced),
+            // Task (and possibly the issue) was blocked → re-tick: a blocked issue
+            // stops + deregisters the driver (so a human retry's respawn takes
+            // effect); a task-only block (issue still running) lands on
+            // `advance_active_task`'s idle arm and parks awaiting a human.
+            ImplementOutcome::Blocked => Ok(StepOutcome::Advanced),
             ImplementOutcome::NoProgress => {
-                // The rework counter was bumped; retry implement at the new attempt.
-                dispatch_implement(
+                // The rework counter was bumped (durable progress); retry implement
+                // at the new attempt. If the write lease was momentarily busy and
+                // nothing launched, still Advanced so the next tick re-attempts (it
+                // lands on the in-flight idle arm if a retry is by then running).
+                let dispatched = dispatch_implement(
                     db,
                     data_dir,
                     spawner,
@@ -204,13 +245,18 @@ async fn advance_implement(
                     task.id,
                     task.attempt + 1,
                 )
-                .await
+                .await?;
+                Ok(if dispatched {
+                    StepOutcome::Dispatched
+                } else {
+                    StepOutcome::Advanced
+                })
             }
         }
     } else {
         // Gate held but nothing live or freshly settled (just acquired, or a
         // prior attempt already processed) → (re)dispatch implement.
-        dispatch_implement(
+        let dispatched = dispatch_implement(
             db,
             data_dir,
             spawner,
@@ -221,7 +267,8 @@ async fn advance_implement(
             task.id,
             task.attempt,
         )
-        .await
+        .await?;
+        Ok(StepOutcome::from_dispatched(dispatched))
     }
 }
 
@@ -552,7 +599,7 @@ enum ReviewDecision {
 /// Drive an `in_progress` (implemented + validated) task through its review
 /// round: ensure `reviewer_count` review slots run, aggregate their verdicts,
 /// then accept (task `done` + release the task gate) or reject (rework + cancel
-/// the remaining reviewers). Returns `true` only when it dispatched a reviewer.
+/// the remaining reviewers). See [`StepOutcome`] for the return semantics.
 #[allow(clippy::too_many_arguments)]
 async fn drive_reviews(
     db: &AppDatabase,
@@ -563,7 +610,7 @@ async fn drive_reviews(
     config: &IssueConfig,
     worktree_folder_id: i32,
     task: &LoopArtifactRow,
-) -> Result<bool, LoopError> {
+) -> Result<StepOutcome, LoopError> {
     let reviewer_specs = config.effective_reviewers();
     let reviewers = reviewer_specs.len() as i32;
     let iters = review_iterations(db, issue.id, task.id, task.attempt).await?;
@@ -589,10 +636,19 @@ async fn drive_reviews(
     match aggregate(config.review_pass_rule, reviewers, &decided) {
         ReviewDecision::Pass => {
             cancel_active_reviews(db, spawner, &iters).await?;
-            set_task_status_cas(db, task.id, ArtifactStatus::InProgress, ArtifactStatus::Done)
-                .await?;
-            release_task_gate(&db.conn, issue.id, task.id).await?;
-            Ok(false)
+            // Only a CAS that actually applied (task was InProgress → Done) is
+            // durable progress; otherwise the snapshot was stale (a prior tick
+            // already settled this task), so don't report Advanced — that would
+            // re-enter this same arm on stale verdicts and hot-spin. Idle instead;
+            // a real wake re-ticks against fresh state.
+            if set_task_status_cas(db, task.id, ArtifactStatus::InProgress, ArtifactStatus::Done)
+                .await?
+            {
+                release_task_gate(&db.conn, issue.id, task.id).await?;
+                Ok(StepOutcome::Advanced)
+            } else {
+                Ok(StepOutcome::Idle)
+            }
         }
         ReviewDecision::Fail => {
             cancel_active_reviews(db, spawner, &iters).await?;
@@ -623,7 +679,11 @@ async fn drive_reviews(
                 // blocked; leave them as-is.
                 ReworkOutcome::Blocked => {}
             }
-            Ok(false)
+            // `record_rework` always bumps the attempt counter (an unconditional
+            // UPDATE), so a Fail arm is always durable progress: re-tick to either
+            // re-implement at the new attempt (Retry) or stop on the now-blocked
+            // issue (Blocked).
+            Ok(StepOutcome::Advanced)
         }
         ReviewDecision::Undecided => {
             let mut dispatched = false;
@@ -645,7 +705,7 @@ async fn drive_reviews(
                     dispatched = true;
                 }
             }
-            Ok(dispatched)
+            Ok(StepOutcome::from_dispatched(dispatched))
         }
     }
 }
@@ -796,8 +856,9 @@ async fn review_verdicts(
 /// a finalize iteration — which submits the `result` artifact via ingest, fanning
 /// `results_from` edges to each task — and commit any finalize worktree changes as
 /// the final checkpoint. A dirty tree blocks the issue (a structural fault a human
-/// must resolve). A no-op until the pipeline is drained. Returns `true` only when
-/// it dispatched the finalize iteration.
+/// must resolve). A no-op until the pipeline is drained. See [`StepOutcome`] for
+/// the return semantics (a dirty-tree block reports `Advanced` so the driver
+/// re-ticks and stops).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_finalize(
     db: &AppDatabase,
@@ -808,7 +869,7 @@ pub(crate) async fn run_finalize(
     dag: &LoopDagView,
     config: &IssueConfig,
     worktree_folder_id: i32,
-) -> Result<bool, LoopError> {
+) -> Result<StepOutcome, LoopError> {
     // Only finalize once every task is done and no task holds the gate.
     let tasks: Vec<&LoopArtifactRow> = dag
         .artifacts
@@ -816,10 +877,10 @@ pub(crate) async fn run_finalize(
         .filter(|a| a.kind == ArtifactKind::Task)
         .collect();
     if tasks.is_empty() || !tasks.iter().all(|t| t.status == ArtifactStatus::Done) {
-        return Ok(false);
+        return Ok(StepOutcome::Idle);
     }
     if issue.active_task_artifact_id.is_some() {
-        return Ok(false);
+        return Ok(StepOutcome::Idle);
     }
 
     let fins = finalize_iterations(db, issue.id).await?;
@@ -828,7 +889,7 @@ pub(crate) async fn run_finalize(
         .any(|it| matches!(it.status, IterationStatus::Queued | IterationStatus::Running))
     {
         // Finalize in flight — wait for its completion.
-        return Ok(false);
+        return Ok(StepOutcome::Idle);
     }
 
     let folder = folder_service::get_folder_by_id(&db.conn, worktree_folder_id)
@@ -854,7 +915,7 @@ pub(crate) async fn run_finalize(
             )
             .await?;
         }
-        return Ok(false);
+        return Ok(StepOutcome::Idle);
     }
 
     // No result yet. Assert the tree is clean (every task's checkpoint committed,
@@ -872,10 +933,14 @@ pub(crate) async fn run_finalize(
             serde_json::json!({ "reason": "worktree_dirty_before_finalize" }),
         )
         .await?;
-        return Ok(false);
+        // Issue is now blocked → re-tick so the driver observes it and stops (a
+        // human retry then respawns the driver).
+        return Ok(StepOutcome::Advanced);
     }
 
-    dispatch_finalize(db, data_dir, spawner, emitter, issue, config, worktree_folder_id).await
+    let dispatched =
+        dispatch_finalize(db, data_dir, spawner, emitter, issue, config, worktree_folder_id).await?;
+    Ok(StepOutcome::from_dispatched(dispatched))
 }
 
 /// Dispatch the finalize iteration (issue-level: `target = None`; the
@@ -1081,7 +1146,7 @@ mod tests {
             .unwrap()
     }
 
-    async fn drive(h: &Harness) -> bool {
+    async fn drive(h: &Harness) -> StepOutcome {
         let issue = load_issue(h).await;
         let dag = artifact::list_dag(&h.db.conn, h.issue_id).await.unwrap();
         drive_active_task(
@@ -1128,6 +1193,80 @@ mod tests {
             .unwrap()
     }
 
+    /// Regression for the driver wedge: an implement settle must report `Advanced`
+    /// (not the old `Ok(false)` that folded into Idle and parked forever), promote
+    /// the task, and let the very next drive dispatch review — no manual tick.
+    #[tokio::test]
+    async fn implement_settle_advances_then_next_drive_dispatches_review() {
+        let h = setup().await;
+        let task = add_task(&h, "T").await;
+
+        // A round: gate free → claim + dispatch implement (in flight).
+        assert_eq!(drive(&h).await, StepOutcome::Dispatched);
+        let impl_id = running_implement_id(&h).await;
+
+        // Simulate the agent editing the tree, then the turn settling.
+        std::fs::write(h.worktree_path.join("feature.txt"), "work\n").unwrap();
+        settle_iteration(&h.db, &EventEmitter::Noop, impl_id)
+            .await
+            .unwrap();
+
+        // The post-settle drive must report Advanced (was wedged as Idle before),
+        // with the task promoted to in_progress (checkpoint + validate ran; the
+        // default config has no validation_commands).
+        assert_eq!(drive(&h).await, StepOutcome::Advanced);
+        assert_eq!(task_node(&h, task).await.status, ArtifactStatus::InProgress);
+
+        // The next drive dispatches review immediately — no external tick / resume.
+        assert_eq!(drive(&h).await, StepOutcome::Dispatched);
+        let has_review = loop_iteration::Entity::find()
+            .filter(loop_iteration::Column::Stage.eq(Stage::Review))
+            .one(&h.db.conn)
+            .await
+            .unwrap()
+            .is_some();
+        assert!(has_review, "review dispatched right after implement advanced");
+    }
+
+    /// Simulate `run_driver`'s fixpoint: keep driving while it reports `Advanced`.
+    /// **Bounded** — a non-converging chain panics (fail-fast in CI) rather than
+    /// hanging, which a real fix never reaches.
+    async fn drive_to_quiescence(h: &Harness) -> StepOutcome {
+        for _ in 0..256 {
+            match drive(h).await {
+                StepOutcome::Advanced => continue,
+                other => return other,
+            }
+        }
+        panic!("driver did not reach quiescence within bound — non-progressing Advanced");
+    }
+
+    /// End-to-end fixpoint: a single implement settle, then the fixpoint loop must
+    /// reach a *running* review with no external tick / manual resume.
+    #[tokio::test]
+    async fn settle_then_fixpoint_reaches_review_without_manual_tick() {
+        let h = setup().await;
+        add_task(&h, "T").await;
+
+        assert_eq!(drive(&h).await, StepOutcome::Dispatched);
+        let impl_id = running_implement_id(&h).await;
+        std::fs::write(h.worktree_path.join("feature.txt"), "work\n").unwrap();
+        settle_iteration(&h.db, &EventEmitter::Noop, impl_id)
+            .await
+            .unwrap();
+
+        // One settle, then run the fixpoint: it should stop at "review dispatched"
+        // (Dispatched), entirely without external intervention.
+        assert_eq!(drive_to_quiescence(&h).await, StepOutcome::Dispatched);
+        let review = loop_iteration::Entity::find()
+            .filter(loop_iteration::Column::Stage.eq(Stage::Review))
+            .filter(loop_iteration::Column::Status.eq(IterationStatus::Running))
+            .one(&h.db.conn)
+            .await
+            .unwrap();
+        assert!(review.is_some(), "review running after a single implement settle");
+    }
+
     #[tokio::test]
     async fn gate_serializes_implement_to_one_task() {
         let h = setup().await;
@@ -1135,12 +1274,20 @@ mod tests {
         let t2 = add_task(&h, "Task 2").await;
 
         // First tick claims the gate for the lowest-ordered task and dispatches.
-        assert!(drive(&h).await, "first tick dispatches an implement");
+        assert_eq!(
+            drive(&h).await,
+            StepOutcome::Dispatched,
+            "first tick dispatches an implement"
+        );
         let issue = load_issue(&h).await;
         assert_eq!(issue.active_task_artifact_id, Some(t1), "gate held by task 1");
 
         // A second tick (no completion yet) must not start the other task.
-        assert!(!drive(&h).await, "no second implement while the gate is held");
+        assert_eq!(
+            drive(&h).await,
+            StepOutcome::Idle,
+            "no second implement while the gate is held"
+        );
         let iters = loop_iteration::Entity::find()
             .filter(loop_iteration::Column::Stage.eq(Stage::Implement))
             .all(&h.db.conn)
@@ -1161,7 +1308,7 @@ mod tests {
         let task = add_task(&h, "Task 1").await;
 
         // Tick 1: dispatch implement for the task.
-        assert!(drive(&h).await);
+        assert_eq!(drive(&h).await, StepOutcome::Dispatched);
         let iter_id = running_implement_id(&h).await;
 
         // The agent makes a change in the worktree (non-empty diff), then the
@@ -1174,7 +1321,11 @@ mod tests {
         assert_eq!(task_node(&h, task).await.attempt, 0);
 
         // Tick 2: checkpoint the diff → commit + promote the task.
-        assert!(!drive(&h).await, "checkpoint/advance is not a dispatch");
+        assert_eq!(
+            drive(&h).await,
+            StepOutcome::Advanced,
+            "checkpoint/advance is an advance, not a dispatch"
+        );
         let node = task_node(&h, task).await;
         assert_eq!(node.status, ArtifactStatus::InProgress, "task implemented");
         assert_eq!(node.attempt, 0, "successful implement does not bump attempt");
@@ -1204,7 +1355,7 @@ mod tests {
         let h = setup().await;
         let task = add_task(&h, "Task 1").await;
 
-        assert!(drive(&h).await);
+        assert_eq!(drive(&h).await, StepOutcome::Dispatched);
         let iter_id = running_implement_id(&h).await;
         // Agent produced no change. Settle, then drive: empty diff → no progress.
         settle_iteration(&h.db, &EventEmitter::Noop, iter_id)
@@ -1212,7 +1363,11 @@ mod tests {
             .unwrap();
 
         // Tick 2: checkpoint finds nothing → rework bump + retry dispatch.
-        assert!(drive(&h).await, "no-progress retries implement");
+        assert_eq!(
+            drive(&h).await,
+            StepOutcome::Dispatched,
+            "no-progress retries implement"
+        );
         let node = task_node(&h, task).await;
         assert_eq!(node.attempt, 1, "rework counter bumped");
         assert_eq!(node.status, ArtifactStatus::Pending, "still awaiting implement");
@@ -1240,7 +1395,7 @@ mod tests {
         }
     }
 
-    async fn drive_with(h: &Harness, config: &IssueConfig) -> bool {
+    async fn drive_with(h: &Harness, config: &IssueConfig) -> StepOutcome {
         let issue = load_issue(h).await;
         let dag = artifact::list_dag(&h.db.conn, h.issue_id).await.unwrap();
         drive_active_task(
@@ -1265,7 +1420,11 @@ mod tests {
         let task = add_task(&h, "Task 1").await;
         let cfg = config_with_validation(&["true"]);
 
-        assert!(drive_with(&h, &cfg).await, "tick 1 dispatches implement");
+        assert_eq!(
+            drive_with(&h, &cfg).await,
+            StepOutcome::Dispatched,
+            "tick 1 dispatches implement"
+        );
         let iter_id = running_implement_id(&h).await;
         std::fs::write(h.worktree_path.join("feature.txt"), "code\n").unwrap();
         settle_iteration(&h.db, &EventEmitter::Noop, iter_id)
@@ -1273,7 +1432,7 @@ mod tests {
             .unwrap();
 
         // Tick 2: checkpoint + validation(pass) → advance (not a dispatch).
-        assert!(!drive_with(&h, &cfg).await);
+        assert_eq!(drive_with(&h, &cfg).await, StepOutcome::Advanced);
         assert_eq!(task_node(&h, task).await.status, ArtifactStatus::InProgress);
         let runs = loop_service::validation::list_for_task(&h.db.conn, task)
             .await
@@ -1290,7 +1449,7 @@ mod tests {
         let task = add_task(&h, "Task 1").await;
         let cfg = config_with_validation(&["false"]);
 
-        assert!(drive_with(&h, &cfg).await);
+        assert_eq!(drive_with(&h, &cfg).await, StepOutcome::Dispatched);
         let iter_id = running_implement_id(&h).await;
         std::fs::write(h.worktree_path.join("feature.txt"), "code\n").unwrap();
         settle_iteration(&h.db, &EventEmitter::Noop, iter_id)
@@ -1298,7 +1457,11 @@ mod tests {
             .unwrap();
 
         // Tick 2: checkpoint + validation(fail) → rework + re-dispatch implement.
-        assert!(drive_with(&h, &cfg).await, "validation failure retries implement");
+        assert_eq!(
+            drive_with(&h, &cfg).await,
+            StepOutcome::Dispatched,
+            "validation failure retries implement"
+        );
         let node = task_node(&h, task).await;
         assert_eq!(node.attempt, 1, "rework counter bumped");
         assert_eq!(
@@ -1339,17 +1502,19 @@ mod tests {
         let task = add_task(&h, "Task 1").await;
         let cfg = config_with_validation(&["codeg-no-such-tool-xyzzy"]);
 
-        assert!(drive_with(&h, &cfg).await);
+        assert_eq!(drive_with(&h, &cfg).await, StepOutcome::Dispatched);
         let iter_id = running_implement_id(&h).await;
         std::fs::write(h.worktree_path.join("feature.txt"), "code\n").unwrap();
         settle_iteration(&h.db, &EventEmitter::Noop, iter_id)
             .await
             .unwrap();
 
-        // Tick 2: checkpoint + validation(unrunnable) → block (not a dispatch).
-        assert!(
-            !drive_with(&h, &cfg).await,
-            "unrunnable validation does not retry"
+        // Tick 2: checkpoint + validation(unrunnable) → block the task (an advance,
+        // not a dispatch; issue stays running so the next drive parks).
+        assert_eq!(
+            drive_with(&h, &cfg).await,
+            StepOutcome::Advanced,
+            "unrunnable validation blocks the task"
         );
         let node = task_node(&h, task).await;
         assert_eq!(node.status, ArtifactStatus::Blocked);
@@ -1382,13 +1547,21 @@ mod tests {
     /// Drive a fresh task from pending to `in_progress` (implemented + validated)
     /// so review tests can start at the review stage.
     async fn implement_to_in_progress(h: &Harness, cfg: &IssueConfig, marker: &str) {
-        assert!(drive_with(h, cfg).await, "dispatch implement");
+        assert_eq!(
+            drive_with(h, cfg).await,
+            StepOutcome::Dispatched,
+            "dispatch implement"
+        );
         let iter_id = running_implement_id(h).await;
         std::fs::write(h.worktree_path.join(marker), "code\n").unwrap();
         settle_iteration(&h.db, &EventEmitter::Noop, iter_id)
             .await
             .unwrap();
-        assert!(!drive_with(h, cfg).await, "checkpoint + validate → in_progress");
+        assert_eq!(
+            drive_with(h, cfg).await,
+            StepOutcome::Advanced,
+            "checkpoint + validate → in_progress"
+        );
     }
 
     async fn running_review(h: &Harness) -> i32 {
@@ -1441,7 +1614,11 @@ mod tests {
         assert_eq!(task_node(&h, task).await.status, ArtifactStatus::InProgress);
 
         // Dispatch the reviewer, who passes.
-        assert!(drive_with(&h, &cfg).await, "dispatches a reviewer");
+        assert_eq!(
+            drive_with(&h, &cfg).await,
+            StepOutcome::Dispatched,
+            "dispatches a reviewer"
+        );
         let review = running_review(&h).await;
         submit_verdict(&h, review, "pass", "looks good").await;
         settle_iteration(&h.db, &EventEmitter::Noop, review)
@@ -1449,7 +1626,7 @@ mod tests {
             .unwrap();
 
         // Aggregate → pass → task done + gate released.
-        assert!(!drive_with(&h, &cfg).await);
+        assert_eq!(drive_with(&h, &cfg).await, StepOutcome::Advanced);
         assert_eq!(task_node(&h, task).await.status, ArtifactStatus::Done);
         assert_eq!(
             load_issue(&h).await.active_task_artifact_id,
@@ -1483,7 +1660,11 @@ mod tests {
         implement_to_in_progress(&h, &cfg, "feature.txt").await;
 
         // One drive dispatches both review slots.
-        assert!(drive_with(&h, &cfg).await, "dispatches reviewers");
+        assert_eq!(
+            drive_with(&h, &cfg).await,
+            StepOutcome::Dispatched,
+            "dispatches reviewers"
+        );
         let reviews = review_iters_of(&h, task).await; // sorted by slot_no
         assert_eq!(reviews.len(), 2, "one iteration per configured reviewer");
 
@@ -1512,15 +1693,19 @@ mod tests {
         let cfg = config_reviewers(1, ReviewPassRule::Unanimous);
         implement_to_in_progress(&h, &cfg, "feature.txt").await;
 
-        assert!(drive_with(&h, &cfg).await);
+        assert_eq!(drive_with(&h, &cfg).await, StepOutcome::Dispatched);
         let review = running_review(&h).await;
         submit_verdict(&h, review, "fail", "missing error handling").await;
         settle_iteration(&h.db, &EventEmitter::Noop, review)
             .await
             .unwrap();
 
-        // Aggregate → fail → rework.
-        assert!(!drive_with(&h, &cfg).await, "review fail reworks, not a dispatch");
+        // Aggregate → fail → rework (an advance, not a dispatch).
+        assert_eq!(
+            drive_with(&h, &cfg).await,
+            StepOutcome::Advanced,
+            "review fail reworks, not a dispatch"
+        );
         let node = task_node(&h, task).await;
         assert_eq!(node.status, ArtifactStatus::Pending);
         assert_eq!(node.attempt, 1);
@@ -1554,7 +1739,11 @@ mod tests {
         implement_to_in_progress(&h, &cfg, "feature.txt").await;
 
         // Dispatch both review slots.
-        assert!(drive_with(&h, &cfg).await, "dispatches reviewers");
+        assert_eq!(
+            drive_with(&h, &cfg).await,
+            StepOutcome::Dispatched,
+            "dispatches reviewers"
+        );
         let reviews = review_iters_of(&h, task).await;
         assert_eq!(reviews.len(), 2, "two review slots");
 
@@ -1564,7 +1753,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!drive_with(&h, &cfg).await, "fail-fast reworks");
+        assert_eq!(
+            drive_with(&h, &cfg).await,
+            StepOutcome::Advanced,
+            "fail-fast reworks"
+        );
         assert_eq!(task_node(&h, task).await.status, ArtifactStatus::Pending);
         let slot1 = loop_iteration::Entity::find_by_id(reviews[1].id)
             .one(&h.db.conn)
@@ -1592,15 +1785,24 @@ mod tests {
             ..config_with_validation(&["false"])
         };
 
-        assert!(drive_with(&h, &cfg).await, "tick 1 dispatches implement");
+        assert_eq!(
+            drive_with(&h, &cfg).await,
+            StepOutcome::Dispatched,
+            "tick 1 dispatches implement"
+        );
         let iter_id = running_implement_id(&h).await;
         std::fs::write(h.worktree_path.join("feature.txt"), "code\n").unwrap();
         settle_iteration(&h.db, &EventEmitter::Noop, iter_id)
             .await
             .unwrap();
 
-        // Tick 2: validation fails at attempt 0 → bump→1 ≥ max(1) → block.
-        assert!(!drive_with(&h, &cfg).await, "a breaker block is not a dispatch");
+        // Tick 2: validation fails at attempt 0 → bump→1 ≥ max(1) → block (an
+        // advance: the issue is now blocked, so the driver re-ticks then stops).
+        assert_eq!(
+            drive_with(&h, &cfg).await,
+            StepOutcome::Advanced,
+            "a breaker block advances (then stops), not a dispatch"
+        );
         let node = task_node(&h, task).await;
         assert_eq!(node.status, ArtifactStatus::Blocked, "task blocked");
         assert_eq!(node.attempt, 1);
@@ -1627,13 +1829,17 @@ mod tests {
         let cfg = config_with_validation(&["false"]); // default max_attempts = 6
 
         // Attempt 0: implement → validation fails → retry (not yet blocked).
-        assert!(drive_with(&h, &cfg).await);
+        assert_eq!(drive_with(&h, &cfg).await, StepOutcome::Dispatched);
         let iter0 = running_implement_id(&h).await;
         std::fs::write(h.worktree_path.join("feature.txt"), "code\n").unwrap();
         settle_iteration(&h.db, &EventEmitter::Noop, iter0)
             .await
             .unwrap();
-        assert!(drive_with(&h, &cfg).await, "attempt 0 failure retries");
+        assert_eq!(
+            drive_with(&h, &cfg).await,
+            StepOutcome::Dispatched,
+            "attempt 0 failure retries"
+        );
         assert_eq!(task_node(&h, task).await.attempt, 1);
         assert_eq!(task_node(&h, task).await.status, ArtifactStatus::Pending);
 
@@ -1643,7 +1849,11 @@ mod tests {
         settle_iteration(&h.db, &EventEmitter::Noop, iter1)
             .await
             .unwrap();
-        assert!(!drive_with(&h, &cfg).await, "the repeat trips the breaker");
+        assert_eq!(
+            drive_with(&h, &cfg).await,
+            StepOutcome::Advanced,
+            "the repeat trips the breaker (advance, then stop)"
+        );
 
         let node = task_node(&h, task).await;
         assert_eq!(node.status, ArtifactStatus::Blocked, "task blocked on repeat");
@@ -1669,7 +1879,7 @@ mod tests {
             .unwrap();
 
         // Dispatch + settle any iteration; settlement evaluates the budget breaker.
-        assert!(drive(&h).await, "dispatch implement");
+        assert_eq!(drive(&h).await, StepOutcome::Dispatched, "dispatch implement");
         let iter_id = running_implement_id(&h).await;
         settle_iteration(&h.db, &EventEmitter::Noop, iter_id)
             .await
@@ -1692,7 +1902,7 @@ mod tests {
 
     // ---- Task 2.5: finalize → result ----
 
-    async fn drive_finalize(h: &Harness, cfg: &IssueConfig) -> bool {
+    async fn drive_finalize(h: &Harness, cfg: &IssueConfig) -> StepOutcome {
         let issue = load_issue(h).await;
         let dag = artifact::list_dag(&h.db.conn, h.issue_id).await.unwrap();
         run_finalize(
@@ -1723,13 +1933,21 @@ mod tests {
     /// task gate so the issue is ready to finalize.
     async fn complete_task(h: &Harness, cfg: &IssueConfig, marker: &str, task: i32) {
         implement_to_in_progress(h, cfg, marker).await;
-        assert!(drive_with(h, cfg).await, "dispatch reviewer");
+        assert_eq!(
+            drive_with(h, cfg).await,
+            StepOutcome::Dispatched,
+            "dispatch reviewer"
+        );
         let review = running_review(h).await;
         submit_verdict(h, review, "pass", "ok").await;
         settle_iteration(&h.db, &EventEmitter::Noop, review)
             .await
             .unwrap();
-        assert!(!drive_with(h, cfg).await, "review pass → task done");
+        assert_eq!(
+            drive_with(h, cfg).await,
+            StepOutcome::Advanced,
+            "review pass → task done"
+        );
         assert_eq!(task_node(h, task).await.status, ArtifactStatus::Done);
     }
 
@@ -1748,7 +1966,11 @@ mod tests {
         );
 
         // Finalize dispatches (issue-level, target = None).
-        assert!(drive_finalize(&h, &cfg).await, "finalize dispatched");
+        assert_eq!(
+            drive_finalize(&h, &cfg).await,
+            StepOutcome::Dispatched,
+            "finalize dispatched"
+        );
         let fin = running_finalize(&h).await;
 
         // Simulate the finalize agent submitting the result summary via ingest.
@@ -1765,7 +1987,11 @@ mod tests {
             .unwrap();
 
         // Next tick: result exists → final checkpoint + idle (not a dispatch).
-        assert!(!drive_finalize(&h, &cfg).await, "finalize complete is not a dispatch");
+        assert_eq!(
+            drive_finalize(&h, &cfg).await,
+            StepOutcome::Idle,
+            "finalize complete is not a dispatch"
+        );
 
         let dag = artifact::list_dag(&h.db.conn, h.issue_id).await.unwrap();
         let results: Vec<_> = dag
@@ -1799,7 +2025,11 @@ mod tests {
         // Stray uncommitted file in the worktree.
         std::fs::write(h.worktree_path.join("stray.txt"), "uncommitted\n").unwrap();
 
-        assert!(!drive_finalize(&h, &cfg).await, "dirty tree does not dispatch");
+        assert_eq!(
+            drive_finalize(&h, &cfg).await,
+            StepOutcome::Advanced,
+            "dirty tree blocks (advance), not a dispatch"
+        );
         assert_eq!(
             load_issue(&h).await.status,
             IssueStatus::Blocked,
