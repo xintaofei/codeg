@@ -32,7 +32,7 @@ import {
 import { DelegationProvider } from "@/contexts/delegation-context"
 import { ConversationRuntimeProvider } from "@/contexts/conversation-runtime-context"
 import { TabProvider, useTabContext } from "@/contexts/tab-context"
-import { LoopsViewProvider, useLoopsView } from "@/contexts/loops-view-context"
+import { useLoopNav } from "@/hooks/use-loop-nav"
 import { SessionStatsProvider } from "@/contexts/session-stats-context"
 import { SidebarProvider, useSidebarContext } from "@/contexts/sidebar-context"
 import { SearchDialogProvider } from "@/contexts/search-dialog-context"
@@ -405,7 +405,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
     maxHeight: terminalMaxHeight,
     setHeight: setTerminalHeight,
   } = useTerminalContext()
-  const { view: loopsView } = useLoopsView()
+  const { nav } = useLoopNav()
 
   const shellGroupRef = useRef<ImperativePanelGroupHandle | null>(null)
   const mainGroupRef = useRef<ImperativePanelGroupHandle | null>(null)
@@ -741,7 +741,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
             <div
               className={cn(
                 "flex min-h-0 flex-1 flex-col",
-                loopsView === "loops" && "hidden"
+                nav.loops && "hidden"
               )}
             >
               <ResizablePanelGroup
@@ -783,7 +783,7 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
               </ResizablePanelGroup>
             </div>
 
-            {loopsView === "loops" ? (
+            {nav.loops ? (
               <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
                 <Suspense
                   fallback={
@@ -824,16 +824,29 @@ function FolderWorkspaceShell({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * Bridges the active chat tab into the loops view context so that selecting a
- * chat tab (the active id changing) flips the workspace back to the chat
- * surface. Lives inside TabProvider so it can read the active tab id, and wraps
- * the shell so both the sidebar entry and the workspace gate share the state.
+ * Selecting a chat tab (the active tab id changing) drops the workspace back to
+ * the chat surface — but, unlike the old localStorage view, it leaves loop nav
+ * (space/issue/tab) in the URL so returning to loops restores it. Lives inside
+ * TabProvider so it can read the active tab id.
  */
-function LoopsViewBridge({ children }: { children: React.ReactNode }) {
+function LoopsTabSync({ children }: { children: React.ReactNode }) {
   const { activeTabId } = useTabContext()
-  return (
-    <LoopsViewProvider activeTabId={activeTabId}>{children}</LoopsViewProvider>
-  )
+  const { nav, exitLoops } = useLoopNav()
+  const prevTabRef = useRef<string | null | undefined>(undefined)
+  useEffect(() => {
+    // Skip the initial mount (review NB2) so a deep-linked loops view is NOT
+    // exited on hydration — only a genuine later tab switch drops to chat.
+    if (prevTabRef.current === undefined) {
+      prevTabRef.current = activeTabId
+      return
+    }
+    if (prevTabRef.current !== activeTabId) {
+      prevTabRef.current = activeTabId
+      // exitLoops is a URL write (not a React setState), so no set-state-in-effect.
+      if (nav.loops) exitLoops()
+    }
+  }, [activeTabId, nav.loops, exitLoops])
+  return <>{children}</>
 }
 
 function FolderLayoutShell({ children }: { children: React.ReactNode }) {
@@ -881,11 +894,11 @@ function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
                             <AuxPanelProvider>
                               <TerminalProvider>
                                 <SearchDialogProvider>
-                                  <LoopsViewBridge>
+                                  <LoopsTabSync>
                                     <FolderLayoutShell>
                                       {children}
                                     </FolderLayoutShell>
-                                  </LoopsViewBridge>
+                                  </LoopsTabSync>
                                 </SearchDialogProvider>
                               </TerminalProvider>
                             </AuxPanelProvider>

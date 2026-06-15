@@ -12,6 +12,8 @@ import type {
   LoopSpaceSummary,
 } from "@/lib/types"
 import { useLoopResource } from "@/hooks/use-loop-resource"
+import { useLoopNav } from "@/hooks/use-loop-nav"
+import type { LoopTab } from "@/lib/loop-nav"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { IssueList } from "@/components/loops/issue-list"
@@ -23,8 +25,6 @@ import { ArtifactList } from "@/components/loops/artifact-list"
 import { MemoryPanel } from "@/components/loops/memory-panel"
 import { ArtifactDrawer } from "@/components/loops/artifact-drawer"
 import { SpaceDefaultsDialog } from "@/components/loops/space-defaults-dialog"
-
-type SpaceTab = "issues" | "iterations" | "artifacts" | "inbox" | "memory"
 
 /** The iteration session a `question` inbox card points at, parsed from its
  *  payload (written by the engine's question router). The dialog self-discovers
@@ -59,9 +59,10 @@ export function SpaceDetail({
 }) {
   const t = useTranslations("Loops.spaceDetail")
   const tDefaults = useTranslations("Loops.spaceDefaults")
-  const [tab, setTab] = useState<SpaceTab>("issues")
+  const { nav, setTab, selectIssue } = useLoopNav()
+  const tab: LoopTab = nav.tab
+  const selectedIssueId = nav.issue
   const [defaultsOpen, setDefaultsOpen] = useState(false)
-  const [selectedIssueId, setSelectedIssueId] = useState<number | null>(null)
   const [openIteration, setOpenIteration] = useState<OpenIteration | null>(null)
   const [selectedArtifactId, setSelectedArtifactId] = useState<number | null>(
     null
@@ -91,7 +92,7 @@ export function SpaceDetail({
 
       <Tabs
         value={tab}
-        onValueChange={(v) => setTab(v as SpaceTab)}
+        onValueChange={(v) => setTab(v as LoopTab)}
         className="flex min-h-0 flex-1 flex-col"
       >
         <div className="mx-4 mt-2 flex items-center gap-2 self-start">
@@ -122,7 +123,7 @@ export function SpaceDetail({
               <IssueList
                 spaceId={space.id}
                 selectedIssueId={selectedIssueId}
-                onSelectIssue={setSelectedIssueId}
+                onSelectIssue={selectIssue}
               />
             </div>
             <div className="min-w-0 flex-1">

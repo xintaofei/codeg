@@ -12,7 +12,7 @@ import {
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useActiveFolder } from "@/contexts/active-folder-context"
-import { useLoopsView } from "@/contexts/loops-view-context"
+import { useLoopNav } from "@/hooks/use-loop-nav"
 import { useSidebarContext } from "@/contexts/sidebar-context"
 import { useTabContext } from "@/contexts/tab-context"
 import { useSearchDialog } from "@/contexts/search-dialog-context"
@@ -65,7 +65,7 @@ export function Sidebar() {
   const { activeFolder } = useActiveFolder()
   const { openNewConversationTab, openChatModeTab } = useTabContext()
   const { setOpen: setSearchOpen } = useSearchDialog()
-  const { view: loopsView, setView: setLoopsView } = useLoopsView()
+  const { nav, toggleLoops } = useLoopNav()
   const isMac = useIsMac()
   const { shortcuts } = useShortcutSettings()
   const isMobile = useIsMobile()
@@ -246,15 +246,15 @@ export function Sidebar() {
         {!isMobile ? (
           <button
             type="button"
-            onClick={() => setLoopsView("loops")}
+            onClick={() => toggleLoops()}
             title={t("loops")}
-            aria-pressed={loopsView === "loops"}
+            aria-pressed={nav.loops}
             className={cn(
               "group flex h-8 w-full items-center gap-[0.4375rem] rounded-full pl-[0.4375rem] pr-1.5",
               "text-[0.875rem] text-sidebar-foreground outline-none",
               "transition-colors duration-150 hover:bg-sidebar-accent",
               "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-              loopsView === "loops" && "bg-sidebar-accent"
+              nav.loops && "bg-sidebar-accent"
             )}
           >
             <Workflow className="h-[0.875rem] w-[0.875rem] shrink-0 text-muted-foreground" />

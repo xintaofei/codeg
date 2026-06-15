@@ -57,6 +57,10 @@ function makeSpace(over: Partial<LoopSpaceSummary> = {}): LoopSpaceSummary {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // Space selection is now URL-driven (useLoopNav), so reset the query string
+  // between tests — otherwise a `?space=1` written by one test's card click
+  // would leak into the next and pre-open a space.
+  window.history.replaceState({}, "", "/")
   // The header mounts EngineHealthBadge, which polls getLoopEngineHealth on
   // mount. Resolve a quiet fixture so the effect doesn't throw or hit transport
   // (the badge renders null until this resolves and never affects assertions).

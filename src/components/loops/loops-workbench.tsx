@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import {
@@ -18,6 +18,7 @@ import type { LoopSpaceSummary } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
 import { LoopRealtimeProvider } from "@/components/loops/loop-realtime-context"
 import { useLoopResource } from "@/hooks/use-loop-resource"
+import { useLoopNav } from "@/hooks/use-loop-nav"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -54,7 +55,12 @@ function LoopsWorkbenchInner() {
   const tCommon = useTranslations("Loops.common")
   const tToasts = useTranslations("Loops.toasts")
 
-  const [selectedSpaceId, setSelectedSpaceId] = useState<number | null>(null)
+  const { nav, openSpace, closeSpace } = useLoopNav()
+  const selectedSpaceId = nav.space
+  const setSelectedSpaceId = useCallback(
+    (id: number | null) => (id == null ? closeSpace() : openSpace(id)),
+    [openSpace, closeSpace]
+  )
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<LoopSpaceSummary | null>(null)
   const [deleting, setDeleting] = useState<LoopSpaceSummary | null>(null)
@@ -82,7 +88,7 @@ function LoopsWorkbenchInner() {
     if (selectedSpaceId != null && !loading && !selectedSpace) {
       setSelectedSpaceId(null)
     }
-  }, [selectedSpaceId, selectedSpace, loading])
+  }, [selectedSpaceId, selectedSpace, loading, setSelectedSpaceId])
 
   const handleDelete = async () => {
     if (!deleting) return

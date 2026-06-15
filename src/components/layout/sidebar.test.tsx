@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { Sidebar } from "./sidebar"
 import enMessages from "@/i18n/messages/en.json"
+import { DEFAULT_LOOP_NAV } from "@/lib/loop-nav"
 
 // Stable spies + mutable active-folder, referenced from the hoisted mock
 // factories below (vi.mock is hoisted above imports).
@@ -11,7 +12,7 @@ const spies = vi.hoisted(() => ({
   openNewConversationTab: vi.fn(),
   openChatModeTab: vi.fn(),
   setSearchOpen: vi.fn(),
-  setLoopsView: vi.fn(),
+  toggleLoops: vi.fn(),
 }))
 const mockState = vi.hoisted(() => ({
   activeFolder: { id: 7, path: "/x" } as { id: number; path: string } | null,
@@ -37,8 +38,11 @@ vi.mock("@/contexts/tab-context", () => ({
 vi.mock("@/contexts/search-dialog-context", () => ({
   useSearchDialog: () => ({ open: false, setOpen: spies.setSearchOpen }),
 }))
-vi.mock("@/contexts/loops-view-context", () => ({
-  useLoopsView: () => ({ view: "chat", setView: spies.setLoopsView }),
+vi.mock("@/hooks/use-loop-nav", () => ({
+  useLoopNav: () => ({
+    nav: { ...DEFAULT_LOOP_NAV },
+    toggleLoops: spies.toggleLoops,
+  }),
 }))
 vi.mock("@/hooks/use-is-mac", () => ({ useIsMac: () => false }))
 vi.mock("@/hooks/use-shortcut-settings", () => ({
