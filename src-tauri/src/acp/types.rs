@@ -492,6 +492,13 @@ pub struct AcpAgentInfo {
     pub enabled: bool,
     pub sort_order: i32,
     pub installed_version: Option<String>,
+    /// Version of the upstream/original CLI detected on PATH (for example
+    /// `claude` or `codex`) when the managed ACP adapter/wrapper itself is not
+    /// installed. This is informational for Settings and must not be treated as
+    /// ACP-launch readiness.
+    pub base_cli_version: Option<String>,
+    pub base_cli_command: Option<String>,
+    pub base_cli_package: Option<String>,
     pub env: BTreeMap<String, String>,
     pub config_json: Option<String>,
     pub config_file_path: Option<String>,
@@ -512,6 +519,10 @@ pub struct AcpAgentStatus {
     pub available: bool,
     pub enabled: bool,
     pub installed_version: Option<String>,
+    /// Informational upstream/original CLI detection; see `AcpAgentInfo`.
+    pub base_cli_version: Option<String>,
+    pub base_cli_command: Option<String>,
+    pub base_cli_package: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

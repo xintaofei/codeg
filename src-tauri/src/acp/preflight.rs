@@ -433,7 +433,7 @@ async fn check_binary_environment(
     };
     checks.push(platform_check);
 
-    // Check binary cache.
+    // Check binary cache / system binary.
     //
     // Pass as long as *any* cached version is present — the session-page
     // connect path uses the best cached version via
@@ -441,7 +441,9 @@ async fn check_binary_environment(
     // should still be considered "ready". If the cached version differs
     // from the registry's recommended version, we note it in the message
     // but still pass — the Settings page's version-badge flow is the
-    // canonical place to surface "upgrade available".
+    // canonical place to surface "upgrade available". If Codeg did not
+    // download the binary but the command is already available on PATH (for
+    // example a user-managed `opencode`), that is launchable too.
     if platform_supported {
         let cache_check = match binary_cache::find_best_cached_binary_for_agent(agent_type, cmd) {
             Ok(Some((_, cached_version))) => {
@@ -458,15 +460,27 @@ async fn check_binary_environment(
                     fixes: vec![],
                 }
             }
-            Ok(None) => CheckItem {
-                check_id: "binary_cached".into(),
-                label: "Binary cache".into(),
-                status: CheckStatus::Warn,
-                message:
-                    "Binary is not installed. Download it from Agent Settings before connecting."
-                        .into(),
-                fixes: vec![],
-            },
+            Ok(None) => {
+                if let Some(path) = binary_cache::resolve_system_binary_for_agent(agent_type, cmd) {
+                    CheckItem {
+                        check_id: "binary_cached".into(),
+                        label: "Binary".into(),
+                        status: CheckStatus::Pass,
+                        message: format!("Using system binary {}", path.display()),
+                        fixes: vec![],
+                    }
+                } else {
+                    CheckItem {
+                        check_id: "binary_cached".into(),
+                        label: "Binary cache".into(),
+                        status: CheckStatus::Warn,
+                        message:
+                            "Binary is not installed. Download it from Agent Settings before connecting."
+                                .into(),
+                        fixes: vec![],
+                    }
+                }
+            }
             Err(_) => CheckItem {
                 check_id: "binary_cached".into(),
                 label: "Binary cache".into(),

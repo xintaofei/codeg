@@ -790,7 +790,8 @@
       "localUnrecognized": "{versionText}. Local version is not comparable; try upgrade to overwrite install.",
       "upgradeAvailable": "{versionText}. Upgrade available.",
       "remoteUnavailable": "{versionText}. Remote version is currently unavailable.",
-      "latest": "{versionText}. Already latest."
+      "latest": "{versionText}. Already latest.",
+      "baseCliDetected": "{versionText}. Detected upstream CLI {command} {version}, but the ACP adapter is not installed yet. Click Install to install the adapter."
     },
     "cline": {
       "configDescription": "Configure Cline API provider and credentials. Settings are saved to ~/.cline/data/."
@@ -1761,6 +1762,7 @@
           "missingConfig": "Unable to read current Agent configuration.",
           "disabled": "{agent} is disabled in Agents settings. Enable it before connecting.",
           "unavailable": "{agent} is unavailable on the current platform.",
+          "adapterMissingWithBaseCli": "Detected upstream CLI {command} {version}, but the {agent} ACP adapter is not installed yet.",
           "sdkMissing": "{agent} SDK is not installed"
         },
         "backendErrors": {

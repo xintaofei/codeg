@@ -2115,6 +2115,17 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         return { kind: "none", reason: "" }
       }
 
+      if (agent.base_cli_version) {
+        return {
+          kind: "sdk_missing",
+          reason: t("blocked.adapterMissingWithBaseCli", {
+            agent: agentLabel,
+            command: agent.base_cli_command ?? "CLI",
+            version: agent.base_cli_version,
+          }),
+        }
+      }
+
       return {
         kind: "sdk_missing",
         reason: t("blocked.sdkMissing", { agent: agentLabel }),

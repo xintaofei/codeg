@@ -790,7 +790,8 @@
       "localUnrecognized": "{versionText}。ローカルバージョンは比較できません。上書きインストールのためアップグレードを試してください。",
       "upgradeAvailable": "{versionText}。アップグレード可能です。",
       "remoteUnavailable": "{versionText}。現在リモートバージョンは取得できません。",
-      "latest": "{versionText}。すでに最新です。"
+      "latest": "{versionText}。すでに最新です。",
+      "baseCliDetected": "{versionText}。上流 CLI {command} {version} を検出しましたが、ACP アダプターはまだインストールされていません。インストールをクリックしてアダプターをインストールしてください。"
     },
     "cline": {
       "configDescription": "Cline API プロバイダーと認証情報を設定します。設定は ~/.cline/data/ に保存されます。"
@@ -1761,6 +1762,7 @@
           "missingConfig": "現在のエージェント設定を読み取れません。",
           "disabled": "{agent} はエージェント設定で無効になっています。接続前に有効化してください。",
           "unavailable": "{agent} は現在のプラットフォームでは利用できません。",
+          "adapterMissingWithBaseCli": "上流 CLI {command} {version} は検出されましたが、{agent} の ACP アダプターはまだインストールされていません。",
           "sdkMissing": "{agent} SDK がインストールされていません"
         },
         "backendErrors": {

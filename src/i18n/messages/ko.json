@@ -790,7 +790,8 @@
       "localUnrecognized": "{versionText}. 로컬 버전을 비교할 수 없습니다. 덮어쓰기 설치를 위해 업그레이드를 시도하세요.",
       "upgradeAvailable": "{versionText}. 업그레이드가 가능합니다.",
       "remoteUnavailable": "{versionText}. 현재 원격 버전을 사용할 수 없습니다.",
-      "latest": "{versionText}. 이미 최신입니다."
+      "latest": "{versionText}. 이미 최신입니다.",
+      "baseCliDetected": "{versionText}. 업스트림 CLI {command} {version}이 감지되었지만 ACP 어댑터는 아직 설치되지 않았습니다. 설치를 클릭해 어댑터를 설치하세요."
     },
     "cline": {
       "configDescription": "Cline API 제공자와 자격 증명을 구성합니다. 설정은 ~/.cline/data/에 저장됩니다."
@@ -1761,6 +1762,7 @@
           "missingConfig": "현재 에이전트 구성을 읽을 수 없습니다.",
           "disabled": "{agent}은(는) 에이전트 설정에서 비활성화되어 있습니다. 연결 전에 활성화하세요.",
           "unavailable": "{agent}은(는) 현재 플랫폼에서 사용할 수 없습니다.",
+          "adapterMissingWithBaseCli": "업스트림 CLI {command} {version}이 감지되었지만 {agent} ACP 어댑터가 아직 설치되어 있지 않습니다.",
           "sdkMissing": "{agent} SDK가 설치되어 있지 않습니다"
         },
         "backendErrors": {

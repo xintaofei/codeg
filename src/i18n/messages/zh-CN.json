@@ -790,7 +790,8 @@
       "localUnrecognized": "{versionText}。本地版本无法识别，可尝试升级覆盖安装。",
       "upgradeAvailable": "{versionText}。发现可升级版本。",
       "remoteUnavailable": "{versionText}。远程版本暂不可用。",
-      "latest": "{versionText}。已是最新版本。"
+      "latest": "{versionText}。已是最新版本。",
+      "baseCliDetected": "{versionText}。已检测到上游 CLI {command} {version}，但 ACP 适配器尚未安装。请点击安装来安装适配器。"
     },
     "cline": {
       "configDescription": "配置 Cline API 提供商和凭证。设置将保存到 ~/.cline/data/。"
@@ -1761,6 +1762,7 @@
           "missingConfig": "无法读取当前 Agent 配置。",
           "disabled": "{agent} 已在 Agents 管理中禁用，请先启用后再连接。",
           "unavailable": "{agent} 当前平台不可用。",
+          "adapterMissingWithBaseCli": "已检测到上游 CLI {command} {version}，但 {agent} ACP 适配器尚未安装。",
           "sdkMissing": "{agent} SDK 尚未安装"
         },
         "backendErrors": {
