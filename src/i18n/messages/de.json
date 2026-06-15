@@ -2976,7 +2976,8 @@
       "rootArtifact": "Aufgabe",
       "noIterations": "Noch keine Iterationen.",
       "noArtifacts": "Bisher nur das Stamm-Artefakt der Aufgabe.",
-      "executingNow": "Wird jetzt ausgeführt"
+      "executingNow": "Wird jetzt ausgeführt",
+      "iterationsError": "Iterationen konnten nicht geladen werden"
     },
     "status": {
       "pending": "Ausstehend",
@@ -3218,7 +3219,8 @@
     },
     "engineHealth": {
       "summary": "{issues} laufend · {iters} in Bearbeitung",
-      "pending": "{n} Token ausstehend"
+      "pending": "{n} Token ausstehend",
+      "reconnecting": "Verbindung wird wiederhergestellt…"
     }
   }
 }

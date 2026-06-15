@@ -2976,7 +2976,8 @@
       "rootArtifact": "課題",
       "noIterations": "イテレーションはまだありません。",
       "noArtifacts": "今のところルート課題アーティファクトのみです。",
-      "executingNow": "実行中"
+      "executingNow": "実行中",
+      "iterationsError": "イテレーションを読み込めませんでした"
     },
     "status": {
       "pending": "保留中",
@@ -3218,7 +3219,8 @@
     },
     "engineHealth": {
       "summary": "実行中 {issues} 件 · 処理中 {iters} 件",
-      "pending": "トークン保留 {n} 件"
+      "pending": "トークン保留 {n} 件",
+      "reconnecting": "再接続中…"
     }
   }
 }

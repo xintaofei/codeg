@@ -57,6 +57,7 @@ interface IssueDetailData {
   artifacts: LoopArtifactRow[]
   links: LoopLinkRow[]
   iterations: LoopIterationRow[]
+  iterationsError: boolean
 }
 
 const EMPTY_ISSUE_DETAIL: IssueDetailData = {
@@ -64,6 +65,7 @@ const EMPTY_ISSUE_DETAIL: IssueDetailData = {
   artifacts: [],
   links: [],
   iterations: [],
+  iterationsError: false,
 }
 
 export function IssueDetail({
@@ -100,12 +102,23 @@ export function IssueDetail({
       if (!detail) return EMPTY_ISSUE_DETAIL
       // Iterations drive the "executing now" highlight (read-stage artifacts
       // land done/pending, so status alone can't show a live node). Non-fatal:
-      // the graph still renders without the highlight.
-      const iterations = await listLoopIterations(
-        detail.space_id,
-        issueId
-      ).catch(() => [] as LoopIterationRow[])
-      return { detail, artifacts: dag.artifacts, links: dag.links, iterations }
+      // the graph still renders without the highlight, but a load failure is now
+      // surfaced (rather than silently swallowed) so the operator knows the
+      // iterations panel may be incomplete.
+      let iterations: LoopIterationRow[] = []
+      let iterationsError = false
+      try {
+        iterations = await listLoopIterations(detail.space_id, issueId)
+      } catch {
+        iterationsError = true
+      }
+      return {
+        detail,
+        artifacts: dag.artifacts,
+        links: dag.links,
+        iterations,
+        iterationsError,
+      }
     },
     {
       match: (e) => e.issue_id === issueId,
@@ -114,7 +127,7 @@ export function IssueDetail({
     }
   )
   const issue = data.detail
-  const { artifacts, links, iterations } = data
+  const { artifacts, links, iterations, iterationsError } = data
 
   // Artifact ids with a live iteration: a target node for non-triage stages, or
   // the issue root while triage runs (triage targets the whole issue).
@@ -321,6 +334,11 @@ export function IssueDetail({
               value="iterations"
               className="min-h-0 flex-1 overflow-y-auto px-5 py-2 data-[state=inactive]:hidden"
             >
+              {iterationsError && (
+                <p className="mb-1 text-xs text-amber-600">
+                  {t("iterationsError")}
+                </p>
+              )}
               <IterationList spaceId={issue.space_id} issueId={issue.id} />
             </TabsContent>
             <TabsContent

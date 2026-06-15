@@ -42,16 +42,23 @@ import { SpaceDetail } from "@/components/loops/space-detail"
 import { EngineHealthBadge } from "@/components/loops/engine-health-badge"
 import { LoopOverlaysProvider } from "@/components/loops/loop-overlays-context"
 import { ArtifactDrawer } from "@/components/loops/artifact-drawer"
+import { EngineReconnectBanner } from "@/components/loops/engine-reconnect-banner"
 
 /** Roots the single loop realtime subscription for every loop surface below,
  *  plus the single overlay owners: one IterationDialog (via the overlays
  *  context) and one URL-driven ArtifactDrawer — every surface opens them by
- *  dispatch/URL rather than mounting its own. */
+ *  dispatch/URL rather than mounting its own. The reconnect banner spans the top
+ *  of the workbench (both the space grid and a space detail). */
 export function LoopsWorkbench() {
   return (
     <LoopRealtimeProvider>
       <LoopOverlaysProvider>
-        <LoopsWorkbenchInner />
+        <div className="flex h-full min-h-0 flex-col">
+          <EngineReconnectBanner />
+          <div className="min-h-0 flex-1">
+            <LoopsWorkbenchInner />
+          </div>
+        </div>
         <WorkbenchArtifactDrawer />
       </LoopOverlaysProvider>
     </LoopRealtimeProvider>

@@ -2976,7 +2976,8 @@
       "rootArtifact": "議題",
       "noIterations": "還沒有迭代。",
       "noArtifacts": "目前只有根議題工件。",
-      "executingNow": "本輪執行中"
+      "executingNow": "本輪執行中",
+      "iterationsError": "無法載入疊代"
     },
     "status": {
       "pending": "待觸發",
@@ -3218,7 +3219,8 @@
     },
     "engineHealth": {
       "summary": "{issues} 個執行中 · {iters} 個進行中",
-      "pending": "{n} 個 token 待結算"
+      "pending": "{n} 個 token 待結算",
+      "reconnecting": "重新連線中…"
     }
   }
 }

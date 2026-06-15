@@ -2976,7 +2976,8 @@
       "rootArtifact": "Issue",
       "noIterations": "No iterations yet.",
       "noArtifacts": "Only the root issue artifact so far.",
-      "executingNow": "Executing now"
+      "executingNow": "Executing now",
+      "iterationsError": "Couldn't load iterations"
     },
     "status": {
       "pending": "Pending",
@@ -3218,7 +3219,8 @@
     },
     "engineHealth": {
       "summary": "{issues} running · {iters} in flight",
-      "pending": "{n} token-pending"
+      "pending": "{n} token-pending",
+      "reconnecting": "Reconnecting…"
     }
   }
 }

@@ -2976,7 +2976,8 @@
       "rootArtifact": "议题",
       "noIterations": "还没有迭代。",
       "noArtifacts": "目前只有根议题工件。",
-      "executingNow": "本轮执行中"
+      "executingNow": "本轮执行中",
+      "iterationsError": "无法加载迭代"
     },
     "status": {
       "pending": "待触发",
@@ -3218,7 +3219,8 @@
     },
     "engineHealth": {
       "summary": "{issues} 个运行中 · {iters} 个进行中",
-      "pending": "{n} 个 token 待结算"
+      "pending": "{n} 个 token 待结算",
+      "reconnecting": "重新连接中…"
     }
   }
 }

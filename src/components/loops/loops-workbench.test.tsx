@@ -24,6 +24,14 @@ vi.mock("@/lib/platform", () => ({
   subscribe: vi.fn().mockResolvedValue(() => {}),
   onTransportReconnect: vi.fn(() => null),
 }))
+// The reconnect banner reads the web-connection store on mount, which lazily
+// requires the web transport (unavailable in jsdom). Stub it to a steady
+// "connected" so the banner renders null and never touches the transport.
+vi.mock("@/lib/transport/web-connection-store", () => ({
+  subscribeWebConnection: () => () => {},
+  getWebConnectionSnapshot: () => "connected",
+  getWebConnectionServerSnapshot: () => "connected",
+}))
 vi.mock("@/lib/loops-api", () => ({
   listLoopSpaces,
   deleteLoopSpace,

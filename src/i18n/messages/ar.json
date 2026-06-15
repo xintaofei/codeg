@@ -2976,7 +2976,8 @@
       "rootArtifact": "مسألة",
       "noIterations": "لا توجد تكرارات بعد.",
       "noArtifacts": "لا يوجد سوى أثر المسألة الجذري حتى الآن.",
-      "executingNow": "قيد التنفيذ الآن"
+      "executingNow": "قيد التنفيذ الآن",
+      "iterationsError": "تعذّر تحميل التكرارات"
     },
     "status": {
       "pending": "قيد الانتظار",
@@ -3218,7 +3219,8 @@
     },
     "engineHealth": {
       "summary": "{issues} قيد التشغيل · {iters} قيد التنفيذ",
-      "pending": "{n} رمز معلّق"
+      "pending": "{n} رمز معلّق",
+      "reconnecting": "إعادة الاتصال…"
     }
   }
 }

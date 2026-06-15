@@ -2976,7 +2976,8 @@
       "rootArtifact": "Problème",
       "noIterations": "Aucune itération pour le moment.",
       "noArtifacts": "Pour l'instant, seul l'artefact racine du problème.",
-      "executingNow": "En cours d'exécution"
+      "executingNow": "En cours d'exécution",
+      "iterationsError": "Impossible de charger les itérations"
     },
     "status": {
       "pending": "En attente",
@@ -3218,7 +3219,8 @@
     },
     "engineHealth": {
       "summary": "{issues} en exécution · {iters} en cours",
-      "pending": "{n} jetons en attente"
+      "pending": "{n} jetons en attente",
+      "reconnecting": "Reconnexion…"
     }
   }
 }

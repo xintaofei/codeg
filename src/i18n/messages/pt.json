@@ -2976,7 +2976,8 @@
       "rootArtifact": "Problema",
       "noIterations": "Ainda não há iterações.",
       "noArtifacts": "Até agora, apenas o artefato raiz do problema.",
-      "executingNow": "Executando agora"
+      "executingNow": "Executando agora",
+      "iterationsError": "Não foi possível carregar as iterações"
     },
     "status": {
       "pending": "Pendente",
@@ -3218,7 +3219,8 @@
     },
     "engineHealth": {
       "summary": "{issues} em execução · {iters} em andamento",
-      "pending": "{n} com tokens pendentes"
+      "pending": "{n} com tokens pendentes",
+      "reconnecting": "Reconectando…"
     }
   }
 }
