@@ -30,6 +30,7 @@ use crate::db::entities::loop_artifact::{self, ArtifactKind, ArtifactStatus, Rev
 use crate::db::entities::loop_inbox_item::InboxKind;
 use crate::db::entities::loop_issue::{self, IssueStatus};
 use crate::db::entities::loop_iteration::{self, IterationStatus, Stage};
+use crate::db::entities::loop_link::LinkKind;
 use crate::db::service::{folder_service, loop_service};
 use crate::db::AppDatabase;
 use crate::models::loops::{IssueConfig, LoopArtifactRow, LoopDagView, ReviewPassRule, ReviewerSpec};
@@ -125,9 +126,11 @@ pub(crate) async fn drive_active_task(
             )
             .await
         }
-        // Gate free → claim it for the next task awaiting implement and start.
+        // Gate free → claim it for the next ready task awaiting implement and
+        // start. Serial wiring: take the first of the dependency-aware ready set
+        // (≤1 for a serial/single-chain issue; phase 2 fans out the full set).
         None => {
-            let Some(task) = next_pending_task(dag) else {
+            let Some(task) = ready_tasks(dag).into_iter().next() else {
                 return Ok(StepOutcome::Idle);
             };
             if try_acquire_task_gate(&db.conn, issue.id, task.id).await? {
@@ -152,12 +155,33 @@ pub(crate) async fn drive_active_task(
     }
 }
 
-/// The next task awaiting implement: the lowest-ordered `pending` task node.
-fn next_pending_task(dag: &LoopDagView) -> Option<&LoopArtifactRow> {
-    dag.artifacts
+/// Tasks whose every `DependsOn` predecessor is `Done` — the dependency-aware
+/// ready frontier. Edge contract: a `DependsOn` link is `from = successor`,
+/// `to = predecessor`, so a task is ready when all links whose `from` is the task
+/// point to `Done` tasks. Deterministic order by `(sort, id)` so downstream
+/// dispatch/topology is stable. A root task (no `DependsOn` edges) is ready as
+/// soon as it is `pending`. (Serial/single-chain issues yield ≤1 ready task, so
+/// taking the first preserves today's behavior; phase 2 dispatches the whole set.)
+fn ready_tasks(dag: &LoopDagView) -> Vec<&LoopArtifactRow> {
+    let done: std::collections::HashSet<i32> = dag
+        .artifacts
+        .iter()
+        .filter(|a| a.status == ArtifactStatus::Done)
+        .map(|a| a.id)
+        .collect();
+    let mut out: Vec<&LoopArtifactRow> = dag
+        .artifacts
         .iter()
         .filter(|a| a.kind == ArtifactKind::Task && a.status == ArtifactStatus::Pending)
-        .min_by(|a, b| a.sort.cmp(&b.sort).then(a.id.cmp(&b.id)))
+        .filter(|t| {
+            dag.links
+                .iter()
+                .filter(|l| l.kind == LinkKind::DependsOn && l.from_artifact_id == t.id)
+                .all(|l| done.contains(&l.to_artifact_id))
+        })
+        .collect();
+    out.sort_by(|a, b| a.sort.cmp(&b.sort).then(a.id.cmp(&b.id)));
+    out
 }
 
 /// Route the gate-holding task to its write-pipeline stage by status: `pending`
@@ -1004,8 +1028,8 @@ mod tests {
     use sea_orm::ActiveEnum; // for `*.to_value()` in the test helpers below
     use crate::db::entities::loop_artifact_revision::ActorKind;
     use crate::db::entities::loop_issue::{IssuePriority, IssueStatus};
-    use crate::db::entities::loop_link::LinkKind;
     use crate::db::service::loop_service::{artifact, issue, link, space};
+    use crate::models::loops::LoopLinkRow;
     use crate::db::test_helpers::{fresh_disk_db, seed_folder};
     use crate::loop_engine::dispatch::settle_iteration;
     use crate::models::agent::AgentType;
@@ -1199,6 +1223,93 @@ mod tests {
             .await
             .unwrap()
             .unwrap()
+    }
+
+    /// Pure `Task` row for the dependency-frontier tests (`ready_tasks`).
+    fn ready_task_row(id: i32, status: ArtifactStatus) -> LoopArtifactRow {
+        LoopArtifactRow {
+            id,
+            issue_id: 1,
+            issue_seq: 1,
+            kind: ArtifactKind::Task,
+            title: format!("T{id}"),
+            status,
+            origin: ActorKind::Agent,
+            produced_by_iteration_id: None,
+            verdict: None,
+            attempt: 0,
+            sort: id,
+            updated_at: Utc::now(),
+        }
+    }
+
+    /// Build a task-only DAG. `edges` are `(successor, predecessor)` pairs — the
+    /// `DependsOn` direction (from = successor, to = predecessor).
+    fn depends_dag(tasks: &[(i32, ArtifactStatus)], edges: &[(i32, i32)]) -> LoopDagView {
+        LoopDagView {
+            artifacts: tasks.iter().map(|&(id, st)| ready_task_row(id, st)).collect(),
+            links: edges
+                .iter()
+                .enumerate()
+                .map(|(i, &(succ, pred))| LoopLinkRow {
+                    id: i as i32 + 1,
+                    from_artifact_id: succ,
+                    to_artifact_id: pred,
+                    kind: LinkKind::DependsOn,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn ready_tasks_chain() {
+        use ArtifactStatus::{Done, Pending};
+        // A→B→C, all pending: only the root A is ready.
+        let dag = depends_dag(&[(1, Pending), (2, Pending), (3, Pending)], &[(2, 1), (3, 2)]);
+        assert_eq!(
+            ready_tasks(&dag).iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![1]
+        );
+        // A done → B becomes ready; C is still blocked behind B.
+        let dag = depends_dag(&[(1, Done), (2, Pending), (3, Pending)], &[(2, 1), (3, 2)]);
+        assert_eq!(
+            ready_tasks(&dag).iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![2]
+        );
+    }
+
+    #[test]
+    fn ready_tasks_fanout() {
+        use ArtifactStatus::{Done, Pending};
+        // A→B, A→C. While A is pending, neither successor is ready.
+        let dag = depends_dag(&[(1, Pending), (2, Pending), (3, Pending)], &[(2, 1), (3, 1)]);
+        assert_eq!(
+            ready_tasks(&dag).iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![1]
+        );
+        // A done → B and C are BOTH ready at once (true parallelism).
+        let dag = depends_dag(&[(1, Done), (2, Pending), (3, Pending)], &[(2, 1), (3, 1)]);
+        assert_eq!(
+            ready_tasks(&dag).iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+    }
+
+    #[test]
+    fn ready_tasks_edge_direction_contract() {
+        use ArtifactStatus::{Done, Pending};
+        // B depends_on A ⇒ edge (from=B, to=A). B's readiness is gated on A being
+        // Done, never the reverse.
+        let blocked = depends_dag(&[(1, Pending), (2, Pending)], &[(2, 1)]);
+        assert_eq!(
+            ready_tasks(&blocked).iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![1]
+        );
+        let unblocked = depends_dag(&[(1, Done), (2, Pending)], &[(2, 1)]);
+        assert_eq!(
+            ready_tasks(&unblocked).iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![2]
+        );
     }
 
     /// Regression for the driver wedge: an implement settle must report `Advanced`
