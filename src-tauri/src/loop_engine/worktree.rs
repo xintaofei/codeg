@@ -557,6 +557,115 @@ pub async fn merge_issue(
     Ok(MergeOutcome::Merged { merge_commit })
 }
 
+/// Outcome of folding an issue's frozen task commits into the integrate branch
+/// (the parallel result-stage fan-in, spec §4.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FanInOutcome {
+    /// Every frozen task commit is integrated and re-validation passed; `tip` is
+    /// the integrate branch tip the caller CAS-lands onto the issue branch.
+    Integrated { tip: String },
+    /// A task commit's merge conflicted. The in-progress merge (`MERGE_HEAD`) is
+    /// LEFT in place — NOT aborted — for a resolution agent to finish with
+    /// `git commit` (preserving both parents). `task_id` is the conflicting task.
+    Conflict { task_id: i32, detail: String },
+    /// All commits merged cleanly, but re-running the issue's validation suite on
+    /// the integrated tree failed — the combination broke; it must not land.
+    RevalidationFailed { output: String },
+}
+
+/// Merge each frozen task commit into the integrate branch (the worktree's
+/// current HEAD), in the given topological order, then re-validate the result.
+///
+/// Idempotent + resumable: a commit already an ancestor of the integrate tip is
+/// skipped, so re-entry after a partial fan-in (crash, or returning to finish
+/// after a resolved conflict) only does the remaining work. On conflict it leaves
+/// the in-progress merge in place (no `--abort`) and returns `Conflict{task_id}`;
+/// the caller dispatches a resolver that MUST `git commit` to complete the merge.
+///
+/// Pure git + deterministic validation — no DB, no engine state. The caller owns
+/// the manifest session lock + the CAS landing.
+pub async fn fan_in_tasks(
+    integrate_worktree: &Path,
+    ordered_frozen: &[(i32, String)],
+    validation_commands: &[String],
+    iteration_timeout_secs: Option<u64>,
+) -> Result<FanInOutcome, LoopError> {
+    for (task_id, sha) in ordered_frozen {
+        // Already merged (resumable / idempotent) → skip.
+        let anc = run_git(
+            integrate_worktree,
+            &["merge-base", "--is-ancestor", sha, "HEAD"],
+        )
+        .await?;
+        if anc.status.success() {
+            continue;
+        }
+        // `--no-edit` + `GIT_MERGE_AUTOEDIT=no`: never open an editor for the
+        // merge commit message (which would hang a headless engine).
+        let merge = crate::process::tokio_command("git")
+            .args(["merge", "--no-ff", "--no-edit", sha.as_str()])
+            .current_dir(integrate_worktree)
+            .env("GIT_MERGE_AUTOEDIT", "no")
+            .output()
+            .await
+            .map_err(|e| LoopError::Git(format!("git merge {sha}: {e}")))?;
+        if !merge.status.success() {
+            // Leave the in-progress merge for a resolution agent; DO NOT abort.
+            return Ok(FanInOutcome::Conflict {
+                task_id: *task_id,
+                detail: combined_output(&merge),
+            });
+        }
+    }
+
+    let commands: Vec<String> = validation_commands
+        .iter()
+        .filter(|c| !c.trim().is_empty())
+        .cloned()
+        .collect();
+    if !commands.is_empty() {
+        let report = validation::run_validation(
+            integrate_worktree,
+            &commands,
+            iteration_timeout_secs.map(Duration::from_secs),
+        )
+        .await?;
+        if !report.passed() {
+            return Ok(FanInOutcome::RevalidationFailed {
+                output: report.output,
+            });
+        }
+    }
+    let tip = head_commit(integrate_worktree).await?;
+    Ok(FanInOutcome::Integrated { tip })
+}
+
+/// Whether the worktree has a merge in progress (`MERGE_HEAD` exists) — a conflict
+/// left for a resolver, or a merge mid-commit. Lets the driver tell "resume the
+/// in-flight merge" from "start a fresh fan-in".
+pub async fn integrate_in_progress(worktree: &Path) -> bool {
+    run_git(worktree, &["rev-parse", "--verify", "--quiet", "MERGE_HEAD"])
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Atomically advance `branch` from `expected_old` to `new` via
+/// `git update-ref refs/heads/{branch} <new> <expected_old>`: succeeds
+/// (`Ok(true)`) only if the branch still points at `expected_old`, else a
+/// lost-CAS race (`Ok(false)`). Touches only the ref — never a working tree (so
+/// the caller must `reset --hard` the issue worktree to the new tip afterward).
+pub async fn cas_advance_branch(
+    repo_path: &Path,
+    branch: &str,
+    new: &str,
+    expected_old: &str,
+) -> Result<bool, LoopError> {
+    let refname = format!("refs/heads/{branch}");
+    let out = run_git(repo_path, &["update-ref", &refname, new, expected_old]).await?;
+    Ok(out.status.success())
+}
+
 /// Remove the worktree directory and its administrative entry (best-effort
 /// `--force` to tolerate a dirty tree). The branch is left intact — call
 /// [`delete_branch`] separately for paths that should also drop it.
@@ -1183,5 +1292,160 @@ mod tests {
             "committed work preserved (no -B rewind)"
         );
         assert!(ctx2.worktree_path.join("feature.txt").exists());
+    }
+
+    // ---- Fan-in (Phase 1) ----
+
+    /// Two independent task commits (distinct files) off `base`, plus an
+    /// `integrate` branch at `base` checked out. Returns (base, sha_a, sha_b).
+    fn two_independent_tasks(dir: &Path) -> (String, String, String) {
+        let base = git_out(dir, &["rev-parse", "HEAD"]);
+        git(dir, &["checkout", "-q", "-b", "taskA", &base]);
+        std::fs::write(dir.join("a.txt"), "A\n").unwrap();
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-q", "-m", "A"]);
+        let sha_a = git_out(dir, &["rev-parse", "HEAD"]);
+        git(dir, &["checkout", "-q", "-b", "taskB", &base]);
+        std::fs::write(dir.join("b.txt"), "B\n").unwrap();
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-q", "-m", "B"]);
+        let sha_b = git_out(dir, &["rev-parse", "HEAD"]);
+        git(dir, &["checkout", "-q", "-b", "integrate", &base]);
+        (base, sha_a, sha_b)
+    }
+
+    #[tokio::test]
+    async fn fan_in_clean_two_branches() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let (_base, a, b) = two_independent_tasks(dir.path());
+        let out = fan_in_tasks(dir.path(), &[(1, a), (2, b)], &[], None)
+            .await
+            .unwrap();
+        let tip = match out {
+            FanInOutcome::Integrated { tip } => tip,
+            o => panic!("expected Integrated, got {o:?}"),
+        };
+        assert_eq!(git_out(dir.path(), &["rev-parse", "HEAD"]), tip);
+        assert!(dir.path().join("a.txt").exists() && dir.path().join("b.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn fan_in_skips_already_merged() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let (_base, a, b) = two_independent_tasks(dir.path());
+        let first = fan_in_tasks(dir.path(), &[(1, a.clone()), (2, b.clone())], &[], None)
+            .await
+            .unwrap();
+        let tip1 = match first {
+            FanInOutcome::Integrated { tip } => tip,
+            o => panic!("{o:?}"),
+        };
+        // Re-run the same set → all ancestors → skipped, tip unchanged.
+        let again = fan_in_tasks(dir.path(), &[(1, a), (2, b)], &[], None)
+            .await
+            .unwrap();
+        assert_eq!(
+            again,
+            FanInOutcome::Integrated { tip: tip1 },
+            "already-merged commits are skipped (idempotent)"
+        );
+    }
+
+    #[tokio::test]
+    async fn fan_in_resume_after_partial() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let (_base, a, b) = two_independent_tasks(dir.path());
+        // Partial: integrate only A.
+        fan_in_tasks(dir.path(), &[(1, a.clone())], &[], None)
+            .await
+            .unwrap();
+        assert!(dir.path().join("a.txt").exists() && !dir.path().join("b.txt").exists());
+        // Re-enter with [A, B]: A skipped, only B merged.
+        let out = fan_in_tasks(dir.path(), &[(1, a), (2, b)], &[], None)
+            .await
+            .unwrap();
+        assert!(matches!(out, FanInOutcome::Integrated { .. }));
+        assert!(
+            dir.path().join("b.txt").exists(),
+            "resume integrated the remaining task"
+        );
+    }
+
+    #[tokio::test]
+    async fn fan_in_conflict_returns_task() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let base = git_out(dir.path(), &["rev-parse", "HEAD"]);
+        // Both tasks edit the SAME file differently → the second merge conflicts.
+        git(dir.path(), &["checkout", "-q", "-b", "taskA", &base]);
+        std::fs::write(dir.path().join("README.md"), "A\n").unwrap();
+        git(dir.path(), &["add", "-A"]);
+        git(dir.path(), &["commit", "-q", "-m", "A"]);
+        let a = git_out(dir.path(), &["rev-parse", "HEAD"]);
+        git(dir.path(), &["checkout", "-q", "-b", "taskB", &base]);
+        std::fs::write(dir.path().join("README.md"), "B\n").unwrap();
+        git(dir.path(), &["add", "-A"]);
+        git(dir.path(), &["commit", "-q", "-m", "B"]);
+        let b = git_out(dir.path(), &["rev-parse", "HEAD"]);
+        git(dir.path(), &["checkout", "-q", "-b", "integrate", &base]);
+
+        let out = fan_in_tasks(dir.path(), &[(1, a), (2, b)], &[], None)
+            .await
+            .unwrap();
+        match out {
+            FanInOutcome::Conflict { task_id, .. } => {
+                assert_eq!(task_id, 2, "the conflicting (second) task is reported")
+            }
+            o => panic!("expected Conflict, got {o:?}"),
+        }
+        // The in-progress merge is LEFT for a resolver (not aborted).
+        assert!(
+            integrate_in_progress(dir.path()).await,
+            "MERGE_HEAD preserved for the resolution agent"
+        );
+    }
+
+    #[tokio::test]
+    async fn fan_in_revalidation_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let (_base, a, _b) = two_independent_tasks(dir.path());
+        // A validation command that exits non-zero (git is cross-platform).
+        let cmds = vec!["git rev-parse --verify refs/heads/no-such-ref".to_string()];
+        let out = fan_in_tasks(dir.path(), &[(1, a)], &cmds, None)
+            .await
+            .unwrap();
+        assert!(matches!(out, FanInOutcome::RevalidationFailed { .. }));
+    }
+
+    #[tokio::test]
+    async fn cas_advance_branch_atomic() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let base = git_out(dir.path(), &["rev-parse", "HEAD"]);
+        git(dir.path(), &["checkout", "-q", "-b", "feature", &base]);
+        std::fs::write(dir.path().join("f.txt"), "f\n").unwrap();
+        git(dir.path(), &["add", "-A"]);
+        git(dir.path(), &["commit", "-q", "-m", "f"]);
+        let new = git_out(dir.path(), &["rev-parse", "HEAD"]);
+        git(dir.path(), &["branch", "target", &base]);
+
+        // CAS base→new applies.
+        assert!(cas_advance_branch(dir.path(), "target", &new, &base)
+            .await
+            .unwrap());
+        assert_eq!(git_out(dir.path(), &["rev-parse", "target"]), new);
+        // A stale expected_old now misses, leaving the ref unchanged.
+        assert!(!cas_advance_branch(dir.path(), "target", &base, &base)
+            .await
+            .unwrap());
+        assert_eq!(
+            git_out(dir.path(), &["rev-parse", "target"]),
+            new,
+            "ref unchanged after a CAS miss"
+        );
     }
 }
