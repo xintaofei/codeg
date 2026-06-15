@@ -36,7 +36,7 @@ use crate::db::AppDatabase;
 use crate::models::loops::{IssueConfig, LoopArtifactRow, LoopDagView, ReviewPassRule, ReviewerSpec};
 use crate::web::event_bridge::EventEmitter;
 
-use crate::loop_engine::dispatch::{dispatch_iteration, DispatchInput, LoopAgentSpawner};
+use crate::loop_engine::dispatch::{dispatch_iteration, emit_changed, DispatchInput, LoopAgentSpawner};
 use crate::loop_engine::driver::resolve_agent_spec;
 use crate::loop_engine::error::LoopError;
 use crate::loop_engine::transitions::{
@@ -110,8 +110,37 @@ pub(crate) async fn drive_active_task(
     config: &IssueConfig,
     worktree_folder_id: i32,
 ) -> Result<StepOutcome, LoopError> {
-    match issue.active_task_artifact_id {
-        // A task already holds the gate → advance it.
+    // Gate scrub: a gate pointing at a task that reached a terminal state
+    // (Blocked / Cancelled, or — defensively — Done) without releasing the gate,
+    // or at a node no longer in the DAG, would strand the issue forever on the
+    // `Some(active)` idle arm. CAS-clear it and fall through to ready-task
+    // selection / dead-dependency detection. Load-bearing once a task can block
+    // without blocking the whole issue; harmless otherwise.
+    let active_task = match issue.active_task_artifact_id {
+        Some(active) => {
+            let live = dag
+                .artifacts
+                .iter()
+                .find(|a| a.id == active)
+                .map(|a| {
+                    !matches!(
+                        a.status,
+                        ArtifactStatus::Blocked | ArtifactStatus::Cancelled | ArtifactStatus::Done
+                    )
+                })
+                .unwrap_or(false); // not in the DAG → stale, scrub it
+            if live {
+                Some(active)
+            } else {
+                release_task_gate(&db.conn, issue.id, active).await?;
+                None
+            }
+        }
+        None => None,
+    };
+
+    match active_task {
+        // A live task holds the gate → advance it.
         Some(active) => {
             advance_active_task(
                 db,
@@ -131,7 +160,10 @@ pub(crate) async fn drive_active_task(
         // (≤1 for a serial/single-chain issue; phase 2 fans out the full set).
         None => {
             let Some(task) = ready_tasks(dag).into_iter().next() else {
-                return Ok(StepOutcome::Idle);
+                // Nothing ready. If a pending task is wedged behind a Blocked /
+                // Cancelled dependency that can never become Done, block the issue
+                // (retry-reachable) instead of parking silently.
+                return detect_dead_dependency(db, emitter, issue, dag).await;
             };
             if try_acquire_task_gate(&db.conn, issue.id, task.id).await? {
                 let dispatched = dispatch_implement(
@@ -153,6 +185,94 @@ pub(crate) async fn drive_active_task(
             }
         }
     }
+}
+
+/// Whether `task` (pending) transitively depends on a `Blocked` or `Cancelled`
+/// task — a predecessor that can never become `Done`, so the task can never
+/// start. Walks the `DependsOn` closure (from = successor, to = predecessor);
+/// the submit-time acyclicity guard bounds the walk.
+fn has_dead_dependency(dag: &LoopDagView, task_id: i32) -> bool {
+    let mut stack = vec![task_id];
+    let mut seen = std::collections::HashSet::new();
+    while let Some(cur) = stack.pop() {
+        if !seen.insert(cur) {
+            continue;
+        }
+        for l in dag
+            .links
+            .iter()
+            .filter(|l| l.kind == LinkKind::DependsOn && l.from_artifact_id == cur)
+        {
+            match dag.artifacts.iter().find(|a| a.id == l.to_artifact_id) {
+                Some(p)
+                    if matches!(
+                        p.status,
+                        ArtifactStatus::Blocked | ArtifactStatus::Cancelled
+                    ) =>
+                {
+                    return true;
+                }
+                Some(_) => stack.push(l.to_artifact_id),
+                None => {}
+            }
+        }
+    }
+    false
+}
+
+/// Whether the issue has any queued/running iteration.
+async fn issue_has_inflight(db: &AppDatabase, issue_id: i32) -> Result<bool, LoopError> {
+    Ok(loop_iteration::Entity::find()
+        .filter(loop_iteration::Column::IssueId.eq(issue_id))
+        .filter(
+            loop_iteration::Column::Status
+                .is_in([IterationStatus::Queued, IterationStatus::Running]),
+        )
+        .one(&db.conn)
+        .await?
+        .is_some())
+}
+
+/// Called when the gate is free and no task is ready. If a pending task is wedged
+/// behind a `Blocked`/`Cancelled` dependency and nothing is in flight, the issue
+/// can never progress on its own — block it (retry-reachable) with an inbox card
+/// rather than parking silently. Otherwise idle (all done → finalize handles it;
+/// or work is still in flight that may yet open the frontier).
+async fn detect_dead_dependency(
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+    issue: &loop_issue::Model,
+    dag: &LoopDagView,
+) -> Result<StepOutcome, LoopError> {
+    let pending: Vec<&LoopArtifactRow> = dag
+        .artifacts
+        .iter()
+        .filter(|a| a.kind == ArtifactKind::Task && a.status == ArtifactStatus::Pending)
+        .collect();
+    if pending.is_empty() {
+        return Ok(StepOutcome::Idle); // nothing pending → not a dead end (finalize path)
+    }
+    if issue_has_inflight(db, issue.id).await? {
+        return Ok(StepOutcome::Idle); // in-flight work may yet open the frontier
+    }
+    if pending.iter().any(|t| has_dead_dependency(dag, t.id)) {
+        if cas_issue_status(&db.conn, issue.id, IssueStatus::Running, IssueStatus::Blocked).await? {
+            loop_service::inbox::upsert_inbox(
+                &db.conn,
+                issue.space_id,
+                issue.id,
+                None,
+                InboxKind::Blocked,
+                &format!("dependency_unsatisfiable:{}", issue.id),
+                serde_json::json!({ "v": 1, "reason": "dependency_unsatisfiable" }),
+            )
+            .await?;
+            emit_changed(emitter, issue.space_id, issue.id, issue.id, "blocked");
+        }
+        // Issue now blocked → re-tick so the driver observes it and stops.
+        return Ok(StepOutcome::Advanced);
+    }
+    Ok(StepOutcome::Idle)
 }
 
 /// Tasks whose every `DependsOn` predecessor is `Done` — the dependency-aware
@@ -1309,6 +1429,59 @@ mod tests {
         assert_eq!(
             ready_tasks(&unblocked).iter().map(|t| t.id).collect::<Vec<_>>(),
             vec![2]
+        );
+    }
+
+    #[tokio::test]
+    async fn gate_scrub_releases_terminal_gated_task() {
+        let h = setup().await;
+        let t1 = add_task(&h, "T1").await;
+        let t2 = add_task(&h, "T2").await;
+        // T1 holds the gate but reached a terminal state without releasing it
+        // (e.g. a crash between marking it done and releasing the gate). Drive it
+        // through the legal Pending→InProgress→Done path.
+        assert!(try_acquire_task_gate(&h.db.conn, h.issue_id, t1)
+            .await
+            .unwrap());
+        cas_artifact_status(&h.db.conn, t1, ArtifactStatus::Pending, ArtifactStatus::InProgress)
+            .await
+            .unwrap();
+        cas_artifact_status(&h.db.conn, t1, ArtifactStatus::InProgress, ArtifactStatus::Done)
+            .await
+            .unwrap();
+        // Drive: the scrub clears the stale gate, then the next ready task (T2) is
+        // claimed + dispatched — no permanent strand on the idle arm.
+        assert_eq!(drive(&h).await, StepOutcome::Dispatched);
+        assert_eq!(
+            load_issue(&h).await.active_task_artifact_id,
+            Some(t2),
+            "gate scrubbed off terminal T1 and re-acquired for ready T2"
+        );
+    }
+
+    #[tokio::test]
+    async fn dead_dependency_blocks_issue() {
+        let h = setup().await;
+        let t1 = add_task(&h, "T1").await;
+        let t2 = add_task(&h, "T2").await;
+        // T2 depends on T1; T1 is blocked → T2 can never start.
+        link::create_link(&h.db.conn, h.space_id, t2, t1, LinkKind::DependsOn)
+            .await
+            .unwrap();
+        cas_artifact_status(&h.db.conn, t1, ArtifactStatus::Pending, ArtifactStatus::Blocked)
+            .await
+            .unwrap();
+        // No gate, no in-flight, no ready task → detect the dead dependency and
+        // block the issue (retry-reachable) with a clear card, never park silently.
+        assert_eq!(drive(&h).await, StepOutcome::Advanced);
+        assert_eq!(load_issue(&h).await.status, IssueStatus::Blocked);
+        let inbox = loop_service::inbox::list_inbox(&h.db.conn, h.space_id, None)
+            .await
+            .unwrap();
+        assert!(
+            inbox.iter().any(|i| i.kind == InboxKind::Blocked
+                && i.subject_key == format!("dependency_unsatisfiable:{}", h.issue_id)),
+            "files a dependency_unsatisfiable card"
         );
     }
 
