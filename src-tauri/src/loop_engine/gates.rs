@@ -3634,6 +3634,32 @@ mod tests {
         );
     }
 
+    /// Empty integration closure (D11): a result with NOTHING to verify — no
+    /// requirements, and the (direct-route) tasks carry no acceptance criteria —
+    /// blocks the issue with an `unverifiable` card rather than a vacuous pass.
+    #[tokio::test]
+    async fn integration_empty_closure_blocks_unverifiable() {
+        let h = setup().await;
+        let dag0 = artifact::list_dag(&h.db.conn, h.issue_id).await.unwrap();
+        let root = dag0.artifacts.iter().find(|a| a.kind == ArtifactKind::Issue).unwrap().id;
+        // A Done task with NO acceptance criteria + a Done result. No requirements.
+        let task = artifact::create_artifact(&h.db.conn, h.space_id, h.issue_id, ArtifactKind::Task, "T", ArtifactStatus::Done, ActorKind::Agent, None).await.unwrap();
+        link::create_link(&h.db.conn, h.space_id, task.id, root, LinkKind::DerivesFrom, None).await.unwrap();
+        artifact::create_artifact(&h.db.conn, h.space_id, h.issue_id, ArtifactKind::Result, "R", ArtifactStatus::Done, ActorKind::Agent, None).await.unwrap();
+
+        let cfg = config_reviewers(1, ReviewPassRule::Unanimous);
+        // Result exists, all live tasks Done, quiescent → integration gate → empty
+        // closure → block (advance + stop), never a vacuous pass.
+        assert_eq!(drive_finalize(&h, &cfg).await, StepOutcome::Advanced);
+        assert_eq!(load_issue(&h).await.status, IssueStatus::Blocked);
+        let inbox = loop_service::inbox::list_inbox(&h.db.conn, h.space_id, None).await.unwrap();
+        assert!(
+            inbox.iter().any(|i| i.kind == InboxKind::Blocked
+                && i.subject_key == format!("unverifiable:{}", h.issue_id)),
+            "unverifiable card filed"
+        );
+    }
+
     /// Finalize must wait for the issue to be **fully quiescent** — every task
     /// `Done` is not enough if any iteration is still in flight (e.g. a losing
     /// review slot mid-settle). The old per-issue write gate proxied this; the

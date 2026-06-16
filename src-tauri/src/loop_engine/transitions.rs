@@ -563,4 +563,24 @@ mod tests {
             .await
             .unwrap());
     }
+
+    /// Legality totality: the supersede edges the loop-backs rely on are legal, and
+    /// representative illegal transitions are rejected (so a typo in a loop-back can
+    /// never silently corrupt a node's lifecycle).
+    #[test]
+    fn is_legal_artifact_supersede_edges_and_rejections() {
+        use ArtifactStatus::*;
+        // Loop-back supersede edges (coverage / integration / design-reject).
+        assert!(is_legal_artifact(Done, Superseded), "integration loop-back supersedes done tasks/result");
+        assert!(is_legal_artifact(AwaitingApproval, Superseded), "design-reject supersedes the awaiting design");
+        assert!(is_legal_artifact(Pending, Superseded), "coverage loop-back supersedes pending tasks");
+        // Review-fail retry sends an in-progress task back to pending.
+        assert!(is_legal_artifact(InProgress, Pending));
+        // Rejections: a settled/implemented node can't regress or be superseded
+        // through an undefined edge.
+        assert!(!is_legal_artifact(Done, Pending), "a done task never reopens to pending");
+        assert!(!is_legal_artifact(InProgress, Superseded), "an in-progress task isn't directly superseded");
+        assert!(!is_legal_artifact(Done, InProgress), "a done task never reverts to in-progress");
+        assert!(!is_legal_artifact(Blocked, Superseded), "a blocked node is resolved by retry/cancel, not supersede");
+    }
 }

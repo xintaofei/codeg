@@ -596,6 +596,65 @@ async fn maybe_coverage_loopback(
     Ok(Some(TickOutcome::Advanced))
 }
 
+/// D12: a human-rejected design supersedes it, and the read frontier re-emits
+/// Design next tick (a bounded feedback edge, like the coverage loop-back). Bound
+/// it by the count of Design iterations vs `max_attempts` (0 = unlimited): on
+/// exhaustion, block the issue and file a `design_rejected` card rather than
+/// re-dispatching forever. Returns `Some(Advanced)` only on exhaustion; `None`
+/// otherwise — letting the frontier re-emit Design for the next bounded attempt.
+///
+/// Like the coverage loop-back, the transient re-emit files no card (the engine is
+/// converging as designed); only the terminal blocked state is an inbox item.
+async fn maybe_design_reject_exhausted(
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+    issue: &loop_issue::Model,
+    config: &IssueConfig,
+    dag: &LoopDagView,
+) -> Result<Option<TickOutcome>, LoopError> {
+    let conn = &db.conn;
+    // Only relevant once a design was rejected (superseded) and none is live — i.e.
+    // the frontier is about to re-emit Design.
+    let rejected = dag
+        .artifacts
+        .iter()
+        .any(|a| a.kind == ArtifactKind::Design && a.status == ArtifactStatus::Superseded);
+    let live = dag.artifacts.iter().any(|a| {
+        a.kind == ArtifactKind::Design
+            && !matches!(a.status, ArtifactStatus::Superseded | ArtifactStatus::Cancelled)
+    });
+    if !rejected || live {
+        return Ok(None);
+    }
+
+    // Each Design dispatch is one Design iteration on record.
+    let design_attempts = loop_iteration::Entity::find()
+        .filter(loop_iteration::Column::IssueId.eq(issue.id))
+        .filter(loop_iteration::Column::Stage.eq(Stage::Design))
+        .count(conn)
+        .await? as u32;
+    if config.max_attempts != 0 && design_attempts >= config.max_attempts {
+        cas_issue_status(conn, issue.id, IssueStatus::Running, IssueStatus::Blocked).await?;
+        inbox::upsert_inbox(
+            conn,
+            issue.space_id,
+            issue.id,
+            None,
+            InboxKind::Blocked,
+            &format!("design_rejected:{}", issue.id),
+            serde_json::json!({
+                "v": 1,
+                "reason": "design_rejected_exhausted",
+                "design_attempts": design_attempts,
+            }),
+        )
+        .await?;
+        emit_changed(emitter, issue.space_id, issue.id, issue.id, "blocked");
+        return Ok(Some(TickOutcome::Advanced));
+    }
+    Ok(None)
+}
+
 /// One scheduling tick for a single issue: ensure triage, then dispatch the
 /// ready frontier. Idempotent and side-effect-guarded by the DB leases, so it
 /// is safe to call repeatedly. Takes explicit handles (not `&LoopEngine`) so it
@@ -685,6 +744,18 @@ pub(crate) async fn tick_once(
     // Design approval gate (route=full): while a produced design awaits human
     // approval, keep its inbox card filed; the read frontier idles until approved.
     ensure_design_gate_card(db, &issue, &dag).await?;
+
+    // D12: a rejected design re-emits Design via the frontier below; bound that
+    // loop-back so endless rejections terminate at `block + design_rejected`
+    // instead of re-dispatching forever (route=full only — other routes have no
+    // design stage).
+    if route == IssueRoute::Full {
+        if let Some(outcome) =
+            maybe_design_reject_exhausted(db, emitter, &issue, &config, &dag).await?
+        {
+            return Ok(outcome);
+        }
+    }
 
     // Read pipeline first (triage → refine → design → plan). While it has work,
     // the write pipeline waits.
@@ -1799,6 +1870,66 @@ mod tests {
             cards.iter().any(|c| c.subject_key == format!("coverage_gap:{issue_id}")
                 && c.kind == InboxKind::Blocked),
             "coverage_gap card filed"
+        );
+    }
+
+    /// D12: a rejected design re-emits Design via the frontier; the loop-back is
+    /// bounded by the Design-iteration count vs `max_attempts`. Under the bound it
+    /// re-emits (None); at/over it blocks the issue + files `design_rejected`;
+    /// `0` = unlimited never blocks.
+    #[tokio::test]
+    async fn design_reject_loopback_is_bounded() {
+        use crate::loop_engine::transitions::{try_claim_iteration, IterationClaim};
+        let (db, _data_dir, issue_id) = setup().await;
+        let conn = &db.conn;
+        let issue = loop_issue::Entity::find_by_id(issue_id).one(conn).await.unwrap().unwrap();
+        let space_id = issue.space_id;
+
+        // A rejected (superseded) design with no live design + two Design iterations.
+        artifact::create_artifact(conn, space_id, issue_id, ArtifactKind::Design, "D1", ArtifactStatus::Superseded, ActorKind::Agent, None).await.unwrap();
+        for n in 0..2 {
+            try_claim_iteration(
+                conn,
+                IterationClaim {
+                    space_id,
+                    issue_id,
+                    stage: Stage::Design,
+                    target_artifact_id: None,
+                    slot_no: None,
+                    capability_token: format!("d{n}"),
+                    attempt: n,
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        }
+        let dag = artifact::list_dag(conn, issue_id).await.unwrap();
+
+        // Under the bound (3 > 2) → re-emit; issue stays running.
+        let under = IssueConfig { max_attempts: 3, ..IssueConfig::default() };
+        assert!(maybe_design_reject_exhausted(&db, &EventEmitter::Noop, &issue, &under, &dag).await.unwrap().is_none());
+        // Unlimited (0) never blocks.
+        let unlimited = IssueConfig { max_attempts: 0, ..IssueConfig::default() };
+        assert!(maybe_design_reject_exhausted(&db, &EventEmitter::Noop, &issue, &unlimited, &dag).await.unwrap().is_none());
+        assert_eq!(
+            loop_issue::Entity::find_by_id(issue_id).one(conn).await.unwrap().unwrap().status,
+            IssueStatus::Running
+        );
+
+        // At the bound (2 ≤ 2) → block + design_rejected card.
+        let at = IssueConfig { max_attempts: 2, ..IssueConfig::default() };
+        let out = maybe_design_reject_exhausted(&db, &EventEmitter::Noop, &issue, &at, &dag).await.unwrap();
+        assert_eq!(out, Some(TickOutcome::Advanced));
+        assert_eq!(
+            loop_issue::Entity::find_by_id(issue_id).one(conn).await.unwrap().unwrap().status,
+            IssueStatus::Blocked
+        );
+        let cards = inbox::list_inbox(conn, space_id, None).await.unwrap();
+        assert!(
+            cards.iter().any(|c| c.subject_key == format!("design_rejected:{issue_id}")
+                && c.kind == InboxKind::Blocked),
+            "design_rejected card filed on exhaustion"
         );
     }
 
