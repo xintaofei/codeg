@@ -3028,6 +3028,18 @@
       "review": "مراجعة",
       "result": "نتيجة"
     },
+    "criterionKind": {
+      "acceptance": "قبول",
+      "constraint": "قيد",
+      "invariant": "ثابت",
+      "obligation": "التزام"
+    },
+    "coverage": {
+      "coveredBy": "مغطى بواسطة: {tasks}",
+      "covers": "يغطي",
+      "uncovered": "لم تتم تغطيته بعد بأي مهمة",
+      "gapCardTitle": "فجوة التغطية"
+    },
     "artifactStatus": {
       "pending": "قيد الانتظار",
       "in_progress": "قيد التنفيذ",

@@ -3028,6 +3028,18 @@
       "review": "評審",
       "result": "結果"
     },
+    "criterionKind": {
+      "acceptance": "驗收",
+      "constraint": "約束",
+      "invariant": "不變量",
+      "obligation": "義務"
+    },
+    "coverage": {
+      "coveredBy": "覆蓋於：{tasks}",
+      "covers": "覆蓋",
+      "uncovered": "尚無任務覆蓋",
+      "gapCardTitle": "覆蓋缺口"
+    },
     "artifactStatus": {
       "pending": "待處理",
       "in_progress": "進行中",

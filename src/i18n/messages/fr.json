@@ -3028,6 +3028,18 @@
       "review": "Revue",
       "result": "Résultat"
     },
+    "criterionKind": {
+      "acceptance": "Acceptation",
+      "constraint": "Contrainte",
+      "invariant": "Invariant",
+      "obligation": "Obligation"
+    },
+    "coverage": {
+      "coveredBy": "Couvert par : {tasks}",
+      "covers": "Couvre",
+      "uncovered": "Pas encore couvert par une tâche",
+      "gapCardTitle": "Écart de couverture"
+    },
     "artifactStatus": {
       "pending": "En attente",
       "in_progress": "En cours",

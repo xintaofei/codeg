@@ -3028,6 +3028,18 @@
       "review": "评审",
       "result": "结果"
     },
+    "criterionKind": {
+      "acceptance": "验收",
+      "constraint": "约束",
+      "invariant": "不变量",
+      "obligation": "义务"
+    },
+    "coverage": {
+      "coveredBy": "覆盖于：{tasks}",
+      "covers": "覆盖",
+      "uncovered": "尚无任务覆盖",
+      "gapCardTitle": "覆盖缺口"
+    },
     "artifactStatus": {
       "pending": "待处理",
       "in_progress": "进行中",

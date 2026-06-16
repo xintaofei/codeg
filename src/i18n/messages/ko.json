@@ -3028,6 +3028,18 @@
       "review": "검토",
       "result": "결과"
     },
+    "criterionKind": {
+      "acceptance": "인수",
+      "constraint": "제약",
+      "invariant": "불변",
+      "obligation": "의무"
+    },
+    "coverage": {
+      "coveredBy": "담당: {tasks}",
+      "covers": "담당 기준",
+      "uncovered": "아직 어떤 작업도 담당하지 않음",
+      "gapCardTitle": "커버리지 공백"
+    },
     "artifactStatus": {
       "pending": "대기 중",
       "in_progress": "진행 중",

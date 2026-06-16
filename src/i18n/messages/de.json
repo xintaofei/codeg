@@ -3028,6 +3028,18 @@
       "review": "Prüfung",
       "result": "Ergebnis"
     },
+    "criterionKind": {
+      "acceptance": "Abnahme",
+      "constraint": "Beschränkung",
+      "invariant": "Invariante",
+      "obligation": "Verpflichtung"
+    },
+    "coverage": {
+      "coveredBy": "Abgedeckt von: {tasks}",
+      "covers": "Deckt ab",
+      "uncovered": "Noch von keiner Aufgabe abgedeckt",
+      "gapCardTitle": "Abdeckungslücke"
+    },
     "artifactStatus": {
       "pending": "Ausstehend",
       "in_progress": "In Bearbeitung",

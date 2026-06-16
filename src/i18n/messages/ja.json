@@ -3028,6 +3028,18 @@
       "review": "レビュー",
       "result": "結果"
     },
+    "criterionKind": {
+      "acceptance": "受け入れ",
+      "constraint": "制約",
+      "invariant": "不変条件",
+      "obligation": "義務"
+    },
+    "coverage": {
+      "coveredBy": "カバー: {tasks}",
+      "covers": "カバー対象",
+      "uncovered": "まだどのタスクもカバーしていません",
+      "gapCardTitle": "カバレッジギャップ"
+    },
     "artifactStatus": {
       "pending": "保留中",
       "in_progress": "進行中",

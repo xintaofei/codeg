@@ -3028,6 +3028,18 @@
       "review": "Revisão",
       "result": "Resultado"
     },
+    "criterionKind": {
+      "acceptance": "Aceitação",
+      "constraint": "Restrição",
+      "invariant": "Invariante",
+      "obligation": "Obrigação"
+    },
+    "coverage": {
+      "coveredBy": "Coberto por: {tasks}",
+      "covers": "Cobre",
+      "uncovered": "Ainda não coberto por nenhuma tarefa",
+      "gapCardTitle": "Lacuna de cobertura"
+    },
     "artifactStatus": {
       "pending": "Pendente",
       "in_progress": "Em andamento",

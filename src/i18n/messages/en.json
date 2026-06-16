@@ -3028,6 +3028,18 @@
       "review": "Review",
       "result": "Result"
     },
+    "criterionKind": {
+      "acceptance": "Acceptance",
+      "constraint": "Constraint",
+      "invariant": "Invariant",
+      "obligation": "Obligation"
+    },
+    "coverage": {
+      "coveredBy": "Covered by: {tasks}",
+      "covers": "Covers",
+      "uncovered": "Not yet covered by any task",
+      "gapCardTitle": "Coverage gap"
+    },
     "artifactStatus": {
       "pending": "Pending",
       "in_progress": "In progress",
