@@ -52,7 +52,7 @@ const SCRIPT = `
     // 界面字体：预水合写入 --font-sans（普通组件与会话消息区都跟随它）。
     // stack 只是「显式选择」的缓存，不是偏好本身：仅当存在显式 id（codeg-ui-font）
     // 时才应用它。无显式选择的用户（含从旧默认升级、Provider 仅缓存过 stack 的用户）
-    // 跳过，落到 :root 的 --font-sans 兜底（= 当前默认 MONO_FALLBACK），避免升级首屏闪字。
+    // 跳过，落到 :root 的 --font-sans 兜底（= 当前默认界面字体 Inter 栈），避免升级首屏闪字。
     // 无需在脚本里复制字体目录；空/超长/含越界字符同样跳过走默认。
     var uiFontId = localStorage.getItem("${STORAGE_KEY_UI_FONT}");
     var uiFontStack = localStorage.getItem("${STORAGE_KEY_UI_FONT_STACK}");
