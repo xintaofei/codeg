@@ -41,14 +41,14 @@ function req(
   } as LoopArtifactDetail
 }
 
-function task(id: number, title: string): LoopArtifactRow {
+function task(id: number, title: string, status = "pending"): LoopArtifactRow {
   return {
     id,
     issue_id: 1,
     issue_seq: 1,
     kind: "task",
     title,
-    status: "pending",
+    status,
     origin: "agent",
     produced_by_iteration_id: null,
     verdict: null,
@@ -90,6 +90,10 @@ describe("loop-coverage", () => {
       "Build B",
     ])
     expect(coveringTaskTitles(22, coverage, tasks)).toEqual([]) // uncovered
+
+    // A superseded task's coverage row does NOT count — the criterion is a gap.
+    const replanned = [task(100, "Build A", "superseded"), task(101, "Build B")]
+    expect(coveringTaskTitles(20, [cov(100, 20)], replanned)).toEqual([])
   })
 
   it("resolves a task's covered criteria as ordinal+text", () => {

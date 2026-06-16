@@ -35,7 +35,9 @@ export function acceptanceOrdinalMap(
   return map
 }
 
-/** Titles of the tasks that cover a given criterion (empty ⇒ uncovered). */
+/** Titles of the LIVE tasks that cover a given criterion (empty ⇒ uncovered).
+ * Coverage rows of superseded/cancelled tasks (e.g. a replanned-away task) do
+ * not count — they're dead, so a criterion they once claimed is really a gap. */
 export function coveringTaskTitles(
   criterionId: number,
   coverage: LoopCoverageRow[],
@@ -44,7 +46,10 @@ export function coveringTaskTitles(
   return coverage
     .filter((c) => c.criterion_id === criterionId)
     .map((c) => artifacts.find((a) => a.id === c.task_artifact_id))
-    .filter((a): a is LoopArtifactRow => a != null)
+    .filter(
+      (a): a is LoopArtifactRow =>
+        a != null && a.status !== "superseded" && a.status !== "cancelled"
+    )
     .map((a) => a.title)
 }
 

@@ -173,8 +173,10 @@ function ArtifactDrawerBody({ artifactId }: { artifactId: number }) {
           }
           coverage = { coveredBy, covers: [] }
         } else if (dag && detail.kind === "task") {
+          // Done requirements only — matches the backend ordinal source, so the
+          // R{i}.AC{j} shown here lines up with what `covers` recorded.
           const reqIds = dag.artifacts
-            .filter((a) => a.kind === "requirement")
+            .filter((a) => a.kind === "requirement" && a.status === "done")
             .map((a) => a.id)
           const reqDetails = (
             await Promise.all(
