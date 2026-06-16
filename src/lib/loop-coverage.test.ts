@@ -105,4 +105,13 @@ describe("loop-coverage", () => {
     const covers = taskCovers(100, [cov(100, 11), cov(100, 20)], map)
     expect(covers.map((c) => c.ordinal)).toEqual(["R1.AC1", "R2.AC1"])
   })
+
+  it("orders covered criteria numerically (R10 after R2)", () => {
+    const map = new Map([
+      [1, { ordinal: "R2.AC1", text: "two" }],
+      [2, { ordinal: "R10.AC1", text: "ten" }],
+    ])
+    const covers = taskCovers(100, [cov(100, 2), cov(100, 1)], map)
+    expect(covers.map((c) => c.ordinal)).toEqual(["R2.AC1", "R10.AC1"])
+  })
 })

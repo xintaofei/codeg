@@ -59,9 +59,14 @@ export function taskCovers(
   coverage: LoopCoverageRow[],
   ordinals: Map<number, CriterionOrdinal>
 ): CriterionOrdinal[] {
-  return coverage
-    .filter((c) => c.task_artifact_id === taskId)
-    .map((c) => ordinals.get(c.criterion_id))
-    .filter((x): x is CriterionOrdinal => x != null)
-    .sort((a, b) => a.ordinal.localeCompare(b.ordinal))
+  return (
+    coverage
+      .filter((c) => c.task_artifact_id === taskId)
+      .map((c) => ordinals.get(c.criterion_id))
+      .filter((x): x is CriterionOrdinal => x != null)
+      // Numeric collation so R10.AC1 sorts after R2.AC1, not before it.
+      .sort((a, b) =>
+        a.ordinal.localeCompare(b.ordinal, undefined, { numeric: true })
+      )
+  )
 }
