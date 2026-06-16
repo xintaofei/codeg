@@ -883,6 +883,42 @@ enum ReviewDecision {
 /// `finalize`). Stored in `loop_gate_decision.stage` and used as the replay key.
 const REVIEW_STAGE: &str = "review";
 
+/// The gate-decision stage label for the integration review (target = result).
+/// `merge_issue` reads it; `count_fail(issue, FINALIZE_GATE_STAGE)` bounds the
+/// integration loop-back.
+pub(crate) const FINALIZE_GATE_STAGE: &str = "finalize";
+
+/// The issue's live (non-superseded/cancelled) result artifact, if any — the one
+/// `uniq_result_per_issue` admits. The integration gate and merge gate both reason
+/// about THIS result, never a superseded one a prior loop-back left behind.
+pub(crate) fn live_result(dag: &LoopDagView) -> Option<&LoopArtifactRow> {
+    dag.artifacts.iter().find(|a| {
+        a.kind == ArtifactKind::Result
+            && !matches!(a.status, ArtifactStatus::Superseded | ArtifactStatus::Cancelled)
+    })
+}
+
+/// Whether the issue's live result has passed integration (a recorded
+/// `gate_decision(result, finalize, attempt) == Pass`). The merge gate's
+/// precondition (D6) and the driver's auto-merge trigger both consult this, so a
+/// result can land only after the whole-issue closure is verified.
+pub(crate) async fn integration_passed(
+    conn: &sea_orm::DatabaseConnection,
+    dag: &LoopDagView,
+) -> Result<bool, LoopError> {
+    let Some(result) = live_result(dag) else {
+        return Ok(false);
+    };
+    Ok(loop_service::gate_decision::outcome_for(
+        conn,
+        result.id,
+        FINALIZE_GATE_STAGE,
+        result.attempt,
+    )
+    .await?
+        == Some(GateOutcome::Pass))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn drive_reviews(
     db: &AppDatabase,
@@ -1296,11 +1332,18 @@ pub(crate) async fn run_finalize(
     config: &IssueConfig,
     worktree_folder_id: i32,
 ) -> Result<StepOutcome, LoopError> {
-    // Only finalize once every task is done and no task holds the gate.
+    // Only finalize once every LIVE task is done and no task holds the gate.
+    // Excludes superseded/cancelled tasks: an integration (or coverage) loop-back
+    // supersedes the prior plan's tasks, and a stale `Superseded` task must not
+    // wedge the `all done` precondition forever (the new plan's tasks are what
+    // must complete).
     let tasks: Vec<&LoopArtifactRow> = dag
         .artifacts
         .iter()
-        .filter(|a| a.kind == ArtifactKind::Task)
+        .filter(|a| {
+            a.kind == ArtifactKind::Task
+                && !matches!(a.status, ArtifactStatus::Superseded | ArtifactStatus::Cancelled)
+        })
         .collect();
     if tasks.is_empty() || !tasks.iter().all(|t| t.status == ArtifactStatus::Done) {
         return Ok(StepOutcome::Idle);
@@ -1318,8 +1361,7 @@ pub(crate) async fn run_finalize(
     // fan-in (engine-synthesized result), not an agent-submitted finalize. Only
     // once the result exists do they rejoin the shared "result ready → merge gate"
     // tail below.
-    let has_result = dag.artifacts.iter().any(|a| a.kind == ArtifactKind::Result);
-    if issue.execution_mode.as_deref() == Some("parallel") && !has_result {
+    if issue.execution_mode.as_deref() == Some("parallel") && live_result(dag).is_none() {
         return crate::loop_engine::fan_in::run_parallel_finalize(
             db, data_dir, spawner, emitter, issue, dag, config, worktree_folder_id,
         )
@@ -1341,24 +1383,55 @@ pub(crate) async fn run_finalize(
     let worktree_path = Path::new(&folder.path);
 
     // Result already produced → commit any finalize worktree changes as the final
-    // checkpoint, then idle. With a human merge gate (auto_merge off) keep the
-    // approval inbox card filed; auto_merge lands via the driver instead.
-    if dag.artifacts.iter().any(|a| a.kind == ArtifactKind::Result) {
+    // checkpoint, then run the INTEGRATION gate (§3.6) before the merge gate. The
+    // checkpoint commits FIRST so integration reviewers read the committed combined
+    // tree; the gate verifies the whole-issue closure against the assembled result.
+    if let Some(result) = live_result(dag) {
         let message = format!("loop: finalize (issue #{})", issue.seq_no);
         worktree::checkpoint(worktree_path, &message).await?;
-        if !config.auto_merge {
-            loop_service::inbox::upsert_inbox(
-                &db.conn,
-                issue.space_id,
-                issue.id,
-                None,
-                InboxKind::Approval,
-                &format!("merge:{}", issue.id),
-                serde_json::json!({ "v": 1, "gate": "merge" }),
-            )
-            .await?;
-        }
-        return Ok(StepOutcome::Idle);
+
+        return match drive_integration_review(
+            db,
+            data_dir,
+            spawner,
+            emitter,
+            issue,
+            config,
+            worktree_folder_id,
+            result,
+        )
+        .await?
+        {
+            // Whole-issue closure verified → open the merge gate. With a human gate
+            // (auto_merge off) keep the approval card filed; auto_merge lands via
+            // the driver, which only triggers once `integration_passed` holds.
+            IntegrationGate::Pass => {
+                if !config.auto_merge {
+                    loop_service::inbox::upsert_inbox(
+                        &db.conn,
+                        issue.space_id,
+                        issue.id,
+                        None,
+                        InboxKind::Approval,
+                        &format!("merge:{}", issue.id),
+                        serde_json::json!({ "v": 1, "gate": "merge" }),
+                    )
+                    .await?;
+                }
+                Ok(StepOutcome::Idle)
+            }
+            // The assembled result fails a requirement/obligation → bounded loop-back.
+            IntegrationGate::Fail => {
+                maybe_integration_loopback(
+                    db, emitter, issue, config, dag, result, worktree_folder_id,
+                )
+                .await
+            }
+            // Nothing to verify (empty closure) → issue already blocked; re-tick to stop.
+            IntegrationGate::Blocked => Ok(StepOutcome::Advanced),
+            // More integration reviewer checks needed.
+            IntegrationGate::Pending(dispatched) => Ok(StepOutcome::from_dispatched(dispatched)),
+        };
     }
 
     // No result yet. Assert the tree is clean (every task's checkpoint committed,
@@ -1384,6 +1457,233 @@ pub(crate) async fn run_finalize(
     let dispatched =
         dispatch_finalize(db, data_dir, spawner, emitter, issue, config, worktree_folder_id).await?;
     Ok(StepOutcome::from_dispatched(dispatched))
+}
+
+/// Outcome of the integration gate (target = the assembled result).
+enum IntegrationGate {
+    /// Whole-issue closure verified → caller opens the merge gate.
+    Pass,
+    /// A requirement / obligation is unmet by the assembled result → caller loops back.
+    Fail,
+    /// Nothing to verify (empty closure, D11) → issue blocked + inbox(unverifiable).
+    Blocked,
+    /// More integration reviewer checks needed (`true` = a slot was dispatched).
+    Pending(bool),
+}
+
+/// The integration gate (§3.6): the result-targeted analogue of [`drive_reviews`].
+/// Same per-criterion machinery (D2/D3/D8) — reviewers run as `Stage::Review` slots
+/// on the result, each submitting one check per injected `integration_ordinals`
+/// handle — but the decision is recorded under `FINALIZE_GATE_STAGE` and drives no
+/// freeze/rework: the caller acts on the returned gate (merge / loop-back). A
+/// recorded decision is the replay pivot. An empty closure blocks the issue (D11).
+#[allow(clippy::too_many_arguments)]
+async fn drive_integration_review(
+    db: &AppDatabase,
+    data_dir: &Path,
+    spawner: &dyn LoopAgentSpawner,
+    emitter: &EventEmitter,
+    issue: &loop_issue::Model,
+    config: &IssueConfig,
+    worktree_folder_id: i32,
+    result: &LoopArtifactRow,
+) -> Result<IntegrationGate, LoopError> {
+    // Replay-safe pivot (D4): a recorded finalize decision drives the outcome.
+    if let Some(outcome) =
+        loop_service::gate_decision::outcome_for(&db.conn, result.id, FINALIZE_GATE_STAGE, result.attempt)
+            .await?
+    {
+        return Ok(match outcome {
+            GateOutcome::Pass => IntegrationGate::Pass,
+            GateOutcome::Fail => IntegrationGate::Fail,
+            GateOutcome::Undecided => IntegrationGate::Pending(false),
+        });
+    }
+
+    // Empty-closure guard (D11): nothing to verify → block, never a vacuous pass.
+    let ordinals =
+        loop_service::criterion_ordinals::integration_ordinals(&db.conn, issue.id).await?;
+    if ordinals.is_empty() {
+        cas_issue_status(&db.conn, issue.id, IssueStatus::Running, IssueStatus::Blocked).await?;
+        loop_service::inbox::upsert_inbox(
+            &db.conn,
+            issue.space_id,
+            issue.id,
+            None,
+            InboxKind::Blocked,
+            &format!("unverifiable:{}", issue.id),
+            serde_json::json!({ "v": 1, "reason": "no_integration_criteria" }),
+        )
+        .await?;
+        emit_changed(emitter, issue.space_id, issue.id, issue.id, "blocked");
+        return Ok(IntegrationGate::Blocked);
+    }
+
+    let reviewer_specs = config.effective_reviewers();
+    let reviewers = reviewer_specs.len() as i32;
+    let iters = review_iterations(db, issue.id, result.id, result.attempt).await?;
+    let verdicts = review_verdicts(db, &iters).await?;
+    let decided_iter_ids: Vec<i32> = verdicts.keys().copied().collect();
+    let mut missing_slots: Vec<i32> = Vec::new();
+    for slot in 0..reviewers {
+        let slot_iters: Vec<&loop_iteration::Model> =
+            iters.iter().filter(|it| it.slot_no == Some(slot)).collect();
+        let decided = slot_iters.iter().any(|it| verdicts.contains_key(&it.id));
+        let in_flight = slot_iters
+            .iter()
+            .any(|it| matches!(it.status, IterationStatus::Queued | IterationStatus::Running));
+        if !decided && !in_flight {
+            missing_slots.push(slot);
+        }
+    }
+
+    let injected_ids = injected_criterion_ids(&iters);
+    let checks =
+        loop_service::criterion_check::for_scope_iterations(&db.conn, result.id, &decided_iter_ids)
+            .await?;
+    let outcome = aggregate_checks(config.review_pass_rule, reviewers, &checks, &injected_ids);
+
+    match outcome {
+        GateOutcome::Pass | GateOutcome::Fail => {
+            let policy = review_policy_json(config);
+            match loop_service::gate_decision::record_decision(
+                &db.conn,
+                issue.space_id,
+                issue.id,
+                result.id,
+                FINALIZE_GATE_STAGE,
+                result.attempt,
+                &checks,
+                &injected_ids,
+                &policy,
+                outcome,
+            )
+            .await?
+            {
+                loop_service::gate_decision::RecordedDecision::Settled(_) => {}
+                loop_service::gate_decision::RecordedDecision::Conflict(_) => {
+                    return Err(LoopError::Conflict)
+                }
+            }
+            Ok(if outcome == GateOutcome::Pass {
+                IntegrationGate::Pass
+            } else {
+                IntegrationGate::Fail
+            })
+        }
+        GateOutcome::Undecided => {
+            let mut dispatched = false;
+            for slot in missing_slots {
+                if dispatch_review(
+                    db,
+                    data_dir,
+                    spawner,
+                    emitter,
+                    issue,
+                    worktree_folder_id,
+                    result.id,
+                    slot,
+                    result.attempt,
+                    &reviewer_specs[slot as usize],
+                )
+                .await?
+                {
+                    dispatched = true;
+                }
+            }
+            Ok(IntegrationGate::Pending(dispatched))
+        }
+    }
+}
+
+/// Integration failure → bounded loop-back to plan (D7). Supersede the live result
+/// (frees `uniq_result_per_issue`) and the live tasks so the read frontier re-emits
+/// Plan next tick; the committed task work stays in the worktree (integration
+/// faults are usually missing glue — a full reset would discard all task work and
+/// likely re-fail). Bounded by the count of failed finalize decisions vs
+/// `max_attempts` (0 = unlimited); exhaustion → block + inbox(integration_gap).
+/// Parallel issues also restore their per-task worktrees from the integrated HEAD
+/// so the new plan's tasks branch cleanly. Returns `Advanced` (re-tick).
+#[allow(clippy::too_many_arguments)]
+async fn maybe_integration_loopback(
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+    issue: &loop_issue::Model,
+    config: &IssueConfig,
+    dag: &LoopDagView,
+    result: &LoopArtifactRow,
+    worktree_folder_id: i32,
+) -> Result<StepOutcome, LoopError> {
+    let conn = &db.conn;
+    let fails = loop_service::gate_decision::count_fail(conn, issue.id, FINALIZE_GATE_STAGE).await?;
+    let exhausted = config.max_attempts != 0 && fails >= config.max_attempts;
+    if exhausted {
+        cas_issue_status(conn, issue.id, IssueStatus::Running, IssueStatus::Blocked).await?;
+        loop_service::inbox::upsert_inbox(
+            conn,
+            issue.space_id,
+            issue.id,
+            None,
+            InboxKind::Blocked,
+            &format!("integration_gap:{}", issue.id),
+            serde_json::json!({ "v": 1, "reason": "integration_gap_exhausted", "fails": fails }),
+        )
+        .await?;
+        emit_changed(emitter, issue.space_id, issue.id, issue.id, "blocked");
+        return Ok(StepOutcome::Advanced);
+    }
+
+    // Supersede the live result, then the live tasks, so the next tick's read
+    // frontier sees no live tasks and re-emits Plan (whose briefing carries the
+    // failing requirement feedback via the standard channels).
+    crate::loop_engine::transitions::cas_artifact_status_from(
+        conn,
+        result.id,
+        &[ArtifactStatus::Done, ArtifactStatus::AwaitingApproval],
+        ArtifactStatus::Superseded,
+    )
+    .await?;
+    // Every live task is Done here (the finalize precondition), and only
+    // (Done, Superseded) is a legal supersede edge for an implemented task.
+    for t in dag.artifacts.iter().filter(|a| {
+        a.kind == ArtifactKind::Task
+            && !matches!(a.status, ArtifactStatus::Superseded | ArtifactStatus::Cancelled)
+    }) {
+        crate::loop_engine::transitions::cas_artifact_status_from(
+            conn,
+            t.id,
+            &[ArtifactStatus::Done],
+            ArtifactStatus::Superseded,
+        )
+        .await?;
+    }
+
+    // Parallel: restore the per-task worktrees from the integrated HEAD before the
+    // re-plan creates fresh tasks (serial shares the issue worktree, nothing to do).
+    if issue.execution_mode.as_deref() == Some("parallel") {
+        if let Some(issue_wt) =
+            folder_service::get_folder_by_id(conn, worktree_folder_id).await?
+        {
+            if let Some(space) = loop_service::space::get_space(conn, issue.space_id).await? {
+                if let Some(repo) = folder_service::get_folder_by_id(conn, space.folder_id).await? {
+                    worktree::reset_issue_subtree(
+                        Path::new(&repo.path),
+                        Path::new(&issue_wt.path),
+                    )
+                    .await?;
+                }
+            }
+        }
+    }
+
+    tracing::info!(
+        issue_id = issue.id,
+        fails,
+        result_id = result.id,
+        "integration gap: superseding result + tasks and replanning"
+    );
+    emit_changed(emitter, issue.space_id, issue.id, issue.id, "issue");
+    Ok(StepOutcome::Advanced)
 }
 
 /// Dispatch the finalize iteration (issue-level: `target = None`; the
@@ -3192,11 +3492,12 @@ mod tests {
             .await
             .unwrap();
 
-        // Next tick: result exists → final checkpoint + idle (not a dispatch).
+        // Next tick: result exists → the INTEGRATION gate dispatches a reviewer on
+        // the result (the whole-issue closure must be verified before merge).
         assert_eq!(
             drive_finalize(&h, &cfg).await,
-            StepOutcome::Idle,
-            "finalize complete is not a dispatch"
+            StepOutcome::Dispatched,
+            "result exists → integration reviewer dispatched"
         );
 
         let dag = artifact::list_dag(&h.db.conn, h.issue_id).await.unwrap();
@@ -3217,6 +3518,120 @@ mod tests {
             })
             .count();
         assert_eq!(edges, 1, "results_from edge from result to the task");
+    }
+
+    /// Drive a single-task issue to a produced `result` sitting at the integration
+    /// gate (the finalize agent has submitted it). Returns the result artifact id.
+    async fn finalize_to_result(h: &Harness, cfg: &IssueConfig, task: i32) -> i32 {
+        complete_task(h, cfg, "feature.txt", task).await;
+        assert_eq!(
+            drive_finalize(h, cfg).await,
+            StepOutcome::Dispatched,
+            "finalize dispatched"
+        );
+        let fin = running_finalize(h).await;
+        crate::loop_engine::ingest::ingest(
+            &h.db.conn,
+            &fin.capability_token,
+            "loop_submit_artifacts",
+            &serde_json::json!({ "artifacts": [{ "title": "Result", "content": "shipped" }] }),
+        )
+        .await
+        .unwrap();
+        settle_iteration(&h.db, &EventEmitter::Noop, fin.id).await.unwrap();
+        let dag = artifact::list_dag(&h.db.conn, h.issue_id).await.unwrap();
+        live_result(&dag).expect("result produced").id
+    }
+
+    /// Integration gate PASS opens the merge gate: the result exists, an integration
+    /// reviewer is dispatched on it, and once it passes the whole-issue closure the
+    /// finalize decision is recorded and `integration_passed` holds (merge allowed).
+    #[tokio::test]
+    async fn integration_pass_opens_merge_gate() {
+        let h = setup().await;
+        let task = add_task(&h, "Task 1").await;
+        let cfg = config_reviewers(1, ReviewPassRule::Unanimous);
+        let result_id = finalize_to_result(&h, &cfg, task).await;
+
+        // Result exists → integration reviewer dispatched (target = result), and the
+        // gate is not yet passed.
+        assert_eq!(drive_finalize(&h, &cfg).await, StepOutcome::Dispatched);
+        let dag = artifact::list_dag(&h.db.conn, h.issue_id).await.unwrap();
+        assert!(!integration_passed(&h.db.conn, &dag).await.unwrap());
+        let review = running_review(&h).await; // the only running Review = integration
+        submit_verdict(&h, review, "pass", "closure holds").await;
+        settle_iteration(&h.db, &EventEmitter::Noop, review).await.unwrap();
+
+        // Next tick: integration Pass → merge gate open (no further dispatch).
+        assert_eq!(drive_finalize(&h, &cfg).await, StepOutcome::Idle);
+        assert_eq!(
+            loop_service::gate_decision::outcome_for(&h.db.conn, result_id, "finalize", 0)
+                .await
+                .unwrap(),
+            Some(GateOutcome::Pass)
+        );
+        let dag = artifact::list_dag(&h.db.conn, h.issue_id).await.unwrap();
+        assert!(integration_passed(&h.db.conn, &dag).await.unwrap(), "merge gate open");
+    }
+
+    /// Integration gate FAIL loops back: the live result and tasks are superseded
+    /// (freeing `uniq_result_per_issue`), the fail decision is recorded, and the
+    /// next plan can produce a fresh result. The integration reviewer failing a
+    /// closure criterion is exactly the cross-task-violation path.
+    #[tokio::test]
+    async fn integration_fail_supersedes_result_and_tasks() {
+        let h = setup().await;
+        let task = add_task(&h, "Task 1").await;
+        let cfg = IssueConfig { max_attempts: 3, ..config_reviewers(1, ReviewPassRule::Unanimous) };
+        let result_id = finalize_to_result(&h, &cfg, task).await;
+
+        assert_eq!(drive_finalize(&h, &cfg).await, StepOutcome::Dispatched);
+        let review = running_review(&h).await;
+        submit_verdict(&h, review, "fail", "requirement unmet by the combined result").await;
+        settle_iteration(&h.db, &EventEmitter::Noop, review).await.unwrap();
+
+        // Integration Fail → bounded loop-back (advance + re-plan), result+task superseded.
+        assert_eq!(drive_finalize(&h, &cfg).await, StepOutcome::Advanced);
+        assert_eq!(
+            loop_service::gate_decision::outcome_for(&h.db.conn, result_id, "finalize", 0)
+                .await
+                .unwrap(),
+            Some(GateOutcome::Fail)
+        );
+        let dag = artifact::list_dag(&h.db.conn, h.issue_id).await.unwrap();
+        assert_eq!(
+            dag.artifacts.iter().find(|a| a.id == result_id).unwrap().status,
+            ArtifactStatus::Superseded,
+            "live result superseded"
+        );
+        assert_eq!(task_node(&h, task).await.status, ArtifactStatus::Superseded, "task superseded");
+        assert!(live_result(&dag).is_none(), "uniq_result_per_issue freed for a fresh result");
+        assert_eq!(load_issue(&h).await.status, IssueStatus::Running, "still running (bounded retry)");
+    }
+
+    /// Integration loop-back is bounded: with `max_attempts = 1` the first integration
+    /// failure exhausts the bound → issue blocked + `integration_gap` card.
+    #[tokio::test]
+    async fn integration_gap_exhausts_to_block() {
+        let h = setup().await;
+        let task = add_task(&h, "Task 1").await;
+        let cfg = IssueConfig { max_attempts: 1, ..config_reviewers(1, ReviewPassRule::Unanimous) };
+        let _ = finalize_to_result(&h, &cfg, task).await;
+
+        assert_eq!(drive_finalize(&h, &cfg).await, StepOutcome::Dispatched);
+        let review = running_review(&h).await;
+        submit_verdict(&h, review, "fail", "unmet").await;
+        settle_iteration(&h.db, &EventEmitter::Noop, review).await.unwrap();
+
+        // count_fail(finalize) reaches max_attempts(1) → block, not loop-back.
+        assert_eq!(drive_finalize(&h, &cfg).await, StepOutcome::Advanced);
+        assert_eq!(load_issue(&h).await.status, IssueStatus::Blocked);
+        let inbox = loop_service::inbox::list_inbox(&h.db.conn, h.space_id, None).await.unwrap();
+        assert!(
+            inbox.iter().any(|i| i.kind == InboxKind::Blocked
+                && i.subject_key == format!("integration_gap:{}", h.issue_id)),
+            "integration_gap card filed"
+        );
     }
 
     /// Finalize must wait for the issue to be **fully quiescent** — every task

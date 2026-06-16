@@ -295,13 +295,16 @@ impl LoopEngine {
             return Ok(());
         }
         // Not mergeable: any other non-running state (blocked / cancelled / paused
-        // / pending) or finalize has not produced a result. Emit a resync FIRST so
-        // a view still showing "running" refetches the true status (the original
+        // / pending), or the live result has not passed integration (D6) — finalize
+        // produced no result, or its whole-issue closure isn't verified
+        // (`gate_decision(result, finalize) == Pass`). Emit a resync FIRST so a view
+        // still showing "running" refetches the true status (the original
         // transition's event may have been missed), then return the non-retryable
         // error.
         let dag = artifact::list_dag(conn, issue_id).await?;
-        let has_result = dag.artifacts.iter().any(|a| a.kind == ArtifactKind::Result);
-        if issue.status != IssueStatus::Running || !has_result {
+        let integration_passed =
+            crate::loop_engine::gates::integration_passed(conn, &dag).await?;
+        if issue.status != IssueStatus::Running || !integration_passed {
             self.emit_changed(issue.space_id, issue_id, "merge_unavailable");
             return Err(LoopError::NotMergeable);
         }
@@ -1065,7 +1068,7 @@ mod tests {
             .unwrap()
             .expect("committed");
         // Finalize produced the result artifact.
-        artifact::create_artifact(
+        let result = artifact::create_artifact(
             &conn,
             space.id,
             issue.row.id,
@@ -1074,6 +1077,23 @@ mod tests {
             ArtifactStatus::Done,
             ActorKind::Agent,
             None,
+        )
+        .await
+        .unwrap();
+        // Integration verified: the merge gate (D6) requires a recorded
+        // `gate_decision(result, finalize) == Pass`, so a finalized issue at the
+        // merge gate must carry it.
+        crate::db::service::loop_service::gate_decision::record_decision(
+            &conn,
+            space.id,
+            issue.row.id,
+            result.id,
+            crate::loop_engine::gates::FINALIZE_GATE_STAGE,
+            result.attempt,
+            &[],
+            &[],
+            "{}",
+            crate::db::entities::loop_gate_decision::GateOutcome::Pass,
         )
         .await
         .unwrap();

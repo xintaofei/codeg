@@ -469,6 +469,40 @@ async fn review_checklist_section(
     ))
 }
 
+/// The per-criterion checklist for an INTEGRATION review (target = the assembled
+/// `result`, §3.6, D9): the whole-issue closure — every requirement acceptance
+/// (`R{i}.AC{j}`) plus every design obligation (`D{k}`), or the tasks' own
+/// acceptance on the `direct` route. ALL of these are checks here (unlike a task
+/// review, where obligations are awareness-only). Returns the section body and the
+/// `{ handle: criterion_id }` manifest the gate resolves against.
+async fn integration_checklist_section(
+    conn: &DatabaseConnection,
+    issue_id: i32,
+) -> Result<(Option<String>, Value), LoopError> {
+    let entries =
+        loop_service::criterion_ordinals::integration_ordinals(conn, issue_id).await?;
+    let mut manifest = serde_json::Map::new();
+    for e in &entries {
+        manifest.insert(e.handle.clone(), json!(e.criterion_id));
+    }
+    if entries.is_empty() {
+        return Ok((None, Value::Object(manifest)));
+    }
+    let mut body = String::from(
+        "Verify the ASSEMBLED RESULT (the full combined change) against the whole-issue \
+         closure. Submit one check per handle below (use the EXACT handle in brackets), each \
+         with a pass/fail and concrete evidence drawn from the integrated result — a `fail` \
+         names the specific gap or cross-task conflict:\n",
+    );
+    for e in &entries {
+        body.push_str(&format!("- [{}] {}\n", e.handle, e.text));
+    }
+    Ok((
+        Some(format!("# Integration criteria\n{}", body.trim_end())),
+        Value::Object(manifest),
+    ))
+}
+
 /// Assemble the briefing for one iteration. `issue` is the loaded issue row;
 /// `target_artifact_id` is the node the iteration derives its output from (the
 /// issue root for triage/refine, a requirement for design, etc.) — `None` only
@@ -640,13 +674,24 @@ pub async fn assemble_briefing(
                     components.push(json!({ "section": "acceptance_criteria", "closure": true }));
                 }
             } else if stage == Stage::Review {
-                let (section, manifest) =
-                    review_checklist_section(conn, issue.id, target).await?;
+                // A review targeting the `result` is the INTEGRATION gate (whole-issue
+                // closure); a review targeting a task is the task gate (covered ACs +
+                // the task's own acceptance, obligations awareness-only).
+                let is_integration = dag
+                    .artifacts
+                    .iter()
+                    .find(|a| a.id == target)
+                    .map(|a| a.kind == ArtifactKind::Result)
+                    .unwrap_or(false);
+                let (label, (section, manifest)) = if is_integration {
+                    ("integration_checklist", integration_checklist_section(conn, issue.id).await?)
+                } else {
+                    ("review_checklist", review_checklist_section(conn, issue.id, target).await?)
+                };
                 if let Some(s) = section {
                     sections.push(s);
                     let count = manifest.as_object().map(|m| m.len()).unwrap_or(0);
-                    components
-                        .push(json!({ "section": "review_checklist", "count": count }));
+                    components.push(json!({ "section": label, "count": count }));
                 }
                 criteria_manifest = Some(manifest);
             } else {

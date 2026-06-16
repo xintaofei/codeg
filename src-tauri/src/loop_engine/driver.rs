@@ -786,10 +786,12 @@ pub(crate) async fn tick_once(
         gates::StepOutcome::Idle => {}
     }
 
-    // Result produced → merge gate. With `auto_merge` on, signal the driver to
-    // land it (the merge needs `&LoopEngine`). Otherwise idle: the human gate
-    // awaits an explicit approve_merge (its inbox card arrives in Task 2.7).
-    if config.auto_merge && dag.artifacts.iter().any(|a| a.kind == ArtifactKind::Result) {
+    // Result produced AND integration-verified → merge gate. With `auto_merge` on,
+    // signal the driver to land it (the merge needs `&LoopEngine`). Gating on
+    // `integration_passed` (not just "a result exists") means auto-merge fires only
+    // after the whole-issue closure is verified — and never on a superseded result a
+    // loop-back left behind. Otherwise idle: the human gate awaits approve_merge.
+    if config.auto_merge && gates::integration_passed(&db.conn, &dag).await? {
         return Ok(TickOutcome::AutoMerge);
     }
     Ok(TickOutcome::Idle)
