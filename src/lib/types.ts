@@ -622,6 +622,36 @@ export interface LoopCoverageRow {
   criterion_id: number
 }
 
+/** A reviewer's per-criterion verdict. */
+export type CheckVerdict = "pass" | "fail"
+
+/** A gate's aggregated outcome over its criterion checks. */
+export type GateOutcome = "pass" | "fail" | "undecided"
+
+/** One reviewer check of a single criterion, scoped to the artifact reviewed
+ * (`scope_artifact_id` = the task, or the result for an integration review). */
+export interface LoopCriterionCheckRow {
+  id: number
+  criterion_id: number
+  iteration_id: number
+  scope_artifact_id: number
+  verdict: CheckVerdict
+  evidence: string
+}
+
+/** The immutable record of a gate's decision over the checks it aggregated.
+ * `stage` is `review` (task gate) or `finalize` (integration gate); `target`
+ * is the task or the result. */
+export interface LoopGateDecisionRow {
+  id: number
+  target_artifact_id: number
+  stage: string
+  attempt: number
+  outcome: GateOutcome
+  input_check_ids: number[]
+  created_at: string
+}
+
 export interface LoopArtifactDetail extends LoopArtifactRow {
   revisions: LoopRevision[]
   criteria: LoopCriterionRow[]
@@ -632,6 +662,8 @@ export interface LoopDagView {
   artifacts: LoopArtifactRow[]
   links: LoopLinkRow[]
   coverage: LoopCoverageRow[]
+  criterion_checks: LoopCriterionCheckRow[]
+  gate_decisions: LoopGateDecisionRow[]
 }
 
 export interface LoopIterationRow {

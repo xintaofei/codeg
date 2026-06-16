@@ -3,12 +3,14 @@ import { describe, expect, it } from "vitest"
 import {
   acceptanceOrdinalMap,
   coveringTaskTitles,
+  criterionCheckMap,
   taskCovers,
 } from "@/lib/loop-coverage"
 import type {
   LoopArtifactDetail,
   LoopArtifactRow,
   LoopCoverageRow,
+  LoopCriterionCheckRow,
 } from "@/lib/types"
 
 function req(
@@ -113,5 +115,62 @@ describe("loop-coverage", () => {
     ])
     const covers = taskCovers(100, [cov(100, 2), cov(100, 1)], map)
     expect(covers.map((c) => c.ordinal)).toEqual(["R2.AC1", "R10.AC1"])
+  })
+
+  it("criterionCheckMap scores each criterion from its latest gate round", () => {
+    const chk = (
+      id: number,
+      criterion_id: number,
+      scope: number,
+      verdict: "pass" | "fail"
+    ): LoopCriterionCheckRow => ({
+      id,
+      criterion_id,
+      iteration_id: 0,
+      scope_artifact_id: scope,
+      verdict,
+      evidence: "",
+    })
+    const dec = (id: number, input_check_ids: number[]) => ({
+      id,
+      target_artifact_id: 0,
+      stage: "review",
+      attempt: 0,
+      outcome: "pass" as const,
+      input_check_ids,
+      created_at: "",
+    })
+
+    const checks = [
+      // Criterion 10 reworked: attempt-0 task round failed (check 1), attempt-1
+      // round passed (check 2) — SAME task scope. The newer round must win → pass
+      // (no stale fail across the rework).
+      chk(1, 10, 500, "fail"),
+      chk(2, 10, 500, "pass"),
+      // Criterion 11: two reviewers in ONE round disagree (fail 3 + pass 4).
+      // Fail-dominant within the round → fail (never a misleading pass).
+      chk(3, 11, 500, "fail"),
+      chk(4, 11, 500, "pass"),
+      // Criterion 12: task round fail (5), then a later integration round pass (6).
+      chk(5, 12, 500, "fail"),
+      chk(6, 12, 900, "pass"),
+      // Criterion 13: a check with NO decision yet (in-flight) → fallback fail-dom.
+      chk(7, 13, 500, "fail"),
+    ]
+    const decisions = [
+      dec(10, [1]), // attempt-0 task round (failed) — older
+      dec(20, [2]), // attempt-1 task round (passed) — newer, wins criterion 10
+      dec(11, [3, 4]), // criterion 11's single round (both reviewers)
+      dec(30, [5]), // criterion 12 task round (failed) — older
+      dec(40, [6]), // criterion 12 integration round (passed) — newer, wins
+    ]
+
+    const map = criterionCheckMap(checks, decisions)
+    expect(map.get(10)?.verdict).toBe("pass") // rework: newer round wins, no stale fail
+    expect(map.get(11)?.verdict).toBe("fail") // within-round disagreement → fail
+    expect(map.get(12)?.verdict).toBe("pass") // integration round superseded the task fail
+    expect(map.get(12)?.scope_artifact_id).toBe(900)
+    expect(map.get(13)?.verdict).toBe("fail") // undecided fallback
+    expect(map.has(99)).toBe(false)
   })
 })

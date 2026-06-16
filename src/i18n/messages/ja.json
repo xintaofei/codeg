@@ -3040,7 +3040,9 @@
       "coveredBy": "カバー: {tasks}",
       "covers": "カバー対象",
       "uncovered": "まだどのタスクもカバーしていません",
-      "gapCardTitle": "カバレッジギャップ"
+      "gapCardTitle": "カバレッジギャップ",
+      "gateDecision": "ゲート判定",
+      "aggregatedChecks": "{count} 件のチェック"
     },
     "artifactStatus": {
       "pending": "保留中",
@@ -3236,6 +3238,15 @@
       "summary": "実行中 {issues} 件 · 処理中 {iters} 件",
       "pending": "トークン保留 {n} 件",
       "reconnecting": "再接続中…"
+    },
+    "checkVerdict": {
+      "pass": "合格",
+      "fail": "不合格"
+    },
+    "gateOutcome": {
+      "pass": "合格",
+      "fail": "不合格",
+      "undecided": "未確定"
     }
   }
 }

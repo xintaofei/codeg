@@ -3040,7 +3040,9 @@
       "coveredBy": "Abgedeckt von: {tasks}",
       "covers": "Deckt ab",
       "uncovered": "Noch von keiner Aufgabe abgedeckt",
-      "gapCardTitle": "Abdeckungslücke"
+      "gapCardTitle": "Abdeckungslücke",
+      "gateDecision": "Gate-Entscheidung",
+      "aggregatedChecks": "{count} Prüfungen"
     },
     "artifactStatus": {
       "pending": "Ausstehend",
@@ -3236,6 +3238,15 @@
       "summary": "{issues} laufend · {iters} in Bearbeitung",
       "pending": "{n} Token ausstehend",
       "reconnecting": "Verbindung wird wiederhergestellt…"
+    },
+    "checkVerdict": {
+      "pass": "Bestanden",
+      "fail": "Durchgefallen"
+    },
+    "gateOutcome": {
+      "pass": "Bestanden",
+      "fail": "Fehlgeschlagen",
+      "undecided": "Unentschieden"
     }
   }
 }

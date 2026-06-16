@@ -19,11 +19,14 @@ import { diffLines, type DiffLine } from "@/lib/line-diff"
 import {
   acceptanceOrdinalMap,
   coveringTaskTitles,
+  criterionCheckMap,
   taskCovers,
   type CriterionOrdinal,
 } from "@/lib/loop-coverage"
 import type {
   LoopArtifactDetail,
+  LoopCriterionCheckRow,
+  LoopGateDecisionRow,
   LoopIssueDetail,
   LoopRevision,
 } from "@/lib/types"
@@ -51,6 +54,31 @@ import { MessageResponse } from "@/components/ai-elements/message"
 
 type Gate = "design" | "merge"
 
+/** A per-criterion verdict pill — glyph PLUS the verdict word (never color- or
+ * glyph-only) so the trace is accessible. The glyph is decorative (`aria-hidden`);
+ * the visible label carries the meaning. */
+function CriterionVerdict({
+  check,
+  label,
+}: {
+  check: LoopCriterionCheckRow
+  label: string
+}) {
+  const pass = check.verdict === "pass"
+  return (
+    <span
+      className={`inline-flex items-center gap-0.5 text-[10px] font-medium ${
+        pass
+          ? "text-emerald-600 dark:text-emerald-400"
+          : "text-red-600 dark:text-red-400"
+      }`}
+    >
+      <span aria-hidden>{pass ? "✓" : "✗"}</span>
+      {label}
+    </span>
+  )
+}
+
 /** Criterion-level coverage view for the drawer (computed from the issue DAG). */
 interface CoverageView {
   // Requirement drawer: acceptance criterion id → covering task titles
@@ -67,12 +95,33 @@ interface ArtifactDrawerData {
   issue: LoopIssueDetail | null
   // Loaded for requirement/task artifacts to render the coverage matrix.
   coverage: CoverageView | null
+  // Latest reviewer check per criterion id (the per-criterion verdict glyph in
+  // the coverage matrix). Empty for artifacts that show no matrix.
+  checks: Map<number, LoopCriterionCheckRow>
+  // The gate decision for THIS artifact's own target: a task's review gate or a
+  // result's integration (finalize) gate. Null when none recorded yet.
+  gateDecision: LoopGateDecisionRow | null
 }
 
 const EMPTY_DRAWER: ArtifactDrawerData = {
   detail: null,
   issue: null,
   coverage: null,
+  checks: new Map(),
+  gateDecision: null,
+}
+
+/** The most recent gate decision for a target+stage (highest attempt, then id). */
+function latestDecisionFor(
+  decisions: LoopGateDecisionRow[],
+  targetId: number,
+  stage: string
+): LoopGateDecisionRow | null {
+  return (
+    decisions
+      .filter((d) => d.target_artifact_id === targetId && d.stage === stage)
+      .sort((a, b) => b.attempt - a.attempt || b.id - a.id)[0] ?? null
+  )
 }
 
 /**
@@ -131,6 +180,8 @@ function ArtifactDrawerBody({ artifactId }: { artifactId: number }) {
   const tActor = useTranslations("Loops.actorKind")
   const tCriterionKind = useTranslations("Loops.criterionKind")
   const tCoverage = useTranslations("Loops.coverage")
+  const tCheckVerdict = useTranslations("Loops.checkVerdict")
+  const tGateOutcome = useTranslations("Loops.gateOutcome")
   const tGate = useTranslations("Loops.inbox")
   const tCommon = useTranslations("Loops.common")
   const tToasts = useTranslations("Loops.toasts")
@@ -153,47 +204,64 @@ function ArtifactDrawerBody({ artifactId }: { artifactId: number }) {
       if (detail) issueRef.current = detail.issue_id // immutable → narrow now
       let issue: LoopIssueDetail | null = null
       let coverage: CoverageView | null = null
+      let checks: Map<number, LoopCriterionCheckRow> = new Map()
+      let gateDecision: LoopGateDecisionRow | null = null
       if (detail && detail.kind === "result") {
         issue = await getLoopIssue(detail.issue_id).catch(() => null)
       }
-      // Coverage matrix: requirements show which task covers each acceptance
-      // criterion (and warn on gaps); tasks show which criteria they cover.
-      if (detail && (detail.kind === "requirement" || detail.kind === "task")) {
+      // The coverage matrix, the per-criterion verdict trace, and the gate
+      // decision all read the issue DAG; load it for the kinds that surface them.
+      if (
+        detail &&
+        (detail.kind === "requirement" ||
+          detail.kind === "task" ||
+          detail.kind === "result")
+      ) {
         const dag = await getLoopDag(detail.issue_id).catch(() => null)
-        if (dag && detail.kind === "requirement") {
-          const coveredBy: Record<number, string[]> = {}
-          for (const c of detail.criteria) {
-            if (c.kind === "acceptance") {
-              coveredBy[c.id] = coveringTaskTitles(
-                c.id,
-                dag.coverage,
-                dag.artifacts
-              )
+        if (dag) {
+          // Per-criterion verdict (latest check) + this target's gate decision
+          // (a task's review gate / a result's integration finalize gate).
+          checks = criterionCheckMap(dag.criterion_checks, dag.gate_decisions)
+          gateDecision = latestDecisionFor(
+            dag.gate_decisions,
+            detail.id,
+            detail.kind === "result" ? "finalize" : "review"
+          )
+          if (detail.kind === "requirement") {
+            const coveredBy: Record<number, string[]> = {}
+            for (const c of detail.criteria) {
+              if (c.kind === "acceptance") {
+                coveredBy[c.id] = coveringTaskTitles(
+                  c.id,
+                  dag.coverage,
+                  dag.artifacts
+                )
+              }
             }
-          }
-          coverage = { coveredBy, covers: [] }
-        } else if (dag && detail.kind === "task") {
-          // Done requirements only — matches the backend ordinal source, so the
-          // R{i}.AC{j} shown here lines up with what `covers` recorded.
-          const reqIds = dag.artifacts
-            .filter((a) => a.kind === "requirement" && a.status === "done")
-            .map((a) => a.id)
-          const reqDetails = (
-            await Promise.all(
-              reqIds.map((id) => getLoopArtifact(id).catch(() => null))
-            )
-          ).filter((d): d is LoopArtifactDetail => d != null)
-          coverage = {
-            coveredBy: {},
-            covers: taskCovers(
-              detail.id,
-              dag.coverage,
-              acceptanceOrdinalMap(reqDetails)
-            ),
+            coverage = { coveredBy, covers: [] }
+          } else if (detail.kind === "task") {
+            // Done requirements only — matches the backend ordinal source, so the
+            // R{i}.AC{j} shown here lines up with what `covers` recorded.
+            const reqIds = dag.artifacts
+              .filter((a) => a.kind === "requirement" && a.status === "done")
+              .map((a) => a.id)
+            const reqDetails = (
+              await Promise.all(
+                reqIds.map((id) => getLoopArtifact(id).catch(() => null))
+              )
+            ).filter((d): d is LoopArtifactDetail => d != null)
+            coverage = {
+              coveredBy: {},
+              covers: taskCovers(
+                detail.id,
+                dag.coverage,
+                acceptanceOrdinalMap(reqDetails)
+              ),
+            }
           }
         }
       }
-      return { detail, issue, coverage }
+      return { detail, issue, coverage, checks, gateDecision }
     },
     {
       match: (e) => issueRef.current == null || e.issue_id === issueRef.current,
@@ -318,6 +386,10 @@ function ArtifactDrawerBody({ artifactId }: { artifactId: number }) {
                       detail.kind === "requirement" && c.kind === "acceptance"
                         ? data.coverage?.coveredBy[c.id]
                         : undefined
+                    const check =
+                      c.kind === "acceptance"
+                        ? data.checks.get(c.id)
+                        : undefined
                     return (
                       <li key={c.id} className="text-sm">
                         <div className="flex items-center gap-1.5">
@@ -325,6 +397,12 @@ function ArtifactDrawerBody({ artifactId }: { artifactId: number }) {
                             {tCriterionKind(c.kind)}
                           </Badge>
                           <span className="font-medium">{c.label}</span>
+                          {check && (
+                            <CriterionVerdict
+                              check={check}
+                              label={tCheckVerdict(check.verdict)}
+                            />
+                          )}
                         </div>
                         {c.text ? (
                           <p className="text-muted-foreground">{c.text}</p>
@@ -365,6 +443,33 @@ function ArtifactDrawerBody({ artifactId }: { artifactId: number }) {
                   </ul>
                 </Section>
               )}
+
+            {/* Gate decision: the canonical per-criterion outcome the engine
+                recorded for this target (a task's review gate / a result's
+                integration finalize gate). */}
+            {data.gateDecision && (
+              <Section title={tCoverage("gateDecision")}>
+                <div className="flex items-center gap-2 text-sm">
+                  <Badge
+                    variant="outline"
+                    className={
+                      data.gateDecision.outcome === "pass"
+                        ? "border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
+                        : data.gateDecision.outcome === "fail"
+                          ? "border-red-500/40 text-red-600 dark:text-red-400"
+                          : "text-muted-foreground"
+                    }
+                  >
+                    {tGateOutcome(data.gateDecision.outcome)}
+                  </Badge>
+                  <span className="text-muted-foreground">
+                    {tCoverage("aggregatedChecks", {
+                      count: data.gateDecision.input_check_ids.length,
+                    })}
+                  </span>
+                </div>
+              </Section>
+            )}
 
             {revisions.length > 1 && (
               <Section title={t("revisionsHeading")}>

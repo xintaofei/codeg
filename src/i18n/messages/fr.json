@@ -3040,7 +3040,9 @@
       "coveredBy": "Couvert par : {tasks}",
       "covers": "Couvre",
       "uncovered": "Pas encore couvert par une tâche",
-      "gapCardTitle": "Écart de couverture"
+      "gapCardTitle": "Écart de couverture",
+      "gateDecision": "Décision de la porte",
+      "aggregatedChecks": "{count} vérifications"
     },
     "artifactStatus": {
       "pending": "En attente",
@@ -3236,6 +3238,15 @@
       "summary": "{issues} en exécution · {iters} en cours",
       "pending": "{n} jetons en attente",
       "reconnecting": "Reconnexion…"
+    },
+    "checkVerdict": {
+      "pass": "Validé",
+      "fail": "Rejeté"
+    },
+    "gateOutcome": {
+      "pass": "Réussi",
+      "fail": "Échoué",
+      "undecided": "Indécis"
     }
   }
 }

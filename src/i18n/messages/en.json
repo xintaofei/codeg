@@ -3040,7 +3040,9 @@
       "coveredBy": "Covered by: {tasks}",
       "covers": "Covers",
       "uncovered": "Not yet covered by any task",
-      "gapCardTitle": "Coverage gap"
+      "gapCardTitle": "Coverage gap",
+      "gateDecision": "Gate decision",
+      "aggregatedChecks": "{count} checks"
     },
     "artifactStatus": {
       "pending": "Pending",
@@ -3236,6 +3238,15 @@
       "summary": "{issues} running · {iters} in flight",
       "pending": "{n} token-pending",
       "reconnecting": "Reconnecting…"
+    },
+    "checkVerdict": {
+      "pass": "Pass",
+      "fail": "Fail"
+    },
+    "gateOutcome": {
+      "pass": "Passed",
+      "fail": "Failed",
+      "undecided": "Undecided"
     }
   }
 }

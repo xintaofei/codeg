@@ -3040,7 +3040,9 @@
       "coveredBy": "담당: {tasks}",
       "covers": "담당 기준",
       "uncovered": "아직 어떤 작업도 담당하지 않음",
-      "gapCardTitle": "커버리지 공백"
+      "gapCardTitle": "커버리지 공백",
+      "gateDecision": "게이트 결정",
+      "aggregatedChecks": "검사 {count}건"
     },
     "artifactStatus": {
       "pending": "대기 중",
@@ -3236,6 +3238,15 @@
       "summary": "실행 중 {issues}개 · 진행 중 {iters}개",
       "pending": "토큰 대기 {n}개",
       "reconnecting": "다시 연결 중…"
+    },
+    "checkVerdict": {
+      "pass": "통과",
+      "fail": "실패"
+    },
+    "gateOutcome": {
+      "pass": "통과",
+      "fail": "실패",
+      "undecided": "미결정"
     }
   }
 }

@@ -3040,7 +3040,9 @@
       "coveredBy": "覆盖于：{tasks}",
       "covers": "覆盖",
       "uncovered": "尚无任务覆盖",
-      "gapCardTitle": "覆盖缺口"
+      "gapCardTitle": "覆盖缺口",
+      "gateDecision": "门禁决定",
+      "aggregatedChecks": "{count} 项检查"
     },
     "artifactStatus": {
       "pending": "待处理",
@@ -3236,6 +3238,15 @@
       "summary": "{issues} 个运行中 · {iters} 个进行中",
       "pending": "{n} 个 token 待结算",
       "reconnecting": "重新连接中…"
+    },
+    "checkVerdict": {
+      "pass": "通过",
+      "fail": "未通过"
+    },
+    "gateOutcome": {
+      "pass": "已通过",
+      "fail": "未通过",
+      "undecided": "未决"
     }
   }
 }

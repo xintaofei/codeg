@@ -3040,7 +3040,9 @@
       "coveredBy": "Coberto por: {tasks}",
       "covers": "Cobre",
       "uncovered": "Ainda não coberto por nenhuma tarefa",
-      "gapCardTitle": "Lacuna de cobertura"
+      "gapCardTitle": "Lacuna de cobertura",
+      "gateDecision": "Decisão do portão",
+      "aggregatedChecks": "{count} verificações"
     },
     "artifactStatus": {
       "pending": "Pendente",
@@ -3236,6 +3238,15 @@
       "summary": "{issues} em execução · {iters} em andamento",
       "pending": "{n} com tokens pendentes",
       "reconnecting": "Reconectando…"
+    },
+    "checkVerdict": {
+      "pass": "Aprovado",
+      "fail": "Reprovado"
+    },
+    "gateOutcome": {
+      "pass": "Aprovado",
+      "fail": "Reprovado",
+      "undecided": "Indeciso"
     }
   }
 }

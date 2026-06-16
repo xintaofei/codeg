@@ -3040,7 +3040,9 @@
       "coveredBy": "مغطى بواسطة: {tasks}",
       "covers": "يغطي",
       "uncovered": "لم تتم تغطيته بعد بأي مهمة",
-      "gapCardTitle": "فجوة التغطية"
+      "gapCardTitle": "فجوة التغطية",
+      "gateDecision": "قرار البوابة",
+      "aggregatedChecks": "{count} عمليات تحقق"
     },
     "artifactStatus": {
       "pending": "قيد الانتظار",
@@ -3236,6 +3238,15 @@
       "summary": "{issues} قيد التشغيل · {iters} قيد التنفيذ",
       "pending": "{n} رمز معلّق",
       "reconnecting": "إعادة الاتصال…"
+    },
+    "checkVerdict": {
+      "pass": "ناجح",
+      "fail": "راسب"
+    },
+    "gateOutcome": {
+      "pass": "ناجح",
+      "fail": "فاشل",
+      "undecided": "غير محسوم"
     }
   }
 }

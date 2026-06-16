@@ -130,7 +130,13 @@ function issue(status: LoopIssueDetail["status"]): LoopIssueDetail {
 beforeEach(() => {
   vi.clearAllMocks()
   getLoopIssue.mockResolvedValue(issue("running"))
-  getLoopDag.mockResolvedValue({ artifacts: [], links: [], coverage: [] })
+  getLoopDag.mockResolvedValue({
+    artifacts: [],
+    links: [],
+    coverage: [],
+    criterion_checks: [],
+    gate_decisions: [],
+  })
 })
 
 describe("ArtifactDrawer", () => {
@@ -195,6 +201,18 @@ describe("ArtifactDrawer", () => {
       links: [],
       // AC-1 (id 100) is covered; AC-2 (id 101) is not.
       coverage: [{ id: 1, task_artifact_id: 200, criterion_id: 100 }],
+      // AC-1 has a passing task-review check; AC-2 has none.
+      criterion_checks: [
+        {
+          id: 1,
+          criterion_id: 100,
+          iteration_id: 1,
+          scope_artifact_id: 200,
+          verdict: "pass",
+          evidence: "ok",
+        },
+      ],
+      gate_decisions: [],
     })
     render(<ArtifactDrawer artifactId={7} onClose={() => {}} />)
 
