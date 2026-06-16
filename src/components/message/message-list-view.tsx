@@ -59,6 +59,7 @@ import {
 } from "@/components/message/conversation-message-nav"
 import type { MessageScrollContextValue } from "@/components/message/message-scroll-context"
 import { extractSessionFilesGrouped } from "@/lib/session-files"
+import { unescapeComposerText } from "@/lib/composer-copy-text"
 import { useStickToBottomContext } from "use-stick-to-bottom"
 
 interface MessageListViewProps {
@@ -359,7 +360,11 @@ const UserMessageCopyButton = memo(function UserMessageCopyButton({
 
   const handleCopy = useCallback(async () => {
     if (isCopied) return
-    const text = extractTextFromParts(parts)
+    // User text was Markdown-escaped by the composer on send (e.g. a Windows
+    // path `C:\…` became `C:\\…`); the transcript renders it back through a
+    // Markdown renderer, so the copy must reverse that escaping to match what
+    // the user sees. Assistant copies (TurnStats below) keep the raw Markdown.
+    const text = unescapeComposerText(extractTextFromParts(parts))
     if (!text) return
     const ok = await copyTextToClipboard(text)
     if (!ok) return

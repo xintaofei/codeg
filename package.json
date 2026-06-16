@@ -58,6 +58,7 @@
     "ignore": "^7.0.5",
     "katex": "^0.16.45",
     "lucide-react": "^0.563.0",
+    "mdast-util-from-markdown": "^2.0.2",
     "monaco-editor": "^0.55.1",
     "motion": "^12.34.0",
     "next": "^16",
