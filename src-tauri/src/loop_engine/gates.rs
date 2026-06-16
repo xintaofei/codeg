@@ -29,13 +29,17 @@ use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 use crate::db::entities::loop_artifact::{self, ArtifactKind, ArtifactStatus, ReviewVerdict};
+use crate::db::entities::loop_criterion_check::CheckVerdict;
+use crate::db::entities::loop_gate_decision::GateOutcome;
 use crate::db::entities::loop_inbox_item::InboxKind;
 use crate::db::entities::loop_issue::{self, IssueStatus};
 use crate::db::entities::loop_iteration::{self, IterationStatus, Stage};
 use crate::db::entities::loop_link::LinkKind;
 use crate::db::service::{folder_service, loop_service};
 use crate::db::AppDatabase;
-use crate::models::loops::{IssueConfig, LoopArtifactRow, LoopDagView, ReviewPassRule, ReviewerSpec};
+use crate::models::loops::{
+    IssueConfig, LoopArtifactRow, LoopCriterionCheckRow, LoopDagView, ReviewPassRule, ReviewerSpec,
+};
 use crate::web::event_bridge::EventEmitter;
 
 use crate::loop_engine::dispatch::{
@@ -875,6 +879,10 @@ enum ReviewDecision {
 /// round: ensure `reviewer_count` review slots run, aggregate their verdicts,
 /// then accept (task `done`, freezing its integration commit) or reject (rework +
 /// cancel the remaining reviewers). See [`StepOutcome`] for the return semantics.
+/// The gate-decision stage label for a task review (D5: integration review uses
+/// `finalize`). Stored in `loop_gate_decision.stage` and used as the replay key.
+const REVIEW_STAGE: &str = "review";
+
 #[allow(clippy::too_many_arguments)]
 async fn drive_reviews(
     db: &AppDatabase,
@@ -889,77 +897,80 @@ async fn drive_reviews(
     let reviewer_specs = config.effective_reviewers();
     let reviewers = reviewer_specs.len() as i32;
     let iters = review_iterations(db, issue.id, task.id, task.attempt).await?;
-    let verdicts = review_verdicts(db, &iters).await?;
 
-    // Resolve each slot to a verdict (decided), in-flight, or needing dispatch.
-    let mut decided: Vec<ReviewVerdict> = Vec::new();
+    // Replay-safe pivot (D4): a decision already recorded for (task, review,
+    // attempt) drives the side-effects idempotently — so a crash after recording
+    // but before the freeze/rework completed is finished by this tick from the
+    // recorded outcome (never recomputed). The key advances with the attempt, so a
+    // completed rework (attempt bumped) is never re-entered here.
+    if let Some(outcome) =
+        loop_service::gate_decision::outcome_for(&db.conn, task.id, REVIEW_STAGE, task.attempt)
+            .await?
+    {
+        return drive_review_outcome(
+            db, spawner, emitter, issue, config, worktree_folder_id, task, &iters, outcome,
+        )
+        .await;
+    }
+
+    // Slot accounting: a slot is "decided" once it has a submitted (succeeded)
+    // review; "missing" when it has no active and no submitted iteration. The
+    // display verdict isn't the gate input — it only tells us WHICH iterations
+    // submitted, so we know whose checks to aggregate and which slots to dispatch.
+    let verdicts = review_verdicts(db, &iters).await?;
+    let decided_iter_ids: Vec<i32> = verdicts.keys().copied().collect();
     let mut missing_slots: Vec<i32> = Vec::new();
     for slot in 0..reviewers {
         let slot_iters: Vec<&loop_iteration::Model> =
             iters.iter().filter(|it| it.slot_no == Some(slot)).collect();
-        if let Some(v) = slot_iters.iter().find_map(|it| verdicts.get(&it.id).copied()) {
-            decided.push(v);
-        } else if !slot_iters
+        let decided = slot_iters.iter().any(|it| verdicts.contains_key(&it.id));
+        let in_flight = slot_iters
             .iter()
-            .any(|it| matches!(it.status, IterationStatus::Queued | IterationStatus::Running))
-        {
-            // No iteration, or only terminal ones without a verdict → (re)dispatch.
+            .any(|it| matches!(it.status, IterationStatus::Queued | IterationStatus::Running));
+        if !decided && !in_flight {
             missing_slots.push(slot);
         }
     }
 
-    match aggregate(config.review_pass_rule, reviewers, &decided) {
-        ReviewDecision::Pass => {
-            cancel_active_reviews(db, spawner, &iters).await?;
-            // Atomically freeze the task's accepted tip and mark it Done. Only a
-            // CAS that applied (task was InProgress) is durable progress;
-            // otherwise the snapshot was stale (a prior tick already settled this
-            // task), so don't report Advanced — that would re-enter this arm on
-            // stale verdicts and hot-spin. Idle instead; a real wake re-ticks
-            // against fresh state. (No gate to release: a done task simply drops
-            // out of the next tick's drivable set.)
-            if freeze_and_done(db, worktree_folder_id, task.id).await? {
-                Ok(StepOutcome::Advanced)
-            } else {
-                Ok(StepOutcome::Idle)
-            }
-        }
-        ReviewDecision::Fail => {
-            cancel_active_reviews(db, spawner, &iters).await?;
-            // Defensive: clear any reviewer side-effects before re-implementing.
-            let folder = folder_service::get_folder_by_id(&db.conn, worktree_folder_id)
-                .await?
-                .ok_or_else(|| {
-                    LoopError::NotFound(format!("worktree folder {worktree_folder_id}"))
-                })?;
-            worktree::reset_to_head(Path::new(&folder.path)).await?;
-            // Fingerprint the rejecting findings so the breaker can tell "the same
-            // objection again" from a genuinely new one.
-            let findings =
-                loop_service::artifact::latest_failed_review_findings(&db.conn, task.id).await?;
-            let sig = format!("review_rejected:{}", sig_hash(&findings.join("\n---\n")));
-            match record_rework(db, issue, config, task, None, &sig).await? {
-                // Back to awaiting implement at the new attempt.
-                ReworkOutcome::Retry => {
-                    set_task_status_cas(
-                        db,
-                        task.id,
-                        ArtifactStatus::InProgress,
-                        ArtifactStatus::Pending,
-                    )
-                    .await?;
+    // Canonical per-criterion decision over the submitted checks (D8) — NOT an
+    // aggregation of per-reviewer verdicts.
+    let injected_ids = injected_criterion_ids(&iters);
+    let checks =
+        loop_service::criterion_check::for_scope_iterations(&db.conn, task.id, &decided_iter_ids)
+            .await?;
+    let outcome = aggregate_checks(config.review_pass_rule, reviewers, &checks, &injected_ids);
+
+    match outcome {
+        GateOutcome::Pass | GateOutcome::Fail => {
+            // Record the immutable decision FIRST (the durable pivot), THEN drive
+            // side-effects. A divergent recompute at the same key (different
+            // inputs) is a Conflict → re-tick against fresh state, never overwrite.
+            let policy = review_policy_json(config);
+            match loop_service::gate_decision::record_decision(
+                &db.conn,
+                issue.space_id,
+                issue.id,
+                task.id,
+                REVIEW_STAGE,
+                task.attempt,
+                &checks,
+                &injected_ids,
+                &policy,
+                outcome,
+            )
+            .await?
+            {
+                loop_service::gate_decision::RecordedDecision::Settled(_) => {}
+                loop_service::gate_decision::RecordedDecision::Conflict(_) => {
+                    return Err(LoopError::Conflict)
                 }
-                // Breaker tripped: `mark_blocked` already set the task + issue
-                // blocked; leave them as-is.
-                ReworkOutcome::Blocked => {}
             }
-            // `record_rework` always bumps the attempt counter (an unconditional
-            // UPDATE), so a Fail arm is always durable progress: re-tick to either
-            // re-implement at the new attempt (Retry) or stop on the now-blocked
-            // issue (Blocked).
-            Ok(StepOutcome::Advanced)
+            drive_review_outcome(
+                db, spawner, emitter, issue, config, worktree_folder_id, task, &iters, outcome,
+            )
+            .await
         }
-        ReviewDecision::Undecided => {
+        GateOutcome::Undecided => {
             let mut dispatched = false;
             for slot in missing_slots {
                 if dispatch_review(
@@ -982,6 +993,103 @@ async fn drive_reviews(
             Ok(StepOutcome::from_dispatched(dispatched))
         }
     }
+}
+
+/// Drive a settled review decision's side-effects (shared by the fresh decision
+/// and the replay pivot). Pass → freeze the accepted tip + mark Done; Fail →
+/// cancel remaining reviewers, reset the tree, and rework (retry or breaker).
+/// Idempotent: Pass is a CAS (InProgress→Done); Fail is only reached while the
+/// task is still InProgress at the deciding attempt (a completed rework bumped the
+/// attempt, so the decision key no longer resolves here).
+#[allow(clippy::too_many_arguments)]
+async fn drive_review_outcome(
+    db: &AppDatabase,
+    spawner: &dyn LoopAgentSpawner,
+    _emitter: &EventEmitter,
+    issue: &loop_issue::Model,
+    config: &IssueConfig,
+    worktree_folder_id: i32,
+    task: &LoopArtifactRow,
+    iters: &[loop_iteration::Model],
+    outcome: GateOutcome,
+) -> Result<StepOutcome, LoopError> {
+    match outcome {
+        GateOutcome::Pass => {
+            cancel_active_reviews(db, spawner, iters).await?;
+            if freeze_and_done(db, worktree_folder_id, task.id).await? {
+                Ok(StepOutcome::Advanced)
+            } else {
+                Ok(StepOutcome::Idle)
+            }
+        }
+        GateOutcome::Fail => {
+            cancel_active_reviews(db, spawner, iters).await?;
+            // Defensive: clear any reviewer side-effects before re-implementing.
+            let folder = folder_service::get_folder_by_id(&db.conn, worktree_folder_id)
+                .await?
+                .ok_or_else(|| {
+                    LoopError::NotFound(format!("worktree folder {worktree_folder_id}"))
+                })?;
+            worktree::reset_to_head(Path::new(&folder.path)).await?;
+            // Fingerprint the rejecting findings so the breaker can tell "the same
+            // objection again" from a genuinely new one.
+            let findings =
+                loop_service::artifact::latest_failed_review_findings(&db.conn, task.id).await?;
+            let sig = format!("review_rejected:{}", sig_hash(&findings.join("\n---\n")));
+            match record_rework(db, issue, config, task, None, &sig).await? {
+                ReworkOutcome::Retry => {
+                    set_task_status_cas(
+                        db,
+                        task.id,
+                        ArtifactStatus::InProgress,
+                        ArtifactStatus::Pending,
+                    )
+                    .await?;
+                }
+                ReworkOutcome::Blocked => {}
+            }
+            Ok(StepOutcome::Advanced)
+        }
+        // Undecided is never recorded as a decision; defensive no-op.
+        GateOutcome::Undecided => Ok(StepOutcome::Idle),
+    }
+}
+
+/// The injected criterion-id set for a review round = the union of the criterion
+/// ids in the dispatched iterations' persisted manifests (D10). Every slot at one
+/// attempt was shown the same frozen manifest, so this is the canonical "what must
+/// be checked" set the gate aggregates against.
+fn injected_criterion_ids(iters: &[loop_iteration::Model]) -> Vec<i32> {
+    let mut set: std::collections::BTreeSet<i32> = std::collections::BTreeSet::new();
+    for it in iters {
+        if let Some(raw) = it.context_manifest.as_deref() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
+                if let Some(obj) = v.get("criteria").and_then(|c| c.as_object()) {
+                    for val in obj.values() {
+                        if let Some(id) = val.as_i64() {
+                            set.insert(id as i32);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    set.into_iter().collect()
+}
+
+/// The gate's policy fingerprint, recorded with the decision so a config change
+/// (rule / reviewer count) is detectable as a different decision input.
+fn review_policy_json(config: &IssueConfig) -> String {
+    let rule = match config.review_pass_rule {
+        ReviewPassRule::Unanimous => "unanimous",
+        ReviewPassRule::Majority => "majority",
+    };
+    serde_json::json!({
+        "rule": rule,
+        "reviewers": config.effective_reviewers().len(),
+        "v": 1,
+    })
+    .to_string()
 }
 
 /// Aggregate review verdicts under the pass rule. `unanimous` fails fast on any
@@ -1009,6 +1117,50 @@ fn aggregate(rule: ReviewPassRule, n: i32, verdicts: &[ReviewVerdict]) -> Review
         ReviewDecision::Pass
     } else {
         ReviewDecision::Undecided
+    }
+}
+
+/// Per-criterion aggregation (D8) — the canonical gate decision. Group the
+/// submitted checks by criterion, apply the SAME quorum as [`aggregate`] to each
+/// criterion's reviewer checks, then: the gate is `Fail` iff ANY injected
+/// criterion failed, `Pass` iff EVERY injected criterion passed, else `Undecided`
+/// (more reviewer checks needed). This is NOT the same as aggregating per-reviewer
+/// verdicts — under Majority the two can diverge (see the counterexample test):
+/// reviewers can split such that no reviewer is in the majority yet every
+/// criterion individually clears quorum. An empty injected set is `Undecided`
+/// (no criteria dispatched yet, or a degenerate task) — never a vacuous pass.
+fn aggregate_checks(
+    rule: ReviewPassRule,
+    n: i32,
+    checks: &[LoopCriterionCheckRow],
+    injected_ids: &[i32],
+) -> GateOutcome {
+    if injected_ids.is_empty() {
+        return GateOutcome::Undecided;
+    }
+    let mut any_fail = false;
+    let mut all_pass = true;
+    for &cid in injected_ids {
+        let verdicts: Vec<ReviewVerdict> = checks
+            .iter()
+            .filter(|c| c.criterion_id == cid)
+            .map(|c| match c.verdict {
+                CheckVerdict::Pass => ReviewVerdict::Pass,
+                CheckVerdict::Fail => ReviewVerdict::Fail,
+            })
+            .collect();
+        match aggregate(rule, n, &verdicts) {
+            ReviewDecision::Fail => any_fail = true,
+            ReviewDecision::Pass => {}
+            ReviewDecision::Undecided => all_pass = false,
+        }
+    }
+    if any_fail {
+        GateOutcome::Fail
+    } else if all_pass {
+        GateOutcome::Pass
+    } else {
+        GateOutcome::Undecided
     }
 }
 
@@ -2229,6 +2381,112 @@ mod tests {
         // Aggregate → pass → task done.
         assert_eq!(drive_with(&h, &cfg).await, StepOutcome::Advanced);
         assert_eq!(task_node(&h, task).await.status, ArtifactStatus::Done);
+
+        // The pass is recorded as an immutable gate decision over the reviewer's
+        // checks (the durable replay pivot).
+        let decisions = loop_service::gate_decision::list_for_issue(&h.db.conn, h.issue_id)
+            .await
+            .unwrap();
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].outcome, GateOutcome::Pass);
+        assert_eq!(decisions[0].stage, "review");
+        assert!(!decisions[0].input_check_ids.is_empty(), "decision records its check ids");
+    }
+
+    /// Per-criterion aggregation (D8) is canonical: it can PASS where aggregating
+    /// per-reviewer verdicts would FAIL. 3 reviewers × 2 criteria, each criterion
+    /// clears a 2/3 majority, but only 1 of 3 reviewers is all-pass — so a verdict
+    /// majority rejects while the gate (correctly) accepts.
+    #[test]
+    fn aggregate_checks_per_criterion_diverges_from_verdict_majority() {
+        fn chk(criterion: i32, iteration: i32, v: CheckVerdict) -> LoopCriterionCheckRow {
+            LoopCriterionCheckRow {
+                id: 0,
+                criterion_id: criterion,
+                iteration_id: iteration,
+                scope_artifact_id: 0,
+                verdict: v,
+                evidence: String::new(),
+            }
+        }
+        // criteria 10 (A) & 11 (B); reviewers = iterations 100/101/102.
+        let checks = vec![
+            chk(10, 100, CheckVerdict::Pass), chk(11, 100, CheckVerdict::Fail), // r0
+            chk(10, 101, CheckVerdict::Fail), chk(11, 101, CheckVerdict::Pass), // r1
+            chk(10, 102, CheckVerdict::Pass), chk(11, 102, CheckVerdict::Pass), // r2
+        ];
+        // Per criterion (Majority, n=3): A passes 2/3, B passes 2/3 → gate PASS.
+        assert_eq!(
+            aggregate_checks(ReviewPassRule::Majority, 3, &checks, &[10, 11]),
+            GateOutcome::Pass
+        );
+        // Verdict-majority would reject: r0 & r1 each have a failing check (display
+        // verdict Fail), only r2 is all-pass → 2 of 3 fail.
+        let per_reviewer = [ReviewVerdict::Fail, ReviewVerdict::Fail, ReviewVerdict::Pass];
+        assert!(
+            matches!(aggregate(ReviewPassRule::Majority, 3, &per_reviewer), ReviewDecision::Fail),
+            "aggregating per-reviewer verdicts would (wrongly) reject"
+        );
+        // An empty injected set is never a vacuous pass.
+        assert_eq!(
+            aggregate_checks(ReviewPassRule::Unanimous, 1, &[], &[]),
+            GateOutcome::Undecided
+        );
+    }
+
+    /// One failing criterion → gate Fail recorded + rework (task back to pending at
+    /// the next attempt). The decision is keyed at the DECIDING attempt (0).
+    #[tokio::test]
+    async fn review_fail_records_gate_decision() {
+        let h = setup().await;
+        let task = add_task(&h, "Task 1").await;
+        let cfg = config_reviewers(1, ReviewPassRule::Unanimous);
+        implement_to_in_progress(&h, &cfg, "feature.txt").await;
+
+        assert_eq!(drive_with(&h, &cfg).await, StepOutcome::Dispatched);
+        let review = running_review(&h).await;
+        submit_verdict(&h, review, "fail", "missing error handling").await;
+        settle_iteration(&h.db, &EventEmitter::Noop, review).await.unwrap();
+
+        assert_eq!(drive_with(&h, &cfg).await, StepOutcome::Advanced);
+        // Decision recorded Fail at attempt 0; task reworked to pending at attempt 1.
+        assert_eq!(
+            loop_service::gate_decision::outcome_for(&h.db.conn, task, "review", 0).await.unwrap(),
+            Some(GateOutcome::Fail)
+        );
+        let node = task_node(&h, task).await;
+        assert_eq!(node.status, ArtifactStatus::Pending);
+        assert_eq!(node.attempt, 1);
+    }
+
+    /// Replay pivot (D4): a recorded decision drives the side-effects on the next
+    /// tick without re-running reviewers — a crash after recording but before the
+    /// freeze is completed from the decision. Recording a Pass for an InProgress
+    /// task and driving freezes it Done with NO reviewer dispatched.
+    #[tokio::test]
+    async fn review_replay_freezes_from_recorded_decision() {
+        let h = setup().await;
+        let task = add_task(&h, "Task 1").await;
+        let cfg = config_reviewers(1, ReviewPassRule::Unanimous);
+        implement_to_in_progress(&h, &cfg, "feature.txt").await;
+        assert_eq!(task_node(&h, task).await.status, ArtifactStatus::InProgress);
+
+        // Simulate "decision recorded, crash before freeze": persist a Pass decision
+        // at the current attempt with no reviewers run.
+        loop_service::gate_decision::record_decision(
+            &h.db.conn, h.space_id, h.issue_id, task, "review", 0, &[], &[], "{}", GateOutcome::Pass,
+        )
+        .await
+        .unwrap();
+
+        // The next drive resolves the pivot → freeze the task Done, dispatching no
+        // reviewer.
+        assert_eq!(drive_with(&h, &cfg).await, StepOutcome::Advanced);
+        assert_eq!(task_node(&h, task).await.status, ArtifactStatus::Done);
+        assert!(
+            review_iters_of(&h, task).await.is_empty(),
+            "replay drove from the decision without dispatching a reviewer"
+        );
     }
 
     /// Each configured reviewer runs as its own slot with its own agent.
