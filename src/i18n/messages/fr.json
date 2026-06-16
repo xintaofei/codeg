@@ -2978,7 +2978,9 @@
       "noArtifacts": "Pour l'instant, seul l'artefact racine du problème.",
       "executingNow": "En cours d'exécution",
       "iterationsError": "Impossible de charger les itérations",
-      "reviewsOlder": "+{count} antérieures"
+      "reviewsOlder": "+{count} antérieures",
+      "showSuperseded": "Afficher {count} remplacées",
+      "hideSuperseded": "Masquer les remplacées"
     },
     "status": {
       "pending": "En attente",

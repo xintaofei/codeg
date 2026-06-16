@@ -2978,7 +2978,9 @@
       "noArtifacts": "Até agora, apenas o artefato raiz do problema.",
       "executingNow": "Executando agora",
       "iterationsError": "Não foi possível carregar as iterações",
-      "reviewsOlder": "+{count} anteriores"
+      "reviewsOlder": "+{count} anteriores",
+      "showSuperseded": "Mostrar {count} substituídas",
+      "hideSuperseded": "Ocultar substituídas"
     },
     "status": {
       "pending": "Pendente",

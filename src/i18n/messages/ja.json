@@ -2978,7 +2978,9 @@
       "noArtifacts": "今のところルート課題アーティファクトのみです。",
       "executingNow": "実行中",
       "iterationsError": "イテレーションを読み込めませんでした",
-      "reviewsOlder": "以前の{count}件"
+      "reviewsOlder": "以前の{count}件",
+      "showSuperseded": "置き換え済み {count} 件を表示",
+      "hideSuperseded": "置き換え済みを非表示"
     },
     "status": {
       "pending": "保留中",

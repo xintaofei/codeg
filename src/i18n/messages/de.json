@@ -2978,7 +2978,9 @@
       "noArtifacts": "Bisher nur das Stamm-Artefakt der Aufgabe.",
       "executingNow": "Wird jetzt ausgeführt",
       "iterationsError": "Iterationen konnten nicht geladen werden",
-      "reviewsOlder": "+{count} frühere"
+      "reviewsOlder": "+{count} frühere",
+      "showSuperseded": "{count} ersetzte anzeigen",
+      "hideSuperseded": "Ersetzte ausblenden"
     },
     "status": {
       "pending": "Ausstehend",

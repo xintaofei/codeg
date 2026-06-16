@@ -176,6 +176,79 @@ describe("buildDag", () => {
     expect(edges[0].from).toBe(task.id)
     expect(edges[0].to).toBe(issue.id)
   })
+
+  it("hides superseded/cancelled tasks by default and reports the count", () => {
+    const issue = artifact("issue")
+    const design = artifact("design")
+    const live = artifact("task", { status: "pending", sort: 1 })
+    const old = artifact("task", { status: "superseded", sort: 0 })
+    const cancelled = artifact("task", { status: "cancelled", sort: 2 })
+    const layout = buildDag(
+      [issue, design, live, old, cancelled],
+      [
+        link(live.id, design.id), // live task → design (kept)
+        link(old.id, design.id), // superseded task → design (drops with the node)
+      ]
+    )
+
+    expect(layout.clusters.map((c) => c.task.id)).toEqual([live.id])
+    expect(layout.supersededCount).toBe(2)
+    // The design no longer connects to a dead task.
+    expect(layout.edges.some((e) => e.from === old.id || e.to === old.id)).toBe(
+      false
+    )
+    // The live task's lineage survives.
+    expect(
+      layout.edges.some((e) => e.from === live.id && e.to === design.id)
+    ).toBe(true)
+  })
+
+  it("includeSuperseded reveals dead nodes and their edges", () => {
+    const issue = artifact("issue")
+    const design = artifact("design")
+    const live = artifact("task", { status: "pending", sort: 1 })
+    const old = artifact("task", { status: "superseded", sort: 0 })
+    const layout = buildDag(
+      [issue, design, live, old],
+      [link(live.id, design.id), link(old.id, design.id)],
+      { includeSuperseded: true }
+    )
+
+    expect(layout.clusters.map((c) => c.task.id).sort((a, b) => a - b)).toEqual(
+      [live.id, old.id].sort((a, b) => a - b)
+    )
+    // Count reflects the full input regardless of the toggle (so it can hide again).
+    expect(layout.supersededCount).toBe(1)
+    expect(layout.edges.some((e) => e.from === old.id)).toBe(true)
+  })
+
+  it("folds a dead review under a live task only when superseded are revealed", () => {
+    const issue = artifact("issue")
+    const task = artifact("task", { status: "done" })
+    const liveReview = artifact("review", { status: "done", sort: 0 })
+    const deadReview = artifact("review", { status: "cancelled", sort: 1 })
+    const links = [
+      link(liveReview.id, task.id, "reviews"),
+      link(deadReview.id, task.id, "reviews"),
+    ]
+
+    // Hidden by default: the dead review is not folded into the live cluster…
+    const def = buildDag([issue, task, liveReview, deadReview], links)
+    expect(
+      def.clusters.find((c) => c.task.id === task.id)!.reviews.map((r) => r.id)
+    ).toEqual([liveReview.id])
+    expect(def.supersededCount).toBe(1)
+
+    // …revealed: it folds in (so the row can be dimmed by its own status).
+    const shown = buildDag([issue, task, liveReview, deadReview], links, {
+      includeSuperseded: true,
+    })
+    expect(
+      shown.clusters
+        .find((c) => c.task.id === task.id)!
+        .reviews.map((r) => r.id)
+    ).toEqual([liveReview.id, deadReview.id])
+  })
 })
 
 describe("foldReviews", () => {

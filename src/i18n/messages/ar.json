@@ -2978,7 +2978,9 @@
       "noArtifacts": "لا يوجد سوى أثر المسألة الجذري حتى الآن.",
       "executingNow": "قيد التنفيذ الآن",
       "iterationsError": "تعذّر تحميل التكرارات",
-      "reviewsOlder": "+{count} أقدم"
+      "reviewsOlder": "+{count} أقدم",
+      "showSuperseded": "إظهار {count} مُستبدَلة",
+      "hideSuperseded": "إخفاء المُستبدَلة"
     },
     "status": {
       "pending": "قيد الانتظار",

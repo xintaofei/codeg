@@ -2978,7 +2978,9 @@
       "noArtifacts": "Only the root issue artifact so far.",
       "executingNow": "Executing now",
       "iterationsError": "Couldn't load iterations",
-      "reviewsOlder": "+{count} earlier"
+      "reviewsOlder": "+{count} earlier",
+      "showSuperseded": "Show {count} superseded",
+      "hideSuperseded": "Hide superseded"
     },
     "status": {
       "pending": "Pending",

@@ -2978,7 +2978,9 @@
       "noArtifacts": "目前只有根议题工件。",
       "executingNow": "本轮执行中",
       "iterationsError": "无法加载迭代",
-      "reviewsOlder": "另 {count} 条更早"
+      "reviewsOlder": "另 {count} 条更早",
+      "showSuperseded": "显示 {count} 个已取代",
+      "hideSuperseded": "隐藏已取代"
     },
     "status": {
       "pending": "待触发",

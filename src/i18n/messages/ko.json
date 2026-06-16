@@ -2978,7 +2978,9 @@
       "noArtifacts": "아직 루트 이슈 아티팩트만 있습니다.",
       "executingNow": "실행 중",
       "iterationsError": "이터레이션을 불러올 수 없습니다",
-      "reviewsOlder": "이전 {count}건"
+      "reviewsOlder": "이전 {count}건",
+      "showSuperseded": "대체된 {count}개 표시",
+      "hideSuperseded": "대체된 항목 숨기기"
     },
     "status": {
       "pending": "대기 중",

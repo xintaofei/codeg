@@ -70,7 +70,17 @@ export interface DagLayout {
   laneCount: number
   /** Tallest read-stage column's node count (stage-band height driver). */
   stageRowCount: number
+  /**
+   * Count of `superseded`/`cancelled` artifacts (any kind) hidden from the
+   * layout. Drives the "show N superseded" toggle. Counted over the FULL input
+   * regardless of `includeSuperseded`, so the toggle stays available to hide
+   * them again. 0 when there are none.
+   */
+  supersededCount: number
 }
+
+const isDeadStatus = (s: LoopArtifactRow["status"]): boolean =>
+  s === "superseded" || s === "cancelled"
 
 const isDashed = (kind: LoopLinkKind): boolean => kind === "skips_to"
 
@@ -86,12 +96,24 @@ const bySortId = (a: LoopArtifactRow, b: LoopArtifactRow) =>
  */
 export function buildDag(
   artifacts: LoopArtifactRow[],
-  links: LoopLinkRow[]
+  links: LoopLinkRow[],
+  opts?: { includeSuperseded?: boolean }
 ): DagLayout {
-  const byId = new Map(artifacts.map((a) => [a.id, a]))
-  const tasks = artifacts.filter((a) => a.kind === "task")
+  // By default, dead nodes (superseded / cancelled — e.g. tasks a replan
+  // discarded, or a rejected design) are dropped from the layout so the graph
+  // shows the LIVE plan; their edges fall away with them (the design no longer
+  // links to old tasks). The audit copies live on in the artifact list/drawer,
+  // and the toggle re-includes them (dimmed) on demand.
+  const includeSuperseded = opts?.includeSuperseded ?? false
+  const supersededCount = artifacts.filter((a) => isDeadStatus(a.status)).length
+  const visible = includeSuperseded
+    ? artifacts
+    : artifacts.filter((a) => !isDeadStatus(a.status))
+
+  const byId = new Map(visible.map((a) => [a.id, a]))
+  const tasks = visible.filter((a) => a.kind === "task")
   const reviewIds = new Set(
-    artifacts.filter((a) => a.kind === "review").map((r) => r.id)
+    visible.filter((a) => a.kind === "review").map((r) => r.id)
   )
 
   // --- Fold reviews into the task each reviews (review --reviews--> task). ---
@@ -187,7 +209,7 @@ export function buildDag(
   const stageNodes: DagNode[] = []
   let stageRowCount = 0
   STAGE_COLUMNS.forEach((kind, col) => {
-    const bucket = artifacts.filter((a) => a.kind === kind).sort(bySortId)
+    const bucket = visible.filter((a) => a.kind === kind).sort(bySortId)
     bucket.forEach((artifact, row) => stageNodes.push({ artifact, col, row }))
     if (bucket.length > stageRowCount) stageRowCount = bucket.length
   })
@@ -197,13 +219,13 @@ export function buildDag(
     (m, c) => Math.max(m, c.col),
     TASK_COL_BASE - 1
   )
-  const resultArtifact = artifacts.find((a) => a.kind === "result") ?? null
+  const resultArtifact = visible.find((a) => a.kind === "result") ?? null
   const result = resultArtifact
     ? { artifact: resultArtifact, col: maxTaskCol + 1 }
     : null
 
   // --- Edges: drop dangling + any touching a folded review (containment says it). ---
-  const present = new Set(artifacts.map((a) => a.id))
+  const present = new Set(visible.map((a) => a.id))
   const edges: DagEdge[] = links
     .filter(
       (l) =>
@@ -235,6 +257,7 @@ export function buildDag(
       ? Math.max(...clusters.map((c) => c.lane)) + 1
       : 0,
     stageRowCount,
+    supersededCount,
   }
 }
 

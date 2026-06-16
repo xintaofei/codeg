@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 
 import { buildDag, foldReviews, type DagCluster } from "@/lib/loop-dag"
@@ -24,6 +24,10 @@ const LANE_GAP = 22
 const REVIEW_H = 22
 const REVIEW_PAD = 6
 const REVIEW_DIVIDER = 1 // border-t between the task header and its reviews
+
+/** Superseded / cancelled nodes are history; when revealed they render dimmed. */
+const isDead = (s: LoopArtifactStatus): boolean =>
+  s === "superseded" || s === "cancelled"
 
 const STATUS_DOT: Record<LoopArtifactStatus, string> = {
   pending: "bg-muted-foreground/40",
@@ -68,7 +72,13 @@ export function DagGraph({
   const tVerdict = useTranslations("Loops.reviewVerdict")
   const tDetail = useTranslations("Loops.issueDetail")
 
-  const layout = useMemo(() => buildDag(artifacts, links), [artifacts, links])
+  // Dead nodes (superseded / cancelled) are hidden by default so the graph shows
+  // the live plan; the toggle reveals them (dimmed) for audit.
+  const [showSuperseded, setShowSuperseded] = useState(false)
+  const layout = useMemo(
+    () => buildDag(artifacts, links, { includeSuperseded: showSuperseded }),
+    [artifacts, links, showSuperseded]
+  )
 
   const geom = useMemo(() => {
     const stageLayout = layout.stageNodes.map((node) => ({
@@ -140,94 +150,111 @@ export function DagGraph({
     }
   }, [layout])
 
-  if (
+  const canvasEmpty =
     geom.stageLayout.length === 0 &&
     geom.clusterLayout.length === 0 &&
     !geom.resultLayout
-  ) {
+  if (canvasEmpty && layout.supersededCount === 0) {
     return null
   }
 
   return (
-    <div
-      className="relative"
-      style={{ width: geom.width, height: geom.height }}
-    >
-      <svg
-        className="pointer-events-none absolute inset-0 text-muted-foreground"
-        width={geom.width}
-        height={geom.height}
-        aria-hidden
-      >
-        {layout.edges.map((e) => {
-          const a = geom.boxOf.get(e.from)
-          const b = geom.boxOf.get(e.to)
-          if (!a || !b) return null
-          return (
-            <path
-              key={e.id}
-              d={edgePath(a, b)}
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={1.5}
-              strokeDasharray={e.dashed ? "4 4" : undefined}
-              className={
-                e.dashed
-                  ? "opacity-50"
-                  : e.kind === "depends_on"
-                    ? "opacity-40"
-                    : "opacity-25"
-              }
-            />
-          )
-        })}
-      </svg>
-
-      {geom.stageLayout.map(({ node, x, y }) => (
-        <NodeCard
-          key={node.artifact.id}
-          artifact={node.artifact}
-          x={x}
-          y={y}
-          executing={executingIds.has(node.artifact.id)}
-          kindLabel={tKind(node.artifact.kind)}
-          statusLabel={tStatus(node.artifact.status)}
-          executingLabel={tDetail("executingNow")}
-          onSelect={onSelect}
-        />
-      ))}
-
-      {geom.resultLayout && (
-        <NodeCard
-          artifact={geom.resultLayout.artifact}
-          x={geom.resultLayout.x}
-          y={geom.resultLayout.y}
-          executing={executingIds.has(geom.resultLayout.artifact.id)}
-          kindLabel={tKind(geom.resultLayout.artifact.kind)}
-          statusLabel={tStatus(geom.resultLayout.artifact.status)}
-          executingLabel={tDetail("executingNow")}
-          onSelect={onSelect}
-        />
+    <div className="flex flex-col gap-2">
+      {layout.supersededCount > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowSuperseded((v) => !v)}
+          aria-pressed={showSuperseded}
+          className="self-start rounded-md border px-2 py-1 text-xs text-muted-foreground outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {showSuperseded
+            ? tDetail("hideSuperseded")
+            : tDetail("showSuperseded", { count: layout.supersededCount })}
+        </button>
       )}
+      <div
+        className="relative"
+        style={{ width: geom.width, height: geom.height }}
+      >
+        <svg
+          className="pointer-events-none absolute inset-0 text-muted-foreground"
+          width={geom.width}
+          height={geom.height}
+          aria-hidden
+        >
+          {layout.edges.map((e) => {
+            const a = geom.boxOf.get(e.from)
+            const b = geom.boxOf.get(e.to)
+            if (!a || !b) return null
+            return (
+              <path
+                key={e.id}
+                d={edgePath(a, b)}
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.5}
+                strokeDasharray={e.dashed ? "4 4" : undefined}
+                className={
+                  e.dashed
+                    ? "opacity-50"
+                    : e.kind === "depends_on"
+                      ? "opacity-40"
+                      : "opacity-25"
+                }
+              />
+            )
+          })}
+        </svg>
 
-      {geom.clusterLayout.map(({ cluster, x, y, height, fold }) => (
-        <ClusterCard
-          key={cluster.task.id}
-          cluster={cluster}
-          fold={fold}
-          x={x}
-          y={y}
-          height={height}
-          executingIds={executingIds}
-          kindLabel={tKind(cluster.task.kind)}
-          reviewKindLabel={tKind("review")}
-          statusLabelOf={(s) => tStatus(s)}
-          verdictLabelOf={(v) => tVerdict(v)}
-          executingLabel={tDetail("executingNow")}
-          olderLabelOf={(count) => tDetail("reviewsOlder", { count })}
-          onSelect={onSelect}
-        />
-      ))}
+        {geom.stageLayout.map(({ node, x, y }) => (
+          <NodeCard
+            key={node.artifact.id}
+            artifact={node.artifact}
+            x={x}
+            y={y}
+            executing={executingIds.has(node.artifact.id)}
+            dimmed={isDead(node.artifact.status)}
+            kindLabel={tKind(node.artifact.kind)}
+            statusLabel={tStatus(node.artifact.status)}
+            executingLabel={tDetail("executingNow")}
+            onSelect={onSelect}
+          />
+        ))}
+
+        {geom.resultLayout && (
+          <NodeCard
+            artifact={geom.resultLayout.artifact}
+            x={geom.resultLayout.x}
+            y={geom.resultLayout.y}
+            executing={executingIds.has(geom.resultLayout.artifact.id)}
+            dimmed={isDead(geom.resultLayout.artifact.status)}
+            kindLabel={tKind(geom.resultLayout.artifact.kind)}
+            statusLabel={tStatus(geom.resultLayout.artifact.status)}
+            executingLabel={tDetail("executingNow")}
+            onSelect={onSelect}
+          />
+        )}
+
+        {geom.clusterLayout.map(({ cluster, x, y, height, fold }) => (
+          <ClusterCard
+            key={cluster.task.id}
+            cluster={cluster}
+            fold={fold}
+            x={x}
+            y={y}
+            height={height}
+            dimmed={isDead(cluster.task.status)}
+            executingIds={executingIds}
+            kindLabel={tKind(cluster.task.kind)}
+            reviewKindLabel={tKind("review")}
+            statusLabelOf={(s) => tStatus(s)}
+            verdictLabelOf={(v) => tVerdict(v)}
+            executingLabel={tDetail("executingNow")}
+            olderLabelOf={(count) => tDetail("reviewsOlder", { count })}
+            onSelect={onSelect}
+          />
+        ))}
+      </div>
     </div>
   )
 }
@@ -258,6 +285,7 @@ function NodeCard({
   x,
   y,
   executing,
+  dimmed,
   kindLabel,
   statusLabel,
   executingLabel,
@@ -267,6 +295,7 @@ function NodeCard({
   x: number
   y: number
   executing: boolean
+  dimmed: boolean
   kindLabel: string
   statusLabel: string
   executingLabel: string
@@ -280,7 +309,8 @@ function NodeCard({
       aria-label={`${kindLabel}: ${artifact.title}`}
       className={cn(
         "absolute flex flex-col justify-center gap-1 rounded-lg border bg-card px-3 py-2 text-left shadow-sm outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring",
-        executing && "ring-2 ring-sky-500/50"
+        executing && "ring-2 ring-sky-500/50",
+        dimmed && "opacity-50"
       )}
     >
       <div className="flex items-center gap-1.5">
@@ -305,6 +335,7 @@ function ClusterCard({
   x,
   y,
   height,
+  dimmed,
   executingIds,
   kindLabel,
   reviewKindLabel,
@@ -319,6 +350,7 @@ function ClusterCard({
   x: number
   y: number
   height: number
+  dimmed: boolean
   executingIds: Set<number>
   kindLabel: string
   reviewKindLabel: string
@@ -334,7 +366,10 @@ function ClusterCard({
   return (
     <div
       style={{ left: x, top: y, width: NODE_W, height }}
-      className="absolute flex flex-col overflow-hidden rounded-lg border bg-card shadow-sm"
+      className={cn(
+        "absolute flex flex-col overflow-hidden rounded-lg border bg-card shadow-sm",
+        dimmed && "opacity-50"
+      )}
     >
       <button
         type="button"
@@ -387,7 +422,12 @@ function ClusterCard({
                     : `${reviewKindLabel}: ${review.title}`
                 }
                 title={verdictLabel ?? statusLabel}
-                className="flex items-center gap-1.5 px-3 text-left outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                className={cn(
+                  "flex items-center gap-1.5 px-3 text-left outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                  // A dead review folded under a live task is dimmed on its own;
+                  // when the task itself is dead the whole cluster is already dimmed.
+                  isDead(review.status) && "opacity-50"
+                )}
               >
                 <span
                   className={cn(
