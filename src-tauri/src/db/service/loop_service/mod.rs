@@ -25,7 +25,7 @@ mod tests {
     use crate::db::entities::loop_criterion::CriterionKind;
     use crate::db::entities::loop_iteration::Stage;
     use crate::db::entities::loop_link::LinkKind;
-    use crate::db::entities::loop_memory::MemoryKind;
+    use crate::db::entities::loop_memory::{MemoryKind, TrustTier};
     use crate::db::test_helpers::{fresh_in_memory_db, seed_folder};
     use crate::models::loops::IssueConfig;
 
@@ -286,12 +286,32 @@ mod tests {
         let folder_id = seed_folder(&db, "/tmp/repo-e").await;
         let space = space::create_space(&db.conn, "S", folder_id).await.unwrap();
 
-        memory::create_memory(&db.conn, space.id, MemoryKind::Pitfall, ActorKind::Agent, "p", "b")
-            .await
-            .unwrap();
-        memory::create_memory(&db.conn, space.id, MemoryKind::Decision, ActorKind::Human, "d", "b")
-            .await
-            .unwrap();
+        memory::create_memory(
+            &db.conn,
+            space.id,
+            MemoryKind::Pitfall,
+            ActorKind::Agent,
+            "p",
+            None,
+            "b",
+            TrustTier::Proposed,
+            memory::MemoryProvenance::default(),
+        )
+        .await
+        .unwrap();
+        memory::create_memory(
+            &db.conn,
+            space.id,
+            MemoryKind::Decision,
+            ActorKind::Human,
+            "d",
+            None,
+            "b",
+            TrustTier::Human,
+            memory::MemoryProvenance::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(memory::list_memory(&db.conn, space.id).await.unwrap().len(), 2);
 
         // implement stage injects pitfalls, not decisions.

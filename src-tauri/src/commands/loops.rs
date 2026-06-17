@@ -10,7 +10,7 @@ use crate::app_error::AppCommandError;
 use crate::db::entities::loop_artifact_revision::ActorKind;
 use crate::db::entities::loop_inbox_item::{InboxKind, InboxStatus};
 use crate::db::entities::loop_issue::{self, IssuePriority, IssueStatus};
-use crate::db::entities::loop_memory::{MemoryKind, MemoryStatus};
+use crate::db::entities::loop_memory::{MemoryKind, MemoryStatus, TrustTier};
 use crate::db::service::folder_service;
 use crate::db::service::loop_service::{
     artifact, inbox, issue, iteration, memory, space, validation,
@@ -513,7 +513,18 @@ pub async fn create_loop_memory_core(
     title: String,
     content: String,
 ) -> Result<LoopMemoryRow, AppCommandError> {
-    let m = memory::create_memory(conn, space_id, kind, ActorKind::Human, &title, &content).await?;
+    let m = memory::create_memory(
+        conn,
+        space_id,
+        kind,
+        ActorKind::Human,
+        &title,
+        None,
+        &content,
+        TrustTier::Human,
+        memory::MemoryProvenance::default(),
+    )
+    .await?;
     emit_loop_changed(emitter, space_id, None, "memory", m.id, "created");
     Ok(memory::to_row(m))
 }

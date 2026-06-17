@@ -958,7 +958,10 @@ mod tests {
             MemoryKind::Constitution,
             ActorKind::Human,
             "House rules",
+            None,
             "No new dependencies without approval.",
+            loop_memory::TrustTier::Human,
+            loop_service::memory::MemoryProvenance::default(),
         )
         .await
         .unwrap();
@@ -968,7 +971,10 @@ mod tests {
             MemoryKind::Decision,
             ActorKind::Agent,
             "Token store",
+            None,
             "Use the existing keyring abstraction.",
+            loop_memory::TrustTier::Proposed,
+            loop_service::memory::MemoryProvenance::default(),
         )
         .await
         .unwrap();
@@ -978,7 +984,10 @@ mod tests {
             MemoryKind::Pitfall,
             ActorKind::Agent,
             "Flaky test",
+            None,
             "auth_test is order-dependent.",
+            loop_memory::TrustTier::Proposed,
+            loop_service::memory::MemoryProvenance::default(),
         )
         .await
         .unwrap();

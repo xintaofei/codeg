@@ -29,6 +29,23 @@ pub enum MemoryStatus {
     Active,
     #[sea_orm(string_value = "archived")]
     Archived,
+    #[sea_orm(string_value = "superseded")]
+    Superseded,
+}
+
+/// How much a memory is trusted: `human`-authored, `distilled` by the reflect
+/// stage from confirmed work, or `proposed` (agent-recorded, unvetted). Shown in
+/// the briefing index for the agent's judgment — never used to rank or filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
+#[sea_orm(rs_type = "String", db_type = "String(StringLen::None)")]
+#[serde(rename_all = "snake_case")]
+pub enum TrustTier {
+    #[sea_orm(string_value = "human")]
+    Human,
+    #[sea_orm(string_value = "distilled")]
+    Distilled,
+    #[sea_orm(string_value = "proposed")]
+    Proposed,
 }
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
@@ -40,8 +57,14 @@ pub struct Model {
     pub kind: MemoryKind,
     pub source: ActorKind,
     pub title: String,
+    pub summary: Option<String>,
     pub content: String,
+    pub trust_tier: TrustTier,
     pub status: MemoryStatus,
+    pub superseded_by: Option<i32>,
+    pub source_issue_id: Option<i32>,
+    pub source_artifact_id: Option<i32>,
+    pub produced_by_iteration_id: Option<i32>,
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
 }

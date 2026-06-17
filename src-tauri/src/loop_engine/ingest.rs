@@ -30,7 +30,7 @@ use crate::db::entities::loop_inbox_item::InboxKind;
 use crate::db::entities::loop_issue::{self, IssuePriority, IssueRoute};
 use crate::db::entities::loop_iteration::{self, IterationStatus, Stage};
 use crate::db::entities::loop_link::LinkKind;
-use crate::db::entities::loop_memory::MemoryKind;
+use crate::db::entities::loop_memory::{MemoryKind, TrustTier};
 use crate::db::service::loop_service;
 use crate::loop_engine::LoopError;
 
@@ -910,7 +910,14 @@ async fn record_memory(
         kind,
         ActorKind::Agent,
         title,
+        None,
         &truncate(content),
+        TrustTier::Proposed,
+        loop_service::memory::MemoryProvenance {
+            source_issue_id: Some(it.issue_id),
+            source_artifact_id: None,
+            produced_by_iteration_id: Some(it.id),
+        },
     )
     .await?;
     Ok(json!({ "ok": true, "id": m.id }))

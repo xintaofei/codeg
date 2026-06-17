@@ -17,7 +17,7 @@ use crate::db::entities::loop_inbox_item::{InboxKind, InboxStatus};
 use crate::db::entities::loop_issue::{IssuePriority, IssueRoute, IssueStatus, PauseReason};
 use crate::db::entities::loop_iteration::{IterationStatus, LaunchedBy, Stage};
 use crate::db::entities::loop_link::LinkKind;
-use crate::db::entities::loop_memory::{MemoryKind, MemoryStatus};
+use crate::db::entities::loop_memory::{MemoryKind, MemoryStatus, TrustTier};
 
 /// An agent plus the same startup mode/config knobs the regular sub-agent
 /// settings expose. Used both for each per-stage agent override (a field of
@@ -393,8 +393,14 @@ pub struct LoopMemoryRow {
     pub kind: MemoryKind,
     pub source: ActorKind,
     pub title: String,
+    pub summary: Option<String>,
     pub content: String,
+    pub trust_tier: TrustTier,
     pub status: MemoryStatus,
+    pub superseded_by: Option<i32>,
+    pub source_issue_id: Option<i32>,
+    pub source_artifact_id: Option<i32>,
+    pub produced_by_iteration_id: Option<i32>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

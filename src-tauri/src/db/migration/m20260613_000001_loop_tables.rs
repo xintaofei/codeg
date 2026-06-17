@@ -248,9 +248,16 @@ const UP: &[&str] = &[
             CHECK (kind IN ('constitution','constraint','decision','preference','pitfall')),
         source TEXT NOT NULL CHECK (source IN ('human','agent')),
         title TEXT NOT NULL,
+        summary TEXT,
         content TEXT NOT NULL,
+        trust_tier TEXT NOT NULL DEFAULT 'proposed'
+            CHECK (trust_tier IN ('human','distilled','proposed')),
         status TEXT NOT NULL DEFAULT 'active'
-            CHECK (status IN ('active','archived')),
+            CHECK (status IN ('active','archived','superseded')),
+        superseded_by INTEGER REFERENCES loop_memory(id) ON DELETE SET NULL,
+        source_issue_id INTEGER,
+        source_artifact_id INTEGER,
+        produced_by_iteration_id INTEGER,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     )",
