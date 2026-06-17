@@ -2,7 +2,7 @@
 
 import { memo, useCallback, useMemo, useRef } from "react"
 import { Reorder } from "motion/react"
-import { X } from "lucide-react"
+import { RefreshCw, X } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { cn, handleMiddleClickClose } from "@/lib/utils"
 import type { ConversationStatus } from "@/lib/types"
@@ -28,6 +28,7 @@ interface TabItemProps {
   onCloseOthers: (tabId: string) => void
   onCloseAll: () => void
   onPin: (tabId: string) => void
+  onReconnect: (tabId: string) => void
   onToggleTile: () => void
   isCoarsePointer: boolean
   isTouchSorting: boolean
@@ -46,6 +47,7 @@ export const TabItem = memo(function TabItem({
   onCloseOthers,
   onCloseAll,
   onPin,
+  onReconnect,
   onToggleTile,
   isCoarsePointer,
   isTouchSorting,
@@ -98,6 +100,10 @@ export const TabItem = memo(function TabItem({
   const handleCloseOthers = useCallback(() => {
     onCloseOthers(tab.id)
   }, [onCloseOthers, tab.id])
+
+  const handleReconnect = useCallback(() => {
+    onReconnect(tab.id)
+  }, [onReconnect, tab.id])
 
   const whileDrag = useMemo(() => ({ scale: 1.03 }), [])
 
@@ -167,6 +173,11 @@ export const TabItem = memo(function TabItem({
           </div>
         </ContextMenuTrigger>
         <ContextMenuContent>
+          <ContextMenuItem onSelect={handleReconnect}>
+            <RefreshCw className="h-4 w-4" />
+            {t("reconnect")}
+          </ContextMenuItem>
+          <ContextMenuSeparator />
           <ContextMenuItem onSelect={handleClose}>{t("close")}</ContextMenuItem>
           <ContextMenuItem onSelect={handleCloseOthers}>
             {t("closeOthers")}

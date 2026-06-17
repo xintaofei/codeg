@@ -5,6 +5,7 @@ import { Reorder } from "motion/react"
 import { useAppWorkspace } from "@/contexts/app-workspace-context"
 import { useTabContext } from "@/contexts/tab-context"
 import type { TabItem as TabItemData } from "@/contexts/tab-context"
+import { useAcpActions } from "@/contexts/acp-connections-context"
 import { useWorkspaceContext } from "@/contexts/workspace-context"
 import { useIsCoarsePointer } from "@/hooks/use-is-coarse-pointer"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
@@ -27,6 +28,7 @@ export function TabBar() {
   } = useTabContext()
   const { allFolders, branches } = useAppWorkspace()
   const { mode, activePane, filesMaximized } = useWorkspaceContext()
+  const { reapplyConfig } = useAcpActions()
 
   const folderIndex = useMemo(() => {
     const map = new Map<number, { name: string }>()
@@ -112,6 +114,13 @@ export function TabBar() {
     []
   )
 
+  const handleReconnect = useCallback(
+    async (tabId: string) => {
+      await reapplyConfig(tabId)
+    },
+    [reapplyConfig]
+  )
+
   if (tabs.length === 0) return null
 
   return (
@@ -154,6 +163,7 @@ export function TabBar() {
             onCloseOthers={closeOtherTabs}
             onCloseAll={closeAllTabs}
             onPin={pinTab}
+            onReconnect={handleReconnect}
             onToggleTile={toggleTileMode}
             isCoarsePointer={isCoarsePointer}
             isTouchSorting={touchSortingTabId === tab.id}

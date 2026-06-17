@@ -1172,6 +1172,7 @@
     },
     "tabs": {
       "closeConversationTab": "Close conversation tab",
+      "reconnect": "Reconnect",
       "close": "Close",
       "closeOthers": "Close Others",
       "closeAll": "Close All",
