@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 use sea_orm::DatabaseConnection;
 use serde_json::{json, Value};
 
-use crate::db::entities::loop_artifact::{ArtifactKind, ArtifactStatus};
+use crate::db::entities::loop_artifact::{ArtifactKind, ArtifactStatus, ReviewVerdict};
 use crate::db::entities::loop_artifact_revision::ActorKind;
 use crate::db::entities::loop_criterion::CriterionKind;
 use crate::db::entities::loop_iteration::Stage;
@@ -75,6 +75,26 @@ fn trust_tier_label(t: TrustTier) -> &'static str {
         TrustTier::Human => "human",
         TrustTier::Distilled => "distilled",
         TrustTier::Proposed => "proposed",
+    }
+}
+
+/// Lowercase label for an artifact kind — used in the reflect retrospective.
+fn artifact_kind_label(kind: ArtifactKind) -> &'static str {
+    match kind {
+        ArtifactKind::Issue => "issue",
+        ArtifactKind::Requirement => "requirement",
+        ArtifactKind::Design => "design",
+        ArtifactKind::Task => "task",
+        ArtifactKind::Review => "review",
+        ArtifactKind::Result => "result",
+        ArtifactKind::Reflection => "reflection",
+    }
+}
+
+fn review_verdict_label(v: ReviewVerdict) -> &'static str {
+    match v {
+        ReviewVerdict::Pass => "pass",
+        ReviewVerdict::Fail => "fail",
     }
 }
 
@@ -789,6 +809,55 @@ pub async fn assemble_briefing(
                 }
             }
         }
+    } else if stage == Stage::Reflect {
+        // Reflect runs on a completed, merged issue (target = None). Give the agent
+        // a retrospective: each live artifact (requirement/design/task/result) as
+        // title + first paragraph + its criteria + its review verdict, plus a
+        // one-line outcome — enough to distill episodic/procedural memories. (The
+        // constitution §① and full memory index §② — which supersedes handles
+        // resolve against — already inject above for every stage.)
+        let dag = loop_service::artifact::list_dag(conn, issue.id).await?;
+        let mut retro = String::new();
+        let mut task_count = 0usize;
+        for a in dag.artifacts.iter().filter(|a| {
+            matches!(
+                a.kind,
+                ArtifactKind::Requirement
+                    | ArtifactKind::Design
+                    | ArtifactKind::Task
+                    | ArtifactKind::Result
+            ) && !matches!(a.status, ArtifactStatus::Superseded | ArtifactStatus::Cancelled)
+        }) {
+            if a.kind == ArtifactKind::Task {
+                task_count += 1;
+            }
+            if let Some(d) = loop_service::artifact::get_artifact_detail(conn, a.id).await? {
+                let body =
+                    first_paragraph(d.revisions.last().map(|r| r.content.as_str()).unwrap_or(""));
+                retro.push_str(&format!(
+                    "\n## {} ({})\n{}\n",
+                    d.row.title,
+                    artifact_kind_label(a.kind),
+                    body
+                ));
+                for c in &d.criteria {
+                    retro.push_str(&format!("- [{}] {}\n", c.label, c.text));
+                }
+                if let Some(v) = a.verdict {
+                    retro.push_str(&format!("- verdict: {}\n", review_verdict_label(v)));
+                }
+            }
+        }
+        if !retro.is_empty() {
+            sections.push(format!(
+                "# What was built\nIssue #{} merged ({} task{}).\n{}",
+                issue.seq_no,
+                task_count,
+                if task_count == 1 { "" } else { "s" },
+                retro.trim()
+            ));
+            components.push(json!({ "section": "reflect_context", "tasks": task_count }));
+        }
     }
 
     // ⑤a Rework feedback — on an implement retry, surface why the last attempt
@@ -1280,5 +1349,63 @@ mod tests {
         assert_eq!(first_paragraph("one\ntwo\n\nthree"), "one\ntwo");
         assert_eq!(first_paragraph("\n\nlead\nmore"), "lead\nmore");
         assert_eq!(first_paragraph("   "), "");
+    }
+
+    #[tokio::test]
+    async fn reflect_briefing_has_retrospective_and_read_only_instruction() {
+        let (db, space, issue, root) = seed().await;
+        // A non-constitution memory so the Memory index (§②) renders — reflect's
+        // supersede handles resolve against it.
+        loop_service::memory::create_memory(
+            &db.conn,
+            space,
+            MemoryKind::Decision,
+            ActorKind::Agent,
+            "Use keyring",
+            Some("store tokens in the OS keyring"),
+            "We chose the OS keyring.",
+            loop_memory::TrustTier::Proposed,
+            loop_service::memory::MemoryProvenance::default(),
+        )
+        .await
+        .unwrap();
+        // A requirement (+criterion) and a result — the retrospective surface.
+        let req = add_node(
+            &db,
+            space,
+            issue.id,
+            ArtifactKind::Requirement,
+            "Authenticate users",
+            "Users can log in.",
+            &["session persists"],
+            root,
+        )
+        .await;
+        let _result = add_node(
+            &db,
+            space,
+            issue.id,
+            ArtifactKind::Result,
+            "Login shipped",
+            "Auth is implemented and merged.",
+            &[],
+            req,
+        )
+        .await;
+
+        let out = assemble_briefing(&db.conn, &issue, Stage::Reflect, None)
+            .await
+            .unwrap();
+        let t = &out.text;
+        assert!(t.contains("# What was built"), "retro header present");
+        assert!(t.contains("Authenticate users"), "requirement title in retro");
+        assert!(t.contains("session persists"), "criterion in retro");
+        assert!(t.contains("READ-ONLY"), "read-only stage instruction");
+        assert!(t.contains("loop_submit_reflection"), "tool contract");
+        assert!(t.contains("# Memory index"), "memory index injects for reflect");
+        assert!(
+            out.manifest["memory_index"]["M1"].is_i64(),
+            "manifest carries memory_index"
+        );
     }
 }
