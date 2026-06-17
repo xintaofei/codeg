@@ -3270,6 +3270,14 @@
     "dag": {
       "running": "Running",
       "queued": "Queued"
+    },
+    "stageRail": {
+      "statusDone": "Done",
+      "statusActive": "Active",
+      "statusBlocked": "Needs attention",
+      "statusSkipped": "Skipped",
+      "statusPending": "Pending",
+      "runningCount": "{n} running"
     }
   }
 }

@@ -3270,6 +3270,14 @@
     "dag": {
       "running": "قيد التشغيل",
       "queued": "في قائمة الانتظار"
+    },
+    "stageRail": {
+      "statusDone": "تم",
+      "statusActive": "نشط",
+      "statusBlocked": "يتطلب انتباهاً",
+      "statusSkipped": "تم التخطّي",
+      "statusPending": "قيد الانتظار",
+      "runningCount": "{n} قيد التشغيل"
     }
   }
 }

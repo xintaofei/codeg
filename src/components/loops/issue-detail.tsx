@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/resizable"
 import type { PendingNode } from "@/lib/loop-dag"
 import { DagGraph } from "@/components/loops/dag-graph"
+import { StagePipelineRail } from "@/components/loops/stage-pipeline-rail"
 import { IssueSettingsPanel } from "@/components/loops/issue-settings-dialog"
 import { BoardView } from "@/components/loops/board-view"
 import { IterationList } from "@/components/loops/iteration-list"
@@ -302,8 +303,19 @@ export function IssueDetail({
         autoSaveId="loop:issue:rows"
         className="min-h-0 flex-1 border-t"
       >
-        <ResizablePanel defaultSize={68} minSize={30} className="min-h-0">
-          <Tabs defaultValue="graph" className="flex h-full min-h-0 flex-col">
+        <ResizablePanel
+          defaultSize={68}
+          minSize={30}
+          className="flex min-h-0 flex-col"
+        >
+          <div className="shrink-0 px-4 pt-2">
+            <StagePipelineRail
+              route={issue.route}
+              artifacts={artifacts}
+              liveIterations={liveIterations}
+            />
+          </div>
+          <Tabs defaultValue="graph" className="flex min-h-0 flex-1 flex-col">
             <TabsList className="mx-auto mt-2 self-center">
               <TabsTrigger value="graph">{t("subtabGraph")}</TabsTrigger>
               <TabsTrigger value="board">{t("subtabBoard")}</TabsTrigger>

@@ -3270,6 +3270,14 @@
     "dag": {
       "running": "執行中",
       "queued": "排隊中"
+    },
+    "stageRail": {
+      "statusDone": "已完成",
+      "statusActive": "進行中",
+      "statusBlocked": "需處理",
+      "statusSkipped": "已略過",
+      "statusPending": "待處理",
+      "runningCount": "{n} 個執行中"
     }
   }
 }

@@ -3270,6 +3270,14 @@
     "dag": {
       "running": "실행 중",
       "queued": "대기 중"
+    },
+    "stageRail": {
+      "statusDone": "완료",
+      "statusActive": "진행 중",
+      "statusBlocked": "처리 필요",
+      "statusSkipped": "건너뜀",
+      "statusPending": "대기 중",
+      "runningCount": "{n}개 실행 중"
     }
   }
 }
