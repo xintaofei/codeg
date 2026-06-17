@@ -15,6 +15,7 @@ vi.mock("@/hooks/use-delegated-sub-session", () => ({
 // connections store (to badge "awaiting approval"). It renders no body and
 // answers no permission inline — so those are the only contexts to stub.
 let mockChildConnection: unknown = undefined
+const mockOpenConversationTab = vi.fn(() => Promise.resolve())
 
 vi.mock("@/contexts/acp-connections-context", async () => {
   const actual = await vi.importActual<
@@ -30,6 +31,10 @@ vi.mock("@/contexts/acp-connections-context", async () => {
     }),
   }
 })
+
+vi.mock("@/hooks/use-open-conversation-tab", () => ({
+  useOpenConversationTab: () => mockOpenConversationTab,
+}))
 
 // SubAgentSessionDialog pulls in MessageListView + useConversationRuntime, which
 // would require the full runtime provider tree. Stub it to a sentinel exposing
@@ -109,6 +114,8 @@ function childConnWith(pendingPermission: unknown) {
 describe("DelegatedSubThread", () => {
   beforeEach(() => {
     mockChildConnection = undefined
+    mockOpenConversationTab.mockReset()
+    mockOpenConversationTab.mockResolvedValue(undefined)
     mockedHook.mockReturnValue({
       binding: undefined,
       detail: null,
@@ -353,6 +360,8 @@ describe("DelegatedSubThread", () => {
 describe("DelegatedSubThread (async ack semantics)", () => {
   beforeEach(() => {
     mockChildConnection = undefined
+    mockOpenConversationTab.mockReset()
+    mockOpenConversationTab.mockResolvedValue(undefined)
     mockedHook.mockReturnValue({
       binding: undefined,
       detail: null,

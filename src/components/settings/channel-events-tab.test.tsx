@@ -56,11 +56,11 @@ describe("ChannelEventsTab event filter (opt-in user_prompt_sent)", () => {
   it("defaults user_prompt_sent OFF under a null filter while other events stay ON", async () => {
     mockGetFilter.mockResolvedValue(null)
     renderTab()
-    await waitFor(() => expect(mockGetFilter).toHaveBeenCalled())
+    const userMessageSwitch = await screen.findByRole("switch", {
+      name: "User Message",
+    })
 
-    expect(
-      screen.getByRole("switch", { name: "User Message" })
-    ).not.toBeChecked()
+    expect(userMessageSwitch).not.toBeChecked()
     expect(screen.getByRole("switch", { name: "Turn Complete" })).toBeChecked()
     expect(
       screen.getByRole("switch", { name: "Permission Request" })
@@ -70,9 +70,8 @@ describe("ChannelEventsTab event filter (opt-in user_prompt_sent)", () => {
   it("enabling user_prompt_sent persists an explicit list including it (never null)", async () => {
     mockGetFilter.mockResolvedValue(null)
     renderTab()
-    await waitFor(() => expect(mockGetFilter).toHaveBeenCalled())
 
-    fireEvent.click(screen.getByRole("switch", { name: "User Message" }))
+    fireEvent.click(await screen.findByRole("switch", { name: "User Message" }))
 
     await waitFor(() => expect(mockSetFilter).toHaveBeenCalled())
     const calls = mockSetFilter.mock.calls

@@ -17,6 +17,7 @@ const mockSetLiveOwnsActiveTurn = vi.fn()
 const mockGetSession = vi.fn()
 const mockGetTimelineTurns = vi.fn(() => [])
 const mockRespondPermission = vi.fn()
+const mockOpenConversationTab = vi.fn(() => Promise.resolve())
 // syncTurnMetadata returns a cancel function; hand back a spy so tests can
 // assert both that the backfill is kicked off and that it's cancelled on close.
 const mockSyncCancel = vi.fn()
@@ -118,6 +119,10 @@ vi.mock("@/hooks/use-conversation-detail", () => ({
   useConversationDetail: () => mockDetailState,
 }))
 
+vi.mock("@/hooks/use-open-conversation-tab", () => ({
+  useOpenConversationTab: () => mockOpenConversationTab,
+}))
+
 // MessageListView pulls in the full runtime provider + virtualization
 // stack. Stub it to a sentinel that records the props we care about,
 // so the read-only-mode test can assert that no `onReload`/`onNewSession`/
@@ -194,6 +199,8 @@ describe("SubAgentSessionDialog", () => {
     mockGetSession.mockReset()
     mockGetTimelineTurns.mockClear()
     mockRespondPermission.mockReset()
+    mockOpenConversationTab.mockReset()
+    mockOpenConversationTab.mockResolvedValue(undefined)
     mockSyncCancel.mockReset()
     mockSyncTurnMetadata.mockClear()
     mockSyncTurnMetadata.mockReturnValue(mockSyncCancel)
