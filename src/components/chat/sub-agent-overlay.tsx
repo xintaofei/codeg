@@ -17,7 +17,8 @@
 
 import { memo, useState } from "react"
 import { useTranslations } from "next-intl"
-import { BotIcon, ChevronDownIcon } from "lucide-react"
+import { BotIcon, ChevronDownIcon, PanelRight } from "lucide-react"
+import { toast } from "sonner"
 
 import { AgentIcon } from "@/components/agent-icon"
 import { CollapsedOverlayChip } from "@/components/chat/collapsed-overlay-chip"
@@ -29,6 +30,7 @@ import {
   useDelegationCardModel,
   type DelegationCardSource,
 } from "@/hooks/use-delegation-card-model"
+import { useOpenConversationTab } from "@/hooks/use-open-conversation-tab"
 import { AGENT_LABELS } from "@/lib/types"
 
 interface SubAgentOverlayProps {
@@ -124,6 +126,7 @@ const SubAgentOverlayRow = memo(function SubAgentOverlayRow({
     childConversationId,
     childConnectionId,
   } = useDelegationCardModel(source)
+  const openConversationTab = useOpenConversationTab()
 
   // Unlike the inline DelegatedSubThread (which falls through to the generic
   // tool renderer when nothing resolves), the overlay always renders one row
@@ -132,6 +135,13 @@ const SubAgentOverlayRow = memo(function SubAgentOverlayRow({
   // degrade gracefully: unknown agent → neutral dot + "Sub-agent" label,
   // missing child id → non-clickable.
   const clickable = childConversationId != null
+  const handleOpenTab = () => {
+    if (childConversationId == null) return
+    openConversationTab(childConversationId, { title: task }).catch((err) => {
+      console.error("[SubAgentOverlay] open conversation tab failed:", err)
+      toast.error(t("openInTabFailed"))
+    })
+  }
 
   const rowBody = (
     <div className="min-w-0 flex-1 space-y-1">
@@ -166,18 +176,31 @@ const SubAgentOverlayRow = memo(function SubAgentOverlayRow({
   return (
     <>
       {clickable ? (
-        <button
-          type="button"
+        <div
           data-testid="sub-agent-row"
-          onClick={() => setDialogOpen(true)}
-          className="flex w-full items-center gap-2 rounded-lg border bg-transparent px-2 py-1.5 text-left transition-colors hover:bg-muted/60"
-          // No aria-label: let the row content (agent name + task) name the
-          // button so screen readers can tell rows apart. `title` stays for the
-          // pointer tooltip.
-          title={t("openDetail")}
+          className="flex w-full items-stretch overflow-hidden rounded-lg border bg-transparent transition-colors hover:bg-muted/60"
         >
-          {rowBody}
-        </button>
+          <button
+            type="button"
+            onClick={() => setDialogOpen(true)}
+            className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left"
+            // No aria-label: let the row content (agent name + task) name the
+            // button so screen readers can tell rows apart. `title` stays for the
+            // pointer tooltip.
+            title={t("openDetail")}
+          >
+            {rowBody}
+          </button>
+          <button
+            type="button"
+            onClick={handleOpenTab}
+            className="flex shrink-0 items-center border-l px-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            title={t("openInTab")}
+            aria-label={t("openInTab")}
+          >
+            <PanelRight className="h-3.5 w-3.5" />
+          </button>
+        </div>
       ) : (
         <div
           data-testid="sub-agent-row"

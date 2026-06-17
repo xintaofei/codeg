@@ -288,6 +288,9 @@ export interface OpenedTab {
   position: number
   is_active: boolean
   is_pinned: boolean
+  /** Optional display-title override for restored/synced tabs, e.g.
+   *  delegated sub-agent tabs named by their responsibility. */
+  title_override?: string | null
 }
 
 export interface DbConversationSummary {

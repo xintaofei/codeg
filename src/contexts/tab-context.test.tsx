@@ -14,6 +14,7 @@ import type {
 
 const listOpenedTabsMock = vi.fn()
 const saveOpenedTabsMock = vi.fn()
+const getFolderConversationMock = vi.fn()
 const setActiveFolderIdMock = vi.fn()
 const activateConversationPaneMock = vi.fn()
 const disconnectMock = vi.fn()
@@ -36,6 +37,8 @@ vi.mock("next-intl", () => {
 vi.mock("@/lib/api", () => ({
   listOpenedTabs: (...args: unknown[]) => listOpenedTabsMock(...args),
   saveOpenedTabs: (...args: unknown[]) => saveOpenedTabsMock(...args),
+  getFolderConversation: (...args: unknown[]) =>
+    getFolderConversationMock(...args),
 }))
 
 vi.mock("@/lib/platform", () => ({
@@ -179,6 +182,9 @@ function Probe() {
       <output data-testid="active-folder">
         {activeTab?.folderId ?? "none"}
       </output>
+      <output data-testid="titles">
+        {ctx.tabs.map((tab) => tab.title).join("|")}
+      </output>
     </div>
   )
 }
@@ -213,6 +219,7 @@ describe("TabProvider tab state transitions", () => {
       version: 1,
       tabs: [],
     })
+    getFolderConversationMock.mockRejectedValue(new Error("not found"))
     tabsChangedHandler = null
     subscribeMock.mockImplementation(
       (event: string, handler: (change: TabsChanged) => void) => {
@@ -548,7 +555,8 @@ describe("TabProvider tab state transitions", () => {
 function tabItem(
   folderId: number,
   conversationId: number,
-  isActive = false
+  isActive = false,
+  titleOverride: string | null = null
 ): OpenedTab {
   return {
     id: conversationId,
@@ -558,6 +566,7 @@ function tabItem(
     position: 0,
     is_active: isActive,
     is_pinned: true,
+    title_override: titleOverride,
   }
 }
 
@@ -572,6 +581,7 @@ describe("TabProvider cross-client sync", () => {
       version: 1,
       tabs: [],
     })
+    getFolderConversationMock.mockRejectedValue(new Error("not found"))
     tabsChangedHandler = null
     subscribeMock.mockImplementation(
       (event: string, handler: (change: TabsChanged) => void) => {
@@ -847,6 +857,86 @@ describe("TabProvider cross-client sync", () => {
     await renderHydrated()
 
     expect(screen.getByTestId("active")).toHaveTextContent("conv-1-codex-2")
+  })
+
+  it("restores a delegated tab responsibility title from opened_tabs", async () => {
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 1, true, "Backend verifier")],
+      version: 3,
+    })
+    await renderHydrated()
+
+    expect(screen.getByTestId("titles")).toHaveTextContent("Backend verifier")
+  })
+
+  it("persists delegated tab responsibility titles", async () => {
+    await renderHydrated()
+    saveOpenedTabsMock.mockClear()
+
+    act(() => {
+      latestContext?.openTab(1, 1, "codex", true, "Backend verifier", {
+        titleOverride: true,
+      })
+    })
+
+    await waitFor(() => expect(saveOpenedTabsMock).toHaveBeenCalled(), {
+      timeout: 2000,
+    })
+    const calls = saveOpenedTabsMock.mock.calls
+    const items = calls[calls.length - 1][0] as OpenedTab[]
+    expect(items[0]).toMatchObject({
+      conversation_id: 1,
+      title_override: "Backend verifier",
+    })
+  })
+
+  it("applies a remote delegated tab responsibility title", async () => {
+    await renderHydrated()
+    expect(tabsChangedHandler).not.toBeNull()
+
+    act(() => {
+      tabsChangedHandler?.({
+        version: 1,
+        origin: "other-device",
+        tabs: [tabItem(1, 1, true, "Frontend verifier")],
+      })
+    })
+
+    expect(screen.getByTestId("titles")).toHaveTextContent("Frontend verifier")
+  })
+
+  it("resolves a restored delegation-child tab title outside the root conversation list", async () => {
+    listOpenedTabsMock.mockResolvedValue({
+      items: [tabItem(1, 99, true)],
+      version: 3,
+    })
+    getFolderConversationMock.mockResolvedValue({
+      summary: {
+        id: 99,
+        folder_id: 1,
+        title: "Backend verifier",
+        title_locked: false,
+        agent_type: "codex",
+        status: "completed",
+        model: null,
+        git_branch: null,
+        external_id: null,
+        message_count: 1,
+        created_at: "2026-05-24T00:00:00Z",
+        updated_at: "2026-05-24T00:00:00Z",
+        pinned_at: null,
+        parent_id: 1,
+        parent_tool_use_id: "toolu-child",
+        delegation_call_id: "delegate-1",
+      },
+      turns: [],
+    })
+    await renderHydrated()
+
+    await waitFor(() => {
+      expect(screen.getByTestId("titles")).toHaveTextContent("Backend verifier")
+    })
+    expect(getFolderConversationMock).toHaveBeenCalledWith(99)
   })
 
   it("cancels a pending local save when a remote snapshot supersedes it", async () => {

@@ -1180,7 +1180,10 @@
       "closeOthers": "Andere schließen",
       "closeAll": "Alle schließen",
       "tileDisplay": "Kachelansicht",
-      "untileDisplay": "Kachel beenden"
+      "untileDisplay": "Kachel beenden",
+      "viewToggle": "Ansicht",
+      "tileAllTabs": "Alle Tabs nebeneinander anzeigen",
+      "showCurrentTabOnly": "Nur aktuellen Tab anzeigen"
     },
     "fileWorkspace": {
       "files": "Dateien",
@@ -2061,7 +2064,9 @@
             "child_unknown": "Subagent: Fehler",
             "unknown": "unbekannte Aufgabe"
           }
-        }
+        },
+        "openInTab": "In Tab öffnen",
+        "openInTabFailed": "Unterhaltungstab konnte nicht geöffnet werden"
       },
       "contentParts": {
         "showingTailOutput": "Zur besseren Performance wird während des Streamings nur die Endausgabe angezeigt.",

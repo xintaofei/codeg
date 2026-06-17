@@ -39,6 +39,11 @@ pub struct OpenedTab {
     pub position: i32,
     pub is_active: bool,
     pub is_pinned: bool,
+    /// Optional display-title override for restored/synced tabs. Used by
+    /// delegated sub-agent tabs so their tab label can remain the role/task
+    /// name instead of falling back to the persisted conversation title.
+    #[serde(default)]
+    pub title_override: Option<String>,
 }
 
 /// Response for `list_opened_tabs`: the persisted tab set plus the current

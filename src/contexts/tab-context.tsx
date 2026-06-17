@@ -16,7 +16,11 @@ import { useAppWorkspace } from "@/contexts/app-workspace-context"
 import { useAcpActions } from "@/contexts/acp-connections-context"
 import { useWorkspaceContext } from "@/contexts/workspace-context"
 import { useSortedAvailableAgents } from "@/hooks/use-sorted-available-agents"
-import { listOpenedTabs, saveOpenedTabs } from "@/lib/api"
+import {
+  getFolderConversation,
+  listOpenedTabs,
+  saveOpenedTabs,
+} from "@/lib/api"
 import { onTransportReconnect, subscribe } from "@/lib/platform"
 import { resolveDefaultAgent } from "@/lib/resolve-default-agent"
 import { formatConversationTitle } from "@/lib/conversation-title"
@@ -29,6 +33,7 @@ import {
   TABS_CHANGED_EVENT,
   type AgentType,
   type ConversationStatus,
+  type DbConversationSummary,
   type OpenedTab,
   type TabsChanged,
 } from "@/lib/types"
@@ -47,6 +52,13 @@ interface TabItemInternal {
   isPinned: boolean
   workingDir?: string
   status?: ConversationStatus
+  /**
+   * Display title override for tabs opened from a contextual entry point (for
+   * example a delegated sub-agent whose "role" is clearer than the persisted
+   * conversation title). Conversation-bound tabs persist this to `opened_tabs`
+   * so restored/synced clients keep the responsibility label after restart.
+   */
+  titleOverride?: string
   /**
    * Marks `agentType` as a system best-guess that should be replaced once
    * the agent list becomes fresh. True for draft tabs whose default came
@@ -85,7 +97,11 @@ interface TabContextValue {
     conversationId: number,
     agentType: AgentType,
     pin?: boolean,
-    title?: string
+    title?: string,
+    options?: {
+      placement?: "end" | "afterActive"
+      titleOverride?: boolean
+    }
   ) => void
   closeTab: (tabId: string) => void
   closeConversationTab: (
@@ -255,6 +271,11 @@ const TILE_MODE_STORAGE_KEY = "workspace:tile-mode"
  *  suppression, not the user, so nothing about it needs to persist. */
 const TAB_ORIGIN = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 
+function normalizeTabTitleOverride(value: string | null | undefined) {
+  const formatted = formatConversationTitle(value)
+  return formatted || undefined
+}
+
 /** Build the persisted (synced) tab payload: conversation-bound tabs only
  *  (drafts are device-local), `position` = display index, and `is_active` set on
  *  the focused tab so focus mirrors across clients. (A draft- or null-focus
@@ -275,6 +296,7 @@ function buildPersistItems(
       position: i,
       is_active: tab.id === activeTabId,
       is_pinned: tab.isPinned,
+      title_override: normalizeTabTitleOverride(tab.titleOverride) ?? null,
     }))
 }
 
@@ -299,7 +321,18 @@ export function TabProvider({ children }: TabProviderProps) {
   const { rawTabs, activeTabId, previewReplacedTabIds, draftRetargetRequests } =
     tabState
   const [tabsHydrated, setTabsHydrated] = useState(false)
-
+  // Root conversations are already supplied by AppWorkspace for sidebar tabs.
+  // Delegation children, however, are intentionally excluded from that root
+  // list; when a child tab is restored from `opened_tabs` after a process
+  // restart, it would otherwise stay stuck on the hydrate seed title
+  // ("Loading..."). Keep a small per-open-tab summary cache populated from the
+  // detail endpoint so restored child tabs can derive their title/status without
+  // leaking child rows into the sidebar list.
+  const [tabConversationSummaries, setTabConversationSummaries] = useState<
+    Map<number, DbConversationSummary>
+  >(() => new Map())
+  const tabSummaryFetchesRef = useRef<Set<number>>(new Set())
+  const tabSummaryFailuresRef = useRef<Set<number>>(new Set())
   // ── Cross-client open-tab sync (see TAB_ORIGIN / `tabs://changed`) ──────────
   // `versionRef` — last workspace tab version this client has observed/applied;
   //   every save sends it as the CAS `expected_version`.
@@ -537,25 +570,30 @@ export function TabProvider({ children }: TabProviderProps) {
         const snap = await listOpenedTabs()
         if (cancelled) return
         versionRef.current = snap.version
-        const restored: TabItemInternal[] = snap.items.map((it) => ({
-          id:
-            it.conversation_id != null
-              ? makeConversationTabId(
-                  it.folder_id,
-                  it.agent_type,
-                  it.conversation_id
-                )
-              : makeNewConversationTabId(),
-          kind: "conversation",
-          folderId: it.folder_id,
-          conversationId: it.conversation_id,
-          agentType: it.agent_type,
-          title:
-            it.conversation_id != null
-              ? t("loadingConversation")
-              : t("newConversation"),
-          isPinned: it.is_pinned,
-        }))
+        const restored: TabItemInternal[] = snap.items.map((it) => {
+          const titleOverride = normalizeTabTitleOverride(it.title_override)
+          return {
+            id:
+              it.conversation_id != null
+                ? makeConversationTabId(
+                    it.folder_id,
+                    it.agent_type,
+                    it.conversation_id
+                  )
+                : makeNewConversationTabId(),
+            kind: "conversation",
+            folderId: it.folder_id,
+            conversationId: it.conversation_id,
+            agentType: it.agent_type,
+            title:
+              titleOverride ??
+              (it.conversation_id != null
+                ? t("loadingConversation")
+                : t("newConversation")),
+            titleOverride,
+            isPinned: it.is_pinned,
+          }
+        })
         // Focus the synced-active tab; fall back to the first tab when the
         // persisted set has no active marker (e.g. last saved from a draft).
         const activeItem = snap.items.find(
@@ -677,14 +715,85 @@ export function TabProvider({ children }: TabProviderProps) {
     []
   )
 
+  // Hydrated opened tabs can include delegation-child conversations. Those
+  // rows are deliberately absent from AppWorkspace's root-only `conversations`
+  // list, so fetch their summaries directly; otherwise their seed title would
+  // remain "Loading..." forever after an app/process restart.
+  useEffect(() => {
+    if (!tabsHydrated) return
+
+    const openConversationIds = new Set(
+      rawTabs
+        .map((tab) => tab.conversationId)
+        .filter((id): id is number => id != null)
+    )
+
+    if (tabConversationSummaries.size > 0) {
+      setTabConversationSummaries((prev) => {
+        let changed = false
+        const next = new Map<number, DbConversationSummary>()
+        for (const [id, summary] of prev) {
+          if (openConversationIds.has(id)) {
+            next.set(id, summary)
+          } else {
+            changed = true
+          }
+        }
+        return changed ? next : prev
+      })
+    }
+
+    for (const id of Array.from(tabSummaryFailuresRef.current)) {
+      if (!openConversationIds.has(id)) {
+        tabSummaryFailuresRef.current.delete(id)
+      }
+    }
+
+    const rootConversationIds = new Set(conversations.map((c) => c.id))
+    for (const tab of rawTabs) {
+      const id = tab.conversationId
+      if (id == null) continue
+      if (rootConversationIds.has(id)) continue
+      if (tabConversationSummaries.has(id)) continue
+      if (tabSummaryFetchesRef.current.has(id)) continue
+      if (tabSummaryFailuresRef.current.has(id)) continue
+
+      tabSummaryFetchesRef.current.add(id)
+      void getFolderConversation(id)
+        .then((detail) => {
+          setTabConversationSummaries((prev) => {
+            const current = prev.get(id)
+            if (current === detail.summary) return prev
+            const next = new Map(prev)
+            next.set(id, detail.summary)
+            return next
+          })
+        })
+        .catch((err: unknown) => {
+          tabSummaryFailuresRef.current.add(id)
+          console.warn(
+            "[TabProvider] getFolderConversation for opened tab failed:",
+            id,
+            err
+          )
+        })
+        .finally(() => {
+          tabSummaryFetchesRef.current.delete(id)
+        })
+    }
+  }, [tabsHydrated, rawTabs, conversations, tabConversationSummaries])
+
   // Pre-index conversations for O(1) lookup in tabs derivation
   const conversationMap = useMemo(() => {
-    const m = new Map<string, (typeof conversations)[number]>()
+    const m = new Map<string, DbConversationSummary>()
+    for (const c of tabConversationSummaries.values()) {
+      m.set(`${c.folder_id}-${c.agent_type}-${c.id}`, c)
+    }
     for (const c of conversations) {
       m.set(`${c.folder_id}-${c.agent_type}-${c.id}`, c)
     }
     return m
-  }, [conversations])
+  }, [conversations, tabConversationSummaries])
 
   // Derive tabs with up-to-date titles and status from conversations
   const tabs = useMemo(() => {
@@ -695,8 +804,13 @@ export function TabProvider({ children }: TabProviderProps) {
           `${tab.folderId}-${tab.agentType}-${tab.conversationId}`
         )
         if (conv) {
+          const overrideTitle = tab.titleOverride
+            ? formatConversationTitle(tab.titleOverride)
+            : ""
           const newTitle =
-            formatConversationTitle(conv.title) || t("untitledConversation")
+            overrideTitle ||
+            formatConversationTitle(conv.title) ||
+            t("untitledConversation")
           const newStatus = conv.status as ConversationStatus | undefined
           if (tab.title !== newTitle || tab.status !== newStatus) {
             return { ...tab, title: newTitle, status: newStatus }
@@ -713,7 +827,11 @@ export function TabProvider({ children }: TabProviderProps) {
       conversationId: number,
       agentType: AgentType,
       pin = false,
-      title?: string
+      title?: string,
+      options?: {
+        placement?: "end" | "afterActive"
+        titleOverride?: boolean
+      }
     ) => {
       setTabState((prevState) => {
         const existingIndex = findTabIndexForConversation(
@@ -722,14 +840,26 @@ export function TabProvider({ children }: TabProviderProps) {
           agentType,
           conversationId
         )
+        const formattedTitle =
+          title != null
+            ? formatConversationTitle(title) || undefined
+            : undefined
+        const titleOverride = options?.titleOverride
+          ? formattedTitle
+          : undefined
 
         if (existingIndex >= 0) {
           const activateTabId = prevState.rawTabs[existingIndex].id
-          if (pin && !prevState.rawTabs[existingIndex].isPinned) {
+          if (
+            (pin && !prevState.rawTabs[existingIndex].isPinned) ||
+            (titleOverride &&
+              prevState.rawTabs[existingIndex].titleOverride !== titleOverride)
+          ) {
             const updated = [...prevState.rawTabs]
             updated[existingIndex] = {
               ...updated[existingIndex],
-              isPinned: true,
+              ...(pin ? { isPinned: true } : {}),
+              ...(titleOverride ? { title: titleOverride, titleOverride } : {}),
             }
             return {
               ...prevState,
@@ -745,15 +875,16 @@ export function TabProvider({ children }: TabProviderProps) {
         // raw Markdown, before the `tabs` memo re-derives it from the refreshed
         // conversation list.
         const resolvedTitle =
-          formatConversationTitle(
-            title ??
-              conversationsRef.current.find(
-                (c) =>
-                  c.id === conversationId &&
-                  c.agent_type === agentType &&
-                  c.folder_id === folderId
-              )?.title
-          ) || t("untitledConversation")
+          formattedTitle ??
+          (formatConversationTitle(
+            conversationsRef.current.find(
+              (c) =>
+                c.id === conversationId &&
+                c.agent_type === agentType &&
+                c.folder_id === folderId
+            )?.title
+          ) ||
+            t("untitledConversation"))
 
         const tabId = makeConversationTabId(folderId, agentType, conversationId)
         const newTab: TabItemInternal = {
@@ -763,13 +894,28 @@ export function TabProvider({ children }: TabProviderProps) {
           conversationId,
           agentType,
           title: resolvedTitle,
+          titleOverride,
           isPinned: pin,
+        }
+        const insertTab = (items: TabItemInternal[]) => {
+          if (options?.placement !== "afterActive") {
+            return [...items, newTab]
+          }
+          const activeIndex = prevState.activeTabId
+            ? items.findIndex((tab) => tab.id === prevState.activeTabId)
+            : -1
+          if (activeIndex < 0) {
+            return [...items, newTab]
+          }
+          const next = items.slice()
+          next.splice(activeIndex + 1, 0, newTab)
+          return next
         }
 
         if (pin) {
           return {
             ...prevState,
-            rawTabs: [...prevState.rawTabs, newTab],
+            rawTabs: insertTab(prevState.rawTabs),
             activeTabId: tabId,
           }
         }
@@ -792,7 +938,7 @@ export function TabProvider({ children }: TabProviderProps) {
 
         return {
           ...prevState,
-          rawTabs: [...prevState.rawTabs, newTab],
+          rawTabs: insertTab(prevState.rawTabs),
           activeTabId: tabId,
         }
       })
@@ -911,6 +1057,11 @@ export function TabProvider({ children }: TabProviderProps) {
                 tb.folderId === it.folder_id &&
                 tb.agentType === it.agent_type
             )
+          const remoteCarriesTitleOverride =
+            Object.prototype.hasOwnProperty.call(it, "title_override")
+          const titleOverride = remoteCarriesTitleOverride
+            ? normalizeTabTitleOverride(it.title_override)
+            : existing?.titleOverride
           return {
             id: existing?.id ?? canonicalId,
             kind: "conversation",
@@ -919,7 +1070,8 @@ export function TabProvider({ children }: TabProviderProps) {
             agentType: it.agent_type,
             // Title/status are re-derived from `conversations` by the `tabs`
             // memo; carry the live runtime id forward for any tab already open.
-            title: existing?.title ?? t("loadingConversation"),
+            title: titleOverride ?? existing?.title ?? t("loadingConversation"),
+            titleOverride,
             isPinned: it.is_pinned,
             runtimeConversationId: existing?.runtimeConversationId,
             status: existing?.status,

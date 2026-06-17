@@ -2479,6 +2479,7 @@ mod tests {
             position: 0,
             is_active: false,
             is_pinned: true,
+            title_override: None,
         }
     }
 
@@ -2495,8 +2496,10 @@ mod tests {
         let (broadcaster, emitter) = sync_test_emitter();
         let mut rx = broadcaster.subscribe();
 
+        let mut delegated_tab = conv_tab(folder_id, c1, AgentType::ClaudeCode);
+        delegated_tab.title_override = Some("Backend verifier".to_string());
         let items = vec![
-            conv_tab(folder_id, c1, AgentType::ClaudeCode),
+            delegated_tab,
             conv_tab(folder_id, c2, AgentType::Codex),
             // A draft (conversation_id == None) — must NOT persist.
             OpenedTab {
@@ -2507,6 +2510,7 @@ mod tests {
                 position: 2,
                 is_active: true,
                 is_pinned: true,
+                title_override: None,
             },
         ];
         let outcome = save_opened_tabs_core(&db.conn, &emitter, items, 0, "win-a".into())
@@ -2521,10 +2525,15 @@ mod tests {
         assert_eq!(evt.payload["version"], 1);
         assert_eq!(evt.payload["origin"], "win-a");
         assert_eq!(evt.payload["tabs"].as_array().unwrap().len(), 2);
+        assert_eq!(evt.payload["tabs"][0]["title_override"], "Backend verifier");
 
         let snap = list_opened_tabs_core(&db.conn).await.expect("list");
         assert_eq!(snap.items.len(), 2);
         assert_eq!(snap.version, 1);
+        assert_eq!(
+            snap.items[0].title_override.as_deref(),
+            Some("Backend verifier")
+        );
     }
 
     #[tokio::test]

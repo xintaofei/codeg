@@ -1180,7 +1180,10 @@
       "closeOthers": "Fechar outros",
       "closeAll": "Fechar tudo",
       "tileDisplay": "Exibição em mosaico",
-      "untileDisplay": "Sair do mosaico"
+      "untileDisplay": "Sair do mosaico",
+      "viewToggle": "Visualização",
+      "tileAllTabs": "Mostrar todas as abas lado a lado",
+      "showCurrentTabOnly": "Mostrar apenas a aba atual"
     },
     "fileWorkspace": {
       "files": "Arquivos",
@@ -2061,7 +2064,9 @@
             "child_unknown": "subagente: erro",
             "unknown": "tarefa desconhecida"
           }
-        }
+        },
+        "openInTab": "Abrir em aba",
+        "openInTabFailed": "Falha ao abrir a aba da conversa"
       },
       "contentParts": {
         "showingTailOutput": "Mostrando a saída final durante o streaming para melhor desempenho.",

@@ -1180,7 +1180,10 @@
       "closeOthers": "Close Others",
       "closeAll": "Close All",
       "tileDisplay": "Tile Display",
-      "untileDisplay": "Exit Tile"
+      "untileDisplay": "Exit Tile",
+      "viewToggle": "View",
+      "tileAllTabs": "Tile all tabs",
+      "showCurrentTabOnly": "Show current tab only"
     },
     "fileWorkspace": {
       "files": "Files",
@@ -2061,7 +2064,9 @@
             "child_unknown": "subagent unknown error",
             "unknown": "unknown task"
           }
-        }
+        },
+        "openInTab": "Open in tab",
+        "openInTabFailed": "Failed to open conversation tab"
       },
       "contentParts": {
         "showingTailOutput": "Showing tail output while streaming for performance.",

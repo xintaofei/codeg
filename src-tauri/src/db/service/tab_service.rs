@@ -68,6 +68,7 @@ pub async fn list_all_tabs<C: ConnectionTrait>(conn: &C) -> Result<Vec<OpenedTab
                 position: r.position,
                 is_active: r.is_active,
                 is_pinned: r.is_pinned,
+                title_override: r.title_override,
             })
         })
         .collect())
@@ -121,6 +122,12 @@ pub async fn save_all_tabs<C: ConnectionTrait>(
         } else {
             false
         };
+        let title_override = item
+            .title_override
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned);
 
         let active = opened_tab::ActiveModel {
             id: NotSet,
@@ -130,6 +137,7 @@ pub async fn save_all_tabs<C: ConnectionTrait>(
             position: Set(item.position),
             is_active: Set(is_active),
             is_pinned: Set(item.is_pinned),
+            title_override: Set(title_override),
             created_at: Set(now),
             updated_at: Set(now),
         };

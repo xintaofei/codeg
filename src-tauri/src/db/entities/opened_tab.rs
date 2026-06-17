@@ -11,6 +11,7 @@ pub struct Model {
     pub position: i32,
     pub is_active: bool,
     pub is_pinned: bool,
+    pub title_override: Option<String>,
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
 }
