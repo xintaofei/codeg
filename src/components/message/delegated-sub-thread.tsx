@@ -19,8 +19,9 @@
  */
 
 import { useState } from "react"
-import { Eye } from "lucide-react"
+import { Eye, PanelRight } from "lucide-react"
 import { useTranslations } from "next-intl"
+import { toast } from "sonner"
 
 import { AgentIcon } from "@/components/agent-icon"
 import { AGENT_LABELS } from "@/lib/types"
@@ -28,6 +29,7 @@ import type { ToolCallState } from "@/lib/adapters/ai-elements-adapter"
 import { StatusBadge } from "@/components/message/delegation-status-badge"
 import { SubAgentSessionDialog } from "@/components/message/sub-agent-session-dialog"
 import { useDelegationCardModel } from "@/hooks/use-delegation-card-model"
+import { useOpenConversationTab } from "@/hooks/use-open-conversation-tab"
 
 interface Props {
   parentToolUseId: string
@@ -77,12 +79,21 @@ export function DelegatedSubThread({
     state,
     meta,
   })
+  const openConversationTab = useOpenConversationTab()
 
   // A snapshot replay with an empty/unparseable input AND no live binding has
   // no useful card to draw — fall through to the standard renderer instead of
   // an "unknown sub-agent" stub. Placed AFTER all hooks so hook order is stable.
   if (!hasModel) {
     return null
+  }
+
+  const handleOpenTab = () => {
+    if (childConversationId == null) return
+    openConversationTab(childConversationId, { title: task }).catch((err) => {
+      console.error("[DelegatedSubThread] open conversation tab failed:", err)
+      toast.error(t("openInTabFailed"))
+    })
   }
 
   return (
@@ -122,18 +133,32 @@ export function DelegatedSubThread({
           </div>
         </div>
         {childConversationId != null && (
-          <button
-            type="button"
-            onClick={() => setDialogOpen(true)}
-            className="shrink-0 flex items-center gap-1.5 px-3 border-l border-border text-xs font-medium text-foreground/80 hover:bg-muted/60 hover:text-foreground transition-colors"
-            title={t("openDetail")}
-            aria-label={t("openDetail")}
-          >
-            <Eye className="h-3.5 w-3.5" />
-            <span className="hidden @[24rem]/delegcard:inline">
-              {t("openDetail")}
-            </span>
-          </button>
+          <div className="shrink-0 flex border-l border-border">
+            <button
+              type="button"
+              onClick={() => setDialogOpen(true)}
+              className="flex items-center gap-1.5 px-3 text-xs font-medium text-foreground/80 transition-colors hover:bg-muted/60 hover:text-foreground"
+              title={t("openDetail")}
+              aria-label={t("openDetail")}
+            >
+              <Eye className="h-3.5 w-3.5" />
+              <span className="hidden @[24rem]/delegcard:inline">
+                {t("openDetail")}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={handleOpenTab}
+              className="flex items-center gap-1.5 border-l border-border px-3 text-xs font-medium text-foreground/80 transition-colors hover:bg-muted/60 hover:text-foreground"
+              title={t("openInTab")}
+              aria-label={t("openInTab")}
+            >
+              <PanelRight className="h-3.5 w-3.5" />
+              <span className="hidden @[30rem]/delegcard:inline">
+                {t("openInTab")}
+              </span>
+            </button>
+          </div>
         )}
       </div>
       {childConversationId != null && (

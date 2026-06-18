@@ -23,9 +23,12 @@
 
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react"
 import { useTranslations } from "next-intl"
+import { PanelRight } from "lucide-react"
+import { toast } from "sonner"
 
 import { AgentIcon } from "@/components/agent-icon"
 import { MessageListView } from "@/components/message/message-list-view"
+import { Button } from "@/components/ui/button"
 import {
   Dialog,
   DialogContent,
@@ -41,6 +44,7 @@ import {
 } from "@/contexts/acp-connections-context"
 import { PermissionDialog } from "@/components/chat/permission-dialog"
 import { AGENT_LABELS, type AgentType } from "@/lib/types"
+import { useOpenConversationTab } from "@/hooks/use-open-conversation-tab"
 
 interface Props {
   open: boolean
@@ -249,6 +253,7 @@ export function SubAgentSessionDialog({
             childConnectionId={childConnectionId}
             agentType={agentType}
             kickoffTask={kickoffTask}
+            onRequestClose={() => onOpenChange(false)}
           />
         ) : null}
       </DialogContent>
@@ -261,11 +266,13 @@ function SubAgentSessionBody({
   childConnectionId,
   agentType,
   kickoffTask,
+  onRequestClose,
 }: {
   childConversationId: number
   childConnectionId: string | null
   agentType: AgentType | null
   kickoffTask?: string | null
+  onRequestClose: () => void
 }) {
   const t = useTranslations("Folder.chat.delegation")
 
@@ -274,6 +281,18 @@ function SubAgentSessionBody({
   const isChildStreaming = connStatus === "prompting"
 
   const { refetchDetail, setLiveOwnsActiveTurn } = useConversationRuntime()
+  const openConversationTab = useOpenConversationTab()
+  const handleOpenTab = useCallback(() => {
+    openConversationTab(childConversationId, { title: kickoffTask })
+      .then(() => onRequestClose())
+      .catch((err) => {
+        console.error(
+          "[SubAgentSessionDialog] open conversation tab failed:",
+          err
+        )
+        toast.error(t("openInTabFailed"))
+      })
+  }, [childConversationId, kickoffTask, onRequestClose, openConversationTab, t])
 
   // Enter delegation-child viewer mode: mark the session live-owned and record
   // the known kickoff task. `getTimelineTurns` then (a) synthesizes the kickoff
@@ -336,6 +355,17 @@ function SubAgentSessionBody({
         <span className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">
           {agentType ? AGENT_LABELS[agentType] : t("unknownAgent")}
         </span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          onClick={handleOpenTab}
+          className="shrink-0 gap-1.5"
+          title={t("openInTab")}
+        >
+          <PanelRight className="h-3.5 w-3.5" />
+          <span>{t("openInTab")}</span>
+        </Button>
       </div>
       {childPendingPermission && (
         <div className="border-b border-border px-4 py-3">

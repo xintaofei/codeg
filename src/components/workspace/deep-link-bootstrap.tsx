@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef } from "react"
 import { toast } from "sonner"
 import { useAppWorkspace } from "@/contexts/app-workspace-context"
 import { useTabContext } from "@/contexts/tab-context"
+import { listAllConversations } from "@/lib/api"
 import type { AgentType } from "@/lib/types"
 
 /**
@@ -60,18 +61,36 @@ export function DeepLinkBootstrap() {
           }
         }
 
-        const hasConv = conversations.some(
-          (c) =>
-            c.id === conversationId &&
-            c.folder_id === folderId &&
-            c.agent_type === rawAgent
-        )
-        if (!hasConv) {
+        const linkedConversation =
+          conversations.find(
+            (c) =>
+              c.id === conversationId &&
+              c.folder_id === folderId &&
+              c.agent_type === rawAgent
+          ) ??
+          (
+            await listAllConversations({
+              folder_ids: [folderId],
+              include_children: true,
+            })
+          ).find(
+            (c) =>
+              c.id === conversationId &&
+              c.folder_id === folderId &&
+              c.agent_type === rawAgent
+          )
+        if (!linkedConversation) {
           toast.error("Linked conversation not found")
           return
         }
 
-        openTab(folderId, conversationId, rawAgent, true)
+        openTab(
+          folderId,
+          conversationId,
+          rawAgent,
+          true,
+          linkedConversation.title ?? undefined
+        )
       } finally {
         clearUrl()
       }

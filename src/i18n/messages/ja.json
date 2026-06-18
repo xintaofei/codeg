@@ -1180,7 +1180,10 @@
       "closeOthers": "他を閉じる",
       "closeAll": "すべて閉じる",
       "tileDisplay": "タイル表示",
-      "untileDisplay": "タイル解除"
+      "untileDisplay": "タイル解除",
+      "viewToggle": "表示",
+      "tileAllTabs": "すべてのタブを並べて表示",
+      "showCurrentTabOnly": "現在のタブのみ表示"
     },
     "fileWorkspace": {
       "files": "ファイル",
@@ -2065,7 +2068,9 @@
             "child_unknown": "サブエージェント: エラー",
             "unknown": "不明なタスク"
           }
-        }
+        },
+        "openInTab": "タブで開く",
+        "openInTabFailed": "会話タブを開けませんでした"
       },
       "contentParts": {
         "showingTailOutput": "パフォーマンスのため、ストリーミング中は末尾出力を表示しています。",

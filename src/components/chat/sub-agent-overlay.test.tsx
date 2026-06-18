@@ -29,6 +29,12 @@ vi.mock("@/contexts/acp-connections-context", async () => {
   }
 })
 
+const mockOpenConversationTab = vi.fn(() => Promise.resolve())
+
+vi.mock("@/hooks/use-open-conversation-tab", () => ({
+  useOpenConversationTab: () => mockOpenConversationTab,
+}))
+
 // SubAgentSessionDialog pulls in MessageListView + the runtime provider tree.
 // Stub it to a sentinel exposing the open state + target conversation id.
 vi.mock("@/components/message/sub-agent-session-dialog", () => ({
@@ -84,6 +90,8 @@ function source(
 describe("SubAgentOverlay", () => {
   beforeEach(() => {
     bindings = {}
+    mockOpenConversationTab.mockReset()
+    mockOpenConversationTab.mockResolvedValue(undefined)
     mockedHook.mockReset()
     mockedHook.mockImplementation((id: string) => ({
       binding: bindings[id],

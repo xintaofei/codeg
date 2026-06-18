@@ -1180,7 +1180,10 @@
       "closeOthers": "إغلاق البقية",
       "closeAll": "إغلاق الكل",
       "tileDisplay": "عرض متجانب",
-      "untileDisplay": "إلغاء التجانب"
+      "untileDisplay": "إلغاء التجانب",
+      "viewToggle": "العرض",
+      "tileAllTabs": "عرض كل علامات التبويب جنبًا إلى جنب",
+      "showCurrentTabOnly": "عرض علامة التبويب الحالية فقط"
     },
     "fileWorkspace": {
       "files": "الملفات",
@@ -2065,7 +2068,9 @@
             "child_unknown": "الوكيل الفرعي: خطأ",
             "unknown": "مهمة غير معروفة"
           }
-        }
+        },
+        "openInTab": "فتح في تبويب",
+        "openInTabFailed": "تعذر فتح تبويب المحادثة"
       },
       "contentParts": {
         "showingTailOutput": "يتم عرض نهاية المخرجات أثناء البث لتحسين الأداء.",

@@ -1180,7 +1180,10 @@
       "closeOthers": "Cerrar otros",
       "closeAll": "Cerrar todo",
       "tileDisplay": "Vista en mosaico",
-      "untileDisplay": "Salir de mosaico"
+      "untileDisplay": "Salir de mosaico",
+      "viewToggle": "Vista",
+      "tileAllTabs": "Mostrar todas las pestañas en paralelo",
+      "showCurrentTabOnly": "Mostrar solo la pestaña actual"
     },
     "fileWorkspace": {
       "files": "Archivos",
@@ -2065,7 +2068,9 @@
             "child_unknown": "subagente: error",
             "unknown": "tarea desconocida"
           }
-        }
+        },
+        "openInTab": "Abrir en pestaña",
+        "openInTabFailed": "No se pudo abrir la pestaña de conversación"
       },
       "contentParts": {
         "showingTailOutput": "Mostrando la salida final durante el streaming para mejorar el rendimiento.",

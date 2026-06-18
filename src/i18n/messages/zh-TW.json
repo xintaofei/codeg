@@ -1180,7 +1180,10 @@
       "closeOthers": "關閉其它",
       "closeAll": "關閉所有",
       "tileDisplay": "平鋪顯示",
-      "untileDisplay": "取消平鋪"
+      "untileDisplay": "取消平鋪",
+      "viewToggle": "視圖",
+      "tileAllTabs": "並列顯示所有標籤頁",
+      "showCurrentTabOnly": "只顯示目前標籤頁"
     },
     "fileWorkspace": {
       "files": "檔案",
@@ -2065,7 +2068,9 @@
             "child_unknown": "子代理未知錯誤",
             "unknown": "未知任務"
           }
-        }
+        },
+        "openInTab": "新標籤頁",
+        "openInTabFailed": "開啟會話標籤頁失敗"
       },
       "contentParts": {
         "showingTailOutput": "為確保效能，串流輸出時僅顯示尾端內容。",

@@ -1180,7 +1180,10 @@
       "closeOthers": "다른 항목 닫기",
       "closeAll": "모두 닫기",
       "tileDisplay": "타일 표시",
-      "untileDisplay": "타일 해제"
+      "untileDisplay": "타일 해제",
+      "viewToggle": "보기",
+      "tileAllTabs": "모든 탭 나란히 표시",
+      "showCurrentTabOnly": "현재 탭만 표시"
     },
     "fileWorkspace": {
       "files": "파일",
@@ -2065,7 +2068,9 @@
             "child_unknown": "서브에이전트: 오류",
             "unknown": "알 수 없는 작업"
           }
-        }
+        },
+        "openInTab": "탭에서 열기",
+        "openInTabFailed": "대화 탭을 열지 못했습니다"
       },
       "contentParts": {
         "showingTailOutput": "성능을 위해 스트리밍 중에는 출력의 끝부분만 표시합니다.",

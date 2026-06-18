@@ -1180,7 +1180,10 @@
       "closeOthers": "关闭其它",
       "closeAll": "关闭所有",
       "tileDisplay": "平铺显示",
-      "untileDisplay": "取消平铺"
+      "untileDisplay": "取消平铺",
+      "viewToggle": "视图",
+      "tileAllTabs": "并列显示所有标签页",
+      "showCurrentTabOnly": "只显示当前标签页"
     },
     "fileWorkspace": {
       "files": "文件",
@@ -2065,7 +2068,9 @@
             "child_unknown": "子代理未知错误",
             "unknown": "未知任务"
           }
-        }
+        },
+        "openInTab": "新标签页",
+        "openInTabFailed": "打开会话标签页失败"
       },
       "contentParts": {
         "showingTailOutput": "为保证性能，流式输出时仅显示尾部内容。",

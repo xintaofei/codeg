@@ -4,8 +4,8 @@
   "version": "0.15.14",
   "identifier": "app.codeg",
   "build": {
-    "beforeDevCommand": "pnpm tauri:before-dev",
-    "devUrl": "http://localhost:3000",
+    "beforeDevCommand": "pnpm tauri:prepare-sidecars && pnpm exec next dev --turbopack -p 4000",
+    "devUrl": "http://localhost:4000",
     "beforeBuildCommand": "pnpm tauri:before-build",
     "frontendDist": "../out"
   },

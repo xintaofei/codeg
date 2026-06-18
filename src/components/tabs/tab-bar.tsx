@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Reorder } from "motion/react"
+import { Columns3, PanelTop } from "lucide-react"
+import { useTranslations } from "next-intl"
 import { useAppWorkspace } from "@/contexts/app-workspace-context"
 import { useTabContext } from "@/contexts/tab-context"
 import type { TabItem as TabItemData } from "@/contexts/tab-context"
@@ -9,10 +11,12 @@ import { useWorkspaceContext } from "@/contexts/workspace-context"
 import { useIsCoarsePointer } from "@/hooks/use-is-coarse-pointer"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { matchShortcutEvent } from "@/lib/keyboard-shortcuts"
+import { Button } from "@/components/ui/button"
 import { TabItem } from "./tab-item"
 import { cn } from "@/lib/utils"
 
 export function TabBar() {
+  const t = useTranslations("Folder.tabs")
   const {
     tabs,
     activeTabId,
@@ -111,57 +115,84 @@ export function TabBar() {
     () => setTouchSortingTabId(null),
     []
   )
+  const viewToggleLabel = isTileMode
+    ? t("showCurrentTabOnly")
+    : t("tileAllTabs")
 
   if (tabs.length === 0) return null
 
   return (
-    <Reorder.Group
-      as="div"
-      ref={scrollRef}
-      role="tablist"
-      axis="x"
-      values={tabs}
-      onReorder={handleReorder}
-      onWheel={handleWheel}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      className={cn(
-        "h-10 pt-1.5 px-1.5 flex items-stretch gap-1.5 border-b border-border",
-        "overflow-x-scroll",
-        isHovered
-          ? [
-              "pb-0.5",
-              "[&::-webkit-scrollbar]:h-1",
-              "[&::-webkit-scrollbar-track]:bg-transparent",
-              "[&::-webkit-scrollbar-thumb]:rounded-full",
-              "[&::-webkit-scrollbar-thumb]:bg-border",
-            ]
-          : ["pb-1.5", "[&::-webkit-scrollbar]:h-0"]
-      )}
-    >
-      {tabs.map((tab) => {
-        const folderInfo = folderIndex.get(tab.folderId)
-        return (
-          <TabItem
-            key={tab.id}
-            tab={tab}
-            isActive={tab.id === activeTabId}
-            isTileMode={isTileMode}
-            folderName={folderInfo?.name ?? null}
-            folderBranch={branches.get(tab.folderId) ?? null}
-            onSwitch={switchTab}
-            onClose={closeTab}
-            onCloseOthers={closeOtherTabs}
-            onCloseAll={closeAllTabs}
-            onPin={pinTab}
-            onToggleTile={toggleTileMode}
-            isCoarsePointer={isCoarsePointer}
-            isTouchSorting={touchSortingTabId === tab.id}
-            onTouchSortingStart={setTouchSortingTabId}
-            onTouchSortingEnd={handleTouchSortingEnd}
-          />
-        )
-      })}
-    </Reorder.Group>
+    <div className="flex h-10 items-stretch border-b border-border">
+      <Reorder.Group
+        as="div"
+        ref={scrollRef}
+        role="tablist"
+        axis="x"
+        values={tabs}
+        onReorder={handleReorder}
+        onWheel={handleWheel}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+        className={cn(
+          "min-w-0 flex-1 pt-1.5 px-1.5 flex items-stretch gap-1.5",
+          "overflow-x-scroll",
+          isHovered
+            ? [
+                "pb-0.5",
+                "[&::-webkit-scrollbar]:h-1",
+                "[&::-webkit-scrollbar-track]:bg-transparent",
+                "[&::-webkit-scrollbar-thumb]:rounded-full",
+                "[&::-webkit-scrollbar-thumb]:bg-border",
+              ]
+            : ["pb-1.5", "[&::-webkit-scrollbar]:h-0"]
+        )}
+      >
+        {tabs.map((tab) => {
+          const folderInfo = folderIndex.get(tab.folderId)
+          return (
+            <TabItem
+              key={tab.id}
+              tab={tab}
+              isActive={tab.id === activeTabId}
+              isTileMode={isTileMode}
+              folderName={folderInfo?.name ?? null}
+              folderBranch={branches.get(tab.folderId) ?? null}
+              onSwitch={switchTab}
+              onClose={closeTab}
+              onCloseOthers={closeOtherTabs}
+              onCloseAll={closeAllTabs}
+              onPin={pinTab}
+              onToggleTile={toggleTileMode}
+              isCoarsePointer={isCoarsePointer}
+              isTouchSorting={touchSortingTabId === tab.id}
+              onTouchSortingStart={setTouchSortingTabId}
+              onTouchSortingEnd={handleTouchSortingEnd}
+            />
+          )
+        })}
+      </Reorder.Group>
+      <div className="flex shrink-0 items-center border-l border-border/60 px-1.5">
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          aria-pressed={isTileMode}
+          aria-label={viewToggleLabel}
+          title={viewToggleLabel}
+          onClick={toggleTileMode}
+          className={cn(
+            "h-7 rounded-full px-2 text-xs",
+            isTileMode && "bg-primary/10 text-foreground"
+          )}
+        >
+          {isTileMode ? (
+            <PanelTop className="h-3.5 w-3.5" />
+          ) : (
+            <Columns3 className="h-3.5 w-3.5" />
+          )}
+          <span>{t("viewToggle")}</span>
+        </Button>
+      </div>
+    </div>
   )
 }

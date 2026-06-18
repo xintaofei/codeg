@@ -1180,7 +1180,10 @@
       "closeOthers": "Fermer les autres",
       "closeAll": "Tout fermer",
       "tileDisplay": "Affichage en mosaïque",
-      "untileDisplay": "Quitter la mosaïque"
+      "untileDisplay": "Quitter la mosaïque",
+      "viewToggle": "Affichage",
+      "tileAllTabs": "Afficher tous les onglets côte à côte",
+      "showCurrentTabOnly": "Afficher seulement l’onglet actuel"
     },
     "fileWorkspace": {
       "files": "Fichiers",
@@ -2065,7 +2068,9 @@
             "child_unknown": "sous-agent : erreur",
             "unknown": "tâche inconnue"
           }
-        }
+        },
+        "openInTab": "Ouvrir dans un onglet",
+        "openInTabFailed": "Impossible d’ouvrir l’onglet de conversation"
       },
       "contentParts": {
         "showingTailOutput": "Affichage de la fin de la sortie pendant le streaming pour de meilleures performances.",
