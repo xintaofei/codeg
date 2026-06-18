@@ -846,7 +846,13 @@
     "restartRequired": "Gespeichert. Starten Sie die App neu, damit die Änderung wirksam wird.",
     "restartNow": "Jetzt neu starten",
     "restartFailed": "Neustart fehlgeschlagen: {message}",
-    "loadFailed": "Laden fehlgeschlagen: {message}"
+    "loadFailed": "Laden fehlgeschlagen: {message}",
+    "workspaceLayoutTitle": "Arbeitsbereich-Layout",
+    "workspaceLayoutDescription": "Wählen Sie, wie der Arbeitsbereich Konversationen und Dateien anzeigt, wenn Datei-Tabs geöffnet sind.",
+    "workspaceLayoutFiles": "Dateien",
+    "workspaceLayoutFilesHint": "Einzelansicht: zwischen Konversation und Dateien wechseln",
+    "workspaceLayoutFusion": "Hybrid",
+    "workspaceLayoutFusionHint": "Geteilte Ansicht: Konversation und Dateien nebeneinander"
   },
   "LoginPage": {
     "documentTitle": "Anmelden - codeg",

@@ -846,7 +846,13 @@
     "restartRequired": "تم الحفظ. أعد تشغيل التطبيق ليصبح التغيير نافذًا.",
     "restartNow": "إعادة التشغيل الآن",
     "restartFailed": "فشل إعادة التشغيل: {message}",
-    "loadFailed": "فشل التحميل: {message}"
+    "loadFailed": "فشل التحميل: {message}",
+    "workspaceLayoutTitle": "تخطيط مساحة العمل",
+    "workspaceLayoutDescription": "اختر كيفية عرض مساحة العمل للمحادثات والملفات عند فتح علامات تبويب الملفات.",
+    "workspaceLayoutFiles": "ملفات",
+    "workspaceLayoutFilesHint": "عرض واحد: التبديل بين المحادثة والملفات",
+    "workspaceLayoutFusion": "هجين",
+    "workspaceLayoutFusionHint": "عرض مقسم: المحادثة والملفات جنبًا إلى جنب"
   },
   "LoginPage": {
     "documentTitle": "تسجيل الدخول - codeg",
