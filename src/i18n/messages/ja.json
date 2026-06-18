@@ -1574,6 +1574,8 @@
     "fileTreeTab": {
       "workspace": "ワークスペース",
       "retry": "再試行",
+      "filterPlaceholder": "ファイルを絞り込み...",
+      "filterNoResults": "一致するファイルはありません",
       "git": "Git",
       "openInFileManager": "ファイルマネージャーで開く",
       "openInFinder": "Finderで開く",
