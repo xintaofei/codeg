@@ -279,14 +279,25 @@ async fn build_agent(
             // `src/contexts/acp-connections-context.tsx` to surface a
             // localized install prompt. Do not change the wording.
             let (binary_path, cached_version) =
-                crate::acp::binary_cache::find_best_cached_binary_for_agent(agent_type, cmd)?
-                    .ok_or_else(|| {
-                        AcpError::SdkNotInstalled(format!(
-                            "{} is not installed. Please install it in Agent Settings.",
-                            meta.name
-                        ))
-                    })?;
-            if cached_version == registry_version {
+                match crate::acp::binary_cache::find_best_cached_binary_for_agent(agent_type, cmd)?
+                {
+                    Some(cached) => cached,
+                    None => {
+                        let path = crate::acp::binary_cache::resolve_system_binary_for_agent(
+                            agent_type, cmd,
+                        )
+                        .ok_or_else(|| {
+                            AcpError::SdkNotInstalled(format!(
+                                "{} is not installed. Please install it in Agent Settings.",
+                                meta.name
+                            ))
+                        })?;
+                        (path, "system".to_string())
+                    }
+                };
+            if cached_version == "system" {
+                eprintln!("[ACP][{}] Using system binary {}", meta.name, binary_path.display());
+            } else if cached_version == registry_version {
                 eprintln!("[ACP][{}] Using cached binary {cached_version}", meta.name);
             } else {
                 eprintln!(

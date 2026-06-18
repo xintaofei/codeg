@@ -1340,6 +1340,10 @@ export interface AcpAgentInfo {
   enabled: boolean
   sort_order: number
   installed_version: string | null
+  /** Upstream/original CLI detected on PATH; informational only. */
+  base_cli_version?: string | null
+  base_cli_command?: string | null
+  base_cli_package?: string | null
   env: Record<string, string>
   config_json: string | null
   config_file_path: string | null
@@ -1358,6 +1362,10 @@ export interface AcpAgentStatus {
   available: boolean
   enabled: boolean
   installed_version: string | null
+  /** Upstream/original CLI detected on PATH; informational only. */
+  base_cli_version?: string | null
+  base_cli_command?: string | null
+  base_cli_package?: string | null
 }
 
 export type AgentSkillScope = "global" | "project"

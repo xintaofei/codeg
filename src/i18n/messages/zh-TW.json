@@ -794,7 +794,8 @@
       "localUnrecognized": "{versionText}。本地版本無法識別，可嘗試升級覆蓋安裝。",
       "upgradeAvailable": "{versionText}。發現可升級版本。",
       "remoteUnavailable": "{versionText}。遠端版本暫不可用。",
-      "latest": "{versionText}。已是最新版本。"
+      "latest": "{versionText}。已是最新版本。",
+      "baseCliDetected": "{versionText}。已偵測到上游 CLI {command} {version}，但 ACP 轉接器尚未安裝。請點擊安裝來安裝轉接器。"
     },
     "cline": {
       "configDescription": "配置 Cline API 提供商和憑證。設定將儲存到 ~/.cline/data/。"
@@ -1765,6 +1766,7 @@
           "missingConfig": "無法讀取目前 Agent 設定。",
           "disabled": "{agent} 已在 Agents 管理中停用，請先啟用後再連線。",
           "unavailable": "{agent} 目前平台不可用。",
+          "adapterMissingWithBaseCli": "已偵測到上游 CLI {command} {version}，但 {agent} ACP 轉接器尚未安裝。",
           "sdkMissing": "{agent} SDK 尚未安裝"
         },
         "backendErrors": {

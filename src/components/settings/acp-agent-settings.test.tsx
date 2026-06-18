@@ -21,6 +21,9 @@ function makeAgent(overrides: Partial<AcpAgentInfo>): AcpAgentInfo {
     enabled: true,
     sort_order: 0,
     installed_version: null,
+    base_cli_version: null,
+    base_cli_command: null,
+    base_cli_package: null,
     env: {},
     config_json: null,
     config_file_path: null,
@@ -133,6 +136,25 @@ describe("buildVersionCheck", () => {
     expect(check?.status).toBe("fail")
     expect(check?.fixes).toHaveLength(0)
   })
+
+  it("warns instead of failing when only the upstream CLI is detected", () => {
+    const check = buildVersionCheck(
+      makeAgent({
+        agent_type: "codex" as AgentType,
+        distribution_type: "binary",
+        installed_version: null,
+        base_cli_version: "0.128.0",
+        base_cli_command: "codex",
+        base_cli_package: "@openai/codex",
+      })
+    )
+
+    expect(check?.status).toBe("warn")
+    expect(check?.message).toContain("codex 0.128.0")
+    expect(check?.fixes.some((fix) => fix.kind === "download_binary")).toBe(
+      true
+    )
+  })
 })
 
 describe("getAgentChecks uv gating", () => {
@@ -147,6 +169,22 @@ describe("getAgentChecks uv gating", () => {
           label: "uv",
           status: "fail",
           message: "uv is not installed",
+          fixes: [{ label: "Install uv", kind: "install_uv", payload: "" }],
+        },
+      ],
+    },
+  }
+  const systemCliPreflight: { result: PreflightResult } = {
+    result: {
+      agent_type: "hermes" as AgentType,
+      agent_name: "Hermes Agent",
+      passed: true,
+      checks: [
+        {
+          check_id: "uv_available",
+          label: "uv",
+          status: "warn",
+          message: "uv not found; will launch via the system `hermes` command",
           fixes: [{ label: "Install uv", kind: "install_uv", payload: "" }],
         },
       ],
@@ -191,6 +229,22 @@ describe("getAgentChecks uv gating", () => {
     )
     expect(installFix).toBeDefined()
     expect(fixDisabled(installFix!)).toBe(false)
+  })
+
+  it("does not block when uv is missing but a system uvx-agent CLI is launchable", () => {
+    const checks = getAgentChecks(
+      makeAgent({
+        distribution_type: "uvx",
+        available: true,
+        installed_version: "unknown",
+      }),
+      systemCliPreflight
+    )
+
+    const versionCheck = checks.find((c) => c.check_id === "version_status")
+    expect(versionCheck?.status).toBe("warn")
+    expect(versionCheck?.fixes.some((fix) => fixDisabled(fix))).toBe(false)
+    expect(versionCheck?.message).toContain("unknown")
   })
 })
 

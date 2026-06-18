@@ -794,7 +794,8 @@
       "localUnrecognized": "{versionText}. الإصدار المحلي غير قابل للمقارنة؛ جرّب الترقية للكتابة فوق التثبيت.",
       "upgradeAvailable": "{versionText}. تتوفر ترقية.",
       "remoteUnavailable": "{versionText}. الإصدار البعيد غير متاح حاليًا.",
-      "latest": "{versionText}. أنت على أحدث إصدار."
+      "latest": "{versionText}. أنت على أحدث إصدار.",
+      "baseCliDetected": "{versionText}. تم اكتشاف CLI الأصلي {command} {version}، لكن محوّل ACP غير مثبت بعد. انقر على تثبيت لتثبيت المحوّل."
     },
     "cline": {
       "configDescription": "تكوين مزود واجهة برمجة التطبيقات وبيانات اعتماد Cline. يتم حفظ الإعدادات في ~/.cline/data/."
@@ -1765,6 +1766,7 @@
           "missingConfig": "تعذر قراءة إعدادات الوكيل الحالية.",
           "disabled": "{agent} معطّل في إعدادات الوكلاء. قم بتمكينه قبل الاتصال.",
           "unavailable": "{agent} غير متاح على المنصة الحالية.",
+          "adapterMissingWithBaseCli": "تم اكتشاف واجهة CLI الأصلية {command} {version}، لكن محوّل ACP لـ {agent} غير مثبت بعد.",
           "sdkMissing": "لم يتم تثبيت SDK الخاص بـ {agent}"
         },
         "backendErrors": {

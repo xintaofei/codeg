@@ -794,7 +794,8 @@
       "localUnrecognized": "{versionText}. La version locale n’est pas comparable ; essayez une mise à niveau pour écraser l’installation.",
       "upgradeAvailable": "{versionText}. Mise à niveau disponible.",
       "remoteUnavailable": "{versionText}. La version distante est actuellement indisponible.",
-      "latest": "{versionText}. Déjà à jour."
+      "latest": "{versionText}. Déjà à jour.",
+      "baseCliDetected": "{versionText}. La CLI amont {command} {version} a été détectée, mais l’adaptateur ACP n’est pas encore installé. Cliquez sur Installer pour l’installer."
     },
     "cline": {
       "configDescription": "Configurez le fournisseur API et les identifiants Cline. Les paramètres sont enregistrés dans ~/.cline/data/."
@@ -1765,6 +1766,7 @@
           "missingConfig": "Impossible de lire la configuration actuelle de l'agent.",
           "disabled": "{agent} est désactivé dans les paramètres des agents. Activez-le avant de vous connecter.",
           "unavailable": "{agent} n'est pas disponible sur la plateforme actuelle.",
+          "adapterMissingWithBaseCli": "CLI amont {command} {version} détectée, mais l’adaptateur ACP de {agent} n’est pas encore installé.",
           "sdkMissing": "Le SDK de {agent} n'est pas installé"
         },
         "backendErrors": {

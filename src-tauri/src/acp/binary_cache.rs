@@ -347,6 +347,35 @@ pub fn detect_installed_version(
     installed_version_for_agent(agent_type, cmd_name)
 }
 
+/// Resolve a user-managed binary that can launch the registry command.
+///
+/// Most binary agents expose the same command name on PATH. OpenCode Desktop
+/// for macOS is the notable exception: it installs an app bundle whose ACP-capable
+/// CLI is `Contents/MacOS/opencode-cli`, not a PATH-visible `opencode`.
+pub fn resolve_system_binary_for_agent(agent_type: AgentType, cmd_name: &str) -> Option<PathBuf> {
+    if let Ok(path) = which::which(cmd_name) {
+        return Some(path);
+    }
+
+    if agent_type == AgentType::OpenCode && cmd_name == "opencode" {
+        let mut candidates = vec![PathBuf::from(
+            "/Applications/OpenCode.app/Contents/MacOS/opencode-cli",
+        )];
+        if let Some(home) = dirs::home_dir() {
+            candidates.push(
+                home.join("Applications")
+                    .join("OpenCode.app")
+                    .join("Contents")
+                    .join("MacOS")
+                    .join("opencode-cli"),
+            );
+        }
+        return candidates.into_iter().find(|path| path.is_file());
+    }
+
+    None
+}
+
 /// Return the best cached binary across all installed versions.
 ///
 /// This returns the path + version label of the highest semver-ish

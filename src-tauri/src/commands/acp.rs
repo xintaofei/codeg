@@ -27,6 +27,9 @@ use crate::web::event_bridge::EventEmitter;
 
 const ACP_AGENTS_UPDATED_EVENT: &str = "app://acp-agents-updated";
 const NPM_PREFIX_TIMEOUT: Duration = Duration::from_millis(1500);
+const NPM_LIST_TIMEOUT: Duration = Duration::from_millis(1500);
+const NPX_VERSION_COMMAND_TIMEOUT: Duration = Duration::from_millis(3000);
+const UNKNOWN_INSTALLED_VERSION: &str = "unknown";
 
 static NPM_GLOBAL_PREFIX_CACHE: tokio::sync::OnceCell<PathBuf> = tokio::sync::OnceCell::const_new();
 
@@ -89,7 +92,11 @@ fn is_version_like(value: &str) -> bool {
 }
 
 fn normalize_version_candidate(value: &str) -> Option<String> {
-    let normalized = value.trim().trim_start_matches('v');
+    let trimmed = value.trim();
+    let normalized = trimmed
+        .strip_prefix('v')
+        .or_else(|| trimmed.strip_prefix('V'))
+        .unwrap_or(trimmed);
     if is_version_like(normalized) {
         Some(normalized.to_string())
     } else {
@@ -231,6 +238,38 @@ fn uvx_agent_launchable(system_cmd: Option<(&'static str, &'static [&'static str
         || system_cmd
             .map(|(c, _)| resolve_command_on_path(c).is_some())
             .unwrap_or(false)
+}
+
+async fn detect_uvx_installed_version(
+    agent_type: AgentType,
+    system_cmd: Option<(&'static str, &'static [&'static str])>,
+) -> Option<String> {
+    if let Some(version) = binary_cache::uvx_prepared_version(agent_type) {
+        return Some(version);
+    }
+
+    // A user-installed system CLI (for example `hermes`) is a valid launch
+    // path even when Codeg did not prepare the uvx package. Surface it as
+    // installed/launchable so Settings and the connect gate agree.
+    if let Some((cmd, _)) = system_cmd {
+        if let Some(path) = resolve_command_on_path(cmd) {
+            return Some(
+                version_from_command_output(&path)
+                    .await
+                    .unwrap_or_else(|| UNKNOWN_INSTALLED_VERSION.to_string()),
+            );
+        }
+    }
+
+    // If uvx itself is available, the pinned package can be fetched and run on
+    // demand. We deliberately do not run `uvx --from ... --version` here:
+    // passive detection must not download packages. Use a sentinel instead of
+    // `None` so the UI warns rather than falsely saying "not installed".
+    if resolve_uvx_command().is_some() {
+        return Some(UNKNOWN_INSTALLED_VERSION.to_string());
+    }
+
+    None
 }
 
 /// The `uvx` flags that pin the interpreter for a `Uvx` agent, inserted before
@@ -434,6 +473,221 @@ fn is_npm_command_candidate(path: &Path) -> bool {
             .unwrap_or(false)
 }
 
+fn npm_package_path(package_name: &str) -> Option<PathBuf> {
+    let trimmed = package_name.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut path = PathBuf::new();
+    for part in trimmed.split('/') {
+        if part.is_empty() || part == "." || part == ".." {
+            return None;
+        }
+        path.push(part);
+    }
+    Some(path)
+}
+
+fn npm_package_json_from_prefix(prefix: &Path, package_name: &str) -> Option<PathBuf> {
+    let package_path = npm_package_path(package_name)?;
+    let node_modules = if cfg!(windows) {
+        prefix.join("node_modules")
+    } else {
+        prefix.join("lib").join("node_modules")
+    };
+    Some(node_modules.join(package_path).join("package.json"))
+}
+
+fn version_from_package_json(path: &Path, expected_name: &str) -> Option<String> {
+    let raw = fs::read_to_string(path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    if json.get("name")?.as_str()? != expected_name {
+        return None;
+    }
+    normalize_version_candidate(json.get("version")?.as_str()?)
+}
+
+fn version_from_npm_prefix_package_json(prefix: &Path, package_name: &str) -> Option<String> {
+    let package_json = npm_package_json_from_prefix(prefix, package_name)?;
+    version_from_package_json(&package_json, package_name)
+}
+
+fn version_from_package_json_ancestors(start: &Path, package_name: &str) -> Option<String> {
+    let first_dir = if start.is_dir() { start } else { start.parent()? };
+    for dir in first_dir.ancestors() {
+        if let Some(version) = version_from_package_json(&dir.join("package.json"), package_name) {
+            return Some(version);
+        }
+    }
+    None
+}
+
+fn version_from_resolved_npx_command(command_path: &Path, package_name: &str) -> Option<String> {
+    // npm's Unix shims are often symlinks into
+    // `<prefix>/lib/node_modules/<pkg>/...`; canonicalizing lets us read the
+    // package.json without spawning npm. Real-file shims are handled by the
+    // prefix fallback below.
+    if let Some(version) = version_from_package_json_ancestors(command_path, package_name) {
+        return Some(version);
+    }
+    if let Ok(canonical) = fs::canonicalize(command_path) {
+        if let Some(version) = version_from_package_json_ancestors(&canonical, package_name) {
+            return Some(version);
+        }
+    }
+
+    // npm global shims live in `<prefix>/bin` on Unix and directly under
+    // `<prefix>` on Windows. This catches non-symlink shims (notably Windows
+    // `.cmd` files) without parsing shell/batch contents.
+    let prefix = if cfg!(windows) {
+        command_path.parent().map(Path::to_path_buf)
+    } else {
+        command_path
+            .parent()
+            .and_then(|bin_dir| (bin_dir.file_name()? == "bin").then(|| bin_dir.parent()))
+            .flatten()
+            .map(Path::to_path_buf)
+    };
+    prefix
+        .as_deref()
+        .and_then(|p| version_from_npm_prefix_package_json(p, package_name))
+}
+
+fn first_version_like_in_text(text: &str) -> Option<String> {
+    text.split(|c: char| {
+        c.is_whitespace()
+            || matches!(
+                c,
+                '/' | '\\' | '=' | ':' | ';' | ',' | '(' | ')' | '[' | ']' | '{' | '}' | '"' | '\''
+            )
+    })
+    .find_map(|part| {
+        let candidate = part.trim_matches(|c: char| {
+            !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | 'v' | 'V'))
+        });
+        normalize_version_candidate(candidate)
+    })
+}
+
+async fn version_from_command_output(command_path: &Path) -> Option<String> {
+    let mut cmd = crate::process::tokio_command(command_path);
+    cmd.arg("--version").kill_on_drop(true);
+    let output = tokio::time::timeout(NPX_VERSION_COMMAND_TIMEOUT, cmd.output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut combined = String::from_utf8_lossy(&output.stdout).to_string();
+    if !output.stderr.is_empty() {
+        combined.push('\n');
+        combined.push_str(&String::from_utf8_lossy(&output.stderr));
+    }
+    first_version_like_in_text(&combined)
+}
+
+async fn detect_npx_installed_version(
+    package_name: &str,
+    resolved_cmd: Option<&Path>,
+) -> Option<String> {
+    if package_name.trim().is_empty() {
+        return None;
+    }
+
+    if let Some(path) = resolved_cmd {
+        if let Some(version) = version_from_resolved_npx_command(path, package_name) {
+            return Some(version);
+        }
+    }
+    if let Some(version) = detect_npm_global_version(package_name).await {
+        return Some(version);
+    }
+    if let Some(path) = resolved_cmd {
+        if let Some(version) = version_from_command_output(path).await {
+            return Some(version);
+        }
+    }
+    None
+}
+
+async fn detect_binary_installed_version(agent_type: AgentType, cmd: &str) -> Option<String> {
+    if let Ok(Some(version)) = binary_cache::detect_installed_version(agent_type, cmd) {
+        return Some(version);
+    }
+
+    let resolved = binary_cache::resolve_system_binary_for_agent(agent_type, cmd)?;
+    Some(
+        version_from_command_output(&resolved)
+            .await
+            .unwrap_or_else(|| UNKNOWN_INSTALLED_VERSION.to_string()),
+    )
+}
+
+fn npx_installed_version_or_unknown(version: Option<String>) -> String {
+    version.unwrap_or_else(|| UNKNOWN_INSTALLED_VERSION.to_string())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BaseCliFallback {
+    cmd: &'static str,
+    package: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BaseCliDetection {
+    cmd: &'static str,
+    package: Option<&'static str>,
+    version: String,
+}
+
+fn base_cli_fallback(agent_type: AgentType) -> Option<BaseCliFallback> {
+    match agent_type {
+        // The managed ACP package exposes `claude-agent-acp`, but many users
+        // already have the upstream Claude Code CLI (`claude`) installed and
+        // reasonably expect Settings to notice it. Keep this informational:
+        // launching still requires the ACP adapter.
+        AgentType::ClaudeCode => Some(BaseCliFallback {
+            cmd: "claude",
+            package: Some("@anthropic-ai/claude-code"),
+        }),
+        // Codeg launches Zed's `codex-acp` adapter, while the common local
+        // install is OpenAI's upstream `codex` CLI (`@openai/codex`).
+        AgentType::Codex => Some(BaseCliFallback {
+            cmd: "codex",
+            package: Some("@openai/codex"),
+        }),
+        _ => None,
+    }
+}
+
+async fn detect_base_cli(agent_type: AgentType) -> Option<BaseCliDetection> {
+    let fallback = base_cli_fallback(agent_type)?;
+    detect_base_cli_with_fallback(fallback).await
+}
+
+async fn detect_base_cli_with_fallback(fallback: BaseCliFallback) -> Option<BaseCliDetection> {
+    let resolved = resolve_npx_command(fallback.cmd).await?;
+
+    let mut version = None;
+    if let Some(package) = fallback.package {
+        version = version_from_resolved_npx_command(&resolved, package);
+        if version.is_none() {
+            version = detect_npm_global_version(package).await;
+        }
+    }
+    if version.is_none() {
+        version = version_from_command_output(&resolved).await;
+    }
+
+    Some(BaseCliDetection {
+        cmd: fallback.cmd,
+        package: fallback.package,
+        version: version.unwrap_or_else(|| UNKNOWN_INSTALLED_VERSION.to_string()),
+    })
+}
+
 /// Verify that the agent SDK / binary is installed and usable.
 ///
 /// This is the pre-spawn guard used by the session-page connect path:
@@ -470,8 +724,12 @@ pub(crate) async fn verify_agent_installed(agent_type: AgentType) -> Result<(), 
             }
             // Accept any cached version — the Settings page will still
             // surface "upgrade available" for stale caches via its own
-            // version-badge flow.
-            if binary_cache::find_best_cached_binary_for_agent(agent_type, cmd)?.is_none() {
+            // version-badge flow. Also accept a user-installed binary on PATH
+            // (notably OpenCode's `opencode` and globally installed adapters
+            // such as `codex-acp`).
+            if binary_cache::find_best_cached_binary_for_agent(agent_type, cmd)?.is_none()
+                && binary_cache::resolve_system_binary_for_agent(agent_type, cmd).is_none()
+            {
                 // INVARIANT: see note above — "is not installed" is a
                 // stable substring the frontend matches against.
                 return Err(AcpError::SdkNotInstalled(format!(
@@ -507,6 +765,20 @@ pub(crate) async fn verify_agent_installed(agent_type: AgentType) -> Result<(), 
 async fn detect_npm_global_version(package_name: &str) -> Option<String> {
     let npm_path = which::which("npm").ok()?;
 
+    // Fast path: read package.json from known prefixes before spawning npm.
+    if let Some(prefix) = cached_npm_global_prefix().await {
+        if let Some(version) = version_from_npm_prefix_package_json(&prefix, package_name) {
+            return Some(version);
+        }
+    }
+    if let Some(prefix) = crate::process::user_npm_prefix() {
+        if prefix.exists() {
+            if let Some(version) = version_from_npm_prefix_package_json(&prefix, package_name) {
+                return Some(version);
+            }
+        }
+    }
+
     // Try the default global prefix first.
     if let Some(v) = npm_list_version(&npm_path, package_name, None).await {
         return Some(v);
@@ -538,7 +810,11 @@ async fn npm_list_version(
     if let Some(p) = prefix {
         cmd.arg(format!("--prefix={}", p.display()));
     }
-    let output = cmd.output().await.ok()?;
+    cmd.kill_on_drop(true);
+    let output = tokio::time::timeout(NPM_LIST_TIMEOUT, cmd.output())
+        .await
+        .ok()?
+        .ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).ok()?;
     let version = json
@@ -553,19 +829,16 @@ async fn detect_local_version(agent_type: AgentType) -> Option<String> {
     let meta = registry::get_agent_meta(agent_type);
     match meta.distribution {
         registry::AgentDistribution::Npx { cmd, package, .. } => {
-            if !is_cmd_available(cmd).await {
-                return None;
-            }
-            // Try `npm list -g <package_name> --json` to get the real installed version.
+            let resolved = resolve_npx_command(cmd).await?;
             let pkg_name = package_name_from_spec(package);
-            detect_npm_global_version(&pkg_name).await
+            detect_npx_installed_version(&pkg_name, Some(resolved.as_path())).await
         }
         registry::AgentDistribution::Binary { cmd, .. } => {
-            binary_cache::detect_installed_version(agent_type, cmd)
-                .ok()
-                .flatten()
+            detect_binary_installed_version(agent_type, cmd).await
         }
-        registry::AgentDistribution::Uvx { .. } => binary_cache::uvx_prepared_version(agent_type),
+        registry::AgentDistribution::Uvx { system_cmd, .. } => {
+            detect_uvx_installed_version(agent_type, system_cmd).await
+        }
     }
 }
 
@@ -4330,22 +4603,41 @@ pub(crate) async fn acp_get_agent_status_core(
         .map_err(|e| AcpError::protocol(e.to_string()))?;
 
     let (available, installed_version) = match &meta.distribution {
-        registry::AgentDistribution::Npx { cmd, .. } => (
-            true,
-            resolve_npx_command(cmd)
-                .await
-                .and_then(|_| setting.as_ref().and_then(|m| m.installed_version.clone())),
-        ),
+        registry::AgentDistribution::Npx { cmd, package, .. } => {
+            let resolved = resolve_npx_command(cmd).await;
+            let version = if let Some(resolved_path) = resolved.as_deref() {
+                if let Some(v) = setting.as_ref().and_then(|m| m.installed_version.clone()) {
+                    Some(v)
+                } else {
+                    // Command found on disk but DB has no version record —
+                    // probe the package/shim for the real installed version.
+                    // If the command is launchable but the version cannot be
+                    // proven, return "unknown" so the UI warns instead of
+                    // showing a false "not installed" fail.
+                    let pkg_name = package_name_from_spec(package);
+                    Some(npx_installed_version_or_unknown(
+                        detect_npx_installed_version(&pkg_name, Some(resolved_path)).await,
+                    ))
+                }
+            } else {
+                None
+            };
+            (true, version)
+        }
         registry::AgentDistribution::Binary { platforms, cmd, .. } => {
-            let detected = binary_cache::detect_installed_version(agent_type, cmd)
-                .ok()
-                .flatten();
+            let detected = detect_binary_installed_version(agent_type, cmd).await;
             (platforms.iter().any(|p| p.platform == platform), detected)
         }
         registry::AgentDistribution::Uvx { system_cmd, .. } => (
             uvx_agent_launchable(*system_cmd),
-            binary_cache::uvx_prepared_version(agent_type),
+            detect_uvx_installed_version(agent_type, *system_cmd).await,
         ),
+    };
+
+    let base_cli = if installed_version.is_none() {
+        detect_base_cli(agent_type).await
+    } else {
+        None
     };
 
     Ok(crate::acp::types::AcpAgentStatus {
@@ -4353,6 +4645,9 @@ pub(crate) async fn acp_get_agent_status_core(
         available,
         enabled: setting.map(|m| m.enabled).unwrap_or(true),
         installed_version,
+        base_cli_version: base_cli.as_ref().map(|d| d.version.clone()),
+        base_cli_command: base_cli.as_ref().map(|d| d.cmd.to_string()),
+        base_cli_package: base_cli.and_then(|d| d.package.map(ToString::to_string)),
     })
 }
 
@@ -4394,20 +4689,35 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
         let setting = settings_map.get(&agent_type);
         let meta = registry::get_agent_meta(agent_type);
         let (available, dist_type, local_installed_version) = match &meta.distribution {
-            registry::AgentDistribution::Npx { cmd, .. } => {
+            registry::AgentDistribution::Npx {
+                cmd, package, ..
+            } => {
                 // Keep the list path bounded: each list request probes npm
                 // global prefix at most once, then reuses the result across
                 // all NPX agents in the loop.
-                let cached = npx_resolver
-                    .resolve_for_list(cmd)
-                    .await
-                    .and_then(|_| setting.and_then(|m| m.installed_version.clone()));
-                (true, "npx", cached)
+                let resolved = npx_resolver.resolve_for_list(cmd).await;
+                let version = if let Some(resolved_path) = resolved.as_deref() {
+                    if let Some(v) = setting.and_then(|m| m.installed_version.clone()) {
+                        Some(v)
+                    } else {
+                        // Command found on disk but DB has no version record
+                        // (e.g. user installed outside Codeg, or DB was
+                        // cleared). Probe the package/shim for the real
+                        // installed version; if only launchability can be
+                        // proven, use "unknown" so the UI warns instead of
+                        // showing "fail".
+                        let pkg_name = package_name_from_spec(package);
+                        Some(npx_installed_version_or_unknown(
+                            detect_npx_installed_version(&pkg_name, Some(resolved_path)).await,
+                        ))
+                    }
+                } else {
+                    None
+                };
+                (true, "npx", version)
             }
             registry::AgentDistribution::Binary { platforms, cmd, .. } => {
-                let detected = binary_cache::detect_installed_version(agent_type, cmd)
-                    .ok()
-                    .flatten();
+                let detected = detect_binary_installed_version(agent_type, cmd).await;
                 (
                     platforms.iter().any(|p| p.platform == platform),
                     "binary",
@@ -4417,7 +4727,7 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
             registry::AgentDistribution::Uvx { system_cmd, .. } => (
                 uvx_agent_launchable(*system_cmd),
                 "uvx",
-                binary_cache::uvx_prepared_version(agent_type),
+                detect_uvx_installed_version(agent_type, *system_cmd).await,
             ),
         };
 
@@ -4450,7 +4760,11 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
             }
         }
         let sort_order = setting.map(|m| m.sort_order).unwrap_or(idx as i32);
-        // Persist detected version to DB for binary agents (npx written during install/upgrade)
+        // Persist detected version to DB. Binary agents always write (None
+        // clears phantom versions). Npx agents only write when a concrete
+        // version was detected from package.json/npm/`--version` —
+        // the install/upgrade path writes independently, and a transient probe
+        // failure or "unknown" fallback must not erase a valid DB record.
         if dist_type == "binary" {
             let _ = agent_setting_service::set_installed_version(
                 &db.conn,
@@ -4458,7 +4772,27 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
                 local_installed_version.clone(),
             )
             .await;
+        } else if dist_type == "npx" && local_installed_version.is_some() {
+            // Only persist when we actually detected a concrete version; skip
+            // when the DB already had one (no change) or only launchability
+            // was proven as "unknown".
+            let db_version = setting.and_then(|m| m.installed_version.clone());
+            if db_version.is_none()
+                && local_installed_version.as_deref() != Some(UNKNOWN_INSTALLED_VERSION)
+            {
+                let _ = agent_setting_service::set_installed_version(
+                    &db.conn,
+                    agent_type,
+                    local_installed_version.clone(),
+                )
+                .await;
+            }
         }
+        let base_cli = if local_installed_version.is_none() {
+            detect_base_cli(agent_type).await
+        } else {
+            None
+        };
         let codex_auth_json = if agent_type == AgentType::Codex {
             load_codex_auth_json_raw()
         } else {
@@ -4504,6 +4838,9 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
             enabled: setting.map(|m| m.enabled).unwrap_or(true),
             sort_order,
             installed_version: local_installed_version,
+            base_cli_version: base_cli.as_ref().map(|d| d.version.clone()),
+            base_cli_command: base_cli.as_ref().map(|d| d.cmd.to_string()),
+            base_cli_package: base_cli.and_then(|d| d.package.map(ToString::to_string)),
             env,
             config_json,
             config_file_path: agent_local_config_path(agent_type)
@@ -6432,6 +6769,118 @@ mod tests {
     #[test]
     fn build_npm_install_spec_rejects_invalid_override() {
         assert!(build_npm_install_spec("cline@3.0.9", Some("latest")).is_err());
+    }
+
+    #[test]
+    fn normalize_version_candidate_accepts_uppercase_v_prefix() {
+        assert_eq!(
+            normalize_version_candidate("V1.2.3").as_deref(),
+            Some("1.2.3")
+        );
+    }
+
+    #[test]
+    fn package_name_from_spec_preserves_scoped_name_without_version() {
+        assert_eq!(
+            package_name_from_spec("@google/gemini-cli@0.45.2"),
+            "@google/gemini-cli"
+        );
+        assert_eq!(
+            package_name_from_spec("@agentclientprotocol/claude-agent-acp"),
+            "@agentclientprotocol/claude-agent-acp"
+        );
+    }
+
+    #[test]
+    fn reads_version_from_npm_prefix_package_json() {
+        let prefix = unique_test_dir("npm-package-json-version");
+        let package_json = npm_package_json_from_prefix(&prefix, "@google/gemini-cli")
+            .expect("valid package path");
+        std::fs::create_dir_all(package_json.parent().unwrap()).expect("create package dir");
+        std::fs::write(
+            &package_json,
+            r#"{"name":"@google/gemini-cli","version":"0.45.2"}"#,
+        )
+        .expect("write package.json");
+
+        assert_eq!(
+            version_from_npm_prefix_package_json(&prefix, "@google/gemini-cli").as_deref(),
+            Some("0.45.2")
+        );
+        assert_eq!(
+            version_from_npm_prefix_package_json(&prefix, "cline"),
+            None,
+            "must not read a different package's version"
+        );
+        let _ = std::fs::remove_dir_all(prefix);
+    }
+
+    #[test]
+    fn reads_version_from_resolved_npx_prefix_shim() {
+        let prefix = unique_test_dir("npx-prefix-shim-version");
+        let package_json =
+            npm_package_json_from_prefix(&prefix, "cline").expect("valid package path");
+        std::fs::create_dir_all(package_json.parent().unwrap()).expect("create package dir");
+        std::fs::write(&package_json, r#"{"name":"cline","version":"3.0.9"}"#)
+            .expect("write package.json");
+
+        let bin_dir = npm_prefix_bin_dir(&prefix);
+        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+        #[cfg(windows)]
+        let command_path = bin_dir.join("cline.cmd");
+        #[cfg(not(windows))]
+        let command_path = bin_dir.join("cline");
+        std::fs::write(&command_path, "").expect("write shim");
+
+        assert_eq!(
+            version_from_resolved_npx_command(&command_path, "cline").as_deref(),
+            Some("3.0.9")
+        );
+        let _ = std::fs::remove_dir_all(prefix);
+    }
+
+    #[test]
+    fn extracts_version_from_command_output_text() {
+        assert_eq!(
+            first_version_like_in_text("gemini/0.45.2 darwin-arm64").as_deref(),
+            Some("0.45.2")
+        );
+        assert_eq!(
+            first_version_like_in_text("codex-cli 0.128.0").as_deref(),
+            Some("0.128.0")
+        );
+        assert_eq!(
+            first_version_like_in_text("Version: V2026.6.1").as_deref(),
+            Some("2026.6.1")
+        );
+        assert_eq!(first_version_like_in_text("no version here"), None);
+    }
+
+    #[test]
+    fn base_cli_fallback_maps_upstream_cli_commands_only() {
+        assert_eq!(
+            base_cli_fallback(AgentType::ClaudeCode),
+            Some(BaseCliFallback {
+                cmd: "claude",
+                package: Some("@anthropic-ai/claude-code")
+            })
+        );
+        assert_eq!(
+            base_cli_fallback(AgentType::Codex),
+            Some(BaseCliFallback {
+                cmd: "codex",
+                package: Some("@openai/codex")
+            })
+        );
+        assert_eq!(base_cli_fallback(AgentType::Gemini), None);
+    }
+
+    #[test]
+    fn launchable_npx_without_detected_version_uses_unknown_sentinel() {
+        assert_eq!(
+            npx_installed_version_or_unknown(None),
+            UNKNOWN_INSTALLED_VERSION
+        );
     }
 
     #[test]

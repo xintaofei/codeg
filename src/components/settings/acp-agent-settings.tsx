@@ -215,7 +215,13 @@ function acpText(
   fallback: string,
   values?: Record<string, string | number>
 ): string {
-  if (!acpTranslator) return fallback
+  if (!acpTranslator) {
+    if (!values) return fallback
+    return fallback.replace(/\{(\w+)\}/g, (match, name: string) => {
+      const value = values[name]
+      return value === undefined ? match : String(value)
+    })
+  }
   return acpTranslator(key, values)
 }
 
@@ -2748,6 +2754,30 @@ export function buildVersionCheck(
   const withCustomInstall = (fixes: UiFixAction[]): UiFixAction[] =>
     supportsCustomInstall ? [...fixes, customInstallFix] : fixes
 
+  if (!agent.installed_version && agent.base_cli_version) {
+    return {
+      check_id: "version_status",
+      label: acpText("version.statusLabel", "Version Status"),
+      status: "warn",
+      message: acpText(
+        "version.baseCliDetected",
+        "{versionText}. Detected upstream CLI {command} {version}, but the ACP adapter is not installed yet. Click Install to install the adapter.",
+        {
+          versionText,
+          command: agent.base_cli_command ?? "CLI",
+          version: agent.base_cli_version,
+        }
+      ),
+      fixes: withCustomInstall([
+        {
+          label: acpText("actions.install", "Install"),
+          kind: installAction,
+          payload: agent.agent_type,
+        },
+      ]),
+    }
+  }
+
   if (!agent.installed_version) {
     return {
       check_id: "version_status",
@@ -2868,16 +2898,17 @@ export function getAgentChecks(
   current?: AgentCheckState
 ): UiCheckItem[] {
   // For uvx agents, only treat uv as not-ready when the preflight result is
-  // present AND its uv check isn't passing. With no result yet (or an errored
-  // preflight) stay optimistic — otherwise we'd block the version-status
-  // install while the "Install uv" button (which lives in that same preflight
-  // result) is absent, a dead end. When the result IS present, the button is
-  // present alongside it, so blocking is always paired with an actionable fix.
+  // present AND its uv check is a hard failure. A warn result means a system
+  // agent CLI fallback (for example `hermes`) is launchable even though uv is
+  // absent, so Settings must not downgrade that to "not installed". With no
+  // result yet (or an errored one), stay optimistic — otherwise we'd block the
+  // version-status install while the "Install uv" button (which lives in that
+  // same preflight result) is absent, a dead end.
   const uvCheck = current?.result?.checks?.find(
     (check) => check.check_id === "uv_available"
   )
   const uvReady =
-    agent.distribution_type !== "uvx" || !uvCheck || uvCheck.status === "pass"
+    agent.distribution_type !== "uvx" || !uvCheck || uvCheck.status !== "fail"
   const versionCheck = buildVersionCheck(agent, uvReady)
   const remoteChecks: UiCheckItem[] = (current?.result?.checks ?? []).map(
     (check) => ({
@@ -3133,14 +3164,29 @@ export function AcpAgentSettings() {
         // install that provisions the runtime flips it true here — otherwise
         // the version-status panel would stay stuck on the unavailable /
         // "runtime not ready" branch with the freshly installed version shown.
+        // Also refresh upstream/base CLI metadata (`claude`, `codex`) so a
+        // manual check can downgrade "not installed" to the adapter-missing
+        // warning without requiring a full list reload.
         if (statusState.status === "fulfilled") {
           setAgents((prev) => {
             let changed = false
             const next = prev.map((agent) => {
               if (agent.agent_type !== agentType) return agent
-              if (agent.available === statusState.value.available) return agent
+              if (
+                agent.available === statusState.value.available &&
+                agent.base_cli_version === statusState.value.base_cli_version &&
+                agent.base_cli_command === statusState.value.base_cli_command &&
+                agent.base_cli_package === statusState.value.base_cli_package
+              )
+                return agent
               changed = true
-              return { ...agent, available: statusState.value.available }
+              return {
+                ...agent,
+                available: statusState.value.available,
+                base_cli_version: statusState.value.base_cli_version ?? null,
+                base_cli_command: statusState.value.base_cli_command ?? null,
+                base_cli_package: statusState.value.base_cli_package ?? null,
+              }
             })
             return changed ? next : prev
           })
