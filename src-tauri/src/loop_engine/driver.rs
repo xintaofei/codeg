@@ -1195,6 +1195,7 @@ mod tests {
             criterion_checks: Vec::new(),
             gate_decisions: Vec::new(),
             live_iterations: Vec::new(),
+            artifact_iteration_refs: Vec::new(),
         }
     }
 
@@ -2334,6 +2335,7 @@ mod tests {
             criterion_checks: vec![],
             gate_decisions: vec![],
             live_iterations: vec![],
+            artifact_iteration_refs: vec![],
         };
         let f = ready_nodes(&dag, IssueRoute::Full);
         assert_eq!(f.len(), 1);
@@ -2351,6 +2353,7 @@ mod tests {
             criterion_checks: vec![],
             gate_decisions: vec![],
             live_iterations: vec![],
+            artifact_iteration_refs: vec![],
         };
         assert_eq!(ready_nodes(&dag, IssueRoute::Full)[0].stage, Stage::Design);
 
@@ -2366,6 +2369,7 @@ mod tests {
             criterion_checks: vec![],
             gate_decisions: vec![],
             live_iterations: vec![],
+            artifact_iteration_refs: vec![],
         };
         assert_eq!(ready_nodes(&dag, IssueRoute::Full)[0].stage, Stage::Plan);
 
@@ -2382,6 +2386,7 @@ mod tests {
             criterion_checks: vec![],
             gate_decisions: vec![],
             live_iterations: vec![],
+            artifact_iteration_refs: vec![],
         };
         assert!(ready_nodes(&dag, IssueRoute::Full).is_empty());
     }
@@ -2413,6 +2418,7 @@ mod tests {
             criterion_checks: vec![],
             gate_decisions: vec![],
             live_iterations: vec![],
+            artifact_iteration_refs: vec![],
         };
         let f = ready_nodes(&dag, IssueRoute::Direct);
         assert_eq!(f[0].stage, Stage::Plan);
@@ -2431,6 +2437,7 @@ mod tests {
             criterion_checks: vec![],
             gate_decisions: vec![],
             live_iterations: vec![],
+            artifact_iteration_refs: vec![],
         };
         assert_eq!(ready_nodes(&dag, IssueRoute::SkipDesign)[0].stage, Stage::Plan);
     }

@@ -109,6 +109,14 @@ pub fn build_router(
             post(handlers::loops::list_loop_iterations),
         )
         .route(
+            "/get_loop_artifact_iterations",
+            post(handlers::loops::get_loop_artifact_iterations),
+        )
+        .route(
+            "/get_loop_phase_iterations",
+            post(handlers::loops::get_loop_phase_iterations),
+        )
+        .route(
             "/list_loop_validations",
             post(handlers::loops::list_loop_validations),
         )

@@ -8,6 +8,7 @@ use crate::app_state::AppState;
 use crate::commands::loops as core;
 use crate::db::entities::loop_inbox_item::InboxStatus;
 use crate::db::entities::loop_issue::{IssuePriority, IssueStatus};
+use crate::db::entities::loop_iteration::Stage;
 use crate::db::entities::loop_memory::{MemoryKind, MemoryStatus};
 use crate::models::loops::{
     IssueConfig, LoopArtifactDetail, LoopArtifactRow, LoopAttention, LoopDagView, LoopInboxItemRow,
@@ -380,6 +381,37 @@ pub async fn list_loop_iterations(
 ) -> Result<Json<Vec<LoopIterationRow>>, AppCommandError> {
     Ok(Json(
         core::list_loop_iterations_core(&state.db.conn, p.space_id, p.issue_id).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactIdParam {
+    pub artifact_id: i32,
+}
+
+pub async fn get_loop_artifact_iterations(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(p): Json<ArtifactIdParam>,
+) -> Result<Json<Vec<LoopIterationRow>>, AppCommandError> {
+    Ok(Json(
+        core::get_loop_artifact_iterations_core(&state.db.conn, p.artifact_id).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhaseIterationsParams {
+    pub issue_id: i32,
+    pub stage: Stage,
+}
+
+pub async fn get_loop_phase_iterations(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(p): Json<PhaseIterationsParams>,
+) -> Result<Json<Vec<LoopIterationRow>>, AppCommandError> {
+    Ok(Json(
+        core::get_loop_phase_iterations_core(&state.db.conn, p.issue_id, p.stage).await?,
     ))
 }
 

@@ -380,6 +380,34 @@ pub struct LoopArtifactDetail {
     pub links: Vec<LoopLinkRow>,
 }
 
+/// The iteration that produced an artifact, resolved within the issue (P3 agent
+/// facet). Carried on [`LoopDagView`] so the graph can overlay the producing
+/// agent/session and the per-artifact attempt count without an extra round-trip.
+///
+/// Only emitted for artifacts whose `produced_by_iteration_id` resolves to an
+/// iteration in THIS issue — orphan / cross-issue references are omitted, and the
+/// frontend infers an unresolved producer from "facet on, but no ref for this
+/// node". Always a resolved reference, so `iteration_id`/`stage`/`status` are
+/// non-null.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ArtifactIterationRef {
+    pub artifact_id: i32,
+    pub iteration_id: i32,
+    pub stage: Stage,
+    pub status: IterationStatus,
+    pub outcome: Option<IterationOutcome>,
+    /// From `conversation.agent_type` (the serde wire form of `AgentType`); `None`
+    /// when the iteration has no conversation. The frontend treats it as its
+    /// `AgentType` union (with an icon fallback for unknown values).
+    pub agent_type: Option<String>,
+    /// `None` when the iteration has no conversation (no session to open).
+    pub conversation_id: Option<i32>,
+    /// Per-kind, issue-bounded attempt count: task/requirement/design/reflection =
+    /// iterations targeting the artifact; result = finalize iterations; review = 1.
+    pub attempt_count: i32,
+}
+
 /// Per-issue DAG payload (nodes + edges) for the graph/board views.
 #[derive(Debug, Clone, Serialize)]
 pub struct LoopDagView {
@@ -395,6 +423,11 @@ pub struct LoopDagView {
     /// the stage rail (spec D1). Output artifacts don't exist yet for these, so
     /// they're carried alongside the landed DAG, not as artifacts.
     pub live_iterations: Vec<LoopIterationRow>,
+    /// Resolved producing-iteration references for this issue's artifacts (P3 agent
+    /// facet). ALWAYS present — `[]` when nothing resolves — so the frontend can
+    /// detect the capability via `Array.isArray`. Older servers omit the field
+    /// entirely, which the frontend reads as "facet unavailable".
+    pub artifact_iteration_refs: Vec<ArtifactIterationRef>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -406,6 +439,9 @@ pub struct LoopIterationRow {
     pub target_artifact_id: Option<i32>,
     pub target_title: Option<String>,
     pub conversation_id: Option<i32>,
+    /// Producing agent, joined from `conversation.agent_type` (P3 facet). `None`
+    /// when the iteration has no conversation, or on older servers that omit it.
+    pub agent_type: Option<String>,
     pub status: IterationStatus,
     pub launched_by: LaunchedBy,
     pub attempt: i32,

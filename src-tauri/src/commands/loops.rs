@@ -10,6 +10,7 @@ use crate::app_error::AppCommandError;
 use crate::db::entities::loop_artifact_revision::ActorKind;
 use crate::db::entities::loop_inbox_item::{InboxKind, InboxStatus};
 use crate::db::entities::loop_issue::{self, IssuePriority, IssueStatus};
+use crate::db::entities::loop_iteration::Stage;
 use crate::db::entities::loop_memory::{MemoryKind, MemoryStatus, TrustTier};
 use crate::db::service::folder_service;
 use crate::db::service::loop_service::{
@@ -503,6 +504,26 @@ pub async fn list_loop_iterations_core(
     })
 }
 
+/// Targeted, bounded iteration history for one artifact (P3 drawer): the implement
+/// + review attempts for a task, the producing run for a requirement/design/etc.
+pub async fn get_loop_artifact_iterations_core(
+    conn: &DatabaseConnection,
+    artifact_id: i32,
+) -> Result<Vec<LoopIterationRow>, AppCommandError> {
+    Ok(iteration::list_iterations_for_artifact(conn, artifact_id).await?)
+}
+
+/// Phase-level (artifact-less) iteration history for an issue stage (P3 drawer):
+/// the triage sessions behind an Issue node, the finalize sessions behind a Result
+/// node. Enforces `target_artifact_id IS NULL` server-side.
+pub async fn get_loop_phase_iterations_core(
+    conn: &DatabaseConnection,
+    issue_id: i32,
+    stage: Stage,
+) -> Result<Vec<LoopIterationRow>, AppCommandError> {
+    Ok(iteration::list_iterations_for_phase(conn, issue_id, stage).await?)
+}
+
 pub async fn list_loop_validations_core(
     conn: &DatabaseConnection,
     space_id: i32,
@@ -928,6 +949,25 @@ pub async fn list_loop_iterations(
     issue_id: Option<i32>,
 ) -> Result<Vec<LoopIterationRow>, AppCommandError> {
     list_loop_iterations_core(&db.conn, space_id, issue_id).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn get_loop_artifact_iterations(
+    db: tauri::State<'_, AppDatabase>,
+    artifact_id: i32,
+) -> Result<Vec<LoopIterationRow>, AppCommandError> {
+    get_loop_artifact_iterations_core(&db.conn, artifact_id).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn get_loop_phase_iterations(
+    db: tauri::State<'_, AppDatabase>,
+    issue_id: i32,
+    stage: Stage,
+) -> Result<Vec<LoopIterationRow>, AppCommandError> {
+    get_loop_phase_iterations_core(&db.conn, issue_id, stage).await
 }
 
 #[cfg(feature = "tauri-runtime")]

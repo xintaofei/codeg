@@ -10,11 +10,13 @@ use crate::db::entities::loop_artifact_revision::ActorKind;
 use crate::db::entities::loop_criterion::CriterionKind;
 use crate::db::entities::loop_link::LinkKind;
 use crate::db::entities::{
-    loop_artifact, loop_artifact_revision, loop_criterion, loop_issue, loop_iteration, loop_link,
+    conversation, loop_artifact, loop_artifact_revision, loop_criterion, loop_issue,
+    loop_iteration, loop_link,
 };
 use crate::db::error::DbError;
 use crate::models::loops::{
-    LoopArtifactDetail, LoopArtifactRow, LoopCriterionRow, LoopDagView, LoopLinkRow, LoopRevision,
+    ArtifactIterationRef, LoopArtifactDetail, LoopArtifactRow, LoopCriterionRow, LoopDagView,
+    LoopLinkRow, LoopRevision,
 };
 
 use super::link::to_link_row;
@@ -269,6 +271,76 @@ pub async fn list_dag(
     let gate_decisions = super::gate_decision::list_for_issue(&txn, issue_id).await?;
     let live_iterations = super::iteration::list_live_for_issue(&txn, issue_id).await?;
 
+    // P3 agent facet: resolve each artifact's producing iteration WITHIN this issue
+    // so the graph can overlay the agent/session + a per-artifact attempt count.
+    // Bounded — one pass over the issue's iterations plus two batched queries. Only
+    // artifacts whose `produced_by_iteration_id` resolves to an in-issue iteration
+    // get a ref; orphan / cross-issue references are omitted, and the frontend
+    // infers an unresolved producer from "facet on, but no ref for this node".
+    let iterations = loop_iteration::Entity::find()
+        .filter(loop_iteration::Column::IssueId.eq(issue_id))
+        .all(&txn)
+        .await?;
+    let iter_by_id: HashMap<i32, &loop_iteration::Model> =
+        iterations.iter().map(|m| (m.id, m)).collect();
+    // Per-target attempt counts (task/requirement/design/reflection) and the
+    // finalize count (result). Review's count is always 1 (its single producer).
+    let mut count_by_target: HashMap<i32, i32> = HashMap::new();
+    let mut finalize_count = 0i32;
+    for it in &iterations {
+        if let Some(tid) = it.target_artifact_id {
+            *count_by_target.entry(tid).or_insert(0) += 1;
+        }
+        if it.stage == loop_iteration::Stage::Finalize {
+            finalize_count += 1;
+        }
+    }
+    // agent_type for the producing iterations' conversations (one batched query).
+    let producing_conv_ids: Vec<i32> = artifact_models
+        .iter()
+        .filter_map(|a| a.produced_by_iteration_id)
+        .filter_map(|iid| iter_by_id.get(&iid).copied())
+        .filter_map(|it| it.conversation_id)
+        .collect();
+    let conv_agent: HashMap<i32, String> = if producing_conv_ids.is_empty() {
+        HashMap::new()
+    } else {
+        conversation::Entity::find()
+            .filter(conversation::Column::Id.is_in(producing_conv_ids))
+            .all(&txn)
+            .await?
+            .into_iter()
+            .map(|c| (c.id, c.agent_type))
+            .collect()
+    };
+    let artifact_iteration_refs: Vec<ArtifactIterationRef> = artifact_models
+        .iter()
+        .filter_map(|a| {
+            let it = *iter_by_id.get(&a.produced_by_iteration_id?)?;
+            let attempt_count = match a.kind {
+                ArtifactKind::Result => finalize_count,
+                ArtifactKind::Review => 1,
+                // An issue artifact is produced by triage (which targets NULL),
+                // so nothing ever targets it — its attempt count is always 0.
+                ArtifactKind::Issue => 0,
+                _ => count_by_target.get(&a.id).copied().unwrap_or(0),
+            };
+            let agent_type = it
+                .conversation_id
+                .and_then(|cid| conv_agent.get(&cid).cloned());
+            Some(ArtifactIterationRef {
+                artifact_id: a.id,
+                iteration_id: it.id,
+                stage: it.stage,
+                status: it.status,
+                outcome: it.outcome,
+                agent_type,
+                conversation_id: it.conversation_id,
+                attempt_count,
+            })
+        })
+        .collect();
+
     txn.commit().await?;
 
     Ok(LoopDagView {
@@ -278,6 +350,7 @@ pub async fn list_dag(
         criterion_checks,
         gate_decisions,
         live_iterations,
+        artifact_iteration_refs,
     })
 }
 

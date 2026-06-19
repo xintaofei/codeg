@@ -2291,6 +2291,7 @@ test result: FAILED. 1 failed in 0.9s";
             criterion_checks: Vec::new(),
             gate_decisions: Vec::new(),
             live_iterations: Vec::new(),
+            artifact_iteration_refs: Vec::new(),
         }
     }
 
