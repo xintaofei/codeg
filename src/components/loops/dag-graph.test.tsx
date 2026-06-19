@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { DagGraph } from "./dag-graph"
 import type { AttentionKey } from "@/lib/loop-attention"
 import type {
+  ArtifactIterationRef,
   LoopArtifactRow,
   LoopInboxItemRow,
   LoopIterationRow,
@@ -398,5 +399,175 @@ describe("DagGraph reviews are first-class folded nodes", () => {
     )
     fireEvent.click(container.querySelector('[data-artifact-id="20"]')!)
     expect(onSelect).toHaveBeenCalledWith(20)
+  })
+})
+
+describe("DagGraph agent facet (P3)", () => {
+  // The echoing mock returns the key for every translation, so the agent icon's
+  // presence is asserted via the accessible name carrying "agentRunBy" (pushed in
+  // only when an agent resolves) and the attempt badge via its literal "×N".
+  it("shows the agent icon (aria) + attempt badge on a node when the facet is on", () => {
+    const refs: ArtifactIterationRef[] = [
+      {
+        artifact_id: 2,
+        iteration_id: 5,
+        stage: "refine",
+        status: "succeeded",
+        outcome: "succeeded",
+        agent_type: "codex",
+        conversation_id: 9,
+        attempt_count: 3,
+      },
+    ]
+    render(
+      <DagGraph
+        {...base}
+        artifacts={[
+          art({
+            id: 2,
+            kind: "requirement",
+            title: "Req",
+            produced_by_iteration_id: 5,
+          }),
+        ]}
+        artifactIterationRefs={refs}
+      />
+    )
+    expect(screen.getByRole("button", { name: /agentRunBy/ })).toBeTruthy()
+    expect(screen.getByText("×3")).toBeTruthy()
+  })
+
+  it("renders the agent badge (with attempts) on a folded review row", () => {
+    const refs: ArtifactIterationRef[] = [
+      {
+        artifact_id: 20,
+        iteration_id: 8,
+        stage: "review",
+        status: "succeeded",
+        outcome: "succeeded",
+        agent_type: "codex",
+        conversation_id: 4,
+        attempt_count: 2,
+      },
+    ]
+    render(
+      <DagGraph
+        {...base}
+        artifacts={[
+          art({ id: 10, kind: "task", status: "in_progress" }),
+          art({
+            id: 20,
+            kind: "review",
+            status: "done",
+            verdict: "pass",
+            title: "R",
+            produced_by_iteration_id: 8,
+          }),
+        ]}
+        links={[link(1, 20, 10, "reviews")]}
+        artifactIterationRefs={refs}
+      />
+    )
+    // The folded review row uses the shared AgentBadge, so it surfaces ×N from
+    // the model-resolved attemptCount — a bespoke icon-only row dropped it.
+    expect(screen.getByText("×2")).toBeTruthy()
+  })
+
+  it("shows an agent icon on a pending ghost when the facet is on", () => {
+    render(
+      <DagGraph
+        {...base}
+        artifacts={[]}
+        liveIterations={[
+          iter(1, "design", { status: "running", agent_type: "gemini" }),
+        ]}
+        artifactIterationRefs={[]}
+      />
+    )
+    expect(screen.getByRole("button", { name: /agentRunBy/ })).toBeTruthy()
+  })
+
+  it("shows no facet — and no ghost icon — when refs are absent (old server)", () => {
+    render(
+      <DagGraph
+        {...base}
+        artifacts={[
+          art({
+            id: 2,
+            kind: "requirement",
+            title: "Req",
+            produced_by_iteration_id: 5,
+          }),
+        ]}
+        liveIterations={[
+          iter(1, "design", { status: "running", agent_type: "gemini" }),
+        ]}
+      />
+    )
+    // No artifactIterationRefs ⇒ facet off ⇒ no node/ghost icon, no crash.
+    expect(screen.queryByRole("button", { name: /agentRunBy/ })).toBeNull()
+    expect(screen.queryByText("×3")).toBeNull()
+  })
+
+  it("renders no icon when the resolved agent_type is null (no crash)", () => {
+    const refs: ArtifactIterationRef[] = [
+      {
+        artifact_id: 2,
+        iteration_id: 5,
+        stage: "refine",
+        status: "succeeded",
+        outcome: null,
+        agent_type: null,
+        conversation_id: null,
+        attempt_count: 1,
+      },
+    ]
+    render(
+      <DagGraph
+        {...base}
+        artifacts={[
+          art({
+            id: 2,
+            kind: "requirement",
+            title: "Req",
+            produced_by_iteration_id: 5,
+          }),
+        ]}
+        artifactIterationRefs={refs}
+      />
+    )
+    expect(screen.queryByRole("button", { name: /agentRunBy/ })).toBeNull()
+  })
+
+  it("renders a clickable session chip for a live artifact-less triage (session_only)", () => {
+    const onOpenSession = vi.fn()
+    const { container } = render(
+      <DagGraph
+        {...base}
+        artifacts={[]}
+        liveIterations={[
+          iter(1, "triage", {
+            status: "running",
+            agent_type: "codex",
+            conversation_id: 7,
+          }),
+        ]}
+        artifactIterationRefs={[]}
+        onOpenSession={onOpenSession}
+      />
+    )
+    // The Issue phase stays solid (not a slim placeholder) so the chip has a home.
+    const issueBox = container.querySelector('[data-phase="issue"]')
+    expect(issueBox).not.toBeNull()
+    expect(issueBox!.getAttribute("data-placeholder")).toBeNull()
+    // The chip is the session entry point (no drawer for a live, artifact-less run).
+    fireEvent.click(screen.getByRole("button", { name: /triage/ }))
+    expect(onOpenSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 7,
+        agentType: "codex",
+        stage: "triage",
+      })
+    )
   })
 })

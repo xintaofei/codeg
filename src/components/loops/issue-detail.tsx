@@ -15,12 +15,15 @@ import {
   triggerLoopIssue,
 } from "@/lib/loops-api"
 import type {
+  AgentType,
   IssueConfig,
   LoopArtifactRow,
   LoopInboxItemRow,
   LoopIssueDetail,
+  LoopIterationOutcome,
   LoopIterationRow,
   LoopLinkRow,
+  LoopStage,
 } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
 import { buildAttentionMap } from "@/lib/loop-attention"
@@ -33,7 +36,10 @@ import {
   ResizablePanel,
   ResizableHandle,
 } from "@/components/ui/resizable"
-import type { PhasePending } from "@/lib/loop-process-graph"
+import type {
+  ArtifactIterationRef,
+  PhasePending,
+} from "@/lib/loop-process-graph"
 import { DagGraph } from "@/components/loops/dag-graph"
 import { StagePipelineRail } from "@/components/loops/stage-pipeline-rail"
 import { IssueSettingsPanel } from "@/components/loops/issue-settings-dialog"
@@ -63,6 +69,9 @@ interface IssueDetailData {
   links: LoopLinkRow[]
   liveIterations: LoopIterationRow[]
   inbox: LoopInboxItemRow[]
+  /** P3 agent facet. Left `undefined` on older servers (field absent) so the
+   *  graph's `Array.isArray` probe reads the facet as unavailable. */
+  artifactIterationRefs?: ArtifactIterationRef[]
 }
 
 const EMPTY_ISSUE_DETAIL: IssueDetailData = {
@@ -123,6 +132,7 @@ export function IssueDetail({
         links: dag.links,
         liveIterations: dag.live_iterations,
         inbox,
+        artifactIterationRefs: dag.artifact_iteration_refs,
       }
     },
     {
@@ -132,7 +142,7 @@ export function IssueDetail({
     }
   )
   const issue = data.detail
-  const { artifacts, links, liveIterations } = data
+  const { artifacts, links, liveIterations, artifactIterationRefs } = data
 
   // Pending inbox cards grouped onto the nodes they concern (D8) — drives the
   // amber attention rings on the graph and board.
@@ -173,6 +183,31 @@ export function IssueDetail({
           issueId: issue.id,
           issueSeq: issue.seq_no,
           stage: pending.stage,
+        },
+      })
+    },
+    [openIteration, issue]
+  )
+
+  // Open a live artifact-less session (Issue triage / Result finalize chip) in
+  // the shared viewer, labeled with this issue's context.
+  const onOpenSession = useCallback(
+    (session: {
+      conversationId: number
+      agentType?: AgentType | null
+      outcome?: LoopIterationOutcome | null
+      stage?: LoopStage
+    }) => {
+      if (issue == null) return
+      openIteration({
+        conversationId: session.conversationId,
+        agentType: session.agentType,
+        outcome: session.outcome,
+        issueContext: {
+          spaceId: issue.space_id,
+          issueId: issue.id,
+          issueSeq: issue.seq_no,
+          stage: session.stage,
         },
       })
     },
@@ -354,6 +389,8 @@ export function IssueDetail({
                 onFocusConsumed={clearFocus}
                 onSelect={openArtifact}
                 onOpenIteration={onOpenIteration}
+                artifactIterationRefs={artifactIterationRefs}
+                onOpenSession={onOpenSession}
               />
               {artifacts.length <= 1 && liveIterations.length === 0 && (
                 <p className="mt-4 text-center text-xs text-muted-foreground">

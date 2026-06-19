@@ -4,10 +4,13 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { TriangleAlert } from "lucide-react"
 
+import { AgentIcon } from "@/components/agent-icon"
 import { foldReviews, placeGhosts } from "@/lib/loop-dag"
 import {
   buildProcessGraph,
+  type ArtifactIterationRef,
   type ArtifactNode,
+  type IterationRef,
   type Phase,
   type PhaseConnector,
   type PhasePending,
@@ -15,13 +18,17 @@ import {
   type ProcessGraph,
 } from "@/lib/loop-process-graph"
 import type { AttentionKey } from "@/lib/loop-attention"
+import { AGENT_LABELS } from "@/lib/types"
 import type {
+  AgentType,
   LoopArtifactRow,
   LoopArtifactStatus,
   LoopInboxItemRow,
+  LoopIterationOutcome,
   LoopIterationRow,
   LoopLinkRow,
   LoopReviewVerdict,
+  LoopStage,
 } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
@@ -50,6 +57,13 @@ const PLACEHOLDER_W = 116 // an empty phase's slim placeholder box
 const PLACEHOLDER_H = 72
 const SKIP_LANE_GAP = 18 // gap below the boxes before the skip-routing lane
 const SKIP_LANE_H = 28 // reserved band a skip connector dips into
+const SESSION_CHIP_H = 30 // a live triage/finalize session chip (Issue / Result)
+const SESSION_GAP = 8 // gap above the first session chip / between chips
+const SESSION_PITCH = SESSION_CHIP_H + SESSION_GAP
+
+/** Human-readable agent name for an `AgentType`, falling back to the raw wire
+ *  value for an unknown (future) agent so the label degrades instead of blanking. */
+const agentName = (a: AgentType): string => AGENT_LABELS[a] ?? a
 
 /** Superseded / cancelled nodes are history; when revealed they render dimmed. */
 const isDead = (s: LoopArtifactStatus): boolean =>
@@ -136,6 +150,11 @@ interface PendingLayout {
   x: number
   y: number
 }
+interface SessionLayout {
+  ref: IterationRef
+  x: number
+  y: number
+}
 interface PhaseBoxLayout {
   phase: Phase
   /** Solid box (has visible content) vs slim placeholder (empty phase). */
@@ -146,6 +165,8 @@ interface PhaseBoxLayout {
   height: number
   members: MemberLayout[]
   pending: PendingLayout[]
+  /** Live artifact-less session chips (Issue triage / Result finalize, P3). */
+  sessions: SessionLayout[]
 }
 interface WorkflowEdgeLayout {
   id: string
@@ -184,6 +205,7 @@ interface PreLayout {
     fold: { latest: LoopArtifactRow[]; olderCount: number }
   }>
   pendingLocal: Array<{ pending: PhasePending; lx: number; ly: number }>
+  sessionLocal: Array<{ ref: IterationRef; lx: number; ly: number }>
 }
 
 /** Visible rows of a node's reviews under the current toggle (dead hidden by
@@ -208,7 +230,13 @@ function prelayoutPhase(phase: Phase, showSuperseded: boolean): PreLayout {
   const visibleMembers = showSuperseded
     ? phase.members
     : phase.members.filter((m) => !m.dead)
-  const solid = visibleMembers.length > 0 || phase.pending.length > 0
+  // session_only gate (Codex major): a live artifact-less session keeps a phase
+  // solid (not a slim placeholder) even with no members/pending — its chip needs
+  // somewhere to render.
+  const solid =
+    visibleMembers.length > 0 ||
+    phase.pending.length > 0 ||
+    phase.sessionRefs.length > 0
 
   if (phase.kind === "implement") {
     // Compact the (possibly sparse after hiding dead) lanes to 0..n-1.
@@ -280,10 +308,13 @@ function prelayoutPhase(phase: Phase, showSuperseded: boolean): PreLayout {
       contentH,
       memberLocal: placedMembers,
       pendingLocal,
+      sessionLocal: [], // Implement carries no artifact-less sessions.
     }
   }
 
-  // issue / requirement / design / result / reflect: simple vertical stack.
+  // issue / requirement / design / result / reflect: a vertical stack of member
+  // cards, then pending ghosts, then live session chips (Issue triage / Result
+  // finalize — the artifact-less phase history, P3).
   const memberLocal = visibleMembers.map((node, i) => ({
     node,
     lx: 0,
@@ -296,10 +327,30 @@ function prelayoutPhase(phase: Phase, showSuperseded: boolean): PreLayout {
     lx: 0,
     ly: (visibleMembers.length + i) * ROW_PITCH,
   }))
-  const rows = visibleMembers.length + phase.pending.length
-  const contentH = rows > 0 ? (rows - 1) * ROW_PITCH + HEADER_H : 0
-  const contentW = rows > 0 ? NODE_W : 0
-  return { phase, solid, contentW, contentH, memberLocal, pendingLocal }
+  const nodeRows = visibleMembers.length + phase.pending.length
+  const nodeStackBottom =
+    nodeRows > 0 ? (nodeRows - 1) * ROW_PITCH + HEADER_H : 0
+  // Chips sit below the node stack (or at the top when the phase is session-only).
+  const sessionTop = nodeRows > 0 ? nodeStackBottom + SESSION_GAP : 0
+  const sessionLocal = phase.sessionRefs.map((ref, i) => ({
+    ref,
+    lx: 0,
+    ly: sessionTop + i * SESSION_PITCH,
+  }))
+  const sessionBottom = sessionLocal.length
+    ? sessionTop + (sessionLocal.length - 1) * SESSION_PITCH + SESSION_CHIP_H
+    : 0
+  const contentH = Math.max(nodeStackBottom, sessionBottom)
+  const contentW = nodeRows > 0 || sessionLocal.length > 0 ? NODE_W : 0
+  return {
+    phase,
+    solid,
+    contentW,
+    contentH,
+    memberLocal,
+    pendingLocal,
+    sessionLocal,
+  }
 }
 
 /** S-curve between two box edges that face each other (earlier right → later
@@ -375,6 +426,11 @@ function layoutGraph(graph: ProcessGraph, showSuperseded: boolean): GraphGeom {
         pending: pl.pending,
         x: contentLeft + pl.lx,
         y: contentTop + pl.ly,
+      })),
+      sessions: p.sessionLocal.map((s) => ({
+        ref: s.ref,
+        x: contentLeft + s.lx,
+        y: contentTop + s.ly,
       })),
     }
   })
@@ -469,6 +525,8 @@ export function DagGraph({
   onFocusConsumed,
   onSelect,
   onOpenIteration,
+  artifactIterationRefs,
+  onOpenSession,
 }: {
   artifacts: LoopArtifactRow[]
   links: LoopLinkRow[]
@@ -487,6 +545,16 @@ export function DagGraph({
   onSelect: (artifactId: number) => void
   /** Open a ghost's live iteration session (when it has a conversation). */
   onOpenIteration?: (pending: PhasePending) => void
+  /** Resolved producing-iteration refs (P3 agent facet). An array (incl. `[]`)
+   *  turns the facet on (`Array.isArray` probe); absent/null ⇒ facet off. */
+  artifactIterationRefs?: readonly ArtifactIterationRef[] | null
+  /** Open a live artifact-less session (Issue triage / Result finalize chip). */
+  onOpenSession?: (session: {
+    conversationId: number
+    agentType?: AgentType | null
+    outcome?: LoopIterationOutcome | null
+    stage?: LoopStage
+  }) => void
 }) {
   const tKind = useTranslations("Loops.artifactKind")
   const tStatus = useTranslations("Loops.artifactStatus")
@@ -495,11 +563,18 @@ export function DagGraph({
   const tDag = useTranslations("Loops.dag")
   const tPhase = useTranslations("Loops.phase")
   const tPhaseState = useTranslations("Loops.phaseState")
+  const tStage = useTranslations("Loops.stage")
 
   // The model is toggle-independent: built once, includes dead nodes flagged.
   const graph = useMemo(
-    () => buildProcessGraph({ artifacts, links, liveIterations }),
-    [artifacts, links, liveIterations]
+    () =>
+      buildProcessGraph({
+        artifacts,
+        links,
+        liveIterations,
+        artifactIterationRefs,
+      }),
+    [artifacts, links, liveIterations, artifactIterationRefs]
   )
 
   // Dead nodes (superseded / cancelled) are hidden by default so the graph shows
@@ -518,6 +593,32 @@ export function DagGraph({
     () => new Map(artifacts.map((a) => [a.id, a])),
     [artifacts]
   )
+
+  // P3 agent facet: a flat lookup of each node's (and folded review's) resolved
+  // agent + attempt count, keeping the cards decoupled from the geometry/fold.
+  // Gated by agentFacetAvailable — facet off ⇒ every lookup is null/null (no
+  // icons/badges, P1 appearance preserved).
+  const facetOf = useMemo(() => {
+    const m = new Map<
+      number,
+      { agentType: AgentType | null; attemptCount: number | null }
+    >()
+    if (graph.agentFacetAvailable) {
+      for (const p of graph.phases)
+        for (const node of p.members) {
+          m.set(node.artifact.id, {
+            agentType: node.producedBy?.agentType ?? null,
+            attemptCount: node.attemptCount,
+          })
+          for (const r of node.reviews)
+            m.set(r.artifact.id, {
+              agentType: r.producedBy?.agentType ?? null,
+              attemptCount: r.attemptCount,
+            })
+        }
+    }
+    return (id: number) => m.get(id) ?? { agentType: null, attemptCount: null }
+  }, [graph])
 
   // Locate-in-graph: when a `focus` request lands and its node is rendered,
   // scroll to it and pulse it for a moment, then consume the request. Re-runs on
@@ -568,7 +669,15 @@ export function DagGraph({
   const unmappedCount = graph.unmappedArtifacts + graph.unmappedIterations
   const hasAnyMember = graph.phases.some((p) => p.members.length > 0)
   const hasAnyPending = graph.phases.some((p) => p.pending.length > 0)
-  if (!hasAnyMember && !hasAnyPending && graph.supersededCount === 0) {
+  // A brand-new issue can be just a live triage session (no artifacts/ghosts yet);
+  // its session chip must still render, so sessions count toward "has content".
+  const hasAnySession = graph.phases.some((p) => p.sessionRefs.length > 0)
+  if (
+    !hasAnyMember &&
+    !hasAnyPending &&
+    !hasAnySession &&
+    graph.supersededCount === 0
+  ) {
     return null
   }
 
@@ -679,6 +788,9 @@ export function DagGraph({
                 executingLabel={tDetail("executingNow")}
                 attentionLabelOf={(count) => tDag("attention", { count })}
                 olderLabelOf={(count) => tDetail("reviewsOlder", { count })}
+                facetOf={facetOf}
+                agentRunByLabelOf={(agent) => tDag("agentRunBy", { agent })}
+                attemptsLabelOf={(count) => tDag("attempts", { count })}
                 onSelect={onSelect}
               />
             ) : (
@@ -695,6 +807,9 @@ export function DagGraph({
                 statusLabel={tStatus(m.node.artifact.status)}
                 executingLabel={tDetail("executingNow")}
                 attentionLabelOf={(count) => tDag("attention", { count })}
+                facet={facetOf(m.node.artifact.id)}
+                agentRunByLabelOf={(agent) => tDag("agentRunBy", { agent })}
+                attemptsLabelOf={(count) => tDag("attempts", { count })}
                 onSelect={onSelect}
               />
             )
@@ -713,7 +828,27 @@ export function DagGraph({
                   ? tDag("running")
                   : tDag("queued")
               }
+              agentFacetAvailable={graph.agentFacetAvailable}
+              agentRunByLabelOf={(agent) => tDag("agentRunBy", { agent })}
               onOpen={onOpenIteration}
+            />
+          ))
+        )}
+
+        {/* Live artifact-less session chips (Issue triage / Result finalize). */}
+        {geom.boxes.flatMap((box) =>
+          box.sessions.map((s) => (
+            <SessionChip
+              key={`session:${s.ref.iterationId}`}
+              session={s.ref}
+              x={s.x}
+              y={s.y}
+              kindLabel={tStage(s.ref.stage)}
+              statusLabel={
+                s.ref.status === "running" ? tDag("running") : tDag("queued")
+              }
+              agentRunByLabelOf={(agent) => tDag("agentRunBy", { agent })}
+              onOpenSession={onOpenSession}
             />
           ))
         )}
@@ -845,6 +980,8 @@ function PendingCard({
   y,
   kindLabel,
   statusLabel,
+  agentFacetAvailable,
+  agentRunByLabelOf,
   onOpen,
 }: {
   pending: PhasePending
@@ -852,16 +989,26 @@ function PendingCard({
   y: number
   kindLabel: string
   statusLabel: string
+  agentFacetAvailable: boolean
+  agentRunByLabelOf: (agent: string) => string
   onOpen?: (pending: PhasePending) => void
 }) {
   const clickable = pending.conversationId != null && onOpen != null
+  // Gate on agentFacetAvailable too (not just agentType != null) so a partial
+  // deployment with the facet off never shows a ghost icon (Codex minor).
+  const agentType = agentFacetAvailable ? pending.agentType : null
+  const runBy = agentType ? agentRunByLabelOf(agentName(agentType)) : null
   return (
     <button
       type="button"
       disabled={!clickable}
       onClick={() => onOpen?.(pending)}
       style={{ left: x, top: y, width: NODE_W, height: HEADER_H }}
-      aria-label={`${kindLabel}: ${statusLabel}`}
+      aria-label={
+        runBy
+          ? `${kindLabel}: ${statusLabel} — ${runBy}`
+          : `${kindLabel}: ${statusLabel}`
+      }
       className={cn(
         "absolute flex flex-col justify-center gap-1 rounded-lg border border-dashed bg-card/60 px-3 py-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
         clickable ? "hover:bg-accent" : "cursor-default"
@@ -872,8 +1019,84 @@ function PendingCard({
         <span className="text-[0.625rem] uppercase tracking-wide text-muted-foreground">
           {kindLabel}
         </span>
+        {agentType && (
+          <span
+            className="ml-auto inline-flex shrink-0"
+            title={runBy ?? undefined}
+          >
+            <AgentIcon agentType={agentType} className="h-3 w-3" />
+          </span>
+        )}
       </div>
       <span className="truncate text-sm font-medium text-muted-foreground">
+        {statusLabel}
+      </span>
+    </button>
+  )
+}
+
+/**
+ * A live, artifact-less session chip (Issue triage / Result finalize). Unlike a
+ * landed node there's no drawer to open, so the chip itself is the session entry
+ * point — clickable to its conversation when it has one.
+ */
+function SessionChip({
+  session,
+  x,
+  y,
+  kindLabel,
+  statusLabel,
+  agentRunByLabelOf,
+  onOpenSession,
+}: {
+  session: IterationRef
+  x: number
+  y: number
+  kindLabel: string
+  statusLabel: string
+  agentRunByLabelOf: (agent: string) => string
+  onOpenSession?: (session: {
+    conversationId: number
+    agentType?: AgentType | null
+    outcome?: LoopIterationOutcome | null
+    stage?: LoopStage
+  }) => void
+}) {
+  const clickable = session.conversationId != null && onOpenSession != null
+  const runBy = session.agentType
+    ? agentRunByLabelOf(agentName(session.agentType))
+    : null
+  return (
+    <button
+      type="button"
+      disabled={!clickable}
+      onClick={() => {
+        if (session.conversationId != null)
+          onOpenSession?.({
+            conversationId: session.conversationId,
+            agentType: session.agentType,
+            outcome: session.outcome,
+            stage: session.stage,
+          })
+      }}
+      style={{ left: x, top: y, width: NODE_W, height: SESSION_CHIP_H }}
+      aria-label={
+        runBy
+          ? `${kindLabel}: ${statusLabel} — ${runBy}`
+          : `${kindLabel}: ${statusLabel}`
+      }
+      className={cn(
+        "absolute flex items-center gap-1.5 rounded-md border border-dashed bg-card/60 px-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+        clickable ? "hover:bg-accent" : "cursor-default"
+      )}
+    >
+      <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-sky-500" />
+      {session.agentType && (
+        <span className="inline-flex shrink-0" title={runBy ?? undefined}>
+          <AgentIcon agentType={session.agentType} className="h-3 w-3" />
+        </span>
+      )}
+      <span className="truncate text-xs text-muted-foreground">
         {statusLabel}
       </span>
     </button>
@@ -900,6 +1123,45 @@ function StatusDot({
   )
 }
 
+/** The agent facet shown on a node: an `×N` attempt badge (N > 1) and the
+ *  producing agent's icon (decorative — the node's own click opens the drawer,
+ *  which surfaces the producing session). Renders nothing when the facet is off
+ *  or the node has no agent / a single attempt. */
+function AgentBadge({
+  agentType,
+  attemptCount,
+  runByLabelOf,
+  attemptsLabelOf,
+}: {
+  agentType: AgentType | null
+  attemptCount: number | null
+  runByLabelOf: (agent: string) => string
+  attemptsLabelOf: (count: number) => string
+}) {
+  const showAttempts = attemptCount != null && attemptCount > 1
+  if (!agentType && !showAttempts) return null
+  return (
+    <>
+      {showAttempts && (
+        <span
+          title={attemptsLabelOf(attemptCount)}
+          className="rounded bg-muted px-1 text-[0.5625rem] font-medium tabular-nums text-muted-foreground"
+        >
+          ×{attemptCount}
+        </span>
+      )}
+      {agentType && (
+        <span
+          title={runByLabelOf(agentName(agentType))}
+          className="inline-flex shrink-0"
+        >
+          <AgentIcon agentType={agentType} className="h-3 w-3" />
+        </span>
+      )}
+    </>
+  )
+}
+
 /** A read-stage (issue/requirement/design), result, or reflection node. */
 function NodeCard({
   artifact,
@@ -913,6 +1175,9 @@ function NodeCard({
   statusLabel,
   executingLabel,
   attentionLabelOf,
+  facet,
+  agentRunByLabelOf,
+  attemptsLabelOf,
   onSelect,
 }: {
   artifact: LoopArtifactRow
@@ -926,21 +1191,26 @@ function NodeCard({
   statusLabel: string
   executingLabel: string
   attentionLabelOf: (count: number) => string
+  facet: { agentType: AgentType | null; attemptCount: number | null }
+  agentRunByLabelOf: (agent: string) => string
+  attemptsLabelOf: (count: number) => string
   onSelect: (artifactId: number) => void
 }) {
   const attention = attentionCount > 0
   const attentionLabel = attention ? attentionLabelOf(attentionCount) : null
+  const runBy = facet.agentType
+    ? agentRunByLabelOf(agentName(facet.agentType))
+    : null
+  const aria = [`${kindLabel}: ${artifact.title}`]
+  if (runBy) aria.push(runBy)
+  if (attentionLabel) aria.push(attentionLabel)
   return (
     <button
       type="button"
       data-artifact-id={artifact.id}
       onClick={() => onSelect(artifact.id)}
       style={{ left: x, top: y, width: NODE_W, height: HEADER_H }}
-      aria-label={
-        attentionLabel
-          ? `${kindLabel}: ${artifact.title} — ${attentionLabel}`
-          : `${kindLabel}: ${artifact.title}`
-      }
+      aria-label={aria.join(" — ")}
       className={cn(
         "absolute flex flex-col justify-center gap-1 rounded-lg border bg-card px-3 py-2 text-left shadow-sm outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring",
         nodeRingClass({ pulsing, attention, executing }),
@@ -956,11 +1226,19 @@ function NodeCard({
         <span className="text-[0.625rem] uppercase tracking-wide text-muted-foreground">
           {kindLabel}
         </span>
-        {attention && (
-          <span className="ml-auto" title={attentionLabel ?? undefined}>
-            <AttentionMark />
-          </span>
-        )}
+        <span className="ml-auto flex items-center gap-1">
+          <AgentBadge
+            agentType={facet.agentType}
+            attemptCount={facet.attemptCount}
+            runByLabelOf={agentRunByLabelOf}
+            attemptsLabelOf={attemptsLabelOf}
+          />
+          {attention && (
+            <span title={attentionLabel ?? undefined}>
+              <AttentionMark />
+            </span>
+          )}
+        </span>
       </div>
       <span className="truncate text-sm font-medium">{artifact.title}</span>
     </button>
@@ -986,6 +1264,9 @@ function ClusterCard({
   executingLabel,
   attentionLabelOf,
   olderLabelOf,
+  facetOf,
+  agentRunByLabelOf,
+  attemptsLabelOf,
   onSelect,
 }: {
   cluster: TaskClusterView
@@ -1003,6 +1284,12 @@ function ClusterCard({
   executingLabel: string
   attentionLabelOf: (count: number) => string
   olderLabelOf: (count: number) => string
+  facetOf: (id: number) => {
+    agentType: AgentType | null
+    attemptCount: number | null
+  }
+  agentRunByLabelOf: (agent: string) => string
+  attemptsLabelOf: (count: number) => string
   onSelect: (artifactId: number) => void
 }) {
   const { task, fold } = cluster
@@ -1013,6 +1300,13 @@ function ClusterCard({
   const taskAttentionLabel = taskAttention
     ? attentionLabelOf(taskAttentionCount)
     : null
+  const taskFacet = facetOf(task.id)
+  const taskRunBy = taskFacet.agentType
+    ? agentRunByLabelOf(agentName(taskFacet.agentType))
+    : null
+  const taskAria = [`${kindLabel}: ${task.title}`]
+  if (taskRunBy) taskAria.push(taskRunBy)
+  if (taskAttentionLabel) taskAria.push(taskAttentionLabel)
   return (
     <div
       data-artifact-id={task.id}
@@ -1031,11 +1325,7 @@ function ClusterCard({
         type="button"
         onClick={() => onSelect(task.id)}
         style={{ height: HEADER_H }}
-        aria-label={
-          taskAttentionLabel
-            ? `${kindLabel}: ${task.title} — ${taskAttentionLabel}`
-            : `${kindLabel}: ${task.title}`
-        }
+        aria-label={taskAria.join(" — ")}
         className={cn(
           "flex flex-col justify-center gap-1 px-3 py-2 text-left outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
           taskExecuting && "ring-2 ring-inset ring-sky-500/50"
@@ -1050,11 +1340,19 @@ function ClusterCard({
           <span className="text-[0.625rem] uppercase tracking-wide text-muted-foreground">
             {kindLabel}
           </span>
-          {taskAttention && (
-            <span className="ml-auto" title={taskAttentionLabel ?? undefined}>
-              <AttentionMark />
-            </span>
-          )}
+          <span className="ml-auto flex items-center gap-1">
+            <AgentBadge
+              agentType={taskFacet.agentType}
+              attemptCount={taskFacet.attemptCount}
+              runByLabelOf={agentRunByLabelOf}
+              attemptsLabelOf={attemptsLabelOf}
+            />
+            {taskAttention && (
+              <span title={taskAttentionLabel ?? undefined}>
+                <AttentionMark />
+              </span>
+            )}
+          </span>
         </div>
         <span className="truncate text-sm font-medium">{task.title}</span>
       </button>
@@ -1083,6 +1381,14 @@ function ClusterCard({
             const baseLabel = verdictLabel
               ? `${reviewKindLabel}: ${review.title} — ${verdictLabel}`
               : `${reviewKindLabel}: ${review.title}`
+            const reviewFacet = facetOf(review.id)
+            const reviewAgentType = reviewFacet.agentType
+            const reviewRunBy = reviewAgentType
+              ? agentRunByLabelOf(agentName(reviewAgentType))
+              : null
+            const reviewAria = [baseLabel]
+            if (reviewRunBy) reviewAria.push(reviewRunBy)
+            if (attentionLabel) reviewAria.push(attentionLabel)
             return (
               <button
                 key={review.id}
@@ -1090,11 +1396,7 @@ function ClusterCard({
                 data-artifact-id={review.id}
                 onClick={() => onSelect(review.id)}
                 style={{ height: REVIEW_H }}
-                aria-label={
-                  attentionLabel
-                    ? `${baseLabel} — ${attentionLabel}`
-                    : baseLabel
-                }
+                aria-label={reviewAria.join(" — ")}
                 title={verdictLabel ?? statusLabel}
                 className={cn(
                   "flex items-center gap-1.5 px-3 text-left outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
@@ -1127,6 +1429,12 @@ function ClusterCard({
                     <AttentionMark />
                   </span>
                 )}
+                <AgentBadge
+                  agentType={reviewFacet.agentType}
+                  attemptCount={reviewFacet.attemptCount}
+                  runByLabelOf={agentRunByLabelOf}
+                  attemptsLabelOf={attemptsLabelOf}
+                />
                 {review.verdict && (
                   <span
                     aria-hidden

@@ -17,6 +17,7 @@ import type {
   LoopMemoryRow,
   LoopMemoryStatus,
   LoopSpaceSummary,
+  LoopStage,
   LoopValidationRunRow,
 } from "./types"
 
@@ -188,6 +189,25 @@ export function listLoopIterations(spaceId: number, issueId?: number) {
   return getTransport().call<LoopIterationRow[]>("list_loop_iterations", {
     spaceId,
     issueId: issueId ?? null,
+  })
+}
+
+/** Targeted, bounded iteration history for one artifact (P3 drawer): a task's
+ *  implement + review attempts, a requirement/design/etc.'s producing run. */
+export function getLoopArtifactIterations(artifactId: number) {
+  return getTransport().call<LoopIterationRow[]>(
+    "get_loop_artifact_iterations",
+    { artifactId }
+  )
+}
+
+/** Phase-level (artifact-less) iteration history for an issue stage (P3 drawer):
+ *  triage sessions behind an Issue node, finalize sessions behind a Result node.
+ *  The server enforces `target_artifact_id IS NULL`. */
+export function getLoopPhaseIterations(issueId: number, stage: LoopStage) {
+  return getTransport().call<LoopIterationRow[]>("get_loop_phase_iterations", {
+    issueId,
+    stage,
   })
 }
 

@@ -689,6 +689,10 @@ export interface LoopDagView {
   gate_decisions: LoopGateDecisionRow[]
   /** In-flight (queued|running) iterations — drives ghost nodes + stage rail. */
   live_iterations: LoopIterationRow[]
+  /** Resolved producing-iteration refs for this issue's artifacts (P3 agent
+   *  facet). Optional: older servers omit it, which the model reads via
+   *  `Array.isArray` as "facet unavailable". */
+  artifact_iteration_refs?: ArtifactIterationRef[]
 }
 
 /** Why an iteration ended (D11). `declared_complete` is a Phase-C value, listed
@@ -710,6 +714,9 @@ export interface LoopIterationRow {
   target_artifact_id: number | null
   target_title: string | null
   conversation_id: number | null
+  /** Producing agent (P3), joined from `conversation.agent_type`. Optional: older
+   *  servers omit it; `null` when the iteration has no conversation. */
+  agent_type?: AgentType | null
   status: LoopIterationStatus
   launched_by: LoopLaunchedBy
   attempt: number
@@ -718,6 +725,21 @@ export interface LoopIterationRow {
   created_at: string
   started_at: string | null
   ended_at: string | null
+}
+
+/** TS mirror of the backend `ArtifactIterationRef` (P3 agent facet). A *resolved*
+ *  producing reference for one artifact (non-null id/stage/status); an unresolvable
+ *  `produced_by_iteration_id` yields no row. `agent_type` is `conversation.agent_type`
+ *  (its `AgentType` union; `AgentIcon` falls back for unknown values). */
+export interface ArtifactIterationRef {
+  artifact_id: number
+  iteration_id: number
+  stage: LoopStage
+  status: LoopIterationStatus
+  outcome: LoopIterationOutcome | null
+  agent_type: AgentType | null
+  conversation_id: number | null
+  attempt_count: number
 }
 
 export interface LoopValidationRunRow {

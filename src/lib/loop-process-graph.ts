@@ -7,6 +7,8 @@ import {
   phaseRank,
 } from "@/lib/loop-phase"
 import type {
+  AgentType,
+  ArtifactIterationRef,
   LoopArtifactKind,
   LoopArtifactRow,
   LoopArtifactStatus,
@@ -18,6 +20,11 @@ import type {
   LoopLinkRow,
   LoopStage,
 } from "@/lib/types"
+
+// `ArtifactIterationRef` is the backend DTO mirror; its home is `types.ts`.
+// Re-exported here so consumers of the model's input contract keep importing it
+// from this module.
+export type { ArtifactIterationRef }
 
 /**
  * The two-level process model that replaces the artifact-level "edge soup" DAG.
@@ -35,9 +42,9 @@ import type {
  * and precomputes both `activeCount`/`totalCount` connector counts. Hiding dead
  * nodes is a pure render-layer choice that never rebuilds the model (spec §4.6).
  *
- * P1 scope: this is the pure model only — no DAG/rail render consumes it yet, and
- * the whole agent facet (producedBy / attemptCount / sessionRefs) is deferred to
- * P3 and rendered absent here.
+ * The agent facet (producedBy / attemptCount / sessionRefs) is populated only when
+ * `artifactIterationRefs` is supplied (P3); without it the model degrades cleanly
+ * to the structural-only graph (all facet fields null/empty).
  */
 export interface ProcessGraph {
   /** Always 6, in {@link PHASE_ORDER}. Includes empty phases (rail full-spectrum). */
@@ -54,7 +61,7 @@ export interface ProcessGraph {
   unmappedArtifacts: number
   unmappedIterations: number
   /** Capability probe (spec §3.3): whether the agent facet (icons, producedBy,
-   *  sessionRefs) can be populated. P1 callers never pass refs ⇒ always false. */
+   *  sessionRefs) can be populated — true iff `artifactIterationRefs` was given. */
   agentFacetAvailable: boolean
 }
 
@@ -81,7 +88,7 @@ export interface Phase {
   /** In-flight iterations of this phase whose output artifact hasn't landed. */
   pending: PhasePending[]
   /** Live (queued|running) artifact-less sessions (in-flight triage on Issue,
-   *  finalize/fan-in on Result). **P1: always empty** (agent facet → P3). */
+   *  finalize/fan-in on Result). Empty unless the agent facet is available. */
   sessionRefs: IterationRef[]
 }
 
@@ -96,9 +103,9 @@ export interface ArtifactNode {
   /** Folded reviews of a task (each a full node, with its own `dead`), oldest →
    *  newest by (attempt, sort, id). Empty for non-task kinds. */
   reviews: ArtifactNode[]
-  // —— agent facet, only when agentFacetAvailable; P1: always null (spec §4.3) ——
+  // —— agent facet, populated only when agentFacetAvailable (spec §4.3) ——
   producedBy: ProducedBy | null
-  /** null ⇒ facet unavailable; semantics in spec §4.3. */
+  /** null ⇒ facet unavailable or no producer; semantics in spec §4.3. */
   attemptCount: number | null
 }
 
@@ -114,7 +121,7 @@ export interface ArtifactNode {
 export interface ProducedBy {
   iterationId: number | null
   stage: LoopStage | null
-  agentType: string | null
+  agentType: AgentType | null
   conversationId: number | null
 }
 
@@ -153,8 +160,8 @@ export interface WorkflowEdge {
 
 /**
  * A live, artifact-less session attached to a phase (Issue triage / Result
- * finalize). Populated only when the agent facet is available — **P1 leaves all
- * `sessionRefs` empty** (deferred to P3).
+ * finalize). Populated only when the agent facet is available (otherwise the
+ * phase's `sessionRefs` stay empty).
  */
 export interface IterationRef {
   iterationId: number
@@ -162,7 +169,7 @@ export interface IterationRef {
   attempt: number
   status: LoopIterationStatus
   outcome: LoopIterationOutcome | null
-  agentType: string | null
+  agentType: AgentType | null
   conversationId: number | null
 }
 
@@ -175,29 +182,14 @@ export interface IterationRef {
 export interface PhasePending {
   iterationId: number
   conversationId: number | null
+  /** Producing agent of the in-flight iteration (P3). The render gates the icon by
+   *  `agentFacetAvailable && agentType != null`. `null` on older servers. */
+  agentType: AgentType | null
   stage: LoopStage
   /** Artifact kind this stage will produce. */
   kind: LoopArtifactKind
   status: "queued" | "running"
   startedAt: string | null
-}
-
-/**
- * TS mirror of the backend `ArtifactIterationRef` DTO row (spec §4.4). The
- * backend field and `types.ts` mirror land in **P3**; this consuming-side type is
- * defined now so the model's input contract is typed. Each row carries a
- * **resolved** producing reference (non-null id/stage/status); an unresolvable
- * `produced_by_iteration_id` simply yields no row.
- */
-export interface ArtifactIterationRef {
-  artifact_id: number
-  iteration_id: number
-  stage: LoopStage
-  status: LoopIterationStatus
-  outcome: LoopIterationOutcome | null
-  agent_type: string | null
-  conversation_id: number | null
-  attempt_count: number
 }
 
 export interface BuildProcessGraphInput {
@@ -248,6 +240,43 @@ export function buildProcessGraph(input: BuildProcessGraphInput): ProcessGraph {
   // don't pass refs, so this is false and the whole agent facet stays absent.
   const agentFacetAvailable = Array.isArray(input.artifactIterationRefs)
 
+  // P3 agent facet: index the resolved producing refs by artifact (empty when the
+  // facet is off, so resolution below is a no-op and P1 behavior is preserved).
+  const refByArtifact = new Map<number, ArtifactIterationRef>()
+  if (agentFacetAvailable) {
+    for (const r of input.artifactIterationRefs!)
+      refByArtifact.set(r.artifact_id, r)
+  }
+  // The 4 producedBy states (spec §3.2): facet off OR no producer ⇒ null/null;
+  // producer set but its ref is absent (orphan / cross-issue) ⇒ unresolved
+  // (iterationId null); ref present ⇒ fully resolved + per-kind attemptCount.
+  const resolveProducedBy = (
+    artifact: LoopArtifactRow
+  ): Pick<ArtifactNode, "producedBy" | "attemptCount"> => {
+    if (!agentFacetAvailable || artifact.produced_by_iteration_id == null)
+      return { producedBy: null, attemptCount: null }
+    const ref = refByArtifact.get(artifact.id)
+    if (!ref)
+      return {
+        producedBy: {
+          iterationId: null,
+          stage: null,
+          agentType: null,
+          conversationId: null,
+        },
+        attemptCount: null,
+      }
+    return {
+      producedBy: {
+        iterationId: ref.iteration_id,
+        stage: ref.stage,
+        agentType: ref.agent_type,
+        conversationId: ref.conversation_id,
+      },
+      attemptCount: ref.attempt_count,
+    }
+  }
+
   // Model is toggle-independent: index over ALL artifacts (dead included).
   const byId = new Map(artifacts.map((a) => [a.id, a]))
   const supersededCount = artifacts.filter((a) => isDead(a.status)).length
@@ -290,9 +319,9 @@ export function buildProcessGraph(input: BuildProcessGraphInput): ProcessGraph {
     col,
     lane,
     reviews,
-    // Agent facet is P3 — absent in P1 (spec §4.3: never half-filled here).
-    producedBy: null,
-    attemptCount: null,
+    // Agent facet (P3): resolved for every node, including folded reviews. Facet
+    // off ⇒ null/null, preserving P1 behavior.
+    ...resolveProducedBy(artifact),
   })
 
   for (const a of artifacts) {
@@ -423,6 +452,7 @@ export function buildProcessGraph(input: BuildProcessGraphInput): ProcessGraph {
     pendingByPhase.get(phase)!.push({
       iterationId: it.id,
       conversationId: it.conversation_id,
+      agentType: it.agent_type ?? null,
       stage: it.stage,
       kind,
       status: it.status,
@@ -430,11 +460,40 @@ export function buildProcessGraph(input: BuildProcessGraphInput): ProcessGraph {
     })
   }
 
+  // --- Live, artifact-less sessions per phase (P3 facet): in-flight triage →
+  // Issue, finalize → Result. Only target-less iterations (these are the
+  // artifact-less phase history; a targeted run belongs to its node) and only live
+  // (settled sessions are fetched lazily by the drawer). Off ⇒ all empty (P1). ---
+  const sessionRefsByPhase = new Map<LoopPhase, IterationRef[]>()
+  for (const phase of PHASE_ORDER) sessionRefsByPhase.set(phase, [])
+  if (agentFacetAvailable) {
+    for (const it of liveIterations) {
+      if (it.status !== "queued" && it.status !== "running") continue
+      if (it.target_artifact_id != null) continue
+      const phase: LoopPhase | null =
+        it.stage === "triage"
+          ? "issue"
+          : it.stage === "finalize"
+            ? "result"
+            : null
+      if (phase === null) continue
+      sessionRefsByPhase.get(phase)!.push({
+        iterationId: it.id,
+        stage: it.stage,
+        attempt: it.attempt,
+        status: it.status,
+        outcome: it.outcome,
+        agentType: it.agent_type ?? null,
+        conversationId: it.conversation_id,
+      })
+    }
+  }
+
   // --- Assemble the six phases. ---
   const phases: Phase[] = PHASE_ORDER.map((kind) => {
     const members = membersByPhase.get(kind)!
     const pending = pendingByPhase.get(kind)!
-    const sessionRefs: IterationRef[] = [] // P1: agent facet off
+    const sessionRefs = sessionRefsByPhase.get(kind)!
     const state = computePhaseState(members, pending.length)
     const emptyReason =
       state === "empty"

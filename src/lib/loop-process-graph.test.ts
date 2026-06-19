@@ -469,12 +469,171 @@ describe("buildProcessGraph: agent-facet capability probe (spec §3.3)", () => {
     expect(buildProcessGraph(base).agentFacetAvailable).toBe(false)
   })
 
-  it("P1 leaves producedBy/attemptCount null even when facet is available", () => {
-    // Resolution from refs is P3; P1 only computes the probe flag.
+  it("an artifact with no producer stays null even with the facet on", () => {
+    // base's requirement has produced_by_iteration_id null ⇒ §3.2 case ①.
     const g = buildProcessGraph({ ...base, artifactIterationRefs: [] })
     const m = phaseOf(g, "requirement").members[0]
     expect(m.producedBy).toBeNull()
     expect(m.attemptCount).toBeNull()
+  })
+})
+
+describe("buildProcessGraph: agent-facet resolution (spec §3.2)", () => {
+  it("a resolved ref fills producedBy + attemptCount", () => {
+    const a = art(2, "requirement", { produced_by_iteration_id: 5 })
+    const refs: ArtifactIterationRef[] = [
+      {
+        artifact_id: 2,
+        iteration_id: 5,
+        stage: "refine",
+        status: "succeeded",
+        outcome: "succeeded",
+        agent_type: "codex",
+        conversation_id: 100,
+        attempt_count: 2,
+      },
+    ]
+    const m = phaseOf(
+      buildProcessGraph({
+        artifacts: [a],
+        links: [],
+        artifactIterationRefs: refs,
+      }),
+      "requirement"
+    ).members[0]
+    expect(m.producedBy).toEqual({
+      iterationId: 5,
+      stage: "refine",
+      agentType: "codex",
+      conversationId: 100,
+    })
+    expect(m.attemptCount).toBe(2)
+  })
+
+  it("a producer with no matching ref ⇒ unresolved (iterationId null)", () => {
+    const a = art(2, "requirement", { produced_by_iteration_id: 999 })
+    const m = phaseOf(
+      buildProcessGraph({
+        artifacts: [a],
+        links: [],
+        artifactIterationRefs: [],
+      }),
+      "requirement"
+    ).members[0]
+    expect(m.producedBy).toEqual({
+      iterationId: null,
+      stage: null,
+      agentType: null,
+      conversationId: null,
+    })
+    expect(m.attemptCount).toBeNull()
+  })
+
+  it("facet off ⇒ null even for an artifact with a producer", () => {
+    const a = art(2, "requirement", { produced_by_iteration_id: 5 })
+    const m = phaseOf(
+      buildProcessGraph({ artifacts: [a], links: [] }),
+      "requirement"
+    ).members[0]
+    expect(m.producedBy).toBeNull()
+    expect(m.attemptCount).toBeNull()
+  })
+
+  it("a folded review resolves its own producedBy from refs", () => {
+    const task = art(10, "task", { produced_by_iteration_id: 1 })
+    const review = art(11, "review", { produced_by_iteration_id: 7 })
+    const refs: ArtifactIterationRef[] = [
+      {
+        artifact_id: 10,
+        iteration_id: 1,
+        stage: "plan",
+        status: "succeeded",
+        outcome: "succeeded",
+        agent_type: "claude_code",
+        conversation_id: 1,
+        attempt_count: 1,
+      },
+      {
+        artifact_id: 11,
+        iteration_id: 7,
+        stage: "review",
+        status: "succeeded",
+        outcome: "succeeded",
+        agent_type: "codex",
+        conversation_id: 9,
+        attempt_count: 1,
+      },
+    ]
+    const impl = phaseOf(
+      buildProcessGraph({
+        artifacts: [task, review],
+        links: [link(1, 11, 10, "reviews")],
+        artifactIterationRefs: refs,
+      }),
+      "implement"
+    )
+    expect(impl.members[0].producedBy?.agentType).toBe("claude_code")
+    expect(impl.members[0].reviews[0].producedBy).toEqual({
+      iterationId: 7,
+      stage: "review",
+      agentType: "codex",
+      conversationId: 9,
+    })
+  })
+
+  it("sessionRefs take live artifact-less triage→Issue, finalize→Result only", () => {
+    const live = [
+      iter(1, "triage", {
+        status: "running",
+        agent_type: "codex",
+        conversation_id: 5,
+      }),
+      iter(2, "finalize", {
+        status: "queued",
+        agent_type: "claude_code",
+        conversation_id: 6,
+      }),
+      iter(3, "finalize", { status: "running", target_artifact_id: 99 }), // targeted → out
+      iter(4, "triage", { status: "succeeded" }), // settled → out
+    ]
+    const g = buildProcessGraph({
+      artifacts: [],
+      links: [],
+      liveIterations: live,
+      artifactIterationRefs: [],
+    })
+    expect(phaseOf(g, "issue").sessionRefs.map((s) => s.iterationId)).toEqual([
+      1,
+    ])
+    expect(phaseOf(g, "issue").sessionRefs[0].agentType).toBe("codex")
+    expect(phaseOf(g, "result").sessionRefs.map((s) => s.iterationId)).toEqual([
+      2,
+    ])
+    // session_only becomes reachable (no members, but a live session present).
+    expect(phaseOf(g, "issue").emptyReason).toBe("session_only")
+  })
+
+  it("facet off ⇒ sessionRefs empty even with live triage", () => {
+    const g = buildProcessGraph({
+      artifacts: [],
+      links: [],
+      liveIterations: [iter(1, "triage", { status: "running" })],
+    })
+    expect(phaseOf(g, "issue").sessionRefs).toEqual([])
+  })
+
+  it("a pending ghost carries its iteration's agentType", () => {
+    const g = buildProcessGraph({
+      artifacts: [],
+      links: [],
+      liveIterations: [
+        iter(1, "design", { status: "running", agent_type: "gemini" }),
+      ],
+      artifactIterationRefs: [],
+    })
+    const pending = phaseOf(g, "design").pending
+    expect(pending).toHaveLength(1)
+    expect(pending[0].agentType).toBe("gemini")
   })
 })
 

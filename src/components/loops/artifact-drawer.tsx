@@ -9,13 +9,15 @@ import {
   approveLoopDesign,
   approveLoopMerge,
   getLoopArtifact,
+  getLoopArtifactIterations,
   getLoopDag,
   getLoopIssue,
+  getLoopPhaseIterations,
   listLoopInbox,
-  listLoopIterations,
   rejectLoopDesign,
   rejectLoopMerge,
 } from "@/lib/loops-api"
+import { AgentIcon } from "@/components/agent-icon"
 import { toErrorMessage } from "@/lib/app-error"
 import { diffLines, type DiffLine } from "@/lib/line-diff"
 import {
@@ -113,9 +115,12 @@ interface ArtifactDrawerData {
   // The gate decision for THIS artifact's own target: a task's review gate or a
   // result's integration (finalize) gate. Null when none recorded yet.
   gateDecision: LoopGateDecisionRow | null
-  // This issue's iterations — used to resolve the producer's session and to list
-  // every iteration that targeted this artifact (D10 cross-nav).
+  // The targeted, bounded iteration history for this node (spec §4.4): a node's
+  // own targeting iterations, or an Issue/Result phase's artifact-less sessions.
   iterations: LoopIterationRow[]
+  // True when the iteration-history commands are absent (older server) — the
+  // iteration section degrades to an "unsupported" note instead of a timeline.
+  iterationsUnsupported: boolean
   // This artifact's pending inbox cards (D10): a card concerning it shows inline
   // with a jump to its session.
   inboxCards: LoopInboxItemRow[]
@@ -128,6 +133,7 @@ const EMPTY_DRAWER: ArtifactDrawerData = {
   checks: new Map(),
   gateDecision: null,
   iterations: [],
+  iterationsUnsupported: false,
   inboxCards: [],
 }
 
@@ -235,14 +241,24 @@ function ArtifactDrawerBody({ artifactId }: { artifactId: number }) {
       let checks: Map<number, LoopCriterionCheckRow> = new Map()
       let gateDecision: LoopGateDecisionRow | null = null
       let iterations: LoopIterationRow[] = []
+      let iterationsUnsupported = false
       let inboxCards: LoopInboxItemRow[] = []
       if (detail && spaceId != null) {
-        // This issue's iterations (producer + everything that targeted this
-        // artifact) and its pending inbox cards concerning this artifact. Both
-        // best-effort: a failure just hides the cross-nav, never the artifact.
-        iterations = await listLoopIterations(spaceId, detail.issue_id).catch(
-          () => []
-        )
+        // Targeted, bounded iteration history (spec §4.4): task / requirement /
+        // design / reflection load the iterations that targeted this artifact; an
+        // Issue node loads its triage sessions and a Result node its finalize
+        // sessions (both artifact-less, fetched by phase). Older servers lack
+        // these commands — degrade the section, never fail the drawer.
+        try {
+          iterations =
+            detail.kind === "issue"
+              ? await getLoopPhaseIterations(detail.issue_id, "triage")
+              : detail.kind === "result"
+                ? await getLoopPhaseIterations(detail.issue_id, "finalize")
+                : await getLoopArtifactIterations(detail.id)
+        } catch {
+          iterationsUnsupported = true
+        }
         inboxCards = await listLoopInbox(spaceId, "pending")
           .then((rows) => {
             const byNode = buildAttentionMap(
@@ -314,6 +330,7 @@ function ArtifactDrawerBody({ artifactId }: { artifactId: number }) {
         checks,
         gateDecision,
         iterations,
+        iterationsUnsupported,
         inboxCards,
       }
     },
@@ -334,11 +351,10 @@ function ArtifactDrawerBody({ artifactId }: { artifactId: number }) {
           (it) => it.id === detail.produced_by_iteration_id
         ) ?? null)
       : null
-  const targetingIterations = detail
-    ? [...data.iterations]
-        .filter((it) => it.target_artifact_id === detail.id)
-        .sort((a, b) => b.id - a.id)
-    : []
+  // The iteration-history command already scopes these (a node's own targeting
+  // iterations, or an Issue/Result phase's artifact-less sessions); just order
+  // them newest-first.
+  const targetingIterations = [...data.iterations].sort((a, b) => b.id - a.id)
 
   // Open an iteration's read-only session in the shared viewer (when it has a
   // bound conversation). Labels the viewer with this artifact's issue context.
@@ -346,6 +362,7 @@ function ArtifactDrawerBody({ artifactId }: { artifactId: number }) {
     if (it.conversation_id == null || !detail) return
     openIteration({
       conversationId: it.conversation_id,
+      agentType: it.agent_type ?? undefined,
       outcome: it.outcome,
       issueContext: {
         spaceId: spaceId ?? 0,
@@ -620,34 +637,51 @@ function ArtifactDrawerBody({ artifactId }: { artifactId: number }) {
               </Section>
             )}
 
-            {targetingIterations.length > 0 && (
+            {data.iterationsUnsupported ? (
               <Section title={t("targetingHeading")}>
-                <ul className="space-y-1.5">
-                  {targetingIterations.map((it) => (
-                    <li key={it.id} className="flex items-center gap-2 text-sm">
-                      <span className="text-muted-foreground">
-                        {tStage(it.stage)}
-                      </span>
-                      <IterationStatusBadge status={it.status} />
-                      {it.attempt > 0 && (
-                        <span className="text-[11px] text-muted-foreground">
-                          {t("attempt", { n: it.attempt })}
-                        </span>
-                      )}
-                      {it.conversation_id != null && (
-                        <button
-                          type="button"
-                          onClick={() => openSession(it)}
-                          className="ml-auto inline-flex items-center gap-1 text-xs text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-                        >
-                          <MessageSquare className="h-3 w-3" />
-                          {t("openSession")}
-                        </button>
-                      )}
-                    </li>
-                  ))}
-                </ul>
+                <p className="text-sm text-muted-foreground">
+                  {t("iterationsUnsupported")}
+                </p>
               </Section>
+            ) : (
+              targetingIterations.length > 0 && (
+                <Section title={t("targetingHeading")}>
+                  <ul className="space-y-1.5">
+                    {targetingIterations.map((it) => (
+                      <li
+                        key={it.id}
+                        className="flex items-center gap-2 text-sm"
+                      >
+                        {it.agent_type && (
+                          <AgentIcon
+                            agentType={it.agent_type}
+                            className="h-3.5 w-3.5"
+                          />
+                        )}
+                        <span className="text-muted-foreground">
+                          {tStage(it.stage)}
+                        </span>
+                        <IterationStatusBadge status={it.status} />
+                        {it.attempt > 0 && (
+                          <span className="text-[11px] text-muted-foreground">
+                            {t("attempt", { n: it.attempt })}
+                          </span>
+                        )}
+                        {it.conversation_id != null && (
+                          <button
+                            type="button"
+                            onClick={() => openSession(it)}
+                            className="ml-auto inline-flex items-center gap-1 text-xs text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+                          >
+                            <MessageSquare className="h-3 w-3" />
+                            {t("openSession")}
+                          </button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </Section>
+              )
             )}
 
             {data.inboxCards.length > 0 && (
