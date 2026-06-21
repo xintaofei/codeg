@@ -26,9 +26,9 @@ use crate::acp::manager::ConnectionManager;
 use crate::acp::types::{AcpEvent, EventEnvelope, PromptInputBlock};
 use crate::acp::InternalEventBus;
 use crate::commands::acp::{build_session_runtime_env, verify_agent_installed};
-use crate::commands::conversations::create_conversation_core;
+use crate::commands::conversations::{create_conversation_core, emit_conversation_upsert};
 use crate::commands::folders::{
-    get_folder_core, git_checkout, git_worktree_add, open_worktree_folder_core,
+    emit_folder_upsert, get_folder_core, git_checkout, git_worktree_add, open_worktree_folder_core,
     resolve_worktree_folder_core,
 };
 use crate::db::entities::conversation::{self, ConversationStatus};
@@ -217,10 +217,10 @@ impl AutomationEngine {
         let run = automation_service::start_run(&self.db.conn, automation_id, trigger, scheduled_for)
             .await
             .map_err(|e| e.to_string())?;
-        self.emit(AutomationChange::RunStarted {
-            automation_id,
-            run_id: run.id,
-        });
+        // RunStarted is emitted inside `launch` once the run is fully wired (its
+        // connection + conversation attached), so the broadcast carries the live
+        // "View conversation" link. A launch that fails before that point still
+        // surfaces via the RunSettled(failed) emit in the `Err` arm below.
 
         match self.launch(&auto, run.id).await {
             Ok(()) => Ok(run.id),
@@ -261,6 +261,15 @@ impl AutomationEngine {
 
         let cwd = self.resolve_cwd(auto, run_id).await?;
 
+        // Announce the resolved working folder so every client's sidebar knows it
+        // BEFORE the conversation upsert below lands — a conversation in a fresh
+        // per-run worktree has no (client-)known folder to group under and would
+        // never render otherwise. Re-broadcasting an already-open root folder
+        // (shared_in_root) is an idempotent no-op on the client.
+        if let Ok(detail) = get_folder_core(&self.db, cwd.folder_id).await {
+            emit_folder_upsert(&self.emitter, detail);
+        }
+
         // Recompute env from current settings (never snapshotted); hard-fail
         // visibly if the agent is disabled or not installed.
         let runtime_env = build_session_runtime_env(&self.db, agent_type, None, &self.data_dir)
@@ -298,6 +307,13 @@ impl AutomationEngine {
                 }
             };
 
+        // Surface the produced conversation in every client's sidebar the instant
+        // it exists (InProgress) — independent of the implicit upsert inside
+        // send_prompt_linked. Its folder was announced just above, so it can be
+        // grouped/rendered right away; live status then rides the existing
+        // ConversationStatusChanged → conversation://changed bridge.
+        emit_conversation_upsert(&self.emitter, &self.db.conn, conversation_id).await;
+
         // Register for completion correlation BEFORE prompting, so a fast
         // TurnComplete can't race ahead of the index entry.
         self.index
@@ -312,6 +328,14 @@ impl AutomationEngine {
             cwd.worktree_folder_id,
         )
         .await;
+
+        // The run row now carries its connection + conversation, so RunStarted
+        // here gives run history a running row whose "View conversation" link is
+        // live during the run (not only after settle).
+        self.emit(AutomationChange::RunStarted {
+            automation_id: auto.id,
+            run_id,
+        });
 
         match self
             .manager
@@ -682,7 +706,12 @@ impl AutomationEngine {
         {
             let mut active = row.into_active_model();
             active.status = Set(ConversationStatus::Cancelled);
-            let _ = active.update(&self.db.conn).await;
+            if active.update(&self.db.conn).await.is_ok() {
+                // The create-time upsert announced this row as InProgress; converge
+                // every sidebar to the terminal status (this direct flip emits no
+                // ConversationStatusChanged of its own).
+                emit_conversation_upsert(&self.emitter, &self.db.conn, conversation_id).await;
+            }
         }
     }
 }

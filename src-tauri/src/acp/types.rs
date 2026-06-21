@@ -442,6 +442,13 @@ pub struct SessionConfigOptionInfo {
 pub struct AgentOptionsSnapshot {
     pub modes: Option<SessionModeStateInfo>,
     pub config_options: Vec<SessionConfigOptionInfo>,
+    /// Slash commands the agent advertised during the probe's session, captured
+    /// from the same transient connection used for modes/config so callers (e.g.
+    /// the automation editor's `/` menu) get them without a live session. Empty
+    /// when the agent publishes none within the probe's ready+grace window.
+    /// `#[serde(default)]` keeps older snapshots deserializable.
+    #[serde(default)]
+    pub available_commands: Vec<AvailableCommandInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

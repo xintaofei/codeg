@@ -202,6 +202,35 @@ pub enum ConversationChange {
     Status { id: i32, status: String },
 }
 
+/// Global side-channel for cross-client folder list sync. Mirrors
+/// [`CONVERSATION_CHANGED_EVENT`]: a single [`emit_event`] reaches the Tauri
+/// webview and every WebSocket client. A folder created headlessly (e.g. the
+/// automation engine minting a per-run worktree) is otherwise invisible to every
+/// client until the next full `fetchFolders` — so without this broadcast a
+/// conversation produced in that worktree can't be placed in the sidebar
+/// (grouping renders rows only under known/open folders).
+///
+/// Distinct from [`"folder://open-in-workspace"`] (the project launcher's
+/// hand-off, whose listener also opens + focuses a new conversation tab): this
+/// channel ONLY upserts the folder into the workspace list, so a background
+/// emitter never steals the user's focus.
+pub const FOLDER_CHANGED_EVENT: &str = "folder://changed";
+
+/// Payload for [`FOLDER_CHANGED_EVENT`]. The full [`FolderDetail`] rides on the
+/// event so clients apply it without a re-fetch (matching
+/// [`ConversationChange::Upsert`]). `folder` is boxed to keep the enum small and
+/// to leave room for a future `Deleted { id }` variant.
+///
+/// [`FolderDetail`]: crate::models::FolderDetail
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FolderChange {
+    /// Insert-or-replace by id (create / reopen / field update).
+    Upsert {
+        folder: Box<crate::models::FolderDetail>,
+    },
+}
+
 /// Global side-channel for cross-client open-tab sync. Mirrors
 /// [`CONVERSATION_CHANGED_EVENT`]: a single [`emit_event`] reaches the Tauri
 /// webview and every WebSocket client.
@@ -495,5 +524,46 @@ mod tests {
         assert_eq!(p["version"], 6);
         assert_eq!(p["origin"], "win-abc");
         assert!(p["tabs"].is_array(), "tabs must serialize as an array");
+    }
+
+    #[test]
+    fn emit_event_broadcasts_folder_change_upsert() {
+        // A headlessly-created folder (e.g. an automation worktree) reaches every
+        // client via `folder://changed`, carrying the full detail so clients apply
+        // it without a re-fetch. The boxed `folder` serializes transparently — the
+        // wire shape is `{ "kind": "upsert", "folder": { … } }`.
+        use crate::db::entities::folder::FolderKind;
+        use crate::models::FolderDetail;
+
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+
+        emit_event(
+            &emitter,
+            FOLDER_CHANGED_EVENT,
+            FolderChange::Upsert {
+                folder: Box::new(FolderDetail {
+                    id: 42,
+                    name: "repo".to_string(),
+                    path: "/home/me/repo".to_string(),
+                    git_branch: Some("main".to_string()),
+                    default_agent_type: None,
+                    last_opened_at: chrono::Utc::now(),
+                    sort_order: 0,
+                    color: "inherit".to_string(),
+                    parent_id: Some(7),
+                    kind: FolderKind::Regular,
+                }),
+            },
+        );
+
+        let evt = rx.try_recv().expect("folder change should broadcast");
+        let p = &*evt.payload;
+        assert_eq!(evt.channel, FOLDER_CHANGED_EVENT);
+        assert_eq!(p["kind"], "upsert");
+        assert_eq!(p["folder"]["id"], 42);
+        assert_eq!(p["folder"]["parent_id"], 7);
+        assert_eq!(p["folder"]["kind"], "regular");
     }
 }

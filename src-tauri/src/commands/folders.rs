@@ -469,6 +469,26 @@ pub async fn get_folder_core(db: &AppDatabase, folder_id: i32) -> Result<FolderD
         .ok_or_else(|| DbError::Migration(format!("Folder {} not found", folder_id)))
 }
 
+/// Emit a `folder://changed` Upsert so every client inserts-or-replaces the
+/// folder in its workspace list in real time. Used by headless producers — the
+/// automation engine minting a per-run worktree — whose folders no client would
+/// otherwise learn about until the next full `fetchFolders` (leaving any
+/// conversation produced inside them unplaceable in the sidebar). Best-effort:
+/// the folder is already persisted, so a dropped event reconciles on the next
+/// refresh / WS reconnect.
+///
+/// Unlike [`open_folder_in_workspace_core`], this ONLY syncs the folder list — it
+/// never opens or focuses a tab — so a background emitter can't steal focus.
+pub(crate) fn emit_folder_upsert(emitter: &EventEmitter, detail: FolderDetail) {
+    crate::web::event_bridge::emit_event(
+        emitter,
+        crate::web::event_bridge::FOLDER_CHANGED_EVENT,
+        crate::web::event_bridge::FolderChange::Upsert {
+            folder: Box::new(detail),
+        },
+    );
+}
+
 pub async fn load_folder_history_core(
     db: &AppDatabase,
 ) -> Result<Vec<FolderHistoryEntry>, AppCommandError> {
@@ -4293,6 +4313,43 @@ mod tests {
     use super::*;
     use crate::db::test_helpers::fresh_in_memory_db;
     use crate::models::agent::AgentType;
+
+    #[test]
+    fn emit_folder_upsert_broadcasts_on_folder_channel() {
+        // A headlessly-created folder must reach every client on
+        // `folder://changed` carrying its full detail, so the sidebar can place a
+        // conversation produced inside it without a re-fetch.
+        use crate::db::entities::folder::FolderKind;
+        use crate::web::event_bridge::{WebEventBroadcaster, FOLDER_CHANGED_EVENT};
+        use std::sync::Arc;
+
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+
+        emit_folder_upsert(
+            &emitter,
+            FolderDetail {
+                id: 7,
+                name: "repo-automation-3-run-9".to_string(),
+                path: "/home/me/repo-automation-3-run-9".to_string(),
+                git_branch: Some("automation/3/run-9".to_string()),
+                default_agent_type: None,
+                last_opened_at: chrono::Utc::now(),
+                sort_order: 0,
+                color: "inherit".to_string(),
+                parent_id: Some(1),
+                kind: FolderKind::Regular,
+            },
+        );
+
+        let evt = rx.try_recv().expect("folder upsert should broadcast");
+        let p = &*evt.payload;
+        assert_eq!(evt.channel, FOLDER_CHANGED_EVENT);
+        assert_eq!(p["kind"], "upsert");
+        assert_eq!(p["folder"]["id"], 7);
+        assert_eq!(p["folder"]["parent_id"], 1);
+    }
 
     /// Run a git command in `dir`, supplying identity via env so the test does
     /// not depend on (or mutate) the developer's global git config.

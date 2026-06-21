@@ -1571,20 +1571,28 @@ impl ConnectionManager {
         let grace_period = Duration::from_millis(500);
         let mut selectors_ready_at: Option<std::time::Instant> = None;
         loop {
-            let (config_options, modes, selectors_ready) = {
+            let (config_options, modes, available_commands, selectors_ready) = {
                 let conns = self.connections.lock().await;
                 let conn = conns
                     .get(conn_id)
                     .ok_or_else(|| AcpError::ConnectionNotFound(conn_id.into()))?;
                 let s = conn.state.read().await;
-                (s.config_options.clone(), s.modes.clone(), s.selectors_ready)
+                (
+                    s.config_options.clone(),
+                    s.modes.clone(),
+                    s.available_commands.clone(),
+                    s.selectors_ready,
+                )
             };
             if selectors_ready {
                 let ready_at = *selectors_ready_at.get_or_insert_with(std::time::Instant::now);
                 if ready_at.elapsed() >= grace_period {
+                    // Commands ride along from the same probe session (the grace
+                    // window lets a late `available_commands` land before we read).
                     return Ok(AgentOptionsSnapshot {
                         modes,
                         config_options: config_options.unwrap_or_default(),
+                        available_commands,
                     });
                 }
             }
