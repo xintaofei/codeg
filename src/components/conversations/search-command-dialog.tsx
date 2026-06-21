@@ -9,6 +9,7 @@ import { useAuxPanelContext } from "@/contexts/aux-panel-context"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspace } from "@/contexts/app-workspace-context"
 import { useTabContext } from "@/contexts/tab-context"
+import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useWorkspaceContext } from "@/contexts/workspace-context"
 import { listAllConversations } from "@/lib/api"
 import type {
@@ -57,6 +58,7 @@ export function SearchCommandDialog({
     [allConversations, activeFolderId]
   )
   const { openTab } = useTabContext()
+  const { openConversations } = useWorkbenchRoute()
   const { openFilePreview } = useWorkspaceContext()
   const { revealInFileTree } = useAuxPanelContext()
 
@@ -148,10 +150,14 @@ export function SearchCommandDialog({
 
   const handleSelectConversation = useCallback(
     (conv: DbConversationSummary) => {
+      // Leave any workbench route (e.g. Automations) so the picked conversation
+      // isn't stranded behind the route overlay — covers re-selecting the
+      // already-active tab, which doesn't change activeTabId.
+      openConversations()
       openTab(conv.folder_id, conv.id, conv.agent_type, true)
       onOpenChange(false)
     },
-    [openTab, onOpenChange]
+    [openTab, onOpenChange, openConversations]
   )
 
   const handleSelectFile = useCallback(

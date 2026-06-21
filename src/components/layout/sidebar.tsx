@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
   ChevronsDownUp,
   ChevronsUpDown,
@@ -8,12 +8,16 @@ import {
   Funnel,
   Search,
   SquarePen,
+  Zap,
+  type LucideIcon,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useSidebarContext } from "@/contexts/sidebar-context"
 import { useTabContext } from "@/contexts/tab-context"
 import { useSearchDialog } from "@/contexts/search-dialog-context"
+import { useAutomationsView } from "@/contexts/automations-view-context"
+import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import {
   SidebarConversationList,
   type SidebarConversationListHandle,
@@ -57,12 +61,55 @@ const SHORTCUT_BADGE_CLASS = cn(
   "group-hover:opacity-100 group-focus-visible:opacity-100"
 )
 
+/**
+ * A fixed top-of-sidebar action / route row. `active` marks the row as the
+ * current workbench route (selected styling); `trailing` carries a shortcut hint
+ * or a count badge. Extracting this keeps every fixed nav item — and any future
+ * route — on one geometry instead of copy-pasting the className. Each row is a
+ * `group` so a `group-hover`-revealed trailing element works.
+ */
+function SidebarNavButton({
+  icon: Icon,
+  label,
+  onClick,
+  active,
+  trailing,
+}: {
+  icon: LucideIcon
+  label: string
+  onClick: () => void
+  active?: boolean
+  trailing?: ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "group flex h-8 w-full items-center gap-[0.4375rem] rounded-full pl-[0.4375rem] pr-1.5",
+        "text-[0.875rem] text-sidebar-foreground outline-none",
+        "transition-colors duration-150 hover:bg-sidebar-accent",
+        "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+        active && "bg-sidebar-primary/8"
+      )}
+    >
+      <Icon className="h-[0.875rem] w-[0.875rem] shrink-0 text-muted-foreground" />
+      <span className="truncate">{label}</span>
+      {trailing}
+    </button>
+  )
+}
+
 export function Sidebar() {
   const t = useTranslations("Folder.sidebar")
   const { isOpen, toggle } = useSidebarContext()
   const { activeFolder } = useActiveFolder()
   const { openNewConversationTab, openChatModeTab } = useTabContext()
   const { setOpen: setSearchOpen } = useSearchDialog()
+  const { unseenFailures } = useAutomationsView()
+  const { routeId, setRoute, openConversations } = useWorkbenchRoute()
   const isMac = useIsMac()
   const { shortcuts } = useShortcutSettings()
   const isMobile = useIsMobile()
@@ -113,6 +160,9 @@ export function Sidebar() {
   }, [allExpanded])
 
   const handleNewConversation = useCallback(() => {
+    // Starting a conversation always returns to the conversation workspace (in
+    // case a route like Automations was taking over the content region).
+    openConversations()
     // Defense-in-depth: with no active folder (e.g. a cold start that recovered
     // to nothing, or all folders closed) fall back to folderless chat mode
     // rather than no-op, so this entry point is never a dead end.
@@ -121,7 +171,7 @@ export function Sidebar() {
       return
     }
     openNewConversationTab(activeFolder.id, activeFolder.path)
-  }, [activeFolder, openChatModeTab, openNewConversationTab])
+  }, [activeFolder, openChatModeTab, openNewConversationTab, openConversations])
 
   if (!isOpen) return null
 
@@ -204,42 +254,41 @@ export function Sidebar() {
           the list below. Each row is a `group` so its shortcut hint reveals on
           hover / keyboard focus. */}
       <div className="flex shrink-0 flex-col gap-0.5 px-1.5 pt-1.5">
-        <button
-          type="button"
+        <SidebarNavButton
+          icon={SquarePen}
+          label={t("newChat")}
           onClick={handleNewConversation}
-          title={t("newChat")}
-          className={cn(
-            "group flex h-8 w-full items-center gap-[0.4375rem] rounded-full pl-[0.4375rem] pr-1.5",
-            "text-[0.875rem] text-sidebar-foreground outline-none",
-            "transition-colors duration-150 hover:bg-sidebar-accent",
-            "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-          )}
-        >
-          <SquarePen className="h-[0.875rem] w-[0.875rem] shrink-0 text-muted-foreground" />
-          <span className="truncate">{t("newChat")}</span>
-          {newConversationShortcutLabel ? (
-            <kbd className={SHORTCUT_BADGE_CLASS}>
-              {newConversationShortcutLabel}
-            </kbd>
-          ) : null}
-        </button>
-        <button
-          type="button"
+          trailing={
+            newConversationShortcutLabel ? (
+              <kbd className={SHORTCUT_BADGE_CLASS}>
+                {newConversationShortcutLabel}
+              </kbd>
+            ) : null
+          }
+        />
+        <SidebarNavButton
+          icon={Search}
+          label={t("search")}
           onClick={() => setSearchOpen(true)}
-          title={t("search")}
-          className={cn(
-            "group flex h-8 w-full items-center gap-[0.4375rem] rounded-full pl-[0.4375rem] pr-1.5",
-            "text-[0.875rem] text-sidebar-foreground outline-none",
-            "transition-colors duration-150 hover:bg-sidebar-accent",
-            "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-          )}
-        >
-          <Search className="h-[0.875rem] w-[0.875rem] shrink-0 text-muted-foreground" />
-          <span className="truncate">{t("search")}</span>
-          {searchShortcutLabel ? (
-            <kbd className={SHORTCUT_BADGE_CLASS}>{searchShortcutLabel}</kbd>
-          ) : null}
-        </button>
+          trailing={
+            searchShortcutLabel ? (
+              <kbd className={SHORTCUT_BADGE_CLASS}>{searchShortcutLabel}</kbd>
+            ) : null
+          }
+        />
+        <SidebarNavButton
+          icon={Zap}
+          label={t("automations")}
+          active={routeId === "automations"}
+          onClick={() => setRoute("automations")}
+          trailing={
+            unseenFailures > 0 ? (
+              <span className="ml-auto inline-flex h-[0.9375rem] min-w-[0.9375rem] shrink-0 items-center justify-center rounded-full bg-destructive/15 px-1 font-mono text-[0.625rem] font-medium leading-none text-destructive">
+                {unseenFailures}
+              </span>
+            ) : null
+          }
+        />
       </div>
 
       {/* On mobile, clicking a conversation card auto-closes the Sheet */}

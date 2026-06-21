@@ -36,6 +36,7 @@ import {
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspace } from "@/contexts/app-workspace-context"
 import { useTabContext } from "@/contexts/tab-context"
+import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useTaskContext } from "@/contexts/task-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
 import { useThemeColor, useZoomLevel } from "@/hooks/use-appearance"
@@ -610,6 +611,7 @@ export function SidebarConversationList({
     activeTabId,
     tabs,
   } = useTabContext()
+  const { openConversations } = useWorkbenchRoute()
   const { addTask, updateTask } = useTaskContext()
 
   const folderIndex = useMemo(() => {
@@ -1245,16 +1247,20 @@ export function SidebarConversationList({
   // for the card `memo` actually bailing out (see Phase 1 of the perf plan).
   const handleSelect = useCallback(
     (id: number, agentType: string, folderId: number) => {
+      // Selecting a conversation returns to the conversation workspace if a
+      // workbench route (e.g. Automations) was taking over the content region.
+      openConversations()
       openTab(folderId, id, agentType as Parameters<typeof openTab>[2], false)
     },
-    [openTab]
+    [openTab, openConversations]
   )
 
   const handleDoubleClick = useCallback(
     (id: number, agentType: string, folderId: number) => {
+      openConversations()
       openTab(folderId, id, agentType as Parameters<typeof openTab>[2], true)
     },
-    [openTab]
+    [openTab, openConversations]
   )
 
   const handleRename = useCallback(

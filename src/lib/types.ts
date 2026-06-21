@@ -883,6 +883,93 @@ export interface AgentDelegationDefaults {
   config_values: Record<string, string>
 }
 
+// ─── Automations ───────────────────────────────────────────────────────────
+// Mirrors src-tauri/src/models/automation.rs. Wire form is snake_case (serde
+// default), matching AgentDelegationDefaults.
+
+export type AutomationTriggerKind = "schedule" | "manual"
+export type AutomationIsolation = "worktree_per_run" | "shared_in_root"
+export type AutomationRunStatus =
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "skipped"
+
+/** Display-only cache so the editor can render a value the live agent no longer
+ *  offers (marked unavailable) instead of silently dropping it. */
+export interface AutomationLabelSnapshot {
+  agent_label?: string
+  mode_label?: string
+  config_labels?: Record<string, string>
+  folder_label?: string
+  branch_label?: string
+}
+
+/** The captured composer snapshot stored in `automation.config`. `mode_id` +
+ *  `config_values` are exactly AgentDelegationDefaults; the model rides inside
+ *  `config_values["model"]`, never as its own field. */
+export interface AutomationConfig {
+  prompt_blocks: PromptInputBlock[]
+  display_text: string
+  mode_id?: string | null
+  config_values: Record<string, string>
+  label_snapshot?: AutomationLabelSnapshot | null
+}
+
+export interface Automation {
+  id: number
+  name: string
+  enabled: boolean
+  trigger_kind: AutomationTriggerKind
+  cron: string | null
+  timezone: string
+  next_run_at: string | null
+  agent_type: AgentType
+  root_folder_id: number | null
+  isolation: AutomationIsolation
+  branch: string | null
+  is_remote_branch: boolean
+  config: AutomationConfig
+  last_run_at: string | null
+  last_run_status: string | null
+  last_run_conversation_id: number | null
+  unseen_failures: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AutomationRun {
+  id: number
+  automation_id: number
+  status: AutomationRunStatus
+  trigger: string
+  scheduled_for: string | null
+  started_at: string | null
+  ended_at: string | null
+  conversation_id: number | null
+  worktree_folder_id: number | null
+  stop_reason: string | null
+  error: string | null
+  summary: string | null
+  created_at: string
+}
+
+/** Full create/update payload — the editor saves the whole automation wholesale. */
+export interface AutomationDraft {
+  name: string
+  enabled: boolean
+  trigger_kind: AutomationTriggerKind
+  cron: string | null
+  timezone: string
+  agent_type: AgentType
+  root_folder_id: number | null
+  isolation: AutomationIsolation
+  branch: string | null
+  is_remote_branch: boolean
+  config: AutomationConfig
+}
+
 export interface PlanEntryInfo {
   content: string
   priority: string

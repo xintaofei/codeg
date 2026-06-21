@@ -213,6 +213,18 @@ vi.mock("@/contexts/tab-context", () => ({
     tabs: store.tabSpec.map((t) => ({ ...t })),
   }),
 }))
+vi.mock("@/contexts/workbench-route-context", () => {
+  // Stable singleton — the real provider memoizes these (useCallback([])), so a
+  // fresh object per render would break the list's callback-identity memoization
+  // probes.
+  const value = {
+    routeId: "conversations",
+    isConversations: true,
+    setRoute: () => {},
+    openConversations: () => {},
+  }
+  return { useWorkbenchRoute: () => value }
+})
 
 // These only mount when their state opens (never in these tests); stub to keep
 // the import graph light.

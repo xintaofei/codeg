@@ -11,6 +11,8 @@ const spies = vi.hoisted(() => ({
   openNewConversationTab: vi.fn(),
   openChatModeTab: vi.fn(),
   setSearchOpen: vi.fn(),
+  setRoute: vi.fn(),
+  openConversations: vi.fn(),
 }))
 const mockState = vi.hoisted(() => ({
   activeFolder: { id: 7, path: "/x" } as { id: number; path: string } | null,
@@ -36,6 +38,21 @@ vi.mock("@/contexts/tab-context", () => ({
 vi.mock("@/contexts/search-dialog-context", () => ({
   useSearchDialog: () => ({ open: false, setOpen: spies.setSearchOpen }),
 }))
+vi.mock("@/contexts/automations-view-context", () => ({
+  useAutomationsView: () => ({
+    automations: [],
+    unseenFailures: 0,
+    refetch: async () => {},
+  }),
+}))
+vi.mock("@/contexts/workbench-route-context", () => ({
+  useWorkbenchRoute: () => ({
+    routeId: "conversations",
+    isConversations: true,
+    setRoute: spies.setRoute,
+    openConversations: spies.openConversations,
+  }),
+}))
 vi.mock("@/hooks/use-is-mac", () => ({ useIsMac: () => false }))
 vi.mock("@/hooks/use-shortcut-settings", () => ({
   useShortcutSettings: () => ({
@@ -57,7 +74,21 @@ describe("Sidebar — fixed New chat / Search region", () => {
     spies.openNewConversationTab.mockClear()
     spies.openChatModeTab.mockClear()
     spies.setSearchOpen.mockClear()
+    spies.setRoute.mockClear()
+    spies.openConversations.mockClear()
     mockState.activeFolder = { id: 7, path: "/x" }
+  })
+
+  it("Automations navigates to the automations route", () => {
+    const { getByText } = renderSidebar()
+    fireEvent.click(getByText("Automations"))
+    expect(spies.setRoute).toHaveBeenCalledWith("automations")
+  })
+
+  it("New chat returns to the conversation workspace", () => {
+    const { getByText } = renderSidebar()
+    fireEvent.click(getByText("New chat"))
+    expect(spies.openConversations).toHaveBeenCalled()
   })
 
   it("New chat opens a conversation tab in the active folder", () => {

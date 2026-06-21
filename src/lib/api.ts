@@ -15,6 +15,9 @@ import type {
   AgentType,
   AgentDelegationDefaults,
   AgentOptionsSnapshot,
+  Automation,
+  AutomationRun,
+  AutomationDraft,
   ConversationSummary,
   ConversationDetail,
   DbConversationDetail,
@@ -1738,6 +1741,70 @@ export async function quickMessagesDelete(id: number): Promise<void> {
 
 export async function quickMessagesReorder(ids: number[]): Promise<void> {
   return getTransport().call("quick_messages_reorder", { ids })
+}
+
+// Automations
+
+export async function automationList(): Promise<Automation[]> {
+  return getTransport().call("automation_list")
+}
+
+export async function automationGet(id: number): Promise<Automation> {
+  return getTransport().call("automation_get", { id })
+}
+
+export async function automationRuns(
+  automationId: number,
+  limit = 100
+): Promise<AutomationRun[]> {
+  return getTransport().call("automation_runs", { automationId, limit })
+}
+
+export async function automationCreate(
+  draft: AutomationDraft
+): Promise<Automation> {
+  return getTransport().call("automation_create", { draft })
+}
+
+export async function automationUpdate(
+  id: number,
+  draft: AutomationDraft
+): Promise<Automation> {
+  return getTransport().call("automation_update", { id, draft })
+}
+
+export async function automationSetEnabled(
+  id: number,
+  enabled: boolean
+): Promise<Automation> {
+  return getTransport().call("automation_set_enabled", { id, enabled })
+}
+
+export async function automationDelete(id: number): Promise<void> {
+  return getTransport().call("automation_delete", { id })
+}
+
+export async function automationMarkSeen(): Promise<void> {
+  return getTransport().call("automation_mark_seen")
+}
+
+/** Authoritative "next run" preview — same evaluator as the scheduler. Returns
+ *  an ISO timestamp, or null if the cron has no future occurrence. */
+export async function automationComputeNextRun(
+  cron: string,
+  timezone: string
+): Promise<string | null> {
+  return getTransport().call("automation_compute_next_run", { cron, timezone })
+}
+
+/** Fire an automation immediately, bypassing its schedule. Returns the run id. */
+export async function automationRunNow(automationId: number): Promise<number> {
+  return getTransport().call("automation_run_now", { automationId })
+}
+
+/** Cancel an in-flight (or clear a wedged) run. */
+export async function automationCancelRun(runId: number): Promise<void> {
+  return getTransport().call("automation_cancel_run", { runId })
 }
 
 // Directory browser (for web/server mode)
