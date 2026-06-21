@@ -164,7 +164,7 @@ export function AutomationEditor({
   // One transient probe feeds both the config selectors and the `/` command menu
   // (the snapshot carries available_commands). `$` Codex skills load separately
   // (filesystem scan) inside the invocations hook.
-  const agentOptions = useAgentOptions(agentType)
+  const agentOptions = useAgentOptions(agentType, folderPath)
   const invocations = useComposerInvocations({
     editorRef,
     agentType,
