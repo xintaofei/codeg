@@ -1322,8 +1322,13 @@ async fn run_connection(
     // `terminal_base_env` already filtered to just the credential helper
     // keys upstream — see `spawn_agent_connection` for the rationale and
     // why we don't forward the full agent runtime_env here.
-    let terminal_runtime = Arc::new(TerminalRuntime::with_base_env(terminal_base_env));
     let cwd = resolve_working_dir(working_dir.as_deref());
+    // Default terminals to the session working directory so an agent that calls
+    // `terminal/create` without a `cwd` (e.g. CodeBuddy) runs in the folder the
+    // conversation runs in rather than codeg's own process cwd.
+    let terminal_runtime = Arc::new(
+        TerminalRuntime::with_base_env(terminal_base_env).with_default_cwd(Some(cwd.clone())),
+    );
     let cwd_string = cwd.to_string_lossy().to_string();
     let file_system_runtime = Arc::new(FileSystemRuntime::new(cwd.clone()));
 

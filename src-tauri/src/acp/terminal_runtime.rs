@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -221,6 +222,13 @@ pub struct TerminalRuntime {
     /// agent overrides on key collision so an agent can still scrub or
     /// override anything explicitly.
     base_env: BTreeMap<String, String>,
+    /// Fallback working directory applied to spawned terminals when the
+    /// agent's `terminal/create` request omits `cwd`. The connection layer
+    /// sets this to the session's resolved working directory so terminals
+    /// default to the folder the conversation runs in instead of codeg's own
+    /// process cwd (often "/" on desktop, the dev crate dir in development).
+    /// `None` leaves the process cwd inherited (legacy behavior).
+    default_cwd: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -241,6 +249,56 @@ impl TerminalRuntime {
         Self {
             terminals: Mutex::new(HashMap::new()),
             base_env,
+            default_cwd: None,
+        }
+    }
+
+    /// Set the fallback working directory used when a `terminal/create` request
+    /// does not specify its own `cwd`. Chainable after `with_base_env`.
+    pub fn with_default_cwd(mut self, default_cwd: Option<PathBuf>) -> Self {
+        self.default_cwd = default_cwd;
+        self
+    }
+
+    /// Apply stdio, working directory, and environment to a freshly built
+    /// terminal command. Shared by the direct-exec and shell-fallback spawn
+    /// paths in `create_terminal` so both honor the same cwd precedence and
+    /// env layering.
+    fn configure_command(
+        &self,
+        command: &mut tokio::process::Command,
+        request: &CreateTerminalRequest,
+    ) {
+        command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdin(Stdio::null());
+
+        // Working directory. An explicit `cwd` from the agent (validated
+        // absolute in `create_terminal`) is honored as-is, so a non-existent
+        // directory surfaces as a loud spawn failure rather than silently
+        // running somewhere else. Only when the agent omits `cwd` do we fall
+        // back to the connection's session working directory — agents like
+        // CodeBuddy omit it, which would otherwise inherit codeg's own process
+        // cwd instead of the folder the conversation runs in. The fallback is
+        // guarded on `is_dir` so a not-yet-created session dir never turns into
+        // a spawn failure (mirrors the cwd guard in `build_agent`).
+        if let Some(cwd) = request.cwd.as_deref() {
+            command.current_dir(cwd);
+        } else if let Some(default_cwd) = self.default_cwd.as_deref() {
+            if default_cwd.is_dir() {
+                command.current_dir(default_cwd);
+            }
+        }
+
+        // Apply the runtime's base env first (e.g. `GIT_CONFIG_*` for the
+        // codeg credential helper), then layer the agent's request env on top
+        // so agents can still override or scrub specific keys.
+        for (key, value) in &self.base_env {
+            command.env(key, value);
+        }
+        for env_var in &request.env {
+            command.env(&env_var.name, &env_var.value);
         }
     }
 
@@ -256,6 +314,12 @@ impl TerminalRuntime {
             }
         }
 
+        if request.command.trim().is_empty() {
+            return Err(TerminalRuntimeError::InvalidParams(
+                "terminal/create requires a non-empty command".to_string(),
+            ));
+        }
+
         let output_byte_limit = request
             .output_byte_limit
             .unwrap_or(DEFAULT_OUTPUT_BYTE_LIMIT);
@@ -265,33 +329,44 @@ impl TerminalRuntime {
             ));
         }
 
-        let mut command = crate::process::tokio_command(&request.command);
-        command
-            .args(&request.args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .stdin(Stdio::null());
+        // Spawn the command. Try a direct exec first so a real program — one
+        // resolved on PATH, an absolute path, or a relative/space-containing
+        // path reachable through the request's cwd and env — runs exactly as
+        // before, in the real spawn context. Only if the OS cannot find the
+        // program (`NotFound`) AND the request looks like a whole shell line
+        // crammed into `command` (empty args + embedded whitespace, the shape
+        // CodeBuddy sends, e.g. "pnpm build") do we retry through the platform
+        // shell so its `&&`, pipes, `$VAR`, and globs evaluate. Deciding off a
+        // real failed spawn — rather than a pre-spawn `which` guess that runs
+        // in codeg's own cwd/env — means we never reroute a command that would
+        // otherwise have run.
+        let mut direct = crate::process::tokio_command(&request.command);
+        direct.args(&request.args);
+        self.configure_command(&mut direct, &request);
 
-        if let Some(cwd) = request.cwd.as_ref() {
-            command.current_dir(cwd);
-        }
-
-        // Apply the runtime's base env first (e.g. `GIT_CONFIG_*` for the
-        // codeg credential helper), then layer the agent's request env on
-        // top so agents can still override or scrub specific keys.
-        for (key, value) in &self.base_env {
-            command.env(key, value);
-        }
-        for env_var in &request.env {
-            command.env(&env_var.name, &env_var.value);
-        }
-
-        let mut child = command.spawn().map_err(|err| {
-            TerminalRuntimeError::Internal(format!(
-                "failed to spawn terminal command {}: {err}",
-                request.command
-            ))
-        })?;
+        let mut child = match direct.spawn() {
+            Ok(child) => child,
+            Err(err)
+                if err.kind() == std::io::ErrorKind::NotFound
+                    && request.args.is_empty()
+                    && request.command.contains(char::is_whitespace) =>
+            {
+                let mut shell = shell_wrapped_command(&request.command);
+                self.configure_command(&mut shell, &request);
+                shell.spawn().map_err(|err| {
+                    TerminalRuntimeError::Internal(format!(
+                        "failed to spawn terminal command {}: {err}",
+                        request.command
+                    ))
+                })?
+            }
+            Err(err) => {
+                return Err(TerminalRuntimeError::Internal(format!(
+                    "failed to spawn terminal command {}: {err}",
+                    request.command
+                )));
+            }
+        };
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -509,6 +584,26 @@ where
     }
 }
 
+/// Wrap a full shell command line so it executes through the platform shell.
+/// Used when an agent passes an entire command line in `command` with empty
+/// `args` (see `create_terminal`); the shell preserves the `&&`, pipes,
+/// `$VAR`, and globs the agent's line relies on. Reuses `tokio_command` so the
+/// shell still inherits codeg's UTF-8 env and Windows program normalization.
+#[cfg(not(windows))]
+fn shell_wrapped_command(line: &str) -> tokio::process::Command {
+    let mut command = crate::process::tokio_command("/bin/sh");
+    command.arg("-c").arg(line);
+    command
+}
+
+#[cfg(windows)]
+fn shell_wrapped_command(line: &str) -> tokio::process::Command {
+    let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+    let mut command = crate::process::tokio_command(comspec);
+    command.arg("/C").arg(line);
+    command
+}
+
 fn map_exit_status(status: std::process::ExitStatus) -> TerminalExitStatus {
     #[cfg(unix)]
     let signal = std::os::unix::process::ExitStatusExt::signal(&status).map(|s| s.to_string());
@@ -644,5 +739,230 @@ mod tests {
 
         // Drop terminal handle so the runtime drops its writer ends.
         runtime.release_all_for_session(session_id.0.as_ref()).await;
+    }
+
+    /// Spawn `request`, wait for it to exit, return its captured output, and
+    /// release the session's terminals.
+    async fn run_and_capture(
+        runtime: &TerminalRuntime,
+        session_id: &SessionId,
+        request: CreateTerminalRequest,
+    ) -> String {
+        let response = runtime
+            .create_terminal(request)
+            .await
+            .expect("create terminal");
+        let terminal_id = response.terminal_id.clone();
+        runtime
+            .wait_for_terminal_exit(WaitForTerminalExitRequest::new(
+                session_id.clone(),
+                terminal_id.clone(),
+            ))
+            .await
+            .expect("wait for exit");
+        let out = runtime
+            .terminal_output(TerminalOutputRequest::new(
+                session_id.clone(),
+                terminal_id.clone(),
+            ))
+            .await
+            .expect("get output");
+        runtime.release_all_for_session(session_id.0.as_ref()).await;
+        out.output
+    }
+
+    /// A `terminal/create` that omits `cwd` defaults to the runtime's
+    /// configured working directory rather than codeg's own process cwd.
+    #[tokio::test]
+    async fn falls_back_to_default_cwd_when_request_omits_cwd() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let canonical = dir.path().canonicalize().expect("canonicalize");
+        let runtime = TerminalRuntime::with_base_env(BTreeMap::new())
+            .with_default_cwd(Some(dir.path().to_path_buf()));
+
+        let session_id = SessionId::new("cwd-default".to_string());
+        // Bare `pwd` (no whitespace) → direct exec; current_dir still applies.
+        let request = CreateTerminalRequest::new(session_id.clone(), "pwd".to_string());
+        let output = run_and_capture(&runtime, &session_id, request).await;
+
+        assert!(
+            output.contains(canonical.to_string_lossy().as_ref()),
+            "terminal did not run in the default cwd; got:\n{output}"
+        );
+    }
+
+    /// An explicit absolute `cwd` in the request takes precedence over the
+    /// runtime default.
+    #[tokio::test]
+    async fn request_cwd_overrides_default_cwd() {
+        let default_dir = tempfile::tempdir().expect("default dir");
+        let request_dir = tempfile::tempdir().expect("request dir");
+        let request_canonical = request_dir.path().canonicalize().expect("canonicalize");
+        let runtime = TerminalRuntime::with_base_env(BTreeMap::new())
+            .with_default_cwd(Some(default_dir.path().to_path_buf()));
+
+        let session_id = SessionId::new("cwd-override".to_string());
+        let mut request = CreateTerminalRequest::new(session_id.clone(), "pwd".to_string());
+        request.cwd = Some(request_dir.path().to_path_buf());
+        let output = run_and_capture(&runtime, &session_id, request).await;
+
+        assert!(
+            output.contains(request_canonical.to_string_lossy().as_ref()),
+            "request cwd did not take precedence over the default; got:\n{output}"
+        );
+    }
+
+    /// A whitespace-bearing command with empty args runs through the shell. A
+    /// direct exec would ENOENT trying to run a program literally named with
+    /// spaces — this is the shape CodeBuddy sends.
+    #[tokio::test]
+    async fn whitespace_command_runs_through_shell() {
+        let runtime = TerminalRuntime::with_base_env(BTreeMap::new());
+
+        let session_id = SessionId::new("shell-wrap".to_string());
+        let request =
+            CreateTerminalRequest::new(session_id.clone(), "echo hello world".to_string());
+        let output = run_and_capture(&runtime, &session_id, request).await;
+        assert!(
+            output.contains("hello world"),
+            "shell did not run the whitespace command; got:\n{output}"
+        );
+
+        // Genuine shell operators must evaluate, not be passed as literal args.
+        let session_id = SessionId::new("shell-ops".to_string());
+        let request =
+            CreateTerminalRequest::new(session_id.clone(), "true && echo OK".to_string());
+        let output = run_and_capture(&runtime, &session_id, request).await;
+        assert!(
+            output.contains("OK"),
+            "shell operators did not evaluate; got:\n{output}"
+        );
+    }
+
+    /// The shell-wrapped path still honors the working directory, so a
+    /// CodeBuddy-style `pnpm build` runs in the session folder.
+    #[tokio::test]
+    async fn shell_wrapped_command_respects_cwd() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let canonical = dir.path().canonicalize().expect("canonicalize");
+        let runtime = TerminalRuntime::with_base_env(BTreeMap::new())
+            .with_default_cwd(Some(dir.path().to_path_buf()));
+
+        let session_id = SessionId::new("shell-cwd".to_string());
+        // Whitespace → shell-wrapped; must run in the default cwd.
+        let request =
+            CreateTerminalRequest::new(session_id.clone(), "pwd && echo done".to_string());
+        let output = run_and_capture(&runtime, &session_id, request).await;
+        assert!(
+            output.contains(canonical.to_string_lossy().as_ref()) && output.contains("done"),
+            "shell-wrapped command ignored the default cwd; got:\n{output}"
+        );
+    }
+
+    /// When the agent supplies explicit `args`, the command is exec'd directly
+    /// (no shell), so an argument containing spaces stays a single argument.
+    #[tokio::test]
+    async fn explicit_args_bypass_shell_wrap() {
+        let runtime = TerminalRuntime::with_base_env(BTreeMap::new());
+
+        let session_id = SessionId::new("direct-exec".to_string());
+        let mut request =
+            CreateTerminalRequest::new(session_id.clone(), "/bin/echo".to_string());
+        request.args = vec!["hello world".into()];
+        let output = run_and_capture(&runtime, &session_id, request).await;
+        assert!(
+            output.contains("hello world"),
+            "direct exec did not pass the single arg through; got:\n{output}"
+        );
+    }
+
+    /// An explicit but non-existent absolute `cwd` is honored as-is and
+    /// surfaces as a spawn failure — never silently downgraded to the default
+    /// fallback or the inherited process cwd.
+    #[tokio::test]
+    async fn explicit_missing_cwd_surfaces_as_spawn_failure() {
+        let default_dir = tempfile::tempdir().expect("default dir");
+        let runtime = TerminalRuntime::with_base_env(BTreeMap::new())
+            .with_default_cwd(Some(default_dir.path().to_path_buf()));
+
+        let session_id = SessionId::new("missing-cwd".to_string());
+        let mut request = CreateTerminalRequest::new(session_id, "pwd".to_string());
+        request.cwd = Some(PathBuf::from("/codeg-nonexistent-cwd/does/not/exist"));
+
+        let result = runtime.create_terminal(request).await;
+        assert!(
+            matches!(result, Err(TerminalRuntimeError::Internal(_))),
+            "expected a spawn failure for a missing explicit cwd"
+        );
+    }
+
+    /// A real executable whose path contains spaces is exec'd directly: the
+    /// direct spawn succeeds, so the shell fallback never fires (shell-wrapping
+    /// would split the path at the space).
+    #[tokio::test]
+    async fn executable_path_with_spaces_is_not_shell_wrapped() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let exe = dir.path().join("my tool"); // space in the file name
+        std::fs::write(&exe, "#!/bin/sh\necho ran-directly\n").expect("write script");
+        let mut perms = std::fs::metadata(&exe).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&exe, perms).expect("chmod");
+
+        let runtime = TerminalRuntime::with_base_env(BTreeMap::new());
+        let session_id = SessionId::new("space-exe".to_string());
+        // Empty args + whitespace in command, but it resolves to a real
+        // executable, so it must run directly rather than via the shell.
+        let request =
+            CreateTerminalRequest::new(session_id.clone(), exe.to_string_lossy().to_string());
+        let output = run_and_capture(&runtime, &session_id, request).await;
+        assert!(
+            output.contains("ran-directly"),
+            "space-containing executable was not exec'd directly; got:\n{output}"
+        );
+    }
+
+    /// A whitespace-only command is rejected up front rather than spawning a
+    /// shell no-op.
+    #[tokio::test]
+    async fn whitespace_only_command_is_rejected() {
+        let runtime = TerminalRuntime::with_base_env(BTreeMap::new());
+        let session_id = SessionId::new("blank-command".to_string());
+        let request = CreateTerminalRequest::new(session_id, "   ".to_string());
+
+        let result = runtime.create_terminal(request).await;
+        assert!(
+            matches!(result, Err(TerminalRuntimeError::InvalidParams(_))),
+            "expected InvalidParams for a whitespace-only command"
+        );
+    }
+
+    /// A relative, space-containing executable resolves against the terminal's
+    /// effective cwd and runs directly — the shell fallback fires only on a
+    /// genuine NotFound. This guards the regression where a pre-spawn `which`
+    /// check, run in codeg's own cwd, would shell-wrap and split the path.
+    #[tokio::test]
+    async fn relative_executable_with_spaces_runs_in_effective_cwd() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let exe = dir.path().join("my tool"); // space in the file name
+        std::fs::write(&exe, "#!/bin/sh\necho ran-relative\n").expect("write script");
+        let mut perms = std::fs::metadata(&exe).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&exe, perms).expect("chmod");
+
+        let runtime = TerminalRuntime::with_base_env(BTreeMap::new())
+            .with_default_cwd(Some(dir.path().to_path_buf()));
+        let session_id = SessionId::new("rel-space-exe".to_string());
+        // "./my tool": empty args + whitespace, resolvable only against the
+        // terminal's cwd — must run directly, not via the shell.
+        let request = CreateTerminalRequest::new(session_id.clone(), "./my tool".to_string());
+        let output = run_and_capture(&runtime, &session_id, request).await;
+        assert!(
+            output.contains("ran-relative"),
+            "relative space-containing exe was not run in the effective cwd; got:\n{output}"
+        );
     }
 }
