@@ -13,6 +13,53 @@ pub struct ModelProviderInfo {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CcSwitchModelProviderSkipReason {
+    UnsupportedAppType,
+    MissingName,
+    MissingApiUrl,
+    MissingApiKey,
+    InvalidModel,
+    DuplicateName,
+    DuplicateConfig,
+    MalformedSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CcSwitchModelProviderPreviewItem {
+    pub source_id: String,
+    pub source_app_type: String,
+    pub target_agent_type: String,
+    pub name: String,
+    pub api_url: Option<String>,
+    pub model: Option<String>,
+    pub importable: bool,
+    pub skip_reason: Option<CcSwitchModelProviderSkipReason>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ListImportableCcSwitchModelProvidersResult {
+    pub available: bool,
+    pub source_path: String,
+    pub items: Vec<CcSwitchModelProviderPreviewItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportCcSwitchModelProvidersRequest {
+    pub source_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportCcSwitchModelProvidersResult {
+    pub imported_ids: Vec<i32>,
+    pub skipped: Vec<CcSwitchModelProviderPreviewItem>,
+}
+
 fn mask_api_key(key: &str) -> String {
     // Operate on Unicode scalar values, not bytes: an API key may contain a
     // multibyte character (e.g. a full-width char typed with a CJK IME), and
@@ -57,7 +104,7 @@ impl From<crate::db::entities::model_provider::Model> for ModelProviderInfo {
 
 #[cfg(test)]
 mod tests {
-    use super::mask_api_key;
+    use super::{mask_api_key, CcSwitchModelProviderPreviewItem, CcSwitchModelProviderSkipReason};
 
     #[test]
     fn masks_short_ascii_key() {
@@ -80,5 +127,26 @@ mod tests {
     #[test]
     fn masks_short_multibyte_key_without_panic() {
         assert_eq!(mask_api_key("密钥abc"), "\u{2022}".repeat(5));
+    }
+
+    #[test]
+    fn cc_switch_preview_item_serializes_camel_case() {
+        let item = CcSwitchModelProviderPreviewItem {
+            source_id: "codex:demo".to_string(),
+            source_app_type: "codex".to_string(),
+            target_agent_type: "codex".to_string(),
+            name: "Demo".to_string(),
+            api_url: Some("https://api.example.com/v1".to_string()),
+            model: Some("gpt-5".to_string()),
+            importable: false,
+            skip_reason: Some(CcSwitchModelProviderSkipReason::DuplicateName),
+        };
+
+        let value = serde_json::to_value(item).expect("serialize preview item");
+        assert_eq!(value["sourceId"], "codex:demo");
+        assert_eq!(value["sourceAppType"], "codex");
+        assert_eq!(value["targetAgentType"], "codex");
+        assert_eq!(value["importable"], false);
+        assert_eq!(value["skipReason"], "duplicate_name");
     }
 }

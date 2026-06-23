@@ -100,6 +100,9 @@ import type {
   ChatChannelMessageLog,
   WebhookConfig,
   ModelProviderInfo,
+  ListImportableCcSwitchModelProvidersResult,
+  ImportCcSwitchModelProvidersRequest,
+  ImportCcSwitchModelProvidersResult,
   UpdateModelProviderResult,
   PluginCheckSummary,
   QuickMessage,
@@ -2840,6 +2843,18 @@ export async function updateModelProvider(params: {
 
 export async function deleteModelProvider(id: number): Promise<void> {
   return getTransport().call("delete_model_provider", { id })
+}
+
+export async function listImportableCcSwitchModelProviders(): Promise<ListImportableCcSwitchModelProvidersResult> {
+  return getTransport().call("list_importable_cc_switch_model_providers")
+}
+
+export async function importCcSwitchModelProviders(
+  request: ImportCcSwitchModelProvidersRequest
+): Promise<ImportCcSwitchModelProvidersResult> {
+  return getTransport().call("import_cc_switch_model_providers", {
+    ...request,
+  })
 }
 
 // ─── Delegation settings ───────────────────────────────────────────────

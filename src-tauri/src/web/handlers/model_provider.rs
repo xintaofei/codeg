@@ -6,7 +6,10 @@ use serde::Deserialize;
 use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::commands::model_provider as mp_commands;
-use crate::models::model_provider::ModelProviderInfo;
+use crate::models::model_provider::{
+    ImportCcSwitchModelProvidersRequest, ImportCcSwitchModelProvidersResult,
+    ListImportableCcSwitchModelProvidersResult, ModelProviderInfo,
+};
 
 // ---------------------------------------------------------------------------
 // Param structs
@@ -92,4 +95,19 @@ pub async fn delete_model_provider(
 ) -> Result<Json<()>, AppCommandError> {
     mp_commands::delete_model_provider_core(&state.db, params.id).await?;
     Ok(Json(()))
+}
+
+pub async fn list_importable_cc_switch_model_providers(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<ListImportableCcSwitchModelProvidersResult>, AppCommandError> {
+    let result = mp_commands::list_importable_cc_switch_model_providers_core(&state.db).await?;
+    Ok(Json(result))
+}
+
+pub async fn import_cc_switch_model_providers(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(request): Json<ImportCcSwitchModelProvidersRequest>,
+) -> Result<Json<ImportCcSwitchModelProvidersResult>, AppCommandError> {
+    let result = mp_commands::import_cc_switch_model_providers_core(&state.db, request).await?;
+    Ok(Json(result))
 }

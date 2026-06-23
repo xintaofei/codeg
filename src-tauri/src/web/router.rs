@@ -886,6 +886,14 @@ pub fn build_router(
             "/delete_model_provider",
             post(handlers::model_provider::delete_model_provider),
         )
+        .route(
+            "/list_importable_cc_switch_model_providers",
+            post(handlers::model_provider::list_importable_cc_switch_model_providers),
+        )
+        .route(
+            "/import_cc_switch_model_providers",
+            post(handlers::model_provider::import_cc_switch_model_providers),
+        )
         // ─── Quick Messages ───
         .route(
             "/quick_messages_list",
@@ -912,7 +920,10 @@ pub fn build_router(
             "/automation_list",
             post(handlers::automation::automation_list),
         )
-        .route("/automation_get", post(handlers::automation::automation_get))
+        .route(
+            "/automation_get",
+            post(handlers::automation::automation_get),
+        )
         .route(
             "/automation_runs",
             post(handlers::automation::automation_runs),

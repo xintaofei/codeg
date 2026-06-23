@@ -1,7 +1,14 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Loader2, Pencil, Plus, Server, Trash2 } from "lucide-react"
+import {
+  ArrowDownToLine,
+  Loader2,
+  Pencil,
+  Plus,
+  Server,
+  Trash2,
+} from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 
@@ -33,6 +40,7 @@ import {
   type ModelProviderInfo,
 } from "@/lib/types"
 import { AddModelProviderDialog } from "./add-model-provider-dialog"
+import { CcSwitchModelProviderImporter } from "./cc-switch-model-provider-importer"
 import { EditModelProviderDialog } from "./edit-model-provider-dialog"
 
 export function ModelProviderSettings() {
@@ -41,6 +49,7 @@ export function ModelProviderSettings() {
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<AgentType | null>(null)
   const [addDialogOpen, setAddDialogOpen] = useState(false)
+  const [importDialogOpen, setImportDialogOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<ModelProviderInfo | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<ModelProviderInfo | null>(
     null
@@ -122,14 +131,25 @@ export function ModelProviderSettings() {
               ))}
             </SelectContent>
           </Select>
-          <Button
-            size="sm"
-            className="h-8 text-xs"
-            onClick={() => setAddDialogOpen(true)}
-          >
-            <Plus className="h-3.5 w-3.5 mr-1" />
-            {t("addProvider")}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 text-xs"
+              onClick={() => setImportDialogOpen(true)}
+            >
+              <ArrowDownToLine className="mr-1 h-3.5 w-3.5" />
+              {t("ccSwitchImport.open")}
+            </Button>
+            <Button
+              size="sm"
+              className="h-8 text-xs"
+              onClick={() => setAddDialogOpen(true)}
+            >
+              <Plus className="mr-1 h-3.5 w-3.5" />
+              {t("addProvider")}
+            </Button>
+          </div>
         </div>
 
         {loading ? (
@@ -192,6 +212,12 @@ export function ModelProviderSettings() {
         open={addDialogOpen}
         onOpenChange={setAddDialogOpen}
         onProviderAdded={loadProviders}
+      />
+
+      <CcSwitchModelProviderImporter
+        open={importDialogOpen}
+        onClose={() => setImportDialogOpen(false)}
+        onDone={loadProviders}
       />
 
       <EditModelProviderDialog
