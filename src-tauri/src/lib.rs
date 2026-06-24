@@ -45,16 +45,15 @@ mod tauri_app {
     use crate::acp::manager::ConnectionManager;
     use crate::chat_channel::manager::ChatChannelManager;
     use crate::commands::{
-        acp as acp_commands, app_update as app_update_commands,
-        automation as automation_commands, backup,
-        chat_channel as chat_channel_commands, conversations, delegation as delegation_commands,
-        experts as experts_commands, feedback as feedback_commands, file_io, folder_commands,
-        folders, logging as logging_commands, mcp as mcp_commands,
+        acp as acp_commands, app_update as app_update_commands, automation as automation_commands,
+        backup, chat_channel as chat_channel_commands, conversations,
+        delegation as delegation_commands, experts as experts_commands,
+        feedback as feedback_commands, file_io, folder_commands, folders,
+        logging as logging_commands, mcp as mcp_commands,
         model_provider as model_provider_commands, notification, pet as pet_commands, project_boot,
         question as question_commands, quick_messages as quick_messages_commands,
-        remote_proxy as remote_proxy_commands,
-        remote_workspace as remote_workspace_commands, session_info as session_info_commands,
-        system_settings, terminal as terminal_commands,
+        remote_proxy as remote_proxy_commands, remote_workspace as remote_workspace_commands,
+        session_info as session_info_commands, system_settings, terminal as terminal_commands,
         version_control, windows, workspace_state as workspace_state_commands,
     };
     use crate::terminal::manager::TerminalManager;
@@ -1125,6 +1124,8 @@ mod tauri_app {
                 model_provider_commands::create_model_provider,
                 model_provider_commands::update_model_provider,
                 model_provider_commands::delete_model_provider,
+                model_provider_commands::list_importable_cc_switch_model_providers,
+                model_provider_commands::import_cc_switch_model_providers,
                 web::start_web_server,
                 web::stop_web_server,
                 web::get_web_server_status,

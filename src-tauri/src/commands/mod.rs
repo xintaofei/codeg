@@ -3,6 +3,7 @@ pub mod acp;
 pub mod app_update;
 pub mod automation;
 pub mod backup;
+pub mod cc_switch_model_provider_import;
 pub mod chat_channel;
 pub mod conversations;
 pub mod delegation;

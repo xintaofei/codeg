@@ -2245,3 +2245,42 @@ export function serializeClaudeProviderModel(
     cleaned.customOptionDescription = obj.customOptionDescription.trim()
   return Object.keys(cleaned).length === 0 ? null : JSON.stringify(cleaned)
 }
+
+// --- cc-switch import types ---
+
+export type CcSwitchModelProviderSkipReason =
+  | "unsupported_app_type"
+  | "missing_name"
+  | "missing_api_url"
+  | "missing_api_key"
+  | "invalid_model"
+  | "duplicate_name"
+  | "duplicate_config"
+  | "malformed_source"
+
+export interface CcSwitchModelProviderPreviewItem {
+  sourceId: string
+  sourceAppType: string
+  targetAgentType: AgentType
+  name: string
+  apiUrl: string | null
+  model: string | null
+  importable: boolean
+  skipReason: CcSwitchModelProviderSkipReason | null
+}
+
+export interface ListImportableCcSwitchModelProvidersResult {
+  available: boolean
+  sourcePath: string
+  items: CcSwitchModelProviderPreviewItem[]
+}
+
+export interface ImportCcSwitchModelProvidersRequest {
+  sourceIds: string[]
+  overwriteSameName?: boolean
+}
+
+export interface ImportCcSwitchModelProvidersResult {
+  importedIds: number[]
+  skipped: CcSwitchModelProviderPreviewItem[]
+}

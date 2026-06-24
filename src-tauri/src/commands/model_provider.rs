@@ -3,11 +3,15 @@ use std::path::Path;
 use crate::acp::manager::ConnectionManager;
 use crate::acp::types::ConfigStaleKind;
 use crate::app_error::AppCommandError;
-use crate::commands::acp;
+use crate::commands::{acp, cc_switch_model_provider_import};
 use crate::db::service::{agent_setting_service, model_provider_service};
 use crate::db::AppDatabase;
 use crate::models::agent::AgentType;
-use crate::models::model_provider::ModelProviderInfo;
+use crate::models::model_provider::{
+    CcSwitchModelProviderPreviewItem, ImportCcSwitchModelProvidersRequest,
+    ImportCcSwitchModelProvidersResult, ListImportableCcSwitchModelProvidersResult,
+    ModelProviderInfo,
+};
 use crate::web::event_bridge::EventEmitter;
 
 // ---------------------------------------------------------------------------
@@ -23,7 +27,7 @@ fn validate_agent_type(agent_type: &str) -> Result<(), AppCommandError> {
     Ok(())
 }
 
-fn validate_fields(
+pub(crate) fn validate_fields(
     name: Option<&str>,
     api_url: Option<&str>,
     api_key: Option<&str>,
@@ -57,7 +61,7 @@ fn validate_fields(
     Ok(())
 }
 
-fn validate_model(agent_type: &str, model: Option<&str>) -> Result<(), AppCommandError> {
+pub(crate) fn validate_model(agent_type: &str, model: Option<&str>) -> Result<(), AppCommandError> {
     let Some(raw) = model.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(());
     };
@@ -106,6 +110,150 @@ pub async fn create_model_provider_core(
             .await
             .map_err(AppCommandError::from)?;
     Ok(ModelProviderInfo::from(model_row))
+}
+
+async fn list_importable_cc_switch_model_providers_from_path_core(
+    db: &AppDatabase,
+    db_path: &Path,
+) -> Result<ListImportableCcSwitchModelProvidersResult, AppCommandError> {
+    if !db_path.is_file() {
+        return Ok(ListImportableCcSwitchModelProvidersResult {
+            available: false,
+            source_path: db_path.display().to_string(),
+            items: Vec::new(),
+        });
+    }
+
+    let existing = model_provider_service::list_all(&db.conn)
+        .await
+        .map_err(AppCommandError::from)?;
+    let items =
+        cc_switch_model_provider_import::load_cc_switch_preview_items(db_path, &existing).await?;
+
+    Ok(ListImportableCcSwitchModelProvidersResult {
+        available: true,
+        source_path: db_path.display().to_string(),
+        items,
+    })
+}
+
+pub async fn list_importable_cc_switch_model_providers_core(
+    db: &AppDatabase,
+) -> Result<ListImportableCcSwitchModelProvidersResult, AppCommandError> {
+    let db_path = cc_switch_model_provider_import::resolve_cc_switch_db_path();
+    list_importable_cc_switch_model_providers_from_path_core(db, &db_path).await
+}
+
+async fn import_cc_switch_model_providers_from_path_core(
+    db: &AppDatabase,
+    db_path: &Path,
+    request: ImportCcSwitchModelProvidersRequest,
+) -> Result<ImportCcSwitchModelProvidersResult, AppCommandError> {
+    let preview = list_importable_cc_switch_model_providers_from_path_core(db, db_path).await?;
+    if !preview.available {
+        return Ok(ImportCcSwitchModelProvidersResult {
+            imported_ids: Vec::new(),
+            skipped: Vec::new(),
+        });
+    }
+    let wanted: std::collections::HashSet<&str> =
+        request.source_ids.iter().map(String::as_str).collect();
+    let mut skipped: Vec<CcSwitchModelProviderPreviewItem> = preview
+        .items
+        .iter()
+        .filter(|item| {
+            wanted.contains(item.source_id.as_str())
+                && !item.importable
+                && !(request.overwrite_same_name
+                    && item.skip_reason
+                        == Some(crate::models::model_provider::CcSwitchModelProviderSkipReason::DuplicateName))
+        })
+        .cloned()
+        .collect();
+
+    let candidates = cc_switch_model_provider_import::load_cc_switch_import_candidates(
+        db_path,
+        &model_provider_service::list_all(&db.conn)
+            .await
+            .map_err(AppCommandError::from)?,
+    )
+    .await?;
+
+    let mut imported_ids = Vec::new();
+    for candidate in candidates
+        .into_iter()
+        .filter(|candidate| wanted.contains(candidate.source_id.as_str()))
+    {
+        let current_existing = model_provider_service::list_all(&db.conn)
+            .await
+            .map_err(AppCommandError::from)?;
+        if let Some(reason) = cc_switch_model_provider_import::duplicate_reason_for_candidate(
+            &candidate,
+            &current_existing,
+        ) {
+            if request.overwrite_same_name
+                && reason
+                    == crate::models::model_provider::CcSwitchModelProviderSkipReason::DuplicateName
+            {
+                if let Some(existing) = current_existing
+                    .iter()
+                    .find(|provider| provider.name == candidate.name)
+                {
+                    if existing.agent_type == candidate.target_agent_type {
+                        let updated = update_model_provider_core(
+                            db,
+                            existing.id,
+                            None,
+                            Some(candidate.api_url.clone()),
+                            Some(candidate.api_key.clone()),
+                            None,
+                            Some(candidate.model.clone().unwrap_or_default()),
+                            &EventEmitter::Noop,
+                        )
+                        .await?;
+                        imported_ids.push(updated.id);
+                        continue;
+                    }
+                }
+            }
+
+            skipped.push(CcSwitchModelProviderPreviewItem {
+                source_id: candidate.source_id.clone(),
+                source_app_type: candidate.source_app_type.clone(),
+                target_agent_type: candidate.target_agent_type.clone(),
+                name: candidate.name.clone(),
+                api_url: Some(candidate.api_url.clone()),
+                model: candidate.model.clone(),
+                importable: false,
+                skip_reason: Some(reason),
+            });
+            continue;
+        }
+
+        let created = create_model_provider_core(
+            db,
+            candidate.name,
+            candidate.api_url,
+            candidate.api_key,
+            candidate.target_agent_type,
+            candidate.model,
+        )
+        .await?;
+        imported_ids.push(created.id);
+    }
+
+    Ok(ImportCcSwitchModelProvidersResult {
+        imported_ids: imported_ids,
+        skipped,
+    })
+}
+
+pub async fn import_cc_switch_model_providers_core(
+    db: &AppDatabase,
+    request: ImportCcSwitchModelProvidersRequest,
+) -> Result<ImportCcSwitchModelProvidersResult, AppCommandError> {
+    let db_path = cc_switch_model_provider_import::resolve_cc_switch_db_path();
+    import_cc_switch_model_providers_from_path_core(db, &db_path, request).await
 }
 
 /// Update a model provider. For the `model` parameter:
@@ -241,12 +389,13 @@ pub async fn update_model_provider_and_refresh(
 
     // Every agent bound to this provider may now be on stale config (the cascade
     // rewrote their env_json + native config files). Recompute and notify.
-    let agent_types: Vec<AgentType> = agent_setting_service::find_by_model_provider_id(&db.conn, id)
-        .await
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|setting| serde_json::from_str(&setting.agent_type).ok())
-        .collect();
+    let agent_types: Vec<AgentType> =
+        agent_setting_service::find_by_model_provider_id(&db.conn, id)
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|setting| serde_json::from_str(&setting.agent_type).ok())
+            .collect();
     let affected_running_sessions = acp::refresh_config_staleness(
         manager,
         db,
@@ -316,6 +465,23 @@ pub async fn create_model_provider(
 
 #[cfg(feature = "tauri-runtime")]
 #[tauri::command]
+pub async fn list_importable_cc_switch_model_providers(
+    db: tauri::State<'_, AppDatabase>,
+) -> Result<ListImportableCcSwitchModelProvidersResult, AppCommandError> {
+    list_importable_cc_switch_model_providers_core(&db).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn import_cc_switch_model_providers(
+    db: tauri::State<'_, AppDatabase>,
+    request: ImportCcSwitchModelProvidersRequest,
+) -> Result<ImportCcSwitchModelProvidersResult, AppCommandError> {
+    import_cc_switch_model_providers_core(&db, request).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn update_model_provider(
     db: tauri::State<'_, AppDatabase>,
@@ -363,6 +529,46 @@ pub async fn delete_model_provider(
 mod tests {
     use super::*;
     use crate::db::test_helpers::fresh_in_memory_db;
+    use sea_orm::{ConnectionTrait, DbBackend, Statement};
+    use tempfile::tempdir;
+
+    async fn seed_cc_switch_db(
+        providers: &[(&str, &str, &str, serde_json::Value)],
+    ) -> tempfile::TempDir {
+        let dir = tempdir().expect("temp dir");
+        let db_path = dir.path().join("cc-switch.db");
+        let conn =
+            sea_orm::Database::connect(format!("sqlite:{}?mode=rwc", db_path.to_string_lossy()))
+                .await
+                .expect("open cc-switch db");
+        conn.execute(Statement::from_string(
+            DbBackend::Sqlite,
+            "CREATE TABLE providers (id TEXT PRIMARY KEY, app_type TEXT NOT NULL, name TEXT NOT NULL, settings_config TEXT);"
+                .to_owned(),
+        ))
+        .await
+        .expect("create providers table");
+
+        for (id, app_type, name, settings) in providers {
+            let settings_json = serde_json::to_string(settings).expect("serialize settings config");
+            let escaped_name = name.replace('\'', "''");
+            let escaped_settings = settings_json.replace('\'', "''");
+            conn.execute(Statement::from_string(
+                DbBackend::Sqlite,
+                format!(
+                    "INSERT INTO providers (id, app_type, name, settings_config) VALUES ('{}', '{}', '{}', '{}');",
+                    id.replace('\'', "''"),
+                    app_type.replace('\'', "''"),
+                    escaped_name,
+                    escaped_settings
+                ),
+            ))
+            .await
+            .expect("insert cc-switch provider row");
+        }
+
+        dir
+    }
 
     /// Regression: an `api_key` containing a multibyte character (e.g. a
     /// full-width char typed under a CJK IME) must not panic the masking in
@@ -497,5 +703,227 @@ mod tests {
             fp_after_key, fp_after_name,
             "renaming the provider must not shift the agent fingerprint"
         );
+    }
+
+    #[tokio::test]
+    async fn list_importable_cc_switch_model_providers_reports_missing_db_as_unavailable() {
+        let db = fresh_in_memory_db().await;
+        let dir = tempdir().expect("temp dir");
+        let db_path = dir.path().join("missing.db");
+
+        let result = list_importable_cc_switch_model_providers_from_path_core(&db, &db_path)
+            .await
+            .expect("list preview");
+
+        assert!(!result.available);
+        assert!(result.items.is_empty());
+        assert_eq!(result.source_path, db_path.display().to_string());
+    }
+
+    #[tokio::test]
+    async fn import_cc_switch_model_providers_imports_only_selected_rows() {
+        let db = fresh_in_memory_db().await;
+        let cc_switch_dir = seed_cc_switch_db(&[
+            (
+                "codex-1",
+                "codex",
+                "Codex One",
+                serde_json::json!({
+                    "auth": { "OPENAI_API_KEY": "sk-codex-1" },
+                    "config": "model = \"gpt-5\"\nbase_url = \"https://api.codex.one/v1\"\n"
+                }),
+            ),
+            (
+                "gemini-1",
+                "gemini",
+                "Gemini One",
+                serde_json::json!({
+                    "env": {
+                        "GOOGLE_GEMINI_BASE_URL": "https://api.gemini.one",
+                        "GEMINI_API_KEY": "gm-key-1",
+                        "GEMINI_MODEL": "gemini-3-pro"
+                    }
+                }),
+            ),
+        ])
+        .await;
+        let db_path = cc_switch_dir.path().join("cc-switch.db");
+
+        let result = import_cc_switch_model_providers_from_path_core(
+            &db,
+            &db_path,
+            ImportCcSwitchModelProvidersRequest {
+                source_ids: vec!["codex:codex-1".to_string()],
+                overwrite_same_name: false,
+            },
+        )
+        .await
+        .expect("import selected rows");
+
+        assert_eq!(result.imported_ids.len(), 1);
+        assert!(result.skipped.is_empty());
+
+        let providers = list_model_providers_core(&db)
+            .await
+            .expect("list imported providers");
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].name, "Codex One");
+        assert_eq!(providers[0].agent_type, "codex");
+        assert_eq!(providers[0].model.as_deref(), Some("gpt-5"));
+    }
+
+    #[tokio::test]
+    async fn import_cc_switch_model_providers_rechecks_duplicates_between_selected_rows() {
+        let db = fresh_in_memory_db().await;
+        let cc_switch_dir = seed_cc_switch_db(&[
+            (
+                "codex-1",
+                "codex",
+                "Shared Name",
+                serde_json::json!({
+                    "auth": { "OPENAI_API_KEY": "sk-codex-1" },
+                    "config": "model = \"gpt-5\"\nbase_url = \"https://api.first.example/v1\"\n"
+                }),
+            ),
+            (
+                "gemini-1",
+                "gemini",
+                "Shared Name",
+                serde_json::json!({
+                    "env": {
+                        "GOOGLE_GEMINI_BASE_URL": "https://api.second.example",
+                        "GEMINI_API_KEY": "gm-key-1",
+                        "GEMINI_MODEL": "gemini-3-pro"
+                    }
+                }),
+            ),
+        ])
+        .await;
+        let db_path = cc_switch_dir.path().join("cc-switch.db");
+
+        let result = import_cc_switch_model_providers_from_path_core(
+            &db,
+            &db_path,
+            ImportCcSwitchModelProvidersRequest {
+                source_ids: vec!["codex:codex-1".to_string(), "gemini:gemini-1".to_string()],
+                overwrite_same_name: false,
+            },
+        )
+        .await
+        .expect("import rows with internal duplicate");
+
+        assert_eq!(result.imported_ids.len(), 1);
+        assert_eq!(result.skipped.len(), 1);
+        assert_eq!(
+            result.skipped[0].skip_reason,
+            Some(crate::models::model_provider::CcSwitchModelProviderSkipReason::DuplicateName)
+        );
+
+        let providers = list_model_providers_core(&db)
+            .await
+            .expect("list imported providers");
+        assert_eq!(providers.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn import_cc_switch_model_providers_overwrites_same_name_same_agent_type() {
+        let db = fresh_in_memory_db().await;
+        let existing = create_model_provider_core(
+            &db,
+            "Shared Name".to_string(),
+            "https://old.example.com/v1".to_string(),
+            "sk-old".to_string(),
+            "codex".to_string(),
+            Some("gpt-4.1".to_string()),
+        )
+        .await
+        .expect("create existing provider");
+
+        let cc_switch_dir = seed_cc_switch_db(&[(
+            "codex-1",
+            "codex",
+            "Shared Name",
+            serde_json::json!({
+                "auth": { "OPENAI_API_KEY": "sk-new" },
+                "config": "model = \"gpt-5\"\nbase_url = \"https://new.example.com/v1\"\n"
+            }),
+        )])
+        .await;
+        let db_path = cc_switch_dir.path().join("cc-switch.db");
+
+        let result = import_cc_switch_model_providers_from_path_core(
+            &db,
+            &db_path,
+            ImportCcSwitchModelProvidersRequest {
+                source_ids: vec!["codex:codex-1".to_string()],
+                overwrite_same_name: true,
+            },
+        )
+        .await
+        .expect("overwrite same-name provider");
+
+        assert_eq!(result.imported_ids, vec![existing.id]);
+        assert!(result.skipped.is_empty());
+
+        let providers = list_model_providers_core(&db)
+            .await
+            .expect("list providers after overwrite");
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].id, existing.id);
+        assert_eq!(providers[0].api_url, "https://new.example.com/v1");
+        assert_eq!(providers[0].api_key, "sk-new");
+        assert_eq!(providers[0].model.as_deref(), Some("gpt-5"));
+    }
+
+    #[tokio::test]
+    async fn import_cc_switch_model_providers_does_not_overwrite_same_name_different_agent_type() {
+        let db = fresh_in_memory_db().await;
+        create_model_provider_core(
+            &db,
+            "Shared Name".to_string(),
+            "https://existing.example.com/v1".to_string(),
+            "sk-existing".to_string(),
+            "gemini".to_string(),
+            Some("gemini-2.5-pro".to_string()),
+        )
+        .await
+        .expect("create existing provider");
+
+        let cc_switch_dir = seed_cc_switch_db(&[(
+            "codex-1",
+            "codex",
+            "Shared Name",
+            serde_json::json!({
+                "auth": { "OPENAI_API_KEY": "sk-new" },
+                "config": "model = \"gpt-5\"\nbase_url = \"https://new.example.com/v1\"\n"
+            }),
+        )])
+        .await;
+        let db_path = cc_switch_dir.path().join("cc-switch.db");
+
+        let result = import_cc_switch_model_providers_from_path_core(
+            &db,
+            &db_path,
+            ImportCcSwitchModelProvidersRequest {
+                source_ids: vec!["codex:codex-1".to_string()],
+                overwrite_same_name: true,
+            },
+        )
+        .await
+        .expect("attempt overwrite with mismatched agent type");
+
+        assert!(result.imported_ids.is_empty());
+        assert_eq!(result.skipped.len(), 1);
+        assert_eq!(
+            result.skipped[0].skip_reason,
+            Some(crate::models::model_provider::CcSwitchModelProviderSkipReason::DuplicateName)
+        );
+
+        let providers = list_model_providers_core(&db)
+            .await
+            .expect("list providers after mismatch skip");
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].agent_type, "gemini");
+        assert_eq!(providers[0].api_url, "https://existing.example.com/v1");
     }
 }
