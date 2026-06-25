@@ -47,6 +47,9 @@ describe("ConversationDetailPanel new conversation layout", () => {
     // The welcome input is flushed: the welcome column already supplies px-4, so
     // the input must not double-pad (would make it narrower than the cards).
     expect(welcomeBranch).toContain("flush")
+    // The welcome composer is taller (min-h-30) than the compact default kept by
+    // active/historical conversations.
+    expect(welcomeBranch).toContain("tall")
   })
 
   it("does not render a decorative welcome backdrop", () => {
@@ -105,7 +108,9 @@ describe("ConversationDetailPanel new conversation layout", () => {
     // sibling cards in conversation-shell; only the welcome input drops it via
     // `flush` (the welcome column already provides the px-4).
     expect(chatInputSource).toContain('cn("pt-0 pb-1", !flush && "px-4")')
-    expect(chatInputSource).toContain('className="min-h-24 max-h-60"')
+    expect(chatInputSource).toContain(
+      'cn(tall ? "min-h-30" : "min-h-24", "max-h-60")'
+    )
     expect(chatInputSource).not.toContain("containerClassName")
     expect(source).not.toContain("containerClassName")
     expect(conversationShellSource).not.toContain("containerClassName")
