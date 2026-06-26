@@ -7,6 +7,7 @@ import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import {
   Dialog,
   DialogContent,
@@ -46,6 +47,11 @@ export function EditChatChannelDialog({
   const [chatId, setChatId] = useState(config.chat_id ?? "")
   const [appId, setAppId] = useState(config.app_id ?? "")
   const [baseUrl] = useState(config.base_url ?? "")
+  const [allowedSenders, setAllowedSenders] = useState<string>(
+    Array.isArray(config.allowed_senders)
+      ? config.allowed_senders.join("\n")
+      : ""
+  )
   const [dailyReportEnabled, setDailyReportEnabled] = useState(
     channel.daily_report_enabled
   )
@@ -75,12 +81,22 @@ export function EditChatChannelDialog({
     setLoading(true)
     setError(null)
     try {
-      const configJson =
+      const allowedSendersArr = allowedSenders
+        .split("\n")
+        .map((s: string) => s.trim())
+        .filter(Boolean)
+
+      const baseConfig =
         channel.channel_type === "weixin"
-          ? JSON.stringify({ base_url: baseUrl })
+          ? { base_url: baseUrl }
           : channel.channel_type === "lark"
-            ? JSON.stringify({ app_id: appId, chat_id: chatId })
-            : JSON.stringify({ chat_id: chatId })
+            ? { app_id: appId, chat_id: chatId }
+            : { chat_id: chatId }
+
+      const configJson = JSON.stringify({
+        ...baseConfig,
+        allowed_senders: allowedSendersArr,
+      })
 
       await updateChatChannel({
         id: channel.id,
@@ -110,6 +126,7 @@ export function EditChatChannelDialog({
     channel,
     appId,
     baseUrl,
+    allowedSenders,
     dailyReportEnabled,
     dailyReportTime,
     onOpenChange,
@@ -184,6 +201,22 @@ export function EditChatChannelDialog({
               <Input value={baseUrl} disabled />
             </div>
           )}
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium">Allowed Sender IDs</label>
+            <Textarea
+              value={allowedSenders}
+              onChange={(e) => setAllowedSenders(e.target.value)}
+              placeholder={"123456789\n987654321"}
+              rows={3}
+              className="font-mono text-xs"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              One sender ID per line. Only these senders may drive agents via
+              this channel. Leave empty to block everyone (fail-closed). A
+              blocked sender is told their own ID so you can add it here.
+            </p>
+          </div>
 
           <div className="flex items-center justify-between">
             <label className="text-xs font-medium">{t("dailyReport")}</label>
