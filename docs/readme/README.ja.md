@@ -19,7 +19,7 @@
   <a href="./README.ar.md">العربية</a>
 </p>
 
-Codeg（Code Generation）は、マルチエージェント・コーディングワークスペースです。Claude Code、Codex CLI、OpenCode、Gemini CLI、OpenClaw、Cline、Hermes Agent などの複数のエージェントを 1 つのワークスペースに統合し、会話の集約とマルチエージェント協働に対応します。デスクトップへのインストールに加え、サーバー/Docker デプロイにも対応しています。
+Codeg（Code Generation）は、マルチエージェント・コーディングワークスペースです。Claude Code、Codex CLI、OpenCode、Gemini CLI、OpenClaw、Cline、Hermes Agent、CodeBuddy、Kimi Code などの複数のエージェントを 1 つのワークスペースに統合し、会話の集約とマルチエージェント協働に対応します。デスクトップへのインストールに加え、サーバー/Docker デプロイにも対応しています。
 
 ![gallery](../images/gallery.svg)
 
@@ -48,10 +48,15 @@ Codeg（Code Generation）は、マルチエージェント・コーディング
 ![Codeg Light](../images/main-light.png#gh-light-mode-only)
 ![Codeg Dark](../images/main-dark.png#gh-dark-mode-only)
 
-## 設定
+## マルチエージェント協調
 
-![Codeg Light](../images/settings-light.png#gh-light-mode-only)
-![Codeg Dark](../images/settings-dark.png#gh-dark-mode-only)
+![Codeg Light](../images/collaboration-light.png#gh-light-mode-only)
+![Codeg Dark](../images/collaboration-dark.png#gh-dark-mode-only)
+
+## オフィスワークフロー
+
+![Codeg Light](../images/office-light.png#gh-light-mode-only)
+![Codeg Dark](../images/office-dark.png#gh-dark-mode-only)
 
 ## ハイライト
 
@@ -59,6 +64,8 @@ Codeg（Code Generation）は、マルチエージェント・コーディング
 - **マルチエージェント協調** — 同一セッション内で、メインエージェントが異なる種類のサブエージェント（例：Claude Code が Codex、Gemini などを呼び出し）を呼び出してタスクを共同で完了し、各サブエージェントは独立したセッションとして動作
 - 内蔵 `git worktree` フローによる並列開発
 - **プロジェクトブート** — ビジュアル設定とライブプレビューで新規プロジェクトを作成
+- **Office ドキュメント** — 内蔵の officecli ツールセットで .docx / .xlsx / .pptx ファイルを作成・分析・校正・編集。ファイルタブ内でリアルタイムプレビューが可能で、エージェントの編集に合わせて即時更新
+- **オートメーション** — 任意のコンポーザー設定を再利用可能なオートメーションとして保存し、cron スケジュールまたは手動トリガーでヘッドレス実行
 - **チャットチャンネル** — Telegram、Lark（Feishu）、iLink（Weixin）などをコーディング Agent に接続し、リアルタイム通知の受信、フルセッション操作、リモートタスク制御を実行
 - MCP 管理（ローカルスキャン + レジストリ検索/インストール）
 - Skills 管理（グローバルおよびプロジェクトスコープ）
@@ -66,6 +73,7 @@ Codeg（Code Generation）は、マルチエージェント・コーディング
 - Web サービスモード — ブラウザから Codeg にアクセスでき、リモートワークに対応
 - **スタンドアロンサーバーデプロイ** — 任意の Linux/macOS サーバーで `codeg-server` を実行し、ブラウザからアクセス
 - **Docker サポート** — `docker compose up` または `docker run` に対応、カスタムトークン・ポート設定、データ永続化およびプロジェクトディレクトリのマウントをサポート
+- ランタイムログ — フィルタリングとモジュール別ログレベルに対応したリアルタイムログビューアを内蔵
 - 統合エンジニアリングループ（ファイルツリー、Diff、Git 変更、コミット、ターミナル）
 
 ## 対応エージェント
@@ -79,6 +87,8 @@ Codeg（Code Generation）は、マルチエージェント・コーディング
 | OpenClaw     | —                                     | `~/.openclaw/agents`                  | `%USERPROFILE%\\.openclaw\\agents`                    |
 | Cline        | `$CLINE_DIR`                          | `~/.cline/data/tasks`                 | `%USERPROFILE%\\.cline\\data\\tasks`                  |
 | Hermes Agent | `$HERMES_HOME/state.db`               | `~/.hermes/state.db`                  | `%USERPROFILE%\\.hermes\\state.db`                    |
+| CodeBuddy    | `$CODEBUDDY_CONFIG_DIR/projects`      | `~/.codebuddy/projects`               | `%USERPROFILE%\\.codebuddy\\projects`                 |
+| Kimi Code    | `$KIMI_CODE_HOME/sessions`            | `~/.kimi-code/sessions`               | `%USERPROFILE%\\.kimi-code\\sessions`                 |
 
 > 注: 環境変数はフォールバックパスより優先されます。
 
@@ -116,6 +126,34 @@ Codeg（Code Generation）は、マルチエージェント・コーディング
 | iLink（Weixin） | WebSocket + REST API             | 内蔵 |
 
 > その他のチャンネル（Discord、Slack、DingTalk など）は今後のリリースで対応予定。
+
+</details>
+
+<details>
+<summary><h2>Office ドキュメント</h2></summary>
+
+Word、Excel、PowerPoint ファイルをファーストクラスのワークフローとして扱えます。内蔵の **officecli** ツールセットにより、エージェントが .docx、.xlsx、.pptx ドキュメントの作成・分析・校正・編集を行い、Codeg 内で直接プレビューできます。
+
+### 機能
+
+- **作成・編集** — 新規ドキュメントの生成や既存 .docx / .xlsx / .pptx ファイルの編集（グラフ、表、書式設定を含む）
+- **分析・校正** — ドキュメント構造の確認、書式の問題の発見、内容の校正
+- **ライブプレビュー** — ファイルタブで .docx / .xlsx / .pptx を開くとインライン表示され、エージェントの編集に合わせて自動更新——常駐の `officecli watch` サーバーが支え（Web およびスタンドアロンサーバー環境ではリバースプロキシ経由で配信、ケイパビリティ認証）
+- **クイックアクション** — ウェルカムページの「コーディング」と「Office」タブから、対応するスキル呼び出しとプロンプトテンプレートをワンクリックで入力欄に挿入；選択中のエージェントで有効化されていないスキルはロックバッジで表示され、有効化画面へ誘導
+- **Office ツール設定** — 専用設定ページで `officecli` のインストールとドキュメントスキルをスキル×エージェントマトリクスで管理：任意の（スキル、エージェント）ペアを切り替え、一括で有効化/無効化も可能
+
+</details>
+
+<details>
+<summary><h2>オートメーション</h2></summary>
+
+コンポーザーの設定——エージェント、モデル、プロンプト、作業ディレクトリ、オプション——を再利用可能な**オートメーション**として保存し、UI を開かずに実行できます。
+
+### 機能
+
+- **一度設定すれば再利用可能** — 完全なコンポーザー設定を名前付きオートメーションとして保存
+- **スケジュール実行またはオンデマンド** — cron スケジュールで自動実行するか、任意のタイミングで手動トリガー
+- **ヘッドレス実行** — バックグラウンドで実行され、通常のセッションを生成。ワークスペースからいつでも開くことができ、起動後はワークスペースに自動で戻る
 
 </details>
 
@@ -330,6 +368,7 @@ Next.js 16 (Static Export) + React 19
               |- Chat Channels
               |- Git / File Tree / Terminal
               |- MCP marketplace + config
+              |- Office Tools (officecli) + Automations
               |- SeaORM + SQLite
                       |
               ┌───────┼───────┐
@@ -359,6 +398,8 @@ Next.js 16 (Static Export) + React 19
 ## 謝辞
 
 - [ACP](https://agentclientprotocol.com) — Agent Client Protocol (ACP) は、Codeg が複数のエージェントに接続できる基盤です
+- [Superpowers](https://github.com/obra/superpowers) — Codeg のエキスパートスキルモジュールを支えるプロジェクト
+- [OfficeCLI](https://github.com/iOfficeAI/OfficeCLI) — Codeg の Office ドキュメントワークフローを支えるプロジェクト
 
 ## ライセンス
 

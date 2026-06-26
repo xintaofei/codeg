@@ -19,7 +19,7 @@
   <a href="./README.ar.md">العربية</a>
 </p>
 
-Codeg(Code Generation)는 멀티 에이전트 코딩 워크스페이스입니다. Claude Code, Codex CLI, OpenCode, Gemini CLI, OpenClaw, Cline, Hermes Agent 등의 여러 에이전트를 하나의 워크스페이스로 통합하며, 대화 집계와 멀티 에이전트 협업을 지원하고 데스크톱 설치와 서버/Docker 배포를 지원합니다.
+Codeg(Code Generation)는 멀티 에이전트 코딩 워크스페이스입니다. Claude Code, Codex CLI, OpenCode, Gemini CLI, OpenClaw, Cline, Hermes Agent, CodeBuddy, Kimi Code 등의 여러 에이전트를 하나의 워크스페이스로 통합하며, 대화 집계와 멀티 에이전트 협업을 지원하고 데스크톱 설치와 서버/Docker 배포를 지원합니다.
 
 ![gallery](../images/gallery.svg)
 
@@ -48,10 +48,15 @@ Codeg(Code Generation)는 멀티 에이전트 코딩 워크스페이스입니다
 ![Codeg Light](../images/main-light.png#gh-light-mode-only)
 ![Codeg Dark](../images/main-dark.png#gh-dark-mode-only)
 
-## 설정
+## 멀티 에이전트 협업
 
-![Codeg Light](../images/settings-light.png#gh-light-mode-only)
-![Codeg Dark](../images/settings-dark.png#gh-dark-mode-only)
+![Codeg Light](../images/collaboration-light.png#gh-light-mode-only)
+![Codeg Dark](../images/collaboration-dark.png#gh-dark-mode-only)
+
+## 오피스 워크플로우
+
+![Codeg Light](../images/office-light.png#gh-light-mode-only)
+![Codeg Dark](../images/office-dark.png#gh-dark-mode-only)
 
 ## 하이라이트
 
@@ -59,6 +64,8 @@ Codeg(Code Generation)는 멀티 에이전트 코딩 워크스페이스입니다
 - **멀티 에이전트 협업** — 단일 세션 내에서 메인 에이전트가 다양한 유형의 서브 에이전트(예: Claude Code가 Codex, Gemini 등을 호출)를 호출하여 함께 작업을 완료하며, 각 서브 에이전트는 독립된 세션으로 실행
 - 내장 `git worktree` 플로를 통한 병렬 개발
 - **프로젝트 부트** — 시각적 설정과 실시간 미리보기로 새 프로젝트 생성
+- **Office 문서** — 내장 officecli 툴셋으로 .docx / .xlsx / .pptx 파일 생성, 분석, 교정, 편집. 파일 탭 내 실시간 미리보기 지원, 에이전트 편집 시 즉시 갱신
+- **자동화** — 컴포저 설정을 재사용 가능한 자동화로 저장하고, cron 스케줄 또는 수동 트리거로 헤드리스 실행
 - **채팅 채널** — Telegram, Lark(Feishu), iLink(Weixin) 등을 코딩 에이전트에 연결하여 실시간 알림 수신, 전체 세션 상호작용 및 원격 작업 제어
 - MCP 관리 (로컬 스캔 + 레지스트리 검색/설치)
 - Skills 관리 (글로벌 및 프로젝트 범위)
@@ -66,6 +73,7 @@ Codeg(Code Generation)는 멀티 에이전트 코딩 워크스페이스입니다
 - Web 서비스 모드 — 브라우저에서 Codeg에 접속하여 원격 작업 가능
 - **독립형 서버 배포** — 모든 Linux/macOS 서버에서 `codeg-server`를 실행하고 브라우저로 접속
 - **Docker 지원** — `docker compose up` 또는 `docker run` 지원, 사용자 정의 토큰/포트, 데이터 영속화 및 프로젝트 디렉토리 마운트 지원
+- 런타임 로그 — 필터링 및 모듈별 로그 레벨 설정을 지원하는 실시간 로그 뷰어 내장
 - 통합 엔지니어링 루프 (파일 트리, Diff, Git 변경사항, 커밋, 터미널)
 
 ## 지원 에이전트
@@ -79,6 +87,8 @@ Codeg(Code Generation)는 멀티 에이전트 코딩 워크스페이스입니다
 | OpenClaw     | —                                     | `~/.openclaw/agents`                  | `%USERPROFILE%\\.openclaw\\agents`                    |
 | Cline        | `$CLINE_DIR`                          | `~/.cline/data/tasks`                 | `%USERPROFILE%\\.cline\\data\\tasks`                  |
 | Hermes Agent | `$HERMES_HOME/state.db`               | `~/.hermes/state.db`                  | `%USERPROFILE%\\.hermes\\state.db`                    |
+| CodeBuddy    | `$CODEBUDDY_CONFIG_DIR/projects`      | `~/.codebuddy/projects`               | `%USERPROFILE%\\.codebuddy\\projects`                 |
+| Kimi Code    | `$KIMI_CODE_HOME/sessions`            | `~/.kimi-code/sessions`               | `%USERPROFILE%\\.kimi-code\\sessions`                 |
 
 > 참고: 환경 변수가 기본 경로보다 우선합니다.
 
@@ -116,6 +126,34 @@ Codeg(Code Generation)는 멀티 에이전트 코딩 워크스페이스입니다
 | iLink (Weixin) | WebSocket + REST API  | 내장 |
 
 > 추가 채널(Discord, Slack, DingTalk 등)은 향후 릴리스에서 지원 예정입니다.
+
+</details>
+
+<details>
+<summary><h2>Office 문서</h2></summary>
+
+Word, Excel, PowerPoint 파일을 일급 워크플로우로 사용하세요. 내장된 **officecli** 툴셋을 통해 에이전트가 .docx, .xlsx, .pptx 문서를 생성·분석·교정·편집하고, Codeg 내에서 바로 미리볼 수 있습니다.
+
+### 기능
+
+- **생성 및 편집** — 새 문서 생성 또는 기존 .docx / .xlsx / .pptx 파일 수정 (차트, 표, 서식 포함)
+- **분석 및 교정** — 문서 구조 검사, 서식 문제 발견, 내용 교정
+- **실시간 미리보기** — 파일 탭에서 .docx / .xlsx / .pptx 를 열면 인라인으로 렌더링되고, 에이전트 편집 시 자동 갱신——상시 실행되는 `officecli watch` 서버가 지원 (웹 및 독립 서버 환경에서는 리버스 프록시를 통해 제공, 기능 인증 적용)
+- **빠른 실행** — 웰컴 페이지의 「코딩」과 「Office」 탭에서 해당 스킬 호출과 프롬프트 템플릿을 한 번의 클릭으로 입력창에 삽입; 선택된 에이전트에 활성화되지 않은 스킬은 잠금 뱃지로 표시되며 활성화 위치로 안내
+- **Office 도구 설정** — 전용 설정 페이지에서 `officecli` 설치 및 스킬×에이전트 매트릭스로 문서 스킬 관리: 임의의 (스킬, 에이전트) 쌍 토글, 일괄 활성화/비활성화 지원
+
+</details>
+
+<details>
+<summary><h2>자동화</h2></summary>
+
+컴포저 설정——에이전트, 모델, 프롬프트, 작업 디렉토리, 옵션——을 재사용 가능한 **자동화**로 저장하고, UI 를 열지 않고도 실행하세요.
+
+### 기능
+
+- **한 번 설정, 언제든 재사용** — 완전한 컴포저 설정을 이름 있는 자동화로 저장
+- **예약 또는 온디맨드 실행** — cron 스케줄에 따라 자동 실행하거나, 언제든지 수동으로 트리거
+- **헤드리스 실행** — 자동화는 백그라운드에서 실행되어 실제 세션을 생성하며, 워크스페이스에서 언제든 열 수 있고 시작 후 워크스페이스로 자동 복귀
 
 </details>
 
@@ -330,6 +368,7 @@ Next.js 16 (Static Export) + React 19
               |- Chat Channels
               |- Git / File Tree / Terminal
               |- MCP marketplace + config
+              |- Office Tools (officecli) + Automations
               |- SeaORM + SQLite
                       |
               ┌───────┼───────┐
@@ -359,6 +398,8 @@ Next.js 16 (Static Export) + React 19
 ## 감사의 말
 
 - [ACP](https://agentclientprotocol.com) — Agent Client Protocol(ACP)은 Codeg가 여러 에이전트에 연결할 수 있게 해주는 기반입니다
+- [Superpowers](https://github.com/obra/superpowers) — Codeg의 전문가 스킬 모듈을 지원하는 프로젝트
+- [OfficeCLI](https://github.com/iOfficeAI/OfficeCLI) — Codeg의 Office 문서 워크플로우를 지원하는 프로젝트
 
 ## 라이선스
 

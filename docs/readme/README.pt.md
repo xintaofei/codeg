@@ -19,7 +19,7 @@
   <a href="./README.ar.md">العربية</a>
 </p>
 
-Codeg (Code Generation) é um workspace de codificação multiagente. Ele reúne vários agentes (Claude Code, Codex CLI, OpenCode, Gemini CLI, OpenClaw, Cline, Hermes Agent, etc.) em um único workspace, com suporte à agregação de conversas e à colaboração multiagente, além de instalação desktop e implantação em servidor/Docker.
+Codeg (Code Generation) é um workspace de codificação multiagente. Ele reúne vários agentes (Claude Code, Codex CLI, OpenCode, Gemini CLI, OpenClaw, Cline, Hermes Agent, CodeBuddy, Kimi Code, etc.) em um único workspace, com suporte à agregação de conversas e à colaboração multiagente, além de instalação desktop e implantação em servidor/Docker.
 
 ![gallery](../images/gallery.svg)
 
@@ -48,10 +48,15 @@ Codeg (Code Generation) é um workspace de codificação multiagente. Ele reúne
 ![Codeg Light](../images/main-light.png#gh-light-mode-only)
 ![Codeg Dark](../images/main-dark.png#gh-dark-mode-only)
 
-## Configurações
+## Colaboração Multi-Agente
 
-![Codeg Light](../images/settings-light.png#gh-light-mode-only)
-![Codeg Dark](../images/settings-dark.png#gh-dark-mode-only)
+![Codeg Light](../images/collaboration-light.png#gh-light-mode-only)
+![Codeg Dark](../images/collaboration-dark.png#gh-dark-mode-only)
+
+## Fluxo de trabalho do Office
+
+![Codeg Light](../images/office-light.png#gh-light-mode-only)
+![Codeg Dark](../images/office-dark.png#gh-dark-mode-only)
 
 ## Destaques
 
@@ -59,6 +64,8 @@ Codeg (Code Generation) é um workspace de codificação multiagente. Ele reúne
 - **Colaboração multi-agentes** — dentro de uma mesma sessão, o agente principal delega para sub-agentes de tipos diferentes (p. ex. Claude Code chamando Codex, Gemini) para concluir uma tarefa em conjunto, com cada sub-agente executando como uma sessão independente
 - Desenvolvimento paralelo com fluxos `git worktree` integrados
 - **Inicializador de Projeto** — crie novos projetos visualmente com pré-visualização em tempo real
+- **Documentos Office** — crie, analise, revise e edite arquivos .docx / .xlsx / .pptx com o conjunto de ferramentas officecli integrado; pré-visualização em tempo real em uma aba de arquivo que atualiza enquanto o agente edita
+- **Automações** — salve qualquer configuração do compositor como automação reutilizável que executa em segundo plano segundo cronograma cron ou sob demanda
 - **Canais de Chat** — conecte Telegram, Lark (Feishu), iLink (Weixin) e mais aos seus agentes de codificação para notificações em tempo real, interação completa de sessão e controle remoto de tarefas
 - Gerenciamento de MCP (varredura local + busca/instalação no registro)
 - Gerenciamento de Skills (escopo global e por projeto)
@@ -66,6 +73,7 @@ Codeg (Code Generation) é um workspace de codificação multiagente. Ele reúne
 - Modo de serviço web — acesse o Codeg de qualquer navegador para trabalho remoto
 - **Implantação de servidor standalone** — execute `codeg-server` em qualquer servidor Linux/macOS, acesse via navegador
 - **Suporte a Docker** — `docker compose up` ou `docker run`, com token/porta personalizáveis, persistência de dados e montagem de diretórios de projetos
+- Registros de execução — visualizador de registros em tempo real integrado com filtragem e níveis de log por módulo
 - Ciclo de engenharia integrado (árvore de arquivos, diff, alterações git, commit, terminal)
 
 ## Agentes suportados
@@ -79,6 +87,8 @@ Codeg (Code Generation) é um workspace de codificação multiagente. Ele reúne
 | OpenClaw     | —                                     | `~/.openclaw/agents`                  | `%USERPROFILE%\\.openclaw\\agents`                    |
 | Cline        | `$CLINE_DIR`                          | `~/.cline/data/tasks`                 | `%USERPROFILE%\\.cline\\data\\tasks`                  |
 | Hermes Agent | `$HERMES_HOME/state.db`               | `~/.hermes/state.db`                  | `%USERPROFILE%\\.hermes\\state.db`                    |
+| CodeBuddy    | `$CODEBUDDY_CONFIG_DIR/projects`      | `~/.codebuddy/projects`               | `%USERPROFILE%\\.codebuddy\\projects`                 |
+| Kimi Code    | `$KIMI_CODE_HOME/sessions`            | `~/.kimi-code/sessions`               | `%USERPROFILE%\\.kimi-code\\sessions`                 |
 
 > Nota: as variáveis de ambiente têm prioridade sobre os caminhos padrão.
 
@@ -116,6 +126,34 @@ Conecte seus aplicativos de mensagens favoritos — Telegram, Lark (Feishu), iLi
 | iLink (Weixin) | WebSocket + REST API        | Integrado |
 
 > Mais canais (Discord, Slack, DingTalk, etc.) estão planejados para versões futuras.
+
+</details>
+
+<details>
+<summary><h2>Documentos Office</h2></summary>
+
+Trabalhe com arquivos Word, Excel e PowerPoint como fluxo de trabalho de primeira classe. O conjunto de ferramentas **officecli** integrado permite que seus agentes criem, analisem, revisem e editem documentos .docx, .xlsx e .pptx — e você pode pré-visualizar o resultado diretamente no Codeg.
+
+### Funcionalidades
+
+- **Criar e editar** — gere novos documentos ou modifique arquivos .docx / .xlsx / .pptx existentes, incluindo gráficos, tabelas e formatação
+- **Analisar e revisar** — inspecione a estrutura do documento, identifique problemas de formatação e revise o conteúdo
+- **Pré-visualização em tempo real** — abra um .docx / .xlsx / .pptx em uma aba de arquivo e ele renderiza inline, atualizando automaticamente enquanto o agente edita — suportado por um servidor `officecli watch` persistente (com proxy reverso e autenticação por capacidade para ambientes web e servidor)
+- **Ações rápidas** — a página de boas-vindas oferece abas de Codificação e Office que inserem a invocação de habilidade correspondente e um modelo de prompt com um clique; habilidades não habilitadas mostram um badge de bloqueio e redirecionam para onde você pode ativá-las
+- **Configurações do Office Tools** — uma página de configurações dedicada instala o `officecli` e gerencia suas habilidades de documentos por meio de uma matriz habilidade×agente: alterne qualquer par (habilidade, agente) e aplique alterações em massa
+
+</details>
+
+<details>
+<summary><h2>Automações</h2></summary>
+
+Transforme qualquer configuração do compositor — agente, modelo, prompt, diretório de trabalho e opções — em uma **Automação** reutilizável que executa sem abrir a interface.
+
+### Funcionalidades
+
+- **Configure uma vez, reutilize sempre** — salve uma configuração completa do compositor como automação nomeada
+- **Agendada ou sob demanda** — execute segundo um cronograma cron ou dispare manualmente quando necessário
+- **Execução sem interface** — automações executam em segundo plano e criam sessões reais que podem ser abertas no workspace a qualquer momento; após iniciar, a interface retorna automaticamente ao workspace
 
 </details>
 
@@ -330,6 +368,7 @@ Next.js 16 (Static Export) + React 19
               |- Chat Channels
               |- Git / File Tree / Terminal
               |- MCP marketplace + config
+              |- Office Tools (officecli) + Automations
               |- SeaORM + SQLite
                       |
               ┌───────┼───────┐
@@ -359,6 +398,8 @@ Next.js 16 (Static Export) + React 19
 ## Agradecimentos
 
 - [ACP](https://agentclientprotocol.com) — o Agent Client Protocol (ACP) é a base que permite ao Codeg conectar-se a múltiplos agentes
+- [Superpowers](https://github.com/obra/superpowers) — alimenta o módulo de habilidades de especialistas do Codeg
+- [OfficeCLI](https://github.com/iOfficeAI/OfficeCLI) — alimenta o fluxo de trabalho de documentos Office do Codeg
 
 ## Licença
 

@@ -19,7 +19,7 @@
   <a href="./README.ar.md">العربية</a>
 </p>
 
-Codeg（Code Generation）是一個多智慧體編碼工作台，它將多個智慧體（Claude Code、Codex CLI、OpenCode、Gemini CLI、OpenClaw、Cline、Hermes Agent 等）統一到一個工作區中，支援會話彙整和多智慧體協作，支援桌面安裝、伺服器/Docker 部署。
+Codeg（Code Generation）是一個多智慧體編碼工作台，它將多個智慧體（Claude Code、Codex CLI、OpenCode、Gemini CLI、OpenClaw、Cline、Hermes Agent、CodeBuddy、Kimi Code 等）統一到一個工作區中，支援會話彙整和多智慧體協作，支援桌面安裝、伺服器/Docker 部署。
 
 ![gallery](../images/gallery.svg)
 
@@ -48,10 +48,15 @@ Codeg（Code Generation）是一個多智慧體編碼工作台，它將多個智
 ![Codeg Light](../images/main-light.png#gh-light-mode-only)
 ![Codeg Dark](../images/main-dark.png#gh-dark-mode-only)
 
-## 設定
+## 多智慧體協作
 
-![Codeg Light](../images/settings-light.png#gh-light-mode-only)
-![Codeg Dark](../images/settings-dark.png#gh-dark-mode-only)
+![Codeg Light](../images/collaboration-light.png#gh-light-mode-only)
+![Codeg Dark](../images/collaboration-dark.png#gh-dark-mode-only)
+
+## 日常辦公
+
+![Codeg Light](../images/office-light.png#gh-light-mode-only)
+![Codeg Dark](../images/office-dark.png#gh-dark-mode-only)
 
 ## 核心亮點
 
@@ -59,6 +64,8 @@ Codeg（Code Generation）是一個多智慧體編碼工作台，它將多個智
 - **多智能體協作** — 在同一會話中，主智能體可呼叫不同類型的子智能體（如 Claude Code 呼叫 Codex、Gemini 等）協作完成任務，每個子智能體作為獨立會話執行
 - 內建 `git worktree` 並行開發流程
 - **專案啟動器** — 視覺化建立新專案，即時預覽效果
+- **Office 文件** — 透過內建的 officecli 工具集建立、分析、校對和編輯 .docx / .xlsx / .pptx 檔案，支援在檔案標籤頁內即時預覽，隨智慧體編輯即時更新
+- **自動化** — 將任意輸入框設定儲存為可複用的自動化任務，按 cron 排程或手動觸發、無介面自動執行
 - **訊息渠道** — 連接 Telegram、飛書、iLink（微信）等即時通訊應用到編碼代理，即時接收通知、完整會話交互、遠端任務控制
 - MCP 管理（本地掃描 + 市場搜尋/安裝）
 - Skills 管理（全域與專案級）
@@ -66,6 +73,7 @@ Codeg（Code Generation）是一個多智慧體編碼工作台，它將多個智
 - Web 服務模式 — 開啟後可在瀏覽器中存取 Codeg，支援遠端工作
 - **獨立伺服器部署** — 在任意 Linux/macOS 伺服器上執行 `codeg-server`，透過瀏覽器存取
 - **Docker 支援** — `docker compose up` 或 `docker run`，可自訂令牌、連接埠，支援資料持久化及專案目錄掛載
+- 執行時日誌 — 內建即時日誌檢視器，支援篩選和按模組設定日誌層級
 - 整合工程閉環（檔案樹、Diff、Git 變更、提交、終端）
 
 ## 支援的 Agent
@@ -79,6 +87,8 @@ Codeg（Code Generation）是一個多智慧體編碼工作台，它將多個智
 | OpenClaw     | —                                     | `~/.openclaw/agents`                  | `%USERPROFILE%\\.openclaw\\agents`                    |
 | Cline        | `$CLINE_DIR`                          | `~/.cline/data/tasks`                 | `%USERPROFILE%\\.cline\\data\\tasks`                  |
 | Hermes Agent | `$HERMES_HOME/state.db`               | `~/.hermes/state.db`                  | `%USERPROFILE%\\.hermes\\state.db`                    |
+| CodeBuddy    | `$CODEBUDDY_CONFIG_DIR/projects`      | `~/.codebuddy/projects`               | `%USERPROFILE%\\.codebuddy\\projects`                 |
+| Kimi Code    | `$KIMI_CODE_HOME/sessions`            | `~/.kimi-code/sessions`               | `%USERPROFILE%\\.kimi-code\\sessions`                 |
 
 > 注意：環境變數的優先順序高於預設路徑。
 
@@ -116,6 +126,34 @@ Codeg（Code Generation）是一個多智慧體編碼工作台，它將多個智
 | iLink（微信） | WebSocket + REST API   | 內建 |
 
 > 更多渠道（Discord、Slack、釘釘等）計劃在未來版本中支援。
+
+</details>
+
+<details>
+<summary><h2>Office 文件</h2></summary>
+
+將 Word、Excel 和 PowerPoint 文件納入一等工作流程。內建的 **officecli** 工具集讓你的智慧體能夠建立、分析、校對和編輯 .docx、.xlsx、.pptx 文件——並可直接在 Codeg 內預覽結果。
+
+### 功能特性
+
+- **建立與編輯** — 建立新文件或修改現有 .docx / .xlsx / .pptx 檔案，支援圖表、表格和格式設定
+- **分析與校對** — 檢查文件結構、發現格式問題、校對內容
+- **即時預覽** — 在檔案標籤頁中開啟 .docx / .xlsx / .pptx，即可內嵌渲染，隨智慧體編輯自動刷新——底層由常駐的 `officecli watch` 服務支撐（在 Web 和獨立伺服器部署中經反向代理轉發，依能力鑑權）
+- **快捷操作** — 歡迎頁提供「編碼」和「Office」兩個標籤，一鍵將對應技能呼叫和提示詞範本填入輸入框；未對所選智慧體啟用的技能會顯示鎖定標記，並引導你前往可開啟的位置
+- **Office 工具設定** — 專屬設定頁可安裝 `officecli` 並透過技能×智慧體矩陣管理文件技能：切換任意（技能，智慧體）組合，支援一鍵批次啟停
+
+</details>
+
+<details>
+<summary><h2>自動化</h2></summary>
+
+將任意輸入框設定——智慧體、模型、提示詞、工作目錄和選項——儲存為可複用的**自動化**任務，無需開啟 UI 即可執行。
+
+### 功能特性
+
+- **一次設定，隨時複用** — 將完整的輸入框設定儲存為具名自動化任務
+- **定時或按需觸發** — 按 cron 排程執行，或隨時手動觸發
+- **無介面執行** — 自動化任務在背景執行，建立真實會話，可隨時在工作台中開啟，啟動後自動返回工作台
 
 </details>
 
@@ -330,6 +368,7 @@ Next.js 16 (Static Export) + React 19
               |- Chat Channels
               |- Git / File Tree / Terminal
               |- MCP marketplace + config
+              |- Office Tools (officecli) + Automations
               |- SeaORM + SQLite
                       |
               ┌───────┼───────┐
@@ -359,6 +398,8 @@ Next.js 16 (Static Export) + React 19
 ## 致謝
 
 - [ACP](https://agentclientprotocol.com)：智能體客戶端協定 (ACP) 是 codeg 實現多智能體連接的基礎
+- [Superpowers](https://github.com/obra/superpowers)：為 Codeg 的專家技能模組提供支援
+- [OfficeCLI](https://github.com/iOfficeAI/OfficeCLI)：為 Codeg 的 Office 文件工作流程提供支援
 
 ## 授權
 
