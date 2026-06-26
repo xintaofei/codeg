@@ -1246,6 +1246,7 @@
     },
     "tabs": {
       "closeConversationTab": "Fechar aba de conversa",
+      "reconnect": "Reconectar",
       "close": "Fechar",
       "closeOthers": "Fechar outros",
       "closeAll": "Fechar tudo",

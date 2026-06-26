@@ -1246,6 +1246,7 @@
     },
     "tabs": {
       "closeConversationTab": "关闭会话标签",
+      "reconnect": "重新连接",
       "close": "关闭",
       "closeOthers": "关闭其它",
       "closeAll": "关闭所有",

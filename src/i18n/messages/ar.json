@@ -1246,6 +1246,7 @@
     },
     "tabs": {
       "closeConversationTab": "إغلاق تبويب المحادثة",
+      "reconnect": "إعادة الاتصال",
       "close": "إغلاق",
       "closeOthers": "إغلاق البقية",
       "closeAll": "إغلاق الكل",

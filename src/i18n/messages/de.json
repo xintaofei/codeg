@@ -1246,6 +1246,7 @@
     },
     "tabs": {
       "closeConversationTab": "Konversationstab schließen",
+      "reconnect": "Neu verbinden",
       "close": "Schließen",
       "closeOthers": "Andere schließen",
       "closeAll": "Alle schließen",
