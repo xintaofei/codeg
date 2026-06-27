@@ -291,8 +291,18 @@ impl AgentParser for CodexParser {
     }
 
     fn get_conversation(&self, conversation_id: &str) -> Result<ConversationDetail, ParseError> {
-        // Find the conversation file by walking the directory tree
-        for path in self.candidate_jsonl_files() {
+        let files = self.candidate_jsonl_files();
+
+        for path in &files {
+            if let Ok(Some(summary)) = self.parse_jsonl_summary(path) {
+                if summary.id == conversation_id {
+                    return self.parse_conversation_detail(path, conversation_id);
+                }
+            }
+        }
+
+        // Keep filename lookup as a fallback for old or partial transcripts.
+        for path in files {
             let fname = path.file_name().unwrap_or_default().to_string_lossy();
             if fname.contains(conversation_id) {
                 return self.parse_conversation_detail(&path, conversation_id);
@@ -2232,6 +2242,36 @@ mod tests {
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].id, "same-1");
         assert_eq!(summaries[0].title.as_deref(), Some("newer active prompt"));
+
+        fs::remove_dir_all(base).expect("cleanup");
+    }
+
+    #[test]
+    fn get_conversation_searches_archived_session_roots() {
+        let base = env::temp_dir().join(format!(
+            "codeg-codex-detail-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let archived = base
+            .join("archived_sessions")
+            .join("2026")
+            .join("06")
+            .join("27");
+        write_codex_rollout(
+            &archived.join("rollout-2026-06-27T00-00-00-unrelated-file-name.jsonl"),
+            "detail-1",
+            "/repo",
+            "2026-06-27T00:00:00Z",
+            "detail prompt",
+        );
+
+        let parser = CodexParser::with_session_roots(vec![
+            base.join("sessions"),
+            base.join("archived_sessions"),
+        ]);
+        let detail = parser.get_conversation("detail-1").expect("conversation");
+
+        assert_eq!(detail.id, "detail-1");
 
         fs::remove_dir_all(base).expect("cleanup");
     }
