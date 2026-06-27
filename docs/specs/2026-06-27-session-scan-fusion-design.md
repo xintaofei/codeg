@@ -83,7 +83,9 @@ Detail lookup should:
 
 Update `external_transcript_sources()` so Codex archive/export includes both `sessions` and `archived_sessions`.
 
-If the existing `ExternalSource` shape cannot represent multiple Codex roots cleanly, add multiple Codex sources with distinct archive labels, or add a helper that expands agent roots before archiving. Prefer the smaller change that does not alter backup restore semantics for other agents.
+Use the resolved primary Codex home as the archive source root with `include_top: Some(&["sessions", "archived_sessions"])`. This preserves the top-level directory name in backup paths and avoids active/archive files with the same relative year/month/file layout colliding under one `external/codex` namespace.
+
+Extra homes from `CODEG_CODEX_HOME_DIRS` are scanned for import in phase one. They are not added to archive/export until the external source model can namespace multiple Codex homes without restore ambiguity.
 
 ### Claude Path Matching
 

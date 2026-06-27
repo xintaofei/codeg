@@ -844,6 +844,12 @@ Reverse sync behavior: imported Codex/Claude conversations continue through nati
 
 ---
 
+## Plan Adjustment
+
+Before implementation, Task 4's original "one Codex `ExternalSource` per session root" approach was rejected because active and archived roots can contain the same relative year/month/file layout. With the same `agent: "codex"` archive namespace, that can collide during external transcript backup.
+
+Task 4 now uses the primary Codex home as the external archive root and sets `include_top: Some(&["sessions", "archived_sessions"])`, preserving both top-level directories. Extra homes from `CODEG_CODEX_HOME_DIRS` remain import-scan roots in this branch and are intentionally not archived until the external source model has a safe namespace for multiple Codex homes.
+
 ## Self-Review
 
 - Spec coverage: Task 1-4 cover Codex active/archived/default/extra root scanning, dedupe, detail lookup, and archive/export source inclusion. Claude remains unchanged unless a test later proves path matching gaps, matching the spec. Task 5 covers same-branch resume-based reverse sync by testing the imported `external_id` path through frontend lifecycle and ACP connect.
