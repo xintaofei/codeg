@@ -15,7 +15,7 @@ use crate::parsers::{
 };
 
 pub struct CodexParser {
-    base_dir: PathBuf,
+    session_roots: Vec<PathBuf>,
 }
 
 impl Default for CodexParser {
@@ -26,15 +26,62 @@ impl Default for CodexParser {
 
 impl CodexParser {
     pub fn new() -> Self {
-        let base_dir = resolve_codex_home_dir().join("sessions");
-        Self { base_dir }
+        Self {
+            session_roots: resolve_codex_session_roots(),
+        }
     }
 
     /// Test-only constructor that lets callers point the parser at a fixture
     /// directory instead of `~/.codex/sessions`.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn with_base_dir(base_dir: PathBuf) -> Self {
-        Self { base_dir }
+        Self {
+            session_roots: vec![base_dir],
+        }
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn with_session_roots(session_roots: Vec<PathBuf>) -> Self {
+        Self { session_roots }
+    }
+
+    fn candidate_jsonl_files(&self) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        for root in &self.session_roots {
+            if !root.exists() {
+                continue;
+            }
+
+            for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
+                let path = entry.path().to_path_buf();
+                if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                let fname = path.file_name().unwrap_or_default().to_string_lossy();
+                if fname.starts_with("rollout-") {
+                    files.push(path);
+                }
+            }
+        }
+        files
+    }
+
+    fn dedupe_conversations(
+        conversations: Vec<ConversationSummary>,
+    ) -> Vec<ConversationSummary> {
+        let mut by_id: HashMap<String, ConversationSummary> = HashMap::new();
+        for summary in conversations {
+            match by_id.get(&summary.id) {
+                Some(existing) if existing.started_at >= summary.started_at => {}
+                _ => {
+                    by_id.insert(summary.id.clone(), summary);
+                }
+            }
+        }
+
+        let mut conversations: Vec<ConversationSummary> = by_id.into_values().collect();
+        conversations.sort_by_key(|b| std::cmp::Reverse(b.started_at));
+        conversations
     }
 
     fn parse_jsonl_summary(
@@ -233,49 +280,19 @@ impl AgentParser for CodexParser {
     fn list_conversations(&self) -> Result<Vec<ConversationSummary>, ParseError> {
         let mut conversations = Vec::new();
 
-        if !self.base_dir.exists() {
-            return Ok(conversations);
-        }
-
-        for entry in WalkDir::new(&self.base_dir)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            let path = entry.path().to_path_buf();
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let fname = path.file_name().unwrap_or_default().to_string_lossy();
-            if !fname.starts_with("rollout-") {
-                continue;
-            }
-
+        for path in self.candidate_jsonl_files() {
             match self.parse_jsonl_summary(&path) {
                 Ok(Some(summary)) => conversations.push(summary),
                 _ => continue,
             }
         }
 
-        conversations.sort_by_key(|b| std::cmp::Reverse(b.started_at));
-        Ok(conversations)
+        Ok(Self::dedupe_conversations(conversations))
     }
 
     fn get_conversation(&self, conversation_id: &str) -> Result<ConversationDetail, ParseError> {
-        if !self.base_dir.exists() {
-            return Err(ParseError::ConversationNotFound(
-                conversation_id.to_string(),
-            ));
-        }
-
         // Find the conversation file by walking the directory tree
-        for entry in WalkDir::new(&self.base_dir)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            let path = entry.path().to_path_buf();
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                continue;
-            }
+        for path in self.candidate_jsonl_files() {
             let fname = path.file_name().unwrap_or_default().to_string_lossy();
             if fname.contains(conversation_id) {
                 return self.parse_conversation_detail(&path, conversation_id);
@@ -2092,11 +2109,29 @@ mod tests {
     use crate::models::{
         ContentBlock, MessageRole, SessionStats, TurnRole, TurnUsage, UnifiedMessage,
     };
+    use crate::parsers::AgentParser;
     use chrono::{DateTime, Duration, Utc};
     use std::env;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn write_codex_rollout(
+        path: &PathBuf,
+        id: &str,
+        cwd: &str,
+        timestamp: &str,
+        title: &str,
+    ) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create parent");
+        }
+        let content = format!(
+            "{{\"timestamp\":\"{timestamp}\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{cwd}\",\"git\":{{\"branch\":\"main\"}}}}}}\n\
+             {{\"timestamp\":\"{timestamp}\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"{title}\"}}}}\n"
+        );
+        fs::write(path, content).expect("write rollout");
+    }
 
     #[test]
     fn codex_session_roots_include_sessions_and_archived_sessions() {
@@ -2127,6 +2162,78 @@ mod tests {
                 PathBuf::from("/tmp/custom-codex/archived_sessions"),
             ]
         );
+    }
+
+    #[test]
+    fn list_conversations_scans_archived_session_roots() {
+        let base = env::temp_dir().join(format!(
+            "codeg-codex-roots-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let archived = base
+            .join("archived_sessions")
+            .join("2026")
+            .join("06")
+            .join("27");
+        write_codex_rollout(
+            &archived.join("rollout-2026-06-27T00-00-00-archived.jsonl"),
+            "archived-1",
+            "/repo",
+            "2026-06-27T00:00:00Z",
+            "archived prompt",
+        );
+
+        let parser = CodexParser::with_session_roots(vec![
+            base.join("sessions"),
+            base.join("archived_sessions"),
+        ]);
+        let summaries = parser.list_conversations().expect("list conversations");
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, "archived-1");
+        assert_eq!(summaries[0].title.as_deref(), Some("archived prompt"));
+
+        fs::remove_dir_all(base).expect("cleanup");
+    }
+
+    #[test]
+    fn list_conversations_dedupes_duplicate_session_ids_by_newest_timestamp() {
+        let base = env::temp_dir().join(format!(
+            "codeg-codex-dedupe-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let active = base.join("sessions").join("2026").join("06").join("27");
+        let archived = base
+            .join("archived_sessions")
+            .join("2026")
+            .join("06")
+            .join("27");
+        write_codex_rollout(
+            &archived.join("rollout-2026-06-27T00-00-00-same.jsonl"),
+            "same-1",
+            "/repo",
+            "2026-06-27T00:00:00Z",
+            "older archived prompt",
+        );
+        write_codex_rollout(
+            &active.join("rollout-2026-06-27T01-00-00-same.jsonl"),
+            "same-1",
+            "/repo",
+            "2026-06-27T01:00:00Z",
+            "newer active prompt",
+        );
+
+        let parser = CodexParser::with_session_roots(vec![
+            base.join("sessions"),
+            base.join("archived_sessions"),
+        ]);
+        let summaries = parser.list_conversations().expect("list conversations");
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, "same-1");
+        assert_eq!(summaries[0].title.as_deref(), Some("newer active prompt"));
+
+        fs::remove_dir_all(base).expect("cleanup");
     }
 
     #[test]
