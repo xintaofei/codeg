@@ -58,9 +58,9 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
         },
         ExternalSource {
             agent: "codex",
-            root: codex::resolve_codex_home_dir().join("sessions"),
+            root: codex::resolve_codex_home_dir(),
             is_file: false,
-            include_top: None,
+            include_top: Some(&["sessions", "archived_sessions"]),
         },
         ExternalSource {
             // Gemini's base dir mixes transcripts with credentials/config; only
@@ -124,6 +124,27 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
         });
     }
     sources
+}
+
+#[cfg(test)]
+mod external_source_tests {
+    use super::*;
+
+    #[test]
+    fn external_sources_include_codex_active_and_archived_roots() {
+        let sources = external_transcript_sources();
+        let codex_sources: Vec<_> = sources
+            .iter()
+            .filter(|source| source.agent == "codex")
+            .collect();
+
+        assert_eq!(codex_sources.len(), 1);
+        assert_eq!(codex_sources[0].root, codex::resolve_codex_home_dir());
+        assert!(matches!(
+            codex_sources[0].include_top,
+            Some(items) if items == ["sessions", "archived_sessions"]
+        ));
+    }
 }
 
 use regex::Regex;
