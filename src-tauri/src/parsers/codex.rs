@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -183,13 +184,49 @@ pub(crate) fn resolve_codex_home_dir() -> PathBuf {
 }
 
 fn resolve_codex_home_dir_from(
-    codex_home_env: Option<std::ffi::OsString>,
+    codex_home_env: Option<OsString>,
     home_dir: Option<PathBuf>,
 ) -> PathBuf {
     codex_home_env
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| home_dir.unwrap_or_default().join(".codex"))
+}
+
+pub(crate) fn resolve_codex_session_roots() -> Vec<PathBuf> {
+    resolve_codex_session_roots_from(
+        std::env::var_os("CODEX_HOME"),
+        std::env::var_os("CODEG_CODEX_HOME_DIRS"),
+        dirs::home_dir(),
+    )
+}
+
+fn resolve_codex_session_roots_from(
+    codex_home_env: Option<OsString>,
+    extra_homes_env: Option<OsString>,
+    home_dir: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let primary_home = resolve_codex_home_dir_from(codex_home_env, home_dir);
+    let mut homes = vec![primary_home];
+
+    if let Some(extra_homes) = extra_homes_env {
+        for home in std::env::split_paths(&extra_homes) {
+            if !home.as_os_str().is_empty() {
+                homes.push(home);
+            }
+        }
+    }
+
+    let mut roots = Vec::new();
+    let mut seen = HashSet::new();
+    for home in homes {
+        for root in [home.join("sessions"), home.join("archived_sessions")] {
+            if seen.insert(root.clone()) {
+                roots.push(root);
+            }
+        }
+    }
+    roots
 }
 
 impl AgentParser for CodexParser {
@@ -2048,6 +2085,7 @@ mod tests {
     use super::merge_codex_context_window_stats;
     use super::merge_codex_total_usage_stats;
     use super::resolve_codex_home_dir_from;
+    use super::resolve_codex_session_roots_from;
     use super::should_skip_duplicate_user_message;
     use super::strip_blocked_resource_mentions;
     use super::CodexParser;
@@ -2059,6 +2097,37 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn codex_session_roots_include_sessions_and_archived_sessions() {
+        let home = PathBuf::from("/Users/default");
+        let roots = resolve_codex_session_roots_from(None, None, Some(home));
+
+        assert_eq!(
+            roots,
+            vec![
+                PathBuf::from("/Users/default/.codex/sessions"),
+                PathBuf::from("/Users/default/.codex/archived_sessions"),
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_session_roots_honor_codex_home_override() {
+        let roots = resolve_codex_session_roots_from(
+            Some(std::ffi::OsString::from("/tmp/custom-codex")),
+            None,
+            Some(PathBuf::from("/Users/default")),
+        );
+
+        assert_eq!(
+            roots,
+            vec![
+                PathBuf::from("/tmp/custom-codex/sessions"),
+                PathBuf::from("/tmp/custom-codex/archived_sessions"),
+            ]
+        );
+    }
 
     #[test]
     fn skips_agents_instructions_title_candidate() {
