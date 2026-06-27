@@ -6,6 +6,8 @@ Keep Codeg's existing workspace UI and conversation model, while importing the u
 
 The first implementation phase expands Codeg's backend parsers and import path so Codex and Claude history discovery finds more local sessions without adding a new catalog UI.
 
+A later phase adds reverse sync through native resume flows so continuing an imported Codex or Claude session from Codeg can still let the native tool own its transcript writes.
+
 ## Current Codeg Behavior
 
 Codeg already has a clean conversation sidebar and local import flow. The backend discovers external conversations through `AgentParser` implementations and imports matches into Codeg's database.
@@ -39,6 +41,7 @@ Claude discovery should keep Codeg's current UI model but improve path matching 
 - Do not read another application's private SQLite state in phase one.
 - Do not start or depend on Codex/Claude runtime processes just to list history.
 - Do not change Codeg's conversation database schema unless tests prove it is necessary.
+- Do not directly fabricate or rewrite Codex/Claude JSONL transcripts for reverse sync.
 
 ## Architecture
 
@@ -87,6 +90,28 @@ If the existing `ExternalSource` shape cannot represent multiple Codex roots cle
 Do not redesign the Claude parser in phase one. Add regression tests around Windows path normalization and project directory matching if current helpers already cover the behavior.
 
 Only change Claude code if a test proves current matching misses a real path shape from the user's environment.
+
+## Reverse Sync Phase 2
+
+Reverse sync means Codeg can continue work from an imported native session while preserving the native tool as the writer of its own transcript.
+
+The preferred implementation is resume-based:
+
+- For imported Codex conversations, Codeg launches the existing Codex ACP/runtime resume path using the imported `external_id` as the native session id.
+- For imported Claude conversations, Codeg launches the existing Claude resume path with `claude --resume <session_id>` or the equivalent runtime adapter flow.
+- The native tool writes its own transcript updates.
+- Codeg observes the resumed runtime stream and updates its own DB/sidebar state from runtime events and later parser refreshes.
+
+Codeg-owned metadata remains in Codeg storage:
+
+- Folder assignment.
+- Pin state.
+- Manual title override.
+- Notes or future Codeg-only annotations.
+
+This metadata should not be written into Codex/Claude JSONL files. If native transcript files cannot represent a Codeg-only field, Codeg stores a sidecar mapping keyed by `(agent_type, external_id)`.
+
+Direct JSONL write-back is an explicit non-default future experiment. It must stay behind an opt-in flag and require strict schema validation, append-only writes, backup-before-write, and parser round-trip tests for each engine version it supports.
 
 ## UI Behavior
 
