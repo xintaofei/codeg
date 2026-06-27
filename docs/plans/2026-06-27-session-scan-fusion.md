@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Expand Codeg's local Codex/Claude history discovery while keeping the existing clean Codeg UI and avoiding direct native transcript write-back.
+**Goal:** Expand Codeg's local Codex/Claude history discovery and make imported native sessions resume through the native tools while keeping the existing clean Codeg UI and avoiding direct native transcript write-back.
 
-**Architecture:** Phase 1 changes the Rust backend only. `CodexParser` moves from one `base_dir` to ordered session roots, scans active and archived roots, deduplicates by native session id, and keeps existing `ConversationSummary`/`ConversationDetail` interfaces. Phase 2 remains design-only in this plan: reverse sync is resume-based and does not fabricate Codex/Claude JSONL.
+**Architecture:** Phase 1 changes the Rust backend parser roots. `CodexParser` moves from one `base_dir` to ordered session roots, scans active and archived roots, deduplicates by native session id, and keeps existing `ConversationSummary`/`ConversationDetail` interfaces. Phase 2 is delivered in the same branch by verifying and tightening the existing `external_id -> acp_connect(sessionId)` resume path for imported Codex/Claude conversations; it does not fabricate Codex/Claude JSONL.
 
 **Tech Stack:** Rust 2021, Tauri backend, `walkdir`, `chrono`, existing Codeg parser traits, Rust unit tests in `src-tauri/src/parsers`.
 
@@ -27,6 +27,7 @@
 - Modify `docs/specs/2026-06-27-session-scan-fusion-design.md`: already done; keep it as the source design.
 - No frontend files change in Phase 1.
 - No database migrations change in Phase 1.
+- Phase 2 may modify `src/components/conversations/conversation-detail-panel.tsx`, `src/contexts/acp-connections-context.tsx`, `src/hooks/use-connection-lifecycle.ts`, and tests only if the existing imported-session resume path is not already covered.
 
 ---
 
@@ -618,11 +619,163 @@ git commit -m "feat: archive codex active and archived transcripts"
 
 ---
 
-### Task 5: Focused Verification and Phase 2 Reverse Sync Follow-Up
+### Task 5: Resume-Based Reverse Sync Verification
+
+**Files:**
+- Test: `src/components/conversations/conversation-detail-panel-layout.test.tsx` or nearest existing conversation-detail test
+- Test: `src/contexts/acp-connections-context.test.tsx`
+- Modify: `src/components/conversations/conversation-detail-panel.tsx` only if tests expose a missing imported-session resume guard
+- Modify: `src/contexts/acp-connections-context.tsx` only if tests expose session id loss before `acpConnect`
+- Modify: `src/hooks/use-connection-lifecycle.ts` only if tests expose stale `sessionIdRef` behavior
+
+**Interfaces:**
+- Consumes: imported conversation `summary.external_id`
+- Consumes: `useConnectionLifecycle({ sessionId })`
+- Consumes: `acpConnect(agentType, workingDir, sessionId, ...)`
+- Produces: imported Codex/Claude conversations auto-connect with native `sessionId`
+
+- [ ] **Step 1: Add frontend test proving imported history passes external_id to lifecycle**
+
+Locate the nearest existing test that renders `ConversationDetailPanel` with a persisted conversation detail. Add a test equivalent to:
+
+```tsx
+it("passes imported native external_id as sessionId when auto-connecting", async () => {
+  mockUseConversationDetail.mockReturnValue({
+    detail: {
+      summary: {
+        id: 42,
+        external_id: "native-session-123",
+        agent_type: "codex",
+        title: "Imported Codex",
+      },
+      turns: [],
+    },
+    loading: false,
+    error: null,
+    acpLoadError: null,
+  })
+
+  renderConversationDetailPanel({
+    conversationId: 42,
+    agentType: "codex",
+    workingDir: "G:\\\\CTF",
+    isActive: true,
+  })
+
+  await waitFor(() => {
+    expect(mockUseConnectionLifecycle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentType: "codex",
+        sessionId: "native-session-123",
+        conversationId: 42,
+      })
+    )
+  })
+})
+```
+
+Use the repository's actual mocks and helper names. The assertion must prove `external_id` reaches `useConnectionLifecycle` as `sessionId`.
+
+- [ ] **Step 2: Run test and verify current behavior**
+
+Run the relevant Vitest file:
+
+```powershell
+pnpm test src/components/conversations/conversation-detail-panel-layout.test.tsx
+```
+
+Expected: PASS if the existing code already routes imported `external_id` correctly; FAIL if the test helper exposes a missing guard.
+
+- [ ] **Step 3: Add ACP context test proving sessionId reaches acpConnect**
+
+In `src/contexts/acp-connections-context.test.tsx`, add or adapt a test equivalent to:
+
+```tsx
+it("passes imported native session id to acpConnect", async () => {
+  const { actions } = renderAcpConnectionsProvider()
+
+  await act(async () => {
+    await actions.connect(
+      "conv-42",
+      "codex",
+      "G:\\\\CTF",
+      "native-session-123",
+      42
+    )
+  })
+
+  expect(acpConnectMock).toHaveBeenCalledWith(
+    "codex",
+    "G:\\\\CTF",
+    "native-session-123",
+    expect.anything(),
+    expect.anything()
+  )
+})
+```
+
+Use the repository's actual provider/test harness. The assertion must prove no layer strips `sessionId` before `acpConnect`.
+
+- [ ] **Step 4: Run ACP context test**
+
+Run:
+
+```powershell
+pnpm test src/contexts/acp-connections-context.test.tsx
+```
+
+Expected: PASS if existing code already supports resume-based reverse sync.
+
+- [ ] **Step 5: Fix only if a test fails**
+
+If Step 1 fails, keep `conversation-detail-panel.tsx` behavior aligned with this existing logic:
+
+```tsx
+const externalId =
+  detail?.summary.external_id ?? runtimeSession?.externalId ?? undefined
+
+const awaitingHistoricalSessionId =
+  hasPersistedConversation && selectedAgent !== "cline" && detailLoading
+```
+
+If Step 3 fails, keep `acp-connections-context.tsx` behavior aligned with this existing call:
+
+```tsx
+const connectionId = await acpConnect(
+  agentType,
+  workingDir,
+  sessionId,
+  savedPrefs.modeId,
+  savedPrefs.configValues
+)
+```
+
+Do not add JSONL write-back. Do not add a new runtime mode unless these tests prove the existing path cannot support imported-session resume.
+
+- [ ] **Step 6: Add user-facing note only if needed**
+
+If current UI does not make native resume behavior discoverable, add a short tooltip or session details copy near the existing external id display:
+
+```tsx
+Native session id. When this conversation is continued, Codeg resumes this native session instead of rewriting the transcript directly.
+```
+
+Do not add a new button in this task unless existing UX has no way to continue imported sessions.
+
+- [ ] **Step 7: Commit**
+
+```powershell
+git add src/components/conversations src/contexts src/hooks
+git commit -m "test: cover imported native session resume"
+```
+
+---
+
+### Task 6: Focused Verification and PR
 
 **Files:**
 - Modify: `docs/specs/2026-06-27-session-scan-fusion-design.md` only if implementation changed the accepted design
-- No code required for Phase 2 in this task
+- No direct transcript write-back is allowed
 
 **Interfaces:**
 - Consumes: all previous tasks
@@ -681,18 +834,18 @@ gh pr create --repo xintaofei/codeg --head hight456789:fusion/session-scan-roots
 
 Expected: draft PR URL printed.
 
-- [ ] **Step 6: Record Phase 2 reverse sync as follow-up**
+- [ ] **Step 6: Record reverse sync behavior in PR body**
 
 Add this paragraph to the PR body or follow-up issue if requested:
 
 ```markdown
-Reverse sync follow-up: imported Codex/Claude conversations should continue through native resume flows (`codex resume <session>` / `claude --resume <session>`) so the native tools remain the transcript writers. Codeg metadata should stay in Codeg storage keyed by `(agent_type, external_id)`.
+Reverse sync behavior: imported Codex/Claude conversations continue through native resume flows by passing `external_id` as the native session id to Codeg's ACP connect path. Native tools remain the transcript writers. Codeg metadata stays in Codeg storage keyed by `(agent_type, external_id)`.
 ```
 
 ---
 
 ## Self-Review
 
-- Spec coverage: Task 1-4 cover Codex active/archived/default/extra root scanning, dedupe, detail lookup, and archive/export source inclusion. Claude remains unchanged unless a test later proves path matching gaps, matching the spec. Phase 2 reverse sync is explicitly documented as follow-up and not implemented in Phase 1.
+- Spec coverage: Task 1-4 cover Codex active/archived/default/extra root scanning, dedupe, detail lookup, and archive/export source inclusion. Claude remains unchanged unless a test later proves path matching gaps, matching the spec. Task 5 covers same-branch resume-based reverse sync by testing the imported `external_id` path through frontend lifecycle and ACP connect.
 - Placeholder scan: No TODO/TBD placeholders.
 - Type consistency: `resolve_codex_session_roots()` and `resolve_codex_session_roots_from(...)` are defined before use; `CodexParser::with_session_roots(...)` is test-only; `candidate_jsonl_files()` is private to the parser.

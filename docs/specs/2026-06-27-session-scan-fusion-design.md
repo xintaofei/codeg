@@ -6,7 +6,7 @@ Keep Codeg's existing workspace UI and conversation model, while importing the u
 
 The first implementation phase expands Codeg's backend parsers and import path so Codex and Claude history discovery finds more local sessions without adding a new catalog UI.
 
-A later phase adds reverse sync through native resume flows so continuing an imported Codex or Claude session from Codeg can still let the native tool own its transcript writes.
+The same branch also verifies resume-based reverse sync: continuing an imported Codex or Claude session from Codeg should still let the native tool own its transcript writes.
 
 ## Current Codeg Behavior
 
@@ -91,11 +91,11 @@ Do not redesign the Claude parser in phase one. Add regression tests around Wind
 
 Only change Claude code if a test proves current matching misses a real path shape from the user's environment.
 
-## Reverse Sync Phase 2
+## Resume-Based Reverse Sync
 
 Reverse sync means Codeg can continue work from an imported native session while preserving the native tool as the writer of its own transcript.
 
-The preferred implementation is resume-based:
+The implementation is resume-based:
 
 - For imported Codex conversations, Codeg launches the existing Codex ACP/runtime resume path using the imported `external_id` as the native session id.
 - For imported Claude conversations, Codeg launches the existing Claude resume path with `claude --resume <session_id>` or the equivalent runtime adapter flow.
