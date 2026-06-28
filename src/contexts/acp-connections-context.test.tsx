@@ -179,6 +179,34 @@ describe("AcpConnectionsProvider cross-client viewer lifecycle", () => {
     )
   })
 
+  it("passes imported native session id to acpConnect", async () => {
+    h.acpFindConnectionForConversation.mockResolvedValue(null)
+    await mountProvider()
+
+    await act(async () => {
+      await h.actions!.connect(
+        "conv-42-codex-42",
+        "codex",
+        "G:\\CTF",
+        "native-session-123",
+        42
+      )
+    })
+
+    expect(h.acpFindConnectionForConversation).toHaveBeenCalledWith(
+      42,
+      "native-session-123",
+      "codex"
+    )
+    expect(h.acpConnect).toHaveBeenCalledWith(
+      "codex",
+      "G:\\CTF",
+      "native-session-123",
+      undefined,
+      {}
+    )
+  })
+
   it("skips discovery entirely when no persisted conversationId is given", async () => {
     await mountProvider()
 

@@ -125,6 +125,29 @@ describe("ConversationDetailPanel new conversation layout", () => {
   })
 })
 
+describe("ConversationDetailPanel imported native resume path", () => {
+  it("passes imported native external_id as the lifecycle sessionId", () => {
+    const externalIdStart = source.indexOf("const externalId =")
+    const lifecycleStart = source.indexOf("} = useConnectionLifecycle({")
+    const lifecycleEnd = source.indexOf("})", lifecycleStart)
+
+    expect(externalIdStart).toBeGreaterThan(-1)
+    expect(lifecycleStart).toBeGreaterThan(externalIdStart)
+    expect(lifecycleEnd).toBeGreaterThan(lifecycleStart)
+
+    const externalIdBlock = source.slice(externalIdStart, lifecycleStart)
+    expect(externalIdBlock).toContain("detail?.summary.external_id")
+    expect(externalIdBlock).toContain("runtimeSession?.externalId")
+
+    const lifecycleBlock = source.slice(lifecycleStart, lifecycleEnd)
+    expect(lifecycleBlock).toContain("sessionId:")
+    expect(lifecycleBlock).toContain("dbConversationId != null")
+    expect(lifecycleBlock).toContain('selectedAgent !== "cline"')
+    expect(lifecycleBlock).toContain("? externalId")
+    expect(lifecycleBlock).toContain("conversationId: dbConversationId ?? undefined")
+  })
+})
+
 describe("ConversationDetailPanel chat-mode send path", () => {
   // Regression guard for the "first chat message gets stuck in the queue and is
   // never sent" bug: the chat first-send must NOT enqueue-and-return, it must
