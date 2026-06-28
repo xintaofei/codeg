@@ -19,7 +19,7 @@
   <a href="./README.ar.md">العربية</a>
 </p>
 
-Codeg（Code Generation）是一個多智慧體編碼工作台，它將多個智慧體（Claude Code、Codex CLI、OpenCode、Gemini CLI、OpenClaw、Cline、Hermes Agent、CodeBuddy、Kimi Code 等）統一到一個工作區中，支援會話彙整和多智慧體協作，支援桌面安裝、伺服器/Docker 部署。
+Codeg（Code Generation）是一個多智慧體編碼工作台，它將多個智慧體（Claude Code、Codex CLI、OpenCode、Gemini CLI、OpenClaw、Cline、Hermes Agent、CodeBuddy、Kimi Code、Pi 等）統一到一個工作區中，支援會話彙整和多智慧體協作，支援桌面安裝、伺服器/Docker 部署。
 
 ![gallery](../images/gallery.svg)
 
@@ -89,6 +89,7 @@ Codeg（Code Generation）是一個多智慧體編碼工作台，它將多個智
 | Hermes Agent | `$HERMES_HOME/state.db`               | `~/.hermes/state.db`                  | `%USERPROFILE%\\.hermes\\state.db`                    |
 | CodeBuddy    | `$CODEBUDDY_CONFIG_DIR/projects`      | `~/.codebuddy/projects`               | `%USERPROFILE%\\.codebuddy\\projects`                 |
 | Kimi Code    | `$KIMI_CODE_HOME/sessions`            | `~/.kimi-code/sessions`               | `%USERPROFILE%\\.kimi-code\\sessions`                 |
+| Pi           | `$PI_CODING_AGENT_SESSION_DIR`        | `~/.pi/agent/sessions`                | `%USERPROFILE%\\.pi\\agent\\sessions`                 |
 
 > 注意：環境變數的優先順序高於預設路徑。
 
