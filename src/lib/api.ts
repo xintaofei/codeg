@@ -550,6 +550,26 @@ export async function acpValidatePiCommand(command: string): Promise<{
 }
 
 /**
+ * Install the `pi` binary (`@earendil-works/pi-coding-agent`) globally via npm.
+ * This is the prerequisite pi-acp spawns as `pi --mode rpc` — distinct from the
+ * `pi-acp` adapter that `acpPrepareNpxAgent` installs. Progress streams on the
+ * shared `app://agent-install` topic; pass `taskId` to `useAgentInstallStream`
+ * (or `acpInstallStream`) to receive the log lines.
+ */
+export async function acpInstallPiBinary(taskId: string): Promise<void> {
+  return getTransport().call(
+    "acp_install_pi_binary",
+    { taskId },
+    { timeoutMs: 600_000 }
+  )
+}
+
+/** Uninstall the global `pi` binary. Streams on `app://agent-install` too. */
+export async function acpUninstallPiBinary(taskId: string): Promise<void> {
+  return getTransport().call("acp_uninstall_pi_binary", { taskId })
+}
+
+/**
  * Launch Hermes's interactive setup in the OS terminal (desktop only). `kind`
  * picks the flow; the backend constructs the exact command from the registry
  * recipe (no arbitrary shell text crosses the boundary).

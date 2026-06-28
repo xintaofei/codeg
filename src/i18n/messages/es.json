@@ -904,7 +904,12 @@
       "piSaved": "Configuración de Pi guardada",
       "savePiFailed": "No se pudo guardar la configuración de Pi",
       "piRuntimeSaved": "Entorno de Pi guardado",
-      "savePiRuntimeFailed": "No se pudo guardar el entorno de Pi"
+      "savePiRuntimeFailed": "No se pudo guardar el entorno de Pi",
+      "piBinaryInstalled": "pi instalado",
+      "piBinaryInstallFailed": "Error al instalar pi",
+      "piBinaryUninstalled": "pi desinstalado",
+      "piBinaryUninstallFailed": "Error al desinstalar pi",
+      "savePiTrustFailed": "Error al guardar la confianza del espacio de trabajo"
     },
     "version": {
       "statusLabel": "Estado de versión",
@@ -978,7 +983,18 @@
       "apiProtocolLabel": "Protocolo de API",
       "baseUrlLabel": "Endpoint de API (Base URL)",
       "customProviderHint": "Define un proveedor en ~/.pi/agent/models.json hacia tu endpoint. La mayoría de los servidores autoalojados o proxy usan openai-completions.",
-      "baseUrlRequired": "El endpoint de API (Base URL) es obligatorio"
+      "baseUrlRequired": "El endpoint de API (Base URL) es obligatorio",
+      "binaryTitle": "binario pi (pi-coding-agent)",
+      "binaryDescription": "pi-acp ejecuta este binario pi. Instálalo aquí o apunta pi-acp a tu propia compilación más abajo.",
+      "binaryInstalled": "Instalado",
+      "binaryMissing": "No instalado",
+      "binaryChecking": "Comprobando…",
+      "installBinary": "Instalar pi",
+      "installing": "Instalando…",
+      "recheck": "Volver a comprobar",
+      "trustTitle": "Confiar automáticamente en los espacios de trabajo abiertos",
+      "trustDescription": "Cuando codeg conecta pi a una carpeta, marca esa carpeta como de confianza para que pi cargue la configuración y las habilidades locales del proyecto sin una confirmación aparte.",
+      "trustHint": "Solo se confía en las carpetas que abres aquí, nunca en todo tu equipo, y esto afecta únicamente a la carga de configuración, no a lo que pi puede ejecutar."
     }
   },
   "SettingsPages": {

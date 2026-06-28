@@ -904,7 +904,12 @@
       "piSaved": "Pi 設定已儲存",
       "savePiFailed": "儲存 Pi 設定失敗",
       "piRuntimeSaved": "Pi 執行環境已儲存",
-      "savePiRuntimeFailed": "儲存 Pi 執行環境失敗"
+      "savePiRuntimeFailed": "儲存 Pi 執行環境失敗",
+      "piBinaryInstalled": "pi 已安裝",
+      "piBinaryInstallFailed": "pi 安裝失敗",
+      "piBinaryUninstalled": "pi 已解除安裝",
+      "piBinaryUninstallFailed": "pi 解除安裝失敗",
+      "savePiTrustFailed": "儲存工作區信任失敗"
     },
     "version": {
       "statusLabel": "版本狀態",
@@ -978,7 +983,18 @@
       "apiProtocolLabel": "API 協定",
       "baseUrlLabel": "介接位址（Base URL）",
       "customProviderHint": "在 ~/.pi/agent/models.json 中依你的介接位址定義一個供應方。多數自架或代理服務使用 openai-completions。",
-      "baseUrlRequired": "介接位址（Base URL）為必填"
+      "baseUrlRequired": "介接位址（Base URL）為必填",
+      "binaryTitle": "pi 二進位 (pi-coding-agent)",
+      "binaryDescription": "pi-acp 會執行此 pi 二進位。可在此安裝，或在下方指向你自己的組建。",
+      "binaryInstalled": "已安裝",
+      "binaryMissing": "未安裝",
+      "binaryChecking": "偵測中…",
+      "installBinary": "安裝 pi",
+      "installing": "安裝中…",
+      "recheck": "重新偵測",
+      "trustTitle": "自動信任已開啟的工作區",
+      "trustDescription": "codeg 連線 pi 到某個目錄時，將該目錄標記為信任，使 pi 無需另行確認即可載入該專案的本機設定與技能。",
+      "trustHint": "僅信任你在此開啟的目錄，絕不涉及整台機器；且只影響設定載入，不影響 pi 能執行什麼。"
     }
   },
   "SettingsPages": {

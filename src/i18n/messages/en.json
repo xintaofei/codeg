@@ -904,7 +904,12 @@
       "piSaved": "Pi config saved",
       "savePiFailed": "Failed to save Pi config",
       "piRuntimeSaved": "Pi runtime saved",
-      "savePiRuntimeFailed": "Failed to save Pi runtime"
+      "savePiRuntimeFailed": "Failed to save Pi runtime",
+      "piBinaryInstalled": "pi installed",
+      "piBinaryInstallFailed": "Failed to install pi",
+      "piBinaryUninstalled": "pi uninstalled",
+      "piBinaryUninstallFailed": "Failed to uninstall pi",
+      "savePiTrustFailed": "Failed to save workspace trust"
     },
     "version": {
       "statusLabel": "Version Status",
@@ -978,7 +983,18 @@
       "apiProtocolLabel": "API protocol",
       "baseUrlLabel": "API endpoint (Base URL)",
       "customProviderHint": "Defines a provider in ~/.pi/agent/models.json at your endpoint. Most self-hosted or proxy servers use openai-completions.",
-      "baseUrlRequired": "API endpoint (Base URL) is required"
+      "baseUrlRequired": "API endpoint (Base URL) is required",
+      "binaryTitle": "pi binary (pi-coding-agent)",
+      "binaryDescription": "pi-acp runs this pi binary. Install it here, or point pi-acp at your own build below.",
+      "binaryInstalled": "Installed",
+      "binaryMissing": "Not installed",
+      "binaryChecking": "Checking…",
+      "installBinary": "Install pi",
+      "installing": "Installing…",
+      "recheck": "Recheck",
+      "trustTitle": "Auto-trust opened workspaces",
+      "trustDescription": "When codeg connects pi to a folder, mark that folder trusted so pi loads the project's local config and skills without a separate prompt.",
+      "trustHint": "Only folders you open here are trusted, never your whole machine — and this affects config loading only, not what pi is allowed to run."
     }
   },
   "SettingsPages": {

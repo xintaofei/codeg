@@ -904,7 +904,12 @@
       "piSaved": "Configuração do Pi salva",
       "savePiFailed": "Falha ao salvar a configuração do Pi",
       "piRuntimeSaved": "Tempo de execução do Pi salvo",
-      "savePiRuntimeFailed": "Falha ao salvar o tempo de execução do Pi"
+      "savePiRuntimeFailed": "Falha ao salvar o tempo de execução do Pi",
+      "piBinaryInstalled": "pi instalado",
+      "piBinaryInstallFailed": "Falha ao instalar o pi",
+      "piBinaryUninstalled": "pi desinstalado",
+      "piBinaryUninstallFailed": "Falha ao desinstalar o pi",
+      "savePiTrustFailed": "Falha ao salvar a confiança do espaço de trabalho"
     },
     "version": {
       "statusLabel": "Status da versão",
@@ -978,7 +983,18 @@
       "apiProtocolLabel": "Protocolo da API",
       "baseUrlLabel": "Endpoint da API (Base URL)",
       "customProviderHint": "Define um provedor em ~/.pi/agent/models.json para o seu endpoint. A maioria dos servidores auto-hospedados ou proxy usa openai-completions.",
-      "baseUrlRequired": "O endpoint da API (Base URL) é obrigatório"
+      "baseUrlRequired": "O endpoint da API (Base URL) é obrigatório",
+      "binaryTitle": "binário pi (pi-coding-agent)",
+      "binaryDescription": "O pi-acp executa este binário pi. Instale-o aqui ou aponte o pi-acp para sua própria build abaixo.",
+      "binaryInstalled": "Instalado",
+      "binaryMissing": "Não instalado",
+      "binaryChecking": "Verificando…",
+      "installBinary": "Instalar pi",
+      "installing": "Instalando…",
+      "recheck": "Verificar novamente",
+      "trustTitle": "Confiar automaticamente nos espaços de trabalho abertos",
+      "trustDescription": "Quando o codeg conecta o pi a uma pasta, marca essa pasta como confiável para que o pi carregue a configuração e as habilidades locais do projeto sem uma confirmação separada.",
+      "trustHint": "Apenas as pastas que você abre aqui são confiáveis, nunca a máquina inteira — e isso afeta somente o carregamento da configuração, não o que o pi pode executar."
     }
   },
   "SettingsPages": {

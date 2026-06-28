@@ -867,6 +867,34 @@ pub async fn acp_uninstall_agent(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AcpPiBinaryParams {
+    pub task_id: String,
+}
+
+pub async fn acp_install_pi_binary(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<AcpPiBinaryParams>,
+) -> Result<Json<()>, AppCommandError> {
+    let emitter = state.emitter.clone();
+    acp_commands::acp_install_pi_binary_core(params.task_id, &emitter)
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(()))
+}
+
+pub async fn acp_uninstall_pi_binary(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<AcpPiBinaryParams>,
+) -> Result<Json<()>, AppCommandError> {
+    let emitter = state.emitter.clone();
+    acp_commands::acp_uninstall_pi_binary_core(params.task_id, &emitter)
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AcpReorderAgentsParams {
     pub agent_types: Vec<AgentType>,
 }

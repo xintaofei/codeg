@@ -904,7 +904,12 @@
       "piSaved": "Pi 配置已保存",
       "savePiFailed": "保存 Pi 配置失败",
       "piRuntimeSaved": "Pi 运行时已保存",
-      "savePiRuntimeFailed": "保存 Pi 运行时失败"
+      "savePiRuntimeFailed": "保存 Pi 运行时失败",
+      "piBinaryInstalled": "pi 已安装",
+      "piBinaryInstallFailed": "pi 安装失败",
+      "piBinaryUninstalled": "pi 已卸载",
+      "piBinaryUninstallFailed": "pi 卸载失败",
+      "savePiTrustFailed": "保存工作区信任失败"
     },
     "version": {
       "statusLabel": "版本状态",
@@ -978,7 +983,18 @@
       "apiProtocolLabel": "API 协议",
       "baseUrlLabel": "接口地址（Base URL）",
       "customProviderHint": "在 ~/.pi/agent/models.json 中按你的接口地址定义一个提供方。多数自托管或代理服务使用 openai-completions。",
-      "baseUrlRequired": "接口地址（Base URL）为必填项"
+      "baseUrlRequired": "接口地址（Base URL）为必填项",
+      "binaryTitle": "pi 二进制 (pi-coding-agent)",
+      "binaryDescription": "pi-acp 运行此 pi 二进制。可在此安装，或在下方指向你自己的构建。",
+      "binaryInstalled": "已安装",
+      "binaryMissing": "未安装",
+      "binaryChecking": "检测中…",
+      "installBinary": "安装 pi",
+      "installing": "安装中…",
+      "recheck": "重新检测",
+      "trustTitle": "自动信任打开的工作区",
+      "trustDescription": "codeg 连接 pi 到某个目录时，将该目录标记为受信任，使 pi 无需单独确认即可加载该项目的本地配置与技能。",
+      "trustHint": "仅信任你在此打开的目录，绝不涉及整台机器；且只影响配置加载，不影响 pi 能执行什么。"
     }
   },
   "SettingsPages": {

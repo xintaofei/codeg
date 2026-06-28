@@ -904,7 +904,12 @@
       "piSaved": "Pi-Konfiguration gespeichert",
       "savePiFailed": "Pi-Konfiguration konnte nicht gespeichert werden",
       "piRuntimeSaved": "Pi-Laufzeit gespeichert",
-      "savePiRuntimeFailed": "Pi-Laufzeit konnte nicht gespeichert werden"
+      "savePiRuntimeFailed": "Pi-Laufzeit konnte nicht gespeichert werden",
+      "piBinaryInstalled": "pi installiert",
+      "piBinaryInstallFailed": "pi-Installation fehlgeschlagen",
+      "piBinaryUninstalled": "pi deinstalliert",
+      "piBinaryUninstallFailed": "pi-Deinstallation fehlgeschlagen",
+      "savePiTrustFailed": "Speichern des Arbeitsbereich-Vertrauens fehlgeschlagen"
     },
     "version": {
       "statusLabel": "Versionsstatus",
@@ -978,7 +983,18 @@
       "apiProtocolLabel": "API-Protokoll",
       "baseUrlLabel": "API-Endpunkt (Base URL)",
       "customProviderHint": "Definiert einen Anbieter in ~/.pi/agent/models.json an Ihrem Endpunkt. Die meisten selbst gehosteten oder Proxy-Server nutzen openai-completions.",
-      "baseUrlRequired": "API-Endpunkt (Base URL) ist erforderlich"
+      "baseUrlRequired": "API-Endpunkt (Base URL) ist erforderlich",
+      "binaryTitle": "pi-Binärdatei (pi-coding-agent)",
+      "binaryDescription": "pi-acp führt diese pi-Binärdatei aus. Hier installieren oder pi-acp unten auf einen eigenen Build verweisen.",
+      "binaryInstalled": "Installiert",
+      "binaryMissing": "Nicht installiert",
+      "binaryChecking": "Wird geprüft…",
+      "installBinary": "pi installieren",
+      "installing": "Wird installiert…",
+      "recheck": "Erneut prüfen",
+      "trustTitle": "Geöffnete Arbeitsbereiche automatisch vertrauen",
+      "trustDescription": "Wenn codeg pi mit einem Ordner verbindet, wird dieser Ordner als vertrauenswürdig markiert, sodass pi die lokale Konfiguration und Skills des Projekts ohne separate Abfrage lädt.",
+      "trustHint": "Nur hier geöffnete Ordner werden als vertrauenswürdig eingestuft, niemals der gesamte Rechner – und dies betrifft nur das Laden der Konfiguration, nicht das, was pi ausführen darf."
     }
   },
   "SettingsPages": {

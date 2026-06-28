@@ -2471,6 +2471,90 @@ fn pi_models_json_path() -> PathBuf {
     pi_agent_dir().join("models.json")
 }
 
+/// Like [`pi_agent_dir`], but resolves `PI_CODING_AGENT_DIR` from a per-agent
+/// `runtime_env` map first (the BYO-pi override path) before falling back to the
+/// process env / `~/.pi/agent`. Launch-time trust seeding only has the per-agent
+/// env (the override never lands in codeg's own process env), so it must consult
+/// `runtime_env` to target the same agent dir pi-acp will spawn pi against.
+fn pi_agent_dir_for_env(runtime_env: &BTreeMap<String, String>) -> PathBuf {
+    match runtime_env
+        .get("PI_CODING_AGENT_DIR")
+        .map(|raw| raw.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        Some(value) => PathBuf::from(value),
+        None => pi_agent_dir(),
+    }
+}
+
+/// Per-agent `env_json` key gating launch-time workspace-trust seeding for pi.
+/// Absent or any value other than `"0"` ⇒ enabled (default on); `"0"` disables.
+pub(crate) const PI_TRUST_WORKSPACE_ENV: &str = "PI_ACP_TRUST_WORKSPACE";
+
+/// Seed pi's `trust.json` so the workspace codeg is launching pi into is trusted.
+///
+/// pi stores trust as a flat `{ "<canonical-dir>": true|false|null }` map and the
+/// nearest-ancestor entry decides whether it loads a project's local `.pi/*`
+/// config and `.agents/skills`. This gates ONLY config/skill loading, never tool
+/// execution — codeg has already authorized full execution in `cwd` by connecting
+/// an agent there, so trusting the same folder for config loading is consistent
+/// and removes a redundant, mid-connection trust prompt.
+///
+/// Guarantees: scoped (only `cwd`, never machine-wide), additive-only (never
+/// writes `false` or removes entries), idempotent (any existing entry for `cwd` —
+/// including a user's explicit `false`/`null` set in pi — is left untouched), and
+/// crash-safe for pi's file (a present-but-unparseable `trust.json` is never
+/// clobbered). Best-effort: every failure is logged at debug and swallowed so
+/// trust seeding can never block a connect. Honors `PI_CODING_AGENT_DIR` via
+/// `runtime_env`.
+pub(crate) fn seed_pi_workspace_trust(cwd: &Path, runtime_env: &BTreeMap<String, String>) {
+    // Default on: only an explicit "0" disables.
+    if runtime_env
+        .get(PI_TRUST_WORKSPACE_ENV)
+        .is_some_and(|v| v.trim() == "0")
+    {
+        return;
+    }
+    // pi keys trust by the realpath of the directory; mirror `realpathSync` with
+    // `fs::canonicalize`. A non-canonicalizable cwd can't be matched anyway.
+    let canonical = match fs::canonicalize(cwd) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::debug!("[pi] trust seed skipped: canonicalize {cwd:?} failed: {e}");
+            return;
+        }
+    };
+    let key = canonical.to_string_lossy().to_string();
+    let path = pi_agent_dir_for_env(runtime_env).join("trust.json");
+
+    // Read pi's file strictly: a missing file is fine (we create one), but a file
+    // that exists yet doesn't parse to a JSON object must NOT be overwritten —
+    // that would destroy decisions codeg can't see.
+    let mut obj = match fs::read_to_string(&path) {
+        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(serde_json::Value::Object(map)) => map,
+            _ => {
+                tracing::debug!("[pi] trust seed skipped: {path:?} is not a JSON object");
+                return;
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
+        Err(e) => {
+            tracing::debug!("[pi] trust seed skipped: read {path:?} failed: {e}");
+            return;
+        }
+    };
+
+    // Idempotent + respect any decision the user already made for this folder.
+    if obj.contains_key(&key) {
+        return;
+    }
+    obj.insert(key, serde_json::Value::Bool(true));
+    if let Err(e) = write_json_object_pretty(&path, &obj) {
+        tracing::debug!("[pi] trust seed write failed for {path:?}: {e}");
+    }
+}
+
 /// Structured Pi config update from the settings UI. Writes pi's native files:
 /// `settings.json` always (provider/model/thinking level), and `auth.json` only
 /// when an API key is supplied (merge-preserving other providers).
@@ -7069,6 +7153,98 @@ pub async fn acp_uninstall_agent(
     acp_uninstall_agent_core(agent_type, task_id, &db, &emitter).await
 }
 
+/// The npm package that ships the `pi` binary pi-acp spawns as `pi --mode rpc`.
+/// Installed unpinned ("latest"): pi releases frequently and pi-acp resolves
+/// `pi` from PATH, so the binary's version floats independently of the pinned
+/// `pi-acp` adapter (which `acp_prepare_npx_agent` installs separately).
+const PI_CODING_AGENT_PACKAGE: &str = "@earendil-works/pi-coding-agent";
+
+/// Install the `pi` binary globally via npm, streaming progress on the shared
+/// `app://agent-install` topic. This is the prerequisite the missing-pi launch
+/// preflight (see [`crate::acp::connection`]) guards against. Reuses the same
+/// EACCES user-prefix and EEXIST `--force` fallbacks as every other npm agent
+/// install.
+pub(crate) async fn acp_install_pi_binary_core(
+    task_id: String,
+    emitter: &EventEmitter,
+) -> Result<(), AcpError> {
+    emit_agent_install_event(emitter, &task_id, AgentInstallEventKind::Started, "");
+
+    let result =
+        install_npm_global_package_streaming(PI_CODING_AGENT_PACKAGE, &task_id, emitter).await;
+
+    match &result {
+        Ok(()) => emit_agent_install_event(
+            emitter,
+            &task_id,
+            AgentInstallEventKind::Completed,
+            "pi installed successfully",
+        ),
+        Err(e) => emit_agent_install_event(
+            emitter,
+            &task_id,
+            AgentInstallEventKind::Failed,
+            e.to_string(),
+        ),
+    }
+    result
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_install_pi_binary(
+    task_id: String,
+    app: tauri::AppHandle,
+) -> Result<(), AcpError> {
+    let emitter = EventEmitter::Tauri(app);
+    acp_install_pi_binary_core(task_id, &emitter).await
+}
+
+/// Uninstall the global `pi` binary. Mirrors `acp_uninstall_agent_core`'s event
+/// envelope; the npm subprocess output isn't streamed (the shared helper
+/// collects it via `.output()`), but the Started/Log/Completed/Failed events
+/// drive the same install-log block in the panel.
+pub(crate) async fn acp_uninstall_pi_binary_core(
+    task_id: String,
+    emitter: &EventEmitter,
+) -> Result<(), AcpError> {
+    emit_agent_install_event(emitter, &task_id, AgentInstallEventKind::Started, "");
+    emit_agent_install_event(
+        emitter,
+        &task_id,
+        AgentInstallEventKind::Log,
+        format!("$ npm uninstall -g {PI_CODING_AGENT_PACKAGE}"),
+    );
+
+    let result = uninstall_npm_global_package(PI_CODING_AGENT_PACKAGE).await;
+
+    match &result {
+        Ok(()) => emit_agent_install_event(
+            emitter,
+            &task_id,
+            AgentInstallEventKind::Completed,
+            "pi uninstalled successfully",
+        ),
+        Err(e) => emit_agent_install_event(
+            emitter,
+            &task_id,
+            AgentInstallEventKind::Failed,
+            e.to_string(),
+        ),
+    }
+    result
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_uninstall_pi_binary(
+    task_id: String,
+    app: tauri::AppHandle,
+) -> Result<(), AcpError> {
+    let emitter = EventEmitter::Tauri(app);
+    acp_uninstall_pi_binary_core(task_id, &emitter).await
+}
+
 pub(crate) async fn acp_reorder_agents_core(
     agent_types: &[AgentType],
     db: &AppDatabase,
@@ -7578,6 +7754,143 @@ pub(crate) async fn codex_poll_device_code_core(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a `runtime_env` whose `PI_CODING_AGENT_DIR` points at `agent_dir`,
+    /// so trust seeding writes a tempdir's `trust.json` instead of `~/.pi/agent`.
+    fn pi_env_for(agent_dir: &Path) -> BTreeMap<String, String> {
+        let mut env = BTreeMap::new();
+        env.insert(
+            "PI_CODING_AGENT_DIR".to_string(),
+            agent_dir.to_string_lossy().to_string(),
+        );
+        env
+    }
+
+    fn canonical_key(dir: &Path) -> String {
+        fs::canonicalize(dir)
+            .expect("canonicalize")
+            .to_string_lossy()
+            .to_string()
+    }
+
+    #[test]
+    fn pi_trust_seed_creates_file_and_trusts_canonical_cwd() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let agent_dir = tmp.path().join("agent");
+        let workspace = tmp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+
+        seed_pi_workspace_trust(&workspace, &pi_env_for(&agent_dir));
+
+        let map = read_json_object_or_empty(&agent_dir.join("trust.json"));
+        assert_eq!(
+            map.get(&canonical_key(&workspace)),
+            Some(&serde_json::Value::Bool(true)),
+            "the opened workspace must be marked trusted",
+        );
+    }
+
+    #[test]
+    fn pi_trust_seed_preserves_existing_entries() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let agent_dir = tmp.path().join("agent");
+        fs::create_dir_all(&agent_dir).unwrap();
+        let workspace = tmp.path().join("ws");
+        fs::create_dir_all(&workspace).unwrap();
+
+        // Pre-existing decisions for unrelated folders must survive untouched.
+        let mut initial = serde_json::Map::new();
+        initial.insert("/some/other".to_string(), serde_json::Value::Bool(true));
+        initial.insert("/denied".to_string(), serde_json::Value::Bool(false));
+        write_json_object_pretty(&agent_dir.join("trust.json"), &initial).unwrap();
+
+        seed_pi_workspace_trust(&workspace, &pi_env_for(&agent_dir));
+
+        let map = read_json_object_or_empty(&agent_dir.join("trust.json"));
+        assert_eq!(map.get("/some/other"), Some(&serde_json::Value::Bool(true)));
+        assert_eq!(map.get("/denied"), Some(&serde_json::Value::Bool(false)));
+        assert_eq!(
+            map.get(&canonical_key(&workspace)),
+            Some(&serde_json::Value::Bool(true)),
+        );
+    }
+
+    #[test]
+    fn pi_trust_seed_respects_existing_false_and_is_idempotent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let agent_dir = tmp.path().join("agent");
+        fs::create_dir_all(&agent_dir).unwrap();
+        let workspace = tmp.path().join("ws");
+        fs::create_dir_all(&workspace).unwrap();
+        let key = canonical_key(&workspace);
+        let env = pi_env_for(&agent_dir);
+
+        // The user explicitly distrusted this exact folder in pi: never overwrite.
+        let mut initial = serde_json::Map::new();
+        initial.insert(key.clone(), serde_json::Value::Bool(false));
+        write_json_object_pretty(&agent_dir.join("trust.json"), &initial).unwrap();
+
+        seed_pi_workspace_trust(&workspace, &env);
+        let map = read_json_object_or_empty(&agent_dir.join("trust.json"));
+        assert_eq!(
+            map.get(&key),
+            Some(&serde_json::Value::Bool(false)),
+            "an explicit deny must be preserved (additive-only)",
+        );
+
+        // Idempotent: seeding an already-trusted folder must not rewrite the file.
+        let mut trusted = serde_json::Map::new();
+        trusted.insert(key.clone(), serde_json::Value::Bool(true));
+        write_json_object_pretty(&agent_dir.join("trust.json"), &trusted).unwrap();
+        let mtime1 = fs::metadata(agent_dir.join("trust.json"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        seed_pi_workspace_trust(&workspace, &env);
+        assert_eq!(
+            fs::metadata(agent_dir.join("trust.json"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            mtime1,
+            "a no-op seed must not rewrite trust.json",
+        );
+    }
+
+    #[test]
+    fn pi_trust_seed_disabled_writes_nothing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let agent_dir = tmp.path().join("agent");
+        let workspace = tmp.path().join("ws");
+        fs::create_dir_all(&workspace).unwrap();
+
+        let mut env = pi_env_for(&agent_dir);
+        env.insert(PI_TRUST_WORKSPACE_ENV.to_string(), "0".to_string());
+        seed_pi_workspace_trust(&workspace, &env);
+
+        assert!(
+            !agent_dir.join("trust.json").exists(),
+            "a disabled toggle must not touch trust.json",
+        );
+    }
+
+    #[test]
+    fn pi_trust_seed_leaves_unparseable_file_untouched() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let agent_dir = tmp.path().join("agent");
+        fs::create_dir_all(&agent_dir).unwrap();
+        let workspace = tmp.path().join("ws");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(agent_dir.join("trust.json"), "not json at all").unwrap();
+
+        seed_pi_workspace_trust(&workspace, &pi_env_for(&agent_dir));
+
+        assert_eq!(
+            fs::read_to_string(agent_dir.join("trust.json")).unwrap(),
+            "not json at all",
+            "a present-but-unparseable trust.json must never be clobbered",
+        );
+    }
 
     #[test]
     fn opencode_auth_empty_payload_truncates_to_empty_object() {

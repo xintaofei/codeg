@@ -904,7 +904,12 @@
       "piSaved": "تم حفظ إعدادات Pi",
       "savePiFailed": "فشل حفظ إعدادات Pi",
       "piRuntimeSaved": "تم حفظ وقت تشغيل Pi",
-      "savePiRuntimeFailed": "فشل حفظ وقت تشغيل Pi"
+      "savePiRuntimeFailed": "فشل حفظ وقت تشغيل Pi",
+      "piBinaryInstalled": "تم تثبيت pi",
+      "piBinaryInstallFailed": "فشل تثبيت pi",
+      "piBinaryUninstalled": "تم إلغاء تثبيت pi",
+      "piBinaryUninstallFailed": "فشل إلغاء تثبيت pi",
+      "savePiTrustFailed": "فشل حفظ الثقة بمساحة العمل"
     },
     "version": {
       "statusLabel": "حالة الإصدار",
@@ -978,7 +983,18 @@
       "apiProtocolLabel": "بروتوكول API",
       "baseUrlLabel": "نقطة نهاية API (عنوان URL الأساسي)",
       "customProviderHint": "يعرّف مزوّدًا في ~/.pi/agent/models.json عند نقطة النهاية الخاصة بك. تستخدم معظم الخوادم الذاتية الاستضافة أو الوسيطة openai-completions.",
-      "baseUrlRequired": "نقطة نهاية API (عنوان URL الأساسي) مطلوبة"
+      "baseUrlRequired": "نقطة نهاية API (عنوان URL الأساسي) مطلوبة",
+      "binaryTitle": "ثنائي pi (pi-coding-agent)",
+      "binaryDescription": "يشغّل pi-acp ثنائي pi هذا. ثبّته هنا، أو وجّه pi-acp إلى نسختك الخاصة أدناه.",
+      "binaryInstalled": "مثبَّت",
+      "binaryMissing": "غير مثبَّت",
+      "binaryChecking": "جارٍ التحقق…",
+      "installBinary": "تثبيت pi",
+      "installing": "جارٍ التثبيت…",
+      "recheck": "إعادة التحقق",
+      "trustTitle": "الثقة تلقائيًا بمساحات العمل المفتوحة",
+      "trustDescription": "عندما يربط codeg أداة pi بمجلد، يضع علامة موثوق على ذلك المجلد ليحمّل pi إعدادات المشروع المحلية ومهاراته دون تأكيد منفصل.",
+      "trustHint": "يُوثَق فقط بالمجلدات التي تفتحها هنا، وليس جهازك بالكامل، كما أن ذلك يؤثر على تحميل الإعدادات فقط، لا على ما يُسمح لـ pi بتشغيله."
     }
   },
   "SettingsPages": {

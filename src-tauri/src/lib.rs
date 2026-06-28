@@ -1052,6 +1052,8 @@ mod tauri_app {
                 acp_commands::acp_update_pi_config,
                 acp_commands::acp_load_pi_config,
                 acp_commands::acp_validate_pi_command,
+                acp_commands::acp_install_pi_binary,
+                acp_commands::acp_uninstall_pi_binary,
                 acp_commands::acp_open_hermes_setup_terminal,
                 acp_commands::acp_reveal_hermes_home,
                 acp_commands::acp_reorder_agents,

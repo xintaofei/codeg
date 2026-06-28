@@ -904,7 +904,12 @@
       "piSaved": "Pi 설정이 저장됨",
       "savePiFailed": "Pi 설정 저장 실패",
       "piRuntimeSaved": "Pi 런타임이 저장됨",
-      "savePiRuntimeFailed": "Pi 런타임 저장 실패"
+      "savePiRuntimeFailed": "Pi 런타임 저장 실패",
+      "piBinaryInstalled": "pi 설치됨",
+      "piBinaryInstallFailed": "pi 설치 실패",
+      "piBinaryUninstalled": "pi 제거됨",
+      "piBinaryUninstallFailed": "pi 제거 실패",
+      "savePiTrustFailed": "작업 공간 신뢰 저장 실패"
     },
     "version": {
       "statusLabel": "버전 상태",
@@ -978,7 +983,18 @@
       "apiProtocolLabel": "API 프로토콜",
       "baseUrlLabel": "API 엔드포인트(Base URL)",
       "customProviderHint": "~/.pi/agent/models.json에 엔드포인트용 제공자를 정의합니다. 대부분의 자체 호스팅 또는 프록시 서버는 openai-completions를 사용합니다.",
-      "baseUrlRequired": "API 엔드포인트(Base URL)는 필수입니다"
+      "baseUrlRequired": "API 엔드포인트(Base URL)는 필수입니다",
+      "binaryTitle": "pi 바이너리 (pi-coding-agent)",
+      "binaryDescription": "pi-acp가 이 pi 바이너리를 실행합니다. 여기서 설치하거나 아래에서 직접 빌드한 pi를 지정하세요.",
+      "binaryInstalled": "설치됨",
+      "binaryMissing": "설치되지 않음",
+      "binaryChecking": "확인 중…",
+      "installBinary": "pi 설치",
+      "installing": "설치 중…",
+      "recheck": "다시 확인",
+      "trustTitle": "열린 작업 공간 자동 신뢰",
+      "trustDescription": "codeg가 pi를 폴더에 연결할 때 해당 폴더를 신뢰됨으로 표시하여 pi가 별도 확인 없이 프로젝트의 로컬 설정과 스킬을 로드하도록 합니다.",
+      "trustHint": "여기서 여는 폴더만 신뢰되며 전체 컴퓨터는 신뢰되지 않습니다. 또한 설정 로드에만 영향을 주며 pi가 실행할 수 있는 작업에는 영향을 주지 않습니다."
     }
   },
   "SettingsPages": {

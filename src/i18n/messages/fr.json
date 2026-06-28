@@ -904,7 +904,12 @@
       "piSaved": "Configuration Pi enregistrée",
       "savePiFailed": "Échec de l'enregistrement de la config Pi",
       "piRuntimeSaved": "Exécution Pi enregistrée",
-      "savePiRuntimeFailed": "Échec de l'enregistrement de l'exécution Pi"
+      "savePiRuntimeFailed": "Échec de l'enregistrement de l'exécution Pi",
+      "piBinaryInstalled": "pi installé",
+      "piBinaryInstallFailed": "Échec de l'installation de pi",
+      "piBinaryUninstalled": "pi désinstallé",
+      "piBinaryUninstallFailed": "Échec de la désinstallation de pi",
+      "savePiTrustFailed": "Échec de l'enregistrement de la confiance de l'espace de travail"
     },
     "version": {
       "statusLabel": "Statut de version",
@@ -978,7 +983,18 @@
       "apiProtocolLabel": "Protocole API",
       "baseUrlLabel": "Point de terminaison API (Base URL)",
       "customProviderHint": "Définit un fournisseur dans ~/.pi/agent/models.json vers votre point de terminaison. La plupart des serveurs auto-hébergés ou proxy utilisent openai-completions.",
-      "baseUrlRequired": "Le point de terminaison API (Base URL) est requis"
+      "baseUrlRequired": "Le point de terminaison API (Base URL) est requis",
+      "binaryTitle": "binaire pi (pi-coding-agent)",
+      "binaryDescription": "pi-acp exécute ce binaire pi. Installez-le ici, ou faites pointer pi-acp vers votre propre build ci-dessous.",
+      "binaryInstalled": "Installé",
+      "binaryMissing": "Non installé",
+      "binaryChecking": "Vérification…",
+      "installBinary": "Installer pi",
+      "installing": "Installation…",
+      "recheck": "Revérifier",
+      "trustTitle": "Faire confiance automatiquement aux espaces de travail ouverts",
+      "trustDescription": "Lorsque codeg connecte pi à un dossier, ce dossier est marqué comme fiable afin que pi charge la configuration et les compétences locales du projet sans confirmation séparée.",
+      "trustHint": "Seuls les dossiers que vous ouvrez ici sont approuvés, jamais l'ensemble de votre machine — et cela n'affecte que le chargement de la configuration, pas ce que pi est autorisé à exécuter."
     }
   },
   "SettingsPages": {

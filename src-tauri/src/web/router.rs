@@ -651,6 +651,14 @@ pub fn build_router(
             post(handlers::acp::acp_validate_pi_command),
         )
         .route(
+            "/acp_install_pi_binary",
+            post(handlers::acp::acp_install_pi_binary),
+        )
+        .route(
+            "/acp_uninstall_pi_binary",
+            post(handlers::acp::acp_uninstall_pi_binary),
+        )
+        .route(
             "/acp_download_agent_binary",
             post(handlers::acp::acp_download_agent_binary),
         )

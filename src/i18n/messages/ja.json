@@ -904,7 +904,12 @@
       "piSaved": "Pi 設定を保存しました",
       "savePiFailed": "Pi 設定の保存に失敗しました",
       "piRuntimeSaved": "Pi ランタイムを保存しました",
-      "savePiRuntimeFailed": "Pi ランタイムの保存に失敗しました"
+      "savePiRuntimeFailed": "Pi ランタイムの保存に失敗しました",
+      "piBinaryInstalled": "pi をインストールしました",
+      "piBinaryInstallFailed": "pi のインストールに失敗しました",
+      "piBinaryUninstalled": "pi をアンインストールしました",
+      "piBinaryUninstallFailed": "pi のアンインストールに失敗しました",
+      "savePiTrustFailed": "ワークスペースの信頼設定の保存に失敗しました"
     },
     "version": {
       "statusLabel": "バージョン状態",
@@ -978,7 +983,18 @@
       "apiProtocolLabel": "API プロトコル",
       "baseUrlLabel": "API エンドポイント（Base URL）",
       "customProviderHint": "~/.pi/agent/models.json にエンドポイント向けのプロバイダーを定義します。多くのセルフホスト／プロキシは openai-completions を使用します。",
-      "baseUrlRequired": "API エンドポイント（Base URL）は必須です"
+      "baseUrlRequired": "API エンドポイント（Base URL）は必須です",
+      "binaryTitle": "pi バイナリ (pi-coding-agent)",
+      "binaryDescription": "pi-acp はこの pi バイナリを実行します。ここでインストールするか、下で独自のビルドを指定できます。",
+      "binaryInstalled": "インストール済み",
+      "binaryMissing": "未インストール",
+      "binaryChecking": "確認中…",
+      "installBinary": "pi をインストール",
+      "installing": "インストール中…",
+      "recheck": "再確認",
+      "trustTitle": "開いたワークスペースを自動的に信頼",
+      "trustDescription": "codeg が pi をフォルダーに接続する際、そのフォルダーを信頼済みとして登録し、別途の確認なしにプロジェクトのローカル設定とスキルを読み込めるようにします。",
+      "trustHint": "信頼されるのはここで開いたフォルダーのみで、マシン全体ではありません。また影響するのは設定の読み込みだけで、pi が実行できる内容には影響しません。"
     }
   },
   "SettingsPages": {

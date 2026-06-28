@@ -320,6 +320,12 @@ async fn build_agent(
                 if let Some(message) = pi_launch_preflight(runtime_env) {
                     return Err(AcpError::SdkNotInstalled(message));
                 }
+                // Trust the workspace codeg is launching pi into (default on, via
+                // the PI_ACP_TRUST_WORKSPACE env_json key) so pi loads the
+                // project's local config/skills without a redundant prompt. Gates
+                // config loading only, never execution; scoped, additive, and
+                // best-effort (never blocks the connect).
+                crate::commands::acp::seed_pi_workspace_trust(cwd, runtime_env);
             }
             let mut merged_env = merge_agent_env(env, runtime_env);
             // codex-acp 1.0.0 honors APP_SERVER_LOGS as a directory for its
