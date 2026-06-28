@@ -959,7 +959,7 @@
       "runtimeTitle": "运行时",
       "runtimeDescription": "选择运行哪个 pi。使用默认，或指向你自己的 pi 构建。",
       "modeDefault": "默认 pi",
-      "modeDefaultHint": "使用内置 pi-acp 适配器拉起 PATH 上的 pi。",
+      "modeDefaultHint": "使用内置 pi-acp 适配器拉起 PATH 上的 pi。 安装 pi：npm install -g @earendil-works/pi-coding-agent",
       "modeCustom": "自定义 pi",
       "modeCustomHint": "运行你自己的 pi 构建、安装或包装脚本。",
       "commandLabel": "pi 命令或路径",

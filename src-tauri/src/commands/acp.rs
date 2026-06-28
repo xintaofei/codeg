@@ -2779,21 +2779,23 @@ fn pi_path_is_executable(resolved: &Path) -> bool {
 /// up on `PATH` via the `which` crate. On success, best-effort `--version` is run
 /// (failures tolerated → `version=None`). Never errors on a not-found / probe
 /// failure: returns `found=false` (or `version=None`) instead.
-pub(crate) fn acp_validate_pi_command_core(command: String) -> PiCommandValidation {
+/// Resolve a pi command to an executable path: a value containing a path
+/// separator (or an absolute path) is checked on disk; a bare name is looked up
+/// on `PATH` via the `which` crate. Returns `None` when it can't be resolved to
+/// an executable. Shared by the BYO-pi validate command and the launch preflight
+/// ([`crate::acp::connection`]) so both agree on what "pi is resolvable" means —
+/// and both see the same `PATH` the spawned pi-acp process inherits.
+pub(crate) fn resolve_pi_command_path(command: &str) -> Option<PathBuf> {
     let trimmed = command.trim();
     if trimmed.is_empty() {
-        return PiCommandValidation {
-            found: false,
-            resolved_path: None,
-            version: None,
-        };
+        return None;
     }
 
     let looks_like_path = trimmed.contains(std::path::MAIN_SEPARATOR)
         || trimmed.contains('/')
         || Path::new(trimmed).is_absolute();
 
-    let resolved: Option<PathBuf> = if looks_like_path {
+    if looks_like_path {
         let candidate = Path::new(trimmed);
         if pi_path_is_executable(candidate) {
             // Canonicalize to an absolute path; fall back to the raw path if the
@@ -2804,9 +2806,11 @@ pub(crate) fn acp_validate_pi_command_core(command: String) -> PiCommandValidati
         }
     } else {
         which::which(trimmed).ok()
-    };
+    }
+}
 
-    let Some(resolved_path) = resolved else {
+pub(crate) fn acp_validate_pi_command_core(command: String) -> PiCommandValidation {
+    let Some(resolved_path) = resolve_pi_command_path(&command) else {
         return PiCommandValidation {
             found: false,
             resolved_path: None,
@@ -6414,6 +6418,7 @@ pub async fn acp_fetch_kimi_models(
 /// Desktop command; the web handler calls `acp_update_pi_config_core` directly.
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[allow(clippy::too_many_arguments)]
 pub async fn acp_update_pi_config(
     provider: String,
     model: String,

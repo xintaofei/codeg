@@ -271,6 +271,37 @@ fn codex_app_server_log_dir() -> Option<String> {
     Some(dir.to_string_lossy().into_owned())
 }
 
+/// Pi runs through pi-acp, which spawns the actual `pi` binary at runtime. If
+/// `pi` (or the BYO-pi `PI_ACP_PI_COMMAND` override) isn't resolvable, pi-acp
+/// dies mid-connection with a raw ENOENT. This preflight resolves the effective
+/// command up front against the same `PATH` the child inherits and returns a
+/// clear message when it can't be found; `None` means launch may proceed.
+///
+/// The message contains the literal substring "is not installed", which the
+/// frontend matches to show the localized SDK-missing prompt with an "Open Agent
+/// Settings" action (see `src/contexts/acp-connections-context.tsx`). Do not
+/// change that substring.
+fn pi_launch_preflight(runtime_env: &BTreeMap<String, String>) -> Option<String> {
+    let custom = runtime_env
+        .get("PI_ACP_PI_COMMAND")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let command = custom.unwrap_or("pi");
+    if crate::commands::acp::resolve_pi_command_path(command).is_some() {
+        return None;
+    }
+    Some(match custom {
+        Some(cmd) => format!(
+            "Pi is not installed: the custom pi command \"{cmd}\" was not found. \
+             Update it in Agent Settings → Pi → Runtime."
+        ),
+        None => "Pi is not installed. Install it with: \
+                 npm install -g @earendil-works/pi-coding-agent \
+                 (or set a custom pi command in Agent Settings → Pi → Runtime)."
+            .to_string(),
+    })
+}
+
 async fn build_agent(
     agent_type: AgentType,
     runtime_env: &BTreeMap<String, String>,
@@ -281,6 +312,15 @@ async fn build_agent(
 
     let agent = match meta.distribution {
         AgentDistribution::Npx { cmd, args, env, .. } => {
+            // pi-acp spawns the real `pi` binary; fail fast with a clear,
+            // install-prompt-routable error if it (or a BYO-pi override) isn't
+            // resolvable, rather than letting pi-acp die mid-connection on a raw
+            // ENOENT that surfaces as an opaque protocol error.
+            if agent_type == AgentType::Pi {
+                if let Some(message) = pi_launch_preflight(runtime_env) {
+                    return Err(AcpError::SdkNotInstalled(message));
+                }
+            }
             let mut merged_env = merge_agent_env(env, runtime_env);
             // codex-acp 1.0.0 honors APP_SERVER_LOGS as a directory for its
             // adapter-side logs. Surface it only under CODEG_ACP_DEBUG so
@@ -4774,6 +4814,34 @@ async fn emit_conversation_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pi_preflight_flags_missing_custom_command() {
+        let mut env = BTreeMap::new();
+        env.insert(
+            "PI_ACP_PI_COMMAND".to_string(),
+            "/nonexistent/definitely-not-pi-xyz".to_string(),
+        );
+        let msg =
+            pi_launch_preflight(&env).expect("an unresolvable custom pi command must be flagged");
+        // Frontend invariant: routes to the localized SDK-missing install prompt.
+        assert!(msg.contains("is not installed"), "got: {msg}");
+        assert!(msg.contains("definitely-not-pi-xyz"), "got: {msg}");
+    }
+
+    #[test]
+    fn pi_preflight_accepts_resolvable_custom_command() {
+        // A binary we know exists and is executable on this platform — proves the
+        // preflight clears (returns None) for a resolvable PI_ACP_PI_COMMAND.
+        let existing = if cfg!(windows) {
+            "C:\\Windows\\System32\\cmd.exe"
+        } else {
+            "/bin/sh"
+        };
+        let mut env = BTreeMap::new();
+        env.insert("PI_ACP_PI_COMMAND".to_string(), existing.to_string());
+        assert!(pi_launch_preflight(&env).is_none());
+    }
 
     #[test]
     fn prepend_path_unix_prepends_and_keeps_single_key() {

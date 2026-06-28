@@ -959,7 +959,7 @@
       "runtimeTitle": "런타임",
       "runtimeDescription": "어떤 pi를 실행할지 선택합니다. 기본값을 사용하거나 자신의 pi 빌드를 지정하세요.",
       "modeDefault": "기본 pi",
-      "modeDefaultHint": "내장 pi-acp 어댑터로 PATH의 pi를 실행합니다.",
+      "modeDefaultHint": "내장 pi-acp 어댑터로 PATH의 pi를 실행합니다. pi 설치: npm install -g @earendil-works/pi-coding-agent",
       "modeCustom": "사용자 지정 pi",
       "modeCustomHint": "자신의 pi 빌드, 설치 또는 래퍼를 실행합니다.",
       "commandLabel": "pi 명령 또는 경로",

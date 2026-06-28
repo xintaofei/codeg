@@ -959,7 +959,7 @@
       "runtimeTitle": "Entorno de ejecución",
       "runtimeDescription": "Elige qué binario de pi se ejecuta. Usa el predeterminado o apunta a tu propia compilación de pi.",
       "modeDefault": "pi predeterminado",
-      "modeDefaultHint": "Usa el adaptador pi-acp integrado con el pi de tu PATH.",
+      "modeDefaultHint": "Usa el adaptador pi-acp integrado con el pi de tu PATH. Instala pi con: npm install -g @earendil-works/pi-coding-agent",
       "modeCustom": "pi personalizado",
       "modeCustomHint": "Ejecuta tu propia compilación, instalación o envoltorio de pi.",
       "commandLabel": "Comando o ruta de pi",

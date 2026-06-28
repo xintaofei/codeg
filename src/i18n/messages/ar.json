@@ -959,7 +959,7 @@
       "runtimeTitle": "وقت التشغيل",
       "runtimeDescription": "اختر أي ملف pi يعمل. استخدم الافتراضي أو أشِر إلى بناء pi الخاص بك.",
       "modeDefault": "pi الافتراضي",
-      "modeDefaultHint": "يستخدم محوّل pi-acp المدمج مع pi الموجود في PATH.",
+      "modeDefaultHint": "يستخدم محوّل pi-acp المدمج مع pi الموجود في PATH. ثبّت pi عبر: npm install -g @earendil-works/pi-coding-agent",
       "modeCustom": "pi مخصّص",
       "modeCustomHint": "شغّل بناء pi أو تثبيته أو غلافه الخاص بك.",
       "commandLabel": "أمر pi أو مساره",
