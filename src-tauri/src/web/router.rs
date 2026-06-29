@@ -98,6 +98,10 @@ pub fn build_router(
             post(handlers::conversations::get_folder_conversation),
         )
         .route(
+            "/get_folder_conversation_paginated",
+            post(handlers::conversations::get_folder_conversation_paginated),
+        )
+        .route(
             "/list_opened_tabs",
             post(handlers::conversations::list_opened_tabs),
         )

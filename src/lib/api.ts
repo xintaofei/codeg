@@ -21,6 +21,7 @@ import type {
   ConversationSummary,
   ConversationDetail,
   DbConversationDetail,
+  DbConversationDetailPage,
   FolderInfo,
   AgentStats,
   SidebarData,
@@ -1216,6 +1217,18 @@ export async function getFolderConversation(
   conversationId: number
 ): Promise<DbConversationDetail> {
   return getTransport().call("get_folder_conversation", { conversationId })
+}
+
+export async function getFolderConversationPaginated(params: {
+  conversationId: number
+  beforeTurnIndex?: number | null
+  pageSize?: number | null
+}): Promise<DbConversationDetailPage> {
+  return getTransport().call("get_folder_conversation_paginated", {
+    conversationId: params.conversationId,
+    beforeTurnIndex: params.beforeTurnIndex ?? null,
+    pageSize: params.pageSize ?? null,
+  })
 }
 
 export async function removeFolderFromHistory(path: string): Promise<void> {
