@@ -18,6 +18,7 @@ import type {
   AgentExecutionStats,
   DbConversationDetail,
   MessageTurn,
+  PlanEntryInfo,
   SessionStats,
   ToolCallStatus,
   TurnUsage,
@@ -28,6 +29,7 @@ import {
 } from "@/lib/tool-call-normalization"
 import { COLLAB_AGENT_TOOL_NAME, mergeCollabOp } from "@/lib/collab-tool"
 import { collapseLiveCollabBlocks } from "@/lib/collab-collapse"
+import { kimiTodoWriteEntries } from "@/lib/plan-parse"
 import { toErrorMessage } from "@/lib/app-error"
 
 export type ConversationSyncState = "idle" | "awaiting_persist"
@@ -481,7 +483,7 @@ function resolveLiveToolInput(
   return info.raw_input
 }
 
-function buildStreamingTurnsFromLiveMessage(
+export function buildStreamingTurnsFromLiveMessage(
   conversationId: number,
   liveMessage: LiveMessage
 ): BuiltStreamingTurns {
@@ -489,6 +491,25 @@ function buildStreamingTurnsFromLiveMessage(
   // close folded in) so live matches the history reconstruction. No-op when the
   // message has no collab tool calls. See collab-collapse.ts.
   const content = collapseLiveCollabBlocks(liveMessage.content)
+
+  // Kimi Code live TodoList handling. Kimi emits BOTH a `TodoList` tool_call AND
+  // a canonical `plan` update for each write; the reducer collapses all plan
+  // updates into a single latest `plan` block. `hasLivePlan` gates the one-frame
+  // pre-plan fallback in the tool_call case. `latestKimiTodoEntries` is the
+  // canonical plan content: the LAST Kimi write's todos, which are always as
+  // fresh as — and, in the one-event window before that write's own `plan`
+  // update lands, fresher than — the (collapsed) plan block. Rendering the plan
+  // block from these avoids showing the previous write's stale plan during that
+  // window. Null for non-Kimi sessions (e.g. Claude Code), where the synthetic
+  // plan block is the sole source and is used verbatim.
+  const hasLivePlan = content.some((block) => block.type === "plan")
+  let latestKimiTodoEntries: PlanEntryInfo[] | null = null
+  for (const block of content) {
+    if (block.type === "tool_call") {
+      const entries = kimiTodoWriteEntries(block.info.raw_input)
+      if (entries) latestKimiTodoEntries = entries
+    }
+  }
 
   // ── Phase 1: Identify agent → child relationships ──────────────────
   // Uses meta.claudeCode.parentToolUseId when available (precise), with
@@ -624,8 +645,14 @@ function buildStreamingTurnsFromLiveMessage(
       case "plan": {
         // Carry the live plan through as a first-class `plan` block so it
         // renders in a dedicated <PlanCard> instead of being down-converted
-        // into a `thinking`/reasoning block.
-        currentBlocks.push({ type: "plan", entries: block.entries })
+        // into a `thinking`/reasoning block. For a Kimi Code session, prefer the
+        // latest TodoList write's todos over this (possibly one-event-stale)
+        // collapsed plan, so a new write's content shows immediately rather than
+        // the previous write's until Kimi's own `plan` update catches up.
+        currentBlocks.push({
+          type: "plan",
+          entries: latestKimiTodoEntries ?? block.entries,
+        })
         break
       }
       case "tool_call": {
@@ -683,6 +710,28 @@ function buildStreamingTurnsFromLiveMessage(
           if (status === "completed" || status === "failed") {
             currentGroupHasCompletedTool = true
           }
+          break
+        }
+
+        // Kimi Code emits BOTH a `TodoList` tool_call AND a canonical `plan`
+        // update for the same write (claude-code-acp instead replaces the
+        // tool_call with the plan). Render exactly one <PlanCard> with no
+        // duplicate-card flash: once Kimi's own `plan` block is in this live
+        // message, drop the redundant tool card (the synthetic plan renders it);
+        // in the one-frame window before that plan block arrives (the tool_call
+        // is processed one event earlier), render the plan from the call's own
+        // todos so a PlanCard — never a generic tool card — shows immediately and
+        // continues seamlessly (identical entries) when the synthetic block takes
+        // over. Fail-safe: if Kimi never emitted the plan, the converted plan
+        // still shows (no data loss). Identity is the exact Kimi todo-write input
+        // shape because the real tool name "TodoList" is never on the live wire.
+        const kimiTodos = kimiTodoWriteEntries(block.info.raw_input)
+        if (kimiTodos) {
+          if (!hasLivePlan) {
+            currentBlocks.push({ type: "plan", entries: kimiTodos })
+          }
+          // `break` precedes the tool_use and tool_result pushes — no orphan
+          // tool-result and no generic tool card for the suppressed write.
           break
         }
 

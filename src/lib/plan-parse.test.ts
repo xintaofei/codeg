@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   isPlanLikeToolName,
+  kimiTodoWriteEntries,
   normalizePriority,
   normalizeStatus,
   parseTodosFromJson,
@@ -40,9 +41,87 @@ describe("isPlanLikeToolName", () => {
     expect(isPlanLikeToolName("exit_plan_mode")).toBe(true)
   })
 
+  it("recognizes Kimi Code's TodoList (separators stripped)", () => {
+    expect(isPlanLikeToolName("TodoList")).toBe(true)
+    expect(isPlanLikeToolName("todo_list")).toBe(true)
+  })
+
   it("returns false for unrelated tools", () => {
     expect(isPlanLikeToolName("Bash")).toBe(false)
     expect(isPlanLikeToolName("read_file")).toBe(false)
+  })
+})
+
+describe("kimiTodoWriteEntries", () => {
+  it("parses a genuine Kimi todo write into one entry per todo", () => {
+    const input = JSON.stringify({
+      todos: [
+        { title: "Confirm 401 behavior", status: "in_progress" },
+        { title: "Unify request.js", status: "pending" },
+        { title: "Verify changes", status: "done" },
+      ],
+    })
+    expect(kimiTodoWriteEntries(input)).toEqual([
+      {
+        content: "Confirm 401 behavior",
+        status: "in_progress",
+        priority: "medium",
+      },
+      { content: "Unify request.js", status: "pending", priority: "medium" },
+      { content: "Verify changes", status: "completed", priority: "medium" },
+    ])
+  })
+
+  it("returns null for read/clear forms (no plan card)", () => {
+    expect(kimiTodoWriteEntries("{}")).toBeNull()
+    expect(kimiTodoWriteEntries(JSON.stringify({ todos: [] }))).toBeNull()
+  })
+
+  it("rejects non-Kimi shapes (entries/plan arrays, non-title items)", () => {
+    expect(
+      kimiTodoWriteEntries(JSON.stringify({ entries: [{ content: "A" }] }))
+    ).toBeNull()
+    expect(
+      kimiTodoWriteEntries(JSON.stringify({ plan: [{ step: "B" }] }))
+    ).toBeNull()
+    expect(
+      kimiTodoWriteEntries(
+        JSON.stringify({ todos: [{ name: "X", status: "pending" }] })
+      )
+    ).toBeNull()
+    expect(
+      kimiTodoWriteEntries(JSON.stringify({ todos: [{ title: "X" }] }))
+    ).toBeNull()
+  })
+
+  it("rejects unknown statuses and whitespace-only titles", () => {
+    expect(
+      kimiTodoWriteEntries(
+        JSON.stringify({ todos: [{ title: "X", status: "weird" }] })
+      )
+    ).toBeNull()
+    expect(
+      kimiTodoWriteEntries(
+        JSON.stringify({ todos: [{ title: "   ", status: "pending" }] })
+      )
+    ).toBeNull()
+  })
+
+  it("returns null for non-JSON, primitive, and empty input", () => {
+    expect(kimiTodoWriteEntries("not json")).toBeNull()
+    expect(kimiTodoWriteEntries("5")).toBeNull()
+    expect(kimiTodoWriteEntries('"a string"')).toBeNull()
+    expect(kimiTodoWriteEntries("")).toBeNull()
+    expect(kimiTodoWriteEntries(null)).toBeNull()
+    expect(kimiTodoWriteEntries(undefined)).toBeNull()
+  })
+
+  it("accepts status case-insensitively (matching the live wire defensively)", () => {
+    expect(
+      kimiTodoWriteEntries(
+        JSON.stringify({ todos: [{ title: "X", status: "IN_PROGRESS" }] })
+      )
+    ).toEqual([{ content: "X", status: "in_progress", priority: "medium" }])
   })
 })
 

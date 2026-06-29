@@ -36,11 +36,20 @@ import {
 import { useEffect, type ReactNode } from "react"
 
 import {
+  buildStreamingTurnsFromLiveMessage,
   ConversationRuntimeProvider,
   useConversationRuntime,
 } from "@/contexts/conversation-runtime-context"
-import type { LiveMessage } from "@/contexts/acp-connections-context"
-import type { DbConversationDetail, MessageTurn } from "@/lib/types"
+import type {
+  LiveContentBlock,
+  LiveMessage,
+  ToolCallInfo,
+} from "@/contexts/acp-connections-context"
+import type {
+  ContentBlock,
+  DbConversationDetail,
+  MessageTurn,
+} from "@/lib/types"
 
 vi.mock("@/lib/api", () => ({
   getFolderConversation: vi.fn(),
@@ -1707,4 +1716,193 @@ describe("ConversationRuntimeProvider viewer user-turn synthesis", () => {
     expect(ids).toContain("live-99-lm-N")
     expect(ids).not.toContain("a-M")
   })
+})
+
+describe("buildStreamingTurnsFromLiveMessage — Kimi TodoList suppression", () => {
+  function kimiToolCall(
+    rawInput: string | null,
+    overrides: Partial<ToolCallInfo> = {}
+  ): LiveContentBlock {
+    return {
+      type: "tool_call",
+      info: {
+        tool_call_id: "kc-todo-1",
+        // The live ACP title is the localized description, never "TodoList".
+        title: "Updating todo list",
+        kind: "other",
+        status: "in_progress",
+        content: null,
+        raw_input: rawInput,
+        raw_output_chunks: [],
+        raw_output_total_bytes: 0,
+        locations: null,
+        meta: null,
+        images: [],
+        ...overrides,
+      },
+    }
+  }
+
+  const write = (todos: Array<{ title: string; status: string }>): string =>
+    JSON.stringify({ todos })
+
+  const planBlock = (
+    entries: Array<{ content: string; status: string; priority: string }>
+  ): LiveContentBlock => ({ type: "plan", entries })
+
+  function buildBlocks(content: LiveContentBlock[]): ContentBlock[] {
+    const result = buildStreamingTurnsFromLiveMessage(1, {
+      id: "lm-1",
+      role: "assistant",
+      startedAt: 0,
+      content,
+    })
+    return result.turns.flatMap((t) => t.blocks)
+  }
+
+  const planEntries = (b: ContentBlock[]) => b.filter((x) => x.type === "plan")
+  const toolUses = (b: ContentBlock[]) => b.filter((x) => x.type === "tool_use")
+  const toolResults = (b: ContentBlock[]) =>
+    b.filter((x) => x.type === "tool_result")
+
+  it("renders a PlanCard from the call's own todos before Kimi's plan arrives (no tool card, no flash)", () => {
+    const blocks = buildBlocks([
+      kimiToolCall(
+        write([
+          { title: "A", status: "in_progress" },
+          { title: "B", status: "pending" },
+        ])
+      ),
+    ])
+
+    expect(planEntries(blocks)).toHaveLength(1)
+    expect(toolUses(blocks)).toHaveLength(0)
+    expect(toolResults(blocks)).toHaveLength(0)
+    const plan = planEntries(blocks)[0]
+    if (plan.type !== "plan") throw new Error("expected plan")
+    expect(plan.entries).toEqual([
+      { content: "A", status: "in_progress", priority: "medium" },
+      { content: "B", status: "pending", priority: "medium" },
+    ])
+  })
+
+  it("drops the redundant tool card once Kimi's own plan block is present (single PlanCard)", () => {
+    const blocks = buildBlocks([
+      kimiToolCall(write([{ title: "A", status: "pending" }])),
+      planBlock([{ content: "A", status: "pending", priority: "medium" }]),
+    ])
+
+    expect(planEntries(blocks)).toHaveLength(1)
+    expect(toolUses(blocks)).toHaveLength(0)
+  })
+
+  it("shows the latest write's content, not an earlier write's stale plan block", () => {
+    // Pre-plan window of a SECOND write: tool_call(write2 = {A,B}) is present,
+    // but the reducer's collapsed plan block still reflects write1 ({A}) until
+    // write2's own `plan` update lands. The single PlanCard must reflect write2.
+    const blocks = buildBlocks([
+      kimiToolCall(write([{ title: "A", status: "pending" }]), {
+        tool_call_id: "w1",
+        status: "completed",
+      }),
+      kimiToolCall(
+        write([
+          { title: "A", status: "pending" },
+          { title: "B", status: "pending" },
+        ]),
+        { tool_call_id: "w2" }
+      ),
+      // Stale collapsed plan: still write1's content only.
+      planBlock([{ content: "A", status: "pending", priority: "medium" }]),
+    ])
+
+    expect(toolUses(blocks)).toHaveLength(0)
+    const plans = planEntries(blocks)
+    expect(plans).toHaveLength(1)
+    const plan = plans[0]
+    if (plan.type !== "plan") throw new Error("expected plan")
+    expect(plan.entries).toEqual([
+      { content: "A", status: "pending", priority: "medium" },
+      { content: "B", status: "pending", priority: "medium" },
+    ])
+  })
+
+  it("leaves no tool_use or tool_result for a completed write (no orphan)", () => {
+    const blocks = buildBlocks([
+      kimiToolCall(write([{ title: "A", status: "done" }]), {
+        status: "completed",
+      }),
+      planBlock([{ content: "A", status: "completed", priority: "medium" }]),
+    ])
+
+    expect(toolUses(blocks)).toHaveLength(0)
+    expect(toolResults(blocks)).toHaveLength(0)
+    expect(planEntries(blocks)).toHaveLength(1)
+  })
+
+  it("suppresses every write across an add/remove/replace sequence, leaving one plan", () => {
+    const blocks = buildBlocks([
+      kimiToolCall(write([{ title: "A", status: "pending" }]), {
+        tool_call_id: "w1",
+        status: "completed",
+      }),
+      kimiToolCall(
+        write([
+          { title: "A", status: "pending" },
+          { title: "B", status: "pending" },
+        ]),
+        { tool_call_id: "w2", status: "completed" }
+      ),
+      // Final write replaces the list entirely (A removed, B kept).
+      kimiToolCall(write([{ title: "B", status: "in_progress" }]), {
+        tool_call_id: "w3",
+        status: "completed",
+      }),
+      planBlock([{ content: "B", status: "in_progress", priority: "medium" }]),
+    ])
+
+    expect(toolUses(blocks)).toHaveLength(0)
+    expect(planEntries(blocks)).toHaveLength(1)
+  })
+
+  it("does not suppress a coexisting non-Kimi tool (only the todo write is dropped)", () => {
+    const blocks = buildBlocks([
+      kimiToolCall('{"command":"ls"}', {
+        tool_call_id: "bash-1",
+        title: "Run ls",
+        kind: "execute",
+        status: "completed",
+      }),
+      kimiToolCall(write([{ title: "A", status: "pending" }]), {
+        tool_call_id: "kc-1",
+      }),
+      planBlock([{ content: "A", status: "pending", priority: "medium" }]),
+    ])
+
+    const uses = toolUses(blocks)
+    expect(uses).toHaveLength(1)
+    expect(uses[0].type === "tool_use" && uses[0].tool_use_id).toBe("bash-1")
+    expect(planEntries(blocks)).toHaveLength(1)
+  })
+
+  it.each([
+    ["entries array", JSON.stringify({ entries: [{ content: "A" }] })],
+    [
+      "non-title items",
+      JSON.stringify({ todos: [{ name: "A", status: "pending" }] }),
+    ],
+    ["read", "{}"],
+    ["clear", JSON.stringify({ todos: [] })],
+  ])(
+    "never suppresses a non-Kimi-write shape (%s), rendering it as a tool card",
+    (_label, rawInput) => {
+      const blocks = buildBlocks([
+        kimiToolCall(rawInput, { status: "completed" }),
+        planBlock([{ content: "Z", status: "pending", priority: "medium" }]),
+      ])
+
+      // The non-write call is not dropped — it renders through the tool path.
+      expect(toolUses(blocks)).toHaveLength(1)
+    }
+  )
 })

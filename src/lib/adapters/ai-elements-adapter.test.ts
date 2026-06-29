@@ -726,6 +726,89 @@ describe("adaptMessageTurn plan handling", () => {
 
     expect(adapted.content.every((p) => p.type !== "plan")).toBe(true)
   })
+
+  it("converts a persisted Kimi Code TodoList write (title/status shape) into a single plan part", () => {
+    const adapted = adaptMessageTurn(
+      {
+        id: "hist-kimi-plan",
+        role: "assistant",
+        timestamp: "2026-06-02T00:00:00.000Z",
+        blocks: [
+          {
+            type: "tool_use",
+            tool_use_id: "kc-todo-1",
+            tool_name: "TodoList",
+            input_preview: JSON.stringify({
+              todos: [
+                { status: "in_progress", title: "Confirm 401 behavior" },
+                { status: "pending", title: "Unify request.js" },
+                { status: "done", title: "Verify changes" },
+              ],
+            }),
+          },
+          {
+            type: "tool_result",
+            tool_use_id: "kc-todo-1",
+            output_preview: "Todo list updated.",
+            is_error: false,
+          },
+        ],
+      },
+      msgText,
+      false
+    )
+
+    expect(adapted.content.map((p) => p.type)).toEqual(["plan"])
+    expect(adapted.content.some((p) => p.type === "tool-result")).toBe(false)
+    const plan = adapted.content[0]
+    if (plan.type !== "plan") throw new Error("expected a plan part")
+    expect(plan.entries).toEqual([
+      {
+        content: "Confirm 401 behavior",
+        status: "in_progress",
+        priority: "medium",
+      },
+      { content: "Unify request.js", status: "pending", priority: "medium" },
+      { content: "Verify changes", status: "completed", priority: "medium" },
+    ])
+  })
+
+  it.each([
+    ["read", "{}"],
+    ["clear", JSON.stringify({ todos: [] })],
+  ])(
+    "keeps a persisted Kimi TodoList %s (no entries) as a tool card, not a plan part",
+    (_label, inputPreview) => {
+      const adapted = adaptMessageTurn(
+        {
+          id: "hist-kimi-noop",
+          role: "assistant",
+          timestamp: "2026-06-02T00:00:00.000Z",
+          blocks: [
+            {
+              type: "tool_use",
+              tool_use_id: "kc-todo-1",
+              tool_name: "TodoList",
+              input_preview: inputPreview,
+            },
+            {
+              type: "tool_result",
+              tool_use_id: "kc-todo-1",
+              output_preview: "Todo list (empty).",
+              is_error: false,
+            },
+          ],
+        },
+        msgText,
+        false
+      )
+
+      expect(adapted.content.every((p) => p.type !== "plan")).toBe(true)
+      // The non-write TodoList renders through the normal tool-card path
+      // (wrapped in a tool-group by groupConsecutiveToolCalls).
+      expect(adapted.content.some((p) => p.type === "tool-group")).toBe(true)
+    }
+  )
 })
 
 describe("adaptMessageTurn — image tool results", () => {
