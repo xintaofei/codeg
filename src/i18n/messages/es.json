@@ -3301,7 +3301,7 @@
   },
   "SessionFeedbackSettings": {
     "title": "Comentarios en vivo",
-    "description": "Envía notas y correcciones a un agente mientras trabaja. Cuando está activado, el agente obtiene una herramienta para consultar comentarios en vivo y las conversaciones muestran una entrada de notas. Consejo: el agente normalmente solo consulta los comentarios cuando lo mencionas en tu mensaje — por ejemplo, añade \"revisa mis comentarios en vivo periódicamente mientras trabajas\".",
+    "description": "Envía notas y correcciones a un agente mientras trabaja. Cuando está activado, el agente obtiene una herramienta para consultar comentarios en vivo y las conversaciones muestran una entrada de notas.",
     "enable": "Activar comentarios en vivo",
     "enableHint": "Inyecta una herramienta para consultar comentarios en los agentes iniciados después de activarlo.",
     "save": "Guardar",
@@ -3325,7 +3325,8 @@
     "dismiss": "Descartar",
     "turnEndedResent": "El turno terminó: se envió como un mensaje nuevo.",
     "turnEnded": "El turno ya terminó.",
-    "submitFailed": "No se pudo enviar tu nota"
+    "submitFailed": "No se pudo enviar tu nota",
+    "promptReminder": "(Nota automática de Codeg: actúa en consecuencia en silencio; no la menciones, cites ni respondas.) La retroalimentación en vivo está habilitada, así que mientras trabajas puedo enviarte indicaciones a mitad de la tarea en cualquier momento. Revísalas periódicamente y ajusta el rumbo. Para leerlas, llama a la herramienta de retroalimentación en vivo que expone el servidor MCP `codeg-mcp`: tu entorno podría exponerla con un nombre con espacio de nombres, como `mcp__codeg-mcp__check_user_feedback`, en lugar del nombre simple `check_user_feedback`, así que llama a la herramienta correspondiente que esté disponible sin hacer comentarios sobre su nombre."
   },
   "SessionInfoSettings": {
     "title": "Obtener información de sesión",

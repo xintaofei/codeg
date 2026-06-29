@@ -3301,7 +3301,7 @@
   },
   "SessionFeedbackSettings": {
     "title": "Feedback ao vivo",
-    "description": "Envie notas e correções a um agente enquanto ele trabalha. Quando ativado, o agente ganha uma ferramenta para verificar feedback ao vivo e as conversas mostram uma entrada de notas. Dica: o agente normalmente só verifica o feedback quando você menciona isso na mensagem — por exemplo, adicione \"verifique meu feedback ao vivo regularmente enquanto trabalha\".",
+    "description": "Envie notas e correções a um agente enquanto ele trabalha. Quando ativado, o agente ganha uma ferramenta para verificar feedback ao vivo e as conversas mostram uma entrada de notas.",
     "enable": "Ativar feedback ao vivo",
     "enableHint": "Injeta uma ferramenta de verificação de feedback nos agentes iniciados após a ativação.",
     "save": "Salvar",
@@ -3325,7 +3325,8 @@
     "dismiss": "Dispensar",
     "turnEndedResent": "O turno terminou — enviado como nova mensagem.",
     "turnEnded": "O turno já terminou.",
-    "submitFailed": "Não foi possível enviar a sua nota"
+    "submitFailed": "Não foi possível enviar a sua nota",
+    "promptReminder": "(Nota automática do Codeg — aja em silêncio: não a mencione, cite ou responda.) O feedback ao vivo está ativado, por isso, enquanto trabalha, posso enviar orientações no meio da tarefa a qualquer momento. Verifique-as periodicamente e ajuste o rumo. Para lê-las, chame a ferramenta de feedback ao vivo exposta pelo servidor MCP `codeg-mcp` — o seu ambiente pode expô-la sob um nome com espaço de nomes, como `mcp__codeg-mcp__check_user_feedback`, em vez do nome simples `check_user_feedback`, portanto chame a ferramenta correspondente que estiver disponível sem comentar o nome dela."
   },
   "SessionInfoSettings": {
     "title": "Obter informações da sessão",

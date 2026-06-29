@@ -56,6 +56,9 @@ export interface UseSessionFeedback {
   notes: FeedbackItem[]
   /** Global feature flag — gates whether the "+" menu entry is shown at all. */
   featureEnabled: boolean
+  /** Whether THIS agent actually has the `check_user_feedback` tool (fixed at
+   *  launch). True only once the snapshot confirms it. */
+  toolAvailable: boolean
   /** Whether a note can be sent right now (entry is enabled vs. greyed out). */
   canSubmit: boolean
   /** Whether to render the read-only notes list above the composer. */
@@ -257,6 +260,7 @@ export function useSessionFeedback({
     () => ({
       notes,
       featureEnabled: enabled,
+      toolAvailable,
       canSubmit,
       showList,
       submitting,
@@ -268,6 +272,7 @@ export function useSessionFeedback({
     [
       notes,
       enabled,
+      toolAvailable,
       canSubmit,
       showList,
       submitting,

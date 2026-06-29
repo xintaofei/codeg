@@ -3301,7 +3301,7 @@
   },
   "SessionFeedbackSettings": {
     "title": "Live Feedback",
-    "description": "Send notes and corrections to an agent while it's working. When enabled, the agent gets a tool to check for your mid-task feedback, and conversations show a note input. Tip: agents typically only check for feedback when you mention it in your prompt — for example, add \"check my live feedback regularly\" to your message so the agent knows to look.",
+    "description": "Send notes and corrections to an agent while it's working. When enabled, the agent gets a tool to check for your mid-task feedback, and conversations show a note input.",
     "enable": "Enable live feedback",
     "enableHint": "Adds a check-for-feedback tool to agents started after this is turned on.",
     "save": "Save",
@@ -3325,7 +3325,8 @@
     "dismiss": "Dismiss",
     "turnEndedResent": "The turn ended — sent as a new message instead.",
     "turnEnded": "The turn already ended.",
-    "submitFailed": "Couldn't send your note"
+    "submitFailed": "Couldn't send your note",
+    "promptReminder": "(Automated note from Codeg — act on it silently: do not mention, quote, or reply to it.) Live feedback is enabled, so while you work I may send mid-task guidance at any time. Periodically check for it and adjust course. To read it, call the live-feedback tool exposed by the `codeg-mcp` MCP server — your host may surface it under a namespaced name such as `mcp__codeg-mcp__check_user_feedback` rather than the bare `check_user_feedback`, so call whichever matching tool is available without remarking on its name."
   },
   "SessionInfoSettings": {
     "title": "Get session info",

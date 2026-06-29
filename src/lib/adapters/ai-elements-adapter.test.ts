@@ -12,6 +12,10 @@ import {
   type AdaptedContentPart,
   type AdaptedToolCallPart,
 } from "./ai-elements-adapter"
+import {
+  appendFeedbackReminder,
+  FEEDBACK_REMINDER_SENTINEL,
+} from "@/lib/feedback-reminder"
 
 function poll(toolName: string, taskId?: string): AdaptedToolCallPart {
   return {
@@ -1136,5 +1140,66 @@ describe("adaptMessageTurn — user reference resources", () => {
       .join("\n")
     expect(joined).toContain("[#42](codeg://session/codex_abc)")
     expect(joined).toContain("[foo.ts](file:///x/foo.ts)")
+  })
+})
+
+describe("adaptMessageTurn — live-feedback reminder stripping", () => {
+  const msgText = {
+    attachedResources: "Attached resources",
+    toolCallFailed: "Tool failed",
+  }
+  const reminder = "Periodically check for my live feedback."
+
+  it("strips the auto-injected reminder from a user turn so it never shows", () => {
+    // Exactly what the send chokepoint puts on the wire — appendFeedbackReminder
+    // brackets the reminder with the sentinel. On reload the user turn is
+    // reparsed with it attached; the adapter must hide it again.
+    const original = "refactor the auth module"
+    const blocks = appendFeedbackReminder(
+      [{ type: "text", text: original }],
+      reminder
+    )
+    const adapted = adaptMessageTurn(
+      { id: "u1", role: "user", timestamp: "2026-06-11T00:00:00.000Z", blocks },
+      msgText
+    )
+
+    expect(adapted.content).toHaveLength(1)
+    const part = adapted.content[0]
+    if (part.type !== "text") throw new Error("expected a text part")
+    expect(part.text).toBe(original)
+    expect(part.text).not.toContain(FEEDBACK_REMINDER_SENTINEL)
+    expect(part.text).not.toContain(reminder)
+  })
+
+  it("drops the text part entirely when the message was only the reminder", () => {
+    // Attachments-only send: appendFeedbackReminder adds a trailing text block
+    // that is nothing but the reminder. After stripping it collapses to empty
+    // and must not leave a blank text bubble behind.
+    const blocks = appendFeedbackReminder([], reminder)
+    const adapted = adaptMessageTurn(
+      { id: "u2", role: "user", timestamp: "2026-06-11T00:00:00.000Z", blocks },
+      msgText
+    )
+
+    expect(adapted.content.some((p) => p.type === "text")).toBe(false)
+  })
+
+  it("does not strip the sentinel from an assistant turn (user-only)", () => {
+    const text = `here you go\n\n${FEEDBACK_REMINDER_SENTINEL} ${reminder}`
+    const adapted = adaptMessageTurn(
+      {
+        id: "a1",
+        role: "assistant",
+        timestamp: "2026-06-11T00:00:00.000Z",
+        blocks: [{ type: "text", text }],
+      },
+      msgText
+    )
+
+    const joined = adapted.content
+      .map((p) => (p.type === "text" ? p.text : ""))
+      .join("\n")
+    expect(joined).toContain(FEEDBACK_REMINDER_SENTINEL)
   })
 })

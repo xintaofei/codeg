@@ -3301,7 +3301,7 @@
   },
   "SessionFeedbackSettings": {
     "title": "Live-Feedback",
-    "description": "Sende dem Agenten Hinweise und Korrekturen, während er arbeitet. Wenn aktiviert, erhält der Agent ein Werkzeug zum Abrufen von Live-Feedback und Unterhaltungen zeigen eine Notizeingabe. Tipp: Der Agent prüft Feedback normalerweise nur, wenn du es in deiner Nachricht erwähnst — füge z. B. «prüfe regelmäßig mein Live-Feedback während der Arbeit» hinzu.",
+    "description": "Sende dem Agenten Hinweise und Korrekturen, während er arbeitet. Wenn aktiviert, erhält der Agent ein Werkzeug zum Abrufen von Live-Feedback und Unterhaltungen zeigen eine Notizeingabe.",
     "enable": "Live-Feedback aktivieren",
     "enableHint": "Fügt Agenten, die nach dem Aktivieren gestartet werden, ein Werkzeug zum Abrufen von Feedback hinzu.",
     "save": "Speichern",
@@ -3325,7 +3325,8 @@
     "dismiss": "Verwerfen",
     "turnEndedResent": "Die Runde endete – stattdessen als neue Nachricht gesendet.",
     "turnEnded": "Die Runde ist bereits beendet.",
-    "submitFailed": "Deine Notiz konnte nicht gesendet werden"
+    "submitFailed": "Deine Notiz konnte nicht gesendet werden",
+    "promptReminder": "(Automatischer Hinweis von Codeg – handle still danach: erwähne, zitiere oder beantworte ihn nicht.) Live-Feedback ist aktiviert, daher kann ich dir während der Arbeit jederzeit Hinweise mitten in der Aufgabe senden. Prüfe regelmäßig darauf und passe deinen Kurs an. Um es zu lesen, rufe das Live-Feedback-Tool auf, das der MCP-Server `codeg-mcp` bereitstellt – deine Umgebung stellt es möglicherweise unter einem Namespace-Namen wie `mcp__codeg-mcp__check_user_feedback` statt unter dem bloßen `check_user_feedback` bereit, rufe also das jeweils verfügbare passende Tool auf, ohne seinen Namen zu kommentieren."
   },
   "SessionInfoSettings": {
     "title": "Sitzungsinformationen abrufen",

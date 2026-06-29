@@ -3301,7 +3301,7 @@
   },
   "SessionFeedbackSettings": {
     "title": "Retour en direct",
-    "description": "Envoyez des notes et corrections à un agent pendant qu'il travaille. Une fois activé, l'agent dispose d'un outil pour consulter les retours en direct et les conversations affichent une entrée de notes. Astuce : l'agent ne consulte généralement les retours que lorsque vous le mentionnez dans votre message — par exemple, ajoutez « vérifie régulièrement mes retours en direct pendant le travail ».",
+    "description": "Envoyez des notes et corrections à un agent pendant qu'il travaille. Une fois activé, l'agent dispose d'un outil pour consulter les retours en direct et les conversations affichent une entrée de notes.",
     "enable": "Activer le retour en direct",
     "enableHint": "Ajoute un outil de consultation des retours aux agents démarrés après l'activation.",
     "save": "Enregistrer",
@@ -3325,7 +3325,8 @@
     "dismiss": "Ignorer",
     "turnEndedResent": "Le tour est terminé : envoyé comme nouveau message.",
     "turnEnded": "Le tour est déjà terminé.",
-    "submitFailed": "Impossible d'envoyer votre note"
+    "submitFailed": "Impossible d'envoyer votre note",
+    "promptReminder": "(Note automatique de Codeg — agis en conséquence en silence : ne la mentionne pas, ne la cite pas et n'y réponds pas.) Le retour en direct est activé, donc pendant que tu travailles je peux envoyer des indications en cours de tâche à tout moment. Vérifie-les régulièrement et ajuste ta trajectoire. Pour les lire, appelle l'outil de retour en direct exposé par le serveur MCP `codeg-mcp` — ton environnement peut l'exposer sous un nom avec espace de noms tel que `mcp__codeg-mcp__check_user_feedback` plutôt que le nom brut `check_user_feedback`, alors appelle l'outil correspondant disponible sans faire de remarque sur son nom."
   },
   "SessionInfoSettings": {
     "title": "Obtenir les infos de session",
