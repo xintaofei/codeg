@@ -106,6 +106,54 @@ describe("SessionDetailsDialog", () => {
     expect(mockGet).not.toHaveBeenCalled()
   })
 
+  it("falls back to completed summary timestamps when stats duration is missing", () => {
+    const completedSummary = summary({
+      status: "completed",
+      created_at: "2026-06-10T10:00:00.000Z",
+      updated_at: "2026-06-10T10:02:30.000Z",
+    })
+    const statsWithoutDuration: SessionStats = {
+      ...fullStats,
+      total_duration_ms: 0,
+    }
+
+    const { getByText, queryByText } = renderWithIntl(
+      <SessionDetailsDialog
+        open
+        onOpenChange={() => {}}
+        summary={completedSummary}
+        stats={statsWithoutDuration}
+      />
+    )
+
+    expect(getByText("2.5m")).toBeTruthy()
+    expect(queryByText("0ms")).toBeNull()
+  })
+
+  it("does not derive an in-progress duration from timestamps", () => {
+    const liveSummary = summary({
+      status: "in_progress",
+      created_at: "2026-06-10T10:00:00.000Z",
+      updated_at: "2026-06-10T10:02:30.000Z",
+    })
+    const statsWithoutDuration: SessionStats = {
+      ...fullStats,
+      total_duration_ms: 0,
+    }
+
+    const { queryByText } = renderWithIntl(
+      <SessionDetailsDialog
+        open
+        onOpenChange={() => {}}
+        summary={liveSummary}
+        stats={statsWithoutDuration}
+      />
+    )
+
+    expect(queryByText("2.5m")).toBeNull()
+    expect(queryByText("0ms")).toBeNull()
+  })
+
   it("shows the title, agent, and status in the identity header", () => {
     const { getByText } = renderWithIntl(
       <SessionDetailsDialog
