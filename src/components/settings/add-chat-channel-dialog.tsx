@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import {
   Dialog,
   DialogContent,
@@ -46,6 +47,7 @@ export function AddChatChannelDialog({
   const [chatId, setChatId] = useState("")
   const [appId, setAppId] = useState("")
   const [baseUrl, setBaseUrl] = useState("https://ilinkai.weixin.qq.com")
+  const [allowedSenders, setAllowedSenders] = useState("")
   const [dailyReportEnabled, setDailyReportEnabled] = useState(false)
   const [dailyReportTime, setDailyReportTime] = useState("18:00")
 
@@ -56,6 +58,7 @@ export function AddChatChannelDialog({
     setChatId("")
     setAppId("")
     setBaseUrl("https://ilinkai.weixin.qq.com")
+    setAllowedSenders("")
     setDailyReportEnabled(false)
     setDailyReportTime("18:00")
     setError(null)
@@ -86,12 +89,22 @@ export function AddChatChannelDialog({
     setLoading(true)
     setError(null)
     try {
-      const configJson =
+      const allowedSendersArr = allowedSenders
+        .split("\n")
+        .map((s: string) => s.trim())
+        .filter(Boolean)
+
+      const baseConfig =
         channelType === "weixin"
-          ? JSON.stringify({ base_url: baseUrl })
+          ? { base_url: baseUrl }
           : channelType === "lark"
-            ? JSON.stringify({ app_id: appId, chat_id: chatId })
-            : JSON.stringify({ chat_id: chatId })
+            ? { app_id: appId, chat_id: chatId }
+            : { chat_id: chatId }
+
+      const configJson = JSON.stringify({
+        ...baseConfig,
+        allowed_senders: allowedSendersArr,
+      })
 
       const channel = await createChatChannel({
         name: name.trim(),
@@ -121,6 +134,7 @@ export function AddChatChannelDialog({
     channelType,
     appId,
     baseUrl,
+    allowedSenders,
     dailyReportEnabled,
     dailyReportTime,
     handleOpenChange,
@@ -207,6 +221,22 @@ export function AddChatChannelDialog({
               {t("weixinScanDescription")}
             </p>
           )}
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium">Allowed Sender IDs</label>
+            <Textarea
+              value={allowedSenders}
+              onChange={(e) => setAllowedSenders(e.target.value)}
+              placeholder={"123456789\n987654321"}
+              rows={3}
+              className="font-mono text-xs"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              One sender ID per line. Only these senders may drive agents via
+              this channel. Leave empty to block everyone (fail-closed). A
+              blocked sender is told their own ID so you can add it here.
+            </p>
+          </div>
 
           <div className="flex items-center justify-between">
             <label className="text-xs font-medium">{t("dailyReport")}</label>

@@ -5,6 +5,7 @@ use sea_orm::DatabaseConnection;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
+use super::authz;
 use super::command_handlers;
 use super::i18n::{self, Lang};
 use super::manager::ChatChannelManager;
@@ -12,7 +13,9 @@ use super::session_bridge::SessionBridge;
 use super::session_commands;
 use super::types::IncomingCommand;
 use crate::acp::manager::ConnectionManager;
-use crate::db::service::{app_metadata_service, chat_channel_message_log_service};
+use crate::db::service::{
+    app_metadata_service, chat_channel_message_log_service, chat_channel_service,
+};
 use crate::web::event_bridge::EventEmitter;
 
 const COMMAND_PREFIX_KEY: &str = "chat_command_prefix";
@@ -68,7 +71,9 @@ pub fn spawn_command_dispatcher(
             let text = cmd.command_text.trim();
             tracing::info!(
                 "[ChatChannel] received command from channel={} sender={}: {:?}",
-                cmd.channel_id, cmd.sender_id, text
+                cmd.channel_id,
+                cmd.sender_id,
+                text
             );
 
             // Log inbound command
@@ -112,7 +117,8 @@ pub fn spawn_command_dispatcher(
                 Err(e) => {
                     tracing::error!(
                         "[ChatChannel] failed to send response for {:?} to channel {}: {e}",
-                        text, cmd.channel_id
+                        text,
+                        cmd.channel_id
                     );
                     ("failed", Some(e.to_string()))
                 }
@@ -145,6 +151,29 @@ async fn dispatch_command(
     sender_id: &str,
     lang: Lang,
 ) -> super::types::RichMessage {
+    // ── Authorization gate (fail-closed) ──
+    // Chat commands spawn and drive agents with the host's full privileges, so
+    // every inbound message must come from an allow-listed sender. An empty or
+    // unset allowlist authorizes no one. We reply with the sender's own id (and
+    // run no command) so the operator can add it from the channel settings.
+    let authorized = match chat_channel_service::get_by_id(db, channel_id).await {
+        Ok(Some(ch)) => authz::is_sender_allowed(&ch.config_json, sender_id),
+        Ok(None) => false,
+        Err(e) => {
+            tracing::error!(
+                "[ChatChannel] authz lookup failed for channel={channel_id}: {e}; denying"
+            );
+            false
+        }
+    };
+    if !authorized {
+        tracing::warn!(
+            "[ChatChannel] BLOCKED unauthorized sender={sender_id} on channel={channel_id}: {text:?}"
+        );
+        return super::types::RichMessage::error(i18n::unauthorized_sender_body(lang, sender_id))
+            .with_title(i18n::unauthorized_sender_title(lang));
+    }
+
     // Strip prefix; if text doesn't start with it, try as follow-up
     let without_prefix = match text.strip_prefix(prefix) {
         Some(rest) => rest,

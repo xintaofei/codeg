@@ -816,6 +816,58 @@ pub fn unknown_command_title(lang: Lang) -> &'static str {
     }
 }
 
+pub fn unauthorized_sender_title(lang: Lang) -> &'static str {
+    match lang {
+        Lang::ZhCn => "未授权",
+        Lang::ZhTw => "未授權",
+        Lang::Ja => "未承認",
+        Lang::Ko => "권한 없음",
+        Lang::Es => "No autorizado",
+        Lang::De => "Nicht autorisiert",
+        Lang::Fr => "Non autorisé",
+        Lang::Pt => "Não autorizado",
+        Lang::Ar => "غير مصرح",
+        Lang::En => "Unauthorized",
+    }
+}
+
+/// Reply sent to a sender who is not on the channel allowlist. Includes their own
+/// sender id so the operator can add it to the channel's allowed senders.
+pub fn unauthorized_sender_body(lang: Lang, sender_id: &str) -> String {
+    match lang {
+        Lang::ZhCn => format!(
+            "你无权使用此机器人。你的发送者 ID 是 `{sender_id}`。请管理员将其加入该频道的允许发送者列表。"
+        ),
+        Lang::ZhTw => format!(
+            "你無權使用此機器人。你的發送者 ID 是 `{sender_id}`。請管理員將其加入該頻道的允許發送者清單。"
+        ),
+        Lang::Ja => format!(
+            "このボットを使用する権限がありません。あなたの送信者 ID は `{sender_id}` です。管理者にチャンネルの許可リストへの追加を依頼してください。"
+        ),
+        Lang::Ko => format!(
+            "이 봇을 사용할 권한이 없습니다. 발신자 ID는 `{sender_id}` 입니다. 관리자에게 채널 허용 목록에 추가를 요청하세요."
+        ),
+        Lang::Es => format!(
+            "No tienes autorización para usar este bot. Tu ID de remitente es `{sender_id}`. Pide al administrador que lo añada a los remitentes permitidos del canal."
+        ),
+        Lang::De => format!(
+            "Du bist nicht berechtigt, diesen Bot zu nutzen. Deine Sender-ID ist `{sender_id}`. Bitte den Administrator, sie zur Liste der erlaubten Sender des Kanals hinzuzufügen."
+        ),
+        Lang::Fr => format!(
+            "Vous n'êtes pas autorisé à utiliser ce bot. Votre identifiant d'expéditeur est `{sender_id}`. Demandez à l'administrateur de l'ajouter aux expéditeurs autorisés du canal."
+        ),
+        Lang::Pt => format!(
+            "Você não tem autorização para usar este bot. Seu ID de remetente é `{sender_id}`. Peça ao administrador para adicioná-lo aos remetentes permitidos do canal."
+        ),
+        Lang::Ar => format!(
+            "غير مصرح لك باستخدام هذا البوت. معرّف المرسل الخاص بك هو `{sender_id}`. اطلب من المسؤول إضافته إلى قائمة المرسلين المسموح لهم في القناة."
+        ),
+        Lang::En => format!(
+            "You are not authorized to use this bot. Your sender ID is `{sender_id}`. Ask the administrator to add it to this channel's allowed senders."
+        ),
+    }
+}
+
 // ── Session command messages ──
 
 // Folder (/folder)
