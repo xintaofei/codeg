@@ -74,3 +74,26 @@ describe("denormalizeSnapshot — config staleness", () => {
     expect(patch.configStaleKind).toBeNull()
   })
 })
+
+describe("denormalizeSnapshot — last_error", () => {
+  it("carries last_error.message into the patch", () => {
+    const patch = denormalizeSnapshot(
+      baseSnapshot({
+        last_error: {
+          message: " ACP protocol error: Forbidden ",
+          code: "forbidden",
+        },
+      })
+    )
+    expect(patch.lastError).toBe("ACP protocol error: Forbidden")
+    expect(patch.status).toBe("connected")
+  })
+
+  it("defaults lastError to null when the field is absent", () => {
+    const snap = baseSnapshot()
+    delete (snap as { last_error?: unknown }).last_error
+    const patch = denormalizeSnapshot(snap)
+    expect(patch.lastError).toBeNull()
+    expect(patch.status).toBe("connected")
+  })
+})

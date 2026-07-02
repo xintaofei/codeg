@@ -1409,6 +1409,12 @@ export interface FeedbackItem {
   delivered_at?: string | null
 }
 
+/** Snapshot of the most recent ACP runtime error. */
+export interface SessionLastError {
+  message: string
+  code?: string | null
+}
+
 export interface LiveSessionSnapshot {
   connection_id: string
   conversation_id: number | null
@@ -1450,6 +1456,8 @@ export interface LiveSessionSnapshot {
   config_stale?: boolean
   /** Which settings surface drifted; present only while `config_stale`. */
   config_stale_kind?: ConfigStaleKind | null
+  /** Latest agent/runtime error recoverable after reconnect. */
+  last_error?: SessionLastError | null
   event_seq: number
 }
 

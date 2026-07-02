@@ -124,6 +124,22 @@ beforeEach(() => {
   h.denormalizeSnapshot.mockReset()
   h.denormalizeSnapshot.mockReturnValue({
     connectionId: "owner-conn",
+    status: "connected",
+    sessionId: null,
+    modes: null,
+    configOptions: null,
+    availableCommands: null,
+    usage: null,
+    liveMessage: null,
+    pendingPermission: null,
+    pendingAskQuestion: null,
+    pendingUserMessage: null,
+    promptCapabilities: null,
+    selectorsReady: false,
+    supportsFork: false,
+    configStale: false,
+    configStaleKind: null,
+    lastError: null,
     eventSeq: 0,
     activeDelegations: [],
   })
@@ -486,6 +502,7 @@ describe("AcpConnectionsProvider permission request details", () => {
       supportsFork: false,
       configStale: false,
       configStaleKind: null,
+      lastError: null,
       eventSeq: 5,
       activeDelegations: [],
     })
