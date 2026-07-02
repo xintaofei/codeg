@@ -105,6 +105,27 @@ describe("use-open-file-tabs-watch external-change coverage", () => {
   })
 })
 
+describe("file-workspace-panel routes active-tab openers by tab folder", () => {
+  const panelSource = readFileSync(
+    resolve(process.cwd(), "src/components/files/file-workspace-panel.tsx"),
+    "utf8"
+  )
+
+  it("diff-overview rows open files in the overview tab's folder", () => {
+    // A background-folder overview must never open its rows through the
+    // active workspace folder.
+    expect(panelSource).toMatch(
+      /openFilePreview\(path, \{ folderId: overviewFolderId \}\)/
+    )
+  })
+
+  it("markdown preview links resolve within the active tab's folder", () => {
+    expect(panelSource).toMatch(
+      /openFilePreview\(target, \{\s*folderId: activeFileTab\.folderId,?\s*\}\)/
+    )
+  })
+})
+
 describe("workspace-context stale-aware save guard", () => {
   it("verifies a stale dirty tab against disk inside saveFileTab", () => {
     // Blocker #18: every write path funnels through saveFileTab, so the

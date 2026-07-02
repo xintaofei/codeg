@@ -2417,13 +2417,17 @@ describe("file tabs decoupled from the active folder", () => {
 })
 
 function ConflictProbe() {
-  const { externalConflict } = useWorkspaceExternalConflict()
+  const { externalConflict, dismissExternalConflict } =
+    useWorkspaceExternalConflict()
   return (
-    <output data-testid="conflict-head">
-      {externalConflict
-        ? `${externalConflict.folderId}:${externalConflict.path}`
-        : "none"}
-    </output>
+    <div>
+      <output data-testid="conflict-head">
+        {externalConflict
+          ? `${externalConflict.folderId}:${externalConflict.path}`
+          : "none"}
+      </output>
+      <button onClick={dismissExternalConflict}>dismiss-conflict</button>
+    </div>
   )
 }
 
@@ -2722,5 +2726,54 @@ describe("stale-aware save guard (all write paths funnel through saveFileTab)", 
     expect(tabA?.isDirty).toBe(false)
     expect(tabA?.stale).toBe(false)
     expect(screen.getByTestId("conflict-head")).toHaveTextContent("none")
+  })
+
+  it("re-surfaces the conflict when the user saves again after dismissing the dialog", async () => {
+    mockedApi.readFileForEdit
+      .mockResolvedValueOnce({
+        path: "a.ts",
+        content: "v1",
+        etag: "e1",
+        mtime_ms: 1,
+        readonly: false,
+        line_ending: "lf",
+      })
+      .mockResolvedValue({
+        path: "a.ts",
+        content: "disk-v2",
+        etag: "e-div",
+        mtime_ms: 2,
+        readonly: false,
+        line_ending: "lf",
+      })
+    renderGuard()
+
+    await act(async () => {
+      screen.getByText("open-a-f1").click()
+    })
+    await act(async () => {
+      screen.getByText("edit").click()
+    })
+    await act(async () => {
+      screen.getByText("stale-a-f1").click()
+    })
+    await act(async () => {
+      screen.getByText("save").click()
+    })
+    expect(screen.getByTestId("conflict-head")).toHaveTextContent("1:a.ts")
+
+    // User closes the dialog without resolving.
+    await act(async () => {
+      screen.getByText("dismiss-conflict").click()
+    })
+    expect(screen.getByTestId("conflict-head")).toHaveTextContent("none")
+
+    // Saving again is still refused (disk unchanged, still diverged) —
+    // and the dialog MUST come back: a silent no-op would strand the tab.
+    await act(async () => {
+      screen.getByText("save").click()
+    })
+    expect(mockedApi.saveFileContent).not.toHaveBeenCalled()
+    expect(screen.getByTestId("conflict-head")).toHaveTextContent("1:a.ts")
   })
 })

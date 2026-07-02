@@ -1213,24 +1213,30 @@ pub async fn start_workspace_state_stream_core(
         }
     }
 
-    let (should_cleanup_new_stream, start_snapshot) = {
+    let (should_cleanup_new_stream, start_snapshot, lost_race_upgrade) = {
         let mut streams = WORKSPACE_STREAMS.lock().map_err(|_| {
             AppCommandError::task_execution_failed("Failed to lock workspace stream registry")
         })?;
 
         if let Some(entry) = streams.get_mut(&key) {
             // Lost an insert race. Fold this subscription into the winner —
-            // including its full-subscriber count. The winner may have been
-            // seeded paths-only; scans this call already performed are
-            // simply discarded (rare race, correctness over reuse).
+            // including its full-subscriber count. If the winner was seeded
+            // paths-only and WE are its first full subscriber, the same
+            // upgrade contract as the fast path applies: refresh tree/git
+            // (outside the lock, below) so this response carries fresh
+            // snapshots instead of the winner's empty paths-only seed.
             entry.ref_count += 1;
-            if wants_tree_git {
-                entry.full_subscribers.fetch_add(1, Ordering::AcqRel);
-            }
+            let became_full = wants_tree_git
+                && entry.full_subscribers.fetch_add(1, Ordering::AcqRel) == 0;
+            let upgrade = if became_full {
+                Some((Arc::clone(&entry.state), entry.root_display.clone()))
+            } else {
+                None
+            };
             let snapshot = entry.state.lock().map_err(|_| {
                 AppCommandError::task_execution_failed("Failed to lock workspace state snapshot")
             })?;
-            (true, snapshot.snapshot(None))
+            (true, snapshot.snapshot(None), upgrade)
         } else {
             let snapshot = state
                 .lock()
@@ -1252,7 +1258,7 @@ pub async fn start_workspace_state_stream_core(
                     state: Arc::clone(&state),
                 },
             );
-            (false, snapshot)
+            (false, snapshot, None)
         }
     };
 
@@ -1263,6 +1269,18 @@ pub async fn start_workspace_state_stream_core(
         if let Some(created_task) = task.take() {
             created_task.abort();
         }
+    }
+
+    if let Some((winner_state, winner_display)) = lost_race_upgrade {
+        refresh_tree_git_snapshots(&winner_state, &emitter, &winner_display, &root_canonical)
+            .await;
+        let snapshot = winner_state
+            .lock()
+            .map_err(|_| {
+                AppCommandError::task_execution_failed("Failed to lock workspace state snapshot")
+            })?
+            .snapshot(None);
+        return Ok(snapshot);
     }
 
     Ok(start_snapshot)
@@ -1599,6 +1617,41 @@ mod tests {
             event.payload.as_slice(),
             [WorkspaceDelta::Meta { .. }]
         ));
+    }
+
+    #[tokio::test]
+    async fn start_stream_paths_then_full_returns_freshly_scanned_tree() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.txt"), b"hello").expect("write file");
+        let root = dir.path().to_string_lossy().to_string();
+
+        // Paths-only cold start: seeding scans are skipped entirely.
+        let paths_snapshot =
+            start_workspace_state_stream_core(test_emitter(), root.clone(), false)
+                .await
+                .expect("paths start");
+        assert!(
+            paths_snapshot.tree_snapshot.unwrap_or_default().is_empty(),
+            "paths-only seed must not scan the tree"
+        );
+
+        // First full subscriber: the upgrade contract guarantees a freshly
+        // scanned tree in the start response (not the empty paths seed).
+        let full_snapshot =
+            start_workspace_state_stream_core(test_emitter(), root.clone(), true)
+                .await
+                .expect("full start");
+        assert!(
+            !full_snapshot.tree_snapshot.unwrap_or_default().is_empty(),
+            "first full subscriber must receive a refreshed tree snapshot"
+        );
+
+        stop_workspace_state_stream_core(root.clone(), true)
+            .await
+            .expect("stop full");
+        stop_workspace_state_stream_core(root, false)
+            .await
+            .expect("stop paths");
     }
 
     #[test]

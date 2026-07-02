@@ -1749,7 +1749,11 @@ export function FileWorkspacePanel() {
             badge={badge}
             description={description}
             onOpenDiff={handleOpenDiff}
-            openFilePreview={openFilePreview}
+            openFilePreview={(path) =>
+              // Rows belong to the overview tab's folder — never the
+              // active workspace folder.
+              openFilePreview(path, { folderId: overviewFolderId })
+            }
           />
         )}
       </div>
@@ -1849,7 +1853,12 @@ export function FileWorkspacePanel() {
                           const target = clean
                             .replace(/^\/+/, "")
                             .replace(/\/\/+/g, "/")
-                          openFilePreview(target)
+                          // The link lives in the ACTIVE TAB's document —
+                          // resolve within that tab's folder, not the
+                          // active workspace folder.
+                          void openFilePreview(target, {
+                            folderId: activeFileTab.folderId,
+                          })
                         }}
                       >
                         {children}

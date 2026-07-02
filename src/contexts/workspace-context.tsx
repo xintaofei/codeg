@@ -1794,14 +1794,20 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
 
   // Queue a divergence for the conflict dialog. Deduped two ways: a
   // signature already announced for this folder+path is dropped entirely
-  // (no flicker on repeated events); a NEW signature for an already-queued
-  // folder+path replaces that entry in place (disk moved again while the
-  // prompt waited) instead of queueing a second prompt for the same file.
+  // (no flicker on repeated watcher events); a NEW signature for an
+  // already-queued folder+path replaces that entry in place (disk moved
+  // again while the prompt waited) instead of queueing a second prompt.
+  //
+  // `force` bypasses the shown-signature dedup: an explicit USER action
+  // (a refused save) must re-surface the dialog even when the same
+  // divergence was announced before and dismissed/compared — otherwise
+  // the save silently no-ops with no recovery UI. Watcher-driven
+  // announcements never force.
   const enqueueExternalConflict = useCallback(
-    (conflict: WorkspaceExternalConflict) => {
+    (conflict: WorkspaceExternalConflict, options?: { force?: boolean }) => {
       const key = conflictKey(conflict.folderId, conflict.path)
       const shown = conflictSignatureByKeyRef.current.get(key)
-      if (shown === conflict.signature) return
+      if (!options?.force && shown === conflict.signature) return
       conflictSignatureByKeyRef.current.set(key, conflict.signature)
       setExternalConflictQueue((prev) => {
         const idx = prev.findIndex(
@@ -1959,13 +1965,19 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         try {
           const latest = await readFileForEdit(folderPath, tab.path)
           if ((latest.etag ?? null) !== (tab.etag ?? null)) {
-            enqueueExternalConflict({
-              folderId: tab.folderId,
-              path: tab.path,
-              diskContent: latest.content,
-              unsavedContent: tab.content,
-              signature: latest.etag ?? "",
-            })
+            // Forced: the user just asked to save and the save is being
+            // refused — the dialog must re-appear even if this divergence
+            // was announced before and dismissed/compared.
+            enqueueExternalConflict(
+              {
+                folderId: tab.folderId,
+                path: tab.path,
+                diskContent: latest.content,
+                unsavedContent: tab.content,
+                signature: latest.etag ?? "",
+              },
+              { force: true }
+            )
             return false
           }
         } catch (error) {
