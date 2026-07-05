@@ -125,6 +125,8 @@ Unterstützt derzeit **shadcn/ui**-Projekt-Scaffolding, mit einem Tab-basierten 
 
 Verbinden Sie Ihre bevorzugten Messaging-Apps — Telegram, Lark (Feishu), iLink (Weixin) und mehr — mit Ihren KI-Coding-Agenten. Erstellen Sie Aufgaben, senden Sie Folgenachrichten, genehmigen Sie Berechtigungen, setzen Sie Sitzungen fort und überwachen Sie die Aktivität direkt aus dem Chat — empfangen Sie Echtzeit-Antworten der Agenten mit Tool-Call-Details, Berechtigungsanfragen und Abschlusszusammenfassungen, ohne einen Browser zu öffnen.
 
+Telegram-Forum-Supergroups können außerdem den [Telegram topic mode](../chat-channels/telegram-topic-mode.md) verwenden, um jedes topic an eine eigene Codeg-Sitzung zu binden.
+
 ### Unterstützte Kanäle
 
 | Kanal          | Protokoll                   | Status     |

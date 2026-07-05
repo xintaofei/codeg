@@ -24,6 +24,7 @@ mod m20260611_000001_folder_is_chat;
 mod m20260612_000001_conversation_folder_kind;
 mod m20260621_000001_automation;
 mod m20260630_000001_conversation_parent_id_index;
+mod m20260703_000001_chat_channel_thread_binding;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -54,6 +55,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260612_000001_conversation_folder_kind::Migration),
             Box::new(m20260621_000001_automation::Migration),
             Box::new(m20260630_000001_conversation_parent_id_index::Migration),
+            Box::new(m20260703_000001_chat_channel_thread_binding::Migration),
         ]
     }
 }

@@ -2745,6 +2745,8 @@
     "nameRequired": "Channel name is required.",
     "tokenRequired": "Token is required.",
     "chatIdRequired": "Chat ID is required.",
+    "topicMode": "Topic group mode",
+    "topicModeHint": "Route Telegram forum topics as separate Codeg sessions. The bot must be in a forum supergroup and be allowed to manage topics.",
     "loadFailed": "Failed to load channels.",
     "saveFailed": "Failed to save changes.",
     "connectSuccess": "Channel connected.",

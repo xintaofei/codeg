@@ -2733,6 +2733,8 @@
     "nameRequired": "請輸入頻道名稱。",
     "tokenRequired": "請輸入 Token。",
     "chatIdRequired": "請輸入 Chat ID。",
+    "topicMode": "話題群模式",
+    "topicModeHint": "將 Telegram forum topics 路由為獨立 Codeg 對話。Bot 必須加入 forum supergroup，並擁有管理 topics 權限。",
     "loadFailed": "載入頻道失敗。",
     "saveFailed": "儲存失敗。",
     "connectSuccess": "頻道已連線。",

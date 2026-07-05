@@ -28,6 +28,7 @@ pub fn create_backend(
                 channel_id,
                 token,
                 cfg.chat_id,
+                cfg.topic_mode,
             )))
         }
         ChannelType::Weixin => {

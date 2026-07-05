@@ -125,6 +125,8 @@ Codeg（Code Generation）是一個多智慧體編碼工作台，它將多個智
 
 連接你喜愛的即時通訊應用——Telegram、飛書、iLink（微信）等——到 AI 編碼代理。直接在聊天中建立任務、發送後續訊息、審批權限請求、恢復會話、監控代理活動——即時接收代理回應，包含工具呼叫詳情、權限提示和完成摘要。
 
+Telegram 論壇超級群組也可以使用 [Telegram topic mode](../chat-channels/telegram-topic-mode.md)，將每個 topic 綁定到獨立的 Codeg 會話。
+
 ### 支援的渠道
 
 | 渠道          | 協定                   | 狀態 |

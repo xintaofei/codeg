@@ -125,6 +125,8 @@ Codeg(Code Generation)는 멀티 에이전트 코딩 워크스페이스입니다
 
 즐겨 사용하는 메신저 앱 — Telegram, Lark(Feishu), iLink(Weixin) 등 — 을 AI 코딩 에이전트에 연결하세요. 채팅에서 직접 작업을 생성하고, 후속 메시지를 보내고, 권한을 승인하고, 세션을 재개하고, 활동을 모니터링할 수 있습니다 — 도구 호출 상세 정보, 권한 프롬프트, 완료 요약이 포함된 실시간 에이전트 응답을 브라우저를 열지 않고도 받을 수 있습니다.
 
+Telegram 포럼 슈퍼그룹에서는 [Telegram topic mode](../chat-channels/telegram-topic-mode.md)를 사용해 각 topic을 별도의 Codeg 세션에 바인딩할 수 있습니다.
+
 ### 지원 채널
 
 | 채널           | 프로토콜              | 상태 |

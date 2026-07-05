@@ -135,6 +135,8 @@ Connect your favorite messaging apps — Telegram, Lark (Feishu), iLink (Weixin)
 
 > More channels (Discord, Slack, DingTalk, etc.) are planned for future releases.
 
+Telegram forum supergroups can also use [Telegram topic mode](docs/chat-channels/telegram-topic-mode.md) to bind each topic to a separate Codeg session.
+
 </details>
 
 <details>

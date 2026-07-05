@@ -125,6 +125,8 @@ Actualmente soporta scaffolding de proyectos **shadcn/ui**, con un diseño basad
 
 Conecta tus aplicaciones de mensajería favoritas — Telegram, Lark (Feishu), iLink (Weixin) y más — a tus agentes de codificación IA. Crea tareas, envía mensajes de seguimiento, aprueba permisos, reanuda sesiones y monitorea la actividad directamente desde el chat — recibe respuestas del agente en tiempo real con detalles de llamadas a herramientas, solicitudes de permisos y resúmenes de finalización sin necesidad de abrir un navegador.
 
+Los supergrupos de foro de Telegram también pueden usar [Telegram topic mode](../chat-channels/telegram-topic-mode.md) para vincular cada topic a una sesión de Codeg independiente.
+
 ### Canales soportados
 
 | Canal          | Protocolo                   | Estado    |

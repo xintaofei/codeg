@@ -16,6 +16,8 @@ pub enum ChatChannelError {
     AlreadyConnected,
     #[error("channel not found: {0}")]
     NotFound(i32),
+    #[error("unsupported operation: {0}")]
+    Unsupported(String),
     #[error("{0}")]
     Other(String),
 }

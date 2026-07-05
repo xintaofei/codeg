@@ -2733,6 +2733,8 @@
     "nameRequired": "チャンネル名を入力してください。",
     "tokenRequired": "トークンを入力してください。",
     "chatIdRequired": "Chat ID を入力してください。",
+    "topicMode": "トピックグループモード",
+    "topicModeHint": "Telegram forum topics を個別の Codeg セッションとしてルーティングします。Bot は forum supergroup に参加し、topics を管理できる必要があります。",
     "loadFailed": "チャンネルの読み込みに失敗しました。",
     "saveFailed": "保存に失敗しました。",
     "connectSuccess": "チャンネルに接続しました。",

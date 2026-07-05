@@ -2733,6 +2733,8 @@
     "nameRequired": "اسم القناة مطلوب.",
     "tokenRequired": "الرمز مطلوب.",
     "chatIdRequired": "معرف المحادثة مطلوب.",
+    "topicMode": "وضع مجموعة المواضيع",
+    "topicModeHint": "يوجه مواضيع منتدى Telegram كجلسات Codeg منفصلة. يجب أن يكون البوت في forum supergroup وأن يملك صلاحية إدارة المواضيع.",
     "loadFailed": "فشل في تحميل القنوات.",
     "saveFailed": "فشل في حفظ التغييرات.",
     "connectSuccess": "تم توصيل القناة.",

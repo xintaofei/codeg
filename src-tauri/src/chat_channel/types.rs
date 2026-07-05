@@ -13,6 +13,8 @@ pub enum ChannelType {
 #[derive(Debug, Clone, Deserialize)]
 pub struct TelegramConfig {
     pub chat_id: String,
+    #[serde(default)]
+    pub topic_mode: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -52,8 +54,74 @@ pub struct IncomingCommand {
     pub channel_id: i32,
     pub sender_id: String,
     pub command_text: String,
+    pub callback_data: Option<String>,
+    pub target: ChannelMessageTarget,
     pub metadata: serde_json::Value,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChannelMessageTarget {
+    pub channel_id: i32,
+    pub chat_id: Option<String>,
+    pub thread_key: Option<String>,
+    pub thread_kind: Option<String>,
+    pub provider_payload: Option<serde_json::Value>,
+}
+
+impl ChannelMessageTarget {
+    pub fn channel(channel_id: i32) -> Self {
+        Self {
+            channel_id,
+            chat_id: None,
+            thread_key: None,
+            thread_kind: None,
+            provider_payload: None,
+        }
+    }
+
+    pub fn telegram_general(channel_id: i32, chat_id: impl Into<String>) -> Self {
+        Self {
+            channel_id,
+            chat_id: Some(chat_id.into()),
+            thread_key: None,
+            thread_kind: Some(TELEGRAM_GENERAL_THREAD_KIND.to_string()),
+            provider_payload: None,
+        }
+    }
+
+    pub fn telegram_forum_topic(
+        channel_id: i32,
+        chat_id: impl Into<String>,
+        thread_key: impl Into<String>,
+    ) -> Self {
+        Self {
+            channel_id,
+            chat_id: Some(chat_id.into()),
+            thread_key: Some(thread_key.into()),
+            thread_kind: Some(TELEGRAM_FORUM_THREAD_KIND.to_string()),
+            provider_payload: None,
+        }
+    }
+
+    pub fn is_telegram_forum_topic(&self) -> bool {
+        self.thread_kind.as_deref() == Some(TELEGRAM_FORUM_THREAD_KIND)
+            && self.thread_key.is_some()
+    }
+
+    pub fn is_telegram_general_topic(&self) -> bool {
+        self.thread_kind.as_deref() == Some(TELEGRAM_GENERAL_THREAD_KIND)
+    }
+
+    pub fn matches_thread(&self, other: &Self) -> bool {
+        self.channel_id == other.channel_id
+            && self.chat_id == other.chat_id
+            && self.thread_kind == other.thread_kind
+            && self.thread_key == other.thread_key
+    }
+}
+
+pub const TELEGRAM_FORUM_THREAD_KIND: &str = "telegram_forum_topic";
+pub const TELEGRAM_GENERAL_THREAD_KIND: &str = "telegram_general_topic";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

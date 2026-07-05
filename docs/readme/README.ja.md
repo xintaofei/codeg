@@ -125,6 +125,8 @@ Codeg（Code Generation）は、マルチエージェント・コーディング
 
 お気に入りのメッセージングアプリ — Telegram、Lark（Feishu）、iLink（Weixin）など — を AI コーディング Agent に接続。チャットからタスクの作成、フォローアップメッセージの送信、権限の承認、セッションの再開、アクティビティの監視が可能です。Agent のレスポンスはツールコール詳細、権限プロンプト、完了サマリーとともにリアルタイムで受信 — ブラウザを開くことなくすべて対応可能。
 
+Telegram のフォーラムスーパーグループでは [Telegram topic mode](../chat-channels/telegram-topic-mode.md) を使い、各 topic を独立した Codeg セッションに紐付けられます。
+
 ### 対応チャンネル
 
 | チャンネル      | プロトコル                       | 状態 |

@@ -699,6 +699,8 @@ impl ChatChannelBackend for WeixinBackend {
                                             channel_id,
                                             sender_id: from_user_id.to_string(),
                                             command_text: text.to_string(),
+                                            callback_data: None,
+                                            target: ChannelMessageTarget::channel(channel_id),
                                             metadata: msg.clone(),
                                         })
                                         .await;

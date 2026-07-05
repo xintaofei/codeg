@@ -125,6 +125,8 @@ Prend actuellement en charge le scaffolding de projets **shadcn/ui**, avec un de
 
 Connectez vos applications de messagerie préférées — Telegram, Lark (Feishu), iLink (Weixin) et plus — à vos agents de codage IA. Créez des tâches, envoyez des messages de suivi, approuvez les permissions, reprenez des sessions et surveillez l'activité directement depuis votre chat — recevez les réponses des agents en temps réel avec les détails des appels d'outils, les demandes de permissions et les résumés de complétion, le tout sans ouvrir de navigateur.
 
+Les supergroupes forum Telegram peuvent aussi utiliser le [Telegram topic mode](../chat-channels/telegram-topic-mode.md) pour lier chaque topic à une session Codeg distincte.
+
 ### Canaux pris en charge
 
 | Canal          | Protocole                   | Statut  |

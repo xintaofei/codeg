@@ -631,6 +631,7 @@ mod permission_push_tests {
         ActiveSession {
             channel_id,
             sender_id: "u".into(),
+            target: crate::chat_channel::types::ChannelMessageTarget::channel(channel_id),
             conversation_id: 1,
             connection_id: connection_id.into(),
             agent_type: AgentType::ClaudeCode,

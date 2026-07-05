@@ -2733,6 +2733,8 @@
     "nameRequired": "Kanalname ist erforderlich.",
     "tokenRequired": "Token ist erforderlich.",
     "chatIdRequired": "Chat-ID ist erforderlich.",
+    "topicMode": "Themengruppenmodus",
+    "topicModeHint": "Leitet Telegram-Forum-Themen als separate Codeg-Sitzungen weiter. Der Bot muss in einer Forum-Supergruppe sein und Themen verwalten dürfen.",
     "loadFailed": "Kanäle konnten nicht geladen werden.",
     "saveFailed": "Änderungen konnten nicht gespeichert werden.",
     "connectSuccess": "Kanal verbunden.",

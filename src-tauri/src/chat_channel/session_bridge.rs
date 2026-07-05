@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use crate::acp::types::PermissionOptionInfo;
-use crate::chat_channel::types::SentMessageId;
+use crate::chat_channel::types::{ChannelMessageTarget, SentMessageId};
 use crate::models::agent::AgentType;
 
 pub struct PendingPermission {
@@ -15,6 +15,7 @@ pub struct PendingPermission {
 pub struct ActiveSession {
     pub channel_id: i32,
     pub sender_id: String,
+    pub target: ChannelMessageTarget,
     pub conversation_id: i32,
     pub connection_id: String,
     pub agent_type: AgentType,
@@ -67,6 +68,12 @@ impl SessionBridge {
             .find(|s| s.channel_id == channel_id && s.sender_id == sender_id)
     }
 
+    pub fn find_by_target(&self, target: &ChannelMessageTarget) -> Option<&ActiveSession> {
+        self.sessions
+            .values()
+            .find(|s| s.target.matches_thread(target))
+    }
+
     pub fn find_by_sender_mut(
         &mut self,
         channel_id: i32,
@@ -75,6 +82,15 @@ impl SessionBridge {
         self.sessions
             .values_mut()
             .find(|s| s.channel_id == channel_id && s.sender_id == sender_id)
+    }
+
+    pub fn find_by_target_mut(
+        &mut self,
+        target: &ChannelMessageTarget,
+    ) -> Option<&mut ActiveSession> {
+        self.sessions
+            .values_mut()
+            .find(|s| s.target.matches_thread(target))
     }
 
     pub fn all_sessions(&self) -> impl Iterator<Item = &ActiveSession> {

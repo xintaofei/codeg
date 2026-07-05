@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useId, useState } from "react"
 import { Loader2 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
@@ -46,6 +46,7 @@ export function EditChatChannelDialog({
   const [chatId, setChatId] = useState(config.chat_id ?? "")
   const [appId, setAppId] = useState(config.app_id ?? "")
   const [baseUrl] = useState(config.base_url ?? "")
+  const [topicMode, setTopicMode] = useState(Boolean(config.topic_mode))
   const [dailyReportEnabled, setDailyReportEnabled] = useState(
     channel.daily_report_enabled
   )
@@ -53,6 +54,7 @@ export function EditChatChannelDialog({
     channel.daily_report_time || "18:00"
   )
   const [hasToken, setHasToken] = useState(false)
+  const topicModeId = useId()
 
   useEffect(() => {
     if (open) {
@@ -80,7 +82,7 @@ export function EditChatChannelDialog({
           ? JSON.stringify({ base_url: baseUrl })
           : channel.channel_type === "lark"
             ? JSON.stringify({ app_id: appId, chat_id: chatId })
-            : JSON.stringify({ chat_id: chatId })
+            : JSON.stringify({ chat_id: chatId, topic_mode: topicMode })
 
       await updateChatChannel({
         id: channel.id,
@@ -110,6 +112,7 @@ export function EditChatChannelDialog({
     channel,
     appId,
     baseUrl,
+    topicMode,
     dailyReportEnabled,
     dailyReportTime,
     onOpenChange,
@@ -175,6 +178,26 @@ export function EditChatChannelDialog({
                     : "oc_xxxxx"
                 }
               />
+            </div>
+          )}
+
+          {channel.channel_type === "telegram" && (
+            <div className="rounded-md border border-border/70 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <label htmlFor={topicModeId} className="text-xs font-medium">
+                    {t("topicMode")}
+                  </label>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {t("topicModeHint")}
+                  </p>
+                </div>
+                <Switch
+                  id={topicModeId}
+                  checked={topicMode}
+                  onCheckedChange={setTopicMode}
+                />
+              </div>
             </div>
           )}
 

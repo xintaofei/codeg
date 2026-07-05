@@ -2745,6 +2745,8 @@
     "nameRequired": "请输入渠道名称。",
     "tokenRequired": "请输入 Token。",
     "chatIdRequired": "请输入 Chat ID。",
+    "topicMode": "话题群模式",
+    "topicModeHint": "将 Telegram forum topics 路由为独立 Codeg 会话。Bot 必须加入 forum supergroup，并拥有管理 topics 权限。",
     "loadFailed": "加载渠道失败。",
     "saveFailed": "保存失败。",
     "connectSuccess": "渠道已连接。",

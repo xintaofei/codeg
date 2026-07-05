@@ -2733,6 +2733,8 @@
     "nameRequired": "채널 이름을 입력하세요.",
     "tokenRequired": "토큰을 입력하세요.",
     "chatIdRequired": "Chat ID를 입력하세요.",
+    "topicMode": "토픽 그룹 모드",
+    "topicModeHint": "Telegram forum topics를 별도 Codeg 세션으로 라우팅합니다. Bot은 forum supergroup에 있어야 하며 topics 관리 권한이 필요합니다.",
     "loadFailed": "채널 로딩에 실패했습니다.",
     "saveFailed": "저장에 실패했습니다.",
     "connectSuccess": "채널이 연결되었습니다.",

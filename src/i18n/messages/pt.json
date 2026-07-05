@@ -2733,6 +2733,8 @@
     "nameRequired": "O nome do canal é obrigatório.",
     "tokenRequired": "O token é obrigatório.",
     "chatIdRequired": "O Chat ID é obrigatório.",
+    "topicMode": "Modo de grupo por tópicos",
+    "topicModeHint": "Roteia tópicos de fórum do Telegram como sessões Codeg separadas. O bot deve estar em um supergrupo de fórum e poder gerenciar tópicos.",
     "loadFailed": "Falha ao carregar os canais.",
     "saveFailed": "Falha ao salvar as alterações.",
     "connectSuccess": "Canal conectado.",
