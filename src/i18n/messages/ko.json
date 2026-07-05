@@ -1721,6 +1721,7 @@
       "collapseTracked": "추적된 변경 접기",
       "expandUntracked": "추적되지 않은 파일 펼치기",
       "collapseUntracked": "추적되지 않은 파일 접기",
+      "showRemainingItems": "나머지 {count}개 표시",
       "actions": {
         "commitCode": "코드 커밋",
         "rollback": "롤백",

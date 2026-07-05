@@ -1721,6 +1721,7 @@
       "collapseTracked": "Collapse tracked changes",
       "expandUntracked": "Expand untracked files",
       "collapseUntracked": "Collapse untracked files",
+      "showRemainingItems": "Show {count} more items",
       "actions": {
         "commitCode": "Commit code",
         "rollback": "Rollback",

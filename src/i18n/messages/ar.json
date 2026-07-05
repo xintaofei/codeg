@@ -1721,6 +1721,7 @@
       "collapseTracked": "طي التغييرات المتعقبة",
       "expandUntracked": "توسيع الملفات غير المتعقبة",
       "collapseUntracked": "طي الملفات غير المتعقبة",
+      "showRemainingItems": "عرض {count} عنصر إضافي",
       "actions": {
         "commitCode": "التزام الكود",
         "rollback": "تراجع",

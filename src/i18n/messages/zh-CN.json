@@ -1721,6 +1721,7 @@
       "collapseTracked": "折叠已跟踪改动",
       "expandUntracked": "展开未跟踪文件",
       "collapseUntracked": "折叠未跟踪文件",
+      "showRemainingItems": "显示其余 {count} 项",
       "actions": {
         "commitCode": "提交代码",
         "rollback": "回滚",

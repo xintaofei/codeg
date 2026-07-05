@@ -109,7 +109,7 @@ type ChangeTreeFileNode = {
   change: WorkingTreeChange
 }
 
-type ChangeTreeNode = ChangeTreeDirNode | ChangeTreeFileNode
+export type ChangeTreeNode = ChangeTreeDirNode | ChangeTreeFileNode
 
 interface MutableChangeTreeDirNode {
   kind: "dir"
@@ -358,6 +358,86 @@ function collectExpandedDirectoryPaths(
   return expanded
 }
 
+// A large working tree — a sweeping refactor, generated output, an accidentally
+// untracked node_modules — can produce thousands of change rows. Every row is a
+// Radix ContextMenu (plus a Collapsible for directories), so mounting the whole
+// tree at once freezes the panel for seconds. We render at most this many rows
+// per tree and offer a one-click reveal for the remainder, mirroring the
+// unified-diff preview cap.
+export const MAX_VISIBLE_ROWS = 500
+
+// Count the rows a set of nodes contributes to the mounted DOM given the current
+// expansion. Radix Collapsible unmounts a collapsed directory's children, so
+// they cost nothing until that directory is expanded.
+export function countVisibleChangeRows(
+  nodes: ChangeTreeNode[],
+  expandedPaths: Set<string>
+): number {
+  let count = 0
+  for (const node of nodes) {
+    count += 1
+    if (node.kind === "dir" && expandedPaths.has(node.path)) {
+      count += countVisibleChangeRows(node.children, expandedPaths)
+    }
+  }
+  return count
+}
+
+// Return at most `budget` rows worth of nodes, walking in display order so the
+// preview is the top of the tree. Collapsed directories keep their children
+// (mounted lazily on expand) but do not consume budget, matching what Radix
+// actually renders.
+export function capChangeTreeToBudget(
+  nodes: ChangeTreeNode[],
+  expandedPaths: Set<string>,
+  budget: number
+): { nodes: ChangeTreeNode[]; remaining: number } {
+  const capped: ChangeTreeNode[] = []
+  let remaining = budget
+  for (const node of nodes) {
+    if (remaining <= 0) break
+    remaining -= 1
+    if (
+      node.kind === "dir" &&
+      expandedPaths.has(node.path) &&
+      node.children.length > 0
+    ) {
+      const child = capChangeTreeToBudget(
+        node.children,
+        expandedPaths,
+        remaining
+      )
+      remaining = child.remaining
+      capped.push({ ...node, children: child.nodes })
+    } else {
+      capped.push(node)
+    }
+  }
+  return { nodes: capped, remaining }
+}
+
+// A tree row that reveals the change rows hidden by MAX_VISIBLE_ROWS. Rendered
+// as a child of the root folder so it inherits the tree indentation and is
+// unmounted with the rest of the subtree when the root is collapsed.
+function ChangeTreeOverflowRow({
+  label,
+  onReveal,
+}: {
+  label: string
+  onReveal: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onReveal}
+      className="flex w-full min-w-full items-center gap-1 rounded px-2 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+    >
+      <span className="size-4 shrink-0" />
+      <span className="truncate">{label}</span>
+    </button>
+  )
+}
+
 function isUntrackedStatus(status: string): boolean {
   return status.trim().toUpperCase() === UNTRACKED_STATUS
 }
@@ -392,6 +472,8 @@ export function GitChangesTab() {
   const [expandedUntrackedPaths, setExpandedUntrackedPaths] = useState<
     Set<string>
   >(new Set())
+  const [showAllTracked, setShowAllTracked] = useState(false)
+  const [showAllUntracked, setShowAllUntracked] = useState(false)
   const [rollbackTarget, setRollbackTarget] = useState<GitActionTarget | null>(
     null
   )
@@ -466,6 +548,63 @@ export function GitChangesTab() {
     () => buildChangeFileTree(untrackedChanges),
     [untrackedChanges]
   )
+
+  // Reset the reveal when the change set actually changes. The backend only
+  // emits a new git snapshot (hence a new node array) when git status truly
+  // changed, so this never thrashes on no-op resyncs — but it does re-cap when
+  // a fresh, possibly much larger, change set arrives at the same folder. The
+  // `treeChanged` flag also caps this very render (the one that schedules the
+  // reset and is then discarded), so the discarded pass never maps the uncapped
+  // tree even once.
+  const [renderedTrackedNodes, setRenderedTrackedNodes] =
+    useState(trackedTreeNodes)
+  const trackedTreeChanged = trackedTreeNodes !== renderedTrackedNodes
+  if (trackedTreeChanged) {
+    setRenderedTrackedNodes(trackedTreeNodes)
+    setShowAllTracked(false)
+  }
+  const effectiveShowAllTracked = showAllTracked && !trackedTreeChanged
+
+  const [renderedUntrackedNodes, setRenderedUntrackedNodes] =
+    useState(untrackedTreeNodes)
+  const untrackedTreeChanged = untrackedTreeNodes !== renderedUntrackedNodes
+  if (untrackedTreeChanged) {
+    setRenderedUntrackedNodes(untrackedTreeNodes)
+    setShowAllUntracked(false)
+  }
+  const effectiveShowAllUntracked = showAllUntracked && !untrackedTreeChanged
+
+  // Cap each tree to MAX_VISIBLE_ROWS rows (respecting the current expansion,
+  // since collapsed directories are unmounted) so a huge change set never
+  // mounts thousands of rows at once. The reveal escape hatch renders in full.
+  const trackedRender = useMemo(() => {
+    const total = countVisibleChangeRows(trackedTreeNodes, expandedTrackedPaths)
+    if (effectiveShowAllTracked || total <= MAX_VISIBLE_ROWS) {
+      return { nodes: trackedTreeNodes, hiddenCount: 0 }
+    }
+    const { nodes } = capChangeTreeToBudget(
+      trackedTreeNodes,
+      expandedTrackedPaths,
+      MAX_VISIBLE_ROWS
+    )
+    return { nodes, hiddenCount: total - MAX_VISIBLE_ROWS }
+  }, [trackedTreeNodes, expandedTrackedPaths, effectiveShowAllTracked])
+
+  const untrackedRender = useMemo(() => {
+    const total = countVisibleChangeRows(
+      untrackedTreeNodes,
+      expandedUntrackedPaths
+    )
+    if (effectiveShowAllUntracked || total <= MAX_VISIBLE_ROWS) {
+      return { nodes: untrackedTreeNodes, hiddenCount: 0 }
+    }
+    const { nodes } = capChangeTreeToBudget(
+      untrackedTreeNodes,
+      expandedUntrackedPaths,
+      MAX_VISIBLE_ROWS
+    )
+    return { nodes, hiddenCount: total - MAX_VISIBLE_ROWS }
+  }, [untrackedTreeNodes, expandedUntrackedPaths, effectiveShowAllUntracked])
 
   const allTrackedDirectoryPaths = useMemo(() => {
     const paths = collectExpandedDirectoryPaths(trackedTreeNodes)
@@ -843,7 +982,13 @@ export function GitChangesTab() {
                 suffixClassName="text-muted-foreground/45"
                 title={node.path}
               >
-                {node.children.map(renderNode)}
+                {/* Build children only when expanded: Radix unmounts a
+                    collapsed folder's children anyway, and skipping the eager
+                    recursion keeps a huge collapsed subtree from constructing
+                    thousands of elements on every render. */}
+                {expandedTrackedPaths.has(node.path)
+                  ? node.children.map(renderNode)
+                  : null}
               </FileTreeFolder>
             </ContextMenuTrigger>
             <ContextMenuContent>
@@ -984,6 +1129,7 @@ export function GitChangesTab() {
     },
     [
       canAttachToSession,
+      expandedTrackedPaths,
       handleAttachToSession,
       handleOpenCommitWindow,
       handleRequestDelete,
@@ -1015,7 +1161,13 @@ export function GitChangesTab() {
                 suffixClassName="text-muted-foreground/45"
                 title={node.path}
               >
-                {node.children.map(renderNode)}
+                {/* Build children only when expanded: Radix unmounts a
+                    collapsed folder's children anyway, and skipping the eager
+                    recursion keeps a huge collapsed subtree from constructing
+                    thousands of elements on every render. */}
+                {expandedUntrackedPaths.has(node.path)
+                  ? node.children.map(renderNode)
+                  : null}
               </FileTreeFolder>
             </ContextMenuTrigger>
             <ContextMenuContent>
@@ -1156,6 +1308,7 @@ export function GitChangesTab() {
     },
     [
       canAttachToSession,
+      expandedUntrackedPaths,
       handleAttachToSession,
       handleOpenCommitWindow,
       handleAddToVcs,
@@ -1263,7 +1416,15 @@ export function GitChangesTab() {
                         suffixClassName="text-muted-foreground/45"
                         title={folderName}
                       >
-                        {trackedTreeNodes.map(renderTrackedNode)}
+                        {trackedRender.nodes.map(renderTrackedNode)}
+                        {trackedRender.hiddenCount > 0 && (
+                          <ChangeTreeOverflowRow
+                            label={t("showRemainingItems", {
+                              count: trackedRender.hiddenCount,
+                            })}
+                            onReveal={() => setShowAllTracked(true)}
+                          />
+                        )}
                       </FileTreeFolder>
                     </ContextMenuTrigger>
                     <ContextMenuContent>
@@ -1372,7 +1533,15 @@ export function GitChangesTab() {
                         suffixClassName="text-muted-foreground/45"
                         title={folderName}
                       >
-                        {untrackedTreeNodes.map(renderUntrackedNode)}
+                        {untrackedRender.nodes.map(renderUntrackedNode)}
+                        {untrackedRender.hiddenCount > 0 && (
+                          <ChangeTreeOverflowRow
+                            label={t("showRemainingItems", {
+                              count: untrackedRender.hiddenCount,
+                            })}
+                            onReveal={() => setShowAllUntracked(true)}
+                          />
+                        )}
                       </FileTreeFolder>
                     </ContextMenuTrigger>
                     <ContextMenuContent>

@@ -1721,6 +1721,7 @@
       "collapseTracked": "Colapsar cambios rastreados",
       "expandUntracked": "Expandir archivos no rastreados",
       "collapseUntracked": "Colapsar archivos no rastreados",
+      "showRemainingItems": "Mostrar {count} elementos más",
       "actions": {
         "commitCode": "Hacer commit del código",
         "rollback": "Revertir",
