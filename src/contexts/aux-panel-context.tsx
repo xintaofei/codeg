@@ -21,7 +21,7 @@ const STORAGE_KEY = "workspace:right-sidebar"
 
 const DEFAULT_WIDTH = 320
 const MIN_WIDTH = 200
-const MAX_WIDTH = 500
+const MAX_WIDTH = 900
 const DEFAULT_IS_OPEN = false
 
 interface AuxPanelContextValue {

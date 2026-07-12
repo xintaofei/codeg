@@ -18,7 +18,7 @@ const STORAGE_KEY = "workspace:left-sidebar"
 
 const DEFAULT_WIDTH = 320
 const MIN_WIDTH = 200
-const MAX_WIDTH = 600
+const MAX_WIDTH = 900
 const DEFAULT_IS_OPEN = true
 
 interface SidebarContextValue {
