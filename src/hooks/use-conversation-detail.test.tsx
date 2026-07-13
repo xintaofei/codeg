@@ -32,6 +32,7 @@ function seedSession(detail: DbConversationDetail | null) {
           liveOwnsActiveTurn: false,
           delegationKickoffText: null,
           sessionStats: null,
+          historyAssistantBaseline: null,
           pendingCleanup: false,
         },
       ],

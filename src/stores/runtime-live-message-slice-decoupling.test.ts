@@ -33,6 +33,7 @@ function seedSession(sessionStats: SessionStats) {
           liveOwnsActiveTurn: false,
           delegationKickoffText: null,
           sessionStats,
+          historyAssistantBaseline: null,
           pendingCleanup: false,
         },
       ],

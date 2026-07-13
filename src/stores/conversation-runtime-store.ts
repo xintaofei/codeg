@@ -145,6 +145,17 @@ export interface ConversationRuntimeSession {
   // Session-level stats (token usage, context window, etc.)
   sessionStats: SessionStats | null
 
+  // Number of persisted assistant turns that predate this session's `localTurns`
+  // — captured at send time (first optimistic turn of a batch), when `detail`
+  // is settled history. The post-turn reparse (`syncTurnMetadata`) slices this
+  // many turns off the front of the fresh parse before aligning the rest to
+  // `localTurns`, so it never folds a historical (or later-refetched partial)
+  // turn's stats into a new reply. `null` when no user-initiated batch is in
+  // flight (e.g. the sub-agent adopt path, which has no optimistic send); the
+  // reparse then treats the whole parse as this session's, matching the
+  // pre-capture behavior. See `computeTurnMetadataPatches`.
+  historyAssistantBaseline: number | null
+
   // Cleanup
   pendingCleanup: boolean
 }
@@ -332,8 +343,45 @@ function createEmptySession(
     liveOwnsActiveTurn: false,
     delegationKickoffText: null,
     sessionStats: null,
+    historyAssistantBaseline: null,
     pendingCleanup: false,
   }
+}
+
+// Snapshot how many assistant turns are HISTORY when a batch's FIRST turn enters
+// the buffers (no local/optimistic turns yet); otherwise keep the batch-start
+// value so follow-up prompts in the same batch don't move it. BOTH batch-start
+// paths route through this — the owner's own send (APPEND_OPTIMISTIC_TURN) and a
+// co-controller's echoed prompt (APPEND_VIEWER_USER_TURN, on every exit incl.
+// dedup) — so every disjoint batch that later reaches `syncTurnMetadata` carries
+// a boundary; a `null` baseline then means only the overlap paths (e.g. the
+// sub-agent adopt, which promotes via COMPLETE_TURN with no user-turn append),
+// where the whole parse is this session's.
+//
+// `promptId` is the id of the prompt starting this batch. Usually `detail` here
+// is settled history (owner send / a fresh viewer prompt not yet persisted):
+// count every assistant. The ONE exception is a viewer attaching mid-stream,
+// where `detail` already holds THIS prompt — and, for OpenCode/Gemini, a PARTIAL
+// reply after it — with the backend stamping it as `in_flight_user_turn_id`.
+// Only then (marker === promptId) do we cut off at the prompt so the partial
+// stays out of history. The marker alone is not enough: it can linger stale
+// after completion (see the APPEND_VIEWER content-dedup notes), so trusting it
+// for an owner send / distinct prompt would drop a real prior reply from history.
+function batchStartHistoryBaseline(
+  current: ConversationRuntimeSession,
+  promptId: string
+): number | null {
+  if (current.localTurns.length > 0 || current.optimisticTurns.length > 0) {
+    return current.historyAssistantBaseline
+  }
+  const turns = current.detail?.turns ?? []
+  const inFlightId = current.detail?.in_flight_user_turn_id ?? null
+  const cutoff =
+    inFlightId !== null && inFlightId === promptId
+      ? turns.findIndex((t) => t.role === "user" && t.id === inFlightId)
+      : -1
+  const history = cutoff === -1 ? turns : turns.slice(0, cutoff + 1)
+  return history.filter((t) => t.role === "assistant").length
 }
 
 interface BuiltStreamingTurns {
@@ -937,9 +985,16 @@ export interface TurnMetadataPatch {
  * wrong value then stuck until a full reload cleared localTurns and rendered
  * each parsed turn directly.
  *
- * A parse that hasn't caught up yet (fewer session turns than local) simply
- * yields no patch for the unmatched turns, so the caller's retry can pick up
- * the complete parse rather than lock in a stale historical value.
+ * A parse that hasn't caught up yet (fewer session turns than local) head-
+ * aligns the turns it does have and leaves the rest unpatched, so a later
+ * local reply never inherits an earlier one's stats and the caller's retry can
+ * pick up the complete parse rather than lock in a stale value.
+ *
+ * `persistedAssistantCount` is the caller's send-time history baseline (see the
+ * session's `historyAssistantBaseline`), so it is immune to a mid-stream detail
+ * refetch folding this session's own partial into `detail`. `0` treats the
+ * whole parse as this session's — correct when `localTurns` overlaps the parse
+ * tail (the sub-agent adopt path) and identical to the pre-slice behavior.
  */
 export function computeTurnMetadataPatches(params: {
   localAssistantIndices: number[]
@@ -960,12 +1015,19 @@ export function computeTurnMetadataPatches(params: {
   const patches: TurnMetadataPatch[] = []
 
   for (let i = 0; i < localAssistantIndices.length; i++) {
-    const parsedIdx = offset + i
+    // Tail-align local turns to the session parse so a sub-turn split (parser
+    // emits MORE turns than the live stream did) folds its leading extras into
+    // local[0]. When the parse hasn't caught up to every local turn yet
+    // (offset < 0), `Math.max(offset, 0)` head-aligns instead: it maps the
+    // turns that ARE parsed onto the earliest locals and leaves the rest
+    // unpatched, rather than shifting a parsed turn onto a LATER local reply —
+    // which, with first-write-wins metadata, would lock a wrong value there.
+    const parsedIdx = Math.max(offset, 0) + i
     let usageToApply: TurnUsage | null | undefined
     let durationToApply: number | null | undefined
     let modelToApply: string | null | undefined
     // For the merged-sub-turn case (offset > 0), the latest completion is
-    // sessionParsedTurns[offset + i] (the sub-turn we matched); earlier
+    // sessionParsedTurns[parsedIdx] (the sub-turn we matched); earlier
     // rolled-in parsed turns precede it in time, so we don't aggregate
     // completion timestamps.
     let completedAtToApply: string | null | undefined
@@ -1312,6 +1374,10 @@ function reducer(
         optimisticTurns: [...current.optimisticTurns, action.turn],
         syncState: "awaiting_persist",
         activeTurnToken: action.turnToken,
+        historyAssistantBaseline: batchStartHistoryBaseline(
+          current,
+          action.turn.id
+        ),
       }))
 
     case "REMOVE_OPTIMISTIC_TURN": {
@@ -1338,6 +1404,21 @@ function reducer(
         state.byConversationId.get(action.conversationId) ??
         createEmptySession(action.conversationId)
       const id = action.turn.id
+      // The history boundary must be captured for this disjoint viewer batch
+      // even when the prompt is DEDUPED below — a viewer attaching mid-stream
+      // sees the prompt already in `detail`, so both dedup guards fire, yet the
+      // reply still promotes (COMPLETE_TURN) and syncs. Without capturing here
+      // the boundary stays `null`/stale and `syncTurnMetadata` folds history in.
+      // `batchStartHistoryBaseline` is a no-op once the batch has turns, so a
+      // dup echo mid-batch doesn't move it.
+      const nextBaseline = batchStartHistoryBaseline(current, id)
+      const captureOnly = (): ConversationRuntimeState =>
+        nextBaseline === current.historyAssistantBaseline
+          ? state
+          : updateSessionInState(state, action.conversationId, (s) => ({
+              ...s,
+              historyAssistantBaseline: nextBaseline,
+            }))
       // EXACT-id dedup (not a heuristic): the sender's OWN optimistic turn
       // shares this id — the UI threaded its optimistic turn id to the backend,
       // which echoed it as the `user_message` message_id — so the sender drops
@@ -1366,7 +1447,7 @@ function reducer(
         (current.detail?.turns.some((t) => t.id === id && t.role === "user") ??
           false)
       ) {
-        return state
+        return captureOnly()
       }
       // CONTENT dedup against persisted history. The exact-id guard above is
       // blind to the prompt once the agent has written it to its JSONL
@@ -1405,7 +1486,7 @@ function reducer(
         lastPersisted?.role === "user" &&
         userTurnContentKey(lastPersisted) === userTurnContentKey(action.turn)
       ) {
-        return state
+        return captureOnly()
       }
       // Append as an optimistic turn so it flows through the EXISTING promotion
       // (COMPLETE_TURN → localTurns) and reset-on-fetch machinery, identical to
@@ -1416,6 +1497,7 @@ function reducer(
       return updateSessionInState(state, action.conversationId, (s) => ({
         ...s,
         optimisticTurns: [...s.optimisticTurns, action.turn],
+        historyAssistantBaseline: nextBaseline,
       }))
     }
 
@@ -1522,6 +1604,10 @@ function reducer(
         liveOwnsActiveTurn: to.liveOwnsActiveTurn || from.liveOwnsActiveTurn,
         delegationKickoffText:
           to.delegationKickoffText ?? from.delegationKickoffText,
+        // `from` (the draft) leads `localTurns`, so keep its send-time
+        // baseline; fall back to the target's if the draft never captured one.
+        historyAssistantBaseline:
+          from.historyAssistantBaseline ?? to.historyAssistantBaseline,
       }
 
       const nextByConversationId = new Map(state.byConversationId)
@@ -2137,12 +2223,14 @@ export const useConversationRuntimeStore = create<ConversationRuntimeStore>()((
               (t) => t.role === "assistant"
             )
             // Persisted history lives in `detail`, not `localTurns`; the fresh
-            // parse returns history + this session's turns. Pass the boundary
-            // so the alignment maps local turns to the parse TAIL and never
-            // folds a historical turn's stats into the first resumed reply.
-            const persistedAssistantCount = (cur.detail?.turns ?? []).filter(
-              (t) => t.role === "assistant"
-            ).length
+            // parse returns history + this session's turns. The boundary,
+            // captured at send time, tells the alignment how many leading
+            // parsed turns are history so it never folds one into the first
+            // resumed reply. `null` (no optimistic-initiated batch, e.g. the
+            // sub-agent adopt path) means treat the whole parse as this
+            // session's — the pre-capture behavior, correct when `localTurns`
+            // overlaps the parse tail.
+            const persistedAssistantCount = cur.historyAssistantBaseline ?? 0
             const patches = computeTurnMetadataPatches({
               localAssistantIndices,
               parsedAssistantTurns,
@@ -2158,8 +2246,22 @@ export const useConversationRuntimeStore = create<ConversationRuntimeStore>()((
               })
             }
 
-            const latestPatch = patches[patches.length - 1]
-            if (!latestPatch?.usage && attempt < 1) {
+            // Retry once if the MOST RECENT local assistant turn still lacks
+            // usage — its transcript may not have flushed yet. Keying on the
+            // last EMITTED patch is wrong when the latest local turn is the
+            // unflushed one: an earlier reply's patch (with usage) would
+            // suppress the retry the latest turn needs.
+            const lastLocalAssistantIndex =
+              localAssistantIndices[localAssistantIndices.length - 1]
+            const latestCoverage =
+              lastLocalAssistantIndex === undefined
+                ? undefined
+                : patches.find((p) => p.index === lastLocalAssistantIndex)
+            if (
+              lastLocalAssistantIndex !== undefined &&
+              !latestCoverage?.usage &&
+              attempt < 1
+            ) {
               trySync(attempt + 1)
             }
           })
