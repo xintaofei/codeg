@@ -23,34 +23,6 @@ Codeg (Code Generation) es un espacio de trabajo de codificación multiagente. U
 
 ![gallery](../images/gallery.svg)
 
-## Patrocinadores
-
-<table>
-  <tr>
-    <td align="center" width="220">
-      <a href="https://www.compshare.cn/?ytag=GPU_YY_git_codeg" target="_blank"><img src="../images/compshare.png" alt="Compshare" width="160" /></a><br/>
-      <strong><a href="https://www.compshare.cn/?ytag=GPU_YY_git_codeg">Compshare (UCloud)</a></strong>
-    </td>
-    <td>¡Gracias a Compshare por patrocinar este proyecto! Compshare es la plataforma de IA en la nube de UCloud, que ofrece planes Plan de agentes con modelos nacionales en suscripción mensual o por uso, desde 49 ¥/mes. También proporciona acceso estable a modelos extranjeros mediante proxy oficial. Compatible con Claude Code, Codex y llamadas a la API. Apto para empresas: alta concurrencia, soporte técnico 24/7 y facturación en autoservicio. ¡Los usuarios que se registren a través de <a href="https://www.compshare.cn/?ytag=GPU_YY_git_codeg">este enlace</a> recibirán 5 ¥ de saldo de prueba gratis!</td>
-  </tr>
-  <tr>
-    <td align="center" width="220">
-      <a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE" target="_blank"><img src="../images/sui-xiang.jpg" alt="随想AI中转站" width="200" /></a><br/>
-      <strong><a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE">随想AI中转站</a></strong>
-    </td>
-    <td>¡Gracias a 随想AI中转站 por patrocinar este proyecto! 随想AI中转站 es un proveedor de retransmisión de API fiable y eficiente, que ofrece servicios de retransmisión para Claude, Codex, Gemini y más. Las cuentas nuevas reciben 0,5 ¥ de crédito de prueba con cada registro de asistencia diario tras <a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE">registrarse</a>; las recargas se acreditan 1:1, sin suscripción y con pago por uso. La redundancia multilínea, la recuperación ante desastres entre regiones y la conmutación por error automática mantienen sin interrupciones las conexiones SSE de larga duración.</td>
-  </tr>
-  <tr>
-    <td align="center" width="220">
-      <a href="https://hezu.ink/sign-up?aff=0wVz" target="_blank"><img src="../images/hezu-ink.jpg" alt="合租巴士" width="200" /></a><br/>
-      <strong><a href="https://hezu.ink/sign-up?aff=0wVz">合租巴士</a></strong>
-    </td>
-    <td>¡Gracias a 合租巴士 por patrocinar este proyecto! 合租巴士 es una plataforma de retransmisión de IA fiable y eficiente que ofrece una retransmisión de alta estabilidad para los principales modelos como Codex y Claude Code. La proporción de recarga es transparente (1:1), con subvenciones de tarifa de Codex desde tan solo 0,08. <a href="https://hezu.ink/sign-up?aff=0wVz">Únete al grupo desde el sitio web oficial para obtener 5 USD de crédito de prueba</a>.</td>
-  </tr>
-</table>
-
-> ¿Quieres convertirte en patrocinador de Codeg? [Contáctanos por correo electrónico.](mailto:itpkcn@gmail.com)
-
 ## Interfaz principal
 
 ![Codeg Light](../images/main-light.png#gh-light-mode-only)
@@ -425,15 +397,6 @@ Next.js 16 (Static Export) + React 19
 - El acceso a la red solo ocurre mediante acciones iniciadas por el usuario
 - Soporte de proxy del sistema para entornos empresariales
 - El modo de servicio web utiliza autenticación basada en tokens
-
-## Comunidad
-
-- Escanea el código QR de abajo para unirte a nuestro grupo de WeChat para discusiones, comentarios y actualizaciones
-
-<img src="../images/weixin-light.jpg#gh-light-mode-only" alt="WeChat" width="240" />
-<img src="../images/weixin-dark.jpg#gh-dark-mode-only" alt="WeChat" width="240" />
-
-- Gracias a la comunidad de [LinuxDO](https://linux.do) por su apoyo
 
 ## Agradecimientos
 

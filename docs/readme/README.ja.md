@@ -23,34 +23,6 @@ Codeg（Code Generation）は、マルチエージェント・コーディング
 
 ![gallery](../images/gallery.svg)
 
-## スポンサー
-
-<table>
-  <tr>
-    <td align="center" width="220">
-      <a href="https://www.compshare.cn/?ytag=GPU_YY_git_codeg" target="_blank"><img src="../images/compshare.png" alt="Compshare" width="160" /></a><br/>
-      <strong><a href="https://www.compshare.cn/?ytag=GPU_YY_git_codeg">Compshare（UCloud）</a></strong>
-    </td>
-    <td>本プロジェクトをスポンサードしてくださった Compshare に感謝します！Compshare は UCloud 傘下の AI クラウドプラットフォームで、月額制・従量制のコストパフォーマンスに優れた国内モデル agent Plan プランを提供しており、月額 49 元から利用可能です。安定した公式リダイレクトによる海外モデルへのアクセスも提供しています。Claude Code、Codex、API 連携に対応。企業向けの高並列対応、7×24 テクニカルサポート、セルフ請求書発行をサポートしています。<a href="https://www.compshare.cn/?ytag=GPU_YY_git_codeg">こちらのリンク</a>から登録された方には、5 元分の無料プラットフォームクレジットが進呈されます！</td>
-  </tr>
-  <tr>
-    <td align="center" width="220">
-      <a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE" target="_blank"><img src="../images/sui-xiang.jpg" alt="随想AI中转站" width="200" /></a><br/>
-      <strong><a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE">随想AI中转站</a></strong>
-    </td>
-    <td>本プロジェクトをスポンサードしてくださった随想AI中转站に感謝します！随想AI中转站は、Claude、Codex、Gemini などの中継サービスを提供する、信頼性が高く効率的な API 中継サービスプロバイダーです。新規アカウントは<a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE">登録</a>後、毎日のチェックインで 0.5 元のテストクレジットがもらえます。チャージは 1:1 で反映され、サブスクリプション不要の従量課金制です。複数回線の冗長化、リージョン間ディザスタリカバリ、自動フェイルオーバーにより、長時間の SSE 接続も途切れません。</td>
-  </tr>
-  <tr>
-    <td align="center" width="220">
-      <a href="https://hezu.ink/sign-up?aff=0wVz" target="_blank"><img src="../images/hezu-ink.jpg" alt="合租巴士" width="200" /></a><br/>
-      <strong><a href="https://hezu.ink/sign-up?aff=0wVz">合租巴士</a></strong>
-    </td>
-    <td>本プロジェクトをスポンサードしてくださった合租巴士に感謝します！合租巴士は、Codex や Claude Code などの主流モデルに高い安定性の中継機能を提供する、信頼性が高く効率的な AI 中継サービスプラットフォームです。チャージ比率は透明（1:1）で、Codex のレート補助は 0.08 から利用可能です。<a href="https://hezu.ink/sign-up?aff=0wVz">公式サイトからグループに参加すると $5 分の体験クレジットがもらえます</a>。</td>
-  </tr>
-</table>
-
-> Codeg のスポンサーになりませんか？[メールでお問い合わせください。](mailto:itpkcn@gmail.com)
-
 ## メインインターフェース
 
 ![Codeg Light](../images/main-light.png#gh-light-mode-only)
@@ -425,15 +397,6 @@ Next.js 16 (Static Export) + React 19
 - ネットワークアクセスはユーザーが明示的に操作した場合のみ発生
 - エンタープライズ環境向けのシステムプロキシサポート
 - Web サービスモードではトークンベースの認証を使用
-
-## コミュニティ
-
-- QRコードをスキャンして、ディスカッション、フィードバック、アップデートのための WeChat グループに参加してください
-
-<img src="../images/weixin-light.jpg#gh-light-mode-only" alt="WeChat" width="240" />
-<img src="../images/weixin-dark.jpg#gh-dark-mode-only" alt="WeChat" width="240" />
-
-- [LinuxDO](https://linux.do) コミュニティのサポートに感謝します
 
 ## 謝辞
 

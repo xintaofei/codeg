@@ -23,34 +23,6 @@ Codeg（Code Generation）是一个多智能体编码工作台，它将多个智
 
 ![gallery](../images/gallery.svg)
 
-## 赞助
-
-<table>
-  <tr>
-    <td align="center" width="220">
-      <a href="https://www.compshare.cn/?ytag=GPU_YY_git_codeg" target="_blank"><img src="../images/compshare.png" alt="优云智算" width="160" /></a><br/>
-      <strong><a href="https://www.compshare.cn/?ytag=GPU_YY_git_codeg">优云智算</a></strong>
-    </td>
-    <td>感谢优云智算赞助了本项目！优云智算是 UCloud 旗下 AI 云平台，主打包月、按次的高性价比国模 agent Plan 套餐，低至 49 元/月起。同时提供官转稳定海外模型。支持接入 Claude Code、Codex 及 API 调用。支持企业高并发、7*24 技术支持、自助开票。通过<a href="https://www.compshare.cn/?ytag=GPU_YY_git_codeg">此链接</a>注册的用户，可得免费 5 元平台体验金！</td>
-  </tr>
-  <tr>
-    <td align="center" width="220">
-      <a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE" target="_blank"><img src="../images/sui-xiang.jpg" alt="随想AI中转站" width="200" /></a><br/>
-      <strong><a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE">随想AI中转站</a></strong>
-    </td>
-    <td>感谢随想AI中转站对本项目的赞助！随想AI中转站是一家可靠高效的 API 中继服务提供商，提供 Claude、Codex、Gemini 等的中继服务。新账户<a href="https://sui-xiang.com/register?aff=JPFCRHHBE8HE">注册</a>后每日签到就送 0.5 元测试额度，充值额度 1:1，无需订阅，按量付费。多线路冗余、跨区域容灾、自动故障切换，长链路 SSE 不中断。</td>
-  </tr>
-  <tr>
-    <td align="center" width="220">
-      <a href="https://hezu.ink/sign-up?aff=0wVz" target="_blank"><img src="../images/hezu-ink.jpg" alt="合租巴士" width="200" /></a><br/>
-      <strong><a href="https://hezu.ink/sign-up?aff=0wVz">合租巴士</a></strong>
-    </td>
-    <td>感谢合租巴士对本项目的赞助！合租巴士是一家可靠高效的 AI 中转服务平台，主要提供 Codex、Claude Code 等主流模型的高稳定中转能力，充值比例透明（1:1），Codex 倍率补贴低至 0.08。<a href="https://hezu.ink/sign-up?aff=0wVz">官网进群送 5 刀体验金</a>。</td>
-  </tr>
-</table>
-
-> 想成为 Codeg 赞助商？[欢迎通过邮件与我们联系。](mailto:itpkcn@gmail.com)
-
 ## 主界面
 
 ![Codeg Light](../images/main-light.png#gh-light-mode-only)
@@ -425,15 +397,6 @@ Next.js 16 (Static Export) + React 19
 - 仅在用户主动触发时才访问网络
 - 支持系统代理，适配企业网络环境
 - Web 服务模式使用基于令牌的身份认证
-
-## 交流
-
-- 扫描下方二维码加入我们的微信群，参与讨论、反馈与更新
-
-<img src="../images/weixin-light.jpg#gh-light-mode-only" alt="WeChat" width="240" />
-<img src="../images/weixin-dark.jpg#gh-dark-mode-only" alt="WeChat" width="240" />
-
-- 感谢 [LinuxDO](https://linux.do) 社区的支持
 
 ## 鸣谢
 

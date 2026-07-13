@@ -398,15 +398,6 @@ Next.js 16 (Static Export) + React 19
 - System proxy support for enterprise environments
 - Web service mode uses token-based authentication
 
-## Community
-
-- Scan the QR code below to join our WeChat group for discussions, feedback, and updates
-
-<img src="./docs/images/weixin-light.jpg#gh-light-mode-only" alt="WeChat" width="240" />
-<img src="./docs/images/weixin-dark.jpg#gh-dark-mode-only" alt="WeChat" width="240" />
-
-- Thanks to the [LinuxDO](https://linux.do) community for their support
-
 ## Acknowledgments
 
 - [ACP](https://agentclientprotocol.com) — the Agent Client Protocol (ACP) is the foundation that enables Codeg to connect with multiple agents
