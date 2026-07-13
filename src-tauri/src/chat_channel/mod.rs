@@ -1,3 +1,4 @@
+pub mod authz;
 pub mod backends;
 pub mod command_dispatcher;
 pub mod command_handlers;
