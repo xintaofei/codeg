@@ -9,16 +9,24 @@ COPY public/ ./public/
 COPY next.config.ts tsconfig.json postcss.config.mjs components.json ./
 RUN pnpm build
 
-# Stage 2: Build Rust server binary + codeg-mcp companion
+# Stage 2: Build Rust server binary + sidecars
 FROM rust:slim-bookworm AS backend
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y pkg-config libssl-dev curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+# Install Go for the pure-Go Tailscale Funnel sidecar (codeg-tsnet).
+RUN curl -fsSL https://go.dev/dl/go1.22.12.linux-amd64.tar.gz | tar -C /usr/local -xz
+ENV PATH="/usr/local/go/bin:${PATH}"
+WORKDIR /app
+COPY src-tauri/ ./src-tauri/
+COPY codeg-tsnet/ ./codeg-tsnet/
 WORKDIR /app/src-tauri
-COPY src-tauri/ ./
 # codeg-mcp is the stdio MCP companion the runtime injects per session
-# (see acp/delegation/companion.rs). It must ship next to codeg-server so
-# `locate_codeg_mcp_binary()` finds it via the exe-sibling lookup.
+# (see acp/delegation/companion.rs). codeg-tsnet is the private Tailscale
+# Funnel control plane. Both must ship next to codeg-server so sibling
+# lookup works.
 RUN cargo build --release --bin codeg-server --no-default-features \
- && cargo build --release --bin codeg-mcp --no-default-features
+ && cargo build --release --bin codeg-mcp --no-default-features \
+ && cd /app/codeg-tsnet && CGO_ENABLED=0 go build -o /app/src-tauri/target/release/codeg-tsnet .
 
 # Stage 3: Runtime
 FROM node:24-bookworm-slim
@@ -42,6 +50,7 @@ RUN apt-get update && apt-get install -y \
 
 COPY --from=backend /app/src-tauri/target/release/codeg-server /usr/local/bin/codeg-server
 COPY --from=backend /app/src-tauri/target/release/codeg-mcp /usr/local/bin/codeg-mcp
+COPY --from=backend /app/src-tauri/target/release/codeg-tsnet /usr/local/bin/codeg-tsnet
 COPY --from=frontend /app/out /app/web
 
 ENV CODEG_STATIC_DIR=/app/web

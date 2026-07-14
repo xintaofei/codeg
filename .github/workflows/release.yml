@@ -300,32 +300,37 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      # Build the `codeg-mcp` companion binary for the matrix target and
-      # stage it as a Tauri sidecar at
-      # `src-tauri/binaries/codeg-mcp-<triple>{.exe}`. `tauri-action` (below)
-      # then bundles it via the `bundle.externalBin` entry in
-      # `tauri.conf.json` — Tauri installs it next to the main executable
-      # (Contents/MacOS on macOS, install root on Linux/Windows) where the
-      # runtime `locate_codeg_mcp_binary()` finds it via `current_exe`
-      # sibling lookup. The Linux arm64 cross env vars set above also
-      # apply to this cargo invocation.
-      - name: Stage codeg-mcp sidecar for Tauri bundle
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+
+      # Build both sidecars for the matrix target and stage them as Tauri
+      # externalBin companions:
+      #   - codeg-mcp: stdio MCP companion
+      #   - codeg-tsnet: pure-Go Tailscale Funnel control plane
+      # `tauri-action` (below) bundles them via `bundle.externalBin` in
+      # `tauri.conf.json` next to the main executable, where runtime
+      # sibling lookup finds them.
+      - name: Stage sidecars for Tauri bundle
         shell: bash
         run: pnpm tauri:prepare-sidecars --target ${{ matrix.target }}
 
-      - name: Verify codeg-mcp sidecar landed
+      - name: Verify sidecars landed
         shell: bash
         run: |
           ext=""
           case "${{ matrix.target }}" in
             *windows*) ext=".exe" ;;
           esac
-          file="src-tauri/binaries/codeg-mcp-${{ matrix.target }}${ext}"
-          if [ ! -f "$file" ]; then
-            echo "FATAL: sidecar $file missing after prepare-sidecars"
-            exit 1
-          fi
-          ls -la "$file"
+          for name in codeg-mcp codeg-tsnet; do
+            file="src-tauri/binaries/${name}-${{ matrix.target }}${ext}"
+            if [ ! -f "$file" ]; then
+              echo "FATAL: sidecar $file missing after prepare-sidecars"
+              exit 1
+            fi
+            ls -la "$file"
+          done
 
       - name: Import Apple Developer ID certificate
         if: contains(matrix.target, 'apple-darwin')
@@ -662,16 +667,39 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
 
-      - name: Build server + codeg-mcp companion
-        working-directory: src-tauri
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+
+      - name: Build server + sidecars
+        shell: bash
         # `codeg-mcp` is the stdio MCP companion the runtime injects per
-        # session (see acp/delegation/companion.rs). Built with the same
-        # `--no-default-features --target` flags as the server so it shares
-        # the cross-compile env (Linux arm64) without dragging in tauri
-        # runtime deps.
+        # session (see acp/delegation/companion.rs). `codeg-tsnet` is the
+        # pure-Go Tailscale Funnel control plane. Both ship next to
+        # codeg-server so sibling lookup works.
         run: |
-          cargo build --release --bin codeg-server --no-default-features --target ${{ matrix.target }}
-          cargo build --release --bin codeg-mcp --no-default-features --target ${{ matrix.target }}
+          set -euo pipefail
+          cargo build --release --bin codeg-server --no-default-features --target ${{ matrix.target }} --manifest-path src-tauri/Cargo.toml
+          cargo build --release --bin codeg-mcp --no-default-features --target ${{ matrix.target }} --manifest-path src-tauri/Cargo.toml
+          # Map Rust triple -> Go env for cross builds.
+          case "${{ matrix.target }}" in
+            x86_64-apple-darwin) export GOOS=darwin GOARCH=amd64 ;;
+            aarch64-apple-darwin) export GOOS=darwin GOARCH=arm64 ;;
+            x86_64-unknown-linux-gnu) export GOOS=linux GOARCH=amd64 ;;
+            aarch64-unknown-linux-gnu) export GOOS=linux GOARCH=arm64 ;;
+            x86_64-pc-windows-msvc) export GOOS=windows GOARCH=amd64 ;;
+            aarch64-pc-windows-msvc) export GOOS=windows GOARCH=arm64 ;;
+            *) echo "unsupported target for codeg-tsnet: ${{ matrix.target }}"; exit 1 ;;
+          esac
+          export CGO_ENABLED=0
+          if [ "$GOOS" = "windows" ]; then
+            out="src-tauri/target/${{ matrix.target }}/release/codeg-tsnet.exe"
+          else
+            out="src-tauri/target/${{ matrix.target }}/release/codeg-tsnet"
+          fi
+          mkdir -p "$(dirname "$out")"
+          (cd codeg-tsnet && go build -o "../$out" .)
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
@@ -679,7 +707,8 @@ jobs:
           mkdir -p dist/${{ matrix.artifact }}
           cp src-tauri/target/${{ matrix.target }}/release/codeg-server dist/${{ matrix.artifact }}/
           cp src-tauri/target/${{ matrix.target }}/release/codeg-mcp dist/${{ matrix.artifact }}/
-          chmod +x dist/${{ matrix.artifact }}/codeg-server dist/${{ matrix.artifact }}/codeg-mcp
+          cp src-tauri/target/${{ matrix.target }}/release/codeg-tsnet dist/${{ matrix.artifact }}/
+          chmod +x dist/${{ matrix.artifact }}/codeg-server dist/${{ matrix.artifact }}/codeg-mcp dist/${{ matrix.artifact }}/codeg-tsnet
           cp -r out dist/${{ matrix.artifact }}/web
           cd dist && tar czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
 
@@ -690,6 +719,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist/${{ matrix.artifact }}
           Copy-Item src-tauri/target/${{ matrix.target }}/release/codeg-server.exe dist/${{ matrix.artifact }}/
           Copy-Item src-tauri/target/${{ matrix.target }}/release/codeg-mcp.exe dist/${{ matrix.artifact }}/
+          Copy-Item src-tauri/target/${{ matrix.target }}/release/codeg-tsnet.exe dist/${{ matrix.artifact }}/
           Copy-Item -Recurse out dist/${{ matrix.artifact }}/web
           Compress-Archive -Path dist/${{ matrix.artifact }} -DestinationPath dist/${{ matrix.artifact }}.zip
 
@@ -699,15 +729,16 @@ jobs:
           set -euo pipefail
           test -x "dist/${{ matrix.artifact }}/codeg-server"
           test -x "dist/${{ matrix.artifact }}/codeg-mcp"
-          # `codeg-mcp --help` exits 0 without flags and prints the usage
-          # line. Only run it for native targets; cross-compiled arm64
-          # binaries on x64 runners can't execute.
+          test -x "dist/${{ matrix.artifact }}/codeg-tsnet"
+          # Only execute native binaries; cross-compiled arm64 on x64
+          # runners cannot run.
           if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ] || \
              [ "${{ matrix.target }}" = "x86_64-apple-darwin" ] || \
              [ "${{ matrix.target }}" = "aarch64-apple-darwin" ]; then
             "dist/${{ matrix.artifact }}/codeg-mcp" --help | grep -F 'codeg-mcp --parent-connection-id'
+            "dist/${{ matrix.artifact }}/codeg-tsnet" --help | grep -Ei 'control-addr|hostname|state-dir'
           else
-            echo "skipping codeg-mcp --help on cross-target ${{ matrix.target }}"
+            echo "skipping sidecar --help on cross-target ${{ matrix.target }}"
           fi
 
       - name: Smoke test packaged artifact (Windows)
@@ -720,9 +751,16 @@ jobs:
           if (-not (Test-Path "dist/${{ matrix.artifact }}/codeg-mcp.exe")) {
             throw "codeg-mcp.exe missing from packaged artifact"
           }
+          if (-not (Test-Path "dist/${{ matrix.artifact }}/codeg-tsnet.exe")) {
+            throw "codeg-tsnet.exe missing from packaged artifact"
+          }
           $help = & "dist/${{ matrix.artifact }}/codeg-mcp.exe" --help
           if ($help -notlike "*codeg-mcp --parent-connection-id*") {
             throw "codeg-mcp --help output unexpected: $help"
+          }
+          $tsHelp = & "dist/${{ matrix.artifact }}/codeg-tsnet.exe" --help
+          if ($tsHelp -notmatch "control-addr|hostname|state-dir") {
+            throw "codeg-tsnet --help output unexpected: $tsHelp"
           }
 
       - name: Upload artifact for Docker build (Linux only)
@@ -809,14 +847,16 @@ jobs:
           mkdir -p dist/amd64 dist/arm64
           cp artifacts/linux-x64/codeg-server dist/amd64/codeg-server
           cp artifacts/linux-x64/codeg-mcp dist/amd64/codeg-mcp
+          cp artifacts/linux-x64/codeg-tsnet dist/amd64/codeg-tsnet
           cp artifacts/linux-arm64/codeg-server dist/arm64/codeg-server
           cp artifacts/linux-arm64/codeg-mcp dist/arm64/codeg-mcp
+          cp artifacts/linux-arm64/codeg-tsnet dist/arm64/codeg-tsnet
           cp -r artifacts/linux-x64/web dist/web
-          chmod +x dist/amd64/codeg-server dist/amd64/codeg-mcp \
-                   dist/arm64/codeg-server dist/arm64/codeg-mcp
+          chmod +x dist/amd64/codeg-server dist/amd64/codeg-mcp dist/amd64/codeg-tsnet \
+                   dist/arm64/codeg-server dist/arm64/codeg-mcp dist/arm64/codeg-tsnet
           # Fail fast if any companion went missing — Docker would otherwise
-          # produce an image where delegation silently degrades.
-          for f in dist/amd64/codeg-mcp dist/arm64/codeg-mcp; do
+          # produce an image where delegation / Funnel silently degrades.
+          for f in dist/amd64/codeg-mcp dist/arm64/codeg-mcp dist/amd64/codeg-tsnet dist/arm64/codeg-tsnet; do
             test -x "$f" || { echo "FATAL: $f missing or non-exec"; exit 1; }
           done
 

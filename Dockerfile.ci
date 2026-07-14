@@ -27,6 +27,8 @@ COPY dist/${TARGETARCH}/codeg-server /usr/local/bin/codeg-server
 # (see acp/delegation/companion.rs). It must ship next to codeg-server so
 # `locate_codeg_mcp_binary()` finds it via the exe-sibling lookup.
 COPY dist/${TARGETARCH}/codeg-mcp /usr/local/bin/codeg-mcp
+# codeg-tsnet is the private Tailscale Funnel control plane.
+COPY dist/${TARGETARCH}/codeg-tsnet /usr/local/bin/codeg-tsnet
 COPY dist/web /app/web
 
 ENV CODEG_STATIC_DIR=/app/web

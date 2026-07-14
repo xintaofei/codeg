@@ -20,9 +20,9 @@ $Artifact = "codeg-server-windows-x64"
 # layer spawns per session for delegation. Both must live in the same
 # directory — `locate_codeg_mcp_binary()` in src-tauri/src/acp/connection.rs
 # resolves the companion as a sibling of the running server executable.
-$ManagedBins = @("codeg-server", "codeg-mcp")
+$ManagedBins = @("codeg-server", "codeg-mcp", "codeg-tsnet")
 
-# Stale codeg-server / codeg-mcp binaries elsewhere in PATH are removed by
+# Stale codeg-server / codeg-mcp / codeg-tsnet binaries elsewhere in PATH are removed by
 # default so the user's `codeg-server` command always runs the freshly
 # installed binary AND the runtime locates the matching companion via the
 # exe-sibling lookup. Pass -NoCleanup (or set CODEG_NO_CLEANUP=1) to disable.
@@ -211,6 +211,18 @@ if ($McpProcesses) {
     }
 }
 
+$TsnetProcesses = Get-Process -Name "codeg-tsnet" -ErrorAction SilentlyContinue
+if ($TsnetProcesses) {
+    Write-Host "Stopping running codeg-tsnet Funnel process(es)..."
+    $TsnetProcesses | Stop-Process -Force
+    Start-Sleep -Seconds 1
+    $StillRunning = Get-Process -Name "codeg-tsnet" -ErrorAction SilentlyContinue
+    if ($StillRunning) {
+        $StillRunning | Stop-Process -Force
+        Start-Sleep -Seconds 1
+    }
+}
+
 # ── Download and extract ──
 
 $Url = "https://github.com/$Repo/releases/download/$Version/$Artifact.zip"
@@ -321,6 +333,7 @@ if (-not $InstalledVer) { $InstalledVer = $TargetVer }
 Write-Host ""
 Write-Host "codeg-server installed to $InstallDir\codeg-server.exe"
 Write-Host "codeg-mcp    installed to $InstallDir\codeg-mcp.exe"
+Write-Host "codeg-tsnet  installed to $InstallDir\codeg-tsnet.exe"
 Write-Host "Version: $InstalledVer"
 
 # Final smoke: codeg-mcp.exe must exist next to codeg-server.exe so the
@@ -332,6 +345,13 @@ if (-not (Test-Path -LiteralPath $McpPath)) {
     Write-Host ""
     Write-Host "Error: $McpPath missing after install."
     Write-Host "       Delegation (sub-agent tooling) will not work. Re-run the installer."
+    $ExitStatus = 1
+}
+$TsnetPath = Join-Path $InstallDir "codeg-tsnet.exe"
+if (-not (Test-Path -LiteralPath $TsnetPath)) {
+    Write-Host ""
+    Write-Host "Error: $TsnetPath missing after install."
+    Write-Host "       Tailscale Funnel public access will not work. Re-run the installer."
     $ExitStatus = 1
 }
 
