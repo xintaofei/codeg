@@ -2772,6 +2772,7 @@
     "hide": "숨기기",
     "show": "표시",
     "copy": "복사",
+    "copyFailed": "복사에 실패했습니다",
     "qrcode": "QR 코드",
     "qrcodeTitle": "스캔하여 열기",
     "qrcodeHint": "휴대폰으로 스캔하여 브라우저에서 Codeg를 엽니다",

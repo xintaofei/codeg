@@ -2772,6 +2772,7 @@
     "hide": "非表示",
     "show": "表示",
     "copy": "コピー",
+    "copyFailed": "コピーに失敗しました",
     "qrcode": "QRコード",
     "qrcodeTitle": "スキャンして開く",
     "qrcodeHint": "スマートフォンでスキャンして、ブラウザで Codeg を開きます",

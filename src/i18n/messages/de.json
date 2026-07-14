@@ -2772,6 +2772,7 @@
     "hide": "Ausblenden",
     "show": "Einblenden",
     "copy": "Kopieren",
+    "copyFailed": "Kopieren fehlgeschlagen",
     "qrcode": "QR-Code",
     "qrcodeTitle": "Zum Öffnen scannen",
     "qrcodeHint": "Scanne mit deinem Handy, um Codeg im Browser zu öffnen",

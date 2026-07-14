@@ -2772,6 +2772,7 @@
     "hide": "Ocultar",
     "show": "Mostrar",
     "copy": "Copiar",
+    "copyFailed": "Error al copiar",
     "qrcode": "Código QR",
     "qrcodeTitle": "Escanear para abrir",
     "qrcodeHint": "Escanea con tu teléfono para abrir Codeg en el navegador",

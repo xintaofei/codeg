@@ -2772,6 +2772,7 @@
     "hide": "إخفاء",
     "show": "إظهار",
     "copy": "نسخ",
+    "copyFailed": "فشل النسخ",
     "qrcode": "رمز QR",
     "qrcodeTitle": "امسح للفتح",
     "qrcodeHint": "امسح بهاتفك لفتح Codeg في المتصفح",

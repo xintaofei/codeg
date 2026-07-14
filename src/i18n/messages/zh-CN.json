@@ -2772,6 +2772,7 @@
     "hide": "隐藏",
     "show": "显示",
     "copy": "复制",
+    "copyFailed": "复制失败",
     "qrcode": "二维码",
     "qrcodeTitle": "扫码打开",
     "qrcodeHint": "用手机扫描，在浏览器中打开 Codeg",
