@@ -162,8 +162,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "Claude Code",
             description: "ACP wrapper for Anthropic's Claude",
             distribution: AgentDistribution::Npx {
-                version: "0.58.1",
-                package: "@agentclientprotocol/claude-agent-acp@0.58.1",
+                version: "0.59.0",
+                package: "@agentclientprotocol/claude-agent-acp@0.59.0",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -215,12 +215,12 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "OpenClaw",
             description: "OpenClaw is a personal AI assistant you run on your own devices.",
             distribution: AgentDistribution::Npx {
-                version: "2026.6.11",
-                package: "openclaw@2026.6.11",
+                version: "2026.7.1",
+                package: "openclaw@2026.7.1",
                 cmd: "openclaw",
                 args: &["acp"],
                 env: &[],
-                node_required: Some("22.19.0"),
+                node_required: Some("22.22.3"),
             },
         },
         AgentType::Cline => AcpAgentMeta {
@@ -229,8 +229,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "Cline",
             description: "Autonomous coding agent CLI",
             distribution: AgentDistribution::Npx {
-                version: "3.0.39",
-                package: "cline@3.0.39",
+                version: "3.0.40",
+                package: "cline@3.0.40",
                 cmd: "cline",
                 args: &["--acp"],
                 env: &[],
@@ -243,34 +243,34 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "OpenCode",
             description: "The open source coding agent",
             distribution: AgentDistribution::Binary {
-                version: "1.17.18",
+                version: "1.17.20",
                 cmd: "opencode",
                 args: &["acp"],
                 env: &[],
                 platforms: &[
                     PlatformBinary {
                         platform: "darwin-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.18/opencode-darwin-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.20/opencode-darwin-arm64.zip",
                     },
                     PlatformBinary {
                         platform: "darwin-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.18/opencode-darwin-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.20/opencode-darwin-x64.zip",
                     },
                     PlatformBinary {
                         platform: "linux-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.18/opencode-linux-arm64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.20/opencode-linux-arm64.tar.gz",
                     },
                     PlatformBinary {
                         platform: "linux-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.18/opencode-linux-x64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.20/opencode-linux-x64.tar.gz",
                     },
                     PlatformBinary {
                         platform: "windows-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.18/opencode-windows-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.20/opencode-windows-arm64.zip",
                     },
                     PlatformBinary {
                         platform: "windows-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.18/opencode-windows-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.17.20/opencode-windows-x64.zip",
                     },
                 ],
             },
@@ -303,8 +303,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "CodeBuddy",
             description: "Tencent Cloud's official AI coding assistant (ACP)",
             distribution: AgentDistribution::Npx {
-                version: "2.118.2",
-                package: "@tencent-ai/codebuddy-code@2.118.2",
+                version: "2.121.2",
+                package: "@tencent-ai/codebuddy-code@2.121.2",
                 cmd: "codebuddy",
                 args: &["--acp"],
                 env: &[],
@@ -317,8 +317,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "Kimi Code",
             description: "Moonshot AI's official CLI coding assistant (ACP)",
             distribution: AgentDistribution::Npx {
-                version: "0.23.5",
-                package: "@moonshot-ai/kimi-code@0.23.5",
+                version: "0.24.1",
+                package: "@moonshot-ai/kimi-code@0.24.1",
                 cmd: "kimi",
                 args: &["acp"],
                 env: &[],
@@ -374,8 +374,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // leading `KEY=value` argv and sacp's `parse_env_var` only accepts
             // `[A-Za-z0-9_]` env names, which npm's `@scope:registry` key is not.)
             distribution: AgentDistribution::Npx {
-                version: "0.2.94",
-                package: "@xai-official/grok@0.2.94",
+                version: "0.2.101",
+                package: "@xai-official/grok@0.2.101",
                 cmd: "grok",
                 // Only the ACP subcommand lives here. Grok's ROOT-level launch
                 // flags (`--no-auto-update` always, `--permission-mode <value>`
@@ -386,7 +386,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                 // args rather than appending after.
                 args: &["agent", "stdio"],
                 env: &[],
-                // `@xai-official/grok@0.2.94` declares `engines.node: ">=20"`;
+                // `@xai-official/grok@0.2.101` declares `engines.node: ">=20"`;
                 // surface that in preflight so Node 18 isn't silently accepted.
                 node_required: Some("20.0.0"),
             },
@@ -482,8 +482,8 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.58.1",
-            "@agentclientprotocol/claude-agent-acp@0.58.1",
+            "0.59.0",
+            "@agentclientprotocol/claude-agent-acp@0.59.0",
             Some("22.0.0"),
         );
         assert_npx_version(
@@ -494,26 +494,26 @@ mod tests {
         );
         assert_npx_version(
             AgentType::OpenClaw,
-            "2026.6.11",
-            "openclaw@2026.6.11",
-            Some("22.19.0"),
+            "2026.7.1",
+            "openclaw@2026.7.1",
+            Some("22.22.3"),
         );
         assert_npx_version(
             AgentType::Cline,
-            "3.0.39",
-            "cline@3.0.39",
+            "3.0.40",
+            "cline@3.0.40",
             Some("22.0.0"),
         );
         assert_npx_version(
             AgentType::CodeBuddy,
-            "2.118.2",
-            "@tencent-ai/codebuddy-code@2.118.2",
+            "2.121.2",
+            "@tencent-ai/codebuddy-code@2.121.2",
             Some("22.0.0"),
         );
         assert_npx_version(
             AgentType::KimiCode,
-            "0.23.5",
-            "@moonshot-ai/kimi-code@0.23.5",
+            "0.24.1",
+            "@moonshot-ai/kimi-code@0.24.1",
             Some("22.19.0"),
         );
         assert_npx_version(
@@ -525,11 +525,11 @@ mod tests {
         assert_npx_version(AgentType::Pi, "0.0.31", "pi-acp@0.0.31", Some("22.0.0"));
         assert_npx_version(
             AgentType::Grok,
-            "0.2.94",
-            "@xai-official/grok@0.2.94",
+            "0.2.101",
+            "@xai-official/grok@0.2.101",
             Some("20.0.0"),
         );
-        assert_binary_version(AgentType::OpenCode, "1.17.18", "/releases/download/v1.17.18/");
+        assert_binary_version(AgentType::OpenCode, "1.17.20", "/releases/download/v1.17.20/");
         assert_uvx_version(
             AgentType::Hermes,
             "0.18.2",
