@@ -344,12 +344,46 @@ pub enum AcpEvent {
 /// `status` is the notification's `<status>` passed through verbatim
 /// (`"completed"` on success). The same task id may settle more than once —
 /// a completed sub-agent can be resumed via `SendMessage` and re-notify.
+///
+/// `tool_use_id` and `result` come from the same `<task-notification>` record's
+/// `<tool-use-id>`/`<result>` tags. They let the frontend flip the LAUNCH card
+/// (`AgentToolCallPart`) from "running in background" to its terminal state
+/// entirely in-memory — rewriting the launching tool call's own
+/// `[[codeg-background-task]]` marker — WITHOUT a `refetchDetail`. That refetch
+/// path used to be the only card-flip trigger, but it re-parses the still-open
+/// transcript mid-`#870`-hold and both double-renders the held turn and races
+/// the file's own last write.
+/// `tool_use_id` is the launching `tool_use`/`tool_result` block's id (Claude's
+/// SDK-level `toolu_…`), NOT `task_id`; `None` for a background shell (its
+/// notification carries no tool-use-id and it has no marker card to flip).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackgroundSettledInfo {
     pub task_id: String,
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// The launching tool call's `tool_use_id` (from the notification's
+    /// `<tool-use-id>`), so the frontend can locate the exact card to flip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_use_id: Option<String>,
+    /// The notification's `<result>` markdown (capped at
+    /// [`crate::parsers::claude::BACKGROUND_RESULT_MAX_CHARS`], matching the
+    /// cold-parse fold), so the live path renders identically to a cold detail
+    /// parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+    /// Whether this task's reply is/was rendered on the ACP wire as the tail of
+    /// a turn `#870` (claude-agent-acp v0.59.0) held open for it — i.e. the
+    /// settling task's id was still in `current_turn_launched_ids` when the
+    /// watcher read the notification. The frontend uses this to decide whether
+    /// to arm the "syncing results" hint: for a wire-visible settle the reply
+    /// is already on screen (no gap to bridge), whereas a genuinely out-of-turn
+    /// settle's reply arrives later as a separate overlay turn. Derived from the
+    /// backend set (which persists until the next turn's rising edge), NOT from
+    /// the connection's current status — so it's correct even when the watcher
+    /// reads the settlement AFTER the turn already fell back to `Connected`.
+    #[serde(default)]
+    pub wire_visible: bool,
 }
 
 /// Which settings surface drifted, so the frontend can word the

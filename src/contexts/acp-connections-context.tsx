@@ -341,11 +341,13 @@ type Action =
       // accounting) plus whether this event settled tasks / carried overlay
       // turns, which drive the settle-syncing bridge state. No-op when
       // nothing it mirrors changed, so repeat events don't re-render
-      // connection consumers.
+      // connection consumers. `outOfTurnSettleCount` counts only settles whose
+      // reply arrives OUT OF TURN (a separate overlay turn) — i.e. NOT
+      // wire-visible; those are the ones the "syncing results" hint bridges.
       type: "SET_BACKGROUND_OUTSTANDING"
       contextKey: string
       outstanding: number
-      settledCount: number
+      outOfTurnSettleCount: number
       turnsCount: number
     }
   | StreamingAction
@@ -1383,13 +1385,21 @@ function connectionsReducer(
     case "SET_BACKGROUND_OUTSTANDING": {
       const conn = state.get(action.contextKey)
       if (!conn) return state
-      // Settle-syncing bridge: a settlement means the agent's reaction turn
-      // is being generated (the task-notification always triggers one) — arm
-      // the indicator. The first turns-only event is that reaction arriving —
-      // disarm. An event carrying BOTH (reaction to task A + settlement of
-      // task B) re-arms: another reaction is still pending.
+      // Settle-syncing bridge: a settlement whose reply arrives OUT OF TURN
+      // (as a separate overlay turn) means that reply is being generated — arm
+      // the "syncing results" hint to fill the gap until it surfaces. The
+      // backend classifies this per settle via `wire_visible` (folded into
+      // `outOfTurnSettleCount` by the handler): under claude-agent-acp #870 the
+      // launching turn is held OPEN and the reply streams LIVE as its tail —
+      // already on screen, no gap to bridge — so those are excluded. Arming for
+      // a held settle would STRAND the hint: its reply never arrives as an
+      // overlay `turns` event, so nothing disarms it and it sits until the 30s
+      // cap (the "结果都出来了还显示 Syncing" bug). Using the backend flag rather
+      // than the connection's current status is deliberate — it's correct even
+      // when the watcher reads the settlement after the turn already fell back
+      // to `connected`. The first genuinely out-of-turn `turns` event disarms.
       const syncingSince =
-        action.settledCount > 0
+        action.outOfTurnSettleCount > 0
           ? Date.now()
           : action.turnsCount > 0
             ? null
@@ -2948,7 +2958,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             type: "SET_BACKGROUND_OUTSTANDING",
             contextKey,
             outstanding: e.outstanding,
-            settledCount: e.settled?.length ?? 0,
+            // Only settles whose reply arrives out of turn (NOT wire-visible)
+            // warrant the syncing hint; a #870-held settle's reply is already
+            // live on screen (see the reducer + BackgroundSettledInfo).
+            outOfTurnSettleCount:
+              e.settled?.filter((s) => !s.wire_visible).length ?? 0,
             turnsCount: e.turns?.length ?? 0,
           })
           // 2. overlay turns → the conversation runtime store (resolved via
@@ -3009,22 +3023,33 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                 () => {}
               )
             }
-            // 4. fold the settlement into persisted turns: a refetch flips
-            //    the launching card from "result pending" to its terminal
-            //    state (the parser joins the ack with the notification) and
-            //    retires covered overlay turns via the watermark rule. Rare
-            //    (once per task settling), so a full detail parse is fine.
-            //    preserveLive while a foreground turn is in flight so the
-            //    refetch can't clobber the streaming buffers it races.
+            // 4. flip each async sub-agent's launch card to its terminal
+            //    (completed + result) state IN-MEMORY, by rewriting the
+            //    launching tool call's `[[codeg-background-task]]` marker from
+            //    the settle payload's own `tool_use_id`/`status`/`result`. This
+            //    deliberately replaces the `refetchDetail` this used to do: that
+            //    refetch re-parsed the still-open transcript mid-#870-hold,
+            //    double-rendering the held turn AND racing the file's last
+            //    write. Entries with
+            //    no `tool_use_id` (background shells) have no marker card and are
+            //    skipped. The store queues a settlement whose launch turn hasn't
+            //    promoted yet and applies it at COMPLETE_TURN.
             const conversationId = getConversationIdByExternalIdFromStore(
               e.session_id
             )
             if (conversationId != null) {
-              useConversationRuntimeStore
-                .getState()
-                .actions.refetchDetail(conversationId, {
-                  preserveLive: nc?.status === "prompting",
+              const runtimeActions =
+                useConversationRuntimeStore.getState().actions
+              for (const settled of e.settled) {
+                if (!settled.tool_use_id) continue
+                runtimeActions.resolveBackgroundTask(conversationId, {
+                  toolUseId: settled.tool_use_id,
+                  taskId: settled.task_id,
+                  status: settled.status,
+                  summary: settled.summary ?? null,
+                  result: settled.result ?? null,
                 })
+              }
             }
           }
           break

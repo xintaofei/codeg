@@ -172,6 +172,10 @@ describe("ConversationRuntimeProvider fetch-generation guard", () => {
 
   beforeEach(() => {
     mockGetFolderConversation.mockReset()
+    // Default to a promise that never resolves so any call a test doesn't
+    // explicitly configure is a harmless no-op; `mockResolvedValueOnce` calls
+    // below take priority for calls a test does care about.
+    mockGetFolderConversation.mockImplementation(() => new Promise(() => {}))
     preserveLiveFlag = false
     originalConsoleError = console.error
     // Filter React's act() warnings produced when promise resolutions
@@ -701,6 +705,8 @@ describe("ConversationRuntimeProvider delegation kickoff projection", () => {
   beforeEach(() => {
     runtimeHolder.current = undefined
     mockGetFolderConversation.mockReset()
+    // See the fetch-generation-guard describe's beforeEach above for why.
+    mockGetFolderConversation.mockImplementation(() => new Promise(() => {}))
   })
 
   it("synthesizes the kickoff user turn (and strips the persisted reply) while the transcript has no user turn yet", async () => {
@@ -1041,6 +1047,8 @@ describe("ConversationRuntimeProvider viewer user-turn synthesis", () => {
   beforeEach(() => {
     runtimeHolder.current = undefined
     mockGetFolderConversation.mockReset()
+    // See the fetch-generation-guard describe's beforeEach above for why.
+    mockGetFolderConversation.mockImplementation(() => new Promise(() => {}))
   })
 
   it("synthesizes the sender's user turn for a viewer", () => {

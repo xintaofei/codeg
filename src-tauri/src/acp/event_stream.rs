@@ -436,10 +436,16 @@ fn estimate_envelope_size(envelope: &EventEnvelope) -> usize {
                 + settled
                     .iter()
                     .map(|s| {
-                        // `{"task_id":…,"status":…,"summary":…}` + comma
-                        64 + json_str_len(&s.task_id)
+                        // Keys + braces + commas for every field (task_id,
+                        // status, summary, tool_use_id, result, wire_visible)
+                        // plus the `wire_visible` bool value and the element
+                        // comma — generously fixed so `estimate >= serialized`
+                        // holds for every present/absent optional combination.
+                        128 + json_str_len(&s.task_id)
                             + json_str_len(&s.status)
                             + opt_str_size(&s.summary)
+                            + opt_str_size(&s.tool_use_id)
+                            + opt_str_size(&s.result)
                     })
                     .sum::<usize>()
         }
@@ -997,11 +1003,19 @@ mod tests {
                         task_id: "ae6bd822f7a0e23a8".into(),
                         status: "completed".into(),
                         summary: Some("Agent \"Run pnpm build\" finished".into()),
+                        tool_use_id: Some("toolu_01P782zHv8AMMpXYqaz39ijf".into()),
+                        // Escape-heavy + large, to exercise the estimate's
+                        // coverage of the (previously omitted) `result` field.
+                        result: Some("Build \"log\"\n\t".repeat(2048)),
+                        wire_visible: true,
                     },
                     crate::acp::types::BackgroundSettledInfo {
                         task_id: "bipkee1pw".into(),
                         status: "failed".into(),
                         summary: None,
+                        tool_use_id: None,
+                        result: None,
+                        wire_visible: false,
                     },
                 ],
                 watermark: u64::MAX,

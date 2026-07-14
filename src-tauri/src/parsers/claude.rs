@@ -52,8 +52,11 @@ fn model_capacity_suffix_regex() -> &'static Regex {
 pub(crate) const BACKGROUND_TASK_MARKER: &str = "[[codeg-background-task]]";
 
 /// Cap for the folded `<result>` markdown carried on the lifecycle marker —
-/// generous for a sub-agent summary, bounded against a pathological one.
-const BACKGROUND_RESULT_MAX_CHARS: usize = 16_000;
+/// generous for a sub-agent summary, bounded against a pathological one. Also
+/// applied by `background_watch.rs` to the `<result>` it carries on a live
+/// `settled` event, so the live-flipped card matches the cold-parse cap and an
+/// oversized report can't blow the event-stream size budget.
+pub(crate) const BACKGROUND_RESULT_MAX_CHARS: usize = 16_000;
 
 /// Latest `<task-notification>` observed for a background task id.
 struct BackgroundNotification {
@@ -77,7 +80,17 @@ pub(crate) fn task_notification_summary_regex() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"(?s)<summary>(.*?)</summary>").unwrap())
 }
 
-fn task_notification_result_regex() -> &'static Regex {
+/// The `<tool-use-id>` of the launching tool call, carried by every async
+/// sub-agent `<task-notification>`. Lets the background watcher tie a settlement
+/// back to the exact launch card without a separate ack→id map (both ids are
+/// siblings in the notification record). Background-shell notifications don't
+/// carry this tag.
+pub(crate) fn task_notification_tool_use_id_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?s)<tool-use-id>(.*?)</tool-use-id>").unwrap())
+}
+
+pub(crate) fn task_notification_result_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"(?s)<result>(.*?)</result>").unwrap())
 }

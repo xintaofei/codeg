@@ -51,14 +51,16 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 use crate::acp::session_state::{background_keepalive_max_age, SessionState};
-use crate::acp::types::{AcpEvent, BackgroundSettledInfo};
+use crate::acp::types::{AcpEvent, BackgroundSettledInfo, ConnectionStatus};
 use crate::models::agent::AgentType;
 use crate::models::message::MessageTurn;
 use crate::parsers::claude::{
     capture_tag, find_session_file, group_into_turns, is_meta_message, slash_command_display,
-    task_notification_status_regex, task_notification_summary_regex,
-    task_notification_task_id_regex, ClaudeRecordAccumulator, CONTEXT_CONTINUATION_PREFIX,
+    task_notification_result_regex, task_notification_status_regex, task_notification_summary_regex,
+    task_notification_task_id_regex, task_notification_tool_use_id_regex, ClaudeRecordAccumulator,
+    BACKGROUND_RESULT_MAX_CHARS, CONTEXT_CONTINUATION_PREFIX,
 };
+use crate::parsers::truncate_str;
 use crate::web::event_bridge::{emit_with_state, EventEmitter};
 
 /// Poll cadence while background work is outstanding or the transcript moved
@@ -232,9 +234,14 @@ async fn run_watch(
     loop {
         tokio::time::sleep(ws.poll_delay()).await;
 
-        let (session_id, session_changed_at) = {
+        let (session_id, session_changed_at, is_prompting, turn_ended_abnormally) = {
             let s = state.read().await;
-            (s.external_id.clone(), s.external_id_changed_at)
+            (
+                s.external_id.clone(),
+                s.external_id_changed_at,
+                s.status == ConnectionStatus::Prompting,
+                s.last_turn_ended_abnormally,
+            )
         };
         let Some(session_id) = session_id else {
             continue; // session not established yet
@@ -266,7 +273,13 @@ async fn run_watch(
         let conn_for_tick = conn_id.clone();
         let joined = tokio::task::spawn_blocking(move || {
             let mut ws = ws;
-            let event = ws.tick(&ledger_ref, &cwd_for_tick, &conn_for_tick);
+            let event = ws.tick(
+                &ledger_ref,
+                &cwd_for_tick,
+                &conn_for_tick,
+                is_prompting,
+                turn_ended_abnormally,
+            );
             (ws, event)
         })
         .await;
@@ -324,6 +337,13 @@ struct Episode {
     acc: ClaudeRecordAccumulator,
     /// turn id → content hash at last emission, for changed-turn upserts.
     emitted_hashes: HashMap<String, u64>,
+    /// The task id of the `<task-notification>` that initiated this episode,
+    /// or `None` for any other out-of-turn initiator (a cron prompt, other
+    /// injected text). Carried across a force-rotation (same continuous
+    /// out-of-turn stretch, just re-based) — see `classify_and_feed`. Used by
+    /// `collect_changed_turns` to tag each collected turn for the held-turn
+    /// suppression filter in `tick()`.
+    origin_task_id: Option<String>,
 }
 
 enum Mode {
@@ -348,6 +368,43 @@ pub(crate) struct WatchState {
     /// Task ids that have settled at least once — a later `SendMessage` to
     /// such an id re-arms it (the resumed sub-agent will notify again).
     settled_ids: HashSet<String>,
+    /// Task ids launched (an `async_launched`/`backgroundTaskId` ack seen)
+    /// while the connection's CURRENTLY (or most recently) active turn was
+    /// `Prompting`. An `async_launched` (sub-agent) id is inserted here;
+    /// `backgroundTaskId` (shell) ids deliberately are NOT (see `account()`).
+    /// Cleared on every Connected→Prompting rising edge (each turn starts
+    /// with an empty set) AND, early, the instant a turn is observed to have
+    /// ended abnormally (see `last_turn_ended_abnormally` below) — otherwise
+    /// it persists UNCHANGED across a normal Prompting→Connected falling
+    /// edge, with no time limit. Used to detect an out-of-turn
+    /// `<task-notification>` follow-up that belongs to a turn #870
+    /// (claude-agent-acp v0.59.0) is holding open for its own spawned
+    /// sub-agents: that follow-up's content is already rendering on the wire,
+    /// so the OVERLAY turn for it must be suppressed to avoid double-rendering
+    /// it (`tick()`'s `changed_turns` filter). The `settled` notification for
+    /// the same task is NOT suppressed — the frontend needs it to flip the
+    /// launch card, and it patches that card in-memory rather than re-parsing
+    /// the transcript, so it can't double-render (see `tick()`). No time window
+    /// is needed: the set's own lifetime — cleared only at the next rising
+    /// edge — already covers the case where the turn's tail content is read by
+    /// a tick strictly AFTER the falling edge (the watcher polls on its own
+    /// cadence, independent of exactly when the turn settles), for however long
+    /// that takes.
+    current_turn_launched_ids: HashSet<String>,
+    /// `Prompting` state observed at the previous tick — the edge detector for
+    /// `current_turn_launched_ids` above.
+    was_prompting: bool,
+    /// `Prompting` state for the tick currently being processed. Set once at
+    /// `tick()` entry from the caller-supplied snapshot so `account()` (called
+    /// per transcript line within the same tick) can read it without an extra
+    /// parameter threaded through every call site.
+    currently_prompting: bool,
+    /// `MessageTurn.id` → the out-of-turn episode's origin task id (`None` if
+    /// the episode wasn't initiated by a `<task-notification>`, e.g. a cron
+    /// prompt), for turns collected THIS tick by `collect_changed_turns`.
+    /// Drained by the suppression filter at the end of `tick()` — entries
+    /// never outlive the tick that created them.
+    turn_origin_task_ids: HashMap<String, Option<String>>,
     last_disk_activity: Option<Instant>,
     last_emitted_outstanding: Option<u32>,
     armed_logged: bool,
@@ -376,6 +433,10 @@ impl WatchState {
             episode: None,
             tasks: HashMap::new(),
             settled_ids: HashSet::new(),
+            current_turn_launched_ids: HashSet::new(),
+            was_prompting: false,
+            currently_prompting: false,
+            turn_origin_task_ids: HashMap::new(),
             last_disk_activity: None,
             // Some(0), not None: consumers assume zero until told otherwise,
             // so the first tick must not emit an accounting-only event for a
@@ -427,13 +488,43 @@ impl WatchState {
     /// One poll tick: stat-gate, tail-read complete lines, account + classify
     /// each record, regroup the episode, and decide what (if anything) to
     /// emit. Never panics on malformed input — bad lines are skipped.
+    ///
+    /// `is_prompting` is a snapshot of the connection's `Prompting` status
+    /// taken by the async caller right before this (blocking) tick runs — see
+    /// `current_turn_launched_ids`'s doc comment for why the watcher needs it.
+    /// `turn_ended_abnormally` is a snapshot of `SessionState::
+    /// last_turn_ended_abnormally` taken at the same instant — meaningful only
+    /// on the tick that observes the falling edge (see below).
     pub(crate) fn tick(
         &mut self,
         ledger: &PromptLedger,
         cwd: &str,
         conn_id: &str,
+        is_prompting: bool,
+        turn_ended_abnormally: bool,
     ) -> Option<AcpEvent> {
         let session_id = self.session_id.clone()?;
+
+        // Rising edge (a fresh turn started prompting): ids a PAST turn
+        // launched must not suppress an out-of-turn follow-up that has
+        // nowhere else to render. Falling edge: if the turn ended abnormally
+        // (cancelled/refused/etc — its content never reached the wire),
+        // release its launched ids NOW rather than waiting for the next
+        // rising edge — there is no live view left for a late notification to
+        // duplicate, so the overlay is correctly the only place left for it
+        // to render. A NORMAL falling edge leaves the set untouched: it stays
+        // suppression-eligible, with no time limit, until the next rising
+        // edge (see `current_turn_launched_ids`'s doc comment).
+        // `account()` reads `currently_prompting` per-line below without its
+        // own parameter.
+        if is_prompting && !self.was_prompting {
+            self.current_turn_launched_ids.clear();
+        }
+        if !is_prompting && self.was_prompting && turn_ended_abnormally {
+            self.current_turn_launched_ids.clear();
+        }
+        self.was_prompting = is_prompting;
+        self.currently_prompting = is_prompting;
 
         // Expire tasks past the keep-alive max age so a lost completion can't
         // pin the connection alive forever; the emitted outstanding drop also
@@ -532,6 +623,52 @@ impl WatchState {
             }
         }
 
+        // Held-turn OVERLAY suppression: a turn #870 (claude-agent-acp v0.59.0)
+        // is holding open for its own spawned sub-agents renders their follow-up
+        // content on the wire
+        // already, so the OVERLAY copy of that content (a `changed_turns` entry)
+        // must NOT also render — that's the double-render this drop prevents. No
+        // time window is needed: an id's membership in `current_turn_launched_ids`
+        // alone closes the TOCTOU race a naive "is_prompting right now" check
+        // would miss (the turn's own tail content can be read by THIS tick
+        // strictly after the falling edge, even though it was genuinely
+        // wire-rendered a beat earlier while still `Prompting`) — the set simply
+        // isn't cleared until the next rising edge (or immediately, for an
+        // abnormal ending — see `tick()`'s entry). Every other out-of-turn turn
+        // (cron//loop autonomous turns have no originating task id at all; a
+        // notification for a task some OTHER, already-superseded turn launched
+        // isn't in THIS turn's set; background shells are never inserted into the
+        // set at all — see `account()`) passes through unaffected.
+        //
+        // `settled` is deliberately NOT filtered the same way. It carries the
+        // task's terminal state + `<result>` + launching `tool_use_id`, which the
+        // frontend needs to flip the launch CARD (`AgentToolCallPart`) from
+        // "running in background" to its completed/result form — the ONLY trigger
+        // for that flip. Filtering it (as an earlier iteration did) left the card
+        // frozen forever, because `settled.push` fires exactly once per
+        // notification record and the bytes are never re-read. Un-filtering it
+        // does NOT re-introduce a double-render: the frontend patches the
+        // existing card in-memory from this payload (`resolveBackgroundTask`)
+        // rather than issuing the `refetchDetail` it used to — see §3.2.
+        // `outstanding`/`watermark` are computed independently and untouched by
+        // this filter, so the sweep-exemption/chip accounting stays accurate.
+        //
+        // Instead of dropping a held-turn settle we TAG it: `wire_visible` marks
+        // a settle whose task belongs to a turn #870 is holding open (its id is
+        // still in `current_turn_launched_ids`), so its reply is already on the
+        // wire. The frontend reads this to skip arming the "syncing results"
+        // hint for such a settle (there's no gap to bridge) — a backend-derived
+        // classification, correct even when this tick reads the settlement after
+        // the turn already fell back to `Connected` (the set isn't cleared until
+        // the next rising edge).
+        changed_turns.retain(|t| {
+            let origin = self.turn_origin_task_ids.remove(&t.id).flatten();
+            !matches!(origin, Some(task_id) if self.current_turn_launched_ids.contains(&task_id))
+        });
+        for s in settled.iter_mut() {
+            s.wire_visible = self.current_turn_launched_ids.contains(&s.task_id);
+        }
+
         let outstanding = self.tasks.len() as u32;
         let accounting_changed =
             expired_any || self.last_emitted_outstanding != Some(outstanding);
@@ -613,28 +750,58 @@ impl WatchState {
                             .and_then(|v| v.as_str())
                             .filter(|s| !s.is_empty())
                         {
-                            tracing::info!("[bg-watch] registered async agent task={id}");
-                            self.tasks.insert(
-                                id.to_string(),
+                            // `entry().or_insert_with()`, not a blind `insert`:
+                            // a re-observed id (e.g. a resumed sub-agent's ack
+                            // repeating) must not reset `started_at` to now —
+                            // that would restart the max-age clock from
+                            // whatever tick last saw it instead of counting
+                            // from first launch, silently extending how long a
+                            // truly-abandoned task can pin the connection
+                            // alive. The log fires only on first registration.
+                            self.tasks.entry(id.to_string()).or_insert_with(|| {
+                                tracing::info!("[bg-watch] registered async agent task={id}");
                                 TaskEntry {
                                     kind: "agent",
                                     started_at: Instant::now(),
-                                },
-                            );
+                                }
+                            });
+                            // This turn is still `Prompting` at launch time — a
+                            // later out-of-turn follow-up for this SAME id is
+                            // therefore held-open content already rendering on
+                            // the wire (see `current_turn_launched_ids`'s doc
+                            // comment); mark it so `tick()`'s suppression
+                            // filter can catch it.
+                            if self.currently_prompting {
+                                self.current_turn_launched_ids.insert(id.to_string());
+                            }
                         }
                     } else if let Some(id) = tur
                         .get("backgroundTaskId")
                         .and_then(|v| v.as_str())
                         .filter(|s| !s.is_empty())
                     {
-                        tracing::info!("[bg-watch] registered background shell task={id}");
-                        self.tasks.insert(
-                            id.to_string(),
+                        // Same first-seen rationale as the agent branch above —
+                        // doubly important here since a still-running shell is
+                        // typically observed via REPEATED `BashOutput`-style
+                        // reads of this identical shape.
+                        self.tasks.entry(id.to_string()).or_insert_with(|| {
+                            tracing::info!("[bg-watch] registered background shell task={id}");
                             TaskEntry {
                                 kind: "shell",
                                 started_at: Instant::now(),
-                            },
-                        );
+                            }
+                        });
+                        // Deliberately NOT inserted into `current_turn_launched_ids`:
+                        // #870 never holds a turn open for a shell (this
+                        // module's own top-of-file doc comment — "a hold must
+                        // NEVER wait on a shell"), so a shell's owning turn
+                        // always ends via an ordinary `end_turn` while the
+                        // shell keeps running. If shells were suppression-
+                        // eligible, the unbounded (until-next-turn) lifetime
+                        // of that set would silently swallow a shell's
+                        // eventual completion for its entire realistic
+                        // runtime — content that was never on the wire in the
+                        // first place, with nothing to fall back on.
                     }
 
                     // Settle a task the agent collected via `TaskOutput`: its
@@ -672,6 +839,19 @@ impl WatchState {
                         let status = capture_tag(task_notification_status_regex(), trimmed)
                             .unwrap_or_else(|| "completed".into());
                         let summary = capture_tag(task_notification_summary_regex(), trimmed);
+                        // The notification is self-contained: its `<tool-use-id>`
+                        // is the launching tool call's id and `<result>` is the
+                        // sub-agent's report. Carrying both lets the frontend flip
+                        // the launch card in-memory (rewriting its marker) with no
+                        // `refetchDetail` — see `BackgroundSettledInfo`'s doc.
+                        // Absent for a background shell (no such tags → `None`).
+                        let tool_use_id =
+                            capture_tag(task_notification_tool_use_id_regex(), trimmed);
+                        // Same cap the cold-parse fold applies, so the live card
+                        // matches and a pathological report can't blow the
+                        // event-stream size budget.
+                        let result = capture_tag(task_notification_result_regex(), trimmed)
+                            .map(|r| truncate_str(&r, BACKGROUND_RESULT_MAX_CHARS));
                         if let Some(id) = task_id {
                             let known = self.tasks.remove(&id).is_some();
                             self.settled_ids.insert(id.clone());
@@ -682,6 +862,11 @@ impl WatchState {
                                 task_id: id,
                                 status,
                                 summary,
+                                tool_use_id,
+                                result,
+                                // Set in `tick()` from `current_turn_launched_ids`
+                                // once the whole batch has been read.
+                                wire_visible: false,
                             });
                         }
                     }
@@ -721,6 +906,17 @@ impl WatchState {
                                         started_at: Instant::now(),
                                     },
                                 );
+                                // Mirrors the launch-time insert in the
+                                // `async_launched` branch above: if THIS turn
+                                // (the one issuing the resume) is itself held
+                                // open by #870 for the resumed sub-agent, its
+                                // second notification must be suppression-
+                                // eligible the same way a freshly-launched
+                                // one is — otherwise a resume-then-hold
+                                // reproduces the same double-render.
+                                if self.currently_prompting {
+                                    self.current_turn_launched_ids.insert(to.to_string());
+                                }
                             }
                         }
                         // Explicit kill: the background task's process is gone,
@@ -786,6 +982,7 @@ impl WatchState {
                         self.file.clone().unwrap_or_else(|| PathBuf::from("")),
                     ),
                     emitted_hashes: HashMap::new(),
+                    origin_task_id: task_notification_origin_id(&initiator_text),
                 });
             }
             self.mode = Mode::Background;
@@ -807,12 +1004,18 @@ impl WatchState {
                      next detail refetch)"
                 );
                 self.collect_changed_turns(cwd, changed_turns);
+                // Cosmetic re-basing of the SAME continuous out-of-turn
+                // stretch (not a new initiator record) — the origin carries
+                // over unchanged.
+                let inherited_origin =
+                    self.episode.as_ref().and_then(|e| e.origin_task_id.clone());
                 self.episode = Some(Episode {
                     start_offset: self.next_episode_base(),
                     acc: ClaudeRecordAccumulator::new(
                         self.file.clone().unwrap_or_else(|| PathBuf::from("")),
                     ),
                     emitted_hashes: HashMap::new(),
+                    origin_task_id: inherited_origin,
                 });
             }
             if let Some(episode) = self.episode.as_mut() {
@@ -830,6 +1033,7 @@ impl WatchState {
         if episode.acc.messages.is_empty() {
             return;
         }
+        let origin_task_id = episode.origin_task_id.clone();
         let mut messages = episode.acc.messages.clone();
         // An autonomous turn can itself launch background work; fold any
         // ack+notification pairs seen within this episode, same as the
@@ -846,6 +1050,10 @@ impl WatchState {
                 continue;
             }
             episode.emitted_hashes.insert(turn.id.clone(), hash);
+            // Recorded for `tick()`'s held-turn suppression filter, drained
+            // there the same tick it's populated — never outlives one tick.
+            self.turn_origin_task_ids
+                .insert(turn.id.clone(), origin_task_id.clone());
             out.push(turn);
         }
     }
@@ -926,6 +1134,19 @@ fn turn_initiator_text(value: &serde_json::Value) -> Option<String> {
         return None;
     }
     Some(text)
+}
+
+/// If `text` (an out-of-turn initiator from `turn_initiator_text`) is a
+/// `<task-notification>` record, its `<task-id>` — mirroring `account()`'s
+/// exact gate so the two never diverge on what counts as a task-notification.
+/// `None` for any other out-of-turn initiator (a cron prompt, other injected
+/// text), which has no originating task to attribute an episode to.
+fn task_notification_origin_id(text: &str) -> Option<String> {
+    let trimmed = text.trim_start();
+    if !trimmed.starts_with("<task-notification>") {
+        return None;
+    }
+    capture_tag(task_notification_task_id_regex(), trimmed)
 }
 
 /// The arm baseline separating pre-existing history from records written
@@ -1108,7 +1329,23 @@ mod tests {
     }
 
     fn tick_now(ws: &mut WatchState, ledger: &PromptLedger) -> Option<AcpEvent> {
-        ws.tick(ledger, "/tmp", "conn-test")
+        ws.tick(ledger, "/tmp", "conn-test", false, false)
+    }
+
+    /// Like `tick_now`, but with the connection snapshotted as `Prompting` —
+    /// for tests of the held-turn suppression filter (§3 of the 0.59 upgrade
+    /// plan), which engages while the connection is prompting and, with no
+    /// time limit, for as long afterward as no new turn has started.
+    fn tick_prompting(ws: &mut WatchState, ledger: &PromptLedger) -> Option<AcpEvent> {
+        ws.tick(ledger, "/tmp", "conn-test", true, false)
+    }
+
+    /// Like `tick_now`, but reporting the just-ended turn as having stopped
+    /// abnormally (cancelled/refused/etc) — for tests of the early-release
+    /// path that lets a held turn's launched ids stop being suppression-
+    /// eligible immediately instead of waiting for the next turn.
+    fn tick_abnormal_end(ws: &mut WatchState, ledger: &PromptLedger) -> Option<AcpEvent> {
+        ws.tick(ledger, "/tmp", "conn-test", false, true)
     }
 
     fn unpack(
@@ -1457,6 +1694,32 @@ mod tests {
         assert!(tick_now(&mut ws, &ledger).is_none());
     }
 
+    /// A background shell re-observed via a repeat `BashOutput`-style poll
+    /// (the identical `backgroundTaskId` shape appearing again) must not
+    /// reset its `started_at` — a blind `insert` would restart the max-age
+    /// clock on every poll, letting an actively-polled-but-actually-finished
+    /// shell pin the connection alive indefinitely. `entry().or_insert_with()`
+    /// only sets `started_at` on the FIRST observation.
+    #[test]
+    fn repeat_shell_observation_does_not_reset_started_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[&bash_ack("shellA")]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+        let _ = tick_now(&mut ws, &ledger);
+        let first_seen = ws.tasks.get("shellA").expect("registered").started_at;
+
+        write_lines(&path, &[&bash_ack("shellA")]); // a repeat poll of the same shell
+        let _ = tick_now(&mut ws, &ledger);
+        let second_seen = ws.tasks.get("shellA").expect("still tracked").started_at;
+
+        assert_eq!(
+            first_seen, second_seen,
+            "started_at must reflect first-seen (launch), not reset on a repeat observation"
+        );
+    }
+
     #[test]
     fn notification_settles_and_surfaces_the_response_turn() {
         let dir = tempfile::tempdir().unwrap();
@@ -1487,6 +1750,321 @@ mod tests {
         // response is the rendered out-of-turn content.
         assert_eq!(turns.len(), 1);
         assert!(turns[0].id.starts_with("bg-"));
+    }
+
+    /// A `<task-notification>`
+    /// follow-up for an id THIS turn launched, arriving while the connection
+    /// is still `Prompting` (claude-agent-acp v0.59.0's #870 holds the turn
+    /// open for its own spawned sub-agents), is already rendering on the
+    /// wire — so the OVERLAY turn for it must be suppressed. The `settled`
+    /// entry, by contrast, MUST still flow: the frontend needs it to flip the
+    /// launch card (which it does in-memory, so it can't double-render), and it
+    /// carries the launching `tool_use_id` + `<result>` for exactly that.
+    #[test]
+    fn held_turn_followup_for_this_turns_launched_agent_is_suppressed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[&agent_ack("agent1")]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+        // Launched while prompting: agent1 enters this turn's launched set.
+        let _ = tick_prompting(&mut ws, &ledger);
+
+        write_lines(
+            &path,
+            &[
+                &notification("agent1", "completed"),
+                &assistant_text("a1", "Build finished cleanly."),
+            ],
+        );
+        // Still prompting: #870 is holding the turn open for agent1.
+        let (turns, outstanding, settled, _) =
+            unpack(tick_prompting(&mut ws, &ledger).expect("settle event"));
+        assert!(
+            turns.is_empty(),
+            "held-turn overlay follow-up must be suppressed (already on the wire), got {turns:?}"
+        );
+        assert_eq!(outstanding, 0, "accounting must still reflect settlement");
+        // The settle notification is NOT suppressed — it flips the launch card.
+        assert_eq!(settled.len(), 1, "settle must flow to flip the card");
+        assert_eq!(settled[0].task_id, "agent1");
+        assert_eq!(
+            settled[0].tool_use_id.as_deref(),
+            Some("toolu_01"),
+            "settle must carry the launching tool_use_id for the in-memory flip"
+        );
+        assert_eq!(settled[0].result.as_deref(), Some("Build OK"));
+        assert!(
+            settled[0].wire_visible,
+            "a held-turn task's settle is wire-visible → frontend must not arm the syncing hint"
+        );
+    }
+
+    /// The exact real-world race that broke a naive "is_prompting right now"
+    /// check: the turn settles (Prompting→Connected) BEFORE the watcher's own
+    /// tick gets around to reading the follow-up's tail content — the content
+    /// was genuinely wire-rendered a beat earlier, while still `Prompting`,
+    /// but this tick observes `is_prompting == false`. There is no grace
+    /// window anymore: `current_turn_launched_ids` simply isn't cleared until
+    /// the NEXT turn starts (or an abnormal ending releases it early), so
+    /// OVERLAY suppression tolerates an arbitrarily-delayed read — several idle
+    /// ticks pass with no new content before the follow-up finally lands, and
+    /// the overlay turn must still be suppressed. The `settled` entry still
+    /// flows regardless (it flips the launch card).
+    #[test]
+    fn held_turn_followup_still_suppressed_when_settlement_races_ahead_of_the_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[&agent_ack("agent1")]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+        let _ = tick_prompting(&mut ws, &ledger); // agent1 launched while prompting
+
+        // The turn settles with no new transcript content — several idle
+        // ticks pass (simulating the watcher's own poll lag) with nothing
+        // clearing the launched-set: no new turn has started.
+        let _ = tick_now(&mut ws, &ledger);
+        let _ = tick_now(&mut ws, &ledger);
+        let _ = tick_now(&mut ws, &ledger);
+
+        // The notification + follow-up land well after the falling edge —
+        // is_prompting is `false` here, matching the real race exactly.
+        write_lines(
+            &path,
+            &[
+                &notification("agent1", "completed"),
+                &assistant_text("a1", "Build finished cleanly."),
+            ],
+        );
+        let (turns, outstanding, settled, _) =
+            unpack(tick_now(&mut ws, &ledger).expect("settle event"));
+        assert!(
+            turns.is_empty(),
+            "must still suppress the overlay for an arbitrarily-delayed read, got {turns:?}"
+        );
+        assert_eq!(outstanding, 0);
+        // Settle still flows (un-suppressed) so the card can flip; wire_visible
+        // holds even though this tick read it after the falling edge (the set
+        // isn't cleared until the next rising edge).
+        assert_eq!(settled.len(), 1);
+        assert_eq!(settled[0].tool_use_id.as_deref(), Some("toolu_01"));
+        assert!(settled[0].wire_visible);
+    }
+
+    /// A turn that ends ABNORMALLY (cancelled, refused, etc — the same
+    /// `stop_reason != "end_turn"` bucket `connection.rs` already treats
+    /// uniformly elsewhere) must release its launched ids immediately: that
+    /// content never reached the wire (the ACP call was torn down before the
+    /// real background work settled), so unlike a normal completion there is
+    /// no live view left for a later notification to duplicate — the overlay
+    /// is correctly the only place left to render it, and must not wait for
+    /// the next turn to start.
+    #[test]
+    fn abnormal_turn_ending_releases_launched_ids_immediately() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[&agent_ack("agent1")]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+        let _ = tick_prompting(&mut ws, &ledger); // agent1 launched while prompting
+
+        // The turn ends abnormally (e.g. cancelled) instead of a normal end_turn.
+        let _ = tick_abnormal_end(&mut ws, &ledger);
+
+        // The notification lands afterward, with no new turn having started —
+        // under a NORMAL ending this would still be suppressed (see the
+        // settlement-races test above), but the abnormal ending must have
+        // already released it.
+        write_lines(
+            &path,
+            &[
+                &notification("agent1", "completed"),
+                &assistant_text("a1", "Build finished cleanly."),
+            ],
+        );
+        let (turns, outstanding, settled, _) =
+            unpack(tick_now(&mut ws, &ledger).expect("settle event"));
+        assert_eq!(
+            turns.len(),
+            1,
+            "an abandoned held turn's follow-up has nowhere else to render"
+        );
+        assert_eq!(outstanding, 0);
+        assert_eq!(
+            settled.len(),
+            1,
+            "the notification must fire — nothing else will tell the user"
+        );
+        assert!(
+            !settled[0].wire_visible,
+            "an abnormally-ended turn released the id → reply not wire-visible, overlay shows it"
+        );
+    }
+
+    /// A background shell launched while `Prompting` must NOT enter
+    /// `current_turn_launched_ids`: #870 never holds a turn open for a shell,
+    /// so a shell's owning turn ends via an ordinary `end_turn` while the
+    /// shell keeps running. If the shell's id were suppression-eligible, its
+    /// eventual completion would be silently swallowed for the shell's entire
+    /// realistic runtime — content that was never on the wire to begin with.
+    #[test]
+    fn background_shell_launched_while_prompting_is_never_suppression_eligible() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[&bash_ack("shell1")]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+        // Registered while prompting — same moment an async agent ack would
+        // have entered `current_turn_launched_ids`.
+        let _ = tick_prompting(&mut ws, &ledger);
+        assert!(
+            !ws.current_turn_launched_ids.contains("shell1"),
+            "a background shell must never be suppression-eligible"
+        );
+
+        // The turn ends normally (a shell's owning turn always does, per
+        // #870 never holding for shells) with no new turn since — under the
+        // agent case this would still suppress (see the settlement-races
+        // test above), but a shell's notification must always surface.
+        let _ = tick_now(&mut ws, &ledger);
+        write_lines(
+            &path,
+            &[&notification("shell1", "completed"), &assistant_text("a1", "Done.")],
+        );
+        let (turns, outstanding, settled, _) =
+            unpack(tick_now(&mut ws, &ledger).expect("settle event"));
+        assert_eq!(turns.len(), 1, "a shell follow-up has nowhere else to render");
+        assert_eq!(outstanding, 0);
+        assert_eq!(
+            settled.len(),
+            1,
+            "a shell's notification must never be suppressed"
+        );
+        assert!(
+            !settled[0].wire_visible,
+            "a shell is never in the launched set → not wire-visible"
+        );
+    }
+
+    /// A `SendMessage`-resumed sub-agent must be suppression-eligible again if
+    /// the RESUMING turn is itself held open by #870 for it — mirroring the
+    /// launch-time insert. Without this, a resume-then-hold reproduces the
+    /// same double-render the original launch-time tracking exists to
+    /// prevent.
+    #[test]
+    fn resumed_agent_held_by_the_resuming_turn_is_suppressed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[&agent_ack("agent1")]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+        let _ = tick_prompting(&mut ws, &ledger); // agent1 launched while prompting (turn A)
+
+        write_lines(&path, &[&notification("agent1", "completed")]);
+        let _ = tick_prompting(&mut ws, &ledger); // settles within turn A — already suppressed
+
+        // Turn A ends normally; no new turn yet, so the set still holds
+        // agent1 (unbounded persistence, per the new design).
+        let _ = tick_now(&mut ws, &ledger);
+
+        // Turn B starts and, in its very first tick, resumes agent1 via
+        // SendMessage — itself held open by #870 for the resumed work. The
+        // rising edge clears the set BEFORE this line is processed; the
+        // resume must re-insert agent1 within the same tick.
+        let resume = r#"{"type":"assistant","timestamp":"2026-07-07T03:53:00.000Z","uuid":"a-send-resume","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_09","name":"SendMessage","input":{"to":"agent1","summary":"continue","message":"go on"}}]}}"#;
+        write_lines(&path, &[resume]);
+        let _ = tick_prompting(&mut ws, &ledger);
+        assert!(
+            ws.current_turn_launched_ids.contains("agent1"),
+            "a resume issued by a held-open turn must re-enter the launched set"
+        );
+
+        write_lines(
+            &path,
+            &[
+                &notification("agent1", "completed"),
+                &assistant_text("a2", "Continued and finished."),
+            ],
+        );
+        let (turns, outstanding, settled, _) =
+            unpack(tick_prompting(&mut ws, &ledger).expect("settle event"));
+        assert!(
+            turns.is_empty(),
+            "the resumed agent's second overlay notification must be suppressed too, got {turns:?}"
+        );
+        assert_eq!(outstanding, 0);
+        // The settle still flows to re-flip the card for the resumed run.
+        assert_eq!(settled.len(), 1);
+        assert_eq!(settled[0].tool_use_id.as_deref(), Some("toolu_01"));
+        assert!(
+            settled[0].wire_visible,
+            "the resuming turn holds it open → wire-visible"
+        );
+    }
+
+    /// A cron//loop autonomous turn has no originating task id at all (its
+    /// initiator is plain injected text, not a `<task-notification>`), so it
+    /// must never be caught by the held-turn suppression filter — even if,
+    /// coincidentally, some OTHER turn happens to be `Prompting` when it
+    /// fires.
+    #[test]
+    fn cron_followup_is_never_suppressed_even_while_prompting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+
+        write_lines(
+            &path,
+            &[
+                &cron_prompt("iterate forever"),
+                &assistant_text("a1", "Working on it."),
+            ],
+        );
+        let (turns, ..) =
+            unpack(tick_prompting(&mut ws, &ledger).expect("turns event"));
+        assert_eq!(
+            turns.len(),
+            1,
+            "a cron-originated turn has no task id to suppress on"
+        );
+    }
+
+    /// A `<task-notification>` can name a task id that was launched (and
+    /// settled) by a PAST, already-ended turn — not the turn currently
+    /// `Prompting`. Only ids launched by the CURRENTLY active turn are
+    /// suppression-eligible (`current_turn_launched_ids` clears on every
+    /// rising edge), so this must render normally.
+    #[test]
+    fn notification_for_a_past_turns_task_is_not_suppressed_by_a_new_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[&agent_ack("agentA")]);
+        let ledger = PromptLedger::shared();
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+        // Turn A launches agentA while prompting...
+        let _ = tick_prompting(&mut ws, &ledger);
+        // ...then turn A ends (falls back to Connected) with no new lines.
+        let _ = tick_now(&mut ws, &ledger);
+
+        // Turn B starts (rising edge clears the launched-set) and, within its
+        // own held-open window, agentA's late notification from turn A
+        // arrives — it belongs to no id turn B itself launched.
+        write_lines(
+            &path,
+            &[
+                &notification("agentA", "completed"),
+                &assistant_text("a1", "Build finished cleanly."),
+            ],
+        );
+        let (turns, ..) =
+            unpack(tick_prompting(&mut ws, &ledger).expect("settle event"));
+        assert_eq!(
+            turns.len(),
+            1,
+            "a foreign (past-turn) task id must not be suppressed by a different turn"
+        );
     }
 
     /// The dominant real-world shell path: a background shell is launched, the

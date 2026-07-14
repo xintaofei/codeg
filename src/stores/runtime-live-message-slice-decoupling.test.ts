@@ -26,6 +26,7 @@ function seedSession(sessionStats: SessionStats) {
           acpLoadError: null,
           localTurns: [],
           backgroundTurns: [],
+          pendingBackgroundSettlements: [],
           optimisticTurns: [],
           liveMessage: null,
           syncState: "awaiting_persist",

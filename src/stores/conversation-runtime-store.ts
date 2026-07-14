@@ -22,6 +22,7 @@ import { COLLAB_AGENT_TOOL_NAME, mergeCollabOp } from "@/lib/collab-tool"
 import { collapseLiveCollabBlocks } from "@/lib/collab-collapse"
 import { kimiTodoWriteEntries } from "@/lib/plan-parse"
 import { toErrorMessage } from "@/lib/app-error"
+import { BACKGROUND_TASK_MARKER } from "@/lib/background-agent"
 
 /**
  * Conversation-runtime shared state as a Zustand store — the per-conversation
@@ -65,6 +66,22 @@ export interface ConversationTimelineTurn {
 export interface BackgroundOverlayEntry {
   turn: MessageTurn
   watermark: number
+}
+
+/**
+ * A settled async sub-agent whose launch card couldn't be flipped yet because
+ * its launching turn hasn't been promoted into `localTurns` (the dominant case:
+ * with #870 holding the turn open, the task settles seconds BEFORE the turn
+ * completes, so at settle time the launch tool call is still in `liveMessage`,
+ * un-patchable). Queued by `RESOLVE_BACKGROUND_TASK`, drained by `COMPLETE_TURN`
+ * once promotion surfaces the tool_result block. Matched by `toolUseId`.
+ */
+export interface PendingBackgroundSettlement {
+  toolUseId: string
+  taskId: string
+  status: string
+  summary: string | null
+  result: string | null
 }
 
 /**
@@ -115,6 +132,11 @@ export interface ConversationRuntimeSession {
   // next detail refetch; the watermark rule above retires them once a refetch
   // catches up, so overlay and persisted copies never coexist in the timeline.
   backgroundTurns: BackgroundOverlayEntry[]
+
+  // Settled async sub-agents awaiting their launch card's in-memory flip until
+  // the launching turn promotes into `localTurns` (see
+  // `PendingBackgroundSettlement`). Drained by `COMPLETE_TURN`.
+  pendingBackgroundSettlements: PendingBackgroundSettlement[]
 
   // Temporary state
   optimisticTurns: MessageTurn[]
@@ -238,6 +260,15 @@ type Action =
       watermark: number
     }
   | {
+      // An async sub-agent settled: flip its launch card in-memory by rewriting
+      // the launching tool_result's `[[codeg-background-task]]` marker. If the
+      // launching turn hasn't promoted into `localTurns` yet (settle precedes
+      // turn completion under #870), queue it for `COMPLETE_TURN` to apply.
+      type: "RESOLVE_BACKGROUND_TASK"
+      conversationId: number
+      settlement: PendingBackgroundSettlement
+    }
+  | {
       type: "APPEND_OPTIMISTIC_TURN"
       conversationId: number
       turn: MessageTurn
@@ -336,6 +367,7 @@ function createEmptySession(
     acpLoadError: null,
     localTurns: [],
     backgroundTurns: [],
+    pendingBackgroundSettlements: [],
     optimisticTurns: [],
     liveMessage: null,
     syncState: "idle",
@@ -1154,6 +1186,56 @@ function userTurnContentKey(turn: MessageTurn): string {
   )
 }
 
+/**
+ * Rewrite the launching tool call's `[[codeg-background-task]]` marker in a turn
+ * list so `AgentToolCallPart` flips from "running in background" to its
+ * completed/result form — the same marker shape the disk parser
+ * (`apply_background_lifecycle`) produces, so live and cold-open render
+ * identically. Locates the `tool_result` block by `toolUseId` (how the adapter's
+ * `buildToolResultMap` pairs the card).
+ *
+ * Returns `matched` (a block with this `toolUseId` exists here) SEPARATELY from
+ * `changed` (its `output_preview` was actually rewritten). The distinction is
+ * load-bearing: a settlement whose card is already showing exactly this result
+ * is `matched` but not `changed` — callers must treat it as handled (NOT queue
+ * it), or an idempotent re-settle would be buffered and later re-applied over a
+ * newer result. `turns` keeps its original reference when nothing changed.
+ */
+function applyBackgroundSettlementToTurns(
+  turns: MessageTurn[],
+  settlement: PendingBackgroundSettlement
+): { turns: MessageTurn[]; matched: boolean; changed: boolean } {
+  const marker =
+    BACKGROUND_TASK_MARKER +
+    JSON.stringify({
+      task_id: settlement.taskId,
+      status: settlement.status,
+      summary: settlement.summary,
+      result: settlement.result,
+    })
+  let matched = false
+  let changed = false
+  const nextTurns = turns.map((turn) => {
+    let turnChanged = false
+    const nextBlocks = turn.blocks.map((block) => {
+      if (
+        block.type === "tool_result" &&
+        block.tool_use_id === settlement.toolUseId
+      ) {
+        matched = true
+        if (block.output_preview !== marker) {
+          turnChanged = true
+          changed = true
+          return { ...block, output_preview: marker }
+        }
+      }
+      return block
+    })
+    return turnChanged ? { ...turn, blocks: nextBlocks } : turn
+  })
+  return { turns: changed ? nextTurns : turns, matched, changed }
+}
+
 function reducer(
   state: ConversationRuntimeState,
   action: Action
@@ -1318,12 +1400,40 @@ function reducer(
       ]
       const promotedLastIndexById = new Map<string, number>()
       promotedRaw.forEach((turn, i) => promotedLastIndexById.set(turn.id, i))
-      const promoted =
+      const promotedDeduped =
         promotedLastIndexById.size === promotedRaw.length
           ? promotedRaw
           : promotedRaw.filter(
               (turn, i) => promotedLastIndexById.get(turn.id) === i
             )
+
+      // Drain queued async-sub-agent settlements against the just-promoted
+      // turns: a task that settled while this turn was still held open (#870)
+      // couldn't flip its launch card then (the tool call was in `liveMessage`,
+      // un-patchable); now it's in `promoted`. Apply each, keep the ones that
+      // still don't match (their launch turn belongs to a different, not-yet-
+      // promoted turn — or never will, e.g. an abandoned turn — leaving the card
+      // no worse off than before, and bounded to this small buffer).
+      let promoted = promotedDeduped
+      let remainingSettlements = current.pendingBackgroundSettlements
+      if (current.pendingBackgroundSettlements.length > 0) {
+        const stillPending: PendingBackgroundSettlement[] = []
+        for (const settlement of current.pendingBackgroundSettlements) {
+          const res = applyBackgroundSettlementToTurns(promoted, settlement)
+          // Consume on `matched` (the block surfaced), not just `changed`: if
+          // the promoted card already shows this result, the entry is still
+          // handled and must not linger to be re-applied later.
+          if (res.matched) {
+            promoted = res.turns
+          } else {
+            stillPending.push(settlement)
+          }
+        }
+        remainingSettlements =
+          stillPending.length === current.pendingBackgroundSettlements.length
+            ? current.pendingBackgroundSettlements
+            : stillPending
+      }
 
       return updateSessionInState(state, action.conversationId, () => ({
         ...current,
@@ -1332,6 +1442,7 @@ function reducer(
         liveMessage: null,
         syncState: "idle",
         activeTurnToken: null,
+        pendingBackgroundSettlements: remainingSettlements,
       }))
     }
 
@@ -1366,6 +1477,78 @@ function reducer(
             : next
         return { ...current, backgroundTurns: bounded }
       })
+    }
+
+    case "RESOLVE_BACKGROUND_TASK": {
+      // Only meaningful for an open session (a closed tab renders from the
+      // disk parse, which already carries the marker). No-op otherwise — do
+      // NOT materialize a session just to queue a settlement it'll never apply.
+      const current = state.byConversationId.get(action.conversationId)
+      if (!current) return state
+
+      // The launch card can live in any of three places:
+      //  - `optimisticTurns` (a foreground launch whose turn is mid-flight),
+      //  - `localTurns` (already promoted this session), or
+      //  - `detail.turns` (cold-loaded persisted history — e.g. a resumed
+      //    sub-agent notifying after the tab was reopened, whose ORIGINAL card
+      //    sits in detail while the newly promoted turn holds only the
+      //    `SendMessage` call). We patch the in-memory `detail` copy too; the DB
+      //    is never written (a later cold parse reconciles it anyway).
+      const opt = applyBackgroundSettlementToTurns(
+        current.optimisticTurns,
+        action.settlement
+      )
+      const local = applyBackgroundSettlementToTurns(
+        current.localTurns,
+        action.settlement
+      )
+      const detailTurns = current.detail?.turns
+      const detailRes = detailTurns
+        ? applyBackgroundSettlementToTurns(detailTurns, action.settlement)
+        : null
+
+      const matched =
+        opt.matched || local.matched || (detailRes?.matched ?? false)
+
+      if (matched) {
+        // Found the card — flip it (if not already showing this result) and
+        // clear any stale queued copy of the same task. Both must be able to
+        // fire independently: an idempotent re-settle is `matched` but not
+        // `changed`, yet may still need to drop a queued entry.
+        const changed =
+          opt.changed || local.changed || (detailRes?.changed ?? false)
+        const withoutDup = current.pendingBackgroundSettlements.filter(
+          (p) => p.toolUseId !== action.settlement.toolUseId
+        )
+        const pendingChanged =
+          withoutDup.length !== current.pendingBackgroundSettlements.length
+        if (!changed && !pendingChanged) return state
+        return updateSessionInState(state, action.conversationId, (s) => ({
+          ...s,
+          optimisticTurns: opt.turns,
+          localTurns: local.turns,
+          detail:
+            detailRes && detailRes.changed && s.detail
+              ? { ...s.detail, turns: detailRes.turns }
+              : s.detail,
+          pendingBackgroundSettlements: pendingChanged
+            ? withoutDup
+            : current.pendingBackgroundSettlements,
+        }))
+      }
+
+      // Not present in any buffer yet (the #870 case: the launch tool call is
+      // still in `liveMessage`, whose blocks carry no inline tool output — see
+      // `LiveMessage`). Queue for `COMPLETE_TURN` to apply post-promotion.
+      // De-dupe by `toolUseId` so a re-settle (resumed sub-agent) replaces the
+      // queued entry instead of stacking.
+      const withoutDup = current.pendingBackgroundSettlements.filter(
+        (p) => p.toolUseId !== action.settlement.toolUseId
+      )
+      return updateSessionInState(state, action.conversationId, (s) => ({
+        ...s,
+        pendingBackgroundSettlements: [...withoutDup, action.settlement],
+      }))
     }
 
     case "APPEND_OPTIMISTIC_TURN":
@@ -1760,6 +1943,10 @@ export interface RuntimeActions {
     conversationId: number,
     turns: MessageTurn[],
     watermark: number
+  ) => void
+  resolveBackgroundTask: (
+    conversationId: number,
+    settlement: PendingBackgroundSettlement
   ) => void
   setLiveMessage: (
     conversationId: number,
@@ -2283,8 +2470,31 @@ export const useConversationRuntimeStore = create<ConversationRuntimeStore>()((
     fetchDetail,
     refetchDetail,
     syncTurnMetadata,
-    completeTurn: (conversationId, liveMessage) =>
-      dispatch({ type: "COMPLETE_TURN", conversationId, liveMessage }),
+    completeTurn: (conversationId, liveMessage) => {
+      // Deliberately NO refetchDetail here (tried and reverted — see git
+      // history). It used to exist
+      // to fold a held-open turn's (claude-agent-acp v0.59.0's #870) content
+      // into the persisted view, since the backend transcript watcher had no
+      // visibility into what the wire already rendered. That's no longer
+      // needed: `background_watch.rs` suppresses the overlay turn for a held
+      // turn's own launched tasks, and the async sub-agent launch card is now
+      // flipped in-memory from the `settled` event (RESOLVE_BACKGROUND_TASK /
+      // the COMPLETE_TURN drain below) — so there's nothing left for a
+      // post-completion refetch to reconcile. Worse, the refetch actively lost
+      // content: it races the transcript file's own last write against this
+      // very `TurnComplete` event — real hardware evidence showed the final
+      // assistant record's timestamp only 8ms before turn_complete fired, well
+      // inside the file-flush's own margin — and `preserveLive: false`
+      // unconditionally discarded the already-correct `localTurns`/`liveMessage`
+      // in favor of whatever that (sometimes-incomplete) fresh read returned,
+      // visibly dropping the turn's trailing content. The dispatch below already
+      // promotes `liveMessage`/`optimisticTurns` into `localTurns`
+      // synchronously, with no read from disk and therefore no race — that IS
+      // the complete, correct render; a later cold detail fetch (opening the tab
+      // again, etc.) reconciles it against the DB whenever that naturally
+      // happens.
+      dispatch({ type: "COMPLETE_TURN", conversationId, liveMessage })
+    },
     appendOptimisticTurn: (conversationId, turn, turnToken) =>
       dispatch({
         type: "APPEND_OPTIMISTIC_TURN",
@@ -2302,6 +2512,12 @@ export const useConversationRuntimeStore = create<ConversationRuntimeStore>()((
         conversationId,
         turns,
         watermark,
+      }),
+    resolveBackgroundTask: (conversationId, settlement) =>
+      dispatch({
+        type: "RESOLVE_BACKGROUND_TASK",
+        conversationId,
+        settlement,
       }),
     setLiveMessage: (conversationId, liveMessage, isLive) =>
       dispatch({

@@ -1065,11 +1065,30 @@ export interface ToolCallImageWire {
  * `status` is the notification's `<status>` verbatim (`"completed"` on
  * success). The same id may settle more than once (a resumed sub-agent
  * notifies again).
+ *
+ * `tool_use_id`/`result` come from the same notification's `<tool-use-id>`/
+ * `<result>` tags. The `background_activity` handler uses them to flip the
+ * launch card in-memory (rewriting its `[[codeg-background-task]]` marker via
+ * `resolveBackgroundTask`) instead of a `refetchDetail` — which double-rendered
+ * the #870-held turn and raced the transcript's last write. `tool_use_id` is
+ * the launching tool call's id (`toolu_…`), NOT `task_id`; absent for a
+ * background shell (no marker card to flip).
  */
 export interface BackgroundSettledInfo {
   task_id: string
   status: string
   summary?: string | null
+  tool_use_id?: string | null
+  result?: string | null
+  /**
+   * True when this task's reply is/was rendered live on the ACP wire as the
+   * tail of a #870-held turn (the backend derives this from its launched-id
+   * set, which outlives the turn's own status flip). The handler uses it to
+   * skip arming the "Syncing background results…" hint for such a settle — the
+   * reply is already on screen, so there's no gap to bridge. Absent/false for a
+   * genuinely out-of-turn settle (reply arrives later as its own overlay turn).
+   */
+  wire_visible?: boolean
 }
 
 export type AcpEvent =

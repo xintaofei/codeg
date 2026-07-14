@@ -91,9 +91,9 @@ vi.mock("@/lib/api", () => ({
   acpRespondPermission: vi.fn(),
   acpTouchConnection: vi.fn(),
   // Imported by the conversation runtime store (a real dependency of the
-  // provider via the background-activity bridge). The settled path fires a
-  // refetchDetail; reject it so the store's error path absorbs it (these
-  // tests assert the refetch was ISSUED, not its payload).
+  // provider via the background-activity bridge). The settled path no longer
+  // refetches (it flips the launch card in-memory); reject any stray call so a
+  // regression that reintroduces a settle-triggered refetch fails loudly.
   getFolderConversation: vi.fn(async () => {
     throw new Error("detail not seeded in this suite")
   }),
@@ -809,6 +809,8 @@ describe("out-of-turn wire guard + background activity", () => {
     const { sendSystemNotification } = await import("@/lib/notification")
     const notify = vi.mocked(sendSystemNotification)
     notify.mockClear()
+    const { getFolderConversation } = await import("@/lib/api")
+    vi.mocked(getFolderConversation).mockClear()
     resetConversationRuntimeStore()
     // Bind the agent session id to a runtime conversation so the overlay
     // bridge can resolve it. Model the draft-started shape (the common QA
@@ -844,6 +846,8 @@ describe("out-of-turn wire guard + background activity", () => {
           task_id: "agent1",
           status: "completed",
           summary: 'Agent "Run pnpm build" finished',
+          tool_use_id: "toolu_01",
+          result: "Build succeeded (exit code 0).",
         },
       ],
       watermark: 4096,
@@ -872,11 +876,19 @@ describe("out-of-turn wire guard + background activity", () => {
     expect(notify).toHaveBeenCalledTimes(1)
     expect(notify.mock.calls[0][1]).toContain('Agent "Run pnpm build" finished')
 
-    // 4. a settlement folds into persisted turns via a detail refetch (the
-    //    parser joins ack + notification into the card's terminal state).
-    //    The fetch must go out with the DB row id, not the runtime key.
-    const { getFolderConversation } = await import("@/lib/api")
-    expect(vi.mocked(getFolderConversation)).toHaveBeenCalledWith(42)
+    // 4. the settlement flips the launch card IN-MEMORY (no detail refetch):
+    //    with no promoted card yet (it's mid-stream), it's queued under the
+    //    runtime key by `tool_use_id` for COMPLETE_TURN to apply.
+    expect(vi.mocked(getFolderConversation)).not.toHaveBeenCalled()
+    expect(session?.pendingBackgroundSettlements).toEqual([
+      {
+        toolUseId: "toolu_01",
+        taskId: "agent1",
+        status: "completed",
+        summary: 'Agent "Run pnpm build" finished',
+        result: "Build succeeded (exit code 0).",
+      },
+    ])
 
     // Accounting-only follow-up (work settles to zero): mirror updates, no
     // duplicate overlay entries, no extra notification.
@@ -917,6 +929,42 @@ describe("out-of-turn wire guard + background activity", () => {
       outstanding: 0,
       watermark: 4400,
     })
+    expect(h.store!.getConnection(TAB)?.backgroundSettleSyncingSince).toBeNull()
+
+    resetConversationRuntimeStore()
+  })
+
+  it("does NOT arm the syncing-results hint for a wire-visible (#870-held) settle", async () => {
+    const { resetConversationRuntimeStore } =
+      await import("@/stores/conversation-runtime-store")
+    resetConversationRuntimeStore()
+    const handlers = await mountOwnerConnection()
+
+    // #870: the launching turn is held OPEN and the sub-agent's reply streams
+    // live as the tail of that held turn — the backend marks the settle
+    // `wire_visible: true`. There is no "results not yet visible" gap, so the
+    // hint must stay hidden (not strand on "Syncing background results…" until
+    // the 30s cap). Gated on the backend flag, NOT the connection status, so it
+    // holds even if this event is delivered after the turn returns to connected.
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "background_activity",
+      session_id: "sess-1",
+      outstanding: 0,
+      settled: [
+        {
+          task_id: "agent1",
+          status: "completed",
+          tool_use_id: "toolu_01",
+          result: "done",
+          wire_visible: true,
+        },
+      ],
+      watermark: 100,
+    })
+
+    expect(h.store!.getConnection(TAB)?.backgroundOutstanding).toBe(0)
     expect(h.store!.getConnection(TAB)?.backgroundSettleSyncingSince).toBeNull()
 
     resetConversationRuntimeStore()

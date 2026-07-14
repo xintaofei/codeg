@@ -25,6 +25,7 @@ function seedSession(detail: DbConversationDetail | null) {
           acpLoadError: null,
           localTurns: [],
           backgroundTurns: [],
+          pendingBackgroundSettlements: [],
           optimisticTurns: [],
           liveMessage: null,
           syncState: "idle",

@@ -269,6 +269,7 @@ function seedDetail(turns: MessageTurn[], inFlightUserTurnId?: string) {
       acpLoadError: null,
       localTurns: [],
       backgroundTurns: [],
+      pendingBackgroundSettlements: [],
       optimisticTurns: [],
       liveMessage: null,
       syncState: "idle" as const,

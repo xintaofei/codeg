@@ -387,6 +387,20 @@ pub struct SessionState {
     /// not part of the client-visible snapshot.
     pub turn_in_flight: bool,
 
+    /// Whether the most recently completed turn ended via a stop reason other
+    /// than `"end_turn"` (cancelled, refusal, max_tokens, max_turn_requests,
+    /// empty, unknown — the same "abnormal ending" bucket `connection.rs`
+    /// already treats uniformly for cascade-cancelling child delegations). Set
+    /// by `AcpEvent::TurnComplete`, alongside `pending_user_message`/
+    /// `turn_in_flight` clearing. The transcript watcher reads this at the
+    /// Prompting→Connected falling edge: an abnormal ending means the turn's
+    /// content never reached the wire (the ACP call was torn down before a
+    /// held sub-agent's real completion), so `current_turn_launched_ids`
+    /// must release immediately instead of waiting for the next turn — that
+    /// content has nowhere else to render. Not serialized: backend-internal,
+    /// like `turn_in_flight`.
+    pub last_turn_ended_abnormally: bool,
+
     /// True when the agent's effective settings changed after this connection
     /// was spawned — the running process is still on its launch-time config and
     /// needs a restart to pick up the change. Set/cleared by
@@ -448,6 +462,7 @@ impl SessionState {
             pending_user_message: None,
             pending_user_message_started_at: None,
             turn_in_flight: false,
+            last_turn_ended_abnormally: false,
             config_stale: false,
             config_stale_kind: None,
         }
@@ -512,6 +527,18 @@ impl SessionState {
                 }
             }
             AcpEvent::StatusChanged { status } => {
+                // Diagnostic only (no behavior change): StatusChanged was
+                // never logged anywhere, so there was no way to confirm from
+                // the log alone whether a held-open turn (claude-agent-acp
+                // v0.59.0's #870) actually stayed `Prompting` through an async
+                // sub-agent's full lifecycle, or settled earlier than assumed.
+                // The suppression filter reads live `Prompting` status and is
+                // only correct if the hold behaves as documented.
+                tracing::info!(
+                    "[ACP] status_changed session={:?} {:?} -> {status:?}",
+                    self.external_id,
+                    self.status
+                );
                 if matches!(status, ConnectionStatus::Prompting) {
                     // Match the live frontend reducer: a new prompt starts a
                     // new error scope, so stale recoverable errors must not be
@@ -677,7 +704,25 @@ impl SessionState {
                     self.pending_question = None;
                 }
             }
-            AcpEvent::TurnComplete { .. } => {
+            AcpEvent::TurnComplete { stop_reason, .. } => {
+                // Diagnostic only (no behavior change): pairs with the
+                // StatusChanged log above. This is the ACTUAL point the turn
+                // settles (`self.status` flips to `Connected` right below,
+                // bypassing StatusChanged entirely) — needed to tell whether
+                // claude-agent-acp v0.59.0's #870 held the turn open through
+                // an async sub-agent's full lifecycle, or settled earlier.
+                // `background_outstanding` at this instant shows whether a
+                // sub-agent/shell the watcher still considers live was
+                // outstanding when the ORIGINAL turn settled.
+                tracing::info!(
+                    "[ACP] turn_complete session={:?} stop_reason={stop_reason} background_outstanding={}",
+                    self.external_id,
+                    self.background_outstanding
+                );
+                // See `last_turn_ended_abnormally`'s doc comment: any reason
+                // other than a normal end-of-turn means this turn's content
+                // may never have reached the wire.
+                self.last_turn_ended_abnormally = stop_reason != "end_turn";
                 // Snapshot the just-finished turn's FINAL assistant text — what
                 // `get_delegation_status` returns as the child result. We take
                 // the Text blocks that follow the LAST tool call (the agent's

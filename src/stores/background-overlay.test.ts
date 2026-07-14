@@ -24,6 +24,10 @@ import {
   selectTimelineTurns,
   useConversationRuntimeStore,
 } from "@/stores/conversation-runtime-store"
+import {
+  BACKGROUND_TASK_MARKER,
+  parseBackgroundTaskMarker,
+} from "@/lib/background-agent"
 import type { DbConversationDetail, MessageTurn } from "@/lib/types"
 
 vi.mock("@/lib/api", () => ({
@@ -91,6 +95,12 @@ async function flushMicrotasks() {
 beforeEach(() => {
   resetConversationRuntimeStore()
   mockGetFolderConversation.mockReset()
+  // A bare unconfigured mock returns `undefined` and `.then()` on it throws.
+  // Default to a promise that never resolves so any call a test doesn't
+  // explicitly configure is a harmless no-op; `mockResolvedValueOnce`/
+  // `mockResolvedValue` calls below take priority for the invocations a test
+  // does care about.
+  mockGetFolderConversation.mockImplementation(() => new Promise(() => {}))
 })
 
 afterEach(() => {
@@ -283,6 +293,8 @@ describe("refetchDetail DB-id resolution", () => {
     actions().refetchDetail(VIRTUAL, { preserveLive: false })
     await flushMicrotasks()
 
+    // 1 call: `completeTurn` no longer fires an implicit refetch (see its
+    // own comment — it raced the transcript's last write and lost content).
     expect(mockGetFolderConversation).toHaveBeenCalledTimes(1)
     expect(mockGetFolderConversation).toHaveBeenCalledWith(42)
     // Result lands under the runtime key; the stale live buffers are gone and
@@ -301,5 +313,215 @@ describe("refetchDetail DB-id resolution", () => {
     actions().refetchDetail(7)
     await flushMicrotasks()
     expect(mockGetFolderConversation).toHaveBeenCalledWith(7)
+  })
+})
+
+describe("RESOLVE_BACKGROUND_TASK (in-memory launch-card flip)", () => {
+  // An async sub-agent launch card: an assistant turn holding the launching
+  // `Agent` tool_use plus its ack tool_result (raw wire text). This is what
+  // `AgentToolCallPart` renders as "running in background" until its
+  // `output_preview` becomes a `[[codeg-background-task]]` marker.
+  function launchCardTurn(
+    id: string,
+    toolUseId: string,
+    ackText = "Async agent launched successfully."
+  ): MessageTurn {
+    return {
+      id,
+      role: "assistant",
+      blocks: [
+        {
+          type: "tool_use",
+          tool_use_id: toolUseId,
+          tool_name: "Agent",
+          input_preview: null,
+        },
+        {
+          type: "tool_result",
+          tool_use_id: toolUseId,
+          output_preview: ackText,
+          is_error: false,
+        },
+      ],
+      timestamp: "2026-07-07T03:47:00.000Z",
+    }
+  }
+
+  function ackOutput(turns: MessageTurn[], toolUseId: string): string | null {
+    for (const t of turns) {
+      for (const b of t.blocks) {
+        if (b.type === "tool_result" && b.tool_use_id === toolUseId) {
+          return b.output_preview
+        }
+      }
+    }
+    return null
+  }
+
+  const settlement = {
+    toolUseId: "toolu_01",
+    taskId: "agent1",
+    status: "completed",
+    summary: "Agent finished",
+    result: "Build succeeded (exit code 0).",
+  }
+
+  it("flips a launch card already promoted into localTurns immediately", () => {
+    // Seed localTurns with the launch card via the optimistic→complete path.
+    actions().appendOptimisticTurn(
+      7,
+      launchCardTurn("t-0", "toolu_01"),
+      "tok-1"
+    )
+    actions().completeTurn(7, null)
+    expect(session(7)!.localTurns).toHaveLength(1)
+
+    actions().resolveBackgroundTask(7, settlement)
+
+    const output = ackOutput(session(7)!.localTurns, "toolu_01")
+    expect(output).toContain(BACKGROUND_TASK_MARKER)
+    const parsed = parseBackgroundTaskMarker(output)
+    expect(parsed).toMatchObject({
+      taskId: "agent1",
+      status: "completed",
+      result: "Build succeeded (exit code 0).",
+    })
+    // Nothing queued: it applied on the spot.
+    expect(session(7)!.pendingBackgroundSettlements).toEqual([])
+  })
+
+  it("queues a settlement whose launch turn hasn't promoted yet, then applies it at COMPLETE_TURN", () => {
+    // Session exists (a user prompt is in flight) but the launch card is not in
+    // any promotable buffer yet — it's mid-stream in liveMessage, un-patchable.
+    actions().appendOptimisticTurn(
+      7,
+      {
+        id: "u-1",
+        role: "user",
+        blocks: [{ type: "text", text: "run build in background" }],
+        timestamp: "2026-07-07T03:46:00.000Z",
+      },
+      "tok-1"
+    )
+    actions().resolveBackgroundTask(7, settlement)
+    // Not found → queued, no crash, card untouched.
+    expect(session(7)!.pendingBackgroundSettlements).toHaveLength(1)
+
+    // The launch card now arrives and the turn completes: the drain flips it.
+    actions().appendOptimisticTurn(
+      7,
+      launchCardTurn("t-0", "toolu_01"),
+      "tok-1"
+    )
+    actions().completeTurn(7, null)
+
+    const output = ackOutput(session(7)!.localTurns, "toolu_01")
+    expect(parseBackgroundTaskMarker(output)).toMatchObject({
+      taskId: "agent1",
+      status: "completed",
+    })
+    expect(session(7)!.pendingBackgroundSettlements).toEqual([])
+  })
+
+  it("keeps a queued settlement whose card never promotes (no worse than a stuck card)", () => {
+    actions().appendOptimisticTurn(
+      7,
+      {
+        id: "u-1",
+        role: "user",
+        blocks: [{ type: "text", text: "x" }],
+        timestamp: "2026-07-07T03:46:00.000Z",
+      },
+      "tok-1"
+    )
+    actions().resolveBackgroundTask(7, settlement)
+    // Complete a turn that does NOT carry the launch card: the settlement can't
+    // apply and must survive rather than being silently dropped.
+    actions().completeTurn(7, null)
+    expect(session(7)!.pendingBackgroundSettlements).toHaveLength(1)
+  })
+
+  it("de-dupes a re-settle by toolUseId (resumed sub-agent notifies again)", () => {
+    actions().appendOptimisticTurn(
+      7,
+      {
+        id: "u-1",
+        role: "user",
+        blocks: [{ type: "text", text: "x" }],
+        timestamp: "2026-07-07T03:46:00.000Z",
+      },
+      "tok-1"
+    )
+    actions().resolveBackgroundTask(7, settlement)
+    actions().resolveBackgroundTask(7, { ...settlement, status: "failed" })
+    const queued = session(7)!.pendingBackgroundSettlements
+    expect(queued).toHaveLength(1)
+    expect(queued[0].status).toBe("failed")
+  })
+
+  it("is a no-op for a conversation with no open session", () => {
+    actions().resolveBackgroundTask(999, settlement)
+    expect(session(999)).toBeUndefined()
+  })
+
+  it("flips a launch card that lives in cold-loaded detail.turns (resume-after-reopen)", async () => {
+    // The original card is in persisted history (e.g. a resumed sub-agent whose
+    // launch was in a prior, now-cold turn). It's neither optimistic nor local,
+    // so the settle must reach detail.turns or the card stays stale forever.
+    mockGetFolderConversation.mockResolvedValueOnce(
+      detail({ turns: [launchCardTurn("t-0", "toolu_01")] })
+    )
+    actions().fetchDetail(7)
+    await flushMicrotasks()
+    expect(session(7)?.detail?.turns).toHaveLength(1)
+
+    actions().resolveBackgroundTask(7, settlement)
+
+    const output = ackOutput(session(7)!.detail!.turns, "toolu_01")
+    expect(parseBackgroundTaskMarker(output)).toMatchObject({
+      taskId: "agent1",
+      status: "completed",
+      result: "Build succeeded (exit code 0).",
+    })
+    // Matched in detail → not queued.
+    expect(session(7)!.pendingBackgroundSettlements).toEqual([])
+  })
+
+  it("does not queue an already-applied settlement, so a later result is never clobbered", () => {
+    // Seed the card in localTurns and flip it to the first result.
+    actions().appendOptimisticTurn(
+      7,
+      launchCardTurn("t-0", "toolu_01"),
+      "tok-1"
+    )
+    actions().completeTurn(7, null)
+    actions().resolveBackgroundTask(7, settlement)
+    expect(session(7)!.pendingBackgroundSettlements).toEqual([])
+
+    // Idempotent re-settle (identical result): matched-but-unchanged must NOT
+    // be queued — else a later COMPLETE_TURN would re-apply this stale copy.
+    actions().resolveBackgroundTask(7, settlement)
+    expect(session(7)!.pendingBackgroundSettlements).toEqual([])
+
+    // A newer result applies immediately; then a subsequent turn completes and
+    // its drain must find nothing stale to revert the card with.
+    actions().resolveBackgroundTask(7, { ...settlement, result: "newer B" })
+    expect(session(7)!.pendingBackgroundSettlements).toEqual([])
+    actions().appendOptimisticTurn(
+      7,
+      {
+        id: "u-2",
+        role: "user",
+        blocks: [{ type: "text", text: "next" }],
+        timestamp: "2026-07-07T03:50:00.000Z",
+      },
+      "tok-2"
+    )
+    actions().completeTurn(7, null)
+
+    const parsed = parseBackgroundTaskMarker(
+      ackOutput(session(7)!.localTurns, "toolu_01")
+    )
+    expect(parsed?.result).toBe("newer B")
   })
 })
