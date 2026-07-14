@@ -2790,6 +2790,25 @@
       "permissionDenied": "權限不足，請使用 1024 以上的連接埠，或以更高權限執行",
       "addressUnavailable": "該位址在本機不可用",
       "bindFailed": "綁定位址失敗"
+    },
+    "funnelTitle": "公网访问（Tailscale Funnel）",
+    "funnelDescription": "通过 Codeg 私有 Tailscale 节点，将本机 Web 服务暴露为公网 HTTPS 地址。",
+    "funnelEnable": "启用 Funnel",
+    "funnelEnableHint": "需要本地 Web 服务已启动。不会使用或接管系统 Tailscale。",
+    "funnelState": "Funnel 状态",
+    "funnelLogin": "打开 Tailscale 登录",
+    "funnelUrl": "公网地址",
+    "funnelTokenNote": "打开公网地址后仍需使用 Codeg 访问令牌。",
+    "funnelPrivateNodeNote": "Codeg 将 Tailscale 状态保存在自己的数据目录，不会管理系统 Tailscale。",
+    "funnelUnsupported": "当前安装缺少 Funnel sidecar",
+    "funnelErrors": {
+      "sidecarMissing": "未找到 codeg-tsnet sidecar 二进制",
+      "startFailed": "启动 Tailscale sidecar 失败",
+      "loginTimeout": "Tailscale 登录超时",
+      "funnelDenied": "当前 Tailscale 账号/策略不允许 Funnel",
+      "funnelFailed": "启用 Funnel 失败",
+      "authkeyRequired": "无头模式启用 Funnel 需要 CODEG_TS_AUTHKEY",
+      "unsupported": "此处不支持 Tailscale Funnel"
     }
   },
   "DirectoryBrowser": {

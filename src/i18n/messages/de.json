@@ -2790,6 +2790,25 @@
       "permissionDenied": "Zugriff verweigert. Verwenden Sie einen Port über 1024 oder starten Sie mit höheren Rechten.",
       "addressUnavailable": "Die Adresse ist auf diesem Computer nicht verfügbar",
       "bindFailed": "Adresse konnte nicht gebunden werden"
+    },
+    "funnelTitle": "Public Access (Tailscale Funnel)",
+    "funnelDescription": "Expose this Web Service on a public HTTPS URL via Codeg's private Tailscale node.",
+    "funnelEnable": "Enable Funnel",
+    "funnelEnableHint": "Requires local Web Service running. Does not use or replace system Tailscale.",
+    "funnelState": "Funnel status",
+    "funnelLogin": "Open Tailscale login",
+    "funnelUrl": "Public URL",
+    "funnelTokenNote": "Your Codeg access token is still required after opening the public URL.",
+    "funnelPrivateNodeNote": "Codeg keeps Tailscale state under its own data directory and never manages system Tailscale.",
+    "funnelUnsupported": "Funnel sidecar is unavailable in this install",
+    "funnelErrors": {
+      "sidecarMissing": "codeg-tsnet sidecar binary not found",
+      "startFailed": "Failed to start Tailscale sidecar",
+      "loginTimeout": "Tailscale login timed out",
+      "funnelDenied": "Funnel is not permitted for this Tailscale account/policy",
+      "funnelFailed": "Failed to enable Funnel",
+      "authkeyRequired": "CODEG_TS_AUTHKEY is required for headless Funnel",
+      "unsupported": "Tailscale Funnel is not supported here"
     }
   },
   "DirectoryBrowser": {
