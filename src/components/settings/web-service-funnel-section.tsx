@@ -31,7 +31,8 @@ function errorMessage(
 ): string | null {
   if (!status) return null
   const key = status.errorKey
-  if (key === "tailscale.sidecar_missing") return t("funnelErrors.sidecarMissing")
+  if (key === "tailscale.sidecar_missing")
+    return t("funnelErrors.sidecarMissing")
   if (key === "tailscale.start_failed") return t("funnelErrors.startFailed")
   if (key === "tailscale.login_timeout") return t("funnelErrors.loginTimeout")
   if (key === "tailscale.funnel_denied") return t("funnelErrors.funnelDenied")

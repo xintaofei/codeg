@@ -30,10 +30,7 @@ vi.mock("@/hooks/use-copied-flag", () => ({
 
 import { WebServiceFunnelSection } from "./web-service-funnel-section"
 import enMessages from "@/i18n/messages/en.json"
-import {
-  getTailscaleFunnelStatus,
-  type TailscaleFunnelStatus,
-} from "@/lib/api"
+import { getTailscaleFunnelStatus, type TailscaleFunnelStatus } from "@/lib/api"
 
 const mockGet = vi.mocked(getTailscaleFunnelStatus)
 
