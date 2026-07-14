@@ -26,6 +26,8 @@ pub struct AppState {
     pub emitter: EventEmitter,
     pub data_dir: PathBuf,
     pub web_server_state: WebServerState,
+    /// Private Tailscale Funnel sidecar controller. Never touches system Tailscale.
+    pub tailscale: Arc<crate::web::tailscale::TailscaleController>,
     pub chat_channel_manager: ChatChannelManager,
     pub workspace_transfer: Arc<WorkspaceTransferManager>,
     /// Latest ambient `PetState` written by `pet_state_subscriber_task`.
@@ -211,6 +213,7 @@ impl AppState {
             emitter,
             data_dir,
             web_server_state: crate::web::WebServerState::new(),
+            tailscale: Arc::new(crate::web::tailscale::TailscaleController::new()),
             chat_channel_manager: default_chat_channel_manager(),
             workspace_transfer: Arc::new(
                 crate::workspace_transfer::WorkspaceTransferManager::new_for_tests(

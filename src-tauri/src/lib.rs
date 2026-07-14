@@ -195,6 +195,9 @@ mod tauri_app {
             .manage(windows::CommitWindowState::new())
             .manage(windows::MergeWindowState::new())
             .manage(web::WebServerState::new())
+            .manage(std::sync::Arc::new(
+                web::tailscale::TailscaleController::new(),
+            ))
             // Remote-workspace IPC proxy. Routes HTTP / WS for windows
             // opened against a remote codeg-server through Rust so we
             // bypass webview mixed-content blocking and can centrally
@@ -1222,6 +1225,9 @@ mod tauri_app {
                 web::get_web_service_config,
                 web::update_web_service_config,
                 web::probe_web_service_port,
+                web::tailscale::get_tailscale_funnel_status,
+                web::tailscale::set_tailscale_funnel_enabled,
+                web::tailscale::open_tailscale_login,
             ])
             .build(tauri::generate_context!())
             .expect("error while building tauri application")
@@ -1235,6 +1241,11 @@ mod tauri_app {
                     // before the runtime races to exit.
                     if let Some(pet) = app.get_webview_window("pet") {
                         let _ = pet.close();
+                    }
+                    if let Some(controller) =
+                        app.try_state::<std::sync::Arc<web::tailscale::TailscaleController>>()
+                    {
+                        tauri::async_runtime::block_on(controller.shutdown());
                     }
                     if let Some(ws) = app.try_state::<web::WebServerState>() {
                         tauri::async_runtime::block_on(web::do_stop_web_server(&ws));

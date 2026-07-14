@@ -29,6 +29,7 @@ pub mod system_settings;
 pub mod terminal;
 mod upload_jail;
 pub mod version_control;
+pub mod tailscale;
 pub mod web_server;
 pub mod workspace_files;
 pub mod workspace_state;
