@@ -115,6 +115,19 @@ pub struct DbConversationDetail {
     pub in_flight_user_turn_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct DbConversationDetailPage {
+    pub summary: DbConversationSummary,
+    pub turns: Vec<MessageTurn>,
+    pub has_more_history: bool,
+    pub next_before_turn_index: Option<usize>,
+    pub page_size: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_stats: Option<SessionStats>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub in_flight_user_turn_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FolderInfo {
     pub path: String,

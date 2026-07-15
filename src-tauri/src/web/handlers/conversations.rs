@@ -127,6 +127,14 @@ pub struct GetFolderConversationParams {
     pub conversation_id: i32,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetFolderConversationPaginatedParams {
+    pub conversation_id: i32,
+    pub before_turn_index: Option<usize>,
+    pub page_size: Option<usize>,
+}
+
 pub async fn get_folder_conversation(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<GetFolderConversationParams>,
@@ -138,6 +146,23 @@ pub async fn get_folder_conversation(
         &state.chat_channel_manager,
         &state.emitter,
         params.conversation_id,
+    )
+    .await?;
+    Ok(Json(result))
+}
+
+pub async fn get_folder_conversation_paginated(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<GetFolderConversationPaginatedParams>,
+) -> Result<Json<DbConversationDetailPage>, AppCommandError> {
+    let db = &state.db;
+    let result = conv_commands::get_folder_conversation_paginated_core(
+        &db.conn,
+        &state.connection_manager,
+        &state.emitter,
+        params.conversation_id,
+        params.before_turn_index,
+        params.page_size,
     )
     .await?;
     Ok(Json(result))
