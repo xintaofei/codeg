@@ -1,5 +1,80 @@
 const encoder = new TextEncoder()
 
+export function relayBase64UrlEncode(bytes: Uint8Array): string {
+  let binary = ""
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "")
+}
+
+export function relayBase64UrlDecode(value: string): Uint8Array {
+  if (!/^[A-Za-z0-9_-]*$/.test(value)) {
+    throw new Error("Invalid base64url value")
+  }
+  const padding = "=".repeat((4 - (value.length % 4)) % 4)
+  const binary = atob(value.replace(/-/g, "+").replace(/_/g, "/") + padding)
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0))
+}
+
+function relayHandshakeCanonical(
+  role: "mobile" | "desktop",
+  desktopId: string,
+  deviceId: string,
+  connectionId: string,
+  publicKey: string
+): Uint8Array {
+  return encoder.encode(
+    `codeg-relay-v1|${role}|${desktopId}|${deviceId}|${connectionId}|${publicKey}`
+  )
+}
+
+async function importRelayHmacKey(pairingRoot: Uint8Array): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
+    "raw",
+    pairingRoot,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign", "verify"]
+  )
+}
+
+export async function createRelayHandshakeProof(
+  pairingRoot: Uint8Array,
+  role: "mobile" | "desktop",
+  desktopId: string,
+  deviceId: string,
+  connectionId: string,
+  publicKey: string
+): Promise<string> {
+  const key = await importRelayHmacKey(pairingRoot)
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    relayHandshakeCanonical(role, desktopId, deviceId, connectionId, publicKey)
+  )
+  return relayBase64UrlEncode(new Uint8Array(signature))
+}
+
+export async function verifyRelayHandshakeProof(
+  pairingRoot: Uint8Array,
+  proof: string,
+  role: "mobile" | "desktop",
+  desktopId: string,
+  deviceId: string,
+  connectionId: string,
+  publicKey: string
+): Promise<boolean> {
+  const key = await importRelayHmacKey(pairingRoot)
+  return crypto.subtle.verify(
+    "HMAC",
+    key,
+    relayBase64UrlDecode(proof),
+    relayHandshakeCanonical(role, desktopId, deviceId, connectionId, publicKey)
+  )
+}
+
 export interface RelayDirectionalKeys {
   mobileToDesktop: CryptoKey
   desktopToMobile: CryptoKey

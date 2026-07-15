@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 
 import { isMobileEnvironment } from "@/lib/transport/detect"
 import { bootstrapCodegToken } from "@/lib/transport/web-auth"
+import { bootstrapMobileRelaySecrets } from "@/lib/relay/config"
 
 export function MobileAuthBootstrap({
   children,
@@ -17,7 +18,10 @@ export function MobileAuthBootstrap({
     const bootstrap = async () => {
       if (isMobileEnvironment()) {
         try {
-          await bootstrapCodegToken()
+          await Promise.all([
+            bootstrapCodegToken(),
+            bootstrapMobileRelaySecrets(),
+          ])
         } catch (error) {
           console.error("[Mobile] secure token bootstrap failed", error)
         }

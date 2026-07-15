@@ -15,6 +15,7 @@ import { detectEnvironment } from "./detect"
 import { getShellTransport, isRemoteDesktopMode } from "./index"
 import type { WebConnState, WebTransport } from "./web-transport"
 import { getMobileServerUrl } from "../mobile-config"
+import { getMobileRelayConfig } from "../relay/config"
 
 // Module-level constant so `getServerSnapshot` returns a STABLE reference on
 // every call — React warns / loops if the server snapshot identity changes.
@@ -26,16 +27,23 @@ const noop = () => {}
 // dormant (SSR, desktop, remote-desktop). The shape check is belt-and-braces:
 // the env guard already guarantees a WebTransport, but it keeps a future
 // transport swap from crashing the dialog plumbing.
-function webTransport(): WebTransport | null {
+type ConnectionAwareTransport = Pick<
+  WebTransport,
+  | "subscribeConnection"
+  | "getConnectionSnapshot"
+  | "reconnectNow"
+  | "markUnauthorized"
+>
+
+function webTransport(): ConnectionAwareTransport | null {
   if (typeof window === "undefined") return null
   if (detectEnvironment() === "mobile-direct" && !getMobileServerUrl()) {
     return null
   }
-  if (
-    detectEnvironment() === "desktop-local" ||
-    detectEnvironment() === "mobile-relay" ||
-    isRemoteDesktopMode()
-  )
+  if (detectEnvironment() === "mobile-relay" && !getMobileRelayConfig()) {
+    return null
+  }
+  if (detectEnvironment() === "desktop-local" || isRemoteDesktopMode())
     return null
   const transport = getShellTransport()
   if (
@@ -44,7 +52,7 @@ function webTransport(): WebTransport | null {
   ) {
     return null
   }
-  return transport as WebTransport
+  return transport as unknown as ConnectionAwareTransport
 }
 
 export function subscribeWebConnection(callback: () => void): () => void {

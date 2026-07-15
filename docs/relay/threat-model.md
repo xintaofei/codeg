@@ -3,7 +3,7 @@
 ## Protected assets
 
 Codeg access tokens, chat and Agent output, source code, paths, attachments,
-permission decisions, device private keys and pairing roots are confidential.
+permission decisions and pairing roots are confidential.
 Command integrity, event ordering, one-time execution and immediate device
 revocation are equally required.
 
@@ -17,8 +17,9 @@ revocation are equally required.
 
 ## Controls
 
-- Signed ephemeral ECDH plus HKDF and AES-256-GCM provides E2EE, peer
-  authentication and forward secrecy. Routing metadata is authenticated as AAD.
+- Pairing-root-authenticated ephemeral ECDH plus HKDF and AES-256-GCM provides
+  E2EE, peer authentication and forward secrecy. Routing metadata is
+  authenticated as AAD.
 - One-use 256-bit pairing secrets, five-minute expiry, local desktop confirmation
   and matching SAS prevent remote enrollment and detect QR substitution.
 - Monotonic sequence nonces, replay windows, cumulative acknowledgements and
@@ -38,8 +39,8 @@ revocation are equally required.
 - A photographed, unused QR can enroll within its short validity window unless
   the user rejects the unexpected desktop confirmation.
 - Push providers learn that a device received a generic Codeg notification.
-- Revocation cannot erase ciphertext already recorded, but forward secrecy
-  prevents later identity-key compromise from decrypting completed sessions.
+- Revocation cannot erase ciphertext already recorded, but fresh ephemeral ECDH
+  prevents a later endpoint compromise from recovering completed session keys.
 
 ## Required negative tests
 

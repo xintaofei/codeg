@@ -1,6 +1,6 @@
 # Codeg Mobile 实施计划
 
-status: planned
+status: in-progress
 owner: Crain99
 repository: Crain99/codeg-mobile
 visibility: private
@@ -118,71 +118,71 @@ Codeg Mobile                                  │
 
 ### M0：仓库与设计归档
 
-- [ ] 使用个人 GitHub 账号 `Crain99` 创建私有仓库 `codeg-mobile`。
-- [ ] 从 `xintaofei/codeg@v0.20.3` 建立 `main`。
-- [ ] 添加只读 `upstream` remote。
-- [ ] 创建 `develop` 与短期功能分支规则。
-- [ ] 将移动 UI 原型和设计 Token 归档进仓库。
-- [ ] 记录从 `codeg-custom` 选择性移植的稳定性提交清单。
-- [ ] 添加 Android、iOS、Web/Rust 基础 CI。
+- [x] 使用个人 GitHub 账号 `Crain99` 创建私有仓库 `codeg-mobile`。
+- [x] 从 `xintaofei/codeg@v0.20.3` 建立 `main`。
+- [x] 添加只读 `upstream` remote。
+- [x] 创建 `develop` 与短期功能分支规则。
+- [x] 将移动 UI 原型和设计 Token 归档进仓库。
+- [x] 记录从 `codeg-custom` 选择性移植的稳定性提交清单。
+- [x] 添加 Android、iOS、Web/Rust 基础 CI。
 
 完成标准：仓库可重复构建，设计源不再依赖 OpenDesign 数据目录，桌面定制代码未被带入。
 
 ### M1：移动编译边界
 
-- [ ] 生成 Tauri Android 与 iOS 工程。
-- [ ] 增加明确的平台/运行角色检测。
-- [ ] 增加 `mobile-client` Cargo feature。
-- [ ] 对移动端 cfg 掉 ACP、PTY、Agent registry、sidecar、tray、updater、single-instance、多窗口和桌面宠物。
-- [ ] 修复 Android/iOS target 下的平台枚举和依赖编译错误。
-- [ ] 保持 Android 与 iOS 的空壳 App 均可启动。
+- [x] 生成 Tauri Android 与 iOS 工程。
+- [x] 增加明确的平台/运行角色检测。
+- [x] 增加 `mobile-client` Cargo feature。
+- [x] 对移动端 cfg 掉 ACP、PTY、Agent registry、sidecar、tray、updater、single-instance、多窗口和桌面宠物。
+- [x] 修复 Android/iOS target 下的平台枚举和依赖编译错误。
+- [x] 保持 Android 与 iOS 的空壳 App 均可启动。
 
 完成标准：Android 模拟器/真机与 iOS 模拟器均能进入本地打包的移动登录页，不启动任何本地 Agent 进程。
 
 ### M2：DirectTransport 首版
 
-- [ ] 将运行环境从 `tauri/web` 扩展为明确的移动远程模式。
-- [ ] 移动端使用 `WebTransport(serverUrl)`，不使用本地 `TauriTransport`。
-- [ ] 实现服务器配置、Token 验证与安全存储。
-- [ ] 适配登录、退出、401、服务器不可达和节点切换。
-- [ ] 复用并验证 WebSocket readiness、snapshot/replay、seq cursor 和 reconnect。
-- [ ] 实现移动文件选择、图片/附件上传和分享/保存入口。
+- [x] 将运行环境从 `tauri/web` 扩展为明确的移动远程模式。
+- [x] 移动端使用 `WebTransport(serverUrl)`，不使用本地 `TauriTransport`。
+- [x] 实现服务器配置、Token 验证与安全存储。
+- [x] 适配登录、退出、401、服务器不可达和节点切换。
+- [x] 复用并验证 WebSocket readiness、snapshot/replay、seq cursor 和 reconnect。
+- [x] 实现移动文件选择、图片/附件上传和分享/保存入口。
 
 完成标准：手机通过 HTTPS 直连现有 Codeg，在 4G/Wi-Fi 切换后前台 5 秒内恢复会话，不重复工具事件。
 
 ### M3：移动 UI 与任务闭环
 
-- [ ] 实现启动、首次连接、最近会话、执行中、等待批准、Agent 提问、任务中心、会话列表、断线恢复和服务器管理页面。
-- [ ] 接入真实会话、任务和权限数据，删除原型假数据。
-- [ ] 实现消息虚拟列表和向上分页锚点保持。
-- [ ] 实现顶部运行中/等待批准入口。
-- [ ] 实现底部会话/任务/设置导航。
-- [ ] 实现前后台生命周期、网络变化与软键盘适配。
-- [ ] 实现不持久化草稿策略。
+- [x] 实现启动、首次连接、最近会话、执行中、等待批准、Agent 提问、任务中心、会话列表、断线恢复和服务器管理页面。
+- [x] 接入真实会话、任务和权限数据，删除原型假数据。
+- [x] 实现消息虚拟列表和向上分页锚点保持。
+- [x] 实现顶部运行中/等待批准入口。
+- [x] 实现底部会话/任务/设置导航。
+- [x] 实现前后台生命周期、网络变化与软键盘适配。
+- [x] 实现不持久化草稿策略。
 
 完成标准：用户可以在手机完成“创建任务 → 查看执行 → 批准/回答 → 查看结果”的完整闭环。
 
 ### M4：Relay 协议与安全设计
 
-- [ ] 定义版本化 Relay 帧协议：`hello/pair/request/response/event/upload/ack/ping/revoke`。
-- [ ] 定义请求 ID、事件序列、重放窗口、幂等和背压规则。
-- [ ] 定义大文件分片、取消、校验与失败恢复规则。
-- [ ] 定义一次性配对码、设备身份、公钥交换和凭据轮换。
-- [ ] 定义端到端加密；Relay 不获得 Codeg Token、代码或聊天明文。
-- [ ] 定义设备撤销、服务器注销和疑似泄露处置流程。
-- [ ] 完成威胁模型与协议测试向量，再开始 Relay 服务编码。
+- [x] 定义版本化 Relay 帧协议：`hello/pair/request/response/event/upload/ack/ping/revoke`。
+- [x] 定义请求 ID、事件序列、重放窗口、幂等和背压规则。
+- [x] 定义大文件分片、取消、校验与失败恢复规则。
+- [x] 定义一次性配对码、设备身份、公钥交换和凭据轮换。
+- [x] 定义端到端加密；Relay 不获得 Codeg Token、代码或聊天明文。
+- [x] 定义设备撤销、服务器注销和疑似泄露处置流程。
+- [x] 完成威胁模型与协议测试向量，再开始 Relay 服务编码。
 
 完成标准：协议文档、状态机、安全边界、错误码和兼容策略均完成评审。
 
 ### M5：Codeg Relay 服务
 
-- [ ] 新建独立 Relay 服务，优先使用 Rust + Axum。
-- [ ] 实现桌面端与移动端双向 WSS 接入。
-- [ ] 实现 deviceId 路由、心跳、在线状态和连接替换。
-- [ ] 实现加密帧透明转发，不记录内容明文。
-- [ ] 实现限流、连接上限、帧大小限制和审计事件。
-- [ ] 实现健康检查、结构化日志和基础指标。
-- [ ] 在单实例阶段使用内存路由；扩容需要时再引入 Redis 等共享状态。
+- [x] 新建独立 Relay 服务，优先使用 Rust + Axum。
+- [x] 实现桌面端与移动端双向 WSS 接入。
+- [x] 实现 deviceId 路由、心跳、在线状态和连接替换。
+- [x] 实现加密帧透明转发，不记录内容明文。
+- [x] 实现限流、连接上限、帧大小限制和审计事件。
+- [x] 实现健康检查、结构化日志和基础指标。
+- [x] 在单实例阶段使用内存路由；扩容需要时再引入 Redis 等共享状态。
 
 建议部署：`kdit-01`。
 
@@ -196,9 +196,9 @@ Codeg Mobile                                  │
 
 - [ ] 桌面设置增加“移动访问”开关。
 - [ ] 生成并安全保存桌面设备身份。
-- [ ] 主动建立 Relay WSS 并自动重连。
-- [ ] 将 Relay request 映射到现有 Codeg command handler。
-- [ ] 将 Agent 事件、snapshot/replay 和权限请求转发到 Relay。
+- [x] 主动建立 Relay WSS 并自动重连。
+- [x] 将 Relay request 映射到现有 Codeg command handler。
+- [x] 将 Agent 事件、snapshot/replay 和权限请求转发到 Relay。
 - [ ] 生成一次性二维码并在桌面确认新手机。
 - [ ] 显示已配对设备、最后活动时间与撤销操作。
 
@@ -206,7 +206,7 @@ Codeg Mobile                                  │
 
 ### M7：Mobile RelayTransport
 
-- [ ] 实现符合统一 `Transport` 接口的 `RelayTransport`。
+- [x] 实现符合统一 `Transport` 接口的 `RelayTransport`。
 - [ ] 实现扫码、一次性配对、设备确认和安全存储。
 - [ ] 实现 request/response 关联、超时、取消和错误映射。
 - [ ] 实现 event seq、ack、snapshot/replay 和 5 秒前台恢复目标。
@@ -228,7 +228,7 @@ Codeg Mobile                                  │
 
 ### M9：测试、加固与发布
 
-- [ ] 前端单元测试、Rust 单元测试和协议测试。
+- [x] 前端单元测试、Rust 单元测试和协议测试。
 - [ ] Direct/Relay 端到端集成测试。
 - [ ] Wi-Fi/4G 切换、锁屏、Relay 重启、桌面睡眠和服务器重启测试。
 - [ ] 长会话、事件去重、上传中断和多设备并发测试。

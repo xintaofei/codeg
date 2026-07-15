@@ -2,13 +2,17 @@ import { webcrypto } from "node:crypto"
 import { beforeAll, describe, expect, it } from "vitest"
 
 import {
+  createRelayHandshakeProof,
   deriveRelayDirectionalKeys,
   deriveRelaySharedSecret,
   exportRelayPublicKey,
   generateRelayEphemeralKeyPair,
   openRelayFrame,
+  relayBase64UrlDecode,
+  relayBase64UrlEncode,
   relayNonce,
   sealRelayFrame,
+  verifyRelayHandshakeProof,
 } from "./crypto"
 
 beforeAll(() => {
@@ -19,6 +23,47 @@ beforeAll(() => {
 })
 
 describe("Codeg Relay v1 crypto", () => {
+  it("round-trips unpadded base64url", () => {
+    const bytes = Uint8Array.from([0, 1, 2, 250, 251, 252, 253, 254, 255])
+    const encoded = relayBase64UrlEncode(bytes)
+    expect(encoded).not.toMatch(/[+/=]/)
+    expect(relayBase64UrlDecode(encoded)).toEqual(bytes)
+  })
+
+  it("authenticates ephemeral handshake metadata", async () => {
+    const root = crypto.getRandomValues(new Uint8Array(32))
+    const proof = await createRelayHandshakeProof(
+      root,
+      "mobile",
+      "d_test",
+      "m_phone",
+      "c_test",
+      "public-key"
+    )
+    await expect(
+      verifyRelayHandshakeProof(
+        root,
+        proof,
+        "mobile",
+        "d_test",
+        "m_phone",
+        "c_test",
+        "public-key"
+      )
+    ).resolves.toBe(true)
+    await expect(
+      verifyRelayHandshakeProof(
+        root,
+        proof,
+        "mobile",
+        "d_test",
+        "m_other",
+        "c_test",
+        "public-key"
+      )
+    ).resolves.toBe(false)
+  })
+
   it("derives matching directional keys and decrypts an authenticated frame", async () => {
     const mobile = await generateRelayEphemeralKeyPair()
     const desktop = await generateRelayEphemeralKeyPair()

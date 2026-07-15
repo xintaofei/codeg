@@ -4,7 +4,11 @@ import { useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { isDesktop } from "@/lib/platform"
 import { isMobileEnvironment } from "@/lib/transport/detect"
-import { getMobileServerUrl } from "@/lib/mobile-config"
+import {
+  getMobileConnectionMode,
+  getMobileServerUrl,
+} from "@/lib/mobile-config"
+import { getMobileRelayConfig } from "@/lib/relay/config"
 import { clearCodegToken, getCodegToken } from "@/lib/transport/web-auth"
 
 export default function Page() {
@@ -15,6 +19,14 @@ export default function Page() {
       return
     }
     const mobile = isMobileEnvironment()
+    if (mobile && getMobileConnectionMode() === "relay") {
+      if (!getMobileRelayConfig()) {
+        router.replace("/login")
+        return
+      }
+      router.replace("/workspace")
+      return
+    }
     const serverUrl = mobile ? getMobileServerUrl() : ""
     if (mobile && !serverUrl) {
       router.replace("/login")

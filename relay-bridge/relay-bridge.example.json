@@ -1,0 +1,12 @@
+{
+  "relay_url": "wss://relay.codeg.example/v1/ws",
+  "desktop_id": "d_example",
+  "relay_token": "replace-with-the-desktop-routing-token",
+  "local_url": "http://127.0.0.1:3080",
+  "codeg_token": "replace-with-the-local-codeg-token",
+  "devices": {
+    "m_example_phone": {
+      "pairing_root": "replace-with-32-random-bytes-as-unpadded-base64url"
+    }
+  }
+}

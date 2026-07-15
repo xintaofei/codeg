@@ -15,8 +15,8 @@ permission answers in plaintext.
 
 ## Roles and endpoints
 
-- Desktop opens outbound `WSS /v1/desktop` and owns one stable `desktop_id`.
-- Mobile opens outbound `WSS /v1/mobile` and owns one stable `device_id` per
+- Desktop opens outbound `WSS /v1/ws` and owns one stable `desktop_id`.
+- Mobile opens outbound `WSS /v1/ws` and owns one stable `device_id` per
   installation.
 - Relay authenticates both sockets with relay-scoped bearer credentials. These
   credentials authorize routing only and are not Codeg credentials.
@@ -70,28 +70,29 @@ duplicate before decrypting application data.
 
 ## Pairing
 
-1. Desktop generates a long-term P-256 signing identity and a 256-bit
-   `pair_secret`, registers `SHA-256(pair_secret)` as a 5-minute one-use
+1. Desktop generates a 256-bit `pair_secret`, registers
+   `SHA-256(pair_secret)` as a 5-minute one-use
    `pair_id`, then displays a QR code.
-2. QR contains protocol version, Relay URL, desktop ID, desktop signing public
-   key, `pair_id`, `pair_secret` and expiry. The QR is the authenticated channel;
+2. QR contains protocol version, Relay URL, desktop ID, `pair_id`,
+   `pair_secret` and expiry. The QR is the authenticated channel;
    it must only be shown locally and becomes invalid after one use or timeout.
-3. Mobile generates its signing identity and an ephemeral P-256 ECDH key. Its
+3. Mobile generates an ephemeral P-256 ECDH key. Its
    `pair_request` is encrypted with a key derived from ECDH plus `pair_secret`.
 4. Desktop decrypts the request and displays device name plus a six-digit SAS
-   derived from both identity keys and `pair_secret`. Mobile shows the same SAS.
+   derived from both ephemeral keys and `pair_secret`. Mobile shows the same SAS.
 5. User confirms on the desktop. Relay issues a random routing credential;
    desktop returns it inside encrypted `pair_accept` and erases `pair_secret`.
-6. Both peers store identity material and pairing root in OS secure storage.
+6. Both peers store the resulting pairing root in OS secure storage.
    Reject, timeout, a second use or desktop cancellation destroys all temporary
    state.
 
-Each normal connection uses fresh ephemeral P-256 ECDH keys. Peers sign the
-ephemeral public keys and connection ID with their paired signing identities.
-HKDF-SHA-256 derives independent `mobile-to-desktop` and
+Each normal connection uses fresh ephemeral P-256 ECDH keys. Peers authenticate
+the role, both routing IDs, connection ID and ephemeral public key with
+HMAC-SHA-256 under the paired 256-bit root. HKDF-SHA-256 derives independent
+`mobile-to-desktop` and
 `desktop-to-mobile` AES-256-GCM keys from the ephemeral shared secret, pairing
 root and connection ID. This provides mutual authentication and forward
-secrecy for completed sessions.
+secrecy for completed sessions without a separate long-term signing key.
 
 ## Ordering, replay and recovery
 
@@ -119,8 +120,8 @@ secrecy for completed sessions.
 
 Desktop is authoritative for paired devices. Revocation closes matching Relay
 sockets, deletes the routing credential, rotates the desktop pairing root for
-that device and rejects all later frames. A stolen routing token without the OS
-protected identity and pairing root cannot decrypt or forge application frames.
+that device and rejects all later frames. A stolen routing token without the
+OS-protected pairing root cannot decrypt or forge application frames.
 
 Protocol changes that alter cryptography, envelope canonicalization or payload
 semantics require a new integer version. Peers advertise supported versions in

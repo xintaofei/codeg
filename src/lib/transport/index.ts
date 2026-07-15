@@ -1,5 +1,6 @@
 import { detectEnvironment } from "./detect"
 import { getMobileServerUrl } from "../mobile-config"
+import { getMobileRelayConfig } from "../relay/config"
 import type { RemoteTransportConfig, Transport } from "./types"
 
 export type { RemoteTransportConfig, Transport, UnsubscribeFn } from "./types"
@@ -25,6 +26,18 @@ function createWebTransport(baseUrl: string): Transport {
   return new WebTransport(baseUrl)
 }
 
+function createRelayTransport(): Transport {
+  const config = getMobileRelayConfig()
+  if (!config) {
+    throw new Error("Mobile Relay is not configured")
+  }
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { RelayTransport } = require("./relay-transport") as {
+    RelayTransport: new (value: typeof config) => Transport
+  }
+  return new RelayTransport(config)
+}
+
 export function getShellTransport(): Transport {
   if (!_shellTransport) {
     const env = detectEnvironment()
@@ -37,7 +50,7 @@ export function getShellTransport(): Transport {
       }
       _shellTransport = createWebTransport(serverUrl)
     } else if (env === "mobile-relay") {
-      throw new Error("Relay connection is not configured")
+      _shellTransport = createRelayTransport()
     } else {
       _shellTransport = createWebTransport(window.location.origin)
     }
@@ -93,6 +106,7 @@ export function getServerBaseUrl(): string {
   if (_remoteConfig) return _remoteConfig.baseUrl.replace(/\/+$/, "")
   const env = detectEnvironment()
   if (env === "mobile-direct") return getMobileServerUrl()
+  if (env === "mobile-relay") return ""
   return typeof window !== "undefined" ? window.location.origin : ""
 }
 

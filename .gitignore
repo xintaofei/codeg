@@ -60,6 +60,8 @@ docs/superpowers
 src-tauri/binaries/
 mobile/src-tauri/target/
 relay/target/
+relay-bridge/target/
+relay-bridge.json
 
 # pnpm local store (pnpm 11+)
 .pnpm-store/
