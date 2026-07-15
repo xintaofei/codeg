@@ -7,6 +7,7 @@ on:
   pull_request:
 
 env:
+  CI: "true"
   RUST_BACKTRACE: short
   # Refuse to silently regenerate snapshots in CI — any drift must be
   # accepted locally with `cargo insta review` and committed.
