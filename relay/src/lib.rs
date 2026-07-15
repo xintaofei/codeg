@@ -307,6 +307,25 @@ impl Hub {
             let _ = sender.send(Message::Close(None)).await;
         }
     }
+
+    async fn disconnect_mobiles_for_desktop(&self, desktop_id: &str) -> usize {
+        let senders = {
+            let mut mobiles = self.mobiles.write().await;
+            let keys = mobiles
+                .keys()
+                .filter(|(candidate, _)| candidate == desktop_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            keys.into_iter()
+                .filter_map(|key| mobiles.remove(&key))
+                .collect::<Vec<_>>()
+        };
+        let count = senders.len();
+        for sender in senders {
+            let _ = sender.send(Message::Close(None)).await;
+        }
+        count
+    }
 }
 
 pub struct AppState {
@@ -338,6 +357,15 @@ impl AppState {
             .get(desktop_id)
             .or_else(|| self.desktop_token_hashes.get("*"))
             .is_some_and(|expected| expected.ct_eq(&token_hash(token)).into())
+    }
+
+    async fn disconnect_mobiles_for_desktop(&self, desktop_id: &str) {
+        let disconnected = self.hub.disconnect_mobiles_for_desktop(desktop_id).await;
+        if disconnected > 0 {
+            self.metrics
+                .active_mobiles
+                .fetch_sub(disconnected as u64, Ordering::Relaxed);
+        }
     }
 }
 
@@ -467,6 +495,11 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                     .active_desktops
                     .fetch_add(1, Ordering::Relaxed);
             }
+            // A desktop process starts every Relay connection with an empty
+            // in-memory encryption session map. Existing mobile sockets would
+            // otherwise keep sending with stale keys, so close them and let
+            // their normal reconnect path perform a fresh handshake.
+            state.disconnect_mobiles_for_desktop(desktop_id).await;
             info!(role = "desktop", %desktop_id, "relay peer connected");
         }
         Session::Mobile {
@@ -488,10 +521,16 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     let mut last_seen = Instant::now();
     let mut rate = FrameRate::default();
 
-    loop {
+    let disconnect_reason = loop {
         tokio::select! {
             incoming = stream.next() => {
-                let Some(Ok(message)) = incoming else { break };
+                let Some(incoming) = incoming else {
+                    break "peer_eof".to_owned();
+                };
+                let message = match incoming {
+                    Ok(message) => message,
+                    Err(error) => break format!("read_error:{error}"),
+                };
                 last_seen = Instant::now();
                 match message {
                     Message::Text(text) => {
@@ -508,7 +547,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                     }
                     Message::Ping(bytes) => { let _ = sender.send(Message::Pong(bytes)).await; }
                     Message::Pong(_) => {}
-                    Message::Close(_) => break,
+                    Message::Close(_) => break "peer_close".to_owned(),
                     Message::Binary(_) => {
                         state.metrics.rejected_frames.fetch_add(1, Ordering::Relaxed);
                         let _ = sender.send(error_message("protocol_violation")).await;
@@ -516,11 +555,15 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                 }
             }
             _ = heartbeat.tick() => {
-                if last_seen.elapsed() > IDLE_TIMEOUT { break; }
-                if sender.send(Message::Ping(Vec::new().into())).await.is_err() { break; }
+                if last_seen.elapsed() > IDLE_TIMEOUT {
+                    break "idle_timeout".to_owned();
+                }
+                if sender.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    break "writer_closed".to_owned();
+                }
             }
         }
-    }
+    };
 
     match &session {
         Session::Desktop { desktop_id } => {
@@ -529,8 +572,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                     .metrics
                     .active_desktops
                     .fetch_sub(1, Ordering::Relaxed);
+                state.disconnect_mobiles_for_desktop(desktop_id).await;
             }
-            info!(role = "desktop", %desktop_id, "relay peer disconnected");
+            info!(role = "desktop", %desktop_id, reason = %disconnect_reason, "relay peer disconnected");
         }
         Session::Mobile {
             desktop_id,
@@ -543,7 +587,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
             if removed {
                 state.metrics.active_mobiles.fetch_sub(1, Ordering::Relaxed);
             }
-            info!(role = "mobile", %desktop_id, %device_id, "relay peer disconnected");
+            info!(role = "mobile", %desktop_id, %device_id, reason = %disconnect_reason, "relay peer disconnected");
         }
     }
     let _ = sender.send(Message::Close(None)).await;
@@ -849,6 +893,22 @@ mod tests {
             "d_randomly_generated",
             "shared-token-at-least-thirty-two-characters"
         ));
+    }
+
+    #[tokio::test]
+    async fn disconnecting_a_desktop_closes_all_of_its_mobile_routes() {
+        let hub = Hub::default();
+        let (first_tx, mut first_rx) = mpsc::channel(1);
+        let (second_tx, mut second_rx) = mpsc::channel(1);
+        hub.register_mobile("d_test".into(), "m_one".into(), first_tx)
+            .await;
+        hub.register_mobile("d_other".into(), "m_two".into(), second_tx)
+            .await;
+
+        assert_eq!(hub.disconnect_mobiles_for_desktop("d_test").await, 1);
+        assert!(matches!(first_rx.recv().await, Some(Message::Close(_))));
+        assert!(second_rx.try_recv().is_err());
+        assert_eq!(hub.mobiles.read().await.len(), 1);
     }
 
     #[tokio::test]

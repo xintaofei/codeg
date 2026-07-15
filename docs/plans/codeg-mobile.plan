@@ -6,6 +6,8 @@ repository: Crain99/codeg-mobile
 visibility: private
 upstream: xintaofei/codeg@v0.20.3
 updated: 2026-07-15
+strategy: A（本地原生前端 + Relay/Direct 远程控制）
+delivery-priority: Android 可用签名 APK，随后补齐 iOS TestFlight
 
 ## 1. 目标
 
@@ -184,11 +186,11 @@ Codeg Mobile                                  │
 - [x] 实现健康检查、结构化日志和基础指标。
 - [x] 在单实例阶段使用内存路由；扩容需要时再引入 Redis 等共享状态。
 
-建议部署：`kdit-01`。
+实际部署主机：`kdit-01`。
 
-建议域名：`relay.codeg.poisoner.cn`。
-
-以上部署主机与域名仍需用户最终确认。
+实际公网入口：`frp.kditravel.com`，Relay 健康检查使用
+`https://frp.kditravel.com/codeg-relay/health`，WSS 使用
+`wss://frp.kditravel.com/v1/ws`。
 
 完成标准：Relay 可在不开放用户电脑入站端口的情况下稳定转发双向加密帧。
 
@@ -272,8 +274,8 @@ Codeg Mobile                                  │
 
 ## 10. 待用户确认
 
-- [ ] Relay 最终部署到 `kdit-01`。
-- [ ] Relay 最终域名使用 `relay.codeg.poisoner.cn`。
+- [x] Relay 部署到 `kdit-01`。
+- [x] Relay 公网入口使用 `frp.kditravel.com`。
 - [ ] Apple Developer / App Store Connect 账号可用于 TestFlight 与 APNs。
 - [ ] Firebase 项目与 FCM 凭据的归属。
 - [ ] “始终允许”是否进入首版，或首版只提供“允许一次/拒绝”。
@@ -287,3 +289,63 @@ Codeg Mobile                                  │
 - UI 设计资产已归档进仓库。
 - M4 Relay 协议与安全设计先于 M5 服务器编码完成。
 - 不在移动端实现本地 Agent runtime，不扩大首版功能边界。
+
+## 12. 后续执行顺序
+
+### P0：打通 Android Relay 真机闭环
+
+- [x] 手机扫码导入配对信息，敏感凭据只进入 Android Keystore。
+- [x] APK 通过公网 Relay 连接位于 NAT 后的桌面 Codeg。
+- [x] 手机创建或继续真实会话，并持续收到 Agent 流式事件。
+- [ ] 手机完成权限批准、拒绝和 Agent 问题回答。
+- [x] 强制停止 App 后重新打开，5 秒内恢复当前会话且不重复事件。
+- [ ] 桌面撤销设备后，手机立即失去访问能力。
+
+### P1：补齐 Relay 安全与可靠性
+
+- [ ] 配对凭据由服务端一次性消费，过期或重复使用均失败。
+- [ ] 新手机必须经过桌面端明确确认。
+- [ ] request/response 支持超时、取消、错误映射和幂等重试。
+- [ ] 附件支持分片、校验、进度、取消和断点恢复。
+- [ ] Relay 故障时显示可理解的状态，并允许切换 Direct 连接。
+
+### P2：Android 发布
+
+- [ ] 在至少一台 Android 真机完成 Wi-Fi/移动网络、锁屏和后台恢复测试。
+- [ ] 完成长会话、上传中断、多设备、撤销和重放攻击测试。
+- [ ] 使用非调试签名生成 universal Release APK。
+- [ ] 创建私有 GitHub Release，附 SHA-256、安装和配对说明。
+
+### P3：推送通知
+
+- [ ] 接入 FCM，仅发送不含代码、Token 和命令正文的安全摘要。
+- [ ] 点击通知可进入对应会话或批准卡，危险操作仍需应用内确认。
+
+### P4：iOS 交付
+
+- [ ] 保持 iOS 模拟器构建持续通过。
+- [ ] 接入 Keychain、相机扫码、文件选择、APNs 和深链接。
+- [ ] 完成真机归档并上传 TestFlight。
+
+## 13. Android APK 硬验收标准
+
+只有以下条件全部满足，才可把“可用的 Android APK”标记为完成：
+
+1. APK 在未安装开发工具的 Android 真机上可直接安装、冷启动和升级。
+2. 用户无需公网 IP、端口映射或手机 VPN，即可通过 Relay 配对自己的电脑。
+3. 能完成“进入历史会话/新建任务 → 持续执行 → 批准或回答 → 查看最终结果”的真实闭环。
+4. Wi-Fi 与移动网络切换、锁屏返回或短暂断网后，前台 5 秒内恢复一致状态。
+5. 恢复不重复消息、工具事件或命令，不丢失任务最终状态。
+6. Codeg Token、Relay 根密钥和设备私钥不进入日志、URL、明文配置或 Web Storage。
+7. 未发送草稿不跨 App 重启、退出登录或服务器切换保留。
+8. 撤销设备后旧凭据不可再次连接；二维码过期或第二次使用必须失败。
+9. Relay 日志和存储中不存在代码、附件、聊天正文或 Codeg Token 明文。
+10. Release 附带版本号、签名信息、SHA-256、安装说明、配对说明和已知限制。
+
+## 14. 完成定义
+
+- “编译通过”只代表构建门槛通过，不等于功能完成。
+- “模拟器可启动”只代表冒烟通过，不等于真机验收通过。
+- “公网 WSS 可连接”只代表链路通过，不等于任务闭环通过。
+- Android 首发完成必须以第 13 节全部通过为准。
+- iOS 不阻塞 Android 首发，但不得破坏 iOS 持续编译能力。

@@ -183,6 +183,12 @@ export interface UseReferenceSearchOptions {
    * tree is never fetched — let the host pre-warm only the active composer.
    */
   enabled?: boolean
+  /**
+   * Pre-warm workspace files for the `@` panel. Mobile task-control clients
+   * disable this because they do not expose a code browser and a large tree can
+   * dominate reconnect time; agents, sessions and commits remain available.
+   */
+  filesEnabled?: boolean
   /** Localized group headings; English fallbacks when omitted. */
   labels?: ReferenceGroupLabels
 }
@@ -208,13 +214,14 @@ export interface UseReferenceSearchOptions {
 export function useReferenceSearch({
   defaultPath,
   enabled = true,
+  filesEnabled = true,
   labels,
 }: UseReferenceSearchOptions): ReferenceSearch {
   const path = defaultPath || null
 
   const { allFiles, loaded } = useFileTree({
     folderPath: path ?? undefined,
-    enabled,
+    enabled: enabled && filesEnabled,
   })
   const { agents } = useAcpAgents()
 
@@ -246,12 +253,12 @@ export function useReferenceSearch({
     // search never joins the current workspace root onto a previous folder's
     // relative paths during a folder switch.
     filesRef.current =
-      loaded && path
+      enabled && filesEnabled && loaded && path
         ? { root: path, files: allFiles }
         : { root: null, files: [] }
     agentsRef.current = agents
     labelsRef.current = labels
-  }, [allFiles, loaded, path, agents, labels])
+  }, [allFiles, loaded, path, agents, labels, enabled, filesEnabled])
 
   // Lazily-fetched network sources, key-cached so repeat searches reuse the
   // in-flight/resolved promise while a folder switch refetches.

@@ -75,7 +75,31 @@ interface RelayReady {
   kind: "ready"
 }
 
-type DesktopPayload = RelayResponse | RelayWsFrame | RelayReady
+interface RelayChunk {
+  kind: "chunk"
+  chunk_id: string
+  index: number
+  total: number
+  total_bytes: number
+  sha256: string
+  data: string
+}
+
+interface ChunkAssembly {
+  total: number
+  totalBytes: number
+  sha256: string
+  parts: Uint8Array[]
+  receivedBytes: number
+  expiresAt: number
+}
+
+type DesktopPayload = RelayResponse | RelayWsFrame | RelayReady | RelayChunk
+
+const RELAY_CHUNK_BYTES = 256 * 1024
+const RELAY_MAX_REASSEMBLED_BYTES = 128 * 1024 * 1024
+const RELAY_MAX_CHUNKS = 512
+const RELAY_CHUNK_TTL_MS = 120_000
 
 function relayId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replace(/-/g, "")}`
@@ -100,6 +124,7 @@ export class RelayTransport implements Transport {
   private ephemeralKeyPair: CryptoKeyPair | null = null
   private sendSeq = 0
   private receivedSeq = 0
+  private sendQueue: Promise<void> = Promise.resolve()
   private sessionPromise!: Promise<void>
   private sessionResolve!: () => void
   private readyPromise!: Promise<void>
@@ -112,6 +137,7 @@ export class RelayTransport implements Transport {
   private connectionListeners = new Set<() => void>()
   private connState: WebConnState = "reconnecting"
   private eventStreamInstance: WebEventStream | null = null
+  private chunkAssemblies = new Map<string, ChunkAssembly>()
   private readonly pairingRoot: Uint8Array
 
   constructor(private readonly config: MobileRelayConfig) {
@@ -261,6 +287,8 @@ export class RelayTransport implements Transport {
     this.ephemeralKeyPair = null
     this.sendSeq = 0
     this.receivedSeq = 0
+    this.sendQueue = Promise.resolve()
+    this.chunkAssemblies.clear()
     this.sessionPromise = new Promise<void>((resolve) => {
       this.sessionResolve = resolve
     })
@@ -275,6 +303,7 @@ export class RelayTransport implements Transport {
   private connect(): void {
     if (this.destroyed || this.ws) return
     const socket = new WebSocket(this.config.relayUrl)
+    let incoming = Promise.resolve()
     this.ws = socket
     socket.onopen = () => {
       if (this.ws !== socket) return
@@ -292,7 +321,13 @@ export class RelayTransport implements Transport {
     }
     socket.onmessage = (event) => {
       if (this.ws !== socket || typeof event.data !== "string") return
-      void this.handleMessage(event.data).catch(() => socket.close())
+      // WebSocket dispatch does not await async handlers. The desktop sends
+      // `ready` immediately after `desktop_hello`, so processing messages in
+      // parallel can attempt to decrypt the first frame before key derivation
+      // finishes and trigger an unnecessary reconnect loop.
+      incoming = incoming
+        .then(() => this.handleMessage(event.data))
+        .catch(() => socket.close())
     }
     socket.onerror = () => {}
     socket.onclose = () => {
@@ -410,6 +445,14 @@ export class RelayTransport implements Transport {
   }
 
   private async sendEncrypted(payload: unknown): Promise<void> {
+    const queued = this.sendQueue.then(() => this.sendEncryptedNow(payload))
+    // Keep the queue usable after a failed send while preserving the rejection
+    // for the caller that owns this individual frame.
+    this.sendQueue = queued.catch(() => {})
+    return queued
+  }
+
+  private async sendEncryptedNow(payload: unknown): Promise<void> {
     const keys = this.keys
     const socket = this.ws
     if (!keys || !socket || socket.readyState !== WebSocket.OPEN) {
@@ -469,10 +512,15 @@ export class RelayTransport implements Transport {
     const payload = JSON.parse(
       new TextDecoder().decode(plaintext)
     ) as DesktopPayload
-    this.dispatchDesktopPayload(payload)
+    await this.dispatchDesktopPayload(payload)
   }
 
-  private dispatchDesktopPayload(payload: DesktopPayload): void {
+  private async dispatchDesktopPayload(payload: DesktopPayload): Promise<void> {
+    if (payload.kind === "chunk") {
+      const completed = await this.acceptChunk(payload)
+      if (completed) await this.dispatchDesktopPayload(completed)
+      return
+    }
     if (payload.kind === "response") {
       this.finishPending(
         payload.request_id,
@@ -507,6 +555,79 @@ export class RelayTransport implements Transport {
         }
       }
     }
+  }
+
+  private async acceptChunk(chunk: RelayChunk): Promise<DesktopPayload | null> {
+    const now = Date.now()
+    for (const [id, assembly] of this.chunkAssemblies) {
+      if (assembly.expiresAt <= now) this.chunkAssemblies.delete(id)
+    }
+    if (
+      !/^ch_[A-Za-z0-9]+$/.test(chunk.chunk_id) ||
+      !Number.isSafeInteger(chunk.index) ||
+      !Number.isSafeInteger(chunk.total) ||
+      !Number.isSafeInteger(chunk.total_bytes) ||
+      chunk.index < 0 ||
+      chunk.total < 2 ||
+      chunk.total > RELAY_MAX_CHUNKS ||
+      chunk.index >= chunk.total ||
+      chunk.total_bytes <= 0 ||
+      chunk.total_bytes > RELAY_MAX_REASSEMBLED_BYTES ||
+      typeof chunk.sha256 !== "string" ||
+      typeof chunk.data !== "string"
+    ) {
+      throw new Error("Relay chunk metadata is invalid")
+    }
+    const bytes = relayBase64UrlDecode(chunk.data)
+    if (bytes.length === 0 || bytes.length > RELAY_CHUNK_BYTES) {
+      throw new Error("Relay chunk size is invalid")
+    }
+
+    let assembly = this.chunkAssemblies.get(chunk.chunk_id)
+    if (!assembly) {
+      if (chunk.index !== 0) throw new Error("Relay chunk stream is incomplete")
+      assembly = {
+        total: chunk.total,
+        totalBytes: chunk.total_bytes,
+        sha256: chunk.sha256,
+        parts: [],
+        receivedBytes: 0,
+        expiresAt: now + RELAY_CHUNK_TTL_MS,
+      }
+      this.chunkAssemblies.set(chunk.chunk_id, assembly)
+    }
+    if (
+      assembly.total !== chunk.total ||
+      assembly.totalBytes !== chunk.total_bytes ||
+      assembly.sha256 !== chunk.sha256 ||
+      chunk.index !== assembly.parts.length
+    ) {
+      this.chunkAssemblies.delete(chunk.chunk_id)
+      throw new Error("Relay chunk stream is inconsistent")
+    }
+    assembly.parts.push(bytes)
+    assembly.receivedBytes += bytes.length
+    if (assembly.receivedBytes > assembly.totalBytes) {
+      this.chunkAssemblies.delete(chunk.chunk_id)
+      throw new Error("Relay chunk stream exceeds its declared size")
+    }
+    if (assembly.parts.length < assembly.total) return null
+
+    this.chunkAssemblies.delete(chunk.chunk_id)
+    if (assembly.receivedBytes !== assembly.totalBytes) {
+      throw new Error("Relay chunk stream has the wrong final size")
+    }
+    const joined = new Uint8Array(assembly.totalBytes)
+    let offset = 0
+    for (const part of assembly.parts) {
+      joined.set(part, offset)
+      offset += part.length
+    }
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", joined))
+    if (!sameBytes(digest, relayBase64UrlDecode(assembly.sha256))) {
+      throw new Error("Relay chunk checksum is invalid")
+    }
+    return JSON.parse(new TextDecoder().decode(joined)) as DesktopPayload
   }
 
   private finishPending(

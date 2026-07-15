@@ -32,7 +32,11 @@ pub struct PairEnvelope {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RelayFrame {
     pub v: u8,
-    #[serde(rename = "type")]
+    // `IncomingEnvelope` consumes the internally tagged `type` field before
+    // deserializing this struct. Supplying the protocol constant as a default
+    // keeps standalone serialization correct without requiring the field a
+    // second time during enum deserialization.
+    #[serde(rename = "type", default = "frame_message_type")]
     pub message_type: String,
     pub desktop_id: String,
     pub device_id: String,
@@ -42,6 +46,10 @@ pub struct RelayFrame {
     pub ack: u64,
     pub nonce: String,
     pub ciphertext: String,
+}
+
+fn frame_message_type() -> String {
+    "frame".to_owned()
 }
 
 impl RelayFrame {
@@ -96,4 +104,33 @@ pub fn valid_command(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{IncomingEnvelope, PROTOCOL_VERSION};
+
+    #[test]
+    fn parses_frame_with_internally_tagged_type() {
+        let value = serde_json::json!({
+            "v": PROTOCOL_VERSION,
+            "type": "frame",
+            "desktop_id": "d_test",
+            "device_id": "m_phone",
+            "connection_id": "c_session",
+            "frame_id": "f_one",
+            "seq": 1,
+            "ack": 0,
+            "nonce": "nonce",
+            "ciphertext": "ciphertext"
+        });
+
+        let envelope = serde_json::from_value::<IncomingEnvelope>(value)
+            .expect("frame envelope should deserialize");
+        let IncomingEnvelope::Frame(frame) = envelope else {
+            panic!("expected frame envelope");
+        };
+        assert_eq!(frame.v, PROTOCOL_VERSION);
+        assert_eq!(frame.frame_id, "f_one");
+    }
 }

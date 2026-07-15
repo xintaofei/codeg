@@ -85,6 +85,7 @@ import {
 import { extractAppCommandError } from "@/lib/app-error"
 import { openFileDialog } from "@/lib/platform"
 import { getActiveRemoteConnectionId } from "@/lib/transport"
+import { isMobileEnvironment } from "@/lib/transport/detect"
 import { ServerFileBrowserDialog } from "@/components/shared/server-file-browser-dialog"
 import { toast } from "sonner"
 import { disposeTauriListener } from "@/lib/tauri-listener"
@@ -667,6 +668,7 @@ export function MessageInput({
   const referenceSearch = useReferenceSearch({
     defaultPath: defaultPath ?? null,
     enabled: isActive,
+    filesEnabled: !isMobileEnvironment(),
     labels: referenceGroupLabels,
   })
 

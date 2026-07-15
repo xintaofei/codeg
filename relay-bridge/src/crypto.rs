@@ -14,6 +14,7 @@ use p256::{
     PublicKey,
 };
 use sha2::Sha256;
+use tokio::sync::{Mutex, MutexGuard};
 
 use crate::protocol::{
     PairEnvelope, RelayFrame, DESKTOP_TO_MOBILE_NONCE_TAG, MOBILE_TO_DESKTOP_NONCE_TAG,
@@ -29,6 +30,7 @@ pub struct SessionCrypto {
     desktop_to_mobile: Aes256Gcm,
     received_seq: AtomicU64,
     send_seq: AtomicU64,
+    send_lock: Mutex<()>,
 }
 
 impl SessionCrypto {
@@ -93,9 +95,14 @@ impl SessionCrypto {
                 desktop_to_mobile,
                 received_seq: AtomicU64::new(0),
                 send_seq: AtomicU64::new(0),
+                send_lock: Mutex::new(()),
             },
             response,
         ))
+    }
+
+    pub async fn lock_send(&self) -> MutexGuard<'_, ()> {
+        self.send_lock.lock().await
     }
 
     pub fn open_mobile_frame(&self, frame: &RelayFrame) -> anyhow::Result<Vec<u8>> {

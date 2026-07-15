@@ -4,7 +4,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{bail, Context};
@@ -12,6 +12,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::StatusCode;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tokio_tungstenite::{
     connect_async,
@@ -36,6 +37,11 @@ const RECONNECT_MIN: Duration = Duration::from_secs(1);
 const RECONNECT_MAX: Duration = Duration::from_secs(16);
 const OUTBOUND_CAPACITY: usize = 256;
 const IDEMPOTENCY_CAPACITY: usize = 512;
+const DIRECT_PAYLOAD_BYTES: usize = 512 * 1024;
+const CHUNK_BYTES: usize = 256 * 1024;
+const MAX_CHUNKED_PAYLOAD_BYTES: usize = 128 * 1024 * 1024;
+const CHUNK_SEND_INTERVAL: Duration = Duration::from_millis(12);
+const MAX_RELAY_TEXT_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone)]
 pub struct Bridge {
@@ -135,7 +141,9 @@ impl Bridge {
         loop {
             match self.run_relay_once().await {
                 Ok(()) => warn!("Relay connection closed"),
-                Err(error) => warn!(error = %error, "Relay connection failed"),
+                Err(error) => {
+                    warn!(error = %format!("{error:#}"), "Relay connection failed")
+                }
             }
             self.inner.sessions.write().await.clear();
             *self.inner.relay_outbound.write().await = None;
@@ -300,6 +308,7 @@ impl Bridge {
     }
 
     async fn handle_request(&self, session: Arc<SessionCrypto>, request: RelayRequest) {
+        let started = Instant::now();
         let outcome = match self.cached_or_execute(&request).await {
             Ok(outcome) => outcome,
             Err(error) => CommandOutcome {
@@ -322,6 +331,18 @@ impl Bridge {
                 "error": outcome.body
             })
         };
+        let elapsed = started.elapsed();
+        let response_bytes = serde_json::to_vec(&response)
+            .map(|bytes| bytes.len())
+            .unwrap_or_default();
+        if elapsed >= Duration::from_millis(500) || response_bytes > DIRECT_PAYLOAD_BYTES {
+            warn!(
+                command = %request.command,
+                elapsed_ms = elapsed.as_millis(),
+                response_bytes,
+                "Relay command required slow or chunked handling"
+            );
+        }
         if let Err(error) = self.send_encrypted(&session, &response).await {
             warn!(error = %error, "Failed to send encrypted command response");
         }
@@ -472,6 +493,26 @@ impl Bridge {
             warn!("Local Codeg sent invalid JSON event frame");
             return;
         };
+        if text.len() > 512 * 1024 {
+            warn!(
+                bytes = text.len(),
+                channel = frame
+                    .get("channel")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown"),
+                frame_type = frame
+                    .get("type")
+                    .and_then(|value| value.as_str())
+                    .or_else(|| {
+                        frame
+                            .get("payload")
+                            .and_then(|payload| payload.get("type"))
+                            .and_then(|value| value.as_str())
+                    })
+                    .unwrap_or("unknown"),
+                "Local Codeg emitted a large event frame"
+            );
+        }
         let payload = if frame.get("channel").and_then(Value::as_str) == Some("__ready__") {
             self.inner.local_ready.store(true, Ordering::Release);
             json!({"kind": "ready"})
@@ -494,9 +535,57 @@ impl Bridge {
     }
 
     async fn send_encrypted(&self, session: &SessionCrypto, payload: &Value) -> anyhow::Result<()> {
+        // Command responses and event forwarding run concurrently. Protect
+        // sequence allocation plus queue insertion as one operation so frames
+        // cannot reach the mobile out of sequence.
+        let _send_guard = session.lock_send().await;
         let plaintext = serde_json::to_vec(payload)?;
-        let frame = session.seal_desktop_payload(&self.inner.config.desktop_id, &plaintext)?;
-        self.send_to_relay(serde_json::to_string(&frame)?).await
+        if plaintext.len() <= DIRECT_PAYLOAD_BYTES {
+            return self.send_encrypted_bytes(session, &plaintext).await;
+        }
+        if plaintext.len() > MAX_CHUNKED_PAYLOAD_BYTES {
+            bail!(
+                "encrypted payload exceeds the {} byte reassembly limit",
+                MAX_CHUNKED_PAYLOAD_BYTES
+            );
+        }
+
+        let chunk_id = format!("ch_{}", uuid::Uuid::new_v4().simple());
+        let total = plaintext.len().div_ceil(CHUNK_BYTES);
+        let checksum = URL_SAFE_NO_PAD.encode(Sha256::digest(&plaintext));
+        for (index, chunk) in plaintext.chunks(CHUNK_BYTES).enumerate() {
+            let envelope = json!({
+                "kind": "chunk",
+                "chunk_id": chunk_id,
+                "index": index,
+                "total": total,
+                "total_bytes": plaintext.len(),
+                "sha256": checksum,
+                "data": URL_SAFE_NO_PAD.encode(chunk)
+            });
+            self.send_encrypted_bytes(session, &serde_json::to_vec(&envelope)?)
+                .await?;
+            if index + 1 < total {
+                // Relay enforces a per-socket frame rate. Pacing large payloads
+                // keeps chunks below that bound while allowing other peers to
+                // remain responsive.
+                tokio::time::sleep(CHUNK_SEND_INTERVAL).await;
+            }
+        }
+        Ok(())
+    }
+
+    async fn send_encrypted_bytes(
+        &self,
+        session: &SessionCrypto,
+        plaintext: &[u8],
+    ) -> anyhow::Result<()> {
+        let frame = session.seal_desktop_payload(&self.inner.config.desktop_id, plaintext)?;
+        let encoded = serde_json::to_string(&frame)?;
+        if encoded.len() > MAX_RELAY_TEXT_BYTES {
+            bail!("encrypted frame exceeds the Relay text frame limit");
+        }
+        self.send_to_relay(encoded).await
     }
 
     async fn send_to_relay(&self, message: String) -> anyhow::Result<()> {
