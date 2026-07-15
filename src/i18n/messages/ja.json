@@ -53,7 +53,8 @@
       "office_tools": "Officeツール",
       "skill_packs": "スキルパック",
       "quick_messages": "クイックメッセージ",
-      "logs": "実行ログ"
+      "logs": "実行ログ",
+      "auto_reply": "Auto Reply"
     }
   },
   "AppearanceSettings": {
@@ -2141,7 +2142,9 @@
         "mentionGroupAgent": "エージェント",
         "mentionGroupSession": "セッション",
         "mentionGroupCommit": "コミット",
-        "mentionGroupSkill": "スキル"
+        "mentionGroupSkill": "スキル",
+        "autoReply": "Auto Reply",
+        "autoReplyEnabledHint": "Auto Reply is on for this conversation"
       },
       "messageQueue": {
         "addToQueue": "キューに追加",
@@ -2632,6 +2635,15 @@
         "cardCompleted": "バックグラウンドタスクが完了しました",
         "cardFinishedWithStatus": "バックグラウンドタスクが終了しました（{status}）",
         "cardResultPending": "結果はまだ返っていません"
+      },
+      "autoReply": {
+        "bannerTitle": "Auto-replying \"{reply}\" in {seconds}s",
+        "bannerMatched": "Matched: {label}",
+        "cancel": "Cancel",
+        "stopNotice": "Auto-reply stopped for this interruption (max retries reached).",
+        "dismiss": "Dismiss",
+        "matchedHttpStatus": "HTTP {status}",
+        "matchedErrorText": "Error text: {value}"
       }
     },
     "diffPreview": {
@@ -3830,5 +3842,33 @@
     "groupInstructions": "説明とシステムプロンプト",
     "fieldDescription": "説明",
     "baseInstructions": "システムプロンプト（base_instructions）"
+  },
+  "AutoReplySettings": {
+    "title": "Auto Reply",
+    "description": "Configure rules that automatically send a recovery message when error or status signals match. Enable Auto Reply per conversation from the composer + menu.",
+    "help": "Rules match Claude API retry / connection error signals only (not assistant text). First enabled match wins. Built-in rules can be edited but not deleted.",
+    "addRule": "Add rule",
+    "save": "Save",
+    "delete": "Delete",
+    "name": "Name",
+    "enabled": "Enabled",
+    "matchKind": "Match kind",
+    "matchValue": "Match value",
+    "replyText": "Reply text",
+    "delaySeconds": "Delay (seconds)",
+    "cooldownSeconds": "Cooldown (seconds)",
+    "maxPerBurst": "Max per burst",
+    "builtinBadge": "Built-in",
+    "cannotDeleteBuiltin": "Built-in rules cannot be deleted.",
+    "matchKindHttpStatus": "HTTP status",
+    "matchKindErrorText": "Error text contains",
+    "empty": "No rules yet",
+    "moveUp": "Move up",
+    "moveDown": "Move down",
+    "saved": "Rules saved",
+    "confirmDeleteTitle": "Delete rule?",
+    "confirmDeleteDescription": "This custom auto-reply rule will be removed.",
+    "cancel": "Cancel",
+    "newRuleName": "New rule"
   }
 }
