@@ -1,0 +1,12 @@
+{
+  "name": "@codeg/mobile-shell",
+  "private": true,
+  "version": "0.20.3",
+  "packageManager": "pnpm@11.9.0",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.10.0"
+  }
+}

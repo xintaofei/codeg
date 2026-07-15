@@ -48,6 +48,96 @@ jobs:
       - name: Static export build
         run: pnpm build
 
+  android-mobile:
+    name: Android mobile compile smoke
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: "pnpm"
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK and NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android packages
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
+
+      - name: Install Rust Android target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./mobile/src-tauri -> target"
+          shared-key: android-mobile-aarch64
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Android project
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
+        run: pnpm --dir mobile tauri android init --ci
+
+      - name: Build aarch64 debug APK
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
+        run: pnpm --dir mobile tauri android build --apk --debug --target aarch64 --ci
+
+  ios-mobile:
+    name: iOS mobile simulator compile smoke
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: "pnpm"
+
+      - name: Install Rust iOS simulator target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./mobile/src-tauri -> target"
+          shared-key: ios-mobile-aarch64-sim
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate iOS project
+        run: pnpm --dir mobile tauri ios init --ci
+
+      - name: Build iOS simulator app
+        run: pnpm --dir mobile tauri ios build --debug --target aarch64-sim --ci
+
   rust:
     name: Rust ${{ matrix.mode }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

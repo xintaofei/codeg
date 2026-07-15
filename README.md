@@ -214,6 +214,26 @@ Codeg ships three Rust binaries from a single workspace:
 | `codeg-server` | Standalone HTTP + WebSocket server for browser/headless deployments                                          | `pnpm server:build` / `pnpm server:dev`                                     |
 | `codeg-mcp`    | Per-launch stdio MCP companion that surfaces the `delegate_to_agent` tool to agent CLIs (multi-agent collab) | `pnpm tauri:prepare-sidecars` (auto-invoked by `tauri dev` / `tauri build`) |
 
+### Android mobile client
+
+Codeg Mobile is a local, signed Tauri application for controlling Agents that
+continue to run on a remote Codeg desktop/server. It is not a remote webpage
+wrapper and does not execute Codex, Claude Code, OpenCode, ACP, a terminal, or
+Git on the phone.
+
+1. Install the private signed APK on Android 7.0 or newer.
+2. In the desktop/server Codeg UI, open **Settings → Web Service**, enable
+   HTTPS access, and copy the access token.
+3. Open Codeg Mobile and enter the reachable HTTPS server URL (for example,
+   `https://codeg.example.com`) and token.
+4. The app verifies `/api/health`, stores the token with Android Keystore, and
+   opens the mobile task workspace.
+
+Direct mode requires the phone to reach the Codeg HTTPS endpoint. The mobile
+shell automatically reconnects WebSocket sessions after temporary network
+loss and does not preserve unsent drafts across app restarts. Build and signing
+details are in [`mobile/README.md`](mobile/README.md).
+
 `codeg-mcp` must sit next to its parent binary at runtime — installers, the Docker image, and the Tauri sidecar bundler all place it next to `codeg` / `codeg-server`. Source builds and custom layouts can override the lookup with the `CODEG_MCP_BIN=/abs/path/codeg-mcp` env var. If the companion is missing, delegation is skipped (a single warning is logged) and the rest of the agent session keeps working.
 
 ### Development

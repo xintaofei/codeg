@@ -73,6 +73,7 @@ import {
 import { cn } from "@/lib/utils"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
+import { MobileBottomNavigation } from "@/components/mobile/mobile-bottom-navigation"
 
 function WorkspaceDocumentTitle() {
   const { activeFolder } = useActiveFolder()
@@ -892,6 +893,7 @@ function FolderLayoutShell({ children }: { children: React.ReactNode }) {
         <FolderWorkspaceShell>{children}</FolderWorkspaceShell>
       )}
       <StatusBar />
+      <MobileBottomNavigation />
       <AppToaster
         position="bottom-right"
         duration={TOAST_DURATION_MS}

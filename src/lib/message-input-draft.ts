@@ -23,6 +23,14 @@ const pendingPersistDocs = new Map<string, JSONContent>()
 let idlePersistHandle: number | null = null
 let persistenceListenersBound = false
 
+function isMobileMemoryOnlyDraft(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    "__TAURI_INTERNALS__" in window &&
+    /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+  )
+}
+
 function storageKeyForDraftKey(draftKey: string): string {
   return `${STORAGE_PREFIX}:${draftKey}`
 }
@@ -46,6 +54,12 @@ function isTiptapDoc(value: unknown): value is JSONContent {
 
 function flushPendingDraftPersistence(): void {
   if (typeof window === "undefined") return
+  if (isMobileMemoryOnlyDraft()) {
+    pendingPersistDrafts.clear()
+    pendingPersistDocs.clear()
+    idlePersistHandle = null
+    return
+  }
   if (pendingPersistDrafts.size === 0 && pendingPersistDocs.size === 0) {
     idlePersistHandle = null
     return
@@ -141,6 +155,7 @@ export function loadMessageInputDraft(draftKey: string): string | null {
   const cached = draftTextCache.get(draftKey)
   if (typeof cached === "string") return cached
   if (typeof window === "undefined") return null
+  if (isMobileMemoryOnlyDraft()) return null
 
   try {
     const raw = localStorage.getItem(storageKeyForDraftKey(draftKey))
@@ -163,6 +178,7 @@ export function saveMessageInputDraft(draftKey: string, text: string): void {
   if (draftTextCache.get(draftKey) === text) return
   draftTextCache.set(draftKey, text)
   if (typeof window === "undefined") return
+  if (isMobileMemoryOnlyDraft()) return
 
   pendingPersistDrafts.set(draftKey, text)
   scheduleDraftPersistence()
@@ -201,6 +217,7 @@ export function loadMessageInputDraftV2(draftKey: string): LoadedDraftV2 {
   if (cached) return { kind: "doc", doc: cached }
 
   if (typeof window !== "undefined") {
+    if (isMobileMemoryOnlyDraft()) return null
     try {
       const raw = localStorage.getItem(storageKeyForDraftKeyV2(draftKey))
       if (raw) {
@@ -240,6 +257,7 @@ export function saveMessageInputDraftV2(
 ): void {
   draftDocCache.set(draftKey, doc)
   if (typeof window === "undefined") return
+  if (isMobileMemoryOnlyDraft()) return
 
   pendingPersistDocs.set(draftKey, doc)
   scheduleDraftPersistence()

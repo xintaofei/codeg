@@ -13,6 +13,7 @@ import { OverlayScrollbarsInit } from "@/components/overlay-scrollbars-init"
 import { ClipboardFallbackInit } from "@/components/clipboard-fallback-init"
 import { WebConnectionGuard } from "@/components/connection/web-connection-guard"
 import { WindowResizeGrips } from "@/components/layout/window-resize-grips"
+import { MobileAuthBootstrap } from "@/components/mobile-auth-bootstrap"
 
 export const viewport: Viewport = {
   width: "device-width",
@@ -58,25 +59,27 @@ export default async function RootLayout({
           locale={initialLocale}
           messages={initialMessages}
         >
-          <AppI18nProvider
-            initialLocale={initialLocale}
-            initialMessages={initialMessages}
-          >
-            <ThemeProvider
-              attribute="class"
-              defaultTheme="system"
-              enableSystem
-              disableTransitionOnChange
+          <MobileAuthBootstrap>
+            <AppI18nProvider
+              initialLocale={initialLocale}
+              initialMessages={initialMessages}
             >
-              <AppearanceProvider>
-                <OverlayScrollbarsInit />
-                <ClipboardFallbackInit />
-                <WebConnectionGuard />
-                <WindowResizeGrips />
-                {children}
-              </AppearanceProvider>
-            </ThemeProvider>
-          </AppI18nProvider>
+              <ThemeProvider
+                attribute="class"
+                defaultTheme="system"
+                enableSystem
+                disableTransitionOnChange
+              >
+                <AppearanceProvider>
+                  <OverlayScrollbarsInit />
+                  <ClipboardFallbackInit />
+                  <WebConnectionGuard />
+                  <WindowResizeGrips />
+                  {children}
+                </AppearanceProvider>
+              </ThemeProvider>
+            </AppI18nProvider>
+          </MobileAuthBootstrap>
         </NextIntlClientProvider>
       </body>
     </html>

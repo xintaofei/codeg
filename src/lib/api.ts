@@ -1,5 +1,6 @@
 import {
   getActiveRemoteConnectionId,
+  getServerBaseUrl,
   getShellTransport,
   getTransport,
   isDesktop,
@@ -2383,7 +2384,7 @@ export async function uploadAttachment(
   form.append("file", file, file.name)
   if (sessionId) form.append("session_id", sessionId)
 
-  const res = await fetch(`${window.location.origin}/api/upload_attachment`, {
+  const res = await fetch(`${getServerBaseUrl()}/api/upload_attachment`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
     body: form,
@@ -2485,7 +2486,7 @@ async function workspaceFileFetch(
   if (!isMultipart) {
     headers["Content-Type"] = "application/json"
   }
-  const res = await fetch(`${window.location.origin}/api/${endpoint}`, {
+  const res = await fetch(`${getServerBaseUrl()}/api/${endpoint}`, {
     method: "POST",
     headers,
     body,
@@ -2548,7 +2549,7 @@ export async function uploadWorkspaceFile(
   return new Promise<UploadWorkspaceFileResult>((resolve, reject) => {
     const token = getCodegToken()
     const xhr = new XMLHttpRequest()
-    xhr.open("POST", `${window.location.origin}/api/upload_workspace_file`)
+    xhr.open("POST", `${getServerBaseUrl()}/api/upload_workspace_file`)
     xhr.setRequestHeader("Authorization", `Bearer ${token}`)
 
     if (args.onProgress) {
@@ -3537,7 +3538,7 @@ export async function exportBackupWeb(
     { timeoutMs: BACKUP_LONG_CALL_TIMEOUT_MS }
   )
   const a = document.createElement("a")
-  a.href = `${window.location.origin}${ticket.url}`
+  a.href = `${getServerBaseUrl()}${ticket.url}`
   a.download = ticket.filename
   document.body.appendChild(a)
   a.click()
@@ -3552,7 +3553,7 @@ export async function uploadBackupWeb(
   return new Promise<string>((resolve, reject) => {
     const token = getCodegToken()
     const xhr = new XMLHttpRequest()
-    xhr.open("POST", `${window.location.origin}/api/backup_upload`)
+    xhr.open("POST", `${getServerBaseUrl()}/api/backup_upload`)
     xhr.setRequestHeader("Authorization", `Bearer ${token}`)
     if (onProgress) {
       xhr.upload.onprogress = (event) => {

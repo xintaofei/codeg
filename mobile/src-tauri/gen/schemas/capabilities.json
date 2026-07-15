@@ -1,0 +1,1 @@
+{"mobile":{"identifier":"mobile","description":"Minimum permissions for the Codeg mobile remote client","local":true,"windows":["main"],"permissions":["core:default","secure-vault:default"],"platforms":["android","iOS"]}}

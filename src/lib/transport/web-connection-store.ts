@@ -14,6 +14,7 @@
 import { detectEnvironment } from "./detect"
 import { getShellTransport, isRemoteDesktopMode } from "./index"
 import type { WebConnState, WebTransport } from "./web-transport"
+import { getMobileServerUrl } from "../mobile-config"
 
 // Module-level constant so `getServerSnapshot` returns a STABLE reference on
 // every call — React warns / loops if the server snapshot identity changes.
@@ -27,7 +28,15 @@ const noop = () => {}
 // transport swap from crashing the dialog plumbing.
 function webTransport(): WebTransport | null {
   if (typeof window === "undefined") return null
-  if (detectEnvironment() !== "web" || isRemoteDesktopMode()) return null
+  if (detectEnvironment() === "mobile-direct" && !getMobileServerUrl()) {
+    return null
+  }
+  if (
+    detectEnvironment() === "desktop-local" ||
+    detectEnvironment() === "mobile-relay" ||
+    isRemoteDesktopMode()
+  )
+    return null
   const transport = getShellTransport()
   if (
     typeof (transport as Partial<WebTransport>).subscribeConnection !==

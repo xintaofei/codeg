@@ -1,4 +1,5 @@
 import { detectEnvironment } from "./detect"
+import { getMobileServerUrl } from "../mobile-config"
 import type { RemoteTransportConfig, Transport } from "./types"
 
 export type { RemoteTransportConfig, Transport, UnsubscribeFn } from "./types"
@@ -27,10 +28,19 @@ function createWebTransport(baseUrl: string): Transport {
 export function getShellTransport(): Transport {
   if (!_shellTransport) {
     const env = detectEnvironment()
-    _shellTransport =
-      env === "tauri"
-        ? createTauriTransport()
-        : createWebTransport(window.location.origin)
+    if (env === "desktop-local") {
+      _shellTransport = createTauriTransport()
+    } else if (env === "mobile-direct") {
+      const serverUrl = getMobileServerUrl()
+      if (!serverUrl) {
+        throw new Error("Mobile server is not configured")
+      }
+      _shellTransport = createWebTransport(serverUrl)
+    } else if (env === "mobile-relay") {
+      throw new Error("Relay connection is not configured")
+    } else {
+      _shellTransport = createWebTransport(window.location.origin)
+    }
   }
   return _shellTransport
 }
@@ -62,7 +72,7 @@ export function getTransport(): Transport {
 }
 
 export function isDesktop(): boolean {
-  return detectEnvironment() === "tauri"
+  return detectEnvironment() === "desktop-local"
 }
 
 /// True when the current window is a Tauri client bound to a remote
@@ -81,6 +91,8 @@ export function isRemoteDesktopMode(): boolean {
 /// the local origin only as a harmless fallback.
 export function getServerBaseUrl(): string {
   if (_remoteConfig) return _remoteConfig.baseUrl.replace(/\/+$/, "")
+  const env = detectEnvironment()
+  if (env === "mobile-direct") return getMobileServerUrl()
   return typeof window !== "undefined" ? window.location.origin : ""
 }
 

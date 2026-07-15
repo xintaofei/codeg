@@ -9,6 +9,7 @@ import {
   formatShortcutLabel,
   type ShortcutSettings,
 } from "@/lib/keyboard-shortcuts"
+import { isMobileEnvironment } from "@/lib/transport/detect"
 
 type TipKey =
   | "tileTabs"
@@ -103,8 +104,12 @@ export function WelcomeTip() {
   const { shortcuts } = useShortcutSettings()
   const isMac = useIsMac()
 
-  const [tipIndex] = useState(() => Math.floor(Math.random() * TIPS.length))
-  const tip = TIPS[tipIndex]
+  const [tip] = useState(() => {
+    const availableTips = isMobileEnvironment()
+      ? TIPS.filter((candidate) => candidate.key !== "draftAutoSave")
+      : TIPS
+    return availableTips[Math.floor(Math.random() * availableTips.length)]
+  })
 
   const kbd = (chunks: ReactNode) => (
     <kbd className="mx-0.5 inline-flex items-center rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[10.5px] font-medium text-foreground/80">

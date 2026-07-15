@@ -189,7 +189,10 @@ export function SettingsShell({ children }: SettingsShellProps) {
 
   const filteredNavItems = SETTINGS_NAV_ITEMS.filter(
     (item) =>
-      !(item.labelKey === "web_service" && detectEnvironment() === "web")
+      !(
+        item.labelKey === "web_service" &&
+        detectEnvironment() !== "desktop-local"
+      )
   )
 
   const navContent = (

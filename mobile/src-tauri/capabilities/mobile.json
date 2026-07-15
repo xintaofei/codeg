@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "Minimum permissions for the Codeg mobile remote client",
+  "windows": ["main"],
+  "platforms": ["android", "iOS"],
+  "permissions": ["core:default", "secure-vault:default"]
+}
