@@ -50,4 +50,3 @@ revocation are equally required.
 - Retry an identical idempotency key and prove the command executes once.
 - Record Relay logs during chat and upload and prove no content or Codeg token is
   present.
-

@@ -138,4 +138,3 @@ semantics require a new integer version. Peers advertise supported versions in
 - `rate_limited`
 - `backpressure`
 - `protocol_violation`
-
