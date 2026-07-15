@@ -2148,7 +2148,11 @@
         "saveEdit": "Guardar",
         "cancelEdit": "Cancelar edición",
         "editItem": "Editar",
-        "deleteItem": "Eliminar"
+        "deleteItem": "Eliminar",
+        "repeatIntentTitle": "¿Poner mensajes repetidos en cola?",
+        "repeatIntentDescription": "¿Crear {count} mensajes pendientes con: \"{text}\"?",
+        "repeatIntentConfirm": "Encolar {count} mensajes",
+        "repeatIntentCancel": "Cancelar"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "Ajustes > Agentes",

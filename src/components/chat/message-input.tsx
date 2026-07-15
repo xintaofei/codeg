@@ -56,6 +56,20 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import { ImagePreviewDialog } from "@/components/ui/image-preview-dialog"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
+  applyRepeatBaseText,
+  parseRepeatIntent,
+} from "@/lib/repeat-intent"
 import { AgentIcon } from "@/components/agent-icon"
 import { cn, copyTextFromMenu, randomUUID } from "@/lib/utils"
 import {
@@ -220,6 +234,11 @@ interface MessageInputProps {
    *  `isActive` (which still drives auto-focus/connect). */
   showActiveFlow?: boolean
   onEnqueue?: (draft: PromptDraft, modeId: string | null) => void
+  onEnqueueMany?: (
+    draft: PromptDraft,
+    modeId: string | null,
+    count: number
+  ) => void
   /** Id of the queue item being edited — the stable key for (re)hydration, so
    *  switching between two items with identical display text still reloads. */
   editingItemId?: string | null
@@ -503,6 +522,7 @@ export function MessageInput({
   isActive = false,
   showActiveFlow = false,
   onEnqueue,
+  onEnqueueMany,
   editingItemId,
   editingDraftText,
   editingDraftBlocks,
@@ -2348,6 +2368,15 @@ export function MessageInput({
     setAttachments((prev) => prev.filter((item) => item.id !== id))
   }, [])
 
+  type PendingRepeatIntent = {
+    baseDraft: PromptDraft
+    modeId: string | null
+    baseText: string
+    count: number
+  }
+  const [pendingRepeat, setPendingRepeat] =
+    useState<PendingRepeatIntent | null>(null)
+
   const buildDraft = useCallback((): PromptDraft | null => {
     const editor = editorRef.current?.getEditor()
     // Authoritative prefix normalization at the send boundary. A skill / expert
@@ -2433,14 +2462,30 @@ export function MessageInput({
       return
     }
 
+    const modeId = showModeSelector ? effectiveModeId : null
+    // Trailing xN / XN multiplier → confirm before bulk-enqueueing N base drafts.
+    // Skip when neither enqueue path exists (fall through to normal single send).
+    if (onEnqueueMany || onEnqueue) {
+      const intent = parseRepeatIntent(draft.displayText)
+      if (intent) {
+        setPendingRepeat({
+          baseDraft: applyRepeatBaseText(draft, intent.baseText),
+          modeId,
+          baseText: intent.baseText,
+          count: intent.count,
+        })
+        return
+      }
+    }
+
     // Prompting mode: enqueue instead of sending
     if (isPrompting && onEnqueue) {
-      onEnqueue(draft, showModeSelector ? effectiveModeId : null)
+      onEnqueue(draft, modeId)
       resetComposer()
       return
     }
 
-    onSend(draft, showModeSelector ? effectiveModeId : null)
+    onSend(draft, modeId)
     if (effectiveDraftStorageKey) {
       clearMessageInputDraftV2(effectiveDraftStorageKey)
     }
@@ -2452,9 +2497,33 @@ export function MessageInput({
     isPrompting,
     onSaveQueueEdit,
     onEnqueue,
+    onEnqueueMany,
     onSend,
     effectiveModeId,
     showModeSelector,
+    effectiveDraftStorageKey,
+    resetComposer,
+  ])
+
+  const confirmRepeatIntent = useCallback(() => {
+    if (!pendingRepeat) return
+    const { baseDraft, modeId, count } = pendingRepeat
+    if (onEnqueueMany) {
+      onEnqueueMany(baseDraft, modeId, count)
+    } else if (onEnqueue) {
+      for (let i = 0; i < count; i += 1) {
+        onEnqueue(baseDraft, modeId)
+      }
+    }
+    setPendingRepeat(null)
+    if (effectiveDraftStorageKey) {
+      clearMessageInputDraftV2(effectiveDraftStorageKey)
+    }
+    resetComposer()
+  }, [
+    pendingRepeat,
+    onEnqueueMany,
+    onEnqueue,
     effectiveDraftStorageKey,
     resetComposer,
   ])
@@ -2850,6 +2919,36 @@ export function MessageInput({
       onDragLeave={handleContainerDragLeave}
       onDrop={handleContainerDrop}
     >
+      <AlertDialog
+        open={pendingRepeat != null}
+        onOpenChange={(open) => {
+          if (!open) setPendingRepeat(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{tQueue("repeatIntentTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingRepeat
+                ? tQueue("repeatIntentDescription", {
+                    count: pendingRepeat.count,
+                    text: pendingRepeat.baseText,
+                  })
+                : null}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{tQueue("repeatIntentCancel")}</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmRepeatIntent}>
+              {pendingRepeat
+                ? tQueue("repeatIntentConfirm", {
+                    count: pendingRepeat.count,
+                  })
+                : null}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       {slashMenuOpen && slashAutocompleteCount > 0 && (
         <div className="absolute bottom-full left-0 right-0 mb-1 z-50 flex max-h-[min(16rem,40dvh)] flex-col overflow-hidden rounded-xl border border-border bg-popover shadow-lg">
           {/* No search box: the user types the filter inline after `/` (like the

@@ -2148,7 +2148,11 @@
         "saveEdit": "Salvar",
         "cancelEdit": "Cancelar edição",
         "editItem": "Editar",
-        "deleteItem": "Remover"
+        "deleteItem": "Remover",
+        "repeatIntentTitle": "Colocar mensagens repetidas na fila?",
+        "repeatIntentDescription": "Criar {count} mensagens pendentes com: \"{text}\"?",
+        "repeatIntentConfirm": "Enfileirar {count} mensagens",
+        "repeatIntentCancel": "Cancelar"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "Configurações > Agentes",

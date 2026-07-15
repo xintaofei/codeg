@@ -2148,7 +2148,11 @@
         "saveEdit": "儲存",
         "cancelEdit": "取消編輯",
         "editItem": "編輯",
-        "deleteItem": "刪除"
+        "deleteItem": "刪除",
+        "repeatIntentTitle": "產生重複待傳送訊息？",
+        "repeatIntentDescription": "是否產生 {count} 則待傳送訊息：「{text}」",
+        "repeatIntentConfirm": "產生 {count} 則待傳送",
+        "repeatIntentCancel": "取消"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "設定 > Agents",

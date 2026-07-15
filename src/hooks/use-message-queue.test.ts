@@ -115,3 +115,32 @@ describe("useMessageQueue bounce FIFO ordering", () => {
     expect(texts(result.current.queue)).toEqual(["B", "A-edited"])
   })
 })
+
+describe("useMessageQueue enqueueMany", () => {
+  it("appends N identical drafts with unique ids in one update", () => {
+    const { result } = renderHook(() => useMessageQueue())
+    act(() => result.current.enqueue(draft("existing"), null))
+    act(() => result.current.enqueueMany(draft("继续"), "code", 3))
+    expect(texts(result.current.queue)).toEqual([
+      "existing",
+      "继续",
+      "继续",
+      "继续",
+    ])
+    const ids = result.current.queue.map((item) => item.id)
+    expect(new Set(ids).size).toBe(4)
+    expect(
+      result.current.queue.slice(1).every((item) => item.modeId === "code")
+    ).toBe(true)
+    expect(result.current.getQueueLength()).toBe(4)
+  })
+
+  it("is a no-op for non-positive count", () => {
+    const { result } = renderHook(() => useMessageQueue())
+    act(() => result.current.enqueueMany(draft("x"), null, 0))
+    act(() => result.current.enqueueMany(draft("x"), null, -2))
+    expect(result.current.queue).toEqual([])
+    expect(result.current.getQueueLength()).toBe(0)
+  })
+})
+

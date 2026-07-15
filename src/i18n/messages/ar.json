@@ -2148,7 +2148,11 @@
         "saveEdit": "حفظ",
         "cancelEdit": "إلغاء التعديل",
         "editItem": "تعديل",
-        "deleteItem": "حذف"
+        "deleteItem": "حذف",
+        "repeatIntentTitle": "وضع رسائل مكررة في قائمة الانتظار؟",
+        "repeatIntentDescription": "إنشاء {count} رسائل معلّقة بالمحتوى: \"{text}\"؟",
+        "repeatIntentConfirm": "وضع {count} رسائل في الانتظار",
+        "repeatIntentCancel": "إلغاء"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "الإعدادات > الوكلاء",

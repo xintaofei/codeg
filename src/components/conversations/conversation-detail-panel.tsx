@@ -510,6 +510,7 @@ const ConversationTabView = memo(function ConversationTabView({
   const {
     queue: msgQueue,
     enqueue: mqEnqueue,
+    enqueueMany: mqEnqueueMany,
     requeueFront: mqRequeueFront,
     getQueueLength: mqGetQueueLength,
     dequeue: mqDequeue,
@@ -1444,6 +1445,7 @@ const ConversationTabView = memo(function ConversationTabView({
       showActiveFlow={showActiveFlow}
       queue={msgQueue}
       onEnqueue={mqEnqueue}
+      onEnqueueMany={mqEnqueueMany}
       onQueueReorder={mqReorder}
       onQueueEdit={handleQueueEdit}
       onQueueDelete={mqRemove}

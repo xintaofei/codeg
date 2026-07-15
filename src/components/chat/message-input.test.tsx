@@ -424,3 +424,128 @@ describe("MessageInput collapsed selectors popover", () => {
     )
   })
 })
+
+
+describe("MessageInput repeat intent", () => {
+  afterEach(() => {
+    cleanup()
+    composerHandle.current = null
+  })
+
+  async function mountComposer(
+    props: Partial<React.ComponentProps<typeof MessageInput>> = {}
+  ) {
+    const utils = renderInput(props)
+    await waitFor(
+      () => expect(composerHandle.current?.getEditor()).toBeTruthy(),
+      { timeout: 5000 }
+    )
+    return utils
+  }
+
+  async function setComposerText(text: string) {
+    await act(async () => {
+      composerHandle.current?.setText(text)
+    })
+  }
+
+  function clickSend(container: HTMLElement) {
+    const sendButton = container.querySelector<HTMLButtonElement>(
+      `button[title="${enMessages.Folder.chat.messageInput.send}"]`
+    )
+    expect(sendButton).not.toBeNull()
+    expect(sendButton).not.toBeDisabled()
+    fireEvent.click(sendButton!)
+  }
+
+  it("opens a confirm dialog for trailing xN and does not enqueue yet", async () => {
+    const onEnqueueMany = vi.fn()
+    const onSend = vi.fn()
+    const { container } = await mountComposer({ onEnqueueMany, onSend })
+    await setComposerText("继续x10")
+    clickSend(container)
+
+    expect(
+      await screen.findByRole("alertdialog", {
+        name: enMessages.Folder.chat.messageQueue.repeatIntentTitle,
+      })
+    ).toBeInTheDocument()
+    expect(onEnqueueMany).not.toHaveBeenCalled()
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it("enqueues N base drafts and clears the composer on confirm", async () => {
+    const user = userEvent.setup()
+    const onEnqueueMany = vi.fn()
+    const { container } = await mountComposer({ onEnqueueMany })
+    await setComposerText("继续 x 3")
+    clickSend(container)
+
+    await screen.findByRole("alertdialog", {
+      name: enMessages.Folder.chat.messageQueue.repeatIntentTitle,
+    })
+    await user.click(
+      screen.getByRole("button", {
+        name: enMessages.Folder.chat.messageQueue.repeatIntentConfirm.replace(
+          "{count}",
+          "3"
+        ),
+      })
+    )
+
+    await waitFor(() => expect(onEnqueueMany).toHaveBeenCalledTimes(1))
+    const [draft, modeId, count] = onEnqueueMany.mock.calls[0]
+    expect(draft.displayText).toBe("继续")
+    expect(modeId).toBeNull()
+    expect(count).toBe(3)
+    await waitFor(() =>
+      expect(composerHandle.current?.getText().trim() ?? "").toBe("")
+    )
+  })
+
+  it("keeps the original text when the dialog is cancelled", async () => {
+    const user = userEvent.setup()
+    const onEnqueueMany = vi.fn()
+    const { container } = await mountComposer({ onEnqueueMany })
+    await setComposerText("continue X 4")
+    clickSend(container)
+
+    await screen.findByRole("alertdialog", {
+      name: enMessages.Folder.chat.messageQueue.repeatIntentTitle,
+    })
+    await user.click(
+      screen.getByRole("button", {
+        name: enMessages.Folder.chat.messageQueue.repeatIntentCancel,
+      })
+    )
+
+    await waitFor(() =>
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+    )
+    expect(onEnqueueMany).not.toHaveBeenCalled()
+    expect(composerHandle.current?.getText()).toContain("continue X 4")
+  })
+
+  it("skips detection while editing a queue item", async () => {
+    const onSaveQueueEdit = vi.fn()
+    const onEnqueueMany = vi.fn()
+    const { container } = await mountComposer({
+      isEditingQueueItem: true,
+      editingItemId: "q1",
+      editingDraftText: "继续x10",
+      onSaveQueueEdit,
+      onEnqueueMany,
+    })
+    await waitFor(() =>
+      expect(composerHandle.current?.getText() ?? "").toContain("继续")
+    )
+    const saveButton = container.querySelector<HTMLButtonElement>(
+      `button[title="${enMessages.Folder.chat.messageQueue.saveEdit}"]`
+    )
+    expect(saveButton).not.toBeNull()
+    fireEvent.click(saveButton!)
+    await waitFor(() => expect(onSaveQueueEdit).toHaveBeenCalledTimes(1))
+    expect(onEnqueueMany).not.toHaveBeenCalled()
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+  })
+})

@@ -2148,7 +2148,11 @@
         "saveEdit": "保存",
         "cancelEdit": "取消编辑",
         "editItem": "编辑",
-        "deleteItem": "删除"
+        "deleteItem": "删除",
+        "repeatIntentTitle": "生成重复待发送消息？",
+        "repeatIntentDescription": "是否生成 {count} 条待发送消息：「{text}」",
+        "repeatIntentConfirm": "生成 {count} 条待发送",
+        "repeatIntentCancel": "取消"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "设置 > Agents",
