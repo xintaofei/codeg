@@ -336,6 +336,7 @@ impl AppState {
     fn authenticate_desktop(&self, desktop_id: &str, token: &str) -> bool {
         self.desktop_token_hashes
             .get(desktop_id)
+            .or_else(|| self.desktop_token_hashes.get("*"))
             .is_some_and(|expected| expected.ct_eq(&token_hash(token)).into())
     }
 }
@@ -834,6 +835,20 @@ mod tests {
             state.authenticate_desktop("d_test", "desktop-token-at-least-thirty-two-characters")
         );
         assert!(!state.authenticate_desktop("d_test", "wrong"));
+
+        let wildcard = AppState::new(Config {
+            desktop_tokens: HashMap::from([(
+                "*".to_string(),
+                "shared-token-at-least-thirty-two-characters".to_string(),
+            )]),
+            ..test_config(temp.path().join("wildcard-credentials.json"))
+        })
+        .await
+        .unwrap();
+        assert!(wildcard.authenticate_desktop(
+            "d_randomly_generated",
+            "shared-token-at-least-thirty-two-characters"
+        ));
     }
 
     #[tokio::test]
