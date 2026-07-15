@@ -93,6 +93,8 @@ struct DeviceCredential {
     device_id: String,
     token_sha256: String,
     created_at: u64,
+    #[serde(default)]
+    last_seen_at: Option<u64>,
     revoked_at: Option<u64>,
 }
 
@@ -140,6 +142,7 @@ impl CredentialStore {
             device_id: device_id.to_owned(),
             token_sha256: token_hash_hex(&token),
             created_at: unix_seconds(),
+            last_seen_at: None,
             revoked_at: None,
         };
         let snapshot = {
@@ -152,11 +155,24 @@ impl CredentialStore {
     }
 
     async fn authenticate(&self, desktop_id: &str, device_id: &str, token: &str) -> bool {
-        let devices = self.devices.read().await;
-        let Some(record) = devices.get(&(desktop_id.to_owned(), device_id.to_owned())) else {
-            return false;
+        let snapshot = {
+            let mut devices = self.devices.write().await;
+            let Some(record) = devices.get_mut(&(desktop_id.to_owned(), device_id.to_owned()))
+            else {
+                return false;
+            };
+            if record.revoked_at.is_some()
+                || !constant_time_hash_matches(&record.token_sha256, token)
+            {
+                return false;
+            }
+            record.last_seen_at = Some(unix_seconds());
+            devices.values().cloned().collect::<Vec<_>>()
         };
-        record.revoked_at.is_none() && constant_time_hash_matches(&record.token_sha256, token)
+        if let Err(error) = self.persist(snapshot).await {
+            warn!(error = %error, "failed to persist Relay device activity");
+        }
+        true
     }
 
     async fn revoke(&self, desktop_id: &str, device_id: &str) -> anyhow::Result<bool> {
@@ -187,6 +203,7 @@ impl CredentialStore {
             .map(|record| DeviceSummary {
                 device_id: record.device_id.clone(),
                 created_at: record.created_at,
+                last_seen_at: record.last_seen_at,
                 revoked_at: record.revoked_at,
             })
             .collect()
@@ -620,6 +637,7 @@ struct IssuedDevice {
 struct DeviceSummary {
     device_id: String,
     created_at: u64,
+    last_seen_at: Option<u64>,
     revoked_at: Option<u64>,
 }
 

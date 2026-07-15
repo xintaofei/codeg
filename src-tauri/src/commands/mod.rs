@@ -15,10 +15,12 @@ pub mod folder_commands;
 pub mod folders;
 pub mod logging;
 pub mod mcp;
+#[cfg(feature = "tauri-runtime")]
+pub mod mobile_relay;
 pub mod model_provider;
-pub mod office_tools;
 #[cfg(feature = "tauri-runtime")]
 pub mod notification;
+pub mod office_tools;
 pub mod pet;
 pub mod project_boot;
 pub mod question;

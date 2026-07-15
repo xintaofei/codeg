@@ -9,6 +9,12 @@ on:
 env:
   CI: "true"
   RUST_BACKTRACE: short
+  # Hosted Linux runners can exhaust their disk while compiling the full
+  # Tauri desktop test graph. CI does not need incremental objects or debug
+  # symbols, and disabling both keeps the matrix comfortably below the limit.
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
   # Refuse to silently regenerate snapshots in CI — any drift must be
   # accepted locally with `cargo insta review` and committed.
   INSTA_UPDATE: "no"

@@ -9,6 +9,11 @@ fn channel_token_key(channel_id: i32) -> String {
     format!("chat-channel:{}", channel_id)
 }
 
+#[cfg(feature = "tauri-runtime")]
+fn app_secret_key(key: &str) -> String {
+    format!("app-secret:{key}")
+}
+
 // ── Tauri mode: OS keyring ──
 
 #[cfg(feature = "tauri-runtime")]
@@ -34,6 +39,31 @@ pub fn delete_token(account_id: &str) -> Result<(), String> {
         Ok(()) => Ok(()),
         Err(keyring::Error::NoEntry) => Ok(()),
         Err(e) => Err(format!("keyring delete error: {e}")),
+    }
+}
+
+#[cfg(feature = "tauri-runtime")]
+pub fn set_app_secret(key: &str, value: &str) -> Result<(), String> {
+    let entry = keyring::Entry::new(SERVICE_NAME, &app_secret_key(key))
+        .map_err(|error| format!("keyring init error: {error}"))?;
+    entry
+        .set_password(value)
+        .map_err(|error| format!("keyring set error: {error}"))
+}
+
+#[cfg(feature = "tauri-runtime")]
+pub fn get_app_secret(key: &str) -> Option<String> {
+    let entry = keyring::Entry::new(SERVICE_NAME, &app_secret_key(key)).ok()?;
+    entry.get_password().ok()
+}
+
+#[cfg(feature = "tauri-runtime")]
+pub fn delete_app_secret(key: &str) -> Result<(), String> {
+    let entry = keyring::Entry::new(SERVICE_NAME, &app_secret_key(key))
+        .map_err(|error| format!("keyring init error: {error}"))?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!("keyring delete error: {error}")),
     }
 }
 

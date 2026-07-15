@@ -29,6 +29,7 @@ tauri-runtime = [
     "dep:tauri-plugin-notification",
     "dep:tauri-plugin-single-instance",
     "dep:keyring",
+    "dep:codeg-relay-bridge",
 ]
 # Exposes test scaffolding (`AppState::new_for_test`, `EventEmitter::test_web_only`,
 # `ConnectionManager::insert_test_connection`, parser `with_base_dir`, the
@@ -97,6 +98,7 @@ agent-client-protocol-schema = { version = "0.11", features = ["unstable_session
 kill_tree = { version = "0.2", features = ["tokio"] }
 which = "7"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"], optional = true }
+codeg-relay-bridge = { path = "../relay-bridge", optional = true }
 axum = { version = "0.8", features = ["ws", "multipart"] }
 async_zip = { version = "0.0.18", features = ["tokio", "deflate"] }
 tower-http = { version = "0.6", features = ["fs", "cors"] }

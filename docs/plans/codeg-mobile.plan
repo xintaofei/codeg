@@ -194,13 +194,13 @@ Codeg Mobile                                  │
 
 ### M6：桌面 Relay Client
 
-- [ ] 桌面设置增加“移动访问”开关。
-- [ ] 生成并安全保存桌面设备身份。
+- [x] 桌面设置增加“移动访问”开关。
+- [x] 生成并安全保存桌面设备身份。
 - [x] 主动建立 Relay WSS 并自动重连。
 - [x] 将 Relay request 映射到现有 Codeg command handler。
 - [x] 将 Agent 事件、snapshot/replay 和权限请求转发到 Relay。
 - [ ] 生成一次性二维码并在桌面确认新手机。
-- [ ] 显示已配对设备、最后活动时间与撤销操作。
+- [x] 显示已配对设备、最后活动时间与撤销操作。
 
 完成标准：位于 CGNAT 后的电脑无需端口映射即可被已配对手机控制，未配对或已撤销手机不能访问。
 
@@ -209,7 +209,7 @@ Codeg Mobile                                  │
 - [x] 实现符合统一 `Transport` 接口的 `RelayTransport`。
 - [ ] 实现扫码、一次性配对、设备确认和安全存储。
 - [ ] 实现 request/response 关联、超时、取消和错误映射。
-- [ ] 实现 event seq、ack、snapshot/replay 和 5 秒前台恢复目标。
+- [x] 实现 event seq、ack、snapshot/replay 和 5 秒前台恢复目标。
 - [ ] 实现附件分片、进度、取消和失败恢复。
 - [ ] 实现 Direct/Relay 切换和 Relay 故障回退提示。
 

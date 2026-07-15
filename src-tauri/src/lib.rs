@@ -46,20 +46,18 @@ mod tauri_app {
     use crate::acp::manager::ConnectionManager;
     use crate::chat_channel::manager::ChatChannelManager;
     use crate::commands::{
-        acp as acp_commands, app_update as app_update_commands,
-        automation as automation_commands, backup,
-        chat_channel as chat_channel_commands, conversations,
+        acp as acp_commands, app_update as app_update_commands, automation as automation_commands,
+        backup, chat_channel as chat_channel_commands, conversations,
         custom_skills as custom_skills_commands, delegation as delegation_commands,
         experts as experts_commands, feedback as feedback_commands, file_io, folder_commands,
-        office_tools as office_tools_commands,
         folders, logging as logging_commands, mcp as mcp_commands,
-        model_provider as model_provider_commands, notification, pet as pet_commands, project_boot,
+        mobile_relay as mobile_relay_commands, model_provider as model_provider_commands,
+        notification, office_tools as office_tools_commands, pet as pet_commands, project_boot,
         question as question_commands, quick_messages as quick_messages_commands,
-        remote_proxy as remote_proxy_commands,
-        remote_workspace as remote_workspace_commands, science as science_commands,
-        session_info as session_info_commands,
-        system_settings, terminal as terminal_commands,
-        version_control, windows, workspace_state as workspace_state_commands,
+        remote_proxy as remote_proxy_commands, remote_workspace as remote_workspace_commands,
+        science as science_commands, session_info as session_info_commands, system_settings,
+        terminal as terminal_commands, version_control, windows,
+        workspace_state as workspace_state_commands,
     };
     use crate::terminal::manager::TerminalManager;
     use crate::{db, git_credential, network, paths, process, web};
@@ -195,6 +193,7 @@ mod tauri_app {
             .manage(windows::CommitWindowState::new())
             .manage(windows::MergeWindowState::new())
             .manage(web::WebServerState::new())
+            .manage(mobile_relay_commands::MobileRelayState::new())
             // Remote-workspace IPC proxy. Routes HTTP / WS for windows
             // opened against a remote codeg-server through Rust so we
             // bypass webview mixed-content blocking and can centrally
@@ -627,6 +626,13 @@ mod tauri_app {
                     }
                     Ok(_) => {}
                     Err(err) => tracing::error!("[WEB] failed to load auto-start config: {err}"),
+                }
+
+                {
+                    let app_handle = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        mobile_relay_commands::auto_start_mobile_relay(&app_handle).await;
+                    });
                 }
 
                 // Spawn the idle sweep so connections abandoned without an
@@ -1223,6 +1229,10 @@ mod tauri_app {
                 web::get_web_service_config,
                 web::update_web_service_config,
                 web::probe_web_service_port,
+                mobile_relay_commands::get_mobile_relay_settings,
+                mobile_relay_commands::save_mobile_relay_settings,
+                mobile_relay_commands::create_mobile_relay_pairing,
+                mobile_relay_commands::revoke_mobile_relay_device,
             ])
             .build(tauri::generate_context!())
             .expect("error while building tauri application")

@@ -40,9 +40,10 @@ import {
 } from "@/lib/api"
 
 const DEFAULT_PORT = 3080
-import { openUrl } from "@/lib/platform"
+import { isDesktop, openUrl } from "@/lib/platform"
 import { copyTextToClipboard } from "@/lib/utils"
 import { useCopiedFlag } from "@/hooks/use-copied-flag"
+import { MobileRelaySettingsCard } from "./mobile-relay-settings"
 
 // Remembers which reachable address the user last chose to display/open.
 // Keyed by host (IP) only, so the choice survives a port change.
@@ -596,6 +597,8 @@ export function WebServiceSettings() {
             </div>
           )}
         </div>
+
+        {isDesktop() && <MobileRelaySettingsCard />}
       </div>
     </ScrollArea>
   )

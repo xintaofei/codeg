@@ -17,6 +17,7 @@ import {
 } from "@/lib/relay/config"
 import { isMobileEnvironment } from "@/lib/transport/detect"
 import { setCodegToken } from "@/lib/transport/web-auth"
+import { RelayQrScanner } from "@/components/mobile/relay-qr-scanner"
 
 export default function LoginPage() {
   const router = useRouter()
@@ -192,6 +193,12 @@ export default function LoginPage() {
                 autoCorrect="off"
                 rows={6}
                 className="flex w-full resize-none rounded-xl border border-input bg-background px-4 py-3 text-base ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              />
+              <RelayQrScanner
+                onDetected={(payload) => {
+                  setPairingPayload(payload)
+                  setError("")
+                }}
               />
               <p className="text-xs leading-5 text-muted-foreground">
                 电脑只需主动连接 Relay，无需公网 IP

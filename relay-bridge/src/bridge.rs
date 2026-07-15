@@ -122,11 +122,15 @@ impl Bridge {
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
+        let relay = self.clone();
         let events = self.clone();
-        tokio::spawn(async move {
-            events.run_local_events_forever().await;
-        });
+        tokio::select! {
+            result = relay.run_relay_forever() => result,
+            _ = events.run_local_events_forever() => Ok(()),
+        }
+    }
 
+    async fn run_relay_forever(&self) -> anyhow::Result<()> {
         let mut delay = RECONNECT_MIN;
         loop {
             match self.run_relay_once().await {

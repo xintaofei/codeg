@@ -3105,6 +3105,57 @@ export async function probeWebServicePort(
   })
 }
 
+// ── Mobile Relay Management (desktop Tauri only) ──
+
+export interface MobileRelayDevice {
+  deviceId: string
+  name: string
+  createdAt: number
+  lastSeenAt: number | null
+  revokedAt: number | null
+}
+
+export interface MobileRelaySettings {
+  enabled: boolean
+  relayUrl: string
+  desktopId: string
+  relayTokenConfigured: boolean
+  bridgeRunning: boolean
+  devices: MobileRelayDevice[]
+}
+
+export interface MobileRelayPairing {
+  deviceId: string
+  expiresAt: number
+  payload: string
+}
+
+export async function getMobileRelaySettings(): Promise<MobileRelaySettings> {
+  return getTransport().call("get_mobile_relay_settings")
+}
+
+export async function saveMobileRelaySettings(params: {
+  relayUrl: string
+  relayToken?: string
+  enabled: boolean
+}): Promise<MobileRelaySettings> {
+  return getTransport().call("save_mobile_relay_settings", {
+    relayUrl: params.relayUrl,
+    relayToken: params.relayToken?.trim() || null,
+    enabled: params.enabled,
+  })
+}
+
+export async function createMobileRelayPairing(
+  deviceName: string
+): Promise<MobileRelayPairing> {
+  return getTransport().call("create_mobile_relay_pairing", { deviceName })
+}
+
+export async function revokeMobileRelayDevice(deviceId: string): Promise<void> {
+  return getTransport().call("revoke_mobile_relay_device", { deviceId })
+}
+
 // ─── Chat Channels ───
 
 export async function listChatChannels(): Promise<ChatChannelInfo[]> {
