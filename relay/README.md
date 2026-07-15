@@ -1,0 +1,31 @@
+# Codeg Relay
+
+Codeg Relay is a blind router for end-to-end encrypted Codeg Mobile frames. It
+terminates WSS, authenticates routing credentials, limits traffic and forwards
+opaque JSON envelopes between one desktop and its paired phones. It does not
+receive the Codeg access token or decrypt Codeg requests, Agent events or files.
+
+## Run locally
+
+```bash
+export CODEG_RELAY_DESKTOP_TOKENS='{"d_example":"replace-with-at-least-32-random-characters"}'
+export CODEG_RELAY_CREDENTIAL_FILE="$PWD/data/device-credentials.json"
+cargo run --manifest-path relay/Cargo.toml
+```
+
+The process listens on `127.0.0.1:8787` by default. Put Caddy or Nginx in front
+of it and expose only HTTPS/WSS. Do not expose the plaintext listener to the
+internet.
+
+Endpoints:
+
+- `GET /health`
+- `GET /metrics`
+- `GET /v1/ws` followed by a five-second authenticated `hello`
+- `POST /v1/devices` to issue a mobile routing credential
+- `GET /v1/devices?desktop_id=...` to list paired credentials
+- `DELETE /v1/devices/{device_id}?desktop_id=...` to revoke and disconnect
+
+Device administration uses `Authorization: Bearer <desktop relay token>`.
+Only SHA-256 mobile token hashes are persisted. The credential file is written
+with mode `0600` on Unix.

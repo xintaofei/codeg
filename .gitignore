@@ -59,6 +59,7 @@ docs/superpowers
 # release.yml, not git.
 src-tauri/binaries/
 mobile/src-tauri/target/
+relay/target/
 
 # pnpm local store (pnpm 11+)
 .pnpm-store/

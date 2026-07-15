@@ -17,6 +17,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  relay:
+    name: Relay (fmt + clippy + test)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./relay -> target"
+          shared-key: relay
+
+      - name: Format
+        run: cargo fmt --manifest-path relay/Cargo.toml --check
+
+      - name: Clippy
+        run: cargo clippy --manifest-path relay/Cargo.toml --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --manifest-path relay/Cargo.toml
+
   frontend:
     name: Frontend (lint + vitest + build)
     # Frontend tests are OS-independent (jsdom + pure TS), keep on Linux
