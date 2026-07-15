@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 import { useTranslations } from "next-intl"
 import type {
   AgentType,
@@ -23,6 +23,12 @@ import { ChatInput } from "@/components/chat/chat-input"
 import { PermissionDialog } from "@/components/chat/permission-dialog"
 import { QuestionDialog } from "@/components/chat/question-dialog"
 import { AskQuestionCard } from "@/components/chat/ask-question-card"
+import { AutoReplyBanner } from "@/components/chat/auto-reply-banner"
+import { useAutoReplyEngine } from "@/hooks/use-auto-reply-engine"
+import {
+  isAutoReplyEnabled,
+  setAutoReplyEnabled,
+} from "@/lib/auto-reply/storage"
 
 interface ConversationShellProps {
   status: ConnectionStatus | null
@@ -194,6 +200,62 @@ export function ConversationShell({
         })
   }, [claudeApiRetry, tAcp])
 
+  const enableKey = draftStorageKey ?? "unknown"
+  const [autoReplyEnabled, setAutoReplyEnabledState] = useState(false)
+
+  useEffect(() => {
+    setAutoReplyEnabledState(isAutoReplyEnabled(enableKey))
+  }, [enableKey])
+
+  const handleAutoReplyEnabledChange = useCallback(
+    (enabled: boolean) => {
+      setAutoReplyEnabled(enableKey, enabled)
+      setAutoReplyEnabledState(enabled)
+    },
+    [enableKey]
+  )
+
+  const handleAutoSend = useCallback(
+    (draft: PromptDraft) => {
+      onSend(draft)
+    },
+    [onSend]
+  )
+
+  const {
+    pending: autoReplyPending,
+    stopNotice: autoReplyStopNotice,
+    cancelPending: cancelAutoReplyPending,
+    notifyManualSend: notifyAutoReplyManualSend,
+    dismissStopNotice: dismissAutoReplyStopNotice,
+  } = useAutoReplyEngine({
+    enabled: autoReplyEnabled,
+    status,
+    error,
+    claudeApiRetry,
+    pendingPermission: pendingPermission != null,
+    pendingQuestion: pendingQuestion != null,
+    pendingAskQuestion:
+      pendingAskQuestion != null && pendingAskQuestion.questions.length > 0,
+    onSend: handleAutoSend,
+  })
+
+  const handleComposerSend = useCallback(
+    (draft: PromptDraft, modeId?: string | null) => {
+      notifyAutoReplyManualSend()
+      onSend(draft, modeId)
+    },
+    [notifyAutoReplyManualSend, onSend]
+  )
+
+  const handleComposerEnqueue = useCallback(
+    (draft: PromptDraft, modeId: string | null) => {
+      notifyAutoReplyManualSend()
+      onEnqueue?.(draft, modeId)
+    },
+    [notifyAutoReplyManualSend, onEnqueue]
+  )
+
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       {topBanner}
@@ -226,14 +288,24 @@ export function ConversationShell({
 
         {!hideInput && (
           <div className="mx-auto w-full max-w-3xl">
+            <div className="px-4">
+              <AutoReplyBanner
+                pending={autoReplyPending}
+                stopNotice={autoReplyStopNotice}
+                onCancel={cancelAutoReplyPending}
+                onDismissStopNotice={dismissAutoReplyStopNotice}
+              />
+            </div>
             <ChatInput
               status={status}
               promptCapabilities={promptCapabilities}
               defaultPath={defaultPath}
               agentName={agentName}
               onFocus={onFocus}
-              onSend={onSend}
+              onSend={handleComposerSend}
               onCancel={onCancel}
+              autoReplyEnabled={autoReplyEnabled}
+              onAutoReplyEnabledChange={handleAutoReplyEnabledChange}
               modes={modes}
               configOptions={configOptions}
               modeLoading={modeLoading}
@@ -249,7 +321,7 @@ export function ConversationShell({
               isActive={isActive}
               showActiveFlow={showActiveFlow}
               queue={queue}
-              onEnqueue={onEnqueue}
+              onEnqueue={onEnqueue ? handleComposerEnqueue : undefined}
               onQueueReorder={onQueueReorder}
               onQueueEdit={onQueueEdit}
               onQueueDelete={onQueueDelete}
