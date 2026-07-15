@@ -113,6 +113,11 @@
       "terminalLigaturesHint": "As ligaduras do terminal aplicam-se apenas às fontes de programação incluídas.",
       "preview": "Pré-visualização"
     },
+    "markdownPreview": {
+      "sectionTitle": "Pré-visualização de Markdown",
+      "sectionDescription": "Controla como as quebras de linha do código-fonte aparecem ao pré-visualizar arquivos Markdown.",
+      "preserveLineBreaks": "Preservar quebras de linha simples"
+    },
     "welcomePanel": {
       "sectionTitle": "Área de seleção de modo",
       "sectionDescription": "Os cartões de atalho «Desenvolvimento / Escritório» exibidos acima do campo de entrada na página de nova conversa.",

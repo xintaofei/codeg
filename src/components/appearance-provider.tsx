@@ -24,6 +24,7 @@ import {
   STORAGE_KEY_THEME_COLOR,
   STORAGE_KEY_ZOOM_LEVEL,
   STORAGE_KEY_WELCOME_QUICK_ACTIONS,
+  STORAGE_KEY_MARKDOWN_PREVIEW_PRESERVE_LINE_BREAKS,
   STORAGE_KEY_UI_FONT,
   STORAGE_KEY_UI_FONT_CUSTOM,
   STORAGE_KEY_UI_FONT_STACK,
@@ -64,6 +65,9 @@ type AppearanceContextValue = {
   /** 新会话欢迎页是否显示「模式选择区域」（QuickActions 快捷卡片），默认开启 */
   showWelcomeQuickActions: boolean
   setShowWelcomeQuickActions: (on: boolean) => void
+  /** Markdown 文件预览是否将单个物理换行显示为可见换行，默认关闭 */
+  markdownPreviewPreserveLineBreaks: boolean
+  setMarkdownPreviewPreserveLineBreaks: (on: boolean) => void
   /** 界面字体（普通组件，驱动 --font-sans） */
   uiFont: FontSelection
   setUiFont: (id: string, custom?: string) => void
@@ -181,6 +185,12 @@ export function AppearanceProvider({
   // QuickActions 仅在欢迎态客户端渲染，此处同步读 localStorage 不会造成首帧闪烁。
   const [showWelcomeQuickActions, setShowWelcomeQuickActionsState] =
     useState<boolean>(() => readBool(STORAGE_KEY_WELCOME_QUICK_ACTIONS, true))
+  const [
+    markdownPreviewPreserveLineBreaks,
+    setMarkdownPreviewPreserveLineBreaksState,
+  ] = useState<boolean>(() =>
+    readBool(STORAGE_KEY_MARKDOWN_PREVIEW_PRESERVE_LINE_BREAKS, false)
+  )
 
   // 字体偏好的初始值从 localStorage 读 id/custom（视觉已由 inline 脚本就位，
   // 这里只是回填选中态，不会造成闪烁）。
@@ -237,6 +247,11 @@ export function AppearanceProvider({
   const setShowWelcomeQuickActions = useCallback((on: boolean) => {
     setShowWelcomeQuickActionsState(on)
     persist(STORAGE_KEY_WELCOME_QUICK_ACTIONS, on ? "1" : "0")
+  }, [])
+
+  const setMarkdownPreviewPreserveLineBreaks = useCallback((on: boolean) => {
+    setMarkdownPreviewPreserveLineBreaksState(on)
+    persist(STORAGE_KEY_MARKDOWN_PREVIEW_PRESERVE_LINE_BREAKS, on ? "1" : "0")
   }, [])
 
   const setUiFont = useCallback((id: string, custom = "") => {
@@ -384,6 +399,11 @@ export function AppearanceProvider({
           readBool(STORAGE_KEY_WELCOME_QUICK_ACTIONS, true)
         )
       }
+      if (e.key === STORAGE_KEY_MARKDOWN_PREVIEW_PRESERVE_LINE_BREAKS) {
+        setMarkdownPreviewPreserveLineBreaksState(
+          readBool(STORAGE_KEY_MARKDOWN_PREVIEW_PRESERVE_LINE_BREAKS, false)
+        )
+      }
       if (e.key && FONT_KEYS.has(e.key)) {
         rehydrateFonts()
       }
@@ -405,6 +425,8 @@ export function AppearanceProvider({
         setZoomLevel,
         showWelcomeQuickActions,
         setShowWelcomeQuickActions,
+        markdownPreviewPreserveLineBreaks,
+        setMarkdownPreviewPreserveLineBreaks,
         uiFont,
         setUiFont,
         editorFont,

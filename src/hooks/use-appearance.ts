@@ -31,6 +31,18 @@ export function useWelcomeQuickActions() {
   return { showWelcomeQuickActions, setShowWelcomeQuickActions }
 }
 
+/** Markdown 文件预览的显示偏好，不影响源码或 Agent 消息渲染。 */
+export function useMarkdownPreviewPreferences() {
+  const {
+    markdownPreviewPreserveLineBreaks,
+    setMarkdownPreviewPreserveLineBreaks,
+  } = useAppearance()
+  return {
+    markdownPreviewPreserveLineBreaks,
+    setMarkdownPreviewPreserveLineBreaks,
+  }
+}
+
 /** 界面字体（普通组件）。stack 已解析，可直接用于 style 或 CSS 变量。 */
 export function useUiFont() {
   const { uiFont, setUiFont } = useAppearance()

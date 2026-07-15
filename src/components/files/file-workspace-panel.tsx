@@ -31,6 +31,7 @@ import {
 import { ImagePreview } from "@/components/files/image-preview"
 import { HtmlPreview } from "@/components/files/html-preview"
 import { OfficePreview } from "@/components/files/office-preview"
+import { getMarkdownPreviewRemarkPlugins } from "@/components/files/markdown-preview-remark-plugins"
 import { isHtmlPreviewable, isOfficePreviewable } from "@/lib/language-detect"
 import { DiffViewer } from "@/components/diff/diff-viewer"
 import { UnifiedDiffPreview } from "@/components/diff/unified-diff-preview"
@@ -49,7 +50,11 @@ import {
   MONACO_UNICODE_HIGHLIGHT_OPTIONS,
   useMonacoThemeSync,
 } from "@/lib/monaco-themes"
-import { useZoomLevel, useEditorFont } from "@/hooks/use-appearance"
+import {
+  useZoomLevel,
+  useEditorFont,
+  useMarkdownPreviewPreferences,
+} from "@/hooks/use-appearance"
 import { useImeSafeEditorValue } from "@/hooks/use-ime-safe-editor-value"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
@@ -260,10 +265,15 @@ function MarkdownDocumentPreview({
   openFilePreview: (path: string) => void
 }) {
   const plugins = useStreamdownPlugins(content)
+  const { markdownPreviewPreserveLineBreaks } = useMarkdownPreviewPreferences()
+  const remarkPlugins = getMarkdownPreviewRemarkPlugins(
+    markdownPreviewPreserveLineBreaks
+  )
   return (
     <div className="h-full overflow-auto p-6 [&_a_img]:inline [&_ol]:list-decimal [&_ul]:list-disc [&_ol]:pl-6 [&_ul]:pl-6">
       <Streamdown
         plugins={plugins}
+        remarkPlugins={remarkPlugins}
         components={{
           // eslint-disable-next-line @typescript-eslint/no-unused-vars
           img: ({ node, ...imgProps }) => (

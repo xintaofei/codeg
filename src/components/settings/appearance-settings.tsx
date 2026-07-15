@@ -28,6 +28,7 @@ import {
 } from "@/lib/theme-presets"
 import { PetManagerSection } from "./pet-manager-section"
 import { FontSettingsSection } from "./font-settings-section"
+import { MarkdownPreviewSettingsSection } from "./markdown-preview-settings-section"
 
 type ThemeMode = "system" | "light" | "dark"
 
@@ -205,6 +206,9 @@ export function AppearanceSettings() {
 
         {/* ===== Fonts ===== */}
         <FontSettingsSection />
+
+        {/* This entry can move independently; rendering reads the preference hook. */}
+        <MarkdownPreviewSettingsSection />
 
         {/* ===== New conversation — mode selection area ===== */}
         <section className="rounded-xl border bg-card p-4 space-y-4">

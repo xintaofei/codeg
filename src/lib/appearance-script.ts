@@ -11,6 +11,11 @@ export const STORAGE_KEY_ZOOM_LEVEL = "codeg-zoom-level"
 // 缺省即回退为开启（保持历史行为）；仅在欢迎态客户端渲染，无需预水合。
 export const STORAGE_KEY_WELCOME_QUICK_ACTIONS = "codeg-welcome-quick-actions"
 
+// Markdown 文件预览是否将 soft break 显示为可见换行。
+// 默认关闭以保持 CommonMark/GFM 行为；无需预水合。
+export const STORAGE_KEY_MARKDOWN_PREVIEW_PRESERVE_LINE_BREAKS =
+  "codeg-markdown-preview-preserve-line-breaks"
+
 // 字体偏好（界面 / 编辑器 / 终端）。
 // 只有界面字体需要 *_STACK（已解析的 CSS font-family 栈），供 inline 脚本零依赖地
 // 预水合写入 --font-sans；编辑器/终端字体只走各自的 Monaco/xterm 选项，水合后才挂载，
