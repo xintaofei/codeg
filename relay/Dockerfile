@@ -1,14 +1,18 @@
 FROM rust:1.85-bookworm AS builder
 
-ARG CARGO_REGISTRIES_CRATES_IO_INDEX=sparse+https://index.crates.io/
-ENV CARGO_REGISTRIES_CRATES_IO_INDEX=${CARGO_REGISTRIES_CRATES_IO_INDEX}
+ARG CARGO_REGISTRY_MIRROR
 ENV CARGO_HTTP_TIMEOUT=600
 ENV CARGO_NET_RETRY=5
 
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-RUN cargo build --release --locked
+RUN if [ -n "${CARGO_REGISTRY_MIRROR}" ]; then \
+      mkdir -p .cargo; \
+      printf '[source.crates-io]\nreplace-with = "deployment-mirror"\n[source.deployment-mirror]\nregistry = "%s"\n' \
+        "${CARGO_REGISTRY_MIRROR}" > .cargo/config.toml; \
+    fi \
+    && cargo build --release --locked
 
 FROM debian:bookworm-slim
 
