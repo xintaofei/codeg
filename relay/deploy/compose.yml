@@ -1,0 +1,22 @@
+services:
+  relay:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: codeg-relay:local
+    container_name: codeg-relay
+    restart: unless-stopped
+    env_file:
+      - relay.env
+    ports:
+      - "127.0.0.1:18787:8787"
+    volumes:
+      - ./data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
