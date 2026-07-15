@@ -26,4 +26,3 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 reqwest = { version = "0.12", features = ["json"] }
 tempfile = "3"
 tokio-tungstenite = "0.28"
-
