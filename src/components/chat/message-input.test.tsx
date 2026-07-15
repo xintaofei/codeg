@@ -425,7 +425,6 @@ describe("MessageInput collapsed selectors popover", () => {
   })
 })
 
-
 describe("MessageInput repeat intent", () => {
   afterEach(() => {
     cleanup()

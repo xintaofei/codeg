@@ -66,10 +66,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import {
-  applyRepeatBaseText,
-  parseRepeatIntent,
-} from "@/lib/repeat-intent"
+import { applyRepeatBaseText, parseRepeatIntent } from "@/lib/repeat-intent"
 import { AgentIcon } from "@/components/agent-icon"
 import { cn, copyTextFromMenu, randomUUID } from "@/lib/utils"
 import {
@@ -2938,7 +2935,9 @@ export function MessageInput({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>{tQueue("repeatIntentCancel")}</AlertDialogCancel>
+            <AlertDialogCancel>
+              {tQueue("repeatIntentCancel")}
+            </AlertDialogCancel>
             <AlertDialogAction onClick={confirmRepeatIntent}>
               {pendingRepeat
                 ? tQueue("repeatIntentConfirm", {
