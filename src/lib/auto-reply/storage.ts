@@ -15,16 +15,23 @@ function sanitizeRule(raw: unknown): AutoReplyRule | null {
   if (typeof raw.id !== "string" || !raw.id) return null
   if (typeof raw.name !== "string") return null
   if (typeof raw.enabled !== "boolean") return null
-  if (typeof raw.matchKind !== "string" || !VALID_MATCH_KINDS.has(raw.matchKind)) {
+  if (
+    typeof raw.matchKind !== "string" ||
+    !VALID_MATCH_KINDS.has(raw.matchKind)
+  ) {
     return null
   }
   if (typeof raw.matchValue !== "string") return null
   if (typeof raw.replyText !== "string") return null
-  if (typeof raw.delayMs !== "number" || !Number.isFinite(raw.delayMs)) return null
+  if (typeof raw.delayMs !== "number" || !Number.isFinite(raw.delayMs))
+    return null
   if (typeof raw.cooldownMs !== "number" || !Number.isFinite(raw.cooldownMs)) {
     return null
   }
-  if (typeof raw.maxPerBurst !== "number" || !Number.isFinite(raw.maxPerBurst)) {
+  if (
+    typeof raw.maxPerBurst !== "number" ||
+    !Number.isFinite(raw.maxPerBurst)
+  ) {
     return null
   }
 
@@ -87,9 +94,7 @@ export function createDefaultAutoReplySettings(): AutoReplySettings {
   }
 }
 
-export function normalizeAutoReplySettings(
-  raw: unknown
-): AutoReplySettings {
+export function normalizeAutoReplySettings(raw: unknown): AutoReplySettings {
   if (!isRecord(raw) || raw.version !== 1 || !Array.isArray(raw.rules)) {
     return createDefaultAutoReplySettings()
   }
@@ -167,10 +172,7 @@ export function isAutoReplyEnabled(enableKey: string): boolean {
   return loadEnabledMap()[enableKey] === true
 }
 
-export function setAutoReplyEnabled(
-  enableKey: string,
-  enabled: boolean
-): void {
+export function setAutoReplyEnabled(enableKey: string, enabled: boolean): void {
   if (!enableKey) return
   const map = loadEnabledMap()
   if (enabled) {

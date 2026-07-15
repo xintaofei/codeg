@@ -1,10 +1,7 @@
 "use client"
 
 import { useSyncExternalStore } from "react"
-import {
-  loadAutoReplySettings,
-  saveAutoReplySettings,
-} from "./storage"
+import { loadAutoReplySettings, saveAutoReplySettings } from "./storage"
 import type { AutoReplySettings } from "./types"
 
 let cached: AutoReplySettings | null = null
@@ -38,9 +35,7 @@ export function getAutoReplySettings(): AutoReplySettings {
 }
 
 export function updateAutoReplySettings(
-  next:
-    | AutoReplySettings
-    | ((prev: AutoReplySettings) => AutoReplySettings)
+  next: AutoReplySettings | ((prev: AutoReplySettings) => AutoReplySettings)
 ): AutoReplySettings {
   const prev = getSnapshot()
   const resolved = typeof next === "function" ? next(prev) : next

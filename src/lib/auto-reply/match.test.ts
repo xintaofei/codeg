@@ -43,10 +43,12 @@ describe("auto-reply match helpers", () => {
       rule({ id: "off", enabled: false, matchValue: "429" }),
       rule({ id: "on", matchValue: "429" }),
     ]
-    expect(findMatchingRule(rules, { httpStatus: 429, errorText: "" })?.id).toBe(
-      "on"
-    )
-    expect(findMatchingRule(rules, { httpStatus: 503, errorText: "" })).toBeNull()
+    expect(
+      findMatchingRule(rules, { httpStatus: 429, errorText: "" })?.id
+    ).toBe("on")
+    expect(
+      findMatchingRule(rules, { httpStatus: 503, errorText: "" })
+    ).toBeNull()
   })
 
   it("matches error_text as case-sensitive substring; first wins", () => {

@@ -105,8 +105,7 @@ export function signalFromSources(input: {
   connectionError: string | null | undefined
 }): AutoReplySignal {
   const httpStatus = input.claudeApiRetry?.errorStatus ?? null
-  const errorText =
-    input.claudeApiRetry?.error ?? input.connectionError ?? ""
+  const errorText = input.claudeApiRetry?.error ?? input.connectionError ?? ""
   return {
     httpStatus,
     errorText,
@@ -119,4 +118,3 @@ export function buildAutoReplyDraft(text: string): PromptDraft {
     displayText: text,
   }
 }
-

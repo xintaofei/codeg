@@ -1,14 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import {
-  ArrowDown,
-  ArrowUp,
-  Loader2,
-  Plus,
-  Save,
-  Trash2,
-} from "lucide-react"
+import { ArrowDown, ArrowUp, Loader2, Plus, Save, Trash2 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 
@@ -39,10 +32,7 @@ import {
   useAutoReplySettings,
   updateAutoReplySettings,
 } from "@/lib/auto-reply/settings-store"
-import type {
-  AutoReplyMatchKind,
-  AutoReplyRule,
-} from "@/lib/auto-reply/types"
+import type { AutoReplyMatchKind, AutoReplyRule } from "@/lib/auto-reply/types"
 
 const CONTINUE = "\u7ee7\u7eed"
 
@@ -173,7 +163,9 @@ export function AutoReplySettings() {
       <div className="grid gap-4 md:grid-cols-[minmax(240px,280px)_1fr]">
         <div className="space-y-2 rounded-lg border p-2">
           {rules.length === 0 ? (
-            <div className="p-3 text-sm text-muted-foreground">{t("empty")}</div>
+            <div className="p-3 text-sm text-muted-foreground">
+              {t("empty")}
+            </div>
           ) : (
             rules.map((rule, index) => (
               <button

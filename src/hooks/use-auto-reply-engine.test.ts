@@ -12,7 +12,9 @@ function draftTexts(calls: PromptDraft[][]): string[] {
   return calls.map((args) => args[0]?.displayText ?? "")
 }
 
-function baseArgs(overrides: Partial<Parameters<typeof useAutoReplyEngine>[0]> = {}) {
+function baseArgs(
+  overrides: Partial<Parameters<typeof useAutoReplyEngine>[0]> = {}
+) {
   return {
     enabled: true,
     status: "connected" as const,
@@ -64,7 +66,9 @@ describe("useAutoReplyEngine", () => {
 
   it("schedules 429 and sends continue after delayMs", () => {
     const onSend = vi.fn()
-    const { result } = renderHook(() => useAutoReplyEngine(baseArgs({ onSend })))
+    const { result } = renderHook(() =>
+      useAutoReplyEngine(baseArgs({ onSend }))
+    )
     expect(result.current.pending?.replyText).toBe("\u7ee7\u7eed")
     expect(result.current.pending?.ruleId).toBe("builtin-http-429")
 
@@ -83,7 +87,9 @@ describe("useAutoReplyEngine", () => {
 
   it("cancelPending prevents send", () => {
     const onSend = vi.fn()
-    const { result } = renderHook(() => useAutoReplyEngine(baseArgs({ onSend })))
+    const { result } = renderHook(() =>
+      useAutoReplyEngine(baseArgs({ onSend }))
+    )
     act(() => {
       result.current.cancelPending()
     })
@@ -95,7 +101,9 @@ describe("useAutoReplyEngine", () => {
 
   it("notifyManualSend prevents send", () => {
     const onSend = vi.fn()
-    const { result } = renderHook(() => useAutoReplyEngine(baseArgs({ onSend })))
+    const { result } = renderHook(() =>
+      useAutoReplyEngine(baseArgs({ onSend }))
+    )
     act(() => {
       result.current.notifyManualSend()
     })
@@ -151,7 +159,10 @@ describe("useAutoReplyEngine", () => {
         ? { ...rule, delayMs: 100, cooldownMs: 0, maxPerBurst: 2 }
         : rule
     )
-    window.localStorage.setItem(AUTO_REPLY_SETTINGS_KEY, JSON.stringify(settings))
+    window.localStorage.setItem(
+      AUTO_REPLY_SETTINGS_KEY,
+      JSON.stringify(settings)
+    )
     __resetAutoReplySettingsStoreForTests()
 
     const { result, rerender } = renderHook(
@@ -190,7 +201,10 @@ describe("useAutoReplyEngine", () => {
       cooldownMs: 0,
       maxPerBurst: 1,
     }))
-    window.localStorage.setItem(AUTO_REPLY_SETTINGS_KEY, JSON.stringify(settings))
+    window.localStorage.setItem(
+      AUTO_REPLY_SETTINGS_KEY,
+      JSON.stringify(settings)
+    )
     __resetAutoReplySettingsStoreForTests()
 
     const { rerender } = renderHook((props) => useAutoReplyEngine(props), {

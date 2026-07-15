@@ -63,9 +63,7 @@ export function useAutoReplyEngine(
 ): UseAutoReplyEngineResult {
   const settings = useAutoReplySettings()
   const [pending, setPending] = useState<AutoReplyPendingState | null>(null)
-  const [stopNotice, setStopNotice] = useState<AutoReplyStopNotice | null>(
-    null
-  )
+  const [stopNotice, setStopNotice] = useState<AutoReplyStopNotice | null>(null)
   const [nowTick, setNowTick] = useState(() => Date.now())
 
   const pendingRef = useRef<AutoReplyPendingState | null>(null)
@@ -78,7 +76,10 @@ export function useAutoReplyEngine(
   // the interruption signal changes (or clears).
   const suppressedBurstKeyRef = useRef<string | null>(null)
   const onSendRef = useRef(args.onSend)
-  onSendRef.current = args.onSend
+
+  useEffect(() => {
+    onSendRef.current = args.onSend
+  }, [args.onSend])
 
   const clearTimers = useCallback(() => {
     if (fireTimerRef.current !== null) {
@@ -232,9 +233,12 @@ export function useAutoReplyEngine(
       setPending(next)
       setNowTick(Date.now())
 
-      fireTimerRef.current = setTimeout(() => {
-        firePending()
-      }, Math.max(0, rule.delayMs))
+      fireTimerRef.current = setTimeout(
+        () => {
+          firePending()
+        },
+        Math.max(0, rule.delayMs)
+      )
 
       tickTimerRef.current = setInterval(() => {
         setNowTick(Date.now())
@@ -262,6 +266,8 @@ export function useAutoReplyEngine(
     })
   }, [nowTick])
 
+  // Intentionally sync pending countdown state with live interruption signals.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!args.enabled) {
       clearPending()
@@ -336,6 +342,7 @@ export function useAutoReplyEngine(
 
     schedule(rule, burstKey)
   }, [args.enabled, clearPending, safety, schedule, settings.rules, signal])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
     return () => {
