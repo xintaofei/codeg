@@ -15,6 +15,7 @@
 | Target SDK | 36 |
 | SHA-256 | `eee9efd1b1481500f278fb0ebef223f8db06c64123810df85ababd50ee06c4a0` |
 | ABI | `arm64-v8a`、`armeabi-v7a`、`x86`、`x86_64` |
+| 私有草稿预发布 | [`android-v0.20.3-rc.1`](https://github.com/Crain99/codeg-mobile/releases/tag/untagged-eb54ddc9fad7cef3be88) |
 
 ## 签名
 
@@ -46,6 +47,6 @@
 - 在至少一台没有开发工具的 Android 真机安装此候选包。
 - 真机完成一次性二维码配对、桌面安全码确认和真实 Agent 任务闭环。
 - 真机验证 Wi-Fi/移动网络切换、锁屏返回和前台五秒恢复。
-- 完成上述项目后创建私有 GitHub Release，并将本文件状态改为正式发布。
+- 完成上述项目后把现有私有草稿预发布转为正式 Release，并将本文件状态改为正式发布。
 
 安装与配对步骤见 [`android-install-zh-CN.md`](android-install-zh-CN.md)。

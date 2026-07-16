@@ -237,6 +237,7 @@ Codeg Mobile                                  │
 - [x] 长会话、事件去重、上传中断和多设备并发测试。
 - [x] Token、日志脱敏、设备撤销和重放攻击测试。
 - [ ] Android 真机签名 APK 构建与私有 Release。
+  - [x] 已上传签名 APK 到私有草稿预发布 `android-v0.20.3-rc.1`；真机硬验收后再转正式 Release。
 - [ ] iOS 真机归档与 TestFlight 上传。
 - [x] 编写安装、配对、故障恢复和隐私说明。
 
@@ -317,6 +318,7 @@ Codeg Mobile                                  │
 - [x] 完成长会话、上传中断、多设备、撤销和重放攻击测试。
 - [x] 使用非调试签名生成 universal Release APK。
 - [ ] 创建私有 GitHub Release，附 SHA-256、安装和配对说明。
+  - [x] 私有草稿预发布已上传 APK、SHA-256 和候选包说明；等待真机硬验收后发布。
 
 ### P3：推送通知
 
