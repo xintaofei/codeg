@@ -32,7 +32,15 @@ import type {
 
 const DEFAULT_CALL_TIMEOUT_MS = 60_000
 const READY_TIMEOUT_MS = 5_000
-const RECONNECT_MAX_MS = 4_000
+// Mobile Relay must recover within five seconds after Android restores the
+// network. Android WebView does not consistently dispatch the browser
+// `online` event, so the global reconnect nudge cannot be the only fast path.
+// Retry twice per second while the mobile Relay is disconnected. Android can
+// take more than four seconds after a Wi-Fi/mobile-network transition before
+// WSS becomes usable, leaving less than one second of the five-second recovery
+// budget for the successful handshake. Background WebView timers are already
+// throttled by the OS, while a visible app needs this short deterministic gap.
+const RECONNECT_INTERVAL_MS = 500
 const MOBILE_TO_DESKTOP_NONCE_TAG = 0x004d3244
 const DESKTOP_TO_MOBILE_NONCE_TAG = 0x0044324d
 
@@ -173,7 +181,6 @@ export class RelayTransport implements Transport {
   private ws: WebSocket | null = null
   private destroyed = false
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
-  private reconnectDelay = 1_000
   private keys: RelayDirectionalKeys | null = null
   private connectionId = ""
   private ephemeralKeyPair: CryptoKeyPair | null = null
@@ -321,7 +328,6 @@ export class RelayTransport implements Transport {
     if (this.destroyed) return
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
     this.reconnectTimer = null
-    this.reconnectDelay = 1_000
     this.ws?.close()
     this.ws = null
     this.resetSession()
@@ -509,7 +515,6 @@ export class RelayTransport implements Transport {
       this.connectionId
     )
     this.ephemeralKeyPair = null
-    this.reconnectDelay = 1_000
     this.setConnState("connected")
     this.sessionResolve()
     for (const pending of this.pending.values()) {
@@ -879,12 +884,10 @@ export class RelayTransport implements Transport {
 
   private scheduleReconnect(): void {
     if (this.destroyed || this.reconnectTimer) return
-    const delay = this.reconnectDelay
-    this.reconnectDelay = Math.min(this.reconnectDelay * 2, RECONNECT_MAX_MS)
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
       this.connect()
-    }, delay)
+    }, RECONNECT_INTERVAL_MS)
   }
 
   private setConnState(next: WebConnState): void {

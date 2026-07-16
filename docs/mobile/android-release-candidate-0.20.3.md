@@ -13,7 +13,7 @@
 | Version code | `20003` |
 | 最低 Android | API 24 / Android 7.0 |
 | Target SDK | 36 |
-| SHA-256 | `eee9efd1b1481500f278fb0ebef223f8db06c64123810df85ababd50ee06c4a0` |
+| SHA-256 | `ed65ee3c0795d256d9063a60f23dbba4e63b949dd48b8efd1d682643bbc95d7c` |
 | ABI | `arm64-v8a`、`armeabi-v7a`、`x86`、`x86_64` |
 | 私有草稿预发布 | [`android-v0.20.3-rc.1`](https://github.com/Crain99/codeg-mobile/releases) |
 
@@ -28,7 +28,7 @@
 
 ## 已通过的候选包验证
 
-- 前端：190 个测试文件、2342 个测试通过，ESLint 无错误，Next.js 生产构建通过。
+- 前端：190 个测试文件、2343 个测试通过，ESLint 无错误，TypeScript 检查和 Next.js 生产构建通过。
 - Relay Bridge：10 个 Rust 测试通过，包含真实 multipart 上传、700 KB 附件、幂等重试、取消和健康会话重连退避重置；严格 Clippy 通过。
 - Relay 服务：9 个 Rust 测试通过；真实 WebSocket 验证两台移动设备并发路由互不串流，撤销会立即断开在线设备且旧凭据无法重新鉴权；严格 Clippy 通过。
 - Android universal Release APK 构建成功，四种 ABI 均包含 Release 原生库。
@@ -40,7 +40,12 @@
 - 2 MB 上传到 10% 时强制终止桌面进程；桌面重启并重新握手后恢复到 100%，只产生一个大小和 SHA-256 均正确的文件。
 - 受控重启公网 Relay 后，手机从 WebSocket 断开到收到首个加密帧用时 3.696 秒；从执行 Relay 重启开始计时为 4.900 秒，达到前台五秒恢复目标。
 - Bridge 双向连续处理 2048 个有序加密帧，移动 RelayTransport 连续处理 512 个事件；重复帧被拒绝且事件只分发一次。
+- 移动 Relay 断线后每 500 毫秒重试，回归测试验证不会继承较长退避；Android WebView 锁屏/唤醒实测触发 `hidden → visible`，页面和会话上下文仍存在。
 - 对 `kdit-01` Relay 最近四小时的 42 行日志执行业务明文模式审计，代码、附件名、聊天正文、Bearer/Codeg Token 等命中数为 0。
+
+## 已知验收边界
+
+- Android 模拟器的“飞行模式关闭命令 → 收到首个加密帧”压力测试为 6.362 秒，其中模拟器网络栈恢复占主要时间；这不是 Wi-Fi/移动网络切换的通过证据，正式发布仍必须在真实手机上验证五秒目标。
 
 ## 正式发布前仍需完成
 

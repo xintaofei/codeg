@@ -73,6 +73,39 @@ async function eventually(check: () => boolean): Promise<void> {
 }
 
 describe("RelayTransport", () => {
+  it("retries every 500ms for mobile network recovery", async () => {
+    vi.useFakeTimers()
+    try {
+      const transport = new RelayTransport({
+        relayUrl: "wss://relay.example.test/v1/ws",
+        desktopId: "d_test",
+        deviceId: "m_phone",
+        routingToken: "routing-token-at-least-thirty-two-characters",
+        pairingRoot: relayBase64UrlEncode(new Uint8Array(32).fill(0x20)),
+      })
+      const first = MockWebSocket.instances[0]
+      first.onclose?.()
+
+      await vi.advanceTimersByTimeAsync(499)
+      expect(MockWebSocket.instances).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(MockWebSocket.instances).toHaveLength(2)
+
+      MockWebSocket.instances[1].onclose?.()
+      await vi.advanceTimersByTimeAsync(499)
+      expect(MockWebSocket.instances).toHaveLength(2)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(MockWebSocket.instances).toHaveLength(3)
+
+      MockWebSocket.instances[2].onclose?.()
+      await vi.advanceTimersByTimeAsync(500)
+      expect(MockWebSocket.instances).toHaveLength(4)
+      transport.destroy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("propagates AbortSignal cancellation to the encrypted desktop session", async () => {
     const transport = new RelayTransport({
       relayUrl: "wss://relay.example.test/v1/ws",
