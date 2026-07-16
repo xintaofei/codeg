@@ -51,6 +51,14 @@ const MAX_MOBILE_CHUNKS: usize = 512;
 const UPLOAD_MAX_BYTES: usize = 2 * 1024 * 1024;
 const UPLOAD_MAX_BASE64_BYTES: usize = UPLOAD_MAX_BYTES.div_ceil(3) * 4 + 4;
 
+fn reconnect_delay(current: Duration, healthy_session_closed: bool) -> Duration {
+    if healthy_session_closed {
+        RECONNECT_MIN
+    } else {
+        current
+    }
+}
+
 #[derive(Clone)]
 pub struct Bridge {
     inner: Arc<BridgeInner>,
@@ -227,12 +235,22 @@ impl Bridge {
     async fn run_relay_forever(&self) -> anyhow::Result<()> {
         let mut delay = RECONNECT_MIN;
         loop {
-            match self.run_relay_once().await {
-                Ok(()) => warn!("Relay connection closed"),
-                Err(error) => {
-                    warn!(error = %format!("{error:#}"), "Relay connection failed")
+            let healthy_session_closed = match self.run_relay_once().await {
+                Ok(()) => {
+                    // A connection that reached the authenticated relay loop
+                    // was healthy. Do not carry an old exponential backoff
+                    // across that session: after a Relay restart the desktop
+                    // must reconnect quickly enough for the mobile five-second
+                    // foreground recovery target.
+                    warn!("Relay connection closed");
+                    true
                 }
-            }
+                Err(error) => {
+                    warn!(error = %format!("{error:#}"), "Relay connection failed");
+                    false
+                }
+            };
+            delay = reconnect_delay(delay, healthy_session_closed);
             self.inner.sessions.write().await.clear();
             *self.inner.relay_outbound.write().await = None;
             tokio::time::sleep(delay).await;
@@ -806,10 +824,17 @@ impl Bridge {
     async fn run_local_events_forever(&self) {
         let mut delay = RECONNECT_MIN;
         loop {
-            match self.run_local_events_once().await {
-                Ok(()) => warn!("Local Codeg event stream closed"),
-                Err(error) => warn!(error = %error, "Local Codeg event stream failed"),
-            }
+            let healthy_session_closed = match self.run_local_events_once().await {
+                Ok(()) => {
+                    warn!("Local Codeg event stream closed");
+                    true
+                }
+                Err(error) => {
+                    warn!(error = %error, "Local Codeg event stream failed");
+                    false
+                }
+            };
+            delay = reconnect_delay(delay, healthy_session_closed);
             *self.inner.local_ws_outbound.write().await = None;
             self.inner.local_ready.store(false, Ordering::Release);
             tokio::time::sleep(delay).await;
@@ -995,6 +1020,20 @@ impl Bridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn healthy_session_resets_reconnect_backoff() {
+        assert_eq!(
+            reconnect_delay(RECONNECT_MAX, true),
+            RECONNECT_MIN,
+            "a closed healthy session must not inherit stale exponential backoff"
+        );
+        assert_eq!(
+            reconnect_delay(Duration::from_secs(8), false),
+            Duration::from_secs(8),
+            "a failed connection attempt must preserve its current backoff"
+        );
+    }
     use axum::{
         extract::{Multipart, State},
         http::{HeaderMap, StatusCode as AxumStatusCode},
