@@ -68,6 +68,8 @@ describe("MobileRelaySettingsCard", () => {
       await screen.findByDisplayValue("wss://relay.example.test/v1/ws")
     ).toBeInTheDocument()
     expect(screen.getByText("Android")).toBeInTheDocument()
+    expect(screen.getByText("自托管 Relay")).toBeInTheDocument()
+    expect(screen.getByText("当前端点：relay.example.test")).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button", { name: "生成配对码" }))
     expect(await screen.findByText("扫描并配对手机")).toBeInTheDocument()

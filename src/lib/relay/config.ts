@@ -59,6 +59,39 @@ export function normalizeRelayUrl(value: string): string {
   return withScheme.replace(/\/+$/, "")
 }
 
+function isLoopbackRelayHost(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "")
+  return (
+    normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1"
+  )
+}
+
+function requireSecureRelayUrl(value: string): string {
+  const normalized = normalizeRelayUrl(value)
+  let url: URL
+  try {
+    url = new URL(normalized)
+  } catch {
+    throw new Error("Relay 地址无效")
+  }
+  const secure = url.protocol === "wss:"
+  const loopbackDevelopment =
+    url.protocol === "ws:" && isLoopbackRelayHost(url.hostname)
+  if (
+    (!secure && !loopbackDevelopment) ||
+    !url.hostname ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error("Relay 必须使用 wss://；ws:// 仅允许本机开发地址")
+  }
+  return url.toString().replace(/\/$/, "")
+}
+
 async function loadSecret(key: string): Promise<string> {
   if (!isMobileTauri()) return sessionStorage.getItem(key) ?? ""
   const { invoke } = await import("@tauri-apps/api/core")
@@ -101,7 +134,12 @@ export async function bootstrapMobileRelaySecrets(): Promise<void> {
 
 export function getMobileRelayConfig(): MobileRelayConfig | null {
   if (typeof window === "undefined") return null
-  const relayUrl = normalizeRelayUrl(localStorage.getItem(RELAY_URL_KEY) ?? "")
+  let relayUrl = ""
+  try {
+    relayUrl = requireSecureRelayUrl(localStorage.getItem(RELAY_URL_KEY) ?? "")
+  } catch {
+    return null
+  }
   const desktopId = localStorage.getItem(RELAY_DESKTOP_ID_KEY)?.trim() ?? ""
   const deviceId = localStorage.getItem(RELAY_DEVICE_ID_KEY)?.trim() ?? ""
   if (
@@ -120,8 +158,15 @@ export function getMobileRelayPublicConfig(): MobileRelayPublicConfig {
   if (typeof window === "undefined") {
     return { relayUrl: "", desktopId: "", deviceId: "" }
   }
+  let relayUrl = ""
+  try {
+    relayUrl = requireSecureRelayUrl(localStorage.getItem(RELAY_URL_KEY) ?? "")
+  } catch {
+    // Corrupt or legacy insecure settings should send the user back through
+    // pairing instead of reconnecting with a weaker transport.
+  }
   return {
-    relayUrl: normalizeRelayUrl(localStorage.getItem(RELAY_URL_KEY) ?? ""),
+    relayUrl,
     desktopId: localStorage.getItem(RELAY_DESKTOP_ID_KEY)?.trim() ?? "",
     deviceId: localStorage.getItem(RELAY_DEVICE_ID_KEY)?.trim() ?? "",
   }
@@ -130,7 +175,7 @@ export function getMobileRelayPublicConfig(): MobileRelayPublicConfig {
 export async function setMobileRelayConfig(
   config: MobileRelayConfig
 ): Promise<void> {
-  const relayUrl = normalizeRelayUrl(config.relayUrl)
+  const relayUrl = requireSecureRelayUrl(config.relayUrl)
   if (!relayUrl || !config.desktopId.trim() || !config.deviceId.trim()) {
     throw new Error("Relay configuration is incomplete")
   }
@@ -174,7 +219,12 @@ export function parseMobileRelayPairingPayload(
   if (payload.expires_at * 1000 < Date.now()) {
     throw new Error("配对二维码已过期")
   }
-  const relayUrl = normalizeRelayUrl(payload.relay_url ?? "")
+  let relayUrl = ""
+  try {
+    relayUrl = requireSecureRelayUrl(payload.relay_url ?? "")
+  } catch {
+    throw new Error("配对内容中的 Relay 地址不安全")
+  }
   const ids = [payload.desktop_id, payload.pair_id]
   if (
     !relayUrl ||

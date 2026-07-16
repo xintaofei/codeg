@@ -62,6 +62,7 @@ mobile/src-tauri/target/
 relay/target/
 relay-bridge/target/
 relay-bridge.json
+relay/deploy/relay.env
 
 # pnpm local store (pnpm 11+)
 .pnpm-store/

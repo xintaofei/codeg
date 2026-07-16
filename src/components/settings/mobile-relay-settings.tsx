@@ -7,6 +7,7 @@ import {
   Loader2,
   QrCode,
   RadioTower,
+  Server,
   Smartphone,
   Trash2,
 } from "lucide-react"
@@ -132,6 +133,13 @@ export function MobileRelaySettingsCard() {
     () => Math.max(0, (pairing?.expiresAt ?? now) - now),
     [now, pairing]
   )
+  const relayHost = useMemo(() => {
+    try {
+      return new URL(relayUrl).host
+    } catch {
+      return ""
+    }
+  }, [relayUrl])
 
   const save = async () => {
     setBusy(true)
@@ -243,7 +251,7 @@ export function MobileRelaySettingsCard() {
               <h4 className="font-medium">手机 Relay 访问</h4>
               <p className="mt-1 text-xs leading-5 text-muted-foreground">
                 电脑只建立出站连接，无需公网 IP。命令和 Agent
-                事件在手机与电脑之间端到端加密。
+                事件在手机与电脑之间端到端加密，支持使用任意兼容的自托管 Relay。
               </p>
             </div>
           </div>
@@ -280,6 +288,23 @@ export function MobileRelaySettingsCard() {
               }
               autoComplete="off"
             />
+          </div>
+        </div>
+
+        <div className="flex gap-3 rounded-xl border border-dashed bg-muted/30 p-3">
+          <Server className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+          <div className="min-w-0 text-xs leading-5 text-muted-foreground">
+            <p className="font-medium text-foreground">自托管 Relay</p>
+            <p>
+              在自己的服务器部署 Codeg Relay，填写它的 WSS 地址和 32 位以上桌面
+              Token。公网地址必须使用有效 TLS
+              证书；所选域名会写入一次性配对二维码。
+            </p>
+            {relayHost && (
+              <p className="mt-1 truncate font-mono" title={relayHost}>
+                当前端点：{relayHost}
+              </p>
+            )}
           </div>
         </div>
 

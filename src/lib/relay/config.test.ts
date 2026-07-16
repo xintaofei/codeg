@@ -51,6 +51,25 @@ describe("mobile Relay pairing payload", () => {
     expect(() => parseMobileRelayPairingPayload("{}")).toThrow()
   })
 
+  it("rejects public plaintext Relay endpoints", () => {
+    const secret = relayBase64UrlEncode(new Uint8Array(32).fill(4))
+    const publicKey = new Uint8Array(65).fill(5)
+    publicKey[0] = 4
+    expect(() =>
+      parseMobileRelayPairingPayload(
+        JSON.stringify({
+          v: 2,
+          relay_url: "ws://relay.example.test/v1/ws",
+          desktop_id: "d_test",
+          pair_id: "p_insecure",
+          pair_secret: secret,
+          desktop_public_key: relayBase64UrlEncode(publicKey),
+          expires_at: Math.floor(Date.now() / 1000) + 300,
+        })
+      )
+    ).toThrow(/不安全/)
+  })
+
   it("rejects legacy QR payloads that contain reusable credentials", () => {
     expect(() =>
       parseMobileRelayPairingPayload(

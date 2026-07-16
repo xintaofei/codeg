@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    net::IpAddr,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -202,15 +203,21 @@ async fn refresh_device_activity(db: &AppDatabase, settings: &mut PersistedSetti
 fn validate_relay_url(value: &str) -> Result<String, AppCommandError> {
     let mut url = reqwest::Url::parse(value.trim())
         .map_err(|_| AppCommandError::invalid_input("Relay URL is invalid"))?;
-    if !matches!(url.scheme(), "ws" | "wss")
-        || url.host_str().is_none()
+    let host = url
+        .host_str()
+        .ok_or_else(|| AppCommandError::invalid_input("Relay URL must include a host"))?;
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    if (url.scheme() != "wss" && !(url.scheme() == "ws" && loopback))
         || !url.username().is_empty()
         || url.password().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
     {
         return Err(AppCommandError::invalid_input(
-            "Relay URL must be a ws/wss URL without credentials, query, or fragment",
+            "Relay URL must use wss without credentials, query, or fragment; ws is allowed only for loopback development",
         ));
     }
     url.set_path("/v1/ws");
@@ -829,5 +836,10 @@ mod tests {
         );
         assert!(validate_relay_url("wss://token@relay.example.test/v1/ws").is_err());
         assert!(validate_relay_url("https://relay.example.test").is_err());
+        assert!(validate_relay_url("ws://relay.example.test/v1/ws").is_err());
+        assert_eq!(
+            validate_relay_url("ws://127.0.0.1:8787").unwrap(),
+            "ws://127.0.0.1:8787/v1/ws"
+        );
     }
 }
