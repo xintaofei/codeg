@@ -38,9 +38,14 @@ function NavButton({
       {children}
       <span>{label}</span>
       {!!badge && (
-        <span className="absolute right-[calc(50%-18px)] top-1 min-w-4 rounded-full bg-destructive px-1 text-center text-[9px] leading-4 text-destructive-foreground">
-          {badge > 99 ? "99+" : badge}
-        </span>
+        <>
+          <span className="sr-only">{badge} 项需要关注</span>
+          <span
+            aria-hidden="true"
+            data-slot="nav-attention-indicator"
+            className="absolute right-[calc(50%-13px)] top-1.5 h-2 w-2 rounded-full bg-primary/70 ring-2 ring-background"
+          />
+        </>
       )}
     </button>
   )
@@ -59,11 +64,13 @@ export function MobileBottomNavigation() {
     tasks.filter(
       (task) => task.status === "pending" || task.status === "running"
     ).length + alerts.length
+  const runningCount = tasks.filter((task) => task.status === "running").length
+  const pendingCount = tasks.filter((task) => task.status === "pending").length
 
   return (
     <>
       <nav
-        className="grid h-16 shrink-0 grid-cols-3 gap-1 border-t bg-background/95 px-2 py-1 backdrop-blur"
+        className="grid h-14 shrink-0 grid-cols-3 gap-1 border-t bg-background/95 px-2 py-1 backdrop-blur"
         aria-label="移动端主导航"
       >
         <NavButton label="会话" active onClick={toggleSidebar}>
@@ -84,22 +91,42 @@ export function MobileBottomNavigation() {
       <Sheet open={taskCenterOpen} onOpenChange={setTaskCenterOpen}>
         <SheetContent
           side="bottom"
-          className="max-h-[70vh] rounded-t-3xl px-4 pb-[calc(20px+env(safe-area-inset-bottom))]"
+          className="flex h-[min(72dvh,720px)] max-h-[calc(100dvh-12px)] flex-col overflow-hidden rounded-t-3xl px-4 pt-5 pb-[calc(16px+env(safe-area-inset-bottom))]"
         >
-          <SheetTitle className="flex items-center gap-2">
+          <SheetTitle className="flex shrink-0 items-center gap-2 pr-10 text-lg">
             <ListChecks className="h-5 w-5" />
             运行中与等待处理
           </SheetTitle>
-          <div className="mt-5 space-y-3 overflow-y-auto">
+          <div className="mt-4 grid shrink-0 grid-cols-2 gap-2">
+            <div className="rounded-2xl border bg-card px-3 py-2.5">
+              <div className="text-xl font-semibold tabular-nums text-emerald-500">
+                {runningCount}
+              </div>
+              <div className="mt-0.5 text-xs text-muted-foreground">运行中</div>
+            </div>
+            <div className="rounded-2xl border bg-card px-3 py-2.5">
+              <div className="text-xl font-semibold tabular-nums text-amber-500">
+                {pendingCount + alerts.length}
+              </div>
+              <div className="mt-0.5 text-xs text-muted-foreground">
+                等待处理
+              </div>
+            </div>
+          </div>
+          <div className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pb-1">
             {tasks.map((task) => (
-              <div key={task.id} className="rounded-xl border bg-card p-3">
-                <div className="flex items-center justify-between gap-3">
+              <div
+                key={task.id}
+                className="flex min-h-[68px] items-center rounded-2xl border bg-card px-3 py-2.5"
+              >
+                <div className="flex w-full items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="truncate text-sm font-medium">
-                      {task.label || task.description}
+                      {task.description || task.label}
                     </div>
-                    <div className="mt-1 text-xs text-muted-foreground">
+                    <div className="mt-1 truncate text-xs text-muted-foreground">
                       {task.status === "running" ? "运行中" : "等待执行"}
+                      {task.description ? ` · ${task.label}` : ""}
                     </div>
                   </div>
                   {task.status === "running" && (
@@ -111,7 +138,7 @@ export function MobileBottomNavigation() {
             {alerts.map((alert) => (
               <div
                 key={alert.id}
-                className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3"
+                className="flex min-h-[68px] items-center rounded-2xl border border-amber-500/30 bg-amber-500/5 px-3 py-2.5"
               >
                 <div className="flex items-start gap-2">
                   <BellRing className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
@@ -127,7 +154,7 @@ export function MobileBottomNavigation() {
               </div>
             ))}
             {attentionCount === 0 && (
-              <div className="py-10 text-center text-sm text-muted-foreground">
+              <div className="flex min-h-32 items-center justify-center text-center text-sm text-muted-foreground">
                 当前没有运行中或等待处理的任务
               </div>
             )}

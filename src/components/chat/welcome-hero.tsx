@@ -93,7 +93,7 @@ export function WelcomeHero() {
   const t = useTranslations("Folder.chat.welcomePanel")
 
   return (
-    <h1 className="text-center text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">
+    <h1 className="text-center text-2xl font-semibold tracking-tight text-foreground sm:text-4xl">
       {t.rich("greeting", { highlight: highlightTitle })}
     </h1>
   )

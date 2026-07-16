@@ -19,6 +19,7 @@ import {
 } from "@/components/chat/message-input"
 import { MessageQueueDisplay } from "@/components/chat/message-queue-display"
 import { cn } from "@/lib/utils"
+import { isMobileEnvironment } from "@/lib/transport/detect"
 
 interface ChatInputProps {
   status: ConnectionStatus | null
@@ -123,6 +124,7 @@ export const ChatInput = memo(function ChatInput({
   const isConnected = status === "connected"
   const isPrompting = status === "prompting"
   const isConnecting = status === "connecting"
+  const isMobile = isMobileEnvironment()
 
   return (
     <div
@@ -186,7 +188,10 @@ export const ChatInput = memo(function ChatInput({
               ? t("agentResponding", { agent: agentName ?? "Agent" })
               : t("sendMessage")
         }
-        className={cn(tall ? "min-h-30" : "min-h-24", "max-h-60")}
+        className={cn(
+          tall ? (isMobile ? "min-h-24" : "min-h-30") : "min-h-24",
+          isMobile ? "max-h-40" : "max-h-60"
+        )}
       />
     </div>
   )

@@ -129,8 +129,8 @@ export default function MobileSettingsPage() {
   }
 
   return (
-    <main className="min-h-screen bg-background px-4 pb-[calc(24px+env(safe-area-inset-bottom))] pt-[calc(16px+env(safe-area-inset-top))] text-foreground">
-      <div className="mx-auto max-w-lg space-y-6">
+    <main className="min-h-screen bg-background px-4 pb-[calc(20px+env(safe-area-inset-bottom))] pt-[max(12px,env(safe-area-inset-top))] text-foreground">
+      <div className="mx-auto max-w-lg space-y-4">
         <header className="flex min-h-12 items-center gap-3">
           <Button
             variant="ghost"
@@ -149,7 +149,7 @@ export default function MobileSettingsPage() {
           </div>
         </header>
 
-        <section className="space-y-5 rounded-2xl border bg-card p-4 shadow-sm">
+        <section className="space-y-4 rounded-2xl border bg-card p-4 shadow-sm">
           <div className="grid grid-cols-2 gap-2 rounded-xl bg-muted p-1">
             <button
               type="button"
@@ -273,8 +273,8 @@ export default function MobileSettingsPage() {
                   placeholder="扫描二维码，或粘贴电脑显示的一次性配对内容"
                   autoCapitalize="none"
                   autoCorrect="off"
-                  rows={6}
-                  className="flex w-full resize-none rounded-xl border border-input bg-background px-4 py-3 text-base ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  rows={4}
+                  className="flex min-h-28 max-h-40 w-full resize-none rounded-xl border border-input bg-background px-4 py-3 text-base ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 />
                 <RelayQrScanner
                   onDetected={(payload) => {

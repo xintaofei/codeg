@@ -33,7 +33,7 @@ export function AppTitleBar({
   const usesRightControls = (isWindows || isLinux) && hasDesktopWindowChrome
 
   const rowPadding = cn(
-    "px-3",
+    isMobile ? "px-2" : "px-3",
     isMac && hasDesktopWindowChrome && "pl-[92px]",
     usesRightControls && "pr-[138px]"
   )
@@ -42,7 +42,7 @@ export function AppTitleBar({
     <div
       className={cn(
         "relative shrink-0 border-b bg-muted/70 select-none",
-        isMobile ? "h-11" : "h-8",
+        isMobile ? "h-[60px]" : "h-8",
         className
       )}
     >

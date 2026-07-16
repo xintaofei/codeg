@@ -197,11 +197,16 @@ export function SettingsShell({ children }: SettingsShellProps) {
 
   const navContent = (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="px-2 pb-2 text-[11px] font-medium text-muted-foreground">
+      <div
+        className={cn(
+          "font-medium text-muted-foreground",
+          isMobile ? "px-3 pb-3 text-xs tracking-wide" : "px-2 pb-2 text-[11px]"
+        )}
+      >
         {t("preferences")}
       </div>
       <ScrollArea className="min-h-0 flex-1">
-        <nav className="space-y-1">
+        <nav className={cn(isMobile ? "space-y-1.5" : "space-y-1")}>
           {filteredNavItems.map((item) => {
             const Icon = item.icon
             const translationKey = `nav.${item.labelKey}` as const
@@ -213,13 +218,23 @@ export function SettingsShell({ children }: SettingsShellProps) {
                 key={item.href}
                 variant={active ? "secondary" : "ghost"}
                 size="sm"
-                className={cn("w-full justify-start px-2")}
+                className={cn(
+                  "w-full justify-start",
+                  isMobile ? "h-11 rounded-xl px-3 text-sm" : "px-2"
+                )}
                 type="button"
                 onClick={() => navigateTo(item.href)}
                 aria-current={active ? "page" : undefined}
               >
-                <span className="inline-flex items-center gap-1">
-                  <Icon className="h-3.5 w-3.5" />
+                <span
+                  className={cn(
+                    "inline-flex items-center",
+                    isMobile ? "gap-2.5" : "gap-1"
+                  )}
+                >
+                  <Icon
+                    className={cn(isMobile ? "h-4.5 w-4.5" : "h-3.5 w-3.5")}
+                  />
                   {t(translationKey)}
                 </span>
               </Button>
@@ -238,7 +253,7 @@ export function SettingsShell({ children }: SettingsShellProps) {
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8"
+              className="h-11 w-11 rounded-xl"
               onClick={() => setNavOpen(true)}
             >
               <Menu className="h-4 w-4" />
@@ -264,7 +279,7 @@ export function SettingsShell({ children }: SettingsShellProps) {
             <SheetContent
               side="left"
               showCloseButton={false}
-              className="w-[260px] p-3"
+              className="w-[88%] max-w-[360px] border-r-0 px-3 pb-[max(env(safe-area-inset-bottom),12px)] pt-[max(env(safe-area-inset-top),40px)]"
             >
               <SheetTitle className="sr-only">{t("title")}</SheetTitle>
               {navContent}

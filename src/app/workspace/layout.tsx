@@ -410,7 +410,7 @@ function MobileFolderWorkspaceShell({
         <SheetContent
           side="left"
           showCloseButton={false}
-          className="w-[85%] max-w-[360px] p-0"
+          className="w-[88%] max-w-none border-r-0 p-0 pt-[max(env(safe-area-inset-top),24px)]"
         >
           <SheetTitle className="sr-only">Sidebar</SheetTitle>
           <Sidebar />
@@ -425,7 +425,7 @@ function MobileFolderWorkspaceShell({
         <SheetContent
           side="right"
           showCloseButton={false}
-          className="w-[85%] max-w-[360px] p-0"
+          className="w-[85%] max-w-[360px] border-l-0 p-0 pt-[max(env(safe-area-inset-top),24px)]"
         >
           <SheetTitle className="sr-only">Panel</SheetTitle>
           <AuxPanel />
@@ -887,12 +887,13 @@ function FolderLayoutShell({ children }: { children: React.ReactNode }) {
     <div className="fixed inset-0 flex flex-col overflow-hidden bg-background text-foreground pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]">
       <ChatModeAuxAutoHide />
       <FolderTitleBar />
+      {isMobile ? <StatusBar /> : null}
       {isMobile ? (
         <MobileFolderWorkspaceShell>{children}</MobileFolderWorkspaceShell>
       ) : (
         <FolderWorkspaceShell>{children}</FolderWorkspaceShell>
       )}
-      <StatusBar />
+      {!isMobile ? <StatusBar /> : null}
       <MobileBottomNavigation />
       <AppToaster
         position="bottom-right"

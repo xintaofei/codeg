@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react"
 import {
   EllipsisVertical,
+  FolderOpen,
   Menu,
   PanelLeft,
   PanelRight,
@@ -48,6 +49,7 @@ import {
 
 export function FolderTitleBar() {
   const tTitleBar = useTranslations("Folder.folderTitleBar")
+  const tFolderMenu = useTranslations("Folder.folderNameDropdown")
   const tPet = useTranslations("Pet")
   const openFolder = useAppWorkspaceStore((s) => s.openFolder)
   const { activeFolder } = useActiveFolder()
@@ -179,18 +181,30 @@ export function FolderTitleBar() {
       <AppTitleBar
         left={
           isMobile ? (
-            <div className="flex min-w-0 items-center gap-2">
+            <div className="flex min-w-0 items-center gap-1 overflow-hidden">
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8 shrink-0"
+                className="h-11 w-11 shrink-0 rounded-xl"
                 onClick={toggle}
+                aria-label={tTitleBar(isOpen ? "hideSidebar" : "showSidebar")}
               >
-                <Menu className="h-4 w-4" />
+                <Menu className="h-5 w-5" />
               </Button>
-              <NewFolderDropdown />
-              <RemoteWorkspaceDropdown />
-              <BranchDropdown />
+              <div className="min-w-0 flex-1 overflow-hidden">
+                {activeFolder && !isChatMode ? (
+                  <BranchDropdown compact />
+                ) : (
+                  <div className="min-w-0 px-1">
+                    <div className="truncate text-sm font-semibold leading-5">
+                      {activeFolder?.name ?? "Codeg"}
+                    </div>
+                    <div className="truncate text-[11px] leading-4 text-muted-foreground">
+                      {isChatMode ? "Chat" : tFolderMenu("openFolder")}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           ) : (
             <div className="flex h-8 flex-1 items-center gap-6">
@@ -229,18 +243,27 @@ export function FolderTitleBar() {
         }
         right={
           isMobile ? (
-            <div className="flex items-center gap-1">
-              <CommandDropdown />
+            <div className="flex shrink-0 items-center gap-0.5">
+              <CommandDropdown compact />
               {/* Search lives only in the left sidebar's fixed actions region
                   now (desktop + mobile sheet); no title-bar search entry on any
                   width. The ⌘K shortcut + SearchCommandDialog stay wired here. */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon" className="h-8 w-8">
-                    <EllipsisVertical className="h-4 w-4" />
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-11 w-11 rounded-xl"
+                    aria-label={tTitleBar("openSettings")}
+                  >
+                    <EllipsisVertical className="h-5 w-5" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => void handleOpenFolder()}>
+                    <FolderOpen className="h-4 w-4" />
+                    {tFolderMenu("openFolder")}
+                  </DropdownMenuItem>
                   {/* Folderless chat conversations hide the aux panel entirely. */}
                   {!isChatMode && (
                     <DropdownMenuItem

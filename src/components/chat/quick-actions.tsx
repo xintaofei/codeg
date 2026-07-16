@@ -146,7 +146,7 @@ function BigCard({
       onClick={onClick}
       title={locked ? lockHint : undefined}
       className={cn(
-        "group relative flex flex-col items-start gap-1.5 rounded-lg border bg-card/50 px-3 py-2.5 text-left transition-colors",
+        "group relative flex min-h-[92px] flex-col items-start gap-1 rounded-lg border bg-card/50 px-2.5 py-2 text-left transition-colors sm:min-h-0 sm:gap-1.5 sm:px-3 sm:py-2.5",
         a.surface
       )}
     >
