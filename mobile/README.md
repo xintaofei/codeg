@@ -35,7 +35,8 @@ remote Codeg server over HTTPS and WebSocket.
 - Android 7.0 / API 24 or newer
 - JDK 17
 - Android SDK 36, build-tools 36.0.0 and NDK 28.2.13676358
-- Rust target `aarch64-linux-android`
+- Rust targets `aarch64-linux-android`, `armv7-linux-androideabi`,
+  `i686-linux-android` and `x86_64-linux-android` for the universal release APK
 
 For a debug APK:
 
@@ -53,16 +54,19 @@ from environment variables so no password file is created inside the checkout:
 ```bash
 export CODEG_ANDROID_KEYSTORE_PATH=/absolute/path/codeg-mobile-release.jks
 export CODEG_ANDROID_KEYSTORE_PASSWORD='...'
-export CODEG_ANDROID_KEY_ALIAS=codeg-mobile-release
+export CODEG_ANDROID_KEY_ALIAS=codeg-mobile
 export CODEG_ANDROID_KEY_PASSWORD='...'
-pnpm --dir mobile tauri android build --apk --target aarch64 --ci
+pnpm --dir mobile tauri android build --apk --ci
 ```
 
-The private GitHub workflow uses matching repository secrets and publishes the
-signed APK as an Actions artifact. Tags named `mobile-v*` also create a private
-GitHub Release.
+The release command produces one signed universal APK containing arm64-v8a,
+armeabi-v7a, x86 and x86_64 native libraries.
 
-## iOS compile smoke
+The GitHub workflow uses matching repository secrets and publishes the signed
+APK as an Actions artifact. Tags named `mobile-v*` also create a GitHub
+Release.
+
+## iOS build status
 
 The iOS project is generated from the same shell and kept simulator-buildable:
 
@@ -71,5 +75,8 @@ pnpm --dir mobile tauri ios init --ci
 pnpm --dir mobile tauri ios build --debug --target aarch64-sim --ci
 ```
 
-An Apple Developer team and distribution certificate are required for a real
-device archive or TestFlight upload.
+An Apple Developer team, distribution certificate and provisioning profile are
+required for a real-device archive or TestFlight upload. Those credentials are
+not currently available, so this contribution deliberately provides no IPA or
+TestFlight package. The simulator compile smoke remains in CI to keep the iOS
+source buildable until signing credentials are available.

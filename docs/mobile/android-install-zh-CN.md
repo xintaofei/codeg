@@ -5,7 +5,7 @@
 - Android 7.0（API 24）或更高版本。
 - 电脑上的 Codeg 必须保持运行并可访问互联网。
 - Relay 模式不要求电脑拥有公网 IP、端口映射或与手机处于同一网络。
-- 安装包必须来自此私有仓库的 Release，并核对 Release 页面公布的 SHA-256。
+- 安装包必须来自维护者或本次 PR 公布的 Release，并核对 Release 页面公布的 SHA-256。
 
 ## 安装或升级
 
@@ -30,6 +30,10 @@ shasum -a 256 codeg-mobile-<版本>-universal.apk
 6. 电脑确认后，手机自动进入工作区。后续启动不需要再次扫码。
 
 二维码五分钟后过期，并且只能使用一次。已经完成或拒绝的二维码不能再次配对；不要通过聊天、邮件或截图转发二维码。
+
+Relay 可以由管理员自行部署，不依赖固定的官方域名。部署方式见
+[`docs/relay/self-hosting-zh-CN.md`](../relay/self-hosting-zh-CN.md)。更换 Relay
+域名后需要重新生成二维码并配对；公网 Relay 必须使用 `wss://`。
 
 ## Direct 连接
 
@@ -82,4 +86,5 @@ Relay 长时间不可用时，断线提示中会出现 **切换 Direct**。Direc
 
 - 首个 Android Release 尚不包含 FCM 后台推送；应用被系统长期挂起时，需要手动回到前台恢复状态。
 - 手机端不提供本地 Agent、终端、完整代码编辑器或 Git 操作。
-- iOS TestFlight 版本独立交付，不包含在 Android APK 中。
+- 当前没有可用的 Apple Developer 分发证书和 Provisioning Profile，因此暂不提供
+  iOS IPA 或 TestFlight 包；iOS 模拟器工程仍由 CI 做编译检查。

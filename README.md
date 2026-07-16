@@ -221,7 +221,7 @@ continue to run on a remote Codeg desktop/server. It is not a remote webpage
 wrapper and does not execute Codex, Claude Code, OpenCode, ACP, a terminal, or
 Git on the phone.
 
-1. Install the private signed APK on Android 7.0 or newer.
+1. Install the signed universal APK on Android 7.0 or newer.
 2. For the recommended Relay mode, open **Settings → Mobile Access** on the
    desktop, create a one-time QR code, scan it on the phone, compare the
    six-digit safety code and confirm the new phone on the desktop.
@@ -236,6 +236,15 @@ loss and does not preserve unsent drafts across app restarts. Build and signing
 details are in [`mobile/README.md`](mobile/README.md).
 The Chinese end-user guide is in
 [`docs/mobile/android-install-zh-CN.md`](docs/mobile/android-install-zh-CN.md).
+To run your own encrypted Relay, follow
+[`docs/relay/self-hosting-zh-CN.md`](docs/relay/self-hosting-zh-CN.md); the
+desktop accepts any compatible WSS Relay and writes that endpoint into the
+one-time pairing QR code.
+
+The iOS project remains simulator-buildable, but this contribution does not
+provide an IPA or TestFlight build because no Apple Developer distribution
+certificate and provisioning profile are available. Android is the only
+installable mobile package included with this pull request.
 
 `codeg-mcp` must sit next to its parent binary at runtime — installers, the Docker image, and the Tauri sidecar bundler all place it next to `codeg` / `codeg-server`. Source builds and custom layouts can override the lookup with the `CODEG_MCP_BIN=/abs/path/codeg-mcp` env var. If the companion is missing, delegation is skipped (a single warning is logged) and the rest of the agent session keeps working.
 
