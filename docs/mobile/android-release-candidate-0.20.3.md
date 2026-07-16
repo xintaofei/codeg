@@ -15,7 +15,7 @@
 | Target SDK | 36 |
 | SHA-256 | `eee9efd1b1481500f278fb0ebef223f8db06c64123810df85ababd50ee06c4a0` |
 | ABI | `arm64-v8a`、`armeabi-v7a`、`x86`、`x86_64` |
-| 私有草稿预发布 | [`android-v0.20.3-rc.1`](https://github.com/Crain99/codeg-mobile/releases/tag/untagged-eb54ddc9fad7cef3be88) |
+| 私有草稿预发布 | [`android-v0.20.3-rc.1`](https://github.com/Crain99/codeg-mobile/releases) |
 
 ## 签名
 
