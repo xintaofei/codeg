@@ -186,11 +186,8 @@ Codeg Mobile                                  │
 - [x] 实现健康检查、结构化日志和基础指标。
 - [x] 在单实例阶段使用内存路由；扩容需要时再引入 Redis 等共享状态。
 
-实际部署主机：`kdit-01`。
-
-实际公网入口：`frp.kditravel.com`，Relay 健康检查使用
-`https://frp.kditravel.com/codeg-relay/health`，WSS 使用
-`wss://frp.kditravel.com/v1/ws`。
+参考部署使用独立 Relay 主机和受信任的 WSS 域名。具体域名由部署者配置，
+APK 不绑定任何 Relay 运营方；健康检查使用 `/health`，WSS 使用 `/v1/ws`。
 
 完成标准：Relay 可在不开放用户电脑入站端口的情况下稳定转发双向加密帧。
 
@@ -278,8 +275,8 @@ Codeg Mobile                                  │
 
 ## 10. 待用户确认
 
-- [x] Relay 部署到 `kdit-01`。
-- [x] Relay 公网入口使用 `frp.kditravel.com`。
+- [x] Relay 已在参考环境完成部署验证。
+- [x] Relay 公网入口使用受信任 TLS 证书和 WSS。
 - [ ] Apple Developer / App Store Connect 账号可用于 TestFlight 与 APNs。
 - [ ] Firebase 项目与 FCM 凭据的归属。
 - [ ] “始终允许”是否进入首版，或首版只提供“允许一次/拒绝”。
