@@ -5290,6 +5290,32 @@ fn codex_retry_indicator(
     Some((message.to_string(), http_status))
 }
 
+/// True when an available command is really a config-option state toggle rather
+/// than an invokable slash command (codex-acp #293, v1.1.4). codex advertises
+/// e.g. `/plan` as an `AvailableCommand` tagged
+/// `_meta.commandAction = {kind:"setConfigOption", configId:"collaboration_mode",
+/// value:"plan", resetValue:"default", presentation:"state"}` — codex's signal
+/// that the client should represent it as STATE. codeg already surfaces that
+/// state as the `collaboration_mode` config-option selector (the generic
+/// `SessionConfigOption` path), so also listing `/plan` as a slash command is
+/// redundant and its static "Turn plan mode on" description is wrong once plan
+/// mode is already on. Suppress these from the command list. Commands with any
+/// other action kind (e.g. `/goal`'s `prefixPrompt`, which takes an objective
+/// argument) are real commands and kept. Gated on Codex — `commandAction` is a
+/// codex-private `_meta` extension (the ACP schema has no such type).
+fn is_config_option_state_command(
+    agent_type: AgentType,
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> bool {
+    if agent_type != AgentType::Codex {
+        return false;
+    }
+    meta.and_then(|m| m.get("commandAction"))
+        .and_then(|action| action.get("kind"))
+        .and_then(|kind| kind.as_str())
+        == Some("setConfigOption")
+}
+
 /// True when a CodeBuddy sub-agent tool call's `_meta` marks it as a BACKGROUND
 /// sub-agent (`codebuddy.ai/isBackground == true`). A background sub-agent runs
 /// concurrently with the main agent, so the suppression-window invariant (parent
@@ -5937,7 +5963,10 @@ async fn emit_conversation_update(
                 .await;
         }
         SessionUpdate::AvailableCommandsUpdate(update) => {
-            // Some agents (e.g. Claude Code with overlapping user/project slash
+            // Drop config-option state toggles (codex `/plan` — see
+            // `is_config_option_state_command`): they're already the
+            // `collaboration_mode` selector, not invokable commands. Then dedup:
+            // some agents (e.g. Claude Code with overlapping user/project slash
             // commands) emit duplicate entries sharing the same name. Keep the
             // first occurrence so downstream consumers don't render duplicates;
             // the frontend reducer also dedupes as a defensive measure.
@@ -5945,6 +5974,7 @@ async fn emit_conversation_update(
             let commands: Vec<AvailableCommandInfo> = update
                 .available_commands
                 .iter()
+                .filter(|cmd| !is_config_option_state_command(agent_type, cmd.meta.as_ref()))
                 .filter(|cmd| seen.insert(cmd.name.clone()))
                 .map(|cmd| {
                     let input_hint = cmd.input.as_ref().map(|input| match input {
@@ -6073,6 +6103,40 @@ mod tests {
             "codex": { "collaboration": { "tool": "spawnAgent" } }
         }));
         assert!(!is_codex_subagent_activity(AgentType::Codex, Some(&collab)));
+    }
+
+    #[test]
+    fn config_option_state_command_suppressed_only_for_codex_set_config_action() {
+        // codex-acp #293: `/plan` is a config-option state toggle (rendered as the
+        // `collaboration_mode` selector), not an invokable slash command.
+        let plan = meta_map(serde_json::json!({
+            "commandAction": {
+                "kind": "setConfigOption",
+                "configId": "collaboration_mode",
+                "value": "plan",
+                "resetValue": "default",
+                "presentation": "state"
+            }
+        }));
+        assert!(is_config_option_state_command(AgentType::Codex, Some(&plan)));
+        // Gated on Codex — the same meta never suppresses another agent's command.
+        assert!(!is_config_option_state_command(
+            AgentType::ClaudeCode,
+            Some(&plan)
+        ));
+        // `/goal` uses a `prefixPrompt` action (takes an objective argument) → a
+        // real command, kept.
+        let goal = meta_map(serde_json::json!({
+            "commandAction": { "kind": "prefixPrompt", "presentation": "state" }
+        }));
+        assert!(!is_config_option_state_command(AgentType::Codex, Some(&goal)));
+        // Ordinary commands (no `commandAction`) and absent meta are kept.
+        assert!(!is_config_option_state_command(AgentType::Codex, None));
+        let plain = meta_map(serde_json::json!({ "somethingElse": true }));
+        assert!(!is_config_option_state_command(
+            AgentType::Codex,
+            Some(&plain)
+        ));
     }
 
     #[test]
