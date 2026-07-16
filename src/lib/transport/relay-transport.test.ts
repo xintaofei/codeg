@@ -386,6 +386,79 @@ describe("RelayTransport", () => {
     transport.destroy()
   })
 
+  it("dispatches a long ordered event stream once and closes on replay", async () => {
+    const transport = new RelayTransport({
+      relayUrl: "wss://relay.example.test/v1/ws",
+      desktopId: "d_test",
+      deviceId: "m_phone",
+      routingToken: "routing-token-at-least-thirty-two-characters",
+      pairingRoot: relayBase64UrlEncode(new Uint8Array(32).fill(0x51)),
+    })
+    const socket = MockWebSocket.instances[0]
+    socket.readyState = MockWebSocket.OPEN
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new Uint8Array(32).fill(0x63),
+      "AES-GCM",
+      false,
+      ["encrypt", "decrypt"]
+    )
+    const eventHandler = vi.fn()
+    const connectionId = "c_long_session"
+    const internal = transport as unknown as {
+      keys: { mobileToDesktop: CryptoKey; desktopToMobile: CryptoKey } | null
+      connectionId: string
+      handlers: Map<string, Set<(payload: unknown) => void>>
+    }
+    internal.keys = { mobileToDesktop: key, desktopToMobile: key }
+    internal.connectionId = connectionId
+    internal.handlers.set("task.updated", new Set([eventHandler]))
+
+    let lastFrame: RelayFrameEnvelope | null = null
+    for (let sequence = 1; sequence <= 512; sequence++) {
+      const nonce = relayNonce(0x0044324d, BigInt(sequence))
+      const frame: RelayFrameEnvelope = {
+        v: 1,
+        type: "frame",
+        desktop_id: "d_test",
+        device_id: "m_phone",
+        connection_id: connectionId,
+        frame_id: `f_event_${sequence}`,
+        seq: sequence,
+        ack: 0,
+        nonce: relayBase64UrlEncode(nonce),
+        ciphertext: "",
+      }
+      frame.ciphertext = relayBase64UrlEncode(
+        await sealRelayFrame(
+          key,
+          nonce,
+          relayFrameAad(frame),
+          new TextEncoder().encode(
+            JSON.stringify({
+              kind: "ws_frame",
+              frame: {
+                channel: "task.updated",
+                payload: { sequence },
+              },
+            })
+          )
+        )
+      )
+      lastFrame = frame
+      socket.emit(frame)
+    }
+
+    await eventually(() => eventHandler.mock.calls.length === 512)
+    expect(eventHandler.mock.calls[0]).toEqual([{ sequence: 1 }])
+    expect(eventHandler.mock.calls[511]).toEqual([{ sequence: 512 }])
+
+    socket.emit(lastFrame)
+    await eventually(() => socket.closeCount === 1)
+    expect(eventHandler).toHaveBeenCalledTimes(512)
+    transport.destroy()
+  })
+
   it("reassembles and verifies chunked encrypted payloads", async () => {
     const transport = new RelayTransport({
       relayUrl: "wss://relay.example.test/v1/ws",

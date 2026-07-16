@@ -428,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_session_encrypts_and_rejects_replay() {
+    fn authenticated_session_handles_long_ordered_stream_and_rejects_replay() {
         let root = [9_u8; 32];
         let (mobile_secret, hello) = mobile_hello(&root);
         let (desktop, response) =
@@ -480,9 +480,43 @@ mod tests {
         );
         assert!(desktop.open_mobile_frame(&inbound).is_err());
 
+        for sequence in 2..=2_048 {
+            let plaintext = format!(r#"{{"kind":"event","index":{sequence}}}"#);
+            let nonce = relay_nonce(MOBILE_TO_DESKTOP_NONCE_TAG, sequence).unwrap();
+            let mut frame = RelayFrame {
+                v: 1,
+                message_type: "frame".into(),
+                desktop_id: "d_test".into(),
+                device_id: "m_phone".into(),
+                connection_id: "c_test".into(),
+                frame_id: format!("f_mobile_{sequence}"),
+                seq: sequence,
+                ack: 0,
+                nonce: URL_SAFE_NO_PAD.encode(nonce),
+                ciphertext: String::new(),
+            };
+            frame.ciphertext = URL_SAFE_NO_PAD.encode(
+                mobile_to_desktop
+                    .encrypt(
+                        &Nonce::<U12>::from(nonce),
+                        Payload {
+                            msg: plaintext.as_bytes(),
+                            aad: &frame.aad(),
+                        },
+                    )
+                    .unwrap(),
+            );
+            assert_eq!(
+                desktop.open_mobile_frame(&frame).unwrap(),
+                plaintext.as_bytes()
+            );
+        }
+        assert!(desktop.open_mobile_frame(&inbound).is_err());
+
         let outbound = desktop
             .seal_desktop_payload("d_test", br#"{"kind":"response"}"#)
             .unwrap();
+        assert_eq!(outbound.ack, 2_048);
         let nonce = relay_nonce(DESKTOP_TO_MOBILE_NONCE_TAG, outbound.seq).unwrap();
         let ciphertext = URL_SAFE_NO_PAD.decode(&outbound.ciphertext).unwrap();
         let aes_nonce = Nonce::<U12>::from(nonce);
@@ -496,6 +530,27 @@ mod tests {
             )
             .unwrap();
         assert_eq!(plaintext, br#"{"kind":"response"}"#);
+
+        for expected_sequence in 2..=2_048 {
+            let expected = format!(r#"{{"kind":"response","index":{expected_sequence}}}"#);
+            let outbound = desktop
+                .seal_desktop_payload("d_test", expected.as_bytes())
+                .unwrap();
+            assert_eq!(outbound.seq, expected_sequence);
+            assert_eq!(outbound.ack, 2_048);
+            let nonce = relay_nonce(DESKTOP_TO_MOBILE_NONCE_TAG, outbound.seq).unwrap();
+            let ciphertext = URL_SAFE_NO_PAD.decode(&outbound.ciphertext).unwrap();
+            let plaintext = desktop_to_mobile
+                .decrypt(
+                    &Nonce::<U12>::from(nonce),
+                    Payload {
+                        msg: &ciphertext,
+                        aad: &outbound.aad(),
+                    },
+                )
+                .unwrap();
+            assert_eq!(plaintext, expected.as_bytes());
+        }
     }
 
     #[test]

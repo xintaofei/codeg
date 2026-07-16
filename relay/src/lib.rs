@@ -1884,7 +1884,7 @@ mod tests {
                     "role": "mobile",
                     "desktop_id": "d_test",
                     "device_id": "m_phone",
-                    "token": issued.token
+                    "token": issued.token.clone()
                 })
                 .to_string()
                 .into(),
@@ -1933,6 +1933,211 @@ mod tests {
         .unwrap();
         assert!(closed);
 
+        let (mut revoked_mobile, _) = connect_async(format!("ws://{address}/v1/ws"))
+            .await
+            .unwrap();
+        revoked_mobile
+            .send(ClientMessage::Text(
+                serde_json::json!({
+                    "v": 1,
+                    "type": "hello",
+                    "role": "mobile",
+                    "desktop_id": "d_test",
+                    "device_id": "m_phone",
+                    "token": issued.token
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let rejected = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match revoked_mobile.next().await {
+                    Some(Ok(ClientMessage::Close(_))) | None => return true,
+                    Some(Ok(_)) => continue,
+                    Some(Err(_)) => return true,
+                }
+            }
+        })
+        .await
+        .expect("revoked credentials must be rejected promptly");
+        assert!(rejected);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn routes_multiple_mobile_devices_without_cross_talk() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = Arc::new(
+            AppState::new(test_config(temp.path().join("credentials.json")))
+                .await
+                .unwrap(),
+        );
+        let first_token = state.credentials.issue("d_test", "m_one").await.unwrap();
+        let second_token = state.credentials.issue("d_test", "m_two").await.unwrap();
+        let state_for_assertion = state.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app(state)).await.unwrap();
+        });
+
+        let (mut desktop, _) = connect_async(format!("ws://{address}/v1/ws"))
+            .await
+            .unwrap();
+        desktop
+            .send(ClientMessage::Text(
+                serde_json::json!({
+                    "v": 1,
+                    "type": "hello",
+                    "role": "desktop",
+                    "desktop_id": "d_test",
+                    "token": "desktop-token-at-least-thirty-two-characters"
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+
+        let (mut first, _) = connect_async(format!("ws://{address}/v1/ws"))
+            .await
+            .unwrap();
+        first
+            .send(ClientMessage::Text(
+                serde_json::json!({
+                    "v": 1,
+                    "type": "hello",
+                    "role": "mobile",
+                    "desktop_id": "d_test",
+                    "device_id": "m_one",
+                    "token": first_token
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+
+        let (mut second, _) = connect_async(format!("ws://{address}/v1/ws"))
+            .await
+            .unwrap();
+        second
+            .send(ClientMessage::Text(
+                serde_json::json!({
+                    "v": 1,
+                    "type": "hello",
+                    "role": "mobile",
+                    "desktop_id": "d_test",
+                    "device_id": "m_two",
+                    "token": second_token
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if state_for_assertion
+                    .metrics
+                    .active_desktops
+                    .load(Ordering::Relaxed)
+                    == 1
+                    && state_for_assertion
+                        .metrics
+                        .active_mobiles
+                        .load(Ordering::Relaxed)
+                        == 2
+                {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("desktop and both mobiles should authenticate");
+
+        let first_frame = serde_json::json!({
+            "v": 1,
+            "desktop_id": "d_test",
+            "device_id": "m_one",
+            "ciphertext": "only-first-can-read"
+        })
+        .to_string();
+        desktop
+            .send(ClientMessage::Text(first_frame.clone().into()))
+            .await
+            .unwrap();
+        assert_eq!(recv_client_text(&mut first).await, first_frame);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), recv_client_text(&mut second))
+                .await
+                .is_err(),
+            "a frame for the first mobile must not reach the second mobile"
+        );
+
+        let second_frame = serde_json::json!({
+            "v": 1,
+            "desktop_id": "d_test",
+            "device_id": "m_two",
+            "ciphertext": "only-second-can-read"
+        })
+        .to_string();
+        desktop
+            .send(ClientMessage::Text(second_frame.clone().into()))
+            .await
+            .unwrap();
+        assert_eq!(recv_client_text(&mut second).await, second_frame);
+
+        let first_reply = serde_json::json!({
+            "v": 1,
+            "desktop_id": "d_test",
+            "device_id": "m_one",
+            "ciphertext": "first-to-desktop"
+        })
+        .to_string();
+        first
+            .send(ClientMessage::Text(first_reply.clone().into()))
+            .await
+            .unwrap();
+        assert_eq!(recv_client_text(&mut desktop).await, first_reply);
+
+        let second_reply = serde_json::json!({
+            "v": 1,
+            "desktop_id": "d_test",
+            "device_id": "m_two",
+            "ciphertext": "second-to-desktop"
+        })
+        .to_string();
+        second
+            .send(ClientMessage::Text(second_reply.clone().into()))
+            .await
+            .unwrap();
+        assert_eq!(recv_client_text(&mut desktop).await, second_reply);
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while state_for_assertion
+                .metrics
+                .forwarded_frames
+                .load(Ordering::Relaxed)
+                != 4
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("all four isolated frames should be counted as forwarded");
+        assert_eq!(
+            state_for_assertion
+                .metrics
+                .active_mobiles
+                .load(Ordering::Relaxed),
+            2
+        );
         server.abort();
     }
 
