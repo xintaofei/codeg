@@ -15,6 +15,7 @@ import {
 
 // A realistic codex collab tool call rawInput (codex-acp 1.0.1 mapper shape):
 // agentsStates is a map keyed by sub-agent threadId → { status, message }.
+// model/reasoningEffort are top-level siblings (codex-acp #304).
 const collabRaw = JSON.stringify({
   prompt: "在 /Users/x/work/my-app 中运行 `pnpm build`。",
   senderThreadId: "019f06e2-aaaa",
@@ -22,6 +23,8 @@ const collabRaw = JSON.stringify({
   agentsStates: {
     "019f06e3-bbbb": { status: "running", message: "Checking weather" },
   },
+  model: "gpt-5-codex",
+  reasoningEffort: "high",
   status: "inProgress",
 })
 
@@ -62,11 +65,13 @@ describe("isCodexCollabInput", () => {
 })
 
 describe("parseCollabToolInput", () => {
-  it("extracts prompt, op status, op (null by default), and per-agent states", () => {
+  it("extracts prompt, op status, op (null by default), model/effort, and per-agent states", () => {
     expect(parseCollabToolInput(collabRaw)).toEqual({
       prompt: "在 /Users/x/work/my-app 中运行 `pnpm build`。",
       status: "inProgress",
       op: null,
+      model: "gpt-5-codex",
+      reasoningEffort: "high",
       agents: [
         {
           threadId: "019f06e3-bbbb",
@@ -75,6 +80,26 @@ describe("parseCollabToolInput", () => {
         },
       ],
     })
+  })
+
+  it("reads top-level model and reasoningEffort (codex-acp #304)", () => {
+    const info = parseCollabToolInput(collabRaw)
+    expect(info?.model).toBe("gpt-5-codex")
+    expect(info?.reasoningEffort).toBe("high")
+  })
+
+  it("treats absent or blank model/effort as null (not per-agent)", () => {
+    const info = parseCollabToolInput(
+      JSON.stringify({
+        senderThreadId: "t1",
+        receiverThreadIds: ["t2"],
+        // model/effort blank at top level; a per-agent field must NOT be read.
+        model: "   ",
+        agentsStates: { t2: { status: "running", model: "ignored-per-agent" } },
+      })
+    )
+    expect(info?.model).toBeNull()
+    expect(info?.reasoningEffort).toBeNull()
   })
 
   it("reads the merged op key", () => {
@@ -104,6 +129,8 @@ describe("parseCollabToolInput", () => {
       prompt: "do it",
       status: "completed",
       op: null,
+      model: null,
+      reasoningEffort: null,
       agents: [{ threadId: "t2", status: "completed", message: null }],
     })
   })
@@ -118,7 +145,14 @@ describe("parseCollabToolInput", () => {
           agentsStates: {},
         })
       )
-    ).toEqual({ prompt: null, status: null, op: null, agents: [] })
+    ).toEqual({
+      prompt: null,
+      status: null,
+      op: null,
+      model: null,
+      reasoningEffort: null,
+      agents: [],
+    })
   })
 
   it("yields no agent rows when agentsStates is missing, an array, or malformed", () => {
@@ -148,8 +182,10 @@ describe("mergeCollabOp", () => {
     expect(parsed[COLLAB_OP_KEY]).toBe("spawnAgent")
     // round-trips through the parser
     expect(parseCollabToolInput(merged)?.op).toBe("spawnAgent")
-    // original fields preserved
+    // original fields preserved (agents + #304 model/effort)
     expect(parseCollabToolInput(merged)?.agents).toHaveLength(1)
+    expect(parseCollabToolInput(merged)?.model).toBe("gpt-5-codex")
+    expect(parseCollabToolInput(merged)?.reasoningEffort).toBe("high")
   })
 
   it("returns null when there is no op or the input is not a JSON object", () => {
