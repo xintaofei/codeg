@@ -1205,6 +1205,16 @@ export type AcpEvent =
       code: string | null
     }
   | {
+      // codex-acp #289: a retryable turn error that keeps the turn alive (codex
+      // auto-retries). NOT a turn failure — rendered as a transient retry
+      // indicator that reuses the Claude API-retry banner and clears at the
+      // next turn boundary. `error_status` is the HTTP status when codex's
+      // `codexErrorInfo` carried one.
+      type: "turn_retrying"
+      message: string
+      error_status?: number
+    }
+  | {
       type: "session_load_failed"
       session_id: string
       message: string

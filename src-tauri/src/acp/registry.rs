@@ -177,16 +177,23 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             description: "ACP adapter for OpenAI's coding assistant",
             // codex-acp moved from zed-industries (Rust binary) to the
             // agentclientprotocol org (TypeScript rewrite, npx-distributed).
-            // 1.1.2 depends on `@openai/codex` ^0.144.0 and drives `codex
+            // 1.1.4 depends on `@openai/codex` ^0.144.4 and drives `codex
             // app-server`; since 1.0.1 it also resolves the resumed
             // `model_provider` from `~/.codex/config.toml` (#224), so codeg no
             // longer injects `MODEL_PROVIDER` to keep resumed sessions on the
-            // custom provider. 1.1.0 (#263) also reports `/goal` transitions as a
+            // custom provider. 1.1.0 (#263) reports `/goal` transitions as a
             // structured `session_info_update` (`_meta.codex.goal`) rather than
-            // live agent text — see `crate::acp::codex_goal`.
+            // live agent text — see `crate::acp::codex_goal`. 1.1.3+ adds three
+            // new live signals codeg handles in `connection::emit_conversation_update`:
+            // `subAgentActivity` tool calls (#304, suppressed via
+            // `is_codex_subagent_activity` — redundant with the collab capsule),
+            // retryable turn errors (#289, `_meta.codex.error` → a transient
+            // retry banner via `codex_retry_indicator`), and the
+            // context-compaction lifecycle (#288, `_meta.contextCompaction` tool
+            // call → a dedicated frontend card).
             distribution: AgentDistribution::Npx {
-                version: "1.1.2",
-                package: "@agentclientprotocol/codex-acp@1.1.2",
+                version: "1.1.4",
+                package: "@agentclientprotocol/codex-acp@1.1.4",
                 cmd: "codex-acp",
                 args: &[],
                 env: &[],
@@ -518,8 +525,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Codex,
-            "1.1.2",
-            "@agentclientprotocol/codex-acp@1.1.2",
+            "1.1.4",
+            "@agentclientprotocol/codex-acp@1.1.4",
             Some("20.0.0"),
         );
         assert_npx_version(AgentType::Pi, "0.0.31", "pi-acp@0.0.31", Some("22.0.0"));

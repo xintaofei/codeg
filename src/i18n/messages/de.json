@@ -2623,6 +2623,10 @@
         "opClose": "Sub-Agent wird geschlossen",
         "opResume": "Sub-Agent wird fortgesetzt"
       },
+      "contextCompaction": {
+        "compacting": "Kontext wird komprimiert…",
+        "compacted": "Kontext komprimiert"
+      },
       "backgroundTasks": {
         "running": "{count, plural, one {# Hintergrundaufgabe läuft} other {# Hintergrundaufgaben laufen}}",
         "settling": "Hintergrundergebnisse werden synchronisiert…",

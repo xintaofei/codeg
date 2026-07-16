@@ -3202,6 +3202,26 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             entries: e.entries,
           })
           break
+        case "turn_retrying": {
+          // codex-acp #289: a retryable turn error keeps the turn alive (codex
+          // auto-retries). Reuse the Claude API-retry banner — codex doesn't
+          // report attempt/limit/delay, so those stay null; the banner clears at
+          // the next turn boundary like the Claude path.
+          const retryConn = storeRef.current.connections.get(contextKey)
+          dispatch({
+            type: "CLAUDE_API_RETRY",
+            contextKey,
+            retry: {
+              sessionId: retryConn?.sessionId ?? "",
+              attempt: null,
+              maxRetries: null,
+              error: e.message,
+              errorStatus: e.error_status ?? null,
+              retryDelayMs: null,
+            },
+          })
+          break
+        }
         case "turn_complete": {
           flushStreamingQueue()
           flushPendingToolCallUpdates()

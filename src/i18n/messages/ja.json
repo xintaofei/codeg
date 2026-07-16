@@ -2623,6 +2623,10 @@
         "opClose": "サブエージェントを終了中",
         "opResume": "サブエージェントを再開中"
       },
+      "contextCompaction": {
+        "compacting": "コンテキストを圧縮しています…",
+        "compacted": "コンテキストを圧縮しました"
+      },
       "backgroundTasks": {
         "running": "{count} 件のバックグラウンドタスクを実行中",
         "settling": "バックグラウンド結果を同期中…",

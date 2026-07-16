@@ -2623,6 +2623,10 @@
         "opClose": "结束子智能体",
         "opResume": "恢复子智能体"
       },
+      "contextCompaction": {
+        "compacting": "正在压缩上下文…",
+        "compacted": "上下文已压缩"
+      },
       "backgroundTasks": {
         "running": "{count} 个后台任务运行中",
         "settling": "正在同步后台结果…",

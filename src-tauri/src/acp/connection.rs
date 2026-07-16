@@ -5238,6 +5238,58 @@ fn codebuddy_meta_marks_subagent(
         .is_some_and(|s| !s.is_empty())
 }
 
+/// True when a Codex live `tool_call` is a `subAgentActivity` mapping
+/// (codex-acp #304, v1.1.3+). codex-acp maps codex `subAgentActivity`
+/// notifications onto ACP `tool_call(kind:other)` carrying
+/// `_meta.codex.subagent = {threadId, path, activity}`. codeg already renders
+/// codex collaboration from the `collabAgentToolCall` path (spawnAgent/wait/
+/// closeAgent — see `collab-tool.ts`) and reconstructs the full nested
+/// transcript on history reload from `agent-<id>.jsonl` (see
+/// `parsers/codex.rs`), so this new live signal is redundant with what codeg
+/// already shows. Suppressed at the emit point (keeping live and DB-reload
+/// consistent — a suppressed event is never persisted) to preserve the current
+/// live behavior. Gated on Codex.
+fn is_codex_subagent_activity(
+    agent_type: AgentType,
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> bool {
+    if agent_type != AgentType::Codex {
+        return false;
+    }
+    meta.and_then(|m| m.get("codex"))
+        .and_then(|codex| codex.get("subagent"))
+        .is_some()
+}
+
+/// Extract a retryable-turn-error indicator from a Codex `session_info_update`'s
+/// `_meta` (codex-acp #289, v1.1.3+). codex ships a transient, auto-retried
+/// error as `_meta.codex.error = {message, codexErrorInfo, additionalDetails,
+/// turnId, willRetry}` and keeps the prompt alive; it emits this only when
+/// `willRetry == true`. Returns `(message, http_status)` when a non-empty
+/// message is present. `codexErrorInfo` may be a bare string enum, an object
+/// variant carrying an inner `httpStatusCode`, or absent — only the object form
+/// yields a status. Defensively refuses a `willRetry == false` payload so a
+/// terminal error can never render as "retrying".
+fn codex_retry_indicator(
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<(String, Option<i64>)> {
+    let err = meta?.get("codex")?.get("error")?;
+    if err.get("willRetry").and_then(|v| v.as_bool()) == Some(false) {
+        return None;
+    }
+    let message = err.get("message").and_then(|v| v.as_str())?.trim();
+    if message.is_empty() {
+        return None;
+    }
+    let http_status = err
+        .get("codexErrorInfo")
+        .and_then(|info| info.as_object())
+        .and_then(|obj| obj.values().next())
+        .and_then(|inner| inner.get("httpStatusCode"))
+        .and_then(|v| v.as_i64());
+    Some((message.to_string(), http_status))
+}
+
 /// True when a CodeBuddy sub-agent tool call's `_meta` marks it as a BACKGROUND
 /// sub-agent (`codebuddy.ai/isBackground == true`). A background sub-agent runs
 /// concurrently with the main agent, so the suppression-window invariant (parent
@@ -5592,6 +5644,13 @@ async fn emit_conversation_update(
             // Non-text thought chunks are currently ignored.
         }
         SessionUpdate::ToolCall(tc) => {
+            // codex-acp #304 (v1.1.3+) surfaces codex `subAgentActivity` as a
+            // live `tool_call`; suppress it — it is redundant with the collab
+            // capsule and the history reconstruction (see
+            // `is_codex_subagent_activity`).
+            if is_codex_subagent_activity(agent_type, tc.meta.as_ref()) {
+                return;
+            }
             let tool_call_id = tc.tool_call_id.to_string();
             // CodeBuddy double-wraps a deferred MCP result as a `{type,text}`
             // content part; peel it (in both the content and raw_output channels)
@@ -5715,6 +5774,12 @@ async fn emit_conversation_update(
             .await;
         }
         SessionUpdate::ToolCallUpdate(tcu) => {
+            // Symmetric with the `ToolCall` arm: a follow-up update for a codex
+            // `subAgentActivity` still carries `_meta.codex.subagent`, so drop
+            // it too (see `is_codex_subagent_activity`).
+            if is_codex_subagent_activity(agent_type, tcu.meta.as_ref()) {
+                return;
+            }
             let tool_call_id = tcu.tool_call_id.to_string();
             // Peel CodeBuddy's `{type,text}` deferred-MCP wrapper here too — the
             // result often arrives on an update (see raw_output below).
@@ -5948,6 +6013,21 @@ async fn emit_conversation_update(
                     .await;
                 }
             }
+            // codex-acp #289 (v1.1.3+): a retryable turn error rides under
+            // `_meta.codex.error` (only when `willRetry == true`) and the turn
+            // stays alive. Surface a transient retry indicator (the frontend
+            // reuses the Claude API-retry banner); it is NOT a turn failure.
+            if let Some((message, error_status)) = codex_retry_indicator(info.meta.as_ref()) {
+                emit_with_state(
+                    state,
+                    emitter,
+                    AcpEvent::TurnRetrying {
+                        message,
+                        error_status,
+                    },
+                )
+                .await;
+            }
         }
         other => {
             // Log unhandled update types for debugging
@@ -5967,6 +6047,88 @@ mod tests {
             d = d.old_text(o.to_string());
         }
         ToolCallContent::Diff(d)
+    }
+
+    /// Clone a `_meta` map out of a JSON object literal, mirroring how codex-acp
+    /// ships tool-call / session-info `_meta`.
+    fn meta_map(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        v.as_object().expect("object").clone()
+    }
+
+    #[test]
+    fn codex_subagent_activity_detected_only_for_codex_subagent_meta() {
+        // codex-acp #304: `_meta.codex.subagent` marks the suppressed activity.
+        let sub = meta_map(serde_json::json!({
+            "codex": { "subagent": { "threadId": "t1", "path": "/root/x", "activity": "started" } }
+        }));
+        assert!(is_codex_subagent_activity(AgentType::Codex, Some(&sub)));
+        // Only Codex is gated — the same meta never suppresses another agent.
+        assert!(!is_codex_subagent_activity(AgentType::ClaudeCode, Some(&sub)));
+        // Absent meta and sibling codex meta keys (goal / collaboration) are not
+        // subagent activity and must render normally.
+        assert!(!is_codex_subagent_activity(AgentType::Codex, None));
+        let goal = meta_map(serde_json::json!({ "codex": { "goal": { "objective": "x" } } }));
+        assert!(!is_codex_subagent_activity(AgentType::Codex, Some(&goal)));
+        let collab = meta_map(serde_json::json!({
+            "codex": { "collaboration": { "tool": "spawnAgent" } }
+        }));
+        assert!(!is_codex_subagent_activity(AgentType::Codex, Some(&collab)));
+    }
+
+    #[test]
+    fn codex_retry_indicator_extracts_message_and_object_http_status() {
+        // codex-acp #289: object-variant `codexErrorInfo` carries an inner
+        // `httpStatusCode`; the message + status are surfaced.
+        let m = meta_map(serde_json::json!({
+            "codex": { "error": {
+                "message": "Reconnecting after provider returned 401",
+                "codexErrorInfo": { "responseStreamDisconnected": { "httpStatusCode": 401 } },
+                "additionalDetails": "HTTP status 401",
+                "turnId": "turn-id",
+                "willRetry": true
+            } }
+        }));
+        assert_eq!(
+            codex_retry_indicator(Some(&m)),
+            Some((
+                "Reconnecting after provider returned 401".to_string(),
+                Some(401)
+            ))
+        );
+    }
+
+    #[test]
+    fn codex_retry_indicator_string_enum_yields_no_status() {
+        // A bare string `codexErrorInfo` yields the message but no http status.
+        let m = meta_map(serde_json::json!({
+            "codex": { "error": {
+                "message": "Server overloaded",
+                "codexErrorInfo": "serverOverloaded",
+                "willRetry": true
+            } }
+        }));
+        assert_eq!(
+            codex_retry_indicator(Some(&m)),
+            Some(("Server overloaded".to_string(), None))
+        );
+    }
+
+    #[test]
+    fn codex_retry_indicator_refuses_terminal_empty_and_absent() {
+        // `willRetry: false` (e.g. 401 auth) must never render a retry banner.
+        let terminal = meta_map(serde_json::json!({
+            "codex": { "error": { "message": "unauthorized", "willRetry": false } }
+        }));
+        assert_eq!(codex_retry_indicator(Some(&terminal)), None);
+        // Blank/whitespace message → nothing to show.
+        let blank = meta_map(serde_json::json!({
+            "codex": { "error": { "message": "   ", "willRetry": true } }
+        }));
+        assert_eq!(codex_retry_indicator(Some(&blank)), None);
+        // No `codex.error` at all (a goal-only or empty session_info_update).
+        let goal_only = meta_map(serde_json::json!({ "codex": { "goal": null } }));
+        assert_eq!(codex_retry_indicator(Some(&goal_only)), None);
+        assert_eq!(codex_retry_indicator(None), None);
     }
 
     #[test]

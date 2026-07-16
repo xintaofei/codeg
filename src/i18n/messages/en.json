@@ -2623,6 +2623,10 @@
         "opClose": "Closing sub-agent",
         "opResume": "Resuming sub-agent"
       },
+      "contextCompaction": {
+        "compacting": "Compacting context…",
+        "compacted": "Context compacted"
+      },
       "backgroundTasks": {
         "running": "{count, plural, one {# background task running} other {# background tasks running}}",
         "settling": "Syncing background results…",

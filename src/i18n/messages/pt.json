@@ -2623,6 +2623,10 @@
         "opClose": "Encerrando subagente",
         "opResume": "Retomando subagente"
       },
+      "contextCompaction": {
+        "compacting": "Compactando o contexto…",
+        "compacted": "Contexto compactado"
+      },
       "backgroundTasks": {
         "running": "{count, plural, one {# tarefa em segundo plano em execução} other {# tarefas em segundo plano em execução}}",
         "settling": "Sincronizando resultados em segundo plano…",
