@@ -143,6 +143,19 @@ fn prepend_officecli_path(env: &mut BTreeMap<String, String>) {
     }
 }
 
+/// The two actions codex's bespoke `_codex/session/goal_control` request
+/// accepts (codex-acp #293, v1.1.4). Start / resume / re-objective are NOT part
+/// of this method — those go through the `/goal` prompt (a real slash command;
+/// only `/plan`, a config-option state toggle, is suppressed). Serializes to the
+/// lowercase wire value codex expects (`"pause"` / `"clear"`) and deserializes
+/// from the same string coming off the tauri command / HTTP endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GoalControlAction {
+    Pause,
+    Clear,
+}
+
 /// Commands sent from Tauri command handlers to the ACP connection loop.
 pub enum ConnectionCommand {
     Prompt {
@@ -162,6 +175,9 @@ pub enum ConnectionCommand {
     SetConfigOption {
         config_id: String,
         value_id: String,
+    },
+    GoalControl {
+        action: GoalControlAction,
     },
     Cancel,
     RespondPermission {
@@ -3180,6 +3196,34 @@ async fn set_session_config_option_inner(
     Ok(response.config_options)
 }
 
+/// Send codex's bespoke `_codex/session/goal_control` extension request to pause
+/// or clear the session's active goal (codex-acp #293, v1.1.4). Start / resume /
+/// re-objective are NOT this method — they go through the `/goal` prompt.
+///
+/// codex replies with an empty object and then pushes the resulting goal
+/// snapshot as a normal `session_info_update` (`_meta.codex.goal`, or `null` for
+/// a clear), which the existing goal-card path renders — so the response value
+/// carries nothing to parse and is intentionally discarded.
+///
+/// Sent via `UntypedMessage` because `_codex/…` is a codex-private extension
+/// method with no sacp typed variant — the same escape hatch used for
+/// `session/set_config_option` and `session/fork`.
+async fn send_goal_control(
+    cx: &ConnectionTo<Agent>,
+    session_id: &SessionId,
+    action: GoalControlAction,
+) -> Result<(), sacp::Error> {
+    let params = serde_json::json!({
+        "sessionId": session_id,
+        "action": action,
+    });
+    let untyped_req = UntypedMessage::new("_codex/session/goal_control", params).map_err(|e| {
+        sacp::util::internal_error(format!("Failed to build goal_control request: {e}"))
+    })?;
+    cx.send_request_to(Agent, untyped_req).block_task().await?;
+    Ok(())
+}
+
 /// Apply user-saved mode and config-option preferences to a freshly-attached
 /// session BEFORE the initial `session_modes` / `session_config_options`
 /// events are emitted to the frontend.
@@ -4521,6 +4565,22 @@ async fn run_conversation_loop<'a>(
                                         .await;
                                     }
                                 }
+                                Some(ConnectionCommand::GoalControl { action }) => {
+                                    if let Err(e) = send_goal_control(&cx, &sid, action).await {
+                                        emit_with_state(
+                                            state,
+                                            emitter,
+                                            AcpEvent::Error {
+                                                message: format!("Failed to control goal: {e}"),
+                                                agent_type: agent_type.to_string(),
+                                                code: None,
+                                                // Recoverable: a failed pause/clear leaves the turn alive.
+                                                terminal: false,
+                                            },
+                                        )
+                                        .await;
+                                    }
+                                }
                                 Some(ConnectionCommand::Cancel) => {
                                     // Send CancelNotification to agent to stop the current turn
                                     let _ = cx.send_notification_to(
@@ -4693,6 +4753,25 @@ async fn run_conversation_loop<'a>(
                             code: None,
                             // Recoverable: idle SetConfigOption failure leaves
                             // the connection alive.
+                            terminal: false,
+                        },
+                    )
+                    .await;
+                }
+            }
+            Some(ConnectionCommand::GoalControl { action }) => {
+                let cx = session.connection();
+                let sid = session.session_id().clone();
+                if let Err(e) = send_goal_control(&cx, &sid, action).await {
+                    emit_with_state(
+                        state,
+                        emitter,
+                        AcpEvent::Error {
+                            message: format!("Failed to control goal: {e}"),
+                            agent_type: agent_type.to_string(),
+                            code: None,
+                            // Recoverable: an idle pause/clear failure leaves the
+                            // connection alive.
                             terminal: false,
                         },
                     )
@@ -6137,6 +6216,29 @@ mod tests {
             AgentType::Codex,
             Some(&plain)
         ));
+    }
+
+    #[test]
+    fn goal_control_action_roundtrips_codex_wire_values() {
+        // codex-acp #293: `_codex/session/goal_control` expects lowercase
+        // "pause" / "clear" on the wire, and the same strings arrive from the
+        // tauri command / HTTP endpoint — both directions must match exactly.
+        assert_eq!(
+            serde_json::to_value(GoalControlAction::Pause).unwrap(),
+            serde_json::json!("pause")
+        );
+        assert_eq!(
+            serde_json::to_value(GoalControlAction::Clear).unwrap(),
+            serde_json::json!("clear")
+        );
+        assert_eq!(
+            serde_json::from_value::<GoalControlAction>(serde_json::json!("pause")).unwrap(),
+            GoalControlAction::Pause
+        );
+        assert_eq!(
+            serde_json::from_value::<GoalControlAction>(serde_json::json!("clear")).unwrap(),
+            GoalControlAction::Clear
+        );
     }
 
     #[test]

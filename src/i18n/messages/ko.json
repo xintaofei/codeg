@@ -2455,6 +2455,8 @@
           "remaining": "남음",
           "elapsed": "경과",
           "tokens": "tokens",
+          "pause": "일시정지",
+          "clear": "지우기",
           "status": {
             "active": "진행 중",
             "paused": "일시 중지",

@@ -2455,6 +2455,8 @@
           "remaining": "المتبقي",
           "elapsed": "المدة",
           "tokens": "tokens",
+          "pause": "إيقاف مؤقت",
+          "clear": "مسح",
           "status": {
             "active": "نشط",
             "paused": "متوقف مؤقتًا",

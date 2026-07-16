@@ -23,6 +23,7 @@ import {
   acpPrompt,
   acpSetMode,
   acpSetConfigOption,
+  acpGoalControl,
   acpCancel,
   acpRespondPermission,
   acpAnswerQuestion,
@@ -2273,6 +2274,8 @@ export interface AcpActionsValue {
     questionId: string,
     answer: QuestionAnswer
   ): Promise<void>
+  /** Pause or clear the session's active Codex goal (codex-acp #293). */
+  goalControl(contextKey: string, action: "pause" | "clear"): Promise<void>
   setActiveKey(key: string | null): void
   touchActivity(contextKey: string): void
   registerOpenTabKeys(keys: Set<string>): void
@@ -4444,6 +4447,24 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     await acpCancel(conn.connectionId)
   }, [])
 
+  const goalControl = useCallback(
+    async (contextKey: string, action: "pause" | "clear") => {
+      const conn = storeRef.current.connections.get(contextKey)
+      if (!conn) return
+      // Fire-and-forget: there is no in-flight card UI to settle (unlike
+      // answerQuestion). The resulting goal snapshot arrives as a normal
+      // session_info_update, and a wire failure is surfaced by the backend's
+      // recoverable Error event — so log here and don't rethrow.
+      try {
+        lastActivityRef.current.set(contextKey, Date.now())
+        await acpGoalControl(conn.connectionId, action)
+      } catch (e) {
+        console.error("[AcpConnections] goalControl failed:", e)
+      }
+    },
+    []
+  )
+
   const respondPermission = useCallback(
     async (contextKey: string, requestId: string, optionId: string) => {
       const conn = storeRef.current.connections.get(contextKey)
@@ -4571,6 +4592,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       setMode,
       setConfigOption,
       cancel,
+      goalControl,
       respondPermission,
       answerQuestion,
       setActiveKey,
@@ -4591,6 +4613,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       setMode,
       setConfigOption,
       cancel,
+      goalControl,
       respondPermission,
       answerQuestion,
       setActiveKey,

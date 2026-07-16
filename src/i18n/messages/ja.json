@@ -2455,6 +2455,8 @@
           "remaining": "残り",
           "elapsed": "経過時間",
           "tokens": "tokens",
+          "pause": "一時停止",
+          "clear": "クリア",
           "status": {
             "active": "実行中",
             "paused": "一時停止",

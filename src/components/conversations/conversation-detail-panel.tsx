@@ -32,6 +32,10 @@ import { cn, copyTextFromMenu, randomUUID } from "@/lib/utils"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
 import { useMessageQueue, type QueuedMessage } from "@/hooks/use-message-queue"
 import { MessageListView } from "@/components/message/message-list-view"
+import {
+  GoalControlProvider,
+  type GoalControlValue,
+} from "@/components/message/goal-control-context"
 import { ConversationShell } from "@/components/chat/conversation-shell"
 import { SessionConfigStaleBanner } from "@/components/chat/session-config-stale-banner"
 import { BackgroundTasksChip } from "@/components/chat/background-tasks-chip"
@@ -1354,23 +1358,45 @@ const ConversationTabView = memo(function ConversationTabView({
     closeTab(tabId)
   }, [closeTab, folder, openNewConversationTab, tabId, workingDirForConnection])
 
+  // Goal pause/clear is a live, owner-only action, so decide availability once
+  // here (where the connection is owned) rather than in the deep goal card.
+  // `null` when the session isn't live or the user is a viewer → the card hides
+  // its buttons. Codex is the only agent that produces goal cards, so no
+  // agent-type gate is needed. Provided only around the main panel's list; the
+  // read-only sub-agent dialog renders its own MessageListView with no provider.
+  const goalControlValue = useMemo<GoalControlValue>(() => {
+    const live =
+      conn.connectionId !== null &&
+      (connStatus === "connected" || connStatus === "prompting") &&
+      !conn.isViewer
+    return {
+      onGoalControl: live
+        ? (action) => {
+            void acpActions.goalControl(tabId, action)
+          }
+        : null,
+    }
+  }, [conn.connectionId, conn.isViewer, connStatus, acpActions, tabId])
+
   const messageListNode = (
-    <MessageListView
-      conversationId={effectiveConversationId}
-      agentType={selectedAgent}
-      connStatus={connStatus}
-      isActive={isActive}
-      sendSignal={sendSignal}
-      sessionStats={effectiveSessionStats}
-      detailLoading={detailLoading}
-      detailError={detailError}
-      acpLoadError={acpLoadError}
-      hideEmptyState={!hasPersistedConversation || hasSentMessage}
-      onReload={canShowDetailErrorActions ? handleReloadDetail : undefined}
-      onNewSession={
-        canShowDetailErrorActions ? handleOpenNewSession : undefined
-      }
-    />
+    <GoalControlProvider value={goalControlValue}>
+      <MessageListView
+        conversationId={effectiveConversationId}
+        agentType={selectedAgent}
+        connStatus={connStatus}
+        isActive={isActive}
+        sendSignal={sendSignal}
+        sessionStats={effectiveSessionStats}
+        detailLoading={detailLoading}
+        detailError={detailError}
+        acpLoadError={acpLoadError}
+        hideEmptyState={!hasPersistedConversation || hasSentMessage}
+        onReload={canShowDetailErrorActions ? handleReloadDetail : undefined}
+        onNewSession={
+          canShowDetailErrorActions ? handleOpenNewSession : undefined
+        }
+      />
+    </GoalControlProvider>
   )
 
   // Live-feedback bar gating + the "agent never read your note" resend fallback.

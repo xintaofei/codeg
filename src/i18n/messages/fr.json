@@ -2455,6 +2455,8 @@
           "remaining": "Restant",
           "elapsed": "Écoulé",
           "tokens": "tokens",
+          "pause": "Pause",
+          "clear": "Effacer",
           "status": {
             "active": "actif",
             "paused": "en pause",

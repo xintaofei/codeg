@@ -2455,6 +2455,8 @@
           "remaining": "剩余",
           "elapsed": "耗时",
           "tokens": "tokens",
+          "pause": "暂停",
+          "clear": "清除",
           "status": {
             "active": "进行中",
             "paused": "已暂停",
