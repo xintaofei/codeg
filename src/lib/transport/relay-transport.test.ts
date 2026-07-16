@@ -16,7 +16,7 @@ import {
 } from "@/lib/relay/crypto"
 import { relayFrameAad, type RelayFrameEnvelope } from "@/lib/relay/protocol"
 
-import { RelayTransport } from "./relay-transport"
+import { RelayCallError, RelayTransport } from "./relay-transport"
 
 class MockWebSocket {
   static readonly OPEN = 1
@@ -73,6 +73,128 @@ async function eventually(check: () => boolean): Promise<void> {
 }
 
 describe("RelayTransport", () => {
+  it("propagates AbortSignal cancellation to the encrypted desktop session", async () => {
+    const transport = new RelayTransport({
+      relayUrl: "wss://relay.example.test/v1/ws",
+      desktopId: "d_test",
+      deviceId: "m_phone",
+      routingToken: "routing-token-at-least-thirty-two-characters",
+      pairingRoot: relayBase64UrlEncode(new Uint8Array(32).fill(0x21)),
+    })
+    const sendEncrypted = vi.fn().mockResolvedValue(undefined)
+    const internal = transport as unknown as {
+      keys: object | null
+      sendEncrypted: (payload: unknown) => Promise<void>
+      sendPending: () => Promise<void>
+    }
+    internal.keys = {}
+    internal.sendEncrypted = sendEncrypted
+    internal.sendPending = vi.fn().mockResolvedValue(undefined)
+
+    const controller = new AbortController()
+    const result = transport.call(
+      "get_stats",
+      {},
+      { signal: controller.signal }
+    )
+    controller.abort()
+
+    await expect(result).rejects.toMatchObject({ name: "AbortError" })
+    expect(sendEncrypted).toHaveBeenCalledWith({
+      kind: "cancel",
+      request_id: expect.stringMatching(/^r_/),
+    })
+    transport.destroy()
+  })
+
+  it("maps structured Relay failures to a standard Error with a code", async () => {
+    const transport = new RelayTransport({
+      relayUrl: "wss://relay.example.test/v1/ws",
+      desktopId: "d_test",
+      deviceId: "m_phone",
+      routingToken: "routing-token-at-least-thirty-two-characters",
+      pairingRoot: relayBase64UrlEncode(new Uint8Array(32).fill(0x22)),
+    })
+    const internal = transport as unknown as {
+      pending: Map<string, unknown>
+      sendPending: () => Promise<void>
+      finishPending(id: string, success: boolean, value: unknown): void
+    }
+    internal.sendPending = vi.fn().mockResolvedValue(undefined)
+    const result = transport.call("get_stats")
+    const requestId = [...internal.pending.keys()][0]
+    internal.finishPending(requestId, false, {
+      code: "codeg_unreachable",
+      message: "Local Codeg is unavailable",
+    })
+
+    await expect(result).rejects.toEqual(
+      expect.objectContaining<Partial<RelayCallError>>({
+        name: "RelayCallError",
+        code: "codeg_unreachable",
+        message: "Local Codeg is unavailable",
+      })
+    )
+    transport.destroy()
+  })
+
+  it("chunks large requests and advances progress only after desktop acknowledgements", async () => {
+    const transport = new RelayTransport({
+      relayUrl: "wss://relay.example.test/v1/ws",
+      desktopId: "d_test",
+      deviceId: "m_phone",
+      routingToken: "routing-token-at-least-thirty-two-characters",
+      pairingRoot: relayBase64UrlEncode(new Uint8Array(32).fill(0x23)),
+    })
+    const progress = vi.fn()
+    const chunks: Array<Record<string, unknown>> = []
+    let requestedRestart = false
+    const internal = transport as unknown as {
+      sessionPromise: Promise<void>
+      pending: Map<string, unknown>
+      sendEncrypted(payload: Record<string, unknown>): Promise<void>
+      dispatchDesktopPayload(payload: Record<string, unknown>): Promise<void>
+      finishPending(id: string, success: boolean, value: unknown): void
+    }
+    internal.sessionPromise = Promise.resolve()
+    internal.sendEncrypted = vi.fn(async (payload: Record<string, unknown>) => {
+      expect(payload.kind).toBe("chunk")
+      chunks.push(payload)
+      queueMicrotask(() => {
+        const index = Number(payload.index)
+        const nextIndex =
+          index === 1 && !requestedRestart
+            ? ((requestedRestart = true), 0)
+            : index + 1
+        void internal.dispatchDesktopPayload({
+          kind: "chunk_ack",
+          chunk_id: payload.chunk_id,
+          next_index: nextIndex,
+        })
+      })
+    })
+
+    const result = transport.call<{ uploaded: boolean }>(
+      "relay_upload_attachment",
+      { dataBase64: "x".repeat(700_000) },
+      { onProgress: progress }
+    )
+    await eventually(() => chunks.length === 5)
+    const requestId = chunks[0].request_id as string
+    expect(chunks.map((chunk) => chunk.index)).toEqual([0, 1, 0, 1, 2])
+    expect(new Set(chunks.map((chunk) => chunk.chunk_id)).size).toBe(1)
+    expect(new Set(chunks.map((chunk) => chunk.request_id))).toEqual(
+      new Set([requestId])
+    )
+    expect(progress.mock.calls[0]).toEqual([0, expect.any(Number)])
+    const finalProgress = progress.mock.calls[progress.mock.calls.length - 1]
+    expect(finalProgress?.[0]).toBe(finalProgress?.[1])
+
+    internal.finishPending(requestId, true, { uploaded: true })
+    await expect(result).resolves.toEqual({ uploaded: true })
+    transport.destroy()
+  })
+
   it("authenticates a session and resolves an encrypted command response", async () => {
     const pairingRoot = new Uint8Array(32).fill(0x39)
     const transport = new RelayTransport({

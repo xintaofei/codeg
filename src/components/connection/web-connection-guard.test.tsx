@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 // shared object exists before the hoisted `vi.mock` factory runs.
 const store = vi.hoisted(() => {
   let state: "connected" | "reconnecting" | "unauthorized" = "connected"
+  let environment: "browser-remote" | "mobile-relay" = "browser-remote"
   const listeners = new Set<() => void>()
   return {
     getState: () => state,
@@ -21,7 +22,12 @@ const store = vi.hoisted(() => {
     },
     reset: () => {
       state = "connected"
+      environment = "browser-remote"
       listeners.clear()
+    },
+    getEnvironment: () => environment,
+    setEnvironment: (next: "browser-remote" | "mobile-relay") => {
+      environment = next
     },
     reconnectWebNow: vi.fn(),
     redirectToCodegLogin: vi.fn(),
@@ -39,6 +45,10 @@ vi.mock("@/lib/transport/web-connection-store", () => ({
 vi.mock("@/lib/transport/web-auth", () => ({
   redirectToCodegLogin: store.redirectToCodegLogin,
   getCodegToken: () => "tok",
+}))
+
+vi.mock("@/lib/transport/detect", () => ({
+  detectEnvironment: store.getEnvironment,
 }))
 
 import { WebConnectionGuard } from "./web-connection-guard"
@@ -93,6 +103,18 @@ describe("WebConnectionGuard", () => {
     })
     fireEvent.click(screen.getByRole("button", { name: "Reconnect now" }))
     expect(store.reconnectWebNow).toHaveBeenCalledTimes(1)
+  })
+
+  it("offers the Direct settings fallback when Relay stays offline", () => {
+    store.setEnvironment("mobile-relay")
+    renderGuard()
+    act(() => store.setState("reconnecting"))
+    act(() => {
+      vi.advanceTimersByTime(4000)
+    })
+    expect(
+      screen.getByRole("link", { name: "Switch to Direct" })
+    ).toHaveAttribute("href", "/mobile-settings")
   })
 
   it("shows the session-expired dialog immediately (no grace) for unauthorized", () => {

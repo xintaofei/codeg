@@ -2132,6 +2132,8 @@
         "attachUploadFailed": "فشل تحميل {names}.",
         "attachUploadNotAFile": "{names} ليس ملفاً عادياً (مجلد أو ملف خاص) وتم تخطيه.",
         "attachUploadQuotaExceeded": "نفدت مساحة التحميل على الخادم، تعذر رفع {names}.",
+        "uploadingAttachments": "جارٍ رفع {count} مرفق…",
+        "cancelAttachmentUpload": "إلغاء رفع المرفقات",
         "mentionEmpty": "لا توجد نتائج مطابقة",
         "mentionLoading": "جارٍ البحث…",
         "mentionListLabel": "الإشارات",
@@ -3479,6 +3481,7 @@
     "disconnectedTitle": "انقطع الاتصال",
     "reconnectingDescription": "تتم محاولة إعادة الاتصال بالخادم. عادةً ما يُستعاد الاتصال تلقائيًا خلال ثوانٍ قليلة.",
     "reconnectNow": "إعادة الاتصال الآن",
+    "directFallback": "التبديل إلى Direct",
     "sessionExpiredTitle": "انتهت الجلسة",
     "sessionExpiredDescription": "لم تعد جلستك صالحة. يُرجى تسجيل الدخول مرة أخرى للمتابعة.",
     "goToLogin": "الانتقال إلى تسجيل الدخول"

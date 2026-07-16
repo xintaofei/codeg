@@ -2132,6 +2132,8 @@
         "attachUploadFailed": "上传失败：{names}。",
         "attachUploadNotAFile": "{names} 不是常规文件（目录或特殊文件），已跳过。",
         "attachUploadQuotaExceeded": "服务器上传空间已用尽，{names} 未能上传。",
+        "uploadingAttachments": "正在上传 {count} 个附件…",
+        "cancelAttachmentUpload": "取消附件上传",
         "mentionEmpty": "无匹配项",
         "mentionLoading": "搜索中…",
         "mentionListLabel": "提及",
@@ -3479,6 +3481,7 @@
     "disconnectedTitle": "连接已断开",
     "reconnectingDescription": "正在尝试重新连接服务器，通常会在几秒内自动恢复。",
     "reconnectNow": "立即重连",
+    "directFallback": "切换 Direct",
     "sessionExpiredTitle": "会话已过期",
     "sessionExpiredDescription": "登录状态已失效，请重新登录以继续。",
     "goToLogin": "前往登录"

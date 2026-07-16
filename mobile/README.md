@@ -13,10 +13,14 @@ pnpm mobile:android:init
 pnpm mobile:android:build
 ```
 
-The first launch asks for the HTTPS Codeg server URL and access token. The URL
-is ordinary app configuration. The token is held in memory while the app runs
-and persisted with Android Keystore or iOS Keychain; it is never written to
-browser local storage.
+The first launch offers two remote transports. Relay mode pairs with a desktop
+using a one-time QR code and does not require a public IP or inbound port.
+Direct mode asks for a reachable HTTPS Codeg server URL and access token. Relay
+roots and Direct tokens are persisted with Android Keystore or iOS Keychain;
+they are never written to browser local storage.
+
+The end-user Android installation, pairing, fallback, revocation and recovery
+guide is [`docs/mobile/android-install-zh-CN.md`](../docs/mobile/android-install-zh-CN.md).
 
 ## Runtime boundary
 
@@ -49,7 +53,7 @@ from environment variables so no password file is created inside the checkout:
 ```bash
 export CODEG_ANDROID_KEYSTORE_PATH=/absolute/path/codeg-mobile-release.jks
 export CODEG_ANDROID_KEYSTORE_PASSWORD='...'
-export CODEG_ANDROID_KEY_ALIAS=codeg-mobile
+export CODEG_ANDROID_KEY_ALIAS=codeg-mobile-release
 export CODEG_ANDROID_KEY_PASSWORD='...'
 pnpm --dir mobile tauri android build --apk --target aarch64 --ci
 ```

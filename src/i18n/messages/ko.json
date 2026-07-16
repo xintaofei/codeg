@@ -2132,6 +2132,8 @@
         "attachUploadFailed": "{names} 업로드 실패.",
         "attachUploadNotAFile": "{names} 은(는) 일반 파일이 아니므로(디렉터리 또는 특수 파일) 건너뛰었습니다.",
         "attachUploadQuotaExceeded": "서버 업로드 저장 공간이 부족하여 {names} 을(를) 업로드하지 못했습니다.",
+        "uploadingAttachments": "첨부 파일 {count}개 업로드 중…",
+        "cancelAttachmentUpload": "첨부 파일 업로드 취소",
         "mentionEmpty": "일치하는 항목 없음",
         "mentionLoading": "검색 중…",
         "mentionListLabel": "멘션",
@@ -3479,6 +3481,7 @@
     "disconnectedTitle": "연결이 끊어졌습니다",
     "reconnectingDescription": "서버에 다시 연결하는 중입니다. 보통 몇 초 내에 자동으로 복구됩니다.",
     "reconnectNow": "지금 다시 연결",
+    "directFallback": "Direct로 전환",
     "sessionExpiredTitle": "세션이 만료되었습니다",
     "sessionExpiredDescription": "세션이 더 이상 유효하지 않습니다. 계속하려면 다시 로그인하세요.",
     "goToLogin": "로그인으로 이동"

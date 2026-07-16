@@ -16,9 +16,9 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path as AxumPath, Query, State,
     },
-    http::{header::AUTHORIZATION, HeaderMap, StatusCode},
+    http::{header::AUTHORIZATION, HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
-    routing::{delete, get},
+    routing::{delete, get, post},
     Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tokio::sync::{mpsc, RwLock};
+use tower_http::cors::{Any, CorsLayer};
 use tracing::{info, warn};
 
 pub const PROTOCOL_VERSION: u8 = 1;
@@ -35,6 +36,9 @@ const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const FRAMES_PER_SECOND: u32 = 120;
+const PAIRING_TTL_SECONDS: u64 = 300;
+const PAIRING_TOMBSTONE_SECONDS: u64 = 300;
+const MAX_PAIRINGS: usize = 4096;
 
 #[derive(Clone)]
 pub struct Config {
@@ -154,6 +158,32 @@ impl CredentialStore {
         Ok(token)
     }
 
+    async fn issue_hash(
+        &self,
+        desktop_id: &str,
+        device_id: &str,
+        token_sha256: &str,
+    ) -> anyhow::Result<()> {
+        let decoded = hex::decode(token_sha256).context("routing token hash is not hex")?;
+        if decoded.len() != 32 {
+            bail!("routing token hash must contain 32 bytes");
+        }
+        let record = DeviceCredential {
+            desktop_id: desktop_id.to_owned(),
+            device_id: device_id.to_owned(),
+            token_sha256: token_sha256.to_ascii_lowercase(),
+            created_at: unix_seconds(),
+            last_seen_at: None,
+            revoked_at: None,
+        };
+        let snapshot = {
+            let mut devices = self.devices.write().await;
+            devices.insert((desktop_id.to_owned(), device_id.to_owned()), record);
+            devices.values().cloned().collect::<Vec<_>>()
+        };
+        self.persist(snapshot).await
+    }
+
     async fn authenticate(&self, desktop_id: &str, device_id: &str, token: &str) -> bool {
         let snapshot = {
             let mut devices = self.devices.write().await;
@@ -218,6 +248,259 @@ impl CredentialStore {
         set_private_permissions(&tmp).await?;
         tokio::fs::rename(&tmp, self.path.as_ref()).await?;
         Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PendingPairingRequest {
+    device_id: String,
+    device_name: String,
+    mobile_public_key: String,
+}
+
+#[derive(Clone, Debug)]
+struct PairingAcceptEnvelope {
+    nonce: String,
+    ciphertext: String,
+}
+
+#[derive(Clone, Debug)]
+enum PairingState {
+    Waiting,
+    Requested(PendingPairingRequest),
+    Accepting(PendingPairingRequest),
+    Accepted {
+        request: PendingPairingRequest,
+        envelope: PairingAcceptEnvelope,
+    },
+    Rejected {
+        device_id: Option<String>,
+    },
+    Consumed {
+        device_id: String,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct PairingRecord {
+    desktop_id: String,
+    expires_at: u64,
+    state: PairingState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PairingError {
+    NotFound,
+    Expired,
+    Consumed,
+    AlreadyExists,
+    Capacity,
+    WrongDevice,
+}
+
+#[derive(Clone, Default)]
+struct PairingStore {
+    records: Arc<RwLock<HashMap<String, PairingRecord>>>,
+}
+
+impl PairingStore {
+    async fn register(
+        &self,
+        desktop_id: &str,
+        pair_id_hash: &str,
+        expires_at: u64,
+    ) -> Result<(), PairingError> {
+        let now = unix_seconds();
+        let mut records = self.records.write().await;
+        Self::cleanup_locked(&mut records, now);
+        if records.len() >= MAX_PAIRINGS {
+            return Err(PairingError::Capacity);
+        }
+        if records.contains_key(pair_id_hash) {
+            return Err(PairingError::AlreadyExists);
+        }
+        records.insert(
+            pair_id_hash.to_owned(),
+            PairingRecord {
+                desktop_id: desktop_id.to_owned(),
+                expires_at,
+                state: PairingState::Waiting,
+            },
+        );
+        Ok(())
+    }
+
+    async fn request(
+        &self,
+        pair_id: &str,
+        request: PendingPairingRequest,
+    ) -> Result<(), PairingError> {
+        let now = unix_seconds();
+        let pair_hash = token_hash_hex(pair_id);
+        let mut records = self.records.write().await;
+        Self::cleanup_locked(&mut records, now);
+        let record = records.get_mut(&pair_hash).ok_or(PairingError::NotFound)?;
+        if record.expires_at <= now {
+            return Err(PairingError::Expired);
+        }
+        match &record.state {
+            PairingState::Waiting => record.state = PairingState::Requested(request),
+            PairingState::Requested(existing)
+                if existing.device_id == request.device_id
+                    && existing.mobile_public_key == request.mobile_public_key => {}
+            _ => return Err(PairingError::Consumed),
+        }
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        pair_id: &str,
+        desktop_id: Option<&str>,
+    ) -> Result<PairingRecord, PairingError> {
+        let now = unix_seconds();
+        let pair_hash = token_hash_hex(pair_id);
+        let mut records = self.records.write().await;
+        Self::cleanup_locked(&mut records, now);
+        let record = records.get(&pair_hash).ok_or(PairingError::NotFound)?;
+        if record.expires_at <= now {
+            return Err(PairingError::Expired);
+        }
+        if desktop_id.is_some_and(|expected| expected != record.desktop_id) {
+            return Err(PairingError::NotFound);
+        }
+        Ok(record.clone())
+    }
+
+    async fn begin_accept(
+        &self,
+        pair_id: &str,
+        desktop_id: &str,
+        device_id: &str,
+    ) -> Result<PendingPairingRequest, PairingError> {
+        let now = unix_seconds();
+        let pair_hash = token_hash_hex(pair_id);
+        let mut records = self.records.write().await;
+        Self::cleanup_locked(&mut records, now);
+        let record = records.get_mut(&pair_hash).ok_or(PairingError::NotFound)?;
+        if record.expires_at <= now {
+            return Err(PairingError::Expired);
+        }
+        if record.desktop_id != desktop_id {
+            return Err(PairingError::NotFound);
+        }
+        let PairingState::Requested(request) = &record.state else {
+            return Err(PairingError::Consumed);
+        };
+        if request.device_id != device_id {
+            return Err(PairingError::WrongDevice);
+        }
+        let request = request.clone();
+        record.state = PairingState::Accepting(request.clone());
+        Ok(request)
+    }
+
+    async fn finish_accept(
+        &self,
+        pair_id: &str,
+        desktop_id: &str,
+        envelope: PairingAcceptEnvelope,
+    ) -> Result<(), PairingError> {
+        let pair_hash = token_hash_hex(pair_id);
+        let mut records = self.records.write().await;
+        let record = records.get_mut(&pair_hash).ok_or(PairingError::NotFound)?;
+        if record.desktop_id != desktop_id {
+            return Err(PairingError::NotFound);
+        }
+        let PairingState::Accepting(request) = &record.state else {
+            return Err(PairingError::Consumed);
+        };
+        record.state = PairingState::Accepted {
+            request: request.clone(),
+            envelope,
+        };
+        Ok(())
+    }
+
+    async fn abort_accept(&self, pair_id: &str, desktop_id: &str) {
+        let pair_hash = token_hash_hex(pair_id);
+        let mut records = self.records.write().await;
+        let Some(record) = records.get_mut(&pair_hash) else {
+            return;
+        };
+        if record.desktop_id != desktop_id {
+            return;
+        }
+        if let PairingState::Accepting(request) = &record.state {
+            record.state = PairingState::Requested(request.clone());
+        }
+    }
+
+    async fn reject(
+        &self,
+        pair_id: &str,
+        desktop_id: &str,
+        device_id: Option<&str>,
+    ) -> Result<(), PairingError> {
+        let now = unix_seconds();
+        let pair_hash = token_hash_hex(pair_id);
+        let mut records = self.records.write().await;
+        Self::cleanup_locked(&mut records, now);
+        let record = records.get_mut(&pair_hash).ok_or(PairingError::NotFound)?;
+        if record.expires_at <= now {
+            return Err(PairingError::Expired);
+        }
+        if record.desktop_id != desktop_id {
+            return Err(PairingError::NotFound);
+        }
+        let requested_device = match &record.state {
+            PairingState::Waiting => None,
+            PairingState::Requested(request) => Some(request.device_id.clone()),
+            PairingState::Accepting(_)
+            | PairingState::Accepted { .. }
+            | PairingState::Consumed { .. } => return Err(PairingError::Consumed),
+            PairingState::Rejected { .. } => return Ok(()),
+        };
+        if let (Some(expected), Some(actual)) = (requested_device.as_deref(), device_id) {
+            if expected != actual {
+                return Err(PairingError::WrongDevice);
+            }
+        }
+        record.state = PairingState::Rejected {
+            device_id: requested_device,
+        };
+        Ok(())
+    }
+
+    async fn complete(&self, pair_id: &str, device_id: &str) -> Result<(), PairingError> {
+        let now = unix_seconds();
+        let pair_hash = token_hash_hex(pair_id);
+        let mut records = self.records.write().await;
+        Self::cleanup_locked(&mut records, now);
+        let record = records.get_mut(&pair_hash).ok_or(PairingError::NotFound)?;
+        if record.expires_at <= now {
+            return Err(PairingError::Expired);
+        }
+        match &record.state {
+            PairingState::Accepted { request, .. } if request.device_id == device_id => {
+                record.state = PairingState::Consumed {
+                    device_id: device_id.to_owned(),
+                };
+                Ok(())
+            }
+            PairingState::Consumed {
+                device_id: existing,
+            } if existing == device_id => Ok(()),
+            PairingState::Accepted { .. } | PairingState::Consumed { .. } => {
+                Err(PairingError::WrongDevice)
+            }
+            _ => Err(PairingError::Consumed),
+        }
+    }
+
+    fn cleanup_locked(records: &mut HashMap<String, PairingRecord>, now: u64) {
+        records
+            .retain(|_, record| record.expires_at.saturating_add(PAIRING_TOMBSTONE_SECONDS) > now);
     }
 }
 
@@ -331,6 +614,7 @@ impl Hub {
 pub struct AppState {
     desktop_token_hashes: HashMap<String, [u8; 32]>,
     credentials: CredentialStore,
+    pairings: PairingStore,
     hub: Hub,
     metrics: Metrics,
     max_frame_bytes: usize,
@@ -346,6 +630,7 @@ impl AppState {
         Ok(Self {
             desktop_token_hashes,
             credentials: CredentialStore::load(config.credential_file).await?,
+            pairings: PairingStore::default(),
             hub: Hub::default(),
             metrics: Metrics::default(),
             max_frame_bytes: config.max_frame_bytes,
@@ -376,6 +661,18 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/ws", get(websocket))
         .route("/v1/devices", get(list_devices).post(issue_device))
         .route("/v1/devices/{device_id}", delete(revoke_device))
+        .route("/v1/pairings", post(register_pairing))
+        .route("/v1/pairings/{pair_id}", get(pairing_status))
+        .route("/v1/pairings/{pair_id}/request", post(request_pairing))
+        .route("/v1/pairings/{pair_id}/accept", post(accept_pairing))
+        .route("/v1/pairings/{pair_id}/reject", post(reject_pairing))
+        .route("/v1/pairings/{pair_id}/complete", post(complete_pairing))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods([Method::GET, Method::POST])
+                .allow_headers(Any),
+        )
         .with_state(state)
 }
 
@@ -666,6 +963,338 @@ fn error_message(code: &str) -> Message {
 }
 
 #[derive(Deserialize)]
+struct RegisterPairingRequest {
+    desktop_id: String,
+    pair_id_hash: String,
+    expires_at: u64,
+}
+
+#[derive(Deserialize)]
+struct PairingRequestBody {
+    device_id: String,
+    device_name: String,
+    mobile_public_key: String,
+}
+
+#[derive(Deserialize)]
+struct PairingStatusQuery {
+    desktop_id: Option<String>,
+    device_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AcceptPairingRequest {
+    desktop_id: String,
+    device_id: String,
+    token_sha256: String,
+    nonce: String,
+    ciphertext: String,
+}
+
+#[derive(Deserialize)]
+struct RejectPairingRequest {
+    desktop_id: String,
+    device_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CompletePairingRequest {
+    device_id: String,
+}
+
+#[derive(Serialize)]
+struct PairingStatusView {
+    status: &'static str,
+    expires_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mobile_public_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nonce: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ciphertext: Option<String>,
+}
+
+async fn register_pairing(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<RegisterPairingRequest>,
+) -> Result<StatusCode, ApiError> {
+    authorize_desktop(&state, &headers, &request.desktop_id)?;
+    let now = unix_seconds();
+    if !valid_id(&request.desktop_id)
+        || !valid_sha256_hex(&request.pair_id_hash)
+        || request.expires_at <= now
+        || request.expires_at > now.saturating_add(PAIRING_TTL_SECONDS)
+    {
+        return Err(ApiError::bad_request("invalid_pairing"));
+    }
+    state
+        .pairings
+        .register(
+            &request.desktop_id,
+            &request.pair_id_hash.to_ascii_lowercase(),
+            request.expires_at,
+        )
+        .await
+        .map_err(pairing_api_error)?;
+    info!(desktop_id = %request.desktop_id, "one-time mobile pairing registered");
+    Ok(StatusCode::CREATED)
+}
+
+async fn request_pairing(
+    State(state): State<Arc<AppState>>,
+    AxumPath(pair_id): AxumPath<String>,
+    Json(request): Json<PairingRequestBody>,
+) -> Result<StatusCode, ApiError> {
+    if !valid_id(&pair_id)
+        || !valid_id(&request.device_id)
+        || request.device_name.trim().is_empty()
+        || request.device_name.chars().count() > 80
+        || !valid_p256_public_key(&request.mobile_public_key)
+    {
+        return Err(ApiError::bad_request("invalid_pairing_request"));
+    }
+    state
+        .pairings
+        .request(
+            &pair_id,
+            PendingPairingRequest {
+                device_id: request.device_id.clone(),
+                device_name: request.device_name.trim().to_owned(),
+                mobile_public_key: request.mobile_public_key,
+            },
+        )
+        .await
+        .map_err(pairing_api_error)?;
+    info!(device_id = %request.device_id, "mobile pairing awaits desktop confirmation");
+    Ok(StatusCode::ACCEPTED)
+}
+
+async fn pairing_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<PairingStatusQuery>,
+    AxumPath(pair_id): AxumPath<String>,
+) -> Result<Json<PairingStatusView>, ApiError> {
+    if !valid_id(&pair_id) {
+        return Err(ApiError::bad_request("invalid_pairing"));
+    }
+    if let Some(desktop_id) = query.desktop_id.as_deref() {
+        authorize_desktop(&state, &headers, desktop_id)?;
+    } else if query.device_id.as_deref().is_none_or(|id| !valid_id(id)) {
+        return Err(ApiError::bad_request("device_id_required"));
+    }
+    let record = state
+        .pairings
+        .get(&pair_id, query.desktop_id.as_deref())
+        .await
+        .map_err(pairing_api_error)?;
+    let desktop_view = query.desktop_id.is_some();
+    let device_id = query.device_id.as_deref();
+    let view = match record.state {
+        PairingState::Waiting => pairing_view("waiting", record.expires_at),
+        PairingState::Requested(request) | PairingState::Accepting(request) => {
+            if !desktop_view && device_id != Some(request.device_id.as_str()) {
+                return Err(pairing_api_error(PairingError::WrongDevice));
+            }
+            if desktop_view {
+                PairingStatusView {
+                    status: "requested",
+                    expires_at: record.expires_at,
+                    device_id: Some(request.device_id),
+                    device_name: Some(request.device_name),
+                    mobile_public_key: Some(request.mobile_public_key),
+                    nonce: None,
+                    ciphertext: None,
+                }
+            } else {
+                pairing_view("waiting", record.expires_at)
+            }
+        }
+        PairingState::Accepted { request, envelope } => {
+            if !desktop_view && device_id != Some(request.device_id.as_str()) {
+                return Err(pairing_api_error(PairingError::WrongDevice));
+            }
+            PairingStatusView {
+                status: "accepted",
+                expires_at: record.expires_at,
+                device_id: Some(request.device_id),
+                device_name: desktop_view.then_some(request.device_name),
+                mobile_public_key: desktop_view.then_some(request.mobile_public_key),
+                nonce: (!desktop_view).then_some(envelope.nonce),
+                ciphertext: (!desktop_view).then_some(envelope.ciphertext),
+            }
+        }
+        PairingState::Rejected {
+            device_id: rejected,
+        } => {
+            if !desktop_view
+                && rejected
+                    .as_deref()
+                    .is_some_and(|expected| Some(expected) != device_id)
+            {
+                return Err(pairing_api_error(PairingError::WrongDevice));
+            }
+            pairing_view("rejected", record.expires_at)
+        }
+        PairingState::Consumed {
+            device_id: consumed,
+        } => {
+            if !desktop_view && device_id != Some(consumed.as_str()) {
+                return Err(pairing_api_error(PairingError::WrongDevice));
+            }
+            if desktop_view {
+                PairingStatusView {
+                    status: "consumed",
+                    expires_at: record.expires_at,
+                    device_id: Some(consumed),
+                    device_name: None,
+                    mobile_public_key: None,
+                    nonce: None,
+                    ciphertext: None,
+                }
+            } else {
+                pairing_view("consumed", record.expires_at)
+            }
+        }
+    };
+    Ok(Json(view))
+}
+
+async fn accept_pairing(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(pair_id): AxumPath<String>,
+    Json(request): Json<AcceptPairingRequest>,
+) -> Result<StatusCode, ApiError> {
+    authorize_desktop(&state, &headers, &request.desktop_id)?;
+    if !valid_id(&pair_id)
+        || !valid_id(&request.device_id)
+        || !valid_sha256_hex(&request.token_sha256)
+        || !valid_accept_nonce(&request.nonce)
+        || request.ciphertext.is_empty()
+        || request.ciphertext.len() > 4096
+        || URL_SAFE_NO_PAD.decode(&request.ciphertext).is_err()
+    {
+        return Err(ApiError::bad_request("invalid_pairing_accept"));
+    }
+    state
+        .pairings
+        .begin_accept(&pair_id, &request.desktop_id, &request.device_id)
+        .await
+        .map_err(pairing_api_error)?;
+    if let Err(error) = state
+        .credentials
+        .issue_hash(
+            &request.desktop_id,
+            &request.device_id,
+            &request.token_sha256,
+        )
+        .await
+    {
+        state
+            .pairings
+            .abort_accept(&pair_id, &request.desktop_id)
+            .await;
+        return Err(ApiError::internal(error));
+    }
+    let finished = state
+        .pairings
+        .finish_accept(
+            &pair_id,
+            &request.desktop_id,
+            PairingAcceptEnvelope {
+                nonce: request.nonce,
+                ciphertext: request.ciphertext,
+            },
+        )
+        .await;
+    if let Err(error) = finished {
+        let _ = state
+            .credentials
+            .revoke(&request.desktop_id, &request.device_id)
+            .await;
+        return Err(pairing_api_error(error));
+    }
+    info!(desktop_id = %request.desktop_id, device_id = %request.device_id, "mobile pairing confirmed");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn reject_pairing(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(pair_id): AxumPath<String>,
+    Json(request): Json<RejectPairingRequest>,
+) -> Result<StatusCode, ApiError> {
+    authorize_desktop(&state, &headers, &request.desktop_id)?;
+    state
+        .pairings
+        .reject(&pair_id, &request.desktop_id, request.device_id.as_deref())
+        .await
+        .map_err(pairing_api_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn complete_pairing(
+    State(state): State<Arc<AppState>>,
+    AxumPath(pair_id): AxumPath<String>,
+    Json(request): Json<CompletePairingRequest>,
+) -> Result<StatusCode, ApiError> {
+    if !valid_id(&pair_id) || !valid_id(&request.device_id) {
+        return Err(ApiError::bad_request("invalid_pairing"));
+    }
+    state
+        .pairings
+        .complete(&pair_id, &request.device_id)
+        .await
+        .map_err(pairing_api_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn pairing_view(status: &'static str, expires_at: u64) -> PairingStatusView {
+    PairingStatusView {
+        status,
+        expires_at,
+        device_id: None,
+        device_name: None,
+        mobile_public_key: None,
+        nonce: None,
+        ciphertext: None,
+    }
+}
+
+fn pairing_api_error(error: PairingError) -> ApiError {
+    match error {
+        PairingError::NotFound => ApiError::not_found("pair_not_found"),
+        PairingError::Expired => ApiError::gone("pair_expired"),
+        PairingError::Consumed => ApiError::conflict("pair_consumed"),
+        PairingError::AlreadyExists => ApiError::conflict("pair_exists"),
+        PairingError::Capacity => ApiError::unavailable("pair_capacity"),
+        PairingError::WrongDevice => ApiError::unauthorized("pair_device_mismatch"),
+    }
+}
+
+fn valid_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn valid_p256_public_key(value: &str) -> bool {
+    URL_SAFE_NO_PAD
+        .decode(value)
+        .is_ok_and(|bytes| bytes.len() == 65 && bytes.first() == Some(&4))
+}
+
+fn valid_accept_nonce(value: &str) -> bool {
+    URL_SAFE_NO_PAD
+        .decode(value)
+        .is_ok_and(|bytes| bytes.len() == 12)
+}
+
+#[derive(Deserialize)]
 struct DeviceRequest {
     desktop_id: String,
     device_id: String,
@@ -788,6 +1417,27 @@ impl ApiError {
         }
     }
 
+    fn conflict(code: &'static str) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code,
+        }
+    }
+
+    fn gone(code: &'static str) -> Self {
+        Self {
+            status: StatusCode::GONE,
+            code,
+        }
+    }
+
+    fn unavailable(code: &'static str) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code,
+        }
+    }
+
     fn internal(error: anyhow::Error) -> Self {
         warn!(error = %error, "relay internal error");
         Self {
@@ -870,6 +1520,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pairing_store_enforces_one_request_and_consumption() {
+        let store = PairingStore::default();
+        let pair_id = "p_one_time_secret";
+        let pair_hash = token_hash_hex(pair_id);
+        store
+            .register("d_test", &pair_hash, unix_seconds() + 300)
+            .await
+            .unwrap();
+        let first = PendingPairingRequest {
+            device_id: "m_phone".into(),
+            device_name: "Phone".into(),
+            mobile_public_key: URL_SAFE_NO_PAD.encode(
+                std::iter::once(4_u8)
+                    .chain(std::iter::repeat_n(7_u8, 64))
+                    .collect::<Vec<_>>(),
+            ),
+        };
+        store.request(pair_id, first.clone()).await.unwrap();
+        // Network retry from the same mobile is idempotent.
+        store.request(pair_id, first.clone()).await.unwrap();
+        let second = PendingPairingRequest {
+            device_id: "m_other".into(),
+            ..first.clone()
+        };
+        assert_eq!(
+            store.request(pair_id, second).await,
+            Err(PairingError::Consumed)
+        );
+
+        store
+            .begin_accept(pair_id, "d_test", "m_phone")
+            .await
+            .unwrap();
+        store
+            .finish_accept(
+                pair_id,
+                "d_test",
+                PairingAcceptEnvelope {
+                    nonce: URL_SAFE_NO_PAD.encode([1_u8; 12]),
+                    ciphertext: URL_SAFE_NO_PAD.encode([2_u8; 48]),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.get(pair_id, Some("d_test")).await.unwrap().state,
+            PairingState::Accepted { .. }
+        ));
+        store.complete(pair_id, "m_phone").await.unwrap();
+        assert!(matches!(
+            store.get(pair_id, Some("d_test")).await.unwrap().state,
+            PairingState::Consumed { .. }
+        ));
+        assert_eq!(
+            store.request(pair_id, first).await,
+            Err(PairingError::Consumed)
+        );
+    }
+
+    #[tokio::test]
+    async fn pairing_store_rejects_expired_codes() {
+        let store = PairingStore::default();
+        let pair_id = "p_expired_secret";
+        store.records.write().await.insert(
+            token_hash_hex(pair_id),
+            PairingRecord {
+                desktop_id: "d_test".into(),
+                expires_at: unix_seconds(),
+                state: PairingState::Waiting,
+            },
+        );
+        assert!(matches!(
+            store.get(pair_id, Some("d_test")).await,
+            Err(PairingError::Expired)
+        ));
+    }
+
+    #[tokio::test]
     async fn rejects_wrong_desktop_token_in_constant_time_hash_path() {
         let temp = tempfile::tempdir().unwrap();
         let state = AppState::new(test_config(temp.path().join("credentials.json")))
@@ -909,6 +1637,194 @@ mod tests {
         assert!(matches!(first_rx.recv().await, Some(Message::Close(_))));
         assert!(second_rx.try_recv().is_err());
         assert_eq!(hub.mobiles.read().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn pairing_http_flow_is_one_time_device_bound_and_persists_only_hashes() {
+        let temp = tempfile::tempdir().unwrap();
+        let credential_path = temp.path().join("credentials.json");
+        let state = Arc::new(
+            AppState::new(test_config(credential_path.clone()))
+                .await
+                .unwrap(),
+        );
+        let state_for_assertion = state.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app(state)).await.unwrap();
+        });
+        let client = reqwest::Client::new();
+        let pair_id = "p_http_one_time";
+        let expires_at = unix_seconds() + PAIRING_TTL_SECONDS;
+        let mobile_public_key = URL_SAFE_NO_PAD.encode(
+            std::iter::once(4_u8)
+                .chain(std::iter::repeat_n(9_u8, 64))
+                .collect::<Vec<_>>(),
+        );
+
+        let registered = client
+            .post(format!("http://{address}/v1/pairings"))
+            .bearer_auth("desktop-token-at-least-thirty-two-characters")
+            .json(&serde_json::json!({
+                "desktop_id": "d_test",
+                "pair_id_hash": token_hash_hex(pair_id),
+                "expires_at": expires_at
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(registered.status(), StatusCode::CREATED);
+
+        let request_url = format!("http://{address}/v1/pairings/{pair_id}/request");
+        let first_request = serde_json::json!({
+            "device_id": "m_phone",
+            "device_name": "Android",
+            "mobile_public_key": mobile_public_key
+        });
+        for _ in 0..2 {
+            let response = client
+                .post(&request_url)
+                .json(&first_request)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+        }
+
+        let second_device = client
+            .post(&request_url)
+            .json(&serde_json::json!({
+                "device_id": "m_attacker",
+                "device_name": "Other phone",
+                "mobile_public_key": mobile_public_key
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(second_device.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            second_device.json::<serde_json::Value>().await.unwrap()["error"],
+            "pair_consumed"
+        );
+
+        let desktop_status = client
+            .get(format!(
+                "http://{address}/v1/pairings/{pair_id}?desktop_id=d_test"
+            ))
+            .bearer_auth("desktop-token-at-least-thirty-two-characters")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(desktop_status.status(), StatusCode::OK);
+        let desktop_status: serde_json::Value = desktop_status.json().await.unwrap();
+        assert_eq!(desktop_status["status"], "requested");
+        assert_eq!(desktop_status["device_id"], "m_phone");
+
+        let routing_token = "r_http_secret_at_least_thirty_two_characters";
+        let nonce = URL_SAFE_NO_PAD.encode([1_u8; 12]);
+        let ciphertext = URL_SAFE_NO_PAD.encode([2_u8; 64]);
+        let accepted = client
+            .post(format!("http://{address}/v1/pairings/{pair_id}/accept"))
+            .bearer_auth("desktop-token-at-least-thirty-two-characters")
+            .json(&serde_json::json!({
+                "desktop_id": "d_test",
+                "device_id": "m_phone",
+                "token_sha256": token_hash_hex(routing_token),
+                "nonce": nonce,
+                "ciphertext": ciphertext
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(accepted.status(), StatusCode::NO_CONTENT);
+        assert!(
+            state_for_assertion
+                .credentials
+                .authenticate("d_test", "m_phone", routing_token)
+                .await
+        );
+
+        let mobile_status = client
+            .get(format!(
+                "http://{address}/v1/pairings/{pair_id}?device_id=m_phone"
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(mobile_status.status(), StatusCode::OK);
+        let mobile_status: serde_json::Value = mobile_status.json().await.unwrap();
+        assert_eq!(mobile_status["status"], "accepted");
+        assert_eq!(mobile_status["nonce"], nonce);
+        assert_eq!(mobile_status["ciphertext"], ciphertext);
+        assert!(mobile_status.get("mobile_public_key").is_none());
+
+        for _ in 0..2 {
+            let completed = client
+                .post(format!("http://{address}/v1/pairings/{pair_id}/complete"))
+                .json(&serde_json::json!({ "device_id": "m_phone" }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(completed.status(), StatusCode::NO_CONTENT);
+        }
+        let completed_status = client
+            .get(format!(
+                "http://{address}/v1/pairings/{pair_id}?desktop_id=d_test"
+            ))
+            .bearer_auth("desktop-token-at-least-thirty-two-characters")
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            .unwrap();
+        assert_eq!(completed_status["status"], "consumed");
+        assert_eq!(completed_status["device_id"], "m_phone");
+        let reused = client
+            .post(&request_url)
+            .json(&first_request)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(reused.status(), StatusCode::CONFLICT);
+
+        let persisted = tokio::fs::read_to_string(credential_path).await.unwrap();
+        assert!(!persisted.contains(routing_token));
+        assert!(persisted.contains(&token_hash_hex(routing_token)));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn pairing_http_rejects_expired_registration() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = Arc::new(
+            AppState::new(test_config(temp.path().join("credentials.json")))
+                .await
+                .unwrap(),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app(state)).await.unwrap();
+        });
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/v1/pairings"))
+            .bearer_auth("desktop-token-at-least-thirty-two-characters")
+            .json(&serde_json::json!({
+                "desktop_id": "d_test",
+                "pair_id_hash": token_hash_hex("p_expired"),
+                "expires_at": unix_seconds()
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response.json::<serde_json::Value>().await.unwrap()["error"],
+            "invalid_pairing"
+        );
+        server.abort();
     }
 
     #[tokio::test]

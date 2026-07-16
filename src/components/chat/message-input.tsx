@@ -573,6 +573,12 @@ export function MessageInput({
   // embedded/data-uri badge, keyed by its synthetic `file://` sentinel uri, and
   // is reconciled into the outgoing blocks by `buildDraft`.
   const [attachments, setAttachments] = useState<InputAttachment[]>([])
+  const [attachmentUploadProgress, setAttachmentUploadProgress] = useState<{
+    fileCount: number
+    loaded: number
+    total: number
+  } | null>(null)
+  const attachmentUploadAbortRef = useRef<AbortController | null>(null)
   const embeddedPayloadsRef = useRef<Map<string, PromptInputBlock>>(new Map())
   const [isDragActive, setIsDragActive] = useState(false)
   // Collapsed (narrow) selectors live in a controlled Popover holding a
@@ -631,6 +637,13 @@ export function MessageInput({
   useEffect(() => {
     isPromptingRef.current = isPrompting
   }, [isPrompting])
+
+  useEffect(
+    () => () => {
+      attachmentUploadAbortRef.current?.abort()
+    },
+    []
+  )
 
   useEffect(() => {
     // navigator.clipboard is undefined at runtime in non-secure contexts even
@@ -1281,6 +1294,31 @@ export function MessageInput({
       }
       if (accepted.length === 0) return
 
+      const controller = new AbortController()
+      attachmentUploadAbortRef.current?.abort()
+      attachmentUploadAbortRef.current = controller
+      const totalBytes = accepted.reduce((sum, file) => sum + file.size, 0)
+      const fractions = accepted.map(() => 0)
+      const updateProgress = (index: number, sent: number, total: number) => {
+        fractions[index] = total > 0 ? Math.min(1, sent / total) : 0
+        if (attachmentUploadAbortRef.current !== controller) return
+        const loaded = accepted.reduce(
+          (sum, file, fileIndex) =>
+            sum + Math.round(file.size * fractions[fileIndex]),
+          0
+        )
+        setAttachmentUploadProgress({
+          fileCount: accepted.length,
+          loaded,
+          total: totalBytes,
+        })
+      }
+      setAttachmentUploadProgress({
+        fileCount: accepted.length,
+        loaded: 0,
+        total: totalBytes,
+      })
+
       // Concurrent uploads — one failure doesn't block the rest. Cap at 3:
       // small enough to keep server load predictable, large enough to feel
       // responsive for a handful of files.
@@ -1296,9 +1334,19 @@ export function MessageInput({
             const idx = cursor++
             const file = accepted[idx]
             try {
-              const r = await uploadAttachment(file, attachmentTabId ?? null)
+              const r = await uploadAttachment(file, attachmentTabId ?? null, {
+                signal: controller.signal,
+                onProgress: (sent, total) => updateProgress(idx, sent, total),
+              })
+              updateProgress(idx, 1, 1)
               uploaded.push(r.path)
             } catch (error) {
+              if (
+                controller.signal.aborted ||
+                (error instanceof DOMException && error.name === "AbortError")
+              ) {
+                continue
+              }
               if (isEmptyAttachmentError(error)) {
                 // Empty files are explicitly dropped on the floor — log
                 // and move on without a user-facing error toast.
@@ -1318,6 +1366,10 @@ export function MessageInput({
         }
       )
       await Promise.all(workers)
+      if (attachmentUploadAbortRef.current === controller) {
+        attachmentUploadAbortRef.current = null
+        setAttachmentUploadProgress(null)
+      }
 
       if (quotaRejected.length > 0) {
         toast.error(
@@ -2954,6 +3006,46 @@ export function MessageInput({
                 className
               )}
             >
+              {attachmentUploadProgress && (
+                <div
+                  className="mx-3 mt-3 flex items-center gap-3 rounded-lg border bg-muted/40 px-3 py-2 text-xs"
+                  role="status"
+                >
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="truncate text-muted-foreground">
+                        {tAttach("uploadingAttachments", {
+                          count: attachmentUploadProgress.fileCount,
+                        })}
+                      </span>
+                      <span className="tabular-nums text-foreground">
+                        {attachmentUploadProgress.total > 0
+                          ? Math.round(
+                              (attachmentUploadProgress.loaded /
+                                attachmentUploadProgress.total) *
+                                100
+                            )
+                          : 0}
+                        %
+                      </span>
+                    </div>
+                    <progress
+                      className="h-1.5 w-full accent-primary"
+                      max={Math.max(attachmentUploadProgress.total, 1)}
+                      value={attachmentUploadProgress.loaded}
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => attachmentUploadAbortRef.current?.abort()}
+                    aria-label={tAttach("cancelAttachmentUpload")}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              )}
               <ConversationContextBar
                 hasExtraContent={hasImageAttachments}
                 scrollEndTrigger={attachments.length}

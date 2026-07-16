@@ -13,6 +13,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { detectEnvironment } from "@/lib/transport/detect"
 import {
   getWebConnectionServerSnapshot,
   getWebConnectionSnapshot,
@@ -87,6 +88,8 @@ export function WebConnectionGuard() {
 
   const showReconnecting = state === "reconnecting" && graceElapsed
   const showUnauthorized = state === "unauthorized"
+  const showDirectFallback =
+    showReconnecting && detectEnvironment() === "mobile-relay"
   const open = showReconnecting || showUnauthorized
 
   if (!open) return null
@@ -124,9 +127,16 @@ export function WebConnectionGuard() {
               {t("goToLogin")}
             </Button>
           ) : (
-            <Button onClick={() => reconnectWebNow()}>
-              {t("reconnectNow")}
-            </Button>
+            <>
+              {showDirectFallback && (
+                <Button variant="outline" asChild>
+                  <a href="/mobile-settings">{t("directFallback")}</a>
+                </Button>
+              )}
+              <Button onClick={() => reconnectWebNow()}>
+                {t("reconnectNow")}
+              </Button>
+            </>
           )}
         </AlertDialogFooter>
       </AlertDialogContent>

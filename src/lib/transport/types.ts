@@ -87,6 +87,19 @@ export interface CallOptions {
    * backend can return its own structured error.
    */
   timeoutMs?: number
+
+  /**
+   * Cancel this invocation. Web/Relay transports abort their client-side
+   * wait; Relay additionally sends an authenticated cancel frame so the
+   * desktop bridge can stop an in-flight local HTTP request.
+   */
+  signal?: AbortSignal
+
+  /**
+   * Optional byte progress for transports that split a large encrypted
+   * request into resumable chunks. Other transports may ignore it.
+   */
+  onProgress?: (sent: number, total: number) => void
 }
 
 export interface Transport {

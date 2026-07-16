@@ -1,3 +1,5 @@
+import { relayBase64UrlDecode } from "./crypto"
+
 const RELAY_URL_KEY = "codeg_mobile_relay_url"
 const RELAY_DESKTOP_ID_KEY = "codeg_mobile_relay_desktop_id"
 const RELAY_DEVICE_ID_KEY = "codeg_mobile_relay_device_id"
@@ -22,10 +24,19 @@ interface PairingPayload {
   v: number
   relay_url: string
   desktop_id: string
-  device_id: string
-  routing_token: string
-  pairing_root: string
-  expires_at?: number
+  pair_id: string
+  pair_secret: string
+  desktop_public_key: string
+  expires_at: number
+}
+
+export interface MobileRelayPairingPayload {
+  relayUrl: string
+  desktopId: string
+  pairId: string
+  pairSecret: string
+  desktopPublicKey: string
+  expiresAt: number
 }
 
 let relaySecrets: MobileRelaySecrets = {
@@ -41,7 +52,7 @@ function isMobileTauri(): boolean {
   )
 }
 
-function normalizeRelayUrl(value: string): string {
+export function normalizeRelayUrl(value: string): string {
   const trimmed = value.trim()
   if (!trimmed) return ""
   const withScheme = /^wss?:\/\//i.test(trimmed) ? trimmed : `wss://${trimmed}`
@@ -149,22 +160,22 @@ export async function clearMobileRelayConfig(): Promise<void> {
 
 export function parseMobileRelayPairingPayload(
   value: string
-): MobileRelayConfig {
+): MobileRelayPairingPayload {
   let payload: PairingPayload
   try {
     payload = JSON.parse(value) as PairingPayload
   } catch {
     throw new Error("配对内容不是有效 JSON")
   }
-  if (payload.v !== 1) throw new Error("不支持的 Relay 配对版本")
-  if (
-    typeof payload.expires_at === "number" &&
-    payload.expires_at * 1000 < Date.now()
-  ) {
+  if (payload.v !== 2) throw new Error("不支持或不安全的 Relay 配对版本")
+  if (!Number.isSafeInteger(payload.expires_at)) {
+    throw new Error("配对内容缺少有效期限")
+  }
+  if (payload.expires_at * 1000 < Date.now()) {
     throw new Error("配对二维码已过期")
   }
   const relayUrl = normalizeRelayUrl(payload.relay_url ?? "")
-  const ids = [payload.desktop_id, payload.device_id]
+  const ids = [payload.desktop_id, payload.pair_id]
   if (
     !relayUrl ||
     !ids.every(
@@ -174,27 +185,29 @@ export function parseMobileRelayPairingPayload(
         id.length <= 128 &&
         /^[A-Za-z0-9._:-]+$/.test(id)
     ) ||
-    typeof payload.routing_token !== "string" ||
-    payload.routing_token.length < 32 ||
-    typeof payload.pairing_root !== "string"
+    typeof payload.pair_secret !== "string" ||
+    typeof payload.desktop_public_key !== "string"
   ) {
-    throw new Error("配对内容缺少有效的 Relay 凭据")
+    throw new Error("配对内容缺少有效的一次性凭据")
   }
-  const padding = "=".repeat((4 - (payload.pairing_root.length % 4)) % 4)
-  let root: string
+  let pairSecret: Uint8Array
+  let desktopPublicKey: Uint8Array
   try {
-    root = atob(
-      payload.pairing_root.replace(/-/g, "+").replace(/_/g, "/") + padding
-    )
+    pairSecret = relayBase64UrlDecode(payload.pair_secret)
+    desktopPublicKey = relayBase64UrlDecode(payload.desktop_public_key)
   } catch {
-    throw new Error("配对根密钥格式无效")
+    throw new Error("配对密钥格式无效")
   }
-  if (root.length !== 32) throw new Error("配对根密钥长度无效")
+  if (pairSecret.length !== 32) throw new Error("配对密钥长度无效")
+  if (desktopPublicKey.length !== 65 || desktopPublicKey[0] !== 4) {
+    throw new Error("电脑配对公钥无效")
+  }
   return {
     relayUrl,
     desktopId: payload.desktop_id,
-    deviceId: payload.device_id,
-    routingToken: payload.routing_token,
-    pairingRoot: payload.pairing_root,
+    pairId: payload.pair_id,
+    pairSecret: payload.pair_secret,
+    desktopPublicKey: payload.desktop_public_key,
+    expiresAt: payload.expires_at,
   }
 }

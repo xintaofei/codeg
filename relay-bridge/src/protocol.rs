@@ -80,6 +80,17 @@ pub struct RelayRequest {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+pub struct RelayChunk {
+    pub chunk_id: String,
+    pub request_id: String,
+    pub index: usize,
+    pub total: usize,
+    pub total_bytes: usize,
+    pub sha256: String,
+    pub data: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "kind")]
 pub enum EncryptedPayload {
     #[serde(rename = "request")]
@@ -88,6 +99,8 @@ pub enum EncryptedPayload {
     WsFrame { frame: Value },
     #[serde(rename = "cancel")]
     Cancel { request_id: String },
+    #[serde(rename = "chunk")]
+    Chunk(RelayChunk),
     #[serde(other)]
     Other,
 }

@@ -13,12 +13,16 @@ import {
 import { QRCodeSVG } from "qrcode.react"
 
 import {
+  confirmMobileRelayPairing,
   createMobileRelayPairing,
+  getMobileRelayPairingStatus,
   getMobileRelaySettings,
+  rejectMobileRelayPairing,
   revokeMobileRelayDevice,
   saveMobileRelaySettings,
   type MobileRelayDevice,
   type MobileRelayPairing,
+  type MobileRelayPairingStatus,
   type MobileRelaySettings,
 } from "@/lib/api"
 import { extractAppCommandError } from "@/lib/app-error"
@@ -48,6 +52,8 @@ export function MobileRelaySettingsCard() {
   const [enabled, setEnabled] = useState(false)
   const [deviceName, setDeviceName] = useState("")
   const [pairing, setPairing] = useState<MobileRelayPairing | null>(null)
+  const [pairingStatus, setPairingStatus] =
+    useState<MobileRelayPairingStatus | null>(null)
   const [revokeTarget, setRevokeTarget] = useState<MobileRelayDevice | null>(
     null
   )
@@ -87,6 +93,39 @@ export function MobileRelaySettingsCard() {
       1_000
     )
     return () => window.clearInterval(timer)
+  }, [pairing])
+
+  useEffect(() => {
+    if (!pairing) {
+      setPairingStatus(null)
+      return
+    }
+    let active = true
+    let polling = false
+    const poll = async () => {
+      if (polling) return
+      polling = true
+      try {
+        const status = await getMobileRelayPairingStatus(pairing.pairId)
+        if (active) {
+          setPairingStatus(status)
+          if (status.status === "accepted" || status.status === "consumed") {
+            setPairing(null)
+            setPairingStatus(null)
+          }
+        }
+      } catch (cause) {
+        if (active) setError(errorMessage(cause))
+      } finally {
+        polling = false
+      }
+    }
+    void poll()
+    const timer = window.setInterval(() => void poll(), 750)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
   }, [pairing])
 
   const expiresIn = useMemo(
@@ -137,6 +176,37 @@ export function MobileRelaySettingsCard() {
       await revokeMobileRelayDevice(revokeTarget.deviceId)
       setRevokeTarget(null)
       await refresh()
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const confirmPairing = async () => {
+    if (!pairing) return
+    setBusy(true)
+    setError("")
+    try {
+      await confirmMobileRelayPairing(pairing.pairId)
+      setPairing(null)
+      setPairingStatus(null)
+      await refresh()
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const rejectPairing = async () => {
+    if (!pairing) return
+    setBusy(true)
+    setError("")
+    try {
+      await rejectMobileRelayPairing(pairing.pairId, pairingStatus?.deviceId)
+      setPairing(null)
+      setPairingStatus(null)
     } catch (cause) {
       setError(errorMessage(cause))
     } finally {
@@ -316,7 +386,7 @@ export function MobileRelaySettingsCard() {
 
       <Dialog
         open={Boolean(pairing)}
-        onOpenChange={(open) => !open && setPairing(null)}
+        onOpenChange={(open) => !open && void rejectPairing()}
       >
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
@@ -344,7 +414,9 @@ export function MobileRelaySettingsCard() {
               <Button
                 variant="outline"
                 onClick={() => void copyPairing()}
-                disabled={expiresIn === 0}
+                disabled={
+                  expiresIn === 0 || pairingStatus?.status === "requested"
+                }
               >
                 {copied ? (
                   <Check className="h-4 w-4 text-emerald-500" />
@@ -353,6 +425,40 @@ export function MobileRelaySettingsCard() {
                 )}
                 {copied ? "已复制" : "复制配对内容"}
               </Button>
+              {pairingStatus?.status === "requested" && (
+                <div className="w-full space-y-3 rounded-xl border border-primary/30 bg-primary/5 p-4 text-center">
+                  <div>
+                    <p className="text-sm font-medium">
+                      {pairingStatus.deviceName || "Codeg Mobile"} 请求配对
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      请确认手机显示相同的六位安全码
+                    </p>
+                  </div>
+                  <p className="font-mono text-3xl font-semibold tracking-[0.35em]">
+                    {pairingStatus.sas}
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => void rejectPairing()}
+                      disabled={busy}
+                    >
+                      拒绝
+                    </Button>
+                    <Button
+                      onClick={() => void confirmPairing()}
+                      disabled={busy || !pairingStatus.sas}
+                    >
+                      {busy && <Loader2 className="h-4 w-4 animate-spin" />}
+                      确认配对
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {pairingStatus?.status === "rejected" && (
+                <p className="text-sm text-destructive">此次配对已拒绝</p>
+              )}
             </div>
           )}
         </DialogContent>

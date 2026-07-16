@@ -114,6 +114,97 @@ export async function deriveRelaySharedSecret(
   )
 }
 
+export interface MobilePairingMaterial {
+  pairingRoot: Uint8Array
+  sas: string
+  acceptKey: CryptoKey
+}
+
+export async function deriveMobilePairingMaterial(
+  privateKey: CryptoKey,
+  desktopPublicKey: Uint8Array,
+  pairSecret: Uint8Array,
+  desktopId: string,
+  pairId: string,
+  deviceId: string
+): Promise<MobilePairingMaterial> {
+  if (pairSecret.length !== 32) {
+    throw new Error("Pairing secret must contain 32 bytes")
+  }
+  const sharedSecret = await deriveRelaySharedSecret(
+    privateKey,
+    desktopPublicKey
+  )
+  const context = `codeg-relay-pair-v2|${desktopId}|${pairId}|${deviceId}`
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    sharedSecret,
+    "HKDF",
+    false,
+    ["deriveBits", "deriveKey"]
+  )
+  const pairingRoot = new Uint8Array(
+    await crypto.subtle.deriveBits(
+      {
+        name: "HKDF",
+        hash: "SHA-256",
+        salt: pairSecret,
+        info: encoder.encode(`${context}|pairing-root`),
+      },
+      keyMaterial,
+      256
+    )
+  )
+  const acceptKey = await crypto.subtle.deriveKey(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: pairSecret,
+      info: encoder.encode(`${context}|accept-key`),
+    },
+    keyMaterial,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["decrypt"]
+  )
+  const sasKey = await importRelayHmacKey(pairingRoot)
+  const sasDigest = new Uint8Array(
+    await crypto.subtle.sign("HMAC", sasKey, encoder.encode(`${context}|sas`))
+  )
+  const sasNumber =
+    new DataView(sasDigest.buffer, sasDigest.byteOffset, 4).getUint32(
+      0,
+      false
+    ) % 1_000_000
+  return {
+    pairingRoot,
+    sas: sasNumber.toString().padStart(6, "0"),
+    acceptKey,
+  }
+}
+
+export async function openMobilePairingAccept(
+  acceptKey: CryptoKey,
+  nonce: Uint8Array,
+  ciphertext: Uint8Array,
+  desktopId: string,
+  pairId: string,
+  deviceId: string
+): Promise<Uint8Array> {
+  if (nonce.length !== 12)
+    throw new Error("Pairing nonce must contain 12 bytes")
+  const aad = encoder.encode(
+    `codeg-relay-pair-v2|accept|${desktopId}|${pairId}|${deviceId}`
+  )
+  return new Uint8Array(
+    await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: nonce, additionalData: aad, tagLength: 128 },
+      acceptKey,
+      ciphertext
+    )
+  )
+}
+
 async function deriveAesKey(
   sharedSecret: Uint8Array,
   pairingRoot: Uint8Array,

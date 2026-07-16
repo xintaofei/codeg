@@ -2132,6 +2132,8 @@
         "attachUploadFailed": "Failed to upload {names}.",
         "attachUploadNotAFile": "{names} isn't a regular file (directory or special file) and was skipped.",
         "attachUploadQuotaExceeded": "The server is out of upload storage; {names} couldn't be uploaded.",
+        "uploadingAttachments": "Uploading {count} attachment(s)…",
+        "cancelAttachmentUpload": "Cancel attachment upload",
         "mentionEmpty": "No matches",
         "mentionLoading": "Searching…",
         "mentionListLabel": "Mentions",
@@ -3479,6 +3481,7 @@
     "disconnectedTitle": "Connection lost",
     "reconnectingDescription": "Trying to reconnect to the server. This usually recovers on its own within a few seconds.",
     "reconnectNow": "Reconnect now",
+    "directFallback": "Switch to Direct",
     "sessionExpiredTitle": "Session expired",
     "sessionExpiredDescription": "Your session is no longer valid. Please sign in again to continue.",
     "goToLogin": "Go to login"

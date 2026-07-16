@@ -10,7 +10,10 @@ use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use p256::{
     ecdh::EphemeralSecret,
-    elliptic_curve::{rand_core::OsRng, sec1::ToEncodedPoint},
+    elliptic_curve::{
+        rand_core::{OsRng, RngCore},
+        sec1::ToEncodedPoint,
+    },
     PublicKey,
 };
 use sha2::Sha256;
@@ -22,6 +25,132 @@ use crate::protocol::{
 };
 
 type HmacSha256 = Hmac<Sha256>;
+
+pub struct DesktopPairingSecret {
+    secret: EphemeralSecret,
+    pair_secret: [u8; 32],
+    public_key: String,
+}
+
+pub struct PairingMaterial {
+    pub pairing_root: [u8; 32],
+    pub sas: String,
+    accept_key: [u8; 32],
+}
+
+pub struct PairingCiphertext {
+    pub nonce: String,
+    pub ciphertext: String,
+}
+
+impl DesktopPairingSecret {
+    pub fn generate() -> Self {
+        let secret = EphemeralSecret::random(&mut OsRng);
+        let public = PublicKey::from(&secret);
+        let public_key = URL_SAFE_NO_PAD.encode(public.to_encoded_point(false).as_bytes());
+        let mut pair_secret = [0_u8; 32];
+        OsRng.fill_bytes(&mut pair_secret);
+        Self {
+            secret,
+            pair_secret,
+            public_key,
+        }
+    }
+
+    pub fn public_key(&self) -> &str {
+        &self.public_key
+    }
+
+    pub fn pair_secret_encoded(&self) -> String {
+        URL_SAFE_NO_PAD.encode(self.pair_secret)
+    }
+
+    pub fn derive_material(
+        &self,
+        desktop_id: &str,
+        pair_id: &str,
+        device_id: &str,
+        mobile_public_key: &str,
+    ) -> anyhow::Result<PairingMaterial> {
+        let mobile_bytes = URL_SAFE_NO_PAD
+            .decode(mobile_public_key)
+            .context("invalid pairing mobile public key encoding")?;
+        let mobile_public = PublicKey::from_sec1_bytes(&mobile_bytes)
+            .context("invalid pairing mobile P-256 public key")?;
+        let shared = self.secret.diffie_hellman(&mobile_public);
+        derive_pairing_material(
+            shared.raw_secret_bytes(),
+            &self.pair_secret,
+            desktop_id,
+            pair_id,
+            device_id,
+        )
+    }
+}
+
+impl PairingMaterial {
+    pub fn seal_accept(
+        &self,
+        desktop_id: &str,
+        pair_id: &str,
+        device_id: &str,
+        plaintext: &[u8],
+    ) -> anyhow::Result<PairingCiphertext> {
+        let cipher = Aes256Gcm::new_from_slice(&self.accept_key)
+            .map_err(|_| anyhow::anyhow!("invalid pairing accept key"))?;
+        let mut nonce = [0_u8; 12];
+        OsRng.fill_bytes(&mut nonce);
+        let ciphertext = cipher
+            .encrypt(
+                &Nonce::<U12>::from(nonce),
+                Payload {
+                    msg: plaintext,
+                    aad: pairing_accept_aad(desktop_id, pair_id, device_id).as_bytes(),
+                },
+            )
+            .map_err(|_| anyhow::anyhow!("failed to encrypt pairing acceptance"))?;
+        Ok(PairingCiphertext {
+            nonce: URL_SAFE_NO_PAD.encode(nonce),
+            ciphertext: URL_SAFE_NO_PAD.encode(ciphertext),
+        })
+    }
+}
+
+fn derive_pairing_material(
+    shared_secret: &[u8],
+    pair_secret: &[u8; 32],
+    desktop_id: &str,
+    pair_id: &str,
+    device_id: &str,
+) -> anyhow::Result<PairingMaterial> {
+    let context = format!("codeg-relay-pair-v2|{desktop_id}|{pair_id}|{device_id}");
+    let hkdf = Hkdf::<Sha256>::new(Some(pair_secret), shared_secret);
+    let mut pairing_root = [0_u8; 32];
+    let mut accept_key = [0_u8; 32];
+    hkdf.expand(
+        format!("{context}|pairing-root").as_bytes(),
+        &mut pairing_root,
+    )
+    .map_err(|_| anyhow::anyhow!("failed to derive pairing root"))?;
+    hkdf.expand(format!("{context}|accept-key").as_bytes(), &mut accept_key)
+        .map_err(|_| anyhow::anyhow!("failed to derive pairing accept key"))?;
+
+    let mut sas_mac = <HmacSha256 as Mac>::new_from_slice(&pairing_root)
+        .expect("HMAC accepts a key of any length");
+    sas_mac.update(format!("{context}|sas").as_bytes());
+    let sas_bytes = sas_mac.finalize().into_bytes();
+    let sas_number =
+        u32::from_be_bytes([sas_bytes[0], sas_bytes[1], sas_bytes[2], sas_bytes[3]]) % 1_000_000;
+    Ok(PairingMaterial {
+        pairing_root,
+        sas: format!("{sas_number:06}"),
+        accept_key,
+    })
+}
+
+fn pairing_accept_aad(desktop_id: &str, pair_id: &str, device_id: &str) -> String {
+    format!("codeg-relay-pair-v2|accept|{desktop_id}|{pair_id}|{device_id}")
+}
 
 pub struct SessionCrypto {
     pub device_id: String,
@@ -367,5 +496,58 @@ mod tests {
             )
             .unwrap();
         assert_eq!(plaintext, br#"{"kind":"response"}"#);
+    }
+
+    #[test]
+    fn desktop_and_mobile_pairing_material_matches_and_seals_acceptance() {
+        let desktop = DesktopPairingSecret::generate();
+        let mobile_secret = EphemeralSecret::random(&mut OsRng);
+        let mobile_public = PublicKey::from(&mobile_secret);
+        let mobile_public_encoded =
+            URL_SAFE_NO_PAD.encode(mobile_public.to_encoded_point(false).as_bytes());
+
+        let desktop_material = desktop
+            .derive_material("d_test", "p_one_time", "m_phone", &mobile_public_encoded)
+            .unwrap();
+        let desktop_public =
+            PublicKey::from_sec1_bytes(&URL_SAFE_NO_PAD.decode(desktop.public_key()).unwrap())
+                .unwrap();
+        let shared = mobile_secret.diffie_hellman(&desktop_public);
+        let mobile_material = derive_pairing_material(
+            shared.raw_secret_bytes(),
+            &desktop.pair_secret,
+            "d_test",
+            "p_one_time",
+            "m_phone",
+        )
+        .unwrap();
+        assert_eq!(desktop_material.pairing_root, mobile_material.pairing_root);
+        assert_eq!(desktop_material.sas, mobile_material.sas);
+
+        let sealed = desktop_material
+            .seal_accept(
+                "d_test",
+                "p_one_time",
+                "m_phone",
+                br#"{"routing_token":"mrt_test"}"#,
+            )
+            .unwrap();
+        let cipher = Aes256Gcm::new_from_slice(&mobile_material.accept_key).unwrap();
+        let nonce: [u8; 12] = URL_SAFE_NO_PAD
+            .decode(sealed.nonce)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let ciphertext = URL_SAFE_NO_PAD.decode(sealed.ciphertext).unwrap();
+        let opened = cipher
+            .decrypt(
+                &Nonce::<U12>::from(nonce),
+                Payload {
+                    msg: &ciphertext,
+                    aad: pairing_accept_aad("d_test", "p_one_time", "m_phone").as_bytes(),
+                },
+            )
+            .unwrap();
+        assert_eq!(opened, br#"{"routing_token":"mrt_test"}"#);
     }
 }

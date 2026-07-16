@@ -201,7 +201,7 @@ Codeg Mobile                                  │
 - [x] 主动建立 Relay WSS 并自动重连。
 - [x] 将 Relay request 映射到现有 Codeg command handler。
 - [x] 将 Agent 事件、snapshot/replay 和权限请求转发到 Relay。
-- [ ] 生成一次性二维码并在桌面确认新手机。
+- [x] 生成一次性二维码并在桌面确认新手机。
 - [x] 显示已配对设备、最后活动时间与撤销操作。
 
 完成标准：位于 CGNAT 后的电脑无需端口映射即可被已配对手机控制，未配对或已撤销手机不能访问。
@@ -209,11 +209,11 @@ Codeg Mobile                                  │
 ### M7：Mobile RelayTransport
 
 - [x] 实现符合统一 `Transport` 接口的 `RelayTransport`。
-- [ ] 实现扫码、一次性配对、设备确认和安全存储。
-- [ ] 实现 request/response 关联、超时、取消和错误映射。
+- [x] 实现扫码、一次性配对、设备确认和安全存储。
+- [x] 实现 request/response 关联、超时、取消和错误映射。
 - [x] 实现 event seq、ack、snapshot/replay 和 5 秒前台恢复目标。
 - [ ] 实现附件分片、进度、取消和失败恢复。
-- [ ] 实现 Direct/Relay 切换和 Relay 故障回退提示。
+- [x] 实现 Direct/Relay 切换和 Relay 故障回退提示。
 
 完成标准：手机使用移动网络控制没有公网 IP 的电脑，核心任务闭环与 Direct 模式一致。
 
@@ -297,17 +297,17 @@ Codeg Mobile                                  │
 - [x] 手机扫码导入配对信息，敏感凭据只进入 Android Keystore。
 - [x] APK 通过公网 Relay 连接位于 NAT 后的桌面 Codeg。
 - [x] 手机创建或继续真实会话，并持续收到 Agent 流式事件。
-- [ ] 手机完成权限批准、拒绝和 Agent 问题回答。
+- [x] 手机完成权限批准、拒绝和 Agent 问题回答。
 - [x] 强制停止 App 后重新打开，5 秒内恢复当前会话且不重复事件。
-- [ ] 桌面撤销设备后，手机立即失去访问能力。
+- [x] 桌面撤销设备后，手机立即失去访问能力。
 
 ### P1：补齐 Relay 安全与可靠性
 
-- [ ] 配对凭据由服务端一次性消费，过期或重复使用均失败。
-- [ ] 新手机必须经过桌面端明确确认。
-- [ ] request/response 支持超时、取消、错误映射和幂等重试。
+- [x] 配对凭据由服务端一次性消费，过期或重复使用均失败。
+- [x] 新手机必须经过桌面端明确确认。
+- [x] request/response 支持超时、取消、错误映射和幂等重试。
 - [ ] 附件支持分片、校验、进度、取消和断点恢复。
-- [ ] Relay 故障时显示可理解的状态，并允许切换 Direct 连接。
+- [x] Relay 故障时显示可理解的状态，并允许切换 Direct 连接。
 
 ### P2：Android 发布
 

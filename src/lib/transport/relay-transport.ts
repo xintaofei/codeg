@@ -56,6 +56,10 @@ interface PendingCall {
   resolve(value: unknown): void
   reject(reason: unknown): void
   timer: ReturnType<typeof setTimeout>
+  removeAbortListener?: () => void
+  onProgress?: (sent: number, total: number) => void
+  sendAttempt: number
+  outboundChunks?: OutboundChunkState
 }
 
 interface RelayResponse {
@@ -85,6 +89,12 @@ interface RelayChunk {
   data: string
 }
 
+interface RelayChunkAck {
+  kind: "chunk_ack"
+  chunk_id: string
+  next_index: number
+}
+
 interface ChunkAssembly {
   total: number
   totalBytes: number
@@ -94,12 +104,33 @@ interface ChunkAssembly {
   expiresAt: number
 }
 
-type DesktopPayload = RelayResponse | RelayWsFrame | RelayReady | RelayChunk
+interface OutboundChunkState {
+  chunkId: string
+  bytes: Uint8Array
+  total: number
+  sha256: string
+  nextIndex: number
+}
 
+interface ChunkAckWaiter {
+  timer: ReturnType<typeof setTimeout>
+  resolve(nextIndex: number): void
+  reject(reason: unknown): void
+}
+
+type DesktopPayload =
+  | RelayResponse
+  | RelayWsFrame
+  | RelayReady
+  | RelayChunk
+  | RelayChunkAck
+
+const RELAY_DIRECT_PAYLOAD_BYTES = 512 * 1024
 const RELAY_CHUNK_BYTES = 256 * 1024
 const RELAY_MAX_REASSEMBLED_BYTES = 128 * 1024 * 1024
 const RELAY_MAX_CHUNKS = 512
 const RELAY_CHUNK_TTL_MS = 120_000
+const RELAY_CHUNK_ACK_TIMEOUT_MS = 10_000
 
 function relayId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replace(/-/g, "")}`
@@ -112,6 +143,30 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
     difference |= left[index] ^ right[index]
   }
   return difference === 0
+}
+
+export class RelayCallError extends Error {
+  readonly code: string
+  readonly detail: unknown
+
+  constructor(value: unknown) {
+    const record =
+      typeof value === "object" && value !== null
+        ? (value as Record<string, unknown>)
+        : null
+    const code =
+      typeof record?.code === "string" ? record.code : "relay_request_failed"
+    const message =
+      typeof record?.message === "string"
+        ? record.message
+        : typeof value === "string"
+          ? value
+          : "Relay request failed"
+    super(message)
+    this.name = "RelayCallError"
+    this.code = code
+    this.detail = value
+  }
 }
 
 export class RelayTransport implements Transport {
@@ -138,6 +193,7 @@ export class RelayTransport implements Transport {
   private connState: WebConnState = "reconnecting"
   private eventStreamInstance: WebEventStream | null = null
   private chunkAssemblies = new Map<string, ChunkAssembly>()
+  private chunkAckWaiters = new Map<string, ChunkAckWaiter>()
   private readonly pairingRoot: Uint8Array
 
   constructor(private readonly config: MobileRelayConfig) {
@@ -158,10 +214,18 @@ export class RelayTransport implements Transport {
     const requestId = relayId("r")
     const idempotencyKey = relayId("i")
     const timeoutMs = options?.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS
+    if (options?.signal?.aborted) {
+      throw new DOMException("Request canceled", "AbortError")
+    }
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pending.delete(requestId)
-        reject(new Error("Request timed out"))
+        this.cancelPending(
+          requestId,
+          new RelayCallError({
+            code: "request_timeout",
+            message: "Request timed out",
+          })
+        )
       }, timeoutMs)
       const pending: PendingCall = {
         requestId,
@@ -172,13 +236,25 @@ export class RelayTransport implements Transport {
         resolve: (value) => resolve(value as T),
         reject,
         timer,
+        onProgress: options?.onProgress,
+        sendAttempt: 0,
       }
       this.pending.set(requestId, pending)
-      void this.sendPending(pending).catch((error) => {
-        if (this.destroyed) {
-          this.finishPending(requestId, false, error)
+      if (options?.signal) {
+        const signal = options.signal
+        const onAbort = () => {
+          this.cancelPending(
+            requestId,
+            new DOMException("Request canceled", "AbortError")
+          )
         }
-      })
+        signal.addEventListener("abort", onAbort, { once: true })
+        pending.removeAbortListener = () =>
+          signal.removeEventListener("abort", onAbort)
+        if (signal.aborted) onAbort()
+      }
+      if (!this.pending.has(requestId)) return
+      this.startPending(pending)
     })
   }
 
@@ -272,6 +348,7 @@ export class RelayTransport implements Transport {
     this.eventStreamInstance?.destroy()
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer)
+      pending.removeAbortListener?.()
       pending.reject(new Error("Relay transport was closed"))
     }
     this.pending.clear()
@@ -289,6 +366,15 @@ export class RelayTransport implements Transport {
     this.receivedSeq = 0
     this.sendQueue = Promise.resolve()
     this.chunkAssemblies.clear()
+    for (const waiter of this.chunkAckWaiters.values()) {
+      clearTimeout(waiter.timer)
+      waiter.reject(new Error("Relay session changed during chunk upload"))
+    }
+    this.chunkAckWaiters.clear()
+    for (const pending of this.pending.values()) {
+      const chunks = pending.outboundChunks
+      if (chunks && chunks.nextIndex >= chunks.total) chunks.nextIndex = 0
+    }
     this.sessionPromise = new Promise<void>((resolve) => {
       this.sessionResolve = resolve
     })
@@ -427,21 +513,131 @@ export class RelayTransport implements Transport {
     this.setConnState("connected")
     this.sessionResolve()
     for (const pending of this.pending.values()) {
-      void this.sendPending(pending).catch(() => {})
+      this.startPending(pending)
     }
   }
 
+  private startPending(pending: PendingCall): void {
+    void this.sendPending(pending).catch(() => {
+      if (this.destroyed || !this.pending.has(pending.requestId)) return
+      // A failed encrypted send or missing chunk acknowledgement leaves the
+      // delivery outcome uncertain. Reconnect and resume with the same
+      // request/idempotency/chunk identifiers instead of creating a new call.
+      this.ws?.close()
+    })
+  }
+
   private async sendPending(pending: PendingCall): Promise<void> {
-    await this.sessionPromise
-    if (!this.pending.has(pending.requestId)) return
-    await this.sendEncrypted({
+    const attempt = ++pending.sendAttempt
+    const session = this.sessionPromise
+    await session
+    if (
+      !this.pending.has(pending.requestId) ||
+      pending.sendAttempt !== attempt
+    ) {
+      return
+    }
+    const request = {
       kind: "request",
       request_id: pending.requestId,
       command: pending.command,
       args: pending.args,
       idempotency_key: pending.idempotencyKey,
       timeout_ms: pending.timeoutMs,
+    }
+    const bytes = new TextEncoder().encode(JSON.stringify(request))
+    if (bytes.length <= RELAY_DIRECT_PAYLOAD_BYTES) {
+      await this.sendEncrypted(request)
+      return
+    }
+    if (bytes.length > RELAY_MAX_REASSEMBLED_BYTES) {
+      throw new RelayCallError({
+        code: "request_too_large",
+        message: "Encrypted Relay request exceeds the reassembly limit",
+      })
+    }
+    if (!pending.outboundChunks) {
+      const digest = new Uint8Array(
+        await crypto.subtle.digest("SHA-256", bytes)
+      )
+      pending.outboundChunks = {
+        chunkId: relayId("ch"),
+        bytes,
+        total: Math.ceil(bytes.length / RELAY_CHUNK_BYTES),
+        sha256: relayBase64UrlEncode(digest),
+        nextIndex: 0,
+      }
+      pending.onProgress?.(0, bytes.length)
+    }
+    await this.sendPendingChunks(pending, attempt)
+  }
+
+  private async sendPendingChunks(
+    pending: PendingCall,
+    attempt: number
+  ): Promise<void> {
+    const chunks = pending.outboundChunks
+    if (!chunks) return
+    while (chunks.nextIndex < chunks.total) {
+      if (
+        !this.pending.has(pending.requestId) ||
+        pending.sendAttempt !== attempt
+      ) {
+        return
+      }
+      const index = chunks.nextIndex
+      const start = index * RELAY_CHUNK_BYTES
+      const end = Math.min(start + RELAY_CHUNK_BYTES, chunks.bytes.length)
+      const acknowledgement = this.waitForChunkAck(chunks.chunkId)
+      try {
+        await this.sendEncrypted({
+          kind: "chunk",
+          chunk_id: chunks.chunkId,
+          request_id: pending.requestId,
+          index,
+          total: chunks.total,
+          total_bytes: chunks.bytes.length,
+          sha256: chunks.sha256,
+          data: relayBase64UrlEncode(chunks.bytes.slice(start, end)),
+        })
+      } catch (error) {
+        this.rejectChunkAck(chunks.chunkId, error)
+        await acknowledgement.catch(() => {})
+        throw error
+      }
+      const nextIndex = await acknowledgement
+      if (nextIndex < 0 || nextIndex > chunks.total) {
+        throw new Error("Relay chunk acknowledgement is invalid")
+      }
+      chunks.nextIndex = nextIndex
+      const sent = Math.min(
+        chunks.nextIndex * RELAY_CHUNK_BYTES,
+        chunks.bytes.length
+      )
+      pending.onProgress?.(sent, chunks.bytes.length)
+    }
+  }
+
+  private waitForChunkAck(chunkId: string): Promise<number> {
+    this.rejectChunkAck(
+      chunkId,
+      new Error("Relay chunk acknowledgement was superseded")
+    )
+    return new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.chunkAckWaiters.delete(chunkId)
+        reject(new Error("Relay chunk acknowledgement timed out"))
+      }, RELAY_CHUNK_ACK_TIMEOUT_MS)
+      this.chunkAckWaiters.set(chunkId, { timer, resolve, reject })
     })
+  }
+
+  private rejectChunkAck(chunkId: string, reason: unknown): void {
+    const waiter = this.chunkAckWaiters.get(chunkId)
+    if (!waiter) return
+    this.chunkAckWaiters.delete(chunkId)
+    clearTimeout(waiter.timer)
+    waiter.reject(reason)
   }
 
   private async sendEncrypted(payload: unknown): Promise<void> {
@@ -519,6 +715,20 @@ export class RelayTransport implements Transport {
     if (payload.kind === "chunk") {
       const completed = await this.acceptChunk(payload)
       if (completed) await this.dispatchDesktopPayload(completed)
+      return
+    }
+    if (payload.kind === "chunk_ack") {
+      const waiter = this.chunkAckWaiters.get(payload.chunk_id)
+      if (
+        !waiter ||
+        !Number.isSafeInteger(payload.next_index) ||
+        payload.next_index < 0
+      ) {
+        throw new Error("Relay chunk acknowledgement is invalid")
+      }
+      this.chunkAckWaiters.delete(payload.chunk_id)
+      clearTimeout(waiter.timer)
+      waiter.resolve(payload.next_index)
       return
     }
     if (payload.kind === "response") {
@@ -639,8 +849,32 @@ export class RelayTransport implements Transport {
     if (!pending) return
     this.pending.delete(requestId)
     clearTimeout(pending.timer)
+    pending.removeAbortListener?.()
+    if (pending.outboundChunks) {
+      this.rejectChunkAck(
+        pending.outboundChunks.chunkId,
+        new Error("Relay request finished")
+      )
+    }
     if (success) pending.resolve(value)
-    else pending.reject(value)
+    else pending.reject(new RelayCallError(value))
+  }
+
+  private cancelPending(requestId: string, reason: Error): void {
+    const pending = this.pending.get(requestId)
+    if (!pending) return
+    this.pending.delete(requestId)
+    clearTimeout(pending.timer)
+    pending.removeAbortListener?.()
+    if (pending.outboundChunks) {
+      this.rejectChunkAck(pending.outboundChunks.chunkId, reason)
+    }
+    if (this.keys) {
+      void this.sendEncrypted({ kind: "cancel", request_id: requestId }).catch(
+        () => {}
+      )
+    }
+    pending.reject(reason)
   }
 
   private scheduleReconnect(): void {

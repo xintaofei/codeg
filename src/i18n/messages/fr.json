@@ -2132,6 +2132,8 @@
         "attachUploadFailed": "Échec du téléversement de {names}.",
         "attachUploadNotAFile": "{names} n'est pas un fichier régulier (répertoire ou fichier spécial) et a été ignoré.",
         "attachUploadQuotaExceeded": "Le serveur n'a plus d'espace pour les téléversements ; {names} n'a pas pu être envoyé.",
+        "uploadingAttachments": "Téléversement de {count} pièce(s) jointe(s)…",
+        "cancelAttachmentUpload": "Annuler le téléversement",
         "mentionEmpty": "Aucune correspondance",
         "mentionLoading": "Recherche…",
         "mentionListLabel": "Mentions",
@@ -3479,6 +3481,7 @@
     "disconnectedTitle": "Connexion perdue",
     "reconnectingDescription": "Tentative de reconnexion au serveur. Cela se rétablit généralement tout seul en quelques secondes.",
     "reconnectNow": "Se reconnecter maintenant",
+    "directFallback": "Passer à Direct",
     "sessionExpiredTitle": "Session expirée",
     "sessionExpiredDescription": "Votre session n'est plus valide. Veuillez vous reconnecter pour continuer.",
     "goToLogin": "Aller à la connexion"

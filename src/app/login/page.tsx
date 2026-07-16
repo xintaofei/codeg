@@ -15,6 +15,7 @@ import {
   parseMobileRelayPairingPayload,
   setMobileRelayConfig,
 } from "@/lib/relay/config"
+import { completeMobileRelayPairing } from "@/lib/relay/pairing"
 import { isMobileEnvironment } from "@/lib/transport/detect"
 import { setCodegToken } from "@/lib/transport/web-auth"
 import { RelayQrScanner } from "@/components/mobile/relay-qr-scanner"
@@ -26,6 +27,7 @@ export default function LoginPage() {
   const [serverUrl, setServerUrl] = useState("")
   const [mode, setMode] = useState<MobileConnectionMode>("direct")
   const [pairingPayload, setPairingPayload] = useState("")
+  const [pairingSas, setPairingSas] = useState("")
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
 
@@ -51,7 +53,10 @@ export default function LoginPage() {
     try {
       const mobile = isMobileEnvironment()
       if (mobile && mode === "relay") {
-        const config = parseMobileRelayPairingPayload(pairingPayload)
+        const payload = parseMobileRelayPairingPayload(pairingPayload)
+        const config = await completeMobileRelayPairing(payload, (progress) =>
+          setPairingSas(progress.sas)
+        )
         await setMobileRelayConfig(config)
         setMobileConnectionMode("relay")
         window.location.replace("/workspace")
@@ -187,7 +192,10 @@ export default function LoginPage() {
               <textarea
                 id="pairing-payload"
                 value={pairingPayload}
-                onChange={(event) => setPairingPayload(event.target.value)}
+                onChange={(event) => {
+                  setPairingPayload(event.target.value)
+                  setPairingSas("")
+                }}
                 placeholder="扫描二维码，或粘贴电脑显示的一次性配对内容"
                 autoCapitalize="none"
                 autoCorrect="off"
@@ -197,9 +205,20 @@ export default function LoginPage() {
               <RelayQrScanner
                 onDetected={(payload) => {
                   setPairingPayload(payload)
+                  setPairingSas("")
                   setError("")
                 }}
               />
+              {pairingSas && (
+                <div className="rounded-xl border border-primary/30 bg-primary/5 px-3 py-3 text-center">
+                  <p className="text-xs text-muted-foreground">
+                    请在电脑确认相同的安全码
+                  </p>
+                  <p className="mt-1 font-mono text-2xl font-semibold tracking-[0.3em]">
+                    {pairingSas}
+                  </p>
+                </div>
+              )}
               <p className="text-xs leading-5 text-muted-foreground">
                 电脑只需主动连接 Relay，无需公网 IP
                 或开放入站端口。凭据保存在系统安全存储中。

@@ -2132,6 +2132,8 @@
         "attachUploadFailed": "上傳失敗：{names}。",
         "attachUploadNotAFile": "{names} 不是常規檔案（目錄或特殊檔案），已略過。",
         "attachUploadQuotaExceeded": "伺服器上傳空間已用盡，{names} 未能上傳。",
+        "uploadingAttachments": "正在上傳 {count} 個附件…",
+        "cancelAttachmentUpload": "取消附件上傳",
         "mentionEmpty": "無相符項目",
         "mentionLoading": "搜尋中…",
         "mentionListLabel": "提及",
@@ -3479,6 +3481,7 @@
     "disconnectedTitle": "連線已中斷",
     "reconnectingDescription": "正在嘗試重新連線伺服器，通常會在幾秒內自動恢復。",
     "reconnectNow": "立即重新連線",
+    "directFallback": "切換 Direct",
     "sessionExpiredTitle": "工作階段已過期",
     "sessionExpiredDescription": "登入狀態已失效，請重新登入以繼續。",
     "goToLogin": "前往登入"

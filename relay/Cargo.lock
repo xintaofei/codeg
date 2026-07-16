@@ -146,6 +146,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-tungstenite 0.28.0",
+ "tower-http",
  "tracing",
  "tracing-subscriber",
 ]

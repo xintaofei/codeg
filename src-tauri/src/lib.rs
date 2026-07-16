@@ -1232,6 +1232,9 @@ mod tauri_app {
                 mobile_relay_commands::get_mobile_relay_settings,
                 mobile_relay_commands::save_mobile_relay_settings,
                 mobile_relay_commands::create_mobile_relay_pairing,
+                mobile_relay_commands::get_mobile_relay_pairing_status,
+                mobile_relay_commands::confirm_mobile_relay_pairing,
+                mobile_relay_commands::reject_mobile_relay_pairing,
                 mobile_relay_commands::revoke_mobile_relay_device,
             ])
             .build(tauri::generate_context!())

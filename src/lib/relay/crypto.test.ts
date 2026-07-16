@@ -3,10 +3,12 @@ import { beforeAll, describe, expect, it } from "vitest"
 
 import {
   createRelayHandshakeProof,
+  deriveMobilePairingMaterial,
   deriveRelayDirectionalKeys,
   deriveRelaySharedSecret,
   exportRelayPublicKey,
   generateRelayEphemeralKeyPair,
+  openMobilePairingAccept,
   openRelayFrame,
   relayBase64UrlDecode,
   relayBase64UrlEncode,
@@ -133,5 +135,88 @@ describe("Codeg Relay v1 crypto", () => {
     expect(relayNonce(1, 1n)).not.toEqual(relayNonce(1, 2n))
     expect(relayNonce(1, 1n)).not.toEqual(relayNonce(2, 1n))
     expect(() => relayNonce(1, 0n)).toThrow(/sequence/)
+  })
+
+  it("derives and opens a device-bound one-time pairing acceptance", async () => {
+    const desktop = await generateRelayEphemeralKeyPair()
+    const mobile = await generateRelayEphemeralKeyPair()
+    const pairSecret = crypto.getRandomValues(new Uint8Array(32))
+    const desktopId = "d_desktop"
+    const pairId = "p_one_time"
+    const deviceId = "m_phone"
+    const context = `codeg-relay-pair-v2|${desktopId}|${pairId}|${deviceId}`
+
+    const [desktopPublic, mobilePublic] = await Promise.all([
+      exportRelayPublicKey(desktop.publicKey),
+      exportRelayPublicKey(mobile.publicKey),
+    ])
+    const mobileMaterial = await deriveMobilePairingMaterial(
+      mobile.privateKey,
+      desktopPublic,
+      pairSecret,
+      desktopId,
+      pairId,
+      deviceId
+    )
+    expect(mobileMaterial.pairingRoot).toHaveLength(32)
+    expect(mobileMaterial.sas).toMatch(/^\d{6}$/)
+
+    const desktopSharedSecret = await deriveRelaySharedSecret(
+      desktop.privateKey,
+      mobilePublic
+    )
+    const desktopKeyMaterial = await crypto.subtle.importKey(
+      "raw",
+      desktopSharedSecret,
+      "HKDF",
+      false,
+      ["deriveKey"]
+    )
+    const desktopAcceptKey = await crypto.subtle.deriveKey(
+      {
+        name: "HKDF",
+        hash: "SHA-256",
+        salt: pairSecret,
+        info: new TextEncoder().encode(`${context}|accept-key`),
+      },
+      desktopKeyMaterial,
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["encrypt"]
+    )
+    const nonce = crypto.getRandomValues(new Uint8Array(12))
+    const aad = new TextEncoder().encode(
+      `codeg-relay-pair-v2|accept|${desktopId}|${pairId}|${deviceId}`
+    )
+    const plaintext = new TextEncoder().encode(
+      JSON.stringify({ v: 2, routing_token: "secret-routing-token" })
+    )
+    const ciphertext = new Uint8Array(
+      await crypto.subtle.encrypt(
+        { name: "AES-GCM", iv: nonce, additionalData: aad, tagLength: 128 },
+        desktopAcceptKey,
+        plaintext
+      )
+    )
+
+    const opened = await openMobilePairingAccept(
+      mobileMaterial.acceptKey,
+      nonce,
+      ciphertext,
+      desktopId,
+      pairId,
+      deviceId
+    )
+    expect(Array.from(opened)).toEqual(Array.from(plaintext))
+    await expect(
+      openMobilePairingAccept(
+        mobileMaterial.acceptKey,
+        nonce,
+        ciphertext,
+        desktopId,
+        pairId,
+        "m_attacker"
+      )
+    ).rejects.toBeDefined()
   })
 })

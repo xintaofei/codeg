@@ -13,7 +13,7 @@ futures-util = "0.3"
 hkdf = "0.12"
 hmac = "0.12"
 p256 = { version = "0.13", features = ["ecdh"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -25,4 +25,5 @@ url = "2"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+axum = { version = "0.8", features = ["multipart"] }
 tempfile = "3"

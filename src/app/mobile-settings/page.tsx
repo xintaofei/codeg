@@ -29,6 +29,7 @@ import {
   parseMobileRelayPairingPayload,
   setMobileRelayConfig,
 } from "@/lib/relay/config"
+import { completeMobileRelayPairing } from "@/lib/relay/pairing"
 import {
   clearCodegToken,
   getCodegToken,
@@ -41,6 +42,7 @@ export default function MobileSettingsPage() {
   const [serverUrl, setServerUrl] = useState("")
   const [mode, setMode] = useState<MobileConnectionMode>("direct")
   const [pairingPayload, setPairingPayload] = useState("")
+  const [pairingSas, setPairingSas] = useState("")
   const [relaySummary, setRelaySummary] = useState("")
   const [token, setToken] = useState("")
   const [testing, setTesting] = useState(false)
@@ -102,7 +104,10 @@ export default function MobileSettingsPage() {
     setError("")
     try {
       if (pairingPayload.trim()) {
-        const config = parseMobileRelayPairingPayload(pairingPayload)
+        const payload = parseMobileRelayPairingPayload(pairingPayload)
+        const config = await completeMobileRelayPairing(payload, (progress) =>
+          setPairingSas(progress.sas)
+        )
         await setMobileRelayConfig(config)
       } else if (!getMobileRelayConfig()) {
         throw new Error("请扫描二维码或粘贴电脑显示的配对内容。")
@@ -261,7 +266,10 @@ export default function MobileSettingsPage() {
                 <textarea
                   id="relay-pairing-payload"
                   value={pairingPayload}
-                  onChange={(event) => setPairingPayload(event.target.value)}
+                  onChange={(event) => {
+                    setPairingPayload(event.target.value)
+                    setPairingSas("")
+                  }}
                   placeholder="扫描二维码，或粘贴电脑显示的一次性配对内容"
                   autoCapitalize="none"
                   autoCorrect="off"
@@ -271,9 +279,20 @@ export default function MobileSettingsPage() {
                 <RelayQrScanner
                   onDetected={(payload) => {
                     setPairingPayload(payload)
+                    setPairingSas("")
                     setError("")
                   }}
                 />
+                {pairingSas && (
+                  <div className="rounded-xl border border-primary/30 bg-primary/5 px-3 py-3 text-center">
+                    <p className="text-xs text-muted-foreground">
+                      请在电脑确认相同的安全码
+                    </p>
+                    <p className="mt-1 font-mono text-2xl font-semibold tracking-[0.3em]">
+                      {pairingSas}
+                    </p>
+                  </div>
+                )}
                 <p className="text-xs leading-5 text-muted-foreground">
                   Relay 看不到 Codeg
                   Token、聊天、代码和命令正文；配对根密钥只保存在系统安全存储。
