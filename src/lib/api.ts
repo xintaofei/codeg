@@ -9,6 +9,7 @@ import {
 import { getCodegToken } from "./transport/web-auth"
 import { notifyWebUnauthorized } from "./transport/web-connection-store"
 import { getCurrentEffectiveAppLocale } from "./i18n"
+import { emitOpenCommitDialog } from "./commit-dialog-events"
 import { emitOpenSettingsDialog } from "./settings-dialog-events"
 import { TurnBusyError, isTurnInProgressRejection } from "./turn-busy"
 import type { FolderThemeColor } from "./theme-presets"
@@ -1878,7 +1879,7 @@ export async function openCommitWindow(folderId: number): Promise<void> {
     "open_commit_window",
     { folderId, locale }
   )
-  window.open(result.path, `commit-${folderId}`)
+  emitOpenCommitDialog(result.path)
 }
 
 export type SettingsSection =

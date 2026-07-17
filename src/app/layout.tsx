@@ -13,6 +13,7 @@ import { OverlayScrollbarsInit } from "@/components/overlay-scrollbars-init"
 import { ClipboardFallbackInit } from "@/components/clipboard-fallback-init"
 import { WebConnectionGuard } from "@/components/connection/web-connection-guard"
 import { WindowResizeGrips } from "@/components/layout/window-resize-grips"
+import { WebCommitDialog } from "@/components/layout/web-commit-dialog"
 import { WebSettingsDialog } from "@/components/settings/web-settings-dialog"
 
 export const viewport: Viewport = {
@@ -75,6 +76,7 @@ export default async function RootLayout({
                 <WebConnectionGuard />
                 <WindowResizeGrips />
                 {children}
+                <WebCommitDialog />
                 <WebSettingsDialog />
               </AppearanceProvider>
             </ThemeProvider>
