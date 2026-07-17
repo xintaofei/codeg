@@ -9,6 +9,7 @@ import {
 import { getCodegToken } from "./transport/web-auth"
 import { notifyWebUnauthorized } from "./transport/web-connection-store"
 import { getCurrentEffectiveAppLocale } from "./i18n"
+import { emitOpenSettingsDialog } from "./settings-dialog-events"
 import { TurnBusyError, isTurnInProgressRejection } from "./turn-busy"
 import type { FolderThemeColor } from "./theme-presets"
 import type {
@@ -1908,7 +1909,7 @@ export async function openSettingsWindow(
       remoteConnectionId: getActiveRemoteConnectionId(),
     })
   }
-  // Web mode: open in new window
+  // Web mode: render the existing settings route in the page-level modal.
   const result = await getTransport().call<{ path: string }>(
     "open_settings_window",
     {
@@ -1917,7 +1918,7 @@ export async function openSettingsWindow(
       locale,
     }
   )
-  window.open(result.path, `settings-${section ?? "general"}`)
+  emitOpenSettingsDialog(result.path)
 }
 
 export async function openProjectBootWindow(source?: string): Promise<void> {
