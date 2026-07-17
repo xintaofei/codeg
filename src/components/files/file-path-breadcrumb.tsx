@@ -28,6 +28,7 @@ import {
   FileTreeFolder,
 } from "@/components/ai-elements/file-tree"
 import { Skeleton } from "@/components/ui/skeleton"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 
 interface DirSegment {
@@ -341,7 +342,7 @@ function DirectoryTree({
   }
 
   return (
-    <div className="max-h-72 overflow-auto">
+    <ScrollArea className="max-h-72" x="scroll">
       <FileTree
         expanded={expanded}
         onExpandedChange={handleExpandedChange}
@@ -351,6 +352,6 @@ function DirectoryTree({
       >
         {renderNodes(rootAbsPath)}
       </FileTree>
-    </div>
+    </ScrollArea>
   )
 }

@@ -9,6 +9,7 @@ import { useConversationRuntimeStore } from "@/stores/conversation-runtime-store
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { resolveActiveSessionDetails } from "@/components/conversations/active-session-details"
 import { SessionDetailsContent } from "@/components/conversations/session-details-content"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useIsActiveChatMode } from "@/hooks/use-is-active-chat-mode"
 import { useIsMobile } from "@/hooks/use-mobile"
@@ -105,14 +106,16 @@ export function SessionDetailsTab() {
         </div>
       )}
       {summary ? (
-        <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          <SessionDetailsContent
-            summary={summary}
-            stats={stats}
-            model={model}
-            active={isOpen && activeTab === "session_details"}
-          />
-        </div>
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="p-3">
+            <SessionDetailsContent
+              summary={summary}
+              stats={stats}
+              model={model}
+              active={isOpen && activeTab === "session_details"}
+            />
+          </div>
+        </ScrollArea>
       ) : (
         <div className="flex min-h-0 flex-1 items-center justify-center p-6 text-center text-sm text-muted-foreground">
           {t("noActiveSession")}
