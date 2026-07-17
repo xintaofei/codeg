@@ -113,6 +113,11 @@
       "terminalLigaturesHint": "Les ligatures du terminal ne s’appliquent qu’aux polices de programmation intégrées.",
       "preview": "Aperçu"
     },
+    "markdownPreview": {
+      "sectionTitle": "Aperçu Markdown",
+      "sectionDescription": "Contrôle l’affichage des sauts de ligne du code source dans l’aperçu des fichiers Markdown.",
+      "preserveLineBreaks": "Conserver les sauts de ligne simples"
+    },
     "welcomePanel": {
       "sectionTitle": "Zone de sélection du mode",
       "sectionDescription": "Les cartes de raccourci « Développement / Bureautique » affichées au-dessus du champ de saisie sur la page de nouvelle conversation.",

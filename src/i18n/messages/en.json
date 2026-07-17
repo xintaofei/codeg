@@ -113,6 +113,11 @@
       "terminalLigaturesHint": "Terminal ligatures apply only to bundled coding fonts.",
       "preview": "Preview"
     },
+    "markdownPreview": {
+      "sectionTitle": "Markdown preview",
+      "sectionDescription": "Control how source line breaks appear when previewing Markdown files.",
+      "preserveLineBreaks": "Preserve single line breaks"
+    },
     "welcomePanel": {
       "sectionTitle": "Mode selection area",
       "sectionDescription": "The Code Development / Office Work shortcut cards shown above the composer on the new conversation page.",

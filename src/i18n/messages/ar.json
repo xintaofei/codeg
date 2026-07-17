@@ -113,6 +113,11 @@
       "terminalLigaturesHint": "تنطبق الحروف المتصلة في الطرفية على خطوط البرمجة المضمّنة فقط.",
       "preview": "معاينة"
     },
+    "markdownPreview": {
+      "sectionTitle": "معاينة Markdown",
+      "sectionDescription": "تحكم في كيفية ظهور فواصل أسطر المصدر عند معاينة ملفات Markdown.",
+      "preserveLineBreaks": "الاحتفاظ بفواصل الأسطر المفردة"
+    },
     "welcomePanel": {
       "sectionTitle": "منطقة اختيار الوضع",
       "sectionDescription": "بطاقات الاختصار «تطوير الكود / الأعمال المكتبية» التي تظهر أعلى مربع الإدخال في صفحة المحادثة الجديدة.",

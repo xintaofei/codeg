@@ -113,6 +113,11 @@
       "terminalLigaturesHint": "Las ligaduras del terminal solo se aplican a las fuentes de programación incluidas.",
       "preview": "Vista previa"
     },
+    "markdownPreview": {
+      "sectionTitle": "Vista previa de Markdown",
+      "sectionDescription": "Controla cómo aparecen los saltos de línea del código fuente al previsualizar archivos Markdown.",
+      "preserveLineBreaks": "Conservar saltos de línea simples"
+    },
     "welcomePanel": {
       "sectionTitle": "Área de selección de modo",
       "sectionDescription": "Las tarjetas de acceso rápido «Desarrollo de código / Ofimática» que se muestran sobre el editor en la página de nueva conversación.",

@@ -113,6 +113,11 @@
       "terminalLigaturesHint": "Terminal-Ligaturen gelten nur für mitgelieferte Programmierschriftarten.",
       "preview": "Vorschau"
     },
+    "markdownPreview": {
+      "sectionTitle": "Markdown-Vorschau",
+      "sectionDescription": "Legt fest, wie Zeilenumbrüche aus dem Quelltext in der Markdown-Vorschau erscheinen.",
+      "preserveLineBreaks": "Einfache Zeilenumbrüche beibehalten"
+    },
     "welcomePanel": {
       "sectionTitle": "Modusauswahlbereich",
       "sectionDescription": "Die Shortcut-Karten „Code-Entwicklung / Büroarbeit“ über dem Eingabefeld auf der Seite für eine neue Konversation.",

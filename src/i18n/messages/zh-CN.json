@@ -113,6 +113,11 @@
       "terminalLigaturesHint": "终端连字仅对内置编程字体生效。",
       "preview": "预览"
     },
+    "markdownPreview": {
+      "sectionTitle": "Markdown 预览",
+      "sectionDescription": "控制 Markdown 文件预览如何显示源码中的换行。",
+      "preserveLineBreaks": "保留单换行"
+    },
     "welcomePanel": {
       "sectionTitle": "模式选择区域",
       "sectionDescription": "新会话页面输入框上方显示的「代码开发 / 日常办公」快捷卡片区域。",

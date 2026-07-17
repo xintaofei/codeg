@@ -113,6 +113,11 @@
       "terminalLigaturesHint": "終端機連字僅對內建程式字型生效。",
       "preview": "預覽"
     },
+    "markdownPreview": {
+      "sectionTitle": "Markdown 預覽",
+      "sectionDescription": "控制 Markdown 檔案預覽如何顯示原始碼中的換行。",
+      "preserveLineBreaks": "保留單一換行"
+    },
     "welcomePanel": {
       "sectionTitle": "模式選擇區域",
       "sectionDescription": "新會話頁面輸入框上方顯示的「程式開發 / 日常辦公」快捷卡片區域。",
