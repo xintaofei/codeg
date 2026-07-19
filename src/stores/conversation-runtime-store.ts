@@ -2031,6 +2031,47 @@ let timelineCache = new WeakMap<
   ConversationTimelineTurn[]
 >()
 
+// Timeline PREFIX cache (Phases 1–3: persisted + kickoff + local/background +
+// optimistic, already deduped), keyed on the DETAIL object — the one prefix
+// input that is both large and stable across streaming batches. Every
+// SET_LIVE_MESSAGE batch (16ms) replaces the session object, so the per-session
+// cache above misses for the streaming conversation on every batch; without
+// this cache the whole O(conversation length) prefix was rebuilt each time,
+// the only per-frame cost that grows with transcript length. The deps snapshot
+// is validated field by field (`===`): any reducer that changes a prefix input
+// (detail refetch, turn promotion, optimistic append, a migration's
+// conversationId change on the same detail object) misses and rebuilds.
+// Sessions without a detail yet (first prompt of a chat) skip the cache — their
+// prefix is a handful of optimistic/local turns. WeakMap: dropping a detail
+// (refetch / remove / reset) frees the entry with it.
+interface TimelinePrefixDeps {
+  conversationId: number
+  detailTurns: MessageTurn[] | null
+  inFlightUserTurnId: string | null
+  detailCreatedAt: string | null
+  localTurns: MessageTurn[]
+  backgroundTurns: BackgroundOverlayEntry[]
+  optimisticTurns: MessageTurn[]
+  liveOwnsActiveTurn: boolean
+  delegationKickoffText: string | null
+  hasLiveMessage: boolean
+  liveStartedAt: number | null
+}
+interface TimelinePrefixEntry {
+  deps: TimelinePrefixDeps
+  // Deduped Phase 1–3 entries. Never mutated — the streaming tail is appended
+  // via concat, so this array is safely shared across batches and with the
+  // per-session cache when there is no tail.
+  prefix: ConversationTimelineTurn[]
+  // retainKey set of `prefix`; the streaming fast path falls back to a full
+  // dedup pass when a tail key collides with one of these.
+  prefixKeys: Set<string>
+}
+let timelinePrefixCache = new WeakMap<
+  DbConversationDetail,
+  TimelinePrefixEntry
+>()
+
 // Per-conversation fetch-generation counter. Each fetchDetail / refetchDetail /
 // removeConversation bumps the counter for that conversationId; an outstanding
 // fetch captures the value it was issued with and refuses to dispatch its
@@ -2187,15 +2228,109 @@ function mergeTimelineByTimestamp(
   return merged
 }
 
-function computeTimeline(
-  state: ConversationRuntimeState,
-  conversationId: number
-): ConversationTimelineTurn[] {
-  const session = state.byConversationId.get(conversationId)
-  if (!session) return EMPTY_TIMELINE
+// Runs for every timeline entry on every streaming token, so avoid
+// `JSON.stringify`. `role` is a fixed enum with no spaces, so the first space
+// unambiguously splits role from id — a collision-free, far cheaper key.
+const retainKey = (turn: MessageTurn) => `${turn.role} ${turn.id}`
 
-  const cached = timelineCache.get(session)
-  if (cached) return cached
+/**
+ * Invariant: the timeline never contains two turns with the same id. A
+ * premature/duplicate COMPLETE_TURN (e.g. the background `turn_complete`
+ * listener in ConversationDetailPanel racing the panel's own promotion)
+ * can leave the in-flight turn in BOTH `localTurns` (a promoted snapshot)
+ * and the still-streaming `liveMessage`, or — after a final re-promotion
+ * once the same liveMessage was re-bridged — twice in `localTurns`. All
+ * copies are built by `buildStreamingTurnsFromLiveMessage` from that one
+ * liveMessage, so they share `live-<cid>-<liveMessageId>[-i]` ids.
+ * Rendering both duplicates the whole assistant turn (visible doubling +
+ * React duplicate-key warnings once `mergeConsecutiveAssistantTurns`
+ * flat-maps their parts).
+ *
+ * Retain rule is role-aware (all entries sharing an id are the same
+ * underlying turn, so the role is unambiguous):
+ *   - ASSISTANT (and any non-user): keep the LAST occurrence. The live
+ *     streaming copy (appended last) wins over an earlier promoted
+ *     snapshot, and a re-promoted local turn wins over its stale copy.
+ *   - USER: keep the FIRST occurrence. When the detail endpoint stamps the
+ *     persisted in-flight user turn with the broadcast id, that persisted
+ *     copy is emitted first, in its correct position before any partial
+ *     assistant reply; a same-id optimistic/synthesized copy is appended
+ *     later (and, for the sender, survives a mid-turn `awaiting_persist`
+ *     refetch). Keeping the persisted copy preserves ordering — otherwise
+ *     the prompt would render after its own streaming reply.
+ * Real turns always have distinct ids (liveMessage.id is minted fresh per
+ * prompt cycle, DB turn ids are unique), so a normal multi-turn timeline
+ * has no collisions and is returned untouched.
+ *
+ * The key includes the role, not just the id, so the merge only ever
+ * collapses entries that are genuinely the same turn (same id AND role).
+ * Should two DIFFERENT-role turns ever share an id — only reachable via a
+ * client id that collided into another namespace — they are kept separately
+ * (a recoverable visible duplicate) instead of one silently overwriting the
+ * other, which could hide a user prompt.
+ */
+function dedupeTimeline(
+  entries: ConversationTimelineTurn[]
+): ConversationTimelineTurn[] {
+  const retainIndexByKey = new Map<string, number>()
+  entries.forEach((entry, i) => {
+    const key = retainKey(entry.turn)
+    const existing = retainIndexByKey.get(key)
+    // First sighting always records; later sightings overwrite only for
+    // non-user turns (keep-last). User turns keep their first index.
+    if (existing === undefined || entry.turn.role !== "user") {
+      retainIndexByKey.set(key, i)
+    }
+  })
+  return retainIndexByKey.size === entries.length
+    ? entries
+    : entries.filter(
+        (entry, i) => retainIndexByKey.get(retainKey(entry.turn)) === i
+      )
+}
+
+function timelinePrefixDepsEqual(
+  a: TimelinePrefixDeps,
+  b: TimelinePrefixDeps
+): boolean {
+  return (
+    a.conversationId === b.conversationId &&
+    a.detailTurns === b.detailTurns &&
+    a.inFlightUserTurnId === b.inFlightUserTurnId &&
+    a.detailCreatedAt === b.detailCreatedAt &&
+    a.localTurns === b.localTurns &&
+    a.backgroundTurns === b.backgroundTurns &&
+    a.optimisticTurns === b.optimisticTurns &&
+    a.liveOwnsActiveTurn === b.liveOwnsActiveTurn &&
+    a.delegationKickoffText === b.delegationKickoffText &&
+    a.hasLiveMessage === b.hasLiveMessage &&
+    a.liveStartedAt === b.liveStartedAt
+  )
+}
+
+function computeTimelinePrefix(
+  session: ConversationRuntimeSession,
+  conversationId: number
+): TimelinePrefixEntry {
+  const detail = session.detail
+  // Everything Phases 1–3 read, snapshotted for the `===` validity check.
+  const deps: TimelinePrefixDeps = {
+    conversationId,
+    detailTurns: detail?.turns ?? null,
+    inFlightUserTurnId: detail?.in_flight_user_turn_id ?? null,
+    detailCreatedAt: detail?.summary.created_at ?? null,
+    localTurns: session.localTurns,
+    backgroundTurns: session.backgroundTurns,
+    optimisticTurns: session.optimisticTurns,
+    liveOwnsActiveTurn: session.liveOwnsActiveTurn,
+    delegationKickoffText: session.delegationKickoffText,
+    hasLiveMessage: session.liveMessage !== null,
+    liveStartedAt: session.liveMessage?.startedAt ?? null,
+  }
+  if (detail) {
+    const cached = timelinePrefixCache.get(detail)
+    if (cached && timelinePrefixDepsEqual(cached.deps, deps)) return cached
+  }
 
   // Phase 1: DB historical turns.
   // When liveOwnsActiveTurn is set (sub-agent dialog), the live/local reply
@@ -2341,79 +2476,75 @@ function computeTimeline(
     })
   )
 
+  // Dedupe the prefix on its own — prefix-internal collisions (promoted
+  // local vs persisted copies, optimistic vs stamped persisted prompts)
+  // resolve identically with or without a streaming tail, so the result is
+  // reusable across batches.
+  const rawPrefix = [...persisted, ...localAndBackground, ...optimistic]
+  const prefix = dedupeTimeline(rawPrefix)
+  const prefixKeys = new Set<string>()
+  for (const item of prefix) {
+    prefixKeys.add(retainKey(item.turn))
+  }
+  const entry: TimelinePrefixEntry = { deps, prefix, prefixKeys }
+  if (detail) {
+    timelinePrefixCache.set(detail, entry)
+  }
+  return entry
+}
+
+function computeTimeline(
+  state: ConversationRuntimeState,
+  conversationId: number
+): ConversationTimelineTurn[] {
+  const session = state.byConversationId.get(conversationId)
+  if (!session) return EMPTY_TIMELINE
+
+  const cached = timelineCache.get(session)
+  if (cached) return cached
+
+  // Phases 1–3 (already deduped), reused across streaming batches.
+  const { prefix, prefixKeys } = computeTimelinePrefix(session, conversationId)
+
   // Phase 4: Streaming turns (live agent response, split into rounds)
   const streamingMessage = session.liveMessage
   const built = streamingMessage
     ? buildStreamingTurnsFromLiveMessage(conversationId, streamingMessage)
     : null
 
-  const result = [...persisted, ...localAndBackground, ...optimistic]
-
-  if (built) {
-    for (const [i, turn] of built.turns.entries()) {
-      result.push({
-        key: `streaming-${conversationId}-${streamingMessage?.id ?? "unknown"}-${i}`,
-        turn,
-        phase: "streaming",
-        inProgressToolCallIds: built.inProgressToolCallIds,
-      })
+  let deduped: ConversationTimelineTurn[]
+  if (!built || built.turns.length === 0) {
+    deduped = prefix
+  } else {
+    const tail: ConversationTimelineTurn[] = built.turns.map((turn, i) => ({
+      key: `streaming-${conversationId}-${streamingMessage?.id ?? "unknown"}-${i}`,
+      turn,
+      phase: "streaming" as const,
+      inProgressToolCallIds: built.inProgressToolCallIds,
+    }))
+    // Fast path: when no tail key collides with the deduped prefix (or
+    // repeats within the tail), appending preserves the dedup invariant
+    // without re-scanning the whole timeline. On collision — e.g. a
+    // just-promoted local copy of the still-streaming turn, which keep-LAST
+    // must resolve in the tail's favor — fall back to the full pass.
+    // Running that pass over the deduped prefix is equivalent to running it
+    // over the raw phase lists: per key, USER keeps the first prefix
+    // survivor either way, and non-user keeps the tail copy (or, absent
+    // one, the last prefix survivor the prefix dedup already picked).
+    let collides = false
+    const seenTailKeys = tail.length > 1 ? new Set<string>() : null
+    for (const item of tail) {
+      const key = retainKey(item.turn)
+      if (prefixKeys.has(key) || seenTailKeys?.has(key)) {
+        collides = true
+        break
+      }
+      seenTailKeys?.add(key)
     }
+    deduped = collides
+      ? dedupeTimeline(prefix.concat(tail))
+      : prefix.concat(tail)
   }
-
-  // Invariant: the timeline never contains two turns with the same id. A
-  // premature/duplicate COMPLETE_TURN (e.g. the background `turn_complete`
-  // listener in ConversationDetailPanel racing the panel's own promotion)
-  // can leave the in-flight turn in BOTH `localTurns` (a promoted snapshot)
-  // and the still-streaming `liveMessage`, or — after a final re-promotion
-  // once the same liveMessage was re-bridged — twice in `localTurns`. All
-  // copies are built by `buildStreamingTurnsFromLiveMessage` from that one
-  // liveMessage, so they share `live-<cid>-<liveMessageId>[-i]` ids.
-  // Rendering both duplicates the whole assistant turn (visible doubling +
-  // React duplicate-key warnings once `mergeConsecutiveAssistantTurns`
-  // flat-maps their parts).
-  //
-  // Retain rule is role-aware (all entries sharing an id are the same
-  // underlying turn, so the role is unambiguous):
-  //   - ASSISTANT (and any non-user): keep the LAST occurrence. The live
-  //     streaming copy (appended last) wins over an earlier promoted
-  //     snapshot, and a re-promoted local turn wins over its stale copy.
-  //   - USER: keep the FIRST occurrence. When the detail endpoint stamps the
-  //     persisted in-flight user turn with the broadcast id, that persisted
-  //     copy is emitted first, in its correct position before any partial
-  //     assistant reply; a same-id optimistic/synthesized copy is appended
-  //     later (and, for the sender, survives a mid-turn `awaiting_persist`
-  //     refetch). Keeping the persisted copy preserves ordering — otherwise
-  //     the prompt would render after its own streaming reply.
-  // Real turns always have distinct ids (liveMessage.id is minted fresh per
-  // prompt cycle, DB turn ids are unique), so a normal multi-turn timeline
-  // has no collisions and is returned untouched.
-  //
-  // The key includes the role, not just the id, so the merge only ever
-  // collapses entries that are genuinely the same turn (same id AND role).
-  // Should two DIFFERENT-role turns ever share an id — only reachable via a
-  // client id that collided into another namespace — they are kept separately
-  // (a recoverable visible duplicate) instead of one silently overwriting the
-  // other, which could hide a user prompt.
-  // Runs for every timeline entry on every streaming token, so avoid
-  // `JSON.stringify`. `role` is a fixed enum with no spaces, so the first space
-  // unambiguously splits role from id — a collision-free, far cheaper key.
-  const retainKey = (turn: MessageTurn) => `${turn.role} ${turn.id}`
-  const retainIndexByKey = new Map<string, number>()
-  result.forEach((entry, i) => {
-    const key = retainKey(entry.turn)
-    const existing = retainIndexByKey.get(key)
-    // First sighting always records; later sightings overwrite only for
-    // non-user turns (keep-last). User turns keep their first index.
-    if (existing === undefined || entry.turn.role !== "user") {
-      retainIndexByKey.set(key, i)
-    }
-  })
-  const deduped =
-    retainIndexByKey.size === result.length
-      ? result
-      : result.filter(
-          (entry, i) => retainIndexByKey.get(retainKey(entry.turn)) === i
-        )
 
   timelineCache.set(session, deduped)
   return deduped
@@ -2899,6 +3030,7 @@ export function resetConversationRuntimeStore(): void {
   for (const cancel of viewerDetailSyncCancels.values()) cancel()
   viewerDetailSyncCancels.clear()
   timelineCache = new WeakMap()
+  timelinePrefixCache = new WeakMap()
   useConversationRuntimeStore.setState({
     byConversationId: new Map(),
     conversationIdByExternalId: new Map(),
