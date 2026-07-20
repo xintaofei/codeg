@@ -53,7 +53,7 @@ export function DelegationStatusGroupCard({
         "overflow-hidden rounded-lg border text-xs",
         allError
           ? "border-destructive/30 bg-destructive/5"
-          : "border-border bg-card"
+          : "border-border bg-card ws-surface-capsule"
       )}
     >
       {rows.map((r, i) => (

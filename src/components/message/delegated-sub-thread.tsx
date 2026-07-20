@@ -88,7 +88,7 @@ export function DelegatedSubThread({
   return (
     <div
       data-testid="delegated-sub-thread"
-      className="@container/delegcard rounded-lg border border-border bg-card"
+      className="@container/delegcard rounded-lg border border-border bg-card ws-surface-capsule"
     >
       <div className="flex w-full items-stretch rounded-lg overflow-hidden">
         <div className="flex flex-1 min-w-0 items-center gap-3 px-3 py-2.5 text-left">

@@ -37,6 +37,7 @@ import {
 import { useIsMobile } from "@/hooks/use-mobile"
 import { useIsMac } from "@/hooks/use-is-mac"
 import { usePlatform } from "@/hooks/use-platform"
+import { useZoomLevel } from "@/hooks/use-appearance"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { formatShortcutLabel } from "@/lib/keyboard-shortcuts"
 import { isDesktop } from "@/lib/platform"
@@ -119,13 +120,15 @@ export function Sidebar() {
   const { routeId, setRoute, openConversations } = useWorkbenchRoute()
   const isMac = useIsMac()
   const { isMac: platformIsMac } = usePlatform()
+  const { zoomLevel } = useZoomLevel()
   const { shortcuts } = useShortcutSettings()
   const isMobile = useIsMobile()
   const listRef = useRef<SidebarConversationListHandle>(null)
   // On desktop the header's top-left is owned by the fixed window-chrome overlay
   // (sidebar toggle + remote); reserve exactly its width so the view controls
-  // and drag region clear it. Mobile has no overlay (the sidebar is a Sheet).
-  const leftReserve = leftChromeReserve(platformIsMac && isDesktop())
+  // and drag region clear it. The reserve scales with the app zoom to track the
+  // rem-sized overlay buttons. Mobile has no overlay (the sidebar is a Sheet).
+  const leftReserve = leftChromeReserve(platformIsMac && isDesktop(), zoomLevel)
 
   const [showCompleted, setShowCompleted] = useState(false)
   const [sortMode, setSortMode] = useState<SidebarSortMode>("created")

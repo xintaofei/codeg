@@ -241,13 +241,18 @@ export function FileWorkspaceTabBar({
           detail header). Wrapped in one `flex-1` box so the workspace-bg bottom
           hairline (ws-strip-line) runs unbroken under both — the short
           `self-center h-7` button can't carry the line itself. NO `min-w-0`: the
-          wrapper's min-content (the shrink-0 button) is its floor, so under
-          many-tab overflow the group shrinks to reserve the button width instead
-          of the wrapper collapsing to 0 and clipping it. Off (no bg image):
+          wrapper's min-content (the spacer's `min-w-10` + the shrink-0 button) is
+          its floor, so under many-tab overflow the group shrinks to reserve them
+          instead of the wrapper collapsing to 0 and clipping. Off (no bg image):
           ws-strip-line is inert. */}
       {embedded && (
         <div className="flex h-full flex-1 items-stretch ws-strip-line">
-          <div data-tauri-drag-region className="h-full min-w-0 flex-1" />
+          {/* Drag spacer, floored at `min-w-10` (40px) instead of `min-w-0`: even
+              when many tabs overflow and squeeze this region, a grabbable
+              window-drag gap always remains between the last tab and the
+              maximize button, so the tabs never butt against the button and the
+              packed title bar stays draggable. */}
+          <div data-tauri-drag-region className="h-full min-w-10 flex-1" />
           {mode === "fusion" && (
             <button
               type="button"
@@ -412,18 +417,19 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
       data-adjacent-active={embedded ? adjacentActive : undefined}
       className={cn(
         "cursor-grab active:cursor-grabbing",
-        // Embedded (browser-style): each tab sizes to its content (`basis-auto`)
-        // up to `max-w-[15rem]` (leftover row stays a window-drag region);
-        // `grow-0` keeps them from stretching to fill, and they still `shrink`
-        // together (down to `min-w-0`, the label truncates) once full.
-        // `browser-tab-item` draws the left-edge hairline separator (globals.css)
-        // as a 1px divider at each shared edge — tabs sit flush (no gutter) so
-        // the line is the only separation, and the inner row owns its own
-        // `overflow-hidden`. The active tab is raised (`z-10`) so its
+        // Embedded (browser-style): every tab is EQUAL width (`basis-48` = 12rem,
+        // `grow-0` so they don't stretch to fill) — a long filename and a short one
+        // read uniform instead of one wide / one narrow. They still `shrink`
+        // together (down to `min-w-0`, the label fades) once the row fills; above
+        // that the fixed basis keeps them equal. Leftover row stays a window-drag
+        // region. `browser-tab-item` draws the left-edge hairline separator
+        // (globals.css) as a 1px divider at each shared edge — tabs sit flush (no
+        // gutter) so the line is the only separation, and the inner row owns its
+        // own `overflow-hidden`. The active tab is raised (`z-10`) so its
         // reverse-corner seat is never covered by a hovered neighbour's flare.
         // Standalone: rounded pill, intrinsic width (scroll).
         embedded
-          ? "browser-tab-item min-w-0 grow-0 shrink basis-auto max-w-[15rem] data-[active=true]:z-10"
+          ? "browser-tab-item min-w-0 grow-0 shrink basis-48 data-[active=true]:z-10"
           : "rounded-full shrink-0",
         isTouchSorting && "z-50 opacity-90 shadow-md ring-1 ring-primary/25"
       )}

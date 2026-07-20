@@ -36,6 +36,11 @@
      --ws-surface-alpha 由 inline 脚本 / AppearanceProvider 覆盖为用户设置。 */
   --ws-surface-alpha: 0.3;
   --ws-surface-blur: 8px;
+
+  /* 消息流里的内联代码 / 用户气泡 / 委派卡片的固定半透明度：刻意不随「面板不透明度」滑块
+     （--ws-surface-alpha）变化，让这些消息内小面在任何面板透明度下都稳定。配 backdrop 磨砂
+     + 1px 描边（见下方各规则），在忙碌背景图上仍看得清、分得出边界。 */
+  --ws-capsule-alpha: 0.6;
 }
 
 /* ===========================================================================
@@ -1080,6 +1085,56 @@
   backdrop-filter: blur(var(--ws-surface-blur));
 }
 
+/* 会话内联代码（Streamdown 的 inline-code，元素自带 bg-muted）：开图转半透明磨砂。忙碌背景
+   图上单靠半透明色块看不清、看不出边界（用户反馈），故 backdrop 磨砂把身后背景糊开、与之
+   分离，再用 inset 1px ring 描出边界（ring 用纯色 var(--border)，不改盒模型、无回流）。组合式
+   无 base 规则，关图零回归（bg-muted 原样保留）。代码块（code-block-body）有 shiki 底色，不在此列。 */
+[data-workspace-bg="on"] [data-streamdown="inline-code"] {
+  background-color: color-mix(
+    in oklch,
+    var(--muted) calc(var(--ws-capsule-alpha) * 100%),
+    transparent
+  );
+  box-shadow: inset 0 0 0 1px var(--border);
+  -webkit-backdrop-filter: blur(var(--ws-surface-blur));
+  backdrop-filter: blur(var(--ws-surface-blur));
+  /* inline-code 是行内元素，跨行折断时默认(slice)会把底色/ring/圆角当一个盒切开——每段行
+     片只画到断点，ring 在断处豁口。clone 让每个行片各自成完整圆角 chip（自带底色 + ring），
+     折行时也不露豁口。仅 bg-on 生效，关图零回归。 */
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* 用户消息气泡（MessageContent 上的 ws-surface-secondary，配对元素自带的
+   group-[.is-user]:bg-secondary）：开图转半透明磨砂。忙碌背景图上单靠半透明看不清、看不出
+   边界（用户反馈），故加 backdrop 磨砂（与背景分离）+ inset 1px ring 描边。以 .is-user 祖先
+   限定——助手消息（.is-assistant）本无气泡底色，须保持画布透出，不受影响。组合式无 base 规则，关图零回归。 */
+[data-workspace-bg="on"] .is-user .ws-surface-secondary {
+  background-color: color-mix(
+    in oklch,
+    var(--secondary) calc(var(--ws-capsule-alpha) * 100%),
+    transparent
+  );
+  box-shadow: inset 0 0 0 1px var(--border);
+  -webkit-backdrop-filter: blur(var(--ws-surface-blur));
+  backdrop-filter: blur(var(--ws-surface-blur));
+}
+
+/* 消息流委派卡片（delegate_to_agent 的卡片，元素自带 bg-card + border-border）：开图转半透明
+   磨砂——backdrop 磨砂把身后背景糊开、与之分离（卡片自带 border 已描边界，无需 ring）。alpha
+   固定（--ws-capsule-alpha），与消息里的内联代码 / 气泡统一，区别于面板级 ws-surface-card 的
+   滑块磨砂玻璃。组合式无 base 规则，关图零回归（bg-card 原样保留）。仅委派卡片用它；提问卡片 /
+   git-log 面板仍用 ws-surface-card。 */
+[data-workspace-bg="on"] .ws-surface-capsule {
+  background-color: color-mix(
+    in oklch,
+    var(--card) calc(var(--ws-capsule-alpha) * 100%),
+    transparent
+  );
+  -webkit-backdrop-filter: blur(var(--ws-surface-blur));
+  backdrop-filter: blur(var(--ws-surface-blur));
+}
+
 /* Canvas 表面：开启背景图时强制透明，让底层背景图 + 遮罩直接透出（会话/文件
    overlay section、侧栏会话行）。无 base 规则 —— 与元素上配对的 bg-*（bg-background
    / bg-sidebar）组合，未启用背景图时完全等价那个纯色（零回归）。透明不依赖
@@ -1099,6 +1154,34 @@
   background-color: transparent;
 }
 
+/* Monaco sticky scroll（钉住的父级作用域行）：开背景图时编辑器画布透明（WSBG_CANVAS_ALPHA=0），
+   sticky 头部也随画布透明（monaco-themes.ts 里 sticky 背景跟随 canvas）。放任透明则滚动的代码
+   从钉住行下方透出、两者重叠看不清；填成不透明画布色又是浮在背景图上一坨突兀的深色块（用户
+   反馈「一坨黑色」）。这里把整条 .sticky-widget 做成与消息内联代码/气泡同族的磨砂表面：半透明
+   画布色（--card，与编辑器画布同源）+ backdrop 磨砂，把身后滚动代码与背景图糊开，钉住行文字
+   清晰浮于其上。alpha 固定（--ws-capsule-alpha），与消息内小面统一、不随面板滑块。主题侧 sticky
+   背景已随画布透明，故此处单层着色、无接缝。关图无 data-workspace-bg，规则不生效，零回归。
+
+   ★覆盖到滚动条条带：Monaco 运行时给 .sticky-widget 打 inline width =
+   layoutInfo.width − verticalScrollbarWidth（stickyScrollWidget.js:160，即内容宽，右侧漏出
+   一条竖向滚动条宽的条带），CSS 里的 width:100% 被这条 inline 盖过 → 磨砂层到不了右边缘，
+   滚动代码从那条缝透出（用户反馈「右边显示不全」）。故用 width:100% !important 压过 inline
+   width，把磨砂层铺到编辑器右缘补上那条缝。安全性：可见滚动条 .monaco-scrollable-element>.visible
+   是 z-index:11（scrollbars.css），高于 sticky-widget 的 z-index:4——磨砂层永远在滚动条之下，
+   滑块照常浮在其上、可拖可点；滚动条隐藏时（opacity:0 不绘制）磨砂层正好补上条带。backdrop
+   只糊身后的代码，不糊上层滑块。 */
+[data-workspace-bg="on"] .monaco-editor .sticky-widget {
+  /* 压过 Monaco 的 inline 内容宽，铺满到右缘（含滚动条条带）。见上方安全性说明。 */
+  width: 100% !important;
+  background-color: color-mix(
+    in oklch,
+    var(--card) calc(var(--ws-capsule-alpha) * 100%),
+    transparent
+  );
+  -webkit-backdrop-filter: blur(var(--ws-surface-blur));
+  backdrop-filter: blur(var(--ws-surface-blur));
+}
+
 /* 顶部标签条「浏览器拱门」下边框（组合式，无 base 规则，关图零回归）。整条标签条 +
    所有 tab 开图皆透明（透出真背景图）；靠一条细下边框把标签条与下方内容分隔，唯独激活
    tab 处开口——线绕到激活 tab 顶部走一圈（拱门轮廓），激活 tab 靠这圈描边区分而非填充色。
@@ -1115,10 +1198,23 @@
 
 /* 旧 WebKitGTK 无 color-mix 时降级为不透明（背景图仅在透明内容区透出，不崩）。 */
 @supports not (background: color-mix(in oklch, white, transparent)) {
+  /* 老引擎关掉背景模糊（背景色 color-mix 已作废回落到不透明 bg-*）。内联代码 / 用户气泡的
+     inset ring 用纯色 var(--border)，不依赖 color-mix，照常描边（委派卡片自带 border 同理）。 */
   [data-workspace-bg="on"] .ws-surface,
   [data-workspace-bg="on"] .ws-surface-muted,
   [data-workspace-bg="on"] .ws-surface-sidebar,
-  [data-workspace-bg="on"] .ws-surface-card {
+  [data-workspace-bg="on"] .ws-surface-card,
+  [data-workspace-bg="on"] [data-streamdown="inline-code"],
+  [data-workspace-bg="on"] .is-user .ws-surface-secondary,
+  [data-workspace-bg="on"] .ws-surface-capsule {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  /* Monaco sticky scroll 是第三方 DOM，无自带 bg 工具类可回落——color-mix 作废后
+     background-color 声明整条失效会让 .sticky-widget 透明（滚动代码透出）。故老引擎显式
+     回落到不透明画布色 var(--card)（即背景图开启前的老不透明band，仍可读），并关掉磨砂。 */
+  [data-workspace-bg="on"] .monaco-editor .sticky-widget {
+    background-color: var(--card);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
@@ -1905,13 +2001,13 @@
 
 /* The active tab's close button is always visible (an absolute `right-2` / `w-4`
    overlay). Reserve its footprint (0.5rem offset + 1rem width = 1.5rem) as the
-   content's right padding, overriding the default `px-2` right. The tab is
-   content-sized (`grow-0 basis-auto`), so this widens it just enough to fit the FULL
-   title AND the button side by side — the fix for an only/short active tab whose
-   title used to sit under the button and lose its tail to the fade. Non-active tabs
-   don't reserve it: their button only appears on hover, where the label widens its
-   fade to clear the button (above); idle titles keep the full width (R40 "收回按钮
-   空间") and tabs never reflow-widen on hover. General (not workspace-bg gated). */
+   content's right padding, overriding the default `px-2` right, so the title ends
+   left of the button (its tail fades under the reserved zone) instead of sitting
+   under it. Tabs are fixed-width (`grow-0 basis-48`); this padding just carves out
+   the button's column. Non-active tabs don't reserve it: their button only appears
+   on hover, where the label widens its fade to clear the button (above); idle
+   titles keep the full width and tabs never reflow-widen on hover. General (not
+   workspace-bg gated). */
 .browser-tab-item[data-active="true"] .browser-tab-content {
   padding-right: 1.5rem;
 }
@@ -2060,13 +2156,17 @@
    overflow-hidden，脚可外飘）。top:0 = group pt-1.5 下沿(y6)，bottom:0.5rem → 竖边止于
    y32，正好接上 seat 的反向圆角脚(y32→40)；竖边不再越过脚部下探到 y40，消除脚部两侧的
    「垂直角边框」毛刺。rounded-t 出拱顶。仅 bg-on + 激活生效，关图无 ::after（零回归）。
-   取代旧的 .ws-tab-arch（那是画在内容 div 上的整高边框，底部越界成毛刺）。 */
+   ★left/right:-1px（而非 0）：竖边描边画在盒内沿，若贴 tab 边(left:0)则落在 x∈[0,1]（tab
+   内侧），而 seat 脚的竖直切线描边在 tab 外沿 x∈[-1,0]（脚 ::before/::after 往 gutter 外
+   飘 0.5rem，border 画在其内沿）——两者差 1px 形成 y32 处「水平错位」，正是用户反馈激活 tab
+   底部两角弧度「断断续续」的成因。把两侧各外移 1px → 竖边与脚竖直切线共线(x∈[-1,0] /
+   [w,w+1])，拱门侧边与反向弧脚无缝相接。取代旧的 .ws-tab-arch（整高边框底部越界成毛刺）。 */
 [data-workspace-bg="on"] .browser-tab-item[data-active="true"]::after {
   content: "";
   position: absolute;
   top: 0;
-  left: 0;
-  right: 0;
+  left: -1px;
+  right: -1px;
   bottom: 0.5rem;
   border-top: 1px solid var(--border);
   border-left: 1px solid var(--border);
@@ -2116,7 +2216,12 @@
 [data-workspace-bg="on"]
   .browser-tab-item[data-adjacent-active]
   .ws-strip-line {
-  border-bottom-color: transparent;
+  /* border-bottom-WIDTH:0（而非仅 color:transparent）：内缩基线走 ::after(bottom:0)，其
+     containing block 是本元素 padding box。若保留 1px 透明边框，padding box 比 border box
+     矮 1px → ::after 落在 border box 底沿上方 1px，与其它 tab 的 border-bottom（落在 border
+     box 底沿）差 1px，即用户反馈「紧邻激活的 tab 下边框对不齐」。撤掉边框宽度 → padding box
+     与 border box 同底，::after bottom:0 正落 border box 底沿，与普通 tab 基线共线。 */
+  border-bottom-width: 0;
 }
 [data-workspace-bg="on"]
   .browser-tab-item[data-adjacent-active]

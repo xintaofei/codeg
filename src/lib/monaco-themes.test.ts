@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 import {
   configureLanguageValidation,
   defineMonacoThemes,
+  defineWorkspaceBgTheme,
   EDITOR_CANVAS_BG,
   EDITOR_LINE_HIGHLIGHT,
   monacoThemeName,
@@ -135,10 +136,50 @@ describe("configureLanguageValidation", () => {
     expect(call?.[1].colors["editorGutter.background"]).toBe(
       EDITOR_CANVAS_BG.blue.dark
     )
+    // Sticky scroll (pinned parent-scope lines) tracks the canvas: in the opaque
+    // base theme it equals the canvas bg (unchanged). The workspace-bg variant
+    // makes it transparent and frosts the band in CSS instead (see the wsbg test
+    // below) — so it stops being a stark opaque slab over a background image.
+    expect(call?.[1].colors["editorStickyScroll.background"]).toBe(
+      EDITOR_CANVAS_BG.blue.dark
+    )
+    expect(call?.[1].colors["editorStickyScrollGutter.background"]).toBe(
+      EDITOR_CANVAS_BG.blue.dark
+    )
     // The current-line highlight follows the theme's tinted --muted, not a fixed
     // gray, so the focused line carries the accent hue.
     expect(call?.[1].colors["editor.lineHighlightBackground"]).toBe(
       EDITOR_LINE_HIGHLIGHT.blue.dark
+    )
+  })
+
+  it("lets the sticky-scroll band go transparent with the canvas in the workspace-bg variant", () => {
+    // With a workspace background image the canvas is transparent (alpha 0) and
+    // the sticky band tracks it, rather than staying an opaque slab: a single
+    // full-width frosted surface is painted on `.sticky-widget` in CSS instead
+    // (covering the scrollbar strip Monaco's content-width inner layer leaves
+    // bare). So the sticky bg must carry the same transparent canvas value.
+    const { monaco } = makeMonaco()
+    const defineTheme = monaco.editor.defineTheme
+    const base = monacoThemeName("blue", true)
+
+    const name = defineWorkspaceBgTheme(
+      monaco as unknown as Parameters<typeof defineWorkspaceBgTheme>[0],
+      base,
+      0
+    )
+
+    const call = defineTheme.mock.calls.find((c) => c[0] === name)
+    expect(call).toBeDefined()
+    // Fully transparent (`…dark` + "00"), matching `editor.background`, so the
+    // frosted CSS band shows through uniformly across content, gutter and strip.
+    const transparentCanvas = `${EDITOR_CANVAS_BG.blue.dark}00`
+    expect(call?.[1].colors["editor.background"]).toBe(transparentCanvas)
+    expect(call?.[1].colors["editorStickyScroll.background"]).toBe(
+      transparentCanvas
+    )
+    expect(call?.[1].colors["editorStickyScrollGutter.background"]).toBe(
+      transparentCanvas
     )
   })
 })

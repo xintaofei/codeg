@@ -128,19 +128,20 @@ export const TabItem = memo(function TabItem({
       data-adjacent-active={embedded ? adjacentActive : undefined}
       className={cn(
         "cursor-grab active:cursor-grabbing",
-        // Embedded (browser-style): each tab sizes to its content (`basis-auto`)
-        // up to `max-w-[15rem]`, so a few tabs sit at their natural width and the
-        // new-conversation button hugs the last one — the leftover row stays a
-        // window-drag region. `grow-0` keeps them from stretching to fill; they
-        // still `shrink` together (down to `min-w-0`, the label truncates) once
-        // the row fills. `browser-tab-item` draws the left-edge hairline
-        // separator (globals.css) as a 1px divider at each shared edge; tabs sit
-        // flush (no gutter) so the line is the only separation, and the inner row
-        // owns its own `overflow-hidden`. The active tab is raised (`z-10`) so
-        // its reverse-corner seat is never covered by a hovered neighbour's flare.
-        // Standalone: rounded pill, intrinsic size + horizontal scroll (mobile).
+        // Embedded (browser-style): every tab is EQUAL width (`basis-48` = 12rem,
+        // `grow-0` so they don't stretch to fill), so a long title and a short one
+        // read uniform instead of one wide / one narrow. They still `shrink`
+        // together (down to `min-w-0`, the label fades) once the row fills; above
+        // that the fixed basis keeps them equal. The new-conversation button hugs
+        // the last tab and the leftover row stays a window-drag region.
+        // `browser-tab-item` draws the left-edge hairline separator (globals.css)
+        // as a 1px divider at each shared edge; tabs sit flush (no gutter) so the
+        // line is the only separation, and the inner row owns its own
+        // `overflow-hidden`. The active tab is raised (`z-10`) so its reverse-corner
+        // seat is never covered by a hovered neighbour's flare. Standalone: rounded
+        // pill, intrinsic size + horizontal scroll (mobile).
         embedded
-          ? "browser-tab-item min-w-0 grow-0 shrink basis-auto max-w-[15rem] data-[active=true]:z-10"
+          ? "browser-tab-item min-w-0 grow-0 shrink basis-48 data-[active=true]:z-10"
           : "rounded-full shrink-0",
         !isCoarsePointer &&
           (embedded

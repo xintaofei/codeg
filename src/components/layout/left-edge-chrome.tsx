@@ -8,6 +8,7 @@ import { useSidebarContext } from "@/contexts/sidebar-context"
 import { useIsMac } from "@/hooks/use-is-mac"
 import { usePlatform } from "@/hooks/use-platform"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
+import { useZoomLevel } from "@/hooks/use-appearance"
 import { formatShortcutLabel } from "@/lib/keyboard-shortcuts"
 import { MAC_TRAFFIC_LIGHT_INSET, leftChromeReserve } from "@/lib/window-chrome"
 import { RemoteWorkspaceDropdown } from "./remote-workspace-dropdown"
@@ -33,6 +34,7 @@ export function LeftEdgeChrome() {
   const isMac = useIsMac()
   const { shortcuts } = useShortcutSettings()
   const { isMac: platformIsMac } = usePlatform()
+  const { zoomLevel } = useZoomLevel()
   // The traffic lights only exist on the macOS desktop runtime (not web / not
   // Windows-Linux), so only reserve their inset there.
   const showMacInset = platformIsMac && isDesktop()
@@ -40,7 +42,7 @@ export function LeftEdgeChrome() {
   return (
     <div
       className="flex h-full items-center"
-      style={{ width: leftChromeReserve(showMacInset) }}
+      style={{ width: leftChromeReserve(showMacInset, zoomLevel) }}
     >
       {showMacInset && (
         <div

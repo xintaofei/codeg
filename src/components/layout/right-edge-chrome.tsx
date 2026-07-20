@@ -11,8 +11,9 @@ import { useTerminalContext } from "@/contexts/terminal-context"
 import { useIsActiveChatMode } from "@/hooks/use-is-active-chat-mode"
 import { useIsMac } from "@/hooks/use-is-mac"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
+import { useZoomLevel } from "@/hooks/use-appearance"
 import { formatShortcutLabel } from "@/lib/keyboard-shortcuts"
-import { RIGHT_CHROME_CLUSTER } from "@/lib/window-chrome"
+import { rightChromeClusterWidth } from "@/lib/window-chrome"
 
 /**
  * Contents of the window's fixed top-RIGHT chrome overlay: terminal + aux-panel
@@ -31,6 +32,7 @@ export function RightEdgeChrome() {
   const { isOpen: terminalOpen, toggle: toggleTerminal } = useTerminalContext()
   const isMac = useIsMac()
   const { shortcuts } = useShortcutSettings()
+  const { zoomLevel } = useZoomLevel()
 
   const handleOpenSettings = useCallback(() => {
     openSettingsWindow().catch((err) => {
@@ -41,7 +43,7 @@ export function RightEdgeChrome() {
   return (
     <div
       className="flex h-full items-center"
-      style={{ width: RIGHT_CHROME_CLUSTER }}
+      style={{ width: rightChromeClusterWidth(zoomLevel) }}
     >
       {/* Empty head is a window-drag region; buttons stay flush right. */}
       <div data-tauri-drag-region className="h-full min-w-0 flex-1" />

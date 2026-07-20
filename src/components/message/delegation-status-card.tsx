@@ -100,7 +100,7 @@ export function DelegationStatusCard({
         "overflow-hidden rounded-lg border text-xs",
         isError
           ? "border-destructive/30 bg-destructive/5"
-          : "border-border bg-card"
+          : "border-border bg-card ws-surface-capsule"
       )}
     >
       <DelegationStatusRow

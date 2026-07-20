@@ -520,13 +520,29 @@ function withCanvasBackground(
   // the editor. Empty (default) keeps them fully opaque — unchanged behaviour.
   alphaHexSuffix = ""
 ): Record<string, string> {
-  const bg = EDITOR_CANVAS_BG[color][dark ? "dark" : "light"] + alphaHexSuffix
+  const opaqueBg = EDITOR_CANVAS_BG[color][dark ? "dark" : "light"]
+  const bg = opaqueBg + alphaHexSuffix
   return {
     ...base,
     "editor.background": bg,
     "editorGutter.background": bg,
     "peekViewEditor.background": bg,
     "peekViewEditorGutter.background": bg,
+    // Sticky scroll (pinned parent-scope lines) defaults its background to
+    // `editor.background`; keep it tracking the canvas here (so it follows `bg`,
+    // not a fixed value). In the opaque base theme that's the solid canvas colour
+    // — unchanged. When a workspace background image makes the canvas translucent,
+    // a fully OPAQUE sticky band read as a stark dark slab floating over the image
+    // ("一坨黑色"), and Monaco's inner `.sticky-widget-lines-scrollable` only spans
+    // the content width — leaving the vertical-scrollbar strip bare so scrolled
+    // code bled through on the right. So we let the band go transparent with the
+    // canvas and instead paint ONE full-width frosted surface on `.sticky-widget`
+    // in CSS (globals.css `[data-workspace-bg="on"] .monaco-editor .sticky-widget`):
+    // a translucent tint + backdrop blur that covers the strip and blends the
+    // header into the frosted-panel aesthetic while keeping the pinned lines
+    // legible. `bg` = opaque canvas when off (zero regression), transparent when on.
+    "editorStickyScroll.background": bg,
+    "editorStickyScrollGutter.background": bg,
     "editor.lineHighlightBackground":
       EDITOR_LINE_HIGHLIGHT[color][dark ? "dark" : "light"],
   }
@@ -678,8 +694,9 @@ const WSBG_CANVAS_ALPHA = 0
 // Like `useMonacoThemeSync`, but when a workspace background image is enabled it
 // swaps in a fully transparent-canvas theme (see `WSBG_CANVAS_ALPHA`) so the code
 // area reads like the conversation canvas rather than a frosted panel. Disabled →
-// the opaque base theme, byte-for-byte unchanged (zero regression). Shared by the
-// file editor, diff viewer and merge editor.
+// the opaque base theme, visually unchanged (zero regression: the sticky-scroll
+// keys equal `editor.background` when opaque). Shared by the file editor, diff
+// viewer and merge editor.
 //
 // The caller supplies the loaded monaco instance (from the editor's onMount, or
 // `useMonaco()` for conditionally-mounted editors) rather than this hook calling

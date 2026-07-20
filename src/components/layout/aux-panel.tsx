@@ -17,6 +17,7 @@ import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useIsActiveChatMode } from "@/hooks/use-is-active-chat-mode"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { usePlatform } from "@/hooks/use-platform"
+import { useZoomLevel } from "@/hooks/use-appearance"
 import { isDesktop } from "@/lib/platform"
 import { rightChromeReserve } from "@/lib/window-chrome"
 import { cn } from "@/lib/utils"
@@ -118,6 +119,7 @@ export function AuxPanel() {
   const isChatMode = useIsActiveChatMode()
   const isMobile = useIsMobile()
   const { isWindows, isLinux } = usePlatform()
+  const { zoomLevel } = useZoomLevel()
   const [mountedTabs, setMountedTabs] = useState<Set<AuxPanelTab>>(
     () => new Set(LAZY_TABS.filter((tab) => tab === activeTab))
   )
@@ -179,7 +181,7 @@ export function AuxPanel() {
   // a dropdown. Only relevant to the desktop layout (mobile is a full-width
   // Sheet), and only when there's more than the lone Session Details tab.
   const winLinuxControls = isDesktop() && (isWindows || isLinux)
-  const rightReserve = rightChromeReserve(winLinuxControls)
+  const rightReserve = rightChromeReserve(winLinuxControls, zoomLevel)
   const collapsed =
     !isMobile &&
     showFolderTabs &&

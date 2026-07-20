@@ -220,7 +220,7 @@ export function TabBar({ embedded = false }: { embedded?: boolean } = {}) {
 
   if (!embedded) return group
 
-  // Title-bar strip: the tabs sit at their natural width; a new-conversation
+  // Title-bar strip: the tabs are equal width (fixed basis); a new-conversation
   // button follows the last tab (browser-style), then the trailing spacer fills
   // the leftover row and stays a window-drag region so a lightly-tabbed bar can
   // still be grabbed to move the window.
@@ -232,15 +232,15 @@ export function TabBar({ embedded = false }: { embedded?: boolean } = {}) {
           Wrapped in one `flex-1` box so the workspace-bg bottom hairline
           (ws-strip-line) runs unbroken under both — the short `self-center h-7`
           button can't carry the line at the strip's bottom edge itself. NO
-          `min-w-0`: the wrapper's min-content (the shrink-0 button) is its floor,
-          so under many-tab overflow the group shrinks to reserve the button's
-          width instead of the wrapper collapsing to 0 and clipping it — matching
-          the old direct-child sizing. Off (no bg image): ws-strip-line is inert. */}
+          `min-w-0`: the wrapper's min-content (the shrink-0 button + the spacer's
+          `min-w-10`) is its floor, so under many-tab overflow the group shrinks to
+          reserve them instead of the wrapper collapsing to 0 and clipping. Off (no
+          bg image): ws-strip-line is inert. */}
       <div className="flex h-full flex-1 items-stretch ws-strip-line">
         <button
           type="button"
           onClick={handleNewConversation}
-          // Ghost-style icon button hugging the last (content-sized) tab: no left
+          // Ghost-style icon button hugging the last (equal-width) tab: no left
           // margin, so it sits just past the group's `px-2` — close to the final
           // tab's trailing edge, its gap roughly matching its `self-center h-7`
           // top/bottom inset. `self-center` centers it on the h-10 strip's midline
@@ -252,7 +252,12 @@ export function TabBar({ embedded = false }: { embedded?: boolean } = {}) {
         >
           <SquarePen className="h-3.5 w-3.5" />
         </button>
-        <div data-tauri-drag-region className="h-full min-w-0 flex-1" />
+        {/* Drag spacer, floored at `min-w-10` (40px) instead of `min-w-0`: even
+            when many tabs overflow and squeeze this region, a grabbable
+            window-drag gap always remains to the RIGHT of the new-conversation
+            button, so the button never reaches the strip's right edge and the
+            packed title bar stays draggable. */}
+        <div data-tauri-drag-region className="h-full min-w-10 flex-1" />
       </div>
     </div>
   )
