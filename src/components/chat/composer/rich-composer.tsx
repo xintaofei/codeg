@@ -156,6 +156,14 @@ export interface RichComposerProps {
    */
   onPasteFiles?: (event: ClipboardEvent) => boolean
   /**
+   * Called on drop before the editor handles it. Return true when the drop was
+   * consumed out-of-band (e.g. a dragged file-tree entry became an inline
+   * reference) so ProseMirror does not also insert the drag's `text/plain`
+   * fallback as literal text. The host must `stopPropagation()` itself if it
+   * needs to keep the drop from bubbling to an ancestor container handler.
+   */
+  onDropFiles?: (event: DragEvent) => boolean
+  /**
    * Paste-without-formatting intent: fired when `Ctrl/⌘+Shift+V` is pressed. The
    * host owns the clipboard read (and its non-secure fallback). Return true when
    * the host took over so the editor consumes the key and the browser's native
@@ -195,6 +203,7 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
       isExternalMenuOpen,
       onExternalMenuKeyDown,
       onPasteFiles,
+      onDropFiles,
       onPlainPaste,
     },
     ref
@@ -215,6 +224,7 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
     const isExternalMenuOpenRef = useRef(isExternalMenuOpen)
     const onExternalMenuKeyDownRef = useRef(onExternalMenuKeyDown)
     const onPasteFilesRef = useRef(onPasteFiles)
+    const onDropFilesRef = useRef(onDropFiles)
     const onPlainPasteRef = useRef(onPlainPaste)
     // The live editor, captured for command access inside editorProps handlers
     // (which are created before `editor` is assigned in this closure).
@@ -231,6 +241,7 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
       isExternalMenuOpenRef.current = isExternalMenuOpen
       onExternalMenuKeyDownRef.current = onExternalMenuKeyDown
       onPasteFilesRef.current = onPasteFiles
+      onDropFilesRef.current = onDropFiles
       onPlainPasteRef.current = onPlainPaste
     })
 
@@ -346,6 +357,7 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
         },
         handlePaste: (_view, event) =>
           onPasteFilesRef.current?.(event) === true,
+        handleDrop: (_view, event) => onDropFilesRef.current?.(event) === true,
       },
       onCreate: ({ editor }) => {
         editorInstanceRef.current = editor

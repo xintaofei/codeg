@@ -554,6 +554,7 @@ mod tests {
                     color: "inherit".to_string(),
                     parent_id: Some(7),
                     kind: FolderKind::Regular,
+                    alias: None,
                 }),
             },
         );

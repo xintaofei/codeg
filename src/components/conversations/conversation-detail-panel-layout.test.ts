@@ -86,13 +86,16 @@ describe("ConversationDetailPanel new conversation layout", () => {
     expect(messageInputSource).toContain(': "contents"')
     // The rounded border lives in the always-on base (so the active-session flow
     // gradient can overlay a real 1px border without a layout shift); the
-    // attached folder-branch-picker treatment still adds bg-background + the
-    // inset focus ring on top.
+    // attached folder-branch-picker treatment still adds a solid surface
+    // (`bg-background`, which goes transparent to reveal a workspace-bg image via
+    // `ws-transparent-bg` instead of frosting) + the inset focus ring on top.
+    // The resting border is `border-foreground/20` (a touch darker than the
+    // near-invisible default `border-input`, and legible over a background image).
     expect(messageInputSource).toContain(
-      "rounded-xl border border-input bg-transparent transition-colors"
+      "rounded-xl border border-foreground/20 bg-transparent transition-colors"
     )
     expect(messageInputSource).toContain(
-      '"bg-background focus-within:border-ring focus-within:ring-[3px] focus-within:ring-inset focus-within:ring-ring/50"'
+      '"bg-background ws-transparent-bg focus-within:border-ring focus-within:ring-[3px] focus-within:ring-inset focus-within:ring-ring/50"'
     )
     expect(pickerWrapper).not.toContain("border-t border-input")
     expect(pickerWrapper).not.toContain("bg-muted/30")

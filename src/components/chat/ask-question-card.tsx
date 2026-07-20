@@ -418,7 +418,7 @@ export function AskQuestionCard({
       role="group"
       aria-label={title ?? t("title")}
       className={cn(
-        "mb-2 flex max-h-[88svh] flex-col overflow-hidden rounded-xl border border-primary/30 bg-card",
+        "mb-2 flex max-h-[88svh] flex-col overflow-hidden rounded-xl border border-primary/30 bg-card ws-surface-card",
         readOnly ? "shadow-sm" : "shadow-lg"
       )}
     >

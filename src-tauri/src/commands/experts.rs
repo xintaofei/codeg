@@ -789,6 +789,7 @@ fn supported_agents() -> Vec<AgentType> {
         AgentType::KimiCode,
         AgentType::Pi,
         AgentType::Grok,
+        AgentType::Cursor,
     ];
     ALL.iter()
         .filter(|a| skill_storage_spec(**a).is_some())

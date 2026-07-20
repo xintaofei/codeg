@@ -39,6 +39,9 @@ pub struct Model {
     pub parent_id: Option<i32>,
     /// See [`FolderKind`]. Replaces the former `is_chat` boolean.
     pub kind: FolderKind,
+    /// User-supplied display alias. NULL means "no alias" — the UI falls back to
+    /// the path-derived `name`. When set, surfaces render `alias [name]`.
+    pub alias: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

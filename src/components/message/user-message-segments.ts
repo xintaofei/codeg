@@ -33,9 +33,10 @@ function unwrapDestination(destination: string): string {
 
 /**
  * Split a plain-prose run into literal text and bare `/slug`·`$slug` skill
- * badges. Mirrors `rehype-command-badges` (same {@link INVOCATION_TOKEN_RE}) so a
- * sent invocation token renders identically to how the assistant-side transcript
- * used to badge it — the skill badge label keeps the literal `/`·`$` prefix.
+ * badges (same {@link INVOCATION_TOKEN_RE} the composer's `/`·`$` triggers use).
+ * The badge label drops the literal `/`·`$` prefix (the parser strips it) so a
+ * sent invocation token renders identically to the composer's inline badge,
+ * which shows the bare command/skill name.
  */
 function pushProseSegments(value: string, out: UserMessageSegment[]): void {
   INVOCATION_TOKEN_RE.lastIndex = 0
@@ -48,8 +49,9 @@ function pushProseSegments(value: string, out: UserMessageSegment[]): void {
       out.push({ kind: "text", text: value.slice(lastIndex, tokenStart) })
     }
     const slug = token.slice(1)
-    // Resolve through the same parser the transcript uses for `codeg://skill/…`
-    // so the badge label keeps the literal token (`/build`, `$deploy`).
+    // Resolve through the shared reference parser, which strips the leading
+    // `/`·`$` so the badge label is the bare slug (`build`, `deploy`) — matching
+    // the composer's inline command/skill badge.
     const attrs = parseCodegReferenceUri(
       `codeg://skill/${encodeURIComponent(slug)}`,
       token

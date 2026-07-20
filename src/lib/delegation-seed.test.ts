@@ -31,6 +31,27 @@ describe("buildDelegationSeedEnvelopes", () => {
       child_connection_id: "c1",
       child_conversation_id: 99,
       agent_type: "codex",
+      // Absent on older-backend snapshots → normalized to null.
+      task_preview: null,
+      task_id: null,
+    })
+  })
+
+  it("passes the snapshot's task label + task id through to the seeded envelope", () => {
+    const env = buildDelegationSeedEnvelopes(
+      "parent-conn",
+      [
+        dele({
+          parent_tool_use_id: "pt-1",
+          task_preview: "执行 pnpm build",
+          task_id: "task-uuid-3",
+        }),
+      ],
+      1
+    )
+    expect(env[0]).toMatchObject({
+      task_preview: "执行 pnpm build",
+      task_id: "task-uuid-3",
     })
   })
 

@@ -72,6 +72,25 @@ export function blocksToRestoredDraft(
         break
       }
       case "resource": {
+        // An embedded image blob (how an `image: false` / `embedded_context:
+        // true` agent like Grok carries a pasted image) restores as a thumbnail
+        // image attachment, matching how it was displayed when composed — not as
+        // an inline resource badge. Non-image / text embedded resources keep the
+        // badge form.
+        if (block.mime_type?.startsWith("image/") && block.blob) {
+          // A synthetic `clipboard://` uri (path-less pasted image) is not a
+          // readable path, so keep only a real `file://` origin.
+          const imageUri = block.uri.startsWith("file://") ? block.uri : null
+          attachments.push({
+            id: makeId(),
+            type: "image",
+            data: block.blob,
+            uri: imageUri,
+            name: imageName(imageUri, block.mime_type),
+            mimeType: block.mime_type,
+          })
+          break
+        }
         attachments.push({
           id: makeId(),
           type: "resource",
@@ -90,7 +109,7 @@ export function blocksToRestoredDraft(
           type: "image",
           data: block.data,
           uri: block.uri ?? null,
-          name: imageName(block),
+          name: imageName(block.uri, block.mime_type),
           mimeType: block.mime_type,
         })
         break
@@ -118,14 +137,14 @@ function fileBaseName(uri: string): string {
   }
 }
 
-/** Derive a display name for an image block (mirrors the transcript adapter). */
-function imageName(
-  block: Extract<PromptInputBlock, { type: "image" }>
-): string {
-  if (block.uri && block.uri.trim().length > 0) {
-    const base = fileBaseName(block.uri)
+/** Derive a display name for an image attachment from its origin uri (if any)
+ *  and mime type (mirrors the transcript adapter). Shared by the `image` block
+ *  and embedded image-resource restore paths. */
+function imageName(uri: string | null | undefined, mimeType: string): string {
+  if (uri && uri.trim().length > 0) {
+    const base = fileBaseName(uri)
     if (base) return base
   }
-  const ext = block.mime_type.split("/")[1]?.split("+")[0] ?? "image"
+  const ext = mimeType.split("/")[1]?.split("+")[0] ?? "image"
   return `image.${ext}`
 }

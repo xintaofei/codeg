@@ -72,6 +72,8 @@ function bindingOf(overrides: Partial<DelegationBinding>): DelegationBinding {
     childConversationId: 99,
     agentType: "codex",
     status: "running",
+    task: null,
+    taskId: null,
     ...overrides,
   }
 }
@@ -144,6 +146,51 @@ describe("DelegatedSubThread", () => {
     renderWithIntl(<DelegatedSubThread parentToolUseId="pt-1" input={input} />)
     expect(screen.getByText("summarize the failing tests")).toBeInTheDocument()
     expect(screen.getAllByText("Codex").length).toBeGreaterThan(0)
+  })
+
+  it("labels the card from the live binding when the input is empty (Cursor)", () => {
+    // Cursor announces the MCP call with raw_input "{}" and never re-sends
+    // the arguments — the binding's task/taskId (from delegation_started) are
+    // the live card's only label source.
+    mockedHook.mockReturnValue({
+      binding: bindingOf({
+        agentType: "claude_code",
+        task: "执行 pnpm build",
+        taskId: "task-uuid-42",
+      }),
+      detail: null,
+      loading: false,
+      error: null,
+    })
+    renderWithIntl(<DelegatedSubThread parentToolUseId="pt-1" input="{}" />)
+    expect(screen.getByText("执行 pnpm build")).toBeInTheDocument()
+    expect(screen.getByText("#task-uui")).toBeInTheDocument()
+  })
+
+  it("renders from broker meta alone (persisted Cursor shape after refresh)", () => {
+    // Persisted transcript: raw_input "{}", live binding gone. The
+    // broker-stamped meta must be sufficient to render the delegate card with
+    // its label and the open-conversation affordance.
+    renderWithIntl(
+      <DelegatedSubThread
+        parentToolUseId="pt-1"
+        input="{}"
+        meta={{
+          "codeg.delegation": {
+            status: "completed",
+            child_conversation_id: 321,
+            task_preview: "执行 pnpm build",
+            task_id: "task-uuid-9",
+          },
+        }}
+      />
+    )
+    expect(screen.getByText("执行 pnpm build")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Open conversation" }))
+    expect(screen.getByTestId("sub-agent-session-dialog")).toHaveAttribute(
+      "data-conversation-id",
+      "321"
+    )
   })
 
   it("shows the 'starting' badge (not 'running') and no button before the child binds", () => {

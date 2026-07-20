@@ -672,6 +672,21 @@ pub async fn update_folder_color_core(
         .ok_or_else(|| AppCommandError::not_found("Folder not found"))
 }
 
+pub async fn update_folder_alias_core(
+    db: &AppDatabase,
+    folder_id: i32,
+    alias: Option<String>,
+) -> Result<FolderDetail, AppCommandError> {
+    // Empty / whitespace-only input clears the alias (stored as NULL).
+    let normalized = alias
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    folder_service::update_folder_alias(&db.conn, folder_id, normalized)
+        .await
+        .map_err(AppCommandError::from)?
+        .ok_or_else(|| AppCommandError::not_found("Folder not found"))
+}
+
 pub async fn update_folder_default_agent_core(
     db: &AppDatabase,
     folder_id: i32,
@@ -804,6 +819,16 @@ pub async fn update_folder_color(
     color: String,
 ) -> Result<FolderDetail, AppCommandError> {
     update_folder_color_core(&db, folder_id, color).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn update_folder_alias(
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    alias: Option<String>,
+) -> Result<FolderDetail, AppCommandError> {
+    update_folder_alias_core(&db, folder_id, alias).await
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -3799,6 +3824,87 @@ pub async fn rename_file_tree_entry(
     Ok(rel)
 }
 
+/// Move a file/directory into a different directory of the same workspace,
+/// keeping its name. `source_path` and `dest_dir` are both workspace-relative
+/// (forward slashes); `dest_dir` is `""` for the workspace root. Returns the new
+/// workspace-relative path of the moved entry.
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn move_file_tree_entry(
+    root_path: String,
+    source_path: String,
+    dest_dir: String,
+) -> Result<String, AppCommandError> {
+    let root = PathBuf::from(&root_path);
+    if !root.exists() || !root.is_dir() {
+        return Err(AppCommandError::not_found("Folder does not exist"));
+    }
+
+    let source = resolve_tree_path(&root, &source_path)?;
+    // `symlink_metadata` doesn't follow the final component, so a (possibly
+    // dangling) symlink entry the tree still shows counts as existing — and
+    // `fs::rename` moves the link itself rather than whatever it points at.
+    match std::fs::symlink_metadata(&source) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(AppCommandError::not_found("Source file does not exist"));
+        }
+        Err(e) => return Err(AppCommandError::io(e)),
+    }
+    if source == root {
+        return Err(AppCommandError::invalid_input("Cannot move workspace root"));
+    }
+
+    let dest = resolve_tree_path(&root, &dest_dir)?;
+    if !dest.is_dir() {
+        return Err(AppCommandError::invalid_input(
+            "Destination is not a directory",
+        ));
+    }
+
+    // Reject moving a directory into itself or one of its own descendants —
+    // `starts_with` is component-wise, so `src` is not mistaken for `src-utils`.
+    if dest == source || dest.starts_with(&source) {
+        return Err(AppCommandError::invalid_input(
+            "Cannot move a directory into itself",
+        ));
+    }
+
+    let name = source
+        .file_name()
+        .ok_or_else(|| AppCommandError::invalid_input("Cannot move path without a name"))?;
+    let target = dest.join(name);
+
+    // Dropping onto the current parent is a no-op — report the unchanged path
+    // rather than erroring so the UI can simply do nothing.
+    if target == source {
+        return Ok(source_path);
+    }
+    // Collision check via `symlink_metadata`: a same-name entry of ANY kind —
+    // including a dangling symlink, which `Path::exists()` reports as absent —
+    // must block the move so `fs::rename` can't silently clobber it.
+    match std::fs::symlink_metadata(&target) {
+        Ok(_) => {
+            return Err(AppCommandError::already_exists(
+                "An entry with this name already exists in the destination",
+            ));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(AppCommandError::io(e)),
+    }
+
+    std::fs::rename(&source, &target).map_err(AppCommandError::io)?;
+
+    let rel = target
+        .strip_prefix(&root)
+        .map_err(|e| {
+            AppCommandError::invalid_input("Failed to compute relative path")
+                .with_detail(e.to_string())
+        })?
+        .to_string_lossy()
+        .to_string();
+    Ok(rel)
+}
+
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn delete_file_tree_entry(
     root_path: String,
@@ -4377,6 +4483,7 @@ mod tests {
                 color: "inherit".to_string(),
                 parent_id: Some(1),
                 kind: FolderKind::Regular,
+                alias: None,
             },
         );
 
@@ -4742,6 +4849,107 @@ branch refs/heads/main";
             .expect("clear agent");
         assert_eq!(cleared.default_agent_type, None);
     }
+
+    #[tokio::test]
+    async fn move_file_tree_entry_moves_file_into_subdir() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::write(root.path().join("a.txt"), b"x").expect("write");
+        std::fs::create_dir(root.path().join("sub")).expect("mkdir");
+
+        let new_rel = move_file_tree_entry(
+            root.path().to_string_lossy().into_owned(),
+            "a.txt".to_string(),
+            "sub".to_string(),
+        )
+        .await
+        .expect("move");
+
+        assert_eq!(new_rel.replace('\\', "/"), "sub/a.txt");
+        assert!(!root.path().join("a.txt").exists());
+        assert!(root.path().join("sub/a.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn move_file_tree_entry_moves_back_to_root() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::create_dir(root.path().join("sub")).expect("mkdir");
+        std::fs::write(root.path().join("sub/a.txt"), b"x").expect("write");
+
+        let new_rel = move_file_tree_entry(
+            root.path().to_string_lossy().into_owned(),
+            "sub/a.txt".to_string(),
+            String::new(),
+        )
+        .await
+        .expect("move to root");
+
+        assert_eq!(new_rel, "a.txt");
+        assert!(root.path().join("a.txt").exists());
+        assert!(!root.path().join("sub/a.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn move_file_tree_entry_rejects_move_into_own_descendant() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::create_dir_all(root.path().join("src/inner")).expect("mkdir");
+
+        let res = move_file_tree_entry(
+            root.path().to_string_lossy().into_owned(),
+            "src".to_string(),
+            "src/inner".to_string(),
+        )
+        .await;
+        assert!(res.is_err(), "moving a dir into its own descendant must fail");
+        assert!(root.path().join("src/inner").is_dir(), "source untouched");
+    }
+
+    #[tokio::test]
+    async fn move_file_tree_entry_rejects_existing_target() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::write(root.path().join("a.txt"), b"1").expect("write");
+        std::fs::create_dir(root.path().join("sub")).expect("mkdir");
+        std::fs::write(root.path().join("sub/a.txt"), b"2").expect("write");
+
+        let res = move_file_tree_entry(
+            root.path().to_string_lossy().into_owned(),
+            "a.txt".to_string(),
+            "sub".to_string(),
+        )
+        .await;
+        assert!(res.is_err(), "name collision in destination must fail");
+        assert!(root.path().join("a.txt").exists(), "source untouched");
+    }
+
+    #[tokio::test]
+    async fn move_file_tree_entry_same_parent_is_noop() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::create_dir(root.path().join("sub")).expect("mkdir");
+        std::fs::write(root.path().join("sub/a.txt"), b"x").expect("write");
+
+        let rel = move_file_tree_entry(
+            root.path().to_string_lossy().into_owned(),
+            "sub/a.txt".to_string(),
+            "sub".to_string(),
+        )
+        .await
+        .expect("no-op move");
+        assert_eq!(rel, "sub/a.txt");
+        assert!(root.path().join("sub/a.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn move_file_tree_entry_rejects_parent_escape() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::write(root.path().join("a.txt"), b"x").expect("write");
+
+        let res = move_file_tree_entry(
+            root.path().to_string_lossy().into_owned(),
+            "a.txt".to_string(),
+            "../evil".to_string(),
+        )
+        .await;
+        assert!(res.is_err(), "dest containing '..' must be rejected");
+    }
 }
 
 // Symlink confinement that `read_workspace_file_base64` relies on. Unix-only
@@ -4792,5 +5000,59 @@ mod workspace_confinement_tests {
         let link = root.path().join("asset.txt");
         symlink(&secret, &link).expect("symlink");
         assert!(ensure_path_in_workspace(root.path(), &link).is_err());
+    }
+
+    #[tokio::test]
+    async fn move_file_tree_entry_does_not_clobber_dangling_symlink() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::write(root.path().join("a.txt"), b"real").expect("write");
+        std::fs::create_dir(root.path().join("sub")).expect("mkdir");
+        // A dangling symlink occupies the destination name. `Path::exists()`
+        // follows it and reports `false`, so the collision check must instead
+        // use `symlink_metadata` or `fs::rename` would destroy the link.
+        symlink(
+            root.path().join("nonexistent-target"),
+            root.path().join("sub/a.txt"),
+        )
+        .expect("symlink");
+
+        let res = move_file_tree_entry(
+            root.path().to_string_lossy().into_owned(),
+            "a.txt".to_string(),
+            "sub".to_string(),
+        )
+        .await;
+        assert!(res.is_err(), "must not clobber a dangling destination symlink");
+        assert!(
+            std::fs::symlink_metadata(root.path().join("sub/a.txt")).is_ok(),
+            "dangling symlink must remain intact",
+        );
+        assert!(root.path().join("a.txt").exists(), "source untouched");
+    }
+
+    #[tokio::test]
+    async fn move_file_tree_entry_moves_a_symlink_entry() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::write(root.path().join("target.txt"), b"x").expect("write");
+        symlink(
+            root.path().join("target.txt"),
+            root.path().join("link.txt"),
+        )
+        .expect("symlink");
+        std::fs::create_dir(root.path().join("sub")).expect("mkdir");
+
+        let new_rel = move_file_tree_entry(
+            root.path().to_string_lossy().into_owned(),
+            "link.txt".to_string(),
+            "sub".to_string(),
+        )
+        .await
+        .expect("move symlink");
+        assert_eq!(new_rel.replace('\\', "/"), "sub/link.txt");
+        // The moved entry is still a symlink (the link itself moved, not its target).
+        let meta = std::fs::symlink_metadata(root.path().join("sub/link.txt"))
+            .expect("moved link exists");
+        assert!(meta.file_type().is_symlink(), "entry stays a symlink");
+        assert!(!root.path().join("link.txt").exists(), "old link gone");
     }
 }

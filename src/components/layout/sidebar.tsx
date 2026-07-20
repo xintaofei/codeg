@@ -2,10 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
-  ChevronsDownUp,
-  ChevronsUpDown,
   Crosshair,
   Funnel,
+  ListChevronsDownUp,
+  ListChevronsUpDown,
   Search,
   SquarePen,
   Zap,
@@ -27,6 +27,7 @@ import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
@@ -35,8 +36,11 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { useIsMac } from "@/hooks/use-is-mac"
+import { usePlatform } from "@/hooks/use-platform"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { formatShortcutLabel } from "@/lib/keyboard-shortcuts"
+import { isDesktop } from "@/lib/platform"
+import { leftChromeReserve } from "@/lib/window-chrome"
 import {
   loadShowCompleted,
   loadSortMode,
@@ -123,9 +127,14 @@ export function Sidebar() {
   const { unseenFailures } = useAutomationsView()
   const { routeId, setRoute, openConversations } = useWorkbenchRoute()
   const isMac = useIsMac()
+  const { isMac: platformIsMac } = usePlatform()
   const { shortcuts } = useShortcutSettings()
   const isMobile = useIsMobile()
   const listRef = useRef<SidebarConversationListHandle>(null)
+  // On desktop the header's top-left is owned by the fixed window-chrome overlay
+  // (sidebar toggle + remote); reserve exactly its width so the view controls
+  // and drag region clear it. Mobile has no overlay (the sidebar is a Sheet).
+  const leftReserve = leftChromeReserve(platformIsMac && isDesktop())
 
   const [showCompleted, setShowCompleted] = useState(false)
   const [sortMode, setSortMode] = useState<SidebarSortMode>("created")
@@ -201,51 +210,58 @@ export function Sidebar() {
   if (!isOpen) return null
 
   return (
-    <aside className="@container/sidebar flex h-full min-h-0 flex-col overflow-hidden bg-sidebar text-sidebar-foreground select-none">
+    <aside
+      className={cn(
+        "@container/sidebar flex h-full min-h-0 flex-col overflow-hidden text-sidebar-foreground select-none",
+        isMobile && "bg-sidebar"
+      )}
+    >
       <div
         className={cn(
-          "flex shrink-0 items-center justify-between gap-2 border-b border-border pl-4 pr-2",
-          isMobile ? "h-14" : "h-10"
+          "flex shrink-0 items-center gap-2 pr-2",
+          // Desktop: the fixed left window-chrome overlay (reserved below) owns
+          // the top-left, so drop the header's own left padding. A subtle bottom
+          // divider (border-border/50) matches the conversation detail header's
+          // bottom border so the two align as one bar across the app's top edge.
+          // Mobile (Sheet): keep the original title padding + a full-strength
+          // divider — mobile is unchanged.
+          isMobile
+            ? "h-14 border-b border-border pl-4"
+            : "h-10 border-b border-border/50 pl-0"
         )}
       >
-        <div className="flex min-w-0 items-center gap-4">
-          <h2
-            className={cn(
-              "truncate font-bold tracking-[-0.00625rem] text-sidebar-foreground",
-              isMobile ? "text-base" : "text-[0.875rem]"
-            )}
-          >
-            {t("title")}
-          </h2>
-        </div>
+        {isMobile ? (
+          <div className="flex min-w-0 items-center gap-4">
+            <h2 className="truncate text-base font-bold tracking-[-0.00625rem] text-sidebar-foreground">
+              {t("title")}
+            </h2>
+          </div>
+        ) : (
+          // Reserve exactly the fixed left overlay's width so the view controls
+          // clear it; the empty reserved space is a window-drag region.
+          <div
+            data-tauri-drag-region
+            className="h-full shrink-0"
+            style={{ width: leftReserve }}
+          />
+        )}
+        {/* Draggable filler between the two clusters — the header is the
+            window's top edge, so its empty space must move the window. */}
+        <div data-tauri-drag-region className="h-full min-w-0 flex-1" />
         <div className="flex items-center gap-0.5">
-          <Button
-            variant="ghost"
-            size="icon"
-            className={cn(
-              "shrink-0 text-muted-foreground",
-              isMobile ? "h-10 w-10 rounded-xl" : "h-6 w-6"
-            )}
-            onClick={() => listRef.current?.scrollToActive()}
-            title={t("locateActiveConversation")}
-            aria-label={t("locateActiveConversation")}
-          >
-            <Crosshair aria-hidden="true" className="h-3.5 w-3.5" />
-          </Button>
-          {!isMobile && (
+          {/* Mobile keeps the locate shortcut as a touch-sized action. The
+              bulk expand/collapse control remains desktop-only in the view
+              options menu to keep the narrow header uncluttered. */}
+          {isMobile && (
             <Button
               variant="ghost"
               size="icon"
-              className="h-6 w-6 shrink-0 text-muted-foreground"
-              onClick={handleToggleExpandAll}
-              title={toggleExpandLabel}
-              aria-label={toggleExpandLabel}
+              className="h-10 w-10 shrink-0 rounded-xl text-muted-foreground"
+              onClick={() => listRef.current?.scrollToActive()}
+              title={t("locateActiveConversation")}
+              aria-label={t("locateActiveConversation")}
             >
-              {allExpanded ? (
-                <ChevronsDownUp aria-hidden="true" className="h-3.5 w-3.5" />
-              ) : (
-                <ChevronsUpDown aria-hidden="true" className="h-3.5 w-3.5" />
-              )}
+              <Crosshair aria-hidden="true" className="h-3.5 w-3.5" />
             </Button>
           )}
           <DropdownMenu>
@@ -264,6 +280,20 @@ export function Sidebar() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              {/* Desktop only: expand/collapse lives in this menu. */}
+              {!isMobile && (
+                <>
+                  <DropdownMenuItem onSelect={handleToggleExpandAll}>
+                    {allExpanded ? (
+                      <ListChevronsDownUp className="h-4 w-4" />
+                    ) : (
+                      <ListChevronsUpDown className="h-4 w-4" />
+                    )}
+                    {toggleExpandLabel}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                </>
+              )}
               <DropdownMenuCheckboxItem
                 checked={showCompleted}
                 onCheckedChange={handleSetShowCompleted}

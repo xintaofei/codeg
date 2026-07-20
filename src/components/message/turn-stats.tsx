@@ -91,9 +91,12 @@ export function TurnStats({
   const hasUsage = Boolean(usage)
   const hasDuration = typeof duration_ms === "number" && duration_ms > 0
   const hasCompletedAt = Boolean(completedLabel)
+  // Usage OR duration: some agents (Cursor) never report per-turn token
+  // usage, but a turn with a duration chip is still a substantial reply
+  // worth jumping back from.
   const hasJump =
     isResponseComplete &&
-    hasUsage &&
+    (hasUsage || hasDuration) &&
     typeof previousUserIndex === "number" &&
     Boolean(scroll?.scrollToIndex)
 

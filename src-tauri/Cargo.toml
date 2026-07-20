@@ -1,6 +1,6 @@
 [package]
 name = "codeg"
-version = "0.20.3"
+version = "0.21.1"
 description = "Agent Code Generation App"
 authors = ["feitao"]
 edition = "2021"
@@ -86,6 +86,12 @@ urlencoding = "2"
 fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs", version = "0.0.0", optional = true }
 sea-orm = { version = "1.1", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros"] }
 sea-orm-migration = { version = "1.1", features = ["sqlx-sqlite", "runtime-tokio-rustls"] }
+# Synchronous read-only access to agent-native SQLite session stores (the
+# Cursor parser reads ~/.cursor/chats/*/store.db from the sync AgentParser
+# trait, where sqlx's async pool doesn't fit). Pinned to the rusqlite line
+# whose libsqlite3-sys (0.30) matches sqlx-sqlite's, so both link the same
+# bundled SQLite.
+rusqlite = "0.32"
 toml = "0.8"
 # Format-preserving TOML editing for surgical scalar merges into user config
 # files (e.g. the Grok settings panel writing [ui]/[models] keys without
@@ -108,7 +114,7 @@ tokio-util = { version = "0.7", features = ["io", "rt"] }
 prost = "0.13"
 rand = "0.8"
 qrcode = "0.14"
-image = { version = "0.25", default-features = false, features = ["png", "webp"] }
+image = { version = "0.25", default-features = false, features = ["png", "webp", "jpeg"] }
 include_dir = "0.7"
 sha2 = "0.10"
 aes-gcm = { version = "0.10", features = ["stream"] }

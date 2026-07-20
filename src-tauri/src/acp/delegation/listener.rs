@@ -336,6 +336,32 @@ impl DelegationListener {
         let Some(entry) = self.tokens.lookup(&req.token).await else {
             return req.task_ids.iter().map(|id| unknown_report(id)).collect();
         };
+        // Identity-less hosts (Cursor) announce this MCP call as a generic
+        // "MCP: tool" and never upgrade it on the wire — the companion
+        // round-trip landing here is the FIRST moment anything knows the call
+        // is `get_delegation_status`. Restore the live card's identity before
+        // running the (possibly long-poll-blocked) status query; on ordinary
+        // hosts the broker's sticky gate makes this a no-op.
+        let mut rename_input = serde_json::Map::new();
+        rename_input.insert(
+            "task_ids".into(),
+            serde_json::Value::Array(
+                req.task_ids
+                    .iter()
+                    .map(|id| serde_json::Value::String(id.clone()))
+                    .collect(),
+            ),
+        );
+        if let Some(ms) = req.wait_ms {
+            rename_input.insert("wait_ms".into(), serde_json::Value::Number(ms.into()));
+        }
+        self.broker
+            .rewrite_identityless_tool_call(
+                &entry.parent_connection_id,
+                crate::acp::delegation::STATUS_TOOL_REWRITE_TITLE,
+                serde_json::Value::Object(rename_input),
+            )
+            .await;
         let parent_conversation_id = self
             .parent_lookup
             .current_conversation_id(&entry.parent_connection_id)
@@ -364,6 +390,22 @@ impl DelegationListener {
         let Some(entry) = self.tokens.lookup(&req.token).await else {
             return unknown_report(&req.task_id);
         };
+        // Same identity restoration as `process_status` — see the comment
+        // there. `cancel_delegation` results are free-form text, so the
+        // completion-time sniff can't cover this tool; the call-time rename
+        // is its only identity source on identity-less hosts.
+        let mut rename_input = serde_json::Map::new();
+        rename_input.insert(
+            "task_id".into(),
+            serde_json::Value::String(req.task_id.clone()),
+        );
+        self.broker
+            .rewrite_identityless_tool_call(
+                &entry.parent_connection_id,
+                crate::acp::delegation::CANCEL_TOOL_REWRITE_TITLE,
+                serde_json::Value::Object(rename_input),
+            )
+            .await;
         let parent_conversation_id = self
             .parent_lookup
             .current_conversation_id(&entry.parent_connection_id)

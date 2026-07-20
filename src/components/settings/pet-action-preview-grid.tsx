@@ -5,10 +5,13 @@ import { useTranslations } from "next-intl"
 import {
   PET_FRAME_DURATIONS_MS,
   PET_STATE_ROW,
-  SPRITE_BACKGROUND_SIZE,
   backgroundPositionFor,
+  filmstripFrameCount,
+  spriteBackgroundSize,
+  spriteRowsFromHeight,
   type PetState,
 } from "@/lib/pet/animation"
+import { useImageNaturalSize } from "@/lib/pet/use-image-natural-size"
 
 export const PET_ACTION_PREVIEW_STATES = [
   "idle",
@@ -59,6 +62,14 @@ export function PetActionPreviewGrid({
 }: PetActionPreviewGridProps) {
   const t = useTranslations("Pet.marketplace")
 
+  // Measure the asset once so every cell shares the same derived geometry.
+  // Spritesheet sources need the row count; marketplace filmstrips need the
+  // frame count. Both fall back to the legacy layout until the image loads.
+  const size = useImageNaturalSize(source.url)
+  const rows = spriteRowsFromHeight(size?.height)
+  const measuredFrames = size ? filmstripFrameCount(size.width, size.height) : 0
+  const totalFrames = Math.max(MARKETPLACE_PREVIEW_TOTAL_FRAMES, measuredFrames)
+
   return (
     <div className="grid grid-cols-3 gap-1">
       {PET_ACTION_PREVIEW_STATES.map((state) => {
@@ -68,6 +79,8 @@ export function PetActionPreviewGrid({
             key={state}
             source={source}
             state={state}
+            rows={rows}
+            totalFrames={totalFrames}
             label={`${petName} ${actionName}`}
             actionName={actionName}
           />
@@ -80,19 +93,23 @@ export function PetActionPreviewGrid({
 function PetActionPreviewCell({
   source,
   state,
+  rows,
+  totalFrames,
   label,
   actionName,
 }: {
   source: PetActionPreviewSource
   state: PetState
+  rows: number
+  totalFrames: number
   label: string
   actionName: string
 }) {
   const col = usePetActionPreviewFrame(state)
   const frameStyle =
     source.type === "marketplace"
-      ? marketplacePreviewFrameStyle(source.url, state, col)
-      : spritesheetPreviewFrameStyle(source.url, state, col)
+      ? marketplacePreviewFrameStyle(source.url, state, col, totalFrames)
+      : spritesheetPreviewFrameStyle(source.url, state, col, rows)
 
   return (
     <div className="min-w-0 p-1">
@@ -144,13 +161,18 @@ function usePetActionPreviewFrame(state: PetState): number {
 function marketplacePreviewFrameStyle(
   previewUrl: string,
   state: PetState,
-  col: number
+  col: number,
+  totalFrames: number
 ): CSSProperties {
+  // The 9 known states always occupy the front of the filmstrip; newer states
+  // (if any) are appended after. Using the *actual* frame count for the
+  // denominator keeps the known frames aligned even when the strip is longer.
   const frame = MARKETPLACE_PREVIEW_FRAME_START[state] + col
-  const x = (frame / (MARKETPLACE_PREVIEW_TOTAL_FRAMES - 1)) * 100
+  const denom = Math.max(1, totalFrames - 1)
+  const x = (frame / denom) * 100
   return {
     backgroundImage: `url("${previewUrl}")`,
-    backgroundSize: `${MARKETPLACE_PREVIEW_TOTAL_FRAMES * 100}% 100%`,
+    backgroundSize: `${totalFrames * 100}% 100%`,
     backgroundPosition: `${x}% 0%`,
   }
 }
@@ -158,11 +180,12 @@ function marketplacePreviewFrameStyle(
 function spritesheetPreviewFrameStyle(
   spritesheetUrl: string,
   state: PetState,
-  col: number
+  col: number,
+  rows: number
 ): CSSProperties {
   return {
     backgroundImage: `url("${spritesheetUrl}")`,
-    backgroundSize: SPRITE_BACKGROUND_SIZE,
-    backgroundPosition: backgroundPositionFor(PET_STATE_ROW[state], col),
+    backgroundSize: spriteBackgroundSize(rows),
+    backgroundPosition: backgroundPositionFor(PET_STATE_ROW[state], col, rows),
   }
 }

@@ -31,6 +31,7 @@ function seedSession(sessionStats: SessionStats) {
           liveMessage: null,
           syncState: "awaiting_persist",
           activeTurnToken: null,
+          lastTurnOwned: false,
           liveOwnsActiveTurn: false,
           delegationKickoffText: null,
           sessionStats,

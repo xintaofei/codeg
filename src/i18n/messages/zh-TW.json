@@ -117,6 +117,29 @@
       "sectionTitle": "模式選擇區域",
       "sectionDescription": "新會話頁面輸入框上方顯示的「程式開發 / 日常辦公」快捷卡片區域。",
       "showQuickActions": "在新會話頁面顯示"
+    },
+    "workspaceBackground": {
+      "sectionTitle": "工作區背景",
+      "sectionDescription": "在整個工作區背後顯示一張圖片。側邊欄與面板會變半透明並磨砂讓圖片透出，遮罩確保文字可讀。",
+      "enable": "啟用背景圖片",
+      "image": "圖片",
+      "chooseImage": "選擇圖片",
+      "replaceImage": "更換圖片",
+      "removeImage": "移除",
+      "fillMode": "填滿方式",
+      "fillModes": {
+        "cover": "覆蓋",
+        "contain": "適應",
+        "center": "置中",
+        "tile": "平鋪"
+      },
+      "maskOpacity": "遮罩不透明度",
+      "maskOpacityHint": "數值越高，圖片越向主題背景色淡化，文字對比越清晰。",
+      "imageBlur": "圖片模糊",
+      "panelOpacity": "面板不透明度",
+      "panelOpacityHint": "側邊欄、面板與標籤列的不透明程度。越低，透出的圖片越多。",
+      "errorTooLarge": "圖片太大（最大 16 MB）。",
+      "errorUploadFailed": "設定背景圖片失敗。"
     }
   },
   "SystemSettings": {
@@ -640,6 +663,49 @@
       "autoCompactLabel": "自動壓縮閾值（%）",
       "autoCompactHint": "當上下文使用率達到此百分比時壓縮對話（Grok 預設 85）。寫入 `[session]`。"
     },
+    "cursor": {
+      "configDescription": "在此設定 Cursor。先選擇驗證方式——官網訂閱（瀏覽器登入）或用於無頭/伺服器的 Cursor API 金鑰——然後選擇模型並編輯 CLI 的權限規則與沙箱。codeg 會寫入 ~/.cursor/cli-config.json，與 cursor-agent CLI 共用。",
+      "authTitle": "驗證",
+      "authChecking": "檢測中…",
+      "authNotInstalled": "cursor-agent 未安裝",
+      "authLoggedIn": "已登入",
+      "authNotLoggedIn": "未登入",
+      "loginHint": "在終端機執行以下指令登入 Cursor 帳號（會開啟瀏覽器），完成後點重新整理：",
+      "apiKeyLabel": "Cursor API 金鑰",
+      "apiKeyPlaceholder": "在 cursor.com/dashboard 取得",
+      "apiKeyHint": "CURSOR_API_KEY —— Cursor Dashboard 的帳號金鑰，在無頭/伺服器環境下取代瀏覽器登入。不是第三方或 OpenAI 金鑰。",
+      "modelTitle": "預設模型",
+      "loadModels": "取得模型清單",
+      "modelsUnavailable": "模型清單不可用",
+      "modelHint": "會話啟動時透過 --model 傳給 CLI；保持預設則由 Cursor 自行選擇。",
+      "permissionsTitle": "權限與沙箱",
+      "permissionsDescription": "可視化編輯 CLI 權限規則（cli-config.json）。允許規則免確認執行；拒絕規則一律攔截。",
+      "permissionModeLabel": "權限模式",
+      "permissionModeDefault": "執行前詢問（預設）",
+      "permissionModeForce": "全部放行 Run Everything（--force）",
+      "permissionModeHint": "Run Everything 以 --force 啟動工作階段：除 deny 規則外的所有工具呼叫自動放行、不再跳出確認（組織政策可能將其降級為僅按 allow 規則放行）。對新工作階段生效。",
+      "optionDefault": "預設（未設定）",
+      "sandboxLabel": "沙箱",
+      "sandboxEnabled": "啟用",
+      "sandboxDisabled": "停用",
+      "allowRulesLabel": "允許規則",
+      "denyRulesLabel": "拒絕規則",
+      "addRule": "新增規則",
+      "rulesSyntaxHint": "規則語法：Shell(命令)、Read(路徑/萬用字元)、Write(路徑/萬用字元)、WebFetch(網域)、Mcp(伺服器:工具)——deny 規則始終優先。",
+      "saveConfig": "儲存設定",
+      "advancedToggle": "進階：原始 cli-config.json",
+      "advancedHint": "完整的 ~/.cursor/cli-config.json。此處儲存按原文寫入；上方結構化控制項則以合併方式寫入。",
+      "saveRawConfig": "儲存檔案",
+      "authMode": "認證方式",
+      "subscriptionHint": "使用 Cursor 帳號登入，使用 Cursor 的模型。",
+      "customApiKeyRequired": "需要填寫 Cursor API 金鑰。",
+      "authModeApiKey": "Cursor API 金鑰（無頭/伺服器）",
+      "authModeApiKeyHint": "使用 Cursor 官網 Dashboard 產生的帳號 API 金鑰進行驗證（適用於無頭/伺服器環境）。這是 Cursor 帳號金鑰，不是第三方/OpenAI 端點——cursor-agent 只會連線到 Cursor 自己的後端。若要使用 codex/OpenAI 相容端點，請改用 Codex 智慧體。",
+      "modelPickerPlaceholder": "搜尋模型…",
+      "modelNoMatch": "沒有相符的模型",
+      "modelsNeedAuth": "登入後載入模型清單。",
+      "modelDefaultBadge": "預設"
+    },
     "codex": {
       "configDescription": "支援 API URL、API Key、模型名稱、Reasoning Effort 快捷配置，並與 `auth.json` / `config.toml` 雙向聯動。",
       "authMode": "認證方式",
@@ -921,6 +987,8 @@
       "grokSaved": "Grok 設定已儲存",
       "saveGrokNativeFailed": "儲存 Grok 原生設定失敗",
       "saveGrokApiKeyFailed": "設定已儲存，但 API Key 未能儲存",
+      "cursorSaved": "Cursor 設定已儲存",
+      "saveCursorConfigFailed": "儲存 Cursor 設定失敗",
       "codexSaved": "Codex 配置已儲存",
       "saveCodexNativeFailed": "儲存 Codex 原生配置失敗",
       "geminiSaved": "Gemini 配置已儲存",
@@ -1189,6 +1257,7 @@
         "removeFolderFailed": "移除資料夾失敗：{message}",
         "reorderFoldersFailed": "重新排序資料夾失敗：{message}",
         "changeFolderColorFailed": "修改顏色失敗：{message}",
+        "setFolderAliasFailed": "設定別名失敗：{message}",
         "changeFolderDefaultAgentFailed": "設定預設智能體失敗：{message}"
       },
       "statsLabel": "{folders} 個資料夾 · {convos} 個對話",
@@ -1220,6 +1289,11 @@
         "defaultAgentNone": "不設定（使用全域預設）",
         "agentUnavailableSuffix": "（不可用）",
         "loadingAgents": "正在載入代理…",
+        "setAlias": "設定別名…",
+        "setAliasTitle": "設定資料夾別名",
+        "setAliasPlaceholder": "輸入別名（留空清除）",
+        "setAliasSave": "儲存",
+        "setAliasCancel": "取消",
         "removeFromWorkspace": "從工作區移除"
       },
       "manageConversations": {
@@ -1289,10 +1363,12 @@
         "system": "系統",
         "toolResult": "結果",
         "toolError": "錯誤"
-      }
+      },
+      "moreActions": "更多操作"
     },
     "sessionDetails": {
       "menuLabel": "對話詳情",
+      "noActiveSession": "暫無使用中的對話",
       "title": "對話詳情",
       "subtitle": "對話中繼資料與 Token 用量",
       "fieldTitle": "標題",
@@ -1434,7 +1510,8 @@
       "preview": "預覽",
       "editSource": "編輯原始碼",
       "maximize": "最大化",
-      "restore": "還原"
+      "restore": "還原",
+      "emptyDirectory": "空目錄"
     },
     "terminal": {
       "rename": "重新命名",
@@ -1866,6 +1943,7 @@
         "addToVcsFailed": "加入到 VCS 失敗",
         "loadBranchesFailed": "載入分支失敗",
         "renameFailed": "重新命名失敗",
+        "moveFailed": "移動失敗",
         "deleteFailed": "刪除失敗",
         "rolledBack": "已回滾 {name}",
         "rollbackFailed": "回滾失敗",
@@ -2159,7 +2237,8 @@
         "enableAgentFirstPlaceholder": "請先啟用至少一個 Agent 後開始會話...",
         "prepareSessionFailed": "無法準備聊天工作階段，請重試。",
         "createConversationFailed": "無法建立會話，請重試。",
-        "askAnythingPlaceholder": "請開始輸入..."
+        "askAnythingPlaceholder": "請開始輸入...",
+        "agentNotInstalled": "{agent} 尚未安裝 · 點擊前往 Agents 設定安裝"
       },
       "welcomePanel": {
         "greeting": "今天打算<highlight>做些什麼</highlight>呢？",
@@ -2259,7 +2338,8 @@
       },
       "agentSelector": {
         "noEnabledAgents": "暫無已啟用的 Agent",
-        "openAgentsSettings": "開啟 Agents 設定"
+        "openAgentsSettings": "開啟 Agents 設定",
+        "notInstalled": "未安裝"
       },
       "subAgentOverlay": {
         "title": "子智能體",
@@ -3268,7 +3348,7 @@
       "deleteConfirm": "確認刪除寵物「{name}」嗎？會從磁碟上一併移除。",
       "summon": "召喚寵物視窗",
       "openCodexHelp": "Codex 寵物需位於 ~/.codex/pets/ 目錄下,但未找到。",
-      "specRequirement": "精靈圖必須是 1536x1872 像素帶透明通道的 PNG 或 WebP。",
+      "specRequirement": "精靈圖寬度必須為 1536 像素，高度需為 208 像素的整數倍（如 1872 或 2288），並為帶透明通道的 PNG 或 WebP。",
       "form": {
         "id": "寵物 ID",
         "idHelp": "僅允許小寫字母、數字、'-' 和 '_',最多 64 字元。",

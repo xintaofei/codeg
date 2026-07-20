@@ -114,21 +114,25 @@ describe("parseCodegReferenceUri", () => {
     })
   })
 
-  it("parses a skill uri, keeping the literal `/`·`$` token as the label", () => {
+  it("parses a skill uri, stripping the leading `/`·`$` from the label", () => {
     expect(
       parseCodegReferenceUri("codeg://skill/review", "/review")
     ).toMatchObject({
       refType: "skill",
       id: "review",
-      label: "/review",
+      label: "review",
       uri: "codeg://skill/review",
       meta: null,
     })
+    // The `$` prefix ($skill / Codex expert) is stripped the same way.
+    expect(
+      parseCodegReferenceUri("codeg://skill/deploy", "$deploy")?.label
+    ).toBe("deploy")
   })
 
-  it("falls back to a /-prefixed id for an empty skill label", () => {
+  it("falls back to the bare id for an empty skill label", () => {
     expect(parseCodegReferenceUri("codeg://skill/deploy", "")?.label).toBe(
-      "/deploy"
+      "deploy"
     )
   })
 

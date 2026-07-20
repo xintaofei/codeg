@@ -22,8 +22,8 @@ use sacp::schema::{
 use sacp::schema::{HttpHeader, McpServer, McpServerHttp, McpServerSse, McpServerStdio};
 use sacp::util::MatchDispatch;
 use sacp::{
-    on_receive_request, Agent, Client, ConnectionTo, Dispatch, Responder, SessionMessage,
-    UntypedMessage,
+    on_receive_request, Agent, Client, ConnectionTo, Dispatch, JsonRpcRequest, Responder,
+    SessionMessage, UntypedMessage,
 };
 use sacp_tokio::AcpAgent;
 use tokio::sync::{mpsc, RwLock};
@@ -77,6 +77,32 @@ fn merge_agent_env(
     prepend_officecli_path(&mut merged);
 
     merged.into_iter().collect()
+}
+
+/// Cursor subscription-mode launch policy. When the user picked the official
+/// subscription (browser login), guarantee the launched CLI sees NONE of the
+/// custom-endpoint credentials — not even a stale `CURSOR_API_KEY` /
+/// `CURSOR_API_BASE_URL` inherited from this process's environment (e.g. a dev
+/// shell export). cursor-agent would otherwise validate that leaked key and
+/// refuse to fall back to the login credential. An empty value tells the spawn
+/// layer (vendored sacp-tokio) to `env_remove` the inherited var.
+///
+/// Gated on the explicit `CURSOR_AUTH_MODE` knob (written by the Cursor panel),
+/// so legacy rows and operator-provided container env are left untouched. In
+/// custom mode the credentials are present and non-empty, so nothing is cleared.
+fn apply_cursor_env_policy(merged: &mut Vec<(String, String)>, runtime_env: &BTreeMap<String, String>) {
+    if runtime_env.get("CURSOR_AUTH_MODE").map(String::as_str) != Some("subscription") {
+        return;
+    }
+    for key in ["CURSOR_API_KEY", "CURSOR_API_BASE_URL"] {
+        let already_set = merged
+            .iter()
+            .any(|(k, v)| k == key && !v.trim().is_empty());
+        if !already_set {
+            merged.retain(|(k, _)| k != key);
+            merged.push((key.to_string(), String::new()));
+        }
+    }
 }
 
 /// Prepend `dir` to the PATH entry of `env`, seeding from `fallback_path` when
@@ -422,6 +448,7 @@ async fn build_agent(
             args,
             env,
             platforms,
+            dir_entry,
         } => {
             let platform = registry::current_platform();
             let _ = platforms
@@ -440,38 +467,93 @@ async fn build_agent(
             // only when nothing is cached, so the frontend can prompt
             // the user to install it from the Agent Settings page.
             //
+            // Dir-tree agents (Cursor) additionally fall back to a
+            // user-installed CLI on PATH (e.g. `cursor-agent` from the
+            // official install script) before giving up — mirroring the
+            // Uvx `system_cmd` fallback.
+            //
             // INVARIANT: the substring "is not installed" is matched
             // verbatim by the frontend catch block in
             // `src/contexts/acp-connections-context.tsx` to surface a
             // localized install prompt. Do not change the wording.
-            let (binary_path, cached_version) =
-                crate::acp::binary_cache::find_best_cached_binary_for_agent(agent_type, cmd)?
-                    .ok_or_else(|| {
-                        AcpError::SdkNotInstalled(format!(
-                            "{} is not installed. Please install it in Agent Settings.",
+            let cached =
+                crate::acp::binary_cache::find_best_cached_binary_for_agent(agent_type, cmd)?;
+            let binary_path = match cached {
+                Some((path, cached_version)) => {
+                    if cached_version == registry_version {
+                        tracing::info!(
+                            "[ACP][{}] Using cached binary {cached_version}",
                             meta.name
-                        ))
-                    })?;
-            if cached_version == registry_version {
-                tracing::info!("[ACP][{}] Using cached binary {cached_version}", meta.name);
-            } else {
-                tracing::info!(
-                    "[ACP][{}] Using cached binary {cached_version} (registry recommends {registry_version})",
-                    meta.name
-                );
-            }
+                        );
+                    } else {
+                        tracing::info!(
+                            "[ACP][{}] Using cached binary {cached_version} (registry recommends {registry_version})",
+                            meta.name
+                        );
+                    }
+                    path
+                }
+                None => {
+                    let system = dir_entry
+                        .and_then(|_| crate::commands::acp::resolve_system_agent_binary(cmd))
+                        .ok_or_else(|| {
+                            AcpError::SdkNotInstalled(format!(
+                                "{} is not installed. Please install it in Agent Settings.",
+                                meta.name
+                            ))
+                        })?;
+                    tracing::info!(
+                        "[ACP][{}] No cached binary; using system {} from PATH",
+                        meta.name,
+                        system.display()
+                    );
+                    system
+                }
+            };
 
             let binary_str = binary_path.to_string_lossy().to_string();
             let binary_size = std::fs::metadata(&binary_path)
                 .map(|m| m.len())
                 .unwrap_or(0);
             let mut server = McpServerStdio::new(meta.name, &binary_str);
-            let cmd_args: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+            let mut cmd_args: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+            // Cursor's ROOT-level `--model <id>` flag precedes the `acp`
+            // subcommand and sets the session's default model. Sourced from
+            // the Cursor panel's default-model control (env_json key
+            // CURSOR_MODEL — a codeg-side launch knob; the CLI itself reads
+            // no model env var).
+            if agent_type == AgentType::Cursor {
+                if let Some(model) = runtime_env
+                    .get("CURSOR_MODEL")
+                    .map(|v| v.trim())
+                    .filter(|v| !v.is_empty())
+                {
+                    cmd_args.insert(0, "--model".to_string());
+                    cmd_args.insert(1, model.to_string());
+                }
+                // Root `--force` = Run Everything: the ACP session swaps its
+                // permission prompter for an auto-allow one, so tool calls
+                // never reach session/request_permission (deny rules still
+                // apply, and an org policy can downgrade it to rule-based
+                // approval). Sourced from the panel's permission-mode
+                // control (env_json key CURSOR_FORCE — codeg-side knob; the
+                // CLI reads no such env var).
+                if runtime_env
+                    .get("CURSOR_FORCE")
+                    .map(|v| v.trim())
+                    .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                {
+                    cmd_args.insert(0, "--force".to_string());
+                }
+            }
             let cmd_args_for_log = cmd_args.clone();
             if !cmd_args.is_empty() {
                 server = server.args(cmd_args);
             }
-            let merged_env = merge_agent_env(env, runtime_env);
+            let mut merged_env = merge_agent_env(env, runtime_env);
+            if agent_type == AgentType::Cursor {
+                apply_cursor_env_policy(&mut merged_env, runtime_env);
+            }
             let env_key_list: Vec<&str> = merged_env.iter().map(|(k, _)| k.as_str()).collect();
             if !merged_env.is_empty() {
                 let env_vars: Vec<sacp::schema::EnvVariable> = merged_env
@@ -1834,17 +1916,19 @@ fn agent_delivers_wire_mcp(agent_type: AgentType) -> bool {
 /// ACP wire format. Errors and unsupported entries are logged and skipped so
 /// a single malformed entry never blocks a session from starting.
 fn load_mcp_servers_for_agent(agent_type: AgentType) -> Vec<McpServer> {
-    // Hermes, Kimi Code, and Grok each read their own native MCP config at
-    // launch — Hermes from `~/.hermes/config.yaml` (`mcp_servers`, registered as
-    // `mcp-<name>` toolsets), Kimi Code from `~/.kimi-code/mcp.json`
-    // (`mcpServers`), Grok from `~/.grok/config.toml` (`[mcp_servers.<name>]`).
-    // codeg manages those files directly via the MCP settings UI, so forwarding
-    // the same servers over the ACP wire here would double-register them — skip
-    // it. (The built-in `codeg-mcp` companion is injected separately by
-    // `inject_codeg_mcp`, so it still reaches them.)
+    // Hermes, Kimi Code, Grok, and Cursor each read their own native MCP
+    // config at launch — Hermes from `~/.hermes/config.yaml` (`mcp_servers`,
+    // registered as `mcp-<name>` toolsets), Kimi Code from
+    // `~/.kimi-code/mcp.json` (`mcpServers`), Grok from `~/.grok/config.toml`
+    // (`[mcp_servers.<name>]`), Cursor from `~/.cursor/mcp.json`
+    // (`mcpServers`, shared with the IDE). codeg manages those files directly
+    // via the MCP settings UI, so forwarding the same servers over the ACP
+    // wire here would double-register them — skip it. (The built-in
+    // `codeg-mcp` companion is injected separately by `inject_codeg_mcp`, so
+    // it still reaches them.)
     if matches!(
         agent_type,
-        AgentType::Hermes | AgentType::KimiCode | AgentType::Grok
+        AgentType::Hermes | AgentType::KimiCode | AgentType::Grok | AgentType::Cursor
     ) {
         return Vec::new();
     }
@@ -2232,6 +2316,23 @@ async fn run_connection(
     let perms = pending_perms.clone();
     let state_outer = Arc::clone(&state);
 
+    // Grok's native `ask_user_question` (verified against 0.2.101) arrives as an
+    // `_x.ai/ask_user_question` ACP ext request that BLOCKS on the reply — rather
+    // than the codeg-mcp tool. Capture the shared question access + feature toggle
+    // (both live on the delegation injection) so the ext handler can register the
+    // questions through the SAME interactive-card pipeline and answer grok once the
+    // user submits. `None` when the companion isn't injected — the handler then
+    // lets grok fall back to its inert rendering.
+    let grok_ask_access = delegation_injection
+        .as_ref()
+        .map(|inj| (Arc::clone(&inj.questions), inj.ask.clone()));
+    let grok_ask_conn_id = connection_id.clone();
+    // The ext handler emits the answered in-stream card (`AskQuestionResultCard`)
+    // itself once the user submits — grok never emits a completed tool result into
+    // the ACP stream — so it needs this connection's session state + emitter.
+    let grok_ask_state = Arc::clone(&state);
+    let grok_ask_emitter = emitter.clone();
+
     // Claude-only: tail this connection's session transcript for OUT-OF-TURN
     // activity (async sub-agent / background-shell completions, the agent's
     // continued work after them, cron//loop autonomous turns — none of which
@@ -2361,6 +2462,29 @@ async fn run_connection(
                             responder: Responder<ReleaseTerminalResponse>,
                             _cx: ConnectionTo<Agent>| {
                     respond_terminal_request(responder, runtime.release_terminal(req).await)?;
+                    Ok(())
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let access = grok_ask_access.clone();
+                let conn_id = grok_ask_conn_id.clone();
+                let card_state = Arc::clone(&grok_ask_state);
+                let card_emitter = grok_ask_emitter.clone();
+                async move |req: GrokAskUserQuestionRequest,
+                            responder: Responder<serde_json::Value>,
+                            _cx: ConnectionTo<Agent>| {
+                    handle_grok_ask_user_question(
+                        &access,
+                        &conn_id,
+                        &card_state,
+                        &card_emitter,
+                        req,
+                        responder,
+                    )
+                    .await;
                     Ok(())
                 }
             },
@@ -3030,6 +3154,122 @@ async fn run_connection(
 }
 
 /// Store the permission responder and emit event to frontend.
+/// Grok's native `ask_user_question` tool issues this ACP ext request
+/// (`_x.ai/ask_user_question`) and BLOCKS on the reply — it does NOT go through
+/// the codeg-mcp ask tool. Transparent over the raw params object
+/// (`{sessionId, toolCallId, questions, mode}`); the fields codeg needs are read
+/// by [`crate::acp::question::parse_grok_ext_questions`]. sacp routes typed
+/// handlers on the RAW wire method, so the derive keeps the leading `_`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonRpcRequest)]
+#[request(method = "_x.ai/ask_user_question", response = serde_json::Value)]
+#[serde(transparent)]
+struct GrokAskUserQuestionRequest(serde_json::Value);
+
+/// Bridge grok's native `_x.ai/ask_user_question` ext request into codeg's
+/// interactive question card. Grok blocks on the reply, so codeg registers the
+/// questions through the shared [`crate::acp::question::SessionQuestionAccess`] —
+/// the SAME path the codeg-mcp ask tool uses (it sets `pending_question`,
+/// broadcasts `QuestionRequest`, and the `AskQuestionCard` renders) — then answers
+/// the ext request with the user's choice, serialized to grok's own format, once
+/// they submit. Every early return responds with an error, which makes grok fall
+/// back to its inert fire-and-forget rendering — exactly the pre-bridge behavior,
+/// so no path here can regress it.
+async fn handle_grok_ask_user_question(
+    access: &Option<(
+        Arc<dyn crate::acp::question::SessionQuestionAccess>,
+        crate::acp::question::QuestionRuntimeConfig,
+    )>,
+    connection_id: &str,
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    req: GrokAskUserQuestionRequest,
+    responder: Responder<serde_json::Value>,
+) {
+    let Some((questions, ask_cfg)) = access else {
+        let _ = responder.respond_with_internal_error("ask_user_question bridge unavailable");
+        return;
+    };
+    // Same kill switch as the codeg-mcp ask tool: when off, let grok fall back.
+    if !ask_cfg.is_enabled().await {
+        let _ = responder.respond_with_internal_error("ask_user_question is disabled");
+        return;
+    }
+    let specs = match crate::acp::question::parse_grok_ext_questions(&req.0) {
+        Ok(specs) => specs,
+        Err(e) => {
+            tracing::warn!("[grok ask] rejecting malformed ext request: {e}");
+            let _ =
+                responder.respond_with_internal_error(format!("invalid ask_user_question: {e}"));
+            return;
+        }
+    };
+    // Grok's tool_call_id correlates this ext ask with the (suppressed) native
+    // tool_call in the live stream; reuse it so the synthesized result card is the
+    // single card for that id. Absent → still answer grok, just skip the card.
+    let tool_call_id = req
+        .0
+        .get("toolCallId")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    // register_question consumes the specs; keep a copy to render the answered
+    // in-stream card once the user submits.
+    let card_specs = specs.clone();
+    let Some(registered) = questions.register_question(connection_id, specs).await else {
+        // Connection gone, or an ask is already pending on this connection.
+        let _ = responder.respond_with_internal_error("could not register ask_user_question");
+        return;
+    };
+    // The user answers out-of-band (the HTTP `answer_question` endpoint resolves
+    // the one-shot below), so await it on a task — keeping the ACP dispatch loop
+    // free — then reply to grok's blocked ext request.
+    let state = Arc::clone(state);
+    let emitter = emitter.clone();
+    tokio::spawn(async move {
+        match registered.answer_rx.await {
+            Ok(outcome) => {
+                // Surface the answered "提问回答" capsule in-stream — the codeg-mcp
+                // ask parity grok's native tool never emits into the ACP stream (it
+                // resolves the answer over THIS ext round-trip). Emit BEFORE
+                // unblocking grok so the card lands ahead of grok's follow-up text;
+                // grok is blocked on this reply, so nothing races the emit. The
+                // matching raw ask tool_call/updates are suppressed in the live loop
+                // (see `grok_ask_tool_ids`), so this synthesized event — keyed by the
+                // same id — is the only card for the ask.
+                if let Some(tool_call_id) = tool_call_id {
+                    emit_with_state(
+                        &state,
+                        &emitter,
+                        AcpEvent::ToolCall {
+                            tool_call_id,
+                            title: "ask_user_question".to_string(),
+                            kind: "other".to_string(),
+                            status: "completed".to_string(),
+                            content: None,
+                            raw_input: Some(
+                                crate::acp::question::grok_result_card_input(&card_specs)
+                                    .to_string(),
+                            ),
+                            raw_output: Some(
+                                crate::acp::question::grok_result_card_output(&outcome).to_string(),
+                            ),
+                            locations: None,
+                            meta: None,
+                            images: None,
+                        },
+                    )
+                    .await;
+                }
+                let _ = responder.respond(crate::acp::question::build_grok_ext_response(&outcome));
+            }
+            // Sender dropped: the ask was canceled or the connection tore down —
+            // nothing to render; let grok fall back via skip_interview.
+            Err(_) => {
+                let _ = responder.respond(crate::acp::question::grok_ext_skip_response());
+            }
+        }
+    });
+}
+
 async fn handle_permission_request(
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
@@ -3782,6 +4022,58 @@ async fn poll_tracked_terminal_tool_calls(
     }
 }
 
+/// Append the just-ended turn's observed span to the timing journal (see
+/// `crate::turn_timings`). `probe` is `Some((send_stamp, prompt_hash))` only
+/// on agents codeg journals for (Cursor) and is consumed on the first
+/// journaling terminal path, so a turn appends at most one line.
+///
+/// ONLY cleanly completed turns are journaled — callers gate on the
+/// NORMALIZED stop reason (`reason_str == "end_turn"`, which a raw
+/// `end_turn` with no agent output does NOT satisfy: it reclassifies to
+/// `"empty"` and is excluded). A canceled or empty turn may never have been
+/// persisted by Cursor at all, and journaling such a phantom re-opens the
+/// misassignment the parser's guards exist to prevent: a later same-hash
+/// store turn could pair with the phantom's line even across non-contiguous
+/// positions (Codex review R4-2). An unjournaled-but-persisted turn
+/// mid-session merely stops the reverse walk (older turns lose their
+/// clocks); when such turns make up the session's TAIL, the second accepted
+/// residual in `turn_timings`' module docs applies (a stale journal tail can
+/// hash-collide with the store's newest turn).
+///
+/// The append is queued to the journal's single-writer thread and awaited
+/// with a short timeout: the normal case lands in microseconds BEFORE the
+/// TurnComplete emit (so the post-turn reparse deterministically sees it),
+/// while a hung filesystem blocks neither the turn loop nor any Tokio pool —
+/// the queued job just lands late (still in order; the FIFO queue is what
+/// makes overtaking structurally impossible) or is dropped at the queue cap.
+async fn journal_turn_span(
+    probe: &mut Option<(u64, String, u64)>,
+    connection_id: &str,
+    session_id: &str,
+) {
+    let Some((started_at_ms, prompt_sha, ord)) = probe.take() else {
+        return;
+    };
+    let ack = crate::turn_timings::enqueue_turn_timing(
+        crate::paths::codeg_turn_timings_root(),
+        crate::turn_timings::CURSOR_JOURNAL_AGENT.to_string(),
+        session_id.to_string(),
+        crate::turn_timings::TurnTiming {
+            v: crate::turn_timings::TURN_TIMING_SCHEMA_VERSION,
+            ord,
+            conn: connection_id.to_string(),
+            prompt_sha,
+            started_at_ms,
+            ended_at_ms: crate::turn_timings::now_epoch_ms(),
+        },
+    );
+    // Determinism window only — a timeout (or a dropped job's closed channel)
+    // means the entry lands late or not at all, degrading that turn to a
+    // missing footer clock. (See `turn_timings`' module docs for the two
+    // narrow accepted residuals where missing lines can shift alignment.)
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), ack).await;
+}
+
 fn map_prompt_blocks(blocks: Vec<PromptInputBlock>) -> Vec<ContentBlock> {
     blocks
         .into_iter()
@@ -4128,6 +4420,11 @@ async fn run_conversation_loop<'a>(
     // thought/message chunks. See `emit_conversation_update`. Shared across the
     // idle and turn loops.
     let mut cb_state = CodeBuddyLiveState::default();
+    // 1-based per-connection turn counter for the timing journal's ordinal
+    // (see `turn_timings::TurnTiming::ord`) — incremented for EVERY Cursor
+    // prompt turn, journaled or not, so consecutive ordinals prove adjacent
+    // turns to the reader.
+    let mut cursor_turn_ord: u64 = 0;
     loop {
         // Wait for either a user command or a session update (e.g. available_commands_update)
         let cmd = loop {
@@ -4173,6 +4470,26 @@ async fn run_conversation_loop<'a>(
                 // consumed: the transcript record this prompt becomes must
                 // classify as wire-rendered foreground, not overlay.
                 prompt_ledger.record_prompt_blocks(&blocks);
+                // Cursor's ACP store carries no per-turn timestamps at all
+                // (see `crate::turn_timings`), so codeg journals its own
+                // observation of the turn span: hash + ordinal here (before
+                // the blocks are consumed), the send stamp after the
+                // `UserMessage` broadcast below, the append at TurnComplete.
+                // The hash of the outgoing text blocks is what the history
+                // parser correlates its user turns against; the ordinal is
+                // its contiguity anchor (every turn consumes one, journaled
+                // or not).
+                let turn_timing_prep = matches!(agent_type, AgentType::Cursor).then(|| {
+                    cursor_turn_ord += 1;
+                    let text: String = blocks
+                        .iter()
+                        .filter_map(|b| match b {
+                            PromptInputBlock::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    (crate::turn_timings::prompt_hash(&text), cursor_turn_ord)
+                });
                 let prompt_blocks = map_prompt_blocks(blocks);
                 if prompt_blocks.is_empty() {
                     // Defensive: the manager rejects empty prompts before the
@@ -4219,6 +4536,20 @@ async fn run_conversation_loop<'a>(
                     emit_with_state(state, emitter, AcpEvent::UserMessage { message_id, blocks })
                         .await;
                 }
+
+                // Stamp the journal's turn start AFTER the `UserMessage`
+                // broadcast: `apply_in_flight_message_id`'s recency gate
+                // compares parsed user-turn timestamps — which the journal
+                // upgrade rewrites to this stamp — against the broadcast's
+                // application instant (`pending_user_message_started_at`,
+                // stored at millisecond precision for exactly this
+                // comparison). `emit_with_state` applies the event before
+                // returning, so this stamp is never earlier than the gate's
+                // threshold and the in-flight user turn stays stampable in
+                // the journal-written-but-turn-still-pending window.
+                let mut turn_timing_probe = turn_timing_prep.map(|(prompt_sha, ord)| {
+                    (crate::turn_timings::now_epoch_ms(), prompt_sha, ord)
+                });
 
                 // Clone connection and session ID before entering the
                 // select loop so we can send CancelNotification without
@@ -4337,6 +4668,11 @@ async fn run_conversation_loop<'a>(
                                     {
                                         emit_with_state(state, emitter, err_event).await;
                                     }
+                                    // Clean completions only — a canceled/empty
+                                    // turn may be unpersisted (see journal_turn_span).
+                                    if reason_str == "end_turn" {
+                                        journal_turn_span(&mut turn_timing_probe, conn_id, &sid.0).await;
+                                    }
                                     emit_with_state(
                                         state,
                                         emitter,
@@ -4407,6 +4743,11 @@ async fn run_conversation_loop<'a>(
                                 turn_failure_error_event(reason_str, agent_type)
                             {
                                 emit_with_state(state, emitter, err_event).await;
+                            }
+                            // Clean completions only — a canceled/empty turn
+                            // may be unpersisted (see journal_turn_span).
+                            if reason_str == "end_turn" {
+                                journal_turn_span(&mut turn_timing_probe, conn_id, &sid.0).await;
                             }
                             emit_with_state(
                                 state,
@@ -5119,6 +5460,58 @@ fn grok_mcp_output_text(raw_output: &serde_json::Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Recover a codeg-mcp companion tool's identity from its RESULT text, for
+/// Cursor sessions only.
+///
+/// Cursor's ACP layer announces every MCP call from the first streaming
+/// partial — before `McpArgs` exists — so the announcement is the literal
+/// title "MCP: tool" with an empty `raw_input`, and `sendToolCallUpdate`
+/// (bundle-verified) never forwards `title`/`raw_input` again. The ONLY
+/// wire signal that ever identifies the call is the MCP result text arriving
+/// on the completion update, and for the codeg-mcp companion tools that text
+/// is a codeg-owned contract:
+///
+/// * a `delegate_to_agent` ack opens with
+///   `"Delegation successful. task_id="` (`broker.rs::running_ack`);
+/// * `get_delegation_status` renders the compact `{"tasks":[..]}` JSON
+///   (`companion.rs::render_batch_report`), whose items carry `task_id` +
+///   a `status` from the fixed report vocabulary.
+///
+/// (`cancel_delegation` results are free-form report messages with no stable
+/// prefix, so a canceled call keeps the generic title — a rare op, accepted.)
+///
+/// Matching those shapes lets the completion update rewrite the title to the
+/// canonical `<server>__<tool>` form (the exact name the history parser
+/// derives from `McpArgs`), so the frontend resolves the dedicated delegation
+/// cards instead of a generic "MCP: tool" call. Returns `None` for everything
+/// else — an unrecognized result keeps the wire title untouched. Callers gate
+/// the sniff to calls ANNOUNCED with the identity-less "MCP: tool" title
+/// (`CodeBuddyLiveState::cursor_generic_mcp_ids`), so a native tool whose
+/// output merely echoes these shapes is never re-titled.
+fn cursor_companion_title_from_content(content: Option<&str>) -> Option<&'static str> {
+    let text = content?.trim_start();
+    if text.starts_with("Delegation successful. task_id=") {
+        return Some(crate::acp::delegation::DELEGATE_TOOL_REWRITE_TITLE);
+    }
+    // Cheap guards before the full JSON parse: the status report is a JSON
+    // object whose first key is `tasks`.
+    if !text.starts_with('{') || !text.contains("\"tasks\"") {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let tasks = v.get("tasks")?.as_array()?;
+    let is_report_item = |t: &serde_json::Value| {
+        t.get("task_id").and_then(|x| x.as_str()).is_some()
+            && t.get("status").and_then(|x| x.as_str()).is_some_and(|s| {
+                matches!(s, "running" | "completed" | "failed" | "canceled" | "unknown")
+            })
+    };
+    if !tasks.is_empty() && tasks.iter().all(is_report_item) {
+        return Some(crate::acp::delegation::STATUS_TOOL_REWRITE_TITLE);
+    }
+    None
+}
+
 /// Mirrors `parsers/opencode.rs:425-429` (and `parsers/codebuddy.rs`'s
 /// `subagent_type → "Agent"` rewrite) so streaming and reload-from-DB render the
 /// same Agent card. The SQLite-side condition is
@@ -5379,6 +5772,38 @@ struct CodeBuddyLiveState {
     /// (not content) addressing keeps two runs that share an objective from
     /// colliding in the reducer's id-keyed live block list.
     codex_goal_seq: u64,
+    /// Cursor tool calls announced with the identity-less "MCP: tool" title.
+    /// Only these are eligible for the completion-time result sniff
+    /// (`cursor_companion_title_from_content`) — a `shell`/`read` call whose
+    /// OUTPUT merely echoes a delegation ack must never be re-titled. Entries
+    /// are dropped once the call reaches a terminal status (the sniff, if any,
+    /// has recorded its override by then), so the set tracks only in-flight
+    /// calls.
+    cursor_generic_mcp_ids: HashSet<String>,
+    /// Grok tool_call ids whose interactive question already renders via the
+    /// `_x.ai/ask_user_question` ext bridge (`handle_grok_ask_user_question`). The
+    /// redundant native `tool_call` / `tool_call_update` stream for these is
+    /// dropped so the card doesn't double-render; tracked by id because a later
+    /// status-only update may drop the `x.ai/tool` meta that first identified it.
+    grok_ask_tool_ids: HashSet<String>,
+}
+
+/// True when a tool call's ACP `_meta` marks it as grok's native
+/// `ask_user_question` (`x.ai/tool.kind == "ask_user"`). Codeg answers grok's
+/// blocking `_x.ai/ask_user_question` ext request by rendering the interactive
+/// `AskQuestionCard` (see `handle_grok_ask_user_question`), so the parallel
+/// `tool_call` stream grok emits for the same call is redundant — it is dropped
+/// live so the question doesn't render twice (once answerable, once inert).
+fn grok_meta_marks_ask_user(
+    agent_type: AgentType,
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> bool {
+    matches!(agent_type, AgentType::Grok)
+        && meta
+            .and_then(|m| m.get("x.ai/tool"))
+            .and_then(|t| t.get("kind"))
+            .and_then(|k| k.as_str())
+            == Some("ask_user")
 }
 
 /// Resolve a tool call's title, honoring an authoritative rewrite recorded for
@@ -5593,6 +6018,14 @@ async fn emit_conversation_update(
         }
         SessionUpdate::ToolCall(tc) => {
             let tool_call_id = tc.tool_call_id.to_string();
+            // Grok emits a redundant `tool_call` for its native ask_user_question
+            // alongside the blocking `_x.ai/ask_user_question` ext request codeg
+            // answers with the interactive card; drop it here (remembering the id so
+            // later status-only updates that lost the meta are dropped too).
+            if grok_meta_marks_ask_user(agent_type, tc.meta.as_ref()) {
+                cb_state.grok_ask_tool_ids.insert(tool_call_id);
+                return;
+            }
             // CodeBuddy double-wraps a deferred MCP result as a `{type,text}`
             // content part; peel it (in both the content and raw_output channels)
             // so the dedicated delegation cards parse it instead of showing raw JSON.
@@ -5684,6 +6117,15 @@ async fn emit_conversation_update(
                 &mut cb_state.title_overrides,
             )
             .unwrap_or(tc.title);
+            // Mark Cursor's identity-less MCP announcements as eligible for the
+            // completion-time result sniff. Scoping the sniff to ids announced
+            // with this exact title keeps a `shell`/`read` call whose OUTPUT
+            // echoes a delegation ack from being re-titled.
+            if matches!(agent_type, AgentType::Cursor)
+                && title == crate::acp::lifecycle::CURSOR_IDENTITYLESS_MCP_TITLE
+            {
+                cb_state.cursor_generic_mcp_ids.insert(tool_call_id.clone());
+            }
             // Open/close the sub-agent suppression window for this call. `title ==
             // "agent"` iff this is a classified native sub-agent (DeferExecuteTool
             // rewrites to an `mcp__…` name, never "agent").
@@ -5716,6 +6158,14 @@ async fn emit_conversation_update(
         }
         SessionUpdate::ToolCallUpdate(tcu) => {
             let tool_call_id = tcu.tool_call_id.to_string();
+            // Suppress the redundant update stream for grok's ask_user_question
+            // (see the ToolCall arm): match the tracked id, or the meta on a late
+            // update that still carries it.
+            if cb_state.grok_ask_tool_ids.contains(&tool_call_id)
+                || grok_meta_marks_ask_user(agent_type, tcu.meta.as_ref())
+            {
+                return;
+            }
             // Peel CodeBuddy's `{type,text}` deferred-MCP wrapper here too — the
             // result often arrives on an update (see raw_output below).
             // Same Diff→canonical-edit hoist as the initial ToolCall path: the
@@ -5808,6 +6258,27 @@ async fn emit_conversation_update(
                 cb_state
                     .title_overrides
                     .insert(tool_call_id.clone(), name.clone());
+            }
+            // Cursor loses MCP tool identity on the wire entirely (announced as
+            // "MCP: tool" before McpArgs exists; updates never resend title or
+            // raw_input). The completion update's result text is the one signal
+            // left — recover the codeg-mcp companion identity from it and record
+            // it as an authoritative override so the delegation / status cards
+            // resolve instead of a generic tool. Gated to ids this connection
+            // announced with the identity-less title (see the
+            // `cursor_generic_mcp_ids` field doc); the entry is dropped once
+            // the call goes terminal.
+            if matches!(agent_type, AgentType::Cursor)
+                && cb_state.cursor_generic_mcp_ids.contains(&tool_call_id)
+            {
+                if let Some(name) = cursor_companion_title_from_content(content.as_deref()) {
+                    cb_state
+                        .title_overrides
+                        .insert(tool_call_id.clone(), name.to_string());
+                }
+                if matches!(status.as_deref(), Some("completed") | Some("failed")) {
+                    cb_state.cursor_generic_mcp_ids.remove(&tool_call_id);
+                }
             }
             let title = resolve_rewritten_title(
                 agent_type,
@@ -5961,6 +6432,47 @@ mod tests {
     use super::*;
     use sacp::schema::Diff;
 
+    #[test]
+    fn grok_ask_ext_request_routes_and_parses_captured_wire_shape() {
+        use sacp::JsonRpcMessage;
+        // Routing: the derive matches ONLY the underscore-prefixed ext method
+        // (sacp routes typed handlers on the raw wire method — verified against
+        // grok 0.2.101, where the missing underscore made codeg answer "unhandled"
+        // and grok fall back to inert rendering).
+        assert!(GrokAskUserQuestionRequest::matches_method(
+            "_x.ai/ask_user_question"
+        ));
+        assert!(!GrokAskUserQuestionRequest::matches_method(
+            "x.ai/ask_user_question"
+        ));
+        assert!(!GrokAskUserQuestionRequest::matches_method("session/prompt"));
+
+        // The exact params grok sends (captured from a real 0.2.101 run): the
+        // transparent newtype must deserialize them and the raw object must parse
+        // into register-valid specs.
+        let params = serde_json::json!({
+            "sessionId": "019f70eb-32e5-7692-ae92-86fb6cb916a5",
+            "toolCallId": "call-1af86ae7-ed54-440e-a983-2c5d22aa6682-0",
+            "questions": [{
+                "question": "What is your favorite color?",
+                "options": [
+                    { "label": "Red", "description": "Red" },
+                    { "label": "Green", "description": "Green" },
+                    { "label": "Blue", "description": "Blue" }
+                ],
+                "multiSelect": false
+            }],
+            "mode": "default"
+        });
+        let req: GrokAskUserQuestionRequest = serde_json::from_value(params).unwrap();
+        let specs = crate::acp::question::parse_grok_ext_questions(&req.0).unwrap();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].question, "What is your favorite color?");
+        assert_eq!(specs[0].options.len(), 3);
+        assert!(!specs[0].multi_select);
+        crate::acp::question::validate_specs(&specs).unwrap();
+    }
+
     fn diff_content(path: &str, old: Option<&str>, new: &str) -> ToolCallContent {
         let mut d = Diff::new(path, new);
         if let Some(o) = old {
@@ -6042,6 +6554,39 @@ mod tests {
             ),
             None,
         );
+    }
+
+    #[test]
+    fn cursor_env_policy_clears_inherited_creds_only_in_subscription() {
+        let sub: BTreeMap<String, String> =
+            [("CURSOR_AUTH_MODE".to_string(), "subscription".to_string())].into();
+
+        // No configured creds → both injected empty (⇒ spawn strips inherited).
+        let mut merged = vec![("PATH".to_string(), "/usr/bin".to_string())];
+        apply_cursor_env_policy(&mut merged, &sub);
+        assert!(merged.iter().any(|(k, v)| k == "CURSOR_API_KEY" && v.is_empty()));
+        assert!(merged
+            .iter()
+            .any(|(k, v)| k == "CURSOR_API_BASE_URL" && v.is_empty()));
+
+        // A configured key is preserved; only the absent base URL is cleared.
+        let mut with_key = vec![("CURSOR_API_KEY".to_string(), "sk-x".to_string())];
+        apply_cursor_env_policy(&mut with_key, &sub);
+        assert!(with_key.iter().any(|(k, v)| k == "CURSOR_API_KEY" && v == "sk-x"));
+        assert!(with_key
+            .iter()
+            .any(|(k, v)| k == "CURSOR_API_BASE_URL" && v.is_empty()));
+
+        // Custom mode and legacy/no-mode rows are left untouched.
+        for mode in [Some("custom"), None] {
+            let rt: BTreeMap<String, String> = mode
+                .map(|m| [("CURSOR_AUTH_MODE".to_string(), m.to_string())].into())
+                .unwrap_or_default();
+            let mut env = vec![("PATH".to_string(), "/usr/bin".to_string())];
+            apply_cursor_env_policy(&mut env, &rt);
+            assert!(!env.iter().any(|(k, _)| k == "CURSOR_API_KEY"));
+            assert!(!env.iter().any(|(k, _)| k == "CURSOR_API_BASE_URL"));
+        }
     }
 
     #[test]
@@ -7070,6 +7615,64 @@ mod tests {
         // Non-MCP rawOutput → None (caller falls through to output_for_prompt).
         let bash = serde_json::json!({"type": "Bash", "output_for_prompt": "ok"});
         assert_eq!(grok_mcp_output_text(&bash), None);
+    }
+
+    #[test]
+    fn cursor_companion_title_resolves_delegate_ack() {
+        // The broker's running ack (broker.rs::running_ack) — leading
+        // whitespace tolerated, the prefix is the contract.
+        let ack = "Delegation successful. task_id=799467c7-0188-4e7a-b5ef-241d4b141a83. \
+                   Call get_delegation_status with this id in the task_ids array.";
+        assert_eq!(
+            cursor_companion_title_from_content(Some(ack)),
+            Some("codeg-mcp__delegate_to_agent")
+        );
+        assert_eq!(
+            cursor_companion_title_from_content(Some(&format!("  {ack}"))),
+            Some("codeg-mcp__delegate_to_agent")
+        );
+    }
+
+    #[test]
+    fn cursor_companion_title_resolves_status_report() {
+        // Real-device shape: companion.rs::render_batch_report's compact JSON.
+        let report = r#"{"tasks":[{"agent_type":"claude_code","child_conversation_id":1576,"duration_ms":27288,"status":"completed","task_id":"799467c7-0188-4e7a-b5ef-241d4b141a83","text":"done"}]}"#;
+        assert_eq!(
+            cursor_companion_title_from_content(Some(report)),
+            Some("codeg-mcp__get_delegation_status")
+        );
+        // Mixed batch with a running item still resolves.
+        let mixed = r#"{"tasks":[{"task_id":"a","status":"running"},{"task_id":"b","status":"unknown"}]}"#;
+        assert_eq!(
+            cursor_companion_title_from_content(Some(mixed)),
+            Some("codeg-mcp__get_delegation_status")
+        );
+    }
+
+    #[test]
+    fn cursor_companion_title_rejects_lookalikes() {
+        // Foreign task-manager output: status outside the report vocabulary.
+        let foreign =
+            r#"{"tasks":[{"task_id":"T-1","status":"todo"},{"task_id":"T-2","status":"done"}]}"#;
+        assert_eq!(cursor_companion_title_from_content(Some(foreign)), None);
+        // Item missing task_id.
+        let missing = r#"{"tasks":[{"status":"completed"}]}"#;
+        assert_eq!(cursor_companion_title_from_content(Some(missing)), None);
+        // Empty batch carries nothing to verify — leave the title alone.
+        assert_eq!(
+            cursor_companion_title_from_content(Some(r#"{"tasks":[]}"#)),
+            None
+        );
+        // Plain text / absent / non-JSON.
+        assert_eq!(cursor_companion_title_from_content(Some("ls -la ok")), None);
+        assert_eq!(cursor_companion_title_from_content(None), None);
+        // Ack prefix must match from the start, not mid-string.
+        assert_eq!(
+            cursor_companion_title_from_content(Some(
+                "Note: Delegation successful. task_id=x."
+            )),
+            None
+        );
     }
 
     #[test]

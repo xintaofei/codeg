@@ -106,7 +106,7 @@ export function AskQuestionResultCard({
     <div
       data-testid="ask-question-result-card"
       className={cn(
-        "mb-2 overflow-hidden rounded-xl border bg-card",
+        "mb-2 overflow-hidden rounded-xl border bg-card ws-surface-card",
         isError ? "border-destructive/30" : "border-primary/30"
       )}
     >
@@ -207,7 +207,7 @@ export function AskQuestionResultCard({
       aria-expanded={expanded}
       data-testid="ask-question-result-card"
       className={cn(
-        "flex w-full items-center gap-2 rounded-full border border-primary/30 bg-card px-3 py-1.5 text-left transition-colors hover:bg-muted/40",
+        "flex w-full items-center gap-2 rounded-full border border-primary/30 bg-card ws-surface-card px-3 py-1.5 text-left transition-colors hover:bg-muted/40",
         !expanded && "mb-2"
       )}
     >

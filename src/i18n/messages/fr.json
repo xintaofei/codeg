@@ -117,6 +117,29 @@
       "sectionTitle": "Zone de sélection du mode",
       "sectionDescription": "Les cartes de raccourci « Développement / Bureautique » affichées au-dessus du champ de saisie sur la page de nouvelle conversation.",
       "showQuickActions": "Afficher sur la page de nouvelle conversation"
+    },
+    "workspaceBackground": {
+      "sectionTitle": "Arrière-plan de l'espace de travail",
+      "sectionDescription": "Affiche une image derrière tout l'espace de travail. La barre latérale et les panneaux deviennent translucides et dépolis pour laisser transparaître l'image, et un masque préserve la lisibilité du texte.",
+      "enable": "Activer l'image d'arrière-plan",
+      "image": "Image",
+      "chooseImage": "Choisir une image",
+      "replaceImage": "Remplacer l'image",
+      "removeImage": "Supprimer",
+      "fillMode": "Mode de remplissage",
+      "fillModes": {
+        "cover": "Remplir",
+        "contain": "Ajuster",
+        "center": "Centrer",
+        "tile": "Mosaïque"
+      },
+      "maskOpacity": "Opacité du masque",
+      "maskOpacityHint": "Des valeurs élevées fondent l'image vers la couleur d'arrière-plan du thème, améliorant le contraste du texte.",
+      "imageBlur": "Flou de l'image",
+      "panelOpacity": "Opacité des panneaux",
+      "panelOpacityHint": "Opacité de la barre latérale, des panneaux et des barres d'onglets. Plus c'est bas, plus l'image transparaît.",
+      "errorTooLarge": "L'image est trop volumineuse (16 Mo maximum).",
+      "errorUploadFailed": "Échec de la définition de l'image d'arrière-plan."
     }
   },
   "SystemSettings": {
@@ -640,6 +663,49 @@
       "autoCompactLabel": "Seuil de compactage automatique (%)",
       "autoCompactHint": "Compacte la conversation lorsque l'utilisation du contexte atteint ce pourcentage (85 par défaut pour Grok). Écrit dans `[session]`."
     },
+    "cursor": {
+      "configDescription": "Configurez Cursor ici. Choisissez une méthode d'authentification — abonnement officiel (connexion par navigateur) ou une clé API Cursor pour les machines sans interface ou serveurs — puis choisissez un modèle et modifiez les règles d'autorisation et le bac à sable du CLI. codeg les écrit dans ~/.cursor/cli-config.json, partagé avec le CLI cursor-agent.",
+      "authTitle": "Authentification",
+      "authChecking": "Vérification…",
+      "authNotInstalled": "cursor-agent n'est pas installé",
+      "authLoggedIn": "Connecté",
+      "authNotLoggedIn": "Non connecté",
+      "loginHint": "Exécutez ceci dans un terminal pour vous connecter à votre compte Cursor (une fenêtre de navigateur s'ouvre), puis cliquez sur actualiser :",
+      "apiKeyLabel": "Clé API Cursor",
+      "apiKeyPlaceholder": "clé depuis cursor.com/dashboard",
+      "apiKeyHint": "CURSOR_API_KEY — une clé de compte du tableau de bord Cursor, alternative à la connexion par navigateur pour les machines sans interface ou serveurs. Ce n'est pas une clé tierce ni OpenAI.",
+      "modelTitle": "Modèle par défaut",
+      "loadModels": "Charger les modèles",
+      "modelsUnavailable": "Liste de modèles indisponible",
+      "modelHint": "Transmis à la CLI via --model au démarrage de la session. Laissez par défaut pour laisser Cursor choisir.",
+      "permissionsTitle": "Permissions & bac à sable",
+      "permissionsDescription": "Éditeur visuel des règles de permissions de la CLI (cli-config.json). Les règles autorisées s'exécutent sans confirmation ; les règles refusées sont toujours bloquées.",
+      "permissionModeLabel": "Mode d'autorisation",
+      "permissionModeDefault": "Demander avant d'exécuter (par défaut)",
+      "permissionModeForce": "Run Everything (--force)",
+      "permissionModeHint": "Run Everything lance les sessions avec --force : tous les appels d'outils sont autorisés automatiquement sauf les règles de refus, sans confirmation (une politique d'organisation peut le limiter aux règles d'autorisation). S'applique aux nouvelles sessions.",
+      "optionDefault": "Défaut (non défini)",
+      "sandboxLabel": "Bac à sable",
+      "sandboxEnabled": "Activé",
+      "sandboxDisabled": "Désactivé",
+      "allowRulesLabel": "Règles autorisées",
+      "denyRulesLabel": "Règles refusées",
+      "addRule": "Ajouter une règle",
+      "rulesSyntaxHint": "Syntaxe des règles : Shell(cmd), Read(chemin/glob), Write(chemin/glob), WebFetch(domaine), Mcp(serveur:outil) — les règles de refus priment toujours.",
+      "saveConfig": "Enregistrer la configuration",
+      "advancedToggle": "Avancé : cli-config.json brut",
+      "advancedHint": "Le ~/.cursor/cli-config.json complet. Enregistrer écrit le fichier tel quel ; les contrôles structurés ci-dessus y sont fusionnés.",
+      "saveRawConfig": "Enregistrer le fichier",
+      "authMode": "Méthode d'authentification",
+      "subscriptionHint": "Connectez-vous avec votre compte Cursor et utilisez les modèles de Cursor.",
+      "customApiKeyRequired": "Une clé API Cursor est requise.",
+      "authModeApiKey": "Clé API Cursor (sans interface)",
+      "authModeApiKeyHint": "Authentifiez-vous avec une clé API de compte Cursor générée dans le tableau de bord Cursor (pour les machines sans interface ou serveurs). C'est une clé de compte Cursor, pas un point de terminaison tiers/OpenAI : cursor-agent ne communique qu'avec le backend de Cursor. Pour utiliser un point de terminaison compatible codex/OpenAI, utilisez plutôt l'agent Codex.",
+      "modelPickerPlaceholder": "Rechercher des modèles…",
+      "modelNoMatch": "Aucun modèle correspondant",
+      "modelsNeedAuth": "Connectez-vous pour charger la liste des modèles.",
+      "modelDefaultBadge": "par défaut"
+    },
     "codex": {
       "configDescription": "Prend en charge la configuration rapide de l’URL API, de la clé API, du nom du modèle et du reasoning effort, avec synchronisation vers `auth.json` / `config.toml`.",
       "authMode": "Mode d’authentification",
@@ -921,6 +987,8 @@
       "grokSaved": "Configuration Grok enregistrée",
       "saveGrokNativeFailed": "Échec de l'enregistrement de la configuration native Grok",
       "saveGrokApiKeyFailed": "Paramètres enregistrés, mais la clé API n'a pas pu être enregistrée",
+      "cursorSaved": "Configuration Cursor enregistrée",
+      "saveCursorConfigFailed": "Échec de l'enregistrement de la configuration Cursor",
       "codexSaved": "Configuration Codex enregistrée",
       "saveCodexNativeFailed": "Échec de l’enregistrement de la configuration native Codex",
       "geminiSaved": "Configuration Gemini enregistrée",
@@ -1189,6 +1257,7 @@
         "removeFolderFailed": "Échec de la suppression du dossier : {message}",
         "reorderFoldersFailed": "Échec du réordonnancement des dossiers : {message}",
         "changeFolderColorFailed": "Échec du changement de couleur : {message}",
+        "setFolderAliasFailed": "Échec de la définition de l'alias : {message}",
         "changeFolderDefaultAgentFailed": "Échec de la définition de l'agent par défaut : {message}"
       },
       "statsLabel": "{folders} dossiers · {convos} conversations",
@@ -1220,6 +1289,11 @@
         "defaultAgentNone": "Aucun (utiliser la valeur globale)",
         "agentUnavailableSuffix": "(indisponible)",
         "loadingAgents": "Chargement des agents…",
+        "setAlias": "Définir un alias…",
+        "setAliasTitle": "Définir l'alias du dossier",
+        "setAliasPlaceholder": "Saisir un alias (laisser vide pour effacer)",
+        "setAliasSave": "Enregistrer",
+        "setAliasCancel": "Annuler",
         "removeFromWorkspace": "Retirer de l'espace de travail"
       },
       "manageConversations": {
@@ -1289,10 +1363,12 @@
         "system": "Système",
         "toolResult": "Résultat",
         "toolError": "Erreur"
-      }
+      },
+      "moreActions": "Plus d’actions"
     },
     "sessionDetails": {
       "menuLabel": "Détails de la session",
+      "noActiveSession": "Aucune session active",
       "title": "Détails de la session",
       "subtitle": "Métadonnées de la session et utilisation des tokens",
       "fieldTitle": "Titre",
@@ -1434,7 +1510,8 @@
       "preview": "Aperçu",
       "editSource": "Modifier la source",
       "maximize": "Agrandir",
-      "restore": "Restaurer"
+      "restore": "Restaurer",
+      "emptyDirectory": "Dossier vide"
     },
     "terminal": {
       "rename": "Renommer",
@@ -1866,6 +1943,7 @@
         "addToVcsFailed": "Échec de l'ajout au VCS",
         "loadBranchesFailed": "Échec du chargement des branches",
         "renameFailed": "Échec du renommage",
+        "moveFailed": "Échec du déplacement",
         "deleteFailed": "Échec de la suppression",
         "rolledBack": "{name} annulé",
         "rollbackFailed": "Échec de l'annulation",
@@ -2159,7 +2237,8 @@
         "enableAgentFirstPlaceholder": "Activez au moins un agent avant de démarrer une session...",
         "prepareSessionFailed": "Impossible de préparer la session de chat. Veuillez réessayer.",
         "createConversationFailed": "Impossible de créer la conversation. Veuillez réessayer.",
-        "askAnythingPlaceholder": "Posez n'importe quelle question..."
+        "askAnythingPlaceholder": "Posez n'importe quelle question...",
+        "agentNotInstalled": "{agent} n'est pas installé · ouvrez les paramètres Agents pour l'installer"
       },
       "welcomePanel": {
         "greeting": "Que souhaites-tu <highlight>faire aujourd'hui</highlight> ?",
@@ -2259,7 +2338,8 @@
       },
       "agentSelector": {
         "noEnabledAgents": "Aucun agent activé",
-        "openAgentsSettings": "Ouvrir les paramètres des agents"
+        "openAgentsSettings": "Ouvrir les paramètres des agents",
+        "notInstalled": "Non installé"
       },
       "subAgentOverlay": {
         "title": "Sous-agents",
@@ -3268,7 +3348,7 @@
       "deleteConfirm": "Supprimer la mascotte « {name} » ? Elle sera retirée du disque.",
       "summon": "Invoquer la fenêtre de la mascotte",
       "openCodexHelp": "Les mascottes Codex doivent être dans ~/.codex/pets/. Aucune trouvée.",
-      "specRequirement": "Le sprite doit être un PNG/WebP 1536x1872 avec transparence.",
+      "specRequirement": "Le sprite doit faire 1536px de large avec une hauteur multiple de 208px (par ex. 1872 ou 2288), en PNG/WebP avec transparence.",
       "form": {
         "id": "ID mascotte",
         "idHelp": "Lettres minuscules, chiffres, '-' et '_'. Max 64 caractères.",

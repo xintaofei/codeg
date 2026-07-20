@@ -8,7 +8,7 @@ import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
-} from "@/components/ui/collapsible"
+} from "@/components/ui/instant-collapsible"
 import { cn } from "@/lib/utils"
 import {
   CheckCircleIcon,

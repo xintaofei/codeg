@@ -58,6 +58,7 @@ pub enum McpAppType {
     CodeBuddy,
     KimiCode,
     Grok,
+    Cursor,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -410,6 +411,7 @@ pub async fn mcp_upsert_local_server(
         McpAppType::CodeBuddy,
         McpAppType::KimiCode,
         McpAppType::Grok,
+        McpAppType::Cursor,
     ];
 
     for app in all_apps {
@@ -484,6 +486,7 @@ pub async fn mcp_remove_server(
             McpAppType::CodeBuddy,
             McpAppType::KimiCode,
             McpAppType::Grok,
+            McpAppType::Cursor,
         ],
     };
 
@@ -2399,6 +2402,13 @@ fn scan_local_servers() -> Result<Vec<LocalMcpServer>, AppCommandError> {
         entry.1.insert(McpAppType::Grok);
     }
 
+    for (id, spec) in read_cursor_servers()? {
+        let entry = merged
+            .entry(id)
+            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
+        entry.1.insert(McpAppType::Cursor);
+    }
+
     Ok(merged
         .into_iter()
         .map(|(id, (spec, apps))| LocalMcpServer {
@@ -2426,6 +2436,7 @@ fn upsert_server_for_app(app: McpAppType, id: &str, spec: &Value) -> Result<(), 
         McpAppType::CodeBuddy => upsert_codebuddy_server(id, spec),
         McpAppType::KimiCode => upsert_kimi_code_server(id, spec),
         McpAppType::Grok => upsert_grok_server(id, spec),
+        McpAppType::Cursor => upsert_cursor_server(id, spec),
     }
 }
 
@@ -2444,6 +2455,7 @@ pub fn read_servers_for_agent_type(
         AgentType::CodeBuddy => read_codebuddy_servers(),
         AgentType::KimiCode => read_kimi_code_servers(),
         AgentType::Grok => read_grok_servers(),
+        AgentType::Cursor => read_cursor_servers(),
         // pi-acp drops ACP-wire MCP and pi has no native MCP (it needs a
         // third-party extension), so codeg manages no MCP servers for pi (v1).
         AgentType::Pi => Ok(BTreeMap::new()),
@@ -2973,6 +2985,141 @@ fn remove_grok_server_at(path: &Path, id: &str) -> Result<bool, AppCommandError>
 }
 
 // ---------------------------------------------------------------------------
+// Cursor  (~/.cursor/mcp.json  →  top-level `mcpServers`)
+//
+// Cursor's CLI (and IDE — the file is shared) reads its user-global MCP config
+// from `<CURSOR_CONFIG_DIR>/mcp.json` (default `~/.cursor/mcp.json`) — a JSON
+// file with a top-level `mcpServers` object. The 2026.07.16 CLI validates it
+// with a Zod union discriminated purely on shape: `command` present ⇒ stdio,
+// `url` present ⇒ remote (transport auto-negotiated http→sse); there is no
+// `type`/`transport` key, and unknown keys are stripped on parse (not
+// rejected). The writer below therefore emits only the fields Cursor models —
+// `command`/`args`/`env`/`cwd` for stdio, `url`/`headers` for remote — so a
+// foreign key can't ride canonicalize's passthrough onto disk.
+//
+// Because Cursor loads this file natively at session start, `Cursor` is on the
+// ACP forward skip list in `connection.rs` (like Hermes/Kimi/Grok) so the same
+// user servers aren't double-registered over `session/new`. The built-in
+// `codeg-mcp` companion is injected separately by `inject_codeg_mcp`, so it
+// still reaches Cursor over the wire regardless.
+// ---------------------------------------------------------------------------
+
+fn cursor_mcp_json_path() -> PathBuf {
+    // Deliberately NOT `resolve_cursor_config_dir()`: the CLI reads its
+    // user-level MCP config from a hardcoded `~/.cursor/mcp.json` (every
+    // loader in the 2026.07.16 bundle joins `homedir()`), even when
+    // `CURSOR_CONFIG_DIR`/`XDG_CONFIG_HOME` relocate chats + cli-config.json.
+    dirs::home_dir().unwrap_or_default().join(".cursor").join("mcp.json")
+}
+
+fn read_cursor_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
+    read_cursor_servers_at(&cursor_mcp_json_path())
+}
+
+fn read_cursor_servers_at(path: &Path) -> Result<BTreeMap<String, Value>, AppCommandError> {
+    let root = read_json_file(path)?;
+    let mut out = BTreeMap::new();
+
+    let Some(servers) = root.get("mcpServers").and_then(Value::as_object) else {
+        return Ok(out);
+    };
+
+    for (id, spec) in servers {
+        // Cursor discriminates on shape alone; strip any foreign `type` key so
+        // canonicalize re-infers it the way Cursor actually will (`command` ⇒
+        // stdio, `url` ⇒ http).
+        let mut spec = spec.clone();
+        if let Some(obj) = spec.as_object_mut() {
+            obj.remove("type");
+        }
+        match canonicalize_spec(&spec, &format!("Cursor config '{id}'")) {
+            Ok(normalized) => {
+                out.insert(id.to_string(), normalized);
+            }
+            Err(err) => {
+                eprintln!("[MCP] skip invalid Cursor MCP entry id={id}: {err}");
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+/// Convert codeg's canonical spec into a Cursor `mcpServers` entry: only the
+/// fields Cursor models, shape-discriminated (no `type`/`transport` key).
+fn canonical_to_cursor_entry(spec: &Value) -> Result<Value, AppCommandError> {
+    let canonical = canonicalize_spec(spec, "Cursor write")?;
+    let Some(obj) = canonical.as_object() else {
+        return Ok(canonical);
+    };
+    let mut out = Map::new();
+    for (key, value) in obj {
+        let keep = matches!(
+            key.as_str(),
+            "command" | "args" | "env" | "cwd" | "url" | "headers"
+        );
+        if keep {
+            out.insert(key.clone(), value.clone());
+        }
+    }
+    Ok(Value::Object(out))
+}
+
+fn upsert_cursor_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
+    upsert_cursor_server_at(&cursor_mcp_json_path(), id, spec)
+}
+
+fn upsert_cursor_server_at(path: &Path, id: &str, spec: &Value) -> Result<(), AppCommandError> {
+    let mut root = read_json_file(path)?;
+    if !root.is_object() {
+        root = json!({});
+    }
+
+    let canonical = canonical_to_cursor_entry(spec)?;
+
+    let obj = root.as_object_mut().ok_or_else(|| {
+        mcp_configuration_invalid(format!("invalid JSON root in {}", path.display()))
+    })?;
+    if !obj.get("mcpServers").map(Value::is_object).unwrap_or(false) {
+        obj.insert("mcpServers".to_string(), Value::Object(Map::new()));
+    }
+
+    let map = obj
+        .get_mut("mcpServers")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| {
+            mcp_configuration_invalid(format!("invalid mcpServers in {}", path.display()))
+        })?;
+    map.insert(id.to_string(), canonical);
+
+    write_json_file(path, &root)
+}
+
+fn remove_cursor_server(id: &str) -> Result<bool, AppCommandError> {
+    remove_cursor_server_at(&cursor_mcp_json_path(), id)
+}
+
+fn remove_cursor_server_at(path: &Path, id: &str) -> Result<bool, AppCommandError> {
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    let mut root = read_json_file(path)?;
+    let Some(obj) = root.as_object_mut() else {
+        return Ok(false);
+    };
+    let Some(servers) = obj.get_mut("mcpServers").and_then(Value::as_object_mut) else {
+        return Ok(false);
+    };
+
+    let removed = servers.remove(id).is_some();
+    if removed {
+        write_json_file(path, &root)?;
+    }
+    Ok(removed)
+}
+
+// ---------------------------------------------------------------------------
 // Hermes Agent  (~/.hermes/config.yaml  →  mcp_servers)
 //
 // Hermes reads the `mcp_servers` section of its own config.yaml natively at
@@ -3227,6 +3374,7 @@ fn remove_server_for_app(app: McpAppType, id: &str) -> Result<bool, AppCommandEr
         McpAppType::CodeBuddy => remove_codebuddy_server(id),
         McpAppType::KimiCode => remove_kimi_code_server(id),
         McpAppType::Grok => remove_grok_server(id),
+        McpAppType::Cursor => remove_cursor_server(id),
     }
 }
 
@@ -5058,6 +5206,63 @@ mod tests {
             .expect("read after remove")
             .is_empty());
         assert!(!remove_kimi_code_server_at(&path, "ctx7").expect("remove again"));
+    }
+
+    #[test]
+    fn cursor_mcp_json_round_trips_and_strips_type() {
+        // Cursor reads `~/.cursor/mcp.json` (`mcpServers`) natively, shape-
+        // discriminated (command ⇒ stdio, url ⇒ remote) with NO `type` key —
+        // the writer must emit only the fields Cursor models, and the reader
+        // must re-infer transport rather than trusting a foreign `type`.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+
+        assert!(read_cursor_servers_at(&path).expect("read missing").is_empty());
+        assert!(!remove_cursor_server_at(&path, "ctx7").expect("remove missing"));
+
+        // Upsert a stdio server; the canonical `type` must not reach disk.
+        let spec = json!({
+            "type": "stdio",
+            "command": "npx",
+            "args": ["-y", "ctx7-mcp"],
+            "env": { "TOKEN": "t" },
+        });
+        upsert_cursor_server_at(&path, "ctx7", &spec).expect("upsert");
+        let raw = std::fs::read_to_string(&path).expect("read file");
+        let root: Value = serde_json::from_str(&raw).expect("parse json");
+        let on_disk = root.pointer("/mcpServers/ctx7").expect("entry on disk");
+        assert!(on_disk.get("type").is_none(), "no type key on disk");
+        assert_eq!(on_disk.get("command").and_then(Value::as_str), Some("npx"));
+
+        // Read-back canonicalizes (command ⇒ stdio).
+        let servers = read_cursor_servers_at(&path).expect("read back");
+        assert_eq!(
+            servers.get("ctx7").and_then(|s| s.get("type")).and_then(Value::as_str),
+            Some("stdio")
+        );
+
+        // A remote entry keeps url/headers only; a foreign on-disk `type` is
+        // ignored on read (shape wins, like the CLI's Zod parse).
+        upsert_cursor_server_at(
+            &path,
+            "remote",
+            &json!({"type": "sse", "url": "https://mcp.example.com/sse"}),
+        )
+        .expect("upsert remote");
+        let raw2 = std::fs::read_to_string(&path).expect("read file 2");
+        let root2: Value = serde_json::from_str(&raw2).expect("parse json 2");
+        assert!(root2.pointer("/mcpServers/remote/type").is_none());
+        let servers2 = read_cursor_servers_at(&path).expect("read back 2");
+        assert_eq!(
+            servers2.get("remote").and_then(|s| s.get("type")).and_then(Value::as_str),
+            Some("http"),
+            "url-only entries classify as http (Cursor auto-negotiates)"
+        );
+
+        // Remove round-trips.
+        assert!(remove_cursor_server_at(&path, "ctx7").expect("remove"));
+        assert!(remove_cursor_server_at(&path, "remote").expect("remove remote"));
+        assert!(read_cursor_servers_at(&path).expect("read after remove").is_empty());
     }
 
     #[test]

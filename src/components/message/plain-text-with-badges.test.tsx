@@ -54,7 +54,9 @@ describe("PlainTextWithBadges", () => {
       <PlainTextWithBadges text="run /review please" />
     )
     expect(badge(cmd, "skill")).not.toBeNull()
-    expect(cmd.textContent).toContain("/review")
+    // The badge shows the bare name (no `/` prefix), matching the composer.
+    expect(cmd.textContent).toContain("review")
+    expect(cmd.textContent).not.toContain("/review")
 
     const { container: path } = render(
       <PlainTextWithBadges text="see /usr/bin for it" />

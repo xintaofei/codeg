@@ -72,6 +72,7 @@ function mkFolder(p: Partial<FolderDetail> & { id: number }): FolderDetail {
     color: "blue",
     parent_id: null,
     kind: "regular",
+    alias: null,
     ...p,
   }
 }

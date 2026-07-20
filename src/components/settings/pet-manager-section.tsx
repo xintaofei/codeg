@@ -46,9 +46,11 @@ import {
   revokePetSpriteObjectUrl,
 } from "@/lib/pet/sprite-url"
 import {
-  SPRITE_BACKGROUND_SIZE,
   backgroundPositionFor,
+  spriteBackgroundSize,
+  spriteRowsFromHeight,
 } from "@/lib/pet/animation"
+import { useImageNaturalSize } from "@/lib/pet/use-image-natural-size"
 import { PetEditor } from "./pet-editor"
 import { PetImporter } from "./pet-importer"
 import { PetActionPreviewGrid } from "./pet-action-preview-grid"
@@ -313,21 +315,7 @@ export function PetManagerSection() {
                           }}
                           className="flex w-full items-start gap-3 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-default"
                         >
-                          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md border border-border bg-background p-1.5">
-                            <div
-                              className="h-full"
-                              style={{
-                                aspectRatio: "192 / 208",
-                                backgroundImage: sheetUrl
-                                  ? `url("${sheetUrl}")`
-                                  : undefined,
-                                backgroundSize: SPRITE_BACKGROUND_SIZE,
-                                backgroundPosition: backgroundPositionFor(0, 0),
-                                backgroundRepeat: "no-repeat",
-                                imageRendering: "pixelated",
-                              }}
-                            />
-                          </div>
+                          <PetSheetThumbnail url={sheetUrl} />
                           <div className="min-w-0 flex-1">
                             <div
                               className="truncate text-sm font-medium"
@@ -487,6 +475,28 @@ async function loadSpritePreviews(
   await Promise.all(Array.from({ length: workerCount }, () => worker()))
 
   return Object.fromEntries(results)
+}
+
+/** Static first-frame (idle) thumbnail. Measures the sheet so v2 (11-row) pets
+ *  don't bleed the next row into the frame under the legacy 9-row scaling. */
+function PetSheetThumbnail({ url }: { url: string }) {
+  const size = useImageNaturalSize(url || null)
+  const rows = spriteRowsFromHeight(size?.height)
+  return (
+    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md border border-border bg-background p-1.5">
+      <div
+        className="h-full"
+        style={{
+          aspectRatio: "192 / 208",
+          backgroundImage: url ? `url("${url}")` : undefined,
+          backgroundSize: spriteBackgroundSize(rows),
+          backgroundPosition: backgroundPositionFor(0, 0, rows),
+          backgroundRepeat: "no-repeat",
+          imageRendering: "pixelated",
+        }}
+      />
+    </div>
+  )
 }
 
 async function loadSpritePreview(

@@ -117,6 +117,29 @@
       "sectionTitle": "منطقة اختيار الوضع",
       "sectionDescription": "بطاقات الاختصار «تطوير الكود / الأعمال المكتبية» التي تظهر أعلى مربع الإدخال في صفحة المحادثة الجديدة.",
       "showQuickActions": "العرض في صفحة المحادثة الجديدة"
+    },
+    "workspaceBackground": {
+      "sectionTitle": "خلفية مساحة العمل",
+      "sectionDescription": "عرض صورة خلف مساحة العمل بالكامل. يصبح الشريط الجانبي واللوحات شبه شفافة ومصنفرة لتظهر الصورة من خلالها، ويحافظ القناع على وضوح النص.",
+      "enable": "تفعيل صورة الخلفية",
+      "image": "الصورة",
+      "chooseImage": "اختيار صورة",
+      "replaceImage": "استبدال الصورة",
+      "removeImage": "إزالة",
+      "fillMode": "وضع الملء",
+      "fillModes": {
+        "cover": "تغطية",
+        "contain": "احتواء",
+        "center": "توسيط",
+        "tile": "تكرار"
+      },
+      "maskOpacity": "عتامة القناع",
+      "maskOpacityHint": "القيم الأعلى تمزج الصورة نحو لون خلفية السمة، مما يحسّن تباين النص.",
+      "imageBlur": "تمويه الصورة",
+      "panelOpacity": "عتامة اللوحات",
+      "panelOpacityHint": "مدى عتامة الشريط الجانبي واللوحات وأشرطة التبويب. الأقل يُظهر المزيد من الصورة.",
+      "errorTooLarge": "الصورة كبيرة جدًا (16 ميجابايت كحد أقصى).",
+      "errorUploadFailed": "فشل تعيين صورة الخلفية."
     }
   },
   "SystemSettings": {
@@ -640,6 +663,49 @@
       "autoCompactLabel": "عتبة الضغط التلقائي (%)",
       "autoCompactHint": "يضغط المحادثة عندما يبلغ استخدام السياق هذه النسبة المئوية (الافتراضي في Grok هو 85). يُكتَب في `[session]`."
     },
+    "cursor": {
+      "configDescription": "اضبط Cursor هنا. اختر طريقة مصادقة — اشتراك رسمي (تسجيل دخول عبر المتصفح) أو مفتاح Cursor API للأجهزة بدون واجهة أو الخوادم — ثم اختر نموذجًا وحرّر قواعد أذونات CLI وبيئة الحماية. يكتبها codeg في ~/.cursor/cli-config.json، بالمشاركة مع أداة cursor-agent.",
+      "authTitle": "المصادقة",
+      "authChecking": "جارٍ التحقق…",
+      "authNotInstalled": "cursor-agent غير مثبّت",
+      "authLoggedIn": "تم تسجيل الدخول",
+      "authNotLoggedIn": "غير مسجّل الدخول",
+      "loginHint": "شغّل هذا الأمر في الطرفية لتسجيل الدخول إلى حساب Cursor (سيفتح المتصفح)، ثم اضغط تحديث:",
+      "apiKeyLabel": "مفتاح Cursor API",
+      "apiKeyPlaceholder": "المفتاح من cursor.com/dashboard",
+      "apiKeyHint": "CURSOR_API_KEY — مفتاح حساب من لوحة تحكم Cursor، بديل لتسجيل الدخول عبر المتصفح للأجهزة بدون واجهة أو الخوادم. ليس مفتاحًا خارجيًا أو من OpenAI.",
+      "modelTitle": "النموذج الافتراضي",
+      "loadModels": "جلب النماذج",
+      "modelsUnavailable": "قائمة النماذج غير متاحة",
+      "modelHint": "يُمرَّر إلى CLI عبر ‎--model عند بدء الجلسة. اتركه افتراضيًا ليختار Cursor بنفسه.",
+      "permissionsTitle": "الأذونات ووضع الحماية",
+      "permissionsDescription": "محرّر بصري لقواعد أذونات CLI‏ (cli-config.json). القواعد المسموحة تُنفَّذ دون تأكيد؛ والمرفوضة تُحظر دائمًا.",
+      "permissionModeLabel": "وضع الأذونات",
+      "permissionModeDefault": "السؤال قبل التنفيذ (افتراضي)",
+      "permissionModeForce": "تشغيل كل شيء (--force)",
+      "permissionModeHint": "يبدأ وضع Run Everything الجلسات بـ --force: يُسمح تلقائيًا بجميع استدعاءات الأدوات باستثناء قواعد الرفض دون طلب تأكيد (قد تقيّده سياسة المؤسسة بقواعد السماح فقط). يسري على الجلسات الجديدة.",
+      "optionDefault": "افتراضي (غير محدد)",
+      "sandboxLabel": "وضع الحماية",
+      "sandboxEnabled": "مفعّل",
+      "sandboxDisabled": "معطّل",
+      "allowRulesLabel": "قواعد السماح",
+      "denyRulesLabel": "قواعد الرفض",
+      "addRule": "إضافة قاعدة",
+      "rulesSyntaxHint": "صيغة القواعد: Shell(أمر)، Read(مسار/نمط)، Write(مسار/نمط)، WebFetch(نطاق)، Mcp(خادم:أداة) — قواعد الرفض لها الأولوية دائمًا.",
+      "saveConfig": "حفظ الإعدادات",
+      "advancedToggle": "متقدم: cli-config.json الخام",
+      "advancedHint": "ملف ‎~/.cursor/cli-config.json كاملًا. الحفظ هنا يكتب الملف كما هو؛ أما عناصر التحكم أعلاه فتُدمج فيه.",
+      "saveRawConfig": "حفظ الملف",
+      "authMode": "طريقة المصادقة",
+      "subscriptionHint": "سجّل الدخول بحساب Cursor واستخدم نماذج Cursor.",
+      "customApiKeyRequired": "مفتاح Cursor API مطلوب.",
+      "authModeApiKey": "مفتاح Cursor API (بدون واجهة/خادم)",
+      "authModeApiKeyHint": "المصادقة باستخدام مفتاح API لحساب Cursor من لوحة تحكم Cursor (للأجهزة بدون واجهة أو الخوادم). هذا مفتاح حساب Cursor وليس نقطة نهاية خارجية/OpenAI — إذ يتصل cursor-agent بخادم Cursor الخاص فقط. لاستخدام نقطة نهاية متوافقة مع codex/OpenAI، استخدم وكيل Codex بدلاً من ذلك.",
+      "modelPickerPlaceholder": "ابحث عن النماذج…",
+      "modelNoMatch": "لا يوجد نموذج مطابق",
+      "modelsNeedAuth": "سجّل الدخول لتحميل قائمة النماذج.",
+      "modelDefaultBadge": "افتراضي"
+    },
     "codex": {
       "configDescription": "يدعم الإعداد السريع لعنوان API ومفتاح API واسم النموذج وجهد الاستدلال، مع المزامنة مع `auth.json` / `config.toml`.",
       "authMode": "طريقة المصادقة",
@@ -921,6 +987,8 @@
       "grokSaved": "تم حفظ إعدادات Grok",
       "saveGrokNativeFailed": "فشل حفظ إعدادات Grok الأصلية",
       "saveGrokApiKeyFailed": "تم حفظ الإعدادات، لكن تعذّر حفظ مفتاح API",
+      "cursorSaved": "تم حفظ إعدادات Cursor",
+      "saveCursorConfigFailed": "فشل حفظ إعدادات Cursor",
       "codexSaved": "تم حفظ إعداد Codex",
       "saveCodexNativeFailed": "فشل حفظ إعداد Codex الأصلي",
       "geminiSaved": "تم حفظ إعداد Gemini",
@@ -1189,6 +1257,7 @@
         "removeFolderFailed": "فشل إزالة المجلد: {message}",
         "reorderFoldersFailed": "فشل إعادة ترتيب المجلدات: {message}",
         "changeFolderColorFailed": "فشل تغيير اللون: {message}",
+        "setFolderAliasFailed": "فشل تعيين الاسم المستعار: {message}",
         "changeFolderDefaultAgentFailed": "فشل تعيين الوكيل الافتراضي: {message}"
       },
       "statsLabel": "{folders} مجلدات · {convos} محادثة",
@@ -1220,6 +1289,11 @@
         "defaultAgentNone": "بدون افتراضي (استخدام العام)",
         "agentUnavailableSuffix": "(غير متاح)",
         "loadingAgents": "جارٍ تحميل الوكلاء…",
+        "setAlias": "تعيين اسم مستعار…",
+        "setAliasTitle": "تعيين اسم مستعار للمجلد",
+        "setAliasPlaceholder": "أدخل اسمًا مستعارًا (اتركه فارغًا للمسح)",
+        "setAliasSave": "حفظ",
+        "setAliasCancel": "إلغاء",
         "removeFromWorkspace": "إزالة من مساحة العمل"
       },
       "manageConversations": {
@@ -1289,10 +1363,12 @@
         "system": "النظام",
         "toolResult": "النتيجة",
         "toolError": "خطأ"
-      }
+      },
+      "moreActions": "إجراءات إضافية"
     },
     "sessionDetails": {
       "menuLabel": "تفاصيل الجلسة",
+      "noActiveSession": "لا توجد جلسة نشطة",
       "title": "تفاصيل الجلسة",
       "subtitle": "بيانات الجلسة الوصفية واستخدام الرموز",
       "fieldTitle": "العنوان",
@@ -1434,7 +1510,8 @@
       "preview": "معاينة",
       "editSource": "تحرير المصدر",
       "maximize": "تكبير",
-      "restore": "استعادة"
+      "restore": "استعادة",
+      "emptyDirectory": "مجلد فارغ"
     },
     "terminal": {
       "rename": "إعادة تسمية",
@@ -1866,6 +1943,7 @@
         "addToVcsFailed": "فشلت الإضافة إلى VCS",
         "loadBranchesFailed": "فشل تحميل الفروع",
         "renameFailed": "فشل إعادة التسمية",
+        "moveFailed": "فشل النقل",
         "deleteFailed": "فشل الحذف",
         "rolledBack": "تم التراجع عن {name}",
         "rollbackFailed": "فشل التراجع",
@@ -2159,7 +2237,8 @@
         "enableAgentFirstPlaceholder": "فعّل وكيلًا واحدًا على الأقل قبل بدء جلسة...",
         "prepareSessionFailed": "تعذّر تحضير جلسة الدردشة. يرجى المحاولة مرة أخرى.",
         "createConversationFailed": "تعذّر إنشاء المحادثة. يرجى المحاولة مرة أخرى.",
-        "askAnythingPlaceholder": "اسأل أي شيء..."
+        "askAnythingPlaceholder": "اسأل أي شيء...",
+        "agentNotInstalled": "{agent} غير مثبّت · افتح إعدادات Agents لتثبيته"
       },
       "welcomePanel": {
         "greeting": "ماذا تودّ أن <highlight>تفعل اليوم</highlight>؟",
@@ -2259,7 +2338,8 @@
       },
       "agentSelector": {
         "noEnabledAgents": "لا يوجد وكلاء مفعّلون",
-        "openAgentsSettings": "فتح إعدادات الوكلاء"
+        "openAgentsSettings": "فتح إعدادات الوكلاء",
+        "notInstalled": "غير مثبّت"
       },
       "subAgentOverlay": {
         "title": "الوكلاء الفرعيون",
@@ -3268,7 +3348,7 @@
       "deleteConfirm": "حذف الحيوان «{name}»؟ سيُحذف من القرص.",
       "summon": "استدعاء نافذة الحيوان",
       "openCodexHelp": "يجب أن توجد حيوانات Codex داخل ~/.codex/pets/. لم يُعثر على شيء.",
-      "specRequirement": "يجب أن يكون السبرايت PNG أو WebP بحجم 1536x1872 مع شفافية.",
+      "specRequirement": "يجب أن يكون السبرايت بعرض 1536 بكسل وارتفاع من مضاعفات 208 بكسل (مثل 1872 أو 2288)، بصيغة PNG أو WebP مع شفافية.",
       "form": {
         "id": "معرف الحيوان",
         "idHelp": "حروف صغيرة، أرقام، '-' و '_' فقط. حد أقصى 64 حرفًا.",

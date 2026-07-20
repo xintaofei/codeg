@@ -1,6 +1,11 @@
 "use client"
 
-import type { HTMLAttributes, ReactNode } from "react"
+import type {
+  ButtonHTMLAttributes,
+  CSSProperties,
+  HTMLAttributes,
+  ReactNode,
+} from "react"
 
 import {
   Collapsible,
@@ -27,6 +32,25 @@ interface FileTreeContextType {
   togglePath: (path: string) => void
   selectedPath?: string
   onSelect?: (path: string) => void
+}
+
+// Row indentation is driven by an explicit `depth` passed from the tree renderer
+// (a pure-CSS accumulating variable would have to reference itself, which CSS
+// treats as a cycle → invalid → zero padding). When a caller provides `depth`,
+// the row stays FULL-WIDTH and indents only its CONTENT via padding-left, so the
+// hover / selection / drop highlight spans the whole row at any depth. When
+// `depth` is omitted (callers that nest purely via <FileTreeFolder> children),
+// the classic margin/border/padding wrapper indentation is used, unchanged.
+const FILE_TREE_INDENT_STEP_REM = 1.5
+function rowPaddingLeftStyle(
+  depth: number | undefined,
+  base: CSSProperties | undefined
+): CSSProperties | undefined {
+  if (depth == null) return base
+  return {
+    paddingLeft: `calc(${depth} * ${FILE_TREE_INDENT_STEP_REM}rem + 0.5rem)`,
+    ...base,
+  }
 }
 
 // Default noop for context default value
@@ -114,6 +138,32 @@ export type FileTreeFolderProps = HTMLAttributes<HTMLDivElement> & {
   iconClassName?: string
   suffix?: ReactNode
   suffixClassName?: string
+  /**
+   * Props applied to the folder's header row (the trigger button) — e.g.
+   * `draggable` and drag/drop handlers for file-tree DnD. Placed on the header
+   * (not the outer wrapper, which also contains the child rows) so a drop
+   * targets THIS folder rather than its whole subtree. `onClick`/`type` are
+   * owned by the folder and are not overridable here.
+   */
+  rowProps?: ButtonHTMLAttributes<HTMLButtonElement>
+  /** Render a drop-target highlight on the header row (a valid DnD drop is
+   *  hovering this folder). */
+  dropActive?: boolean
+  /**
+   * Marks this folder's header row as a directory drop zone for file-tree DnD,
+   * tagging it with `data-tree-drop-dir` set to this value (the destination
+   * path relative to the workspace root; `""` for the root row). The desktop
+   * drop path hit-tests the drop coordinates against these markers because
+   * Tauri's webview swallows the HTML5 `drop` event. Omit on non-DnD trees.
+   */
+  dropTargetDir?: string
+  /**
+   * Nesting depth (0 = top level). When provided, the row is rendered
+   * full-width and its content is indented via padding-left instead of an
+   * inset children wrapper, so the row highlight spans the whole tree at any
+   * depth. When omitted, the classic wrapper indentation is used unchanged.
+   */
+  depth?: number
 }
 
 export const FileTreeFolder = ({
@@ -123,10 +173,19 @@ export const FileTreeFolder = ({
   iconClassName,
   suffix,
   suffixClassName,
+  rowProps,
+  dropActive,
+  dropTargetDir,
+  depth,
   className,
   children,
   ...props
 }: FileTreeFolderProps) => {
+  const {
+    className: rowClassName,
+    style: rowStyle,
+    ...rowRest
+  } = rowProps ?? {}
   const { expandedPaths, togglePath, selectedPath, onSelect } =
     useContext(FileTreeContext)
   const isExpanded = expandedPaths.has(path)
@@ -158,11 +217,21 @@ export const FileTreeFolder = ({
           <CollapsibleTrigger asChild>
             <button
               className={cn(
-                "flex w-max min-w-full items-center gap-1 rounded px-2 py-1 text-left transition-colors hover:bg-muted/50",
-                isSelected && "bg-muted"
+                "flex w-max min-w-full items-center gap-1 rounded py-1 text-left transition-colors",
+                depth == null ? "px-2" : "pr-2",
+                // A selected row — or a directory being hovered as a drop target
+                // — gets the same static tint with NO hover change; only idle
+                // rows show the hover affordance.
+                dropActive || isSelected
+                  ? "bg-muted-foreground/20"
+                  : "hover:bg-muted/50",
+                rowClassName
               )}
+              style={rowPaddingLeftStyle(depth, rowStyle)}
               onClick={handleSelect}
               type="button"
+              data-tree-drop-dir={dropTargetDir}
+              {...rowRest}
             >
               <ChevronRightIcon
                 className={cn(
@@ -195,7 +264,13 @@ export const FileTreeFolder = ({
             </button>
           </CollapsibleTrigger>
           <CollapsibleContent>
-            <div className="ml-4 border-l pl-2">{children}</div>
+            {/* With explicit `depth`, descendants indent themselves via
+                padding, so this wrapper adds NO left inset (keeping their
+                highlights full-width). Without it, fall back to the classic
+                margin/border/padding inset. */}
+            <div className={depth == null ? "ml-4 border-l pl-2" : undefined}>
+              {children}
+            </div>
           </CollapsibleContent>
         </div>
       </Collapsible>
@@ -217,13 +292,18 @@ export type FileTreeFileProps = HTMLAttributes<HTMLDivElement> & {
   path: string
   name: string
   icon?: ReactNode
+  /** Nesting depth (0 = top level). See {@link FileTreeFolderProps.depth}: when
+   *  provided the row is full-width and indents its content via padding. */
+  depth?: number
 }
 
 export const FileTreeFile = ({
   path,
   name,
   icon,
+  depth,
   className,
+  style,
   children,
   ...props
 }: FileTreeFileProps) => {
@@ -249,10 +329,14 @@ export const FileTreeFile = ({
     <FileTreeFileContext.Provider value={fileContextValue}>
       <div
         className={cn(
-          "flex w-max min-w-full cursor-pointer items-center gap-1 rounded px-2 py-1 transition-colors hover:bg-muted/50",
-          isSelected && "bg-muted",
+          "flex w-max min-w-full cursor-pointer items-center gap-1 rounded py-1 transition-colors",
+          depth == null ? "px-2" : "pr-2",
+          // Selected rows keep a static tint (no hover change); idle rows show
+          // the hover affordance.
+          isSelected ? "bg-muted-foreground/20" : "hover:bg-muted/50",
           className
         )}
+        style={rowPaddingLeftStyle(depth, style)}
         onClick={handleClick}
         onKeyDown={handleKeyDown}
         aria-selected={isSelected}

@@ -198,6 +198,23 @@ pub(crate) fn resolve_command_on_path(cmd: &str) -> Option<PathBuf> {
     which::which(cmd).ok()
 }
 
+/// Resolve a dir-tree binary agent's user-installed CLI (e.g. `cursor-agent`
+/// from Cursor's official install script). Checks PATH first, then
+/// `~/.local/bin` — the script's install target, which a macOS GUI app's
+/// PATH typically lacks.
+pub(crate) fn resolve_system_agent_binary(cmd: &str) -> Option<PathBuf> {
+    if let Some(path) = resolve_command_on_path(cmd) {
+        return Some(path);
+    }
+    let exe = if cfg!(windows) {
+        format!("{cmd}.exe")
+    } else {
+        cmd.to_string()
+    };
+    let cand = home_dir_or_default().join(".local").join("bin").join(exe);
+    cand.is_file().then_some(cand)
+}
+
 /// Resolve the `uvx` (uv tool runner) executable used to launch Python ACP
 /// agents (e.g. Hermes). Checks PATH first (respecting a user's own `uv`),
 /// then codeg's managed uv cache, then the common install locations the
@@ -461,7 +478,12 @@ pub(crate) async fn verify_agent_installed(agent_type: AgentType) -> Result<(), 
             }
             Ok(())
         }
-        registry::AgentDistribution::Binary { cmd, platforms, .. } => {
+        registry::AgentDistribution::Binary {
+            cmd,
+            platforms,
+            dir_entry,
+            ..
+        } => {
             let platform = registry::current_platform();
             if !platforms.iter().any(|p| p.platform == platform) {
                 return Err(AcpError::PlatformNotSupported(format!(
@@ -471,8 +493,13 @@ pub(crate) async fn verify_agent_installed(agent_type: AgentType) -> Result<(), 
             }
             // Accept any cached version — the Settings page will still
             // surface "upgrade available" for stale caches via its own
-            // version-badge flow.
-            if binary_cache::find_best_cached_binary_for_agent(agent_type, cmd)?.is_none() {
+            // version-badge flow. Dir-tree agents (Cursor) additionally
+            // accept a user-installed CLI (official install script), the
+            // same fallback `build_agent` launches with.
+            let launchable = binary_cache::find_best_cached_binary_for_agent(agent_type, cmd)?
+                .is_some()
+                || (dir_entry.is_some() && resolve_system_agent_binary(cmd).is_some());
+            if !launchable {
                 // INVARIANT: see note above — "is not installed" is a
                 // stable substring the frontend matches against.
                 return Err(AcpError::SdkNotInstalled(format!(
@@ -561,13 +588,69 @@ async fn detect_local_version(agent_type: AgentType) -> Option<String> {
             let pkg_name = package_name_from_spec(package);
             detect_npm_global_version(&pkg_name).await
         }
-        registry::AgentDistribution::Binary { cmd, .. } => {
-            binary_cache::detect_installed_version(agent_type, cmd)
+        registry::AgentDistribution::Binary { cmd, dir_entry, .. } => {
+            let cached = binary_cache::detect_installed_version(agent_type, cmd)
                 .ok()
-                .flatten()
+                .flatten();
+            if cached.is_some() {
+                return cached;
+            }
+            // Dir-tree agents: a user-installed CLI (no codeg cache) still
+            // reports a version via `<cmd> --version` (e.g. cursor-agent →
+            // "2026.07.16-899851b").
+            if dir_entry.is_some() {
+                return system_dir_agent_version(cmd).await;
+            }
+            None
         }
         registry::AgentDistribution::Uvx { .. } => binary_cache::uvx_prepared_version(agent_type),
     }
+}
+
+/// Process-local cache for dir-tree agents' system-binary `--version` probes,
+/// keyed by (path, mtime) so an upgrade re-probes but the status/list paths
+/// don't spawn a subprocess on every call.
+static SYSTEM_BINARY_VERSION_CACHE: std::sync::Mutex<
+    Option<(PathBuf, std::time::SystemTime, String)>,
+> = std::sync::Mutex::new(None);
+
+/// Version of a dir-tree agent's user-installed CLI (PATH / ~/.local/bin),
+/// via a cached `--version` probe. `None` when no system install exists or
+/// the probe fails.
+pub(crate) async fn system_dir_agent_version(cmd: &str) -> Option<String> {
+    let bin = resolve_system_agent_binary(cmd)?;
+    let mtime = std::fs::metadata(&bin).ok()?.modified().ok()?;
+    if let Some((cached_bin, cached_mtime, version)) =
+        SYSTEM_BINARY_VERSION_CACHE.lock().ok()?.as_ref()
+    {
+        if *cached_bin == bin && *cached_mtime == mtime {
+            return Some(version.clone());
+        }
+    }
+    let version = probe_binary_version(&bin).await?;
+    if let Ok(mut cache) = SYSTEM_BINARY_VERSION_CACHE.lock() {
+        *cache = Some((bin, mtime, version.clone()));
+    }
+    Some(version)
+}
+
+/// Run `<binary> --version` and return the first non-empty stdout line.
+/// Bounded by a timeout so a wedged binary can't stall the status endpoint.
+async fn probe_binary_version(bin: &std::path::Path) -> Option<String> {
+    let mut cmd = crate::process::tokio_command(bin);
+    cmd.arg("--version");
+    let output = tokio::time::timeout(std::time::Duration::from_secs(10), cmd.output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(str::to_string)
 }
 
 /// Official npm registry URL – used to bypass local mirror configurations that
@@ -4871,6 +4954,21 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
             global_dirs: vec![crate::parsers::grok::resolve_grok_home_dir().join("skills")],
             project_rel_dirs: vec![".grok/skills"],
         }),
+        // Cursor discovers skills in `~/.cursor/skills` + the shared
+        // `~/.agents/skills` store (user scope) and `.cursor/skills` /
+        // `.agents/skills` in the workspace (verified against the CLI's own
+        // discovery table). `~/.cursor/skills-cursor` holds Cursor's bundled
+        // builtin skills — listed for visibility but write-protected via
+        // `is_read_only_skill_path`.
+        AgentType::Cursor => Some(SkillStorageSpec {
+            kind: SkillStorageKind::SkillDirectoryOnly,
+            global_dirs: vec![
+                home_dir_or_default().join(".cursor").join("skills"),
+                home_dir_or_default().join(".agents").join("skills"),
+                home_dir_or_default().join(".cursor").join("skills-cursor"),
+            ],
+            project_rel_dirs: vec![".cursor/skills", ".agents/skills"],
+        }),
     }
 }
 
@@ -5048,10 +5146,13 @@ fn build_skill_item(
 /// these in the `$` autocomplete and the Skills settings list — but any
 /// write to those files would clobber the CLI's own assets.
 fn is_read_only_skill_path(agent_type: AgentType, skill_path: &Path) -> bool {
-    if agent_type != AgentType::Codex {
-        return false;
-    }
-    let ro_root = codex_home_dir().join("skills").join(".system");
+    let ro_root = match agent_type {
+        AgentType::Codex => codex_home_dir().join("skills").join(".system"),
+        // Cursor's bundled builtin skills; the CLI restores them on update,
+        // so editing/deleting through codeg would silently be undone.
+        AgentType::Cursor => home_dir_or_default().join(".cursor").join("skills-cursor"),
+        _ => return false,
+    };
     skill_path.starts_with(&ro_root)
 }
 
@@ -5248,6 +5349,396 @@ fn trim_non_empty(value: Option<String>) -> Option<String> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Cursor settings panel (cli-config.json + auth / models probes)
+// ---------------------------------------------------------------------------
+
+fn cursor_cli_config_path() -> PathBuf {
+    crate::parsers::cursor::resolve_cursor_config_dir().join("cli-config.json")
+}
+
+fn load_cursor_cli_config_raw() -> Option<String> {
+    fs::read_to_string(cursor_cli_config_path()).ok()
+}
+
+/// Project the structured controls out of a raw cli-config.json text.
+/// Malformed JSON yields defaults (the panel shows the raw text separately).
+pub(crate) fn parse_cursor_settings(raw: &str) -> crate::acp::types::CursorSettings {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return crate::acp::types::CursorSettings::default();
+    };
+    let string_list = |val: Option<&serde_json::Value>| -> Vec<String> {
+        val.and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|i| i.as_str())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    crate::acp::types::CursorSettings {
+        sandbox_mode: v
+            .pointer("/sandbox/mode")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        permissions_allow: string_list(v.pointer("/permissions/allow")),
+        permissions_deny: string_list(v.pointer("/permissions/deny")),
+    }
+}
+
+/// Merge the Cursor panel's structured controls into the raw cli-config.json
+/// text. Only the managed keys are touched; every other key (editor prefs,
+/// hints, network, …) is preserved verbatim. `None` fields leave their key
+/// as-is; `Some` fields replace it (lists wholesale).
+fn apply_cursor_structured_config(
+    base: &str,
+    patch: &crate::acp::types::CursorStructuredConfig,
+) -> Result<String, AcpError> {
+    let mut root: serde_json::Value = if base.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str(base)
+            .map_err(|e| AcpError::protocol(format!("invalid cursor cli-config.json: {e}")))?
+    };
+    if !root.is_object() {
+        return Err(AcpError::protocol(
+            "invalid cursor cli-config.json: root must be a JSON object",
+        ));
+    }
+    let obj = root.as_object_mut().expect("checked object");
+
+    // Drop the legacy `approvalMode` key an earlier panel version wrote: the
+    // CLI never reads it from cli-config.json (approval mode lives in each
+    // chat's store.db metadata, seeded by the `--force`/`--auto-review`
+    // launch flags), so leaving it around only misleads whoever inspects the
+    // file.
+    obj.remove("approvalMode");
+    if let Some(mode) = &patch.sandbox_mode {
+        let sandbox = obj
+            .entry("sandbox")
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(sandbox_obj) = sandbox.as_object_mut() {
+            if mode.trim().is_empty() {
+                sandbox_obj.remove("mode");
+            } else {
+                sandbox_obj.insert("mode".into(), serde_json::Value::String(mode.clone()));
+            }
+        }
+    }
+    let mut set_rules = |key: &str, rules: &Option<Vec<String>>| {
+        if let Some(rules) = rules {
+            let permissions = obj
+                .entry("permissions")
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(perm_obj) = permissions.as_object_mut() {
+                let cleaned: Vec<serde_json::Value> = rules
+                    .iter()
+                    .map(|r| r.trim())
+                    .filter(|r| !r.is_empty())
+                    .map(|r| serde_json::Value::String(r.to_string()))
+                    .collect();
+                perm_obj.insert(key.to_string(), serde_json::Value::Array(cleaned));
+            }
+        }
+    };
+    set_rules("allow", &patch.permissions_allow);
+    set_rules("deny", &patch.permissions_deny);
+
+    serde_json::to_string_pretty(&root)
+        .map_err(|e| AcpError::protocol(format!("serialize cursor cli-config failed: {e}")))
+}
+
+/// Validate + write cli-config.json (whole-document; the merge already
+/// preserved unmanaged keys).
+fn persist_cursor_cli_config(text: &str) -> Result<(), AcpError> {
+    let parsed = serde_json::from_str::<serde_json::Value>(text)
+        .map_err(|e| AcpError::protocol(format!("invalid cursor cli-config.json: {e}")))?;
+    if !parsed.is_object() {
+        return Err(AcpError::protocol(
+            "invalid cursor cli-config.json: root must be a JSON object",
+        ));
+    }
+    let path = cursor_cli_config_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| AcpError::protocol(format!("create cursor config dir failed: {e}")))?;
+    }
+    fs::write(&path, format!("{text}\n"))
+        .map_err(|e| AcpError::protocol(format!("write cursor cli-config failed: {e}")))
+}
+
+/// The cursor-agent binary codeg would launch: managed cache first, then the
+/// user's own install (PATH / ~/.local/bin) — the same order as `build_agent`.
+fn resolve_cursor_binary() -> Option<PathBuf> {
+    if let Ok(Some((path, _))) =
+        binary_cache::find_best_cached_binary_for_agent(AgentType::Cursor, "cursor-agent")
+    {
+        return Some(path);
+    }
+    resolve_system_agent_binary("cursor-agent")
+}
+
+/// The Cursor agent's effective probe env: the saved env (env_json) with the
+/// settings form's live API key applied on top, so `status` / `models` test
+/// exactly the credential on screen rather than a stale saved value.
+///
+/// `api_key` is the form value — `Some(key)` in API-key mode, `Some("")` in
+/// subscription mode to force (and verify) the browser-login credential.
+/// `CURSOR_API_KEY` is always materialized (empty when unset) so
+/// `run_cursor_probe` makes an explicit set-or-remove decision and a stale
+/// inherited key can never leak in and produce a bogus "invalid API key".
+/// `CURSOR_API_BASE_URL` is always cleared — the CLI has no custom-endpoint
+/// support, so a base URL is never a valid probe input.
+async fn cursor_probe_env(db: &AppDatabase, api_key: Option<&str>) -> BTreeMap<String, String> {
+    let mut env: BTreeMap<String, String> =
+        agent_setting_service::get_by_agent_type(&db.conn, AgentType::Cursor)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|m| m.env_json)
+            .and_then(|raw| serde_json::from_str::<BTreeMap<String, String>>(&raw).ok())
+            .unwrap_or_default();
+    if let Some(key) = api_key {
+        env.insert("CURSOR_API_KEY".to_string(), key.trim().to_string());
+    }
+    // Materialize the key so an unset one becomes an explicit empty ⇒ removed.
+    env.entry("CURSOR_API_KEY".to_string()).or_default();
+    // Scrub any stale base URL (legacy env_json row or inherited dev-shell
+    // export): empty ⇒ removed by run_cursor_probe.
+    env.insert("CURSOR_API_BASE_URL".to_string(), String::new());
+    env
+}
+
+/// Run a cursor-agent subcommand with a timeout, capturing stdout.
+async fn run_cursor_probe(
+    args: &[&str],
+    timeout_secs: u64,
+    extra_env: &BTreeMap<String, String>,
+) -> Result<String, String> {
+    let bin = resolve_cursor_binary().ok_or_else(|| "cursor-agent is not installed".to_string())?;
+    let mut cmd = crate::process::tokio_command(&bin);
+    cmd.args(args);
+    for (key, value) in extra_env {
+        if value.trim().is_empty() {
+            // This process's env is inherited by the child; an empty value means
+            // "ensure absent" so a stale inherited CURSOR_API_KEY can't leak in.
+            cmd.env_remove(key);
+        } else {
+            cmd.env(key, value);
+        }
+    }
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        cmd.output(),
+    )
+    .await
+    .map_err(|_| format!("cursor-agent {} timed out", args.join(" ")))?
+    .map_err(|e| format!("failed to run cursor-agent: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    if !output.status.success() && stdout.trim().is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "cursor-agent {} failed: {}",
+            args.join(" "),
+            stderr.trim()
+        ));
+    }
+    Ok(stdout)
+}
+
+pub(crate) async fn acp_cursor_auth_status_core(
+    db: &AppDatabase,
+    api_key: Option<String>,
+) -> crate::acp::types::CursorAuthStatus {
+    let binary_path = resolve_cursor_binary().map(|p| p.to_string_lossy().to_string());
+    if binary_path.is_none() {
+        return crate::acp::types::CursorAuthStatus {
+            installed: false,
+            is_authenticated: false,
+            raw_status: None,
+            email: None,
+            membership: None,
+            error: None,
+            binary_path: None,
+        };
+    }
+    let extra_env = cursor_probe_env(db, api_key.as_deref()).await;
+    match run_cursor_probe(&["status", "--format", "json"], 20, &extra_env).await {
+        Ok(stdout) => {
+            // The CLI prints one JSON object; scan to the first `{` so a
+            // leading log line can't break parsing.
+            let json_start = stdout.find('{').unwrap_or(0);
+            match serde_json::from_str::<serde_json::Value>(stdout[json_start..].trim()) {
+                Ok(v) => {
+                    let get_str = |keys: &[&str]| {
+                        keys.iter().find_map(|k| {
+                            v.get(*k)
+                                .and_then(serde_json::Value::as_str)
+                                .filter(|s| !s.is_empty())
+                                .map(str::to_string)
+                        })
+                    };
+                    // Email is nested under `userInfo` in current CLI output;
+                    // fall back to a top-level field for forward-compatibility.
+                    let email = v
+                        .get("userInfo")
+                        .and_then(|u| u.get("email"))
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .or_else(|| get_str(&["email", "userEmail", "user_email"]));
+                    crate::acp::types::CursorAuthStatus {
+                        installed: true,
+                        is_authenticated: v
+                            .get("isAuthenticated")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false),
+                        raw_status: get_str(&["status", "message"]),
+                        email,
+                        membership: get_str(&["membershipType", "membership", "plan"]),
+                        error: None,
+                        binary_path: binary_path.clone(),
+                    }
+                }
+                Err(e) => crate::acp::types::CursorAuthStatus {
+                    installed: true,
+                    is_authenticated: false,
+                    raw_status: Some(truncate_probe_output(&stdout)),
+                    email: None,
+                    membership: None,
+                    error: Some(format!("unexpected status output: {e}")),
+                    binary_path: binary_path.clone(),
+                },
+            }
+        }
+        Err(err) => crate::acp::types::CursorAuthStatus {
+            installed: true,
+            is_authenticated: false,
+            raw_status: None,
+            email: None,
+            membership: None,
+            error: Some(err),
+            binary_path,
+        },
+    }
+}
+
+pub(crate) async fn acp_cursor_list_models_core(
+    db: &AppDatabase,
+    api_key: Option<String>,
+) -> crate::acp::types::CursorModelsResult {
+    let extra_env = cursor_probe_env(db, api_key.as_deref()).await;
+    match run_cursor_probe(&["models"], 30, &extra_env).await {
+        Ok(stdout) => {
+            let (models, default_model) = parse_cursor_models(&stdout);
+            crate::acp::types::CursorModelsResult {
+                models,
+                default_model,
+                error: None,
+            }
+        }
+        Err(err) => crate::acp::types::CursorModelsResult {
+            models: Vec::new(),
+            default_model: None,
+            error: Some(err),
+        },
+    }
+}
+
+/// Parse `cursor-agent models` output. Each model line is
+/// `<id> - <label> [(default)]` (e.g. `claude-opus-4-8-high - Opus 4.8 1M`,
+/// `auto - Auto (default)`); a leading `Available models` header and blank
+/// lines are skipped. Returns the entries in CLI order plus the default id.
+fn parse_cursor_models(stdout: &str) -> (Vec<crate::acp::types::CursorModelInfo>, Option<String>) {
+    let mut models: Vec<crate::acp::types::CursorModelInfo> = Vec::new();
+    let mut default_model = None;
+    for line in stdout.lines() {
+        let cleaned = strip_ansi(line);
+        let trimmed = cleaned.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Split id from label on the first " - ". A line with no " - " is only
+        // a model if it's a bare single-token id — otherwise it's prose (the
+        // "Available models" header has a space, so it's skipped below).
+        let (id_raw, label_raw) = trimmed.split_once(" - ").unwrap_or((trimmed, ""));
+        let id = id_raw
+            .trim()
+            .trim_start_matches(['-', '*', '\u{2022}'])
+            .trim();
+        if id.is_empty() || id.contains(char::is_whitespace) {
+            continue;
+        }
+        let is_default = label_raw.contains("(default)") || label_raw.contains("(current)");
+        let label = label_raw
+            .replace("(default)", "")
+            .replace("(current)", "")
+            .trim()
+            .to_string();
+        if is_default {
+            default_model = Some(id.to_string());
+        }
+        if !models.iter().any(|m| m.id == id) {
+            models.push(crate::acp::types::CursorModelInfo {
+                id: id.to_string(),
+                label,
+                is_default,
+            });
+        }
+    }
+    (models, default_model)
+}
+
+/// Strip ANSI SGR escape sequences from CLI output.
+fn strip_ansi(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for esc in chars.by_ref() {
+                    if esc.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn truncate_probe_output(s: &str) -> String {
+    let t = s.trim();
+    if t.len() > 400 {
+        format!("{}…", &t[..t.char_indices().take_while(|(i, _)| *i < 400).last().map(|(i, c)| i + c.len_utf8()).unwrap_or(400)])
+    } else {
+        t.to_string()
+    }
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_cursor_auth_status(
+    db: State<'_, AppDatabase>,
+    api_key: Option<String>,
+) -> Result<crate::acp::types::CursorAuthStatus, AcpError> {
+    Ok(acp_cursor_auth_status_core(&db, api_key).await)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_cursor_list_models(
+    db: State<'_, AppDatabase>,
+    api_key: Option<String>,
+) -> Result<crate::acp::types::CursorModelsResult, AcpError> {
+    Ok(acp_cursor_list_models_core(&db, api_key).await)
+}
+
 /// Primary env var keys for each agent type: (api_base_url, api_key, model).
 /// Shared by runtime env resolution, model-provider cascade, and config patching.
 fn agent_env_keys(agent_type: AgentType) -> (&'static str, &'static str, &'static str) {
@@ -5268,6 +5759,13 @@ fn agent_env_keys(agent_type: AgentType) -> (&'static str, &'static str, &'stati
         // overrides the API base URL (both win over ~/.grok/config.toml). Note:
         // `XAI_MODEL` is NOT read by Grok — the earlier placeholder was inert.
         AgentType::Grok => ("GROK_XAI_API_BASE_URL", "XAI_API_KEY", "GROK_DEFAULT_MODEL"),
+        // Cursor's non-interactive credential is `CURSOR_API_KEY` (an
+        // alternative to `cursor-agent login`); `CURSOR_API_BASE_URL` is the
+        // endpoint override (both verified against the 2026.07.16 CLI bundle).
+        // The CLI reads NO model env var — `CURSOR_MODEL` is an inert
+        // placeholder so the generic cascade never lands on OPENAI_* keys;
+        // model selection flows through the Cursor panel / ACP instead.
+        AgentType::Cursor => ("CURSOR_API_BASE_URL", "CURSOR_API_KEY", "CURSOR_MODEL"),
         _ => ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"),
     }
 }
@@ -5505,6 +6003,11 @@ fn cascade_update_agent_config(
         AgentType::Hermes => {
             // Hermes self-manages credentials in ~/.hermes/.env via
             // `hermes model` / `hermes setup`; codeg writes no provider creds.
+        }
+        AgentType::Cursor => {
+            // Cursor authenticates via `cursor-agent login` or CURSOR_API_KEY
+            // against Cursor's own backend; there is no third-party
+            // model-provider endpoint to cascade into.
         }
         AgentType::Codex => {
             let auth_path = codex_auth_json_path();
@@ -5874,6 +6377,17 @@ pub(crate) fn fingerprint_config(
         hasher.update(b"\x01grok_toml\x01");
         if let Some(toml) = load_grok_config_toml_raw() {
             hasher.update(toml.as_bytes());
+        }
+    }
+    // Same for Cursor's ~/.cursor/cli-config.json: permission rules and
+    // sandbox settings are read at process start, so panel edits must mark
+    // running Cursor sessions restart-required. (The Run Everything
+    // permission mode is a launch flag sourced from env_json, which the
+    // env loop above already hashed.)
+    if agent_type == AgentType::Cursor {
+        hasher.update(b"\x01cursor_cli_config\x01");
+        if let Some(json) = load_cursor_cli_config_raw() {
+            hasher.update(json.as_bytes());
         }
     }
     format!("{:x}", hasher.finalize())
@@ -6333,10 +6847,22 @@ pub(crate) async fn acp_get_agent_status_core(
                 .await
                 .and_then(|_| setting.as_ref().and_then(|m| m.installed_version.clone())),
         ),
-        registry::AgentDistribution::Binary { platforms, cmd, .. } => {
-            let detected = binary_cache::detect_installed_version(agent_type, cmd)
+        registry::AgentDistribution::Binary {
+            platforms,
+            cmd,
+            dir_entry,
+            ..
+        } => {
+            let mut detected = binary_cache::detect_installed_version(agent_type, cmd)
                 .ok()
                 .flatten();
+            // Dir-tree agents (Cursor): a system install is launchable via the
+            // connect path's PATH fallback, and the frontend gates connect on a
+            // non-null installed_version — report the probed system version so
+            // an official-script install isn't blocked as "not installed".
+            if detected.is_none() && dir_entry.is_some() {
+                detected = system_dir_agent_version(cmd).await;
+            }
             (platforms.iter().any(|p| p.platform == platform), detected)
         }
         registry::AgentDistribution::Uvx { system_cmd, .. } => (
@@ -6401,10 +6927,22 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
                     .and_then(|_| setting.and_then(|m| m.installed_version.clone()));
                 (true, "npx", cached)
             }
-            registry::AgentDistribution::Binary { platforms, cmd, .. } => {
-                let detected = binary_cache::detect_installed_version(agent_type, cmd)
+            registry::AgentDistribution::Binary {
+                platforms,
+                cmd,
+                dir_entry,
+                ..
+            } => {
+                let mut detected = binary_cache::detect_installed_version(agent_type, cmd)
                     .ok()
                     .flatten();
+                // Mirror the status path: a dir-tree agent's system install
+                // counts as installed (cached probe — no per-list subprocess
+                // after the first call). Without this, the list would also
+                // persist `installed_version = None` over the detected value.
+                if detected.is_none() && dir_entry.is_some() {
+                    detected = system_dir_agent_version(cmd).await;
+                }
                 (
                     platforms.iter().any(|p| p.platform == platform),
                     "binary",
@@ -6503,6 +7041,21 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
         // (mode / reasoning effort). Derived from the same raw text so the
         // dropdowns and the advanced editor stay in sync.
         let grok_settings = grok_config_toml.as_deref().map(parse_grok_settings);
+        let cursor_cli_config_json = if agent_type == AgentType::Cursor {
+            load_cursor_cli_config_raw()
+        } else {
+            None
+        };
+        // Parsed scalar settings backing the Cursor panel's structured controls
+        // (approval mode / sandbox / permission rules); an absent config file
+        // still yields defaults so the panel renders its editors.
+        let cursor_settings = if agent_type == AgentType::Cursor {
+            Some(parse_cursor_settings(
+                cursor_cli_config_json.as_deref().unwrap_or(""),
+            ))
+        } else {
+            None
+        };
 
         agents.push(AcpAgentInfo {
             agent_type,
@@ -6527,6 +7080,8 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
             hermes_config_yaml,
             grok_config_toml,
             grok_settings,
+            cursor_cli_config_json,
+            cursor_settings,
             model_provider_id: setting.and_then(|m| m.model_provider_id),
         });
     }
@@ -6982,6 +7537,8 @@ pub(crate) async fn acp_update_agent_config_core(
     codex_model_catalog: Option<String>,
     grok_config_toml: Option<String>,
     grok_structured: Option<GrokStructuredConfig>,
+    cursor_cli_config_json: Option<String>,
+    cursor_structured: Option<crate::acp::types::CursorStructuredConfig>,
     emitter: &EventEmitter,
 ) -> Result<(), AcpError> {
     let config_json = config_json.and_then(|raw| {
@@ -7050,6 +7607,29 @@ pub(crate) async fn acp_update_agent_config_core(
         return Ok(());
     }
 
+    if agent_type == AgentType::Cursor {
+        // Mirrors the Grok flow: the advanced raw editor sends the whole file
+        // (`cursor_cli_config_json = Some(text)`); the structured controls send
+        // only a patch, merged onto the CURRENT on-disk config (read fresh) so
+        // a stale in-memory snapshot can't drop keys written by the CLI's own
+        // `/config` UI since the panel opened.
+        if cursor_cli_config_json.is_some() || cursor_structured.is_some() {
+            let base = match cursor_cli_config_json {
+                Some(text) => text,
+                None => load_cursor_cli_config_raw().unwrap_or_default(),
+            };
+            let merged = match &cursor_structured {
+                Some(patch) => apply_cursor_structured_config(&base, patch)?,
+                None => base,
+            };
+            if !merged.trim().is_empty() {
+                persist_cursor_cli_config(&merged)?;
+            }
+        }
+        emit_acp_agents_updated(emitter, "config_updated", Some(agent_type));
+        return Ok(());
+    }
+
     if agent_type == AgentType::OpenCode {
         persist_opencode_native_config(
             opencode_auth_json.as_deref(),
@@ -7093,6 +7673,8 @@ pub(crate) async fn acp_update_agent_config_and_refresh(
     codex_model_catalog: Option<String>,
     grok_config_toml: Option<String>,
     grok_structured: Option<GrokStructuredConfig>,
+    cursor_cli_config_json: Option<String>,
+    cursor_structured: Option<crate::acp::types::CursorStructuredConfig>,
     db: &AppDatabase,
     manager: &ConnectionManager,
     data_dir: &Path,
@@ -7107,6 +7689,8 @@ pub(crate) async fn acp_update_agent_config_and_refresh(
         codex_model_catalog,
         grok_config_toml,
         grok_structured,
+        cursor_cli_config_json,
+        cursor_structured,
         emitter,
     )
     .await?;
@@ -7125,6 +7709,8 @@ pub async fn acp_update_agent_config(
     codex_model_catalog: Option<String>,
     grok_config_toml: Option<String>,
     grok_structured: Option<GrokStructuredConfig>,
+    cursor_cli_config_json: Option<String>,
+    cursor_structured: Option<crate::acp::types::CursorStructuredConfig>,
     manager: State<'_, ConnectionManager>,
     db: State<'_, AppDatabase>,
     app: tauri::AppHandle,
@@ -7144,6 +7730,8 @@ pub async fn acp_update_agent_config(
         codex_model_catalog,
         grok_config_toml,
         grok_structured,
+        cursor_cli_config_json,
+        cursor_structured,
         &db,
         &manager,
         &app_data_dir,
@@ -9345,6 +9933,149 @@ wire_api = "chat"
                 "changing default_reasoning_effort must change the fingerprint"
             );
         });
+    }
+
+    #[test]
+    fn cursor_fingerprint_tracks_cli_config_changes() {
+        // Cursor's ~/.cursor/cli-config.json (permission rules / sandbox) is
+        // edited via the Cursor settings panel but is NOT in
+        // `agent_local_config_path`, so `fingerprint_config` must fold it in
+        // explicitly — otherwise a permission-rule change never marks a running
+        // Cursor session restart-required.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cli-config.json");
+        temp_env::with_var("CURSOR_CONFIG_DIR", Some(dir.path()), || {
+            let env: BTreeMap<String, String> = BTreeMap::new();
+            let empty_fp = fingerprint_config(AgentType::Cursor, &env);
+
+            std::fs::write(&path, "{\"permissions\":{\"allow\":[\"Shell(ls)\"]}}")
+                .expect("write allow");
+            let allow_fp = fingerprint_config(AgentType::Cursor, &env);
+            assert_ne!(
+                empty_fp, allow_fp,
+                "adding cli-config.json must change the fingerprint"
+            );
+
+            std::fs::write(&path, "{\"permissions\":{\"deny\":[\"Shell(rm)\"]}}")
+                .expect("write deny");
+            let deny_fp = fingerprint_config(AgentType::Cursor, &env);
+            assert_ne!(
+                allow_fp, deny_fp,
+                "changing permission rules must change the fingerprint"
+            );
+        });
+    }
+
+    #[test]
+    fn cursor_structured_config_merges_preserving_unknown_keys() {
+        // The panel's structured save must only touch the managed keys —
+        // editor prefs and other CLI-owned keys survive verbatim, and
+        // empty-string scalars remove their key.
+        let base = r#"{
+  "version": 1,
+  "editor": { "vimMode": true },
+  "approvalMode": "allowlist",
+  "sandbox": { "mode": "disabled", "networkAccess": "full" },
+  "permissions": { "allow": ["Shell(ls)"], "deny": [] }
+}"#;
+        let patch = crate::acp::types::CursorStructuredConfig {
+            sandbox_mode: Some("enabled".to_string()),
+            permissions_allow: Some(vec![
+                "Shell(npm run build)".to_string(),
+                "  ".to_string(), // blank rows are dropped
+            ]),
+            permissions_deny: None, // untouched
+        };
+        let merged = apply_cursor_structured_config(base, &patch).expect("merge");
+        let v: serde_json::Value = serde_json::from_str(&merged).expect("valid json");
+        assert_eq!(v.pointer("/editor/vimMode"), Some(&serde_json::json!(true)));
+        assert_eq!(
+            v.pointer("/sandbox/networkAccess"),
+            Some(&serde_json::json!("full"))
+        );
+        assert!(
+            v.get("approvalMode").is_none(),
+            "the legacy approvalMode key is dropped: the CLI never reads it \
+             from cli-config.json"
+        );
+        assert_eq!(v.pointer("/sandbox/mode"), Some(&serde_json::json!("enabled")));
+        assert_eq!(
+            v.pointer("/permissions/allow"),
+            Some(&serde_json::json!(["Shell(npm run build)"]))
+        );
+        assert_eq!(v.pointer("/permissions/deny"), Some(&serde_json::json!([])));
+    }
+
+    #[tokio::test]
+    async fn cursor_probe_env_materializes_key_and_scrubs_base_url() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+
+        // API-key mode: the form value wins over saved env and is trimmed; the
+        // base URL is always scrubbed to empty (⇒ removed by run_cursor_probe).
+        let env = cursor_probe_env(&db, Some("  my-key  ")).await;
+        assert_eq!(env.get("CURSOR_API_KEY").map(String::as_str), Some("my-key"));
+        assert_eq!(
+            env.get("CURSOR_API_BASE_URL").map(String::as_str),
+            Some("")
+        );
+
+        // Subscription passes an empty key → present but empty, so the probe
+        // strips any inherited value instead of leaking it.
+        let cleared = cursor_probe_env(&db, Some("")).await;
+        assert_eq!(cleared.get("CURSOR_API_KEY").map(String::as_str), Some(""));
+        assert_eq!(
+            cleared.get("CURSOR_API_BASE_URL").map(String::as_str),
+            Some("")
+        );
+
+        // No override + empty DB → key still materialized empty.
+        let none = cursor_probe_env(&db, None).await;
+        assert_eq!(none.get("CURSOR_API_KEY").map(String::as_str), Some(""));
+        assert_eq!(
+            none.get("CURSOR_API_BASE_URL").map(String::as_str),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn parse_cursor_models_reads_id_label_and_default() {
+        // Verbatim shape of `cursor-agent models` (id - label [(default)]).
+        let stdout = "Available models\n\n\
+             auto - Auto (default)\n\
+             claude-opus-4-8-high - Opus 4.8 1M\n\
+             gpt-5.3-codex - Codex 5.3\n\
+             claude-fable-5-thinking-high - Fable 5 1M Thinking (NO ZDR)\n";
+        let (models, default_model) = parse_cursor_models(stdout);
+
+        // The "Available models" header (has whitespace, no " - ") is skipped.
+        assert_eq!(models.len(), 4);
+        assert_eq!(default_model.as_deref(), Some("auto"));
+
+        assert_eq!(models[0].id, "auto");
+        assert_eq!(models[0].label, "Auto");
+        assert!(models[0].is_default);
+
+        assert_eq!(models[1].id, "claude-opus-4-8-high");
+        assert_eq!(models[1].label, "Opus 4.8 1M");
+        assert!(!models[1].is_default);
+
+        // A parenthetical that isn't the default marker stays in the label.
+        assert_eq!(models[3].label, "Fable 5 1M Thinking (NO ZDR)");
+    }
+
+    #[test]
+    fn parse_cursor_models_tolerates_ansi_markers_and_bare_ids() {
+        // ANSI SGR + a leading list marker + a bare-id line with no label.
+        let stdout =
+            "\u{1b}[1mAvailable models\u{1b}[0m\n- gpt-5.2 - GPT-5.2\ncomposer-2.5\n";
+        let (models, default_model) = parse_cursor_models(stdout);
+        assert_eq!(default_model, None);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "gpt-5.2");
+        assert_eq!(models[0].label, "GPT-5.2");
+        // Bare id (no " - <label>") → id kept, label empty.
+        assert_eq!(models[1].id, "composer-2.5");
+        assert_eq!(models[1].label, "");
     }
 
     #[tokio::test]

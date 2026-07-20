@@ -14,7 +14,10 @@
 //! ```
 //!
 //! Where `pet.json` carries `{ id, displayName, description?, spritesheetPath }`
-//! and the spritesheet is a 1536×1872 RGBA WebP (PNG also accepted).
+//! (plus any extra fields such as `spriteVersionNumber` / `kind`, preserved
+//! verbatim) and the spritesheet is a 1536-wide RGBA WebP (PNG also accepted)
+//! whose height is a whole number of 208px animation rows — 1872px (9 rows)
+//! for the base format, 2288px (11 rows) for v2 pets.
 
 pub mod codex_import;
 pub mod marketplace;
@@ -29,16 +32,21 @@ use image::{ImageFormat, ImageReader};
 use crate::app_error::AppCommandError;
 use crate::models::pet::{
     NewPetInput, PetDetail, PetManifest, PetMetaPatch, PetSpriteAsset, PetSummary,
-    PET_MANIFEST_FILENAME, SPRITESHEET_FILENAME, SPRITE_SHEET_HEIGHT, SPRITE_SHEET_WIDTH,
+    PET_MANIFEST_FILENAME, SPRITESHEET_FILENAME, SPRITE_FRAME_HEIGHT, SPRITE_GRID_ROWS,
+    SPRITE_SHEET_WIDTH,
 };
 use crate::paths::codeg_pets_root;
 
 /// Smallest plausible sprite-sheet payload; rejecting tiny inputs early
 /// avoids decoding random files.
 const MIN_SPRITE_BYTES: usize = 1024;
-/// Cap raw sprite uploads at 16 MiB. A correctly-encoded 1536×1872 WebP is
-/// usually well under 1 MiB; this is purely a guardrail.
+/// Cap raw sprite uploads at 16 MiB. A correctly-encoded sheet is usually well
+/// under a few MiB; this is purely a guardrail.
 const MAX_SPRITE_BYTES: usize = 16 * 1024 * 1024;
+/// Upper bound on animation rows. The base format is 9 rows and v2 pets ship
+/// 11; 32 leaves generous headroom for future additive rows while bounding the
+/// decoded image size a hostile package can force us to allocate.
+const MAX_SPRITE_ROWS: u32 = 32;
 
 /// Detected sprite-sheet container.
 #[derive(Debug, Clone, Copy)]
@@ -97,12 +105,7 @@ pub fn validate_spritesheet(bytes: &[u8]) -> Result<SpriteFormat, AppCommandErro
     let img = reader
         .decode()
         .map_err(|e| AppCommandError::invalid_input(format!("Cannot decode sprite: {e}")))?;
-    let (w, h) = (img.width(), img.height());
-    if w != SPRITE_SHEET_WIDTH || h != SPRITE_SHEET_HEIGHT {
-        return Err(AppCommandError::invalid_input(format!(
-            "Spritesheet must be {SPRITE_SHEET_WIDTH}x{SPRITE_SHEET_HEIGHT} pixels (got {w}x{h})."
-        )));
-    }
+    check_sprite_dimensions(img.width(), img.height())?;
     if !img.color().has_alpha() {
         return Err(AppCommandError::invalid_input(
             "Spritesheet must contain an alpha channel (transparent background).",
@@ -110,6 +113,37 @@ pub fn validate_spritesheet(bytes: &[u8]) -> Result<SpriteFormat, AppCommandErro
     }
 
     Ok(detected)
+}
+
+/// Verify a decoded sprite sheet's pixel grid. The width is fixed at 8 columns
+/// (`SPRITE_SHEET_WIDTH`); the height must be a whole number of 208px rows,
+/// covering at least the base animation states and no more than the row cap.
+/// This is where format evolution is absorbed: v1 sheets are 9 rows (1872px)
+/// and v2 sheets are 11 rows (2288px), and both pass.
+fn check_sprite_dimensions(width: u32, height: u32) -> Result<(), AppCommandError> {
+    if width != SPRITE_SHEET_WIDTH {
+        return Err(AppCommandError::invalid_input(format!(
+            "Spritesheet must be {SPRITE_SHEET_WIDTH}px wide (8 columns); got width {width}."
+        )));
+    }
+    if height == 0 || !height.is_multiple_of(SPRITE_FRAME_HEIGHT) {
+        return Err(AppCommandError::invalid_input(format!(
+            "Spritesheet height must be a whole multiple of {SPRITE_FRAME_HEIGHT}px rows; got {height}."
+        )));
+    }
+    let rows = height / SPRITE_FRAME_HEIGHT;
+    if rows < SPRITE_GRID_ROWS {
+        return Err(AppCommandError::invalid_input(format!(
+            "Spritesheet must have at least {SPRITE_GRID_ROWS} rows ({}px); got {rows} rows ({height}px).",
+            SPRITE_GRID_ROWS * SPRITE_FRAME_HEIGHT
+        )));
+    }
+    if rows > MAX_SPRITE_ROWS {
+        return Err(AppCommandError::invalid_input(format!(
+            "Spritesheet has too many rows ({rows}); the maximum is {MAX_SPRITE_ROWS}."
+        )));
+    }
+    Ok(())
 }
 
 /// Slug-validate a pet id. Returns `Err` on invalid input. Defense in depth:
@@ -348,6 +382,7 @@ pub fn add_pet(input: NewPetInput) -> Result<PetSummary, AppCommandError> {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty()),
         spritesheet_path: SPRITESHEET_FILENAME.to_string(),
+        extra: serde_json::Map::new(),
     };
     if let Err(err) = write_manifest_atomic(&tmp_dir, &manifest) {
         let _ = fs::remove_dir_all(&tmp_dir);
@@ -422,6 +457,7 @@ pub fn delete_pet(id: &str) -> Result<(), AppCommandError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::pet::SPRITE_SHEET_HEIGHT;
 
     // Filesystem-touching tests rely on `CODEG_HOME`, which is shared global
     // state. Cargo runs tests in parallel, so we'd need cross-binary
@@ -515,5 +551,79 @@ mod tests {
             .unwrap();
         let format = validate_spritesheet(&bytes).unwrap();
         assert!(matches!(format, SpriteFormat::Png));
+    }
+
+    #[test]
+    fn validate_spritesheet_accepts_v2_eleven_row_sheet() {
+        // v2 marketplace pets are 1536×2288 (11 rows). Before the format bump
+        // this exact size was rejected outright, blocking every v2 install.
+        let mut img = image::RgbaImage::new(SPRITE_SHEET_WIDTH, 11 * SPRITE_FRAME_HEIGHT);
+        for (i, p) in img.pixels_mut().enumerate() {
+            let v = (i % 251) as u8;
+            *p = image::Rgba([v, v, v, v]);
+        }
+        let mut bytes: Vec<u8> = Vec::new();
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut std::io::Cursor::new(&mut bytes), ImageFormat::Png)
+            .unwrap();
+        assert!(validate_spritesheet(&bytes).is_ok());
+    }
+
+    #[test]
+    fn check_sprite_dimensions_accepts_v1_and_v2() {
+        assert!(check_sprite_dimensions(SPRITE_SHEET_WIDTH, SPRITE_SHEET_HEIGHT).is_ok()); // 9 rows
+        assert!(check_sprite_dimensions(SPRITE_SHEET_WIDTH, 2288).is_ok()); // 11 rows
+    }
+
+    #[test]
+    fn check_sprite_dimensions_rejects_bad_width() {
+        let err = check_sprite_dimensions(1024, SPRITE_SHEET_HEIGHT).unwrap_err();
+        assert!(err.message.contains("1536"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn check_sprite_dimensions_rejects_non_row_multiple_height() {
+        // 2000 / 208 = 9.6 → not a whole number of rows.
+        let err = check_sprite_dimensions(SPRITE_SHEET_WIDTH, 2000).unwrap_err();
+        assert!(err.message.contains("multiple"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn check_sprite_dimensions_rejects_too_few_rows() {
+        // 1664 / 208 = 8 rows — missing base animation states.
+        let err = check_sprite_dimensions(SPRITE_SHEET_WIDTH, 8 * SPRITE_FRAME_HEIGHT).unwrap_err();
+        assert!(err.message.contains("at least"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn check_sprite_dimensions_rejects_too_many_rows() {
+        let err = check_sprite_dimensions(SPRITE_SHEET_WIDTH, (MAX_SPRITE_ROWS + 1) * SPRITE_FRAME_HEIGHT)
+            .unwrap_err();
+        assert!(err.message.contains("too many"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn check_sprite_dimensions_rejects_zero_height() {
+        assert!(check_sprite_dimensions(SPRITE_SHEET_WIDTH, 0).is_err());
+    }
+
+    #[test]
+    fn pet_manifest_preserves_extra_fields() {
+        // A v2 manifest carries `spriteVersionNumber` + `kind` that our struct
+        // does not name explicitly; they must survive a parse → serialize
+        // round-trip instead of being dropped on install/edit.
+        let raw = r#"{"id":"cat","displayName":"Cat","spritesheetPath":"spritesheet.webp","spriteVersionNumber":2,"kind":"creature"}"#;
+        let manifest: PetManifest = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            manifest.extra.get("spriteVersionNumber").and_then(|v| v.as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            manifest.extra.get("kind").and_then(|v| v.as_str()),
+            Some("creature")
+        );
+        let out = serde_json::to_string(&manifest).unwrap();
+        assert!(out.contains("\"spriteVersionNumber\":2"), "got: {out}");
+        assert!(out.contains("\"kind\":\"creature\""), "got: {out}");
     }
 }

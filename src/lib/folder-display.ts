@@ -22,6 +22,19 @@ export function resolveFolderDisplayName(
 }
 
 /**
+ * Plain-string folder label for `title` tooltips and other string-only contexts:
+ * `alias [ name ]` (e.g. `My Project [ codeg ]`) when an alias is set, else the
+ * bare `name`. The rendered (color-distinguished) equivalent is the
+ * `FolderAliasLabel` component — keep the `alias [ name ]` spacing in sync.
+ */
+export function formatFolderLabelWithAlias(
+  folder: Pick<FolderDetail, "name" | "alias">
+): string {
+  const alias = folder.alias?.trim()
+  return alias ? `${alias} [ ${folder.name} ]` : folder.name
+}
+
+/**
  * The folders the input-box folder picker should list: top-level repos only.
  * Worktree folders (`parent_id != null`) are reached via the branch picker, so
  * listing them here too would be redundant and confusing. Display-only — the

@@ -274,6 +274,7 @@ function seedDetail(turns: MessageTurn[], inFlightUserTurnId?: string) {
       liveMessage: null,
       syncState: "idle" as const,
       activeTurnToken: null,
+      lastTurnOwned: false,
       liveOwnsActiveTurn: false,
       delegationKickoffText: null,
       sessionStats: null,

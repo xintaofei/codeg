@@ -3,6 +3,7 @@
 import {
   type ReactElement,
   useCallback,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -460,7 +461,22 @@ export function GitChangesTab() {
   const t = useTranslations("Folder.gitChangesTab")
   const tCommon = useTranslations("Folder.common")
   const tFileTree = useTranslations("Folder.fileTreeTab")
-  const { activeFolder: folder } = useActiveFolder()
+  // Defer the folder so a cross-folder conversation-tab switch commits first and
+  // this tab's heavy rebuild (buildChangeFileTree + auto-expand + up to
+  // MAX_VISIBLE_ROWS ContextMenu rows) runs in a non-blocking transition a frame
+  // later instead of janking the switch. The change tree derives from the store
+  // snapshot (path-keyed), so same-path metadata churn is a no-op.
+  const { activeFolder } = useActiveFolder()
+  const folder = useDeferredValue(activeFolder)
+  // True while the deferred render lags a cross-folder switch. During that gap we
+  // render the loading skeleton (below) instead of the PREVIOUS folder's rows:
+  // besides keeping the heavy rebuild off the switch commit, unmounting those
+  // rows closes any open row ContextMenu (it portals outside this subtree, so an
+  // inert wrapper wouldn't reach it) — otherwise a click could route an opener to
+  // the NEW active folder (openers default to it when folderId is omitted — see
+  // resolveTargetFolder) and open/diff a same-named file under the wrong folder.
+  // Clears the instant the deferred render catches up.
+  const folderStale = activeFolder?.id !== folder?.id
   const tabs = useTabStore((s) => s.tabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
   const { openFilePreview, openWorkingTreeDiff } = useWorkspaceActions()
@@ -498,6 +514,10 @@ export function GitChangesTab() {
 
   const hasHydratedTrackedPaths = useRef(false)
   const hasHydratedUntrackedPaths = useRef(false)
+  // Request generation for async dialog loaders: bumped on every folder switch so
+  // a folder-A `gitStatus` still in flight can't write its candidates into (or
+  // close) a dialog the user has since reopened under folder B.
+  const loadGenRef = useRef(0)
 
   const folderName = useMemo(() => {
     const path = folder?.path ?? ""
@@ -736,6 +756,7 @@ export function GitChangesTab() {
     async (action: DirectoryGitAction, target: GitActionTarget) => {
       if (!folder?.path) return
 
+      const gen = loadGenRef.current
       setDirectoryGitActionType(action)
       setDirectoryGitActionTarget(target)
       setDirectoryGitCandidates([])
@@ -745,6 +766,10 @@ export function GitChangesTab() {
 
       try {
         const statusEntries = await gitStatus(folder.path, true)
+        // Bail if the folder switched while this request was in flight — writing
+        // now would clobber (or, on an empty result, close) a dialog reopened
+        // under the new folder.
+        if (gen !== loadGenRef.current) return
         const scopedEntries = scopeGitStatusEntriesForDirectory(
           statusEntries,
           target.path
@@ -768,10 +793,14 @@ export function GitChangesTab() {
           new Set(candidates.map((entry) => entry.path))
         )
       } catch (error) {
+        // Same generation guard on the error path: a stale folder-A rejection
+        // must not write its error into (nor toggle the loading of) a dialog
+        // reopened under folder B.
+        if (gen !== loadGenRef.current) return
         const message = toErrorMessage(error)
         setDirectoryGitError(message)
       } finally {
-        setDirectoryGitLoading(false)
+        if (gen === loadGenRef.current) setDirectoryGitLoading(false)
       }
     },
     [folder?.path, resetDirectoryGitActionDialog, t]
@@ -958,10 +987,16 @@ export function GitChangesTab() {
     workspaceState,
   ])
 
+  // Close in-panel dialogs the instant the ACTIVE folder changes (keyed on the
+  // live id, not the deferred `folder?.path`) so a dialog opened under the
+  // previous folder can't act (delete / rollback / batch) against the new one
+  // after the deferred render settles and the dialog re-mounts.
   useEffect(() => {
+    loadGenRef.current++
     setRollbackTarget(null)
+    setDeleteTarget(null)
     resetDirectoryGitActionDialog()
-  }, [folder?.path, resetDirectoryGitActionDialog])
+  }, [activeFolder?.id, resetDirectoryGitActionDialog])
 
   const renderTrackedNode = useCallback(
     function renderNode(node: ChangeTreeNode): ReactElement {
@@ -1326,7 +1361,9 @@ export function GitChangesTab() {
     return <AuxPanelNoFolderEmpty />
   }
 
-  if (loading) {
+  // `folderStale`: skeleton over the previous folder's rows while the deferred
+  // render catches up to the switch (see the declaration above).
+  if (loading || folderStale) {
     return (
       <div className="p-2 space-y-2">
         <Skeleton className="h-6 w-full" />

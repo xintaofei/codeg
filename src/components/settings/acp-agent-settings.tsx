@@ -136,6 +136,7 @@ import { getInstallErrorHintKey } from "@/lib/agent-install-error"
 import { useAgentInstallStream } from "@/hooks/use-agent-install-stream"
 import { OpencodePluginsModal } from "./opencode-plugins-modal"
 import { CodeBuddyConfigPanel } from "./codebuddy-config-panel"
+import { CursorConfigPanel } from "./cursor-config-panel"
 import { PiConfigPanel } from "./pi-config-panel"
 
 interface AgentCheckState {
@@ -9607,6 +9608,21 @@ supports_websockets = true`}
                       )
                     }
                     onSaved={refreshAgents}
+                  />
+                ) : selectedAgent.agent_type === "cursor" ? (
+                  <CursorConfigPanel
+                    agent={selectedAgent}
+                    saving={Boolean(savingEnv[selectedAgent.agent_type])}
+                    onSaveEnv={(env, enabled) =>
+                      persistEnv(
+                        selectedAgent.agent_type,
+                        enabled,
+                        envMapToText(env),
+                        selectedAgent.model_provider_id
+                      )
+                    }
+                    onSaved={refreshAgents}
+                    onAffectedSessions={reportAffectedSessions}
                   />
                 ) : selectedAgent.agent_type === "grok" ? (
                   <div className="space-y-3 rounded-md border bg-muted/10 p-3">

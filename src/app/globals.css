@@ -30,6 +30,12 @@
   -moz-osx-font-smoothing: grayscale;
   -webkit-text-size-adjust: 100%;
   --radius: 0.625rem;
+
+  /* Workspace 背景图片：面板半透明度与磨砂强度。仅当 <html data-workspace-bg="on">
+     时下方 .ws-surface* 规则才消费它们；未启用背景图时这些变量存在但无副作用。
+     --ws-surface-alpha 由 inline 脚本 / AppearanceProvider 覆盖为用户设置。 */
+  --ws-surface-alpha: 0.3;
+  --ws-surface-blur: 8px;
 }
 
 /* ===========================================================================
@@ -451,53 +457,53 @@
 
 /* ---------- red ---------- */
 [data-theme="red"] {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.141 0.005 285.823);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.141 0.005 285.823);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.141 0.005 285.823);
+  --background: oklch(0.994 0.004 25.331);
+  --foreground: oklch(0.141 0.014 25.331);
+  --card: oklch(0.994 0.004 25.331);
+  --card-foreground: oklch(0.141 0.014 25.331);
+  --popover: oklch(0.994 0.004 25.331);
+  --popover-foreground: oklch(0.141 0.014 25.331);
   --primary: oklch(0.637 0.237 25.331);
   --primary-foreground: oklch(0.971 0.013 17.38);
-  --secondary: oklch(0.967 0.001 286.375);
-  --secondary-foreground: oklch(0.21 0.006 285.885);
-  --muted: oklch(0.967 0.001 286.375);
-  --muted-foreground: oklch(0.552 0.016 285.938);
-  --accent: oklch(0.967 0.001 286.375);
-  --accent-foreground: oklch(0.21 0.006 285.885);
+  --secondary: oklch(0.967 0.013 25.331);
+  --secondary-foreground: oklch(0.21 0.016 25.331);
+  --muted: oklch(0.967 0.013 25.331);
+  --muted-foreground: oklch(0.552 0.032 25.331);
+  --accent: oklch(0.955 0.022 25.331);
+  --accent-foreground: oklch(0.21 0.016 25.331);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.92 0.004 286.32);
-  --input: oklch(0.92 0.004 286.32);
+  --border: oklch(0.914 0.018 25.331);
+  --input: oklch(0.914 0.018 25.331);
   --ring: oklch(0.637 0.237 25.331);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.141 0.005 285.823);
+  --sidebar: oklch(0.985 0.007 25.331);
+  --sidebar-foreground: oklch(0.141 0.014 25.331);
   --sidebar-primary: oklch(0.637 0.237 25.331);
   --sidebar-primary-foreground: oklch(0.971 0.013 17.38);
-  --sidebar-accent: oklch(0.967 0.001 286.375);
-  --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
-  --sidebar-border: oklch(0.92 0.004 286.32);
+  --sidebar-accent: oklch(0.955 0.022 25.331);
+  --sidebar-accent-foreground: oklch(0.21 0.016 25.331);
+  --sidebar-border: oklch(0.914 0.018 25.331);
   --sidebar-ring: oklch(0.637 0.237 25.331);
 }
 [data-theme="red"].dark {
-  --background: oklch(0.141 0.005 285.823);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.21 0.006 285.885);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.21 0.006 285.885);
-  --popover-foreground: oklch(0.985 0 0);
+  --background: oklch(0.141 0.012 25.331);
+  --foreground: oklch(0.985 0.003 25.331);
+  --card: oklch(0.205 0.014 25.331);
+  --card-foreground: oklch(0.985 0.003 25.331);
+  --popover: oklch(0.205 0.014 25.331);
+  --popover-foreground: oklch(0.985 0.003 25.331);
   --primary: oklch(0.637 0.237 25.331);
   --primary-foreground: oklch(0.971 0.013 17.38);
-  --secondary: oklch(0.274 0.006 286.033);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.274 0.006 286.033);
-  --muted-foreground: oklch(0.705 0.015 286.067);
-  --accent: oklch(0.274 0.006 286.033);
-  --accent-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.274 0.016 25.331);
+  --secondary-foreground: oklch(0.985 0.003 25.331);
+  --muted: oklch(0.274 0.016 25.331);
+  --muted-foreground: oklch(0.705 0.03 25.331);
+  --accent: oklch(0.32 0.02 25.331);
+  --accent-foreground: oklch(0.985 0.003 25.331);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
@@ -507,65 +513,65 @@
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.21 0.006 285.885);
-  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar: oklch(0.205 0.014 25.331);
+  --sidebar-foreground: oklch(0.985 0.003 25.331);
   --sidebar-primary: oklch(0.637 0.237 25.331);
   --sidebar-primary-foreground: oklch(0.971 0.013 17.38);
-  --sidebar-accent: oklch(0.274 0.006 286.033);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.274 0.016 25.331);
+  --sidebar-accent-foreground: oklch(0.985 0.003 25.331);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.637 0.237 25.331);
 }
 
 /* ---------- rose ---------- */
 [data-theme="rose"] {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.141 0.005 285.823);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.141 0.005 285.823);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.141 0.005 285.823);
+  --background: oklch(0.994 0.004 16.439);
+  --foreground: oklch(0.141 0.014 16.439);
+  --card: oklch(0.994 0.004 16.439);
+  --card-foreground: oklch(0.141 0.014 16.439);
+  --popover: oklch(0.994 0.004 16.439);
+  --popover-foreground: oklch(0.141 0.014 16.439);
   --primary: oklch(0.645 0.246 16.439);
   --primary-foreground: oklch(0.969 0.015 12.422);
-  --secondary: oklch(0.967 0.001 286.375);
-  --secondary-foreground: oklch(0.21 0.006 285.885);
-  --muted: oklch(0.967 0.001 286.375);
-  --muted-foreground: oklch(0.552 0.016 285.938);
-  --accent: oklch(0.967 0.001 286.375);
-  --accent-foreground: oklch(0.21 0.006 285.885);
+  --secondary: oklch(0.967 0.013 16.439);
+  --secondary-foreground: oklch(0.21 0.016 16.439);
+  --muted: oklch(0.967 0.013 16.439);
+  --muted-foreground: oklch(0.552 0.032 16.439);
+  --accent: oklch(0.955 0.022 16.439);
+  --accent-foreground: oklch(0.21 0.016 16.439);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.92 0.004 286.32);
-  --input: oklch(0.92 0.004 286.32);
+  --border: oklch(0.914 0.018 16.439);
+  --input: oklch(0.914 0.018 16.439);
   --ring: oklch(0.645 0.246 16.439);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.141 0.005 285.823);
+  --sidebar: oklch(0.985 0.007 16.439);
+  --sidebar-foreground: oklch(0.141 0.014 16.439);
   --sidebar-primary: oklch(0.645 0.246 16.439);
   --sidebar-primary-foreground: oklch(0.969 0.015 12.422);
-  --sidebar-accent: oklch(0.967 0.001 286.375);
-  --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
-  --sidebar-border: oklch(0.92 0.004 286.32);
+  --sidebar-accent: oklch(0.955 0.022 16.439);
+  --sidebar-accent-foreground: oklch(0.21 0.016 16.439);
+  --sidebar-border: oklch(0.914 0.018 16.439);
   --sidebar-ring: oklch(0.645 0.246 16.439);
 }
 [data-theme="rose"].dark {
-  --background: oklch(0.141 0.005 285.823);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.21 0.006 285.885);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.21 0.006 285.885);
-  --popover-foreground: oklch(0.985 0 0);
+  --background: oklch(0.141 0.012 16.439);
+  --foreground: oklch(0.985 0.003 16.439);
+  --card: oklch(0.205 0.014 16.439);
+  --card-foreground: oklch(0.985 0.003 16.439);
+  --popover: oklch(0.205 0.014 16.439);
+  --popover-foreground: oklch(0.985 0.003 16.439);
   --primary: oklch(0.645 0.246 16.439);
   --primary-foreground: oklch(0.969 0.015 12.422);
-  --secondary: oklch(0.274 0.006 286.033);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.274 0.006 286.033);
-  --muted-foreground: oklch(0.705 0.015 286.067);
-  --accent: oklch(0.274 0.006 286.033);
-  --accent-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.274 0.016 16.439);
+  --secondary-foreground: oklch(0.985 0.003 16.439);
+  --muted: oklch(0.274 0.016 16.439);
+  --muted-foreground: oklch(0.705 0.03 16.439);
+  --accent: oklch(0.32 0.02 16.439);
+  --accent-foreground: oklch(0.985 0.003 16.439);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
@@ -575,65 +581,65 @@
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.21 0.006 285.885);
-  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar: oklch(0.205 0.014 16.439);
+  --sidebar-foreground: oklch(0.985 0.003 16.439);
   --sidebar-primary: oklch(0.645 0.246 16.439);
   --sidebar-primary-foreground: oklch(0.969 0.015 12.422);
-  --sidebar-accent: oklch(0.274 0.006 286.033);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.274 0.016 16.439);
+  --sidebar-accent-foreground: oklch(0.985 0.003 16.439);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.645 0.246 16.439);
 }
 
 /* ---------- orange ---------- */
 [data-theme="orange"] {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.141 0.005 285.823);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.141 0.005 285.823);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.141 0.005 285.823);
+  --background: oklch(0.994 0.004 47.604);
+  --foreground: oklch(0.141 0.014 47.604);
+  --card: oklch(0.994 0.004 47.604);
+  --card-foreground: oklch(0.141 0.014 47.604);
+  --popover: oklch(0.994 0.004 47.604);
+  --popover-foreground: oklch(0.141 0.014 47.604);
   --primary: oklch(0.705 0.213 47.604);
   --primary-foreground: oklch(0.98 0.016 73.684);
-  --secondary: oklch(0.967 0.001 286.375);
-  --secondary-foreground: oklch(0.21 0.006 285.885);
-  --muted: oklch(0.967 0.001 286.375);
-  --muted-foreground: oklch(0.552 0.016 285.938);
-  --accent: oklch(0.967 0.001 286.375);
-  --accent-foreground: oklch(0.21 0.006 285.885);
+  --secondary: oklch(0.967 0.013 47.604);
+  --secondary-foreground: oklch(0.21 0.016 47.604);
+  --muted: oklch(0.967 0.013 47.604);
+  --muted-foreground: oklch(0.552 0.032 47.604);
+  --accent: oklch(0.955 0.022 47.604);
+  --accent-foreground: oklch(0.21 0.016 47.604);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.92 0.004 286.32);
-  --input: oklch(0.92 0.004 286.32);
+  --border: oklch(0.914 0.018 47.604);
+  --input: oklch(0.914 0.018 47.604);
   --ring: oklch(0.705 0.213 47.604);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.141 0.005 285.823);
+  --sidebar: oklch(0.985 0.007 47.604);
+  --sidebar-foreground: oklch(0.141 0.014 47.604);
   --sidebar-primary: oklch(0.705 0.213 47.604);
   --sidebar-primary-foreground: oklch(0.98 0.016 73.684);
-  --sidebar-accent: oklch(0.967 0.001 286.375);
-  --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
-  --sidebar-border: oklch(0.92 0.004 286.32);
+  --sidebar-accent: oklch(0.955 0.022 47.604);
+  --sidebar-accent-foreground: oklch(0.21 0.016 47.604);
+  --sidebar-border: oklch(0.914 0.018 47.604);
   --sidebar-ring: oklch(0.705 0.213 47.604);
 }
 [data-theme="orange"].dark {
-  --background: oklch(0.141 0.005 285.823);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.21 0.006 285.885);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.21 0.006 285.885);
-  --popover-foreground: oklch(0.985 0 0);
+  --background: oklch(0.141 0.012 47.604);
+  --foreground: oklch(0.985 0.003 47.604);
+  --card: oklch(0.205 0.014 47.604);
+  --card-foreground: oklch(0.985 0.003 47.604);
+  --popover: oklch(0.205 0.014 47.604);
+  --popover-foreground: oklch(0.985 0.003 47.604);
   --primary: oklch(0.646 0.222 41.116);
   --primary-foreground: oklch(0.98 0.016 73.684);
-  --secondary: oklch(0.274 0.006 286.033);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.274 0.006 286.033);
-  --muted-foreground: oklch(0.705 0.015 286.067);
-  --accent: oklch(0.274 0.006 286.033);
-  --accent-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.274 0.016 47.604);
+  --secondary-foreground: oklch(0.985 0.003 47.604);
+  --muted: oklch(0.274 0.016 47.604);
+  --muted-foreground: oklch(0.705 0.03 47.604);
+  --accent: oklch(0.32 0.02 47.604);
+  --accent-foreground: oklch(0.985 0.003 47.604);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
@@ -643,65 +649,65 @@
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.21 0.006 285.885);
-  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar: oklch(0.205 0.014 47.604);
+  --sidebar-foreground: oklch(0.985 0.003 47.604);
   --sidebar-primary: oklch(0.646 0.222 41.116);
   --sidebar-primary-foreground: oklch(0.98 0.016 73.684);
-  --sidebar-accent: oklch(0.274 0.006 286.033);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.274 0.016 47.604);
+  --sidebar-accent-foreground: oklch(0.985 0.003 47.604);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.646 0.222 41.116);
 }
 
 /* ---------- green ---------- */
 [data-theme="green"] {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.141 0.005 285.823);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.141 0.005 285.823);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.141 0.005 285.823);
+  --background: oklch(0.994 0.004 149.579);
+  --foreground: oklch(0.141 0.014 149.579);
+  --card: oklch(0.994 0.004 149.579);
+  --card-foreground: oklch(0.141 0.014 149.579);
+  --popover: oklch(0.994 0.004 149.579);
+  --popover-foreground: oklch(0.141 0.014 149.579);
   --primary: oklch(0.723 0.219 149.579);
   --primary-foreground: oklch(0.982 0.018 155.826);
-  --secondary: oklch(0.967 0.001 286.375);
-  --secondary-foreground: oklch(0.21 0.006 285.885);
-  --muted: oklch(0.967 0.001 286.375);
-  --muted-foreground: oklch(0.552 0.016 285.938);
-  --accent: oklch(0.967 0.001 286.375);
-  --accent-foreground: oklch(0.21 0.006 285.885);
+  --secondary: oklch(0.967 0.013 149.579);
+  --secondary-foreground: oklch(0.21 0.016 149.579);
+  --muted: oklch(0.967 0.013 149.579);
+  --muted-foreground: oklch(0.552 0.032 149.579);
+  --accent: oklch(0.955 0.022 149.579);
+  --accent-foreground: oklch(0.21 0.016 149.579);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.92 0.004 286.32);
-  --input: oklch(0.92 0.004 286.32);
+  --border: oklch(0.914 0.018 149.579);
+  --input: oklch(0.914 0.018 149.579);
   --ring: oklch(0.723 0.219 149.579);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.141 0.005 285.823);
+  --sidebar: oklch(0.985 0.007 149.579);
+  --sidebar-foreground: oklch(0.141 0.014 149.579);
   --sidebar-primary: oklch(0.723 0.219 149.579);
   --sidebar-primary-foreground: oklch(0.982 0.018 155.826);
-  --sidebar-accent: oklch(0.967 0.001 286.375);
-  --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
-  --sidebar-border: oklch(0.92 0.004 286.32);
+  --sidebar-accent: oklch(0.955 0.022 149.579);
+  --sidebar-accent-foreground: oklch(0.21 0.016 149.579);
+  --sidebar-border: oklch(0.914 0.018 149.579);
   --sidebar-ring: oklch(0.723 0.219 149.579);
 }
 [data-theme="green"].dark {
-  --background: oklch(0.141 0.005 285.823);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.21 0.006 285.885);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.21 0.006 285.885);
-  --popover-foreground: oklch(0.985 0 0);
+  --background: oklch(0.141 0.012 149.579);
+  --foreground: oklch(0.985 0.003 149.579);
+  --card: oklch(0.205 0.014 149.579);
+  --card-foreground: oklch(0.985 0.003 149.579);
+  --popover: oklch(0.205 0.014 149.579);
+  --popover-foreground: oklch(0.985 0.003 149.579);
   --primary: oklch(0.696 0.17 162.48);
   --primary-foreground: oklch(0.393 0.095 152.535);
-  --secondary: oklch(0.274 0.006 286.033);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.274 0.006 286.033);
-  --muted-foreground: oklch(0.705 0.015 286.067);
-  --accent: oklch(0.274 0.006 286.033);
-  --accent-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.274 0.016 149.579);
+  --secondary-foreground: oklch(0.985 0.003 149.579);
+  --muted: oklch(0.274 0.016 149.579);
+  --muted-foreground: oklch(0.705 0.03 149.579);
+  --accent: oklch(0.32 0.02 149.579);
+  --accent-foreground: oklch(0.985 0.003 149.579);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
@@ -711,65 +717,65 @@
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.21 0.006 285.885);
-  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar: oklch(0.205 0.014 149.579);
+  --sidebar-foreground: oklch(0.985 0.003 149.579);
   --sidebar-primary: oklch(0.696 0.17 162.48);
   --sidebar-primary-foreground: oklch(0.393 0.095 152.535);
-  --sidebar-accent: oklch(0.274 0.006 286.033);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.274 0.016 149.579);
+  --sidebar-accent-foreground: oklch(0.985 0.003 149.579);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.696 0.17 162.48);
 }
 
 /* ---------- blue ---------- */
 [data-theme="blue"] {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.141 0.005 285.823);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.141 0.005 285.823);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.141 0.005 285.823);
+  --background: oklch(0.994 0.004 262.881);
+  --foreground: oklch(0.141 0.014 262.881);
+  --card: oklch(0.994 0.004 262.881);
+  --card-foreground: oklch(0.141 0.014 262.881);
+  --popover: oklch(0.994 0.004 262.881);
+  --popover-foreground: oklch(0.141 0.014 262.881);
   --primary: oklch(0.546 0.245 262.881);
   --primary-foreground: oklch(0.97 0.014 254.604);
-  --secondary: oklch(0.967 0.001 286.375);
-  --secondary-foreground: oklch(0.21 0.006 285.885);
-  --muted: oklch(0.967 0.001 286.375);
-  --muted-foreground: oklch(0.552 0.016 285.938);
-  --accent: oklch(0.967 0.001 286.375);
-  --accent-foreground: oklch(0.21 0.006 285.885);
+  --secondary: oklch(0.967 0.013 262.881);
+  --secondary-foreground: oklch(0.21 0.016 262.881);
+  --muted: oklch(0.967 0.013 262.881);
+  --muted-foreground: oklch(0.552 0.032 262.881);
+  --accent: oklch(0.955 0.022 262.881);
+  --accent-foreground: oklch(0.21 0.016 262.881);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.92 0.004 286.32);
-  --input: oklch(0.92 0.004 286.32);
+  --border: oklch(0.914 0.018 262.881);
+  --input: oklch(0.914 0.018 262.881);
   --ring: oklch(0.546 0.245 262.881);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.141 0.005 285.823);
+  --sidebar: oklch(0.985 0.007 262.881);
+  --sidebar-foreground: oklch(0.141 0.014 262.881);
   --sidebar-primary: oklch(0.546 0.245 262.881);
   --sidebar-primary-foreground: oklch(0.97 0.014 254.604);
-  --sidebar-accent: oklch(0.967 0.001 286.375);
-  --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
-  --sidebar-border: oklch(0.92 0.004 286.32);
+  --sidebar-accent: oklch(0.955 0.022 262.881);
+  --sidebar-accent-foreground: oklch(0.21 0.016 262.881);
+  --sidebar-border: oklch(0.914 0.018 262.881);
   --sidebar-ring: oklch(0.546 0.245 262.881);
 }
 [data-theme="blue"].dark {
-  --background: oklch(0.141 0.005 285.823);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.21 0.006 285.885);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.21 0.006 285.885);
-  --popover-foreground: oklch(0.985 0 0);
+  --background: oklch(0.141 0.012 262.881);
+  --foreground: oklch(0.985 0.003 262.881);
+  --card: oklch(0.205 0.014 262.881);
+  --card-foreground: oklch(0.985 0.003 262.881);
+  --popover: oklch(0.205 0.014 262.881);
+  --popover-foreground: oklch(0.985 0.003 262.881);
   --primary: oklch(0.623 0.214 259.815);
   --primary-foreground: oklch(0.97 0.014 254.604);
-  --secondary: oklch(0.274 0.006 286.033);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.274 0.006 286.033);
-  --muted-foreground: oklch(0.705 0.015 286.067);
-  --accent: oklch(0.274 0.006 286.033);
-  --accent-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.274 0.016 262.881);
+  --secondary-foreground: oklch(0.985 0.003 262.881);
+  --muted: oklch(0.274 0.016 262.881);
+  --muted-foreground: oklch(0.705 0.03 262.881);
+  --accent: oklch(0.32 0.02 262.881);
+  --accent-foreground: oklch(0.985 0.003 262.881);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
@@ -779,65 +785,65 @@
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.21 0.006 285.885);
-  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar: oklch(0.205 0.014 262.881);
+  --sidebar-foreground: oklch(0.985 0.003 262.881);
   --sidebar-primary: oklch(0.546 0.245 262.881);
   --sidebar-primary-foreground: oklch(0.97 0.014 254.604);
-  --sidebar-accent: oklch(0.274 0.006 286.033);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.274 0.016 262.881);
+  --sidebar-accent-foreground: oklch(0.985 0.003 262.881);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.488 0.243 264.376);
 }
 
 /* ---------- yellow ---------- */
 [data-theme="yellow"] {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.141 0.005 285.823);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.141 0.005 285.823);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.141 0.005 285.823);
+  --background: oklch(0.994 0.004 86.047);
+  --foreground: oklch(0.141 0.014 86.047);
+  --card: oklch(0.994 0.004 86.047);
+  --card-foreground: oklch(0.141 0.014 86.047);
+  --popover: oklch(0.994 0.004 86.047);
+  --popover-foreground: oklch(0.141 0.014 86.047);
   --primary: oklch(0.795 0.184 86.047);
   --primary-foreground: oklch(0.421 0.095 57.708);
-  --secondary: oklch(0.967 0.001 286.375);
-  --secondary-foreground: oklch(0.21 0.006 285.885);
-  --muted: oklch(0.967 0.001 286.375);
-  --muted-foreground: oklch(0.552 0.016 285.938);
-  --accent: oklch(0.967 0.001 286.375);
-  --accent-foreground: oklch(0.21 0.006 285.885);
+  --secondary: oklch(0.967 0.013 86.047);
+  --secondary-foreground: oklch(0.21 0.016 86.047);
+  --muted: oklch(0.967 0.013 86.047);
+  --muted-foreground: oklch(0.552 0.032 86.047);
+  --accent: oklch(0.955 0.022 86.047);
+  --accent-foreground: oklch(0.21 0.016 86.047);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.92 0.004 286.32);
-  --input: oklch(0.92 0.004 286.32);
+  --border: oklch(0.914 0.018 86.047);
+  --input: oklch(0.914 0.018 86.047);
   --ring: oklch(0.795 0.184 86.047);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.141 0.005 285.823);
+  --sidebar: oklch(0.985 0.007 86.047);
+  --sidebar-foreground: oklch(0.141 0.014 86.047);
   --sidebar-primary: oklch(0.795 0.184 86.047);
   --sidebar-primary-foreground: oklch(0.421 0.095 57.708);
-  --sidebar-accent: oklch(0.967 0.001 286.375);
-  --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
-  --sidebar-border: oklch(0.92 0.004 286.32);
+  --sidebar-accent: oklch(0.955 0.022 86.047);
+  --sidebar-accent-foreground: oklch(0.21 0.016 86.047);
+  --sidebar-border: oklch(0.914 0.018 86.047);
   --sidebar-ring: oklch(0.795 0.184 86.047);
 }
 [data-theme="yellow"].dark {
-  --background: oklch(0.141 0.005 285.823);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.21 0.006 285.885);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.21 0.006 285.885);
-  --popover-foreground: oklch(0.985 0 0);
+  --background: oklch(0.141 0.012 86.047);
+  --foreground: oklch(0.985 0.003 86.047);
+  --card: oklch(0.205 0.014 86.047);
+  --card-foreground: oklch(0.985 0.003 86.047);
+  --popover: oklch(0.205 0.014 86.047);
+  --popover-foreground: oklch(0.985 0.003 86.047);
   --primary: oklch(0.795 0.184 86.047);
   --primary-foreground: oklch(0.421 0.095 57.708);
-  --secondary: oklch(0.274 0.006 286.033);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.274 0.006 286.033);
-  --muted-foreground: oklch(0.705 0.015 286.067);
-  --accent: oklch(0.274 0.006 286.033);
-  --accent-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.274 0.016 86.047);
+  --secondary-foreground: oklch(0.985 0.003 86.047);
+  --muted: oklch(0.274 0.016 86.047);
+  --muted-foreground: oklch(0.705 0.03 86.047);
+  --accent: oklch(0.32 0.02 86.047);
+  --accent-foreground: oklch(0.985 0.003 86.047);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
@@ -847,65 +853,65 @@
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.21 0.006 285.885);
-  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar: oklch(0.205 0.014 86.047);
+  --sidebar-foreground: oklch(0.985 0.003 86.047);
   --sidebar-primary: oklch(0.795 0.184 86.047);
   --sidebar-primary-foreground: oklch(0.421 0.095 57.708);
-  --sidebar-accent: oklch(0.274 0.006 286.033);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.274 0.016 86.047);
+  --sidebar-accent-foreground: oklch(0.985 0.003 86.047);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.554 0.135 66.442);
 }
 
 /* ---------- violet ---------- */
 [data-theme="violet"] {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.141 0.005 285.823);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.141 0.005 285.823);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.141 0.005 285.823);
+  --background: oklch(0.994 0.004 292.717);
+  --foreground: oklch(0.141 0.014 292.717);
+  --card: oklch(0.994 0.004 292.717);
+  --card-foreground: oklch(0.141 0.014 292.717);
+  --popover: oklch(0.994 0.004 292.717);
+  --popover-foreground: oklch(0.141 0.014 292.717);
   --primary: oklch(0.606 0.25 292.717);
   --primary-foreground: oklch(0.969 0.016 293.756);
-  --secondary: oklch(0.967 0.001 286.375);
-  --secondary-foreground: oklch(0.21 0.006 285.885);
-  --muted: oklch(0.967 0.001 286.375);
-  --muted-foreground: oklch(0.552 0.016 285.938);
-  --accent: oklch(0.967 0.001 286.375);
-  --accent-foreground: oklch(0.21 0.006 285.885);
+  --secondary: oklch(0.967 0.013 292.717);
+  --secondary-foreground: oklch(0.21 0.016 292.717);
+  --muted: oklch(0.967 0.013 292.717);
+  --muted-foreground: oklch(0.552 0.032 292.717);
+  --accent: oklch(0.955 0.022 292.717);
+  --accent-foreground: oklch(0.21 0.016 292.717);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.92 0.004 286.32);
-  --input: oklch(0.92 0.004 286.32);
+  --border: oklch(0.914 0.018 292.717);
+  --input: oklch(0.914 0.018 292.717);
   --ring: oklch(0.606 0.25 292.717);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.141 0.005 285.823);
+  --sidebar: oklch(0.985 0.007 292.717);
+  --sidebar-foreground: oklch(0.141 0.014 292.717);
   --sidebar-primary: oklch(0.606 0.25 292.717);
   --sidebar-primary-foreground: oklch(0.969 0.016 293.756);
-  --sidebar-accent: oklch(0.967 0.001 286.375);
-  --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
-  --sidebar-border: oklch(0.92 0.004 286.32);
+  --sidebar-accent: oklch(0.955 0.022 292.717);
+  --sidebar-accent-foreground: oklch(0.21 0.016 292.717);
+  --sidebar-border: oklch(0.914 0.018 292.717);
   --sidebar-ring: oklch(0.606 0.25 292.717);
 }
 [data-theme="violet"].dark {
-  --background: oklch(0.141 0.005 285.823);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.21 0.006 285.885);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.21 0.006 285.885);
-  --popover-foreground: oklch(0.985 0 0);
+  --background: oklch(0.141 0.012 292.717);
+  --foreground: oklch(0.985 0.003 292.717);
+  --card: oklch(0.205 0.014 292.717);
+  --card-foreground: oklch(0.985 0.003 292.717);
+  --popover: oklch(0.205 0.014 292.717);
+  --popover-foreground: oklch(0.985 0.003 292.717);
   --primary: oklch(0.541 0.281 293.009);
   --primary-foreground: oklch(0.969 0.016 293.756);
-  --secondary: oklch(0.274 0.006 286.033);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.274 0.006 286.033);
-  --muted-foreground: oklch(0.705 0.015 286.067);
-  --accent: oklch(0.274 0.006 286.033);
-  --accent-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.274 0.016 292.717);
+  --secondary-foreground: oklch(0.985 0.003 292.717);
+  --muted: oklch(0.274 0.016 292.717);
+  --muted-foreground: oklch(0.705 0.03 292.717);
+  --accent: oklch(0.32 0.02 292.717);
+  --accent-foreground: oklch(0.985 0.003 292.717);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
@@ -915,12 +921,12 @@
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.21 0.006 285.885);
-  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar: oklch(0.205 0.014 292.717);
+  --sidebar-foreground: oklch(0.985 0.003 292.717);
   --sidebar-primary: oklch(0.541 0.281 293.009);
   --sidebar-primary-foreground: oklch(0.969 0.016 293.756);
-  --sidebar-accent: oklch(0.274 0.006 286.033);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.274 0.016 292.717);
+  --sidebar-accent-foreground: oklch(0.985 0.003 292.717);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.541 0.281 293.009);
 }
@@ -1013,6 +1019,112 @@
     padding-left: env(safe-area-inset-left);
     padding-right: env(safe-area-inset-right);
   }
+}
+
+/* ===========================================================================
+   Workspace 背景图片：半透明表面
+   workspace/layout.tsx 的结构性表面（侧栏/面板/标签条/终端/状态栏）用这几个语义
+   类替代 bg-sidebar/bg-muted/bg-background。未启用背景图时它们与原 Tailwind 工具类
+   字节等价（纯色，折叠防闪白契约不变）；仅当 inline 脚本 / Provider 给 <html> 打上
+   data-workspace-bg="on" 时才转为半透明 + 磨砂，透出背景图。
+   ========================================================================= */
+.ws-surface {
+  background-color: var(--background);
+}
+.ws-surface-muted {
+  background-color: var(--muted);
+}
+.ws-surface-sidebar {
+  background-color: var(--sidebar);
+}
+
+[data-workspace-bg="on"] .ws-surface {
+  background-color: color-mix(
+    in oklch,
+    var(--background) calc(var(--ws-surface-alpha) * 100%),
+    transparent
+  );
+  -webkit-backdrop-filter: blur(var(--ws-surface-blur));
+  backdrop-filter: blur(var(--ws-surface-blur));
+}
+[data-workspace-bg="on"] .ws-surface-muted {
+  background-color: color-mix(
+    in oklch,
+    var(--muted) calc(var(--ws-surface-alpha) * 100%),
+    transparent
+  );
+  -webkit-backdrop-filter: blur(var(--ws-surface-blur));
+  backdrop-filter: blur(var(--ws-surface-blur));
+}
+[data-workspace-bg="on"] .ws-surface-sidebar {
+  background-color: color-mix(
+    in oklch,
+    var(--sidebar) calc(var(--ws-surface-alpha) * 100%),
+    transparent
+  );
+  -webkit-backdrop-filter: blur(var(--ws-surface-blur));
+  backdrop-filter: blur(var(--ws-surface-blur));
+}
+/* Card 表面（磨砂，组合式）：无 base 规则，与元素上的 bg-card 配对（同 ws-transparent-bg
+   与 bg-* 配对的写法）—— 关图时保留 bg-card 原样（含 hover:bg-* 等 layered 工具类，零
+   回归），开图才转半透明磨砂。用于消息流里的卡片（提问卡片 / 其答案记录），与 frosted
+   composer 观感统一。老 WebKit 无 color-mix 时该声明作废 → 回落到元素自带 bg-card（不透明），
+   故无需额外不透明兜底。 */
+[data-workspace-bg="on"] .ws-surface-card {
+  background-color: color-mix(
+    in oklch,
+    var(--card) calc(var(--ws-surface-alpha) * 100%),
+    transparent
+  );
+  -webkit-backdrop-filter: blur(var(--ws-surface-blur));
+  backdrop-filter: blur(var(--ws-surface-blur));
+}
+
+/* Canvas 表面：开启背景图时强制透明，让底层背景图 + 遮罩直接透出（会话/文件
+   overlay section、侧栏会话行）。无 base 规则 —— 与元素上配对的 bg-*（bg-background
+   / bg-sidebar）组合，未启用背景图时完全等价那个纯色（零回归）。透明不依赖
+   color-mix，故无需 @supports 降级。 */
+[data-workspace-bg="on"] .ws-transparent-bg {
+  background-color: transparent;
+}
+
+/* 终端画布：让 xterm 视口透出所属 ws-surface 面板的磨砂表面（而非黑块）。xterm 6 的视口
+   分两层——外层 .xterm-viewport（xterm.css 硬编码 background-color:#000，且不随主题变化）
+   套着内层 SmoothScrollableElement 节点（终端主题背景色应用在这层）。terminal-view.tsx 已把
+   内层主题背景改成 alpha 0（透明），但外层那层黑底会透出来，终端仍是黑块。这里把外层也改
+   透明——两层皆透，终端画布才透出下方磨砂面板。选择器 .xterm .xterm-viewport 特异性(0,3,0)
+   高于 xterm.css 同名规则(0,2,0)，无需 !important；纯透明不依赖 color-mix，关图无此规则，
+   零回归。 */
+[data-workspace-bg="on"] .xterm .xterm-viewport {
+  background-color: transparent;
+}
+
+/* 顶部标签条「浏览器拱门」下边框（组合式，无 base 规则，关图零回归）。整条标签条 +
+   所有 tab 开图皆透明（透出真背景图）；靠一条细下边框把标签条与下方内容分隔，唯独激活
+   tab 处开口——线绕到激活 tab 顶部走一圈（拱门轮廓），激活 tab 靠这圈描边区分而非填充色。
+   连续下边框无法在激活 tab 处「开口」（透明子元素盖不住祖先画的线），故平线逐段画在激活
+   tab 的兄弟区域（预留区/非激活 tab/按钮/拖拽填充），激活 tab 及其祖先不画。拱门轮廓（顶 +
+   两侧 + 反向圆角脚）与两端 group px-2 补缝都在下方 .browser-tab-item 区块。色 =
+   var(--border)（纯色，比 detail header 的 border/50 略深，让透出背景图时分隔线更清晰）。 */
+
+/* 平线：挂到激活 tab 的兄弟/非祖先区域，逐段 border-bottom 连成一条线（各兄弟 h-full，
+   底都落在 strip 底 y=40）。激活 tab 不挂 → 留缺口给拱门。 */
+[data-workspace-bg="on"] .ws-strip-line {
+  border-bottom: 1px solid var(--border);
+}
+
+/* 旧 WebKitGTK 无 color-mix 时降级为不透明（背景图仅在透明内容区透出，不崩）。 */
+@supports not (background: color-mix(in oklch, white, transparent)) {
+  [data-workspace-bg="on"] .ws-surface,
+  [data-workspace-bg="on"] .ws-surface-muted,
+  [data-workspace-bg="on"] .ws-surface-sidebar,
+  [data-workspace-bg="on"] .ws-surface-card {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  /* 标签条拱门/平线（ws-strip-line、.browser-tab-item 的拱门 ::after / 首末 tab 补缝
+     ::after / seat 描边）只画纯色 var(--border) 边框——无 color-mix、无 backdrop-filter，
+     故不进本 @supports，老引擎照常渲染。 */
 }
 
 /* Native fallback for containers that cannot use OverlayScrollbars (e.g. virtua) */
@@ -1714,4 +1826,317 @@
   [data-reference-badge] {
   outline: 2px solid var(--ring);
   outline-offset: 1px;
+}
+
+/* Browser-style tab separators (embedded desktop title-bar tab strips).
+   Each tab draws a hairline on its LEFT edge; the line is suppressed for the
+   first tab and around any active / hovered tab (Chrome behavior) using only
+   adjacent-sibling selectors — no :has(), so it is robust across webviews. */
+.browser-tab-item {
+  position: relative;
+}
+.browser-tab-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  /* The item stretches from below the group's `pt-1.5` gap to the strip bottom,
+     so its geometric center sits 3px below the h-10 strip's midline. Nudge the
+     hairline up 3px so it centers on the strip midline — matching the tab
+     content (dot/title/close), which is raised by the inner row's `pb-1.5`. */
+  top: calc(50% - 3px);
+  height: 1rem;
+  width: 1px;
+  transform: translateY(-50%);
+  background: var(--border);
+  opacity: 1;
+  transition: opacity 150ms ease;
+  pointer-events: none;
+}
+.browser-tab-item:first-child::before,
+.browser-tab-item[data-active="true"]::before,
+.browser-tab-item:hover::before,
+.browser-tab-item[data-active="true"] + .browser-tab-item::before,
+.browser-tab-item:hover + .browser-tab-item::before {
+  opacity: 0;
+}
+
+/* Embedded tab label — no ellipsis: fade the right edge so an overflowing title
+   dissolves instead of hard-cutting with "…". Pairs with `overflow-hidden
+   whitespace-nowrap` on the label (replaces `truncate`).
+   OVERFLOW-ONLY fade: the label reserves a right padding equal to the fade width,
+   and the gradient fades exactly that padding. A title that fits ends inside the
+   solid zone, so the fade falls over empty padding and eats nothing; only a title
+   long enough to spill into the padding actually fades. This is what lets a short /
+   only tab ("新建会话") show its full title instead of losing its tail to the fade.
+   One fade width suffices because the close button no longer hides under the label —
+   its footprint is reserved as content padding (below), so it never covers text. */
+.browser-tab-label {
+  padding-right: 0.75rem;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 0.75rem),
+    transparent
+  );
+  mask-image: linear-gradient(to right, #000 calc(100% - 0.75rem), transparent);
+}
+
+/* Non-active tab on hover: its close button fades in (an absolute `right-2` / `w-4`
+   overlay) over the label's right ~1rem. The narrow overflow-only fade above only
+   softens 0.75rem, so on hover widen the fade to dissolve the title before the
+   button's left edge — transparent by `100% - 1rem` (with the default `px-2` right,
+   the label-box right edge sits at the button's right edge, and the 1rem-wide button
+   covers the last 1rem of the label box). So an OVERFLOWING title dissolves into the
+   button instead of colliding with it. Active tabs are excluded: they reserve the
+   button's footprint as padding (below), so their label already ends left of it. */
+.browser-tab-item:not([data-active="true"])
+  .browser-tab-content:hover
+  .browser-tab-label {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 1.75rem),
+    transparent calc(100% - 1rem)
+  );
+  mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 1.75rem),
+    transparent calc(100% - 1rem)
+  );
+}
+
+/* The active tab's close button is always visible (an absolute `right-2` / `w-4`
+   overlay). Reserve its footprint (0.5rem offset + 1rem width = 1.5rem) as the
+   content's right padding, overriding the default `px-2` right. The tab is
+   content-sized (`grow-0 basis-auto`), so this widens it just enough to fit the FULL
+   title AND the button side by side — the fix for an only/short active tab whose
+   title used to sit under the button and lose its tail to the fade. Non-active tabs
+   don't reserve it: their button only appears on hover, where the label widens its
+   fade to clear the button (above); idle titles keep the full width (R40 "收回按钮
+   空间") and tabs never reflow-widen on hover. General (not workspace-bg gated). */
+.browser-tab-item[data-active="true"] .browser-tab-content {
+  padding-right: 1.5rem;
+}
+
+/* Non-active embedded tab hover: an inset rounded tint with a larger bottom inset,
+   so the hovered label reads as vertically centered inside the highlight (the tab
+   and its text never move — only the hover fill insets, mirroring the content's
+   `pb-1.5`-raised baseline). Replaces a full-bleed `hover:bg-*`. The content div
+   carries `isolate`, so this `z-index:-1` fill paints behind the label/icon but in
+   front of the tab's own (transparent) surface — no per-child re-stacking, robust
+   across webviews. Off (no bg image) it's the same tint over the muted strip. */
+.browser-tab-hover::before {
+  content: "";
+  position: absolute;
+  inset: 2px 2px 8px 2px;
+  z-index: -1;
+  border-radius: 0.5rem;
+  background-color: color-mix(in oklab, var(--background) 60%, transparent);
+  opacity: 0;
+  transition: opacity 150ms ease;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .browser-tab-hover::before {
+    transition: none;
+  }
+}
+.browser-tab-hover:hover::before {
+  opacity: 1;
+}
+
+/* Tab bottom "seat": the two bottom corners flare outward with a concave
+   (reverse) curve — the browser-tab look — so a tab blends down into the strip /
+   detail header. A dedicated span hosts these because the tab's own surface is
+   `overflow-hidden` (it would clip the outboard flares) and its ::before is
+   already the separator hairline. It is rendered for every embedded tab but
+   stays invisible (opacity 0) until the tab is active OR hovered — so hovering
+   a tab reveals the same reverse corners. The fill matches the tab surface:
+   solid `var(--background)` for the active tab, and the translucent hover shade
+   (`bg-background/60`) for a hovered non-active tab, so the concave never pops
+   as solid white. The radial-gradient mask carves the concave quarter (no color
+   seam). Since the item has no horizontal padding, the seat spans the surface
+   flush (`left/right: 0`) and each flare reaches 0.5rem outward; that fits
+   exactly within the group's `px-2` padding, so `overflow-hidden` never clips
+   the first/last tab's flare. The active tab is elevated (`z-10` on the item),
+   so a hovered neighbour's flare can never paint over the active tab's corner. */
+.browser-tab-seat {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 0.5rem;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .browser-tab-seat {
+    transition: none;
+  }
+}
+.browser-tab-item[data-active="true"] .browser-tab-seat,
+.browser-tab-item:hover .browser-tab-seat {
+  opacity: 1;
+}
+.browser-tab-seat::before,
+.browser-tab-seat::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  height: 0.5rem;
+  width: 0.5rem;
+  background-color: var(--background);
+}
+/* Hovered (non-active) tab: match its translucent hover fill so the concave
+   corner blends with the hover surface instead of popping solid white. */
+.browser-tab-item:not([data-active="true"]):hover .browser-tab-seat::before,
+.browser-tab-item:not([data-active="true"]):hover .browser-tab-seat::after {
+  background-color: color-mix(in oklab, var(--background) 60%, transparent);
+}
+.browser-tab-seat::before {
+  left: -0.5rem;
+  -webkit-mask-image: radial-gradient(
+    circle at top left,
+    transparent 7px,
+    #000 8px
+  );
+  mask-image: radial-gradient(circle at top left, transparent 7px, #000 8px);
+}
+.browser-tab-seat::after {
+  right: -0.5rem;
+  -webkit-mask-image: radial-gradient(
+    circle at top right,
+    transparent 7px,
+    #000 8px
+  );
+  mask-image: radial-gradient(circle at top right, transparent 7px, #000 8px);
+}
+/* Workspace 背景图开启：所有 tab 全透明，seat 反向圆角默认不显示（否则透明 tab 会挂
+   var(--background) 白色小圆角）；hover 的非激活 tab 也抑制其填充凹角，保持全透明基调。 */
+[data-workspace-bg="on"] .browser-tab-seat::before,
+[data-workspace-bg="on"] .browser-tab-seat::after {
+  background-color: transparent;
+}
+[data-workspace-bg="on"]
+  .browser-tab-item:not([data-active="true"]):hover
+  .browser-tab-seat::before,
+[data-workspace-bg="on"]
+  .browser-tab-item:not([data-active="true"]):hover
+  .browser-tab-seat::after {
+  background-color: transparent;
+}
+/* 激活 tab 的两个反向圆角脚（bg-on）：用**真实 border + border-radius** 画 1px 凹弧描边，
+   取代旧的 radial-gradient 环带 mask——环带核仅 0.5px + 两侧抗锯齿，实机易出毛边/线头
+   （用户反馈「底部两角有线跑出来、过渡不自然」）。seat ::before/::after 本就是 gutter 里
+   0.5rem 见方的盒(left/right:-0.5rem, y32→40, box-sizing:border-box)，把**对角圆角 + 相邻
+   两条边框**做成一段干净四分之一凹弧：左脚=右下角圆角+下/右边框，右脚=左下角圆角+下/左边框。
+   弧顶(tab 边 y32)竖直切线接拱门 ::after 侧边、弧底(gutter 外沿 y40)水平切线接 ws-strip-line
+   平线，两端相切→过渡自然。清掉 mask 与填充色，只留描边，色 var(--border) 与拱门同深。 */
+[data-workspace-bg="on"]
+  .browser-tab-item[data-active="true"]
+  .browser-tab-seat::before,
+[data-workspace-bg="on"]
+  .browser-tab-item[data-active="true"]
+  .browser-tab-seat::after {
+  background-color: transparent;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+[data-workspace-bg="on"]
+  .browser-tab-item[data-active="true"]
+  .browser-tab-seat::before {
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  border-bottom-right-radius: 0.5rem;
+}
+[data-workspace-bg="on"]
+  .browser-tab-item[data-active="true"]
+  .browser-tab-seat::after {
+  border-bottom: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+  border-bottom-left-radius: 0.5rem;
+}
+
+/* 激活 tab 拱门「顶 + 两侧」描边：画在 .browser-tab-item 的 ::after（Reorder.Item 未
+   overflow-hidden，脚可外飘）。top:0 = group pt-1.5 下沿(y6)，bottom:0.5rem → 竖边止于
+   y32，正好接上 seat 的反向圆角脚(y32→40)；竖边不再越过脚部下探到 y40，消除脚部两侧的
+   「垂直角边框」毛刺。rounded-t 出拱顶。仅 bg-on + 激活生效，关图无 ::after（零回归）。
+   取代旧的 .ws-tab-arch（那是画在内容 div 上的整高边框，底部越界成毛刺）。 */
+[data-workspace-bg="on"] .browser-tab-item[data-active="true"]::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0.5rem;
+  border-top: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  border-top-left-radius: 0.5rem;
+  border-top-right-radius: 0.5rem;
+  pointer-events: none;
+}
+
+/* 标签条左右两端的补缝：group 的 px-2 在首/末 tab 外各留 0.5rem 无线缝（首 tab 非激活时
+   左端断层、末 tab 与新建按钮间右端空隙）。补缝不能画在 group 上（连续线会盖到激活 tab
+   下方），且必须跟随边缘 tab 的激活态——激活的首/末 tab 该处是拱门脚（反向圆角描边）而非
+   平线，此处绝不能有平线。故补缝画在「非激活」首/末 tab 自己的 ::after 上（激活 tab 的
+   ::after 已改画拱门轮廓，且 :not([data-active]) 排除它）：往 tab 外侧的 px-2 gutter 伸出
+   0.5rem 平线，接上两侧 reserve / 尾部按钮 wrapper 的 ws-strip-line。gutter 落在 group 的
+   padding box 内，overflow-hidden 不裁（同 seat 脚）。宽度 = px-2 = 0.5rem（改 group 内边距
+   需同步）。仅 bg-on 生效，关图无补缝（零回归）。 */
+[data-workspace-bg="on"]
+  .browser-tab-item:first-child:not([data-active="true"])::after,
+[data-workspace-bg="on"]
+  .browser-tab-item:last-child:not([data-active="true"])::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  height: 1px;
+  width: 0.5rem;
+  background-color: var(--border);
+  pointer-events: none;
+}
+[data-workspace-bg="on"]
+  .browser-tab-item:first-child:not([data-active="true"])::after {
+  left: -0.5rem;
+}
+[data-workspace-bg="on"]
+  .browser-tab-item:last-child:not([data-active="true"])::after {
+  right: -0.5rem;
+}
+
+/* 激活 tab 两侧邻居的基线内缩：激活 tab 的反向圆角脚（透明）往外 flare 0.5rem，盖在紧邻
+   tab 上；紧邻 tab 的 ws-strip-line 是**全宽** border-bottom，其被脚罩住的那 0.5rem 会在脚
+   下透出成一小段横线（脚弧只在外端 y40 触到基线，内侧一路悬空）——即用户反馈「激活 tab 角边
+   还有横线穿出来」。修法：把紧邻 tab 的基线撤掉 border-bottom、改画一条**朝激活 tab 一侧内缩
+   0.5rem** 的 ::after 平线，起点正落在脚弧触地处 → 基线与脚弧无缝相接、脚下不再有横线。
+   `data-adjacent-active`（before/after）由标签条按 activeIndex 现算并挂到 .browser-tab-item
+   上（前一个=before，后一个=after），避免上一个兄弟无法用 CSS 选中的问题，且不依赖 :has()。
+   紧邻 tab 必为非激活（有 ws-strip-line + 空闲 ::after），仅 bg-on 生效，关图零回归。 */
+[data-workspace-bg="on"]
+  .browser-tab-item[data-adjacent-active]
+  .ws-strip-line {
+  border-bottom-color: transparent;
+}
+[data-workspace-bg="on"]
+  .browser-tab-item[data-adjacent-active]
+  .ws-strip-line::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  height: 1px;
+  background-color: var(--border);
+  pointer-events: none;
+}
+[data-workspace-bg="on"]
+  .browser-tab-item[data-adjacent-active="after"]
+  .ws-strip-line::after {
+  left: 0.5rem;
+  right: 0;
+}
+[data-workspace-bg="on"]
+  .browser-tab-item[data-adjacent-active="before"]
+  .ws-strip-line::after {
+  left: 0;
+  right: 0.5rem;
 }

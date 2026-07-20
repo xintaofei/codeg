@@ -3,6 +3,7 @@
 import {
   type ReactElement,
   useCallback,
+  useDeferredValue,
   useEffect,
   useMemo,
   useState,
@@ -753,7 +754,20 @@ function BranchSelector({
 export function GitLogTab() {
   const t = useTranslations("Folder.gitLogTab")
   const tCommon = useTranslations("Folder.common")
-  const { activeFolder: folder } = useActiveFolder()
+  // Defer the folder so a cross-folder conversation-tab switch commits first and
+  // this tab's git-log refetch + commit-row render runs in a non-blocking
+  // transition a frame later instead of janking the switch (see the file-tree /
+  // changes tabs). Path-keyed effects ride the deferred folder.
+  const { activeFolder } = useActiveFolder()
+  const folder = useDeferredValue(activeFolder)
+  // True while the deferred render lags a cross-folder switch. During that gap we
+  // render the loading skeleton (below) instead of the PREVIOUS folder's commit
+  // rows: besides keeping the heavy rebuild off the switch commit, unmounting
+  // those rows closes any open row ContextMenu (which portals outside this
+  // subtree) so a click can't route a commit diff / file opener to the NEW active
+  // folder (openers default to it when folderId is omitted — see
+  // resolveTargetFolder). Clears the instant the deferred render catches up.
+  const folderStale = activeFolder?.id !== folder?.id
   const { openCommitDiff, openFilePreview } = useWorkspaceActions()
   const workspaceState = useWorkspaceStateStore(folder?.path ?? null)
   const isGitRepo = workspaceState.isGitRepo
@@ -787,6 +801,15 @@ export function GitLogTab() {
   const [resetTarget, setResetTarget] = useState<CommitResetTarget | null>(null)
   const [resetMode, setResetMode] = useState<GitResetMode>("mixed")
   const [resetting, setResetting] = useState(false)
+
+  // Close the create-branch / reset dialogs the instant the ACTIVE folder
+  // changes (keyed on the live id, not the deferred `folder`) so a dialog opened
+  // under the previous folder can't create-branch / reset against the new one
+  // after the deferred render settles and it re-mounts.
+  useEffect(() => {
+    setNewBranchTarget(null)
+    setResetTarget(null)
+  }, [activeFolder?.id])
 
   const hasBranches =
     branchList.local.length > 0 || branchList.remote.length > 0
@@ -1090,7 +1113,9 @@ export function GitLogTab() {
     return <AuxPanelNoFolderEmpty />
   }
 
-  if (loading) {
+  // `folderStale`: skeleton over the previous folder's commits while the deferred
+  // render catches up to the switch (see the declaration above).
+  if (loading || folderStale) {
     return (
       <ScrollArea className="h-full px-3 py-3">
         {hasBranches && (
@@ -1237,6 +1262,10 @@ export function GitLogTab() {
                     <ContextMenuTrigger asChild>
                       <div>
                         <Commit
+                          // 开背景图时卡片改磨砂表面（与提问卡片等 frosted 卡一致，透出
+                          // 下方背景图），而非纯色 bg-background 黑白块。ws-surface-card 组合式
+                          // 无 base 规则，关图沿用 bg-background，零回归。
+                          className="ws-surface-card"
                           onOpenChange={(open) => {
                             setOpenByCommit((prev) => ({
                               ...prev,

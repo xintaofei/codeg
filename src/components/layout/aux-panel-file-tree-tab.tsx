@@ -1,7 +1,10 @@
 "use client"
 
 import {
+  createContext,
   useCallback,
+  useContext,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -22,6 +25,7 @@ import {
   useWorkspaceFileTabs,
 } from "@/contexts/workspace-context"
 import { useWorkspaceStateStore } from "@/hooks/use-workspace-state-store"
+import { detectPlatform } from "@/hooks/use-platform"
 import { findOwningFolder } from "@/lib/file-open-target"
 import { AuxPanelNoFolderEmpty } from "@/components/layout/aux-panel-no-folder-empty"
 import { WorkspaceDegradedBanner } from "@/components/layout/workspace-degraded-banner"
@@ -37,6 +41,7 @@ import {
   gitListAllBranches,
   gitRollbackFile,
   gitStatus,
+  moveFileTreeEntry,
   readFilePreview,
   openCommitWindow,
   renameFileTreeEntry,
@@ -44,6 +49,11 @@ import {
 } from "@/lib/api"
 import { isDesktop, isRemoteDesktopMode } from "@/lib/transport"
 import { emitAttachFileToSession } from "@/lib/session-attachment-events"
+import {
+  resolveFileTreeDropZone,
+  writeFileTreeDragData,
+  type FileTreeDragPayload,
+} from "@/lib/file-tree-dnd"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import type { FileTreeNode, GitBranchList, GitStatusEntry } from "@/lib/types"
 import {
@@ -88,7 +98,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton"
 import { joinFsPath } from "@/lib/path-utils"
 import { toErrorMessage } from "@/lib/app-error"
-import { copyTextFromMenu } from "@/lib/utils"
+import { cn, copyTextFromMenu } from "@/lib/utils"
 
 function parentDir(filePath: string): string {
   const slashIndex = filePath.lastIndexOf("/")
@@ -126,6 +136,17 @@ async function copyPathToClipboard(
 const FILE_TREE_ROOT_PATH = "__workspace_root__"
 const GITIGNORE_MUTED_CLASS = "text-muted-foreground/55"
 
+/**
+ * The directory drop zone highlighted by an in-flight *desktop* native drag
+ * (relative path; `""` = workspace root), or null. On the web each row derives
+ * its own drop highlight from the DOM `dragover`/`dragleave` it receives; on
+ * desktop WebKit suppresses those target-side events during a native drag
+ * (only `dragstart`/`dragend` reach the DOM), so the highlight is instead
+ * broadcast here from Tauri's native DRAG_OVER hit-test and OR-ed into each
+ * row's `dropActive`. Stays null on the web, so it never forces a re-render there.
+ */
+const DesktopDropDirContext = createContext<string | null>(null)
+
 interface FileActionTarget {
   kind: "file" | "dir"
   path: string
@@ -150,6 +171,25 @@ function normalizeGitStatusPath(path: string): string {
 
 function normalizeComparePath(path: string): string {
   return path.replace(/\\/g, "/").replace(/\/+$/, "")
+}
+
+/** Whether the dragged entry may move into `destDir` (relative; `""` = the
+ *  workspace root). False when it's a no-op (already that parent) or would move
+ *  a directory into itself or one of its own descendants. Pure so both the
+ *  dragover highlight and the deferred desktop commit share one rule. */
+function canMoveEntry(
+  source: { relPath: string; kind: "file" | "dir"; parentDir: string },
+  destDir: string
+): boolean {
+  const dest = normalizeComparePath(destDir)
+  const srcPath = normalizeComparePath(source.relPath)
+  if (normalizeComparePath(source.parentDir) === dest) return false
+  if (
+    source.kind === "dir" &&
+    (dest === srcPath || dest.startsWith(`${srcPath}/`))
+  )
+    return false
+  return true
 }
 
 function prefixFileTreeNodePaths(
@@ -451,11 +491,116 @@ function collectDirectoryGitTreeLeafPaths(
   return node.children.flatMap(collectDirectoryGitTreeLeafPaths)
 }
 
+/**
+ * Replace the native drag ghost with a compact labeled chip. The default ghost
+ * is a snapshot of the dragged row, which — now that rows are full-width — reads
+ * as a big translucent block with a drop shadow (WebKit) that obscures what's
+ * being moved. A small off-screen chip is parked for the browser to snapshot,
+ * then removed on the next tick. No-op outside the DOM.
+ */
+function applyCompactDragImage(event: React.DragEvent, name: string) {
+  if (typeof document === "undefined") return
+  const chip = document.createElement("div")
+  chip.textContent = name
+  chip.setAttribute("aria-hidden", "true")
+  chip.className =
+    "pointer-events-none max-w-[16rem] truncate rounded-md border bg-background px-2 py-0.5 font-mono text-xs text-foreground"
+  chip.style.position = "fixed"
+  chip.style.top = "-1000px"
+  chip.style.left = "-1000px"
+  document.body.appendChild(chip)
+  event.dataTransfer.setDragImage(chip, 12, 12)
+  // Remove once the browser has snapshotted it for the ghost.
+  window.setTimeout(() => {
+    chip.remove()
+  }, 0)
+}
+
+/**
+ * Drag-and-drop bridge shared by every tree row and the workspace-root row. The
+ * source of the in-flight drag lives in a ref on the container (set on
+ * dragstart), so `canDropInto` can validate a hover without reading the
+ * (drag-over–inaccessible) dataTransfer.
+ */
+interface TreeDndHandlers {
+  /** Begin dragging `node`: stash it as the source and write the drag payload
+   *  (so the composer can read a file reference off the same drag). */
+  onEntryDragStart: (event: React.DragEvent, node: FileTreeNode) => void
+  /** Fires continuously while dragging the source row (the DOM `drag` event).
+   *  Desktop-only use: WebKit suppresses the target-side dragover, but this
+   *  source-side event still fires with the cursor in CSS px, so the drop-target
+   *  directory highlight is hit-tested from here. No-op on the web. */
+  onEntryDrag: (clientX: number, clientY: number) => void
+  /** End the current drag (drop or cancel) — clears the source. */
+  onEntryDragEnd: () => void
+  /** Whether the in-flight source may drop into `destDir` (relative; `""` =
+   *  workspace root). False when there's no drag, it's a no-op (same parent), or
+   *  it would move a directory into itself/a descendant. */
+  canDropInto: (destDir: string) => boolean
+  /** Move the in-flight source into `destDir`. */
+  onDropInto: (destDir: string) => void
+}
+
+/**
+ * The workspace-root row. A drop target (move an entry back to the root) but
+ * NOT a drag source — the root itself can't be moved. Kept as its own component
+ * so its hover highlight state re-renders only this row, not the whole tab.
+ */
+function RootDropFolder({
+  name,
+  dnd,
+  children,
+}: {
+  name: string
+  dnd: TreeDndHandlers
+  children: ReactNode
+}) {
+  const [dropActive, setDropActive] = useState(false)
+  // On desktop the DOM dragover never reaches this row, so also honor the
+  // native-drag highlight broadcast for the workspace root ("").
+  const desktopDropActive = useContext(DesktopDropDirContext) === ""
+  return (
+    <FileTreeFolder
+      path={FILE_TREE_ROOT_PATH}
+      name={name}
+      className="font-medium"
+      dropActive={dropActive || desktopDropActive}
+      dropTargetDir=""
+      depth={0}
+      rowProps={{
+        onDragOver: (event) => {
+          if (!dnd.canDropInto("")) return
+          event.preventDefault()
+          event.dataTransfer.dropEffect = "move"
+          setDropActive(true)
+        },
+        onDragLeave: (event) => {
+          const related = event.relatedTarget
+          if (related instanceof Node && event.currentTarget.contains(related))
+            return
+          setDropActive(false)
+        },
+        onDrop: (event) => {
+          setDropActive(false)
+          if (!dnd.canDropInto("")) return
+          event.preventDefault()
+          event.stopPropagation()
+          dnd.onDropInto("")
+        },
+      }}
+    >
+      {children}
+    </FileTreeFolder>
+  )
+}
+
 interface RenderNodeProps {
   node: FileTreeNode
+  depth: number
   expandedPaths: ReadonlySet<string>
   workspacePath: string
   activeSessionTabId: string | null
+  dnd: TreeDndHandlers
   gitEnabled: boolean
   webMode: boolean
   folderUploadSupported: boolean
@@ -484,9 +629,11 @@ interface RenderNodeProps {
 
 function RenderNode({
   node,
+  depth,
   expandedPaths,
   workspacePath,
   activeSessionTabId,
+  dnd,
   gitEnabled,
   webMode,
   folderUploadSupported,
@@ -514,6 +661,13 @@ function RenderNode({
 }: RenderNodeProps) {
   const t = useTranslations("Folder.fileTreeTab")
   const tCommon = useTranslations("Folder.common")
+  // `dragging` dims this row while it is the drag source; `dropActive` lights a
+  // directory row up while a valid drop hovers it (files are never drop targets).
+  const [dragging, setDragging] = useState(false)
+  const [dropActive, setDropActive] = useState(false)
+  // Desktop native drags don't emit DOM dragover, so a directory also lights up
+  // when it's the drop zone broadcast from the Tauri DRAG_OVER hit-test.
+  const desktopDropDir = useContext(DesktopDropDirContext)
   const isGitignoreIgnored =
     ancestorGitignoreIgnored || gitignoreIgnoredPaths.has(node.path)
 
@@ -558,11 +712,23 @@ function RenderNode({
           <FileTreeFile
             path={node.path}
             name={node.name}
-            className={
+            depth={depth}
+            className={cn(
               isGitignoreIgnored
                 ? GITIGNORE_MUTED_CLASS
-                : getGitFileStateClassName(gitStatusCode)
-            }
+                : getGitFileStateClassName(gitStatusCode),
+              dragging && "opacity-70"
+            )}
+            draggable
+            onDragStart={(event) => {
+              setDragging(true)
+              dnd.onEntryDragStart(event, node)
+            }}
+            onDrag={(event) => dnd.onEntryDrag(event.clientX, event.clientY)}
+            onDragEnd={() => {
+              setDragging(false)
+              dnd.onEntryDragEnd()
+            }}
           />
         </ContextMenuTrigger>
         <ContextMenuContent>
@@ -725,15 +891,56 @@ function RenderNode({
                 : undefined
           }
           iconClassName={isGitignoreIgnored ? GITIGNORE_MUTED_CLASS : undefined}
+          dropActive={dropActive || desktopDropDir === node.path}
+          dropTargetDir={node.path}
+          depth={depth}
+          rowProps={{
+            draggable: true,
+            className: dragging ? "opacity-70" : undefined,
+            onDragStart: (event) => {
+              setDragging(true)
+              dnd.onEntryDragStart(event, node)
+            },
+            onDrag: (event) => dnd.onEntryDrag(event.clientX, event.clientY),
+            onDragEnd: () => {
+              setDragging(false)
+              setDropActive(false)
+              dnd.onEntryDragEnd()
+            },
+            onDragOver: (event) => {
+              if (!dnd.canDropInto(node.path)) return
+              event.preventDefault()
+              event.dataTransfer.dropEffect = "move"
+              setDropActive(true)
+            },
+            onDragLeave: (event) => {
+              const related = event.relatedTarget
+              if (
+                related instanceof Node &&
+                event.currentTarget.contains(related)
+              )
+                return
+              setDropActive(false)
+            },
+            onDrop: (event) => {
+              setDropActive(false)
+              if (!dnd.canDropInto(node.path)) return
+              event.preventDefault()
+              event.stopPropagation()
+              dnd.onDropInto(node.path)
+            },
+          }}
         >
           {shouldRenderChildren
             ? node.children.map((child) => (
                 <RenderNode
                   key={child.path}
                   node={child}
+                  depth={depth + 1}
                   expandedPaths={expandedPaths}
                   workspacePath={workspacePath}
                   activeSessionTabId={activeSessionTabId}
+                  dnd={dnd}
                   gitEnabled={gitEnabled}
                   webMode={webMode}
                   folderUploadSupported={folderUploadSupported}
@@ -877,7 +1084,23 @@ export function FileTreeTab() {
   const t = useTranslations("Folder.fileTreeTab")
   const tCommon = useTranslations("Folder.common")
   const { pendingRevealPath, consumePendingRevealPath } = useAuxPanelContext()
-  const { activeFolder: folder } = useActiveFolder()
+  // Defer the folder so a cross-folder conversation-tab switch commits first and
+  // this tab's heavy tree rebuild (remount, applyLazyTreeOverrides, per-row
+  // ContextMenus) runs in a non-blocking transition a frame later instead of
+  // janking the switch. All path-keyed work (store subscription, <FileTree key>,
+  // fetch effects) rides the deferred folder; same-path metadata churn is a
+  // no-op since the tree derives from the store snapshot, not folder identity.
+  const { activeFolder } = useActiveFolder()
+  const folder = useDeferredValue(activeFolder)
+  // True while the deferred render lags a cross-folder switch. During that gap we
+  // render the loading skeleton (below) instead of the PREVIOUS folder's tree:
+  // besides keeping the heavy rebuild off the switch commit, unmounting those
+  // rows closes any open row ContextMenu (which portals outside this subtree) so
+  // a click can't route an opener to the NEW active folder (openers default to it
+  // when folderId is omitted — see resolveTargetFolder) and open/diff a
+  // same-named file under the wrong folder. Also gates the reveal effect below.
+  // Clears the instant the deferred render catches up.
+  const folderStale = activeFolder?.id !== folder?.id
   const tabs = useTabStore((s) => s.tabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
   const { createTerminalInDirectory } = useTerminalContext()
@@ -896,6 +1119,13 @@ export function FileTreeTab() {
   }, [activeFilePath, folder])
   const workspaceState = useWorkspaceStateStore(folder?.path ?? null)
   const [nodes, setNodes] = useState<FileTreeNode[]>([])
+  // The row the user last clicked (file OR directory). Drives the tree's
+  // selection highlight so a clicked directory looks focused too — the active
+  // *file* alone (selectedTreePath) can't, since directories are never opened.
+  // Kept in sync with the externally-active file by the effect below.
+  const [focusedTreePath, setFocusedTreePath] = useState<string | undefined>(
+    undefined
+  )
   const [gitStatusByPath, setGitStatusByPath] = useState<Map<string, string>>(
     new Map()
   )
@@ -961,6 +1191,10 @@ export function FileTreeTab() {
     Set<string>
   >(new Set())
   const filePathSetRef = useRef<Set<string>>(new Set())
+  // Request generation for async dialog loaders: bumped on every folder switch so
+  // a folder-A `gitStatus` / branch fetch still in flight can't write into (or
+  // close) a dialog the user has since reopened under folder B.
+  const loadGenRef = useRef(0)
   const previousExpandedPathsRef = useRef<Set<string>>(
     new Set([FILE_TREE_ROOT_PATH])
   )
@@ -973,6 +1207,25 @@ export function FileTreeTab() {
   >(null)
   const expandedPathsRef = useRef<Set<string>>(new Set([FILE_TREE_ROOT_PATH]))
   const workspaceTreeRef = useRef<FileTreeNode[]>([])
+  // The node currently being dragged (set on dragstart, cleared on drop/cancel).
+  // Held in a ref so drop targets can validate a hover during `dragover`, where
+  // the drag's dataTransfer payload is not readable.
+  const dragSourceRef = useRef<{
+    relPath: string
+    kind: "file" | "dir"
+    parentDir: string
+  } | null>(null)
+  // Desktop-only: true once our drag has ended but its source is still retained
+  // for the trailing native DRAG_DROP (which arrives after `dragend`). The next
+  // drag to *enter* the webview evicts the retained source so an unrelated
+  // (also path-less) foreign drop can't replay a cancelled tree drag.
+  const dragEndedRef = useRef(false)
+  // Desktop-only: the directory drop zone (relative path; "" = root) under the
+  // in-flight native drag, broadcast to rows via DesktopDropDirContext so they
+  // highlight it (WebKit doesn't deliver the DOM dragover that drives the web
+  // highlight). Null when no valid directory is under the cursor. Always null on
+  // the web, where the DOM path handles the highlight locally.
+  const [desktopDropDir, setDesktopDropDir] = useState<string | null>(null)
 
   useEffect(() => {
     setExpandedPaths(new Set([FILE_TREE_ROOT_PATH]))
@@ -982,10 +1235,25 @@ export function FileTreeTab() {
     lazyLoadingDirPathsRef.current.clear()
   }, [folder?.path])
 
+  // Derive the tree's focus from the externally-active file: opening a file from
+  // another surface (search, a file tab) — or clicking one here, which opens it —
+  // highlights that row, and clearing the active file (closing it, or switching
+  // to one outside this folder) clears the highlight. Unconditional so the
+  // `undefined` case clears too — a guard would strand a stale file highlight.
+  // Clicking a *directory* changes neither dependency, so a directory focus set
+  // by handleTreeSelect survives until the active file next changes. Keyed on
+  // folder?.path too, so a folder switch re-derives (or clears) focus.
+  useEffect(() => {
+    setFocusedTreePath(selectedTreePath)
+  }, [selectedTreePath, folder?.path])
+
   // Handle pending reveal path: expand all ancestor directories once tree is loaded
   const hasNodes = nodes.length > 0
   useEffect(() => {
-    if (!pendingRevealPath || !hasNodes) return
+    // Skip while the deferred tree still lags the active folder — consuming the
+    // reveal now would expand it against the PREVIOUS folder's tree (a no-op that
+    // drops the request). Re-runs once folderStale clears on the settled tree.
+    if (!pendingRevealPath || !hasNodes || folderStale) return
     consumePendingRevealPath()
     setExpandedPaths((prev) => {
       const next = new Set(prev)
@@ -998,7 +1266,7 @@ export function FileTreeTab() {
       next.add(pendingRevealPath)
       return next
     })
-  }, [pendingRevealPath, consumePendingRevealPath, hasNodes])
+  }, [pendingRevealPath, consumePendingRevealPath, hasNodes, folderStale])
 
   const activeSessionTabId = useMemo(() => {
     const activeTab = tabs.find((tab) => tab.id === activeTabId)
@@ -1378,11 +1646,281 @@ export function FileTreeTab() {
 
   const handleTreeSelect = useCallback(
     (path: string) => {
+      // Focus any clicked row (file or directory); only files open a preview.
+      setFocusedTreePath(path)
       if (!filePathSet.has(path)) return
       void openFilePreview(path)
     },
     [filePathSet, openFilePreview]
   )
+
+  // ─── File-tree drag & drop (move within tree / drop into composer) ───
+  const handleMoveEntry = useCallback(
+    async (sourcePath: string, destDir: string) => {
+      const rootPath = folder?.path
+      if (!rootPath) return
+      try {
+        await moveFileTreeEntry(rootPath, sourcePath, destDir)
+        // Reveal the destination so the moved entry is visible after the tree
+        // refreshes (its ancestors are already expanded — it was a drop target).
+        if (destDir) {
+          setExpandedPaths((prev) => {
+            if (prev.has(destDir)) return prev
+            const next = new Set(prev)
+            next.add(destDir)
+            return next
+          })
+        }
+        await fetchTree()
+      } catch (error) {
+        toast.error(t("toasts.moveFailed"), {
+          description: toErrorMessage(error),
+        })
+      }
+    },
+    [folder?.path, fetchTree, t]
+  )
+
+  const onEntryDragStart = useCallback(
+    (event: React.DragEvent, node: FileTreeNode) => {
+      const rootPath = folder?.path
+      if (!rootPath) return
+      const absPath = joinFsPath(rootPath, node.path)
+      const payload: FileTreeDragPayload = {
+        rootPath,
+        relPath: node.path,
+        absPath,
+        name: node.name,
+        kind: node.kind,
+      }
+      dragSourceRef.current = {
+        relPath: node.path,
+        kind: node.kind,
+        parentDir: parentDir(node.path),
+      }
+      dragEndedRef.current = false
+      writeFileTreeDragData(event.dataTransfer, payload)
+      // Let the target choose: "move" for a tree folder, "copy" for the composer.
+      event.dataTransfer.effectAllowed = "copyMove"
+      applyCompactDragImage(event, node.name)
+      // Picking a row up selects it (and, being single-select, deselects every
+      // other row). The focus sync keys only on the active file / folder, so
+      // this survives the whole drag.
+      setFocusedTreePath(node.path)
+    },
+    [folder?.path]
+  )
+
+  // Desktop drop-target highlight. WebKit swallows the target-side DOM dragover
+  // during a native drag (only source-side dragstart/drag/dragend reach the DOM
+  // — the same reason the drop is committed from Tauri's native event), so the
+  // per-row onDragOver highlight never runs on desktop. The source-side `drag`
+  // event DOES fire, with the cursor already in CSS px, so we hit-test it here to
+  // light up the directory under the cursor. Web keeps its own onDragOver path;
+  // this early-returns there so desktopDropDir stays null and forces no re-render.
+  const onEntryDrag = useCallback((clientX: number, clientY: number) => {
+    if (!isDesktop()) return
+    // Some `drag` frames report (0,0) before the cursor is tracked — ignore them
+    // so a stray frame doesn't flicker the highlight off.
+    if (clientX === 0 && clientY === 0) return
+    const src = dragSourceRef.current
+    if (!src) {
+      setDesktopDropDir(null)
+      return
+    }
+    const zone = resolveFileTreeDropZone(
+      document.elementFromPoint(clientX, clientY)
+    )
+    setDesktopDropDir(
+      zone?.kind === "dir" && canMoveEntry(src, zone.destDir)
+        ? zone.destDir
+        : null
+    )
+  }, [])
+
+  const onEntryDragEnd = useCallback(() => {
+    // On desktop the HTML5 `drop` never fires — Tauri's webview consumes the OS
+    // drop before WebKit dispatches it — so the drag is committed later from the
+    // native DRAG_DROP event, which arrives *after* this `dragend` and still
+    // needs the source. Keep it and mark the drag ended so a subsequent foreign
+    // drag entering the webview evicts the now-stale source (see the DRAG_ENTER
+    // listener) rather than letting an unrelated path-less drop replay it. On
+    // the web the DOM `drop` handler has already committed synchronously by now,
+    // so clearing here just tidies up after a drop or a cancel.
+    if (isDesktop()) {
+      dragEndedRef.current = true
+    } else {
+      dragSourceRef.current = null
+    }
+    // Drop the desktop highlight on any drag end (including cancel). `dragend`
+    // fires on desktop even though `drop` doesn't, and precedes the trailing
+    // native DRAG_DROP; the pending move still reads the retained dragSourceRef.
+    // No-op on the web (already null → React bails out).
+    setDesktopDropDir(null)
+  }, [])
+
+  const canDropInto = useCallback((destDir: string) => {
+    const src = dragSourceRef.current
+    return src ? canMoveEntry(src, destDir) : false
+  }, [])
+
+  const onDropInto = useCallback(
+    (destDir: string) => {
+      const src = dragSourceRef.current
+      dragSourceRef.current = null
+      if (!src) return
+      void handleMoveEntry(src.relPath, destDir)
+    },
+    [handleMoveEntry]
+  )
+
+  const treeDndValue = useMemo<TreeDndHandlers>(
+    () => ({
+      onEntryDragStart,
+      onEntryDrag,
+      onEntryDragEnd,
+      canDropInto,
+      onDropInto,
+    }),
+    [onEntryDragStart, onEntryDrag, onEntryDragEnd, canDropInto, onDropInto]
+  )
+
+  // Desktop commit path. Tauri's webview drag-drop handler always reports the
+  // OS drop as handled, so WebKit never dispatches an HTML5 `drop` to the DOM
+  // and the tree/composer `onDrop` handlers (which drive the web path) never
+  // run. Tauri does emit its own drag-drop event for the same gesture, so we
+  // finish an in-flight tree drag here: an internal drag reports no `paths`
+  // (only OS file drops carry paths — those belong to the composer's uploader),
+  // and we hit-test the drop coordinates against the `data-tree-drop-*` markers
+  // to decide between a directory move and a composer insert.
+  const commitDesktopDrop = useCallback(
+    (paths: string[], position: { x: number; y: number }) => {
+      const src = dragSourceRef.current
+      if (!src) return
+      // OS file drops carry `paths`; those are the composer uploader's job. An
+      // internal tree drag has none — but neither do foreign text/link/other
+      // non-file drops, so also require our own retained source (evicted by the
+      // DRAG_ENTER listener once a new drag begins) before acting.
+      if (paths.length > 0) return
+      dragSourceRef.current = null
+      dragEndedRef.current = false
+      const rootPath = folder?.path
+      if (!rootPath) return
+      // Resolve one authoritative CSS-pixel point (`elementFromPoint`'s space).
+      // On macOS wry reports the drop in window points, which already equal CSS
+      // pixels (Tauri mislabels them "physical"), so use them as-is; elsewhere
+      // the position is genuinely physical and is scaled down by the DPR.
+      const scale =
+        detectPlatform() === "macos" ? 1 : window.devicePixelRatio || 1
+      const zone = resolveFileTreeDropZone(
+        document.elementFromPoint(position.x / scale, position.y / scale)
+      )
+      if (!zone) return
+      if (zone.kind === "dir") {
+        if (canMoveEntry(src, zone.destDir)) {
+          void handleMoveEntry(src.relPath, zone.destDir)
+        }
+      } else {
+        emitAttachFileToSession({
+          tabId: zone.tabId,
+          path: joinFsPath(rootPath, src.relPath),
+        })
+      }
+    },
+    [folder?.path, handleMoveEntry]
+  )
+  // Read at event time so the Tauri listener can subscribe once (below) yet
+  // always see the latest folder / move handler.
+  const commitDesktopDropRef = useRef(commitDesktopDrop)
+  useEffect(() => {
+    commitDesktopDropRef.current = commitDesktopDrop
+  }, [commitDesktopDrop])
+
+  useEffect(() => {
+    if (!isDesktop()) return
+    let cancelled = false
+    const unlisteners: Array<() => void> = []
+    const setup = async () => {
+      const { getCurrentWebview } = await import("@tauri-apps/api/webview")
+      const { TauriEvent } = await import("@tauri-apps/api/event")
+      const webview = getCurrentWebview()
+      // Which directory zone (relative path; "" = root) the drag is over, or
+      // null. Mirrors commitDesktopDrop's hit-test but for the live highlight:
+      // same authoritative-CSS-pixel scaling (macOS window points already equal
+      // CSS px; elsewhere physical ÷ DPR), and only a *droppable* directory
+      // (canMoveEntry) lights up — hovering a file, the composer, or an invalid
+      // target clears it.
+      const resolveDesktopDropDir = (position: {
+        x: number
+        y: number
+      }): string | null => {
+        const src = dragSourceRef.current
+        if (!src) return null
+        const scale =
+          detectPlatform() === "macos" ? 1 : window.devicePixelRatio || 1
+        const zone = resolveFileTreeDropZone(
+          document.elementFromPoint(position.x / scale, position.y / scale)
+        )
+        return zone?.kind === "dir" && canMoveEntry(src, zone.destDir)
+          ? zone.destDir
+          : null
+      }
+      const unlistenOver = await webview.listen<{
+        position: { x: number; y: number }
+      }>(TauriEvent.DRAG_OVER, (event) => {
+        if (cancelled) return
+        setDesktopDropDir(resolveDesktopDropDir(event.payload.position))
+      })
+      const unlistenLeave = await webview.listen(TauriEvent.DRAG_LEAVE, () => {
+        if (cancelled) return
+        setDesktopDropDir(null)
+      })
+      const unlistenDrop = await webview.listen<{
+        paths: string[]
+        position: { x: number; y: number }
+      }>(TauriEvent.DRAG_DROP, (event) => {
+        if (cancelled) return
+        setDesktopDropDir(null)
+        commitDesktopDropRef.current(
+          event.payload.paths,
+          event.payload.position
+        )
+      })
+      // A new drag entering the webview after our own drag ended means the
+      // retained source belongs to a cancelled drag — evict it so this foreign
+      // (also path-less) drop can't replay it. Our own drag re-enters while
+      // `dragEndedRef` is false (dragstart runs first), so it's untouched.
+      const unlistenEnter = await webview.listen(TauriEvent.DRAG_ENTER, () => {
+        if (cancelled) return
+        if (dragEndedRef.current) {
+          dragSourceRef.current = null
+          dragEndedRef.current = false
+        }
+      })
+      if (cancelled) {
+        unlistenOver()
+        unlistenLeave()
+        unlistenDrop()
+        unlistenEnter()
+        return
+      }
+      unlisteners.push(unlistenOver, unlistenLeave, unlistenDrop, unlistenEnter)
+    }
+    void setup()
+    return () => {
+      cancelled = true
+      for (const unlisten of unlisteners.splice(0)) unlisten()
+    }
+  }, [])
+
+  // A workspace-folder switch invalidates any retained drag source: its path is
+  // relative to the previous root, so a trailing native drop must not move it
+  // under the new root.
+  useEffect(() => {
+    dragSourceRef.current = null
+    dragEndedRef.current = false
+    setDesktopDropDir(null)
+  }, [folder?.path])
 
   const handleOpenDirInTerminal = useCallback(
     async (dirPath: string, fileName: string) => {
@@ -1523,9 +2061,30 @@ export function FileTreeTab() {
     setDirectoryGitSubmitting(false)
   }, [])
 
+  // Close in-panel dialogs the instant the ACTIVE folder changes (keyed on the
+  // live id, not the deferred `folder`) so a dialog opened under the previous
+  // folder can't act (rename / create / delete / rollback / compare / batch)
+  // against the new one after the deferred render settles and it re-mounts.
+  useEffect(() => {
+    loadGenRef.current++
+    setRenameTarget(null)
+    setCreateParentPath(null)
+    setDeleteTarget(null)
+    setRollbackTarget(null)
+    setCompareTarget(null)
+    // Also drop the loaded branch list so a compare dialog reopened under the
+    // new folder starts empty (loading) rather than briefly showing — and
+    // letting the user act on — the previous folder's branches.
+    setCompareBranchList({ local: [], remote: [], worktree_branches: [] })
+    setCompareCurrentBranch(null)
+    setCompareBranchLoading(false)
+    resetDirectoryGitActionDialog()
+  }, [activeFolder?.id, resetDirectoryGitActionDialog])
+
   const openDirectoryGitActionDialog = useCallback(
     async (action: DirectoryGitAction, target: FileActionTarget) => {
       if (!folder?.path) return
+      const gen = loadGenRef.current
       setDirectoryGitActionType(action)
       setDirectoryGitActionTarget(target)
       setDirectoryGitCandidates([])
@@ -1536,6 +2095,10 @@ export function FileTreeTab() {
 
       try {
         const statusEntries = await gitStatus(folder.path)
+        // Bail if the folder switched while this request was in flight — writing
+        // now would clobber (or, on an empty result, close) a dialog reopened
+        // under the new folder.
+        if (gen !== loadGenRef.current) return
         const scopedEntries = scopeGitStatusEntriesForDirectory(
           statusEntries,
           target.path
@@ -1561,10 +2124,14 @@ export function FileTreeTab() {
         )
         setDirectoryGitExpandedPaths(expanded)
       } catch (error) {
+        // Same generation guard on the error path: a stale folder-A rejection
+        // must not write its error into (nor toggle the loading of) a dialog
+        // reopened under folder B.
+        if (gen !== loadGenRef.current) return
         const message = toErrorMessage(error)
         setDirectoryGitError(message)
       } finally {
-        setDirectoryGitLoading(false)
+        if (gen === loadGenRef.current) setDirectoryGitLoading(false)
       }
     },
     [folder?.path, resetDirectoryGitActionDialog, t]
@@ -1606,12 +2173,17 @@ export function FileTreeTab() {
       setCompareCurrentBranch(null)
       return
     }
+    const gen = loadGenRef.current
     setCompareBranchLoading(true)
     try {
       const [branchesResult, currentBranchResult] = await Promise.allSettled([
         gitListAllBranches(folder.path),
         getGitBranch(folder.path),
       ])
+      // Bail if the folder switched mid-flight — writing folder-A branches into a
+      // compare dialog reopened under folder B would let the user diff against the
+      // wrong repo's branch.
+      if (gen !== loadGenRef.current) return
 
       if (branchesResult.status === "fulfilled") {
         setCompareBranchList(branchesResult.value)
@@ -1630,12 +2202,16 @@ export function FileTreeTab() {
         setCompareCurrentBranch(null)
       }
     } catch (error) {
+      // Same generation guard on the error path: a stale folder-A failure must
+      // not clobber (nor toggle the loading of) a compare dialog reopened under
+      // folder B.
+      if (gen !== loadGenRef.current) return
       setCompareBranchList({ local: [], remote: [], worktree_branches: [] })
       setCompareCurrentBranch(null)
       const message = toErrorMessage(error)
       toast.error(t("toasts.loadBranchesFailed"), { description: message })
     } finally {
-      setCompareBranchLoading(false)
+      if (gen === loadGenRef.current) setCompareBranchLoading(false)
     }
   }, [folder?.path, t])
 
@@ -2060,7 +2636,10 @@ export function FileTreeTab() {
     return <AuxPanelNoFolderEmpty />
   }
 
-  if (loading && nodes.length === 0) {
+  // `folderStale` forces the skeleton over the previous folder's tree while the
+  // deferred render catches up to the switch (its nodes are still loaded, so the
+  // `nodes.length === 0` guard alone wouldn't — see the declaration above).
+  if (folderStale || (loading && nodes.length === 0)) {
     return (
       <div className="p-3 space-y-2">
         <Skeleton className="h-4 w-3/4" />
@@ -2100,68 +2679,68 @@ export function FileTreeTab() {
           <ScrollArea className="flex-1 min-h-0 pb-1" x="scroll">
             <FileTree
               key={folder?.path ?? "file-tree-empty"}
-              className="border-0 rounded-none bg-transparent w-max min-w-full"
+              className="border-0 rounded-none bg-transparent w-max min-w-full px-1.5"
               expanded={expandedPaths}
               onExpandedChange={setExpandedPaths}
-              selectedPath={selectedTreePath}
+              selectedPath={focusedTreePath}
               onSelect={handleTreeSelect}
             >
               {folder?.path && (
                 <ContextMenu>
                   <ContextMenuTrigger>
-                    <FileTreeFolder
-                      path={FILE_TREE_ROOT_PATH}
-                      name={rootNodeName}
-                      className="font-medium"
-                    >
-                      {nodes.map((node) => (
-                        <RenderNode
-                          key={node.path}
-                          node={node}
-                          expandedPaths={expandedPaths}
-                          workspacePath={folder.path}
-                          activeSessionTabId={activeSessionTabId}
-                          gitEnabled={gitEnabled}
-                          webMode={webMode}
-                          folderUploadSupported={folderUploadSupported}
-                          gitStatusByPath={gitStatusByPath}
-                          gitChangedDirPaths={gitChangedDirPaths}
-                          untrackedDirPaths={untrackedDirPaths}
-                          gitignoreIgnoredPaths={gitignoreIgnoredPaths}
-                          ancestorGitignoreIgnored={false}
-                          ancestorUntracked={false}
-                          onOpenFilePreview={(path) => {
-                            void openFilePreview(path)
-                          }}
-                          onOpenFileDiff={(path) => {
-                            void openWorkingTreeDiff(path)
-                          }}
-                          onOpenDirDiff={(path) => {
-                            void openWorkingTreeDiff(path, {
-                              mode: "overview",
-                            })
-                          }}
-                          onOpenCommitWindow={handleOpenCommitWindow}
-                          onRequestCompareWithBranch={
-                            handleRequestCompareWithBranch
-                          }
-                          onRequestRollback={handleRequestRollback}
-                          onOpenDirInTerminal={handleOpenDirInTerminal}
-                          onRequestCreate={handleRequestCreate}
-                          onRequestAddToVcs={handleAddToVcs}
-                          onRequestRename={handleRequestRename}
-                          onRequestDelete={handleRequestDelete}
-                          onRequestUpload={handleRequestUpload}
-                          onRequestDownloadFile={(target) =>
-                            void handleRequestDownloadFile(target)
-                          }
-                          onRequestDownloadDir={(target) =>
-                            void handleRequestDownloadDir(target)
-                          }
-                          onRefresh={fetchTree}
-                        />
-                      ))}
-                    </FileTreeFolder>
+                    <DesktopDropDirContext.Provider value={desktopDropDir}>
+                      <RootDropFolder name={rootNodeName} dnd={treeDndValue}>
+                        {nodes.map((node) => (
+                          <RenderNode
+                            key={node.path}
+                            node={node}
+                            depth={1}
+                            expandedPaths={expandedPaths}
+                            workspacePath={folder.path}
+                            activeSessionTabId={activeSessionTabId}
+                            dnd={treeDndValue}
+                            gitEnabled={gitEnabled}
+                            webMode={webMode}
+                            folderUploadSupported={folderUploadSupported}
+                            gitStatusByPath={gitStatusByPath}
+                            gitChangedDirPaths={gitChangedDirPaths}
+                            untrackedDirPaths={untrackedDirPaths}
+                            gitignoreIgnoredPaths={gitignoreIgnoredPaths}
+                            ancestorGitignoreIgnored={false}
+                            ancestorUntracked={false}
+                            onOpenFilePreview={(path) => {
+                              void openFilePreview(path)
+                            }}
+                            onOpenFileDiff={(path) => {
+                              void openWorkingTreeDiff(path)
+                            }}
+                            onOpenDirDiff={(path) => {
+                              void openWorkingTreeDiff(path, {
+                                mode: "overview",
+                              })
+                            }}
+                            onOpenCommitWindow={handleOpenCommitWindow}
+                            onRequestCompareWithBranch={
+                              handleRequestCompareWithBranch
+                            }
+                            onRequestRollback={handleRequestRollback}
+                            onOpenDirInTerminal={handleOpenDirInTerminal}
+                            onRequestCreate={handleRequestCreate}
+                            onRequestAddToVcs={handleAddToVcs}
+                            onRequestRename={handleRequestRename}
+                            onRequestDelete={handleRequestDelete}
+                            onRequestUpload={handleRequestUpload}
+                            onRequestDownloadFile={(target) =>
+                              void handleRequestDownloadFile(target)
+                            }
+                            onRequestDownloadDir={(target) =>
+                              void handleRequestDownloadDir(target)
+                            }
+                            onRefresh={fetchTree}
+                          />
+                        ))}
+                      </RootDropFolder>
+                    </DesktopDropDirContext.Provider>
                   </ContextMenuTrigger>
                   <ContextMenuContent>
                     <ContextMenuSub>

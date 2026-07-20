@@ -2,6 +2,7 @@ pub mod claude;
 pub mod cline;
 pub mod codebuddy;
 pub mod codex;
+pub mod cursor;
 pub mod gemini;
 pub mod grok;
 pub mod hermes;
@@ -127,6 +128,18 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             root: grok::resolve_grok_home_dir().join("sessions"),
             is_file: false,
             include_top: None,
+        },
+        ExternalSource {
+            // Cursor keeps a SQLite blob store per chat under
+            // `~/.cursor/chats/<md5-of-cwd>/<uuid>/store.db`, and one per ACP
+            // session under `~/.cursor/acp-sessions/<uuid>/store.db` (both
+            // relocatable via `CURSOR_CONFIG_DIR`). Allowlist exactly those
+            // two subtrees — never the sibling `cli-config.json` / `mcp.json`
+            // / IDE state under the same home.
+            agent: "cursor",
+            root: cursor::resolve_cursor_config_dir(),
+            is_file: false,
+            include_top: Some(&["chats", "acp-sessions"]),
         },
         ExternalSource {
             // pi writes one JSONL per session under `~/.pi/agent/sessions/`

@@ -185,6 +185,23 @@ pub async fn update_folder_color(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UpdateFolderAliasParams {
+    pub folder_id: i32,
+    pub alias: Option<String>,
+}
+
+pub async fn update_folder_alias(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<UpdateFolderAliasParams>,
+) -> Result<Json<FolderDetail>, AppCommandError> {
+    Ok(Json(
+        folder_commands::update_folder_alias_core(&state.db, params.folder_id, params.alias)
+            .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateFolderDefaultAgentParams {
     pub folder_id: i32,
     pub default_agent_type: Option<AgentType>,

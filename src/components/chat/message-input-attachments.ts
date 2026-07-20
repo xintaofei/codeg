@@ -12,6 +12,8 @@
  * badges. Both fold into the outgoing `PromptInputBlock[]` at send time.
  */
 
+import type { PromptCapabilitiesInfo, PromptInputBlock } from "@/lib/types"
+
 /** A file/resource attachment (a `file://` link, an uploaded blob, or an
  *  embedded text/binary resource). */
 export interface ResourceInputAttachment {
@@ -39,3 +41,54 @@ export interface ImageInputAttachment {
 }
 
 export type InputAttachment = ResourceInputAttachment | ImageInputAttachment
+
+/**
+ * Serialize an image attachment into its outgoing prompt block, choosing the
+ * wire encoding by the connected agent's declared capabilities:
+ *
+ * - Agents that accept native ACP image content (`caps.image` — e.g. Claude,
+ *   Codex) → an `image` block.
+ * - Agents that reject image content but accept embedded context
+ *   (`caps.embedded_context` — e.g. Grok, which advertises `image: false` +
+ *   `embeddedContext: true`) → an embedded `resource` blob carrying the same
+ *   base64 bytes and image mime type. This is exactly what those agents already
+ *   received before; the only change is that the composer now shows the image
+ *   as a thumbnail instead of an inline file badge (see `canAttachImages` in
+ *   `message-input.tsx`), so the sent payload is unchanged for them.
+ *
+ * Pure and deterministic: a path-less pasted image (no `uri`) is given a stable
+ * `clipboard://` identifier derived from its name + id, so the emitted block is
+ * reproducible without a random source (and unit-testable).
+ */
+export function imageAttachmentToPromptBlock(
+  attachment: ImageInputAttachment,
+  caps: Pick<PromptCapabilitiesInfo, "image" | "embedded_context">
+): PromptInputBlock {
+  if (caps.image) {
+    return {
+      type: "image",
+      data: attachment.data,
+      mime_type: attachment.mimeType,
+      uri: attachment.uri,
+    }
+  }
+  // Reachable only when the image was routed to the thumbnail strip, which
+  // requires `image || embedded_context`; so this branch means the agent takes
+  // embedded context. Fall through to it as the best-effort encoding regardless.
+  return {
+    type: "resource",
+    uri: attachment.uri ?? synthClipboardImageUri(attachment),
+    mime_type: attachment.mimeType,
+    text: null,
+    blob: attachment.data,
+  }
+}
+
+/** Stable `clipboard://` identifier for a path-less image sent as an embedded
+ *  resource. Mirrors the `buildClipboardResourceUri` scheme in
+ *  `message-input.tsx` but is deterministic (keyed on the attachment id, not a
+ *  fresh UUID) so serialization is pure. */
+function synthClipboardImageUri(attachment: ImageInputAttachment): string {
+  const label = attachment.name.trim() || "clipboard-image"
+  return `clipboard://${encodeURIComponent(`${label}-${attachment.id}`)}`
+}

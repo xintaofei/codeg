@@ -64,6 +64,10 @@ import {
   formatFileRangeLabel,
 } from "@/lib/reference-link"
 import {
+  hasFileTreeDragType,
+  readFileTreeDragPayload,
+} from "@/lib/file-tree-dnd"
+import {
   filesFromClipboard,
   clipboardHasText,
   imageFilesFromClipboardApi,
@@ -175,10 +179,11 @@ import {
   type ReferenceGroupLabels,
 } from "@/components/chat/composer/use-reference-search"
 import type { MentionUiLabels } from "@/components/chat/composer/suggestion/types"
-import type {
-  ImageInputAttachment,
-  InputAttachment,
-  ResourceInputAttachment,
+import {
+  imageAttachmentToPromptBlock,
+  type ImageInputAttachment,
+  type InputAttachment,
+  type ResourceInputAttachment,
 } from "./message-input-attachments"
 
 /**
@@ -620,15 +625,16 @@ export function MessageInput({
   // Bridge so the early `onChange` handler can call the editor-driven slash
   // detection that is defined further down (after the slash state).
   const detectSlashTriggerRef = useRef<(() => void) | null>(null)
-  const canAttachImages = promptCapabilities.image
-
-  useEffect(() => {
-    if (isActive && !disabled && !isPrompting) {
-      requestAnimationFrame(() => {
-        editorRef.current?.focus()
-      })
-    }
-  }, [isActive, disabled, isPrompting])
+  // Route pasted / dropped / picked images to the top thumbnail strip whenever
+  // the agent can receive them in ANY form — either as a native ACP image block
+  // (`image`) or as an embedded resource blob (`embedded_context`, e.g. Grok,
+  // which advertises `image: false` but `embeddedContext: true`). Without the
+  // `embedded_context` arm, Grok's images fell through to the generic
+  // file-resource path and rendered as an inline badge instead of a thumbnail.
+  // `buildDraft` still picks the wire encoding per-capability, so the sent
+  // payload is unchanged for each agent — this only unifies the presentation.
+  const canAttachImages =
+    promptCapabilities.image || promptCapabilities.embedded_context
 
   useEffect(() => {
     disabledRef.current = disabled
@@ -822,6 +828,25 @@ export function MessageInput({
     effectiveDraftStorageKey,
     hydrateFromBlocks,
   ])
+
+  // Focus the composer the moment the editor exists and this tab is active, so
+  // the caret lands as soon as the chat opens — without waiting for the ACP
+  // connection to come up. The editor is always editable (RichComposer receives
+  // no `disabled`; sends are gated in `handleSend`, not editability), so the old
+  // `!disabled` gate only postponed the caret until "connected" for no real
+  // reason. Deliberately NOT keyed on `disabled`: once focus lands on open, a
+  // later connect (disabled → false) must never re-run this and yank focus back.
+  // Keyed on `composerReady` because `immediatelyRender: false` builds the
+  // editor a tick after mount (mirrors the hydration effect's gate). Ordered
+  // after that hydration effect so this rAF runs after its setContent, landing
+  // the caret at the end of a restored draft rather than before it.
+  useEffect(() => {
+    if (isActive && composerReady && !isPrompting) {
+      requestAnimationFrame(() => {
+        editorRef.current?.focus()
+      })
+    }
+  }, [isActive, composerReady, isPrompting])
 
   // Re-hydrate when the user (re)edits a *different* queue item after the
   // initial mount hydration above. Keyed on the item id (not display text) so
@@ -1795,6 +1820,42 @@ export function MessageInput({
     [appendFilesFromInput, disabled]
   )
 
+  // Insert an inline file reference for a file-tree entry dropped onto the
+  // composer, placing the caret at the drop point first so the badge lands where
+  // the user released (native-textarea feel). Shared by the editor-level drop
+  // (`onDropFiles`) and the container-chrome drop (`handleContainerDrop`).
+  const insertTreeDropAtPoint = useCallback(
+    (absPath: string, clientX: number, clientY: number) => {
+      editorRef.current?.focusAtCoords(clientX, clientY)
+      appendResourceAttachments([absPath], { atCaret: true })
+    },
+    [appendResourceAttachments]
+  )
+
+  // Routed from RichComposer's `onDropFiles` (ProseMirror's `handleDrop`).
+  // Consumes a file-tree drag so PM does not insert the drag's `text/plain`
+  // absolute-path fallback as literal text, and stops propagation so the
+  // container's own drop handler doesn't double-insert. Returns false for every
+  // other drop (OS files, editor text moves) so existing behavior is untouched.
+  const handleEditorDrop = useCallback(
+    (event: DragEvent): boolean => {
+      if (disabled) return false
+      if (!hasFileTreeDragType(event.dataTransfer)) return false
+      const payload = readFileTreeDragPayload(event.dataTransfer)
+      if (!payload) return false
+      event.preventDefault()
+      event.stopPropagation()
+      // `stopPropagation` keeps the container's `onDrop` from double-inserting,
+      // but that handler is also what clears the drag overlay — and a completed
+      // drop doesn't reliably emit `dragleave`. Clear it here so the overlay
+      // can't get stuck covering the composer.
+      setDragActiveIfChanged(false)
+      insertTreeDropAtPoint(payload.absPath, event.clientX, event.clientY)
+      return true
+    },
+    [disabled, insertTreeDropAtPoint, setDragActiveIfChanged]
+  )
+
   useEffect(() => {
     if (!showModeSelector) return
     if (!effectiveModeId || !onModeChange) return
@@ -2446,14 +2507,14 @@ export function MessageInput({
     if (blocks.length === 0 && attachments.length === 0) return null
 
     // `attachments` holds only images now — files live inline as badges above.
+    // The wire encoding is capability-driven (native `image` block vs embedded
+    // `resource` blob) so an agent that advertises `image: false` but
+    // `embedded_context: true` (e.g. Grok) still receives the bytes it accepts.
     for (const attachment of attachments) {
       if (attachment.type === "image") {
-        blocks.push({
-          type: "image",
-          data: attachment.data,
-          mime_type: attachment.mimeType,
-          uri: attachment.uri,
-        })
+        blocks.push(
+          imageAttachmentToPromptBlock(attachment, promptCapabilities)
+        )
       }
     }
 
@@ -2461,7 +2522,7 @@ export function MessageInput({
       displayProse ||
       `Attached ${attachments.length} attachment${attachments.length > 1 ? "s" : ""}`
     return { blocks, displayText }
-  }, [attachments, skillPrefix])
+  }, [attachments, skillPrefix, promptCapabilities])
 
   // Clear the editor + attachments after a send / enqueue / save.
   const resetComposer = useCallback(() => {
@@ -2629,9 +2690,12 @@ export function MessageInput({
 
   const handleContainerDragOver = useCallback(
     (event: React.DragEvent<HTMLDivElement>) => {
-      if (!hasDragFiles(event.dataTransfer)) return
+      const isTreeDrag = hasFileTreeDragType(event.dataTransfer)
+      if (!hasDragFiles(event.dataTransfer) && !isTreeDrag) return
       event.preventDefault()
       if (!disabled) {
+        // A file-tree entry is copied in as a reference, not moved.
+        if (isTreeDrag) event.dataTransfer.dropEffect = "copy"
         setDragActiveIfChanged(true)
       }
     },
@@ -2655,11 +2719,21 @@ export function MessageInput({
 
   const handleContainerDrop = useCallback(
     (event: React.DragEvent<HTMLDivElement>) => {
-      if (!hasDragFiles(event.dataTransfer)) return
+      const treePayload = hasFileTreeDragType(event.dataTransfer)
+        ? readFileTreeDragPayload(event.dataTransfer)
+        : null
+      if (!hasDragFiles(event.dataTransfer) && !treePayload) return
       event.preventDefault()
       lastDomDropAtRef.current = Date.now()
       setDragActiveIfChanged(false)
       if (disabled) return
+      // A file-tree entry dropped on the composer chrome (the editor's own drop
+      // surface is handled first by `handleEditorDrop`) becomes an inline file
+      // reference at the drop point.
+      if (treePayload) {
+        insertTreeDropAtPoint(treePayload.absPath, event.clientX, event.clientY)
+        return
+      }
       const files = Array.from(event.dataTransfer.files ?? [])
       if (files.length > 0) {
         void appendFilesFromInput(files).catch((error) => {
@@ -2667,7 +2741,12 @@ export function MessageInput({
         })
       }
     },
-    [appendFilesFromInput, disabled, setDragActiveIfChanged]
+    [
+      appendFilesFromInput,
+      disabled,
+      insertTreeDropAtPoint,
+      setDragActiveIfChanged,
+    ]
   )
 
   const hasImageAttachments = imageAttachments.length > 0
@@ -2899,6 +2978,12 @@ export function MessageInput({
     <div
       ref={containerRef}
       className="relative"
+      // Marks this composer as a file-tree drop zone. On desktop Tauri's webview
+      // swallows the HTML5 `drop`, so a dragged entry is committed from Tauri's
+      // native drag-drop event by hit-testing the drop point; this attribute
+      // lets that hit-test route the drop to this session's input (see the tree
+      // tab's desktop commit). Absent when there's no tab to attach to.
+      data-tree-drop-composer={attachmentTabId ?? undefined}
       onKeyDown={handleContainerKeyDown}
       onDragOver={handleContainerDragOver}
       onDragLeave={handleContainerDragLeave}
@@ -2987,11 +3072,21 @@ export function MessageInput({
                 // blank areas (padding, the dead space below a short message, the
                 // action-bar gaps) so the whole input reads as clickable-to-type;
                 // interactive controls re-assert their own cursor (see globals.css).
-                "codeg-composer-chrome @container relative flex flex-col rounded-xl border border-input bg-transparent transition-colors",
+                // Resting border uses `border-foreground/20` (a touch darker than
+                // the default `border-input`, which is near-invisible at rest and
+                // vanishes over a workspace background image); it adapts per theme
+                // (dark ink in light mode, light ink in dark) and stays legible.
+                // Focus still swaps to `border-ring` below.
+                "codeg-composer-chrome @container relative flex flex-col rounded-xl border border-foreground/20 bg-transparent transition-colors",
                 // Standard focus ring — always shown when the composer is
-                // focused (the plain default input style).
+                // focused (the plain default input style). `bg-background
+                // ws-transparent-bg`: opaque surface normally, but with a
+                // workspace-bg image the composer goes transparent to reveal the
+                // real image like the rest of the canvas (no frosted treatment) —
+                // the border stays. Off (no image) it's the plain background,
+                // unchanged.
                 folderBranchPickerAttached
-                  ? "bg-background focus-within:border-ring focus-within:ring-[3px] focus-within:ring-inset focus-within:ring-ring/50"
+                  ? "bg-background ws-transparent-bg focus-within:border-ring focus-within:ring-[3px] focus-within:ring-inset focus-within:ring-ring/50"
                   : "focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50",
                 // Active session, tiled across multiple sessions: a gradient
                 // flows around the border to mark which tile is active — but ONLY
@@ -3098,6 +3193,7 @@ export function MessageInput({
                 onSubmit={handleSend}
                 onFocus={onFocus}
                 onPasteFiles={handlePasteFiles}
+                onDropFiles={handleEditorDrop}
                 onPlainPaste={handlePlainPasteShortcut}
                 submitShortcut={shortcuts.send_message}
                 newlineShortcut={shortcuts.newline_in_message}

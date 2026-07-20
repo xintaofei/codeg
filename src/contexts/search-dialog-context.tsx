@@ -21,10 +21,11 @@ const SearchDialogContext = createContext<SearchDialogContextValue | null>(null)
  * Shared open-state for the conversation search command dialog.
  *
  * The dialog itself, and the global ⌘K shortcut that toggles it, are owned by
- * `FolderTitleBar` (which is always mounted). But the trigger button now lives
- * in the sidebar — and the sidebar unmounts when collapsed. Lifting just the
- * boolean here lets the sidebar open the dialog without owning it, so search
- * keeps working (via the shortcut) even when the sidebar is hidden.
+ * `WorkspaceChromeController` (which is always mounted, desktop + mobile). But
+ * the trigger button now lives in the sidebar — and the sidebar unmounts when
+ * collapsed. Lifting just the boolean here lets the sidebar open the dialog
+ * without owning it, so search keeps working (via the shortcut) even when the
+ * sidebar is hidden.
  *
  * `setOpen` is the raw state setter so callers can use the functional updater
  * form (the shortcut handler does `setOpen((prev) => !prev)`).

@@ -52,6 +52,11 @@ pub trait DelegationEventEmitter: Send + Sync {
     /// so both lifecycle ends ride the same parent-stream fanout — the frontend
     /// `DelegationContext` then receives both via the parent's per-connection
     /// attach stream in web/server mode, not only via the desktop firehose.
+    /// `task_preview` / `task_id` ride the event so the frontend binding can
+    /// label the card (task text + correlation id) even when the parent tool
+    /// call's `raw_input` never carries the arguments (Cursor's identity-less
+    /// MCP announcements).
+    #[allow(clippy::too_many_arguments)]
     async fn emit_started(
         &self,
         parent_connection_id: &str,
@@ -59,6 +64,8 @@ pub trait DelegationEventEmitter: Send + Sync {
         child_connection_id: &str,
         child_conversation_id: i32,
         agent_type: AgentType,
+        task_preview: &str,
+        task_id: &str,
     );
 
     async fn emit_completed(
@@ -82,6 +89,7 @@ pub struct NoopEventEmitter;
 
 #[async_trait]
 impl DelegationEventEmitter for NoopEventEmitter {
+    #[allow(clippy::too_many_arguments)]
     async fn emit_started(
         &self,
         _parent_connection_id: &str,
@@ -89,6 +97,8 @@ impl DelegationEventEmitter for NoopEventEmitter {
         _child_connection_id: &str,
         _child_conversation_id: i32,
         _agent_type: AgentType,
+        _task_preview: &str,
+        _task_id: &str,
     ) {
     }
 
@@ -119,6 +129,7 @@ pub struct ConnectionManagerEventEmitter {
 
 #[async_trait]
 impl DelegationEventEmitter for ConnectionManagerEventEmitter {
+    #[allow(clippy::too_many_arguments)]
     async fn emit_started(
         &self,
         parent_connection_id: &str,
@@ -126,6 +137,8 @@ impl DelegationEventEmitter for ConnectionManagerEventEmitter {
         child_connection_id: &str,
         child_conversation_id: i32,
         agent_type: AgentType,
+        task_preview: &str,
+        task_id: &str,
     ) {
         let Some((state_arc, emitter)) = self
             .manager
@@ -143,6 +156,8 @@ impl DelegationEventEmitter for ConnectionManagerEventEmitter {
                 child_connection_id: child_connection_id.to_string(),
                 child_conversation_id,
                 agent_type,
+                task_preview: task_preview.to_string(),
+                task_id: task_id.to_string(),
             },
         )
         .await;
@@ -212,6 +227,8 @@ pub mod mock {
         pub child_connection_id: String,
         pub child_conversation_id: i32,
         pub agent_type: AgentType,
+        pub task_preview: String,
+        pub task_id: String,
     }
 
     impl MockEventEmitter {
@@ -238,6 +255,7 @@ pub mod mock {
 
     #[async_trait]
     impl DelegationEventEmitter for MockEventEmitter {
+        #[allow(clippy::too_many_arguments)]
         async fn emit_started(
             &self,
             parent_connection_id: &str,
@@ -245,6 +263,8 @@ pub mod mock {
             child_connection_id: &str,
             child_conversation_id: i32,
             agent_type: AgentType,
+            task_preview: &str,
+            task_id: &str,
         ) {
             self.started_calls.lock().await.push(EmitStartedCall {
                 parent_connection_id: parent_connection_id.to_string(),
@@ -252,6 +272,8 @@ pub mod mock {
                 child_connection_id: child_connection_id.to_string(),
                 child_conversation_id,
                 agent_type,
+                task_preview: task_preview.to_string(),
+                task_id: task_id.to_string(),
             });
         }
 

@@ -14,7 +14,7 @@ export function StatusBar() {
 
   if (isMobile) {
     return (
-      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-background px-3 py-1.5 text-xs text-muted-foreground">
+      <div className="flex h-12 shrink-0 items-center gap-2 border-t border-border bg-background px-3 py-1.5 text-xs text-muted-foreground">
         <div className="flex h-9 min-w-0 flex-1 items-center rounded-xl border bg-card px-3">
           <StatusBarConnection />
         </div>
@@ -28,7 +28,7 @@ export function StatusBar() {
   }
 
   return (
-    <div className="h-8 shrink-0 border-t border-border bg-muted px-4 flex items-center justify-between text-xs text-muted-foreground">
+    <div className="h-8 shrink-0 border-t border-border ws-surface-muted px-4 flex items-center justify-between text-xs text-muted-foreground">
       <div className="flex items-center">
         <StatusBarStats />
       </div>

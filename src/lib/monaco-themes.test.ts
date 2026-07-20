@@ -3,8 +3,12 @@ import { describe, expect, it, vi } from "vitest"
 import {
   configureLanguageValidation,
   defineMonacoThemes,
+  EDITOR_CANVAS_BG,
+  EDITOR_LINE_HIGHLIGHT,
+  monacoThemeName,
   MONACO_UNICODE_HIGHLIGHT_OPTIONS,
 } from "./monaco-themes"
+import { THEME_COLORS } from "./theme-presets"
 
 // Regression guard for issue #329: Monaco boxed ordinary CJK full-width
 // punctuation (`：` `；` `，` `！` `？` `（` `）` …) because its unicode-highlight
@@ -108,5 +112,74 @@ describe("configureLanguageValidation", () => {
 
     expect(tsDefaults.setDiagnosticsOptions).toHaveBeenCalled()
     expect(jsonDefaults.setDiagnosticsOptions).toHaveBeenCalled()
+  })
+
+  it("registers one theme per (color, mode) with the canvas background applied", () => {
+    const { monaco } = makeMonaco()
+    const defineTheme = monaco.editor.defineTheme
+
+    defineMonacoThemes(
+      monaco as unknown as Parameters<typeof defineMonacoThemes>[0]
+    )
+
+    // 12 theme colors x {light, dark}.
+    expect(defineTheme).toHaveBeenCalledTimes(THEME_COLORS.length * 2)
+
+    const call = defineTheme.mock.calls.find(
+      (c) => c[0] === monacoThemeName("blue", true)
+    )
+    expect(call).toBeDefined()
+    expect(call?.[1].colors["editor.background"]).toBe(
+      EDITOR_CANVAS_BG.blue.dark
+    )
+    expect(call?.[1].colors["editorGutter.background"]).toBe(
+      EDITOR_CANVAS_BG.blue.dark
+    )
+    // The current-line highlight follows the theme's tinted --muted, not a fixed
+    // gray, so the focused line carries the accent hue.
+    expect(call?.[1].colors["editor.lineHighlightBackground"]).toBe(
+      EDITOR_LINE_HIGHLIGHT.blue.dark
+    )
+  })
+})
+
+// The focused line's highlight tracks each theme's `--muted` token so it follows
+// the accent hue instead of a fixed zinc gray.
+describe("EDITOR_LINE_HIGHLIGHT", () => {
+  it("has a valid light + dark hex for every theme color", () => {
+    for (const color of THEME_COLORS) {
+      expect(EDITOR_LINE_HIGHLIGHT[color].light).toMatch(/^#[0-9a-f]{6}$/)
+      expect(EDITOR_LINE_HIGHLIGHT[color].dark).toMatch(/^#[0-9a-f]{6}$/)
+    }
+  })
+
+  it("keeps zinc identical to the previous fixed line highlight", () => {
+    // #f4f4f5 / #27272a — the zinc --muted, which was the hard-coded neutral
+    // highlight before theming, so the zinc preset is a zero-visual-diff baseline.
+    expect(EDITOR_LINE_HIGHLIGHT.zinc.light).toBe("#f4f4f5")
+    expect(EDITOR_LINE_HIGHLIGHT.zinc.dark).toBe("#27272a")
+  })
+})
+
+// The file editor is a card surface: its canvas background tracks each theme's
+// `--card` token, so it is no longer a fixed pure-white / #171717 regardless of theme.
+describe("EDITOR_CANVAS_BG", () => {
+  it("has a valid light + dark hex for every theme color", () => {
+    for (const color of THEME_COLORS) {
+      expect(EDITOR_CANVAS_BG[color].light).toMatch(/^#[0-9a-f]{6}$/)
+      expect(EDITOR_CANVAS_BG[color].dark).toMatch(/^#[0-9a-f]{6}$/)
+    }
+  })
+
+  it("keeps neutral identical to the previous fixed editor background", () => {
+    // #ffffff / #171717 (= oklch(0.205 0 0), the --card dark) — a zero-visual-diff
+    // baseline so only the accent presets change appearance.
+    expect(EDITOR_CANVAS_BG.neutral.light).toBe("#ffffff")
+    expect(EDITOR_CANVAS_BG.neutral.dark).toBe("#171717")
+  })
+
+  it("encodes color and mode in the theme name", () => {
+    expect(monacoThemeName("neutral", false)).toBe("codeg-light-neutral")
+    expect(monacoThemeName("blue", true)).toBe("codeg-dark-blue")
   })
 })

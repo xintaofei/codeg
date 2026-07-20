@@ -51,16 +51,65 @@ export const PET_FRAME_DURATIONS_MS: Record<PetState, number[]> = {
   review: [150, 150, 150, 150, 150, 280],
 }
 
+// Derive the number of animation rows from a sheet's natural pixel height.
+// The frame cell is a constant 192×208, so rows = height / 208. Older pets are
+// 9 rows (1872px); v2 marketplace pets are 11 (2288px). We never report fewer
+// than the 9 base states, so a blank/mis-measured image still maps the known
+// states to valid rows.
+export function spriteRowsFromHeight(
+  naturalHeight: number | null | undefined
+): number {
+  if (
+    naturalHeight == null ||
+    !Number.isFinite(naturalHeight) ||
+    naturalHeight <= 0
+  ) {
+    return SPRITE_GRID_ROWS
+  }
+  const rows = Math.round(naturalHeight / SPRITE_FRAME_HEIGHT)
+  return Math.max(SPRITE_GRID_ROWS, rows)
+}
+
+// CSS `background-size` for a sheet with `rows` rows (columns fixed at 8).
+// Pair with `backgroundPositionFor(_, _, rows)` — both must agree on the row
+// count or frames land off-grid.
+export function spriteBackgroundSize(rows: number = SPRITE_GRID_ROWS): string {
+  const safeRows = Math.max(1, Math.floor(rows))
+  return `${SPRITE_GRID_COLS * 100}% ${safeRows * 100}%`
+}
+
 // CSS background-position for a (row, col) cell. Uses the
-// "(n / (count-1)) * 100%" form because that's how `background-size: 800% 900%`
-// computes positioning — `0% .. 100%` traverses cells `0..(count-1)`.
-export function backgroundPositionFor(row: number, col: number): string {
-  const x = (col / (SPRITE_GRID_COLS - 1)) * 100
-  const y = (row / (SPRITE_GRID_ROWS - 1)) * 100
+// "(n / (count-1)) * 100%" form because that's how `background-size` percentages
+// compute positioning — `0% .. 100%` traverses cells `0..(count-1)`. `rows`
+// defaults to the base 9-row layout for callers rendering a legacy sheet.
+export function backgroundPositionFor(
+  row: number,
+  col: number,
+  rows: number = SPRITE_GRID_ROWS
+): string {
+  const x = SPRITE_GRID_COLS > 1 ? (col / (SPRITE_GRID_COLS - 1)) * 100 : 0
+  const y = rows > 1 ? (row / (rows - 1)) * 100 : 0
   return `${x}% ${y}%`
 }
 
-export const SPRITE_BACKGROUND_SIZE = `${SPRITE_GRID_COLS * 100}% ${SPRITE_GRID_ROWS * 100}%`
+// Number of frames in a horizontal preview filmstrip of natural size
+// `width`×`height`. Each filmstrip frame keeps the 192:208 cell aspect, so
+// frameWidth = height × (192/208) and frames = width / frameWidth. v1 strips
+// hold 57 frames (the 9 base states); v2 strips hold 73 (two appended states).
+// Returns 0 when the size is unknown so callers can fall back to a default.
+export function filmstripFrameCount(width: number, height: number): number {
+  if (
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0
+  ) {
+    return 0
+  }
+  const frameWidth = height * (SPRITE_FRAME_WIDTH / SPRITE_FRAME_HEIGHT)
+  if (frameWidth <= 0) return 0
+  return Math.round(width / frameWidth)
+}
 
 // Tunable: how often to randomly insert a flourish (waving / jumping) when
 // the pet is idle. Avoids the pet looking statue-still during long idle periods.

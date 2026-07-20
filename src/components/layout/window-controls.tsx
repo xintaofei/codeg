@@ -76,7 +76,7 @@ export function WindowControls() {
   if (!showControls || !isDesktop()) return null
 
   return (
-    <div className="flex h-8 items-stretch [-webkit-app-region:no-drag]">
+    <div className="flex h-full items-stretch [-webkit-app-region:no-drag]">
       <button
         type="button"
         className={buttonClass}
@@ -124,7 +124,7 @@ export function WindowControls() {
 }
 
 const buttonClass =
-  "flex h-8 w-[46px] items-center justify-center text-foreground/85 transition-colors duration-75 hover:bg-foreground/10 active:bg-foreground/15"
+  "flex h-full w-[46px] items-center justify-center text-foreground/85 transition-colors duration-75 hover:bg-foreground/10 active:bg-foreground/15"
 
 function MinimizeIcon() {
   return (

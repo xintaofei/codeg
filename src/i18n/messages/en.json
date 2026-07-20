@@ -117,6 +117,29 @@
       "sectionTitle": "Mode selection area",
       "sectionDescription": "The Code Development / Office Work shortcut cards shown above the composer on the new conversation page.",
       "showQuickActions": "Show on the new conversation page"
+    },
+    "workspaceBackground": {
+      "sectionTitle": "Workspace background",
+      "sectionDescription": "Show a picture behind the whole workspace. Sidebar and panels turn translucent and frosted so the image shows through, and a mask keeps text readable.",
+      "enable": "Enable background image",
+      "image": "Image",
+      "chooseImage": "Choose image",
+      "replaceImage": "Replace image",
+      "removeImage": "Remove",
+      "fillMode": "Fill mode",
+      "fillModes": {
+        "cover": "Cover",
+        "contain": "Contain",
+        "center": "Center",
+        "tile": "Tile"
+      },
+      "maskOpacity": "Mask opacity",
+      "maskOpacityHint": "Higher values fade the image toward the theme background, improving text contrast.",
+      "imageBlur": "Image blur",
+      "panelOpacity": "Panel opacity",
+      "panelOpacityHint": "How opaque the sidebar, panels and tab bars are. Lower lets more of the image show through.",
+      "errorTooLarge": "Image is too large (max 16 MB).",
+      "errorUploadFailed": "Failed to set the background image."
     }
   },
   "SystemSettings": {
@@ -640,6 +663,49 @@
       "autoCompactLabel": "Auto-compact threshold (%)",
       "autoCompactHint": "Compact the conversation when context usage reaches this percent (Grok default 85). Written to `[session]`."
     },
+    "cursor": {
+      "configDescription": "Configure Cursor here. Choose an authentication method — official subscription (browser sign-in) or a Cursor API key for headless/server machines — then pick a model and edit the CLI's permission rules and sandbox. codeg writes them into ~/.cursor/cli-config.json, shared with the cursor-agent CLI.",
+      "authTitle": "Authentication",
+      "authChecking": "Checking…",
+      "authNotInstalled": "cursor-agent is not installed",
+      "authLoggedIn": "Logged in",
+      "authNotLoggedIn": "Not logged in",
+      "loginHint": "Run this in a terminal to sign in with your Cursor account (a browser window opens), then hit refresh:",
+      "apiKeyLabel": "Cursor API key",
+      "apiKeyPlaceholder": "key from cursor.com/dashboard",
+      "apiKeyHint": "CURSOR_API_KEY — a Cursor Dashboard account key, an alternative to browser login for headless/server machines. Not a third-party or OpenAI key.",
+      "modelTitle": "Default model",
+      "loadModels": "Load models",
+      "modelsUnavailable": "Model list unavailable",
+      "modelHint": "Passed to the CLI as --model at session start. Leave on default to let Cursor choose.",
+      "permissionsTitle": "Permissions & sandbox",
+      "permissionsDescription": "Visual editor for the CLI's permission rules (cli-config.json). Allow rules run without prompting; deny rules are always blocked.",
+      "permissionModeLabel": "Permission mode",
+      "permissionModeDefault": "Ask before running (default)",
+      "permissionModeForce": "Run Everything (--force)",
+      "permissionModeHint": "Run Everything launches sessions with --force: every tool call is auto-allowed except deny rules, with no confirmation prompts (an organization policy may downgrade it to allow-rule matching). Takes effect for new sessions.",
+      "optionDefault": "Default (unset)",
+      "sandboxLabel": "Sandbox",
+      "sandboxEnabled": "Enabled",
+      "sandboxDisabled": "Disabled",
+      "allowRulesLabel": "Allow rules",
+      "denyRulesLabel": "Deny rules",
+      "addRule": "Add rule",
+      "rulesSyntaxHint": "Rule syntax: Shell(cmd), Read(path/glob), Write(path/glob), WebFetch(domain), Mcp(server:tool) — deny rules always win.",
+      "saveConfig": "Save configuration",
+      "advancedToggle": "Advanced: raw cli-config.json",
+      "advancedHint": "The whole ~/.cursor/cli-config.json. Saving writes the file verbatim — the structured controls above merge into it instead.",
+      "saveRawConfig": "Save file",
+      "authMode": "Authentication method",
+      "subscriptionHint": "Sign in with your Cursor account and use Cursor's models.",
+      "customApiKeyRequired": "A Cursor API key is required.",
+      "authModeApiKey": "Cursor API key (headless)",
+      "authModeApiKeyHint": "Authenticate with a Cursor account API key from the Cursor dashboard — for headless or server machines. This is a Cursor account key, not a third-party/OpenAI endpoint: cursor-agent only talks to Cursor's own backend. To use a codex/OpenAI-compatible endpoint, use the Codex agent instead.",
+      "modelPickerPlaceholder": "Search models…",
+      "modelNoMatch": "No matching model",
+      "modelsNeedAuth": "Sign in to load the model list.",
+      "modelDefaultBadge": "default"
+    },
     "codex": {
       "configDescription": "Supports quick configuration for API URL, API Key, model name and reasoning effort, and syncs with `auth.json` / `config.toml`.",
       "authMode": "Auth Mode",
@@ -921,6 +987,8 @@
       "grokSaved": "Grok config saved",
       "saveGrokNativeFailed": "Failed to save Grok native config",
       "saveGrokApiKeyFailed": "Settings saved, but the API key couldn't be saved",
+      "cursorSaved": "Cursor config saved",
+      "saveCursorConfigFailed": "Failed to save Cursor config",
       "codexSaved": "Codex config saved",
       "saveCodexNativeFailed": "Failed to save Codex native config",
       "geminiSaved": "Gemini config saved",
@@ -1189,6 +1257,7 @@
         "removeFolderFailed": "Failed to remove folder: {message}",
         "reorderFoldersFailed": "Failed to reorder folders: {message}",
         "changeFolderColorFailed": "Failed to change folder color: {message}",
+        "setFolderAliasFailed": "Failed to set alias: {message}",
         "changeFolderDefaultAgentFailed": "Failed to set default agent: {message}"
       },
       "statsLabel": "{folders} folders · {convos} conversations",
@@ -1220,6 +1289,11 @@
         "defaultAgentNone": "No default (use global)",
         "agentUnavailableSuffix": "(unavailable)",
         "loadingAgents": "Loading agents…",
+        "setAlias": "Set alias…",
+        "setAliasTitle": "Set folder alias",
+        "setAliasPlaceholder": "Enter an alias (leave empty to clear)",
+        "setAliasSave": "Save",
+        "setAliasCancel": "Cancel",
         "removeFromWorkspace": "Remove from workspace"
       },
       "manageConversations": {
@@ -1289,10 +1363,12 @@
         "system": "System",
         "toolResult": "Result",
         "toolError": "Error"
-      }
+      },
+      "moreActions": "More actions"
     },
     "sessionDetails": {
       "menuLabel": "Session Details",
+      "noActiveSession": "No active session",
       "title": "Session Details",
       "subtitle": "Session metadata and token usage",
       "fieldTitle": "Title",
@@ -1434,7 +1510,8 @@
       "preview": "Preview",
       "editSource": "Edit Source",
       "maximize": "Maximize",
-      "restore": "Restore"
+      "restore": "Restore",
+      "emptyDirectory": "Empty folder"
     },
     "terminal": {
       "rename": "Rename",
@@ -1866,6 +1943,7 @@
         "addToVcsFailed": "Failed to add to VCS",
         "loadBranchesFailed": "Failed to load branches",
         "renameFailed": "Rename failed",
+        "moveFailed": "Move failed",
         "deleteFailed": "Delete failed",
         "rolledBack": "Rolled back {name}",
         "rollbackFailed": "Rollback failed",
@@ -2159,7 +2237,8 @@
         "enableAgentFirstPlaceholder": "Enable at least one agent before starting a session...",
         "prepareSessionFailed": "Couldn't prepare the chat session. Please try again.",
         "createConversationFailed": "Couldn't create the conversation. Please try again.",
-        "askAnythingPlaceholder": "Ask anything..."
+        "askAnythingPlaceholder": "Ask anything...",
+        "agentNotInstalled": "{agent} is not installed — open Agents settings to install it"
       },
       "welcomePanel": {
         "greeting": "What would you like to <highlight>do today</highlight>?",
@@ -2259,7 +2338,8 @@
       },
       "agentSelector": {
         "noEnabledAgents": "No enabled agents",
-        "openAgentsSettings": "Open Agents settings"
+        "openAgentsSettings": "Open Agents settings",
+        "notInstalled": "Not installed"
       },
       "subAgentOverlay": {
         "title": "Sub-agents",
@@ -3280,7 +3360,7 @@
       "deleteConfirm": "Delete pet \"{name}\"? It will be removed from disk.",
       "summon": "Summon pet window",
       "openCodexHelp": "Codex pets must be installed under ~/.codex/pets/. None found.",
-      "specRequirement": "Spritesheet must be 1536x1872 PNG or WebP with transparency.",
+      "specRequirement": "Spritesheet must be 1536px wide with a height in 208px rows (e.g. 1872 or 2288), PNG or WebP with transparency.",
       "form": {
         "id": "Pet ID",
         "idHelp": "Lowercase letters, digits, '-' and '_'. Max 64 chars.",

@@ -8,16 +8,22 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// Sprite-sheet geometry locked to the Codex format.
+/// Sprite-sheet geometry. The grid is a fixed 8 columns with a constant
+/// 192×208 frame cell; only the row count varies. The base Codex format is
+/// 9 rows (1536×1872), while v2 marketplace pets append two animation rows
+/// for 11 rows (1536×2288). Height therefore grows in whole 208px steps and
+/// is validated per sheet rather than pinned to a single value.
 pub const SPRITE_SHEET_WIDTH: u32 = 1536;
+/// Height of the base 9-row sheet. Treated as the canonical *minimum*; taller
+/// sheets are accepted as long as the height is a whole multiple of a row.
 pub const SPRITE_SHEET_HEIGHT: u32 = 1872;
 #[allow(dead_code)]
 pub const SPRITE_GRID_COLS: u32 = 8;
-#[allow(dead_code)]
+/// Row count of the base format, i.e. the minimum number of rows a sheet must
+/// carry (all base animation states). Newer sheets append rows beyond this.
 pub const SPRITE_GRID_ROWS: u32 = 9;
 #[allow(dead_code)]
 pub const SPRITE_FRAME_WIDTH: u32 = SPRITE_SHEET_WIDTH / SPRITE_GRID_COLS; // 192
-#[allow(dead_code)]
 pub const SPRITE_FRAME_HEIGHT: u32 = SPRITE_SHEET_HEIGHT / SPRITE_GRID_ROWS; // 208
 
 /// Filename codex writes inside each pet directory. Stored as a relative path
@@ -71,6 +77,12 @@ pub struct PetManifest {
     /// round-trip compatibility but ignore the value when locating the asset
     /// (see `SPRITESHEET_FILENAME`).
     pub spritesheet_path: String,
+    /// Any additional manifest fields the upstream format carries (e.g.
+    /// `spriteVersionNumber`, `kind`). Captured verbatim so install/edit
+    /// round-trips preserve metadata newer formats introduce instead of
+    /// silently dropping it.
+    #[serde(flatten, default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Flattened summary returned to the frontend's pet list / picker.

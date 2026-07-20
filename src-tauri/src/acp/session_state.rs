@@ -189,6 +189,15 @@ pub struct ActiveDelegationState {
     pub child_connection_id: String,
     pub child_conversation_id: i32,
     pub agent_type: AgentType,
+    /// Bounded task text preview + broker task id, mirrored from
+    /// `DelegationStarted` so a snapshot re-attach mid-delegation reseeds the
+    /// frontend binding WITH its label — required on hosts whose parent tool
+    /// call never carries the arguments in `raw_input` (Cursor). `default` so
+    /// a snapshot serialized by an older backend still deserializes.
+    #[serde(default)]
+    pub task_preview: String,
+    #[serde(default)]
+    pub task_id: String,
 }
 
 /// The in-flight user prompt for the current turn. Captured from
@@ -791,8 +800,18 @@ impl SessionState {
                 });
                 // Reference instant for the in-flight prompt's recency check in
                 // `apply_in_flight_message_id`. Set here (not at manager enqueue)
-                // so it tracks `pending_user_message` exactly.
-                self.pending_user_message_started_at = Some(Utc::now());
+                // so it tracks `pending_user_message` exactly. Truncated to
+                // whole milliseconds: the gate compares this against parsed
+                // turn timestamps that carry at most millisecond precision
+                // (Cursor's journal upgrade rewrites the in-flight user turn
+                // to a millisecond send stamp taken right after this event
+                // applies — sub-ms residue here would push the threshold past
+                // that stamp and unstamp the turn). The shed sub-ms window
+                // cannot admit a prior identical prompt: no agent turn
+                // round-trips in under a millisecond.
+                let now = Utc::now();
+                self.pending_user_message_started_at =
+                    DateTime::from_timestamp_millis(now.timestamp_millis());
                 // Live-feedback notes are turn-scoped steering: a new user turn
                 // starts with a clean slate. The previous turn's notes (read or
                 // not) are history at this point; the frontend's "agent didn't
@@ -854,6 +873,8 @@ impl SessionState {
                 child_connection_id,
                 child_conversation_id,
                 agent_type,
+                task_preview,
+                task_id,
                 ..
             } => {
                 // Record the running delegation so the binding is snapshot-
@@ -869,6 +890,8 @@ impl SessionState {
                         child_connection_id: child_connection_id.clone(),
                         child_conversation_id: *child_conversation_id,
                         agent_type: *agent_type,
+                        task_preview: task_preview.clone(),
+                        task_id: task_id.clone(),
                     },
                 );
             }
@@ -1511,6 +1534,20 @@ mod tests {
     }
 
     #[test]
+    fn pending_user_message_started_at_has_no_sub_ms_residue() {
+        // The recency gate in `apply_in_flight_message_id` compares this
+        // stamp against millisecond-precision parsed-turn timestamps
+        // (Cursor's journal upgrade rewrites the in-flight user turn to a
+        // ms send stamp taken right after this event applies). Sub-ms
+        // residue would order the threshold AFTER a stamp taken later in
+        // real time and unstamp the turn.
+        let mut s = fresh_state();
+        s.apply_event(&text_user_message("user-1", "hello"));
+        let at = s.pending_user_message_started_at.expect("stamp set");
+        assert_eq!(at.timestamp_subsec_nanos() % 1_000_000, 0);
+    }
+
+    #[test]
     fn turn_complete_clears_pending_user_message() {
         let mut s = fresh_state();
         s.apply_event(&text_user_message("user-1", "hi"));
@@ -2070,6 +2107,8 @@ mod tests {
             child_connection_id: "child-conn-1".into(),
             child_conversation_id: child_conv,
             agent_type: AgentType::Codex,
+            task_preview: "run the tests".into(),
+            task_id: "task-ss-1".into(),
         }
     }
 

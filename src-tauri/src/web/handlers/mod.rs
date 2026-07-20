@@ -1,6 +1,7 @@
 pub mod acp;
 pub mod app_update;
 pub mod automation;
+pub mod background;
 pub mod backup;
 pub mod chat_channel;
 pub mod conversations;

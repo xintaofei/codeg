@@ -71,7 +71,7 @@ export function AppTitleBar({
       ) : null}
 
       {usesRightControls ? (
-        <div className="absolute right-0 top-0 z-30">
+        <div className="absolute inset-y-0 right-0 z-30 flex items-stretch">
           <WindowControls />
         </div>
       ) : null}

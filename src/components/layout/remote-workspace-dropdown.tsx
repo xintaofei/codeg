@@ -21,7 +21,14 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { RemoteWorkspaceManageDialog } from "./remote-workspace-manage-dialog"
 
-export function RemoteWorkspaceDropdown() {
+export function RemoteWorkspaceDropdown({
+  // Default keeps the original mobile look (this component is shared with the
+  // mobile FolderTitleBar). The desktop LeftEdgeChrome passes a darker-hover
+  // variant so the button is visible against its bg-muted strip.
+  triggerClassName = "h-6 w-6 hover:text-foreground/80",
+}: {
+  triggerClassName?: string
+} = {}) {
   const t = useTranslations("RemoteWorkspace")
   const [connections, setConnections] = useState<RemoteWorkspaceConnection[]>(
     []
@@ -46,7 +53,7 @@ export function RemoteWorkspaceDropdown() {
           <Button
             variant="ghost"
             size="icon"
-            className="h-6 w-6 hover:text-foreground/80"
+            className={triggerClassName}
             title={t("openRemoteWorkspace")}
           >
             <MonitorCloud className="h-3.5 w-3.5" />

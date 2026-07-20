@@ -15,21 +15,44 @@ use crate::db::service::app_metadata_service;
 use crate::db::AppDatabase;
 use crate::models::FolderDetail;
 
-/// Base traffic-light position (logical px) at 100 % zoom.
+/// Base traffic-light position (logical px) at 100 % zoom, tuned for the
+/// standard h-8 (32px) overlay title bar shared by the auxiliary windows
+/// (commit / merge / push / stash / settings / …).
 #[cfg(target_os = "macos")]
 const TRAFFIC_LIGHT_X: f64 = 12.0;
 #[cfg(target_os = "macos")]
 const TRAFFIC_LIGHT_Y: f64 = 17.0;
+/// The workspace windows (local `main` + remote workspace) render the taller
+/// h-10 (40px) `FolderTitleBar` that hosts the relocated conversation + file
+/// tab strips, so their traffic lights sit ~4px lower to stay vertically
+/// centred within the taller bar.
+#[cfg(target_os = "macos")]
+const WORKSPACE_TRAFFIC_LIGHT_Y: f64 = 21.0;
 
 #[cfg(target_os = "macos")]
 static CURRENT_ZOOM: AtomicU32 = AtomicU32::new(100);
 
 #[cfg(target_os = "macos")]
-fn traffic_light_position() -> tauri::LogicalPosition<f64> {
+fn traffic_light_position_at(base_y: f64) -> tauri::LogicalPosition<f64> {
     let zoom = CURRENT_ZOOM.load(AtomicOrdering::Relaxed) as f64;
     // Only Y scales with zoom: overlay content shifts vertically with
     // font-size changes, but the horizontal inset remains constant.
-    tauri::LogicalPosition::new(TRAFFIC_LIGHT_X, TRAFFIC_LIGHT_Y * zoom / 100.0)
+    tauri::LogicalPosition::new(TRAFFIC_LIGHT_X, base_y * zoom / 100.0)
+}
+
+/// Traffic-light position for the shared/auxiliary windows (standard bar).
+#[cfg(target_os = "macos")]
+fn traffic_light_position() -> tauri::LogicalPosition<f64> {
+    traffic_light_position_at(TRAFFIC_LIGHT_Y)
+}
+
+/// Traffic-light position for the workspace windows (taller bar): the local
+/// `main` window and every remote workspace window, both of which load the
+/// `/workspace` route. macOS only; call sites are guarded with
+/// `#[cfg(target_os = "macos")]`.
+#[cfg(target_os = "macos")]
+pub(crate) fn workspace_window_traffic_light_position() -> tauri::LogicalPosition<f64> {
+    traffic_light_position_at(WORKSPACE_TRAFFIC_LIGHT_Y)
 }
 
 const ZOOM_LEVEL_DB_KEY: &str = "appearance_zoom_level";

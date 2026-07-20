@@ -174,10 +174,77 @@ describe("aux file tree derives its selection from the absolute tab path", () =>
 
   it("maps the absolute active path to a folder-relative tree selection", () => {
     // Tree node paths are relative to THIS panel's folder; the absolute
-    // activeFilePath must be re-based (and unselected when outside).
+    // activeFilePath must be re-based (and unselected when outside). The
+    // re-based path flows into the tree through focusedTreePath (which also
+    // tracks the clicked directory), never as the raw absolute path.
     expect(auxTreeSource).toMatch(/findOwningFolder\(activeFilePath/)
-    expect(auxTreeSource).toMatch(/selectedPath=\{selectedTreePath\}/)
+    expect(auxTreeSource).toMatch(/setFocusedTreePath\(selectedTreePath\)/)
+    expect(auxTreeSource).toMatch(/selectedPath=\{focusedTreePath\}/)
     expect(auxTreeSource).not.toMatch(/selectedPath=\{activeFilePath/)
+    // The sync MUST be unconditional: a `if (selectedTreePath)` guard would
+    // strand a stale file highlight when the active file is cleared or moves
+    // outside this folder (selectedTreePath -> undefined).
+    expect(auxTreeSource).not.toMatch(
+      /if \(selectedTreePath\)\s*setFocusedTreePath/
+    )
+  })
+})
+
+describe("aux file tree highlights the desktop drop target from native DRAG_OVER", () => {
+  const auxTreeSource = readFileSync(
+    resolve(process.cwd(), "src/components/layout/aux-panel-file-tree-tab.tsx"),
+    "utf8"
+  )
+
+  it("derives the drop highlight from the drag hit-test, OR-ed into each row", () => {
+    // WebKit swallows the target-side DOM dragover during a native desktop
+    // drag, so the directory drop highlight can't come from onDragOver — it
+    // must be hit-tested into desktopDropDir and OR-ed into each row's
+    // dropActive (folder rows by path, root by "").
+    expect(auxTreeSource).toMatch(/setDesktopDropDir\(/)
+    expect(auxTreeSource).toMatch(
+      /dropActive=\{dropActive \|\| desktopDropDir === node\.path\}/
+    )
+    expect(auxTreeSource).toMatch(/useContext\(DesktopDropDirContext\) === ""/)
+  })
+
+  it("drives the highlight from the source-side DOM drag event (clientX/Y)", () => {
+    // The primary driver: `drag` is source-side (NOT suppressed by WebKit like
+    // the target-side dragover) and reports the cursor already in CSS px, so it
+    // hit-tests elementFromPoint(clientX, clientY) with no coordinate scaling.
+    expect(auxTreeSource).toMatch(
+      /onDrag[:=].*dnd\.onEntryDrag\(event\.clientX, event\.clientY\)/
+    )
+    expect(auxTreeSource).toMatch(/elementFromPoint\(clientX, clientY\)/)
+  })
+})
+
+describe("aux file tree drag/selection polish", () => {
+  const auxTreeSource = readFileSync(
+    resolve(process.cwd(), "src/components/layout/aux-panel-file-tree-tab.tsx"),
+    "utf8"
+  )
+
+  it("gives the drag a compact custom ghost instead of the full-width row", () => {
+    // The default drag image snapshots the now-full-width row, which reads as a
+    // big translucent block with a WebKit drop shadow. A custom setDragImage
+    // chip keeps the dragged item legible; lock it so a refactor can't drop back
+    // to the native ghost.
+    expect(auxTreeSource).toMatch(/setDragImage\(/)
+    expect(auxTreeSource).toMatch(/applyCompactDragImage\(event, node\.name\)/)
+  })
+
+  it("selects the dragged row on drag start (deselecting the rest)", () => {
+    // Picking a row up moves the single-select focus to it, so the dragged
+    // file/dir shows the selected style and every other row loses it.
+    expect(auxTreeSource).toMatch(/setFocusedTreePath\(node\.path\)/)
+  })
+
+  it("insets the row highlight from the panel edges", () => {
+    // The selection/hover/drop highlight is the full-width row background;
+    // horizontal padding on the tree container leaves a small left/right gutter
+    // so it no longer runs edge-to-edge.
+    expect(auxTreeSource).toMatch(/w-max min-w-full px-1\.5/)
   })
 })
 

@@ -28,3 +28,20 @@ export function buildMonacoModelPath(path: string | null, id: string): string {
     .join("/")
   return `file:///${encoded}`
 }
+
+/**
+ * Model URIs of every open tab — the keep-set for reconciling Monaco's model
+ * registry against the tab list (models whose tab has closed get disposed).
+ * Every tab is included regardless of kind: tabs that never materialize a
+ * model (rich diffs render their own editor) just never match a registry
+ * entry.
+ */
+export function collectLiveModelPaths(
+  tabs: ReadonlyArray<{ id: string; path: string | null }>
+): string[] {
+  const uris = new Set<string>()
+  for (const tab of tabs) {
+    uris.add(buildMonacoModelPath(tab.path, tab.id))
+  }
+  return [...uris]
+}

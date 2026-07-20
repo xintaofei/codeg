@@ -117,6 +117,29 @@
       "sectionTitle": "모드 선택 영역",
       "sectionDescription": "새 대화 페이지에서 입력창 위에 표시되는 '코드 개발 / 일상 업무' 바로가기 카드입니다.",
       "showQuickActions": "새 대화 페이지에 표시"
+    },
+    "workspaceBackground": {
+      "sectionTitle": "작업 공간 배경",
+      "sectionDescription": "작업 공간 전체 뒤에 이미지를 표시합니다. 사이드바와 패널이 반투명 유리 효과로 바뀌어 이미지가 비쳐 보이며, 마스크가 텍스트 가독성을 유지합니다.",
+      "enable": "배경 이미지 사용",
+      "image": "이미지",
+      "chooseImage": "이미지 선택",
+      "replaceImage": "이미지 변경",
+      "removeImage": "제거",
+      "fillMode": "채우기 방식",
+      "fillModes": {
+        "cover": "채우기",
+        "contain": "맞춤",
+        "center": "가운데",
+        "tile": "바둑판식"
+      },
+      "maskOpacity": "마스크 불투명도",
+      "maskOpacityHint": "값이 높을수록 이미지가 테마 배경색으로 흐려져 텍스트 대비가 좋아집니다.",
+      "imageBlur": "이미지 흐림",
+      "panelOpacity": "패널 불투명도",
+      "panelOpacityHint": "사이드바, 패널, 탭 바의 불투명도입니다. 낮을수록 이미지가 더 많이 비쳐 보입니다.",
+      "errorTooLarge": "이미지가 너무 큽니다(최대 16 MB).",
+      "errorUploadFailed": "배경 이미지 설정에 실패했습니다."
     }
   },
   "SystemSettings": {
@@ -640,6 +663,49 @@
       "autoCompactLabel": "자동 압축 임계값(%)",
       "autoCompactHint": "컨텍스트 사용량이 이 비율에 도달하면 대화를 압축합니다(Grok 기본값 85). `[session]`에 기록됩니다."
     },
+    "cursor": {
+      "configDescription": "여기에서 Cursor를 설정합니다. 먼저 인증 방식을 선택하세요——공식 구독(브라우저 로그인) 또는 헤드리스/서버용 Cursor API 키——그런 다음 모델을 선택하고 CLI의 권한 규칙과 샌드박스를 편집합니다. codeg는 이를 ~/.cursor/cli-config.json에 기록하며 cursor-agent CLI와 공유합니다.",
+      "authTitle": "인증",
+      "authChecking": "확인 중…",
+      "authNotInstalled": "cursor-agent가 설치되지 않았습니다",
+      "authLoggedIn": "로그인됨",
+      "authNotLoggedIn": "로그인되지 않음",
+      "loginHint": "터미널에서 아래 명령을 실행해 Cursor 계정으로 로그인(브라우저가 열립니다)한 뒤 새로고침을 누르세요:",
+      "apiKeyLabel": "Cursor API 키",
+      "apiKeyPlaceholder": "cursor.com/dashboard에서 발급",
+      "apiKeyHint": "CURSOR_API_KEY —— Cursor 대시보드의 계정 키로, 헤드리스/서버 환경에서 브라우저 로그인 대신 사용합니다. 서드파티나 OpenAI 키가 아닙니다.",
+      "modelTitle": "기본 모델",
+      "loadModels": "모델 목록 가져오기",
+      "modelsUnavailable": "모델 목록을 가져올 수 없음",
+      "modelHint": "세션 시작 시 --model로 CLI에 전달됩니다. 기본값이면 Cursor가 선택합니다.",
+      "permissionsTitle": "권한 및 샌드박스",
+      "permissionsDescription": "CLI 권한 규칙(cli-config.json)의 시각 편집기입니다. 허용 규칙은 확인 없이 실행되고 거부 규칙은 항상 차단됩니다.",
+      "permissionModeLabel": "권한 모드",
+      "permissionModeDefault": "실행 전 확인(기본)",
+      "permissionModeForce": "Run Everything(--force)",
+      "permissionModeHint": "Run Everything은 --force로 세션을 시작합니다. deny 규칙을 제외한 모든 도구 호출이 확인 없이 자동 허용됩니다(조직 정책에 따라 allow 규칙 일치로 제한될 수 있음). 새 세션부터 적용됩니다.",
+      "optionDefault": "기본(미설정)",
+      "sandboxLabel": "샌드박스",
+      "sandboxEnabled": "사용",
+      "sandboxDisabled": "사용 안 함",
+      "allowRulesLabel": "허용 규칙",
+      "denyRulesLabel": "거부 규칙",
+      "addRule": "규칙 추가",
+      "rulesSyntaxHint": "규칙 구문: Shell(명령), Read(경로/글롭), Write(경로/글롭), WebFetch(도메인), Mcp(서버:도구) — deny 규칙이 항상 우선합니다.",
+      "saveConfig": "설정 저장",
+      "advancedToggle": "고급: 원본 cli-config.json",
+      "advancedHint": "~/.cursor/cli-config.json 전체입니다. 여기서 저장하면 그대로 기록되며, 위 구조화 컨트롤은 병합 방식으로 기록됩니다.",
+      "saveRawConfig": "파일 저장",
+      "authMode": "인증 방식",
+      "subscriptionHint": "Cursor 계정으로 로그인하고 Cursor의 모델을 사용합니다.",
+      "customApiKeyRequired": "Cursor API 키가 필요합니다.",
+      "authModeApiKey": "Cursor API 키 (헤드리스/서버)",
+      "authModeApiKeyHint": "Cursor 대시보드에서 발급한 계정 API 키로 인증합니다(헤드리스/서버 환경용). 이는 Cursor 계정 키이며 서드파티/OpenAI 엔드포인트가 아닙니다——cursor-agent는 Cursor 자체 백엔드에만 연결됩니다. codex/OpenAI 호환 엔드포인트를 사용하려면 Codex 에이전트를 대신 사용하세요.",
+      "modelPickerPlaceholder": "모델 검색…",
+      "modelNoMatch": "일치하는 모델 없음",
+      "modelsNeedAuth": "로그인하면 모델 목록을 불러옵니다.",
+      "modelDefaultBadge": "기본값"
+    },
     "codex": {
       "configDescription": "API URL, API Key, 모델 이름, reasoning effort를 빠르게 설정하고 `auth.json` / `config.toml`과 동기화합니다.",
       "authMode": "인증 방식",
@@ -921,6 +987,8 @@
       "grokSaved": "Grok 설정이 저장됨",
       "saveGrokNativeFailed": "Grok 네이티브 설정 저장 실패",
       "saveGrokApiKeyFailed": "설정은 저장되었지만 API 키를 저장하지 못했습니다",
+      "cursorSaved": "Cursor 설정이 저장되었습니다",
+      "saveCursorConfigFailed": "Cursor 설정 저장 실패",
       "codexSaved": "Codex 설정 저장됨",
       "saveCodexNativeFailed": "Codex 네이티브 구성 저장 실패",
       "geminiSaved": "Gemini 설정 저장됨",
@@ -1189,6 +1257,7 @@
         "removeFolderFailed": "폴더 제거 실패: {message}",
         "reorderFoldersFailed": "폴더 순서 변경 실패: {message}",
         "changeFolderColorFailed": "색상 변경 실패: {message}",
+        "setFolderAliasFailed": "별칭 설정 실패: {message}",
         "changeFolderDefaultAgentFailed": "기본 에이전트 설정 실패: {message}"
       },
       "statsLabel": "{folders}개 폴더 · {convos}개 대화",
@@ -1220,6 +1289,11 @@
         "defaultAgentNone": "설정 없음(전역 사용)",
         "agentUnavailableSuffix": "(사용 불가)",
         "loadingAgents": "에이전트 로드 중…",
+        "setAlias": "별칭 설정…",
+        "setAliasTitle": "폴더 별칭 설정",
+        "setAliasPlaceholder": "별칭 입력 (비우면 지움)",
+        "setAliasSave": "저장",
+        "setAliasCancel": "취소",
         "removeFromWorkspace": "워크스페이스에서 제거"
       },
       "manageConversations": {
@@ -1289,10 +1363,12 @@
         "system": "시스템",
         "toolResult": "결과",
         "toolError": "오류"
-      }
+      },
+      "moreActions": "추가 작업"
     },
     "sessionDetails": {
       "menuLabel": "세션 세부 정보",
+      "noActiveSession": "활성 세션이 없습니다",
       "title": "세션 세부 정보",
       "subtitle": "세션 메타데이터 및 토큰 사용량",
       "fieldTitle": "제목",
@@ -1434,7 +1510,8 @@
       "preview": "미리보기",
       "editSource": "소스 편집",
       "maximize": "최대화",
-      "restore": "복원"
+      "restore": "복원",
+      "emptyDirectory": "빈 폴더"
     },
     "terminal": {
       "rename": "이름 변경",
@@ -1866,6 +1943,7 @@
         "addToVcsFailed": "VCS에 추가하지 못했습니다",
         "loadBranchesFailed": "브랜치를 불러오지 못했습니다",
         "renameFailed": "이름 변경에 실패했습니다",
+        "moveFailed": "이동에 실패했습니다",
         "deleteFailed": "삭제에 실패했습니다",
         "rolledBack": "{name}을(를) 롤백했습니다",
         "rollbackFailed": "롤백에 실패했습니다",
@@ -2159,7 +2237,8 @@
         "enableAgentFirstPlaceholder": "세션을 시작하기 전에 최소 한 개의 에이전트를 활성화하세요...",
         "prepareSessionFailed": "채팅 세션을 준비하지 못했습니다. 다시 시도해 주세요.",
         "createConversationFailed": "대화를 만들지 못했습니다. 다시 시도해 주세요.",
-        "askAnythingPlaceholder": "무엇이든 물어보세요..."
+        "askAnythingPlaceholder": "무엇이든 물어보세요...",
+        "agentNotInstalled": "{agent}이(가) 설치되지 않았습니다 · 클릭하여 Agents 설정에서 설치하세요"
       },
       "welcomePanel": {
         "greeting": "오늘은 <highlight>무엇을</highlight> 해볼까요?",
@@ -2259,7 +2338,8 @@
       },
       "agentSelector": {
         "noEnabledAgents": "활성화된 에이전트가 없습니다",
-        "openAgentsSettings": "에이전트 설정 열기"
+        "openAgentsSettings": "에이전트 설정 열기",
+        "notInstalled": "설치되지 않음"
       },
       "subAgentOverlay": {
         "title": "서브 에이전트",
@@ -3268,7 +3348,7 @@
       "deleteConfirm": "펫 \"{name}\"을(를) 삭제할까요? 디스크에서도 함께 제거됩니다.",
       "summon": "펫 창 호출",
       "openCodexHelp": "Codex 펫은 ~/.codex/pets/ 아래에 설치되어야 합니다. 찾을 수 없습니다.",
-      "specRequirement": "스프라이트 시트는 1536x1872 PNG 또는 WebP(투명) 이어야 합니다.",
+      "specRequirement": "스프라이트 시트는 너비 1536px, 높이는 208px의 배수(예: 1872 또는 2288)인 투명 PNG 또는 WebP여야 합니다.",
       "form": {
         "id": "펫 ID",
         "idHelp": "소문자/숫자/'-'/'_' 만 가능. 최대 64자.",

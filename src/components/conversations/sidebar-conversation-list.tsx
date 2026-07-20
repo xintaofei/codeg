@@ -31,12 +31,14 @@ import {
   Palette,
   Rocket,
   SquarePen,
+  Tag,
   XCircle,
 } from "lucide-react"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
+import { useConversationLocate } from "@/contexts/conversation-locate-context"
 import { useTaskContext } from "@/contexts/task-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
 import { useThemeColor, useZoomLevel } from "@/hooks/use-appearance"
@@ -48,6 +50,7 @@ import {
   updateConversationStatus,
   updateConversationPinned,
   updateFolderColor,
+  updateFolderAlias,
   updateFolderDefaultAgent,
   deleteConversation,
   listChildConversations,
@@ -109,6 +112,14 @@ import { ConversationManageDialog } from "./conversation-manage-dialog"
 import { CloneDialog } from "@/components/layout/clone-dialog"
 import { DirectoryBrowserDialog } from "@/components/shared/directory-browser-dialog"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Skeleton } from "@/components/ui/skeleton"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
@@ -132,6 +143,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { cn } from "@/lib/utils"
+import { FolderAliasLabel } from "./folder-alias-label"
 import { toErrorMessage } from "@/lib/app-error"
 
 // Layout effect on the client (so the sticky overlay is positioned before
@@ -142,6 +154,7 @@ const useIsomorphicLayoutEffect =
 const FolderHeader = memo(function FolderHeader({
   folderId,
   folderName,
+  folderAlias,
   folderPath,
   count,
   expanded,
@@ -157,6 +170,7 @@ const FolderHeader = memo(function FolderHeader({
   onImport,
   onManageConversations,
   onChangeColor,
+  onSetAlias,
   onSetDefaultAgent,
   onOpenInSystemExplorer,
   onOpenInTerminal,
@@ -166,6 +180,8 @@ const FolderHeader = memo(function FolderHeader({
 }: {
   folderId: number
   folderName: string
+  /** User-set alias, or null. When present the header shows `alias [name]`. */
+  folderAlias: string | null
   folderPath: string
   count: number
   expanded: boolean
@@ -189,6 +205,7 @@ const FolderHeader = memo(function FolderHeader({
   onImport: (folderId: number) => void
   onManageConversations: (folderId: number) => void
   onChangeColor: (folderId: number, color: FolderThemeColor) => void
+  onSetAlias: (folderId: number, alias: string | null) => void
   onSetDefaultAgent: (folderId: number, agentType: AgentType | null) => void
   onOpenInSystemExplorer: (folderId: number) => void
   onOpenInTerminal: (folderId: number) => void
@@ -232,76 +249,100 @@ const FolderHeader = memo(function FolderHeader({
   // `revealItemInDir` only works inside Tauri; in web mode it is a no-op,
   // so disable the entry there to avoid silent failures.
   const isDesktopMode = isDesktop()
+
+  // Alias dialog: controlled Dialog rendered as a sibling of the ContextMenu so
+  // it survives the menu closing on select (mirrors the conversation card's
+  // rename dialog). Seeded from the current alias on open.
+  const [aliasDialogOpen, setAliasDialogOpen] = useState(false)
+  const [aliasValue, setAliasValue] = useState("")
+  const openAliasDialog = useCallback(() => {
+    setAliasValue(folderAlias ?? "")
+    setAliasDialogOpen(true)
+  }, [folderAlias])
+  const confirmAlias = useCallback(() => {
+    // Empty / whitespace clears the alias (null); the backend re-normalizes too.
+    const trimmed = aliasValue.trim()
+    onSetAlias(folderId, trimmed ? trimmed : null)
+    setAliasDialogOpen(false)
+  }, [aliasValue, folderId, onSetAlias])
+
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
-        <div
-          inert={suppressed || undefined}
-          aria-hidden={suppressed || undefined}
-          className={cn("relative h-[2rem]", isDragging && "opacity-60")}
-        >
+    <>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
           <div
-            onPointerDown={(e) => onGripPointerDown?.(folderId, e)}
-            className={cn(
-              "group flex h-[1.9375rem] w-full items-center",
-              "rounded-full",
-              "transition-colors duration-150",
-              isDragging
-                ? "cursor-grabbing"
-                : "cursor-grab hover:bg-[color-mix(in_oklab,var(--sidebar-accent),var(--sidebar-foreground)_2%)]"
-            )}
+            inert={suppressed || undefined}
+            aria-hidden={suppressed || undefined}
+            className={cn("relative h-[2rem]", isDragging && "opacity-60")}
           >
-            <button
-              data-folder-id={folderId}
-              onClick={() => onToggle(folderId)}
-              title={folderPath}
-              aria-expanded={expanded}
+            <div
+              onPointerDown={(e) => onGripPointerDown?.(folderId, e)}
               className={cn(
-                "relative flex h-full min-w-0 flex-1 items-center pr-[0.5rem] outline-none",
-                "rounded-full focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-                "text-sidebar-foreground",
-                isDragging ? "cursor-grabbing" : "cursor-grab"
+                "group flex h-[1.9375rem] w-full items-center",
+                "rounded-full",
+                "transition-colors duration-150",
+                isDragging
+                  ? "cursor-grabbing"
+                  : "cursor-grab hover:bg-[color-mix(in_oklab,var(--sidebar-accent),var(--sidebar-foreground)_2%)]"
               )}
-              style={{ paddingLeft: "calc(var(--conv-rail-axis) + 0.875rem)" }}
             >
-              <span
-                aria-hidden
+              <button
+                data-folder-id={folderId}
+                onClick={() => onToggle(folderId)}
+                title={folderPath}
+                aria-expanded={expanded}
                 className={cn(
-                  "pointer-events-none absolute flex items-center justify-center text-muted-foreground/75"
+                  "relative flex h-full min-w-0 flex-1 items-center pr-[0.5rem] outline-none",
+                  "rounded-full focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                  "text-sidebar-foreground",
+                  isDragging ? "cursor-grabbing" : "cursor-grab"
                 )}
                 style={{
-                  top: "50%",
-                  left: "var(--conv-rail-axis)",
-                  width: "0.875rem",
-                  height: "0.875rem",
-                  transform: "translate(-50%, -50%)",
+                  paddingLeft: "calc(var(--conv-rail-axis) + 0.875rem)",
                 }}
               >
-                {expanded ? (
-                  <FolderOpen className="h-[0.875rem] w-[0.875rem]" />
-                ) : (
-                  <FolderClosed className="h-[0.875rem] w-[0.875rem]" />
-                )}
-              </span>
-              <div className="flex min-w-0 flex-1 items-center gap-[0.5rem]">
                 <span
+                  aria-hidden
                   className={cn(
-                    "min-w-0 flex-shrink truncate text-left text-[0.875rem] font-normal text-sidebar-foreground/75"
+                    "pointer-events-none absolute flex items-center justify-center text-muted-foreground/75"
                   )}
+                  style={{
+                    top: "50%",
+                    left: "var(--conv-rail-axis)",
+                    width: "0.875rem",
+                    height: "0.875rem",
+                    transform: "translate(-50%, -50%)",
+                  }}
                 >
-                  {folderName}
-                </span>
-                <span
-                  className={cn(
-                    "inline-flex shrink-0 items-center justify-center",
-                    "h-[0.9375rem] min-w-[1rem] rounded-[0.3125rem] px-[0.25rem]",
-                    "text-[0.625rem] font-semibold leading-none tabular-nums",
-                    "bg-primary/10 text-primary"
+                  {expanded ? (
+                    <FolderOpen className="h-[0.875rem] w-[0.875rem]" />
+                  ) : (
+                    <FolderClosed className="h-[0.875rem] w-[0.875rem]" />
                   )}
-                >
-                  {count}
                 </span>
-                {/* Disclosure chevron mirrors the section headers: hover-revealed,
+                <div className="flex min-w-0 flex-1 items-center gap-[0.5rem]">
+                  <span
+                    className={cn(
+                      "min-w-0 flex-shrink truncate text-left text-[0.875rem] font-normal text-sidebar-foreground/75"
+                    )}
+                  >
+                    <FolderAliasLabel
+                      name={folderName}
+                      alias={folderAlias}
+                      bracketClassName="text-sidebar-foreground"
+                    />
+                  </span>
+                  <span
+                    className={cn(
+                      "inline-flex shrink-0 items-center justify-center",
+                      "h-[0.9375rem] min-w-[1rem] rounded-[0.3125rem] px-[0.25rem]",
+                      "text-[0.625rem] font-semibold leading-none tabular-nums",
+                      "bg-primary/10 text-primary"
+                    )}
+                  >
+                    {count}
+                  </span>
+                  {/* Disclosure chevron mirrors the section headers: hover-revealed,
                     rotates on expand. The persistent open/closed state still reads
                     from the folder icon on the left; this is the matching affordance
                     that makes folder + section headers feel like one family.
@@ -311,236 +352,269 @@ const FolderHeader = memo(function FolderHeader({
                     sibling ⋯ menu button), so the reveal must react to focus
                     anywhere inside the row. The section header's `group` IS its
                     button, so it uses `group-focus-visible`. Don't "normalize". */}
-                <ChevronRight
-                  aria-hidden
-                  className={cn(
-                    "h-3 w-3 shrink-0 text-muted-foreground/60",
-                    "transition-[transform,opacity] duration-200 ease-out",
-                    // Collapsed: always visible (mirrors the section headers, so a
-                    // folded folder shows the same reopen affordance). Expanded:
-                    // hover/focus-only.
-                    expanded
-                      ? "rotate-90 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100"
-                      : "opacity-100"
-                  )}
-                />
-              </div>
-            </button>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation()
-                // Re-open the SAME context menu as right-click (single source of
-                // truth — the menu has 3 submenus, duplicating it would drift).
-                // Dispatch a synthetic contextmenu event from this button; it
-                // bubbles to the enclosing <ContextMenuTrigger>, which Radix opens
-                // at the given coords — anchored just under the button.
-                const rect = e.currentTarget.getBoundingClientRect()
-                e.currentTarget.dispatchEvent(
-                  new MouseEvent("contextmenu", {
-                    bubbles: true,
-                    cancelable: true,
-                    button: 2,
-                    clientX: rect.left,
-                    clientY: rect.bottom,
-                  })
-                )
-              }}
-              title={t("moreOptions")}
-              aria-label={t("moreOptions")}
-              aria-haspopup="menu"
-              className={cn(
-                "flex h-6 w-6 shrink-0 items-center justify-end",
-                // Shares the card action-icon palette: default /90 is the lightest
-                // muted shade clearing 3:1 non-text contrast (incl. on touch, where
-                // this stays visible); hover deepens to full foreground.
-                "rounded-[0.375rem] cursor-pointer outline-none text-muted-foreground/90",
-                "opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100",
-                "transition-[opacity,color] duration-150 hover:text-sidebar-foreground"
-              )}
-            >
-              <MoreHorizontal className="h-[0.875rem] w-[0.875rem]" />
-            </button>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation()
-                onNewConversation(folderId)
-              }}
-              title={t("newConversation")}
-              aria-label={t("newConversation")}
-              className={cn(
-                // Mirrors the ⋯ button's action-icon palette and hover-reveal so
-                // the two read as one trailing control cluster. As the rightmost
-                // control it carries the right-edge margin that lines this cluster
-                // up with the other sidebar affordances: 0.375rem + the list's
-                // px-1.5 (0.375rem) = a uniform 0.75rem inset from the border,
-                // matching the section-header actions and conversation-card badges.
-                // h-6 (not h-7) keeps every action-icon centre on the same axis, and
-                // justify-end flushes the glyph to that 0.75rem edge so the visible
-                // icon — not the transparent button box — lines up with the badges.
-                "mr-[0.375rem] flex h-6 w-6 shrink-0 items-center justify-end",
-                "rounded-[0.375rem] cursor-pointer outline-none text-muted-foreground/90",
-                "opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100",
-                "transition-[opacity,color] duration-150 hover:text-sidebar-foreground"
-              )}
-            >
-              <SquarePen className="h-[0.875rem] w-[0.875rem]" />
-            </button>
+                  <ChevronRight
+                    aria-hidden
+                    className={cn(
+                      "h-3 w-3 shrink-0 text-muted-foreground/60",
+                      "transition-[transform,opacity] duration-200 ease-out",
+                      // Collapsed: always visible (mirrors the section headers, so a
+                      // folded folder shows the same reopen affordance). Expanded:
+                      // hover/focus-only.
+                      expanded
+                        ? "rotate-90 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100"
+                        : "opacity-100"
+                    )}
+                  />
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  // Re-open the SAME context menu as right-click (single source of
+                  // truth — the menu has 3 submenus, duplicating it would drift).
+                  // Dispatch a synthetic contextmenu event from this button; it
+                  // bubbles to the enclosing <ContextMenuTrigger>, which Radix opens
+                  // at the given coords — anchored just under the button.
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  e.currentTarget.dispatchEvent(
+                    new MouseEvent("contextmenu", {
+                      bubbles: true,
+                      cancelable: true,
+                      button: 2,
+                      clientX: rect.left,
+                      clientY: rect.bottom,
+                    })
+                  )
+                }}
+                title={t("moreOptions")}
+                aria-label={t("moreOptions")}
+                aria-haspopup="menu"
+                className={cn(
+                  "flex h-6 w-6 shrink-0 items-center justify-end",
+                  // Shares the card action-icon palette: default /90 is the lightest
+                  // muted shade clearing 3:1 non-text contrast (incl. on touch, where
+                  // this stays visible); hover deepens to full foreground.
+                  "rounded-[0.375rem] cursor-pointer outline-none text-muted-foreground/90",
+                  "opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100",
+                  "transition-[opacity,color] duration-150 hover:text-sidebar-foreground"
+                )}
+              >
+                <MoreHorizontal className="h-[0.875rem] w-[0.875rem]" />
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onNewConversation(folderId)
+                }}
+                title={t("newConversation")}
+                aria-label={t("newConversation")}
+                className={cn(
+                  // Mirrors the ⋯ button's action-icon palette and hover-reveal so
+                  // the two read as one trailing control cluster. As the rightmost
+                  // control it carries the right-edge margin that lines this cluster
+                  // up with the other sidebar affordances: 0.375rem + the list's
+                  // px-1.5 (0.375rem) = a uniform 0.75rem inset from the border,
+                  // matching the section-header actions and conversation-card badges.
+                  // h-6 (not h-7) keeps every action-icon centre on the same axis, and
+                  // justify-end flushes the glyph to that 0.75rem edge so the visible
+                  // icon — not the transparent button box — lines up with the badges.
+                  "mr-[0.375rem] flex h-6 w-6 shrink-0 items-center justify-end",
+                  "rounded-[0.375rem] cursor-pointer outline-none text-muted-foreground/90",
+                  "opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100",
+                  "transition-[opacity,color] duration-150 hover:text-sidebar-foreground"
+                )}
+              >
+                <SquarePen className="h-[0.875rem] w-[0.875rem]" />
+              </button>
+            </div>
           </div>
-        </div>
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem onSelect={() => onNewConversation(folderId)}>
-          <SquarePen className="h-4 w-4" />
-          {t("newConversation")}
-        </ContextMenuItem>
-        <ContextMenuItem
-          disabled={importing}
-          onSelect={() => onImport(folderId)}
-        >
-          <Download className="h-4 w-4" />
-          {importing ? t("importing") : t("importLocalSessions")}
-        </ContextMenuItem>
-        <ContextMenuSub>
-          <ContextMenuSubTrigger>
-            <ExternalLink className="h-4 w-4" />
-            {tFileTree("openIn")}
-          </ContextMenuSubTrigger>
-          <ContextMenuSubContent>
-            <ContextMenuItem
-              disabled={!isDesktopMode}
-              onSelect={() => onOpenInSystemExplorer(folderId)}
-            >
-              {systemExplorerLabel}
-            </ContextMenuItem>
-            <ContextMenuItem onSelect={() => onOpenInTerminal(folderId)}>
-              {tFileTree("openInTerminal")}
-            </ContextMenuItem>
-          </ContextMenuSubContent>
-        </ContextMenuSub>
-        <ContextMenuSeparator />
-        <ContextMenuItem onSelect={() => onManageConversations(folderId)}>
-          <ListChecks className="h-4 w-4" />
-          {t("folderHeaderMenu.manageConversations")}
-        </ContextMenuItem>
-        <ContextMenuSub>
-          <ContextMenuSubTrigger>
-            <Bot className="h-4 w-4" />
-            {t("folderHeaderMenu.setDefaultAgent")}
-          </ContextMenuSubTrigger>
-          <ContextMenuSubContent className="min-w-[12rem]">
-            <ContextMenuItem
-              onSelect={() => onSetDefaultAgent(folderId, null)}
-              className="gap-2"
-            >
-              <span className="min-w-0 flex-1 truncate">
-                {t("folderHeaderMenu.defaultAgentNone")}
-              </span>
-              {currentDefaultAgent === null ? (
-                <Check className="h-3.5 w-3.5 shrink-0" />
-              ) : null}
-            </ContextMenuItem>
-            <ContextMenuSeparator />
-            {availableAgentsFresh ? (
-              <>
-                {availableAgents.map((agent) => {
-                  const active = currentDefaultAgent === agent
-                  return (
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onSelect={() => onNewConversation(folderId)}>
+            <SquarePen className="h-4 w-4" />
+            {t("newConversation")}
+          </ContextMenuItem>
+          <ContextMenuItem
+            disabled={importing}
+            onSelect={() => onImport(folderId)}
+          >
+            <Download className="h-4 w-4" />
+            {importing ? t("importing") : t("importLocalSessions")}
+          </ContextMenuItem>
+          <ContextMenuSub>
+            <ContextMenuSubTrigger>
+              <ExternalLink className="h-4 w-4" />
+              {tFileTree("openIn")}
+            </ContextMenuSubTrigger>
+            <ContextMenuSubContent>
+              <ContextMenuItem
+                disabled={!isDesktopMode}
+                onSelect={() => onOpenInSystemExplorer(folderId)}
+              >
+                {systemExplorerLabel}
+              </ContextMenuItem>
+              <ContextMenuItem onSelect={() => onOpenInTerminal(folderId)}>
+                {tFileTree("openInTerminal")}
+              </ContextMenuItem>
+            </ContextMenuSubContent>
+          </ContextMenuSub>
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={() => onManageConversations(folderId)}>
+            <ListChecks className="h-4 w-4" />
+            {t("folderHeaderMenu.manageConversations")}
+          </ContextMenuItem>
+          <ContextMenuSub>
+            <ContextMenuSubTrigger>
+              <Bot className="h-4 w-4" />
+              {t("folderHeaderMenu.setDefaultAgent")}
+            </ContextMenuSubTrigger>
+            <ContextMenuSubContent className="min-w-[12rem]">
+              <ContextMenuItem
+                onSelect={() => onSetDefaultAgent(folderId, null)}
+                className="gap-2"
+              >
+                <span className="min-w-0 flex-1 truncate">
+                  {t("folderHeaderMenu.defaultAgentNone")}
+                </span>
+                {currentDefaultAgent === null ? (
+                  <Check className="h-3.5 w-3.5 shrink-0" />
+                ) : null}
+              </ContextMenuItem>
+              <ContextMenuSeparator />
+              {availableAgentsFresh ? (
+                <>
+                  {availableAgents.map((agent) => {
+                    const active = currentDefaultAgent === agent
+                    return (
+                      <ContextMenuItem
+                        key={agent}
+                        onSelect={() => onSetDefaultAgent(folderId, agent)}
+                        className="gap-2"
+                      >
+                        <span className="min-w-0 flex-1 truncate">
+                          {AGENT_LABELS[agent]}
+                        </span>
+                        {active ? (
+                          <Check className="h-3.5 w-3.5 shrink-0" />
+                        ) : null}
+                      </ContextMenuItem>
+                    )
+                  })}
+                  {showStaleDefault && currentDefaultAgent !== null ? (
                     <ContextMenuItem
-                      key={agent}
-                      onSelect={() => onSetDefaultAgent(folderId, agent)}
-                      className="gap-2"
+                      key={currentDefaultAgent}
+                      disabled
+                      className="gap-2 opacity-60"
                     >
                       <span className="min-w-0 flex-1 truncate">
-                        {AGENT_LABELS[agent]}
+                        {`${AGENT_LABELS[currentDefaultAgent]} ${t("folderHeaderMenu.agentUnavailableSuffix")}`}
                       </span>
-                      {active ? (
-                        <Check className="h-3.5 w-3.5 shrink-0" />
-                      ) : null}
+                      <Check className="h-3.5 w-3.5 shrink-0" />
                     </ContextMenuItem>
+                  ) : null}
+                </>
+              ) : (
+                <ContextMenuItem disabled className="gap-2 opacity-60">
+                  <span className="min-w-0 flex-1 truncate">
+                    {t("folderHeaderMenu.loadingAgents")}
+                  </span>
+                </ContextMenuItem>
+              )}
+            </ContextMenuSubContent>
+          </ContextMenuSub>
+          <ContextMenuSub>
+            <ContextMenuSubTrigger>
+              <Palette className="h-4 w-4" />
+              {t("folderHeaderMenu.changeColor")}
+            </ContextMenuSubTrigger>
+            <ContextMenuSubContent className="min-w-[12rem] p-2">
+              <ContextMenuItem
+                onSelect={() =>
+                  onChangeColor(folderId, FOLDER_THEME_COLOR_INHERIT)
+                }
+                className="gap-2"
+              >
+                <span
+                  aria-hidden
+                  className="h-[1.125rem] w-[1.125rem] shrink-0 rounded-[0.25rem] border border-border"
+                  style={{
+                    backgroundColor: THEME_COLOR_PREVIEW[appThemeColor],
+                  }}
+                />
+                <span className="min-w-0 flex-1 truncate">
+                  {t("folderHeaderMenu.useThemeColor")}
+                </span>
+                {themeColor === FOLDER_THEME_COLOR_INHERIT ? (
+                  <Check className="h-3.5 w-3.5 shrink-0" />
+                ) : null}
+              </ContextMenuItem>
+              <ContextMenuSeparator />
+              <div className="grid grid-cols-6 gap-1">
+                {THEME_COLORS.map((color) => {
+                  const active = color === themeColor
+                  return (
+                    <button
+                      key={color}
+                      type="button"
+                      title={color}
+                      aria-label={color}
+                      onClick={() => onChangeColor(folderId, color)}
+                      className={cn(
+                        "h-[1.125rem] w-[1.125rem] cursor-pointer rounded-[0.25rem]",
+                        "outline-none ring-offset-1 ring-offset-popover",
+                        "transition-[box-shadow,transform] duration-100 hover:scale-110",
+                        active && "ring-2 ring-foreground/60"
+                      )}
+                      style={{ backgroundColor: THEME_COLOR_PREVIEW[color] }}
+                    />
                   )
                 })}
-                {showStaleDefault && currentDefaultAgent !== null ? (
-                  <ContextMenuItem
-                    key={currentDefaultAgent}
-                    disabled
-                    className="gap-2 opacity-60"
-                  >
-                    <span className="min-w-0 flex-1 truncate">
-                      {`${AGENT_LABELS[currentDefaultAgent]} ${t("folderHeaderMenu.agentUnavailableSuffix")}`}
-                    </span>
-                    <Check className="h-3.5 w-3.5 shrink-0" />
-                  </ContextMenuItem>
-                ) : null}
-              </>
-            ) : (
-              <ContextMenuItem disabled className="gap-2 opacity-60">
-                <span className="min-w-0 flex-1 truncate">
-                  {t("folderHeaderMenu.loadingAgents")}
-                </span>
-              </ContextMenuItem>
-            )}
-          </ContextMenuSubContent>
-        </ContextMenuSub>
-        <ContextMenuSub>
-          <ContextMenuSubTrigger>
-            <Palette className="h-4 w-4" />
-            {t("folderHeaderMenu.changeColor")}
-          </ContextMenuSubTrigger>
-          <ContextMenuSubContent className="min-w-[12rem] p-2">
-            <ContextMenuItem
-              onSelect={() =>
-                onChangeColor(folderId, FOLDER_THEME_COLOR_INHERIT)
-              }
-              className="gap-2"
-            >
-              <span
-                aria-hidden
-                className="h-[1.125rem] w-[1.125rem] shrink-0 rounded-[0.25rem] border border-border"
-                style={{ backgroundColor: THEME_COLOR_PREVIEW[appThemeColor] }}
-              />
-              <span className="min-w-0 flex-1 truncate">
-                {t("folderHeaderMenu.useThemeColor")}
-              </span>
-              {themeColor === FOLDER_THEME_COLOR_INHERIT ? (
-                <Check className="h-3.5 w-3.5 shrink-0" />
-              ) : null}
-            </ContextMenuItem>
-            <ContextMenuSeparator />
-            <div className="grid grid-cols-6 gap-1">
-              {THEME_COLORS.map((color) => {
-                const active = color === themeColor
-                return (
-                  <button
-                    key={color}
-                    type="button"
-                    title={color}
-                    aria-label={color}
-                    onClick={() => onChangeColor(folderId, color)}
-                    className={cn(
-                      "h-[1.125rem] w-[1.125rem] cursor-pointer rounded-[0.25rem]",
-                      "outline-none ring-offset-1 ring-offset-popover",
-                      "transition-[box-shadow,transform] duration-100 hover:scale-110",
-                      active && "ring-2 ring-foreground/60"
-                    )}
-                    style={{ backgroundColor: THEME_COLOR_PREVIEW[color] }}
-                  />
-                )
-              })}
-            </div>
-          </ContextMenuSubContent>
-        </ContextMenuSub>
-        <ContextMenuSeparator />
-        <ContextMenuItem
-          variant="destructive"
-          onSelect={() => onRemoveFromWorkspace(folderId)}
-        >
-          <XCircle className="h-4 w-4" />
-          {t("folderHeaderMenu.removeFromWorkspace")}
-        </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
+              </div>
+            </ContextMenuSubContent>
+          </ContextMenuSub>
+          <ContextMenuItem onSelect={openAliasDialog}>
+            <Tag className="h-4 w-4" />
+            {t("folderHeaderMenu.setAlias")}
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            variant="destructive"
+            onSelect={() => onRemoveFromWorkspace(folderId)}
+          >
+            <XCircle className="h-4 w-4" />
+            {t("folderHeaderMenu.removeFromWorkspace")}
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+
+      <Dialog open={aliasDialogOpen} onOpenChange={setAliasDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("folderHeaderMenu.setAliasTitle")}</DialogTitle>
+          </DialogHeader>
+          <Input
+            value={aliasValue}
+            onChange={(e) => setAliasValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing || e.key === "Process") return
+              if (e.key === "Enter") confirmAlias()
+            }}
+            placeholder={t("folderHeaderMenu.setAliasPlaceholder")}
+            autoFocus
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAliasDialogOpen(false)}>
+              {t("folderHeaderMenu.setAliasCancel")}
+            </Button>
+            <Button onClick={confirmAlias}>
+              {t("folderHeaderMenu.setAliasSave")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 })
 
@@ -571,6 +645,7 @@ export function SidebarConversationList({
   const { resolvedTheme } = useTheme()
   const { themeColor: appThemeColor } = useThemeColor()
   const { createTerminalInDirectory } = useTerminalContext()
+  const { registerLocate } = useConversationLocate()
   useZoomLevel()
   const folders = useAppWorkspaceStore((s) => s.folders)
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)
@@ -609,6 +684,7 @@ export function SidebarConversationList({
       number,
       {
         name: string
+        alias: string | null
         path: string
         color: string
         defaultAgentType: AgentType | null
@@ -617,6 +693,7 @@ export function SidebarConversationList({
     for (const f of allFolders)
       map.set(f.id, {
         name: f.name,
+        alias: f.alias,
         path: f.path,
         color: f.color,
         defaultAgentType: f.default_agent_type,
@@ -772,6 +849,19 @@ export function SidebarConversationList({
       } catch (err) {
         const msg = toErrorMessage(err)
         toast.error(t("toasts.changeFolderColorFailed", { message: msg }))
+      }
+    },
+    [refreshFolder, t]
+  )
+
+  const handleSetFolderAlias = useCallback(
+    async (folderId: number, alias: string | null) => {
+      try {
+        await updateFolderAlias(folderId, alias)
+        await refreshFolder(folderId)
+      } catch (err) {
+        const msg = toErrorMessage(err)
+        toast.error(t("toasts.setFolderAliasFailed", { message: msg }))
       }
     },
     [refreshFolder, t]
@@ -1040,6 +1130,15 @@ export function SidebarConversationList({
       })
     },
   }))
+
+  // Publish scrollToActive to the locate context so the conversation detail
+  // header's "locate" button (which lives in another column) can reach it. The
+  // registered wrapper is stable; it always reads the current scrollToActiveRef.
+  useEffect(() => {
+    const scrollToActive = () => scrollToActiveRef.current()
+    registerLocate(scrollToActive)
+    return () => registerLocate(null)
+  }, [registerLocate])
 
   useEffect(() => {
     scrollToActiveRef.current = () => {
@@ -1838,6 +1937,7 @@ export function SidebarConversationList({
       <FolderHeader
         folderId={folderId}
         folderName={folderEntry?.name ?? String(folderId)}
+        folderAlias={folderEntry?.alias ?? null}
         folderPath={folderEntry?.path ?? ""}
         count={byFolder.get(folderId)?.length ?? 0}
         expanded={opts.collapsed ? false : (folderExpanded[folderId] ?? true)}
@@ -1853,6 +1953,7 @@ export function SidebarConversationList({
         onImport={handleImportForFolder}
         onManageConversations={handleManageConversations}
         onChangeColor={handleChangeFolderColor}
+        onSetAlias={handleSetFolderAlias}
         onSetDefaultAgent={handleChangeFolderDefaultAgent}
         onOpenInSystemExplorer={handleOpenFolderInSystemExplorer}
         onOpenInTerminal={handleOpenFolderInTerminal}

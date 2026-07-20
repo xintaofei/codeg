@@ -10,6 +10,7 @@ export type AgentType =
   | "kimi_code"
   | "pi"
   | "grok"
+  | "cursor"
 
 export type AppErrorCode =
   | "invalid_input"
@@ -278,6 +279,13 @@ export interface FolderDetail {
    * sidebar "Chat" group and folder-bound chrome is hidden while one is active.
    */
   kind: FolderKind
+  /**
+   * User-supplied display alias, or null when unset. When present, the sidebar
+   * folder header and conversation header render `alias [name]`
+   * (see `formatFolderLabelWithAlias`). Display-only — never used for the
+   * folder's real `path`/`id`.
+   */
+  alias: string | null
 }
 
 /**
@@ -469,6 +477,7 @@ export const AGENT_DISPLAY_ORDER: AgentType[] = [
   "kimi_code",
   "pi",
   "grok",
+  "cursor",
 ]
 
 const AGENT_DISPLAY_ORDER_INDEX = new Map(
@@ -493,6 +502,7 @@ export const ALL_AGENT_TYPES: AgentType[] = [
   "kimi_code",
   "pi",
   "grok",
+  "cursor",
 ]
 
 export const MODEL_PROVIDER_AGENT_TYPES: AgentType[] = [
@@ -784,6 +794,7 @@ export const AGENT_LABELS: Record<AgentType, string> = {
   kimi_code: "Kimi Code",
   pi: "Pi",
   grok: "Grok",
+  cursor: "Cursor",
 }
 
 export const AGENT_COLORS: Record<AgentType, string> = {
@@ -798,6 +809,7 @@ export const AGENT_COLORS: Record<AgentType, string> = {
   kimi_code: "bg-[#1783FF]",
   pi: "bg-[#0D9488]",
   grok: "bg-neutral-900",
+  cursor: "bg-zinc-800",
 }
 
 // ACP connection status (matches Rust ConnectionStatus)
@@ -1251,6 +1263,12 @@ export type AcpEvent =
       child_connection_id: string
       child_conversation_id: number
       agent_type: AgentType
+      /** Bounded preview of the delegated task text. Labels the card on
+       *  hosts whose parent tool call never carries the arguments in
+       *  `raw_input` (Cursor). Optional for older-backend tolerance. */
+      task_preview?: string | null
+      /** Broker-minted task id (the `task_id=` embedded in the running ack). */
+      task_id?: string | null
     }
   /**
    * The child sub-session has finished (or errored / timed out / been
@@ -1457,6 +1475,11 @@ export interface ActiveDelegationState {
   child_connection_id: string
   child_conversation_id: number
   agent_type: AgentType
+  /** Task label + broker task id mirrored from `delegation_started` so a
+   *  snapshot re-attach reseeds the binding WITH its label (required on
+   *  hosts whose tool call `raw_input` never carries the arguments). */
+  task_preview?: string | null
+  task_id?: string | null
 }
 
 /** Lifecycle of a live-feedback note (mirror of Rust `FeedbackStatus`). */
@@ -1578,6 +1601,12 @@ export interface AcpAgentInfo {
   /** Parsed scalar settings backing the Grok panel's structured controls. Only
    * populated for the Grok agent; derived from grok_config_toml. */
   grok_settings: GrokSettings | null
+  /** Raw ~/.cursor/cli-config.json text, for the Cursor panel's advanced view. */
+  cursor_cli_config_json: string | null
+  /** Parsed scalar settings backing the Cursor panel's structured controls
+   * (sandbox / permission rules; the Run Everything permission mode is a
+   * launch flag, not a config key). Cursor agent only. */
+  cursor_settings: CursorSettings | null
   model_provider_id: number | null
 }
 
@@ -1617,6 +1646,57 @@ export interface GrokStructuredConfig {
   customApiBackend: string | null
   customContextWindow: number | null
   autoCompactThresholdPercent: number | null
+}
+
+/** Parsed keys from ~/.cursor/cli-config.json (shared with the Cursor CLI's
+ * own /config UI). Only the codeg-managed subset is projected; everything
+ * else is preserved verbatim on write. */
+export interface CursorSettings {
+  /** sandbox.mode — "enabled" | "disabled". */
+  sandbox_mode: string | null
+  /** permissions.allow rules, e.g. Shell(ls). */
+  permissions_allow: string[]
+  /** permissions.deny rules. */
+  permissions_deny: string[]
+}
+
+/** Structured-control values the Cursor settings panel sends on save. Null
+ * fields leave the key untouched; non-null fields replace it (lists
+ * wholesale; an empty-string scalar removes the key). camelCase on the wire
+ * to match the request body. */
+export interface CursorStructuredConfig {
+  sandboxMode?: string | null
+  permissionsAllow?: string[] | null
+  permissionsDeny?: string[] | null
+}
+
+/** Result of probing `cursor-agent status --format json` (auth card). */
+export interface CursorAuthStatus {
+  installed: boolean
+  is_authenticated: boolean
+  raw_status: string | null
+  email: string | null
+  membership: string | null
+  error: string | null
+  /** Absolute path to the cursor-agent binary codeg would launch; the panel
+   * builds a copy-pasteable `"<binary_path>" login` command from it (the
+   * managed binary isn't on PATH). Null when not installed. */
+  binary_path?: string | null
+}
+
+/** One `cursor-agent models` entry: `<id> - <label> [(default)]`. The picker
+ * shows `label` (falling back to `id`) and passes `id` to the CLI as --model. */
+export interface CursorModelInfo {
+  id: string
+  label: string
+  is_default: boolean
+}
+
+/** Result of `cursor-agent models` (model picker). */
+export interface CursorModelsResult {
+  models: CursorModelInfo[]
+  default_model: string | null
+  error: string | null
 }
 
 // Lightweight agent status returned by acp_get_agent_status
@@ -1969,6 +2049,7 @@ export type McpAppType =
   | "code_buddy"
   | "kimi_code"
   | "grok"
+  | "cursor"
 
 export interface LocalMcpServer {
   id: string

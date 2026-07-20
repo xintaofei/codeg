@@ -5,6 +5,7 @@ import { getGitHead } from "@/lib/api"
 import { onTransportReconnect, subscribe } from "@/lib/platform"
 import { useAcpEvent } from "@/contexts/acp-connections-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import { useConversationRuntimeStore } from "@/stores/conversation-runtime-store"
 import {
   CONVERSATION_CHANGED_EVENT,
   FOLDER_CHANGED_EVENT,
@@ -15,6 +16,19 @@ import {
 
 interface AppWorkspaceProviderProps {
   children: ReactNode
+}
+
+/**
+ * On a cross-client `conversation://changed` nudge, poll the persisted detail of
+ * a conversation THIS client is passively viewing back into sync (its just-
+ * completed reply, streamed to whoever owns the agent, isn't on our live path).
+ * The runtime store no-ops unless the conversation is open and this client is a
+ * pure viewer of it — the owner's in-memory reply is never refetched over.
+ */
+function syncOpenViewerDetail(conversationId: number): void {
+  useConversationRuntimeStore
+    .getState()
+    .actions.syncViewerDetail(conversationId)
 }
 
 /**
@@ -46,12 +60,20 @@ export function AppWorkspaceProvider({ children }: AppWorkspaceProviderProps) {
           const store = useAppWorkspaceStore.getState()
           if (change.kind === "upsert") {
             store.applyConversationUpsert(change.summary)
+            // This side-channel keeps the sidebar in sync but does NOT touch an
+            // open conversation's detail. If THIS client is only viewing that
+            // conversation (another client owns the live agent), a turn that
+            // just completed there has no live promotion path here — so pull the
+            // reply from the persisted transcript. No-op unless the conversation
+            // is open and this client is a pure viewer of it.
+            syncOpenViewerDetail(change.summary.id)
           } else if (change.kind === "deleted") {
             store.applyConversationRemove(change.id)
           } else {
             store.updateConversationLocal(change.id, {
               status: change.status,
             })
+            syncOpenViewerDetail(change.id)
           }
         }
       )

@@ -117,6 +117,29 @@
       "sectionTitle": "Área de seleção de modo",
       "sectionDescription": "Os cartões de atalho «Desenvolvimento / Escritório» exibidos acima do campo de entrada na página de nova conversa.",
       "showQuickActions": "Mostrar na página de nova conversa"
+    },
+    "workspaceBackground": {
+      "sectionTitle": "Plano de fundo da área de trabalho",
+      "sectionDescription": "Mostra uma imagem atrás de toda a área de trabalho. A barra lateral e os painéis ficam translúcidos e foscos para deixar a imagem transparecer, e uma máscara mantém o texto legível.",
+      "enable": "Ativar imagem de fundo",
+      "image": "Imagem",
+      "chooseImage": "Escolher imagem",
+      "replaceImage": "Substituir imagem",
+      "removeImage": "Remover",
+      "fillMode": "Modo de preenchimento",
+      "fillModes": {
+        "cover": "Preencher",
+        "contain": "Ajustar",
+        "center": "Centralizar",
+        "tile": "Lado a lado"
+      },
+      "maskOpacity": "Opacidade da máscara",
+      "maskOpacityHint": "Valores mais altos esmaecem a imagem em direção à cor de fundo do tema, melhorando o contraste do texto.",
+      "imageBlur": "Desfoque da imagem",
+      "panelOpacity": "Opacidade dos painéis",
+      "panelOpacityHint": "O quão opacos são a barra lateral, os painéis e as barras de abas. Mais baixo deixa a imagem transparecer mais.",
+      "errorTooLarge": "A imagem é muito grande (máx. 16 MB).",
+      "errorUploadFailed": "Falha ao definir a imagem de fundo."
     }
   },
   "SystemSettings": {
@@ -640,6 +663,49 @@
       "autoCompactLabel": "Limite de autocompactação (%)",
       "autoCompactHint": "Compacta a conversa quando o uso do contexto atinge esta porcentagem (padrão do Grok: 85). Gravado em `[session]`."
     },
+    "cursor": {
+      "configDescription": "Configure o Cursor aqui. Escolha um método de autenticação — assinatura oficial (login pelo navegador) ou uma chave de API do Cursor para máquinas headless ou servidores — depois escolha um modelo e edite as regras de permissão e o sandbox do CLI. O codeg as grava em ~/.cursor/cli-config.json, compartilhado com o CLI cursor-agent.",
+      "authTitle": "Autenticação",
+      "authChecking": "Verificando…",
+      "authNotInstalled": "cursor-agent não está instalado",
+      "authLoggedIn": "Conectado",
+      "authNotLoggedIn": "Não conectado",
+      "loginHint": "Execute isto em um terminal para entrar na sua conta Cursor (uma janela do navegador abre) e depois clique em atualizar:",
+      "apiKeyLabel": "Chave de API do Cursor",
+      "apiKeyPlaceholder": "chave de cursor.com/dashboard",
+      "apiKeyHint": "CURSOR_API_KEY — uma chave de conta do painel do Cursor, alternativa ao login pelo navegador para máquinas headless ou servidores. Não é uma chave de terceiros nem da OpenAI.",
+      "modelTitle": "Modelo padrão",
+      "loadModels": "Carregar modelos",
+      "modelsUnavailable": "Lista de modelos indisponível",
+      "modelHint": "Passado à CLI como --model ao iniciar a sessão. Deixe no padrão para o Cursor escolher.",
+      "permissionsTitle": "Permissões e sandbox",
+      "permissionsDescription": "Editor visual das regras de permissão da CLI (cli-config.json). Regras permitidas executam sem confirmação; regras negadas são sempre bloqueadas.",
+      "permissionModeLabel": "Modo de permissões",
+      "permissionModeDefault": "Perguntar antes de executar (padrão)",
+      "permissionModeForce": "Run Everything (--force)",
+      "permissionModeHint": "Run Everything inicia as sessões com --force: todas as chamadas de ferramentas são permitidas automaticamente, exceto as regras de negação, sem confirmações (uma política da organização pode limitá-lo às regras de permissão). Vale para novas sessões.",
+      "optionDefault": "Padrão (não definido)",
+      "sandboxLabel": "Sandbox",
+      "sandboxEnabled": "Ativado",
+      "sandboxDisabled": "Desativado",
+      "allowRulesLabel": "Regras permitidas",
+      "denyRulesLabel": "Regras negadas",
+      "addRule": "Adicionar regra",
+      "rulesSyntaxHint": "Sintaxe das regras: Shell(cmd), Read(caminho/glob), Write(caminho/glob), WebFetch(domínio), Mcp(servidor:ferramenta) — as regras de negação sempre prevalecem.",
+      "saveConfig": "Salvar configuração",
+      "advancedToggle": "Avançado: cli-config.json bruto",
+      "advancedHint": "O ~/.cursor/cli-config.json completo. Salvar grava o arquivo como está; os controles estruturados acima são mesclados nele.",
+      "saveRawConfig": "Salvar arquivo",
+      "authMode": "Método de autenticação",
+      "subscriptionHint": "Faça login com sua conta Cursor e use os modelos do Cursor.",
+      "customApiKeyRequired": "É necessária uma chave de API do Cursor.",
+      "authModeApiKey": "Chave de API do Cursor (headless/servidor)",
+      "authModeApiKeyHint": "Autentique-se com uma chave de API de conta do Cursor gerada no painel do Cursor (para máquinas headless ou servidores). É uma chave de conta do Cursor, não um endpoint de terceiros/OpenAI: o cursor-agent só se comunica com o backend do próprio Cursor. Para usar um endpoint compatível com codex/OpenAI, use o agente Codex.",
+      "modelPickerPlaceholder": "Pesquisar modelos…",
+      "modelNoMatch": "Nenhum modelo correspondente",
+      "modelsNeedAuth": "Faça login para carregar a lista de modelos.",
+      "modelDefaultBadge": "padrão"
+    },
     "codex": {
       "configDescription": "Suporta configuração rápida de URL da API, API Key, nome do modelo e reasoning effort, com sincronização para `auth.json` / `config.toml`.",
       "authMode": "Modo de Autenticação",
@@ -921,6 +987,8 @@
       "grokSaved": "Configuração do Grok salva",
       "saveGrokNativeFailed": "Falha ao salvar a configuração nativa do Grok",
       "saveGrokApiKeyFailed": "Configurações salvas, mas não foi possível salvar a chave de API",
+      "cursorSaved": "Configuração do Cursor salva",
+      "saveCursorConfigFailed": "Falha ao salvar a configuração do Cursor",
       "codexSaved": "Configuração do Codex salva",
       "saveCodexNativeFailed": "Falha ao salvar configuração nativa do Codex",
       "geminiSaved": "Configuração do Gemini salva",
@@ -1189,6 +1257,7 @@
         "removeFolderFailed": "Falha ao remover pasta: {message}",
         "reorderFoldersFailed": "Falha ao reordenar pastas: {message}",
         "changeFolderColorFailed": "Falha ao alterar a cor: {message}",
+        "setFolderAliasFailed": "Falha ao definir o alias: {message}",
         "changeFolderDefaultAgentFailed": "Falha ao definir agente padrão: {message}"
       },
       "statsLabel": "{folders} pastas · {convos} conversas",
@@ -1220,6 +1289,11 @@
         "defaultAgentNone": "Sem padrão (usar global)",
         "agentUnavailableSuffix": "(indisponível)",
         "loadingAgents": "Carregando agentes…",
+        "setAlias": "Definir alias…",
+        "setAliasTitle": "Definir alias da pasta",
+        "setAliasPlaceholder": "Insira um alias (deixe vazio para limpar)",
+        "setAliasSave": "Salvar",
+        "setAliasCancel": "Cancelar",
         "removeFromWorkspace": "Remover do espaço de trabalho"
       },
       "manageConversations": {
@@ -1289,10 +1363,12 @@
         "system": "Sistema",
         "toolResult": "Resultado",
         "toolError": "Erro"
-      }
+      },
+      "moreActions": "Mais ações"
     },
     "sessionDetails": {
       "menuLabel": "Detalhes da sessão",
+      "noActiveSession": "Nenhuma sessão ativa",
       "title": "Detalhes da sessão",
       "subtitle": "Metadados da sessão e uso de tokens",
       "fieldTitle": "Título",
@@ -1434,7 +1510,8 @@
       "preview": "Visualizar",
       "editSource": "Editar fonte",
       "maximize": "Maximizar",
-      "restore": "Restaurar"
+      "restore": "Restaurar",
+      "emptyDirectory": "Pasta vazia"
     },
     "terminal": {
       "rename": "Renomear",
@@ -1866,6 +1943,7 @@
         "addToVcsFailed": "Falha ao adicionar ao VCS",
         "loadBranchesFailed": "Falha ao carregar branches",
         "renameFailed": "Falha ao renomear",
+        "moveFailed": "Falha ao mover",
         "deleteFailed": "Falha ao excluir",
         "rolledBack": "{name} revertido",
         "rollbackFailed": "Falha ao reverter",
@@ -2159,7 +2237,8 @@
         "enableAgentFirstPlaceholder": "Ative pelo menos um agente antes de iniciar uma sessão...",
         "prepareSessionFailed": "Não foi possível preparar a sessão de chat. Tente novamente.",
         "createConversationFailed": "Não foi possível criar a conversa. Tente novamente.",
-        "askAnythingPlaceholder": "Pergunte qualquer coisa..."
+        "askAnythingPlaceholder": "Pergunte qualquer coisa...",
+        "agentNotInstalled": "{agent} não está instalado · abra as configurações de Agents para instalá-lo"
       },
       "welcomePanel": {
         "greeting": "O que você gostaria de <highlight>fazer hoje</highlight>?",
@@ -2259,7 +2338,8 @@
       },
       "agentSelector": {
         "noEnabledAgents": "Nenhum agente habilitado",
-        "openAgentsSettings": "Abrir configurações de agentes"
+        "openAgentsSettings": "Abrir configurações de agentes",
+        "notInstalled": "Não instalado"
       },
       "subAgentOverlay": {
         "title": "Subagentes",
@@ -3268,7 +3348,7 @@
       "deleteConfirm": "Excluir o pet \"{name}\"? Será removido do disco.",
       "summon": "Invocar janela do pet",
       "openCodexHelp": "Pets do Codex precisam estar em ~/.codex/pets/. Nenhum encontrado.",
-      "specRequirement": "O sprite precisa ser PNG ou WebP 1536x1872 com transparência.",
+      "specRequirement": "O sprite precisa ter 1536px de largura e altura múltipla de 208px (ex.: 1872 ou 2288), em PNG ou WebP com transparência.",
       "form": {
         "id": "ID do pet",
         "idHelp": "Minúsculas, dígitos, '-' e '_'. Máx 64 caracteres.",

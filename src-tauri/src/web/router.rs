@@ -188,6 +188,10 @@ pub fn build_router(
             post(handlers::folders::update_folder_color),
         )
         .route(
+            "/update_folder_alias",
+            post(handlers::folders::update_folder_alias),
+        )
+        .route(
             "/update_folder_default_agent",
             post(handlers::folders::update_folder_default_agent),
         )
@@ -357,6 +361,10 @@ pub fn build_router(
         .route(
             "/rename_file_tree_entry",
             post(handlers::files::rename_file_tree_entry),
+        )
+        .route(
+            "/move_file_tree_entry",
+            post(handlers::files::move_file_tree_entry),
         )
         .route(
             "/delete_file_tree_entry",
@@ -629,6 +637,14 @@ pub fn build_router(
         .route(
             "/acp_update_hermes_config",
             post(handlers::acp::acp_update_hermes_config),
+        )
+        .route(
+            "/acp_cursor_auth_status",
+            post(handlers::acp::acp_cursor_auth_status),
+        )
+        .route(
+            "/acp_cursor_list_models",
+            post(handlers::acp::acp_cursor_list_models),
         )
         .route(
             "/acp_update_kimi_code_config",
@@ -1113,6 +1129,25 @@ pub fn build_router(
         .route(
             "/automation_cancel_run",
             post(handlers::automation::automation_cancel_run),
+        )
+        // ─── Workspace background ───
+        .route(
+            "/background_read",
+            post(handlers::background::background_read),
+        )
+        .route(
+            "/background_set",
+            // A 16MiB image becomes ~21.4MiB once base64-encoded and wrapped in
+            // the JSON envelope; axum's default 2MiB `DefaultBodyLimit` would
+            // 413 any real photo before the handler runs. Raise it to cover the
+            // advertised ceiling; `backgrounds::validate_background` stays the
+            // authoritative size boundary on the decoded bytes.
+            post(handlers::background::background_set)
+                .layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
+        )
+        .route(
+            "/background_clear",
+            post(handlers::background::background_clear),
         )
         // ─── Pet ───
         .route("/pet_list", post(handlers::pet::pet_list))
