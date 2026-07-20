@@ -2210,6 +2210,8 @@
         "attachUploadFailed": "Falha ao enviar {names}.",
         "attachUploadNotAFile": "{names} não é um arquivo regular (diretório ou arquivo especial) e foi ignorado.",
         "attachUploadQuotaExceeded": "O servidor ficou sem espaço para uploads; {names} não pôde ser enviado.",
+        "uploadingAttachments": "Enviando {count} anexo(s)…",
+        "cancelAttachmentUpload": "Cancelar envio de anexos",
         "mentionEmpty": "Nenhuma correspondência",
         "mentionLoading": "Pesquisando…",
         "mentionListLabel": "Menções",
@@ -3559,6 +3561,7 @@
     "disconnectedTitle": "Conexão perdida",
     "reconnectingDescription": "Tentando reconectar ao servidor. Normalmente isso se resolve sozinho em alguns segundos.",
     "reconnectNow": "Reconectar agora",
+    "directFallback": "Mudar para Direct",
     "sessionExpiredTitle": "Sessão expirada",
     "sessionExpiredDescription": "Sua sessão não é mais válida. Faça login novamente para continuar.",
     "goToLogin": "Ir para o login"

@@ -1,3 +1,6 @@
+packages:
+  - mobile
+
 overrides:
   mermaid: ">=11.13.0"
 

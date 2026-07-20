@@ -1,11 +1,13 @@
 import {
   getActiveRemoteConnectionId,
+  getServerBaseUrl,
   getShellTransport,
   getTransport,
   isDesktop,
   isRemoteDesktopMode,
   notifyRemoteDesktopUnauthorized,
 } from "./transport"
+import { detectEnvironment } from "./transport/detect"
 import { getCodegToken } from "./transport/web-auth"
 import { notifyWebUnauthorized } from "./transport/web-connection-store"
 import { getCurrentEffectiveAppLocale } from "./i18n"
@@ -2385,7 +2387,11 @@ export function isEmptyAttachmentError(err: unknown): boolean {
 // it as a `file://` ResourceLink — identical shape on both transports.
 export async function uploadAttachment(
   file: File,
-  sessionId?: string | null
+  sessionId?: string | null,
+  options?: {
+    signal?: AbortSignal
+    onProgress?: (sent: number, total: number) => void
+  }
 ): Promise<UploadAttachmentResult> {
   if (file.size === 0) {
     // Skip empty files at the entry — both the web and remote-desktop
@@ -2414,15 +2420,35 @@ export async function uploadAttachment(
     )
   }
 
+  if (detectEnvironment() === "mobile-relay") {
+    const buf = await file.arrayBuffer()
+    return getShellTransport().call<UploadAttachmentResult>(
+      "relay_upload_attachment",
+      {
+        fileName: file.name,
+        mimeType: file.type || null,
+        sessionId: sessionId ?? null,
+        dataBase64: arrayBufferToBase64(buf),
+      },
+      {
+        timeoutMs: 180_000,
+        signal: options?.signal,
+        onProgress: options?.onProgress,
+      }
+    )
+  }
+
   const token = getCodegToken()
   const form = new FormData()
   form.append("file", file, file.name)
   if (sessionId) form.append("session_id", sessionId)
+  options?.onProgress?.(0, file.size)
 
-  const res = await fetch(`${window.location.origin}/api/upload_attachment`, {
+  const res = await fetch(`${getServerBaseUrl()}/api/upload_attachment`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
     body: form,
+    signal: options?.signal,
   })
   if (res.status === 401) {
     notifyWebUnauthorized()
@@ -2435,6 +2461,7 @@ export async function uploadAttachment(
     }))
     throw err
   }
+  options?.onProgress?.(file.size, file.size)
   return res.json()
 }
 
@@ -2521,7 +2548,7 @@ async function workspaceFileFetch(
   if (!isMultipart) {
     headers["Content-Type"] = "application/json"
   }
-  const res = await fetch(`${window.location.origin}/api/${endpoint}`, {
+  const res = await fetch(`${getServerBaseUrl()}/api/${endpoint}`, {
     method: "POST",
     headers,
     body,
@@ -2584,7 +2611,7 @@ export async function uploadWorkspaceFile(
   return new Promise<UploadWorkspaceFileResult>((resolve, reject) => {
     const token = getCodegToken()
     const xhr = new XMLHttpRequest()
-    xhr.open("POST", `${window.location.origin}/api/upload_workspace_file`)
+    xhr.open("POST", `${getServerBaseUrl()}/api/upload_workspace_file`)
     xhr.setRequestHeader("Authorization", `Bearer ${token}`)
 
     if (args.onProgress) {
@@ -3158,6 +3185,85 @@ export async function probeWebServicePort(
   })
 }
 
+// ── Mobile Relay Management (desktop Tauri only) ──
+
+export interface MobileRelayDevice {
+  deviceId: string
+  name: string
+  createdAt: number
+  lastSeenAt: number | null
+  revokedAt: number | null
+}
+
+export interface MobileRelaySettings {
+  enabled: boolean
+  relayUrl: string
+  desktopId: string
+  relayTokenConfigured: boolean
+  bridgeRunning: boolean
+  devices: MobileRelayDevice[]
+}
+
+export interface MobileRelayPairing {
+  pairId: string
+  expiresAt: number
+  payload: string
+}
+
+export interface MobileRelayPairingStatus {
+  status: "waiting" | "requested" | "accepted" | "rejected" | "consumed"
+  expiresAt: number
+  deviceId: string | null
+  deviceName: string | null
+  sas: string | null
+}
+
+export async function getMobileRelaySettings(): Promise<MobileRelaySettings> {
+  return getTransport().call("get_mobile_relay_settings")
+}
+
+export async function saveMobileRelaySettings(params: {
+  relayUrl: string
+  relayToken?: string
+  enabled: boolean
+}): Promise<MobileRelaySettings> {
+  return getTransport().call("save_mobile_relay_settings", {
+    relayUrl: params.relayUrl,
+    relayToken: params.relayToken?.trim() || null,
+    enabled: params.enabled,
+  })
+}
+
+export async function createMobileRelayPairing(
+  deviceName: string
+): Promise<MobileRelayPairing> {
+  return getTransport().call("create_mobile_relay_pairing", { deviceName })
+}
+
+export async function getMobileRelayPairingStatus(
+  pairId: string
+): Promise<MobileRelayPairingStatus> {
+  return getTransport().call("get_mobile_relay_pairing_status", { pairId })
+}
+
+export async function confirmMobileRelayPairing(pairId: string): Promise<void> {
+  return getTransport().call("confirm_mobile_relay_pairing", { pairId })
+}
+
+export async function rejectMobileRelayPairing(
+  pairId: string,
+  deviceId?: string | null
+): Promise<void> {
+  return getTransport().call("reject_mobile_relay_pairing", {
+    pairId,
+    deviceId: deviceId ?? null,
+  })
+}
+
+export async function revokeMobileRelayDevice(deviceId: string): Promise<void> {
+  return getTransport().call("revoke_mobile_relay_device", { deviceId })
+}
+
 // ─── Chat Channels ───
 
 export async function listChatChannels(): Promise<ChatChannelInfo[]> {
@@ -3591,7 +3697,7 @@ export async function exportBackupWeb(
     { timeoutMs: BACKUP_LONG_CALL_TIMEOUT_MS }
   )
   const a = document.createElement("a")
-  a.href = `${window.location.origin}${ticket.url}`
+  a.href = `${getServerBaseUrl()}${ticket.url}`
   a.download = ticket.filename
   document.body.appendChild(a)
   a.click()
@@ -3606,7 +3712,7 @@ export async function uploadBackupWeb(
   return new Promise<string>((resolve, reject) => {
     const token = getCodegToken()
     const xhr = new XMLHttpRequest()
-    xhr.open("POST", `${window.location.origin}/api/backup_upload`)
+    xhr.open("POST", `${getServerBaseUrl()}/api/backup_upload`)
     xhr.setRequestHeader("Authorization", `Bearer ${token}`)
     if (onProgress) {
       xhr.upload.onprogress = (event) => {

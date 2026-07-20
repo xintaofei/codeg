@@ -2210,6 +2210,8 @@
         "attachUploadFailed": "Error al subir {names}.",
         "attachUploadNotAFile": "{names} no es un archivo regular (directorio o archivo especial) y se omitió.",
         "attachUploadQuotaExceeded": "El servidor se quedó sin espacio para subidas; no se pudo cargar {names}.",
+        "uploadingAttachments": "Subiendo {count} archivo(s) adjunto(s)…",
+        "cancelAttachmentUpload": "Cancelar la carga de archivos",
         "mentionEmpty": "Sin coincidencias",
         "mentionLoading": "Buscando…",
         "mentionListLabel": "Menciones",
@@ -3559,6 +3561,7 @@
     "disconnectedTitle": "Conexión perdida",
     "reconnectingDescription": "Intentando volver a conectar con el servidor. Normalmente se recupera solo en unos segundos.",
     "reconnectNow": "Volver a conectar ahora",
+    "directFallback": "Cambiar a Direct",
     "sessionExpiredTitle": "Sesión caducada",
     "sessionExpiredDescription": "Tu sesión ya no es válida. Inicia sesión de nuevo para continuar.",
     "goToLogin": "Ir al inicio de sesión"

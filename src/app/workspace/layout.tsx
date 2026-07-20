@@ -87,6 +87,7 @@ import {
 import { useIsMobile } from "@/hooks/use-mobile"
 import { usePlatform } from "@/hooks/use-platform"
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
+import { MobileBottomNavigation } from "@/components/mobile/mobile-bottom-navigation"
 
 function WorkspaceDocumentTitle() {
   const { activeFolder } = useActiveFolder()
@@ -524,7 +525,7 @@ function MobileFolderWorkspaceShell({
         <SheetContent
           side="left"
           showCloseButton={false}
-          className="w-[85%] max-w-[360px] p-0"
+          className="w-[88%] max-w-none border-r-0 p-0 pt-[max(env(safe-area-inset-top),24px)]"
         >
           <SheetTitle className="sr-only">Sidebar</SheetTitle>
           <Sidebar />
@@ -539,7 +540,7 @@ function MobileFolderWorkspaceShell({
         <SheetContent
           side="right"
           showCloseButton={false}
-          className="w-[85%] max-w-[360px] p-0"
+          className="w-[85%] max-w-[360px] border-l-0 p-0 pt-[max(env(safe-area-inset-top),24px)]"
         >
           <SheetTitle className="sr-only">Panel</SheetTitle>
           <AuxPanel />
@@ -1065,6 +1066,7 @@ function FolderLayoutShell({ children }: { children: React.ReactNode }) {
         <FolderWorkspaceShell>{children}</FolderWorkspaceShell>
       )}
       <StatusBar />
+      <MobileBottomNavigation />
       {/* Desktop window chrome, pinned to the window corners so it never moves —
           or re-mounts — when the side panels open/close (that re-parenting is
           what made the old in-header clusters flicker). Left = sidebar toggle +

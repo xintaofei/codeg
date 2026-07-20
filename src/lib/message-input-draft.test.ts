@@ -105,4 +105,39 @@ describe("message-input-draft v2", () => {
     localStorage.setItem(V2("k-corrupt2"), JSON.stringify({ doc: [1, 2] }))
     expect(loadMessageInputDraftV2("k-corrupt2")).toBeNull()
   })
+
+  it("keeps mobile drafts in memory without writing localStorage", () => {
+    const windowRecord = window as unknown as Record<string, unknown>
+    const originalInternals = windowRecord.__TAURI_INTERNALS__
+    const originalUserAgent = Object.getOwnPropertyDescriptor(
+      navigator,
+      "userAgent"
+    )
+    try {
+      windowRecord.__TAURI_INTERNALS__ = { invoke: () => {} }
+      Object.defineProperty(navigator, "userAgent", {
+        configurable: true,
+        value: "Mozilla/5.0 (Linux; Android 15)",
+      })
+
+      saveMessageInputDraftV2("k-mobile-memory", DOC)
+      expect(loadMessageInputDraftV2("k-mobile-memory")).toEqual({
+        kind: "doc",
+        doc: DOC,
+      })
+      expect(localStorage.getItem(V2("k-mobile-memory"))).toBeNull()
+    } finally {
+      clearMessageInputDraftV2("k-mobile-memory")
+      if (originalInternals === undefined) {
+        delete windowRecord.__TAURI_INTERNALS__
+      } else {
+        windowRecord.__TAURI_INTERNALS__ = originalInternals
+      }
+      if (originalUserAgent) {
+        Object.defineProperty(navigator, "userAgent", originalUserAgent)
+      } else {
+        delete (navigator as unknown as Record<string, unknown>).userAgent
+      }
+    }
+  })
 })

@@ -1,4 +1,6 @@
 import { detectEnvironment } from "./detect"
+import { getMobileServerUrl } from "../mobile-config"
+import { getMobileRelayConfig } from "../relay/config"
 import type { RemoteTransportConfig, Transport } from "./types"
 
 export type { RemoteTransportConfig, Transport, UnsubscribeFn } from "./types"
@@ -24,13 +26,34 @@ function createWebTransport(baseUrl: string): Transport {
   return new WebTransport(baseUrl)
 }
 
+function createRelayTransport(): Transport {
+  const config = getMobileRelayConfig()
+  if (!config) {
+    throw new Error("Mobile Relay is not configured")
+  }
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { RelayTransport } = require("./relay-transport") as {
+    RelayTransport: new (value: typeof config) => Transport
+  }
+  return new RelayTransport(config)
+}
+
 export function getShellTransport(): Transport {
   if (!_shellTransport) {
     const env = detectEnvironment()
-    _shellTransport =
-      env === "tauri"
-        ? createTauriTransport()
-        : createWebTransport(window.location.origin)
+    if (env === "desktop-local") {
+      _shellTransport = createTauriTransport()
+    } else if (env === "mobile-direct") {
+      const serverUrl = getMobileServerUrl()
+      if (!serverUrl) {
+        throw new Error("Mobile server is not configured")
+      }
+      _shellTransport = createWebTransport(serverUrl)
+    } else if (env === "mobile-relay") {
+      _shellTransport = createRelayTransport()
+    } else {
+      _shellTransport = createWebTransport(window.location.origin)
+    }
   }
   return _shellTransport
 }
@@ -62,7 +85,7 @@ export function getTransport(): Transport {
 }
 
 export function isDesktop(): boolean {
-  return detectEnvironment() === "tauri"
+  return detectEnvironment() === "desktop-local"
 }
 
 /// True when the current window is a Tauri client bound to a remote
@@ -81,6 +104,9 @@ export function isRemoteDesktopMode(): boolean {
 /// the local origin only as a harmless fallback.
 export function getServerBaseUrl(): string {
   if (_remoteConfig) return _remoteConfig.baseUrl.replace(/\/+$/, "")
+  const env = detectEnvironment()
+  if (env === "mobile-direct") return getMobileServerUrl()
+  if (env === "mobile-relay") return ""
   return typeof window !== "undefined" ? window.location.origin : ""
 }
 

@@ -286,15 +286,19 @@ const mocks = vi.hoisted(() => ({
   files: { allFiles: [] as FlatFileEntry[], loaded: false },
   listAllConversations: vi.fn(),
   gitLog: vi.fn(),
+  useFileTree: vi.fn(),
 }))
 
 vi.mock("@/hooks/use-file-tree", () => ({
-  useFileTree: () => ({
-    allFiles: mocks.files.allFiles,
-    loaded: mocks.files.loaded,
-    loading: false,
-    reset: () => {},
-  }),
+  useFileTree: (options: unknown) => {
+    mocks.useFileTree(options)
+    return {
+      allFiles: mocks.files.allFiles,
+      loaded: mocks.files.loaded,
+      loading: false,
+      reset: () => {},
+    }
+  },
 }))
 vi.mock("@/hooks/use-acp-agents", () => ({
   useAcpAgents: () => ({ agents: mocks.agents, fresh: true, refresh: vi.fn() }),
@@ -310,6 +314,7 @@ describe("useReferenceSearch", () => {
     mocks.agents = []
     mocks.files = { allFiles: [], loaded: false }
     mocks.listAllConversations.mockReset().mockResolvedValue([])
+    mocks.useFileTree.mockReset()
     mocks.gitLog
       .mockReset()
       .mockResolvedValue({ entries: [], has_upstream: false })
@@ -389,6 +394,30 @@ describe("useReferenceSearch", () => {
     expect(groups).toEqual([])
     expect(mocks.listAllConversations).not.toHaveBeenCalled()
     expect(mocks.gitLog).not.toHaveBeenCalled()
+  })
+
+  it("keeps reference search active while mobile file pre-warming is disabled", async () => {
+    mocks.agents = [makeAgent("codex", { name: "Codex" })]
+    mocks.files = { allFiles: [makeFile("large.ts")], loaded: true }
+    const { result } = renderHook(() =>
+      useReferenceSearch({
+        defaultPath: "/repo",
+        enabled: true,
+        filesEnabled: false,
+      })
+    )
+
+    let groups!: SuggestionGroup[]
+    await act(async () => {
+      groups = (await result.current("")) as SuggestionGroup[]
+    })
+
+    expect(mocks.useFileTree).toHaveBeenCalledWith({
+      folderPath: "/repo",
+      enabled: false,
+    })
+    expect(itemsOf(groups, "file")).toHaveLength(0)
+    expect(itemsOf(groups, "agent")).toHaveLength(1)
   })
 
   it("returns no groups when the query is aborted mid-fetch", async () => {

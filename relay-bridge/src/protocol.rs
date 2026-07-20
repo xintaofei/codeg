@@ -1,0 +1,149 @@
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+pub const PROTOCOL_VERSION: u8 = 1;
+pub const MOBILE_TO_DESKTOP_NONCE_TAG: u32 = 0x004d_3244;
+pub const DESKTOP_TO_MOBILE_NONCE_TAG: u32 = 0x0044_324d;
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+pub enum IncomingEnvelope {
+    #[serde(rename = "pair")]
+    Pair(PairEnvelope),
+    #[serde(rename = "frame")]
+    Frame(RelayFrame),
+    #[serde(rename = "error")]
+    Error { code: String },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PairEnvelope {
+    pub v: u8,
+    pub phase: String,
+    pub desktop_id: String,
+    pub device_id: String,
+    pub connection_id: String,
+    pub public_key: String,
+    pub proof: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RelayFrame {
+    pub v: u8,
+    // `IncomingEnvelope` consumes the internally tagged `type` field before
+    // deserializing this struct. Supplying the protocol constant as a default
+    // keeps standalone serialization correct without requiring the field a
+    // second time during enum deserialization.
+    #[serde(rename = "type", default = "frame_message_type")]
+    pub message_type: String,
+    pub desktop_id: String,
+    pub device_id: String,
+    pub connection_id: String,
+    pub frame_id: String,
+    pub seq: u64,
+    pub ack: u64,
+    pub nonce: String,
+    pub ciphertext: String,
+}
+
+fn frame_message_type() -> String {
+    "frame".to_owned()
+}
+
+impl RelayFrame {
+    pub fn aad(&self) -> Vec<u8> {
+        format!(
+            "{}|{}|{}|{}|{}|{}|{}",
+            self.v,
+            self.desktop_id,
+            self.device_id,
+            self.connection_id,
+            self.frame_id,
+            self.seq,
+            self.ack
+        )
+        .into_bytes()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct RelayRequest {
+    pub request_id: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Value,
+    pub idempotency_key: String,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct RelayChunk {
+    pub chunk_id: String,
+    pub request_id: String,
+    pub index: usize,
+    pub total: usize,
+    pub total_bytes: usize,
+    pub sha256: String,
+    pub data: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "kind")]
+pub enum EncryptedPayload {
+    #[serde(rename = "request")]
+    Request(RelayRequest),
+    #[serde(rename = "ws_frame")]
+    WsFrame { frame: Value },
+    #[serde(rename = "cancel")]
+    Cancel { request_id: String },
+    #[serde(rename = "chunk")]
+    Chunk(RelayChunk),
+    #[serde(other)]
+    Other,
+}
+
+pub fn valid_id(value: &str) -> bool {
+    (3..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+}
+
+pub fn valid_command(value: &str) -> bool {
+    (1..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{IncomingEnvelope, PROTOCOL_VERSION};
+
+    #[test]
+    fn parses_frame_with_internally_tagged_type() {
+        let value = serde_json::json!({
+            "v": PROTOCOL_VERSION,
+            "type": "frame",
+            "desktop_id": "d_test",
+            "device_id": "m_phone",
+            "connection_id": "c_session",
+            "frame_id": "f_one",
+            "seq": 1,
+            "ack": 0,
+            "nonce": "nonce",
+            "ciphertext": "ciphertext"
+        });
+
+        let envelope = serde_json::from_value::<IncomingEnvelope>(value)
+            .expect("frame envelope should deserialize");
+        let IncomingEnvelope::Frame(frame) = envelope else {
+            panic!("expected frame envelope");
+        };
+        assert_eq!(frame.v, PROTOCOL_VERSION);
+        assert_eq!(frame.frame_id, "f_one");
+    }
+}

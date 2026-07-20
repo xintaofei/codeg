@@ -1,5 +1,57 @@
 import "@testing-library/jest-dom/vitest"
 
+// Node 24 exposes an experimental global `localStorage` property whose value is
+// `undefined` unless the process receives `--localstorage-file`. It can also
+// shadow jsdom's Storage accessor, so install a deterministic browser-compatible
+// store for every worker without reading the broken Node accessor first.
+class TestStorage implements Storage {
+  readonly #values = new Map<string, string>()
+
+  get length() {
+    return this.#values.size
+  }
+
+  clear() {
+    this.#values.clear()
+  }
+
+  getItem(key: string) {
+    return this.#values.get(String(key)) ?? null
+  }
+
+  key(index: number) {
+    return Array.from(this.#values.keys())[index] ?? null
+  }
+
+  removeItem(key: string) {
+    this.#values.delete(String(key))
+  }
+
+  setItem(key: string, value: string) {
+    this.#values.set(String(key), String(value))
+  }
+}
+
+const testLocalStorage = new TestStorage()
+Object.defineProperty(globalThis, "Storage", {
+  configurable: true,
+  value: TestStorage,
+})
+Object.defineProperty(globalThis, "localStorage", {
+  configurable: true,
+  value: testLocalStorage,
+})
+if (typeof window !== "undefined" && window !== globalThis) {
+  Object.defineProperty(window, "Storage", {
+    configurable: true,
+    value: TestStorage,
+  })
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: testLocalStorage,
+  })
+}
+
 // jsdom doesn't implement a few layout APIs that ProseMirror's EditorView
 // touches on mount (used by Tiptap-based editors such as the message composer).
 // Polyfill them as no-ops so headless/component editor tests can construct a

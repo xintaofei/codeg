@@ -1,0 +1,2158 @@
+use std::{
+    collections::HashMap,
+    env,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+
+use anyhow::{bail, Context};
+use axum::{
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Path as AxumPath, Query, State,
+    },
+    http::{header::AUTHORIZATION, HeaderMap, Method, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{delete, get, post},
+    Json, Router,
+};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
+use tokio::sync::{mpsc, RwLock};
+use tower_http::cors::{Any, CorsLayer};
+use tracing::{info, warn};
+
+pub const PROTOCOL_VERSION: u8 = 1;
+pub const DEFAULT_MAX_FRAME_BYTES: usize = 1024 * 1024;
+const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const FRAMES_PER_SECOND: u32 = 120;
+const PAIRING_TTL_SECONDS: u64 = 300;
+const PAIRING_TOMBSTONE_SECONDS: u64 = 300;
+const MAX_PAIRINGS: usize = 4096;
+
+#[derive(Clone)]
+pub struct Config {
+    pub bind: SocketAddr,
+    pub credential_file: PathBuf,
+    pub desktop_tokens: HashMap<String, String>,
+    pub max_frame_bytes: usize,
+}
+
+impl Config {
+    pub fn from_env() -> anyhow::Result<Self> {
+        let bind = env::var("CODEG_RELAY_BIND")
+            .unwrap_or_else(|_| "127.0.0.1:8787".to_string())
+            .parse()
+            .context("CODEG_RELAY_BIND must be a socket address")?;
+        let credential_file = env::var_os("CODEG_RELAY_CREDENTIAL_FILE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("data/device-credentials.json"));
+        let raw_tokens = env::var("CODEG_RELAY_DESKTOP_TOKENS")
+            .context("CODEG_RELAY_DESKTOP_TOKENS must be a JSON object")?;
+        let desktop_tokens: HashMap<String, String> = serde_json::from_str(&raw_tokens)
+            .context("CODEG_RELAY_DESKTOP_TOKENS must be a JSON object")?;
+        if desktop_tokens.is_empty() || desktop_tokens.values().any(|token| token.len() < 32) {
+            bail!("at least one desktop token of 32+ characters is required");
+        }
+        let max_frame_bytes = env::var("CODEG_RELAY_MAX_FRAME_BYTES")
+            .ok()
+            .map(|value| value.parse())
+            .transpose()
+            .context("CODEG_RELAY_MAX_FRAME_BYTES must be an integer")?
+            .unwrap_or(DEFAULT_MAX_FRAME_BYTES);
+        if !(4096..=4 * 1024 * 1024).contains(&max_frame_bytes) {
+            bail!("CODEG_RELAY_MAX_FRAME_BYTES must be between 4096 and 4194304");
+        }
+        Ok(Self {
+            bind,
+            credential_file,
+            desktop_tokens,
+            max_frame_bytes,
+        })
+    }
+}
+
+#[derive(Default)]
+struct Metrics {
+    active_desktops: AtomicU64,
+    active_mobiles: AtomicU64,
+    forwarded_frames: AtomicU64,
+    rejected_frames: AtomicU64,
+    auth_failures: AtomicU64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct DeviceCredential {
+    desktop_id: String,
+    device_id: String,
+    token_sha256: String,
+    created_at: u64,
+    #[serde(default)]
+    last_seen_at: Option<u64>,
+    revoked_at: Option<u64>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct CredentialFile {
+    devices: Vec<DeviceCredential>,
+}
+
+#[derive(Clone)]
+struct CredentialStore {
+    path: Arc<PathBuf>,
+    devices: Arc<RwLock<HashMap<(String, String), DeviceCredential>>>,
+}
+
+impl CredentialStore {
+    async fn load(path: PathBuf) -> anyhow::Result<Self> {
+        let file = match tokio::fs::read(&path).await {
+            Ok(bytes) => serde_json::from_slice::<CredentialFile>(&bytes)
+                .with_context(|| format!("invalid credential file {}", path.display()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => CredentialFile::default(),
+            Err(error) => return Err(error).context("failed to read credential file"),
+        };
+        let devices = file
+            .devices
+            .into_iter()
+            .map(|record| {
+                (
+                    (record.desktop_id.clone(), record.device_id.clone()),
+                    record,
+                )
+            })
+            .collect();
+        Ok(Self {
+            path: Arc::new(path),
+            devices: Arc::new(RwLock::new(devices)),
+        })
+    }
+
+    async fn issue(&self, desktop_id: &str, device_id: &str) -> anyhow::Result<String> {
+        let mut random = [0_u8; 32];
+        getrandom::fill(&mut random).context("OS random generator failed")?;
+        let token = format!("mrt_{}", URL_SAFE_NO_PAD.encode(random));
+        let record = DeviceCredential {
+            desktop_id: desktop_id.to_owned(),
+            device_id: device_id.to_owned(),
+            token_sha256: token_hash_hex(&token),
+            created_at: unix_seconds(),
+            last_seen_at: None,
+            revoked_at: None,
+        };
+        let snapshot = {
+            let mut devices = self.devices.write().await;
+            devices.insert((desktop_id.to_owned(), device_id.to_owned()), record);
+            devices.values().cloned().collect::<Vec<_>>()
+        };
+        self.persist(snapshot).await?;
+        Ok(token)
+    }
+
+    async fn issue_hash(
+        &self,
+        desktop_id: &str,
+        device_id: &str,
+        token_sha256: &str,
+    ) -> anyhow::Result<()> {
+        let decoded = hex::decode(token_sha256).context("routing token hash is not hex")?;
+        if decoded.len() != 32 {
+            bail!("routing token hash must contain 32 bytes");
+        }
+        let record = DeviceCredential {
+            desktop_id: desktop_id.to_owned(),
+            device_id: device_id.to_owned(),
+            token_sha256: token_sha256.to_ascii_lowercase(),
+            created_at: unix_seconds(),
+            last_seen_at: None,
+            revoked_at: None,
+        };
+        let snapshot = {
+            let mut devices = self.devices.write().await;
+            devices.insert((desktop_id.to_owned(), device_id.to_owned()), record);
+            devices.values().cloned().collect::<Vec<_>>()
+        };
+        self.persist(snapshot).await
+    }
+
+    async fn authenticate(&self, desktop_id: &str, device_id: &str, token: &str) -> bool {
+        let snapshot = {
+            let mut devices = self.devices.write().await;
+            let Some(record) = devices.get_mut(&(desktop_id.to_owned(), device_id.to_owned()))
+            else {
+                return false;
+            };
+            if record.revoked_at.is_some()
+                || !constant_time_hash_matches(&record.token_sha256, token)
+            {
+                return false;
+            }
+            record.last_seen_at = Some(unix_seconds());
+            devices.values().cloned().collect::<Vec<_>>()
+        };
+        if let Err(error) = self.persist(snapshot).await {
+            warn!(error = %error, "failed to persist Relay device activity");
+        }
+        true
+    }
+
+    async fn revoke(&self, desktop_id: &str, device_id: &str) -> anyhow::Result<bool> {
+        let (found, snapshot) = {
+            let mut devices = self.devices.write().await;
+            let found = if let Some(record) =
+                devices.get_mut(&(desktop_id.to_owned(), device_id.to_owned()))
+            {
+                record.revoked_at = Some(unix_seconds());
+                true
+            } else {
+                false
+            };
+            (found, devices.values().cloned().collect::<Vec<_>>())
+        };
+        if found {
+            self.persist(snapshot).await?;
+        }
+        Ok(found)
+    }
+
+    async fn list(&self, desktop_id: &str) -> Vec<DeviceSummary> {
+        self.devices
+            .read()
+            .await
+            .values()
+            .filter(|record| record.desktop_id == desktop_id)
+            .map(|record| DeviceSummary {
+                device_id: record.device_id.clone(),
+                created_at: record.created_at,
+                last_seen_at: record.last_seen_at,
+                revoked_at: record.revoked_at,
+            })
+            .collect()
+    }
+
+    async fn persist(&self, devices: Vec<DeviceCredential>) -> anyhow::Result<()> {
+        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        tokio::fs::create_dir_all(parent).await?;
+        let tmp = self.path.with_extension("json.tmp");
+        let bytes = serde_json::to_vec_pretty(&CredentialFile { devices })?;
+        tokio::fs::write(&tmp, bytes).await?;
+        set_private_permissions(&tmp).await?;
+        tokio::fs::rename(&tmp, self.path.as_ref()).await?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PendingPairingRequest {
+    device_id: String,
+    device_name: String,
+    mobile_public_key: String,
+}
+
+#[derive(Clone, Debug)]
+struct PairingAcceptEnvelope {
+    nonce: String,
+    ciphertext: String,
+}
+
+#[derive(Clone, Debug)]
+enum PairingState {
+    Waiting,
+    Requested(PendingPairingRequest),
+    Accepting(PendingPairingRequest),
+    Accepted {
+        request: PendingPairingRequest,
+        envelope: PairingAcceptEnvelope,
+    },
+    Rejected {
+        device_id: Option<String>,
+    },
+    Consumed {
+        device_id: String,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct PairingRecord {
+    desktop_id: String,
+    expires_at: u64,
+    state: PairingState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PairingError {
+    NotFound,
+    Expired,
+    Consumed,
+    AlreadyExists,
+    Capacity,
+    WrongDevice,
+}
+
+#[derive(Clone, Default)]
+struct PairingStore {
+    records: Arc<RwLock<HashMap<String, PairingRecord>>>,
+}
+
+impl PairingStore {
+    async fn register(
+        &self,
+        desktop_id: &str,
+        pair_id_hash: &str,
+        expires_at: u64,
+    ) -> Result<(), PairingError> {
+        let now = unix_seconds();
+        let mut records = self.records.write().await;
+        Self::cleanup_locked(&mut records, now);
+        if records.len() >= MAX_PAIRINGS {
+            return Err(PairingError::Capacity);
+        }
+        if records.contains_key(pair_id_hash) {
+            return Err(PairingError::AlreadyExists);
+        }
+        records.insert(
+            pair_id_hash.to_owned(),
+            PairingRecord {
+                desktop_id: desktop_id.to_owned(),
+                expires_at,
+                state: PairingState::Waiting,
+            },
+        );
+        Ok(())
+    }
+
+    async fn request(
+        &self,
+        pair_id: &str,
+        request: PendingPairingRequest,
+    ) -> Result<(), PairingError> {
+        let now = unix_seconds();
+        let pair_hash = token_hash_hex(pair_id);
+        let mut records = self.records.write().await;
+        Self::cleanup_locked(&mut records, now);
+        let record = records.get_mut(&pair_hash).ok_or(PairingError::NotFound)?;
+        if record.expires_at <= now {
+            return Err(PairingError::Expired);
+        }
+        match &record.state {
+            PairingState::Waiting => record.state = PairingState::Requested(request),
+            PairingState::Requested(existing)
+                if existing.device_id == request.device_id
+                    && existing.mobile_public_key == request.mobile_public_key => {}
+            _ => return Err(PairingError::Consumed),
+        }
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        pair_id: &str,
+        desktop_id: Option<&str>,
+    ) -> Result<PairingRecord, PairingError> {
+        let now = unix_seconds();
+        let pair_hash = token_hash_hex(pair_id);
+        let mut records = self.records.write().await;
+        Self::cleanup_locked(&mut records, now);
+        let record = records.get(&pair_hash).ok_or(PairingError::NotFound)?;
+        if record.expires_at <= now {
+            return Err(PairingError::Expired);
+        }
+        if desktop_id.is_some_and(|expected| expected != record.desktop_id) {
+            return Err(PairingError::NotFound);
+        }
+        Ok(record.clone())
+    }
+
+    async fn begin_accept(
+        &self,
+        pair_id: &str,
+        desktop_id: &str,
+        device_id: &str,
+    ) -> Result<PendingPairingRequest, PairingError> {
+        let now = unix_seconds();
+        let pair_hash = token_hash_hex(pair_id);
+        let mut records = self.records.write().await;
+        Self::cleanup_locked(&mut records, now);
+        let record = records.get_mut(&pair_hash).ok_or(PairingError::NotFound)?;
+        if record.expires_at <= now {
+            return Err(PairingError::Expired);
+        }
+        if record.desktop_id != desktop_id {
+            return Err(PairingError::NotFound);
+        }
+        let PairingState::Requested(request) = &record.state else {
+            return Err(PairingError::Consumed);
+        };
+        if request.device_id != device_id {
+            return Err(PairingError::WrongDevice);
+        }
+        let request = request.clone();
+        record.state = PairingState::Accepting(request.clone());
+        Ok(request)
+    }
+
+    async fn finish_accept(
+        &self,
+        pair_id: &str,
+        desktop_id: &str,
+        envelope: PairingAcceptEnvelope,
+    ) -> Result<(), PairingError> {
+        let pair_hash = token_hash_hex(pair_id);
+        let mut records = self.records.write().await;
+        let record = records.get_mut(&pair_hash).ok_or(PairingError::NotFound)?;
+        if record.desktop_id != desktop_id {
+            return Err(PairingError::NotFound);
+        }
+        let PairingState::Accepting(request) = &record.state else {
+            return Err(PairingError::Consumed);
+        };
+        record.state = PairingState::Accepted {
+            request: request.clone(),
+            envelope,
+        };
+        Ok(())
+    }
+
+    async fn abort_accept(&self, pair_id: &str, desktop_id: &str) {
+        let pair_hash = token_hash_hex(pair_id);
+        let mut records = self.records.write().await;
+        let Some(record) = records.get_mut(&pair_hash) else {
+            return;
+        };
+        if record.desktop_id != desktop_id {
+            return;
+        }
+        if let PairingState::Accepting(request) = &record.state {
+            record.state = PairingState::Requested(request.clone());
+        }
+    }
+
+    async fn reject(
+        &self,
+        pair_id: &str,
+        desktop_id: &str,
+        device_id: Option<&str>,
+    ) -> Result<(), PairingError> {
+        let now = unix_seconds();
+        let pair_hash = token_hash_hex(pair_id);
+        let mut records = self.records.write().await;
+        Self::cleanup_locked(&mut records, now);
+        let record = records.get_mut(&pair_hash).ok_or(PairingError::NotFound)?;
+        if record.expires_at <= now {
+            return Err(PairingError::Expired);
+        }
+        if record.desktop_id != desktop_id {
+            return Err(PairingError::NotFound);
+        }
+        let requested_device = match &record.state {
+            PairingState::Waiting => None,
+            PairingState::Requested(request) => Some(request.device_id.clone()),
+            PairingState::Accepting(_)
+            | PairingState::Accepted { .. }
+            | PairingState::Consumed { .. } => return Err(PairingError::Consumed),
+            PairingState::Rejected { .. } => return Ok(()),
+        };
+        if let (Some(expected), Some(actual)) = (requested_device.as_deref(), device_id) {
+            if expected != actual {
+                return Err(PairingError::WrongDevice);
+            }
+        }
+        record.state = PairingState::Rejected {
+            device_id: requested_device,
+        };
+        Ok(())
+    }
+
+    async fn complete(&self, pair_id: &str, device_id: &str) -> Result<(), PairingError> {
+        let now = unix_seconds();
+        let pair_hash = token_hash_hex(pair_id);
+        let mut records = self.records.write().await;
+        Self::cleanup_locked(&mut records, now);
+        let record = records.get_mut(&pair_hash).ok_or(PairingError::NotFound)?;
+        if record.expires_at <= now {
+            return Err(PairingError::Expired);
+        }
+        match &record.state {
+            PairingState::Accepted { request, .. } if request.device_id == device_id => {
+                record.state = PairingState::Consumed {
+                    device_id: device_id.to_owned(),
+                };
+                Ok(())
+            }
+            PairingState::Consumed {
+                device_id: existing,
+            } if existing == device_id => Ok(()),
+            PairingState::Accepted { .. } | PairingState::Consumed { .. } => {
+                Err(PairingError::WrongDevice)
+            }
+            _ => Err(PairingError::Consumed),
+        }
+    }
+
+    fn cleanup_locked(records: &mut HashMap<String, PairingRecord>, now: u64) {
+        records
+            .retain(|_, record| record.expires_at.saturating_add(PAIRING_TOMBSTONE_SECONDS) > now);
+    }
+}
+
+#[cfg(unix)]
+async fn set_private_permissions(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await
+}
+
+#[cfg(not(unix))]
+async fn set_private_permissions(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[derive(Clone, Default)]
+struct Hub {
+    desktops: Arc<RwLock<HashMap<String, PeerSender>>>,
+    mobiles: Arc<RwLock<MobilePeers>>,
+}
+
+type PeerSender = mpsc::Sender<Message>;
+type MobilePeers = HashMap<(String, String), PeerSender>;
+
+impl Hub {
+    async fn register_desktop(&self, id: String, sender: mpsc::Sender<Message>) -> bool {
+        let previous = self.desktops.write().await.insert(id, sender);
+        if let Some(previous) = previous.as_ref() {
+            let _ = previous.send(Message::Close(None)).await;
+        }
+        previous.is_none()
+    }
+
+    async fn register_mobile(
+        &self,
+        desktop_id: String,
+        device_id: String,
+        sender: mpsc::Sender<Message>,
+    ) -> bool {
+        let previous = self
+            .mobiles
+            .write()
+            .await
+            .insert((desktop_id, device_id), sender);
+        if let Some(previous) = previous.as_ref() {
+            let _ = previous.send(Message::Close(None)).await;
+        }
+        previous.is_none()
+    }
+
+    async fn remove_desktop(&self, id: &str, sender: &mpsc::Sender<Message>) -> bool {
+        let mut desktops = self.desktops.write().await;
+        if desktops
+            .get(id)
+            .is_some_and(|current| current.same_channel(sender))
+        {
+            desktops.remove(id);
+            return true;
+        }
+        false
+    }
+
+    async fn remove_mobile(
+        &self,
+        desktop_id: &str,
+        device_id: &str,
+        sender: &mpsc::Sender<Message>,
+    ) -> bool {
+        let key = (desktop_id.to_owned(), device_id.to_owned());
+        let mut mobiles = self.mobiles.write().await;
+        if mobiles
+            .get(&key)
+            .is_some_and(|current| current.same_channel(sender))
+        {
+            mobiles.remove(&key);
+            return true;
+        }
+        false
+    }
+
+    async fn disconnect_mobile(&self, desktop_id: &str, device_id: &str) {
+        if let Some(sender) = self
+            .mobiles
+            .write()
+            .await
+            .remove(&(desktop_id.to_owned(), device_id.to_owned()))
+        {
+            let _ = sender.send(Message::Close(None)).await;
+        }
+    }
+
+    async fn disconnect_mobiles_for_desktop(&self, desktop_id: &str) -> usize {
+        let senders = {
+            let mut mobiles = self.mobiles.write().await;
+            let keys = mobiles
+                .keys()
+                .filter(|(candidate, _)| candidate == desktop_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            keys.into_iter()
+                .filter_map(|key| mobiles.remove(&key))
+                .collect::<Vec<_>>()
+        };
+        let count = senders.len();
+        for sender in senders {
+            let _ = sender.send(Message::Close(None)).await;
+        }
+        count
+    }
+}
+
+pub struct AppState {
+    desktop_token_hashes: HashMap<String, [u8; 32]>,
+    credentials: CredentialStore,
+    pairings: PairingStore,
+    hub: Hub,
+    metrics: Metrics,
+    max_frame_bytes: usize,
+}
+
+impl AppState {
+    pub async fn new(config: Config) -> anyhow::Result<Self> {
+        let desktop_token_hashes = config
+            .desktop_tokens
+            .into_iter()
+            .map(|(id, token)| (id, token_hash(&token)))
+            .collect();
+        Ok(Self {
+            desktop_token_hashes,
+            credentials: CredentialStore::load(config.credential_file).await?,
+            pairings: PairingStore::default(),
+            hub: Hub::default(),
+            metrics: Metrics::default(),
+            max_frame_bytes: config.max_frame_bytes,
+        })
+    }
+
+    fn authenticate_desktop(&self, desktop_id: &str, token: &str) -> bool {
+        self.desktop_token_hashes
+            .get(desktop_id)
+            .or_else(|| self.desktop_token_hashes.get("*"))
+            .is_some_and(|expected| expected.ct_eq(&token_hash(token)).into())
+    }
+
+    async fn disconnect_mobiles_for_desktop(&self, desktop_id: &str) {
+        let disconnected = self.hub.disconnect_mobiles_for_desktop(desktop_id).await;
+        if disconnected > 0 {
+            self.metrics
+                .active_mobiles
+                .fetch_sub(disconnected as u64, Ordering::Relaxed);
+        }
+    }
+}
+
+pub fn app(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/metrics", get(metrics))
+        .route("/v1/ws", get(websocket))
+        .route("/v1/devices", get(list_devices).post(issue_device))
+        .route("/v1/devices/{device_id}", delete(revoke_device))
+        .route("/v1/pairings", post(register_pairing))
+        .route("/v1/pairings/{pair_id}", get(pairing_status))
+        .route("/v1/pairings/{pair_id}/request", post(request_pairing))
+        .route("/v1/pairings/{pair_id}/accept", post(accept_pairing))
+        .route("/v1/pairings/{pair_id}/reject", post(reject_pairing))
+        .route("/v1/pairings/{pair_id}/complete", post(complete_pairing))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods([Method::GET, Method::POST])
+                .allow_headers(Any),
+        )
+        .with_state(state)
+}
+
+async fn health() -> Json<serde_json::Value> {
+    Json(serde_json::json!({"status":"ok","protocol":PROTOCOL_VERSION}))
+}
+
+async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let metrics = &state.metrics;
+    format!(
+        concat!(
+            "codeg_relay_active_desktops {}\n",
+            "codeg_relay_active_mobiles {}\n",
+            "codeg_relay_forwarded_frames_total {}\n",
+            "codeg_relay_rejected_frames_total {}\n",
+            "codeg_relay_auth_failures_total {}\n"
+        ),
+        metrics.active_desktops.load(Ordering::Relaxed),
+        metrics.active_mobiles.load(Ordering::Relaxed),
+        metrics.forwarded_frames.load(Ordering::Relaxed),
+        metrics.rejected_frames.load(Ordering::Relaxed),
+        metrics.auth_failures.load(Ordering::Relaxed),
+    )
+}
+
+async fn websocket(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Response {
+    ws.max_message_size(state.max_frame_bytes + 4096)
+        .max_frame_size(state.max_frame_bytes + 4096)
+        .on_upgrade(move |socket| handle_socket(socket, state))
+}
+
+#[derive(Deserialize)]
+struct Hello {
+    v: u8,
+    #[serde(rename = "type")]
+    message_type: String,
+    role: String,
+    desktop_id: String,
+    device_id: Option<String>,
+    token: String,
+}
+
+enum Session {
+    Desktop {
+        desktop_id: String,
+    },
+    Mobile {
+        desktop_id: String,
+        device_id: String,
+    },
+}
+
+async fn authenticate_socket(socket: &mut WebSocket, state: &AppState) -> Option<Session> {
+    let message = tokio::time::timeout(AUTH_TIMEOUT, socket.recv())
+        .await
+        .ok()??
+        .ok()?;
+    let Message::Text(text) = message else {
+        return None;
+    };
+    if text.len() > 8192 {
+        return None;
+    }
+    let hello: Hello = serde_json::from_str(&text).ok()?;
+    if hello.v != PROTOCOL_VERSION || hello.message_type != "hello" || !valid_id(&hello.desktop_id)
+    {
+        return None;
+    }
+    match hello.role.as_str() {
+        "desktop" if state.authenticate_desktop(&hello.desktop_id, &hello.token) => {
+            Some(Session::Desktop {
+                desktop_id: hello.desktop_id,
+            })
+        }
+        "mobile" => {
+            let device_id = hello.device_id.filter(|id| valid_id(id))?;
+            state
+                .credentials
+                .authenticate(&hello.desktop_id, &device_id, &hello.token)
+                .await
+                .then_some(Session::Mobile {
+                    desktop_id: hello.desktop_id,
+                    device_id,
+                })
+        }
+        _ => None,
+    }
+}
+
+async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
+    let Some(session) = authenticate_socket(&mut socket, &state).await else {
+        state.metrics.auth_failures.fetch_add(1, Ordering::Relaxed);
+        let _ = socket.send(Message::Close(None)).await;
+        return;
+    };
+
+    let (mut sink, mut stream) = socket.split();
+    let (sender, mut receiver) = mpsc::channel::<Message>(256);
+    let writer = tokio::spawn(async move {
+        while let Some(message) = receiver.recv().await {
+            let closing = matches!(message, Message::Close(_));
+            if sink.send(message).await.is_err() || closing {
+                break;
+            }
+        }
+    });
+
+    match &session {
+        Session::Desktop { desktop_id } => {
+            let inserted = state
+                .hub
+                .register_desktop(desktop_id.clone(), sender.clone())
+                .await;
+            if inserted {
+                state
+                    .metrics
+                    .active_desktops
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            // A desktop process starts every Relay connection with an empty
+            // in-memory encryption session map. Existing mobile sockets would
+            // otherwise keep sending with stale keys, so close them and let
+            // their normal reconnect path perform a fresh handshake.
+            state.disconnect_mobiles_for_desktop(desktop_id).await;
+            info!(role = "desktop", %desktop_id, "relay peer connected");
+        }
+        Session::Mobile {
+            desktop_id,
+            device_id,
+        } => {
+            let inserted = state
+                .hub
+                .register_mobile(desktop_id.clone(), device_id.clone(), sender.clone())
+                .await;
+            if inserted {
+                state.metrics.active_mobiles.fetch_add(1, Ordering::Relaxed);
+            }
+            info!(role = "mobile", %desktop_id, %device_id, "relay peer connected");
+        }
+    }
+
+    let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+    let mut last_seen = Instant::now();
+    let mut rate = FrameRate::default();
+
+    let disconnect_reason = loop {
+        tokio::select! {
+            incoming = stream.next() => {
+                let Some(incoming) = incoming else {
+                    break "peer_eof".to_owned();
+                };
+                let message = match incoming {
+                    Ok(message) => message,
+                    Err(error) => break format!("read_error:{error}"),
+                };
+                last_seen = Instant::now();
+                match message {
+                    Message::Text(text) => {
+                        if text.len() > state.max_frame_bytes || !rate.accept() {
+                            state.metrics.rejected_frames.fetch_add(1, Ordering::Relaxed);
+                            let _ = sender.send(error_message(if text.len() > state.max_frame_bytes { "frame_too_large" } else { "rate_limited" })).await;
+                            continue;
+                        }
+                        if forward_text(&state, &session, text).await {
+                            state.metrics.forwarded_frames.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            state.metrics.rejected_frames.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    Message::Ping(bytes) => { let _ = sender.send(Message::Pong(bytes)).await; }
+                    Message::Pong(_) => {}
+                    Message::Close(_) => break "peer_close".to_owned(),
+                    Message::Binary(_) => {
+                        state.metrics.rejected_frames.fetch_add(1, Ordering::Relaxed);
+                        let _ = sender.send(error_message("protocol_violation")).await;
+                    }
+                }
+            }
+            _ = heartbeat.tick() => {
+                if last_seen.elapsed() > IDLE_TIMEOUT {
+                    break "idle_timeout".to_owned();
+                }
+                if sender.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    break "writer_closed".to_owned();
+                }
+            }
+        }
+    };
+
+    match &session {
+        Session::Desktop { desktop_id } => {
+            if state.hub.remove_desktop(desktop_id, &sender).await {
+                state
+                    .metrics
+                    .active_desktops
+                    .fetch_sub(1, Ordering::Relaxed);
+                state.disconnect_mobiles_for_desktop(desktop_id).await;
+            }
+            info!(role = "desktop", %desktop_id, reason = %disconnect_reason, "relay peer disconnected");
+        }
+        Session::Mobile {
+            desktop_id,
+            device_id,
+        } => {
+            let removed = state
+                .hub
+                .remove_mobile(desktop_id, device_id, &sender)
+                .await;
+            if removed {
+                state.metrics.active_mobiles.fetch_sub(1, Ordering::Relaxed);
+            }
+            info!(role = "mobile", %desktop_id, %device_id, reason = %disconnect_reason, "relay peer disconnected");
+        }
+    }
+    let _ = sender.send(Message::Close(None)).await;
+    let _ = writer.await;
+}
+
+#[derive(Deserialize)]
+struct RoutingEnvelope {
+    v: u8,
+    desktop_id: String,
+    device_id: String,
+}
+
+async fn forward_text(
+    state: &AppState,
+    session: &Session,
+    text: axum::extract::ws::Utf8Bytes,
+) -> bool {
+    let Ok(route) = serde_json::from_str::<RoutingEnvelope>(&text) else {
+        return false;
+    };
+    if route.v != PROTOCOL_VERSION || !valid_id(&route.desktop_id) || !valid_id(&route.device_id) {
+        return false;
+    }
+
+    let target = match session {
+        Session::Desktop { desktop_id } if desktop_id == &route.desktop_id => state
+            .hub
+            .mobiles
+            .read()
+            .await
+            .get(&(route.desktop_id, route.device_id))
+            .cloned(),
+        Session::Mobile {
+            desktop_id,
+            device_id,
+        } if desktop_id == &route.desktop_id && device_id == &route.device_id => {
+            state.hub.desktops.read().await.get(desktop_id).cloned()
+        }
+        _ => None,
+    };
+
+    let Some(target) = target else {
+        return false;
+    };
+    target.send(Message::Text(text)).await.is_ok()
+}
+
+#[derive(Default)]
+struct FrameRate {
+    window_started: Option<Instant>,
+    count: u32,
+}
+
+impl FrameRate {
+    fn accept(&mut self) -> bool {
+        let now = Instant::now();
+        if self
+            .window_started
+            .is_none_or(|started| now.duration_since(started) >= Duration::from_secs(1))
+        {
+            self.window_started = Some(now);
+            self.count = 0;
+        }
+        self.count += 1;
+        self.count <= FRAMES_PER_SECOND
+    }
+}
+
+fn error_message(code: &str) -> Message {
+    Message::Text(
+        serde_json::json!({"v":PROTOCOL_VERSION,"type":"error","code":code})
+            .to_string()
+            .into(),
+    )
+}
+
+#[derive(Deserialize)]
+struct RegisterPairingRequest {
+    desktop_id: String,
+    pair_id_hash: String,
+    expires_at: u64,
+}
+
+#[derive(Deserialize)]
+struct PairingRequestBody {
+    device_id: String,
+    device_name: String,
+    mobile_public_key: String,
+}
+
+#[derive(Deserialize)]
+struct PairingStatusQuery {
+    desktop_id: Option<String>,
+    device_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AcceptPairingRequest {
+    desktop_id: String,
+    device_id: String,
+    token_sha256: String,
+    nonce: String,
+    ciphertext: String,
+}
+
+#[derive(Deserialize)]
+struct RejectPairingRequest {
+    desktop_id: String,
+    device_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CompletePairingRequest {
+    device_id: String,
+}
+
+#[derive(Serialize)]
+struct PairingStatusView {
+    status: &'static str,
+    expires_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mobile_public_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nonce: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ciphertext: Option<String>,
+}
+
+async fn register_pairing(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<RegisterPairingRequest>,
+) -> Result<StatusCode, ApiError> {
+    authorize_desktop(&state, &headers, &request.desktop_id)?;
+    let now = unix_seconds();
+    if !valid_id(&request.desktop_id)
+        || !valid_sha256_hex(&request.pair_id_hash)
+        || request.expires_at <= now
+        || request.expires_at > now.saturating_add(PAIRING_TTL_SECONDS)
+    {
+        return Err(ApiError::bad_request("invalid_pairing"));
+    }
+    state
+        .pairings
+        .register(
+            &request.desktop_id,
+            &request.pair_id_hash.to_ascii_lowercase(),
+            request.expires_at,
+        )
+        .await
+        .map_err(pairing_api_error)?;
+    info!(desktop_id = %request.desktop_id, "one-time mobile pairing registered");
+    Ok(StatusCode::CREATED)
+}
+
+async fn request_pairing(
+    State(state): State<Arc<AppState>>,
+    AxumPath(pair_id): AxumPath<String>,
+    Json(request): Json<PairingRequestBody>,
+) -> Result<StatusCode, ApiError> {
+    if !valid_id(&pair_id)
+        || !valid_id(&request.device_id)
+        || request.device_name.trim().is_empty()
+        || request.device_name.chars().count() > 80
+        || !valid_p256_public_key(&request.mobile_public_key)
+    {
+        return Err(ApiError::bad_request("invalid_pairing_request"));
+    }
+    state
+        .pairings
+        .request(
+            &pair_id,
+            PendingPairingRequest {
+                device_id: request.device_id.clone(),
+                device_name: request.device_name.trim().to_owned(),
+                mobile_public_key: request.mobile_public_key,
+            },
+        )
+        .await
+        .map_err(pairing_api_error)?;
+    info!(device_id = %request.device_id, "mobile pairing awaits desktop confirmation");
+    Ok(StatusCode::ACCEPTED)
+}
+
+async fn pairing_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<PairingStatusQuery>,
+    AxumPath(pair_id): AxumPath<String>,
+) -> Result<Json<PairingStatusView>, ApiError> {
+    if !valid_id(&pair_id) {
+        return Err(ApiError::bad_request("invalid_pairing"));
+    }
+    if let Some(desktop_id) = query.desktop_id.as_deref() {
+        authorize_desktop(&state, &headers, desktop_id)?;
+    } else if query.device_id.as_deref().is_none_or(|id| !valid_id(id)) {
+        return Err(ApiError::bad_request("device_id_required"));
+    }
+    let record = state
+        .pairings
+        .get(&pair_id, query.desktop_id.as_deref())
+        .await
+        .map_err(pairing_api_error)?;
+    let desktop_view = query.desktop_id.is_some();
+    let device_id = query.device_id.as_deref();
+    let view = match record.state {
+        PairingState::Waiting => pairing_view("waiting", record.expires_at),
+        PairingState::Requested(request) | PairingState::Accepting(request) => {
+            if !desktop_view && device_id != Some(request.device_id.as_str()) {
+                return Err(pairing_api_error(PairingError::WrongDevice));
+            }
+            if desktop_view {
+                PairingStatusView {
+                    status: "requested",
+                    expires_at: record.expires_at,
+                    device_id: Some(request.device_id),
+                    device_name: Some(request.device_name),
+                    mobile_public_key: Some(request.mobile_public_key),
+                    nonce: None,
+                    ciphertext: None,
+                }
+            } else {
+                pairing_view("waiting", record.expires_at)
+            }
+        }
+        PairingState::Accepted { request, envelope } => {
+            if !desktop_view && device_id != Some(request.device_id.as_str()) {
+                return Err(pairing_api_error(PairingError::WrongDevice));
+            }
+            PairingStatusView {
+                status: "accepted",
+                expires_at: record.expires_at,
+                device_id: Some(request.device_id),
+                device_name: desktop_view.then_some(request.device_name),
+                mobile_public_key: desktop_view.then_some(request.mobile_public_key),
+                nonce: (!desktop_view).then_some(envelope.nonce),
+                ciphertext: (!desktop_view).then_some(envelope.ciphertext),
+            }
+        }
+        PairingState::Rejected {
+            device_id: rejected,
+        } => {
+            if !desktop_view
+                && rejected
+                    .as_deref()
+                    .is_some_and(|expected| Some(expected) != device_id)
+            {
+                return Err(pairing_api_error(PairingError::WrongDevice));
+            }
+            pairing_view("rejected", record.expires_at)
+        }
+        PairingState::Consumed {
+            device_id: consumed,
+        } => {
+            if !desktop_view && device_id != Some(consumed.as_str()) {
+                return Err(pairing_api_error(PairingError::WrongDevice));
+            }
+            if desktop_view {
+                PairingStatusView {
+                    status: "consumed",
+                    expires_at: record.expires_at,
+                    device_id: Some(consumed),
+                    device_name: None,
+                    mobile_public_key: None,
+                    nonce: None,
+                    ciphertext: None,
+                }
+            } else {
+                pairing_view("consumed", record.expires_at)
+            }
+        }
+    };
+    Ok(Json(view))
+}
+
+async fn accept_pairing(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(pair_id): AxumPath<String>,
+    Json(request): Json<AcceptPairingRequest>,
+) -> Result<StatusCode, ApiError> {
+    authorize_desktop(&state, &headers, &request.desktop_id)?;
+    if !valid_id(&pair_id)
+        || !valid_id(&request.device_id)
+        || !valid_sha256_hex(&request.token_sha256)
+        || !valid_accept_nonce(&request.nonce)
+        || request.ciphertext.is_empty()
+        || request.ciphertext.len() > 4096
+        || URL_SAFE_NO_PAD.decode(&request.ciphertext).is_err()
+    {
+        return Err(ApiError::bad_request("invalid_pairing_accept"));
+    }
+    state
+        .pairings
+        .begin_accept(&pair_id, &request.desktop_id, &request.device_id)
+        .await
+        .map_err(pairing_api_error)?;
+    if let Err(error) = state
+        .credentials
+        .issue_hash(
+            &request.desktop_id,
+            &request.device_id,
+            &request.token_sha256,
+        )
+        .await
+    {
+        state
+            .pairings
+            .abort_accept(&pair_id, &request.desktop_id)
+            .await;
+        return Err(ApiError::internal(error));
+    }
+    let finished = state
+        .pairings
+        .finish_accept(
+            &pair_id,
+            &request.desktop_id,
+            PairingAcceptEnvelope {
+                nonce: request.nonce,
+                ciphertext: request.ciphertext,
+            },
+        )
+        .await;
+    if let Err(error) = finished {
+        let _ = state
+            .credentials
+            .revoke(&request.desktop_id, &request.device_id)
+            .await;
+        return Err(pairing_api_error(error));
+    }
+    info!(desktop_id = %request.desktop_id, device_id = %request.device_id, "mobile pairing confirmed");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn reject_pairing(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(pair_id): AxumPath<String>,
+    Json(request): Json<RejectPairingRequest>,
+) -> Result<StatusCode, ApiError> {
+    authorize_desktop(&state, &headers, &request.desktop_id)?;
+    state
+        .pairings
+        .reject(&pair_id, &request.desktop_id, request.device_id.as_deref())
+        .await
+        .map_err(pairing_api_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn complete_pairing(
+    State(state): State<Arc<AppState>>,
+    AxumPath(pair_id): AxumPath<String>,
+    Json(request): Json<CompletePairingRequest>,
+) -> Result<StatusCode, ApiError> {
+    if !valid_id(&pair_id) || !valid_id(&request.device_id) {
+        return Err(ApiError::bad_request("invalid_pairing"));
+    }
+    state
+        .pairings
+        .complete(&pair_id, &request.device_id)
+        .await
+        .map_err(pairing_api_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn pairing_view(status: &'static str, expires_at: u64) -> PairingStatusView {
+    PairingStatusView {
+        status,
+        expires_at,
+        device_id: None,
+        device_name: None,
+        mobile_public_key: None,
+        nonce: None,
+        ciphertext: None,
+    }
+}
+
+fn pairing_api_error(error: PairingError) -> ApiError {
+    match error {
+        PairingError::NotFound => ApiError::not_found("pair_not_found"),
+        PairingError::Expired => ApiError::gone("pair_expired"),
+        PairingError::Consumed => ApiError::conflict("pair_consumed"),
+        PairingError::AlreadyExists => ApiError::conflict("pair_exists"),
+        PairingError::Capacity => ApiError::unavailable("pair_capacity"),
+        PairingError::WrongDevice => ApiError::unauthorized("pair_device_mismatch"),
+    }
+}
+
+fn valid_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn valid_p256_public_key(value: &str) -> bool {
+    URL_SAFE_NO_PAD
+        .decode(value)
+        .is_ok_and(|bytes| bytes.len() == 65 && bytes.first() == Some(&4))
+}
+
+fn valid_accept_nonce(value: &str) -> bool {
+    URL_SAFE_NO_PAD
+        .decode(value)
+        .is_ok_and(|bytes| bytes.len() == 12)
+}
+
+#[derive(Deserialize)]
+struct DeviceRequest {
+    desktop_id: String,
+    device_id: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct IssuedDevice {
+    desktop_id: String,
+    device_id: String,
+    token: String,
+}
+
+#[derive(Serialize)]
+struct DeviceSummary {
+    device_id: String,
+    created_at: u64,
+    last_seen_at: Option<u64>,
+    revoked_at: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct DesktopQuery {
+    desktop_id: String,
+}
+
+async fn issue_device(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<DeviceRequest>,
+) -> Result<Json<IssuedDevice>, ApiError> {
+    authorize_desktop(&state, &headers, &request.desktop_id)?;
+    if !valid_id(&request.desktop_id) || !valid_id(&request.device_id) {
+        return Err(ApiError::bad_request("invalid_device_id"));
+    }
+    let token = state
+        .credentials
+        .issue(&request.desktop_id, &request.device_id)
+        .await
+        .map_err(ApiError::internal)?;
+    info!(desktop_id = %request.desktop_id, device_id = %request.device_id, "relay device credential issued");
+    Ok(Json(IssuedDevice {
+        desktop_id: request.desktop_id,
+        device_id: request.device_id,
+        token,
+    }))
+}
+
+async fn list_devices(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<DesktopQuery>,
+) -> Result<Json<Vec<DeviceSummary>>, ApiError> {
+    authorize_desktop(&state, &headers, &query.desktop_id)?;
+    Ok(Json(state.credentials.list(&query.desktop_id).await))
+}
+
+async fn revoke_device(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<DesktopQuery>,
+    AxumPath(device_id): AxumPath<String>,
+) -> Result<StatusCode, ApiError> {
+    authorize_desktop(&state, &headers, &query.desktop_id)?;
+    if !state
+        .credentials
+        .revoke(&query.desktop_id, &device_id)
+        .await
+        .map_err(ApiError::internal)?
+    {
+        return Err(ApiError::not_found("device_not_found"));
+    }
+    state
+        .hub
+        .disconnect_mobile(&query.desktop_id, &device_id)
+        .await;
+    info!(desktop_id = %query.desktop_id, %device_id, "relay device revoked");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn authorize_desktop(
+    state: &AppState,
+    headers: &HeaderMap,
+    desktop_id: &str,
+) -> Result<(), ApiError> {
+    let token = headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .ok_or_else(|| ApiError::unauthorized("unauthorized"))?;
+    if !state.authenticate_desktop(desktop_id, token) {
+        return Err(ApiError::unauthorized("unauthorized"));
+    }
+    Ok(())
+}
+
+struct ApiError {
+    status: StatusCode,
+    code: &'static str,
+}
+
+impl ApiError {
+    fn bad_request(code: &'static str) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code,
+        }
+    }
+
+    fn unauthorized(code: &'static str) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            code,
+        }
+    }
+
+    fn not_found(code: &'static str) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            code,
+        }
+    }
+
+    fn conflict(code: &'static str) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code,
+        }
+    }
+
+    fn gone(code: &'static str) -> Self {
+        Self {
+            status: StatusCode::GONE,
+            code,
+        }
+    }
+
+    fn unavailable(code: &'static str) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code,
+        }
+    }
+
+    fn internal(error: anyhow::Error) -> Self {
+        warn!(error = %error, "relay internal error");
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: "internal_error",
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (self.status, Json(serde_json::json!({"error": self.code}))).into_response()
+    }
+}
+
+fn valid_id(value: &str) -> bool {
+    (3..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+}
+
+fn token_hash(token: &str) -> [u8; 32] {
+    Sha256::digest(token.as_bytes()).into()
+}
+
+fn token_hash_hex(token: &str) -> String {
+    hex::encode(token_hash(token))
+}
+
+fn constant_time_hash_matches(expected_hex: &str, token: &str) -> bool {
+    let Ok(expected) = hex::decode(expected_hex) else {
+        return false;
+    };
+    expected.as_slice().ct_eq(&token_hash(token)).into()
+}
+
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::{connect_async, tungstenite::Message as ClientMessage};
+
+    fn test_config(path: PathBuf) -> Config {
+        Config {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            credential_file: path,
+            desktop_tokens: HashMap::from([(
+                "d_test".to_string(),
+                "desktop-token-at-least-thirty-two-characters".to_string(),
+            )]),
+            max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
+        }
+    }
+
+    #[tokio::test]
+    async fn issued_credentials_are_hashed_persisted_and_revocable() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("credentials.json");
+        let store = CredentialStore::load(path.clone()).await.unwrap();
+        let token = store.issue("d_test", "m_phone").await.unwrap();
+        assert!(store.authenticate("d_test", "m_phone", &token).await);
+
+        let serialized = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(!serialized.contains(&token));
+        assert!(serialized.contains(&token_hash_hex(&token)));
+
+        let reloaded = CredentialStore::load(path).await.unwrap();
+        assert!(reloaded.authenticate("d_test", "m_phone", &token).await);
+        assert!(reloaded.revoke("d_test", "m_phone").await.unwrap());
+        assert!(!reloaded.authenticate("d_test", "m_phone", &token).await);
+    }
+
+    #[tokio::test]
+    async fn pairing_store_enforces_one_request_and_consumption() {
+        let store = PairingStore::default();
+        let pair_id = "p_one_time_secret";
+        let pair_hash = token_hash_hex(pair_id);
+        store
+            .register("d_test", &pair_hash, unix_seconds() + 300)
+            .await
+            .unwrap();
+        let first = PendingPairingRequest {
+            device_id: "m_phone".into(),
+            device_name: "Phone".into(),
+            mobile_public_key: URL_SAFE_NO_PAD.encode(
+                std::iter::once(4_u8)
+                    .chain(std::iter::repeat_n(7_u8, 64))
+                    .collect::<Vec<_>>(),
+            ),
+        };
+        store.request(pair_id, first.clone()).await.unwrap();
+        // Network retry from the same mobile is idempotent.
+        store.request(pair_id, first.clone()).await.unwrap();
+        let second = PendingPairingRequest {
+            device_id: "m_other".into(),
+            ..first.clone()
+        };
+        assert_eq!(
+            store.request(pair_id, second).await,
+            Err(PairingError::Consumed)
+        );
+
+        store
+            .begin_accept(pair_id, "d_test", "m_phone")
+            .await
+            .unwrap();
+        store
+            .finish_accept(
+                pair_id,
+                "d_test",
+                PairingAcceptEnvelope {
+                    nonce: URL_SAFE_NO_PAD.encode([1_u8; 12]),
+                    ciphertext: URL_SAFE_NO_PAD.encode([2_u8; 48]),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.get(pair_id, Some("d_test")).await.unwrap().state,
+            PairingState::Accepted { .. }
+        ));
+        store.complete(pair_id, "m_phone").await.unwrap();
+        assert!(matches!(
+            store.get(pair_id, Some("d_test")).await.unwrap().state,
+            PairingState::Consumed { .. }
+        ));
+        assert_eq!(
+            store.request(pair_id, first).await,
+            Err(PairingError::Consumed)
+        );
+    }
+
+    #[tokio::test]
+    async fn pairing_store_rejects_expired_codes() {
+        let store = PairingStore::default();
+        let pair_id = "p_expired_secret";
+        store.records.write().await.insert(
+            token_hash_hex(pair_id),
+            PairingRecord {
+                desktop_id: "d_test".into(),
+                expires_at: unix_seconds(),
+                state: PairingState::Waiting,
+            },
+        );
+        assert!(matches!(
+            store.get(pair_id, Some("d_test")).await,
+            Err(PairingError::Expired)
+        ));
+    }
+
+    #[tokio::test]
+    async fn rejects_wrong_desktop_token_in_constant_time_hash_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = AppState::new(test_config(temp.path().join("credentials.json")))
+            .await
+            .unwrap();
+        assert!(
+            state.authenticate_desktop("d_test", "desktop-token-at-least-thirty-two-characters")
+        );
+        assert!(!state.authenticate_desktop("d_test", "wrong"));
+
+        let wildcard = AppState::new(Config {
+            desktop_tokens: HashMap::from([(
+                "*".to_string(),
+                "shared-token-at-least-thirty-two-characters".to_string(),
+            )]),
+            ..test_config(temp.path().join("wildcard-credentials.json"))
+        })
+        .await
+        .unwrap();
+        assert!(wildcard.authenticate_desktop(
+            "d_randomly_generated",
+            "shared-token-at-least-thirty-two-characters"
+        ));
+    }
+
+    #[tokio::test]
+    async fn disconnecting_a_desktop_closes_all_of_its_mobile_routes() {
+        let hub = Hub::default();
+        let (first_tx, mut first_rx) = mpsc::channel(1);
+        let (second_tx, mut second_rx) = mpsc::channel(1);
+        hub.register_mobile("d_test".into(), "m_one".into(), first_tx)
+            .await;
+        hub.register_mobile("d_other".into(), "m_two".into(), second_tx)
+            .await;
+
+        assert_eq!(hub.disconnect_mobiles_for_desktop("d_test").await, 1);
+        assert!(matches!(first_rx.recv().await, Some(Message::Close(_))));
+        assert!(second_rx.try_recv().is_err());
+        assert_eq!(hub.mobiles.read().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn pairing_http_flow_is_one_time_device_bound_and_persists_only_hashes() {
+        let temp = tempfile::tempdir().unwrap();
+        let credential_path = temp.path().join("credentials.json");
+        let state = Arc::new(
+            AppState::new(test_config(credential_path.clone()))
+                .await
+                .unwrap(),
+        );
+        let state_for_assertion = state.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app(state)).await.unwrap();
+        });
+        let client = reqwest::Client::new();
+        let pair_id = "p_http_one_time";
+        let expires_at = unix_seconds() + PAIRING_TTL_SECONDS;
+        let mobile_public_key = URL_SAFE_NO_PAD.encode(
+            std::iter::once(4_u8)
+                .chain(std::iter::repeat_n(9_u8, 64))
+                .collect::<Vec<_>>(),
+        );
+
+        let registered = client
+            .post(format!("http://{address}/v1/pairings"))
+            .bearer_auth("desktop-token-at-least-thirty-two-characters")
+            .json(&serde_json::json!({
+                "desktop_id": "d_test",
+                "pair_id_hash": token_hash_hex(pair_id),
+                "expires_at": expires_at
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(registered.status(), StatusCode::CREATED);
+
+        let request_url = format!("http://{address}/v1/pairings/{pair_id}/request");
+        let first_request = serde_json::json!({
+            "device_id": "m_phone",
+            "device_name": "Android",
+            "mobile_public_key": mobile_public_key
+        });
+        for _ in 0..2 {
+            let response = client
+                .post(&request_url)
+                .json(&first_request)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+        }
+
+        let second_device = client
+            .post(&request_url)
+            .json(&serde_json::json!({
+                "device_id": "m_attacker",
+                "device_name": "Other phone",
+                "mobile_public_key": mobile_public_key
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(second_device.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            second_device.json::<serde_json::Value>().await.unwrap()["error"],
+            "pair_consumed"
+        );
+
+        let desktop_status = client
+            .get(format!(
+                "http://{address}/v1/pairings/{pair_id}?desktop_id=d_test"
+            ))
+            .bearer_auth("desktop-token-at-least-thirty-two-characters")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(desktop_status.status(), StatusCode::OK);
+        let desktop_status: serde_json::Value = desktop_status.json().await.unwrap();
+        assert_eq!(desktop_status["status"], "requested");
+        assert_eq!(desktop_status["device_id"], "m_phone");
+
+        let routing_token = "r_http_secret_at_least_thirty_two_characters";
+        let nonce = URL_SAFE_NO_PAD.encode([1_u8; 12]);
+        let ciphertext = URL_SAFE_NO_PAD.encode([2_u8; 64]);
+        let accepted = client
+            .post(format!("http://{address}/v1/pairings/{pair_id}/accept"))
+            .bearer_auth("desktop-token-at-least-thirty-two-characters")
+            .json(&serde_json::json!({
+                "desktop_id": "d_test",
+                "device_id": "m_phone",
+                "token_sha256": token_hash_hex(routing_token),
+                "nonce": nonce,
+                "ciphertext": ciphertext
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(accepted.status(), StatusCode::NO_CONTENT);
+        assert!(
+            state_for_assertion
+                .credentials
+                .authenticate("d_test", "m_phone", routing_token)
+                .await
+        );
+
+        let mobile_status = client
+            .get(format!(
+                "http://{address}/v1/pairings/{pair_id}?device_id=m_phone"
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(mobile_status.status(), StatusCode::OK);
+        let mobile_status: serde_json::Value = mobile_status.json().await.unwrap();
+        assert_eq!(mobile_status["status"], "accepted");
+        assert_eq!(mobile_status["nonce"], nonce);
+        assert_eq!(mobile_status["ciphertext"], ciphertext);
+        assert!(mobile_status.get("mobile_public_key").is_none());
+
+        for _ in 0..2 {
+            let completed = client
+                .post(format!("http://{address}/v1/pairings/{pair_id}/complete"))
+                .json(&serde_json::json!({ "device_id": "m_phone" }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(completed.status(), StatusCode::NO_CONTENT);
+        }
+        let completed_status = client
+            .get(format!(
+                "http://{address}/v1/pairings/{pair_id}?desktop_id=d_test"
+            ))
+            .bearer_auth("desktop-token-at-least-thirty-two-characters")
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            .unwrap();
+        assert_eq!(completed_status["status"], "consumed");
+        assert_eq!(completed_status["device_id"], "m_phone");
+        let reused = client
+            .post(&request_url)
+            .json(&first_request)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(reused.status(), StatusCode::CONFLICT);
+
+        let persisted = tokio::fs::read_to_string(credential_path).await.unwrap();
+        assert!(!persisted.contains(routing_token));
+        assert!(persisted.contains(&token_hash_hex(routing_token)));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn pairing_http_rejects_expired_registration() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = Arc::new(
+            AppState::new(test_config(temp.path().join("credentials.json")))
+                .await
+                .unwrap(),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app(state)).await.unwrap();
+        });
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/v1/pairings"))
+            .bearer_auth("desktop-token-at-least-thirty-two-characters")
+            .json(&serde_json::json!({
+                "desktop_id": "d_test",
+                "pair_id_hash": token_hash_hex("p_expired"),
+                "expires_at": unix_seconds()
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response.json::<serde_json::Value>().await.unwrap()["error"],
+            "invalid_pairing"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn routes_opaque_frames_and_disconnects_a_revoked_mobile() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = Arc::new(
+            AppState::new(test_config(temp.path().join("credentials.json")))
+                .await
+                .unwrap(),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app(state)).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let issued = client
+            .post(format!("http://{address}/v1/devices"))
+            .bearer_auth("desktop-token-at-least-thirty-two-characters")
+            .json(&serde_json::json!({
+                "desktop_id": "d_test",
+                "device_id": "m_phone"
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(issued.status(), StatusCode::OK);
+        let issued: IssuedDevice = issued.json().await.unwrap();
+
+        let (mut desktop, _) = connect_async(format!("ws://{address}/v1/ws"))
+            .await
+            .unwrap();
+        desktop
+            .send(ClientMessage::Text(
+                serde_json::json!({
+                    "v": 1,
+                    "type": "hello",
+                    "role": "desktop",
+                    "desktop_id": "d_test",
+                    "token": "desktop-token-at-least-thirty-two-characters"
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+
+        let (mut mobile, _) = connect_async(format!("ws://{address}/v1/ws"))
+            .await
+            .unwrap();
+        mobile
+            .send(ClientMessage::Text(
+                serde_json::json!({
+                    "v": 1,
+                    "type": "hello",
+                    "role": "mobile",
+                    "desktop_id": "d_test",
+                    "device_id": "m_phone",
+                    "token": issued.token.clone()
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+
+        let opaque = serde_json::json!({
+            "v": 1,
+            "type": "frame",
+            "desktop_id": "d_test",
+            "device_id": "m_phone",
+            "connection_id": "c_test",
+            "frame_id": "f_test",
+            "seq": 1,
+            "ack": 0,
+            "nonce": "AAAAAAAAAAAAAAAA",
+            "ciphertext": "relay-cannot-read-this"
+        })
+        .to_string();
+        mobile
+            .send(ClientMessage::Text(opaque.clone().into()))
+            .await
+            .unwrap();
+        assert_eq!(recv_client_text(&mut desktop).await, opaque);
+
+        let revoked = client
+            .delete(format!(
+                "http://{address}/v1/devices/m_phone?desktop_id=d_test"
+            ))
+            .bearer_auth("desktop-token-at-least-thirty-two-characters")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
+        let closed = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match mobile.next().await {
+                    Some(Ok(ClientMessage::Close(_))) | None => return true,
+                    Some(Ok(_)) => continue,
+                    Some(Err(_)) => return true,
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(closed);
+
+        let (mut revoked_mobile, _) = connect_async(format!("ws://{address}/v1/ws"))
+            .await
+            .unwrap();
+        revoked_mobile
+            .send(ClientMessage::Text(
+                serde_json::json!({
+                    "v": 1,
+                    "type": "hello",
+                    "role": "mobile",
+                    "desktop_id": "d_test",
+                    "device_id": "m_phone",
+                    "token": issued.token
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let rejected = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match revoked_mobile.next().await {
+                    Some(Ok(ClientMessage::Close(_))) | None => return true,
+                    Some(Ok(_)) => continue,
+                    Some(Err(_)) => return true,
+                }
+            }
+        })
+        .await
+        .expect("revoked credentials must be rejected promptly");
+        assert!(rejected);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn routes_multiple_mobile_devices_without_cross_talk() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = Arc::new(
+            AppState::new(test_config(temp.path().join("credentials.json")))
+                .await
+                .unwrap(),
+        );
+        let first_token = state.credentials.issue("d_test", "m_one").await.unwrap();
+        let second_token = state.credentials.issue("d_test", "m_two").await.unwrap();
+        let state_for_assertion = state.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app(state)).await.unwrap();
+        });
+
+        let (mut desktop, _) = connect_async(format!("ws://{address}/v1/ws"))
+            .await
+            .unwrap();
+        desktop
+            .send(ClientMessage::Text(
+                serde_json::json!({
+                    "v": 1,
+                    "type": "hello",
+                    "role": "desktop",
+                    "desktop_id": "d_test",
+                    "token": "desktop-token-at-least-thirty-two-characters"
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+
+        let (mut first, _) = connect_async(format!("ws://{address}/v1/ws"))
+            .await
+            .unwrap();
+        first
+            .send(ClientMessage::Text(
+                serde_json::json!({
+                    "v": 1,
+                    "type": "hello",
+                    "role": "mobile",
+                    "desktop_id": "d_test",
+                    "device_id": "m_one",
+                    "token": first_token
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+
+        let (mut second, _) = connect_async(format!("ws://{address}/v1/ws"))
+            .await
+            .unwrap();
+        second
+            .send(ClientMessage::Text(
+                serde_json::json!({
+                    "v": 1,
+                    "type": "hello",
+                    "role": "mobile",
+                    "desktop_id": "d_test",
+                    "device_id": "m_two",
+                    "token": second_token
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if state_for_assertion
+                    .metrics
+                    .active_desktops
+                    .load(Ordering::Relaxed)
+                    == 1
+                    && state_for_assertion
+                        .metrics
+                        .active_mobiles
+                        .load(Ordering::Relaxed)
+                        == 2
+                {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("desktop and both mobiles should authenticate");
+
+        let first_frame = serde_json::json!({
+            "v": 1,
+            "desktop_id": "d_test",
+            "device_id": "m_one",
+            "ciphertext": "only-first-can-read"
+        })
+        .to_string();
+        desktop
+            .send(ClientMessage::Text(first_frame.clone().into()))
+            .await
+            .unwrap();
+        assert_eq!(recv_client_text(&mut first).await, first_frame);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), recv_client_text(&mut second))
+                .await
+                .is_err(),
+            "a frame for the first mobile must not reach the second mobile"
+        );
+
+        let second_frame = serde_json::json!({
+            "v": 1,
+            "desktop_id": "d_test",
+            "device_id": "m_two",
+            "ciphertext": "only-second-can-read"
+        })
+        .to_string();
+        desktop
+            .send(ClientMessage::Text(second_frame.clone().into()))
+            .await
+            .unwrap();
+        assert_eq!(recv_client_text(&mut second).await, second_frame);
+
+        let first_reply = serde_json::json!({
+            "v": 1,
+            "desktop_id": "d_test",
+            "device_id": "m_one",
+            "ciphertext": "first-to-desktop"
+        })
+        .to_string();
+        first
+            .send(ClientMessage::Text(first_reply.clone().into()))
+            .await
+            .unwrap();
+        assert_eq!(recv_client_text(&mut desktop).await, first_reply);
+
+        let second_reply = serde_json::json!({
+            "v": 1,
+            "desktop_id": "d_test",
+            "device_id": "m_two",
+            "ciphertext": "second-to-desktop"
+        })
+        .to_string();
+        second
+            .send(ClientMessage::Text(second_reply.clone().into()))
+            .await
+            .unwrap();
+        assert_eq!(recv_client_text(&mut desktop).await, second_reply);
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while state_for_assertion
+                .metrics
+                .forwarded_frames
+                .load(Ordering::Relaxed)
+                != 4
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("all four isolated frames should be counted as forwarded");
+        assert_eq!(
+            state_for_assertion
+                .metrics
+                .active_mobiles
+                .load(Ordering::Relaxed),
+            2
+        );
+        server.abort();
+    }
+
+    async fn recv_client_text<S>(socket: &mut S) -> String
+    where
+        S: StreamExt<Item = Result<ClientMessage, tokio_tungstenite::tungstenite::Error>> + Unpin,
+    {
+        loop {
+            match socket.next().await.unwrap().unwrap() {
+                ClientMessage::Text(text) => return text.to_string(),
+                ClientMessage::Ping(payload) => {
+                    let _ = payload;
+                }
+                _ => {}
+            }
+        }
+    }
+}

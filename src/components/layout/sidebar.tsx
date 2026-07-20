@@ -81,12 +81,14 @@ function SidebarNavButton({
   onClick,
   active,
   trailing,
+  mobile = false,
 }: {
   icon: LucideIcon
   label: string
   onClick: () => void
   active?: boolean
   trailing?: ReactNode
+  mobile?: boolean
 }) {
   return (
     <button
@@ -95,14 +97,21 @@ function SidebarNavButton({
       title={label}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "group flex h-8 w-full items-center gap-[0.4375rem] rounded-full pl-[0.4375rem] pr-1.5",
-        "text-[0.875rem] text-sidebar-foreground outline-none",
+        "group flex w-full items-center rounded-full text-sidebar-foreground outline-none",
+        mobile
+          ? "h-11 gap-3 px-3 text-base"
+          : "h-8 gap-[0.4375rem] pl-[0.4375rem] pr-1.5 text-[0.875rem]",
         "transition-colors duration-150 hover:bg-sidebar-accent",
         "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
         active && "bg-sidebar-primary/8"
       )}
     >
-      <Icon className="h-[0.875rem] w-[0.875rem] shrink-0 text-muted-foreground" />
+      <Icon
+        className={cn(
+          "shrink-0 text-muted-foreground",
+          mobile ? "h-5 w-5" : "h-[0.875rem] w-[0.875rem]"
+        )}
+      />
       <span className="truncate">{label}</span>
       {trailing}
     </button>
@@ -201,10 +210,15 @@ export function Sidebar() {
   if (!isOpen) return null
 
   return (
-    <aside className="@container/sidebar flex h-full min-h-0 flex-col overflow-hidden text-sidebar-foreground select-none">
+    <aside
+      className={cn(
+        "@container/sidebar flex h-full min-h-0 flex-col overflow-hidden text-sidebar-foreground select-none",
+        isMobile && "bg-sidebar"
+      )}
+    >
       <div
         className={cn(
-          "flex h-10 shrink-0 items-center gap-2 pr-2",
+          "flex shrink-0 items-center gap-2 pr-2",
           // Desktop: the fixed left window-chrome overlay (reserved below) owns
           // the top-left, so drop the header's own left padding. A subtle bottom
           // divider (border-border/50) matches the conversation detail header's
@@ -212,13 +226,13 @@ export function Sidebar() {
           // Mobile (Sheet): keep the original title padding + a full-strength
           // divider — mobile is unchanged.
           isMobile
-            ? "border-b border-border pl-4"
-            : "border-b border-border/50 pl-0"
+            ? "h-14 border-b border-border pl-4"
+            : "h-10 border-b border-border/50 pl-0"
         )}
       >
         {isMobile ? (
           <div className="flex min-w-0 items-center gap-4">
-            <h2 className="truncate text-[0.875rem] font-bold tracking-[-0.00625rem] text-sidebar-foreground">
+            <h2 className="truncate text-base font-bold tracking-[-0.00625rem] text-sidebar-foreground">
               {t("title")}
             </h2>
           </div>
@@ -235,50 +249,30 @@ export function Sidebar() {
             window's top edge, so its empty space must move the window. */}
         <div data-tauri-drag-region className="h-full min-w-0 flex-1" />
         <div className="flex items-center gap-0.5">
-          {/* Locate + expand/collapse move off the mobile header on desktop:
-              locate → the conversation detail header; expand/collapse → the
-              view-options menu below. Mobile keeps both standalone buttons so
-              its layout is unchanged. */}
+          {/* Mobile keeps the locate shortcut as a touch-sized action. The
+              bulk expand/collapse control remains desktop-only in the view
+              options menu to keep the narrow header uncluttered. */}
           {isMobile && (
-            <>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 shrink-0 text-muted-foreground"
-                onClick={() => listRef.current?.scrollToActive()}
-                title={t("locateActiveConversation")}
-                aria-label={t("locateActiveConversation")}
-              >
-                <Crosshair aria-hidden="true" className="h-3.5 w-3.5" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 shrink-0 text-muted-foreground"
-                onClick={handleToggleExpandAll}
-                title={toggleExpandLabel}
-                aria-label={toggleExpandLabel}
-              >
-                {allExpanded ? (
-                  <ListChevronsDownUp
-                    aria-hidden="true"
-                    className="h-3.5 w-3.5"
-                  />
-                ) : (
-                  <ListChevronsUpDown
-                    aria-hidden="true"
-                    className="h-3.5 w-3.5"
-                  />
-                )}
-              </Button>
-            </>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-10 w-10 shrink-0 rounded-xl text-muted-foreground"
+              onClick={() => listRef.current?.scrollToActive()}
+              title={t("locateActiveConversation")}
+              aria-label={t("locateActiveConversation")}
+            >
+              <Crosshair aria-hidden="true" className="h-3.5 w-3.5" />
+            </Button>
           )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-6 w-6 shrink-0 text-muted-foreground"
+                className={cn(
+                  "shrink-0 text-muted-foreground",
+                  isMobile ? "h-10 w-10 rounded-xl" : "h-6 w-6"
+                )}
                 title={viewOptionsLabel}
                 aria-label={viewOptionsLabel}
               >
@@ -286,8 +280,7 @@ export function Sidebar() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              {/* Desktop only: expand/collapse lives in this menu (it kept its
-                  standalone header button on mobile). */}
+              {/* Desktop only: expand/collapse lives in this menu. */}
               {!isMobile && (
                 <>
                   <DropdownMenuItem onSelect={handleToggleExpandAll}>
@@ -346,11 +339,17 @@ export function Sidebar() {
           center on the same 0.875rem rail axis as the folder/conversation icons in
           the list below. Each row is a `group` so its shortcut hint reveals on
           hover / keyboard focus. */}
-      <div className="flex shrink-0 flex-col gap-0.5 px-1.5 pt-1.5">
+      <div
+        className={cn(
+          "flex shrink-0 flex-col",
+          isMobile ? "gap-1 px-2.5 pt-2" : "gap-0.5 px-1.5 pt-1.5"
+        )}
+      >
         <SidebarNavButton
           icon={SquarePen}
           label={t("newChat")}
           onClick={handleNewConversation}
+          mobile={isMobile}
           trailing={
             newConversationShortcutLabel ? (
               <kbd className={SHORTCUT_BADGE_CLASS}>
@@ -363,6 +362,7 @@ export function Sidebar() {
           icon={Search}
           label={t("search")}
           onClick={() => setSearchOpen(true)}
+          mobile={isMobile}
           trailing={
             searchShortcutLabel ? (
               <kbd className={SHORTCUT_BADGE_CLASS}>{searchShortcutLabel}</kbd>
@@ -374,6 +374,7 @@ export function Sidebar() {
           label={t("automations")}
           active={routeId === "automations"}
           onClick={() => setRoute("automations")}
+          mobile={isMobile}
           trailing={
             unseenFailures > 0 ? (
               <span className="ml-auto inline-flex h-[0.9375rem] min-w-[0.9375rem] shrink-0 items-center justify-center rounded-full bg-destructive/15 px-1 font-mono text-[0.625rem] font-medium leading-none text-destructive">

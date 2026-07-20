@@ -1,0 +1,90 @@
+name: Mobile Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "mobile-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    name: Signed Android APK
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: "pnpm"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK, NDK and Rust target
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./mobile/src-tauri -> target"
+          shared-key: android-mobile-release
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Restore signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/codeg-mobile-release.jks"
+
+      - name: Build signed release APK
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
+          CODEG_ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/codeg-mobile-release.jks
+          CODEG_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          CODEG_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          CODEG_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: pnpm --dir mobile tauri android build --apk --ci
+
+      - name: Verify release signature
+        run: |
+          APK=mobile/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
+          apksigner verify --verbose "$APK"
+          if apksigner verify --print-certs "$APK" | grep -q 'CN=Android Debug'; then
+            echo "::error::Release APK was signed with the Android debug certificate"
+            exit 1
+          fi
+
+      - name: Stage artifact
+        run: |
+          mkdir -p dist
+          cp mobile/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk \
+            dist/codeg-mobile-${GITHUB_REF_NAME}-universal.apk
+          sha256sum dist/*.apk > dist/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codeg-mobile-android-${{ github.ref_name }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Attach APK to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/mobile-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

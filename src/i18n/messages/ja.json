@@ -2210,6 +2210,8 @@
         "attachUploadFailed": "{names} のアップロードに失敗しました。",
         "attachUploadNotAFile": "{names} は通常ファイルではなく（ディレクトリまたは特殊ファイル）、スキップされました。",
         "attachUploadQuotaExceeded": "サーバーのアップロード容量が不足しているため、{names} をアップロードできませんでした。",
+        "uploadingAttachments": "{count} 件の添付ファイルをアップロード中…",
+        "cancelAttachmentUpload": "添付ファイルのアップロードをキャンセル",
         "mentionEmpty": "一致する項目がありません",
         "mentionLoading": "検索中…",
         "mentionListLabel": "メンション",
@@ -3559,6 +3561,7 @@
     "disconnectedTitle": "接続が切断されました",
     "reconnectingDescription": "サーバーへの再接続を試みています。通常は数秒で自動的に復旧します。",
     "reconnectNow": "今すぐ再接続",
+    "directFallback": "Direct に切り替える",
     "sessionExpiredTitle": "セッションの有効期限が切れました",
     "sessionExpiredDescription": "セッションが無効になりました。続行するには再度サインインしてください。",
     "goToLogin": "ログインへ移動"

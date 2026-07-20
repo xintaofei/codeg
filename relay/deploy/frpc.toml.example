@@ -1,0 +1,17 @@
+# Optional: use this only when Codeg Relay itself runs on a private machine.
+# Running Relay directly on a public VPS does not require FRP.
+serverAddr = "relay-vps.example.com"
+serverPort = 7000
+
+auth.method = "token"
+auth.token = "replace-with-your-frps-token"
+
+[[proxies]]
+name = "codeg-relay"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 8787
+remotePort = 18787
+
+# On frps, set proxyBindAddr = "127.0.0.1" or block 18787 with the firewall.
+# Nginx/Caddy on the VPS is the only process that should reach this port.

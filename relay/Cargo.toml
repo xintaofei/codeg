@@ -1,0 +1,29 @@
+[package]
+name = "codeg-relay"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Blind WebSocket router for Codeg Mobile end-to-end encrypted frames"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
+futures-util = "0.3"
+getrandom = "0.3"
+hex = "0.4"
+http = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+subtle = "2.6"
+tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tower-http = { version = "0.6", features = ["cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["json"] }
+tempfile = "3"
+tokio-tungstenite = "0.28"

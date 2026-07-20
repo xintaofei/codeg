@@ -26,6 +26,8 @@ import { getSystemLanguageSettings } from "@/lib/api"
 import { disposeTauriListener } from "@/lib/tauri-listener"
 import { AppBootLoading } from "@/components/layout/app-boot-loading"
 import type { AppLocale, SystemLanguageSettings } from "@/lib/types"
+import { getMobileServerUrl } from "@/lib/mobile-config"
+import { isMobileEnvironment } from "@/lib/transport/detect"
 
 interface AppI18nContextValue {
   appLocale: AppLocale
@@ -181,6 +183,15 @@ export function AppI18nProvider({
 
   useEffect(() => {
     let cancelled = false
+
+    // A fresh mobile install has no remote server yet. Loading language
+    // settings through Transport here would throw before the login page can
+    // collect that server URL. Use the bundled locale for this one screen;
+    // after a server is saved, subsequent launches load the server preference.
+    if (isMobileEnvironment() && !getMobileServerUrl()) {
+      setLanguageSettingsLoaded(true)
+      return
+    }
 
     getSystemLanguageSettings()
       .then((settings) => {

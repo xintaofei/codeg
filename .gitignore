@@ -43,6 +43,12 @@ coverage/
 *.p12
 certificate-base64.txt
 
+# Android signing material. Release credentials are injected from the local
+# keychain or CI and must never be committed.
+*.jks
+*.keystore
+keystore.properties
+
 # Agent
 .claude
 .docs
@@ -52,6 +58,11 @@ docs/superpowers
 # The binaries are platform-specific build artifacts; ship them through
 # release.yml, not git.
 src-tauri/binaries/
+mobile/src-tauri/target/
+relay/target/
+relay-bridge/target/
+relay-bridge.json
+relay/deploy/relay.env
 
 # pnpm local store (pnpm 11+)
 .pnpm-store/

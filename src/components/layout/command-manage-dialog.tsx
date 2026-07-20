@@ -9,7 +9,14 @@ import {
   type PointerEvent,
   type ReactNode,
 } from "react"
-import { GripVertical, Loader2, Plus, Save, Trash2 } from "lucide-react"
+import {
+  GripVertical,
+  Loader2,
+  Plus,
+  Save,
+  SquareTerminal,
+  Trash2,
+} from "lucide-react"
 import { Reorder, useDragControls } from "motion/react"
 import { useTranslations } from "next-intl"
 import {
@@ -40,6 +47,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { useIsMobile } from "@/hooks/use-mobile"
 import {
   ResizableHandle,
   ResizablePanel,
@@ -121,7 +129,7 @@ function CommandReorderItem({
       dragMomentum={false}
       layout="position"
       className={cn(
-        "cursor-pointer rounded-lg border bg-card p-2.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
+        "min-h-12 cursor-pointer rounded-lg border bg-card p-2.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 sm:min-h-0",
         selected && "border-primary/60 bg-primary/5"
       )}
       tabIndex={0}
@@ -158,6 +166,7 @@ export function CommandManageDialog({
   const [deleting, setDeleting] = useState(false)
   const [deleteTargetId, setDeleteTargetId] = useState<number | null>(null)
   const [reordering, setReordering] = useState(false)
+  const isMobile = useIsMobile()
   const pendingOrderRef = useRef<number[] | null>(null)
   const panelContainerRef = useRef<HTMLDivElement | null>(null)
   const [panelContainerWidth, setPanelContainerWidth] = useState(0)
@@ -381,31 +390,44 @@ export function CommandManageDialog({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="flex h-[min(760px,calc(100vh-4rem))] max-w-[min(980px,calc(100vw-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl">
-          <DialogHeader className="border-b px-4 py-3">
-            <DialogTitle>{t("title")}</DialogTitle>
+        <DialogContent
+          closeButtonClassName="top-2 right-3 size-10 rounded-xl sm:top-4 sm:right-4 sm:size-8"
+          className="flex h-[calc(100dvh-5rem)] max-h-[calc(100dvh-5rem)] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden rounded-[24px] p-0 sm:h-[min(760px,calc(100vh-4rem))] sm:max-w-5xl sm:rounded-4xl"
+        >
+          <DialogHeader className="flex min-h-14 shrink-0 justify-center border-b px-5 py-2.5 sm:min-h-0 sm:px-4 sm:py-3">
+            <DialogTitle className="text-lg sm:text-lg">
+              {t("title")}
+            </DialogTitle>
           </DialogHeader>
 
-          <div ref={panelContainerRef} className="min-h-0 min-w-0 flex-1 p-3">
+          <div
+            ref={panelContainerRef}
+            className="min-h-0 min-w-0 flex-1 p-2 sm:p-3"
+          >
             <ResizablePanelGroup
-              direction="horizontal"
+              direction={isMobile ? "vertical" : "horizontal"}
               className="h-full min-h-0 min-w-0"
             >
               <ResizablePanel
-                defaultSize={36}
-                minSize={leftMinSize}
-                maxSize={leftMaxSize}
+                defaultSize={isMobile ? 38 : 36}
+                minSize={isMobile ? 28 : leftMinSize}
+                maxSize={isMobile ? 50 : leftMaxSize}
               >
-                <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border bg-card lg:rounded-r-none">
-                  <div className="space-y-2.5 border-b p-3">
-                    <div className="flex items-center gap-2">
+                <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border bg-card lg:rounded-r-none">
+                  <div className="space-y-2 border-b p-2.5 sm:space-y-2.5 sm:p-3">
+                    <div className="grid gap-2 sm:flex sm:items-center">
                       <Input
+                        className="h-11 w-full min-w-0 sm:h-9 sm:flex-1"
                         value={searchQuery}
                         onChange={(event) => setSearchQuery(event.target.value)}
                         placeholder={t("searchPlaceholder")}
                       />
-                      <Button size="sm" onClick={startNew}>
-                        <Plus className="h-3.5 w-3.5" />
+                      <Button
+                        size="sm"
+                        className="h-11 w-full shrink-0 justify-center px-3 sm:h-8 sm:w-auto"
+                        onClick={startNew}
+                      >
+                        <Plus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
                         {t("newCommand")}
                       </Button>
                     </div>
@@ -421,8 +443,13 @@ export function CommandManageDialog({
                       {tCommon("loading")}
                     </div>
                   ) : filteredCommands.length === 0 ? (
-                    <div className="flex flex-1 items-center justify-center px-4 text-center text-xs text-muted-foreground">
-                      {commands.length === 0 ? t("empty") : t("noResults")}
+                    <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 text-center text-xs text-muted-foreground">
+                      <span className="flex size-9 items-center justify-center rounded-full bg-muted/70">
+                        <SquareTerminal className="size-4" />
+                      </span>
+                      <span>
+                        {commands.length === 0 ? t("empty") : t("noResults")}
+                      </span>
                     </div>
                   ) : (
                     <Reorder.Group
@@ -490,17 +517,24 @@ export function CommandManageDialog({
                 </div>
               </ResizablePanel>
 
-              <ResizableHandle withHandle />
+              <ResizableHandle
+                withHandle
+                className={cn(isMobile && "my-1.5")}
+              />
 
-              <ResizablePanel defaultSize={64} minSize={rightMinSize}>
-                <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border bg-card lg:rounded-l-none lg:border-l-0">
-                  <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+              <ResizablePanel
+                defaultSize={isMobile ? 62 : 64}
+                minSize={isMobile ? 48 : rightMinSize}
+              >
+                <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border bg-card lg:rounded-l-none lg:border-l-0">
+                  <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto p-3 sm:space-y-4 sm:p-4">
                     <div className="space-y-1.5">
                       <Label htmlFor="folder-command-name" className="text-xs">
                         {t("nameLabel")}
                       </Label>
                       <Input
                         id="folder-command-name"
+                        className="h-11 text-base sm:h-9 sm:text-sm"
                         value={draft.name}
                         onChange={(event) =>
                           updateDraft({ name: event.target.value })
@@ -516,7 +550,7 @@ export function CommandManageDialog({
                       </Label>
                       <Input
                         id="folder-command-command"
-                        className="font-mono"
+                        className="h-11 font-mono text-base sm:h-9 sm:text-sm"
                         value={draft.command}
                         placeholder="pnpm dev"
                         onChange={(event) =>
@@ -526,13 +560,13 @@ export function CommandManageDialog({
                     </div>
                   </div>
 
-                  <div className="space-y-3 border-t px-4 py-3">
+                  <div className="shrink-0 space-y-3 border-t px-3.5 py-3 sm:px-4">
                     {formError ? (
                       <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
                         {formError}
                       </div>
                     ) : null}
-                    <div className="flex items-center justify-between gap-2">
+                    <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:justify-between">
                       <Button
                         size="sm"
                         variant="outline"
@@ -540,7 +574,7 @@ export function CommandManageDialog({
                         disabled={
                           deleting || saving || loading || draft.id === null
                         }
-                        className="text-red-500 hover:text-red-500"
+                        className="h-11 text-red-500 hover:text-red-500 sm:h-8"
                       >
                         {deleting ? (
                           <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -551,6 +585,7 @@ export function CommandManageDialog({
                       </Button>
                       <Button
                         size="sm"
+                        className="h-11 sm:h-8"
                         onClick={() => {
                           handleSave().catch((err) => {
                             console.error("[CommandManage] save failed:", err)

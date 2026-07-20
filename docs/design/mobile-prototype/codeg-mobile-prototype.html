@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="od-deliverable" content="codeg-mobile-prototype">
+  <title>Codeg Mobile 原型评审台</title>
+  <style>
+    :root{
+      --bg:#0B0F14;
+      --surface:#111820;
+      --surface-2:#17212B;
+      --input:#141C25;
+      --border:#263241;
+      --border-strong:#38506A;
+      --fg:#F4F7FA;
+      --muted:#9AA9B8;
+      --meta:#697887;
+      --accent:#5EA2FF;
+      --accent-on:#07111D;
+      --success:#38D39F;
+      --warn:#F6B84A;
+      --danger:#F06A6A;
+      --inactive:#778493;
+      --font-display:Inter,"SF Pro Display","PingFang SC","HarmonyOS Sans",system-ui,sans-serif;
+      --font-body:Inter,"SF Pro Text","PingFang SC","HarmonyOS Sans",system-ui,sans-serif;
+      --font-mono:"JetBrains Mono","SF Mono",Menlo,monospace;
+      --radius-control:8px;
+      --radius-panel:12px;
+      --motion:150ms;
+    }
+    :root[data-theme="light"]{
+      --bg:#F4F7FA;
+      --surface:#FFFFFF;
+      --surface-2:#EAF0F5;
+      --input:#F0F4F8;
+      --border:#CBD6E1;
+      --border-strong:#96ABC0;
+      --fg:#111820;
+      --muted:#526579;
+      --meta:#728397;
+      --accent:#176FD1;
+      --accent-on:#FFFFFF;
+      --success:#148764;
+      --warn:#A86406;
+      --danger:#C83E45;
+      --inactive:#697887;
+    }
+    *{box-sizing:border-box}
+    html,body{width:100%;height:100%;margin:0;overflow:hidden;background:var(--bg);color:var(--fg);font-family:var(--font-body);font-size:14px}
+    button,a{font:inherit;color:inherit}
+    button{border:0}
+    button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+    .workbench{height:100dvh;min-height:640px;display:grid;grid-template-rows:58px minmax(0,1fr) 30px;background:var(--bg)}
+    .topbar{display:flex;align-items:center;gap:14px;padding:0 16px;border-bottom:1px solid var(--border);background:var(--surface)}
+    .brandmark{width:30px;height:30px;border:1px solid var(--border-strong);border-radius:var(--radius-control);display:grid;place-items:center;color:var(--accent);font:650 13px var(--font-mono)}
+    .brandblock{min-width:0}.brandtitle{font-weight:600;letter-spacing:-.01em}.brandmeta{margin-top:2px;color:var(--meta);font:11px/1.2 var(--font-mono);letter-spacing:.01em}
+    .live-state{margin-left:auto;display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}.live-state::before{content:"";width:7px;height:7px;border-radius:2px;background:var(--success)}
+    .theme-switch{display:flex;gap:2px;padding:3px;border:1px solid var(--border);border-radius:var(--radius-panel);background:var(--input)}
+    .theme-switch button{height:32px;padding:0 11px;border-radius:var(--radius-control);background:transparent;color:var(--muted);cursor:pointer;letter-spacing:.02em;transition:background var(--motion),color var(--motion)}
+    .theme-switch button[aria-pressed="true"]{background:var(--surface-2);color:var(--fg)}
+    .layout{min-height:0;display:grid;grid-template-columns:216px minmax(700px,1fr) 292px}
+    .scenario-rail{min-height:0;overflow:auto;border-right:1px solid var(--border);background:var(--surface);padding:14px 10px 20px}
+    .rail-group{margin:0 0 18px}.rail-label{padding:0 9px;margin:0 0 6px;color:var(--meta);font:600 10px/1.5 var(--font-mono);letter-spacing:.08em;text-transform:uppercase}
+    .scenario{width:100%;min-height:40px;padding:7px 9px;border-radius:var(--radius-control);display:grid;grid-template-columns:22px minmax(0,1fr);gap:8px;align-items:center;background:transparent;color:var(--muted);cursor:pointer;text-align:left;transition:background var(--motion),color var(--motion)}
+    .scenario:hover{background:var(--input);color:var(--fg)}
+    .scenario[aria-current="page"]{background:var(--surface-2);color:var(--fg)}
+    .scenario-mark{width:20px;height:20px;border:1px solid var(--border);border-radius:6px;display:grid;place-items:center;color:var(--meta);font:600 10px var(--font-mono)}
+    .scenario[aria-current="page"] .scenario-mark{border-color:var(--accent);color:var(--accent)}
+    .scenario-text{min-width:0}.scenario-name{display:block;font-size:13px;font-weight:520;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.scenario-state{display:block;margin-top:2px;color:var(--meta);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .stage{min-width:0;min-height:0;display:grid;grid-template-rows:62px minmax(0,1fr);background:var(--bg)}
+    .stage-head{display:flex;align-items:center;gap:16px;padding:0 18px;border-bottom:1px solid var(--border)}
+    .stage-title{font-size:16px;font-weight:600;letter-spacing:-.01em}.stage-copy{margin-top:3px;color:var(--muted);font-size:12px;max-width:65ch;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .stage-badges{margin-left:auto;display:flex;gap:6px}.platform-badge{height:28px;padding:0 9px;border:1px solid var(--border);border-radius:var(--radius-control);display:flex;align-items:center;color:var(--muted);font:11px var(--font-mono)}
+    .device-stage{min-height:0;overflow:auto;display:flex;align-items:flex-start;justify-content:center;gap:26px;padding:22px;background:var(--bg)}
+    .device{flex:none}.device-label{height:26px;display:flex;align-items:center;justify-content:space-between;color:var(--meta);font:11px var(--font-mono)}
+    .device-label strong{color:var(--muted);font-weight:500}
+    iframe{display:block;border:0;background:var(--app-bg,var(--bg))}
+    .ios-frame{width:390px;height:844px}.android-frame{width:412px;height:900px}
+    .inspector{min-height:0;overflow:auto;border-left:1px solid var(--border);background:var(--surface)}
+    .inspect-section{padding:16px;border-bottom:1px solid var(--border)}
+    .inspect-section:last-child{border-bottom:0}.inspect-title{margin:0 0 10px;color:var(--meta);font:600 10px var(--font-mono);letter-spacing:.08em;text-transform:uppercase}
+    .scene-summary{margin:0;color:var(--fg);font-size:13px;line-height:1.55}.scene-goal{margin-top:8px;color:var(--muted);font-size:12px;line-height:1.55}
+    .fact-list{display:grid;gap:9px}.fact{display:grid;grid-template-columns:78px minmax(0,1fr);gap:9px;align-items:start}.fact dt{color:var(--meta);font-size:11px}.fact dd{margin:0;color:var(--muted);font-size:11px;line-height:1.45}
+    .state-list{display:grid;gap:7px}.state-row{min-height:34px;display:grid;grid-template-columns:24px 74px minmax(0,1fr);gap:7px;align-items:center}.state-shape{width:20px;height:20px;border:1px solid currentColor;border-radius:6px;display:grid;place-items:center;font:600 10px var(--font-mono)}.state-row strong{font-size:11px;font-weight:550}.state-row span:last-child{color:var(--meta);font-size:10px;line-height:1.35}.state-online{color:var(--success)}.state-wait{color:var(--warn)}.state-error{color:var(--danger)}.state-off{color:var(--inactive)}
+    .token-list{display:grid;grid-template-columns:repeat(6,1fr);gap:5px}.token-swatch{aspect-ratio:1;border:1px solid var(--border);border-radius:6px}.token-swatch:nth-child(1){background:var(--bg)}.token-swatch:nth-child(2){background:var(--surface)}.token-swatch:nth-child(3){background:var(--fg)}.token-swatch:nth-child(4){background:var(--muted)}.token-swatch:nth-child(5){background:var(--border)}.token-swatch:nth-child(6){background:var(--accent)}
+    .flow-list{margin:0;padding:0;list-style:none;counter-reset:flow}.flow-list li{counter-increment:flow;display:grid;grid-template-columns:22px minmax(0,1fr);gap:8px;padding:7px 0;color:var(--muted);font-size:11px;line-height:1.45}.flow-list li::before{content:counter(flow);color:var(--meta);font:10px var(--font-mono)}
+    .handoff-list{margin:0;padding-left:16px;color:var(--muted);font-size:11px;line-height:1.55}.handoff-list li+li{margin-top:6px}
+    .footer{display:flex;align-items:center;gap:18px;padding:0 12px;border-top:1px solid var(--border);background:var(--surface);color:var(--meta);font:10px var(--font-mono)}.footer .push{margin-left:auto}.footer strong{color:var(--muted);font-weight:500}
+    .scenario:active,.theme-switch button:active{transform:scale(.98)}
+    @media(max-width:1180px){.layout{grid-template-columns:190px minmax(680px,1fr)}.inspector{display:none}.device-stage{justify-content:flex-start}}
+    @media(max-width:820px){html,body{overflow:auto}.workbench{height:auto;min-height:100dvh;grid-template-rows:auto auto auto}.topbar{min-height:58px;flex-wrap:wrap;padding:10px 12px}.live-state{margin-left:auto}.layout{display:block}.scenario-rail{border-right:0;border-bottom:1px solid var(--border);display:flex;gap:8px;overflow:auto;padding:10px}.rail-group{display:flex;gap:6px;margin:0}.rail-label{display:none}.scenario{width:auto;min-width:max-content;grid-template-columns:20px auto}.scenario-state{display:none}.stage{height:auto}.stage-head{min-height:62px}.stage-badges{display:none}.device-stage{min-height:930px;justify-content:flex-start}.inspector{display:block;border-left:0;border-top:1px solid var(--border)}.footer{min-height:30px;flex-wrap:wrap}.footer .push{margin-left:0}}
+    @media(prefers-reduced-motion:reduce){*{transition-duration:.01ms!important}.scenario:active,.theme-switch button:active{transform:none}}
+  </style>
+</head>
+<body>
+  <div class="workbench" data-od-id="prototype-workbench">
+    <header class="topbar" data-od-id="prototype-toolbar">
+      <div class="brandmark" aria-hidden="true">C</div>
+      <div class="brandblock"><div class="brandtitle">Codeg Mobile</div><div class="brandmeta">双平台产品原型</div></div>
+      <div class="live-state">可交互</div>
+      <div class="theme-switch" aria-label="主题选择">
+        <button type="button" data-theme-choice="dark" aria-pressed="true">深色</button>
+        <button type="button" data-theme-choice="light" aria-pressed="false">浅色</button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside class="scenario-rail" data-od-id="scenario-navigation" aria-label="原型场景">
+        <section class="rail-group" data-od-id="connection-scenes"><div class="rail-label">连接与恢复</div>
+          <button class="scenario" data-screen="splash" data-od-id="scene-splash"><span class="scenario-mark">S</span><span class="scenario-text"><span class="scenario-name">启动页</span><span class="scenario-state">恢复最近会话</span></span></button>
+          <button class="scenario" data-screen="connect" data-od-id="scene-connect"><span class="scenario-mark">C</span><span class="scenario-text"><span class="scenario-name">首次连接</span><span class="scenario-state">验证服务器与 Token</span></span></button>
+          <button class="scenario" data-screen="reconnect" data-od-id="scene-reconnect"><span class="scenario-mark">R</span><span class="scenario-text"><span class="scenario-name">断线恢复</span><span class="scenario-state">保留草稿与游标</span></span></button>
+        </section>
+        <section class="rail-group" data-od-id="conversation-scenes"><div class="rail-label">会话工作面</div>
+          <button class="scenario" data-screen="session" data-od-id="scene-session" aria-current="page"><span class="scenario-mark">H</span><span class="scenario-text"><span class="scenario-name">最近会话</span><span class="scenario-state">默认首页</span></span></button>
+          <button class="scenario" data-screen="running" data-od-id="scene-running"><span class="scenario-mark">A</span><span class="scenario-text"><span class="scenario-name">Agent 执行中</span><span class="scenario-state">紧凑时间线</span></span></button>
+          <button class="scenario" data-screen="approval" data-od-id="scene-approval"><span class="scenario-mark">P</span><span class="scenario-text"><span class="scenario-name">等待批准</span><span class="scenario-state">三步内处理</span></span></button>
+          <button class="scenario" data-screen="question" data-od-id="scene-question"><span class="scenario-mark">Q</span><span class="scenario-text"><span class="scenario-name">Agent 提问</span><span class="scenario-state">嵌入会话流</span></span></button>
+        </section>
+        <section class="rail-group" data-od-id="management-scenes"><div class="rail-label">管理</div>
+          <button class="scenario" data-screen="tasks" data-od-id="scene-tasks"><span class="scenario-mark">T</span><span class="scenario-text"><span class="scenario-name">任务中心</span><span class="scenario-state">行动优先排序</span></span></button>
+          <button class="scenario" data-screen="sessions" data-od-id="scene-sessions"><span class="scenario-mark">L</span><span class="scenario-text"><span class="scenario-name">会话列表</span><span class="scenario-state">搜索与分组</span></span></button>
+          <button class="scenario" data-screen="servers" data-od-id="scene-servers"><span class="scenario-mark">N</span><span class="scenario-text"><span class="scenario-name">服务器管理</span><span class="scenario-state">保存并切换节点</span></span></button>
+        </section>
+      </aside>
+
+      <main class="stage" data-od-id="device-comparison-stage">
+        <header class="stage-head"><div><div class="stage-title" id="scene-title">最近会话</div><div class="stage-copy" id="scene-copy">打开应用后直接回到上次任务，输入与执行状态保持在同一工作面。</div></div><div class="stage-badges"><span class="platform-badge">iOS 44pt</span><span class="platform-badge">Android 48dp</span></div></header>
+        <div class="device-stage">
+          <section class="device" data-od-id="ios-device"><div class="device-label"><strong>iPhone 15 Pro</strong><span>390 × 844</span></div><iframe id="ios-frame" class="ios-frame" src="mobile-ios.html?screen=session&amp;theme=dark" title="Codeg Mobile iOS 原型" loading="eager"></iframe></section>
+          <section class="device" data-od-id="android-device"><div class="device-label"><strong>Pixel</strong><span>412 × 900</span></div><iframe id="android-frame" class="android-frame" src="mobile-android.html?screen=session&amp;theme=dark" title="Codeg Mobile Android 原型" loading="eager"></iframe></section>
+        </div>
+      </main>
+
+      <aside class="inspector" data-od-id="design-inspector">
+        <section class="inspect-section" data-od-id="scene-intent"><h2 class="inspect-title">当前场景</h2><p class="scene-summary" id="inspect-summary">对话是默认工作面，任务状态只在需要行动时提高层级。</p><p class="scene-goal" id="inspect-goal">用户应在打开应用后立即知道 Agent 正在做什么，并能继续输入任务。</p></section>
+        <section class="inspect-section" data-od-id="interaction-facts"><h2 class="inspect-title">交互约束</h2><dl class="fact-list"><div class="fact"><dt>默认入口</dt><dd>最近一次会话</dd></div><div class="fact"><dt>审批路径</dt><dd>通知到完成操作不超过三步</dd></div><div class="fact"><dt>输入安全</dt><dd>键盘、切网和锁屏不丢失草稿</dd></div><div class="fact"><dt>执行信息</dt><dd>步骤精简，日志按需展开</dd></div></dl></section>
+        <section class="inspect-section" data-od-id="state-language"><h2 class="inspect-title">状态语言</h2><div class="state-list"><div class="state-row state-online"><span class="state-shape">✓</span><strong>运行正常</strong><span>符号、文字、方形轮廓</span></div><div class="state-row state-wait"><span class="state-shape">◆</span><strong>等待批准</strong><span>琥珀色与明确动作</span></div><div class="state-row state-error"><span class="state-shape">!</span><strong>错误停止</strong><span>红色与恢复路径</span></div><div class="state-row state-off"><span class="state-shape">×</span><strong>未激活</strong><span>中性灰与原因说明</span></div></div></section>
+        <section class="inspect-section" data-od-id="brand-tokens"><h2 class="inspect-title">核心 Token</h2><div class="token-list" aria-label="背景、表面、文字、次级文字、边框和主色"><span class="token-swatch"></span><span class="token-swatch"></span><span class="token-swatch"></span><span class="token-swatch"></span><span class="token-swatch"></span><span class="token-swatch"></span></div></section>
+        <section class="inspect-section" data-od-id="navigation-flow"><h2 class="inspect-title">核心路径</h2><ol class="flow-list"><li>恢复最近会话与事件游标</li><li>查看执行步骤或待处理入口</li><li>在会话内批准、拒绝或回答</li><li>继续执行并回填结果</li></ol></section>
+        <section class="inspect-section" data-od-id="developer-notes"><h2 class="inspect-title">开发交付</h2><ul class="handoff-list"><li>长会话使用虚拟列表，上滑分页不改变阅读锚点。</li><li>WebSocket 重连携带 sessionId 与 lastEventId，避免重复工具调用。</li><li>Token 存入 Keychain 或 Keystore，不进入日志与通知。</li><li>输入区消费安全区和软键盘 Insets，正文保持 16px。</li><li>中英文与动态字体均允许容器增高，不截断主操作。</li></ul></section>
+      </aside>
+    </div>
+
+    <footer class="footer" data-od-id="prototype-status"><span><strong>对话优先</strong></span><span>10 个核心场景</span><span>双平台</span><span>双主题</span><span class="push">动效 150-220ms</span></footer>
+  </div>
+  <script>
+    const scenes={
+      splash:{title:"启动页",copy:"快速初始化连接，恢复最近会话与任务状态。",summary:"启动只承担连接准备，不承担品牌宣传。",goal:"在最短等待后进入最近会话，并让恢复状态可感知。"},
+      connect:{title:"首次连接",copy:"保存服务器、验证 HTTPS 与 Token，并建立安全预期。",summary:"字段标签、验证结果和安全存储说明处于同一表单路径。",goal:"用户能区分地址错误、Token 无效和服务器不可达。"},
+      reconnect:{title:"断线恢复",copy:"保留当前页面、事件游标和未发送草稿。",summary:"断线是可恢复状态，不是空白页或浏览器错误。",goal:"切网或锁屏返回后，用户仍能确认上下文没有丢失。"},
+      session:{title:"最近会话",copy:"打开应用后直接回到上次任务，输入与执行状态保持在同一工作面。",summary:"对话是默认工作面，任务状态只在需要行动时提高层级。",goal:"用户应在打开应用后立即知道 Agent 正在做什么，并能继续输入任务。"},
+      running:{title:"Agent 执行中",copy:"使用紧凑时间线呈现步骤，终端日志默认折叠。",summary:"执行状态强调阶段和结果，不用大段终端输出占满屏幕。",goal:"用户能快速判断当前进度、耗时和是否需要介入。"},
+      approval:{title:"等待批准",copy:"说明操作、影响范围和风险，提供三种明确决策。",summary:"普通写入使用克制的琥珀状态，危险命令才升级为红色。",goal:"从通知进入后，用户能在三步内做出可撤销的决定。"},
+      question:{title:"Agent 提问",copy:"单选、多选和文本回答直接嵌入会话流。",summary:"提问卡不离开上下文，推荐项只作为辅助信息。",goal:"用户理解 Agent 为什么提问，并能快速继续任务。"},
+      tasks:{title:"任务中心",copy:"运行中优先，等待批准获得更高行动权重。",summary:"任务列表按是否需要用户行动排序，不按服务器或时间机械分组。",goal:"用户可以快速发现阻塞任务并回到对应会话。"},
+      sessions:{title:"会话列表",copy:"按运行中、最近和已完成分组，支持搜索与新建。",summary:"会话摘要聚焦 Agent、最后进展和未处理权限数量。",goal:"用户能快速恢复历史上下文，而不是浏览项目文件。"},
+      servers:{title:"服务器管理",copy:"保存多个 Codeg 节点，测试、编辑并切换当前服务器。",summary:"服务器状态包含地址、延迟和最后连接时间，不写死单一节点。",goal:"用户可以安全地管理个人电脑、工作站与远程服务器。"}
+    };
+    const iosFrame=document.getElementById("ios-frame");
+    const androidFrame=document.getElementById("android-frame");
+    const title=document.getElementById("scene-title");
+    const copy=document.getElementById("scene-copy");
+    const summary=document.getElementById("inspect-summary");
+    const goal=document.getElementById("inspect-goal");
+    let activeScreen="session";
+    let activeTheme="dark";
+    let firstRender=true;
+    function appSource(file){
+      return file+"?screen="+encodeURIComponent(activeScreen)+"&theme="+encodeURIComponent(activeTheme);
+    }
+    function render(){
+      const scene=scenes[activeScreen]||scenes.session;
+      document.documentElement.dataset.theme=activeTheme;
+      title.textContent=scene.title;copy.textContent=scene.copy;summary.textContent=scene.summary;goal.textContent=scene.goal;
+      document.querySelectorAll(".scenario").forEach(button=>button.toggleAttribute("aria-current",button.dataset.screen===activeScreen));
+      document.querySelectorAll("[data-theme-choice]").forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.themeChoice===activeTheme)));
+      if(firstRender){
+        firstRender=false;
+      }else{
+        iosFrame.src=appSource("mobile-ios.html");
+        androidFrame.src=appSource("mobile-android.html");
+      }
+    }
+    document.querySelectorAll(".scenario").forEach(button=>button.addEventListener("click",()=>{activeScreen=button.dataset.screen;try{localStorage.setItem("codeg-review-screen",activeScreen)}catch(error){}render()}));
+    document.querySelectorAll("[data-theme-choice]").forEach(button=>button.addEventListener("click",()=>{activeTheme=button.dataset.themeChoice;try{localStorage.setItem("codeg-review-theme",activeTheme)}catch(error){}render()}));
+    render();
+  </script>
+</body>
+</html>

@@ -119,8 +119,9 @@ describe("ConversationDetailPanel new conversation layout", () => {
     // `flush` (the welcome column already provides the px-4).
     expect(chatInputSource).toContain('cn("pt-0 pb-1", !flush && "px-4")')
     expect(chatInputSource).toContain(
-      'cn(tall ? "min-h-30" : "min-h-24", "max-h-60")'
+      'tall ? (isMobile ? "min-h-24" : "min-h-30") : "min-h-24"'
     )
+    expect(chatInputSource).toContain('isMobile ? "max-h-40" : "max-h-60"')
     expect(chatInputSource).not.toContain("containerClassName")
     expect(source).not.toContain("containerClassName")
     expect(conversationShellSource).not.toContain("containerClassName")

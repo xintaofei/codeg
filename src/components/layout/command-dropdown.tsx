@@ -19,6 +19,7 @@ import {
   terminalKill,
 } from "@/lib/api"
 import type { FolderCommand } from "@/lib/types"
+import { cn } from "@/lib/utils"
 import {
   resolveLiveCommandTerminalId,
   useCommandTerminalLinkStore,
@@ -42,7 +43,7 @@ function setSelectedCommandId(folderId: number, cmdId: number) {
   }
 }
 
-export function CommandDropdown() {
+export function CommandDropdown({ compact = false }: { compact?: boolean }) {
   const t = useTranslations("Folder.commandDropdown")
   const { activeFolder: folder } = useActiveFolder()
   const {
@@ -246,21 +247,37 @@ export function CommandDropdown() {
         // No commands → show add command button
         <Button
           variant="ghost"
-          size="sm"
-          className="h-6 px-2 text-xs gap-1 hover:text-foreground/80"
+          size={compact ? "icon" : "sm"}
+          className={cn(
+            "text-xs gap-1 hover:text-foreground/80",
+            compact ? "h-11 w-11 rounded-xl" : "h-6 px-2"
+          )}
           onClick={() => setManageOpen(true)}
           disabled={bootstrapping}
+          title={bootstrapping ? t("loading") : t("addCommand")}
         >
-          <Plus className="h-3 w-3" />
-          {bootstrapping ? t("loading") : t("addCommand")}
+          <Plus className={cn("h-3 w-3", compact && "h-5 w-5")} />
+          <span className={cn(compact && "sr-only")}>
+            {bootstrapping ? t("loading") : t("addCommand")}
+          </span>
         </Button>
       ) : (
         // Has commands → split button: [name ▼] [run/stop]
-        <div className="flex items-center">
+        <div className="flex min-w-0 items-center">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" className="h-6 hover:text-foreground/80">
-                <span className="max-w-24 truncate">{activeCmd?.name}</span>
+              <Button
+                variant="ghost"
+                className={cn(
+                  "hover:text-foreground/80",
+                  compact ? "h-11 max-w-20 gap-1 px-2" : "h-6"
+                )}
+              >
+                <span
+                  className={cn("truncate", compact ? "max-w-12" : "max-w-24")}
+                >
+                  {activeCmd?.name}
+                </span>
                 <ChevronDown className="h-3 w-3" />
               </Button>
             </DropdownMenuTrigger>
@@ -288,11 +305,13 @@ export function CommandDropdown() {
           <Button
             variant="ghost"
             size="sm"
-            className={`h-6 px-2 text-xs gap-1 ${
+            className={cn(
+              "text-xs gap-1",
+              compact ? "h-11 w-11 rounded-xl px-0" : "h-6 px-2",
               isActiveCommandRunning
                 ? "text-destructive hover:text-destructive"
                 : "hover:text-foreground/80"
-            }`}
+            )}
             onClick={handleRunOrStop}
             title={
               isActiveCommandRunning

@@ -1,0 +1,9 @@
+relay.example.com {
+	@relay path /health /v1/ws /v1/devices* /v1/pairings*
+	reverse_proxy @relay 127.0.0.1:18787
+
+	# Metrics stay private. Expose them through a protected monitoring network
+	# instead of this public virtual host.
+	respond /metrics 404
+	respond 404
+}

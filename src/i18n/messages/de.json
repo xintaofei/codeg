@@ -2210,6 +2210,8 @@
         "attachUploadFailed": "Upload fehlgeschlagen: {names}.",
         "attachUploadNotAFile": "{names} ist keine reguläre Datei (Verzeichnis oder Spezialdatei) und wurde übersprungen.",
         "attachUploadQuotaExceeded": "Auf dem Server ist kein Upload-Speicher mehr verfügbar; {names} konnte nicht hochgeladen werden.",
+        "uploadingAttachments": "{count} Anhänge werden hochgeladen…",
+        "cancelAttachmentUpload": "Anhang-Upload abbrechen",
         "mentionEmpty": "Keine Treffer",
         "mentionLoading": "Suche läuft…",
         "mentionListLabel": "Erwähnungen",
@@ -3559,6 +3561,7 @@
     "disconnectedTitle": "Verbindung getrennt",
     "reconnectingDescription": "Verbindung zum Server wird wiederhergestellt. Das geschieht normalerweise innerhalb weniger Sekunden automatisch.",
     "reconnectNow": "Jetzt neu verbinden",
+    "directFallback": "Zu Direct wechseln",
     "sessionExpiredTitle": "Sitzung abgelaufen",
     "sessionExpiredDescription": "Deine Sitzung ist nicht mehr gültig. Bitte melde dich erneut an, um fortzufahren.",
     "goToLogin": "Zur Anmeldung"

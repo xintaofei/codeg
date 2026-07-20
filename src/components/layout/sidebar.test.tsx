@@ -16,6 +16,7 @@ const spies = vi.hoisted(() => ({
 }))
 const mockState = vi.hoisted(() => ({
   activeFolder: { id: 7, path: "/x" } as { id: number; path: string } | null,
+  mobile: false,
 }))
 
 // The conversation list is irrelevant here — stub it so the test exercises only
@@ -59,7 +60,9 @@ vi.mock("@/hooks/use-shortcut-settings", () => ({
     shortcuts: { toggle_search: "mod+k", new_conversation: "mod+t" },
   }),
 }))
-vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => false }))
+vi.mock("@/hooks/use-mobile", () => ({
+  useIsMobile: () => mockState.mobile,
+}))
 
 function renderSidebar() {
   return render(
@@ -77,6 +80,7 @@ describe("Sidebar — fixed New chat / Search region", () => {
     spies.setRoute.mockClear()
     spies.openConversations.mockClear()
     mockState.activeFolder = { id: 7, path: "/x" }
+    mockState.mobile = false
   })
 
   it("Automations navigates to the automations route", () => {
@@ -109,6 +113,15 @@ describe("Sidebar — fixed New chat / Search region", () => {
     // row is hovered/focused but stay in the DOM, so getByText resolves them.
     expect(getByText("Ctrl+T")).toBeTruthy()
     expect(getByText("Ctrl+K")).toBeTruthy()
+  })
+
+  it("uses touch-sized primary actions and hides the desktop expand control on mobile", () => {
+    mockState.mobile = true
+    const { getByText, queryByLabelText } = renderSidebar()
+
+    expect(getByText("New chat").closest("button")).toHaveClass("h-11")
+    expect(getByText("Search").closest("button")).toHaveClass("h-11")
+    expect(queryByLabelText("Collapse All Groups")).toBeNull()
   })
 
   it("falls back to chat mode (never disabled) when no folder is active", () => {

@@ -1,0 +1,354 @@
+# Codeg Mobile 实施计划
+
+status: in-progress
+owner: Crain99
+repository: Crain99/codeg-mobile
+visibility: private
+upstream: xintaofei/codeg@v0.20.3
+updated: 2026-07-15
+strategy: A（本地原生前端 + Relay/Direct 远程控制）
+delivery-priority: Android 可用签名 APK，随后补齐 iOS TestFlight
+
+## 1. 目标
+
+构建原生可安装的 Android/iOS Codeg 移动客户端。手机负责创建任务、查看执行过程、批准权限、回答 Agent 问题和接收通知；Codex、Claude Code、OpenCode、ACP、终端、Git 与项目文件继续运行在电脑或服务器端。
+
+产品不是缩小版移动 IDE，也不是加载远程网址的简单 WebView。前端资源随 APK/IPA 本地打包，通过统一 Transport 接口连接远程 Codeg。
+
+## 2. 已锁定决策
+
+- 新建私有仓库 `Crain99/codeg-mobile`。
+- 基线使用上游原版 `xintaofei/codeg` 的 `v0.20.3` 标签。
+- 只选择性移植 `codeg-custom` 中与 WebSocket、长会话、事件恢复和远程稳定性有关的改进。
+- 使用 Tauri 2 + 现有 Next.js/React 前端，不使用 Flutter 或 React Native 重写。
+- Android 与 iOS 共用一条产品主线；Android 主推进，iOS 从第一天起保持可编译、可启动。
+- 默认使用“本地前端 + 远程后端”。
+- 同时保留 `DirectTransport` 与 `RelayTransport` 两种连接方式。
+- 第一版是任务控制客户端，不包含完整移动 IDE。
+- UI 采用“对话优先”，保留顶部“运行中/等待批准”入口与底部“会话/任务/设置”导航。
+- Android 通过私有签名 APK 分发；iOS 通过 TestFlight 分发。
+- 不持久化未发送草稿：当前页面存活时可以保留内存中的输入；App 重启、退出登录或切换服务器后清除。
+
+## 3. 首版功能边界
+
+### 必须包含
+
+- 添加、测试、保存和切换 Codeg 服务器。
+- 服务器地址 + Token 登录。
+- Token 使用 Android Keystore / iOS Keychain 保存。
+- 会话列表、新建会话、继续历史会话。
+- 发送消息并接收流式 Agent 输出。
+- 紧凑展示分析、读文件、改代码、运行测试等执行步骤。
+- 停止任务。
+- 批准或拒绝权限。
+- 回答 Agent 的单选、多选和文本问题。
+- 上传图片和文件。
+- 长会话分页与消息虚拟列表。
+- 网络切换、锁屏返回和短暂断线后的自动恢复。
+- “运行中”和“等待批准”任务中心。
+- 深色/浅色主题及中英文弹性布局。
+
+### 首版不包含
+
+- 手机本地运行 Codex、Claude Code、OpenCode 或 ACP。
+- 手机本地终端。
+- 完整 Git、Diff、提交与分支管理。
+- 代码编辑器。
+- Agent、模型供应商和 MCP 安装配置。
+- 桌面宠物、多窗口和桌面自动更新设置。
+- 跨重启、跨服务器或跨登录保存未发送草稿。
+
+## 4. UI 设计基线
+
+设计源目录：
+
+`/Users/crain/Library/Application Support/Open Design/namespaces/release-stable/data/projects/bf55c167-7525-4426-8272-7855c4e215c9`
+
+实施前将以下文件复制到仓库 `docs/design/mobile-prototype/`，避免依赖 Application Support 临时目录：
+
+- `codeg-mobile-prototype.html`
+- `codeg-mobile.css`
+- `codeg-mobile.js`
+- `mobile-ios.html`
+- `mobile-android.html`
+- `brand-spec.md`
+- 预览 PNG 与 `critique.json`
+
+需要补充的设计状态：
+
+- Relay 扫码配对。
+- 电脑端确认手机。
+- 已配对设备列表与撤销权限。
+- Relay 不可用时切换 Direct 连接。
+- 不持久化草稿后的断线文案与交互。
+
+正式实现要求：
+
+- 使用系统状态栏，不实现原型中的模拟状态栏。
+- iOS 最小触控尺寸 44pt，Android 最小触控尺寸 48dp。
+- 输入框正文 16px，正确消费安全区和软键盘 Insets。
+- 不使用浏览器 `confirm()`；危险操作使用应用内确认组件。
+- “始终允许”必须显示权限范围、服务器、工作区和撤销入口。
+- 移除 `user-scalable=no`，保留动态字体与无障碍缩放能力。
+
+## 5. 目标架构
+
+```text
+Codeg Desktop / codeg-server
+    ├── Local Agent runtime
+    ├── ACP / PTY / Git / Filesystem
+    ├── Direct HTTPS + WebSocket server
+    └── Relay Desktop Client ── outbound WSS ──┐
+                                               │
+                                      Codeg Relay
+                                               │
+Codeg Mobile                                  │
+    ├── DirectTransport ── HTTPS + WS ─────────┤
+    └── RelayTransport ── outbound WSS ────────┘
+```
+
+运行角色必须显式区分：
+
+- `desktop-local`
+- `browser-remote`
+- `mobile-direct`
+- `mobile-relay`
+
+移动 Tauri 不能继续被当作桌面 Tauri，也不能调用本地 Agent、PTY、sidecar、多窗口或桌面更新器。
+
+## 6. 里程碑
+
+### M0：仓库与设计归档
+
+- [x] 使用个人 GitHub 账号 `Crain99` 创建私有仓库 `codeg-mobile`。
+- [x] 从 `xintaofei/codeg@v0.20.3` 建立 `main`。
+- [x] 添加只读 `upstream` remote。
+- [x] 创建 `develop` 与短期功能分支规则。
+- [x] 将移动 UI 原型和设计 Token 归档进仓库。
+- [x] 记录从 `codeg-custom` 选择性移植的稳定性提交清单。
+- [x] 添加 Android、iOS、Web/Rust 基础 CI。
+
+完成标准：仓库可重复构建，设计源不再依赖 OpenDesign 数据目录，桌面定制代码未被带入。
+
+### M1：移动编译边界
+
+- [x] 生成 Tauri Android 与 iOS 工程。
+- [x] 增加明确的平台/运行角色检测。
+- [x] 增加 `mobile-client` Cargo feature。
+- [x] 对移动端 cfg 掉 ACP、PTY、Agent registry、sidecar、tray、updater、single-instance、多窗口和桌面宠物。
+- [x] 修复 Android/iOS target 下的平台枚举和依赖编译错误。
+- [x] 保持 Android 与 iOS 的空壳 App 均可启动。
+
+完成标准：Android 模拟器/真机与 iOS 模拟器均能进入本地打包的移动登录页，不启动任何本地 Agent 进程。
+
+### M2：DirectTransport 首版
+
+- [x] 将运行环境从 `tauri/web` 扩展为明确的移动远程模式。
+- [x] 移动端使用 `WebTransport(serverUrl)`，不使用本地 `TauriTransport`。
+- [x] 实现服务器配置、Token 验证与安全存储。
+- [x] 适配登录、退出、401、服务器不可达和节点切换。
+- [x] 复用并验证 WebSocket readiness、snapshot/replay、seq cursor 和 reconnect。
+- [x] 实现移动文件选择、图片/附件上传和分享/保存入口。
+
+完成标准：手机通过 HTTPS 直连现有 Codeg，在 4G/Wi-Fi 切换后前台 5 秒内恢复会话，不重复工具事件。
+
+### M3：移动 UI 与任务闭环
+
+- [x] 实现启动、首次连接、最近会话、执行中、等待批准、Agent 提问、任务中心、会话列表、断线恢复和服务器管理页面。
+- [x] 接入真实会话、任务和权限数据，删除原型假数据。
+- [x] 实现消息虚拟列表和向上分页锚点保持。
+- [x] 实现顶部运行中/等待批准入口。
+- [x] 实现底部会话/任务/设置导航。
+- [x] 实现前后台生命周期、网络变化与软键盘适配。
+- [x] 实现不持久化草稿策略。
+
+完成标准：用户可以在手机完成“创建任务 → 查看执行 → 批准/回答 → 查看结果”的完整闭环。
+
+### M4：Relay 协议与安全设计
+
+- [x] 定义版本化 Relay 帧协议：`hello/pair/request/response/event/upload/ack/ping/revoke`。
+- [x] 定义请求 ID、事件序列、重放窗口、幂等和背压规则。
+- [x] 定义大文件分片、取消、校验与失败恢复规则。
+- [x] 定义一次性配对码、设备身份、公钥交换和凭据轮换。
+- [x] 定义端到端加密；Relay 不获得 Codeg Token、代码或聊天明文。
+- [x] 定义设备撤销、服务器注销和疑似泄露处置流程。
+- [x] 完成威胁模型与协议测试向量，再开始 Relay 服务编码。
+
+完成标准：协议文档、状态机、安全边界、错误码和兼容策略均完成评审。
+
+### M5：Codeg Relay 服务
+
+- [x] 新建独立 Relay 服务，优先使用 Rust + Axum。
+- [x] 实现桌面端与移动端双向 WSS 接入。
+- [x] 实现 deviceId 路由、心跳、在线状态和连接替换。
+- [x] 实现加密帧透明转发，不记录内容明文。
+- [x] 实现限流、连接上限、帧大小限制和审计事件。
+- [x] 实现健康检查、结构化日志和基础指标。
+- [x] 在单实例阶段使用内存路由；扩容需要时再引入 Redis 等共享状态。
+
+参考部署使用独立 Relay 主机和受信任的 WSS 域名。具体域名由部署者配置，
+APK 不绑定任何 Relay 运营方；健康检查使用 `/health`，WSS 使用 `/v1/ws`。
+
+完成标准：Relay 可在不开放用户电脑入站端口的情况下稳定转发双向加密帧。
+
+### M6：桌面 Relay Client
+
+- [x] 桌面设置增加“移动访问”开关。
+- [x] 生成并安全保存桌面设备身份。
+- [x] 主动建立 Relay WSS 并自动重连。
+- [x] 将 Relay request 映射到现有 Codeg command handler。
+- [x] 将 Agent 事件、snapshot/replay 和权限请求转发到 Relay。
+- [x] 生成一次性二维码并在桌面确认新手机。
+- [x] 显示已配对设备、最后活动时间与撤销操作。
+
+完成标准：位于 CGNAT 后的电脑无需端口映射即可被已配对手机控制，未配对或已撤销手机不能访问。
+
+### M7：Mobile RelayTransport
+
+- [x] 实现符合统一 `Transport` 接口的 `RelayTransport`。
+- [x] 实现扫码、一次性配对、设备确认和安全存储。
+- [x] 实现 request/response 关联、超时、取消和错误映射。
+- [x] 实现 event seq、ack、snapshot/replay 和 5 秒前台恢复目标。
+- [x] 实现附件分片、进度、取消和失败恢复。
+- [x] 实现 Direct/Relay 切换和 Relay 故障回退提示。
+
+完成标准：手机使用移动网络控制没有公网 IP 的电脑，核心任务闭环与 Direct 模式一致。
+
+### M8：推送与深链接
+
+- [ ] iOS 接入 APNs。
+- [ ] Android 接入 FCM。
+- [ ] 通知只包含安全摘要，不包含代码、Token 或敏感命令正文。
+- [ ] 通知携带 taskId/actionType，点击直达对应会话或批准卡。
+- [ ] App 回到前台后重新连接 Relay 并校验事件游标。
+- [ ] 危险操作仍要求应用内二次确认。
+
+完成标准：App 被系统挂起时仍能收到任务完成/等待批准通知，点击后正确恢复上下文。
+
+### M9：测试、加固与发布
+
+- [x] 前端单元测试、Rust 单元测试和协议测试。
+- [ ] Direct/Relay 端到端集成测试。
+- [ ] Wi-Fi/4G 切换、锁屏、Relay 重启、桌面睡眠和服务器重启测试。
+  - [x] 公网 Relay 受控重启：WebSocket 断开后 3.696 秒恢复首个加密帧，从重启命令开始计时 4.900 秒。
+  - [x] Android 模拟器锁屏/唤醒触发 `hidden → visible`，页面和会话上下文保留。
+  - [ ] 模拟器飞行模式压力测试从恢复命令到首个加密帧为 6.362 秒；不替代真机 Wi-Fi/移动网络五秒验收。
+- [x] 长会话、事件去重、上传中断和多设备并发测试。
+- [x] Token、日志脱敏、设备撤销和重放攻击测试。
+- [ ] Android 真机签名 APK 构建与私有 Release。
+  - [x] 已上传签名 APK 到私有草稿预发布 `android-v0.20.3-rc.1`；真机硬验收后再转正式 Release。
+- [ ] iOS 真机归档与 TestFlight 上传。
+- [x] 编写安装、配对、故障恢复和隐私说明。
+
+完成标准：全部验收场景通过，发布包可由非开发人员安装使用。
+
+## 7. CI/CD
+
+- Pull Request：前端 lint、类型检查、Vitest、Rust fmt/clippy/test、Android/iOS 编译冒烟。
+- `main` 标签：生成签名 Android APK。
+- iOS 发布标签：macOS runner 构建并上传 TestFlight。
+- Relay：构建不可变镜像/二进制，部署后执行健康检查与 WSS 冒烟。
+- 密钥只使用 GitHub Actions Secrets 或部署端密钥管理，不写入仓库和构建日志。
+
+## 8. 验收场景
+
+1. 电脑位于路由器或 CGNAT 后，没有公网 IP，也没有开放入站端口。
+2. 手机使用 4G/5G，通过二维码完成一次性配对。
+3. 手机创建任务并持续看到 Agent 执行步骤。
+4. 手机完成权限批准和 Agent 提问回答。
+5. 网络中断后重新进入前台，5 秒内恢复到一致状态。
+6. 恢复过程不重复工具调用、不重复消息、不丢最终状态。
+7. 未发送输入不跨 App 重启、服务器切换或退出登录保存。
+8. 撤销手机后，该设备立即失去后续访问能力。
+9. Relay 无法读取 Codeg Token、代码、附件和聊天明文。
+10. Android APK 与 iOS TestFlight 均可由真实设备安装运行。
+
+## 9. 风险与控制
+
+- 移动 Tauri 误走桌面 IPC：使用显式运行角色和编译 feature 隔离。
+- iOS 后台暂停 WebSocket：使用 APNs 通知，前台重连，不依赖永久后台 socket。
+- Relay 成为高价值入口：端到端加密、一次性配对、设备撤销、限流和最小日志。
+- 事件重复导致重复执行：请求幂等键、事件 seq/ack 与服务端去重。
+- 长会话卡顿：虚拟列表、分页、按需挂载工具日志和快照恢复。
+- 上游持续更新：基于稳定标签开发，定期合并 upstream，不跟踪未发布 main。
+- UI 原型丢失：M0 首先归档到 Git 仓库。
+
+## 10. 待用户确认
+
+- [x] Relay 已在参考环境完成部署验证。
+- [x] Relay 公网入口使用受信任 TLS 证书和 WSS。
+- [ ] Apple Developer / App Store Connect 账号可用于 TestFlight 与 APNs。
+- [ ] Firebase 项目与 FCM 凭据的归属。
+- [ ] “始终允许”是否进入首版，或首版只提供“允许一次/拒绝”。
+
+## 11. 开工门槛
+
+满足以下条件后进入实现：
+
+- 本计划经用户确认。
+- `Crain99/codeg-mobile` 私有仓库创建完成。
+- UI 设计资产已归档进仓库。
+- M4 Relay 协议与安全设计先于 M5 服务器编码完成。
+- 不在移动端实现本地 Agent runtime，不扩大首版功能边界。
+
+## 12. 后续执行顺序
+
+### P0：打通 Android Relay 真机闭环
+
+- [x] 手机扫码导入配对信息，敏感凭据只进入 Android Keystore。
+- [x] APK 通过公网 Relay 连接位于 NAT 后的桌面 Codeg。
+- [x] 手机创建或继续真实会话，并持续收到 Agent 流式事件。
+- [x] 手机完成权限批准、拒绝和 Agent 问题回答。
+- [x] 强制停止 App 后重新打开，5 秒内恢复当前会话且不重复事件。
+- [x] 桌面撤销设备后，手机立即失去访问能力。
+
+### P1：补齐 Relay 安全与可靠性
+
+- [x] 配对凭据由服务端一次性消费，过期或重复使用均失败。
+- [x] 新手机必须经过桌面端明确确认。
+- [x] request/response 支持超时、取消、错误映射和幂等重试。
+- [x] 附件支持分片、校验、进度、取消和断点恢复。
+- [x] Relay 故障时显示可理解的状态，并允许切换 Direct 连接。
+- [x] 修复健康连接继承旧指数退避的问题；公网 Relay 重启后 4.900 秒内恢复加密会话。
+
+### P2：Android 发布
+
+- [ ] 在至少一台 Android 真机完成 Wi-Fi/移动网络、锁屏和后台恢复测试。
+- [x] 完成长会话、上传中断、多设备、撤销和重放攻击测试。
+- [x] 使用非调试签名生成 universal Release APK。
+- [ ] 创建私有 GitHub Release，附 SHA-256、安装和配对说明。
+  - [x] 私有草稿预发布已上传 APK、SHA-256 和候选包说明；等待真机硬验收后发布。
+
+### P3：推送通知
+
+- [ ] 接入 FCM，仅发送不含代码、Token 和命令正文的安全摘要。
+- [ ] 点击通知可进入对应会话或批准卡，危险操作仍需应用内确认。
+
+### P4：iOS 交付
+
+- [ ] 保持 iOS 模拟器构建持续通过。
+- [ ] 接入 Keychain、相机扫码、文件选择、APNs 和深链接。
+- [ ] 完成真机归档并上传 TestFlight。
+
+## 13. Android APK 硬验收标准
+
+只有以下条件全部满足，才可把“可用的 Android APK”标记为完成：
+
+1. APK 在未安装开发工具的 Android 真机上可直接安装、冷启动和升级。
+2. 用户无需公网 IP、端口映射或手机 VPN，即可通过 Relay 配对自己的电脑。
+3. 能完成“进入历史会话/新建任务 → 持续执行 → 批准或回答 → 查看最终结果”的真实闭环。
+4. Wi-Fi 与移动网络切换、锁屏返回或短暂断网后，前台 5 秒内恢复一致状态。
+5. 恢复不重复消息、工具事件或命令，不丢失任务最终状态。
+6. Codeg Token、Relay 根密钥和设备私钥不进入日志、URL、明文配置或 Web Storage。
+7. 未发送草稿不跨 App 重启、退出登录或服务器切换保留。
+8. 撤销设备后旧凭据不可再次连接；二维码过期或第二次使用必须失败。
+9. Relay 日志和存储中不存在代码、附件、聊天正文或 Codeg Token 明文。
+10. Release 附带版本号、签名信息、SHA-256、安装说明、配对说明和已知限制。
+
+## 14. 完成定义
+
+- “编译通过”只代表构建门槛通过，不等于功能完成。
+- “模拟器可启动”只代表冒烟通过，不等于真机验收通过。
+- “公网 WSS 可连接”只代表链路通过，不等于任务闭环通过。
+- Android 首发完成必须以第 13 节全部通过为准。
+- iOS 不阻塞 Android 首发，但不得破坏 iOS 持续编译能力。

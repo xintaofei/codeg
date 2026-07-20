@@ -135,7 +135,7 @@ interface GitPushSucceededEventPayload {
   upstream_set: boolean
 }
 
-export function BranchDropdown() {
+export function BranchDropdown({ compact = false }: { compact?: boolean }) {
   const t = useTranslations("Folder.branchDropdown")
   const tCommon = useTranslations("Folder.common")
   const { activeFolder } = useActiveFolder()
@@ -692,18 +692,43 @@ export function BranchDropdown() {
   // below still use `activeFolder` (the worktree) unchanged.
   const folderName = resolveFolderDisplayName(activeFolder, allFolders)
 
+  const triggerLabel = (branchLabel: string) =>
+    compact ? (
+      <span className="min-w-0 flex-1 text-left">
+        <span className="block truncate text-[13px] font-semibold leading-4">
+          {folderName}
+        </span>
+        <span className="block truncate text-[11px] font-normal leading-4 text-muted-foreground">
+          {branchLabel}
+        </span>
+      </span>
+    ) : (
+      <span className="max-w-[320px] truncate">
+        {folderName}
+        <span className="mx-1.5 inline-block h-3 w-px bg-foreground/20 align-middle" />
+        <span className="text-primary">{branchLabel}</span>
+      </span>
+    )
+
   if (!isRepo) {
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button className="flex min-w-0 items-center gap-1 text-sm tracking-tight outline-none transition-colors cursor-default hover:text-foreground/80">
-            <GitFork className="h-3 w-3 shrink-0" />
-            <span className="max-w-[320px] truncate">
-              {folderName}
-              <span className="mx-1.5 inline-block h-3 w-px bg-foreground/20 align-middle" />
-              <span className="text-primary">{t("noBranch")}</span>
-            </span>
-            <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
+          <button
+            className={cn(
+              "flex min-w-0 items-center gap-1 text-sm tracking-tight outline-none transition-colors cursor-default hover:text-foreground/80",
+              compact &&
+                "h-11 w-full max-w-full gap-2 overflow-hidden rounded-xl px-1 cursor-pointer"
+            )}
+          >
+            <GitFork className={cn("h-3 w-3 shrink-0", compact && "h-4 w-4")} />
+            {triggerLabel(t("noBranch"))}
+            <ChevronDown
+              className={cn(
+                "h-3 w-3 shrink-0 opacity-50",
+                compact && "h-4 w-4"
+              )}
+            />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent className="min-w-64" align="start">
@@ -726,7 +751,11 @@ export function BranchDropdown() {
       <DropdownMenu open={dropdownOpen} onOpenChange={handleDropdownOpenChange}>
         <DropdownMenuTrigger asChild>
           <button
-            className="flex min-w-0 items-center gap-1 text-sm tracking-tight outline-none transition-colors cursor-default hover:text-foreground/80"
+            className={cn(
+              "flex min-w-0 items-center gap-1 text-sm tracking-tight outline-none transition-colors cursor-default hover:text-foreground/80",
+              compact &&
+                "h-11 w-full max-w-full gap-2 overflow-hidden rounded-xl px-1 cursor-pointer"
+            )}
             title={
               isDetached
                 ? t("detachedHead", { sha: head?.short_sha ?? "" })
@@ -734,18 +763,21 @@ export function BranchDropdown() {
             }
           >
             {isDetached ? (
-              <GitCommitHorizontal className="h-3 w-3 shrink-0" />
+              <GitCommitHorizontal
+                className={cn("h-3 w-3 shrink-0", compact && "h-4 w-4")}
+              />
             ) : (
-              <GitBranch className="h-3 w-3 shrink-0" />
+              <GitBranch
+                className={cn("h-3 w-3 shrink-0", compact && "h-4 w-4")}
+              />
             )}
-            <span className="max-w-[320px] truncate">
-              {folderName}
-              <span className="mx-1.5 inline-block h-3 w-px bg-foreground/20 align-middle" />
-              <span className="text-primary">
-                {branch ?? head?.short_sha ?? t("noBranch")}
-              </span>
-            </span>
-            <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
+            {triggerLabel(branch ?? head?.short_sha ?? t("noBranch"))}
+            <ChevronDown
+              className={cn(
+                "h-3 w-3 shrink-0 opacity-50",
+                compact && "h-4 w-4"
+              )}
+            />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent className="min-w-64" align="start">
