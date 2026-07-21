@@ -39,12 +39,35 @@ pub struct LogGuard {
     _guard: Option<WorkerGuard>,
 }
 
+/// Standing per-target backstops appended to EVERY constructed filter — the
+/// default/configured level, a persisted level, AND an explicit `RUST_LOG` /
+/// `CODEG_LOG` override. Two entries, both appended last so they win over a
+/// broader global level:
+///
+/// - `kill_tree=warn` — the `kill_tree` crate emits one DEBUG line per inspected
+///   PID (~1500 on macOS, mostly EPERM on SIP-protected processes) on every
+///   `kill_tree()` call. Under a global `debug` level that firehose grew a
+///   server's log file to 217GB. We never want it: real kill failures are
+///   already surfaced at our own call sites via `error!`. Pinned here so even
+///   `RUST_LOG=debug` can't re-open it.
+/// - `codeg_lib::logging=off` — the logging stack must not log about itself
+///   (cross-thread feedback-loop backstop; the layer's thread-local guard
+///   handles the same-thread case).
+const TARGET_BACKSTOPS: &str = "kill_tree=warn,codeg_lib::logging=off";
+
+/// Directive string for an explicit env-override level `s`, with the standing
+/// [`TARGET_BACKSTOPS`] appended. Extracted so the backstop application on the
+/// env-override path is unit-testable without installing a global subscriber.
+fn env_override_directives(s: &str) -> String {
+    format!("{s},{TARGET_BACKSTOPS}")
+}
+
 /// Build the `EnvFilter` for the full settings: the global level followed by
-/// each non-empty per-target override (`target=level`), then always excluding
-/// the logging module's own target as a cross-thread feedback-loop backstop
-/// (the layer's thread-local guard handles the same-thread case). The backstop
-/// is appended last so it wins. `parse_lossy` silently drops any malformed
-/// target directive — the UI constrains the input to avoid that.
+/// each non-empty per-target override (`target=level`), then always appending
+/// [`TARGET_BACKSTOPS`] (the `kill_tree` clamp + the logging module's own target
+/// off). The backstops are appended last so they win. `parse_lossy` silently
+/// drops any malformed target directive — the UI constrains the input to avoid
+/// that.
 pub fn build_env_filter(settings: &LogSettings) -> EnvFilter {
     let mut directives = settings.level.directive().to_string();
     for t in &settings.targets {
@@ -56,7 +79,8 @@ pub fn build_env_filter(settings: &LogSettings) -> EnvFilter {
             directives.push_str(&format!(",{}={}", target, t.level.directive()));
         }
     }
-    directives.push_str(",codeg_lib::logging=off");
+    directives.push(',');
+    directives.push_str(TARGET_BACKSTOPS);
     EnvFilter::builder().parse_lossy(directives)
 }
 
@@ -159,7 +183,9 @@ fn build_subscriber(
     // same `env_level_override` precedence as `env_level_is_set`, so a level
     // applied here is exactly the one the UI reports as env-locked.
     let initial_filter = match env_level_override() {
-        Some(s) => EnvFilter::builder().parse_lossy(format!("{s},codeg_lib::logging=off")),
+        // Even an explicit env override gets the standing target backstops, so
+        // `RUST_LOG=debug` still can't re-open the kill_tree per-PID firehose.
+        Some(s) => EnvFilter::builder().parse_lossy(env_override_directives(&s)),
         // Phase 1 has no DB yet, so no persisted per-target overrides; just the
         // default level. Phase 2 (apply_persisted_level) rebuilds with targets.
         None => build_env_filter(&LogSettings {
@@ -329,6 +355,45 @@ mod tests {
         // The logging module stays off; the override attempt is dropped.
         assert!(rendered.contains("codeg_lib::logging=off"), "{rendered}");
         assert!(!rendered.contains("codeg_lib::logging=trace"), "{rendered}");
+    }
+
+    #[test]
+    fn build_env_filter_pins_noisy_third_party_targets() {
+        // Every constructed filter clamps `kill_tree` to warn — its per-PID
+        // DEBUG firehose once grew a server log to 217GB — and keeps the
+        // logging module's own target off.
+        let rendered = build_env_filter(&LogSettings {
+            level: LogLevel::Info,
+            targets: Vec::new(),
+        })
+        .to_string();
+        assert!(
+            rendered.contains("kill_tree=warn"),
+            "kill_tree must be pinned to warn: {rendered}"
+        );
+        assert!(
+            rendered.contains("codeg_lib::logging=off"),
+            "logging backstop must remain: {rendered}"
+        );
+    }
+
+    #[test]
+    fn env_override_appends_backstops_so_debug_cannot_reopen_kill_tree() {
+        // The explicit RUST_LOG/CODEG_LOG path bypasses build_env_filter, so it
+        // must apply the same backstops itself — otherwise `RUST_LOG=debug`
+        // re-opens the kill_tree per-PID firehose.
+        assert_eq!(
+            env_override_directives("debug"),
+            "debug,kill_tree=warn,codeg_lib::logging=off"
+        );
+        // And the parsed filter still carries the clamp under a global debug.
+        let rendered = EnvFilter::builder()
+            .parse_lossy(env_override_directives("debug"))
+            .to_string();
+        assert!(
+            rendered.contains("kill_tree=warn"),
+            "kill_tree clamp must survive a global debug override: {rendered}"
+        );
     }
 
     #[test]
