@@ -235,6 +235,18 @@ describe("AskQuestionResultCard", () => {
     expect(screen.queryByRole("radio")).toBeNull()
   })
 
+  it("renders nothing for an in-flight question whose input hasn't streamed in", () => {
+    // claude-agent-acp's arg-less initial tool_call leaves the input empty, so no
+    // question parses. The live question is answered via the pinned card, so this
+    // in-stream placeholder is pure noise — it must not render an anonymous
+    // "awaiting your answer" card (they stacked into visible duplicates).
+    const { container } = renderWithIntl(
+      <AskQuestionResultCard input="{}" state="input-available" />
+    )
+    expect(container.firstChild).toBeNull()
+    expect(screen.queryByText(result.awaiting)).not.toBeInTheDocument()
+  })
+
   it("matches grok's header-less questions to their empty-header answers", () => {
     // Grok's native ask carries no `header`; the connection bridge (live) and the
     // history parser both emit header-less questions + answers with `header: ""`.

@@ -535,9 +535,29 @@ export function buildDelegationTaskRows(
     // gets a (spinner) row immediately instead of all-but-the-first vanishing
     // until the batch resolves.
     const count = Math.max(reports.length, inputIds.length)
+    const inFlight =
+      poll.state === "input-available" || poll.state === "input-streaming"
     for (let i = 0; i < count; i++) {
       const report = reports[i] ?? EMPTY_STATUS_REPORT
       const taskId = report.taskId ?? inputIds[i] ?? null
+      // Drop an in-flight poll that carries no identity AND nothing to show yet.
+      // claude-agent-acp ships an arg-less initial `tool_call` (rawInput `{}`)
+      // and only fills the real `task_ids` on a later update — which, for a long
+      // `wait_ms` status check, lands near completion — so a poll that is still
+      // in flight often parses to this empty, id-less report. Each such re-poll
+      // would otherwise become its own anonymous "waiting for a task's result"
+      // row, stacking identical duplicates of the same wait. It folds into its
+      // task's row the moment an id or report arrives, and the settled transcript
+      // (whose polls always carry the id) is unaffected. A settled id-less report
+      // — a real interim note or terminal status — still gets its own row below.
+      if (
+        taskId == null &&
+        inFlight &&
+        report.status == null &&
+        (report.text == null || report.text.trim() === "")
+      ) {
+        continue
+      }
       const key = taskId ?? `__unattributed__:${poll.toolCallId}:${i}`
       let entry = byKey.get(key)
       if (!entry) {

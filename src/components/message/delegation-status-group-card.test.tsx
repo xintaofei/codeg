@@ -155,6 +155,47 @@ describe("DelegationStatusGroupCard", () => {
     expect(container.querySelector(".animate-spin")).toBeInTheDocument()
   })
 
+  it("suppresses an in-flight poll whose task_ids have not streamed in yet", () => {
+    // claude-agent-acp ships an arg-less initial tool_call (rawInput `{}`) and
+    // fills the real `task_ids` only on a later update, so a still-blocking live
+    // poll has neither an input id nor an output report. It must NOT render as an
+    // anonymous "waiting for a task's result" row.
+    const { container } = renderWithIntl(
+      <DelegationStatusGroupCard
+        polls={[poll("", { input: "{}", state: "input-available" })]}
+      />
+    )
+    expect(container.firstChild).toBeNull()
+    expect(
+      screen.queryByText("Waiting for task result")
+    ).not.toBeInTheDocument()
+  })
+
+  it("does not stack repeated id-less in-flight re-polls into duplicate rows", () => {
+    // The reported bug: N concurrent/re-issued anonymous polls each became a
+    // separate "waiting for a task's result" row. With one task attributed via
+    // its returned report and three id-less in-flight checks, only the attributed
+    // row survives.
+    renderWithIntl(
+      <DelegationStatusGroupCard
+        polls={[
+          poll("abc12345", {
+            output: envelope({ task_id: "abc12345", status: "running" }),
+          }),
+          poll("", { input: "{}", state: "input-available" }),
+          poll("", { input: null, state: "input-available" }),
+          poll("", { input: "{}", state: "input-streaming" }),
+        ]}
+      />
+    )
+    expect(
+      screen.getByText("Waiting for task #abc12345 result")
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText("Waiting for task result")
+    ).not.toBeInTheDocument()
+  })
+
   it("renders one row per task for parallel waits", () => {
     renderWithIntl(
       <DelegationStatusGroupCard

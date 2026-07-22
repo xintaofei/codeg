@@ -140,17 +140,24 @@ export function AskQuestionResultCard({
   }
 
   if (isInFlight) {
+    // A live pending question is answered through the PINNED AskQuestionCard
+    // (driven by the connection's `pendingAskQuestion`), not this in-stream
+    // record. Until the question text streams onto the wire, claude-agent-acp's
+    // arg-less initial `tool_call` leaves `input` empty, so `questions` is []:
+    // rendering the bare "awaiting your answer" placeholder here only stacks
+    // anonymous duplicates of the same wait — one per in-flight (or stranded)
+    // question call. Drop it; the card reappears with its Q&A the moment the
+    // input or the answer resolves, and the settled transcript is unaffected.
+    if (questions.length === 0) return null
     return shell(
       t("awaiting"),
-      questions.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5">
-          {questions.map((q, i) => (
-            <Badge key={i} variant="outline" className="text-[10px]">
-              {q.header || q.question}
-            </Badge>
-          ))}
-        </div>
-      ) : undefined
+      <div className="flex flex-wrap gap-1.5">
+        {questions.map((q, i) => (
+          <Badge key={i} variant="outline" className="text-[10px]">
+            {q.header || q.question}
+          </Badge>
+        ))}
+      </div>
     )
   }
 

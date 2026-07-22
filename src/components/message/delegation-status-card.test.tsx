@@ -69,10 +69,31 @@ describe("DelegationStatusCard", () => {
   })
 
   it("falls back to a task-less label when the task_id can't be parsed", () => {
+    // A settled poll that returned a note but no resolvable id still shows the
+    // task-less label (there is content to surface).
     renderWithIntl(
-      <DelegationStatusCard kind="status" state="input-available" />
+      <DelegationStatusCard
+        kind="status"
+        output="Interim note from the sub-agent."
+        state="output-available"
+      />
     )
     expect(screen.getByText("Waiting for task result")).toBeInTheDocument()
+  })
+
+  it("suppresses a still-in-flight poll whose task_id hasn't streamed in yet", () => {
+    // claude-agent-acp ships an arg-less initial tool_call (rawInput not yet on
+    // the wire), so a live in-flight poll carries no identity and nothing to
+    // show. It must NOT render as an anonymous "waiting for a task's result"
+    // row (that stacked into visible duplicates); it appears once its id or a
+    // report resolves.
+    const { container } = renderWithIntl(
+      <DelegationStatusCard kind="status" state="input-available" />
+    )
+    expect(container.firstChild).toBeNull()
+    expect(
+      screen.queryByText("Waiting for task result")
+    ).not.toBeInTheDocument()
   })
 
   it("expands a plain streamed result inline (no child-session button)", () => {

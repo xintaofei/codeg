@@ -275,6 +275,18 @@ export function buildBackgroundTaskRows(
       poll.output ?? poll.errorText ?? null
     )
     const taskId = envelope?.taskId ?? inputTaskId(poll.input) ?? null
+    // Drop an in-flight poll that carries no identity AND no output yet — a live
+    // `TaskOutput` whose `task_id` hasn't streamed onto the wire. claude-agent-acp
+    // emits an arg-less initial `tool_call` (rawInput `{}`) and fills the real
+    // args only on a later update, so a still-blocking poll parses to no envelope
+    // and no input id. Each such re-poll would otherwise render as its own
+    // anonymous "background task running" row, stacking identical duplicates of
+    // the same wait; it folds into its task's row once the id resolves (and the
+    // settled transcript, whose polls always carry the id, is unaffected).
+    // Mirrors `buildDelegationTaskRows`.
+    if (taskId == null && envelope == null && isInFlightState(poll)) {
+      continue
+    }
     const key = taskId ?? `__bg__:${poll.toolCallId}`
     let entry = byKey.get(key)
     if (!entry) {
