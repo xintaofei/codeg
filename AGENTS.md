@@ -119,3 +119,8 @@ INSTA_UPDATE=auto cargo test --features test-utils     # 自动写新 .snap
 - ESLint：next/core-web-vitals + typescript + prettier
 - TypeScript：strict 模式，启用 `noUnusedLocals` 和 `noUnusedParameters`
 - Rust：2021 edition，使用 `thiserror` 定义错误类型
+
+## Local Service Runtime
+
+- Run exactly one `codeg-server` instance at a time.
+- Use `127.0.0.1:3080`. If an older Codeg service occupies the port, stop it before starting the current service; do not switch to another port.
