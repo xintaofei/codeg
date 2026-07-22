@@ -863,9 +863,11 @@ pub async fn acp_detect_agent_local_version(
     Json(params): Json<AgentTypeParams>,
 ) -> Result<Json<Option<String>>, AppCommandError> {
     let db = &state.db;
-    let result = acp_commands::acp_detect_agent_local_version_core(params.agent_type, &db.conn)
-        .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    let emitter = state.emitter.clone();
+    let result =
+        acp_commands::acp_detect_agent_local_version_core(params.agent_type, &db.conn, &emitter)
+            .await
+            .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(result))
 }
 

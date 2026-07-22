@@ -8168,12 +8168,32 @@ pub async fn acp_install_uv_tool(
 pub(crate) async fn acp_detect_agent_local_version_core(
     agent_type: AgentType,
     conn: &sea_orm::DatabaseConnection,
+    emitter: &EventEmitter,
 ) -> Result<Option<String>, AcpError> {
+    // Snapshot the stored version before probing so we can tell whether this
+    // detection actually moves it. The settings page re-runs this for every
+    // agent on each open; emitting unconditionally would fan a reload storm out
+    // to every `useAcpAgents()` consumer, so we only notify on a real change.
+    let previous = agent_setting_service::get_by_agent_type(conn, agent_type)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|m| m.installed_version);
+
     let detected = detect_local_version(agent_type).await;
     if let Some(version) = detected.clone() {
         let _ =
             agent_setting_service::set_installed_version(conn, agent_type, Some(version.clone()))
                 .await;
+        // Heal the composer's install status. The input box reads
+        // `installed_version` straight from this row and shows "not installed"
+        // while it's null (`acp_list_agents_core` never probes npm for it). When
+        // a live probe discovers a version the DB never recorded — an agent
+        // installed outside codeg, or by a build predating version tracking —
+        // wake `useAcpAgents()` so the composer stops claiming it's missing.
+        if previous.as_deref() != Some(version.as_str()) {
+            emit_acp_agents_updated(emitter, "local_version_detected", Some(agent_type));
+        }
         return Ok(Some(version));
     }
 
@@ -8190,15 +8210,15 @@ pub(crate) async fn acp_detect_agent_local_version_core(
         registry::AgentDistribution::Binary { .. }
     ) {
         let _ = agent_setting_service::set_installed_version(conn, agent_type, None).await;
+        // Mirror the heal in the clearing direction: a binary that vanished from
+        // disk must flip the composer back to "not installed".
+        if previous.is_some() {
+            emit_acp_agents_updated(emitter, "local_version_cleared", Some(agent_type));
+        }
         return Ok(None);
     }
 
-    let fallback = agent_setting_service::get_by_agent_type(conn, agent_type)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|m| m.installed_version);
-    Ok(fallback)
+    Ok(previous)
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -8206,8 +8226,10 @@ pub(crate) async fn acp_detect_agent_local_version_core(
 pub async fn acp_detect_agent_local_version(
     agent_type: AgentType,
     db: State<'_, AppDatabase>,
+    app: tauri::AppHandle,
 ) -> Result<Option<String>, AcpError> {
-    acp_detect_agent_local_version_core(agent_type, &db.conn).await
+    let emitter = EventEmitter::Tauri(app);
+    acp_detect_agent_local_version_core(agent_type, &db.conn, &emitter).await
 }
 
 pub(crate) async fn acp_prepare_npx_agent_core(
