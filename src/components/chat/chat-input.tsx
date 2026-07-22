@@ -58,6 +58,8 @@ interface ChatInputProps {
   onForkSend?: (draft: PromptDraft, modeId?: string | null) => void
   onAddFeedback?: () => void
   feedbackAddDisabled?: boolean
+  autoReplyEnabled?: boolean
+  onAutoReplyEnabledChange?: (enabled: boolean) => void
   /**
    * Keep the composer usable even while disconnected. Set for a folderless chat
    * draft: it has no working dir yet (so it never auto-connects), and the FIRST
@@ -113,6 +115,8 @@ export const ChatInput = memo(function ChatInput({
   onForkSend,
   onAddFeedback,
   feedbackAddDisabled,
+  autoReplyEnabled = false,
+  onAutoReplyEnabledChange,
   allowOfflineCompose = false,
   injectContent,
   onInjectConsumed,
@@ -181,6 +185,8 @@ export const ChatInput = memo(function ChatInput({
         onForkSend={onForkSend}
         onAddFeedback={onAddFeedback}
         feedbackAddDisabled={feedbackAddDisabled}
+        autoReplyEnabled={autoReplyEnabled}
+        onAutoReplyEnabledChange={onAutoReplyEnabledChange}
         injectContent={injectContent}
         onInjectConsumed={onInjectConsumed}
         placeholder={

@@ -53,7 +53,8 @@
       "office_tools": "办公工具",
       "skill_packs": "技能包",
       "quick_messages": "快捷消息",
-      "logs": "运行日志"
+      "logs": "运行日志",
+      "auto_reply": "自动回复"
     }
   },
   "AppearanceSettings": {
@@ -2271,7 +2272,9 @@
         "mentionGroupAgent": "智能体",
         "mentionGroupSession": "会话",
         "mentionGroupCommit": "提交",
-        "mentionGroupSkill": "技能"
+        "mentionGroupSkill": "技能",
+        "autoReply": "自动回复",
+        "autoReplyEnabledHint": "当前会话已开启自动回复"
       },
       "messageQueue": {
         "addToQueue": "加入队列",
@@ -2766,6 +2769,15 @@
         "cardCompleted": "后台任务已完成",
         "cardFinishedWithStatus": "后台任务已结束（{status}）",
         "cardResultPending": "结果尚未返回"
+      },
+      "autoReply": {
+        "bannerTitle": "即将自动回复「{reply}」· {seconds}s",
+        "bannerMatched": "匹配：{label}",
+        "cancel": "取消",
+        "stopNotice": "此中断的自动回复已停止（已达次数上限）。",
+        "dismiss": "关闭",
+        "matchedHttpStatus": "HTTP {status}",
+        "matchedErrorText": "错误文本：{value}"
       }
     },
     "diffPreview": {
@@ -3964,5 +3976,33 @@
     "groupInstructions": "描述与系统提示词",
     "fieldDescription": "描述",
     "baseInstructions": "系统提示词（base_instructions）"
+  },
+  "AutoReplySettings": {
+    "title": "自动回复",
+    "description": "配置在错误/状态信号匹配时自动发送恢复消息的规则。请在输入框 + 菜单中按会话开启自动回复。",
+    "help": "规则仅匹配 Claude API 重试 / 连接错误信号（不匹配助手正文）。按列表顺序取第一个启用的规则。内置规则可编辑但不可删除。",
+    "addRule": "添加规则",
+    "save": "保存",
+    "delete": "删除",
+    "name": "名称",
+    "enabled": "启用",
+    "matchKind": "匹配类型",
+    "matchValue": "匹配值",
+    "replyText": "回复内容",
+    "delaySeconds": "延迟（秒）",
+    "cooldownSeconds": "冷却（秒）",
+    "maxPerBurst": "单次中断最大次数",
+    "builtinBadge": "内置",
+    "cannotDeleteBuiltin": "内置规则不可删除。",
+    "matchKindHttpStatus": "HTTP 状态码",
+    "matchKindErrorText": "错误文本包含",
+    "empty": "暂无规则",
+    "moveUp": "上移",
+    "moveDown": "下移",
+    "saved": "规则已保存",
+    "confirmDeleteTitle": "删除规则？",
+    "confirmDeleteDescription": "将删除该自定义自动回复规则。",
+    "cancel": "取消",
+    "newRuleName": "新规则"
   }
 }

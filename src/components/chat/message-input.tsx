@@ -33,6 +33,7 @@ import {
 } from "lucide-react"
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSub,
@@ -241,6 +242,8 @@ interface MessageInputProps {
   /** Open the live-feedback dialog (from the "+" menu). When omitted the entry
    *  is hidden (feature off). */
   onAddFeedback?: () => void
+  autoReplyEnabled?: boolean
+  onAutoReplyEnabledChange?: (enabled: boolean) => void
   /** Grey out the live-feedback "+" entry when a note can't be sent right now
    *  (no active turn / agent lacks the tool). */
   feedbackAddDisabled?: boolean
@@ -512,6 +515,8 @@ export function MessageInput({
   onCancelQueueEdit,
   onForkSend,
   onAddFeedback,
+  autoReplyEnabled = false,
+  onAutoReplyEnabledChange,
   feedbackAddDisabled,
   injectContent,
   onInjectConsumed,
@@ -3099,8 +3104,15 @@ export function MessageInput({
                         disabled={disabled}
                         variant="ghost"
                         size="icon-xs"
-                        className="shrink-0 text-muted-foreground"
-                        title={t("addActions")}
+                        className={cn(
+                          "shrink-0 text-muted-foreground",
+                          autoReplyEnabled && "text-primary"
+                        )}
+                        title={
+                          autoReplyEnabled
+                            ? t("autoReplyEnabledHint")
+                            : t("addActions")
+                        }
                         aria-label={t("addActions")}
                       >
                         <Plus className="size-4" />
@@ -3190,6 +3202,17 @@ export function MessageInput({
                           )}
                         </DropdownMenuSubContent>
                       </DropdownMenuSub>
+                      {onAutoReplyEnabledChange && (
+                        <DropdownMenuCheckboxItem
+                          checked={autoReplyEnabled}
+                          onCheckedChange={(checked) =>
+                            onAutoReplyEnabledChange(checked === true)
+                          }
+                        >
+                          <MessageSquarePlus className="size-4" />
+                          {t("autoReply")}
+                        </DropdownMenuCheckboxItem>
+                      )}
                       {onAddFeedback && (
                         <DropdownMenuItem
                           disabled={feedbackAddDisabled}

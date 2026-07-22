@@ -16,6 +16,7 @@ import {
   Globe,
   Keyboard,
   Menu,
+  MessageSquarePlus,
   MessageSquareText,
   SendHorizontal,
   Palette,
@@ -47,6 +48,7 @@ interface SettingsNavItem {
     | "skills"
     | "skill_packs"
     | "quick_messages"
+    | "auto_reply"
     | "shortcuts"
     | "version_control"
     | "chat_channels"
@@ -96,6 +98,11 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     href: "/settings/quick-messages",
     labelKey: "quick_messages",
     icon: MessageSquareText,
+  },
+  {
+    href: "/settings/auto-reply",
+    labelKey: "auto_reply",
+    icon: MessageSquarePlus,
   },
   {
     href: "/settings/shortcuts",
