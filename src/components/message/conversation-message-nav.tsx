@@ -227,7 +227,7 @@ export const ConversationMessageNav = memo(function ConversationMessageNav({
                         )
 
                       return (
-                        <li key={file.id}>
+                        <li key={file.id} className="min-w-0">
                           <FilePathContextMenu
                             filePath={file.path}
                             folderPath={folder?.path}

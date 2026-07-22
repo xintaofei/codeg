@@ -8,10 +8,14 @@ import { getActiveRemoteConnectionId, isDesktop } from "@/lib/transport"
 import { toErrorMessage } from "@/lib/app-error"
 import type { LinkSafetyConfig, LinkSafetyModalProps } from "streamdown"
 import { toast } from "sonner"
+import { FilePathContextMenu } from "@/components/shared/file-path-context-menu"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useWorkspaceActions } from "@/contexts/workspace-context"
 import { isHomeRelativePath } from "@/lib/file-open-target"
-import { isAbsoluteFilePath } from "@/lib/file-path-display"
+import {
+  isAbsoluteFilePath,
+  toNativeAbsoluteFilePath,
+} from "@/lib/file-path-display"
 import { cn } from "@/lib/utils"
 
 interface LocalFileTarget {
@@ -388,6 +392,9 @@ function resolveToolFilePath(rawPath: string): string | null {
 
 /**
  * Clickable file-path label that routes the file into the workspace file panel.
+ * Right-click opens the shared VS Code-style path menu (copy / reveal / open
+ * with / add-to-chat) — same affordance as the message-nav and reply-artifact
+ * changed-file rows, so tool reads/writes and diff headers stay consistent.
  */
 export function FilePathLink({
   filePath,
@@ -443,14 +450,26 @@ export function FilePathLink({
       })
   }, [filePath, folderPath, line, openFilePreview, t])
 
+  // Always prefer a native absolute path for hover tooltips (matches Edit headers).
+  const absoluteTitle =
+    title ??
+    toNativeAbsoluteFilePath(filePath, folderPath ?? undefined) ??
+    filePath
+
   return (
-    <span className={cn("block min-w-0", className)}>
+    <FilePathContextMenu
+      filePath={filePath}
+      folderPath={folderPath ?? undefined}
+      onOpenInCodeg={handleOpen}
+      title={absoluteTitle}
+      className={cn("min-w-0", className)}
+    >
       <button
         type="button"
-        title={title ?? filePath}
+        title={absoluteTitle}
         aria-busy={opening}
         disabled={opening}
-        className="max-w-full cursor-pointer truncate text-left align-bottom hover:underline focus-visible:underline focus-visible:outline-none disabled:cursor-wait disabled:opacity-70 disabled:hover:no-underline"
+        className="block max-w-full min-w-0 cursor-pointer truncate text-left align-bottom hover:underline focus-visible:underline focus-visible:outline-none disabled:cursor-wait disabled:opacity-70 disabled:hover:no-underline"
         onClick={(e) => {
           e.stopPropagation()
           handleOpen()
@@ -458,6 +477,6 @@ export function FilePathLink({
       >
         {children}
       </button>
-    </span>
+    </FilePathContextMenu>
   )
 }

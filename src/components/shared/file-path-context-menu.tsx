@@ -6,14 +6,10 @@
  * Used by the per-conversation message navigator and the per-reply artifacts
  * card so both surfaces share the same copy / open / mention actions.
  *
- * Menu shape (items appear only when applicable):
- *  - Open in Codeg (optional `onOpenInCodeg`)
- *  - Add to chat (insert `@file` badge into the active composer)
- *  - Reveal in Finder / Explorer (local desktop)
- *  - Open with → Default app / VS Code / Cursor (local desktop)
- *  - Copy Relative Path
- *  - Copy Absolute Path
- *  - Copy File Name
+ * Nested under ConversationDetailPanel's full-surface ContextMenu — that
+ * ancestor steals right-clicks unless we (1) stopPropagation on our trigger
+ * and (2) mark `[data-file-path-menu]` so the panel can suppress its own open
+ * when the event still bubbles (see conversation-detail-panel).
  */
 
 import {
@@ -60,6 +56,10 @@ import {
 import { isLocalDesktop } from "@/lib/platform"
 import { toErrorMessage } from "@/lib/app-error"
 import { emitAttachFileToSession } from "@/lib/session-attachment-events"
+import { cn } from "@/lib/utils"
+
+/** Attribute the conversation-panel ContextMenu looks for to yield ownership. */
+export const FILE_PATH_MENU_ATTR = "data-file-path-menu"
 
 export interface FilePathContextMenuProps {
   /** Agent-reported path (absolute or workspace-relative). */
@@ -74,6 +74,18 @@ export interface FilePathContextMenuProps {
   externalOpenDisabled?: boolean
   /** Primary open action (Codeg tab / session diff). Omitted = hide the item. */
   onOpenInCodeg?: () => void
+  /**
+   * Native HTML tooltip for the trigger surface (e.g. absolute path on a
+   * tool-row wrapper). Applied on the trigger element that receives hover.
+   */
+  title?: string
+  /**
+   * Merge trigger props onto `children` (must be a single element that accepts
+   * a ref). Use for tool headers (`CollapsibleTrigger`) so the whole row owns
+   * the right-click without an extra wrapping span.
+   */
+  asChild?: boolean
+  className?: string
   children: ReactNode
 }
 
@@ -82,6 +94,9 @@ export function FilePathContextMenu({
   folderPath,
   externalOpenDisabled = false,
   onOpenInCodeg,
+  title,
+  asChild = false,
+  className,
   children,
 }: FilePathContextMenuProps) {
   const t = useTranslations("Folder.chat.filePathMenu")
@@ -101,7 +116,6 @@ export function FilePathContextMenu({
   const explorerLabel = t(systemExplorerLabelKey())
   const canOpenExternally =
     localDesktop && !!absolutePath && !externalOpenDisabled
-  // Composer attach expects a resolvable filesystem path (absolute preferred).
   const attachPath = absolutePath ?? relativePath
   const canAddToChat = Boolean(activeSessionTabId && attachPath)
 
@@ -148,10 +162,6 @@ export function FilePathContextMenu({
     [absolutePath, runExternal]
   )
 
-  /**
-   * Insert an inline `@file` reference badge into the active conversation
-   * composer — same event path as the file-tree "Add to session" action.
-   */
   const handleAddToChat = useCallback(() => {
     if (!activeSessionTabId || !attachPath) {
       toast.error(t("noActiveConversation"))
@@ -164,27 +174,30 @@ export function FilePathContextMenu({
     toast.success(t("addToChatDone", { label: fileName }))
   }, [activeSessionTabId, attachPath, fileName, t])
 
-  // ConversationDetailPanel wraps the whole chat surface in its own
-  // ContextMenu (copy selection / export / …). Nested Radix context menus
-  // both listen on bubble — without stopPropagation the outer menu steals
-  // the right-click and this file menu never appears. Stop the event on the
-  // trigger so only this menu opens (same pattern as chat-input).
-  const stopOuterContextMenu = useCallback((event: ReactMouseEvent) => {
+  // Own the gesture before it reaches ConversationDetailPanel's ContextMenu.
+  // Always stamp `data-file-path-menu` so the panel can `preventDefault` its
+  // own open via composeEventHandlers when the event still bubbles.
+  const claimContextMenu = useCallback((event: ReactMouseEvent) => {
     event.stopPropagation()
   }, [])
 
-  const stopOuterRightPointer = useCallback((event: ReactPointerEvent) => {
-    // Parent panel also intercepts right-button pointerdown when text is
-    // selected; keep the event local so nested file rows stay responsive.
+  const claimRightPointer = useCallback((event: ReactPointerEvent) => {
     if (event.button === 2) event.stopPropagation()
   }, [])
+
+  // Prefer an explicit title, otherwise the resolved absolute path so hover on
+  // the wrapper (not only the inner button) still shows the full path.
+  const triggerTitle = title ?? absolutePath ?? relativePath
 
   return (
     <ContextMenu modal={false}>
       <ContextMenuTrigger
-        asChild
-        onContextMenu={stopOuterContextMenu}
-        onPointerDown={stopOuterRightPointer}
+        asChild={asChild}
+        data-file-path-menu=""
+        title={triggerTitle || undefined}
+        className={asChild ? className : cn("block w-full min-w-0", className)}
+        onContextMenu={claimContextMenu}
+        onPointerDown={claimRightPointer}
       >
         {children}
       </ContextMenuTrigger>

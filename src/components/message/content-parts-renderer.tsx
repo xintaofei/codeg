@@ -1,5 +1,13 @@
-import { memo, useMemo, useState, type ReactNode } from "react"
+import { memo, useCallback, useMemo, useState, type ReactNode } from "react"
+import { useActiveFolder } from "@/contexts/active-folder-context"
+import { useWorkspaceActions } from "@/contexts/workspace-context"
 import type { AdaptedContentPart } from "@/lib/adapters/ai-elements-adapter"
+import { FilePathContextMenu } from "@/components/shared/file-path-context-menu"
+import {
+  normalizeSlashPath,
+  toFolderRelativePath,
+  toNativeAbsoluteFilePath,
+} from "@/lib/file-path-display"
 import {
   classifyToolKind,
   TOOL_KIND_ORDER,
@@ -217,9 +225,94 @@ function isLikelyIdField(key: string): boolean {
   )
 }
 
-/** Shorten an absolute path to its last 2 segments. */
+/** Shorten a path to its last 2 segments (handles `/` and `\`). */
 function shortPath(p: string): string {
-  return p.split("/").slice(-2).join("/")
+  return p.replace(/\\/g, "/").split("/").filter(Boolean).slice(-2).join("/")
+}
+
+/**
+ * Strip a tool-title prefix (English or localized) to recover the file path
+ * segment, e.g. "Read AGENTS.md" / "读取 AGENTS.md" → "AGENTS.md".
+ */
+function pathFromToolTitle(title: string | null | undefined): string | null {
+  if (!title) return null
+  const trimmed = title.trim()
+  // English prefixes from deriveToolTitle
+  const en = trimmed.match(/^(?:Read|Edit|Write|NotebookEdit)\s+(.+)$/i)
+  if (en?.[1]?.trim()) return en[1].trim()
+  // Common localized prefixes (zh-CN / zh-TW / ja / ko …)
+  const localized = trimmed.match(
+    /^(?:读取|讀取|编辑|編輯|写入|寫入|読み取り|읽기)\s+(.+)$/u
+  )
+  if (localized?.[1]?.trim()) return localized[1].trim()
+  // i18n templates sometimes put the path only: still a plausible file path
+  if (/[/\\]/.test(trimmed) || /\.[A-Za-z0-9]{1,12}$/.test(trimmed)) {
+    // Avoid matching pure status words
+    if (!/^(Read|Edit|Write|Command|TodoWrite)$/i.test(trimmed)) {
+      return trimmed
+    }
+  }
+  return null
+}
+
+/**
+ * Pull the primary file path out of a tool input/output envelope (same fields
+ * as {@link deriveToolTitle}). Used for full-path tooltips on truncated titles
+ * and for the outer tool-row context menu.
+ *
+ * `displayTitle` must be the **pre-localization** English title when possible
+ * (e.g. "Read AGENTS.md"), because localized titles vary by language.
+ */
+function normalizeToolPathValue(direct: string): string {
+  if (/^file:\/\//i.test(direct)) {
+    try {
+      const u = new URL(direct)
+      let p = decodeURIComponent(u.pathname)
+      // Windows: /C:/Users/... → C:/Users/...
+      if (/^\/[A-Za-z]:\//.test(p)) p = p.slice(1)
+      return p
+    } catch {
+      return direct.replace(/^file:\/\//i, "")
+    }
+  }
+  return direct
+}
+
+function extractToolFilePath(
+  toolName: string,
+  input: string | null,
+  output?: string | null,
+  displayTitle?: string | null
+): string | null {
+  const titleSource = input ?? output ?? null
+  const parsedInput = input ? tryParseJson(input) : null
+  const parsedOutput = output ? tryParseJson(output) : null
+  const parsed = parsedInput ?? parsedOutput
+  const name = toolName.toLowerCase()
+
+  const direct = lookupToolFilePathField(parsed, input, output)
+  if (direct) return normalizeToolPathValue(direct)
+
+  if (
+    titleSource &&
+    (name === "apply_patch" ||
+      name === "edit" ||
+      name === "edit_file" ||
+      name === "editfile")
+  ) {
+    const files = parseApplyPatchFilesFromUnknownInput(titleSource, parsed)
+    if (files.length === 1) {
+      const file = files[0]
+      const path =
+        file.op === "move" && file.to
+          ? file.to
+          : (file.from ?? file.to ?? file.path)
+      if (path) return path
+    }
+    const fromDiff = extractPathFromDiffText(titleSource)
+    if (fromDiff) return fromDiff
+  }
+  return pathFromToolTitle(displayTitle)
 }
 
 /** Truncate text to maxLen, appending "…" if truncated. */
@@ -867,6 +960,75 @@ function getToolIcon(
 
 // ── title derivation ──────────────────────────────────────────────────
 
+/** True for tools that primarily target a single file path. */
+function isFilePathToolName(toolName: string): boolean {
+  const name = toolName.toLowerCase()
+  return (
+    name === "read" ||
+    name === "read file" ||
+    name === "read_file" ||
+    name === "read_text_file" ||
+    name === "readfile" ||
+    name === "view" ||
+    name === "write" ||
+    name === "write_file" ||
+    name === "writefile" ||
+    name === "notebookedit" ||
+    name === "edit" ||
+    name === "edit_file" ||
+    name === "editfile" ||
+    name === "apply_patch"
+  )
+}
+
+/**
+ * Shared field lookup used by both title derivation and path tooltips / menus.
+ * Keep a single implementation so "Read AGENTS.md" can never appear without a
+ * resolvable path for hover + right-click.
+ */
+function lookupToolStringField(
+  key: string,
+  parsed: Record<string, unknown> | null,
+  input: string | null,
+  output?: string | null
+): string | null {
+  const nested = findStringFieldDeep(parsed, key)
+  if (nested) return nested
+  if (input) {
+    const fromInput = extractJsonField(input, key)
+    if (fromInput) return fromInput
+  }
+  if (output) {
+    const fromOutput = extractJsonField(output, key)
+    if (fromOutput) return fromOutput
+  }
+  return null
+}
+
+const TOOL_FILE_PATH_KEYS = [
+  "file_path",
+  "filePath",
+  "target_file",
+  "targetFile",
+  "filename",
+  "file",
+  "path",
+  "notebook_path",
+  "uri",
+] as const
+
+function lookupToolFilePathField(
+  parsed: Record<string, unknown> | null,
+  input: string | null,
+  output?: string | null
+): string | null {
+  for (const key of TOOL_FILE_PATH_KEYS) {
+    const value = lookupToolStringField(key, parsed, input, output)
+    if (value) return value
+  }
+  return null
+}
+
 function deriveToolTitle(
   toolName: string,
   input: string | null,
@@ -879,19 +1041,8 @@ function deriveToolTitle(
   const parsedOutput = output ? tryParseJson(output) : null
   const parsed = parsedInput ?? parsedOutput
 
-  const getField = (key: string): string | null => {
-    const nested = findStringFieldDeep(parsed, key)
-    if (nested) return nested
-    if (input) {
-      const fromInput = extractJsonField(input, key)
-      if (fromInput) return fromInput
-    }
-    if (output) {
-      const fromOutput = extractJsonField(output, key)
-      if (fromOutput) return fromOutput
-    }
-    return null
-  }
+  const getField = (key: string): string | null =>
+    lookupToolStringField(key, parsed, input, output)
 
   // Cline: attempt_completion — show result summary as title
   if (name === "attempt_completion") {
@@ -903,20 +1054,26 @@ function deriveToolTitle(
     return "Completion"
   }
 
-  // File-based tools
-  const filePath =
-    getField("file_path") ??
-    getField("filePath") ??
-    getField("target_file") ??
-    getField("targetFile") ??
-    getField("filename") ??
-    getField("path") ??
-    getField("notebook_path")
+  // File-based tools — use the shared path lookup (same as extractToolFilePath)
+  const filePath = lookupToolFilePathField(parsed, input, output)
   if (filePath) {
     const sp = shortPath(filePath)
-    if (name === "read" || name === "read file") return `Read ${sp}`
-    if (name === "edit") return `Edit ${sp}`
-    if (name === "write") return `Write ${sp}`
+    if (
+      name === "read" ||
+      name === "read file" ||
+      name === "read_file" ||
+      name === "read_text_file" ||
+      name === "readfile" ||
+      name === "view"
+    ) {
+      return `Read ${sp}`
+    }
+    if (name === "edit" || name === "edit_file" || name === "editfile") {
+      return `Edit ${sp}`
+    }
+    if (name === "write" || name === "write_file" || name === "writefile") {
+      return `Write ${sp}`
+    }
     if (name === "notebookedit") return `NotebookEdit ${sp}`
   }
 
@@ -1396,15 +1553,25 @@ function FileToolInput({
   toolName,
   input,
   output,
+  rawInput,
 }: {
   toolName: string
   input: Record<string, unknown>
   output?: string | null
+  /** Original JSON string — used when path is only recoverable via regex. */
+  rawInput?: string | null
 }) {
   const t = useTranslations("Folder.chat.contentParts")
+  const { activeFolder: folder } = useActiveFolder()
+  const folderPath = folder?.path
   const name = toolName.toLowerCase()
+  // Same deep lookup as tool-row title / context menu (top-level str() missed
+  // nested `{ input: { file_path } }` envelopes used by some read tools).
   const filePath =
-    str(input, "file_path") ?? str(input, "path") ?? str(input, "notebook_path")
+    lookupToolFilePathField(input, rawInput ?? null, output) ??
+    str(input, "file_path") ??
+    str(input, "path") ??
+    str(input, "notebook_path")
   const content = str(input, "content")
   const newSource = str(input, "new_source")
   const offset = num(input, "offset")
@@ -1412,7 +1579,21 @@ function FileToolInput({
   const pages = str(input, "pages")
   const cellType = str(input, "cell_type")
   const editMode = str(input, "edit_mode")
-  const isRead = name === "read" || name === "read file"
+  const isRead =
+    name === "read" ||
+    name === "read file" ||
+    name === "read_file" ||
+    name === "read_text_file" ||
+    name === "readfile" ||
+    name === "view"
+
+  // Match edit/diff headers: short display path + absolute native path tooltip.
+  const displayPath = filePath
+    ? toFolderRelativePath(filePath, folderPath)
+    : null
+  const absoluteTitle = filePath
+    ? (toNativeAbsoluteFilePath(filePath, folderPath) ?? filePath)
+    : null
 
   const badges: string[] = []
   if (offset != null) badges.push(t("offset", { offset }))
@@ -1441,9 +1622,10 @@ function FileToolInput({
         {filePath ? (
           <FilePathLink
             filePath={filePath}
+            title={absoluteTitle ?? filePath}
             className="min-w-0 flex-1 font-mono text-foreground"
           >
-            {filePath}
+            {displayPath ?? filePath}
           </FilePathLink>
         ) : (
           <span className="min-w-0 flex-1 truncate font-mono text-foreground">
@@ -1784,6 +1966,32 @@ function StructuredToolInput({
     }
   }
 
+  // Read / write file tools: always try the file card (even when JSON is
+  // truncated / unparsable) so path link + context menu still work.
+  if (isFilePathToolName(name) && name !== "edit" && name !== "apply_patch") {
+    if (parsed) {
+      return (
+        <FileToolInput
+          toolName={toolName}
+          input={parsed}
+          rawInput={input}
+          output={output}
+        />
+      )
+    }
+    const recoveredPath = extractToolFilePath(toolName, input, output)
+    if (recoveredPath) {
+      return (
+        <FileToolInput
+          toolName={toolName}
+          input={{ file_path: recoveredPath, path: recoveredPath }}
+          rawInput={input}
+          output={output}
+        />
+      )
+    }
+  }
+
   if (!parsed) {
     return (
       <pre className="whitespace-pre-wrap break-all rounded-md bg-muted/50 p-3 text-xs text-muted-foreground">
@@ -1835,13 +2043,7 @@ function StructuredToolInput({
   }
   if (name === "bash" || name === "exec_command")
     return <BashToolInput input={parsed} />
-  if (
-    name === "read" ||
-    name === "read file" ||
-    name === "write" ||
-    name === "notebookedit"
-  )
-    return <FileToolInput toolName={toolName} input={parsed} output={output} />
+  // read/write already handled above (with rawInput recovery)
   if (name === "glob" || name === "grep")
     return <SearchToolInput toolName={toolName} input={parsed} />
   if (name === "webfetch" || name === "websearch")
@@ -2103,6 +2305,8 @@ const ToolCallPart = memo(function ToolCallPart({
   part: Extract<AdaptedContentPart, { type: "tool-call" }>
 }) {
   const t = useTranslations("Folder.chat.contentParts")
+  const { activeFolder: folder } = useActiveFolder()
+  const { openFilePreview } = useWorkspaceActions()
   const [manualOpen, setManualOpen] = useState(false)
   const normalizedToolName = useMemo(
     () => normalizeToolName(part.toolName),
@@ -2125,28 +2329,65 @@ const ToolCallPart = memo(function ToolCallPart({
         : null,
     [isCommandTool, part.output, part.errorText]
   )
-  const title = useMemo(() => {
-    const rawTitle =
+  // Keep the English-derived title for path extraction; localization is
+  // display-only and must not feed extractToolFilePath (zh "读取 x" breaks
+  // English-only fallbacks and previously left the tooltip as "Read x").
+  const rawToolTitle = useMemo(
+    () =>
       deriveToolTitle(
         normalizedToolName,
         part.input,
         part.output ?? part.errorText ?? null
       ) ??
       sanitizeLiveTitle(part.displayTitle) ??
-      null
-    return localizeDerivedToolTitle(rawTitle, ((key, values) =>
-      t(key as never, values as never)) as (
-      key: string,
-      values?: Record<string, unknown>
-    ) => string)
-  }, [
-    normalizedToolName,
-    part.input,
-    part.output,
-    part.errorText,
-    part.displayTitle,
-    t,
-  ])
+      null,
+    [
+      normalizedToolName,
+      part.input,
+      part.output,
+      part.errorText,
+      part.displayTitle,
+    ]
+  )
+  const title = useMemo(
+    () =>
+      localizeDerivedToolTitle(rawToolTitle, ((key, values) =>
+        t(key as never, values as never)) as (
+        key: string,
+        values?: Record<string, unknown>
+      ) => string),
+    [rawToolTitle, t]
+  )
+  // Path for tool-row context menu + full-path tooltip on the collapsed header.
+  const toolFilePath = useMemo(
+    () =>
+      extractToolFilePath(
+        normalizedToolName,
+        part.input,
+        part.output ?? part.errorText ?? null,
+        rawToolTitle ?? part.displayTitle ?? null
+      ),
+    [
+      normalizedToolName,
+      part.input,
+      part.output,
+      part.errorText,
+      rawToolTitle,
+      part.displayTitle,
+    ]
+  )
+  const titleTooltip = useMemo(() => {
+    if (!toolFilePath) return undefined
+    // Prefer absolute native path so Read rows match Edit's hover behavior.
+    const abs = toNativeAbsoluteFilePath(toolFilePath, folder?.path)
+    if (abs) return abs
+    return toFolderRelativePath(toolFilePath, folder?.path) || toolFilePath
+  }, [toolFilePath, folder?.path])
+
+  const openToolFileInCodeg = useCallback(() => {
+    if (!toolFilePath) return
+    void openFilePreview(normalizeSlashPath(toolFilePath))
+  }, [openFilePreview, toolFilePath])
   const lineChangeStats = useMemo(() => {
     if (toolNameLower !== "edit" && toolNameLower !== "apply_patch") {
       return null
@@ -2470,16 +2711,38 @@ const ToolCallPart = memo(function ToolCallPart({
 
   const open = (isRunning && (isCommandTool || hasLiveOutput)) || manualOpen
 
+  const toolHeader = (
+    <ToolHeader
+      type="dynamic-tool"
+      state={part.state}
+      toolName={normalizedToolName}
+      title={title ?? undefined}
+      titleTooltip={titleTooltip}
+      titleSuffix={titleSuffix ?? undefined}
+      icon={icon}
+    />
+  )
+
   return (
     <Tool open={open} onOpenChange={setManualOpen}>
-      <ToolHeader
-        type="dynamic-tool"
-        state={part.state}
-        toolName={normalizedToolName}
-        title={title ?? undefined}
-        titleSuffix={titleSuffix ?? undefined}
-        icon={icon}
-      />
+      {toolFilePath ? (
+        // Outer native `title` div: browsers only show the element under the
+        // cursor's own title attribute (not ancestors). Put the absolute path
+        // on BOTH this div and the context-menu trigger + CollapsibleTrigger.
+        <div className="w-full min-w-0" title={titleTooltip}>
+          <FilePathContextMenu
+            filePath={toolFilePath}
+            folderPath={folder?.path}
+            onOpenInCodeg={openToolFileInCodeg}
+            title={titleTooltip}
+            className="w-full"
+          >
+            {toolHeader}
+          </FilePathContextMenu>
+        </div>
+      ) : (
+        toolHeader
+      )}
       <ToolContent>
         {part.input && (!isCommandTool || !shouldRenderCommandTerminal) && (
           <StructuredToolInput

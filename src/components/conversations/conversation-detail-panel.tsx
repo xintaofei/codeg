@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react"
 import {
@@ -1804,9 +1805,39 @@ export function ConversationDetailPanel() {
   const handleContextMenuTriggerPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
       if (event.button !== 2) return
+      // File-path menus (message nav / reply artifacts) own right-clicks on
+      // their rows — don't let selection-preservation logic interfere.
+      if (
+        event.target instanceof Element &&
+        event.target.closest("[data-file-path-menu]")
+      ) {
+        return
+      }
       const selection = window.getSelection()
       if (selection && !selection.isCollapsed) {
         event.preventDefault()
+      }
+    },
+    []
+  )
+
+  /**
+   * Nested file-path ContextMenus sit inside this panel menu. Radix runs the
+   * trigger's user `onContextMenu` first and skips its own open when
+   * `defaultPrevented` — so yield ownership when the event originated under
+   * `[data-file-path-menu]` (message navigator + reply artifact rows).
+   */
+  const handlePanelContextMenu = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      if (
+        event.target instanceof Element &&
+        event.target.closest("[data-file-path-menu]")
+      ) {
+        // Radix runs this user handler before opening the panel menu; when
+        // defaultPrevented it skips open. Also stop bubble so nothing else
+        // competes with the nested file-path menu.
+        event.preventDefault()
+        event.stopPropagation()
       }
     },
     []
@@ -2064,6 +2095,7 @@ export function ConversationDetailPanel() {
             <div
               className="relative min-h-0 flex-1 overflow-hidden"
               onPointerDown={handleContextMenuTriggerPointerDown}
+              onContextMenu={handlePanelContextMenu}
             >
               {/* Stable wrapper across canTile flip — otherwise sibling tabs remount and a live streaming response is torn down. */}
               <TileScrollContainer canTile={canTile}>
