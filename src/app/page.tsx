@@ -3,6 +3,12 @@
 import { useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { isDesktop } from "@/lib/platform"
+import {
+  clearCodegToken,
+  consumeCodegTokenFromFragment,
+  getCodegToken,
+  setCodegToken,
+} from "@/lib/transport/web-auth"
 
 export default function Page() {
   const router = useRouter()
@@ -11,9 +17,18 @@ export default function Page() {
       router.replace("/workspace")
       return
     }
+    // The local launcher passes its token in the URL fragment. Fragments never
+    // reach the server; consume it once, scrub the address bar, then validate
+    // it through the same health check as a manually entered token.
+    const bootstrapToken = consumeCodegTokenFromFragment()
+    if (bootstrapToken !== null) {
+      setCodegToken(bootstrapToken)
+    }
+
     // Web mode: validate token before entering app
-    const token = localStorage.getItem("codeg_token")
+    const token = bootstrapToken ?? getCodegToken()
     if (!token) {
+      clearCodegToken()
       router.replace("/login")
       return
     }
@@ -33,7 +48,7 @@ export default function Page() {
         }
         if (res.status === 401) {
           // Token genuinely rejected → clear it and re-authenticate.
-          localStorage.removeItem("codeg_token")
+          clearCodegToken()
           router.replace("/login")
           return
         }

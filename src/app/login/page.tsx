@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { useTranslations } from "next-intl"
 import { isDesktop } from "@/lib/platform"
+import { setCodegToken } from "@/lib/transport/web-auth"
 
 export default function LoginPage() {
   const router = useRouter()
@@ -39,7 +40,7 @@ export default function LoginPage() {
       })
 
       if (res.ok) {
-        localStorage.setItem("codeg_token", token)
+        setCodegToken(token)
         router.replace("/workspace")
       } else if (res.status === 401) {
         setError(t("invalidToken"))
