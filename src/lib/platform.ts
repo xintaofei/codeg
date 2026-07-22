@@ -81,14 +81,18 @@ export async function openUrl(url: string): Promise<void> {
 }
 
 /**
- * Open a path in the system file manager (desktop only).
- * No-op in web mode.
+ * Open a path with the system default app, or a specific app when `openWith`
+ * is set (desktop local only). No-op in web / remote-desktop modes.
+ *
+ * `openWith` is the program name passed to the OS opener (e.g. `"code"`,
+ * `"cursor"`, `"vlc"`). When omitted, the default handler for the path type
+ * is used.
  */
-export async function openPath(path: string): Promise<void> {
+export async function openPath(path: string, openWith?: string): Promise<void> {
   if (isDesktop() && getActiveRemoteConnectionId() === null) {
     const { openPath: tauriOpenPath } =
       await import("@tauri-apps/plugin-opener")
-    await tauriOpenPath(path)
+    await tauriOpenPath(path, openWith)
   }
 }
 

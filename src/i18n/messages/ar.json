@@ -2726,6 +2726,26 @@
         "remove": "إزالة",
         "noDiffDataAvailable": "لا توجد بيانات diff متاحة لـ {filePath}"
       },
+      "filePathMenu": {
+        "openInCodeg": "فتح في Codeg",
+        "addToChat": "إضافة إلى المحادثة",
+        "addToChatDone": "تمت إضافة {label} إلى المحادثة",
+        "noActiveConversation": "لا توجد محادثة نشطة للإضافة إليها",
+        "openInFinder": "إظهار في Finder",
+        "openInExplorer": "إظهار في مستكشف الملفات",
+        "openInFileManager": "إظهار في مدير الملفات",
+        "openWith": "فتح باستخدام",
+        "openWithDefault": "التطبيق الافتراضي",
+        "openWithVsCode": "Visual Studio Code",
+        "openWithCursor": "Cursor",
+        "copyRelativePath": "نسخ المسار النسبي",
+        "copyAbsolutePath": "نسخ المسار المطلق",
+        "copyFileName": "نسخ اسم الملف",
+        "pathCopied": "تم نسخ المسار",
+        "fileNameCopied": "تم نسخ اسم الملف",
+        "copyFailed": "فشل النسخ",
+        "openFailed": "فشل فتح الملف"
+      },
       "askQuestion": {
         "title": "يحتاج الوكيل إلى اختيارك",
         "subtitle": "أجب ثم أرسل. يمكنك التخطّي في أي وقت.",

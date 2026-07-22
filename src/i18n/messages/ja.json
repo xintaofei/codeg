@@ -2726,6 +2726,26 @@
         "remove": "削除",
         "noDiffDataAvailable": "{filePath} の差分データがありません"
       },
+      "filePathMenu": {
+        "openInCodeg": "Codeg で開く",
+        "addToChat": "チャットに追加",
+        "addToChatDone": "{label} をチャットに追加しました",
+        "noActiveConversation": "追加先のチャットがありません",
+        "openInFinder": "Finder で表示",
+        "openInExplorer": "エクスプローラーで表示",
+        "openInFileManager": "ファイルマネージャーで表示",
+        "openWith": "プログラムから開く",
+        "openWithDefault": "既定のアプリ",
+        "openWithVsCode": "Visual Studio Code",
+        "openWithCursor": "Cursor",
+        "copyRelativePath": "相対パスをコピー",
+        "copyAbsolutePath": "絶対パスをコピー",
+        "copyFileName": "ファイル名をコピー",
+        "pathCopied": "パスをコピーしました",
+        "fileNameCopied": "ファイル名をコピーしました",
+        "copyFailed": "コピーに失敗しました",
+        "openFailed": "ファイルを開けませんでした"
+      },
       "askQuestion": {
         "title": "エージェントが選択を求めています",
         "subtitle": "回答したら送信してください。いつでもスキップできます",

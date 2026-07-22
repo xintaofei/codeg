@@ -2726,6 +2726,26 @@
         "remove": "Entfernen",
         "noDiffDataAvailable": "Keine Diff-Daten verfügbar für {filePath}"
       },
+      "filePathMenu": {
+        "openInCodeg": "In Codeg öffnen",
+        "addToChat": "Zum Chat hinzufügen",
+        "addToChatDone": "{label} zum Chat hinzugefügt",
+        "noActiveConversation": "Kein aktiver Chat zum Hinzufügen",
+        "openInFinder": "Im Finder anzeigen",
+        "openInExplorer": "Im Explorer anzeigen",
+        "openInFileManager": "Im Dateimanager anzeigen",
+        "openWith": "Öffnen mit",
+        "openWithDefault": "Standardanwendung",
+        "openWithVsCode": "Visual Studio Code",
+        "openWithCursor": "Cursor",
+        "copyRelativePath": "Relativen Pfad kopieren",
+        "copyAbsolutePath": "Absoluten Pfad kopieren",
+        "copyFileName": "Dateinamen kopieren",
+        "pathCopied": "Pfad kopiert",
+        "fileNameCopied": "Dateiname kopiert",
+        "copyFailed": "Kopieren fehlgeschlagen",
+        "openFailed": "Datei konnte nicht geöffnet werden"
+      },
       "askQuestion": {
         "title": "Der Agent benötigt deine Auswahl",
         "subtitle": "Antworten und absenden. Du kannst jederzeit überspringen.",
