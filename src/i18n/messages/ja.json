@@ -1318,6 +1318,7 @@
       "searchPlaceholder": "会話を検索...",
       "viewOptions": "表示オプション",
       "showCompleted": "完了した会話を表示",
+      "showWorktrees": "ワークツリーフォルダを表示",
       "moreOptions": "その他のオプション",
       "sortBy": "並び替え",
       "sortByCreatedAt": "作成時刻順",

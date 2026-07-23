@@ -1,4 +1,5 @@
-import { fireEvent, render } from "@testing-library/react"
+import { fireEvent, render, screen } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -13,6 +14,9 @@ const spies = vi.hoisted(() => ({
   setSearchOpen: vi.fn(),
   setRoute: vi.fn(),
   openConversations: vi.fn(),
+  // Latest props the (stubbed) conversation list was rendered with, so tests can
+  // assert what the sidebar threads down (e.g. showWorktrees).
+  listProps: null as { showWorktrees?: boolean } | null,
 }))
 const mockState = vi.hoisted(() => ({
   activeFolder: { id: 7, path: "/x" } as { id: number; path: string } | null,
@@ -21,7 +25,10 @@ const mockState = vi.hoisted(() => ({
 // The conversation list is irrelevant here — stub it so the test exercises only
 // the sidebar's header + fixed New chat / Search region.
 vi.mock("@/components/conversations/sidebar-conversation-list", () => ({
-  SidebarConversationList: () => null,
+  SidebarConversationList: (props: { showWorktrees?: boolean }) => {
+    spies.listProps = props
+    return null
+  },
 }))
 vi.mock("@/contexts/sidebar-context", () => ({
   useSidebarContext: () => ({ isOpen: true, toggle: vi.fn() }),
@@ -124,5 +131,42 @@ describe("Sidebar — fixed New chat / Search region", () => {
     fireEvent.click(btn)
     expect(spies.openChatModeTab).toHaveBeenCalled()
     expect(spies.openNewConversationTab).not.toHaveBeenCalled()
+  })
+})
+
+describe("Sidebar — Show worktrees toggle", () => {
+  beforeEach(() => {
+    localStorage.clear()
+    spies.listProps = null
+    mockState.activeFolder = { id: 7, path: "/x" }
+  })
+
+  it("defaults Show worktrees off and threads it to the conversation list", () => {
+    renderSidebar()
+    expect(spies.listProps?.showWorktrees).toBe(false)
+  })
+
+  it("hydrates Show worktrees from localStorage and threads it down", () => {
+    localStorage.setItem("workspace:sidebar-show-worktrees", "true")
+    renderSidebar()
+    // Hydration runs in a mount effect (flushed by render's act), which flips the
+    // state and re-renders the (stubbed) list with the persisted value.
+    expect(spies.listProps?.showWorktrees).toBe(true)
+  })
+
+  it("toggling the funnel item persists the choice and threads it down", async () => {
+    const user = userEvent.setup()
+    renderSidebar()
+    expect(spies.listProps?.showWorktrees).toBe(false)
+
+    await user.click(screen.getByRole("button", { name: "View options" }))
+    await user.click(
+      screen.getByRole("menuitemcheckbox", { name: "Show worktree folders" })
+    )
+
+    expect(localStorage.getItem("workspace:sidebar-show-worktrees")).toBe(
+      "true"
+    )
+    expect(spies.listProps?.showWorktrees).toBe(true)
   })
 })

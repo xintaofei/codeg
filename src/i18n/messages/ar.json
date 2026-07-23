@@ -1318,6 +1318,7 @@
       "searchPlaceholder": "بحث عن محادثات...",
       "viewOptions": "خيارات العرض",
       "showCompleted": "عرض المحادثات المكتملة",
+      "showWorktrees": "عرض مجلدات worktree",
       "moreOptions": "المزيد من الخيارات",
       "sortBy": "الترتيب حسب",
       "sortByCreatedAt": "وقت الإنشاء",

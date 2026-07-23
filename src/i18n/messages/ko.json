@@ -1318,6 +1318,7 @@
       "searchPlaceholder": "대화 검색...",
       "viewOptions": "보기 옵션",
       "showCompleted": "완료된 대화 표시",
+      "showWorktrees": "워크트리 폴더 표시",
       "moreOptions": "더 많은 옵션",
       "sortBy": "정렬 기준",
       "sortByCreatedAt": "생성 시간순",

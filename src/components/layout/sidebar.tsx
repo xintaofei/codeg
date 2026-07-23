@@ -44,9 +44,11 @@ import { isDesktop } from "@/lib/platform"
 import { leftChromeReserve } from "@/lib/window-chrome"
 import {
   loadShowCompleted,
+  loadShowWorktrees,
   loadSortMode,
   loadSectionOrder,
   saveShowCompleted,
+  saveShowWorktrees,
   saveSortMode,
   saveSectionOrder,
   type SidebarSortMode,
@@ -131,6 +133,7 @@ export function Sidebar() {
   const leftReserve = leftChromeReserve(platformIsMac && isDesktop(), zoomLevel)
 
   const [showCompleted, setShowCompleted] = useState(false)
+  const [showWorktrees, setShowWorktrees] = useState(false)
   const [sortMode, setSortMode] = useState<SidebarSortMode>("created")
   const [sectionOrder, setSectionOrder] =
     useState<SidebarSectionOrder>("folders-first")
@@ -155,6 +158,7 @@ export function Sidebar() {
     // Hydrate from localStorage after mount to keep SSR/CSR markup consistent.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setShowCompleted(loadShowCompleted())
+    setShowWorktrees(loadShowWorktrees())
     setSortMode(loadSortMode())
     setSectionOrder(loadSectionOrder())
   }, [])
@@ -162,6 +166,11 @@ export function Sidebar() {
   const handleSetShowCompleted = useCallback((value: boolean) => {
     setShowCompleted(value)
     saveShowCompleted(value)
+  }, [])
+
+  const handleSetShowWorktrees = useCallback((value: boolean) => {
+    setShowWorktrees(value)
+    saveShowWorktrees(value)
   }, [])
 
   const handleSetSortMode = useCallback((value: string) => {
@@ -324,6 +333,12 @@ export function Sidebar() {
               >
                 {t("showCompleted")}
               </DropdownMenuCheckboxItem>
+              <DropdownMenuCheckboxItem
+                checked={showWorktrees}
+                onCheckedChange={handleSetShowWorktrees}
+              >
+                {t("showWorktrees")}
+              </DropdownMenuCheckboxItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel>{t("sortBy")}</DropdownMenuLabel>
               <DropdownMenuRadioGroup
@@ -418,6 +433,7 @@ export function Sidebar() {
         <SidebarConversationList
           ref={listRef}
           showCompleted={showCompleted}
+          showWorktrees={showWorktrees}
           sortMode={sortMode}
           sectionOrder={sectionOrder}
         />

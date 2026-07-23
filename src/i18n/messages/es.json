@@ -1318,6 +1318,7 @@
       "searchPlaceholder": "Buscar conversaciones...",
       "viewOptions": "Opciones de visualización",
       "showCompleted": "Mostrar conversaciones completadas",
+      "showWorktrees": "Mostrar carpetas de worktree",
       "moreOptions": "Más opciones",
       "sortBy": "Ordenar por",
       "sortByCreatedAt": "Fecha de creación",

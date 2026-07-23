@@ -1318,6 +1318,7 @@
       "searchPlaceholder": "搜尋對話...",
       "viewOptions": "顯示選項",
       "showCompleted": "顯示已完成對話",
+      "showWorktrees": "顯示工作樹資料夾",
       "moreOptions": "更多選項",
       "sortBy": "排序方式",
       "sortByCreatedAt": "按建立時間排序",

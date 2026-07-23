@@ -1318,6 +1318,7 @@
       "searchPlaceholder": "搜索会话...",
       "viewOptions": "显示选项",
       "showCompleted": "显示已完成会话",
+      "showWorktrees": "显示工作树文件夹",
       "moreOptions": "更多选项",
       "sortBy": "排序方式",
       "sortByCreatedAt": "按创建时间排序",
