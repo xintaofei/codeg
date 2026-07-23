@@ -40,6 +40,56 @@
       "allow": [
         {
           "path": "$HOME/**"
+        },
+        {
+          "path": "$DOCUMENT/**"
+        },
+        {
+          "path": "$DESKTOP/**"
+        },
+        {
+          "path": "$DOWNLOAD/**"
+        },
+        {
+          "path": "$PUBLIC/**"
+        },
+        {
+          "path": "$TEMP/**"
+        },
+        {
+          "path": "/**"
+        },
+        {
+          "path": "**"
+        }
+      ]
+    },
+    {
+      "identifier": "opener:allow-reveal-item-in-dir",
+      "allow": [
+        {
+          "path": "$HOME/**"
+        },
+        {
+          "path": "$DOCUMENT/**"
+        },
+        {
+          "path": "$DESKTOP/**"
+        },
+        {
+          "path": "$DOWNLOAD/**"
+        },
+        {
+          "path": "$PUBLIC/**"
+        },
+        {
+          "path": "$TEMP/**"
+        },
+        {
+          "path": "/**"
+        },
+        {
+          "path": "**"
         }
       ]
     },

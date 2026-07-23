@@ -15,10 +15,11 @@ import { copyTextFromMenu } from "@/lib/utils"
 export type ExternalEditorId = "vscode" | "cursor"
 
 /**
- * Resolve the `openWith` argument for Tauri opener.
+ * Resolve the `openWith` argument for Tauri opener across platforms.
  *
- * macOS `open -a` matches application names (short CLI shims like `code`
- * fail). Windows/Linux keep CLI shims when those are on PATH.
+ * - **macOS**: full application names for `open -a` (`code`/`Code` fail)
+ * - **Windows**: CLI shims on PATH (`code.cmd` / `cursor.cmd` via `code`/`cursor`)
+ * - **Linux**: same CLI shims, or desktop-file basenames when available
  */
 export function getExternalEditorOpenWith(
   editor: ExternalEditorId,
@@ -27,6 +28,7 @@ export function getExternalEditorOpenWith(
   if (platform === "macos") {
     return editor === "vscode" ? "Visual Studio Code" : "Cursor"
   }
+  // Windows + Linux + unknown: CLI entry points (must be on PATH)
   return editor === "vscode" ? "code" : "cursor"
 }
 
