@@ -604,7 +604,7 @@ async fn detect_local_version(agent_type: AgentType) -> Option<String> {
             }
             // Dir-tree agents: a user-installed CLI (no codeg cache) still
             // reports a version via `<cmd> --version` (e.g. cursor-agent →
-            // "2026.07.16-899851b").
+            // "2026.07.20-8cc9c0b").
             if dir_entry.is_some() {
                 return system_dir_agent_version(cmd).await;
             }

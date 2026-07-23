@@ -194,8 +194,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "Claude Code",
             description: "ACP wrapper for Anthropic's Claude",
             distribution: AgentDistribution::Npx {
-                version: "0.60.0",
-                package: "@agentclientprotocol/claude-agent-acp@0.60.0",
+                version: "0.61.0",
+                package: "@agentclientprotocol/claude-agent-acp@0.61.0",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -238,8 +238,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "Gemini CLI",
             description: "Google's official CLI for Gemini",
             distribution: AgentDistribution::Npx {
-                version: "0.51.0",
-                package: "@google/gemini-cli@0.51.0",
+                version: "0.52.0",
+                package: "@google/gemini-cli@0.52.0",
                 cmd: "gemini",
                 args: &["--acp", "--skip-trust"],
                 env: &[],
@@ -343,8 +343,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "CodeBuddy",
             description: "Tencent Cloud's official AI coding assistant (ACP)",
             distribution: AgentDistribution::Npx {
-                version: "2.125.0",
-                package: "@tencent-ai/codebuddy-code@2.125.0",
+                version: "2.126.0",
+                package: "@tencent-ai/codebuddy-code@2.126.0",
                 cmd: "codebuddy",
                 args: &["--acp"],
                 env: &[],
@@ -357,8 +357,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "Kimi Code",
             description: "Moonshot AI's official CLI coding assistant (ACP)",
             distribution: AgentDistribution::Npx {
-                version: "0.28.1",
-                package: "@moonshot-ai/kimi-code@0.28.1",
+                version: "0.29.0",
+                package: "@moonshot-ai/kimi-code@0.29.0",
                 cmd: "kimi",
                 args: &["acp"],
                 env: &[],
@@ -414,8 +414,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // leading `KEY=value` argv and sacp's `parse_env_var` only accepts
             // `[A-Za-z0-9_]` env names, which npm's `@scope:registry` key is not.)
             distribution: AgentDistribution::Npx {
-                version: "0.2.103",
-                package: "@xai-official/grok@0.2.103",
+                version: "0.2.111",
+                package: "@xai-official/grok@0.2.111",
                 cmd: "grok",
                 // Only the ACP subcommand lives here. Grok's ROOT-level launch
                 // flags (`--no-auto-update` always, `--permission-mode <value>`
@@ -426,7 +426,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                 // args rather than appending after.
                 args: &["agent", "stdio"],
                 env: &[],
-                // `@xai-official/grok@0.2.103` declares `engines.node: ">=20"`;
+                // `@xai-official/grok@0.2.111` declares `engines.node: ">=20"`;
                 // surface that in preflight so Node 18 isn't silently accepted.
                 node_required: Some("20.0.0"),
             },
@@ -448,34 +448,34 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // (downloads.cursor.com/lab/<version>/<os>/<arch>/...); custom
             // versions substitute into the same pattern.
             distribution: AgentDistribution::Binary {
-                version: "2026.07.16-899851b",
+                version: "2026.07.20-8cc9c0b",
                 cmd: "cursor-agent",
                 args: &["acp"],
                 env: &[],
                 platforms: &[
                     PlatformBinary {
                         platform: "darwin-aarch64",
-                        url: "https://downloads.cursor.com/lab/2026.07.16-899851b/darwin/arm64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.07.20-8cc9c0b/darwin/arm64/agent-cli-package.tar.gz",
                     },
                     PlatformBinary {
                         platform: "darwin-x86_64",
-                        url: "https://downloads.cursor.com/lab/2026.07.16-899851b/darwin/x64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.07.20-8cc9c0b/darwin/x64/agent-cli-package.tar.gz",
                     },
                     PlatformBinary {
                         platform: "linux-aarch64",
-                        url: "https://downloads.cursor.com/lab/2026.07.16-899851b/linux/arm64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.07.20-8cc9c0b/linux/arm64/agent-cli-package.tar.gz",
                     },
                     PlatformBinary {
                         platform: "linux-x86_64",
-                        url: "https://downloads.cursor.com/lab/2026.07.16-899851b/linux/x64/agent-cli-package.tar.gz",
+                        url: "https://downloads.cursor.com/lab/2026.07.20-8cc9c0b/linux/x64/agent-cli-package.tar.gz",
                     },
                     PlatformBinary {
                         platform: "windows-aarch64",
-                        url: "https://downloads.cursor.com/lab/2026.07.16-899851b/windows/arm64/agent-cli-package.zip",
+                        url: "https://downloads.cursor.com/lab/2026.07.20-8cc9c0b/windows/arm64/agent-cli-package.zip",
                     },
                     PlatformBinary {
                         platform: "windows-x86_64",
-                        url: "https://downloads.cursor.com/lab/2026.07.16-899851b/windows/x64/agent-cli-package.zip",
+                        url: "https://downloads.cursor.com/lab/2026.07.20-8cc9c0b/windows/x64/agent-cli-package.zip",
                     },
                 ],
                 dir_entry: Some(BinaryDirEntry {
@@ -579,8 +579,8 @@ mod tests {
         let meta = get_agent_meta(AgentType::Cursor);
         assert_binary_version(
             AgentType::Cursor,
-            "2026.07.16-899851b",
-            "/lab/2026.07.16-899851b/",
+            "2026.07.20-8cc9c0b",
+            "/lab/2026.07.20-8cc9c0b/",
         );
         match meta.distribution {
             AgentDistribution::Binary {
@@ -610,14 +610,14 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.60.0",
-            "@agentclientprotocol/claude-agent-acp@0.60.0",
+            "0.61.0",
+            "@agentclientprotocol/claude-agent-acp@0.61.0",
             Some("22.0.0"),
         );
         assert_npx_version(
             AgentType::Gemini,
-            "0.51.0",
-            "@google/gemini-cli@0.51.0",
+            "0.52.0",
+            "@google/gemini-cli@0.52.0",
             Some("20.0.0"),
         );
         assert_npx_version(
@@ -634,14 +634,14 @@ mod tests {
         );
         assert_npx_version(
             AgentType::CodeBuddy,
-            "2.125.0",
-            "@tencent-ai/codebuddy-code@2.125.0",
+            "2.126.0",
+            "@tencent-ai/codebuddy-code@2.126.0",
             Some("22.0.0"),
         );
         assert_npx_version(
             AgentType::KimiCode,
-            "0.28.1",
-            "@moonshot-ai/kimi-code@0.28.1",
+            "0.29.0",
+            "@moonshot-ai/kimi-code@0.29.0",
             Some("22.19.0"),
         );
         assert_npx_version(
@@ -653,8 +653,8 @@ mod tests {
         assert_npx_version(AgentType::Pi, "0.0.31", "pi-acp@0.0.31", Some("22.0.0"));
         assert_npx_version(
             AgentType::Grok,
-            "0.2.103",
-            "@xai-official/grok@0.2.103",
+            "0.2.111",
+            "@xai-official/grok@0.2.111",
             Some("20.0.0"),
         );
         assert_binary_version(AgentType::OpenCode, "1.18.4", "/releases/download/v1.18.4/");
