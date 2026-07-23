@@ -174,6 +174,44 @@ export function removeRecentAuthor(recent: string[], author: string): string[] {
   return recent.filter((a) => a !== author)
 }
 
+// The last branch/author filter, persisted per folder path so the tab reopens on
+// the same view. `null` for either means the default (all branches / all
+// authors); when both are null the entry is dropped to keep storage tidy.
+const SELECTION_KEY_PREFIX = "codeg:gitlog:selection:"
+
+type GitLogSelection = { branch: string | null; author: string | null }
+
+function loadSelection(folderPath: string): GitLogSelection {
+  if (typeof window === "undefined") return { branch: null, author: null }
+  try {
+    const raw = window.localStorage.getItem(SELECTION_KEY_PREFIX + folderPath)
+    if (!raw) return { branch: null, author: null }
+    const parsed = JSON.parse(raw)
+    return {
+      branch: typeof parsed?.branch === "string" ? parsed.branch : null,
+      author: typeof parsed?.author === "string" ? parsed.author : null,
+    }
+  } catch {
+    return { branch: null, author: null }
+  }
+}
+
+function saveSelection(folderPath: string, selection: GitLogSelection): void {
+  if (typeof window === "undefined") return
+  try {
+    if (selection.branch == null && selection.author == null) {
+      window.localStorage.removeItem(SELECTION_KEY_PREFIX + folderPath)
+      return
+    }
+    window.localStorage.setItem(
+      SELECTION_KEY_PREFIX + folderPath,
+      JSON.stringify(selection)
+    )
+  } catch {
+    // Best-effort — a failed persist just means the view won't be restored.
+  }
+}
+
 const emitEvent = async (event: string, payload?: unknown) => {
   try {
     const { emit } = await import("@tauri-apps/api/event")
@@ -1297,6 +1335,32 @@ export function GitLogTab() {
   const [recentAuthors, setRecentAuthors] = useState<string[]>([])
   const [selectedAuthor, setSelectedAuthor] = useState<string | null>(null)
 
+  // The folder path whose persisted selection is currently applied. When the
+  // (deferred) folder changes we restore that folder's saved branch/author
+  // filter *synchronously during render* — before the first log fetch — so the
+  // reopened view lands on the same filter in a single fetch, with no
+  // all-branches flash. This is React's "adjust state during render" pattern
+  // (https://react.dev/reference/react/useState#storing-information-from-previous-renders);
+  // it re-renders in place, so fetchLog below is computed with the restored
+  // values. Reading localStorage here is a pure, idempotent read.
+  const [selectionFolder, setSelectionFolder] = useState<string | null>(null)
+  const currentSelectionPath = folder?.path ?? null
+  if (currentSelectionPath !== selectionFolder) {
+    setSelectionFolder(currentSelectionPath)
+    const restored = currentSelectionPath
+      ? loadSelection(currentSelectionPath)
+      : { branch: null, author: null }
+    setSelectedBranch(restored.branch)
+    setSelectedAuthor(restored.author)
+  }
+  // Mirror the live selection into refs so refreshBranches (keyed only on the
+  // folder path) can validate/persist against the latest values without being
+  // recreated — and re-running its effect — on every filter change.
+  const selectedBranchRef = useRef(selectedBranch)
+  selectedBranchRef.current = selectedBranch
+  const selectedAuthorRef = useRef(selectedAuthor)
+  selectedAuthorRef.current = selectedAuthor
+
   // Lazy per-commit file changes: the log list is fetched without file stats
   // (withFiles=false) for speed; a commit's files load on demand when its row is
   // expanded (mirrors branchesByCommit above).
@@ -1359,20 +1423,16 @@ export function GitLogTab() {
   // pending request's finally still clears its loading flag (no latch).
   const filesGenRef = useRef(0)
 
-  // Close the create-branch / reset dialogs — and clear the author filter (it's
-  // repo-specific) — the instant the ACTIVE folder changes (keyed on the live
-  // id, not the deferred `folder`) so a dialog opened under the previous folder
-  // can't create-branch / reset against the new one after the deferred render
-  // settles, and so the new folder's first fetch never carries the old folder's
-  // author filter.
+  // Close the create-branch / reset dialogs the instant the ACTIVE folder
+  // changes (keyed on the live id, not the deferred `folder`) so a dialog opened
+  // under the previous folder can't create-branch / reset against the new one
+  // after the deferred render settles. The branch/author selection is NOT reset
+  // here — it's restored per folder during render (see the selectionFolder
+  // adjustment above), which lands each folder's saved filter before its first
+  // fetch, so the previous folder's filter never leaks into the new query.
   useEffect(() => {
     setNewBranchTarget(null)
     setResetTarget(null)
-    setSelectedAuthor(null)
-    // Reset to the default "all branches" view. refreshBranches no longer sets
-    // selectedBranch, so without this the previous folder's branch would leak
-    // into the new repo's query (empty/wrong log) since the tab stays mounted.
-    setSelectedBranch(null)
   }, [activeFolder?.id])
 
   const pushStatusLabels = useMemo(
@@ -1389,24 +1449,37 @@ export function GitLogTab() {
     return (parts[parts.length - 1] ?? path) || t("workspace")
   }, [folder?.path, t])
 
-  const handleBranchChange = useCallback((branch: string | null) => {
-    setSelectedBranch(branch)
-  }, [])
+  const handleBranchChange = useCallback(
+    (branch: string | null) => {
+      setSelectedBranch(branch)
+      // Persist the pick (paired with the current author) so the tab restores it
+      // the next time this folder is opened.
+      if (folder?.path) {
+        saveSelection(folder.path, { branch, author: selectedAuthor })
+      }
+    },
+    [folder?.path, selectedAuthor]
+  )
 
   const handleAuthorChange = useCallback(
     (author: string | null) => {
       setSelectedAuthor(author)
-      // Remember the chosen author so it surfaces in the dropdown next time.
-      if (author && folder?.path) {
-        const path = folder.path
-        setRecentAuthors((prev) => {
-          const next = addRecentAuthor(prev, author)
-          saveRecentAuthors(path, next)
-          return next
-        })
+      if (folder?.path) {
+        // Persist the pick (paired with the current branch) so it restores the
+        // next time this folder is opened.
+        saveSelection(folder.path, { branch: selectedBranch, author })
+        // Remember the chosen author so it surfaces in the dropdown next time.
+        if (author) {
+          const path = folder.path
+          setRecentAuthors((prev) => {
+            const next = addRecentAuthor(prev, author)
+            saveRecentAuthors(path, next)
+            return next
+          })
+        }
       }
     },
-    [folder?.path]
+    [folder?.path, selectedBranch]
   )
 
   const handleRemoveRecent = useCallback(
@@ -1439,16 +1512,34 @@ export function GitLogTab() {
   }, [folder?.path])
 
   const refreshBranches = useCallback(async () => {
-    if (!folder?.path) return
+    const path = folder?.path
+    if (!path) return
     try {
       const [allBranches, current] = await Promise.all([
-        gitListAllBranches(folder.path),
-        getGitBranch(folder.path),
+        gitListAllBranches(path),
+        getGitBranch(path),
       ])
+      // Ignore a response that resolved after a folder switch.
+      if (folderPathRef.current !== path) return
       setBranchList(allBranches)
       setCurrentBranch(current)
-      // Do NOT touch selectedBranch: the default view is "all branches" (null)
-      // and any explicit selection is owned by the branch selector.
+      // A restored/selected branch may no longer exist (deleted since it was
+      // last used). Once we have this repo's authoritative branch list, drop it
+      // back to the all-branches view and forget it so we don't keep restoring a
+      // dead branch (which would make the first fetch error). Read via refs so
+      // this callback stays keyed only on the folder path — else it'd recreate,
+      // and re-run its effect, on every filter change. Otherwise leave
+      // selectedBranch alone: the default is "all branches" (null) and an
+      // explicit pick is owned by the branch selector / restored per folder.
+      const sel = selectedBranchRef.current
+      if (
+        sel &&
+        !allBranches.local.includes(sel) &&
+        !allBranches.remote.includes(sel)
+      ) {
+        setSelectedBranch(null)
+        saveSelection(path, { branch: null, author: selectedAuthorRef.current })
+      }
     } catch {
       // Silently ignore — branches dropdown won't appear
     }
