@@ -17,6 +17,7 @@ use crate::acp::types::{AcpEvent, EventEnvelope};
 use crate::db::service::{
     app_metadata_service, chat_channel_message_log_service, chat_channel_service,
 };
+use crate::logging::throttle::{LagLogThrottle, LAG_LOG_WINDOW};
 
 /// Minimum interval between pushes for the same event type per channel (debounce).
 const DEBOUNCE_SECS: u64 = 5;
@@ -213,13 +214,22 @@ pub fn spawn_event_subscriber(
         let mut config = EventConfigCache::new();
         // One reqwest client, reused (and cheaply cloned) for every webhook POST.
         let webhook_client = super::webhook::make_webhook_client();
+        let mut lag_throttle = LagLogThrottle::new(LAG_LOG_WINDOW);
 
         loop {
             let envelope_arc = match rx.recv().await {
                 Ok(e) => e,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!("[ChatChannel] event subscriber lagged by {n} messages");
                     metrics.lagged_count.fetch_add(n, Ordering::Relaxed);
+                    if let Some(s) = lag_throttle.record(n) {
+                        tracing::warn!(
+                            "[ChatChannel] event subscriber lagged: dropped {} messages across \
+                             {} occurrence(s) in the last {}s",
+                            s.dropped,
+                            s.occurrences,
+                            LAG_LOG_WINDOW.as_secs()
+                        );
+                    }
                     continue;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {

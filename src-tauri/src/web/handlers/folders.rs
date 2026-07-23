@@ -185,6 +185,23 @@ pub async fn update_folder_color(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UpdateFolderAliasParams {
+    pub folder_id: i32,
+    pub alias: Option<String>,
+}
+
+pub async fn update_folder_alias(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<UpdateFolderAliasParams>,
+) -> Result<Json<FolderDetail>, AppCommandError> {
+    Ok(Json(
+        folder_commands::update_folder_alias_core(&state.db, params.folder_id, params.alias)
+            .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateFolderDefaultAgentParams {
     pub folder_id: i32,
     pub default_agent_type: Option<AgentType>,
@@ -260,6 +277,19 @@ pub async fn get_file_tree(
     Json(params): Json<GetFileTreeParams>,
 ) -> Result<Json<Vec<folder_commands::FileTreeNode>>, AppCommandError> {
     let result = folder_commands::get_file_tree(params.path, params.max_depth).await?;
+    Ok(Json(result))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListWorkspaceFilesParams {
+    pub path: String,
+}
+
+pub async fn list_workspace_files(
+    Json(params): Json<ListWorkspaceFilesParams>,
+) -> Result<Json<Vec<folder_commands::WorkspaceFileEntry>>, AppCommandError> {
+    let result = folder_commands::list_workspace_files(params.path).await?;
     Ok(Json(result))
 }
 
@@ -348,6 +378,29 @@ pub async fn open_merge_window(
     }
     if let Some(uc) = &params.upstream_commit {
         path.push_str(&format!("&upstreamCommit={uc}"));
+    }
+    Ok(Json(SettingsNavigationResult { path }))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenImportSessionsWindowParams {
+    pub focus_path: Option<String>,
+}
+
+/// Web equivalent of `open_import_sessions_window`: returns the navigation
+/// path; the web client opens it in a new browser window.
+pub async fn open_import_sessions_window(
+    Json(params): Json<OpenImportSessionsWindowParams>,
+) -> Result<Json<SettingsNavigationResult>, AppCommandError> {
+    let mut path = "/import-sessions".to_string();
+    if let Some(focus) = params
+        .focus_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        path.push_str(&format!("?focusPath={}", urlencoding::encode(focus)));
     }
     Ok(Json(SettingsNavigationResult { path }))
 }

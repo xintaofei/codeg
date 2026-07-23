@@ -3,12 +3,13 @@
 import { useCallback, useMemo, useRef, useState } from "react"
 import dynamic from "next/dynamic"
 import { ChevronLeft, ChevronRight } from "lucide-react"
+import { useMonaco } from "@monaco-editor/react"
 import type { DiffOnMount } from "@monaco-editor/react"
 import type { editor as MonacoEditorNs } from "monaco-editor"
 import {
   defineMonacoThemes,
   MONACO_UNICODE_HIGHLIGHT_OPTIONS,
-  useMonacoThemeSync,
+  useMonacoWorkspaceTheme,
 } from "@/lib/monaco-themes"
 import { useZoomLevel, useEditorFont } from "@/hooks/use-appearance"
 import { cn } from "@/lib/utils"
@@ -40,7 +41,10 @@ export function DiffViewer({
   language = "plaintext",
   className,
 }: DiffViewerProps) {
-  const editorTheme = useMonacoThemeSync()
+  // Conditionally mounted (only when a diff is shown), so useMonaco() here is
+  // already lazy — Monaco is loading for this editor anyway.
+  const monaco = useMonaco()
+  const editorTheme = useMonacoWorkspaceTheme(monaco)
   const { zoomLevel } = useZoomLevel()
   const { editorFontStack, editorFontSize, editorLigatures, editorWordWrap } =
     useEditorFont()
@@ -181,8 +185,6 @@ export function DiffViewer({
           modified={modified}
           language={language}
           theme={editorTheme}
-          keepCurrentOriginalModel
-          keepCurrentModifiedModel
           beforeMount={defineMonacoThemes}
           onMount={handleEditorMount}
           loading={

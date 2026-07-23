@@ -26,7 +26,7 @@ import enMessages from "@/i18n/messages/en.json"
 // FolderOpen lucide icon renders once per FolderHeader body → counts folder
 // re-renders. Both increment only when the owning memoized component does NOT
 // bail out, so they measure exactly the production memo path.
-const probes = vi.hoisted(() => ({ card: 0, folder: 0 }))
+const probes = vi.hoisted(() => ({ card: 0, folder: 0, root: 0 }))
 
 // Mutable backing store the mocked tab-context hook reads from (workspace data
 // now lives in the real zustand store, seeded per test below). `tabs` is
@@ -133,10 +133,14 @@ vi.mock("virtua", () => ({
   },
 }))
 
-// FolderHeader renders exactly one of FolderClosed/FolderOpen in its body →
-// folder re-render probe. Every other icon stays real. (The Folders section
-// header's Open Folder / Clone Repository actions use FolderOpenDot / FolderGit2,
-// which are NOT mocked here, so they never inflate this probe.)
+// FolderHeader renders exactly one glyph in its body per variant: FolderClosed/
+// FolderOpen (a repo / plain folder / repo container header) → `probes.folder`,
+// or FolderRoot (a container's "root" sub-group header) → `probes.root`. Every
+// other icon stays real. FolderRoot is used ONLY by the root sub-group, so it is
+// an exact re-render probe. Worktree headers use FolderGit2, which the Folders
+// section header's Clone action ALSO renders — so it is deliberately left real
+// (not a probe); worktree headers are asserted via `data-folder-id` + the branch
+// label instead.
 vi.mock("lucide-react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("lucide-react")>()
   return {
@@ -147,6 +151,10 @@ vi.mock("lucide-react", async (importOriginal) => {
     },
     FolderOpen: () => {
       probes.folder++
+      return null
+    },
+    FolderRoot: () => {
+      probes.root++
       return null
     },
   }
@@ -797,5 +805,168 @@ describe("SidebarConversationList — folder ⋯ opens the same menu as right-cl
 
     // The identical menu is now open — assert a label unique to the folder menu.
     expect(document.body.textContent).toContain("Manage conversations")
+  })
+})
+
+describe("SidebarConversationList — worktree grouping (Show worktrees)", () => {
+  // A repo (folder 1) with two conversations, plus a worktree child (folder 2,
+  // branch "feature-x") holding one conversation.
+  const wtHarness: { rerender: () => void } = { rerender: () => {} }
+  function WtHarness({ showWorktrees }: { showWorktrees: boolean }) {
+    const [, setTick] = useState(0)
+    useEffect(() => {
+      wtHarness.rerender = () => setTick((n) => n + 1)
+    }, [])
+    return (
+      <SidebarConversationList
+        showCompleted
+        showWorktrees={showWorktrees}
+        sortMode="created"
+      />
+    )
+  }
+  function wtTree(showWorktrees: boolean) {
+    return (
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <WtHarness showWorktrees={showWorktrees} />
+      </NextIntlClientProvider>
+    )
+  }
+
+  function folderHeaderIds(): number[] {
+    return Array.from(document.querySelectorAll("[data-folder-id]")).map((el) =>
+      Number(el.getAttribute("data-folder-id"))
+    )
+  }
+
+  beforeEach(() => {
+    probes.card = 0
+    probes.folder = 0
+    probes.root = 0
+    const wt = {
+      ...folder(2, "wt-feature", 1),
+      git_branch: "feature-x",
+    } as unknown as FolderDetail
+    const folders = [folder(1, "Repo"), wt]
+    store.activeTabId = null
+    store.tabSpec = []
+    useAppWorkspaceStore.setState({
+      folders,
+      allFolders: folders,
+      conversations: [conv(11, 1), conv(12, 1), conv(21, 2)],
+    })
+  })
+
+  it("merges worktree conversations flat under the parent when off", () => {
+    render(wtTree(false))
+    // Only the repo gets a header; the worktree child is hidden and its
+    // conversation is merged into the repo bucket — no container/root split.
+    expect(folderHeaderIds()).toEqual([1])
+    const text = document.body.textContent ?? ""
+    expect(text).toContain("conv-11")
+    expect(text).toContain("conv-12")
+    expect(text).toContain("conv-21")
+    // No worktree header → no branch label; no root sub-group (probes.root===0,
+    // the unambiguous check — the "root" label is a generic word to match on).
+    expect(text).not.toContain("feature-x")
+    expect(probes.root).toBe(0)
+  })
+
+  it("splits the repo into a container + root sub-group + worktree sub-group when on", () => {
+    render(wtTree(true))
+    // Container header (repo id 1) → root sub-group header (also repo id 1, its
+    // own sessions) → worktree header (id 2). The repo id appears twice: the
+    // container and its root sub-group both carry it.
+    expect(folderHeaderIds()).toEqual([1, 1, 2])
+    const text = document.body.textContent ?? ""
+    // Order: container "Repo" → "root" sub-group + its own convs → worktree
+    // branch "feature-x" + the worktree's conv.
+    const iRoot = text.indexOf("root")
+    const iRepoConv = text.indexOf("conv-11")
+    const iBranch = text.indexOf("feature-x")
+    const iWtConv = text.indexOf("conv-21")
+    expect(iRoot).toBeGreaterThanOrEqual(0)
+    expect(iRepoConv).toBeGreaterThan(iRoot)
+    expect(iBranch).toBeGreaterThan(iRepoConv)
+    expect(iWtConv).toBeGreaterThan(iBranch)
+    // Exactly one container header (FolderOpen) + one root sub-group (FolderRoot).
+    expect(probes.folder).toBe(1)
+    expect(probes.root).toBe(1)
+  })
+
+  it("collapsing the root sub-group hides the repo's own sessions but keeps the worktree", () => {
+    render(wtTree(true))
+    expect(document.body.textContent).toContain("conv-11")
+
+    // Toggle the root sub-group header (the SECOND data-folder-id=1 button, after
+    // the container). Its own sessions collapse; the worktree stays visible.
+    const repoHeaders = document.querySelectorAll('[data-folder-id="1"]')
+    expect(repoHeaders).toHaveLength(2)
+    act(() => {
+      fireEvent.click(repoHeaders[1] as HTMLElement)
+    })
+
+    const text = document.body.textContent ?? ""
+    expect(text).not.toContain("conv-11")
+    expect(text).not.toContain("conv-12")
+    // The worktree sub-group is untouched.
+    expect(text).toContain("feature-x")
+    expect(text).toContain("conv-21")
+  })
+
+  it("keeps the connector spine continuous through an empty worktree sub-group", () => {
+    // Add a second worktree (folder 3) with NO conversations → it renders the
+    // empty-folder hint. That empty row must still draw the container spine
+    // (ancestor rail) so the vertical connector doesn't break at "no
+    // conversations".
+    const wtEmpty = {
+      ...folder(3, "wt-empty", 1),
+      git_branch: "feature-y",
+    } as unknown as FolderDetail
+    const cur = useAppWorkspaceStore.getState()
+    useAppWorkspaceStore.setState({
+      folders: [...cur.folders, wtEmpty],
+      allFolders: [...cur.allFolders, wtEmpty],
+    })
+    render(wtTree(true))
+
+    const hint = enMessages.Folder.sidebar.emptyFolderHint
+    const hintSpan = Array.from(document.querySelectorAll("span")).find(
+      (s) => s.textContent === hint
+    )
+    expect(hintSpan).toBeTruthy()
+    // The empty row (the hint span's row container) carries an ancestor rail.
+    const row = hintSpan!.closest("div")
+    expect(row?.querySelector("[data-subsession-rail]")).not.toBeNull()
+  })
+
+  it("keeps the single-status-event budget (1 card, 0 headers) with worktrees on", () => {
+    render(wtTree(true))
+    // Initial mount: all three conversations render a card.
+    expect(probes.card).toBe(3)
+
+    // Replace exactly the worktree's conversation (conv 21) with a new object;
+    // every other summary keeps its identity (mirrors updateConversationLocal).
+    const prev = useAppWorkspaceStore.getState().conversations
+    const next = prev.slice()
+    const idx = next.findIndex((c) => c.id === 21)
+    next[idx] = { ...next[idx], status: "completed" }
+
+    probes.card = 0
+    probes.folder = 0
+    probes.root = 0
+    act(() => {
+      useAppWorkspaceStore.setState({ conversations: next })
+    })
+    act(() => wtHarness.rerender())
+
+    // Only the changed card re-renders; the container header AND the root
+    // sub-group header (both keyed off `folders`, unchanged by a status event)
+    // bail out, so the container split costs nothing extra per event. (The
+    // worktree header shares the same memo + folder-derived props, so 0 root/
+    // folder re-renders is sufficient evidence it bails too.)
+    expect(probes.card).toBe(1)
+    expect(probes.folder).toBe(0)
+    expect(probes.root).toBe(0)
   })
 })

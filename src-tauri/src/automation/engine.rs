@@ -34,6 +34,7 @@ use crate::commands::folders::{
 use crate::db::entities::conversation::{self, ConversationStatus};
 use crate::db::service::automation_service;
 use crate::db::AppDatabase;
+use crate::logging::throttle::{LagLogThrottle, LAG_LOG_WINDOW};
 use crate::models::{
     AgentType, AutomationConfig, AutomationInfo, AutomationRunStatus, IsolationMode,
 };
@@ -231,6 +232,7 @@ pub async fn run_automation_engine(engine: Arc<AutomationEngine>) {
     let mut reconcile = delay_interval(RECONCILE_INTERVAL_SECS);
     let mut schedule = delay_interval(SCHEDULER_INTERVAL_SECS);
     let mut prune = delay_interval(PRUNE_INTERVAL_SECS);
+    let mut lag_throttle = LagLogThrottle::new(LAG_LOG_WINDOW);
 
     loop {
         tokio::select! {
@@ -238,7 +240,15 @@ pub async fn run_automation_engine(engine: Arc<AutomationEngine>) {
                 Ok(env) => engine.on_event(&env).await,
                 // Dropped events under lag — the reconcile backstop recovers them.
                 Err(RecvError::Lagged(n)) => {
-                    tracing::warn!("[automation] event bus lagged {n}; reconcile will recover");
+                    if let Some(s) = lag_throttle.record(n) {
+                        tracing::warn!(
+                            "[automation] event bus lagged: dropped {} events across \
+                             {} occurrence(s) in the last {}s; reconcile will recover",
+                            s.dropped,
+                            s.occurrences,
+                            LAG_LOG_WINDOW.as_secs()
+                        );
+                    }
                 }
                 Err(RecvError::Closed) => break,
             },

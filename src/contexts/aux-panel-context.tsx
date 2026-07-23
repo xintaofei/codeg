@@ -14,8 +14,14 @@ import {
   savePersistedPanelState,
 } from "@/lib/panel-state-storage"
 import { useActiveFolder } from "@/contexts/active-folder-context"
+import { detectPlatform } from "@/hooks/use-platform"
+import { isDesktop } from "@/lib/platform"
 
-export type AuxPanelTab = "file_tree" | "changes" | "git_log"
+export type AuxPanelTab =
+  | "session_details"
+  | "file_tree"
+  | "changes"
+  | "git_log"
 
 const STORAGE_KEY = "workspace:right-sidebar"
 
@@ -23,6 +29,19 @@ const DEFAULT_WIDTH = 320
 const MIN_WIDTH = 200
 const MAX_WIDTH = 900
 const DEFAULT_IS_OPEN = false
+
+// The tabs now sit on their own row below the fixed top-right window-chrome
+// overlay (terminal/aux/settings), so they no longer need extra width to clear
+// it. The minimum only has to keep that overlay — and, on Windows/Linux, the
+// native caption strip beside it (~116 + 138) — from spilling past the panel's
+// left edge over the middle column. Elsewhere the base 200 is plenty.
+function resolveAuxMinWidth(): number {
+  const platform = detectPlatform()
+  if (isDesktop() && (platform === "windows" || platform === "linux")) {
+    return 260
+  }
+  return MIN_WIDTH
+}
 
 interface AuxPanelContextValue {
   isOpen: boolean
@@ -52,8 +71,8 @@ export function useAuxPanelContext() {
   return ctx
 }
 
-function clampWidth(width: number) {
-  return Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, width))
+function clampWidth(width: number, minWidth: number) {
+  return Math.max(minWidth, Math.min(MAX_WIDTH, width))
 }
 
 interface AuxPanelProviderProps {
@@ -66,18 +85,23 @@ export function AuxPanelProvider({ children }: AuxPanelProviderProps) {
   const [isOpen, setIsOpen] = useState(DEFAULT_IS_OPEN)
   const [width, setWidthState] = useState(DEFAULT_WIDTH)
   const [restored, setRestored] = useState(false)
-  const [activeTab, setActiveTab] = useState<AuxPanelTab>("file_tree")
+  const [activeTab, setActiveTab] = useState<AuxPanelTab>("session_details")
   const [pendingRevealPath, setPendingRevealPath] = useState<string | null>(
     null
   )
+  // Platform-derived minimum (see resolveAuxMinWidth); stable for the session.
+  const minWidth = useMemo(() => resolveAuxMinWidth(), [])
 
   const toggle = useCallback(() => setIsOpen((prev) => !prev), [])
 
   const setOpen = useCallback((open: boolean) => setIsOpen(open), [])
 
-  const setWidth = useCallback((w: number) => {
-    setWidthState(clampWidth(w))
-  }, [])
+  const setWidth = useCallback(
+    (w: number) => {
+      setWidthState(clampWidth(w, minWidth))
+    },
+    [minWidth]
+  )
 
   const openTab = useCallback((tab: AuxPanelTab) => {
     setActiveTab(tab)
@@ -101,9 +125,9 @@ export function AuxPanelProvider({ children }: AuxPanelProviderProps) {
     // Hydrate from localStorage after mount to keep SSR/CSR markup consistent.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsOpen(isMobileViewport ? false : (stored?.isOpen ?? defaultOpen))
-    setWidthState(clampWidth(stored?.width ?? DEFAULT_WIDTH))
+    setWidthState(clampWidth(stored?.width ?? DEFAULT_WIDTH, minWidth))
     setRestored(true)
-  }, [storageKey])
+  }, [storageKey, minWidth])
 
   useEffect(() => {
     if (!restored) return
@@ -123,7 +147,7 @@ export function AuxPanelProvider({ children }: AuxPanelProviderProps) {
       isOpen,
       restored,
       width,
-      minWidth: MIN_WIDTH,
+      minWidth,
       maxWidth: MAX_WIDTH,
       activeTab,
       toggle,
@@ -139,6 +163,7 @@ export function AuxPanelProvider({ children }: AuxPanelProviderProps) {
       isOpen,
       restored,
       width,
+      minWidth,
       activeTab,
       toggle,
       setOpen,

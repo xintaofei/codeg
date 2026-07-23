@@ -29,6 +29,9 @@ pub struct FolderDetail {
     /// `allFolders` (so cwd / active-folder resolve) but hidden from folder
     /// lists; their conversations route to the sidebar "Chat" group.
     pub kind: FolderKind,
+    /// User-supplied display alias, or NULL when unset. When present the sidebar
+    /// folder header and conversation header render `alias [name]`.
+    pub alias: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

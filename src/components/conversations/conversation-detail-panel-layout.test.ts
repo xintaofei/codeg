@@ -86,35 +86,52 @@ describe("ConversationDetailPanel new conversation layout", () => {
     expect(messageInputSource).toContain(': "contents"')
     // The rounded border lives in the always-on base (so the active-session flow
     // gradient can overlay a real 1px border without a layout shift); the
-    // attached folder-branch-picker treatment still adds bg-background + the
-    // inset focus ring on top.
+    // attached folder-branch-picker treatment still adds a solid surface
+    // (`bg-background`, which goes transparent to reveal a workspace-bg image via
+    // `ws-transparent-bg` instead of frosting) + the inset focus ring on top.
+    // The resting border is `border-foreground/20` (a touch darker than the
+    // near-invisible default `border-input`, and legible over a background image).
     expect(messageInputSource).toContain(
-      "rounded-xl border border-input bg-transparent transition-colors"
+      "rounded-xl border border-foreground/20 bg-transparent transition-colors"
     )
     expect(messageInputSource).toContain(
-      '"bg-background focus-within:border-ring focus-within:ring-[3px] focus-within:ring-inset focus-within:ring-ring/50"'
+      '"bg-background ws-transparent-bg focus-within:border-ring focus-within:ring-[3px] focus-within:ring-inset focus-within:ring-ring/50"'
     )
     expect(pickerWrapper).not.toContain("border-t border-input")
     expect(pickerWrapper).not.toContain("bg-muted/30")
     expect(pickerWrapper).toContain("pt-1")
     expect(pickerWrapper).not.toContain("py-1")
     expect(pickerWrapper).toContain("rounded-b-xl")
-    expect(pickerWrapper).toContain("mt-1.5")
-    expect(pickerWrapper).toContain("pl-2")
+    // The row only renders while attached below the composer, so the detached
+    // `mt-1.5` else-branch is gone; it always takes the rounded-bottom box.
+    expect(pickerWrapper).not.toContain("mt-1.5")
+    // `px-2` keeps the left gutter aligned with the composer above while also
+    // padding the trailing edge where the status indicators sit.
+    expect(pickerWrapper).toContain("px-2")
     expect(pickerWrapper).not.toContain("pl-[")
     expect(pickerWrapper).not.toContain("pl-1.5")
     expect(pickerWrapper).not.toMatch(/\bborder-b\b/)
     expect(pickerWrapper).not.toMatch(/\bborder-x\b/)
+    // The context-usage circle + agent connection status moved here from the
+    // bottom status bar: they right-align at the trailing edge (justify-between)
+    // while the folder/branch pickers stay on the left.
+    expect(pickerWrapper).toContain("justify-between")
+    expect(pickerWrapper).toContain("<ComposerContextUsage")
+    expect(pickerWrapper).toContain("<ComposerConnectionStatus")
   })
 
   it("keeps ordinary chat input constrained to the message column width", () => {
     expect(conversationShellSource).toContain(
       'className="mx-auto w-full max-w-3xl"'
     )
-    // Ordinary (active) chat input keeps its own px-4 gutter to align with the
-    // sibling cards in conversation-shell; only the welcome input drops it via
-    // `flush` (the welcome column already provides the px-4).
-    expect(chatInputSource).toContain('cn("pt-0 pb-1", !flush && "px-4")')
+    // Ordinary (active/historical) chat input keeps its own px-4 gutter to align
+    // with the sibling cards in conversation-shell AND a tight bottom gap (pb-1)
+    // matching the attached folder/branch row's `pt-1` top gap; only the welcome
+    // input drops the gutter via `flush` (the welcome column already provides
+    // px-4) and uses the same pb-1.
+    expect(chatInputSource).toContain(
+      'cn("pt-0", flush ? "pb-1" : "px-4 pb-1")'
+    )
     expect(chatInputSource).toContain(
       'cn(tall ? "min-h-30" : "min-h-24", "max-h-60")'
     )

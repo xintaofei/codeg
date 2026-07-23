@@ -3,7 +3,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use tokio::io::AsyncBufReadExt;
 
 use crate::web::event_bridge::{emit_event, EventEmitter};
 
@@ -507,16 +506,21 @@ pub async fn install_missing_plugins(
     let emitter_clone = emitter.clone();
     let task_id_clone = task_id.clone();
 
+    // `collect_lines_lossy` (not `Lines`/`next_line()`) matters here: bun/npm
+    // can emit OEM-codepage bytes (e.g. GBK on a zh-CN Windows) for localized
+    // OS-level error text, which `next_line()` chokes on and silently drops —
+    // truncating the live install log at the first non-UTF-8 byte. The
+    // collected return value is unused (the failure message below is built from
+    // the exit code, not captured stderr), so it is discarded.
     let stdout_handle = tokio::spawn({
         let emitter = emitter_clone.clone();
         let task_id = task_id_clone.clone();
         async move {
             if let Some(stdout) = stdout {
-                let reader = tokio::io::BufReader::new(stdout);
-                let mut lines = reader.lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    emit_plugin_event(&emitter, &task_id, PluginInstallEventKind::Log, &line);
-                }
+                crate::process::collect_lines_lossy(tokio::io::BufReader::new(stdout), |line| {
+                    emit_plugin_event(&emitter, &task_id, PluginInstallEventKind::Log, line);
+                })
+                .await;
             }
         }
     });
@@ -526,11 +530,10 @@ pub async fn install_missing_plugins(
         let task_id = task_id_clone;
         async move {
             if let Some(stderr) = stderr {
-                let reader = tokio::io::BufReader::new(stderr);
-                let mut lines = reader.lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    emit_plugin_event(&emitter, &task_id, PluginInstallEventKind::Log, &line);
-                }
+                crate::process::collect_lines_lossy(tokio::io::BufReader::new(stderr), |line| {
+                    emit_plugin_event(&emitter, &task_id, PluginInstallEventKind::Log, line);
+                })
+                .await;
             }
         }
     });

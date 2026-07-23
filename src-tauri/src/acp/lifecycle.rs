@@ -27,6 +27,7 @@ use crate::acp::types::{AcpEvent, ConnectionStatus, EventEnvelope};
 use crate::db::entities::conversation::ConversationStatus;
 use crate::db::error::DbError;
 use crate::db::service::conversation_service;
+use crate::logging::throttle::{LagLogThrottle, LAG_LOG_WINDOW};
 use crate::models::AgentType;
 use crate::web::event_bridge::{emit_with_state, EventEmitter};
 use tokio::sync::RwLock;
@@ -462,9 +463,11 @@ fn format_terminal_error(message: &str, code: Option<&str>) -> String {
 /// Wrapper keys hosts use to nest the real tool arguments. JSON-RPC servers
 /// and MCP relays pack the call as `{name, arguments}` or `{params: {...}}`;
 /// some agents stash the args under a generic `input`/`payload` next to
-/// `_meta`. Mirrors the frontend `ARGS_WRAPPER_KEYS` in
-/// `delegated-sub-thread.tsx` so the two sides peel exactly the same shapes.
-const ARGS_WRAPPER_KEYS: [&str; 5] = ["arguments", "input", "params", "payload", "_meta"];
+/// `_meta`; Cursor's MCP tool calls surface as
+/// `{providerIdentifier, toolName, args: {...}}`. Mirrors the frontend
+/// `ARGS_WRAPPER_KEYS` in `delegation-card.ts` so the two sides peel exactly
+/// the same shapes.
+const ARGS_WRAPPER_KEYS: [&str; 6] = ["arguments", "input", "params", "payload", "_meta", "args"];
 
 /// Walk wrapper layers — and one level of double-encoded JSON-of-JSON — down to
 /// the object that actually carries the `delegate_to_agent` arguments, and
@@ -512,6 +515,14 @@ fn find_delegation_args(
     }
     None
 }
+
+/// The exact title Cursor's ACP layer sends for an MCP tool call announced
+/// before its `McpArgs` exist: `` `${providerIdentifier ?? "MCP"}: ${toolName
+/// ?? "tool"}` `` with both absent. Used to register identity-less candidates
+/// (see the comment in [`register_delegation_tool_call_from_event`]) and by
+/// `acp::connection` to mark such calls eligible for the completion-time
+/// result sniff.
+pub(crate) const CURSOR_IDENTITYLESS_MCP_TITLE: &str = "MCP: tool";
 
 /// True when the ACP `tool_call` smells like an invocation of the
 /// `delegate_to_agent` MCP tool. Defensive on both inputs because the host
@@ -696,22 +707,60 @@ async fn register_delegation_tool_call_from_event(
         ),
         _ => return,
     };
-    if !is_delegation_invocation(title, raw_input) {
+    // Cursor's ACP layer announces every MCP tool call from the FIRST streaming
+    // partial — before the `McpArgs` (provider/tool identity + arguments) have
+    // materialized — so the announcement is the literal fallback title
+    // "MCP: tool" with an empty `raw_input`, and its `tool_call_update`s never
+    // carry `title`/`raw_input` again (bundle-verified: `sendToolCallUpdate`
+    // forwards only status/content/rawOutput/locations). No later event can
+    // upgrade the identity, so register the id as an UNKEYED candidate on this
+    // exact title: if the call turns out to be `delegate_to_agent`, its MCP
+    // round-trip claims the id via the post-budget FIFO last resort and the
+    // child binds to the REAL ACP id — which is what the live
+    // `meta["codeg.delegation"]` write and the historical
+    // `inject_delegation_meta` match both key on. A non-delegation MCP call's
+    // candidate is harmless: it's tombstoned when the call goes terminal and
+    // GC'd by the unkeyed TTL otherwise; the FIFO only pays out when a
+    // delegate round-trip actually arrives in-window.
+    //
+    // The empty-`raw_input` requirement narrows the shape to exactly what
+    // Cursor emits (`{}` — undefined McpArgs fields dropped by JSON): a
+    // hypothetical other host reusing this title but shipping real args
+    // registers through `is_delegation_invocation`'s arg-shape check or not
+    // at all. Deliberately NOT gated on the connection's agent type — that
+    // lookup would thread the manager through this hot-path fn (and every
+    // test call site) to defend against a title no other known host emits.
+    let is_cursor_identityless_mcp = title == CURSOR_IDENTITYLESS_MCP_TITLE
+        && raw_input.is_none_or(|raw| matches!(raw.trim(), "" | "{}"));
+    if !is_delegation_invocation(title, raw_input) && !is_cursor_identityless_mcp {
         return;
     }
     let match_key = extract_delegation_match_key(raw_input);
     tracing::info!(
-        "[delegation] registering parent tool_call_id={tool_call_id} on conn={} (keyed={})",
+        "[delegation] registering parent tool_call_id={tool_call_id} on conn={} (keyed={}, cursor_mcp_candidate={})",
         envelope.connection_id,
-        match_key.is_some()
+        match_key.is_some(),
+        is_cursor_identityless_mcp
     );
-    broker
-        .register_pending_tool_call_with_key(
-            &envelope.connection_id,
-            tool_call_id.clone(),
-            match_key,
-        )
-        .await;
+    if is_cursor_identityless_mcp {
+        // Identity-less candidate: additionally claimable by the broker's
+        // status/cancel call-time rename, and a delegate claim landing on it
+        // triggers the identity write. `is_delegation_invocation` matching
+        // takes precedence above — a call that DID look like a delegation
+        // registers through the ordinary (keyable) path even if its title
+        // were ever the generic one.
+        broker
+            .register_identityless_tool_call(&envelope.connection_id, tool_call_id.clone())
+            .await;
+    } else {
+        broker
+            .register_pending_tool_call_with_key(
+                &envelope.connection_id,
+                tool_call_id.clone(),
+                match_key,
+            )
+            .await;
+    }
 }
 
 #[cfg(test)]
@@ -1260,6 +1309,77 @@ mod delegation_registration_tests {
             "non-delegation tool events must not register"
         );
     }
+
+    /// Cursor announces every MCP call as the literal "MCP: tool" (identity
+    /// streams in after the announcement and never reaches the wire again).
+    /// Such an event must register an UNKEYED candidate that the post-budget
+    /// FIFO claim can pay out to a `delegate_to_agent` round-trip.
+    #[tokio::test]
+    async fn cursor_identityless_mcp_title_registers_unkeyed_candidate() {
+        let b = broker();
+        register_delegation_tool_call_from_event(
+            &b,
+            &tool_call_event("call-cursor-1\nfc_abc_0", "MCP: tool", Some("{}")),
+        )
+        .await;
+        assert_eq!(
+            b.take_pending_tool_call("parent-conn").await.as_deref(),
+            Some("call-cursor-1\nfc_abc_0"),
+            "the identity-less Cursor MCP announcement must be claimable unkeyed"
+        );
+    }
+
+    /// The candidate branch is scoped to the EXACT fallback title — other
+    /// generic titles (including near-misses) must not enqueue junk ids —
+    /// AND to the empty raw_input Cursor actually ships; a same-titled call
+    /// carrying real args is not the identity-less shape.
+    #[tokio::test]
+    async fn near_miss_generic_titles_do_not_register() {
+        let b = broker();
+        for title in ["MCP: weather", "MCP:tool", "mcp: tool", "Tool"] {
+            register_delegation_tool_call_from_event(
+                &b,
+                &tool_call_event("tc-x", title, Some("{}")),
+            )
+            .await;
+        }
+        register_delegation_tool_call_from_event(
+            &b,
+            &tool_call_event("tc-y", "MCP: tool", Some(r#"{"providerIdentifier":"x"}"#)),
+        )
+        .await;
+        assert!(
+            b.take_pending_tool_call("parent-conn").await.is_none(),
+            "only the literal \"MCP: tool\" fallback with an empty input registers"
+        );
+    }
+
+    /// Cursor's full-form MCP `raw_input` nests the delegation arguments under
+    /// `args` (`{providerIdentifier, toolName, args: {...}}`). The wrapper
+    /// walker must peel it so the registration is KEYED (exact-match claim, no
+    /// FIFO ambiguity).
+    #[tokio::test]
+    async fn cursor_args_wrapper_yields_keyed_registration() {
+        let b = broker();
+        register_delegation_tool_call_from_event(
+            &b,
+            &tool_call_event(
+                "tc-keyed",
+                "codeg-mcp: delegate_to_agent",
+                Some(
+                    r#"{"providerIdentifier":"codeg-mcp","toolName":"delegate_to_agent","args":{"agent_type":"codex","task":"build it"}}"#,
+                ),
+            ),
+        )
+        .await;
+        assert_eq!(
+            b.take_matching_tool_call("parent-conn", &codex_key("build it"))
+                .await
+                .as_deref(),
+            Some("tc-keyed"),
+            "args-wrapped delegation input must produce a keyed entry"
+        );
+    }
 }
 
 /// Per-connection worker that owns the cache for one connection and
@@ -1393,6 +1513,7 @@ pub fn lifecycle_subscriber_task(
         // connection's first relevant event and torn down after a terminal
         // event by dropping the sender (worker drains its queue and exits).
         let mut workers: HashMap<String, mpsc::Sender<Arc<EventEnvelope>>> = HashMap::new();
+        let mut lag_throttle = LagLogThrottle::new(LAG_LOG_WINDOW);
         loop {
             match rx.recv().await {
                 Ok(envelope_arc) => {
@@ -1473,12 +1594,19 @@ pub fn lifecycle_subscriber_task(
                     // Lagged at the bus level. Now that the dispatcher
                     // filters and only blocks on the rare relevant events,
                     // this should only fire under genuine emit-rate spikes
-                    // exceeding the 4096 broadcast capacity.
-                    tracing::warn!(
-                        "[lifecycle][WARN] internal bus lagged, dropped {skipped} events \
-                         (emit rate exceeded broadcast capacity)"
-                    );
+                    // exceeding the 4096 broadcast capacity. The metric is the
+                    // authoritative loss record (unthrottled); the log line is
+                    // throttled to at most one per window.
                     metrics.lagged_count.fetch_add(skipped, Ordering::Relaxed);
+                    if let Some(s) = lag_throttle.record(skipped) {
+                        tracing::warn!(
+                            "[lifecycle][WARN] internal bus lagged: dropped {} events across \
+                             {} occurrence(s) in the last {}s (emit rate exceeded broadcast capacity)",
+                            s.dropped,
+                            s.occurrences,
+                            LAG_LOG_WINDOW.as_secs()
+                        );
+                    }
                 }
                 Err(broadcast::error::RecvError::Closed) => {
                     tracing::info!("[lifecycle] internal bus closed; dispatcher exiting");

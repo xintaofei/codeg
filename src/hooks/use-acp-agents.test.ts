@@ -57,6 +57,8 @@ function makeAgent(agentType: AgentType, sortOrder: number): AcpAgentInfo {
     grok_settings: null,
     cline_secrets_json: null,
     hermes_config_yaml: null,
+    cursor_cli_config_json: null,
+    cursor_settings: null,
     model_provider_id: null,
   }
 }

@@ -404,13 +404,22 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
           return updated
         }
         const { folders, allFolders, branches } = get()
-        const nextBranches = new Map(branches)
-        nextBranches.set(id, detail.git_branch ?? null)
-        set({
+        const patch: Partial<AppWorkspaceStoreState> = {
           folders: patchList(folders),
           allFolders: patchList(allFolders),
-          branches: nextBranches,
-        })
+        }
+        // Only adopt the DB branch when the row actually carries one. A folder's
+        // `git_branch` column is always null today — branch state is resolved by
+        // git-head polling (`applyGitHead`) — so unconditionally writing it here
+        // would clobber the polled branch name with null and make the selector
+        // flash "no branch" until the next poll (up to 10s). Mirrors the same
+        // null-guard the `folder://changed` handler already applies.
+        if (detail.git_branch != null) {
+          const nextBranches = new Map(branches)
+          nextBranches.set(id, detail.git_branch)
+          patch.branches = nextBranches
+        }
+        set(patch)
       } catch (err) {
         console.error("[AppWorkspace] refreshFolder failed:", err)
       }

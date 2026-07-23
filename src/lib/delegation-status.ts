@@ -20,6 +20,7 @@
  */
 
 import { extractEmbeddedJsonObject } from "@/lib/embedded-json"
+import { isUnsettledToolCall } from "@/lib/tool-call-lifecycle"
 import type {
   AdaptedToolCallPart,
   ToolCallState,
@@ -538,6 +539,28 @@ export function buildDelegationTaskRows(
     for (let i = 0; i < count; i++) {
       const report = reports[i] ?? EMPTY_STATUS_REPORT
       const taskId = report.taskId ?? inputIds[i] ?? null
+      // Drop an unsettled poll that carries no identity AND nothing to show yet.
+      // claude-agent-acp ships an arg-less initial `tool_call` (rawInput `{}`)
+      // and only fills the real `task_ids` on a later update — which, for a long
+      // `wait_ms` status check, lands near completion — so a poll that is still
+      // in flight often parses to this empty, id-less report. Each such re-poll
+      // would otherwise become its own anonymous "waiting for a task's result"
+      // row, stacking identical duplicates of the same wait. It folds into its
+      // task's row the moment an id or report arrives, and the settled transcript
+      // (whose polls always carry the id) is unaffected. `isUnsettledToolCall`
+      // (not a bare live-state check) also covers an orphan promoted into
+      // `localTurns` at COMPLETE_TURN — output-available yet never settled — which
+      // would otherwise re-stack after the turn completes. A genuinely settled
+      // id-less report — a real interim note or terminal status — still gets its
+      // own row below.
+      if (
+        taskId == null &&
+        isUnsettledToolCall(poll) &&
+        report.status == null &&
+        (report.text == null || report.text.trim() === "")
+      ) {
+        continue
+      }
       const key = taskId ?? `__unattributed__:${poll.toolCallId}:${i}`
       let entry = byKey.get(key)
       if (!entry) {

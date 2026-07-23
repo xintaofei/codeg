@@ -26,6 +26,7 @@ use tokio::task::JoinHandle;
 use crate::acp::internal_bus::InternalEventBus;
 use crate::acp::types::{AcpEvent, ConnectionStatus, EventEnvelope};
 use crate::db::entities::conversation::ConversationStatus;
+use crate::logging::throttle::{LagLogThrottle, LAG_LOG_WINDOW};
 use crate::models::pet::PetState;
 use crate::web::event_bridge::{emit_event, EventEmitter, WebEvent, WebEventBroadcaster};
 
@@ -341,6 +342,12 @@ pub fn pet_state_subscriber_task(
         write_pet_state(&handle, last_state);
         emit_event(&emitter, "pet://state", last_state);
 
+        // Separate throttles for the two lag signals: the internal ACP bus and
+        // the web side-channel broadcaster overflow independently, so a burst on
+        // one must not suppress the other's first line.
+        let mut acp_lag_throttle = LagLogThrottle::new(LAG_LOG_WINDOW);
+        let mut web_lag_throttle = LagLogThrottle::new(LAG_LOG_WINDOW);
+
         loop {
             tokio::select! {
                 acp_event = acp_rx.recv() => {
@@ -414,11 +421,19 @@ pub fn pet_state_subscriber_task(
                             // snapshot. A persistent lag without follow-up
                             // events would leave the pet stuck on idle even
                             // if connections are still active; surface it on
-                            // the metric so operators can spot it.
-                            tracing::warn!(
-                                "[Pet] internal bus lagged, dropped {skipped} events; resetting to idle"
-                            );
+                            // the metric so operators can spot it. The metric is
+                            // the authoritative loss record, so it's bumped
+                            // unconditionally; only the log line is throttled.
                             metrics.lagged_count.fetch_add(skipped, Ordering::Relaxed);
+                            if let Some(s) = acp_lag_throttle.record(skipped) {
+                                tracing::warn!(
+                                    "[Pet] internal bus lagged: dropped {} events across \
+                                     {} occurrence(s) in the last {}s; resetting to idle",
+                                    s.dropped,
+                                    s.occurrences,
+                                    LAG_LOG_WINDOW.as_secs()
+                                );
+                            }
                             // Clear the volatile signals (reseeded from the next
                             // StatusChanged batch) but KEEP the delegation-child
                             // classification — a running sub-agent won't re-fire
@@ -467,9 +482,15 @@ pub fn pet_state_subscriber_task(
                             // these are fire-and-forget side-channel events
                             // (a lost git-commit ping is benign), so just
                             // log and keep going. No snapshot reset.
-                            tracing::warn!(
-                                "[Pet] web broadcaster lagged, dropped {skipped} non-ACP events"
-                            );
+                            if let Some(s) = web_lag_throttle.record(skipped) {
+                                tracing::warn!(
+                                    "[Pet] web broadcaster lagged: dropped {} non-ACP events \
+                                     across {} occurrence(s) in the last {}s",
+                                    s.dropped,
+                                    s.occurrences,
+                                    LAG_LOG_WINDOW.as_secs()
+                                );
+                            }
                         }
                         Err(broadcast::error::RecvError::Closed) => {
                             cancel_failed_recovery(&mut clear_task);
@@ -854,6 +875,8 @@ mod tests {
                 child_connection_id: child.into(),
                 child_conversation_id: 1,
                 agent_type: crate::models::agent::AgentType::Codex,
+                task_preview: "run the tests".into(),
+                task_id: "task-pet-1".into(),
             },
         )
     }

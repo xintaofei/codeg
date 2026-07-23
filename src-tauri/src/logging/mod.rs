@@ -15,6 +15,7 @@
 pub mod hub;
 pub mod init;
 pub mod layer;
+pub mod throttle;
 
 use serde::{Deserialize, Serialize};
 

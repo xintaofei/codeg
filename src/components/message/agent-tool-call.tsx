@@ -9,7 +9,7 @@ import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
-} from "@/components/ui/collapsible"
+} from "@/components/ui/instant-collapsible"
 import { cn } from "@/lib/utils"
 import { ChevronRightIcon, Clock3, Loader2 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -53,6 +53,63 @@ function asText(v: unknown): string | null {
   return typeof v === "string" && v.length > 0 ? v : null
 }
 
+interface TaskOutcomeEnvelope {
+  durationMs: number | null
+  isBackground: boolean
+  error: string | null
+}
+
+// Cursor's live task completions carry a bare JSON envelope instead of report
+// text: success → {durationMs, isBackground}, failure → {error} — and the
+// wire status stays "completed" either way. `isTask` gates folding to inputs
+// that prove the call is a Cursor task (the `_toolName:"task"` stamp): another
+// agent's sub-agent legitimately returning `{"error":...}` text must render
+// as-is, not get repainted as a failure. Shape stays exact-keys on top.
+function parseTaskOutcomeEnvelope(
+  output: string | null | undefined,
+  isTask: boolean
+): TaskOutcomeEnvelope | null {
+  if (!isTask || !output) return null
+  const trimmed = output.trim()
+  if (!trimmed.startsWith("{")) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null
+  }
+  const obj = parsed as Record<string, unknown>
+  const keys = Object.keys(obj)
+  if (keys.length === 0) return null
+  if (
+    keys.every((k) => k === "durationMs" || k === "isBackground") &&
+    (!("durationMs" in obj) || typeof obj.durationMs === "number") &&
+    (!("isBackground" in obj) || typeof obj.isBackground === "boolean")
+  ) {
+    const duration = obj.durationMs
+    return {
+      durationMs:
+        typeof duration === "number" && Number.isFinite(duration)
+          ? duration
+          : null,
+      isBackground: obj.isBackground === true,
+      error: null,
+    }
+  }
+  if (
+    keys.length === 1 &&
+    keys[0] === "error" &&
+    typeof obj.error === "string" &&
+    obj.error.length > 0
+  ) {
+    return { durationMs: null, isBackground: false, error: obj.error }
+  }
+  return null
+}
+
 // ── main component ────────────────────────────────────────────────────
 
 export const AgentToolCallPart = memo(function AgentToolCallPart({
@@ -75,6 +132,11 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
     part.state === "input-available" || part.state === "input-streaming"
   const isError = part.state === "output-error"
 
+  const parsed = useMemo(
+    () => (part.input ? tryParseJson(part.input) : null),
+    [part.input]
+  )
+
   // Background sub-agent lifecycle. Historical/refetched turns carry the
   // parser's structured marker (settled state + summary + result folded from
   // the transcript's task-notification); a live turn still holds the raw wire
@@ -85,6 +147,15 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
     () => parseBackgroundTaskMarker(part.output),
     [part.output]
   )
+  // Cursor task completion envelope — fold into the capsule chrome (duration
+  // suffix / error box / background label) instead of dumping raw JSON into
+  // the body. Gated on the live input's `_toolName:"task"` identity stamp.
+  const taskOutcome = useMemo(
+    () => parseTaskOutcomeEnvelope(part.output, parsed?._toolName === "task"),
+    [part.output, parsed]
+  )
+  const outcomeError = taskOutcome?.error ?? null
+  const outcomeBackground = taskOutcome?.isBackground === true
   const isLiveBackgroundLaunch =
     backgroundLifecycle === null &&
     part.state === "output-available" &&
@@ -95,11 +166,6 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
 
   const [promptOpen, setPromptOpen] = useState(false)
 
-  const parsed = useMemo(
-    () => (part.input ? tryParseJson(part.input) : null),
-    [part.input]
-  )
-
   const subagentType = useMemo(
     () =>
       asText(parsed?.subagent_type) ??
@@ -107,6 +173,11 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
       // instead of `subagent_type` (the historical parser already maps it
       // across). Read both so the prefix shows during streaming too.
       asText(parsed?.agent_type) ??
+      // Cursor's live task payload carries `subagentType` as a protobuf-es
+      // oneof object ({case: "generalPurpose", …}); its history parser emits
+      // a plain snake_case string, so read the live case here for parity.
+      asText(parsed?.subagentType) ??
+      asText((parsed?.subagentType as { case?: unknown } | undefined)?.case) ??
       (part.input ? extractJsonField(part.input, "subagent_type") : null) ??
       (part.input ? extractJsonField(part.input, "agent_type") : null),
     [parsed, part.input]
@@ -164,13 +235,21 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
         : tBg("cardLaunchedPending")
     : isLiveBackgroundLaunch
       ? tBg("cardRunning")
-      : part.state === "input-available"
-        ? tTool("status.inputAvailable")
-        : part.state === "input-streaming"
-          ? tTool("status.inputStreaming")
-          : part.state === "output-available"
-            ? tTool("status.outputAvailable")
-            : tTool("status.outputError")
+      : outcomeError
+        ? // Cursor reports a failed task with wire status "completed"; the
+          // error envelope is the only failure signal.
+          tTool("status.outputError")
+        : outcomeBackground
+          ? // A background task's completion envelope only acknowledges the
+            // launch — the sub-agent is still running.
+            tBg("cardRunning")
+          : part.state === "input-available"
+            ? tTool("status.inputAvailable")
+            : part.state === "input-streaming"
+              ? tTool("status.inputStreaming")
+              : part.state === "output-available"
+                ? tTool("status.outputAvailable")
+                : tTool("status.outputError")
 
   const agentStats = part.agentStats ?? null
   const adaptedToolCalls = useMemo(
@@ -179,15 +258,20 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
   )
 
   const durationSuffix = useMemo(() => {
-    if (!agentStats?.total_duration_ms) return null
-    return formatDuration(agentStats.total_duration_ms)
-  }, [agentStats])
+    if (agentStats?.total_duration_ms) {
+      return formatDuration(agentStats.total_duration_ms)
+    }
+    if (taskOutcome?.durationMs != null) {
+      return formatDuration(taskOutcome.durationMs)
+    }
+    return null
+  }, [agentStats, taskOutcome])
 
   return (
     <AgentCapsule
       title={title}
-      isRunning={isRunning || isLiveBackgroundLaunch}
-      isError={isError || backgroundFailed}
+      isRunning={isRunning || isLiveBackgroundLaunch || outcomeBackground}
+      isError={isError || backgroundFailed || outcomeError != null}
       rightSuffix={durationSuffix}
       idBadge={agentId ? shortAgentId(agentId) : null}
       statusLabel={statusLabel}
@@ -235,13 +319,17 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
         </div>
       )}
 
-      {/* Running indicator (in-turn streaming, or a live background launch
-          whose ack just replaced the stream) */}
-      {((isRunning && !part.output) || isLiveBackgroundLaunch) && (
+      {/* Running indicator (in-turn streaming, a live background launch whose
+          ack just replaced the stream, or a cursor background-task envelope) */}
+      {((isRunning && !part.output) ||
+        isLiveBackgroundLaunch ||
+        outcomeBackground) && (
         <div className="flex items-center gap-2">
           <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
           <Shimmer className="text-sm" duration={1} shineColor="var(--primary)">
-            {isLiveBackgroundLaunch ? tBg("cardRunning") : t("agentRunning")}
+            {isLiveBackgroundLaunch || outcomeBackground
+              ? tBg("cardRunning")
+              : t("agentRunning")}
           </Shimmer>
         </div>
       )}
@@ -251,6 +339,16 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
         <div className="rounded-md bg-destructive/10 p-3">
           <pre className="whitespace-pre-wrap break-words text-xs text-destructive">
             {part.errorText}
+          </pre>
+        </div>
+      )}
+
+      {/* Cursor task failure envelope ({error}) — the wire marks the call
+          "completed", so this renders where the error styling belongs. */}
+      {outcomeError && !isError && (
+        <div className="rounded-md bg-destructive/10 p-3">
+          <pre className="whitespace-pre-wrap break-words text-xs text-destructive">
+            {outcomeError}
           </pre>
         </div>
       )}
@@ -278,9 +376,11 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
         </div>
       )}
 
-      {/* Final output */}
+      {/* Final output. A folded task-outcome envelope renders via the
+          capsule chrome above (duration suffix / error box), never as body. */}
       {part.output &&
         !isError &&
+        !taskOutcome &&
         !backgroundLifecycle &&
         !isLiveBackgroundLaunch && (
           <div className="text-sm prose prose-sm dark:prose-invert max-w-none [&_ul]:list-inside [&_ol]:list-inside">

@@ -162,7 +162,7 @@ export const PlanCard = memo(function PlanCard({
   ).length
 
   return (
-    <div className="overflow-hidden rounded-lg border bg-card/50">
+    <div className="overflow-hidden rounded-lg border bg-card/50 ws-msg-card">
       <div className="flex items-center gap-2 border-b px-3 py-2">
         <ListTodoIcon className="size-4 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1 truncate text-sm font-medium">

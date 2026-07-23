@@ -2,7 +2,7 @@ import { render, screen, cleanup } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { ConversationFolderBranchPicker } from "./conversation-context-bar"
+import { ConversationHeaderFolderPicker } from "./conversation-context-bar"
 import type { FolderDetail } from "@/lib/types"
 import {
   resetAppWorkspaceStore,
@@ -10,13 +10,10 @@ import {
 } from "@/stores/app-workspace-store"
 
 // ---------------------------------------------------------------------------
-// Mocks. The picker reads three contexts/hooks and one api call; everything
-// else (cmdk tree building, branch-tree expansion) is pure and runs for real.
+// Mocks. The header folder picker reads the tab store + tab actions and renders
+// the shared FolderPicker (cmdk); the folder-display helpers run for real.
 // ---------------------------------------------------------------------------
 
-const switchToBranch = vi.fn().mockResolvedValue(undefined)
-const gitCheckout = vi.fn().mockResolvedValue(undefined)
-const gitListAllBranches = vi.fn()
 const openNewConversationTab = vi.fn()
 
 vi.mock("next-intl", () => ({
@@ -25,17 +22,6 @@ vi.mock("next-intl", () => ({
 
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
-}))
-
-vi.mock("@/hooks/use-switch-to-branch", () => ({
-  useSwitchToBranch: () => switchToBranch,
-}))
-
-vi.mock("@/lib/api", () => ({
-  gitListAllBranches: (path: string) => gitListAllBranches(path),
-  // Present only so the "never bare-checkout" assertion has a spy to read; the
-  // component must not reach for it any more.
-  gitCheckout: (path: string, branch: string) => gitCheckout(path, branch),
 }))
 
 // Tab state, mutated per test before render. Workspace state (folders /
@@ -72,6 +58,7 @@ function mkFolder(p: Partial<FolderDetail> & { id: number }): FolderDetail {
     color: "blue",
     parent_id: null,
     kind: "regular",
+    alias: null,
     ...p,
   }
 }
@@ -84,15 +71,7 @@ const repo = mkFolder({
 })
 
 beforeEach(() => {
-  switchToBranch.mockClear()
-  gitCheckout.mockClear()
   openNewConversationTab.mockClear()
-  gitListAllBranches.mockReset()
-  gitListAllBranches.mockResolvedValue({
-    local: ["main", "feat-x"],
-    remote: [],
-    worktree_branches: ["feat-x"],
-  })
   resetAppWorkspaceStore()
   useAppWorkspaceStore.setState({
     folders: [repo],
@@ -103,64 +82,54 @@ beforeEach(() => {
 
 afterEach(() => cleanup())
 
-async function openBranchPickerAndSelect(branchName: string) {
-  const user = userEvent.setup()
-  // Two triggers render (folder + branch); the branch one is labelled by the
-  // current branch.
-  await user.click(screen.getByRole("button", { name: /main/ }))
-  const item = await screen.findByText(branchName)
-  await user.click(item)
-}
-
-describe("ConversationFolderBranchPicker — branch checkout", () => {
-  it("routes an EXISTING conversation through switchToBranch (not a bare checkout)", async () => {
-    tabs = [{ id: "tab-1", folderId: 1, conversationId: 42 }]
-    activeTabId = "tab-1"
-
-    render(<ConversationFolderBranchPicker tabId="tab-1" />)
-    await openBranchPickerAndSelect("feat-x")
-
-    expect(switchToBranch).toHaveBeenCalledTimes(1)
-    expect(switchToBranch).toHaveBeenCalledWith({
-      activeFolder: repo,
-      branchName: "feat-x",
-      currentBranch: "main",
-      isRemote: false,
+// The conversation header renders the owning folder as a STATIC breadcrumb —
+// folder (and chat-mode) switching moved to the below-composer picker row, so
+// the header never opens a popover, even for a draft. `next-intl` is mocked to
+// echo keys, so a translated label like the chat-mode item reads back as its key.
+describe("ConversationHeaderFolderPicker", () => {
+  it("renders a draft's folder name as a static (non-switchable) breadcrumb", async () => {
+    const other = mkFolder({ id: 2, name: "other-repo", path: "/repo/other" })
+    useAppWorkspaceStore.setState({
+      folders: [repo, other],
+      allFolders: [repo, other],
     })
-    // The whole point of the fix: existing conversations must never run a bare
-    // in-place `git checkout` (which fails for a worktree branch or hijacks a
-    // worktree onto a free one).
-    expect(gitCheckout).not.toHaveBeenCalled()
-  })
-
-  it("routes a DRAFT conversation through switchToBranch too (unchanged)", async () => {
     tabs = [{ id: "tab-draft", folderId: 1, conversationId: null }]
     activeTabId = "tab-draft"
 
-    render(<ConversationFolderBranchPicker tabId="tab-draft" />)
-    await openBranchPickerAndSelect("feat-x")
-
-    expect(switchToBranch).toHaveBeenCalledWith({
-      activeFolder: repo,
-      branchName: "feat-x",
-      currentBranch: "main",
-      isRemote: false,
-    })
-    expect(gitCheckout).not.toHaveBeenCalled()
+    const user = userEvent.setup()
+    render(<ConversationHeaderFolderPicker tabId="tab-draft" />)
+    // Even a draft is static now: clicking the label opens no folder list, so
+    // the other repo is unreachable and no switch fires.
+    await user.click(screen.getByRole("button", { name: /repo/ }))
+    expect(screen.queryByText("other-repo")).toBeNull()
+    expect(openNewConversationTab).not.toHaveBeenCalled()
   })
 
-  it("does not fire a checkout when the picked branch is the current one", async () => {
+  it("renders a static (non-switchable) chip for an existing conversation", async () => {
+    const other = mkFolder({ id: 2, name: "other-repo", path: "/repo/other" })
+    useAppWorkspaceStore.setState({
+      folders: [repo, other],
+      allFolders: [repo, other],
+    })
     tabs = [{ id: "tab-1", folderId: 1, conversationId: 42 }]
     activeTabId = "tab-1"
 
-    render(<ConversationFolderBranchPicker tabId="tab-1" />)
     const user = userEvent.setup()
-    await user.click(screen.getByRole("button", { name: /main/ }))
-    // Click the already-current branch inside the open popover.
-    const items = await screen.findAllByText("main")
-    await user.click(items[items.length - 1])
+    render(<ConversationHeaderFolderPicker tabId="tab-1" />)
+    await user.click(screen.getByRole("button", { name: /repo/ }))
+    // Non-editable: clicking opens no folder list, so the other repo is
+    // unreachable and no switch fires.
+    expect(screen.queryByText("other-repo")).toBeNull()
+    expect(openNewConversationTab).not.toHaveBeenCalled()
+  })
 
-    expect(switchToBranch).not.toHaveBeenCalled()
-    expect(gitCheckout).not.toHaveBeenCalled()
+  it("shows the chat-mode label for a folderless chat tab", () => {
+    tabs = [
+      { id: "tab-chat", folderId: 999, conversationId: null, isChat: true },
+    ]
+    activeTabId = "tab-chat"
+
+    render(<ConversationHeaderFolderPicker tabId="tab-chat" />)
+    expect(screen.getByRole("button", { name: /chatModeLabel/ })).toBeTruthy()
   })
 })

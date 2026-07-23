@@ -1,38 +1,12 @@
 "use client"
 
-import {
-  Fragment,
-  memo,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react"
+import { memo, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
-import {
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Folder,
-  GitBranch,
-  Loader2,
-  MessageSquare,
-} from "lucide-react"
+import { Check, ChevronDown, Folder, MessageSquare } from "lucide-react"
 import type { OverlayScrollbarsComponentRef } from "overlayscrollbars-react"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
-import { gitListAllBranches } from "@/lib/api"
-import {
-  buildBranchTree,
-  buildRemoteBranchSections,
-  expandedKeysForBranch,
-  localBranchItems,
-  type BranchTreeNode,
-} from "@/lib/branch-tree"
-import { useBranchTreeExpansion } from "@/hooks/use-branch-tree-expansion"
-import type { GitBranchList } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import {
   Popover,
@@ -53,10 +27,12 @@ import { cn } from "@/lib/utils"
 import {
   excludeChatFolders,
   filterTopLevelFolders,
+  formatFolderLabelWithAlias,
   resolveFolderDisplayName,
   resolvePickerSelectedFolderId,
 } from "@/lib/folder-display"
-import { useSwitchToBranch } from "@/hooks/use-switch-to-branch"
+import { FolderAliasLabel } from "@/components/conversations/folder-alias-label"
+import { BranchDropdown } from "@/components/layout/branch-dropdown"
 
 interface ConversationContextBarProps {
   extraContent?: React.ReactNode
@@ -124,8 +100,136 @@ export const ConversationContextBar = memo(function ConversationContextBar({
 ConversationContextBar.displayName = "ConversationContextBar"
 
 // ============================================================================
+// ConversationHeaderFolderPicker — the folder selector on its own. Rendered in
+// the desktop conversation header (replacing the old folder-name breadcrumb).
+// Self-contained: resolves its own tab/folder from `tabId` (or the active tab)
+// so the mount site only passes `tabId`. The branch selector no longer sits
+// beside it here — on desktop it lives in the bottom status bar.
+// ============================================================================
+
+interface ConversationHeaderFolderPickerProps {
+  tabId?: string | null
+}
+
+export const ConversationHeaderFolderPicker = memo(
+  function ConversationHeaderFolderPicker({
+    tabId,
+  }: ConversationHeaderFolderPickerProps) {
+    const t = useTranslations("Folder.conversationContextBar")
+    const tabs = useTabStore((s) => s.tabs)
+    const activeTabId = useTabStore((s) => s.activeTabId)
+    const { openNewConversationTab, openChatModeTab } = useTabActions()
+    const folders = useAppWorkspaceStore((s) => s.folders)
+    const allFolders = useAppWorkspaceStore((s) => s.allFolders)
+
+    const ownTab = useMemo(() => {
+      const lookupId = tabId ?? activeTabId
+      return tabs.find((x) => x.id === lookupId) ?? null
+    }, [tabs, tabId, activeTabId])
+
+    const ownFolder = useMemo(
+      () =>
+        ownTab
+          ? (allFolders.find((f) => f.id === ownTab.folderId) ?? null)
+          : null,
+      [ownTab, allFolders]
+    )
+
+    // Only top-level repos are switchable here; worktree folders are reached
+    // via the branch picker, and hidden chat folders are a per-conversation
+    // implementation detail, so both are excluded from the list.
+    const topLevelFolders = useMemo(
+      () => excludeChatFolders(filterTopLevelFolders(folders)),
+      [folders]
+    )
+
+    if (!ownTab) return null
+    // Chat mode: a draft flagged `isChat` (no folder yet) or a conversation
+    // bound to a hidden chat folder. The chip still shows so the user can
+    // switch back to a real folder while drafting.
+    const isChatMode = ownTab.isChat === true || ownFolder?.kind === "chat"
+    if (!ownFolder && !isChatMode) return null
+
+    // Worktree folders surface their parent (root repo) row; resolve that same
+    // folder so the header shows the repo's `alias [ name ]` (matching the
+    // sidebar) rather than the worktree dir's own name. Git/path ops still use
+    // `ownFolder` (the worktree) unchanged.
+    const pickerSelectedId =
+      isChatMode || !ownFolder ? -1 : resolvePickerSelectedFolderId(ownFolder)
+    const displayFolder =
+      isChatMode || !ownFolder
+        ? null
+        : (allFolders.find((f) => f.id === pickerSelectedId) ?? ownFolder)
+    const displayFolderName = isChatMode
+      ? t("chatModeLabel")
+      : resolveFolderDisplayName(ownFolder!, allFolders)
+    const displayFolderAlias = displayFolder?.alias ?? null
+    // The full `alias [ name ]` also goes in the tooltip for the truncated case.
+    const titleFolderName = displayFolder
+      ? formatFolderLabelWithAlias(displayFolder)
+      : displayFolderName
+
+    // The header folder is a static, un-themed breadcrumb: folder (and chat-mode)
+    // switching now lives in the below-composer picker row, so even a new
+    // conversation draft shows a plain label here — never a popover trigger,
+    // never the theme color.
+    return (
+      <FolderPicker
+        variant="header"
+        folders={topLevelFolders}
+        currentFolderId={pickerSelectedId}
+        currentFolderName={displayFolderName}
+        alias={displayFolderAlias}
+        title={`${t("folderTitle")}: ${titleFolderName}`}
+        editable={false}
+        onSelect={async (folderId) => {
+          const target = folders.find((f) => f.id === folderId)
+          if (!target) return
+          try {
+            // Route through openNewConversationTab so the target folder's saved
+            // default agent is applied; the existing-draft branch reuses ownTab
+            // via the singleton invariant. `inheritFromActive: true` keeps the
+            // user's current agent when the target folder has no pinned default.
+            openNewConversationTab(target.id, target.path, {
+              inheritFromActive: true,
+            })
+            toast.success(t("toasts.folderChanged", { name: target.name }))
+          } catch (err) {
+            console.error(
+              "[ConversationHeaderFolderPicker] switch folder failed:",
+              err
+            )
+            toast.error(t("toasts.openFolderFailed"))
+          }
+        }}
+        labelEmpty={t("noFolders")}
+        labelSearch={t("searchFolder")}
+        labelChatMode={t("chatModeLabel")}
+        isChatMode={isChatMode}
+        onSelectChatMode={() => {
+          try {
+            openChatModeTab()
+            toast.success(t("toasts.switchedToChatMode"))
+          } catch (err) {
+            console.error(
+              "[ConversationHeaderFolderPicker] switch to chat mode failed:",
+              err
+            )
+            toast.error(t("toasts.openFolderFailed"))
+          }
+        }}
+      />
+    )
+  }
+)
+
+ConversationHeaderFolderPicker.displayName = "ConversationHeaderFolderPicker"
+
+// ============================================================================
 // ConversationFolderBranchPicker — folder + branch buttons rendered below the
-// message input.
+// message input on every platform. Lets the user switch the draft's folder (and
+// its git branch) right where they type; the conversation header shows the same
+// folder as a static breadcrumb.
 // ============================================================================
 
 interface ConversationFolderBranchPickerProps {
@@ -142,8 +246,6 @@ export const ConversationFolderBranchPicker = memo(
     const { openNewConversationTab, openChatModeTab } = useTabActions()
     const folders = useAppWorkspaceStore((s) => s.folders)
     const allFolders = useAppWorkspaceStore((s) => s.allFolders)
-    const branches = useAppWorkspaceStore((s) => s.branches)
-    const switchToBranch = useSwitchToBranch()
 
     const ownTab = useMemo(() => {
       const lookupId = tabId ?? activeTabId
@@ -177,11 +279,6 @@ export const ConversationFolderBranchPicker = memo(
     if (!ownFolder && !isChatMode) return null
 
     const isNewConversation = ownTab.conversationId == null
-    const currentBranch =
-      isChatMode || !ownFolder
-        ? null
-        : (branches.get(ownFolder.id) ?? ownFolder.git_branch ?? null)
-    const showBranchPicker = currentBranch != null
     // Worktree folders surface their parent (root repo) name here; the picker's
     // own list below keeps real folder names/paths for selection, and every
     // git/path operation still uses `ownFolder` (the worktree) unchanged.
@@ -244,30 +341,12 @@ export const ConversationFolderBranchPicker = memo(
           }}
         />
 
-        {showBranchPicker && ownFolder && (
-          <BranchPicker
-            folderId={ownFolder.id}
-            folderPath={ownFolder.path}
-            currentBranch={currentBranch}
-            title={`${t("branchTitle")}: ${currentBranch ?? t("noBranch")}`}
-            onCheckout={async (branchName, isRemote) => {
-              // Both draft and existing conversations route through the shared
-              // switch logic (mirroring the top-bar branch dropdown). It never
-              // mutates the live conversation: a branch checked out in another
-              // worktree navigates to that folder (opening a fresh draft there
-              // via the singleton), and a free branch checks out in place only
-              // when the active folder is already the root tree. A bare
-              // in-place `git checkout` would instead fail (branch already
-              // checked out elsewhere) or hijack a worktree onto another branch.
-              await switchToBranch({
-                activeFolder: ownFolder,
-                branchName,
-                currentBranch,
-                isRemote,
-              })
-            }}
-          />
-        )}
+        {/* Branch selector — the rich BranchDropdown (pull / commit / push /
+            new branch / worktree / stash / merge / rebase / … + branch tree).
+            Mounted per tile with the tile's OWN folder so a tiled view keeps
+            every tile's chip live; self-hides in chat mode and offers an init
+            option for a non-git folder. */}
+        <BranchDropdown folder={ownFolder} isChatMode={isChatMode} />
       </>
     )
   }
@@ -293,8 +372,9 @@ export function useConversationFolderBranchPickerVisible(
   const ownFolder = ownTab
     ? (allFolders.find((f) => f.id === ownTab.folderId) ?? null)
     : null
-  // Chat-mode drafts have no resolvable folder yet, but the picker row must
-  // still show so the folder chip (and the "no-folder mode" item) are reachable.
+  // The row shows below the composer on every platform. Chat-mode drafts have
+  // no resolvable folder yet, but the row must still show so the folder chip
+  // (and the chat-mode item) stay reachable.
   return Boolean(ownTab && (ownFolder || ownTab.isChat))
 }
 
@@ -303,7 +383,7 @@ export function useConversationFolderBranchPickerVisible(
 // ============================================================================
 
 interface FolderPickerProps {
-  folders: { id: number; name: string; path: string }[]
+  folders: { id: number; name: string; path: string; alias?: string | null }[]
   currentFolderId: number
   currentFolderName: string
   title: string
@@ -317,6 +397,14 @@ interface FolderPickerProps {
   isChatMode: boolean
   /** Select folderless chat mode. */
   onSelectChatMode: () => void
+  /** Trigger appearance. `"chip"` (default) = folder icon + name + chevron, the
+   *  compact below-input row (mobile). `"header"` = bare text sized to the
+   *  conversation title, alias-aware, themed while editable — the desktop
+   *  conversation-header breadcrumb. */
+  variant?: "chip" | "header"
+  /** Folder alias for the `"header"` variant's `alias [ name ]` label (rendered
+   *  via {@link FolderAliasLabel}). Ignored by the chip variant. */
+  alias?: string | null
 }
 
 const FolderPicker = memo(function FolderPicker({
@@ -331,27 +419,61 @@ const FolderPicker = memo(function FolderPicker({
   labelChatMode,
   isChatMode,
   onSelectChatMode,
+  variant = "chip",
+  alias = null,
 }: FolderPickerProps) {
   const [open, setOpen] = useState(false)
 
-  const trigger = (
-    <Button
-      variant="ghost"
-      size="xs"
-      title={title}
-      // `px-1.5` (rem scale, so it tracks UI zoom) matches the composer "+"
-      // button's icon breathing room; paired with the row's `pl-2` it lands the
-      // folder icon on the same column as the centered "+" icon.
-      className={cn(
-        "min-w-0 gap-0.5 px-1.5",
-        !editable && "cursor-default opacity-60 hover:bg-transparent"
-      )}
-    >
-      <Folder className="size-3 shrink-0 text-muted-foreground" />
-      <span className="max-w-[140px] truncate">{currentFolderName}</span>
-      <ChevronDown className="size-3 shrink-0 text-muted-foreground/60" />
-    </Button>
-  )
+  // Header variant: no icons, `alias [ name ]` inline (matching the sidebar
+  // folder header), sized to the neighbouring conversation title. A new/editable
+  // conversation renders in the theme color to advertise that it's switchable;
+  // a bound one is a static foreground chip that reads as a breadcrumb crumb.
+  const headerLabel =
+    alias && alias.trim() ? (
+      <FolderAliasLabel
+        name={currentFolderName}
+        alias={alias}
+        bracketClassName={editable ? "text-primary/60" : "text-foreground"}
+      />
+    ) : (
+      currentFolderName
+    )
+
+  const trigger =
+    variant === "header" ? (
+      <button
+        type="button"
+        title={title}
+        className={cn(
+          "flex shrink-0 items-center rounded-sm text-sm outline-none transition-colors",
+          editable
+            ? "cursor-pointer text-primary hover:text-primary/80 focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            : "cursor-default text-muted-foreground"
+        )}
+      >
+        {/* Full display — the folder crumb never truncates; the neighbouring
+            conversation title takes the ellipsis when the header runs out of
+            room (see conversation-detail-header). */}
+        <span className="whitespace-nowrap">{headerLabel}</span>
+      </button>
+    ) : (
+      <Button
+        variant="ghost"
+        size="xs"
+        title={title}
+        // `px-1.5` (rem scale, so it tracks UI zoom) matches the composer "+"
+        // button's icon breathing room; paired with the row's `pl-2` it lands the
+        // folder icon on the same column as the centered "+" icon.
+        className={cn(
+          "min-w-0 gap-0.5 px-1.5",
+          !editable && "cursor-default opacity-60 hover:bg-transparent"
+        )}
+      >
+        <Folder className="size-3 shrink-0 text-muted-foreground" />
+        <span className="max-w-[140px] truncate">{currentFolderName}</span>
+        <ChevronDown className="size-3 shrink-0 text-muted-foreground/60" />
+      </Button>
+    )
 
   if (!editable) {
     return trigger
@@ -369,7 +491,9 @@ const FolderPicker = memo(function FolderPicker({
               {folders.map((f) => (
                 <CommandItem
                   key={f.id}
-                  value={`${f.name} ${f.path}`}
+                  // Include the alias in the search token so typing the alias
+                  // matches the row (the visible label leads with the alias too).
+                  value={`${f.alias ?? ""} ${f.name} ${f.path}`}
                   onSelect={() => {
                     setOpen(false)
                     void onSelect(f.id)
@@ -377,7 +501,13 @@ const FolderPicker = memo(function FolderPicker({
                 >
                   <Folder className="h-4 w-4" />
                   <div className="flex flex-col min-w-0 flex-1">
-                    <span className="truncate font-medium">{f.name}</span>
+                    <span className="truncate font-medium">
+                      <FolderAliasLabel
+                        name={f.name}
+                        alias={f.alias ?? null}
+                        bracketClassName="text-muted-foreground"
+                      />
+                    </span>
                     <span className="truncate text-xs text-muted-foreground">
                       {f.path}
                     </span>
@@ -413,287 +543,6 @@ const FolderPicker = memo(function FolderPicker({
                 </CommandItem>
               </CommandGroup>
             </div>
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
-  )
-})
-
-// ============================================================================
-// BranchPicker
-// ============================================================================
-
-interface BranchPickerProps {
-  folderId: number
-  folderPath: string
-  currentBranch: string | null
-  title: string
-  onCheckout: (branchName: string, isRemote: boolean) => Promise<void>
-}
-
-const BranchPicker = memo(function BranchPicker({
-  folderId,
-  folderPath,
-  currentBranch,
-  title,
-  onCheckout,
-}: BranchPickerProps) {
-  const t = useTranslations("Folder.conversationContextBar")
-  const tBd = useTranslations("Folder.branchDropdown")
-  const [open, setOpen] = useState(false)
-  const [branchList, setBranchList] = useState<GitBranchList | null>(null)
-  const [loading, setLoading] = useState(false)
-
-  const loadBranches = useCallback(async () => {
-    setLoading(true)
-    try {
-      const list = await gitListAllBranches(folderPath)
-      setBranchList(list)
-    } catch (err) {
-      console.error("[BranchPicker] list failed:", err)
-      setBranchList({ local: [], remote: [], worktree_branches: [] })
-    } finally {
-      setLoading(false)
-    }
-  }, [folderPath])
-
-  useEffect(() => {
-    if (open) void loadBranches()
-  }, [open, loadBranches])
-
-  // Tree mode (browse) when the search box is empty; flat list (cmdk filters)
-  // when the user types — cmdk unmounts filtered items, so collapsed branches
-  // would otherwise be unsearchable. The query is controlled, so it must be
-  // cleared explicitly (an uncontrolled input used to reset when the popover
-  // content unmounted).
-  const [query, setQuery] = useState("")
-
-  // Clear the search on EVERY close, regardless of path. `onOpenChange` doesn't
-  // fire when a leaf's `onSelect` closes the popover via `setOpen(false)`
-  // directly, so reset off the `open` transition (render-time, not an effect)
-  // — covers select, Escape, outside-click, and trigger-toggle alike.
-  const [prevOpen, setPrevOpen] = useState(open)
-  if (open !== prevOpen) {
-    setPrevOpen(open)
-    if (!open) setQuery("")
-  }
-
-  // Reset branches cache + search when folder changes.
-  useEffect(() => {
-    setBranchList(null)
-    setQuery("")
-  }, [folderId])
-  const isSearching = query.trim().length > 0
-
-  const localNodes = useMemo(
-    () => buildBranchTree(localBranchItems(branchList?.local ?? []), "local"),
-    [branchList]
-  )
-  const remoteSections = useMemo(
-    () => buildRemoteBranchSections(branchList?.remote ?? []),
-    [branchList]
-  )
-
-  // Auto-expand the prefix groups leading to the current (local) branch.
-  const seedKeys = useMemo(
-    () =>
-      currentBranch ? expandedKeysForBranch(localNodes, currentBranch) : [],
-    [currentBranch, localNodes]
-  )
-  const { isExpanded, toggle } = useBranchTreeExpansion(open, seedKeys)
-
-  const indentStyle = (depth: number) => ({
-    paddingLeft: `${0.5 + depth * 0.75}rem`,
-  })
-
-  // Recursively render the prefix tree as cmdk items. Group headers toggle
-  // expansion (and never close the popover); leaves check out.
-  const renderTreeItems = (
-    nodes: BranchTreeNode[],
-    depth: number,
-    isRemote: boolean
-  ): React.ReactNode[] =>
-    nodes.flatMap((node) => {
-      if (node.type === "group") {
-        const groupOpen = isExpanded(node.key)
-        const header = (
-          <CommandItem
-            key={node.key}
-            value={node.key}
-            aria-expanded={groupOpen}
-            onSelect={() => toggle(node.key)}
-            style={indentStyle(depth)}
-          >
-            <ChevronRight
-              className={cn(
-                "size-3 shrink-0 text-muted-foreground/70 transition-transform",
-                groupOpen && "rotate-90"
-              )}
-            />
-            <span className="min-w-0 flex-1 truncate">{node.label}</span>
-            <span className="shrink-0 text-xs text-muted-foreground/60">
-              {node.count}
-            </span>
-          </CommandItem>
-        )
-        return groupOpen
-          ? [header, ...renderTreeItems(node.children, depth + 1, isRemote)]
-          : [header]
-      }
-      const localName = isRemote
-        ? node.fullName.replace(/^[^/]+\//, "")
-        : node.fullName
-      const selected = localName === currentBranch
-      return [
-        <CommandItem
-          key={node.key}
-          value={node.key}
-          title={node.fullName}
-          onSelect={() => {
-            setOpen(false)
-            if (localName !== currentBranch)
-              void onCheckout(localName, isRemote)
-          }}
-          style={indentStyle(depth)}
-        >
-          <GitBranch
-            className={cn("h-4 w-4 shrink-0", isRemote && "opacity-60")}
-          />
-          <span
-            className={cn(
-              "min-w-0 flex-1 truncate",
-              isRemote && "text-muted-foreground"
-            )}
-          >
-            {node.label}
-          </span>
-          {selected && <Check className="h-4 w-4 shrink-0" />}
-        </CommandItem>,
-      ]
-    })
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="ghost"
-          size="xs"
-          title={title}
-          className="min-w-0 gap-0.5 px-1.5"
-        >
-          <GitBranch className="size-3 shrink-0 text-muted-foreground" />
-          <span className="max-w-[160px] truncate">
-            {currentBranch ?? t("noBranch")}
-          </span>
-          <ChevronDown className="size-3 shrink-0 text-muted-foreground/60" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="p-0 w-80 overflow-hidden">
-        <Command className="rounded-2xl" shouldFilter={isSearching}>
-          <CommandInput
-            placeholder={t("searchBranch")}
-            value={query}
-            onValueChange={setQuery}
-          />
-          <CommandList>
-            {loading ? (
-              <div className="py-6 text-center text-xs text-muted-foreground">
-                <Loader2 className="h-3.5 w-3.5 animate-spin mx-auto" />
-              </div>
-            ) : (
-              <>
-                <CommandEmpty>{t("noBranches")}</CommandEmpty>
-                {branchList && branchList.local.length > 0 && (
-                  <CommandGroup
-                    heading={tBd("localBranches", {
-                      count: branchList.local.length,
-                    })}
-                  >
-                    {isSearching
-                      ? branchList.local.map((b) => (
-                          <CommandItem
-                            key={`local-${b}`}
-                            value={`local ${b}`}
-                            onSelect={() => {
-                              setOpen(false)
-                              if (b !== currentBranch) void onCheckout(b, false)
-                            }}
-                          >
-                            <GitBranch className="h-4 w-4 shrink-0" />
-                            <span className="min-w-0 flex-1 truncate">{b}</span>
-                            {b === currentBranch && (
-                              <Check className="h-4 w-4 shrink-0" />
-                            )}
-                          </CommandItem>
-                        ))
-                      : renderTreeItems(localNodes, 0, false)}
-                  </CommandGroup>
-                )}
-                {branchList && branchList.remote.length > 0 && (
-                  <CommandGroup
-                    heading={tBd("remoteBranches", {
-                      count: branchList.remote.length,
-                    })}
-                  >
-                    {isSearching
-                      ? branchList.remote.map((b) => {
-                          const localName = b.replace(/^[^/]+\//, "")
-                          return (
-                            <CommandItem
-                              key={`remote-${b}`}
-                              value={`remote ${b}`}
-                              onSelect={() => {
-                                setOpen(false)
-                                if (localName !== currentBranch)
-                                  void onCheckout(localName, true)
-                              }}
-                            >
-                              <GitBranch className="h-4 w-4 shrink-0 opacity-60" />
-                              <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                                {b}
-                              </span>
-                              {localName === currentBranch && (
-                                <Check className="h-4 w-4 shrink-0" />
-                              )}
-                            </CommandItem>
-                          )
-                        })
-                      : remoteSections.map((section) =>
-                          section.remoteName == null ? (
-                            <Fragment key="remote-single">
-                              {renderTreeItems(section.nodes, 0, true)}
-                            </Fragment>
-                          ) : (
-                            <Fragment key={section.key}>
-                              <CommandItem
-                                value={section.key}
-                                aria-expanded={isExpanded(section.key)}
-                                onSelect={() => toggle(section.key)}
-                                style={indentStyle(0)}
-                              >
-                                <ChevronRight
-                                  className={cn(
-                                    "size-3 shrink-0 text-muted-foreground/70 transition-transform",
-                                    isExpanded(section.key) && "rotate-90"
-                                  )}
-                                />
-                                <span className="min-w-0 flex-1 truncate">
-                                  {section.remoteName}
-                                </span>
-                                <span className="shrink-0 text-xs text-muted-foreground/60">
-                                  {section.count}
-                                </span>
-                              </CommandItem>
-                              {isExpanded(section.key) &&
-                                renderTreeItems(section.nodes, 1, true)}
-                            </Fragment>
-                          )
-                        )}
-                  </CommandGroup>
-                )}
-              </>
-            )}
           </CommandList>
         </Command>
       </PopoverContent>

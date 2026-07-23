@@ -17,6 +17,7 @@ function makeFolder(id: number): FolderDetail {
     color: "inherit",
     parent_id: null,
     kind: "regular",
+    alias: null,
   }
 }
 

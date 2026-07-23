@@ -1,4 +1,4 @@
-import type { DbConversationSummary } from "@/lib/types"
+import type { DbConversationSummary, FolderDetail } from "@/lib/types"
 import type {
   SidebarSortMode,
   SidebarSectionOrder,
@@ -259,6 +259,60 @@ export function selectChatConversationsWithReuse(
   return arraysShallowEqual(prev, next) ? prev : next
 }
 
+// ── Folder display ordering (worktree nesting) ──────────────────────────────
+
+/** The folder fields needed to nest worktree children under their repo root. */
+export type FolderOrderInput = Pick<
+  FolderDetail,
+  "id" | "parent_id" | "sort_order" | "name"
+>
+
+/**
+ * Group each top-level repo's OPEN worktree child folders under it, returning a
+ * `repoId → [worktreeChildId, ...]` map that only contains repos with at least
+ * one worktree child. A folder is a worktree child of `p` when its `parent_id`
+ * is `p` and `p` is a top-level entry in `topLevelFolderIds`; children are
+ * ordered `sort_order`, then `name`, then `id` for a stable, input-order-
+ * independent sequence.
+ *
+ * Drives the "Show worktrees" container tree: a repo present as a key renders as
+ * a container (its own sessions move into an indented "root" sub-group, and each
+ * worktree becomes an indented sub-group after it). An orphan worktree whose
+ * parent is closed/removed is not a top-level entry's child, so it appears in no
+ * value list and stands alone as an ordinary top-level folder. Pure — no side
+ * effects, never mutates inputs.
+ */
+export function worktreeChildrenByParent(
+  topLevelFolderIds: readonly number[],
+  folders: readonly FolderOrderInput[]
+): Map<number, number[]> {
+  const topLevel = new Set(topLevelFolderIds)
+  const childrenByParent = new Map<number, FolderOrderInput[]>()
+  for (const f of folders) {
+    if (f.parent_id == null) continue
+    if (!topLevel.has(f.parent_id)) continue
+    const list = childrenByParent.get(f.parent_id)
+    if (list) list.push(f)
+    else childrenByParent.set(f.parent_id, [f])
+  }
+
+  const out = new Map<number, number[]>()
+  for (const [parentId, list] of childrenByParent) {
+    // Stable order within a repo: sort_order, then name, then id as a final
+    // tie-break so the sequence is deterministic regardless of input order.
+    list.sort((a, b) => {
+      if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order
+      const byName = a.name.localeCompare(b.name)
+      return byName !== 0 ? byName : a.id - b.id
+    })
+    out.set(
+      parentId,
+      list.map((f) => f.id)
+    )
+  }
+  return out
+}
+
 // ── Flat row model (Phase 2 virtualization) ─────────────────────────────────
 // The sidebar tree (folders → their conversation rows) is flattened into a
 // single linear array so it can be windowed by `virtua`. Each visible folder
@@ -267,6 +321,21 @@ export function selectChatConversationsWithReuse(
 
 export interface FolderHeaderRow {
   kind: "folder"
+  folderId: number
+}
+
+/**
+ * The "root" sub-group header shown (only under "Show worktrees") directly below
+ * a repo CONTAINER header: it groups the repo's OWN (non-worktree) conversations
+ * under an indented, FolderRoot-glyph "root folder" heading, parallel to each
+ * worktree sub-group. Distinct from {@link FolderHeaderRow} so it can share the
+ * container's numeric `folderId` (the repo id, used for its bucket / count /
+ * theme) without colliding with the container's own folder header row, and so
+ * the sticky-header machinery — keyed on `kind === "folder"` — deliberately
+ * skips it (single-level sticky: the container stands in for its root sessions).
+ */
+export interface RootGroupHeaderRow {
+  kind: "root-group"
   folderId: number
 }
 
@@ -309,6 +378,17 @@ export interface ChatsEmptyRow {
 }
 
 /**
+ * The single empty-state hint shown under an expanded but empty "Folders"
+ * section ("No folders open"). Like {@link ChatsEmptyRow} it is folderless — it
+ * stands in for the whole (empty) folder list rather than one folder — so it
+ * carries no folder id and renders with a flat (non-rail) indent. Distinct from
+ * {@link EmptyHintRow}, which is the per-folder "this folder is empty" hint.
+ */
+export interface FoldersEmptyRow {
+  kind: "folders-empty"
+}
+
+/**
  * A collapsible section heading. Three exist: "pinned" (above the folders, shown
  * only when there are pinned conversations), "folders" (wraps the whole folder
  * list), and "chats" (below the folders, a flat list of folderless chat-mode
@@ -339,9 +419,11 @@ export interface SubsessionLoadingRow {
 export type SidebarRow =
   | SectionHeaderRow
   | FolderHeaderRow
+  | RootGroupHeaderRow
   | ConversationRow
   | EmptyHintRow
   | ChatsEmptyRow
+  | FoldersEmptyRow
   | SubsessionLoadingRow
 
 const MAX_RENDER_DEPTH = 32
@@ -351,6 +433,10 @@ const MAX_RENDER_DEPTH = 32
 // the row output is then identical to the pre-subtree flat model.
 const EMPTY_EXPANDED: ReadonlySet<number> = new Set()
 const EMPTY_CHILDREN: ReadonlyMap<number, readonly DbConversationSummary[]> =
+  new Map()
+// No repo is a worktree container by default (Show worktrees off) — every folder
+// then takes the flat path, identical to the pre-worktree row model.
+const EMPTY_CONTAINER_CHILDREN: ReadonlyMap<number, readonly number[]> =
   new Map()
 
 /**
@@ -445,13 +531,18 @@ function pushConversationRow(
  * that order:
  * - The "Pinned" section header + its conversations appear only when `pinned`
  *   is non-empty, and its rows only when `pinnedExpanded`.
- * - The "Folders" section header appears whenever there are folders; its folder
- *   rows appear only when `foldersExpanded`. Within it, order follows
- *   `orderedFolderIds`: a collapsed folder contributes only its header; an
- *   expanded empty folder contributes header + one empty-hint row; an expanded
- *   non-empty folder contributes header + its (already sorted) bucket. `byFolder`
- *   / `folderTotalCounts` exclude pinned conversations (they live in the Pinned
- *   section), so a folder whose only conversations are pinned reads as empty.
+ * - The "Folders" section header ALWAYS appears (like "Chat"), so the section
+ *   stays a permanent entry point — its Open-folder / Clone / Import actions stay
+ *   reachable even with nothing open. Its rows appear only when `foldersExpanded`:
+ *   when expanded with no open folders it contributes a single `folders-empty`
+ *   hint row; otherwise its folder rows follow `orderedFolderIds`: a collapsed
+ *   folder contributes only its header; an expanded empty folder contributes
+ *   header + one (per-folder) empty-hint row; an expanded non-empty folder
+ *   contributes header + its (already sorted) bucket. `byFolder` /
+ *   `folderTotalCounts` exclude pinned conversations (they live in the Pinned
+ *   section), so a folder whose only conversations are pinned reads as empty. The
+ *   fully-empty initial workspace (no folders AND no conversations) never reaches
+ *   buildRows — the list renders its dedicated open-folder call-to-action there.
  * - The "Chat" section header ALWAYS appears (even with zero chat
  *   conversations), so the section is a permanent entry point — its New-chat
  *   affordance and an empty hint stay reachable. When expanded and empty it
@@ -486,6 +577,17 @@ export function buildRows(args: {
    *  spinner; an empty array WITHOUT membership is a settled-empty subtree
    *  (renders nothing). Optional. */
   childrenLoading?: ReadonlySet<number>
+  /** "Show worktrees" container map: `repoId → [worktreeChildId, ...]`. A repo
+   *  present here renders as a CONTAINER — its header is followed (when the
+   *  container is expanded via `folderExpanded[repoId]`) by a `root-group` header
+   *  + the repo's own sessions (depth 1), then each worktree's header + sessions
+   *  (depth 1). Absent/empty (the default) = the flat model: every folder renders
+   *  its header + its own bucket at depth 0, exactly as before. Optional. */
+  containerChildren?: ReadonlyMap<number, readonly number[]>
+  /** Repo ids whose `root-group` sub-group is collapsed (its own sessions
+   *  hidden). Absent = expanded (the default). Only consulted for container
+   *  repos. Optional. */
+  rootGroupCollapsed?: ReadonlySet<number>
 }): SidebarRow[] {
   const {
     pinned,
@@ -501,6 +603,8 @@ export function buildRows(args: {
     conversationExpanded = EMPTY_EXPANDED,
     childrenByParent = EMPTY_CHILDREN,
     childrenLoading = EMPTY_EXPANDED,
+    containerChildren = EMPTY_CONTAINER_CHILDREN,
+    rootGroupCollapsed = EMPTY_EXPANDED,
   } = args
   const rows: SidebarRow[] = []
 
@@ -527,41 +631,73 @@ export function buildRows(args: {
 
   // The Folders and Chat sections sit below the (always-top) Pinned section in
   // an order the user controls via `sectionOrder`. Each is its own closure so
-  // the order they emit into `rows` is a one-line swap below — the conditional
-  // logic inside each (folders gated on count, chats header always present)
+  // the order they emit into `rows` is a one-line swap below — the row logic
+  // inside each (both headers always present, each with its own empty hint)
   // stays intact regardless of position.
+  // Emit one folder's body (its conversation rows, or a single empty hint) at
+  // `baseDepth` — 0 for a plain top-level folder, 1 for a container's root
+  // sub-group or a worktree sub-group. The empty hint carries no depth; the
+  // renderer derives its indent from the folder id (worktree/container → 1).
+  const pushFolderBody = (folderId: number, baseDepth: number) => {
+    const convs = byFolder.get(folderId)
+    if (!convs || convs.length === 0) {
+      rows.push({
+        kind: "empty",
+        folderId,
+        totalConversationCount: folderTotalCounts.get(folderId) ?? 0,
+      })
+      return
+    }
+    for (const conv of convs) {
+      pushConversationRow(
+        rows,
+        conv,
+        baseDepth,
+        conversationExpanded,
+        childrenByParent,
+        childrenLoading
+      )
+    }
+  }
+
   const pushFolders = () => {
-    if (orderedFolderIds.length === 0) return
+    // The Folders section header is always present (a permanent entry point),
+    // mirroring the Chat section — so a workspace with chats but no open folders
+    // still shows the "Folders" heading and its "add a folder" actions. The
+    // fully-empty initial workspace (no folders AND no conversations) never
+    // reaches buildRows; the list renders a dedicated open-folder CTA there.
     rows.push({
       kind: "section",
       section: "folders",
       expanded: foldersExpanded,
       count: orderedFolderIds.length,
     })
-    if (foldersExpanded) {
-      for (const folderId of orderedFolderIds) {
+    if (!foldersExpanded) return
+    if (orderedFolderIds.length === 0) {
+      rows.push({ kind: "folders-empty" })
+      return
+    }
+    for (const folderId of orderedFolderIds) {
+      const worktrees = containerChildren.get(folderId)
+      if (!worktrees || worktrees.length === 0) {
+        // Plain top-level folder (or, under Show worktrees, a repo with no open
+        // worktrees): header + its own bucket at depth 0 — the flat model.
         rows.push({ kind: "folder", folderId })
-        const expanded = folderExpanded[folderId] ?? true
-        if (!expanded) continue
-        const convs = byFolder.get(folderId)
-        if (!convs || convs.length === 0) {
-          rows.push({
-            kind: "empty",
-            folderId,
-            totalConversationCount: folderTotalCounts.get(folderId) ?? 0,
-          })
-          continue
-        }
-        for (const conv of convs) {
-          pushConversationRow(
-            rows,
-            conv,
-            0,
-            conversationExpanded,
-            childrenByParent,
-            childrenLoading
-          )
-        }
+        if (folderExpanded[folderId] ?? true) pushFolderBody(folderId, 0)
+        continue
+      }
+      // Container repo: its header gates the WHOLE subtree (root sub-group +
+      // worktrees). Collapsing it hides everything below, so the connector spine
+      // only spans an expanded container.
+      rows.push({ kind: "folder", folderId })
+      if (!(folderExpanded[folderId] ?? true)) continue
+      // The repo's OWN sessions move into an indented "root" sub-group, first.
+      rows.push({ kind: "root-group", folderId })
+      if (!rootGroupCollapsed.has(folderId)) pushFolderBody(folderId, 1)
+      // Then each worktree as its own indented sub-group.
+      for (const worktreeId of worktrees) {
+        rows.push({ kind: "folder", folderId: worktreeId })
+        if (folderExpanded[worktreeId] ?? true) pushFolderBody(worktreeId, 1)
       }
     }
   }

@@ -8,8 +8,8 @@ use crate::acp::error::AcpError;
 use crate::acp::opencode_plugins::PluginCheckSummary;
 use crate::acp::preflight::PreflightResult;
 use crate::acp::types::{
-    AcpAgentInfo, AcpAgentStatus, AgentSkillContent, AgentSkillLayout, AgentSkillScope,
-    AgentSkillsListResult, ConnectionInfo, ForkResultInfo,
+    AcpAgentInfo, AcpAgentStatus, AgentDiagnosticsReport, AgentSkillContent, AgentSkillLayout,
+    AgentSkillScope, AgentSkillsListResult, ConnectionInfo, ForkResultInfo,
 };
 use crate::app_error::{AppCommandError, AppErrorCode};
 use crate::app_state::AppState;
@@ -38,6 +38,24 @@ pub async fn acp_list_agents(
 ) -> Result<Json<Vec<AcpAgentInfo>>, AppCommandError> {
     let db = &state.db;
     let result = acp_commands::acp_list_agents_core(db)
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(result))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpEnvDiagnosticsParams {
+    #[serde(default)]
+    pub agent_type: Option<AgentType>,
+}
+
+pub async fn acp_env_diagnostics(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<AcpEnvDiagnosticsParams>,
+) -> Result<Json<AgentDiagnosticsReport>, AppCommandError> {
+    let db = &state.db;
+    let result = acp_commands::acp_env_diagnostics_core(db, params.agent_type)
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(result))
@@ -622,6 +640,8 @@ pub struct AcpUpdateAgentConfigParams {
     pub codex_model_catalog: Option<String>,
     pub grok_config_toml: Option<String>,
     pub grok_structured: Option<crate::acp::types::GrokStructuredConfig>,
+    pub cursor_cli_config_json: Option<String>,
+    pub cursor_structured: Option<crate::acp::types::CursorStructuredConfig>,
 }
 
 pub async fn acp_update_agent_config(
@@ -638,6 +658,8 @@ pub async fn acp_update_agent_config(
         params.codex_model_catalog,
         params.grok_config_toml,
         params.grok_structured,
+        params.cursor_cli_config_json,
+        params.cursor_structured,
         &state.db,
         &state.connection_manager,
         &state.data_dir,
@@ -646,6 +668,32 @@ pub async fn acp_update_agent_config(
     .await
     .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(affected))
+}
+
+/// Optional live API key from the Cursor settings form, forwarded so the
+/// `status` / `models` probes test what's on screen (empty ⇒ browser-login).
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CursorProbeParams {
+    pub api_key: Option<String>,
+}
+
+pub async fn acp_cursor_auth_status(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<CursorProbeParams>,
+) -> Result<Json<crate::acp::types::CursorAuthStatus>, AppCommandError> {
+    Ok(Json(
+        acp_commands::acp_cursor_auth_status_core(&state.db, params.api_key).await,
+    ))
+}
+
+pub async fn acp_cursor_list_models(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<CursorProbeParams>,
+) -> Result<Json<crate::acp::types::CursorModelsResult>, AppCommandError> {
+    Ok(Json(
+        acp_commands::acp_cursor_list_models_core(&state.db, params.api_key).await,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -852,9 +900,11 @@ pub async fn acp_detect_agent_local_version(
     Json(params): Json<AgentTypeParams>,
 ) -> Result<Json<Option<String>>, AppCommandError> {
     let db = &state.db;
-    let result = acp_commands::acp_detect_agent_local_version_core(params.agent_type, &db.conn)
-        .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    let emitter = state.emitter.clone();
+    let result =
+        acp_commands::acp_detect_agent_local_version_core(params.agent_type, &db.conn, &emitter)
+            .await
+            .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(result))
 }
 

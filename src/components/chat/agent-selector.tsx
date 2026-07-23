@@ -196,11 +196,23 @@ export function AgentSelector({
       )}
       {agents.map((agent) => {
         const isSelected = selected === agent.agent_type
+        // Enabled + platform-available, but the CLI/SDK isn't installed. Kept
+        // clickable (selecting it surfaces a persistent install prompt in the
+        // composer) but flagged with a marker + tooltip so it reads as "needs
+        // install" instead of looking identical to a ready agent.
+        const notInstalled = agent.available && !agent.installed_version
+        const label = AGENT_LABELS[agent.agent_type]
         return (
           <button
             key={agent.agent_type}
             ref={setItemRef(agent.agent_type)}
-            title={!isSelected ? AGENT_LABELS[agent.agent_type] : undefined}
+            title={
+              notInstalled
+                ? `${label} · ${t("notInstalled")}`
+                : !isSelected
+                  ? label
+                  : undefined
+            }
             disabled={disabled || !agent.available}
             onClick={() => handleSelect(agent.agent_type)}
             className={cn(
@@ -214,10 +226,15 @@ export function AgentSelector({
                 : "text-muted-foreground hover:text-foreground/70"
             )}
           >
-            <AgentIcon
-              agentType={agent.agent_type}
-              className="w-4 h-4 shrink-0"
-            />
+            <span className="relative shrink-0">
+              <AgentIcon agentType={agent.agent_type} className="h-4 w-4" />
+              {notInstalled ? (
+                <span
+                  aria-hidden
+                  className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-amber-500 ring-1 ring-background"
+                />
+              ) : null}
+            </span>
             <span
               className={cn(
                 "grid transition-[grid-template-columns] duration-300",
@@ -230,7 +247,7 @@ export function AgentSelector({
                   isSelected ? "opacity-100" : "opacity-0"
                 )}
               >
-                {AGENT_LABELS[agent.agent_type]}
+                {label}
               </span>
             </span>
           </button>

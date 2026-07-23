@@ -10,6 +10,8 @@
     "settings",
     "project-boot",
     "remote-project-boot-*",
+    "import-sessions",
+    "remote-import-sessions-*",
     "pet",
     "pet-panel",
     "remote-workspace-*",

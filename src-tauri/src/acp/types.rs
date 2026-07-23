@@ -270,6 +270,15 @@ pub enum AcpEvent {
         child_connection_id: String,
         child_conversation_id: i32,
         agent_type: crate::models::agent::AgentType,
+        /// Bounded preview of the delegated task text (broker's
+        /// `TASK_PREVIEW_CAP`). Lets the live card show WHAT was delegated even
+        /// when the parent tool call's `raw_input` never carries the arguments
+        /// (Cursor announces MCP calls identity-less and never re-sends them).
+        task_preview: String,
+        /// Broker-minted task id — the same id the running ack embeds as
+        /// `task_id=<id>` — so the live card can label the delegation before
+        /// the ack text lands on the tool output.
+        task_id: String,
     },
     /// The child sub-session has finished (or errored / timed out / been
     /// canceled). The MCP tool_result has been delivered to the parent agent.
@@ -415,8 +424,11 @@ pub enum ConfigStaleKind {
 /// A block of the user's submitted prompt, broadcast via [`AcpEvent::UserMessage`]
 /// and stored in the live snapshot. Intentionally narrower than
 /// [`PromptInputBlock`]: only what a viewer needs to render the user turn.
-/// `Resource` / `ResourceLink` prompt blocks are folded into `Text` markdown
-/// links by [`user_blocks_from_prompt`].
+/// Non-image `Resource` / `ResourceLink` prompt blocks are folded into `Text`
+/// markdown links by [`user_blocks_from_prompt`]; an image-mime embedded
+/// `Resource` (how an `image:false` / `embedded_context:true` agent like Grok
+/// carries a pasted image) is promoted to `Image` so the viewer renders a
+/// thumbnail, not a link.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UserMessageBlock {
@@ -425,9 +437,11 @@ pub enum UserMessageBlock {
 }
 
 /// Project the wire `PromptInputBlock`s the sender submitted into the lean
-/// [`UserMessageBlock`]s broadcast to viewers: text and images pass through;
-/// resources/resource-links collapse to a `[label](uri)` markdown line so a
-/// viewer still sees what was attached without shipping blob bytes twice.
+/// [`UserMessageBlock`]s broadcast to viewers: text and images pass through; an
+/// image-mime embedded resource (Grok's pasted-image encoding) is promoted to an
+/// `Image`; other resources/resource-links collapse to a `[label](uri)` markdown
+/// line so a viewer still sees what was attached without shipping blob bytes
+/// twice.
 pub fn user_blocks_from_prompt(blocks: &[PromptInputBlock]) -> Vec<UserMessageBlock> {
     blocks
         .iter()
@@ -439,8 +453,23 @@ pub fn user_blocks_from_prompt(blocks: &[PromptInputBlock]) -> Vec<UserMessageBl
                 data: data.clone(),
                 mime_type: mime_type.clone(),
             },
-            PromptInputBlock::Resource { uri, .. } => UserMessageBlock::Text {
-                text: format!("[{uri}]({uri})"),
+            // An image-mime embedded resource carries a pasted image for agents
+            // that reject native image blocks (Grok: `image:false` +
+            // `embedded_context:true`). Promote it to `Image` so viewers render
+            // the thumbnail; non-image resources still collapse to a link.
+            PromptInputBlock::Resource {
+                uri,
+                mime_type,
+                blob,
+                ..
+            } => match (mime_type, blob) {
+                (Some(mt), Some(b)) if mt.starts_with("image/") => UserMessageBlock::Image {
+                    data: b.clone(),
+                    mime_type: mt.clone(),
+                },
+                _ => UserMessageBlock::Text {
+                    text: format!("[{uri}]({uri})"),
+                },
             },
             PromptInputBlock::ResourceLink { uri, name, .. } => UserMessageBlock::Text {
                 text: format!("[{name}]({uri})"),
@@ -631,6 +660,14 @@ pub struct AcpAgentInfo {
     /// effort). Only populated for `AgentType::Grok`. `None` fields mean the key
     /// is absent from the config. Derived from `grok_config_toml`.
     pub grok_settings: Option<GrokSettings>,
+    /// Raw `~/.cursor/cli-config.json` text, attached for the Cursor settings
+    /// panel's advanced view. Only populated for `AgentType::Cursor`.
+    pub cursor_cli_config_json: Option<String>,
+    /// Parsed scalar settings from cli-config.json backing the Cursor panel's
+    /// structured controls (sandbox / permission rules; the Run Everything
+    /// permission mode is a launch flag, not a config key). Only populated
+    /// for `AgentType::Cursor`. Derived from `cursor_cli_config_json`.
+    pub cursor_settings: Option<CursorSettings>,
     pub model_provider_id: Option<i32>,
 }
 
@@ -695,6 +732,83 @@ pub struct GrokStructuredConfig {
     pub auto_compact_threshold_percent: Option<i64>,
 }
 
+/// The subset of `~/.cursor/cli-config.json` surfaced as structured controls
+/// in the Cursor settings panel. The file is shared with the Cursor CLI's own
+/// `/config` UI, so codeg only projects the keys it manages; everything else
+/// is preserved verbatim on write. `None` means the key is absent.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CursorSettings {
+    /// `sandbox.mode` — "enabled" | "disabled".
+    pub sandbox_mode: Option<String>,
+    /// `permissions.allow` rules, e.g. `Shell(ls)`.
+    pub permissions_allow: Vec<String>,
+    /// `permissions.deny` rules.
+    pub permissions_deny: Vec<String>,
+}
+
+/// The structured-control values the Cursor settings panel sends on save.
+/// `None` fields leave the corresponding key untouched; `Some` fields replace
+/// it (lists are replaced wholesale). Merged onto the current on-disk
+/// cli-config.json so unmanaged keys are preserved. camelCase on the wire to
+/// match the enclosing request body.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CursorStructuredConfig {
+    pub sandbox_mode: Option<String>,
+    pub permissions_allow: Option<Vec<String>>,
+    pub permissions_deny: Option<Vec<String>>,
+}
+
+/// Result of probing `cursor-agent status --format json` for the Cursor
+/// settings panel's auth card. Parsed defensively: unknown shapes surface as
+/// `raw_status` so the panel can still show something useful.
+#[derive(Debug, Clone, Serialize)]
+pub struct CursorAuthStatus {
+    /// A launchable cursor-agent binary was found (cache or system install).
+    pub installed: bool,
+    pub is_authenticated: bool,
+    /// The CLI's own `status` string (e.g. "unauthenticated").
+    pub raw_status: Option<String>,
+    /// Account email when logged in. The CLI nests it under `userInfo.email`
+    /// (a top-level `email` is also accepted as a fallback).
+    pub email: Option<String>,
+    /// Membership/plan label when the CLI reports one. Current `status --format
+    /// json` output carries no such field, so this is usually `None`.
+    pub membership: Option<String>,
+    /// Probe failure detail (spawn error / timeout / non-JSON output).
+    pub error: Option<String>,
+    /// Absolute path to the cursor-agent binary codeg would launch (managed
+    /// cache or system install). The settings panel builds a copy-pasteable
+    /// `"<binary_path>" login` command from it — the managed binary lives in
+    /// codeg's cache and is NOT on the user's PATH, so a bare `cursor-agent
+    /// login` fails. `None` when no binary is installed.
+    pub binary_path: Option<String>,
+}
+
+/// One entry from `cursor-agent models`, whose lines are `<id> - <label>
+/// [(default)]` (e.g. `claude-opus-4-8-high - Opus 4.8 1M`). The panel shows
+/// `label` (falling back to `id`) and passes `id` to the CLI as `--model`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CursorModelInfo {
+    /// The model id (`--model` value), e.g. `claude-opus-4-8-high`.
+    pub id: String,
+    /// Human-readable label from the CLI, e.g. `Opus 4.8 1M`. Empty when the
+    /// CLI emitted a bare id with no ` - <label>` suffix.
+    pub label: String,
+    /// The account default (the CLI marks it `(default)`, e.g. `auto`).
+    pub is_default: bool,
+}
+
+/// Result of `cursor-agent models` for the Cursor settings panel's model
+/// picker. `models` is best-effort parsed CLI output; `error` carries the
+/// failure reason when the probe could not run (e.g. not logged in).
+#[derive(Debug, Clone, Serialize)]
+pub struct CursorModelsResult {
+    pub models: Vec<CursorModelInfo>,
+    pub default_model: Option<String>,
+    pub error: Option<String>,
+}
+
 /// Lightweight status info for a single agent, used by connect() pre-check.
 #[derive(Debug, Clone, Serialize)]
 pub struct AcpAgentStatus {
@@ -702,6 +816,63 @@ pub struct AcpAgentStatus {
     pub available: bool,
     pub enabled: bool,
     pub installed_version: Option<String>,
+}
+
+/// Severity of a single diagnostics check / the overall verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagLevel {
+    /// Healthy / expected.
+    Ok,
+    /// Suspicious but not necessarily broken (e.g. slow `npm prefix -g`).
+    Warn,
+    /// A concrete problem that explains a failure.
+    Fail,
+    /// Neutral information (not a pass/fail signal).
+    Info,
+}
+
+/// One labelled probe result inside a [`DiagSection`]. `value` and `hint` carry
+/// dynamic data (paths, versions) and are rendered as plain text in the UI —
+/// they are NEVER fed through i18n/ICU (see `label`, which is a language-neutral
+/// technical string emitted by the backend).
+#[derive(Debug, Clone, Serialize)]
+pub struct DiagCheck {
+    pub label: String,
+    pub value: String,
+    pub status: DiagLevel,
+    pub hint: Option<String>,
+}
+
+/// A titled group of [`DiagCheck`]s.
+#[derive(Debug, Clone, Serialize)]
+pub struct DiagSection {
+    pub title: String,
+    pub checks: Vec<DiagCheck>,
+}
+
+/// The one-line "likely cause" conclusion. `code` is a stable identifier the
+/// frontend localizes via `DiagnosticsSettings.verdict.<code>`; `summary` is a
+/// pre-formatted English sentence used only inside [`AgentDiagnosticsReport::plain_text`]
+/// so a copied report reads the same regardless of UI locale.
+#[derive(Debug, Clone, Serialize)]
+pub struct DiagnosticsVerdict {
+    pub level: DiagLevel,
+    pub code: String,
+    pub summary: String,
+}
+
+/// Full environment-diagnostics report returned by `acp_env_diagnostics`.
+///
+/// Plain `Serialize` with snake_case fields (the repo convention for response
+/// DTOs), mirrored field-for-field by the `AgentDiagnosticsReport` TS interface.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentDiagnosticsReport {
+    pub generated_at: String,
+    pub agent_type: Option<crate::models::agent::AgentType>,
+    pub verdict: DiagnosticsVerdict,
+    pub sections: Vec<DiagSection>,
+    pub plain_text: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -840,5 +1011,49 @@ mod envelope_tests {
             }
             other => panic!("expected ConversationStatusChanged, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn user_blocks_promote_image_resource_and_fold_other_resources() {
+        let blocks = vec![
+            PromptInputBlock::Text { text: "hi".into() },
+            // Grok's pasted image: an embedded resource with an image mime + blob.
+            PromptInputBlock::Resource {
+                uri: "clipboard://image.png-abc".into(),
+                mime_type: Some("image/png".into()),
+                text: None,
+                blob: Some("QUJD".into()),
+            },
+            // A non-image embedded resource still folds to a link.
+            PromptInputBlock::Resource {
+                uri: "clipboard://notes.txt".into(),
+                mime_type: Some("text/plain".into()),
+                text: Some("note".into()),
+                blob: None,
+            },
+            PromptInputBlock::ResourceLink {
+                uri: "file:///a/app.ts".into(),
+                name: "app.ts".into(),
+                mime_type: None,
+                description: None,
+            },
+        ];
+        let out = user_blocks_from_prompt(&blocks);
+        assert_eq!(
+            out,
+            vec![
+                UserMessageBlock::Text { text: "hi".into() },
+                UserMessageBlock::Image {
+                    data: "QUJD".into(),
+                    mime_type: "image/png".into(),
+                },
+                UserMessageBlock::Text {
+                    text: "[clipboard://notes.txt](clipboard://notes.txt)".into(),
+                },
+                UserMessageBlock::Text {
+                    text: "[app.ts](file:///a/app.ts)".into(),
+                },
+            ]
+        );
     }
 }

@@ -31,7 +31,11 @@ import type {
   QuestionAnswer,
   AcpAgentInfo,
   AcpAgentStatus,
+  AgentDiagnosticsReport,
   GrokStructuredConfig,
+  CursorStructuredConfig,
+  CursorAuthStatus,
+  CursorModelsResult,
   CodexModelInfo,
   AgentSkillScope,
   AgentSkillLayout,
@@ -53,6 +57,9 @@ import type {
   WorktreeResolution,
   DbConversationSummary,
   ImportResult,
+  ImportSelectedResult,
+  ScanResult,
+  SelectedSessionKey,
   OpenedTab,
   OpenedTabsSnapshot,
   SaveTabsOutcome,
@@ -74,6 +81,7 @@ import type {
   TerminalInfo,
   PromptInputBlock,
   FileTreeNode,
+  WorkspaceFileEntry,
   DirectoryEntry,
   DirectoryItem,
   UploadAttachmentResult,
@@ -82,6 +90,7 @@ import type {
   FileSaveResult,
   WorkspaceSnapshotResponse,
   GitLogResult,
+  GitLogFileChange,
   AvailableTerminalShells,
   SystemLanguageSettings,
   SystemProxySettings,
@@ -334,6 +343,13 @@ export async function acpGetAgentStatus(
   return getTransport().call("acp_get_agent_status", { agentType })
 }
 
+// Run environment diagnostics for an agent (or a base env report when omitted).
+export async function acpEnvDiagnostics(
+  agentType?: AgentType
+): Promise<AgentDiagnosticsReport> {
+  return getTransport().call("acp_env_diagnostics", { agentType })
+}
+
 export async function acpClearBinaryCache(agentType: AgentType): Promise<void> {
   return getTransport().call("acp_clear_binary_cache", { agentType })
 }
@@ -447,6 +463,11 @@ export async function acpUpdateAgentConfig(
     /** Grok structured controls (mode / reasoning effort); merged onto the
      * on-disk config.toml server-side. */
     grok_structured?: GrokStructuredConfig | null
+    /** Raw ~/.cursor/cli-config.json text (advanced editor; whole file). */
+    cursor_cli_config_json?: string | null
+    /** Cursor structured controls (sandbox / permission rules); merged onto
+     * the on-disk cli-config.json server-side. */
+    cursor_structured?: CursorStructuredConfig | null
   }
 ): Promise<number> {
   return getTransport().call("acp_update_agent_config", {
@@ -458,7 +479,28 @@ export async function acpUpdateAgentConfig(
     codexModelCatalog: params.codex_model_catalog ?? null,
     grokConfigToml: params.grok_config_toml ?? null,
     grokStructured: params.grok_structured ?? null,
+    cursorCliConfigJson: params.cursor_cli_config_json ?? null,
+    cursorStructured: params.cursor_structured ?? null,
   })
+}
+
+/**
+ * Probe `cursor-agent status --format json` for the Cursor auth card. The
+ * optional live API key lets the probe test what's on screen; subscription
+ * mode passes an empty string to force (and verify) the browser-login
+ * credential.
+ */
+export async function acpCursorAuthStatus(
+  apiKey?: string
+): Promise<CursorAuthStatus> {
+  return getTransport().call("acp_cursor_auth_status", { apiKey })
+}
+
+/** List models via `cursor-agent models` for the Cursor model picker. */
+export async function acpCursorListModels(
+  apiKey?: string
+): Promise<CursorModelsResult> {
+  return getTransport().call("acp_cursor_list_models", { apiKey })
 }
 
 /**
@@ -1392,6 +1434,13 @@ export async function updateFolderColor(
   return getTransport().call("update_folder_color", { folderId, color })
 }
 
+export async function updateFolderAlias(
+  folderId: number,
+  alias: string | null
+): Promise<FolderDetail> {
+  return getTransport().call("update_folder_alias", { folderId, alias })
+}
+
 export async function updateFolderDefaultAgent(
   folderId: number,
   defaultAgentType: AgentType | null
@@ -1406,6 +1455,23 @@ export async function importLocalConversations(
   folderId: number
 ): Promise<ImportResult> {
   return getTransport().call("import_local_conversations", { folderId })
+}
+
+/** Walk every local agent's session store and reconcile against the DB for the
+ *  import picker. Slow (filesystem-bound); per-agent progress arrives on the
+ *  `import-scan://progress` side-channel while this call is in flight. */
+export async function scanImportableSessions(): Promise<ScanResult> {
+  return getTransport().call("scan_importable_sessions", {})
+}
+
+/** Batch-import the selected scanned sessions. The backend re-walks the local
+ *  stores (disk is the source of truth), creates or reopens each target folder,
+ *  and broadcasts `folder://changed` + one `conversations://bulk-changed` so
+ *  every window's sidebar converges. Rejected while another import runs. */
+export async function importSelectedSessions(
+  selections: SelectedSessionKey[]
+): Promise<ImportSelectedResult> {
+  return getTransport().call("import_selected_sessions", { selections })
 }
 
 export async function getFolderConversation(
@@ -1928,6 +1994,30 @@ export async function openSettingsWindow(
     }
   )
   window.open(result.path, `settings-${section ?? "general"}`)
+}
+
+export interface OpenImportSessionsWindowOptions {
+  /** Folder path the picker should scroll to and preselect once the scan
+   *  completes (the sidebar folder context-menu entry passes its own path). */
+  focusPath?: string | null
+}
+
+export async function openImportSessionsWindow(
+  options?: OpenImportSessionsWindowOptions
+): Promise<void> {
+  const focusPath = options?.focusPath ?? null
+  if (isDesktop()) {
+    return getShellTransport().call("open_import_sessions_window", {
+      focusPath,
+      locale: getCurrentEffectiveAppLocale(),
+      remoteConnectionId: getActiveRemoteConnectionId(),
+    })
+  }
+  const result = await getTransport().call<{ path: string }>(
+    "open_import_sessions_window",
+    { focusPath }
+  )
+  window.open(result.path, "import-sessions")
 }
 
 export async function openProjectBootWindow(source?: string): Promise<void> {
@@ -2859,6 +2949,17 @@ export async function getFileTree(
   })
 }
 
+/**
+ * Flat, gitignore-aware listing of every file/dir under `path`. Ignored
+ * directories are pruned during the backend walk (no depth cap), so deeply
+ * nested files are reachable while the payload stays small. Used by file search.
+ */
+export async function listWorkspaceFiles(
+  path: string
+): Promise<WorkspaceFileEntry[]> {
+  return getTransport().call("list_workspace_files", { path })
+}
+
 export async function startWorkspaceStateStream(
   rootPath: string,
   wantsTreeGit = true
@@ -2966,6 +3067,24 @@ export async function renameFileTreeEntry(
   })
 }
 
+/**
+ * Move a file/directory into a different directory of the same workspace,
+ * keeping its name. `sourcePath` and `destDir` are workspace-relative
+ * (forward slashes); `destDir` is `""` for the workspace root. Resolves to the
+ * moved entry's new workspace-relative path.
+ */
+export async function moveFileTreeEntry(
+  rootPath: string,
+  sourcePath: string,
+  destDir: string
+): Promise<string> {
+  return getTransport().call("move_file_tree_entry", {
+    rootPath,
+    sourcePath,
+    destDir,
+  })
+}
+
 export async function deleteFileTreeEntry(
   rootPath: string,
   path: string
@@ -2991,13 +3110,47 @@ export async function gitLog(
   path: string,
   limit?: number,
   branch?: string,
-  remote?: string
+  remote?: string,
+  skip?: number,
+  author?: string,
+  allBranches?: boolean,
+  withFiles?: boolean
 ): Promise<GitLogResult> {
   return getTransport().call("git_log", {
     path,
     limit: limit ?? null,
     branch: branch ?? null,
     remote: remote ?? null,
+    skip: skip ?? null,
+    author: author ?? null,
+    allBranches: allBranches ?? null,
+    withFiles: withFiles ?? null,
+  })
+}
+
+export async function gitCurrentUser(path: string): Promise<string | null> {
+  return getTransport().call("git_current_user", { path })
+}
+
+export async function gitCommitFiles(
+  path: string,
+  commit: string
+): Promise<GitLogFileChange[]> {
+  return getTransport().call("git_commit_files", { path, commit })
+}
+
+// On-demand author search for the log filter — real repo authors matching
+// `query` (case-insensitive, most-active first). Debounced client-side; no
+// upfront full-repo scan.
+export async function gitSearchAuthors(
+  path: string,
+  query: string,
+  limit?: number
+): Promise<string[]> {
+  return getTransport().call("git_search_authors", {
+    path,
+    query,
+    limit: limit ?? null,
   })
 }
 

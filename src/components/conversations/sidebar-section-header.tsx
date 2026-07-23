@@ -3,6 +3,7 @@
 import { memo } from "react"
 import {
   ChevronRight,
+  Download,
   FolderGit2,
   FolderOpenDot,
   SquarePen,
@@ -31,6 +32,7 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
   onNewChat,
   onOpenFolder,
   onCloneRepository,
+  onImportSessions,
   topGap = false,
 }: {
   section: "pinned" | "folders" | "chats"
@@ -54,6 +56,12 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
    */
   onOpenFolder?: () => void
   onCloneRepository?: () => void
+  /**
+   * When provided on the "folders" section, renders the global "Import local
+   * sessions" action (opens the import-picker window, no folder anchor) in the
+   * same right-edge cluster. Must be referentially stable to preserve the memo.
+   */
+  onImportSessions?: () => void
   /**
    * Adds breathing room above the header so the "Folders" section reads as
    * visually separated from the "Pinned" section above it. Implemented as
@@ -80,7 +88,10 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
   // with two buttons (Open Folder / Clone Repository) — the same "add a folder"
   // actions the top-of-page NewFolderDropdown offers.
   const showFolderActions =
-    section === "folders" && (onOpenFolder != null || onCloneRepository != null)
+    section === "folders" &&
+    (onOpenFolder != null ||
+      onCloneRepository != null ||
+      onImportSessions != null)
   // Shared styling for the right-edge hover-revealed action buttons (New chat on
   // the chats section; Open Folder / Clone Repository on the folders section).
   // Revealed only while the row is hovered (group/header lives on the row
@@ -167,6 +178,20 @@ export const SidebarSectionHeader = memo(function SidebarSectionHeader({
         )}
         {showFolderActions && (
           <div className="absolute top-1/2 right-[0.375rem] flex -translate-y-1/2 items-center gap-px">
+            {onImportSessions != null && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onImportSessions()
+                }}
+                title={t("importLocalSessions")}
+                aria-label={t("importLocalSessions")}
+                className={actionButtonClassName}
+              >
+                <Download className="h-[0.875rem] w-[0.875rem]" />
+              </button>
+            )}
             {onCloneRepository != null && (
               <button
                 type="button"

@@ -2,10 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
-  ChevronsDownUp,
-  ChevronsUpDown,
   Crosshair,
   Funnel,
+  ListChevronsDownUp,
+  ListChevronsUpDown,
   Search,
   SquarePen,
   Zap,
@@ -27,6 +27,7 @@ import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
@@ -35,13 +36,19 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { useIsMac } from "@/hooks/use-is-mac"
+import { usePlatform } from "@/hooks/use-platform"
+import { useZoomLevel } from "@/hooks/use-appearance"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { formatShortcutLabel } from "@/lib/keyboard-shortcuts"
+import { isDesktop } from "@/lib/platform"
+import { leftChromeReserve } from "@/lib/window-chrome"
 import {
   loadShowCompleted,
+  loadShowWorktrees,
   loadSortMode,
   loadSectionOrder,
   saveShowCompleted,
+  saveShowWorktrees,
   saveSortMode,
   saveSectionOrder,
   type SidebarSortMode,
@@ -114,11 +121,22 @@ export function Sidebar() {
   const { unseenFailures } = useAutomationsView()
   const { routeId, setRoute, openConversations } = useWorkbenchRoute()
   const isMac = useIsMac()
+  const { isMac: platformIsMac } = usePlatform()
+  const { zoomLevel } = useZoomLevel()
   const { shortcuts } = useShortcutSettings()
   const isMobile = useIsMobile()
   const listRef = useRef<SidebarConversationListHandle>(null)
+  // On desktop the header's top-left is owned by the fixed window-chrome overlay
+  // (sidebar toggle + remote); reserve exactly its width so the view controls
+  // and drag region clear it. The reserve scales with the app zoom to track the
+  // rem-sized overlay buttons. Mobile has no overlay (the sidebar is a Sheet).
+  const leftReserve = leftChromeReserve(platformIsMac && isDesktop(), zoomLevel)
 
-  const [showCompleted, setShowCompleted] = useState(false)
+  // Both default ON (the mount effect below reconciles a persisted "false").
+  // The initial value matches that default so the pre-hydration render doesn't
+  // flash from off → on.
+  const [showCompleted, setShowCompleted] = useState(true)
+  const [showWorktrees, setShowWorktrees] = useState(true)
   const [sortMode, setSortMode] = useState<SidebarSortMode>("created")
   const [sectionOrder, setSectionOrder] =
     useState<SidebarSectionOrder>("folders-first")
@@ -143,6 +161,7 @@ export function Sidebar() {
     // Hydrate from localStorage after mount to keep SSR/CSR markup consistent.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setShowCompleted(loadShowCompleted())
+    setShowWorktrees(loadShowWorktrees())
     setSortMode(loadSortMode())
     setSectionOrder(loadSectionOrder())
   }, [])
@@ -150,6 +169,11 @@ export function Sidebar() {
   const handleSetShowCompleted = useCallback((value: boolean) => {
     setShowCompleted(value)
     saveShowCompleted(value)
+  }, [])
+
+  const handleSetShowWorktrees = useCallback((value: boolean) => {
+    setShowWorktrees(value)
+    saveShowWorktrees(value)
   }, [])
 
   const handleSetSortMode = useCallback((value: string) => {
@@ -176,6 +200,10 @@ export function Sidebar() {
   }, [allExpanded])
 
   const handleNewConversation = useCallback(() => {
+    // On mobile the sidebar is a Sheet overlay — close it so the new
+    // conversation is visible (mirrors tapping a conversation card, which the
+    // list wrapper already closes on).
+    if (isMobile) toggle()
     // Starting a conversation always returns to the conversation workspace (in
     // case a route like Automations was taking over the content region).
     openConversations()
@@ -187,19 +215,59 @@ export function Sidebar() {
       return
     }
     openNewConversationTab(activeFolder.id, activeFolder.path)
-  }, [activeFolder, openChatModeTab, openNewConversationTab, openConversations])
+  }, [
+    activeFolder,
+    openChatModeTab,
+    openNewConversationTab,
+    openConversations,
+    isMobile,
+    toggle,
+  ])
 
   if (!isOpen) return null
 
   return (
-    <aside className="@container/sidebar flex h-full min-h-0 flex-col overflow-hidden bg-sidebar text-sidebar-foreground select-none">
-      <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border pl-4 pr-2">
-        <div className="flex min-w-0 items-center gap-4">
-          <h2 className="truncate text-[0.875rem] font-bold tracking-[-0.00625rem] text-sidebar-foreground">
-            {t("title")}
-          </h2>
-        </div>
+    <aside className="@container/sidebar flex h-full min-h-0 flex-col overflow-hidden text-sidebar-foreground select-none">
+      <div
+        className={cn(
+          "flex h-10 shrink-0 items-center gap-2 pr-2",
+          // Desktop: the fixed left window-chrome overlay (reserved below) owns
+          // the top-left, so drop the header's own left padding. Off-image the
+          // divider is border-border/50, matching the conversation / file detail
+          // headers. But the sidebar sits on a FROSTED surface (ws-surface-sidebar)
+          // while those headers sit on the transparent canvas: with a workspace
+          // background image on, a border-border/50 hairline washes out against the
+          // frosted shade, so it takes the boosted `ws-chrome-border` (like the
+          // frosted status bar) to stay legible. Mobile (Sheet): keep the original
+          // title padding + a full-strength divider — mobile is unchanged.
+          isMobile
+            ? "border-b border-border pl-4"
+            : "border-b border-border/50 ws-chrome-border pl-0"
+        )}
+      >
+        {isMobile ? (
+          <div className="flex min-w-0 items-center gap-4">
+            <h2 className="truncate text-[0.875rem] font-bold tracking-[-0.00625rem] text-sidebar-foreground">
+              {t("title")}
+            </h2>
+          </div>
+        ) : (
+          // Reserve exactly the fixed left overlay's width so the view controls
+          // clear it; the empty reserved space is a window-drag region.
+          <div
+            data-tauri-drag-region
+            className="h-full shrink-0"
+            style={{ width: leftReserve }}
+          />
+        )}
+        {/* Draggable filler between the two clusters — the header is the
+            window's top edge, so its empty space must move the window. */}
+        <div data-tauri-drag-region className="h-full min-w-0 flex-1" />
         <div className="flex items-center gap-0.5">
+          {/* Locate the active conversation in the list below (moved here from
+              the conversation detail header). Always shown, sitting just before
+              the view-options funnel. The sidebar is unmounted while collapsed,
+              so `listRef` is live whenever this button is visible. */}
           <Button
             variant="ghost"
             size="icon"
@@ -210,20 +278,30 @@ export function Sidebar() {
           >
             <Crosshair aria-hidden="true" className="h-3.5 w-3.5" />
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6 shrink-0 text-muted-foreground"
-            onClick={handleToggleExpandAll}
-            title={toggleExpandLabel}
-            aria-label={toggleExpandLabel}
-          >
-            {allExpanded ? (
-              <ChevronsDownUp aria-hidden="true" className="h-3.5 w-3.5" />
-            ) : (
-              <ChevronsUpDown aria-hidden="true" className="h-3.5 w-3.5" />
-            )}
-          </Button>
+          {/* Expand/collapse-all keeps a standalone header button on mobile; on
+              desktop it's folded into the view-options menu below. */}
+          {isMobile && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 shrink-0 text-muted-foreground"
+              onClick={handleToggleExpandAll}
+              title={toggleExpandLabel}
+              aria-label={toggleExpandLabel}
+            >
+              {allExpanded ? (
+                <ListChevronsDownUp
+                  aria-hidden="true"
+                  className="h-3.5 w-3.5"
+                />
+              ) : (
+                <ListChevronsUpDown
+                  aria-hidden="true"
+                  className="h-3.5 w-3.5"
+                />
+              )}
+            </Button>
+          )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -237,11 +315,32 @@ export function Sidebar() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              {/* Desktop only: expand/collapse lives in this menu (it kept its
+                  standalone header button on mobile). */}
+              {!isMobile && (
+                <>
+                  <DropdownMenuItem onSelect={handleToggleExpandAll}>
+                    {allExpanded ? (
+                      <ListChevronsDownUp className="h-4 w-4" />
+                    ) : (
+                      <ListChevronsUpDown className="h-4 w-4" />
+                    )}
+                    {toggleExpandLabel}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                </>
+              )}
               <DropdownMenuCheckboxItem
                 checked={showCompleted}
                 onCheckedChange={handleSetShowCompleted}
               >
                 {t("showCompleted")}
+              </DropdownMenuCheckboxItem>
+              <DropdownMenuCheckboxItem
+                checked={showWorktrees}
+                onCheckedChange={handleSetShowWorktrees}
+              >
+                {t("showWorktrees")}
               </DropdownMenuCheckboxItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel>{t("sortBy")}</DropdownMenuLabel>
@@ -337,6 +436,7 @@ export function Sidebar() {
         <SidebarConversationList
           ref={listRef}
           showCompleted={showCompleted}
+          showWorktrees={showWorktrees}
           sortMode={sortMode}
           sectionOrder={sectionOrder}
         />

@@ -109,6 +109,14 @@ pub fn build_router(
             "/import_local_conversations",
             post(handlers::conversations::import_local_conversations),
         )
+        .route(
+            "/scan_importable_sessions",
+            post(handlers::conversations::scan_importable_sessions),
+        )
+        .route(
+            "/import_selected_sessions",
+            post(handlers::conversations::import_selected_sessions),
+        )
         .route("/list_folders", post(handlers::conversations::list_folders))
         .route("/get_stats", post(handlers::conversations::get_stats))
         .route(
@@ -188,6 +196,10 @@ pub fn build_router(
             post(handlers::folders::update_folder_color),
         )
         .route(
+            "/update_folder_alias",
+            post(handlers::folders::update_folder_alias),
+        )
+        .route(
             "/update_folder_default_agent",
             post(handlers::folders::update_folder_default_agent),
         )
@@ -219,6 +231,10 @@ pub fn build_router(
         )
         .route("/get_file_tree", post(handlers::folders::get_file_tree))
         .route(
+            "/list_workspace_files",
+            post(handlers::folders::list_workspace_files),
+        )
+        .route(
             "/start_workspace_state_stream",
             post(handlers::workspace_state::start_workspace_state_stream),
         )
@@ -240,6 +256,10 @@ pub fn build_router(
             post(handlers::folders::open_commit_window),
         )
         .route(
+            "/open_import_sessions_window",
+            post(handlers::folders::open_import_sessions_window),
+        )
+        .route(
             "/open_merge_window",
             post(handlers::folders::open_merge_window),
         )
@@ -255,6 +275,12 @@ pub fn build_router(
         .route("/git_status", post(handlers::git::git_status))
         .route("/git_init", post(handlers::git::git_init))
         .route("/git_log", post(handlers::git::git_log))
+        .route("/git_current_user", post(handlers::git::git_current_user))
+        .route("/git_commit_files", post(handlers::git::git_commit_files))
+        .route(
+            "/git_search_authors",
+            post(handlers::git::git_search_authors),
+        )
         .route(
             "/git_list_all_branches",
             post(handlers::git::git_list_all_branches),
@@ -357,6 +383,10 @@ pub fn build_router(
         .route(
             "/rename_file_tree_entry",
             post(handlers::files::rename_file_tree_entry),
+        )
+        .route(
+            "/move_file_tree_entry",
+            post(handlers::files::move_file_tree_entry),
         )
         .route(
             "/delete_file_tree_entry",
@@ -567,6 +597,10 @@ pub fn build_router(
             post(handlers::acp::acp_get_agent_status),
         )
         .route("/acp_list_agents", post(handlers::acp::acp_list_agents))
+        .route(
+            "/acp_env_diagnostics",
+            post(handlers::acp::acp_env_diagnostics),
+        )
         .route("/acp_connect", post(handlers::acp::acp_connect))
         .route("/acp_disconnect", post(handlers::acp::acp_disconnect))
         .route(
@@ -633,6 +667,14 @@ pub fn build_router(
         .route(
             "/acp_update_hermes_config",
             post(handlers::acp::acp_update_hermes_config),
+        )
+        .route(
+            "/acp_cursor_auth_status",
+            post(handlers::acp::acp_cursor_auth_status),
+        )
+        .route(
+            "/acp_cursor_list_models",
+            post(handlers::acp::acp_cursor_list_models),
         )
         .route(
             "/acp_update_kimi_code_config",
@@ -1117,6 +1159,25 @@ pub fn build_router(
         .route(
             "/automation_cancel_run",
             post(handlers::automation::automation_cancel_run),
+        )
+        // ─── Workspace background ───
+        .route(
+            "/background_read",
+            post(handlers::background::background_read),
+        )
+        .route(
+            "/background_set",
+            // A 16MiB image becomes ~21.4MiB once base64-encoded and wrapped in
+            // the JSON envelope; axum's default 2MiB `DefaultBodyLimit` would
+            // 413 any real photo before the handler runs. Raise it to cover the
+            // advertised ceiling; `backgrounds::validate_background` stays the
+            // authoritative size boundary on the decoded bytes.
+            post(handlers::background::background_set)
+                .layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
+        )
+        .route(
+            "/background_clear",
+            post(handlers::background::background_clear),
         )
         // ─── Pet ───
         .route("/pet_list", post(handlers::pet::pet_list))

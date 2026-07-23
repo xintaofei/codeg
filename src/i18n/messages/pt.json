@@ -117,6 +117,29 @@
       "sectionTitle": "Área de seleção de modo",
       "sectionDescription": "Os cartões de atalho «Desenvolvimento / Escritório» exibidos acima do campo de entrada na página de nova conversa.",
       "showQuickActions": "Mostrar na página de nova conversa"
+    },
+    "workspaceBackground": {
+      "sectionTitle": "Plano de fundo da área de trabalho",
+      "sectionDescription": "Mostra uma imagem atrás de toda a área de trabalho. A barra lateral e os painéis ficam translúcidos e foscos para deixar a imagem transparecer, e uma máscara mantém o texto legível.",
+      "enable": "Ativar imagem de fundo",
+      "image": "Imagem",
+      "chooseImage": "Escolher imagem",
+      "replaceImage": "Substituir imagem",
+      "removeImage": "Remover",
+      "fillMode": "Modo de preenchimento",
+      "fillModes": {
+        "cover": "Preencher",
+        "contain": "Ajustar",
+        "center": "Centralizar",
+        "tile": "Lado a lado"
+      },
+      "maskOpacity": "Opacidade da máscara",
+      "maskOpacityHint": "Valores mais altos esmaecem a imagem em direção à cor de fundo do tema, melhorando o contraste do texto.",
+      "imageBlur": "Desfoque da imagem",
+      "panelOpacity": "Opacidade dos painéis",
+      "panelOpacityHint": "O quão opacos são a barra lateral, os painéis e as barras de abas. Mais baixo deixa a imagem transparecer mais.",
+      "errorTooLarge": "A imagem é muito grande (máx. 16 MB).",
+      "errorUploadFailed": "Falha ao definir a imagem de fundo."
     }
   },
   "SystemSettings": {
@@ -588,7 +611,8 @@
       "saveCodeBuddyConfig": "Salvar configuração do CodeBuddy",
       "saveKimiCodeConfig": "Salvar configuração do Kimi Code",
       "customInstall": "Instalação personalizada",
-      "saveKimiCodeRawConfig": "Save config.toml"
+      "saveKimiCodeRawConfig": "Save config.toml",
+      "diagnose": "Diagnosticar"
     },
     "status": {
       "enabled": "Habilitado",
@@ -615,9 +639,17 @@
       "effortXhigh": "Máximo",
       "optionDefault": "Usar padrão",
       "authTitle": "Autenticação",
+      "authMode": "Método de autenticação",
+      "authModeApiKey": "Chave de API da XAI",
+      "authModeApiKeyHint": "Autentique-se com uma XAI_API_KEY do console da xAI, para execuções não interativas ou headless. Armazenada no ambiente deste agente.",
+      "authModeCustom": "Endpoint personalizado",
+      "authModeCustomHint": "Use um endpoint próprio (BYO): defina abaixo um modelo personalizado com a sua própria base URL e chave de API. Ele se torna o modelo padrão do Grok.",
+      "subscriptionHint": "Entre com `grok login` (SuperGrok / X Premium+). Nenhuma chave de API é armazenada.",
+      "loginHint": "Execute isto num terminal para entrar e depois reabra estas configurações:",
+      "commandCopied": "Comando copiado para a área de transferência",
+      "copyCommand": "Copiar comando",
       "authKeyConfigured": "XAI_API_KEY está configurada.",
       "authKeyMissing": "Nenhuma XAI_API_KEY definida.",
-      "authLoginHint": "Defina XAI_API_KEY aqui ou execute `grok login` para login por assinatura (SuperGrok / X Premium+).",
       "advancedToggle": "Avançado (config.toml bruto)",
       "configTomlNative": "config.toml (nativo)",
       "configTomlHint": "Salvo literalmente como todo o ~/.grok/config.toml. TOML inválido é rejeitado para que um erro de digitação nunca trunque seu arquivo.",
@@ -639,6 +671,49 @@
       "customContextWindowHint": "Opcional. Define o momento da autocompactação; deixe vazio para o padrão do endpoint.",
       "autoCompactLabel": "Limite de autocompactação (%)",
       "autoCompactHint": "Compacta a conversa quando o uso do contexto atinge esta porcentagem (padrão do Grok: 85). Gravado em `[session]`."
+    },
+    "cursor": {
+      "configDescription": "Configure o Cursor aqui. Escolha um método de autenticação — assinatura oficial (login pelo navegador) ou uma chave de API do Cursor para máquinas headless ou servidores — depois escolha um modelo e edite as regras de permissão e o sandbox do CLI. O codeg as grava em ~/.cursor/cli-config.json, compartilhado com o CLI cursor-agent.",
+      "authTitle": "Autenticação",
+      "authChecking": "Verificando…",
+      "authNotInstalled": "cursor-agent não está instalado",
+      "authLoggedIn": "Conectado",
+      "authNotLoggedIn": "Não conectado",
+      "loginHint": "Execute isto em um terminal para entrar na sua conta Cursor (uma janela do navegador abre) e depois clique em atualizar:",
+      "apiKeyLabel": "Chave de API do Cursor",
+      "apiKeyPlaceholder": "chave de cursor.com/dashboard",
+      "apiKeyHint": "CURSOR_API_KEY — uma chave de conta do painel do Cursor, alternativa ao login pelo navegador para máquinas headless ou servidores. Não é uma chave de terceiros nem da OpenAI.",
+      "modelTitle": "Modelo padrão",
+      "loadModels": "Carregar modelos",
+      "modelsUnavailable": "Lista de modelos indisponível",
+      "modelHint": "Passado à CLI como --model ao iniciar a sessão. Deixe no padrão para o Cursor escolher.",
+      "permissionsTitle": "Permissões e sandbox",
+      "permissionsDescription": "Editor visual das regras de permissão da CLI (cli-config.json). Regras permitidas executam sem confirmação; regras negadas são sempre bloqueadas.",
+      "permissionModeLabel": "Modo de permissões",
+      "permissionModeDefault": "Perguntar antes de executar (padrão)",
+      "permissionModeForce": "Run Everything (--force)",
+      "permissionModeHint": "Run Everything inicia as sessões com --force: todas as chamadas de ferramentas são permitidas automaticamente, exceto as regras de negação, sem confirmações (uma política da organização pode limitá-lo às regras de permissão). Vale para novas sessões.",
+      "optionDefault": "Padrão (não definido)",
+      "sandboxLabel": "Sandbox",
+      "sandboxEnabled": "Ativado",
+      "sandboxDisabled": "Desativado",
+      "allowRulesLabel": "Regras permitidas",
+      "denyRulesLabel": "Regras negadas",
+      "addRule": "Adicionar regra",
+      "rulesSyntaxHint": "Sintaxe das regras: Shell(cmd), Read(caminho/glob), Write(caminho/glob), WebFetch(domínio), Mcp(servidor:ferramenta) — as regras de negação sempre prevalecem.",
+      "saveConfig": "Salvar configuração",
+      "advancedToggle": "Avançado: cli-config.json bruto",
+      "advancedHint": "O ~/.cursor/cli-config.json completo. Salvar grava o arquivo como está; os controles estruturados acima são mesclados nele.",
+      "saveRawConfig": "Salvar arquivo",
+      "authMode": "Método de autenticação",
+      "subscriptionHint": "Faça login com sua conta Cursor e use os modelos do Cursor.",
+      "customApiKeyRequired": "É necessária uma chave de API do Cursor.",
+      "authModeApiKey": "Chave de API do Cursor (headless/servidor)",
+      "authModeApiKeyHint": "Autentique-se com uma chave de API de conta do Cursor gerada no painel do Cursor (para máquinas headless ou servidores). É uma chave de conta do Cursor, não um endpoint de terceiros/OpenAI: o cursor-agent só se comunica com o backend do próprio Cursor. Para usar um endpoint compatível com codex/OpenAI, use o agente Codex.",
+      "modelPickerPlaceholder": "Pesquisar modelos…",
+      "modelNoMatch": "Nenhum modelo correspondente",
+      "modelsNeedAuth": "Faça login para carregar a lista de modelos.",
+      "modelDefaultBadge": "padrão"
     },
     "codex": {
       "configDescription": "Suporta configuração rápida de URL da API, API Key, nome do modelo e reasoning effort, com sincronização para `auth.json` / `config.toml`.",
@@ -921,6 +996,8 @@
       "grokSaved": "Configuração do Grok salva",
       "saveGrokNativeFailed": "Falha ao salvar a configuração nativa do Grok",
       "saveGrokApiKeyFailed": "Configurações salvas, mas não foi possível salvar a chave de API",
+      "cursorSaved": "Configuração do Cursor salva",
+      "saveCursorConfigFailed": "Falha ao salvar a configuração do Cursor",
       "codexSaved": "Configuração do Codex salva",
       "saveCodexNativeFailed": "Falha ao salvar configuração nativa do Codex",
       "geminiSaved": "Configuração do Gemini salva",
@@ -1126,6 +1203,49 @@
     "applyLeftNonConflicting": "Aplicar local",
     "applyRightNonConflicting": "Aplicar remoto"
   },
+  "ImportSessions": {
+    "title": "Importar sessões locais",
+    "scanningTitle": "Verificando sessões locais dos agentes…",
+    "scanningHint": "Percorrendo o armazenamento local de sessões de cada agente. Históricos grandes podem levar um momento.",
+    "scanFailed": "Falha na verificação",
+    "retry": "Tentar novamente",
+    "rescan": "Verificar novamente",
+    "empty": "Nenhuma sessão local encontrada",
+    "emptyHint": "Nenhum armazenamento de sessões de agentes foi encontrado nesta máquina.",
+    "noMatches": "Nenhuma sessão corresponde aos filtros atuais",
+    "searchPlaceholder": "Pesquisar título ou caminho…",
+    "allAgents": "Todos os agentes",
+    "onlyImportable": "Somente importáveis",
+    "selectAll": "Selecionar tudo",
+    "clearSelection": "Limpar",
+    "expandAll": "Expandir tudo",
+    "collapseAll": "Recolher tudo",
+    "summaryCounts": "{total} sessões · {importable} importáveis · {folders} pastas",
+    "noFolderSkipped": "{count} sem pasta de projeto ignoradas",
+    "folderNew": "Nova",
+    "folderCounts": "{importable}/{total} importáveis",
+    "toggleFolderAria": "Selecionar todas as sessões importáveis de {name}",
+    "toggleSessionAria": "Selecionar a sessão {title}",
+    "statusImported": "Importada",
+    "statusDeleted": "Excluída",
+    "untitled": "Sessão sem título",
+    "messageCount": "{count} mensagens",
+    "selectedCount": "{count} selecionadas",
+    "importSelected": "Importar seleção",
+    "importing": "Importando…",
+    "close": "Fechar",
+    "doneTitle": "Importação concluída",
+    "doneImported": "Importadas",
+    "doneUpdated": "Títulos atualizados",
+    "doneSkipped": "Ignoradas",
+    "doneCreatedFolders": "Pastas criadas",
+    "doneNotFound": "Não encontradas",
+    "doneFailed": "Falharam",
+    "continueImport": "Continuar importando",
+    "toasts": {
+      "importFailed": "Falha ao importar: {message}"
+    }
+  },
   "Folder": {
     "workspaceStatus": {
       "degradedTitle": "Atualizações em tempo real indisponíveis",
@@ -1189,6 +1309,7 @@
         "removeFolderFailed": "Falha ao remover pasta: {message}",
         "reorderFoldersFailed": "Falha ao reordenar pastas: {message}",
         "changeFolderColorFailed": "Falha ao alterar a cor: {message}",
+        "setFolderAliasFailed": "Falha ao definir o alias: {message}",
         "changeFolderDefaultAgentFailed": "Falha ao definir agente padrão: {message}"
       },
       "statsLabel": "{folders} pastas · {convos} conversas",
@@ -1197,6 +1318,7 @@
       "searchPlaceholder": "Buscar conversas...",
       "viewOptions": "Opções de exibição",
       "showCompleted": "Mostrar conversas concluídas",
+      "showWorktrees": "Mostrar pastas de worktree",
       "moreOptions": "Mais opções",
       "sortBy": "Ordenar por",
       "sortByCreatedAt": "Data de criação",
@@ -1220,6 +1342,11 @@
         "defaultAgentNone": "Sem padrão (usar global)",
         "agentUnavailableSuffix": "(indisponível)",
         "loadingAgents": "Carregando agentes…",
+        "setAlias": "Definir alias…",
+        "setAliasTitle": "Definir alias da pasta",
+        "setAliasPlaceholder": "Insira um alias (deixe vazio para limpar)",
+        "setAliasSave": "Salvar",
+        "setAliasCancel": "Cancelar",
         "removeFromWorkspace": "Remover do espaço de trabalho"
       },
       "manageConversations": {
@@ -1247,6 +1374,7 @@
       "sectionFolders": "Pastas",
       "sectionChats": "Chat",
       "noChats": "Sem chats",
+      "noFolders": "Nenhuma pasta aberta",
       "newChatAction": "Novo chat",
       "automations": "Automações",
       "loadingSubsessions": "Carregando subconversas…"
@@ -1289,10 +1417,12 @@
         "system": "Sistema",
         "toolResult": "Resultado",
         "toolError": "Erro"
-      }
+      },
+      "moreActions": "Mais ações"
     },
     "sessionDetails": {
       "menuLabel": "Detalhes da sessão",
+      "noActiveSession": "Nenhuma sessão ativa",
       "title": "Detalhes da sessão",
       "subtitle": "Metadados da sessão e uso de tokens",
       "fieldTitle": "Título",
@@ -1434,7 +1564,8 @@
       "preview": "Visualizar",
       "editSource": "Editar fonte",
       "maximize": "Maximizar",
-      "restore": "Restaurar"
+      "restore": "Restaurar",
+      "emptyDirectory": "Pasta vazia"
     },
     "terminal": {
       "rename": "Renomear",
@@ -1609,7 +1740,11 @@
         "confirmApply": "Aplicar stash {ref} ao diretório de trabalho?",
         "cancel": "Cancelar"
       },
-      "deleteBranch": "Excluir branch"
+      "deleteBranch": "Excluir branch",
+      "searchPlaceholder": "Pesquisar ramos e ações",
+      "searchAriaLabel": "Pesquisar ramos e ações",
+      "branchListLabel": "Ramos e ações",
+      "noMatches": "Nenhuma correspondência"
     },
     "commitDialog": {
       "toasts": {
@@ -1695,13 +1830,13 @@
       "copyMessage": "Copiar mensagem",
       "author": "Autor",
       "noFileChangeDetails": "Sem detalhes de alteração de arquivos disponíveis.",
+      "loadingFiles": "Carregando arquivos...",
       "branchesTitle": "Branches Git",
       "loadingBranches": "Carregando branches...",
       "noContainingBranches": "Nenhuma branch contendo este commit foi encontrada.",
       "newBranch": "Nova branch...",
       "resetToHere": "Resetar para aqui",
       "resetDisabledReasonNotCurrentBranchView": "Disponível somente ao visualizar a branch atual",
-      "viewCommitDiffAria": "Ver diff do commit {hash}",
       "copyFullCommitHashAria": "Copiar hash completo do commit {hash}",
       "pushStatus": {
         "pushed": "Enviado para o remoto",
@@ -1724,12 +1859,28 @@
         "resetSuccessDescription": "{branch} foi resetada para {shortHash} com {mode}",
         "resetFailed": "Falha no reset"
       },
+      "authorFilter": {
+        "label": "Autor",
+        "searchPlaceholder": "Pesquisar autor",
+        "noAuthors": "Nenhum autor encontrado",
+        "you": "você",
+        "filterByAuthorAria": "Filtrar commits por autor",
+        "filterByQuery": "Filtrar por \"{query}\"",
+        "clearAuthorFilterAria": "Limpar filtro de autor",
+        "recent": "Recentes",
+        "matchingAuthors": "Autores correspondentes",
+        "removeFromRecent": "Remover {name} dos recentes"
+      },
       "branchSelector": {
+        "label": "Branch",
+        "searchBranch": "Pesquisar branch...",
+        "noBranches": "Nenhum branch",
         "selectBranchPlaceholder": "Selecionar branch...",
         "localBranches": "Branches locais",
         "current": "Atual",
         "remoteBranches": "Branches remotas",
-        "refreshCommitHistory": "Atualizar histórico de commits"
+        "refreshCommitHistory": "Atualizar histórico de commits",
+        "clearBranchFilterAria": "Limpar filtro de branch"
       },
       "dialogs": {
         "newBranchTitle": "Nova branch",
@@ -1866,6 +2017,7 @@
         "addToVcsFailed": "Falha ao adicionar ao VCS",
         "loadBranchesFailed": "Falha ao carregar branches",
         "renameFailed": "Falha ao renomear",
+        "moveFailed": "Falha ao mover",
         "deleteFailed": "Falha ao excluir",
         "rolledBack": "{name} revertido",
         "rollbackFailed": "Falha ao reverter",
@@ -2157,7 +2309,8 @@
         "enableAgentFirstPlaceholder": "Ative pelo menos um agente antes de iniciar uma sessão...",
         "prepareSessionFailed": "Não foi possível preparar a sessão de chat. Tente novamente.",
         "createConversationFailed": "Não foi possível criar a conversa. Tente novamente.",
-        "askAnythingPlaceholder": "Pergunte qualquer coisa..."
+        "askAnythingPlaceholder": "Pergunte qualquer coisa...",
+        "agentNotInstalled": "{agent} não está instalado · abra as configurações de Agents para instalá-lo"
       },
       "welcomePanel": {
         "greeting": "O que você gostaria de <highlight>fazer hoje</highlight>?",
@@ -2257,7 +2410,8 @@
       },
       "agentSelector": {
         "noEnabledAgents": "Nenhum agente habilitado",
-        "openAgentsSettings": "Abrir configurações de agentes"
+        "openAgentsSettings": "Abrir configurações de agentes",
+        "notInstalled": "Não instalado"
       },
       "subAgentOverlay": {
         "title": "Subagentes",
@@ -2342,7 +2496,9 @@
         "tokenCacheWrite": "Escrita de cache",
         "duration": "Duração",
         "completedAt": "Concluído às",
-        "jumpToPreviousUserMessage": "Ir para a mensagem do usuário"
+        "jumpToPreviousUserMessage": "Ir para a mensagem do usuário",
+        "showMore": "Mostrar mais",
+        "showLess": "Mostrar menos"
       },
       "liveTurnStats": {
         "thinking": "Pensando...",
@@ -2660,7 +2816,7 @@
       "noFolders": "No folders",
       "noBranches": "No branches",
       "noBranch": "(no branch)",
-      "chatModeLabel": "Modo sem pasta",
+      "chatModeLabel": "Modo de chat",
       "commit": "Commit",
       "push": "Push",
       "merge": "Merge",
@@ -3272,7 +3428,7 @@
       "deleteConfirm": "Excluir o pet \"{name}\"? Será removido do disco.",
       "summon": "Invocar janela do pet",
       "openCodexHelp": "Pets do Codex precisam estar em ~/.codex/pets/. Nenhum encontrado.",
-      "specRequirement": "O sprite precisa ser PNG ou WebP 1536x1872 com transparência.",
+      "specRequirement": "O sprite precisa ter 1536px de largura e altura múltipla de 208px (ex.: 1872 ou 2288), em PNG ou WebP com transparência.",
       "form": {
         "id": "ID do pet",
         "idHelp": "Minúsculas, dígitos, '-' e '_'. Máx 64 caracteres.",
@@ -3836,5 +3992,27 @@
     "groupInstructions": "Descrição e prompt do sistema",
     "fieldDescription": "Descrição",
     "baseInstructions": "Prompt do sistema (base_instructions)"
+  },
+  "DiagnosticsSettings": {
+    "title": "Diagnóstico do ambiente",
+    "description": "Verifica como este app resolve a CLI do agente no próprio processo, que pode diferir do seu terminal.",
+    "loading": "Executando diagnóstico…",
+    "error": "Falha no diagnóstico",
+    "rerun": "Executar novamente",
+    "copyAll": "Copiar tudo",
+    "copied": "Diagnóstico copiado para a área de transferência",
+    "button": "Diagnosticar",
+    "verdict": {
+      "ok": "O ambiente parece saudável. Se ainda aparecer como não instalado, reinicie o app completamente para atualizar o cache do prefixo.",
+      "node_missing": "Node.js não foi encontrado no PATH do app.",
+      "npm_missing": "npm não foi encontrado no PATH do app.",
+      "not_installed": "Este agente não parece estar instalado.",
+      "installed_but_unresolved": "Consta como instalado, mas o app não consegue localizar o executável.",
+      "user_prefix_not_on_path": "Instalado no prefixo de fallback (~/.codeg/npm-global), que não está no PATH do app. Reinicie o app completamente e tente novamente.",
+      "homebrew_bin_not_on_path": "Instalado no bin do Homebrew, que não está no PATH do app (divisão de keg no Apple Silicon).",
+      "terminal_only_path": "O comando é resolvido no seu terminal, mas não no app: uma diferença de PATH da GUI. Inicie o app por um terminal ou reinstale nas Configurações de agentes.",
+      "npm_prefix_timeout": "npm prefix -g foi muito lento (mais de 1,5 s), então a detecção de fallback foi ignorada. Reinicie o app e tente novamente.",
+      "node_too_old": "Seu Node.js ativo é mais antigo do que este agente requer. Atualize o Node.js."
+    }
   }
 }

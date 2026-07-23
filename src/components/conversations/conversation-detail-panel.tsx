@@ -22,11 +22,15 @@ import {
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
-import { useAcpActions, useAcpEvent } from "@/contexts/acp-connections-context"
+import {
+  getCachedSelectors,
+  useAcpActions,
+  useAcpEvent,
+} from "@/contexts/acp-connections-context"
+import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
-import { useSessionStats } from "@/contexts/session-stats-context"
 import { useTaskContext } from "@/contexts/task-context"
 import { cn, copyTextFromMenu, randomUUID } from "@/lib/utils"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
@@ -41,6 +45,7 @@ import { SessionConfigStaleBanner } from "@/components/chat/session-config-stale
 import { BackgroundTasksChip } from "@/components/chat/background-tasks-chip"
 import { FeedbackNotesDisplay } from "@/components/chat/feedback-notes-display"
 import { FeedbackDialog } from "@/components/chat/feedback-dialog"
+import { AgentDiagnosticsDialog } from "@/components/settings/agent-diagnostics-dialog"
 import { useFeedbackEnabled } from "@/hooks/use-feedback-enabled"
 import { useSessionFeedback } from "@/hooks/use-session-feedback"
 import { AgentSelector } from "@/components/chat/agent-selector"
@@ -48,7 +53,7 @@ import { ChatInput } from "@/components/chat/chat-input"
 import { WelcomeHero, WelcomeTip } from "@/components/chat/welcome-hero"
 import { QuickActions } from "@/components/chat/quick-actions"
 import type { ComposerInjectContent } from "@/components/chat/message-input"
-import { ScrollArea } from "@/components/ui/scroll-area"
+import { TileScrollContainer } from "@/components/conversations/tile-scroll-container"
 import {
   acpFork,
   createChatConversation,
@@ -80,6 +85,7 @@ import {
   AGENT_LABELS,
   type AgentType,
   type ContentBlock,
+  type ConversationStatus,
   type EventEnvelope,
   type MessageTurn,
   type PromptDraft,
@@ -111,9 +117,10 @@ import {
   exportAsImage,
   exportAsMarkdown,
   ExportTooLongError,
-  type ExportLabels,
 } from "@/lib/export-conversation"
+import { useExportLabels } from "@/lib/use-export-labels"
 import { resolveActiveSessionDetails } from "./active-session-details"
+import { ConversationDetailHeader } from "./conversation-detail-header"
 import { SessionDetailsDialog } from "./session-details-dialog"
 
 interface ConversationTabViewProps {
@@ -201,6 +208,7 @@ const ConversationTabView = memo(function ConversationTabView({
 }: ConversationTabViewProps) {
   const t = useTranslations("Folder.conversation")
   const tWelcome = useTranslations("Folder.chat.welcomeInputPanel")
+  const tDiag = useTranslations("DiagnosticsSettings")
   const sharedT = useTranslations("Folder.chat.shared")
   const refreshConversations = useAppWorkspaceStore(
     (s) => s.refreshConversations
@@ -237,7 +245,6 @@ const ConversationTabView = memo(function ConversationTabView({
     confirmDraftAgent,
     setDraftAgentFromFallback,
   } = useTabActions()
-  const { setSessionStats } = useSessionStats()
   const {
     appendOptimisticTurn,
     removeOptimisticTurn,
@@ -283,6 +290,7 @@ const ConversationTabView = memo(function ConversationTabView({
   const [sendSignal, setSendSignal] = useState(0)
   const [agentsLoaded, setAgentsLoaded] = useState(false)
   const [usableAgentCount, setUsableAgentCount] = useState(0)
+  const [composerDiagnosticsOpen, setComposerDiagnosticsOpen] = useState(false)
   const [agentConnectError, setAgentConnectError] = useState<string | null>(
     null
   )
@@ -421,30 +429,22 @@ const ConversationTabView = memo(function ConversationTabView({
   // session — NOT the whole session object. The live-message sink rewrites the
   // session object on every streaming batch (~60/s, via SET_LIVE_MESSAGE); a
   // whole-object selector here would re-render this keep-alive panel (and the
-  // composer subtree it wraps) on every streaming token, even though none of
-  // these three fields change mid-stream. `useShallow` keeps the returned slice
+  // composer subtree it wraps) on every streaming token, even though neither of
+  // these two fields changes mid-stream. `useShallow` keeps the returned slice
   // reference-stable across batches, so the panel re-renders only when one of
   // them actually changes. (message-list-view subscribes to the session's
-  // liveMessage separately to render the live stream.)
-  const {
-    sessionStats: effectiveSessionStats,
-    externalId: runtimeExternalId,
-    syncState: runtimeSyncState,
-  } = useConversationRuntimeStore(
-    useShallow((s) => {
-      const session = s.byConversationId.get(effectiveConversationId)
-      return {
-        sessionStats: session?.sessionStats ?? null,
-        externalId: session?.externalId ?? null,
-        syncState: session?.syncState ?? "idle",
-      }
-    })
-  )
-
-  useEffect(() => {
-    if (!isActive) return
-    setSessionStats(effectiveSessionStats)
-  }, [effectiveSessionStats, isActive, setSessionStats])
+  // liveMessage separately to render the live stream; the context indicator
+  // reads its own session stats from the runtime store directly.)
+  const { externalId: runtimeExternalId, syncState: runtimeSyncState } =
+    useConversationRuntimeStore(
+      useShallow((s) => {
+        const session = s.byConversationId.get(effectiveConversationId)
+        return {
+          externalId: session?.externalId ?? null,
+          syncState: session?.syncState ?? "idle",
+        }
+      })
+    )
 
   // Two-source resolution for the session id passed to acp_connect:
   //   1. detail.summary.external_id — DB value, available for tabs opened
@@ -468,9 +468,26 @@ const ConversationTabView = memo(function ConversationTabView({
   // immediately regardless.
   const awaitingHistoricalSessionId =
     hasPersistedConversation && selectedAgent !== "cline" && detailLoading
+  // Install status of the currently selected agent. An agent can be enabled and
+  // platform-available yet have no CLI/SDK installed; selecting one can never
+  // connect. Rather than firing a doomed (and racy) auto-connect whose only
+  // outcome is a transient "not installed" toast, we skip the connect and
+  // surface a persistent install prompt instead (see composerBlockedMessage).
+  const { agents: acpAgents } = useAcpAgents()
+  const selectedAgentNotInstalled = useMemo(() => {
+    const info = acpAgents.find((a) => a.agent_type === selectedAgent)
+    return (
+      info != null && info.enabled && info.available && !info.installed_version
+    )
+  }, [acpAgents, selectedAgent])
   const canAutoConnect =
     (hasPersistedConversation || (agentsLoaded && usableAgentCount > 0)) &&
     !awaitingHistoricalSessionId &&
+    // Skip the doomed auto-connect for a not-installed agent ONLY in the draft
+    // surfaces, where the persistent install banner explains it instead. A
+    // persisted conversation keeps its existing connect-and-surface-the-error
+    // behavior (its agent can't be swapped from the picker anyway).
+    !(selectedAgentNotInstalled && !hasPersistedConversation) &&
     !(hasPersistedConversation && detailError) &&
     !(hasPersistedConversation && acpLoadError)
   const draftStorageKey = useMemo(() => {
@@ -533,41 +550,79 @@ const ConversationTabView = memo(function ConversationTabView({
     isViewerRef.current = conn.isViewer
   }, [conn.isViewer])
   const isConnecting = connStatus === "connecting"
+  // The tab's connection is keyed by a stable tabId, but agent switching is
+  // async — and for a not-installed target, connect()'s preflight throws BEFORE
+  // it tears down the old connection. So `conn` can still describe the PREVIOUS
+  // agent while `selectedAgent` has already advanced. When that's the case we
+  // must NOT surface the previous agent's selectors / ready-state as the
+  // selected one's: doing so showed the old agent's model + config list and
+  // (worse) let a send reach the wrong agent. Reconcile everything the composer
+  // reads against `selectedAgent`, falling back to that agent's own cached
+  // selectors (empty until it connects).
+  const connIsForOtherAgent =
+    conn.agentType != null && conn.agentType !== selectedAgent
+  const effectiveModes = connIsForOtherAgent
+    ? (getCachedSelectors(selectedAgent)?.modes ?? null)
+    : conn.modes
+  const effectiveConfigOptions = connIsForOtherAgent
+    ? (getCachedSelectors(selectedAgent)?.configOptions ?? null)
+    : conn.configOptions
   // The live connection is ready for THIS tab only when it's connected AND its
   // cwd matches the tab's intended working dir. A just-retargeted chat draft (or
   // any mid-reconnect) can briefly read a stale "connected" for the PREVIOUS cwd;
   // sending then would deliver the prompt to the wrong agent/workspace. Every
   // direct send gates on this (handleSend), mirroring the flush effect's guard.
   // No-op for normal conversations, whose connected cwd always equals intended.
-  const connectionReady = isConnectionReady(
-    connStatus,
-    conn.connectedWorkingDir,
-    workingDirForConnection
-  )
+  // A connection still bound to a different agent is never "ready" for the
+  // selected one — it would otherwise let a send reach the previous agent.
+  const connectionReady =
+    !connIsForOtherAgent &&
+    isConnectionReady(
+      connStatus,
+      conn.connectedWorkingDir,
+      workingDirForConnection
+    )
   // Present "connecting" to the composer while connected-but-not-ready, so it
   // disables its send affordance instead of inviting a submit handleSend rejects.
-  // Only ever differs from connStatus during that transient mismatch window.
-  const composerConnStatus =
-    connStatus === "connected" && !connectionReady ? "connecting" : connStatus
+  // While the live connection still belongs to a different agent, present the
+  // selected agent's real state: "disconnected" when it isn't installed (the
+  // install banner explains why), otherwise "connecting" (the switch is in
+  // flight). Only ever differs from connStatus during those transient windows.
+  const composerConnStatus = connIsForOtherAgent
+    ? selectedAgentNotInstalled
+      ? "disconnected"
+      : "connecting"
+    : connStatus === "connected" && !connectionReady
+      ? "connecting"
+      : connStatus
   const connectionModes = useMemo(
-    () => conn.modes?.available_modes ?? [],
-    [conn.modes?.available_modes]
+    () => effectiveModes?.available_modes ?? [],
+    [effectiveModes]
   )
   const connectionConfigOptions = useMemo(
-    () => conn.configOptions ?? [],
-    [conn.configOptions]
+    () => effectiveConfigOptions ?? [],
+    [effectiveConfigOptions]
   )
   const connectionCommands = useMemo(
-    () => conn.availableCommands ?? [],
-    [conn.availableCommands]
+    () => (connIsForOtherAgent ? [] : (conn.availableCommands ?? [])),
+    [connIsForOtherAgent, conn.availableCommands]
   )
   const selectedModeId = useMemo(() => {
     if (connectionModes.length === 0) return null
     if (modeId && connectionModes.some((mode) => mode.id === modeId)) {
       return modeId
     }
-    return conn.modes?.current_mode_id ?? connectionModes[0]?.id ?? null
-  }, [conn.modes?.current_mode_id, connectionModes, modeId])
+    return effectiveModes?.current_mode_id ?? connectionModes[0]?.id ?? null
+  }, [effectiveModes, connectionModes, modeId])
+
+  // The single blocking message shown in the composer's inline banner (clicking
+  // it opens Agent Settings). The not-installed prompt takes priority: it's the
+  // actionable one and, unlike the connect-time toast, it's deterministic — it
+  // appears the moment a not-installed agent is selected, independent of whether
+  // a (deduped/superseded) connect attempt ever reached the preflight.
+  const composerBlockedMessage = selectedAgentNotInstalled
+    ? tWelcome("agentNotInstalled", { agent: AGENT_LABELS[selectedAgent] })
+    : (autoConnectError ?? agentConnectError)
 
   useEffect(() => {
     if (connSessionId) {
@@ -1215,15 +1270,18 @@ const ConversationTabView = memo(function ConversationTabView({
   const handleModeChange = useCallback(
     (newModeId: string) => {
       setModeId(newModeId)
-      // Persist mode selection to localStorage immediately
-      if (conn.modes) {
+      // Persist mode selection to localStorage immediately. Use effectiveModes
+      // (reconciled to selectedAgent) rather than the raw connection modes, so a
+      // mode change made during a cross-agent switch window can't save the
+      // previous agent's mode shape under the selected agent.
+      if (effectiveModes) {
         saveModePreference(selectedAgent, {
-          ...conn.modes,
+          ...effectiveModes,
           current_mode_id: newModeId,
         })
       }
     },
-    [conn.modes, selectedAgent]
+    [effectiveModes, selectedAgent]
   )
 
   const handleAnswerQuestion = useCallback(
@@ -1386,7 +1444,6 @@ const ConversationTabView = memo(function ConversationTabView({
         connStatus={connStatus}
         isActive={isActive}
         sendSignal={sendSignal}
-        sessionStats={effectiveSessionStats}
         detailLoading={detailLoading}
         detailError={detailError}
         acpLoadError={acpLoadError}
@@ -1513,19 +1570,26 @@ const ConversationTabView = memo(function ConversationTabView({
                 disabled={isConnecting || dbConversationId != null}
               />
             </div>
-            {autoConnectError || agentConnectError ? (
-              <button
-                type="button"
-                onClick={handleOpenAgentsSettings}
-                className="w-full cursor-pointer rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-center text-xs text-destructive transition-colors hover:bg-destructive/10"
-              >
-                <div
-                  className="overflow-hidden text-ellipsis whitespace-nowrap text-center"
-                  title={autoConnectError ?? agentConnectError ?? ""}
+            {composerBlockedMessage ? (
+              <div className="flex w-full items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                <button
+                  type="button"
+                  onClick={handleOpenAgentsSettings}
+                  title={composerBlockedMessage}
+                  className="min-w-0 flex-1 cursor-pointer overflow-hidden text-ellipsis whitespace-nowrap text-left transition-colors hover:text-destructive/80"
                 >
-                  {autoConnectError ?? agentConnectError}
-                </div>
-              </button>
+                  {composerBlockedMessage}
+                </button>
+                {selectedAgentNotInstalled ? (
+                  <button
+                    type="button"
+                    onClick={() => setComposerDiagnosticsOpen(true)}
+                    className="shrink-0 rounded border border-destructive/40 px-2 py-0.5 font-medium transition-colors hover:bg-destructive/10"
+                  >
+                    {tDiag("button")}
+                  </button>
+                ) : null}
+              </div>
             ) : null}
             <ChatInput
               // composerConnStatus (not connStatus): a chat draft mid-reconnect
@@ -1584,19 +1648,26 @@ const ConversationTabView = memo(function ConversationTabView({
               onOpenAgentsSettings={handleOpenAgentsSettings}
               disabled={isConnecting || dbConversationId != null}
             />
-            {autoConnectError || agentConnectError ? (
-              <button
-                type="button"
-                onClick={handleOpenAgentsSettings}
-                className="mt-2 w-full cursor-pointer rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-center text-xs text-destructive transition-colors hover:bg-destructive/10"
-              >
-                <div
-                  className="overflow-hidden text-ellipsis whitespace-nowrap text-center"
-                  title={autoConnectError ?? agentConnectError ?? ""}
+            {composerBlockedMessage ? (
+              <div className="mt-2 flex w-full items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                <button
+                  type="button"
+                  onClick={handleOpenAgentsSettings}
+                  title={composerBlockedMessage}
+                  className="min-w-0 flex-1 cursor-pointer overflow-hidden text-ellipsis whitespace-nowrap text-left transition-colors hover:text-destructive/80"
                 >
-                  {autoConnectError ?? agentConnectError}
-                </div>
-              </button>
+                  {composerBlockedMessage}
+                </button>
+                {selectedAgentNotInstalled ? (
+                  <button
+                    type="button"
+                    onClick={() => setComposerDiagnosticsOpen(true)}
+                    className="shrink-0 rounded border border-destructive/40 px-2 py-0.5 font-medium transition-colors hover:bg-destructive/10"
+                  >
+                    {tDiag("button")}
+                  </button>
+                ) : null}
+              </div>
             ) : null}
           </div>
           <div className="min-h-0 flex-1">{messageListNode}</div>
@@ -1614,14 +1685,17 @@ const ConversationTabView = memo(function ConversationTabView({
         submitting={feedback.submitting}
         agentName={AGENT_LABELS[selectedAgent]}
       />
+      <AgentDiagnosticsDialog
+        open={composerDiagnosticsOpen}
+        onOpenChange={setComposerDiagnosticsOpen}
+        agentType={selectedAgent}
+      />
     </ConversationShell>
   )
 })
 
 export function ConversationDetailPanel() {
   const t = useTranslations("Folder.conversation")
-  const tStatus = useTranslations("Folder.statusLabels")
-  const tExport = useTranslations("Folder.conversation.exportLabels")
   const tDetails = useTranslations("Folder.sessionDetails")
   const {
     completeTurn: runtimeCompleteTurn,
@@ -1647,34 +1721,7 @@ export function ConversationDetailPanel() {
   const [reloadByTabId, setReloadByTabId] = useState<Record<string, number>>({})
   const [detailsOpen, setDetailsOpen] = useState(false)
 
-  const exportLabels = useMemo<ExportLabels>(
-    () => ({
-      untitledConversation: tExport("untitledConversation"),
-      agent: tExport("agent"),
-      model: tExport("model"),
-      status: tExport("status"),
-      started: tExport("started"),
-      updated: tExport("updated"),
-      tokens: tExport("tokens"),
-      duration: tExport("duration"),
-      inputTokens: tExport("inputTokens"),
-      outputTokens: tExport("outputTokens"),
-      cacheRead: tExport("cacheRead"),
-      cacheWrite: tExport("cacheWrite"),
-      user: tExport("user"),
-      assistant: tExport("assistant"),
-      system: tExport("system"),
-      toolResult: tExport("toolResult"),
-      toolError: tExport("toolError"),
-      statusLabels: {
-        in_progress: tStatus("in_progress"),
-        pending_review: tStatus("pending_review"),
-        completed: tStatus("completed"),
-        cancelled: tStatus("cancelled"),
-      },
-    }),
-    [tExport, tStatus]
-  )
+  const exportLabels = useExportLabels()
 
   // Disconnect the old connection immediately when a preview tab is replaced
   useEffect(() => {
@@ -1968,6 +2015,18 @@ export function ConversationDetailPanel() {
 
   const tabElements = tabs.map((tab, index) => {
     const active = tab.id === activeTabId
+    const folderPath = allFolders.find((f) => f.id === tab.folderId)?.path
+    const view = (
+      <ConversationTabView
+        tabId={tab.id}
+        conversationId={tab.conversationId}
+        agentType={tab.agentType}
+        workingDir={tab.workingDir ?? folderPath}
+        isActive={active}
+        showActiveFlow={canTile && active}
+        reloadSignal={reloadByTabId[tab.id] ?? 0}
+      />
+    )
     return (
       <div
         key={tab.id}
@@ -1982,7 +2041,7 @@ export function ConversationDetailPanel() {
           canTile
             ? cn(
                 "relative h-full min-w-[24rem] flex-1 overflow-hidden",
-                index > 0 && "border-l border-border"
+                index > 0 && "border-l border-border/50"
               )
             : active
               ? "h-full"
@@ -1998,107 +2057,114 @@ export function ConversationDetailPanel() {
         {canTile && active && (
           <span className="sr-only">{t("activeConversationIndicator")}</span>
         )}
-        <ConversationTabView
-          tabId={tab.id}
-          conversationId={tab.conversationId}
-          agentType={tab.agentType}
-          workingDir={
-            tab.workingDir ??
-            allFolders.find((f) => f.id === tab.folderId)?.path
-          }
-          isActive={active}
-          showActiveFlow={canTile && active}
-          reloadSignal={reloadByTabId[tab.id] ?? 0}
-        />
+        {view}
       </div>
     )
   })
 
+  // A single header sits fixed above the horizontally-scrolling tile row, so it
+  // never scrolls on the x-axis when conversations are tiled. It reflects the
+  // ACTIVE conversation (title + owning folder). On mobile there's no tile row —
+  // it's simply the sole conversation's header.
+  const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null
+  const activeTabFolder = activeTab
+    ? allFolders.find((f) => f.id === activeTab.folderId)
+    : undefined
+
   return (
     <>
-      <ContextMenu onOpenChange={handleContextMenuOpenChange}>
-        <ContextMenuTrigger asChild>
-          <div
-            className="relative h-full min-h-0 overflow-hidden"
-            onPointerDown={handleContextMenuTriggerPointerDown}
-          >
-            {/* Stable wrapper across canTile flip — otherwise sibling tabs remount and a live streaming response is torn down. */}
-            <ScrollArea
-              x={canTile ? "scroll" : "hidden"}
-              y="hidden"
-              className="h-full w-full"
+      <div className="flex h-full min-h-0 flex-col overflow-hidden">
+        {activeTab && (
+          <ConversationDetailHeader
+            tabId={activeTab.id}
+            conversationId={activeTab.conversationId}
+            runtimeConversationId={activeTab.runtimeConversationId ?? null}
+            folderId={activeTab.folderId}
+            folderPath={activeTabFolder?.path}
+            title={activeTab.title}
+            status={activeTab.status as ConversationStatus | undefined}
+          />
+        )}
+        <ContextMenu onOpenChange={handleContextMenuOpenChange}>
+          <ContextMenuTrigger asChild>
+            <div
+              className="relative min-h-0 flex-1 overflow-hidden"
+              onPointerDown={handleContextMenuTriggerPointerDown}
             >
-              <div
-                className={cn(
-                  "relative h-full",
-                  canTile && "flex min-w-full flex-row"
-                )}
-              >
-                {tabElements}
-              </div>
-            </ScrollArea>
-          </div>
-        </ContextMenuTrigger>
-        <ContextMenuContent>
-          <ContextMenuItem
-            disabled={!contextMenuSelectedText}
-            onSelect={handleCopySelectedText}
-          >
-            <Copy className="h-4 w-4" />
-            {t("copyText")}
-          </ContextMenuItem>
-          <ContextMenuSeparator />
-          <ContextMenuItem
-            disabled={!folder?.path}
-            onSelect={handleNewConversation}
-          >
-            <SquarePen className="h-4 w-4" />
-            {t("newConversation")}
-          </ContextMenuItem>
-          <ContextMenuSub>
-            <ContextMenuSubTrigger disabled={!canExport}>
-              <Download className="h-4 w-4" />
-              {t("exportConversation")}
-            </ContextMenuSubTrigger>
-            <ContextMenuSubContent>
-              <ContextMenuItem onSelect={handleExportImage}>
-                <FileImage className="h-4 w-4" />
-                {t("exportImage")}
-              </ContextMenuItem>
-              <ContextMenuItem onSelect={handleExportMarkdown}>
-                <FileText className="h-4 w-4" />
-                {t("exportMarkdown")}
-              </ContextMenuItem>
-              <ContextMenuItem onSelect={handleExportHtml}>
-                <FileCode className="h-4 w-4" />
-                {t("exportHtml")}
-              </ContextMenuItem>
-            </ContextMenuSubContent>
-          </ContextMenuSub>
-          <ContextMenuItem
-            disabled={!canReloadActiveConversation}
-            onSelect={handleReloadActiveConversation}
-          >
-            <RefreshCw className="h-4 w-4" />
-            {t("reload")}
-          </ContextMenuItem>
-          <ContextMenuItem
-            disabled={!activeSessionSummary}
-            onSelect={() => setDetailsOpen(true)}
-          >
-            <Info className="h-4 w-4" />
-            {tDetails("menuLabel")}
-          </ContextMenuItem>
-          <ContextMenuSeparator />
-          <ContextMenuItem
-            disabled={!activeTabId}
-            onSelect={handleCloseActiveTab}
-          >
-            <X className="h-4 w-4" />
-            {t("closeConversation")}
-          </ContextMenuItem>
-        </ContextMenuContent>
-      </ContextMenu>
+              {/* Stable wrapper across canTile flip — otherwise sibling tabs remount and a live streaming response is torn down. */}
+              <TileScrollContainer canTile={canTile}>
+                <div
+                  className={cn(
+                    "relative h-full",
+                    canTile && "flex min-w-full flex-row"
+                  )}
+                >
+                  {tabElements}
+                </div>
+              </TileScrollContainer>
+            </div>
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuItem
+              disabled={!contextMenuSelectedText}
+              onSelect={handleCopySelectedText}
+            >
+              <Copy className="h-4 w-4" />
+              {t("copyText")}
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              disabled={!folder?.path}
+              onSelect={handleNewConversation}
+            >
+              <SquarePen className="h-4 w-4" />
+              {t("newConversation")}
+            </ContextMenuItem>
+            <ContextMenuSub>
+              <ContextMenuSubTrigger disabled={!canExport}>
+                <Download className="h-4 w-4" />
+                {t("exportConversation")}
+              </ContextMenuSubTrigger>
+              <ContextMenuSubContent>
+                <ContextMenuItem onSelect={handleExportImage}>
+                  <FileImage className="h-4 w-4" />
+                  {t("exportImage")}
+                </ContextMenuItem>
+                <ContextMenuItem onSelect={handleExportMarkdown}>
+                  <FileText className="h-4 w-4" />
+                  {t("exportMarkdown")}
+                </ContextMenuItem>
+                <ContextMenuItem onSelect={handleExportHtml}>
+                  <FileCode className="h-4 w-4" />
+                  {t("exportHtml")}
+                </ContextMenuItem>
+              </ContextMenuSubContent>
+            </ContextMenuSub>
+            <ContextMenuItem
+              disabled={!canReloadActiveConversation}
+              onSelect={handleReloadActiveConversation}
+            >
+              <RefreshCw className="h-4 w-4" />
+              {t("reload")}
+            </ContextMenuItem>
+            <ContextMenuItem
+              disabled={!activeSessionSummary}
+              onSelect={() => setDetailsOpen(true)}
+            >
+              <Info className="h-4 w-4" />
+              {tDetails("menuLabel")}
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              disabled={!activeTabId}
+              onSelect={handleCloseActiveTab}
+            >
+              <X className="h-4 w-4" />
+              {t("closeConversation")}
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
+      </div>
       {activeSessionSummary && (
         <SessionDetailsDialog
           open={detailsOpen}

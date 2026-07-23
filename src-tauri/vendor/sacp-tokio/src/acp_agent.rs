@@ -194,7 +194,19 @@ impl AcpAgent {
                 let mut cmd = tokio::process::Command::new(&stdio.command);
                 cmd.args(&stdio.args);
                 for env_var in &stdio.env {
-                    cmd.env(&env_var.name, &env_var.value);
+                    // codeg convention: an empty value means "ensure this var is
+                    // ABSENT from the child" (strip an inherited value) rather
+                    // than setting it empty. The child otherwise inherits this
+                    // process's environment, so this lets the launch layer
+                    // deterministically clear a leaked credential — e.g. Cursor
+                    // subscription mode removing an inherited CURSOR_API_KEY so
+                    // the CLI uses its browser-login credential. No current
+                    // caller passes an intentional empty value.
+                    if env_var.value.is_empty() {
+                        cmd.env_remove(&env_var.name);
+                    } else {
+                        cmd.env(&env_var.name, &env_var.value);
+                    }
                 }
                 if let Some(dir) = &self.current_dir {
                     cmd.current_dir(dir);

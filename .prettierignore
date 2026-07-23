@@ -2,6 +2,8 @@ src-tauri/target/
 src-tauri/vendor/
 src-tauri/gen/
 src-tauri/experts/
+src-tauri/science/
 src-tauri/resources/opencode/models-dev.json
+src-tauri/resources/codex/bundled-catalog.json
 docs/
 pnpm-lock.yaml

@@ -203,6 +203,79 @@ describe("blocksToRestoredDraft", () => {
     })
   })
 
+  it("restores an embedded image blob (file:// origin) as a thumbnail image, not a badge", () => {
+    // An `image: false` / `embedded_context: true` agent (e.g. Grok) carries a
+    // pasted image as an embedded resource blob; it must round-trip back to a
+    // thumbnail image attachment, matching how it was composed.
+    const { attachments } = blocksToRestoredDraft(
+      [
+        {
+          type: "resource",
+          uri: "file:///a/shot.png",
+          mime_type: "image/png",
+          text: null,
+          blob: "AAAA",
+        },
+      ],
+      counter()
+    )
+    expect(attachments).toEqual([
+      {
+        id: "id-0",
+        type: "image",
+        data: "AAAA",
+        uri: "file:///a/shot.png",
+        name: "shot.png",
+        mimeType: "image/png",
+      },
+    ])
+  })
+
+  it("restores an embedded image blob (synthetic clipboard uri) with a derived name and no origin uri", () => {
+    const { attachments } = blocksToRestoredDraft(
+      [
+        {
+          type: "resource",
+          uri: "clipboard://clipboard-image-image%3A1%3A0",
+          mime_type: "image/jpeg",
+          text: null,
+          blob: "BBBB",
+        },
+      ],
+      counter()
+    )
+    // A non-`file://` synthetic uri is not a readable path, so it is dropped and
+    // the name falls back to the mime-derived default.
+    expect(attachments[0]).toMatchObject({
+      type: "image",
+      data: "BBBB",
+      uri: null,
+      name: "image.jpeg",
+      mimeType: "image/jpeg",
+    })
+  })
+
+  it("keeps a non-image embedded resource as an embedded badge", () => {
+    // Guards the mime branch: only image blobs lift to thumbnails.
+    const { attachments } = blocksToRestoredDraft(
+      [
+        {
+          type: "resource",
+          uri: "clipboard://data.bin",
+          mime_type: "application/octet-stream",
+          text: null,
+          blob: "CCCC",
+        },
+      ],
+      counter()
+    )
+    expect(attachments[0]).toMatchObject({
+      type: "resource",
+      kind: "embedded",
+      blob: "CCCC",
+    })
+  })
+
   it("restores an image block, deriving a name", () => {
     const withUri = blocksToRestoredDraft(
       [

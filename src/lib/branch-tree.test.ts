@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   buildBranchTree,
   buildRemoteBranchSections,
+  collectGroupKeys,
   containsBranch,
   expandedKeysForBranch,
   localBranchItems,
@@ -286,5 +287,43 @@ describe("sectionKey", () => {
     expect(sectionKey("local")).toBe("s local")
     expect(sectionKey("remote")).toBe("s remote")
     expect(sectionKey("remote:origin")).toBe("s remote:origin")
+  })
+})
+
+describe("collectGroupKeys", () => {
+  it("collects every prefix-group key, descending nested groups in render order", () => {
+    const nodes = buildBranchTree(
+      localBranchItems([
+        "feat/auth/login",
+        "feat/auth/logout",
+        "feat/pay",
+        "main",
+      ]),
+      "local"
+    )
+    expect(collectGroupKeys(nodes)).toEqual([
+      "g local feat",
+      "g local feat/auth",
+    ])
+  })
+
+  it("returns [] when there are no surviving prefix groups", () => {
+    // Distinct top-level branches + a single collapsed chain — all leaves.
+    const nodes = buildBranchTree(
+      localBranchItems(["main", "dev", "a/b/c"]),
+      "local"
+    )
+    expect(collectGroupKeys(nodes)).toEqual([])
+  })
+
+  it("collects tree-internal groups but not the multi-remote wrapper key", () => {
+    const [origin] = buildRemoteBranchSections([
+      "origin/feat/a",
+      "origin/feat/b",
+      "upstream/main",
+    ])
+    // Only the in-tree "feat/" group — the wrapper (section.key) lives outside.
+    expect(collectGroupKeys(origin.nodes)).toEqual(["g remote:origin feat"])
+    expect(collectGroupKeys(origin.nodes)).not.toContain(origin.key)
   })
 })

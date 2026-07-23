@@ -30,6 +30,18 @@
   -moz-osx-font-smoothing: grayscale;
   -webkit-text-size-adjust: 100%;
   --radius: 0.625rem;
+
+  /* Workspace 背景图片：面板半透明度与磨砂强度。仅当 <html data-workspace-bg="on">
+     时下方 .ws-surface* 规则才消费它们；未启用背景图时这些变量存在但无副作用。
+     --ws-surface-alpha 由 inline 脚本 / AppearanceProvider 覆盖为用户设置。 */
+  --ws-surface-alpha: 0.3;
+  --ws-surface-blur: 8px;
+
+  /* 消息内磨砂表面（ws-msg-*：内联代码 / 用户气泡 / 卡片 / 胶囊 / 表格 / 代码块标题栏）的
+     固定半透明度：刻意不随「面板不透明度」滑块（--ws-surface-alpha）变化，让这些消息内小面
+     在任何面板透明度下都稳定。全族统一用中性 --muted 染色（不再按角色分 card/secondary/primary），
+     配 backdrop 磨砂 + 1px 描边（见下方 ws-msg-* 各规则），在忙碌背景图上仍看得清、分得出边界。 */
+  --ws-msg-alpha: 0.5;
 }
 
 /* ===========================================================================
@@ -451,53 +463,53 @@
 
 /* ---------- red ---------- */
 [data-theme="red"] {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.141 0.005 285.823);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.141 0.005 285.823);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.141 0.005 285.823);
+  --background: oklch(0.994 0.004 25.331);
+  --foreground: oklch(0.141 0.014 25.331);
+  --card: oklch(0.994 0.004 25.331);
+  --card-foreground: oklch(0.141 0.014 25.331);
+  --popover: oklch(0.994 0.004 25.331);
+  --popover-foreground: oklch(0.141 0.014 25.331);
   --primary: oklch(0.637 0.237 25.331);
   --primary-foreground: oklch(0.971 0.013 17.38);
-  --secondary: oklch(0.967 0.001 286.375);
-  --secondary-foreground: oklch(0.21 0.006 285.885);
-  --muted: oklch(0.967 0.001 286.375);
-  --muted-foreground: oklch(0.552 0.016 285.938);
-  --accent: oklch(0.967 0.001 286.375);
-  --accent-foreground: oklch(0.21 0.006 285.885);
+  --secondary: oklch(0.967 0.013 25.331);
+  --secondary-foreground: oklch(0.21 0.016 25.331);
+  --muted: oklch(0.967 0.013 25.331);
+  --muted-foreground: oklch(0.552 0.032 25.331);
+  --accent: oklch(0.955 0.022 25.331);
+  --accent-foreground: oklch(0.21 0.016 25.331);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.92 0.004 286.32);
-  --input: oklch(0.92 0.004 286.32);
+  --border: oklch(0.914 0.018 25.331);
+  --input: oklch(0.914 0.018 25.331);
   --ring: oklch(0.637 0.237 25.331);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.141 0.005 285.823);
+  --sidebar: oklch(0.985 0.007 25.331);
+  --sidebar-foreground: oklch(0.141 0.014 25.331);
   --sidebar-primary: oklch(0.637 0.237 25.331);
   --sidebar-primary-foreground: oklch(0.971 0.013 17.38);
-  --sidebar-accent: oklch(0.967 0.001 286.375);
-  --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
-  --sidebar-border: oklch(0.92 0.004 286.32);
+  --sidebar-accent: oklch(0.955 0.022 25.331);
+  --sidebar-accent-foreground: oklch(0.21 0.016 25.331);
+  --sidebar-border: oklch(0.914 0.018 25.331);
   --sidebar-ring: oklch(0.637 0.237 25.331);
 }
 [data-theme="red"].dark {
-  --background: oklch(0.141 0.005 285.823);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.21 0.006 285.885);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.21 0.006 285.885);
-  --popover-foreground: oklch(0.985 0 0);
+  --background: oklch(0.141 0.012 25.331);
+  --foreground: oklch(0.985 0.003 25.331);
+  --card: oklch(0.205 0.014 25.331);
+  --card-foreground: oklch(0.985 0.003 25.331);
+  --popover: oklch(0.205 0.014 25.331);
+  --popover-foreground: oklch(0.985 0.003 25.331);
   --primary: oklch(0.637 0.237 25.331);
   --primary-foreground: oklch(0.971 0.013 17.38);
-  --secondary: oklch(0.274 0.006 286.033);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.274 0.006 286.033);
-  --muted-foreground: oklch(0.705 0.015 286.067);
-  --accent: oklch(0.274 0.006 286.033);
-  --accent-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.274 0.016 25.331);
+  --secondary-foreground: oklch(0.985 0.003 25.331);
+  --muted: oklch(0.274 0.016 25.331);
+  --muted-foreground: oklch(0.705 0.03 25.331);
+  --accent: oklch(0.32 0.02 25.331);
+  --accent-foreground: oklch(0.985 0.003 25.331);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
@@ -507,65 +519,65 @@
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.21 0.006 285.885);
-  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar: oklch(0.205 0.014 25.331);
+  --sidebar-foreground: oklch(0.985 0.003 25.331);
   --sidebar-primary: oklch(0.637 0.237 25.331);
   --sidebar-primary-foreground: oklch(0.971 0.013 17.38);
-  --sidebar-accent: oklch(0.274 0.006 286.033);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.274 0.016 25.331);
+  --sidebar-accent-foreground: oklch(0.985 0.003 25.331);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.637 0.237 25.331);
 }
 
 /* ---------- rose ---------- */
 [data-theme="rose"] {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.141 0.005 285.823);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.141 0.005 285.823);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.141 0.005 285.823);
+  --background: oklch(0.994 0.004 16.439);
+  --foreground: oklch(0.141 0.014 16.439);
+  --card: oklch(0.994 0.004 16.439);
+  --card-foreground: oklch(0.141 0.014 16.439);
+  --popover: oklch(0.994 0.004 16.439);
+  --popover-foreground: oklch(0.141 0.014 16.439);
   --primary: oklch(0.645 0.246 16.439);
   --primary-foreground: oklch(0.969 0.015 12.422);
-  --secondary: oklch(0.967 0.001 286.375);
-  --secondary-foreground: oklch(0.21 0.006 285.885);
-  --muted: oklch(0.967 0.001 286.375);
-  --muted-foreground: oklch(0.552 0.016 285.938);
-  --accent: oklch(0.967 0.001 286.375);
-  --accent-foreground: oklch(0.21 0.006 285.885);
+  --secondary: oklch(0.967 0.013 16.439);
+  --secondary-foreground: oklch(0.21 0.016 16.439);
+  --muted: oklch(0.967 0.013 16.439);
+  --muted-foreground: oklch(0.552 0.032 16.439);
+  --accent: oklch(0.955 0.022 16.439);
+  --accent-foreground: oklch(0.21 0.016 16.439);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.92 0.004 286.32);
-  --input: oklch(0.92 0.004 286.32);
+  --border: oklch(0.914 0.018 16.439);
+  --input: oklch(0.914 0.018 16.439);
   --ring: oklch(0.645 0.246 16.439);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.141 0.005 285.823);
+  --sidebar: oklch(0.985 0.007 16.439);
+  --sidebar-foreground: oklch(0.141 0.014 16.439);
   --sidebar-primary: oklch(0.645 0.246 16.439);
   --sidebar-primary-foreground: oklch(0.969 0.015 12.422);
-  --sidebar-accent: oklch(0.967 0.001 286.375);
-  --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
-  --sidebar-border: oklch(0.92 0.004 286.32);
+  --sidebar-accent: oklch(0.955 0.022 16.439);
+  --sidebar-accent-foreground: oklch(0.21 0.016 16.439);
+  --sidebar-border: oklch(0.914 0.018 16.439);
   --sidebar-ring: oklch(0.645 0.246 16.439);
 }
 [data-theme="rose"].dark {
-  --background: oklch(0.141 0.005 285.823);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.21 0.006 285.885);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.21 0.006 285.885);
-  --popover-foreground: oklch(0.985 0 0);
+  --background: oklch(0.141 0.012 16.439);
+  --foreground: oklch(0.985 0.003 16.439);
+  --card: oklch(0.205 0.014 16.439);
+  --card-foreground: oklch(0.985 0.003 16.439);
+  --popover: oklch(0.205 0.014 16.439);
+  --popover-foreground: oklch(0.985 0.003 16.439);
   --primary: oklch(0.645 0.246 16.439);
   --primary-foreground: oklch(0.969 0.015 12.422);
-  --secondary: oklch(0.274 0.006 286.033);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.274 0.006 286.033);
-  --muted-foreground: oklch(0.705 0.015 286.067);
-  --accent: oklch(0.274 0.006 286.033);
-  --accent-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.274 0.016 16.439);
+  --secondary-foreground: oklch(0.985 0.003 16.439);
+  --muted: oklch(0.274 0.016 16.439);
+  --muted-foreground: oklch(0.705 0.03 16.439);
+  --accent: oklch(0.32 0.02 16.439);
+  --accent-foreground: oklch(0.985 0.003 16.439);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
@@ -575,65 +587,65 @@
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.21 0.006 285.885);
-  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar: oklch(0.205 0.014 16.439);
+  --sidebar-foreground: oklch(0.985 0.003 16.439);
   --sidebar-primary: oklch(0.645 0.246 16.439);
   --sidebar-primary-foreground: oklch(0.969 0.015 12.422);
-  --sidebar-accent: oklch(0.274 0.006 286.033);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.274 0.016 16.439);
+  --sidebar-accent-foreground: oklch(0.985 0.003 16.439);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.645 0.246 16.439);
 }
 
 /* ---------- orange ---------- */
 [data-theme="orange"] {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.141 0.005 285.823);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.141 0.005 285.823);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.141 0.005 285.823);
+  --background: oklch(0.994 0.004 47.604);
+  --foreground: oklch(0.141 0.014 47.604);
+  --card: oklch(0.994 0.004 47.604);
+  --card-foreground: oklch(0.141 0.014 47.604);
+  --popover: oklch(0.994 0.004 47.604);
+  --popover-foreground: oklch(0.141 0.014 47.604);
   --primary: oklch(0.705 0.213 47.604);
   --primary-foreground: oklch(0.98 0.016 73.684);
-  --secondary: oklch(0.967 0.001 286.375);
-  --secondary-foreground: oklch(0.21 0.006 285.885);
-  --muted: oklch(0.967 0.001 286.375);
-  --muted-foreground: oklch(0.552 0.016 285.938);
-  --accent: oklch(0.967 0.001 286.375);
-  --accent-foreground: oklch(0.21 0.006 285.885);
+  --secondary: oklch(0.967 0.013 47.604);
+  --secondary-foreground: oklch(0.21 0.016 47.604);
+  --muted: oklch(0.967 0.013 47.604);
+  --muted-foreground: oklch(0.552 0.032 47.604);
+  --accent: oklch(0.955 0.022 47.604);
+  --accent-foreground: oklch(0.21 0.016 47.604);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.92 0.004 286.32);
-  --input: oklch(0.92 0.004 286.32);
+  --border: oklch(0.914 0.018 47.604);
+  --input: oklch(0.914 0.018 47.604);
   --ring: oklch(0.705 0.213 47.604);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.141 0.005 285.823);
+  --sidebar: oklch(0.985 0.007 47.604);
+  --sidebar-foreground: oklch(0.141 0.014 47.604);
   --sidebar-primary: oklch(0.705 0.213 47.604);
   --sidebar-primary-foreground: oklch(0.98 0.016 73.684);
-  --sidebar-accent: oklch(0.967 0.001 286.375);
-  --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
-  --sidebar-border: oklch(0.92 0.004 286.32);
+  --sidebar-accent: oklch(0.955 0.022 47.604);
+  --sidebar-accent-foreground: oklch(0.21 0.016 47.604);
+  --sidebar-border: oklch(0.914 0.018 47.604);
   --sidebar-ring: oklch(0.705 0.213 47.604);
 }
 [data-theme="orange"].dark {
-  --background: oklch(0.141 0.005 285.823);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.21 0.006 285.885);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.21 0.006 285.885);
-  --popover-foreground: oklch(0.985 0 0);
+  --background: oklch(0.141 0.012 47.604);
+  --foreground: oklch(0.985 0.003 47.604);
+  --card: oklch(0.205 0.014 47.604);
+  --card-foreground: oklch(0.985 0.003 47.604);
+  --popover: oklch(0.205 0.014 47.604);
+  --popover-foreground: oklch(0.985 0.003 47.604);
   --primary: oklch(0.646 0.222 41.116);
   --primary-foreground: oklch(0.98 0.016 73.684);
-  --secondary: oklch(0.274 0.006 286.033);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.274 0.006 286.033);
-  --muted-foreground: oklch(0.705 0.015 286.067);
-  --accent: oklch(0.274 0.006 286.033);
-  --accent-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.274 0.016 47.604);
+  --secondary-foreground: oklch(0.985 0.003 47.604);
+  --muted: oklch(0.274 0.016 47.604);
+  --muted-foreground: oklch(0.705 0.03 47.604);
+  --accent: oklch(0.32 0.02 47.604);
+  --accent-foreground: oklch(0.985 0.003 47.604);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
@@ -643,65 +655,65 @@
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.21 0.006 285.885);
-  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar: oklch(0.205 0.014 47.604);
+  --sidebar-foreground: oklch(0.985 0.003 47.604);
   --sidebar-primary: oklch(0.646 0.222 41.116);
   --sidebar-primary-foreground: oklch(0.98 0.016 73.684);
-  --sidebar-accent: oklch(0.274 0.006 286.033);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.274 0.016 47.604);
+  --sidebar-accent-foreground: oklch(0.985 0.003 47.604);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.646 0.222 41.116);
 }
 
 /* ---------- green ---------- */
 [data-theme="green"] {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.141 0.005 285.823);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.141 0.005 285.823);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.141 0.005 285.823);
+  --background: oklch(0.994 0.004 149.579);
+  --foreground: oklch(0.141 0.014 149.579);
+  --card: oklch(0.994 0.004 149.579);
+  --card-foreground: oklch(0.141 0.014 149.579);
+  --popover: oklch(0.994 0.004 149.579);
+  --popover-foreground: oklch(0.141 0.014 149.579);
   --primary: oklch(0.723 0.219 149.579);
   --primary-foreground: oklch(0.982 0.018 155.826);
-  --secondary: oklch(0.967 0.001 286.375);
-  --secondary-foreground: oklch(0.21 0.006 285.885);
-  --muted: oklch(0.967 0.001 286.375);
-  --muted-foreground: oklch(0.552 0.016 285.938);
-  --accent: oklch(0.967 0.001 286.375);
-  --accent-foreground: oklch(0.21 0.006 285.885);
+  --secondary: oklch(0.967 0.013 149.579);
+  --secondary-foreground: oklch(0.21 0.016 149.579);
+  --muted: oklch(0.967 0.013 149.579);
+  --muted-foreground: oklch(0.552 0.032 149.579);
+  --accent: oklch(0.955 0.022 149.579);
+  --accent-foreground: oklch(0.21 0.016 149.579);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.92 0.004 286.32);
-  --input: oklch(0.92 0.004 286.32);
+  --border: oklch(0.914 0.018 149.579);
+  --input: oklch(0.914 0.018 149.579);
   --ring: oklch(0.723 0.219 149.579);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.141 0.005 285.823);
+  --sidebar: oklch(0.985 0.007 149.579);
+  --sidebar-foreground: oklch(0.141 0.014 149.579);
   --sidebar-primary: oklch(0.723 0.219 149.579);
   --sidebar-primary-foreground: oklch(0.982 0.018 155.826);
-  --sidebar-accent: oklch(0.967 0.001 286.375);
-  --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
-  --sidebar-border: oklch(0.92 0.004 286.32);
+  --sidebar-accent: oklch(0.955 0.022 149.579);
+  --sidebar-accent-foreground: oklch(0.21 0.016 149.579);
+  --sidebar-border: oklch(0.914 0.018 149.579);
   --sidebar-ring: oklch(0.723 0.219 149.579);
 }
 [data-theme="green"].dark {
-  --background: oklch(0.141 0.005 285.823);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.21 0.006 285.885);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.21 0.006 285.885);
-  --popover-foreground: oklch(0.985 0 0);
+  --background: oklch(0.141 0.012 149.579);
+  --foreground: oklch(0.985 0.003 149.579);
+  --card: oklch(0.205 0.014 149.579);
+  --card-foreground: oklch(0.985 0.003 149.579);
+  --popover: oklch(0.205 0.014 149.579);
+  --popover-foreground: oklch(0.985 0.003 149.579);
   --primary: oklch(0.696 0.17 162.48);
   --primary-foreground: oklch(0.393 0.095 152.535);
-  --secondary: oklch(0.274 0.006 286.033);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.274 0.006 286.033);
-  --muted-foreground: oklch(0.705 0.015 286.067);
-  --accent: oklch(0.274 0.006 286.033);
-  --accent-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.274 0.016 149.579);
+  --secondary-foreground: oklch(0.985 0.003 149.579);
+  --muted: oklch(0.274 0.016 149.579);
+  --muted-foreground: oklch(0.705 0.03 149.579);
+  --accent: oklch(0.32 0.02 149.579);
+  --accent-foreground: oklch(0.985 0.003 149.579);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
@@ -711,65 +723,65 @@
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.21 0.006 285.885);
-  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar: oklch(0.205 0.014 149.579);
+  --sidebar-foreground: oklch(0.985 0.003 149.579);
   --sidebar-primary: oklch(0.696 0.17 162.48);
   --sidebar-primary-foreground: oklch(0.393 0.095 152.535);
-  --sidebar-accent: oklch(0.274 0.006 286.033);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.274 0.016 149.579);
+  --sidebar-accent-foreground: oklch(0.985 0.003 149.579);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.696 0.17 162.48);
 }
 
 /* ---------- blue ---------- */
 [data-theme="blue"] {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.141 0.005 285.823);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.141 0.005 285.823);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.141 0.005 285.823);
+  --background: oklch(0.994 0.004 262.881);
+  --foreground: oklch(0.141 0.014 262.881);
+  --card: oklch(0.994 0.004 262.881);
+  --card-foreground: oklch(0.141 0.014 262.881);
+  --popover: oklch(0.994 0.004 262.881);
+  --popover-foreground: oklch(0.141 0.014 262.881);
   --primary: oklch(0.546 0.245 262.881);
   --primary-foreground: oklch(0.97 0.014 254.604);
-  --secondary: oklch(0.967 0.001 286.375);
-  --secondary-foreground: oklch(0.21 0.006 285.885);
-  --muted: oklch(0.967 0.001 286.375);
-  --muted-foreground: oklch(0.552 0.016 285.938);
-  --accent: oklch(0.967 0.001 286.375);
-  --accent-foreground: oklch(0.21 0.006 285.885);
+  --secondary: oklch(0.967 0.013 262.881);
+  --secondary-foreground: oklch(0.21 0.016 262.881);
+  --muted: oklch(0.967 0.013 262.881);
+  --muted-foreground: oklch(0.552 0.032 262.881);
+  --accent: oklch(0.955 0.022 262.881);
+  --accent-foreground: oklch(0.21 0.016 262.881);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.92 0.004 286.32);
-  --input: oklch(0.92 0.004 286.32);
+  --border: oklch(0.914 0.018 262.881);
+  --input: oklch(0.914 0.018 262.881);
   --ring: oklch(0.546 0.245 262.881);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.141 0.005 285.823);
+  --sidebar: oklch(0.985 0.007 262.881);
+  --sidebar-foreground: oklch(0.141 0.014 262.881);
   --sidebar-primary: oklch(0.546 0.245 262.881);
   --sidebar-primary-foreground: oklch(0.97 0.014 254.604);
-  --sidebar-accent: oklch(0.967 0.001 286.375);
-  --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
-  --sidebar-border: oklch(0.92 0.004 286.32);
+  --sidebar-accent: oklch(0.955 0.022 262.881);
+  --sidebar-accent-foreground: oklch(0.21 0.016 262.881);
+  --sidebar-border: oklch(0.914 0.018 262.881);
   --sidebar-ring: oklch(0.546 0.245 262.881);
 }
 [data-theme="blue"].dark {
-  --background: oklch(0.141 0.005 285.823);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.21 0.006 285.885);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.21 0.006 285.885);
-  --popover-foreground: oklch(0.985 0 0);
+  --background: oklch(0.141 0.012 262.881);
+  --foreground: oklch(0.985 0.003 262.881);
+  --card: oklch(0.205 0.014 262.881);
+  --card-foreground: oklch(0.985 0.003 262.881);
+  --popover: oklch(0.205 0.014 262.881);
+  --popover-foreground: oklch(0.985 0.003 262.881);
   --primary: oklch(0.623 0.214 259.815);
   --primary-foreground: oklch(0.97 0.014 254.604);
-  --secondary: oklch(0.274 0.006 286.033);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.274 0.006 286.033);
-  --muted-foreground: oklch(0.705 0.015 286.067);
-  --accent: oklch(0.274 0.006 286.033);
-  --accent-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.274 0.016 262.881);
+  --secondary-foreground: oklch(0.985 0.003 262.881);
+  --muted: oklch(0.274 0.016 262.881);
+  --muted-foreground: oklch(0.705 0.03 262.881);
+  --accent: oklch(0.32 0.02 262.881);
+  --accent-foreground: oklch(0.985 0.003 262.881);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
@@ -779,65 +791,65 @@
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.21 0.006 285.885);
-  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar: oklch(0.205 0.014 262.881);
+  --sidebar-foreground: oklch(0.985 0.003 262.881);
   --sidebar-primary: oklch(0.546 0.245 262.881);
   --sidebar-primary-foreground: oklch(0.97 0.014 254.604);
-  --sidebar-accent: oklch(0.274 0.006 286.033);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.274 0.016 262.881);
+  --sidebar-accent-foreground: oklch(0.985 0.003 262.881);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.488 0.243 264.376);
 }
 
 /* ---------- yellow ---------- */
 [data-theme="yellow"] {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.141 0.005 285.823);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.141 0.005 285.823);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.141 0.005 285.823);
+  --background: oklch(0.994 0.004 86.047);
+  --foreground: oklch(0.141 0.014 86.047);
+  --card: oklch(0.994 0.004 86.047);
+  --card-foreground: oklch(0.141 0.014 86.047);
+  --popover: oklch(0.994 0.004 86.047);
+  --popover-foreground: oklch(0.141 0.014 86.047);
   --primary: oklch(0.795 0.184 86.047);
   --primary-foreground: oklch(0.421 0.095 57.708);
-  --secondary: oklch(0.967 0.001 286.375);
-  --secondary-foreground: oklch(0.21 0.006 285.885);
-  --muted: oklch(0.967 0.001 286.375);
-  --muted-foreground: oklch(0.552 0.016 285.938);
-  --accent: oklch(0.967 0.001 286.375);
-  --accent-foreground: oklch(0.21 0.006 285.885);
+  --secondary: oklch(0.967 0.013 86.047);
+  --secondary-foreground: oklch(0.21 0.016 86.047);
+  --muted: oklch(0.967 0.013 86.047);
+  --muted-foreground: oklch(0.552 0.032 86.047);
+  --accent: oklch(0.955 0.022 86.047);
+  --accent-foreground: oklch(0.21 0.016 86.047);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.92 0.004 286.32);
-  --input: oklch(0.92 0.004 286.32);
+  --border: oklch(0.914 0.018 86.047);
+  --input: oklch(0.914 0.018 86.047);
   --ring: oklch(0.795 0.184 86.047);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.141 0.005 285.823);
+  --sidebar: oklch(0.985 0.007 86.047);
+  --sidebar-foreground: oklch(0.141 0.014 86.047);
   --sidebar-primary: oklch(0.795 0.184 86.047);
   --sidebar-primary-foreground: oklch(0.421 0.095 57.708);
-  --sidebar-accent: oklch(0.967 0.001 286.375);
-  --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
-  --sidebar-border: oklch(0.92 0.004 286.32);
+  --sidebar-accent: oklch(0.955 0.022 86.047);
+  --sidebar-accent-foreground: oklch(0.21 0.016 86.047);
+  --sidebar-border: oklch(0.914 0.018 86.047);
   --sidebar-ring: oklch(0.795 0.184 86.047);
 }
 [data-theme="yellow"].dark {
-  --background: oklch(0.141 0.005 285.823);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.21 0.006 285.885);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.21 0.006 285.885);
-  --popover-foreground: oklch(0.985 0 0);
+  --background: oklch(0.141 0.012 86.047);
+  --foreground: oklch(0.985 0.003 86.047);
+  --card: oklch(0.205 0.014 86.047);
+  --card-foreground: oklch(0.985 0.003 86.047);
+  --popover: oklch(0.205 0.014 86.047);
+  --popover-foreground: oklch(0.985 0.003 86.047);
   --primary: oklch(0.795 0.184 86.047);
   --primary-foreground: oklch(0.421 0.095 57.708);
-  --secondary: oklch(0.274 0.006 286.033);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.274 0.006 286.033);
-  --muted-foreground: oklch(0.705 0.015 286.067);
-  --accent: oklch(0.274 0.006 286.033);
-  --accent-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.274 0.016 86.047);
+  --secondary-foreground: oklch(0.985 0.003 86.047);
+  --muted: oklch(0.274 0.016 86.047);
+  --muted-foreground: oklch(0.705 0.03 86.047);
+  --accent: oklch(0.32 0.02 86.047);
+  --accent-foreground: oklch(0.985 0.003 86.047);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
@@ -847,65 +859,65 @@
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.21 0.006 285.885);
-  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar: oklch(0.205 0.014 86.047);
+  --sidebar-foreground: oklch(0.985 0.003 86.047);
   --sidebar-primary: oklch(0.795 0.184 86.047);
   --sidebar-primary-foreground: oklch(0.421 0.095 57.708);
-  --sidebar-accent: oklch(0.274 0.006 286.033);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.274 0.016 86.047);
+  --sidebar-accent-foreground: oklch(0.985 0.003 86.047);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.554 0.135 66.442);
 }
 
 /* ---------- violet ---------- */
 [data-theme="violet"] {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.141 0.005 285.823);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.141 0.005 285.823);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.141 0.005 285.823);
+  --background: oklch(0.994 0.004 292.717);
+  --foreground: oklch(0.141 0.014 292.717);
+  --card: oklch(0.994 0.004 292.717);
+  --card-foreground: oklch(0.141 0.014 292.717);
+  --popover: oklch(0.994 0.004 292.717);
+  --popover-foreground: oklch(0.141 0.014 292.717);
   --primary: oklch(0.606 0.25 292.717);
   --primary-foreground: oklch(0.969 0.016 293.756);
-  --secondary: oklch(0.967 0.001 286.375);
-  --secondary-foreground: oklch(0.21 0.006 285.885);
-  --muted: oklch(0.967 0.001 286.375);
-  --muted-foreground: oklch(0.552 0.016 285.938);
-  --accent: oklch(0.967 0.001 286.375);
-  --accent-foreground: oklch(0.21 0.006 285.885);
+  --secondary: oklch(0.967 0.013 292.717);
+  --secondary-foreground: oklch(0.21 0.016 292.717);
+  --muted: oklch(0.967 0.013 292.717);
+  --muted-foreground: oklch(0.552 0.032 292.717);
+  --accent: oklch(0.955 0.022 292.717);
+  --accent-foreground: oklch(0.21 0.016 292.717);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.92 0.004 286.32);
-  --input: oklch(0.92 0.004 286.32);
+  --border: oklch(0.914 0.018 292.717);
+  --input: oklch(0.914 0.018 292.717);
   --ring: oklch(0.606 0.25 292.717);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.141 0.005 285.823);
+  --sidebar: oklch(0.985 0.007 292.717);
+  --sidebar-foreground: oklch(0.141 0.014 292.717);
   --sidebar-primary: oklch(0.606 0.25 292.717);
   --sidebar-primary-foreground: oklch(0.969 0.016 293.756);
-  --sidebar-accent: oklch(0.967 0.001 286.375);
-  --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
-  --sidebar-border: oklch(0.92 0.004 286.32);
+  --sidebar-accent: oklch(0.955 0.022 292.717);
+  --sidebar-accent-foreground: oklch(0.21 0.016 292.717);
+  --sidebar-border: oklch(0.914 0.018 292.717);
   --sidebar-ring: oklch(0.606 0.25 292.717);
 }
 [data-theme="violet"].dark {
-  --background: oklch(0.141 0.005 285.823);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.21 0.006 285.885);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.21 0.006 285.885);
-  --popover-foreground: oklch(0.985 0 0);
+  --background: oklch(0.141 0.012 292.717);
+  --foreground: oklch(0.985 0.003 292.717);
+  --card: oklch(0.205 0.014 292.717);
+  --card-foreground: oklch(0.985 0.003 292.717);
+  --popover: oklch(0.205 0.014 292.717);
+  --popover-foreground: oklch(0.985 0.003 292.717);
   --primary: oklch(0.541 0.281 293.009);
   --primary-foreground: oklch(0.969 0.016 293.756);
-  --secondary: oklch(0.274 0.006 286.033);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.274 0.006 286.033);
-  --muted-foreground: oklch(0.705 0.015 286.067);
-  --accent: oklch(0.274 0.006 286.033);
-  --accent-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.274 0.016 292.717);
+  --secondary-foreground: oklch(0.985 0.003 292.717);
+  --muted: oklch(0.274 0.016 292.717);
+  --muted-foreground: oklch(0.705 0.03 292.717);
+  --accent: oklch(0.32 0.02 292.717);
+  --accent-foreground: oklch(0.985 0.003 292.717);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
@@ -915,12 +927,12 @@
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.21 0.006 285.885);
-  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar: oklch(0.205 0.014 292.717);
+  --sidebar-foreground: oklch(0.985 0.003 292.717);
   --sidebar-primary: oklch(0.541 0.281 293.009);
   --sidebar-primary-foreground: oklch(0.969 0.016 293.756);
-  --sidebar-accent: oklch(0.274 0.006 286.033);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.274 0.016 292.717);
+  --sidebar-accent-foreground: oklch(0.985 0.003 292.717);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.541 0.281 293.009);
 }
@@ -1015,6 +1027,277 @@
   }
 }
 
+/* ===========================================================================
+   Workspace 背景图片：半透明表面
+   workspace/layout.tsx 的结构性表面（侧栏/面板/标签条/终端/状态栏）用这几个语义
+   类替代 bg-sidebar/bg-muted/bg-background。未启用背景图时它们与原 Tailwind 工具类
+   字节等价（纯色，折叠防闪白契约不变）；仅当 inline 脚本 / Provider 给 <html> 打上
+   data-workspace-bg="on" 时才转为半透明 + 磨砂，透出背景图。
+   ========================================================================= */
+.ws-surface {
+  background-color: var(--background);
+}
+.ws-surface-muted {
+  background-color: var(--muted);
+}
+.ws-surface-sidebar {
+  background-color: var(--sidebar);
+}
+
+[data-workspace-bg="on"] .ws-surface {
+  background-color: color-mix(
+    in oklch,
+    var(--background) calc(var(--ws-surface-alpha) * 100%),
+    transparent
+  );
+  -webkit-backdrop-filter: blur(var(--ws-surface-blur));
+  backdrop-filter: blur(var(--ws-surface-blur));
+}
+[data-workspace-bg="on"] .ws-surface-muted {
+  background-color: color-mix(
+    in oklch,
+    var(--muted) calc(var(--ws-surface-alpha) * 100%),
+    transparent
+  );
+  -webkit-backdrop-filter: blur(var(--ws-surface-blur));
+  backdrop-filter: blur(var(--ws-surface-blur));
+}
+[data-workspace-bg="on"] .ws-surface-sidebar {
+  background-color: color-mix(
+    in oklch,
+    var(--sidebar) calc(var(--ws-surface-alpha) * 100%),
+    transparent
+  );
+  -webkit-backdrop-filter: blur(var(--ws-surface-blur));
+  backdrop-filter: blur(var(--ws-surface-blur));
+}
+/* Card 表面（面板级，磨砂，组合式）：无 base 规则，与元素上的 bg-card 配对——关图时保留
+   bg-card 原样（含 hover:bg-* 等 layered 工具类，零回归），开图才转半透明磨砂。属 ws-surface-*
+   面板级家族，跟随「面板不透明度」滑块（--ws-surface-alpha）。消息流内的卡片改用 ws-msg-card
+   （固定 --ws-msg-alpha，不随滑块，见下）；此原语保留给面板级卡片（如 git-log 提交卡），当前
+   暂无消费者。老 WebKit 无 color-mix 时声明作废 → 回落到元素自带 bg-card（不透明），无需额外兜底。 */
+[data-workspace-bg="on"] .ws-surface-card {
+  background-color: color-mix(
+    in oklch,
+    var(--card) calc(var(--ws-surface-alpha) * 100%),
+    transparent
+  );
+  -webkit-backdrop-filter: blur(var(--ws-surface-blur));
+  backdrop-filter: blur(var(--ws-surface-blur));
+}
+
+/* 内联代码全圆角 pill（与背景图无关，始终生效）：Streamdown 默认 rounded(小圆角)→改 rounded-full,
+   与合并工具胶囊一致；略增左右内边距让 pill 两端不挤字；box-decoration-break: clone 提为常驻——
+   inline-code 是行内元素，跨行折断时默认(slice)会把底色/ring/圆角当一个盒切开、断处露豁口，clone
+   让每段行片各自成完整圆角 pill。属性选择器(unlayered)压过 streamdown 的 layered rounded/px-1.5。 */
+[data-streamdown="inline-code"] {
+  border-radius: 9999px;
+  padding-inline: 0.5rem;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* 会话内联代码（Streamdown 的 inline-code，元素自带 bg-muted）：开图转半透明中性染色（不磨砂，
+   用户要真透出背景图），用 inset 1px ring 描出边界（纯色 var(--border)，不改盒模型、无回流，替代
+   磨砂提供分离）。组合式无 base 规则，关图零回归（bg-muted 原样保留）。代码块（code-block-body）
+   有 shiki 底色，不在此列。 */
+[data-workspace-bg="on"] [data-streamdown="inline-code"] {
+  background-color: color-mix(
+    in oklch,
+    var(--muted) calc(var(--ws-msg-alpha) * 100%),
+    transparent
+  );
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+/* 用户消息气泡（MessageContent 上的 ws-msg-secondary，配对元素自带的
+   group-[.is-user]:bg-secondary）：开图转半透明中性染色（全族统一 --muted，不磨砂，不再 secondary
+   色）+ inset 1px ring 描边（纯色 var(--border)，替代磨砂提供分离）。以 .is-user 祖先限定——助手
+   消息（.is-assistant）本无气泡底色，须保持画布透出，不受影响。关图零回归。 */
+[data-workspace-bg="on"] .is-user .ws-msg-secondary {
+  background-color: color-mix(
+    in oklch,
+    var(--muted) calc(var(--ws-msg-alpha) * 100%),
+    transparent
+  );
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+/* 折叠态用户消息底部渐隐：遮罩内容本身而非叠加层，跟 .qa-marquee-viewport /
+   .browser-tab-label 同技术，天然适配纯色 bg-secondary 或开工作区背景图后的
+   半透明 ws-msg-secondary。不属于下面的 ws- 门控家族，始终生效。 */
+.collapsed-user-message-fade {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - 2.5rem),
+    transparent
+  );
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
+}
+
+/* ===== 消息内半透明表面 ws-msg-* =====
+   会话消息内一切带底色元素读作同一种半透明中性染色（**不磨砂**，用户要真透出背景图）+ 1px
+   var(--border) 边。alpha 固定（--ws-msg-alpha=0.5），刻意不随「面板不透明度」滑块——消息不随
+   chrome 不透明度抖动，区别于面板级 ws-surface-* 家族（那族仍磨砂、跟滑块）。组合式（无 base
+   规则）：配元素自带的 bg-*（关图兜底，零回归）；老 WebKit 无 color-mix 时染色声明作废、回落
+   到元素自带 bg-*（不透明），ring 用纯色仍描边。 */
+
+/* 内容卡片（抬升的容器：委派三卡 / 后台任务卡 / 提问两卡 / 计划卡 / CodeBlock 根）。全族统一
+   染色用中性 --muted；边界由元素自带 border 提供，无需 ring。 */
+[data-workspace-bg="on"] .ws-msg-card {
+  background-color: color-mix(
+    in oklch,
+    var(--muted) calc(var(--ws-msg-alpha) * 100%),
+    transparent
+  );
+}
+
+/* 轻量胶囊（合并工具胶囊 / Agent 胶囊）：全族统一后与卡片同族——开图转半透明中性染色
+   （muted@--ws-msg-alpha，不磨砂）+ inset 1px ring（pill 无边框故用 ring）。关图零回归（无 base
+   规则，元素自带 bg-muted/60·bg-primary/10 原样）。注：开图 unlayered 背景会盖过同节点
+   hover:bg-*，与卡片一致（染色即表面）。 */
+[data-workspace-bg="on"] .ws-msg-chip {
+  background-color: color-mix(
+    in oklch,
+    var(--muted) calc(var(--ws-msg-alpha) * 100%),
+    transparent
+  );
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+/* 会话表格（Streamdown 内部渲染）：表格整体做成圆角半透明卡片——圆角/边框挂在滚动容器上（见
+   下方 table-wrapper 区块，不磨砂），thead/tbody 只上半透明中性染色。表头比表体略深保层级；关图
+   回落各自 bg-muted/80·bg-muted/40（属性选择器 unlayered 压过 streamdown 的 layered 值）。 */
+[data-workspace-bg="on"] [data-streamdown="table-header"] {
+  background-color: color-mix(in oklch, var(--muted) 65%, transparent);
+}
+[data-workspace-bg="on"] [data-streamdown="table-body"] {
+  background-color: color-mix(
+    in oklch,
+    var(--muted) calc(var(--ws-msg-alpha) * 100%),
+    transparent
+  );
+}
+
+/* 围栏代码块标题栏（Streamdown 的 code-block-header，元素自带 bg-muted/80）：转半透明中性染色
+   （不磨砂），与其它 muted 标题栏统一。代码块根自带 rounded-xl border 作边界。代码正文
+   （code-block-body）有 shiki 底色、保持不透明（护可读性），不在此列。 */
+[data-workspace-bg="on"] [data-streamdown="code-block-header"] {
+  background-color: color-mix(
+    in oklch,
+    var(--muted) calc(var(--ws-msg-alpha) * 100%),
+    transparent
+  );
+}
+
+/* Canvas 表面：开启背景图时强制透明，让底层背景图 + 遮罩直接透出（会话/文件
+   overlay section、侧栏会话行）。无 base 规则 —— 与元素上配对的 bg-*（bg-background
+   / bg-sidebar）组合，未启用背景图时完全等价那个纯色（零回归）。透明不依赖
+   color-mix，故无需 @supports 降级。 */
+[data-workspace-bg="on"] .ws-transparent-bg {
+  background-color: transparent;
+}
+
+/* 终端画布：让 xterm 视口透出所属 ws-surface 面板的磨砂表面（而非黑块）。xterm 6 的视口
+   分两层——外层 .xterm-viewport（xterm.css 硬编码 background-color:#000，且不随主题变化）
+   套着内层 SmoothScrollableElement 节点（终端主题背景色应用在这层）。terminal-view.tsx 已把
+   内层主题背景改成 alpha 0（透明），但外层那层黑底会透出来，终端仍是黑块。这里把外层也改
+   透明——两层皆透，终端画布才透出下方磨砂面板。选择器 .xterm .xterm-viewport 特异性(0,3,0)
+   高于 xterm.css 同名规则(0,2,0)，无需 !important；纯透明不依赖 color-mix，关图无此规则，
+   零回归。 */
+[data-workspace-bg="on"] .xterm .xterm-viewport {
+  background-color: transparent;
+}
+
+/* Monaco sticky scroll（钉住的父级作用域行）：开背景图时编辑器画布透明（WSBG_CANVAS_ALPHA=0），
+   sticky 头部也随画布透明（monaco-themes.ts 里 sticky 背景跟随 canvas）。放任透明则滚动的代码
+   从钉住行下方透出、两者重叠看不清；填成不透明画布色又是浮在背景图上一坨突兀的深色块（用户
+   反馈「一坨黑色」）。这里把整条 .sticky-widget 做成与消息内联代码/气泡同族的磨砂表面：半透明
+   画布色（--card，与编辑器画布同源）+ backdrop 磨砂，把身后滚动代码与背景图糊开，钉住行文字
+   清晰浮于其上。alpha 固定（--ws-msg-alpha），与消息内小面统一、不随面板滑块。主题侧 sticky
+   背景已随画布透明，故此处单层着色、无接缝。关图无 data-workspace-bg，规则不生效，零回归。
+
+   ★覆盖到滚动条条带：Monaco 运行时给 .sticky-widget 打 inline width =
+   layoutInfo.width − verticalScrollbarWidth（stickyScrollWidget.js:160，即内容宽，右侧漏出
+   一条竖向滚动条宽的条带），CSS 里的 width:100% 被这条 inline 盖过 → 磨砂层到不了右边缘，
+   滚动代码从那条缝透出（用户反馈「右边显示不全」）。故用 width:100% !important 压过 inline
+   width，把磨砂层铺到编辑器右缘补上那条缝。安全性：可见滚动条 .monaco-scrollable-element>.visible
+   是 z-index:11（scrollbars.css），高于 sticky-widget 的 z-index:4——磨砂层永远在滚动条之下，
+   滑块照常浮在其上、可拖可点；滚动条隐藏时（opacity:0 不绘制）磨砂层正好补上条带。backdrop
+   只糊身后的代码，不糊上层滑块。 */
+[data-workspace-bg="on"] .monaco-editor .sticky-widget {
+  /* 压过 Monaco 的 inline 内容宽，铺满到右缘（含滚动条条带）。见上方安全性说明。 */
+  width: 100% !important;
+  background-color: color-mix(
+    in oklch,
+    var(--card) calc(var(--ws-msg-alpha) * 100%),
+    transparent
+  );
+  -webkit-backdrop-filter: blur(var(--ws-surface-blur));
+  backdrop-filter: blur(var(--ws-surface-blur));
+}
+
+/* 顶部标签条「浏览器拱门」下边框（组合式，无 base 规则，关图零回归）。整条标签条 +
+   所有 tab 开图皆透明（透出真背景图）；靠一条细下边框把标签条与下方内容分隔，唯独激活
+   tab 处开口——线绕到激活 tab 顶部走一圈（拱门轮廓），激活 tab 靠这圈描边区分而非填充色。
+   连续下边框无法在激活 tab 处「开口」（透明子元素盖不住祖先画的线），故平线逐段画在激活
+   tab 的兄弟区域（预留区/非激活 tab/按钮/拖拽填充），激活 tab 及其祖先不画。拱门轮廓（顶 +
+   两侧 + 反向圆角脚）与两端 group px-2 补缝都在下方 .browser-tab-item 区块。色 =
+   var(--ws-chrome-border)（下方定义的加强色，与状态栏/header 等所有 chrome 分隔线统一）。 */
+
+/* ===== 结构性 chrome 分隔线加强色 --ws-chrome-border =====
+   状态栏顶边 / 会话·文件 header 底边 / 移动端标题栏·aux 标签条底边 / 标签条平线 + 激活 tab 拱门——
+   这些持久的 chrome 细分隔线原本用主题 --border（浅色主题=0.922 灰，在浅色磨砂面上几乎看不见；深色
+   主题=白/10%）。开启背景图后（默认遮罩 0.82 把画面veil向 --background），它们常被冲淡看不清（用户
+   反馈「边框很多时候不清楚」）。这里给它们一个 foreground 染色的加强 hairline：浅色主题转深、深色主题
+   转浅，自动在两侧都有对比；alpha 低只描出一条清晰细线。仅 bg-on 生效，关图零回归。单一变量=一处调深浅。 */
+[data-workspace-bg="on"] {
+  --ws-chrome-border: color-mix(in oklch, var(--foreground) 13%, transparent);
+}
+/* 老引擎无 color-mix 时回落到主题 --border（仍随主题，至少不崩）。 */
+@supports not (background: color-mix(in oklch, white, transparent)) {
+  [data-workspace-bg="on"] {
+    --ws-chrome-border: var(--border);
+  }
+}
+/* 组合式 utility（无 base 规则）：挂在已带 border-* / border-border* 的 chrome 元素上，开图时用加强色
+   覆盖其 border-color。unlayered 压过 Tailwind 的 layered border-border（与 specificity 无关）。关图无此
+   规则 → 元素保留自带 border 颜色，零回归。这些分隔线无 hover 变色，故 unlayered 覆盖不会误盖交互态。 */
+[data-workspace-bg="on"] .ws-chrome-border {
+  border-color: var(--ws-chrome-border);
+}
+
+/* 平线：挂到激活 tab 的兄弟/非祖先区域，逐段 border-bottom 连成一条线（各兄弟 h-full，
+   底都落在 strip 底 y=40）。激活 tab 不挂 → 留缺口给拱门。色随 --ws-chrome-border（同上加强色，
+   与状态栏/header 分隔线统一）。 */
+[data-workspace-bg="on"] .ws-strip-line {
+  border-bottom: 1px solid var(--ws-chrome-border);
+}
+
+/* 旧 WebKitGTK 无 color-mix 时降级为不透明（背景图仅在透明内容区透出，不崩）。 */
+@supports not (background: color-mix(in oklch, white, transparent)) {
+  /* 老引擎关掉面板 chrome 的背景模糊（背景色 color-mix 已作废回落到不透明 bg-*）。消息内表面
+     现已不磨砂（只半透明染色 + 纯色 var(--border) 描边），无 backdrop-filter 可关，故不在此列。 */
+  [data-workspace-bg="on"] .ws-surface,
+  [data-workspace-bg="on"] .ws-surface-muted,
+  [data-workspace-bg="on"] .ws-surface-sidebar,
+  [data-workspace-bg="on"] .ws-surface-card {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  /* Monaco sticky scroll 是第三方 DOM，无自带 bg 工具类可回落——color-mix 作废后
+     background-color 声明整条失效会让 .sticky-widget 透明（滚动代码透出）。故老引擎显式
+     回落到不透明画布色 var(--card)（即背景图开启前的老不透明band，仍可读），并关掉磨砂。 */
+  [data-workspace-bg="on"] .monaco-editor .sticky-widget {
+    background-color: var(--card);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  /* 标签条拱门/平线（ws-strip-line、.browser-tab-item 的拱门 ::after / 首末 tab 补缝
+     ::after / seat 描边）只画纯色 var(--border) 边框——无 color-mix、无 backdrop-filter，
+     故不进本 @supports，老引擎照常渲染。 */
+}
+
 /* Native fallback for containers that cannot use OverlayScrollbars (e.g. virtua) */
 .scrollbar-thin {
   scrollbar-width: thin;
@@ -1088,6 +1371,27 @@
   right: 0;
   z-index: 10;
 }
+
+/* 表格圆角卡片化（与背景图无关，始终生效·点③·参考委派卡）：把圆角 + 边框挂在滚动容器
+   （直接包着 <table> 的 overflow-x-auto div）——它已有 overflow(auto)，border-radius 会把表格裁到
+   圆角；复制工具条是 table-wrapper 的兄弟、不在此容器内，故不被裁（无需搬动）。 */
+[data-streamdown="table-wrapper"] > div:has(> [data-streamdown="table"]) {
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+}
+/* 表格自带外边框归 0，避免与容器边框双线；内部行线（tr border-b / tbody divide-y）保留。 */
+[data-streamdown="table"] {
+  border-width: 0;
+}
+/* 末行的 border-b 会与容器底边框叠成双线（Codex 实测：末行 1px + 容器 1px）——去掉「最末行组」
+   末行的底边框；有 tbody 时表头末行的 border-b（表头/表体分隔线）不受影响、保留。 */
+[data-streamdown="table"] > tbody:last-child > tr:last-child,
+[data-streamdown="table"] > thead:last-child > tr:last-child {
+  border-bottom-width: 0;
+}
+/* 表格不再磨砂（用户要真透出背景图）：滚动容器只保留上面的圆角 + 边框；thead/tbody 走半透明
+   中性染色。历史注：曾给行组 thead/tbody 加 backdrop-filter 会让 border-collapse 合并边框整体
+   不渲染（表格边框消失根因），去磨砂后无此问题。 */
 
 /* Streamdown code line number width by total line digits */
 [data-streamdown="code-block-body"] code {
@@ -1714,4 +2018,375 @@
   [data-reference-badge] {
   outline: 2px solid var(--ring);
   outline-offset: 1px;
+}
+
+/* Browser-style tab separators (embedded desktop title-bar tab strips).
+   Each tab draws a hairline on its LEFT edge; the line is suppressed for the
+   first tab and around any active / hovered tab (Chrome behavior) using only
+   adjacent-sibling selectors — no :has(), so it is robust across webviews.
+   Tone: `--border` off-image; boosted to `--ws-chrome-border` under a workspace
+   background so it matches the tab arch / strip-line border (rule below). */
+.browser-tab-item {
+  position: relative;
+}
+.browser-tab-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  /* The item stretches from below the group's `pt-1.5` gap to the strip bottom,
+     so its geometric center sits 3px below the h-10 strip's midline. Nudge the
+     hairline up 3px so it centers on the strip midline — matching the tab
+     content (dot/title/close), which is raised by the inner row's `pb-1.5`. */
+  top: calc(50% - 3px);
+  height: 1rem;
+  width: 1px;
+  transform: translateY(-50%);
+  background: var(--border);
+  opacity: 1;
+  transition: opacity 150ms ease;
+  pointer-events: none;
+}
+.browser-tab-item:first-child::before,
+.browser-tab-item[data-active="true"]::before,
+.browser-tab-item:hover::before,
+.browser-tab-item[data-active="true"] + .browser-tab-item::before,
+.browser-tab-item:hover + .browser-tab-item::before {
+  opacity: 0;
+}
+
+/* Trailing separator between the last tab and the new-conversation button (the
+   conversation strip only — see tab-bar.tsx `tab-strip-tail`). Inter-tab
+   separators sit on each tab's LEFT edge, so the last tab's RIGHT edge, where
+   the flush-pinned button wrapper begins, has none. Same hairline geometry as
+   `.browser-tab-item::before` (the wrapper shares the tabs' flex box, so the
+   `calc(50% - 3px)` nudge centers it on the strip midline identically) and the
+   same tone (`--border` off-image, `--ws-chrome-border` on — see below), so it
+   reads as just another inter-tab separator. Suppressed when the last tab is
+   active or hovered, mirroring how a tab drops the separators flanking the
+   active/hovered tab. */
+.tab-strip-tail::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: calc(50% - 3px);
+  height: 1rem;
+  width: 1px;
+  transform: translateY(-50%);
+  background: var(--border);
+  opacity: 1;
+  transition: opacity 150ms ease;
+  pointer-events: none;
+}
+.browser-tab-item[data-active="true"] + .tab-strip-tail::before,
+.browser-tab-item:hover + .tab-strip-tail::before {
+  opacity: 0;
+}
+
+/* Under a workspace background image, lift the inter-tab separators (and the
+   trailing new-conversation divider) to the boosted `--ws-chrome-border` so they
+   match the tab's own arch / strip-line border color instead of the faint
+   theme `--border`, which washes out on the frosted strip. Off-image they stay
+   `--border` (above). Covers both the conversation and file tab strips. */
+[data-workspace-bg="on"] .browser-tab-item::before,
+[data-workspace-bg="on"] .tab-strip-tail::before {
+  background: var(--ws-chrome-border);
+}
+
+/* Embedded tab label — no ellipsis: fade the right edge so an overflowing title
+   dissolves instead of hard-cutting with "…". Pairs with `overflow-hidden
+   whitespace-nowrap` on the label (replaces `truncate`).
+   OVERFLOW-ONLY fade: the label reserves a right padding equal to the fade width,
+   and the gradient fades exactly that padding. A title that fits ends inside the
+   solid zone, so the fade falls over empty padding and eats nothing; only a title
+   long enough to spill into the padding actually fades. This is what lets a short /
+   only tab ("新建会话") show its full title instead of losing its tail to the fade.
+   One fade width suffices because the close button no longer hides under the label —
+   its footprint is reserved as content padding (below), so it never covers text. */
+.browser-tab-label {
+  padding-right: 0.75rem;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 0.75rem),
+    transparent
+  );
+  mask-image: linear-gradient(to right, #000 calc(100% - 0.75rem), transparent);
+}
+
+/* Non-active tab on hover: its close button fades in (an absolute `right-2` / `w-4`
+   overlay) over the label's right ~1rem. The narrow overflow-only fade above only
+   softens 0.75rem, so on hover widen the fade to dissolve the title before the
+   button's left edge — transparent by `100% - 1rem` (with the default `px-2` right,
+   the label-box right edge sits at the button's right edge, and the 1rem-wide button
+   covers the last 1rem of the label box). So an OVERFLOWING title dissolves into the
+   button instead of colliding with it. Active tabs are excluded: they reserve the
+   button's footprint as padding (below), so their label already ends left of it. */
+.browser-tab-item:not([data-active="true"])
+  .browser-tab-content:hover
+  .browser-tab-label {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 1.75rem),
+    transparent calc(100% - 1rem)
+  );
+  mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 1.75rem),
+    transparent calc(100% - 1rem)
+  );
+}
+
+/* The active tab's close button is always visible (an absolute `right-2` / `w-4`
+   overlay). Reserve its footprint (0.5rem offset + 1rem width = 1.5rem) as the
+   content's right padding, overriding the default `px-2` right, so the title ends
+   left of the button (its tail fades under the reserved zone) instead of sitting
+   under it. Tabs are fixed-width (`grow-0 basis-48`); this padding just carves out
+   the button's column. Non-active tabs don't reserve it: their button only appears
+   on hover, where the label widens its fade to clear the button (above); idle
+   titles keep the full width and tabs never reflow-widen on hover. General (not
+   workspace-bg gated). */
+.browser-tab-item[data-active="true"] .browser-tab-content {
+  padding-right: 1.5rem;
+}
+
+/* Non-active embedded tab hover: an inset rounded tint with a larger bottom inset,
+   so the hovered label reads as vertically centered inside the highlight (the tab
+   and its text never move — only the hover fill insets, mirroring the content's
+   `pb-1.5`-raised baseline). Replaces a full-bleed `hover:bg-*`. The content div
+   carries `isolate`, so this `z-index:-1` fill paints behind the label/icon but in
+   front of the tab's own (transparent) surface — no per-child re-stacking, robust
+   across webviews. Off (no bg image) it's the same tint over the muted strip. */
+.browser-tab-hover::before {
+  content: "";
+  position: absolute;
+  inset: 2px 2px 8px 2px;
+  z-index: -1;
+  border-radius: 0.5rem;
+  background-color: color-mix(in oklab, var(--background) 60%, transparent);
+  opacity: 0;
+  transition: opacity 150ms ease;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .browser-tab-hover::before {
+    transition: none;
+  }
+}
+.browser-tab-hover:hover::before {
+  opacity: 1;
+}
+
+/* Tab bottom "seat": the two bottom corners flare outward with a concave
+   (reverse) curve — the browser-tab look — so a tab blends down into the strip /
+   detail header. A dedicated span hosts these because the tab's own surface is
+   `overflow-hidden` (it would clip the outboard flares) and its ::before is
+   already the separator hairline. It is rendered for every embedded tab but
+   stays invisible (opacity 0) until the tab is ACTIVE. Only the active tab's
+   solid `var(--background)` body reaches the strip bottom, so its feet flare from
+   real corners and read cleanly. A hovered non-active tab instead shows a
+   floating inset pill (`browser-tab-hover`, inset 2/2/8/2) that stops 8px short
+   of the bottom; revealing the feet under it left two concave nubs disconnected
+   from the pill at the bottom corners, so hover no longer reveals the seat. The
+   radial-gradient mask carves the concave quarter (no color seam). Since the item
+   has no horizontal padding, the seat spans the surface flush (`left/right: 0`)
+   and each flare reaches 0.5rem outward; that fits exactly within the group's
+   `px-2` padding, so `overflow-hidden` never clips the first/last tab's flare.
+   The active tab is elevated (`z-10` on the item), so a hovered neighbour's flare
+   can never paint over the active tab's corner. */
+.browser-tab-seat {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 0.5rem;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .browser-tab-seat {
+    transition: none;
+  }
+}
+.browser-tab-item[data-active="true"] .browser-tab-seat {
+  opacity: 1;
+}
+.browser-tab-seat::before,
+.browser-tab-seat::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  height: 0.5rem;
+  width: 0.5rem;
+  background-color: var(--background);
+}
+.browser-tab-seat::before {
+  left: -0.5rem;
+  -webkit-mask-image: radial-gradient(
+    circle at top left,
+    transparent 7px,
+    #000 8px
+  );
+  mask-image: radial-gradient(circle at top left, transparent 7px, #000 8px);
+}
+.browser-tab-seat::after {
+  right: -0.5rem;
+  -webkit-mask-image: radial-gradient(
+    circle at top right,
+    transparent 7px,
+    #000 8px
+  );
+  mask-image: radial-gradient(circle at top right, transparent 7px, #000 8px);
+}
+/* Workspace 背景图开启：所有 tab 全透明，seat 反向圆角默认不显示（否则透明 tab 会挂
+   var(--background) 白色小圆角）。非激活 tab 的 seat 已不随 hover 显示（见上「仅激活」），
+   激活 tab 的脚在下方用真实 border 重画。 */
+[data-workspace-bg="on"] .browser-tab-seat::before,
+[data-workspace-bg="on"] .browser-tab-seat::after {
+  background-color: transparent;
+}
+/* 激活 tab 的两个反向圆角脚（bg-on）：用**真实 border + border-radius** 画 1px 凹弧描边，
+   取代旧的 radial-gradient 环带 mask——环带核仅 0.5px + 两侧抗锯齿，实机易出毛边/线头
+   （用户反馈「底部两角有线跑出来、过渡不自然」）。seat ::before/::after 本就是 gutter 里
+   0.5rem 见方的盒(left/right:-0.5rem, y32→40, box-sizing:border-box)，把**对角圆角 + 相邻
+   两条边框**做成一段干净四分之一凹弧：左脚=右下角圆角+下/右边框，右脚=左下角圆角+下/左边框。
+   弧顶(tab 边 y32)竖直切线接拱门 ::after 侧边、弧底(gutter 外沿 y40)水平切线接 ws-strip-line
+   平线，两端相切→过渡自然。清掉 mask 与填充色，只留描边，色 var(--ws-chrome-border) 与拱门同深。 */
+[data-workspace-bg="on"]
+  .browser-tab-item[data-active="true"]
+  .browser-tab-seat::before,
+[data-workspace-bg="on"]
+  .browser-tab-item[data-active="true"]
+  .browser-tab-seat::after {
+  background-color: transparent;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+[data-workspace-bg="on"]
+  .browser-tab-item[data-active="true"]
+  .browser-tab-seat::before {
+  border-bottom: 1px solid var(--ws-chrome-border);
+  border-right: 1px solid var(--ws-chrome-border);
+  border-bottom-right-radius: 0.5rem;
+}
+[data-workspace-bg="on"]
+  .browser-tab-item[data-active="true"]
+  .browser-tab-seat::after {
+  border-bottom: 1px solid var(--ws-chrome-border);
+  border-left: 1px solid var(--ws-chrome-border);
+  border-bottom-left-radius: 0.5rem;
+}
+
+/* 激活 tab 拱门「顶 + 两侧」描边：画在 .browser-tab-item 的 ::after（Reorder.Item 未
+   overflow-hidden，脚可外飘）。top:0 = group pt-1.5 下沿(y6)，bottom:0.5rem → 竖边止于
+   y32，正好接上 seat 的反向圆角脚(y32→40)；竖边不再越过脚部下探到 y40，消除脚部两侧的
+   「垂直角边框」毛刺。rounded-t 出拱顶。仅 bg-on + 激活生效，关图无 ::after（零回归）。
+   ★left/right:-1px（而非 0）：竖边描边画在盒内沿，若贴 tab 边(left:0)则落在 x∈[0,1]（tab
+   内侧），而 seat 脚的竖直切线描边在 tab 外沿 x∈[-1,0]（脚 ::before/::after 往 gutter 外
+   飘 0.5rem，border 画在其内沿）——两者差 1px 形成 y32 处「水平错位」，正是用户反馈激活 tab
+   底部两角弧度「断断续续」的成因。把两侧各外移 1px → 竖边与脚竖直切线共线(x∈[-1,0] /
+   [w,w+1])，拱门侧边与反向弧脚无缝相接。取代旧的 .ws-tab-arch（整高边框底部越界成毛刺）。 */
+[data-workspace-bg="on"] .browser-tab-item[data-active="true"]::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -1px;
+  right: -1px;
+  bottom: 0.5rem;
+  border-top: 1px solid var(--ws-chrome-border);
+  border-left: 1px solid var(--ws-chrome-border);
+  border-right: 1px solid var(--ws-chrome-border);
+  border-top-left-radius: 0.5rem;
+  border-top-right-radius: 0.5rem;
+  pointer-events: none;
+}
+
+/* 标签条左右两端的补缝：group 的 px-2 在首/末 tab 外各留 0.5rem 无线缝（首 tab 非激活时
+   左端断层、末 tab 与新建按钮间右端空隙）。补缝不能画在 group 上（连续线会盖到激活 tab
+   下方），且必须跟随边缘 tab 的激活态——激活的首/末 tab 该处是拱门脚（反向圆角描边）而非
+   平线，此处绝不能有平线。故补缝画在「非激活」首/末 tab 自己的 ::after 上（激活 tab 的
+   ::after 已改画拱门轮廓，且 :not([data-active]) 排除它）：往 tab 外侧的 px-2 gutter 伸出
+   0.5rem 平线，接上两侧 reserve / 尾部按钮 wrapper 的 ws-strip-line。gutter 落在 group 的
+   padding box 内，overflow-hidden 不裁（同 seat 脚）。宽度 = px-2 = 0.5rem（改 group 内边距
+   需同步）。仅 bg-on 生效，关图无补缝（零回归）。 */
+[data-workspace-bg="on"]
+  .browser-tab-item:first-child:not([data-active="true"])::after,
+[data-workspace-bg="on"]
+  .browser-tab-item:last-child:not([data-active="true"])::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  height: 1px;
+  width: 0.5rem;
+  background-color: var(--ws-chrome-border);
+  pointer-events: none;
+}
+[data-workspace-bg="on"]
+  .browser-tab-item:first-child:not([data-active="true"])::after {
+  left: -0.5rem;
+}
+[data-workspace-bg="on"]
+  .browser-tab-item:last-child:not([data-active="true"])::after {
+  right: -0.5rem;
+}
+
+/* 激活 tab 两侧邻居的基线内缩：激活 tab 的反向圆角脚（透明）往外 flare 0.5rem，盖在紧邻
+   tab 上；紧邻 tab 的 ws-strip-line 是**全宽** border-bottom，其被脚罩住的那 0.5rem 会在脚
+   下透出成一小段横线（脚弧只在外端 y40 触到基线，内侧一路悬空）——即用户反馈「激活 tab 角边
+   还有横线穿出来」。修法：把紧邻 tab 的基线撤掉 border-bottom、改画一条**朝激活 tab 一侧内缩
+   0.5rem** 的 ::after 平线，起点正落在脚弧触地处 → 基线与脚弧无缝相接、脚下不再有横线。
+   `data-adjacent-active`（before/after）由标签条按 activeIndex 现算并挂到 .browser-tab-item
+   上（前一个=before，后一个=after），避免上一个兄弟无法用 CSS 选中的问题，且不依赖 :has()。
+   紧邻 tab 必为非激活（有 ws-strip-line + 空闲 ::after），仅 bg-on 生效，关图零回归。 */
+[data-workspace-bg="on"]
+  .browser-tab-item[data-adjacent-active]
+  .ws-strip-line {
+  /* border-bottom-WIDTH:0（而非仅 color:transparent）：内缩基线走 ::after(bottom:0)，其
+     containing block 是本元素 padding box。若保留 1px 透明边框，padding box 比 border box
+     矮 1px → ::after 落在 border box 底沿上方 1px，与其它 tab 的 border-bottom（落在 border
+     box 底沿）差 1px，即用户反馈「紧邻激活的 tab 下边框对不齐」。撤掉边框宽度 → padding box
+     与 border box 同底，::after bottom:0 正落 border box 底沿，与普通 tab 基线共线。 */
+  border-bottom-width: 0;
+}
+[data-workspace-bg="on"]
+  .browser-tab-item[data-adjacent-active]
+  .ws-strip-line::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  height: 1px;
+  background-color: var(--ws-chrome-border);
+  pointer-events: none;
+}
+[data-workspace-bg="on"]
+  .browser-tab-item[data-adjacent-active="after"]
+  .ws-strip-line::after {
+  left: 0.5rem;
+  right: 0;
+}
+[data-workspace-bg="on"]
+  .browser-tab-item[data-adjacent-active="before"]
+  .ws-strip-line::after {
+  left: 0;
+  right: 0.5rem;
+}
+/* 同款内缩，但用于末尾「新建会话」按钮 wrapper（它紧邻激活的末尾 tab 时挂 data-adjacent-active
+   ="after"）。激活 tab 的右反向圆角脚往外 flare 0.5rem 盖在这个 wrapper 上，而 wrapper 的
+   ws-strip-line 是全宽 border-bottom，会在脚下透出一小段横线（用户反馈「激活末尾 tab 右下角
+   下边框突出来」）。上面的规则只处理 tab 邻居——那里 ws-strip-line 是 .browser-tab-item 的
+   后代；这个尾部 wrapper 不是 tab，且 ws-strip-line 与 data-adjacent-active 同挂在它自己身上，
+   故用独立选择器。撤掉全宽 border-bottom、改画一条朝激活 tab 一侧内缩 0.5rem 的 ::after 平线
+   （起点正落在脚弧触地处）→ 脚下不再有横线。wrapper 的 position:relative 由组件提供。仅 bg-on
+   生效，关图零回归。 */
+[data-workspace-bg="on"] .ws-strip-line[data-adjacent-active="after"] {
+  border-bottom-width: 0;
+}
+[data-workspace-bg="on"] .ws-strip-line[data-adjacent-active="after"]::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0.5rem;
+  right: 0;
+  height: 1px;
+  background-color: var(--ws-chrome-border);
+  pointer-events: none;
 }

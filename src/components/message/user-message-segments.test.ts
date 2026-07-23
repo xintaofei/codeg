@@ -95,19 +95,20 @@ describe("parseUserMessageSegments", () => {
   })
 
   describe("bare invocation tokens → skill badges", () => {
-    it("badges a /command token keeping its prefix", () => {
+    it("badges a /command token, dropping its prefix from the label", () => {
       const segments = parseUserMessageSegments("run /review please")
       expect(segments[0]).toEqual({ kind: "text", text: "run " })
       const skill = segments[1] as { kind: "reference"; attrs: ReferenceAttrs }
       expect(skill.attrs.refType).toBe("skill")
-      expect(skill.attrs.label).toBe("/review")
+      // Badge label matches the composer's inline badge: the bare name, no `/`.
+      expect(skill.attrs.label).toBe("review")
       expect(segments[2]).toEqual({ kind: "text", text: " please" })
     })
 
-    it("badges a $skill token", () => {
+    it("badges a $skill token, dropping its prefix from the label", () => {
       const attrs = onlyReference("$deploy now")
       expect(attrs.refType).toBe("skill")
-      expect(attrs.label).toBe("$deploy")
+      expect(attrs.label).toBe("deploy")
     })
 
     it("does NOT badge a file-ish path", () => {

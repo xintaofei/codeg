@@ -188,7 +188,14 @@ pub async fn open_remote_workspace(
         .inner_size(1260.0, 860.0)
         .min_inner_size(400.0, 600.0)
         .center();
-    let window = crate::commands::windows::apply_platform_window_style(builder)
+    let builder = crate::commands::windows::apply_platform_window_style(builder);
+    // Remote workspace windows load the same `/workspace` route with the taller
+    // h-10 title bar, so they get the workspace traffic-light position (not the
+    // shorter auxiliary-window default).
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .traffic_light_position(crate::commands::windows::workspace_window_traffic_light_position());
+    let window = builder
         .build()
         .map_err(|e| AppCommandError::window("Failed to open remote workspace", e.to_string()))?;
     if let Some(proxy) =

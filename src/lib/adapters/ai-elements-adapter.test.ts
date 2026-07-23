@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   adaptMessageTurn,
   createMessageTurnAdapter,
+  dropEmptyInFlightToolCalls,
   dropHiddenFeedbackChecks,
   extractUserResourcesFromText,
   groupConsecutiveDelegationStatus,
@@ -234,6 +235,183 @@ describe("dropHiddenFeedbackChecks", () => {
       "tool-call",
       "tool-group",
     ])
+  })
+})
+
+describe("dropEmptyInFlightToolCalls", () => {
+  // A generic, still-running tool call (arg-less by default) — the shape
+  // claude-agent-acp emits at content_block_start before the args arrive.
+  function running(
+    toolName: string,
+    extra: Partial<AdaptedToolCallPart> = {}
+  ): AdaptedToolCallPart {
+    return {
+      type: "tool-call",
+      toolCallId: `${toolName}:live`,
+      toolName,
+      input: "{}",
+      state: "input-available",
+      ...extra,
+    }
+  }
+
+  it("drops empty, still-running generic tool calls in every empty shape", () => {
+    expect(
+      dropEmptyInFlightToolCalls([
+        running("bash", { input: "{}" }),
+        running("bash", { input: "" }),
+        running("bash", { input: null }),
+        running("bash", { input: "  " }),
+      ])
+    ).toHaveLength(0)
+  })
+
+  it("keeps an in-flight call that already carries a real command", () => {
+    const live = running("bash", {
+      input: JSON.stringify({ command: "pnpm build" }),
+    })
+    expect(dropEmptyInFlightToolCalls([live])).toEqual([live])
+  })
+
+  it("keeps an empty in-flight call that is already streaming output", () => {
+    const live = running("bash", { input: "{}", output: "...building..." })
+    expect(dropEmptyInFlightToolCalls([live])).toEqual([live])
+  })
+
+  it("keeps an in-flight call that surfaced an error", () => {
+    const live = running("bash", { input: "{}", errorText: "boom" })
+    expect(dropEmptyInFlightToolCalls([live])).toEqual([live])
+  })
+
+  it("keeps DB-history parts that carry no forwarded status", () => {
+    // Persisted rows have no `toolStatus` (undefined) → treated as settled, so
+    // an arg-less-but-completed historical tool is never mistaken for an orphan.
+    const hist = running("bash", { input: "{}", state: "output-available" })
+    expect(dropEmptyInFlightToolCalls([hist])).toEqual([hist])
+  })
+
+  it("drops a promoted orphan: state settled to output-available but status unsettled", () => {
+    // The COMPLETE_TURN promotion path: the same unpruned orphan is re-adapted
+    // with isStreaming=false, so its state flips to output-available while the
+    // forwarded ACP status stays pending/in_progress.
+    expect(
+      dropEmptyInFlightToolCalls([
+        running("bash", {
+          input: "{}",
+          state: "output-available",
+          toolStatus: "pending",
+        }),
+        running("bash", {
+          input: "{}",
+          state: "output-available",
+          toolStatus: "in_progress",
+        }),
+      ])
+    ).toHaveLength(0)
+  })
+
+  it("keeps a promoted part once its status settles (completed/failed)", () => {
+    const done = running("bash", {
+      input: "{}",
+      state: "output-available",
+      toolStatus: "completed",
+    })
+    expect(dropEmptyInFlightToolCalls([done])).toEqual([done])
+  })
+
+  it("keeps a promoted orphan that already streamed output", () => {
+    const withOutput = running("bash", {
+      input: "{}",
+      state: "output-available",
+      toolStatus: "in_progress",
+      output: "...partial...",
+    })
+    expect(dropEmptyInFlightToolCalls([withOutput])).toEqual([withOutput])
+  })
+
+  it("never touches specialized lanes (agent/delegation/ask/background/plan)", () => {
+    // Empty + in-flight, but each renders through its own card and handles its
+    // own empty polls (see commit 1ddf751b) — this filter must leave them be.
+    const lanes: AdaptedContentPart[] = [
+      running("get_delegation_status"),
+      running("question"),
+      running("TaskOutput"),
+      running("switch_mode"),
+    ]
+    expect(dropEmptyInFlightToolCalls(lanes)).toEqual(lanes)
+  })
+
+  it("collapses the phantom scenario to a single one-command group", () => {
+    // Live turn: one real completed build + two orphaned arg-less bash blocks
+    // left by an interrupted/retried attempt. Settled transcript has only the
+    // real one, so the live count must converge to it.
+    const real: AdaptedToolCallPart = {
+      type: "tool-call",
+      toolCallId: "bash:real",
+      toolName: "bash",
+      input: JSON.stringify({ command: "pnpm build 2>&1 | tail -20" }),
+      state: "output-available",
+      output: "Build succeeded",
+    }
+    const grouped = groupConsecutiveToolCalls(
+      dropEmptyInFlightToolCalls([
+        real,
+        running("bash", { input: "{}" }),
+        running("bash", { input: "{}" }),
+      ])
+    )
+    expect(grouped.map((p) => p.type)).toEqual(["tool-group"])
+    const group = grouped[0]
+    if (group.type !== "tool-group") throw new Error("expected a tool-group")
+    expect(group.items).toHaveLength(1)
+    expect(group.items[0].toolCallId).toBe("bash:real")
+  })
+
+  it("prunes a promoted orphan end-to-end via adaptMessageTurn (isStreaming=false)", () => {
+    // Shape of a localTurn after COMPLETE_TURN: one real completed bash (with a
+    // matching result) plus one interrupted arg-less orphan — status still
+    // "pending", no result block. Adapted with isStreaming=false (promoted),
+    // the orphan's state becomes output-available; only its forwarded status
+    // reveals it. The group must still converge to the single real command.
+    const adapted = adaptMessageTurn(
+      {
+        id: "promoted-turn",
+        role: "assistant",
+        timestamp: "2026-07-23T00:00:00.000Z",
+        blocks: [
+          {
+            type: "tool_use",
+            tool_use_id: "tc-real",
+            tool_name: "bash",
+            input_preview: JSON.stringify({ command: "pnpm build" }),
+            status: "completed",
+          },
+          {
+            type: "tool_result",
+            tool_use_id: "tc-real",
+            output_preview: "Build succeeded",
+            is_error: false,
+          },
+          {
+            type: "tool_use",
+            tool_use_id: "tc-orphan",
+            tool_name: "bash",
+            input_preview: "{}",
+            status: "pending",
+          },
+        ],
+      },
+      {
+        attachedResources: "Attached resources",
+        toolCallFailed: "Tool failed",
+      },
+      false
+    )
+    expect(adapted.content.map((p) => p.type)).toEqual(["tool-group"])
+    const group = adapted.content[0]
+    if (group.type !== "tool-group") throw new Error("expected a tool-group")
+    expect(group.items).toHaveLength(1)
+    expect(group.items[0].toolCallId).toBe("tc-real")
   })
 })
 

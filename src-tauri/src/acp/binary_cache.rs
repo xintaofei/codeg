@@ -266,24 +266,42 @@ pub fn sweep_trash() {
     }
 }
 
-fn installed_binary_path(agent_id: &str, version: &str, cmd_name: &str) -> Option<PathBuf> {
-    let bin_name = if cfg!(target_os = "windows") {
-        format!("{cmd_name}.exe")
-    } else {
-        cmd_name.to_string()
-    };
+/// Dir-tree entry for a cache key, when the agent's archive is extracted as a
+/// whole directory instead of a single copied-out binary (see
+/// `AgentDistribution::Binary::dir_entry`).
+fn dir_entry_for_agent_id(agent_id: &str) -> Option<registry::BinaryDirEntry> {
+    let agent_type = registry::from_registry_id(agent_id)?;
+    match registry::get_agent_meta(agent_type).distribution {
+        registry::AgentDistribution::Binary { dir_entry, .. } => dir_entry,
+        _ => None,
+    }
+}
 
+fn installed_binary_path(agent_id: &str, version: &str, cmd_name: &str) -> Option<PathBuf> {
     let normalized = normalize_version_label(version);
     if normalized.is_empty() {
         return None;
     }
 
-    let path = cache_dir()
+    let platform_dir = cache_dir()
         .ok()?
         .join(agent_id)
         .join(normalized)
-        .join(registry::current_platform())
-        .join(bin_name);
+        .join(registry::current_platform());
+
+    // Dir-tree agents launch an in-tree entry script; probe it by existence
+    // only — the magic-byte check below would reject `#!` shell shims.
+    if let Some(entry) = dir_entry_for_agent_id(agent_id) {
+        let path = platform_dir.join(entry.for_current_platform());
+        return path.is_file().then_some(path);
+    }
+
+    let bin_name = if cfg!(target_os = "windows") {
+        format!("{cmd_name}.exe")
+    } else {
+        cmd_name.to_string()
+    };
+    let path = platform_dir.join(bin_name);
 
     if !path.exists() {
         return None;
@@ -471,6 +489,10 @@ async fn ensure_binary_with_progress(
             )));
         }
 
+        if let Some(entry) = dir_entry_for_agent_id(agent_id) {
+            return install_extracted_tree(&extract_dir, &dir, entry, &on_progress);
+        }
+
         // Find the binary in extracted files and move to final location.
         on_progress("Locating binary...");
         let extracted_bin = find_binary_recursive(&extract_dir, &bin_name).ok_or_else(|| {
@@ -501,6 +523,50 @@ async fn ensure_binary_with_progress(
     }
 
     result
+}
+
+/// Move a dir-tree archive's extracted content into the final per-version
+/// cache dir and return the launch entry path inside it. The extracted root
+/// children are renamed (same filesystem) rather than copied; the entry's
+/// existence is validated afterwards so a layout change in the upstream
+/// archive fails loudly instead of caching a dead tree.
+fn install_extracted_tree(
+    extract_dir: &Path,
+    final_dir: &Path,
+    entry: registry::BinaryDirEntry,
+    on_progress: &impl Fn(&str),
+) -> Result<PathBuf, AcpError> {
+    on_progress("Installing extracted files...");
+    let children = std::fs::read_dir(extract_dir)
+        .map_err(|e| AcpError::DownloadFailed(format!("failed to read extracted dir: {e}")))?;
+    for child in children.flatten() {
+        let target = final_dir.join(child.file_name());
+        std::fs::rename(child.path(), &target).map_err(|e| {
+            AcpError::DownloadFailed(format!(
+                "failed to move {} into cache: {e}",
+                child.file_name().to_string_lossy()
+            ))
+        })?;
+    }
+
+    let entry_rel = entry.for_current_platform();
+    let entry_path = final_dir.join(entry_rel);
+    if !entry_path.is_file() {
+        return Err(AcpError::DownloadFailed(format!(
+            "entry '{entry_rel}' not found in archive"
+        )));
+    }
+    // tar preserves the executable bit, but be defensive: the entry shim and
+    // its sibling `node` runtime must both be executable for the spawn to work.
+    set_executable_permissions(&entry_path)?;
+    if let Some(parent) = entry_path.parent() {
+        let node = parent.join("node");
+        if node.is_file() {
+            set_executable_permissions(&node)?;
+        }
+    }
+    on_progress("Binary installed successfully");
+    Ok(entry_path)
 }
 
 pub(crate) fn find_cached_binary(
@@ -689,6 +755,59 @@ mod tests {
     fn cache_key_uses_registry_id() {
         assert_eq!(agent_cache_key(AgentType::OpenCode), "opencode");
         assert_eq!(agent_cache_key(AgentType::Codex), "codex-acp");
+    }
+
+    // Cursor's whole-tree install: the extracted archive root (dist-package/…)
+    // is moved intact into the version dir, the entry script is validated and
+    // made executable, and a missing entry fails loudly.
+    #[test]
+    fn install_extracted_tree_moves_root_and_validates_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let extract = tmp.path().join("extracted");
+        let package = extract.join("dist-package");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(package.join("cursor-agent"), "#!/usr/bin/env bash\n").unwrap();
+        std::fs::write(package.join("node"), [0_u8, 1, 2]).unwrap();
+        std::fs::write(package.join("index.js"), "// chunk").unwrap();
+        let final_dir = tmp.path().join("final");
+        std::fs::create_dir_all(&final_dir).unwrap();
+
+        let entry = registry::BinaryDirEntry {
+            unix: "dist-package/cursor-agent",
+            windows: "dist-package/cursor-agent.cmd",
+        };
+        // On Windows the fixture writes the unix name only; skip there — the
+        // path join and rename logic under test is platform-independent.
+        if cfg!(windows) {
+            return;
+        }
+        let installed = install_extracted_tree(&extract, &final_dir, entry, &|_| {}).unwrap();
+        assert_eq!(installed, final_dir.join("dist-package/cursor-agent"));
+        assert!(final_dir.join("dist-package/index.js").is_file());
+        assert!(final_dir.join("dist-package/node").is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&installed).unwrap().permissions().mode();
+            assert_ne!(mode & 0o111, 0, "entry must be executable");
+        }
+        // The extracted staging dir was drained by the rename.
+        assert!(std::fs::read_dir(&extract).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn install_extracted_tree_missing_entry_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let extract = tmp.path().join("extracted");
+        std::fs::create_dir_all(extract.join("wrong-root")).unwrap();
+        let final_dir = tmp.path().join("final");
+        std::fs::create_dir_all(&final_dir).unwrap();
+        let entry = registry::BinaryDirEntry {
+            unix: "dist-package/cursor-agent",
+            windows: "dist-package/cursor-agent.cmd",
+        };
+        let err = install_extracted_tree(&extract, &final_dir, entry, &|_| {}).unwrap_err();
+        assert!(err.to_string().contains("not found in archive"), "{err}");
     }
 
     #[test]

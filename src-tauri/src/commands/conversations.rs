@@ -12,16 +12,21 @@ use crate::parsers::cline::ClineParser;
 use crate::parsers::codebuddy::CodeBuddyParser;
 use crate::parsers::codex::CodexParser;
 use crate::parsers::gemini::GeminiParser;
+use crate::parsers::cursor::CursorParser;
 use crate::parsers::grok::GrokParser;
 use crate::parsers::hermes::HermesParser;
 use crate::parsers::kimi_code::KimiCodeParser;
 use crate::parsers::pi::PiParser;
 use crate::parsers::openclaw::OpenClawParser;
 use crate::parsers::opencode::OpenCodeParser;
-use crate::parsers::{path_eq_for_matching, AgentParser, ParseError};
+use crate::parsers::{
+    folder_name_from_path, normalize_path_for_matching, path_eq_for_matching, AgentParser,
+    ParseError,
+};
 use crate::web::event_bridge::{
-    emit_event, ConversationChange, EventEmitter, TabsChanged, CONVERSATION_CHANGED_EVENT,
-    TABS_CHANGED_EVENT,
+    emit_event, ConversationChange, ConversationsBulkChanged, EventEmitter, ImportScanProgress,
+    TabsChanged, CONVERSATIONS_BULK_CHANGED_EVENT, CONVERSATION_CHANGED_EVENT,
+    IMPORT_SCAN_PROGRESS_EVENT, TABS_CHANGED_EVENT,
 };
 
 pub async fn list_all_conversations_core(
@@ -174,6 +179,7 @@ fn list_conversations_sync(
         (AgentType::KimiCode, Box::new(KimiCodeParser::new())),
         (AgentType::Pi, Box::new(PiParser::new())),
         (AgentType::Grok, Box::new(GrokParser::new())),
+        (AgentType::Cursor, Box::new(CursorParser::new())),
     ];
 
     for (at, parser) in &parsers {
@@ -282,6 +288,7 @@ pub async fn get_conversation(
             AgentType::KimiCode => Box::new(KimiCodeParser::new()),
             AgentType::Pi => Box::new(PiParser::new()),
             AgentType::Grok => Box::new(GrokParser::new()),
+            AgentType::Cursor => Box::new(CursorParser::new()),
         };
 
         parser
@@ -373,6 +380,15 @@ pub async fn import_local_conversations_core(
     emitter: &EventEmitter,
     folder_id: i32,
 ) -> Result<ImportResult, AppCommandError> {
+    // Share IMPORT_GUARD with the batch importer: `(external_id, agent_type)`
+    // has no DB unique index, so this legacy path racing a batch import (or a
+    // second legacy call) could double-insert. try_lock rejects the overlap
+    // rather than queueing — matching `import_selected_sessions_core`. (No UI
+    // still calls this command; it is kept only for API/back-compat.)
+    let _guard = IMPORT_GUARD
+        .try_lock()
+        .map_err(|_| AppCommandError::invalid_input("An import is already in progress"))?;
+
     let folder = folder_service::get_folder_by_id(conn, folder_id)
         .await
         .map_err(AppCommandError::from)?
@@ -404,6 +420,411 @@ pub async fn import_local_conversations(
     folder_id: i32,
 ) -> Result<ImportResult, AppCommandError> {
     import_local_conversations_core(&db.conn, &EventEmitter::Tauri(app), folder_id).await
+}
+
+/// Serializes concurrent batch imports: `(external_id, agent_type)` has no DB
+/// unique index (and adding one now could fail on historical duplicates), so
+/// two overlapping imports could double-insert the same session. `try_lock`
+/// instead of queueing — a second import racing the first is a user mistake to
+/// surface, not work to serialize.
+static IMPORT_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// The DB's stored string for an [`AgentType`] (its snake_case serde name) —
+/// the same conversion `import_one` uses for the `agent_type` column.
+fn agent_type_db_str(at: &AgentType) -> String {
+    serde_json::to_value(at)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default()
+}
+
+/// Minimal projection of a `folder` row for scan/import reconciliation (keeps
+/// `build_scan_result` constructible in tests without full SeaORM models).
+struct ScanFolderRow {
+    id: i32,
+    path: String,
+    name: String,
+    deleted: bool,
+}
+
+async fn load_folder_rows(
+    conn: &sea_orm::DatabaseConnection,
+) -> Result<Vec<ScanFolderRow>, AppCommandError> {
+    use sea_orm::EntityTrait;
+    let rows = crate::db::entities::folder::Entity::find()
+        .all(conn)
+        .await
+        .map_err(crate::db::error::DbError::from)
+        .map_err(AppCommandError::from)?;
+    Ok(rows
+        .into_iter()
+        .map(|f| ScanFolderRow {
+            id: f.id,
+            path: f.path,
+            name: f.name,
+            deleted: f.deleted_at.is_some(),
+        })
+        .collect())
+}
+
+/// Normalized path → folder row, preferring a live row when a soft-deleted
+/// variant of the same normalized path also exists (both can coexist since
+/// `UNIQUE(path)` is on the raw string).
+fn index_folder_rows(rows: &[ScanFolderRow]) -> HashMap<String, &ScanFolderRow> {
+    let mut index: HashMap<String, &ScanFolderRow> = HashMap::new();
+    for row in rows {
+        let slot = index.entry(normalize_path_for_matching(&row.path)).or_insert(row);
+        if slot.deleted && !row.deleted {
+            *slot = row;
+        }
+    }
+    index
+}
+
+/// Pure grouping/reconciliation for the import-picker scan.
+/// `imported_index` maps `(agent_type_db_str, external_id)` → "a live row
+/// exists" (false = only soft-deleted rows).
+fn build_scan_result(
+    summaries: Vec<(AgentType, ConversationSummary)>,
+    imported_index: &HashMap<(String, String), bool>,
+    folder_rows: &[ScanFolderRow],
+) -> ScanResult {
+    struct GroupAcc {
+        path: String,
+        name: String,
+        exists_in_codeg: bool,
+        folder_id: Option<i32>,
+        agent_types: Vec<AgentType>,
+        sessions: Vec<ScanSession>,
+    }
+
+    let folder_index = index_folder_rows(folder_rows);
+    let mut groups: HashMap<String, GroupAcc> = HashMap::new();
+    let mut no_folder_count = 0u32;
+
+    for (at, summary) in summaries {
+        let raw_path = match summary.folder_path.as_deref().map(str::trim) {
+            Some(p) if !p.is_empty() => p.to_string(),
+            _ => {
+                no_folder_count += 1;
+                continue;
+            }
+        };
+        let key = normalize_path_for_matching(&raw_path);
+        let entry = groups.entry(key.clone()).or_insert_with(|| {
+            let row = folder_index.get(&key).copied();
+            GroupAcc {
+                // Reuse the stored row's exact path string so the import-side
+                // add_folder upsert hits the same UNIQUE(path) key instead of
+                // minting a near-duplicate from a trailing-slash/case variant.
+                path: row.map(|r| r.path.clone()).unwrap_or_else(|| raw_path.clone()),
+                name: row
+                    .map(|r| r.name.clone())
+                    .or_else(|| summary.folder_name.clone())
+                    .unwrap_or_else(|| folder_name_from_path(&raw_path)),
+                exists_in_codeg: row.map(|r| !r.deleted).unwrap_or(false),
+                folder_id: row.map(|r| r.id),
+                agent_types: Vec::new(),
+                sessions: Vec::new(),
+            }
+        });
+        if !entry.agent_types.contains(&at) {
+            entry.agent_types.push(at);
+        }
+        let status = match imported_index.get(&(agent_type_db_str(&at), summary.id.clone())) {
+            None => ScanSessionStatus::New,
+            Some(true) => ScanSessionStatus::Imported,
+            Some(false) => ScanSessionStatus::Deleted,
+        };
+        entry.sessions.push(ScanSession {
+            external_id: summary.id,
+            agent_type: at,
+            title: summary.title,
+            started_at: summary.started_at,
+            ended_at: summary.ended_at,
+            message_count: summary.message_count,
+            model: summary.model,
+            git_branch: summary.git_branch,
+            status,
+        });
+    }
+
+    let mut folders: Vec<ScanFolder> = groups
+        .into_values()
+        .map(|mut g| {
+            g.sessions
+                .sort_by_key(|s| std::cmp::Reverse(s.started_at));
+            ScanFolder {
+                path: g.path,
+                name: g.name,
+                exists_in_codeg: g.exists_in_codeg,
+                folder_id: g.folder_id,
+                agent_types: g.agent_types,
+                sessions: g.sessions,
+            }
+        })
+        .collect();
+
+    fn importable(f: &ScanFolder) -> u32 {
+        f.sessions
+            .iter()
+            .filter(|s| s.status == ScanSessionStatus::New)
+            .count() as u32
+    }
+    folders.sort_by(|a, b| {
+        importable(b)
+            .cmp(&importable(a))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+
+    let total_sessions = folders.iter().map(|f| f.sessions.len() as u32).sum();
+    let importable_count = folders.iter().map(importable).sum();
+
+    ScanResult {
+        folders,
+        no_folder_count,
+        total_sessions,
+        importable_count,
+    }
+}
+
+/// Scan every local agent's sessions and reconcile them against the DB for the
+/// import-picker window. Emits [`IMPORT_SCAN_PROGRESS_EVENT`] once per parser
+/// while the walk runs.
+pub async fn scan_importable_sessions_core(
+    conn: &sea_orm::DatabaseConnection,
+    emitter: &EventEmitter,
+) -> Result<ScanResult, AppCommandError> {
+    use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+    let progress_emitter = emitter.clone();
+    let summaries =
+        import_service::collect_local_summaries(move |agent_type, done, total, session_count| {
+            emit_event(
+                &progress_emitter,
+                IMPORT_SCAN_PROGRESS_EVENT,
+                ImportScanProgress {
+                    agent_type,
+                    done,
+                    total,
+                    session_count,
+                },
+            );
+        })
+        .await;
+
+    let conv_rows = conversation::Entity::find()
+        .filter(conversation::Column::ExternalId.is_not_null())
+        .all(conn)
+        .await
+        .map_err(crate::db::error::DbError::from)
+        .map_err(AppCommandError::from)?;
+    let mut imported_index: HashMap<(String, String), bool> = HashMap::new();
+    for row in conv_rows {
+        let Some(external_id) = row.external_id else {
+            continue;
+        };
+        let live = row.deleted_at.is_none();
+        let entry = imported_index
+            .entry((row.agent_type, external_id))
+            .or_insert(live);
+        *entry = *entry || live;
+    }
+
+    let folder_rows = load_folder_rows(conn).await?;
+    Ok(build_scan_result(summaries, &imported_index, &folder_rows))
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn scan_importable_sessions(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+) -> Result<ScanResult, AppCommandError> {
+    scan_importable_sessions_core(&db.conn, &EventEmitter::Tauri(app)).await
+}
+
+/// Batch-import the selected sessions, creating (or reopening) each target
+/// folder as needed. Test seam for [`import_selected_sessions_core`]: takes the
+/// scanned summaries as input instead of walking the filesystem.
+pub(crate) async fn import_selected_from_summaries(
+    conn: &sea_orm::DatabaseConnection,
+    emitter: &EventEmitter,
+    summaries: Vec<(AgentType, ConversationSummary)>,
+    selections: Vec<SelectedSessionKey>,
+) -> Result<ImportSelectedResult, AppCommandError> {
+    const MAX_ERRORS: usize = 10;
+
+    // Defense-in-depth mirror of collect_local_summaries' child filter: a
+    // delegation child must never import as a root row, so a selection key
+    // pointing at one resolves to not_found.
+    let mut by_key: HashMap<(AgentType, String), (AgentType, ConversationSummary)> = summaries
+        .into_iter()
+        .filter(|(_, c)| c.parent_id.is_none())
+        .map(|(at, c)| ((at, c.id.clone()), (at, c)))
+        .collect();
+
+    // Group the resolved selections by normalized cwd. Duplicate keys in the
+    // request resolve once (the map entry is consumed); a key that no longer
+    // resolves — vanished from disk since the scan, cwd-less, or bogus — counts
+    // as not_found.
+    let mut not_found = 0u32;
+    let mut groups: HashMap<String, Vec<(AgentType, ConversationSummary)>> = HashMap::new();
+    let mut seen_keys: HashSet<(AgentType, String)> = HashSet::new();
+    for key in selections {
+        if !seen_keys.insert((key.agent_type, key.external_id.clone())) {
+            continue;
+        }
+        let Some((at, summary)) = by_key.remove(&(key.agent_type, key.external_id)) else {
+            not_found += 1;
+            continue;
+        };
+        let raw_path = match summary.folder_path.as_deref().map(str::trim) {
+            Some(p) if !p.is_empty() => p.to_string(),
+            _ => {
+                not_found += 1;
+                continue;
+            }
+        };
+        groups
+            .entry(normalize_path_for_matching(&raw_path))
+            .or_default()
+            .push((at, summary));
+    }
+
+    let folder_rows = load_folder_rows(conn).await?;
+    let folder_index = index_folder_rows(&folder_rows);
+
+    let mut result = ImportSelectedResult {
+        imported: 0,
+        updated: 0,
+        skipped: 0,
+        not_found,
+        failed: 0,
+        created_folders: 0,
+        folders: Vec::new(),
+        errors: Vec::new(),
+    };
+    let mut touched_folder_ids: Vec<i32> = Vec::new();
+
+    // Deterministic folder order (normalized path) so results and tests are
+    // stable regardless of HashMap iteration.
+    let mut ordered: Vec<(String, Vec<(AgentType, ConversationSummary)>)> =
+        groups.into_iter().collect();
+    ordered.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (norm_key, items) in ordered {
+        let row = folder_index.get(&norm_key).copied();
+        // Import into the stored row's exact path when one normalize-matches
+        // (see build_scan_result); otherwise the parser cwd creates the folder.
+        let target_path = row.map(|r| r.path.clone()).unwrap_or_else(|| {
+            items[0]
+                .1
+                .folder_path
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_string()
+        });
+        let created = row.map(|r| r.deleted).unwrap_or(true);
+
+        // `add_folder` is the only fallible step here — `import_summaries` is
+        // resilient (per-row failures are counted, never aborting the group), so
+        // a partial failure still commits and reports its good rows and still
+        // broadcasts the folder it created.
+        match folder_service::add_folder(conn, &target_path)
+            .await
+            .map_err(AppCommandError::from)
+        {
+            Ok(entry) => {
+                let folder_id = entry.id;
+                let (tally, _updated_ids, failed_in_group) =
+                    import_service::import_summaries_resilient(conn, folder_id, &items).await;
+                result.imported += tally.imported;
+                result.updated += tally.updated;
+                result.skipped += tally.skipped;
+                result.failed += failed_in_group;
+                if created {
+                    result.created_folders += 1;
+                }
+                touched_folder_ids.push(folder_id);
+                result.folders.push(ImportFolderOutcome {
+                    path: target_path.clone(),
+                    folder_id,
+                    created,
+                    imported: tally.imported,
+                    updated: tally.updated,
+                    skipped: tally.skipped,
+                });
+                if failed_in_group > 0 && result.errors.len() < MAX_ERRORS {
+                    result
+                        .errors
+                        .push(format!("{target_path}: {failed_in_group} session(s) failed"));
+                }
+                // Broadcast every touched folder: even a pre-existing row may
+                // have flipped is_open/deleted_at in add_folder, and clients
+                // need the row to place the imported conversations — so this
+                // fires even when some of the group's rows failed.
+                if let Ok(Some(detail)) = folder_service::get_folder_by_id(conn, folder_id).await {
+                    crate::commands::folders::emit_folder_upsert(emitter, detail);
+                }
+            }
+            // The folder itself could not be created/reopened — the whole group
+            // produced nothing, so there is no folder to broadcast.
+            Err(e) => {
+                result.failed += items.len() as u32;
+                if result.errors.len() < MAX_ERRORS {
+                    result.errors.push(format!("{target_path}: {e}"));
+                }
+            }
+        }
+    }
+
+    // One nudge instead of per-row upserts: clients answer with a single full
+    // refetch, which also covers refreshed titles (see the event's doc).
+    if result.imported > 0 || result.updated > 0 {
+        emit_event(
+            emitter,
+            CONVERSATIONS_BULK_CHANGED_EVENT,
+            ConversationsBulkChanged {
+                imported: result.imported,
+                updated: result.updated,
+                folder_ids: touched_folder_ids,
+            },
+        );
+    }
+
+    Ok(result)
+}
+
+/// Import the selected scanned sessions. Re-walks the parsers rather than
+/// trusting client-echoed summaries — the scan is moments old and the disk is
+/// the source of truth. Runs under [`IMPORT_GUARD`]; if the picker window is
+/// closed mid-import the future still completes and events still broadcast.
+pub async fn import_selected_sessions_core(
+    conn: &sea_orm::DatabaseConnection,
+    emitter: &EventEmitter,
+    selections: Vec<SelectedSessionKey>,
+) -> Result<ImportSelectedResult, AppCommandError> {
+    if selections.is_empty() {
+        return Err(AppCommandError::invalid_input("No sessions selected"));
+    }
+    let _guard = IMPORT_GUARD
+        .try_lock()
+        .map_err(|_| AppCommandError::invalid_input("An import is already in progress"))?;
+
+    let summaries = import_service::collect_local_summaries(|_, _, _, _| {}).await;
+    import_selected_from_summaries(conn, emitter, summaries, selections).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn import_selected_sessions(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    selections: Vec<SelectedSessionKey>,
+) -> Result<ImportSelectedResult, AppCommandError> {
+    import_selected_sessions_core(&db.conn, &EventEmitter::Tauri(app), selections).await
 }
 
 /// Build the `meta["codeg.delegation"]` value for a delegation child loaded
@@ -524,6 +945,7 @@ pub async fn get_folder_conversation_core(
                 AgentType::KimiCode => Box::new(KimiCodeParser::new()),
                 AgentType::Pi => Box::new(PiParser::new()),
                 AgentType::Grok => Box::new(GrokParser::new()),
+                AgentType::Cursor => Box::new(CursorParser::new()),
             };
             match parser.get_conversation(&eid) {
                 Ok(d) => Ok((
@@ -3213,6 +3635,560 @@ mod tests {
         assert!(
             saw_parent_upsert,
             "parent must re-broadcast an Upsert for child_count convergence"
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Import-picker scan reconciliation (`build_scan_result`) and batch
+    // import (`import_selected_from_summaries`).
+    // ──────────────────────────────────────────────────────────────────────
+
+    fn scan_summary(
+        id: &str,
+        agent: AgentType,
+        cwd: Option<&str>,
+        ts: chrono::DateTime<chrono::Utc>,
+    ) -> (AgentType, ConversationSummary) {
+        (
+            agent,
+            ConversationSummary {
+                id: id.into(),
+                agent_type: agent,
+                folder_path: cwd.map(String::from),
+                folder_name: cwd.map(folder_name_from_path),
+                title: Some(format!("title-{id}")),
+                started_at: ts,
+                ended_at: None,
+                message_count: 1,
+                model: None,
+                git_branch: None,
+                parent_id: None,
+                parent_tool_use_id: None,
+                delegation_call_id: None,
+            },
+        )
+    }
+
+    fn key_of(agent: AgentType, id: &str) -> SelectedSessionKey {
+        SelectedSessionKey {
+            agent_type: agent,
+            external_id: id.into(),
+        }
+    }
+
+    #[test]
+    fn scan_groups_normalized_path_variants_into_one_folder() {
+        // A trailing-slash cwd variant must land in the same group as the bare
+        // path — otherwise the picker shows one folder twice and an import
+        // could mint a near-duplicate folder row.
+        let summaries = vec![
+            scan_summary("s1", AgentType::ClaudeCode, Some("/tmp/proj"), at(0)),
+            scan_summary("s2", AgentType::Codex, Some("/tmp/proj/"), at(10)),
+        ];
+        let result = build_scan_result(summaries, &HashMap::new(), &[]);
+
+        assert_eq!(result.folders.len(), 1);
+        let folder = &result.folders[0];
+        assert_eq!(folder.path, "/tmp/proj");
+        assert!(!folder.exists_in_codeg);
+        assert_eq!(folder.folder_id, None);
+        assert_eq!(
+            folder.agent_types,
+            vec![AgentType::ClaudeCode, AgentType::Codex]
+        );
+        // Sessions sort newest-first inside the group.
+        assert_eq!(folder.sessions[0].external_id, "s2");
+        assert_eq!(result.total_sessions, 2);
+        assert_eq!(result.importable_count, 2);
+    }
+
+    #[test]
+    fn scan_marks_status_new_imported_deleted() {
+        let summaries = vec![
+            scan_summary("new", AgentType::ClaudeCode, Some("/tmp/p"), at(0)),
+            scan_summary("live", AgentType::ClaudeCode, Some("/tmp/p"), at(1)),
+            scan_summary("gone", AgentType::ClaudeCode, Some("/tmp/p"), at(2)),
+        ];
+        let mut imported_index = HashMap::new();
+        imported_index.insert(("claude_code".to_string(), "live".to_string()), true);
+        imported_index.insert(("claude_code".to_string(), "gone".to_string()), false);
+
+        let result = build_scan_result(summaries, &imported_index, &[]);
+        let by_id: HashMap<&str, ScanSessionStatus> = result.folders[0]
+            .sessions
+            .iter()
+            .map(|s| (s.external_id.as_str(), s.status))
+            .collect();
+
+        assert_eq!(by_id["new"], ScanSessionStatus::New);
+        assert_eq!(by_id["live"], ScanSessionStatus::Imported);
+        assert_eq!(by_id["gone"], ScanSessionStatus::Deleted);
+        assert_eq!(result.total_sessions, 3);
+        assert_eq!(result.importable_count, 1, "only New counts as importable");
+    }
+
+    #[test]
+    fn scan_counts_sessions_without_folder_path_instead_of_listing_them() {
+        let summaries = vec![
+            scan_summary("has", AgentType::Codex, Some("/tmp/p"), at(0)),
+            scan_summary("none", AgentType::Codex, None, at(1)),
+            scan_summary("blank", AgentType::Codex, Some("   "), at(2)),
+        ];
+        let result = build_scan_result(summaries, &HashMap::new(), &[]);
+
+        assert_eq!(result.folders.len(), 1);
+        assert_eq!(result.no_folder_count, 2);
+        assert_eq!(result.total_sessions, 1);
+    }
+
+    #[test]
+    fn scan_prefers_stored_row_path_and_live_row_over_deleted_variant() {
+        // The DB stores raw strings (UNIQUE on the exact bytes), so a live and
+        // a soft-deleted variant of the same normalized path can coexist. The
+        // scan must surface the LIVE row's exact path, or a later add_folder
+        // would resurrect the deleted variant instead.
+        let rows = vec![
+            ScanFolderRow {
+                id: 1,
+                path: "/tmp/proj/".into(),
+                name: "proj-deleted".into(),
+                deleted: true,
+            },
+            ScanFolderRow {
+                id: 2,
+                path: "/tmp/proj".into(),
+                name: "proj".into(),
+                deleted: false,
+            },
+        ];
+        let summaries = vec![scan_summary(
+            "s1",
+            AgentType::ClaudeCode,
+            Some("/tmp/proj///"),
+            at(0),
+        )];
+        let result = build_scan_result(summaries, &HashMap::new(), &rows);
+
+        let folder = &result.folders[0];
+        assert_eq!(folder.path, "/tmp/proj", "live row's stored path wins");
+        assert_eq!(folder.name, "proj");
+        assert!(folder.exists_in_codeg);
+        assert_eq!(folder.folder_id, Some(2));
+    }
+
+    #[test]
+    fn scan_soft_deleted_folder_reports_not_exists_but_keeps_id() {
+        let rows = vec![ScanFolderRow {
+            id: 9,
+            path: "/tmp/gone".into(),
+            name: "gone".into(),
+            deleted: true,
+        }];
+        let summaries = vec![scan_summary(
+            "s1",
+            AgentType::Codex,
+            Some("/tmp/gone"),
+            at(0),
+        )];
+        let result = build_scan_result(summaries, &HashMap::new(), &rows);
+
+        let folder = &result.folders[0];
+        assert!(
+            !folder.exists_in_codeg,
+            "a soft-deleted row is not a live folder — import will reopen it"
+        );
+        assert_eq!(folder.folder_id, Some(9));
+    }
+
+    #[test]
+    fn scan_sorts_folders_by_importable_count_then_path() {
+        let mut imported_index = HashMap::new();
+        imported_index.insert(("codex".to_string(), "b1".to_string()), true);
+        let summaries = vec![
+            scan_summary("b1", AgentType::Codex, Some("/tmp/b"), at(0)),
+            scan_summary("a1", AgentType::Codex, Some("/tmp/a"), at(1)),
+            scan_summary("a2", AgentType::Codex, Some("/tmp/a"), at(2)),
+        ];
+        let result = build_scan_result(summaries, &imported_index, &[]);
+
+        let paths: Vec<&str> = result.folders.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, vec!["/tmp/a", "/tmp/b"], "2 importable before 0");
+    }
+
+    #[tokio::test]
+    async fn batch_import_creates_missing_folder_and_imports() {
+        use sea_orm::EntityTrait;
+        let db = fresh_in_memory_db().await;
+
+        let summaries = vec![
+            scan_summary("s1", AgentType::ClaudeCode, Some("/tmp/proj-a"), at(0)),
+            scan_summary("s2", AgentType::Codex, Some("/tmp/proj-a"), at(1)),
+        ];
+        let result = import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            summaries,
+            vec![
+                key_of(AgentType::ClaudeCode, "s1"),
+                key_of(AgentType::Codex, "s2"),
+            ],
+        )
+        .await
+        .expect("batch import");
+
+        assert_eq!(result.imported, 2);
+        assert_eq!(result.created_folders, 1);
+        assert_eq!(result.failed, 0);
+        assert_eq!(result.folders.len(), 1);
+        assert!(result.folders[0].created);
+
+        let folder_rows = crate::db::entities::folder::Entity::find()
+            .all(&db.conn)
+            .await
+            .unwrap();
+        assert_eq!(folder_rows.len(), 1);
+        assert_eq!(folder_rows[0].path, "/tmp/proj-a");
+        assert!(folder_rows[0].is_open, "created folder must open in sidebar");
+
+        let convs = conversation::Entity::find().all(&db.conn).await.unwrap();
+        assert_eq!(convs.len(), 2);
+        assert!(convs.iter().all(|c| c.folder_id == folder_rows[0].id));
+    }
+
+    #[tokio::test]
+    async fn batch_import_reuses_stored_path_for_trailing_slash_variant() {
+        use sea_orm::EntityTrait;
+        let db = fresh_in_memory_db().await;
+        let seeded_id = seed_folder(&db, "/tmp/proj-b").await;
+
+        let summaries = vec![scan_summary(
+            "s1",
+            AgentType::ClaudeCode,
+            Some("/tmp/proj-b/"),
+            at(0),
+        )];
+        let result = import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            summaries,
+            vec![key_of(AgentType::ClaudeCode, "s1")],
+        )
+        .await
+        .expect("batch import");
+
+        assert_eq!(result.imported, 1);
+        assert_eq!(result.created_folders, 0);
+        assert!(!result.folders[0].created);
+        assert_eq!(result.folders[0].folder_id, seeded_id);
+
+        let folder_rows = crate::db::entities::folder::Entity::find()
+            .all(&db.conn)
+            .await
+            .unwrap();
+        assert_eq!(
+            folder_rows.len(),
+            1,
+            "the trailing-slash cwd must NOT mint a near-duplicate folder row"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_import_reopens_soft_deleted_folder_without_duplicate() {
+        use sea_orm::{ActiveModelTrait, EntityTrait, IntoActiveModel, Set};
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/proj-c").await;
+
+        let row = crate::db::entities::folder::Entity::find_by_id(folder_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut active = row.into_active_model();
+        active.deleted_at = Set(Some(chrono::Utc::now()));
+        active.is_open = Set(false);
+        active.update(&db.conn).await.unwrap();
+
+        let summaries = vec![scan_summary(
+            "s1",
+            AgentType::ClaudeCode,
+            Some("/tmp/proj-c"),
+            at(0),
+        )];
+        let result = import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            summaries,
+            vec![key_of(AgentType::ClaudeCode, "s1")],
+        )
+        .await
+        .expect("batch import");
+
+        assert_eq!(result.imported, 1);
+        assert_eq!(
+            result.created_folders, 1,
+            "reopening a soft-deleted row counts as creating a folder"
+        );
+
+        let folder_rows = crate::db::entities::folder::Entity::find()
+            .all(&db.conn)
+            .await
+            .unwrap();
+        assert_eq!(folder_rows.len(), 1, "reopened in place, not duplicated");
+        assert!(folder_rows[0].deleted_at.is_none());
+        assert!(folder_rows[0].is_open);
+    }
+
+    #[tokio::test]
+    async fn batch_import_skips_already_imported_and_counts_missing_keys() {
+        let db = fresh_in_memory_db().await;
+
+        let make = || {
+            vec![scan_summary(
+                "s1",
+                AgentType::ClaudeCode,
+                Some("/tmp/proj-d"),
+                at(0),
+            )]
+        };
+        let first = import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            make(),
+            vec![key_of(AgentType::ClaudeCode, "s1")],
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.imported, 1);
+
+        let second = import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            make(),
+            vec![
+                key_of(AgentType::ClaudeCode, "s1"),
+                key_of(AgentType::Codex, "does-not-exist"),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(second.imported, 0);
+        assert_eq!(second.skipped, 1, "re-import of an existing row skips");
+        assert_eq!(second.not_found, 1, "unresolvable key counts as not_found");
+    }
+
+    #[tokio::test]
+    async fn batch_import_never_resurrects_a_deleted_conversation() {
+        use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, IntoActiveModel, QueryFilter,
+            Set};
+        let db = fresh_in_memory_db().await;
+
+        let make = || {
+            vec![scan_summary(
+                "s1",
+                AgentType::ClaudeCode,
+                Some("/tmp/proj-e"),
+                at(0),
+            )]
+        };
+        import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            make(),
+            vec![key_of(AgentType::ClaudeCode, "s1")],
+        )
+        .await
+        .unwrap();
+
+        let row = conversation::Entity::find()
+            .filter(conversation::Column::ExternalId.eq("s1"))
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut active = row.into_active_model();
+        active.deleted_at = Set(Some(chrono::Utc::now()));
+        active.update(&db.conn).await.unwrap();
+
+        let again = import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            make(),
+            vec![key_of(AgentType::ClaudeCode, "s1")],
+        )
+        .await
+        .unwrap();
+        assert_eq!(again.imported, 0);
+        assert_eq!(again.skipped, 1);
+
+        let rows = conversation::Entity::find().all(&db.conn).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(
+            rows[0].deleted_at.is_some(),
+            "a deleted conversation stays deleted"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_import_selection_of_delegation_child_counts_not_found() {
+        let db = fresh_in_memory_db().await;
+
+        let (agent, mut child) =
+            scan_summary("child", AgentType::Hermes, Some("/tmp/proj-f"), at(0));
+        child.parent_id = Some("root".into());
+
+        let result = import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            vec![(agent, child)],
+            vec![key_of(AgentType::Hermes, "child")],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.imported, 0);
+        assert_eq!(
+            result.not_found, 1,
+            "a delegation child must never import as a root row"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_import_emits_folder_upserts_and_one_bulk_event() {
+        use crate::web::event_bridge::{
+            WebEventBroadcaster, CONVERSATIONS_BULK_CHANGED_EVENT, FOLDER_CHANGED_EVENT,
+        };
+        use std::sync::Arc;
+
+        let db = fresh_in_memory_db().await;
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+
+        let summaries = vec![
+            scan_summary("s1", AgentType::ClaudeCode, Some("/tmp/proj-g"), at(0)),
+            scan_summary("s2", AgentType::Codex, Some("/tmp/proj-h"), at(1)),
+        ];
+        let result = import_selected_from_summaries(
+            &db.conn,
+            &emitter,
+            summaries,
+            vec![
+                key_of(AgentType::ClaudeCode, "s1"),
+                key_of(AgentType::Codex, "s2"),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.imported, 2);
+
+        let mut folder_events = 0;
+        let mut bulk_events = 0;
+        while let Ok(evt) = rx.try_recv() {
+            match evt.channel.as_str() {
+                FOLDER_CHANGED_EVENT => folder_events += 1,
+                CONVERSATIONS_BULK_CHANGED_EVENT => {
+                    bulk_events += 1;
+                    let p = &*evt.payload;
+                    assert_eq!(p["imported"], 2);
+                    assert_eq!(p["folder_ids"].as_array().unwrap().len(), 2);
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(folder_events, 2, "one folder upsert per touched folder");
+        assert_eq!(bulk_events, 1, "exactly one bulk nudge, never per-row spam");
+    }
+
+    #[tokio::test]
+    async fn import_selected_sessions_core_rejects_concurrent_and_empty() {
+        let db = fresh_in_memory_db().await;
+
+        assert!(
+            import_selected_sessions_core(&db.conn, &EventEmitter::Noop, vec![])
+                .await
+                .is_err(),
+            "empty selection is invalid input"
+        );
+
+        let _held = IMPORT_GUARD.try_lock().expect("guard free in test");
+        assert!(
+            import_selected_sessions_core(
+                &db.conn,
+                &EventEmitter::Noop,
+                vec![key_of(AgentType::ClaudeCode, "x")],
+            )
+            .await
+            .is_err(),
+            "a second import racing the guard must be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_import_shares_the_guard_with_batch_import() {
+        // The retained legacy command must NOT bypass IMPORT_GUARD — otherwise a
+        // legacy import racing a batch import could double-insert on a DB with no
+        // unique index. With the guard held it is rejected BEFORE the folder
+        // lookup, so even a valid folder id surfaces the guard error, not a hit.
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/legacy-guard").await;
+
+        let _held = IMPORT_GUARD.try_lock().expect("guard free in test");
+        let err = import_local_conversations_core(&db.conn, &EventEmitter::Noop, folder_id)
+            .await
+            .expect_err("legacy import must be rejected while an import is in progress");
+        let msg = format!("{err:?}").to_lowercase();
+        assert!(
+            msg.contains("already in progress"),
+            "expected the guard error, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn import_summaries_counts_row_failures_without_aborting() {
+        // A row whose insert fails (here: a non-existent folder_id → FK violation
+        // with PRAGMA foreign_keys=ON) is logged and counted as `failed`, never
+        // aborting the batch or stranding the good rows — so a mid-group DB error
+        // can't lose the committed tally or the folder broadcast.
+        let db = fresh_in_memory_db().await;
+        let items = vec![
+            scan_summary("s1", AgentType::ClaudeCode, Some("/tmp/x"), at(0)),
+            scan_summary("s2", AgentType::Codex, Some("/tmp/x"), at(1)),
+        ];
+
+        let (tally, updated_ids, failed) =
+            import_service::import_summaries_resilient(&db.conn, 999_999, &items).await;
+        assert_eq!(failed, 2, "both rows fail the folder FK and are counted");
+        assert_eq!(tally.imported, 0);
+        assert_eq!(tally.updated, 0);
+        assert!(updated_ids.is_empty());
+
+        // Same items into a real folder import cleanly — the resilient loop did
+        // not corrupt state or leave a half-open transaction.
+        let folder_id = seed_folder(&db, "/tmp/x").await;
+        let (tally2, _ids, failed2) =
+            import_service::import_summaries_resilient(&db.conn, folder_id, &items).await;
+        assert_eq!(failed2, 0);
+        assert_eq!(tally2.imported, 2);
+    }
+
+    #[tokio::test]
+    async fn legacy_strict_import_summaries_propagates_row_failure() {
+        // The legacy per-folder importer keeps its strict contract: a DB error
+        // propagates as Err rather than being swallowed into a 0/0/0 tally, so
+        // its back-compat command still surfaces failures. (The batch path uses
+        // the resilient variant instead.)
+        let db = fresh_in_memory_db().await;
+        let items = vec![scan_summary(
+            "s1",
+            AgentType::ClaudeCode,
+            Some("/tmp/x"),
+            at(0),
+        )];
+        assert!(
+            import_service::import_summaries(&db.conn, 999_999, &items)
+                .await
+                .is_err(),
+            "a row FK violation must propagate through the strict importer"
         );
     }
 }

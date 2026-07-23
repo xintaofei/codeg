@@ -104,8 +104,19 @@ const LIGHT_THEME: ITheme = {
   brightWhite: "#ffffff",
 }
 
+// #1a1a1a / #ffffff 的 alpha 0 版本。工作区背景图开启时用它替换终端背景色，让画布透出
+// 所属 ws-surface 面板的磨砂表面。RGB 保持与对应主题背景色一致，故 xterm 由背景色派生
+// 的反显（inverse video）字色 color.opaque(bg) 仍是原主题背景色，不会随透明背景变黑。
+const DARK_TRANSPARENT_BACKGROUND = "rgba(26, 26, 26, 0)"
+const LIGHT_TRANSPARENT_BACKGROUND = "rgba(255, 255, 255, 0)"
+
 function isDarkMode() {
   return document.documentElement.classList.contains("dark")
+}
+
+// 工作区背景图是否开启（<html data-workspace-bg="on">，由 AppearanceProvider 设置）。
+function isWorkspaceBgOn() {
+  return document.documentElement.getAttribute("data-workspace-bg") === "on"
 }
 
 function resolveBackgroundColor(
@@ -123,7 +134,21 @@ function resolveBackgroundColor(
 }
 
 function getTerminalTheme(container: HTMLDivElement | null): ITheme {
-  const baseTheme = isDarkMode() ? DARK_THEME : LIGHT_THEME
+  const dark = isDarkMode()
+  const baseTheme = dark ? DARK_THEME : LIGHT_THEME
+
+  // 背景图开启：终端画布透明，透出所属 ws-surface 面板的磨砂表面（跟随面板不透明度滑块），
+  // 而非用不透明色盖住背景图。只改 background；cursorAccent 保留主题不透明色，块状光标下的
+  // 字符才不会随透明背景一起消失。
+  if (isWorkspaceBgOn()) {
+    return {
+      ...baseTheme,
+      background: dark
+        ? DARK_TRANSPARENT_BACKGROUND
+        : LIGHT_TRANSPARENT_BACKGROUND,
+    }
+  }
+
   const background = resolveBackgroundColor(container)
   if (!background) return baseTheme
 
@@ -201,6 +226,10 @@ export function TerminalView({
         ),
         fontFamily: terminalFontRef.current,
         theme: getTerminalTheme(containerRef.current),
+        // 允许透明背景：背景图开启时 getTerminalTheme 返回 alpha 0 的背景色，透出下方磨砂
+        // 面板。当前 DOM 渲染器本就按 CSS 应用背景色（透明即生效，不消费此项）；显式设置是
+        // 为将来若改用 canvas/webgl 渲染器时仍保持透明，不致回退成不透明黑块。
+        allowTransparency: true,
         allowProposedApi: true,
       })
 
@@ -265,13 +294,15 @@ export function TerminalView({
         return true
       })
 
-      // Watch <html> class changes for theme switching
+      // Watch <html> for theme (class) and workspace-background (data-workspace-bg)
+      // switching — both change what getTerminalTheme returns (dark/light palette,
+      // and transparent-vs-opaque background), so re-push the theme on either.
       const themeObserver = new MutationObserver(() => {
         term.options.theme = getTerminalTheme(containerRef.current)
       })
       themeObserver.observe(document.documentElement, {
         attributes: true,
-        attributeFilter: ["class"],
+        attributeFilter: ["class", "data-workspace-bg"],
       })
 
       // Send input to PTY

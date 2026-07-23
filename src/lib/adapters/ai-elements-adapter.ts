@@ -14,6 +14,7 @@ import {
 } from "@/lib/adapters/tool-kind-classifier"
 import { normalizeToolName } from "@/lib/tool-call-normalization"
 import { isBackgroundTaskToolCall } from "@/lib/background-task"
+import { isUnsettledToolCall } from "@/lib/tool-call-lifecycle"
 import { feedbackCheckHasContent } from "@/lib/feedback-check"
 import {
   isPlanLikeToolName,
@@ -44,6 +45,17 @@ export type AdaptedToolCallPart = {
   output?: string | null
   errorText?: string
   agentStats?: AgentExecutionStats | null
+  /**
+   * Forwarded ACP tool-call status for live/promoted turns (`ContentBlock.
+   * tool_use.status`); absent/`null` for DB-persisted rows (the Rust `ToolUse`
+   * model has no status field). Consumed via `isUnsettledToolCall` by both the
+   * generic tool-group filter (`dropEmptyInFlightToolCalls`) and the specialized
+   * lane row-builders (`buildDelegationTaskRows` / `buildBackgroundTaskRows`) to
+   * recognise an interrupted arg-less orphan that survives `COMPLETE_TURN`
+   * promotion (its `state` flips to `output-available`, but its status stays
+   * unsettled).
+   */
+  toolStatus?: string | null
   /**
    * ACP extensibility metadata forwarded from `ContentBlock.tool_use.meta`.
    * Opaque pass-through; the only consumer today is `<DelegatedSubThread>`
@@ -1148,6 +1160,89 @@ export function dropHiddenFeedbackChecks(
 }
 
 /**
+ * Whether a tool-call's `input` string carries any real argument. Treats the
+ * empty shapes an arg-less initial `tool_call` serializes to — `null`, `""`,
+ * `"{}"`, `"[]"`, `"null"`, and any JSON that parses to an empty object/array —
+ * as "no input". Non-JSON but non-empty text counts as input.
+ */
+function toolCallHasInput(input: string | null | undefined): boolean {
+  if (input == null) return false
+  const trimmed = input.trim()
+  if (
+    trimmed === "" ||
+    trimmed === "{}" ||
+    trimmed === "[]" ||
+    trimmed === "null"
+  ) {
+    return false
+  }
+  try {
+    const parsed: unknown = JSON.parse(trimmed)
+    if (parsed == null) return false
+    if (Array.isArray(parsed)) return parsed.length > 0
+    if (typeof parsed === "object") return Object.keys(parsed).length > 0
+  } catch {
+    // Non-JSON but non-empty text → treat as real input.
+  }
+  return true
+}
+
+/**
+ * Drop empty, unsettled generic tool-call parts. claude-agent-acp emits an
+ * arg-less initial `tool_call` at `content_block_start` (`rawInput = {}`) and
+ * fills the real args on a later same-id `tool_call_update`. When a turn is
+ * interrupted and retried (connection error / Claude API retry), the aborted
+ * attempt's arg-less `tool_call` — which carries its own id, never gets refined,
+ * and is never written to the JSONL transcript — lingers in `liveMessage`. It
+ * then inflates the "运行 N 个命令" tool-group count and renders as a blank
+ * `bash · 运行中` card. The settled view (rebuilt from the transcript) never
+ * contains it, hence the live-only mismatch.
+ *
+ * Two render passes see the orphan, so the predicate spans both: (1) during
+ * streaming its state is `input-available` (running); (2) after `COMPLETE_TURN`
+ * the same unpruned `liveMessage` is promoted into `localTurns` and re-adapted
+ * with `isStreaming=false`, flipping the unmatched orphan to `output-available`
+ * — still caught, because its forwarded ACP status stays unsettled until an
+ * authoritative detail reload replaces the promoted copy. DB-persisted history
+ * carries no forwarded status, so it is exempt.
+ *
+ * The lane guard mirrors `groupConsecutiveToolCalls`'s fold condition exactly,
+ * so this only ever removes parts that would fold into a generic tool-group.
+ * Every specialized lane (agent/delegation/ask/feedback/goal via
+ * `isAgentLikeToolName`, plan-mode, background-task) is left untouched — those
+ * render through their own cards and handle their own empty in-flight polls
+ * (see commit 1ddf751b, same disease in the other lanes). Runs before
+ * `groupConsecutiveToolCalls`.
+ */
+export function dropEmptyInFlightToolCalls(
+  parts: AdaptedContentPart[]
+): AdaptedContentPart[] {
+  return parts.filter((part) => {
+    if (part.type !== "tool-call") return true
+    // Specialized lanes render standalone — never our concern.
+    if (
+      isAgentLikeToolName(part.toolName) ||
+      isPlanModeToolName(part.toolName) ||
+      isBackgroundTaskToolCall(part)
+    ) {
+      return true
+    }
+    // Keep unless the part is unsettled — still running (live orphan) or carrying
+    // an unsettled forwarded status (a promoted orphan whose state flipped to
+    // output-available at COMPLETE_TURN). DB-persisted rows have no forwarded
+    // status → settled → always kept here. See `isUnsettledToolCall`.
+    if (!isUnsettledToolCall(part)) {
+      return true
+    }
+    if (part.state === "output-error" || part.errorText?.trim()) return true
+    if (part.output && part.output.trim().length > 0) return true // streaming output → keep
+    if (toolCallHasInput(part.input)) return true // has a real command/args → keep
+    // Empty args + unsettled + no output/error → orphaned arg-less initial call.
+    return false
+  })
+}
+
+/**
  * Wrap each run of consecutive `get_delegation_status` poll parts into a single
  * `delegation-status-group` part. Runs after `groupConsecutiveToolCalls`, which
  * leaves delegation (agent-like) tool calls standalone — so the status polls
@@ -1695,6 +1790,10 @@ export function adaptMessageTurn(
             toolName: block.tool_name,
             input: block.input_preview,
             state: isStreaming ? "input-available" : "output-available",
+            // Forward status so a promoted arg-less orphan (unmatched, no
+            // result) can be recognised after COMPLETE_TURN flips its state to
+            // output-available. See dropEmptyInFlightToolCalls.
+            toolStatus: block.status ?? null,
             meta: block.meta ?? null,
           })
         }
@@ -1744,7 +1843,9 @@ export function adaptMessageTurn(
           groupConsecutiveBackgroundTasks(
             groupConsecutiveDelegationStatus(
               groupConsecutiveToolCalls(
-                dropHiddenFeedbackChecks(adaptedContent)
+                dropEmptyInFlightToolCalls(
+                  dropHiddenFeedbackChecks(adaptedContent)
+                )
               )
             )
           ),

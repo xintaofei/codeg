@@ -90,3 +90,38 @@ export function useTerminalFont() {
     setTerminalLigatures,
   }
 }
+
+/** Workspace 背景图片：启用开关、遮罩/模糊/填充/面板不透明度配置、以及已解析的
+ * 图片 blob URL（异步从磁盘加载）。供外观设置面板与 workspace 布局共同消费。 */
+export function useWorkspaceBackground() {
+  const {
+    workspaceBgEnabled,
+    setWorkspaceBgEnabled,
+    workspaceBgMaskOpacity,
+    setWorkspaceBgMaskOpacity,
+    workspaceBgImageBlur,
+    setWorkspaceBgImageBlur,
+    workspaceBgPanelOpacity,
+    setWorkspaceBgPanelOpacity,
+    workspaceBgFillMode,
+    setWorkspaceBgFillMode,
+    workspaceBgImageUrl,
+    setWorkspaceBackgroundImage,
+    removeWorkspaceBackground,
+  } = useAppearance()
+  return {
+    workspaceBgEnabled,
+    setWorkspaceBgEnabled,
+    workspaceBgMaskOpacity,
+    setWorkspaceBgMaskOpacity,
+    workspaceBgImageBlur,
+    setWorkspaceBgImageBlur,
+    workspaceBgPanelOpacity,
+    setWorkspaceBgPanelOpacity,
+    workspaceBgFillMode,
+    setWorkspaceBgFillMode,
+    workspaceBgImageUrl,
+    setWorkspaceBackgroundImage,
+    removeWorkspaceBackground,
+  }
+}

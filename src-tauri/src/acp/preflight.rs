@@ -402,6 +402,15 @@ fn build_uv_version_check(current: Option<&str>, required: &str) -> CheckItem {
     }
 }
 
+/// The registry `dir_entry` for a binary agent (None for single-file agents
+/// and non-binary distributions).
+fn binary_dir_entry(agent_type: AgentType) -> Option<registry::BinaryDirEntry> {
+    match registry::get_agent_meta(agent_type).distribution {
+        AgentDistribution::Binary { dir_entry, .. } => dir_entry,
+        _ => None,
+    }
+}
+
 async fn check_binary_environment(
     agent_type: AgentType,
     version: &str,
@@ -455,6 +464,23 @@ async fn check_binary_environment(
                     label: "Binary cache".into(),
                     status: CheckStatus::Pass,
                     message,
+                    fixes: vec![],
+                }
+            }
+            // Dir-tree agents (Cursor): a user-installed CLI on PATH /
+            // ~/.local/bin is launchable as-is — the connect path falls back
+            // to it — so report ready instead of a misleading warn.
+            Ok(None)
+                if binary_dir_entry(agent_type).is_some()
+                    && crate::commands::acp::resolve_system_agent_binary(cmd).is_some() =>
+            {
+                CheckItem {
+                    check_id: "binary_cached".into(),
+                    label: "Binary cache".into(),
+                    status: CheckStatus::Pass,
+                    message: format!(
+                        "Using the system-installed {cmd} (codeg-managed download also available)"
+                    ),
                     fixes: vec![],
                 }
             }

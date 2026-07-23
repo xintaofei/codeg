@@ -8,6 +8,7 @@ use std::sync::LazyLock;
 use std::time::UNIX_EPOCH;
 
 use base64::Engine as _;
+use ignore::WalkBuilder;
 use serde::Serialize;
 
 use tokio::sync::Semaphore;
@@ -248,6 +249,23 @@ pub enum FileTreeNode {
         path: String,
         children: Vec<FileTreeNode>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkspaceEntryKind {
+    File,
+    Dir,
+}
+
+/// A flat workspace entry produced by `list_workspace_files`. Unlike the nested
+/// `FileTreeNode`, this is a single flat record suited to fuzzy file search.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WorkspaceFileEntry {
+    pub name: String,
+    /// Path relative to the workspace root, always forward-slashed.
+    pub path: String,
+    pub kind: WorkspaceEntryKind,
 }
 
 #[derive(Debug, Serialize)]
@@ -672,6 +690,21 @@ pub async fn update_folder_color_core(
         .ok_or_else(|| AppCommandError::not_found("Folder not found"))
 }
 
+pub async fn update_folder_alias_core(
+    db: &AppDatabase,
+    folder_id: i32,
+    alias: Option<String>,
+) -> Result<FolderDetail, AppCommandError> {
+    // Empty / whitespace-only input clears the alias (stored as NULL).
+    let normalized = alias
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    folder_service::update_folder_alias(&db.conn, folder_id, normalized)
+        .await
+        .map_err(AppCommandError::from)?
+        .ok_or_else(|| AppCommandError::not_found("Folder not found"))
+}
+
 pub async fn update_folder_default_agent_core(
     db: &AppDatabase,
     folder_id: i32,
@@ -804,6 +837,16 @@ pub async fn update_folder_color(
     color: String,
 ) -> Result<FolderDetail, AppCommandError> {
     update_folder_color_core(&db, folder_id, color).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn update_folder_alias(
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    alias: Option<String>,
+) -> Result<FolderDetail, AppCommandError> {
+    update_folder_alias_core(&db, folder_id, alias).await
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -3344,6 +3387,77 @@ pub async fn get_file_tree(
     Ok(dir_children.remove(&root).unwrap_or_default())
 }
 
+/// Flat, gitignore-aware listing of every file and directory under `path`, for
+/// fuzzy file search. Unlike [`get_file_tree`], ignored directories
+/// (`node_modules`, `target`, `dist`, …) are pruned *during* the walk, so no
+/// depth cap is needed: deep files stay reachable while the heavy trees are
+/// never descended and the payload stays small. Gitignore handling that used to
+/// run client-side now happens here at native speed in a single pass.
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn list_workspace_files(
+    path: String,
+) -> Result<Vec<WorkspaceFileEntry>, AppCommandError> {
+    let root = PathBuf::from(&path);
+
+    // Conservative gitignore parity with the previous client-side pass: respect
+    // in-tree `.gitignore`/`.ignore`/`.git/info/exclude`, but not the global
+    // gitignore or parent-directory ignores (the workspace root is the
+    // boundary). `require_git(false)` keeps `.gitignore` effective even outside
+    // a git repo. `hidden(false)` keeps dotfiles visible. The `filter_entry`
+    // mirrors `get_file_tree`'s hardcoded ignores exactly.
+    let walker = WalkBuilder::new(&root)
+        .hidden(false)
+        .parents(false)
+        .ignore(true)
+        .git_ignore(true)
+        .git_exclude(true)
+        .git_global(false)
+        .require_git(false)
+        .sort_by_file_name(|a, b| a.cmp(b))
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                !FILE_TREE_IGNORED_DIRS.contains(&name.as_ref())
+            } else {
+                name != ".DS_Store"
+            }
+        })
+        .build();
+
+    let mut entries: Vec<WorkspaceFileEntry> = Vec::new();
+    for result in walker {
+        // Skip unreadable entries (permission errors, transient races) rather
+        // than failing the whole search.
+        let Ok(entry) = result else { continue };
+        let entry_path = entry.path();
+
+        // Skip the root directory itself.
+        if entry_path == root {
+            continue;
+        }
+
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let name = entry.file_name().to_string_lossy().to_string();
+        let rel_path = entry_path
+            .strip_prefix(&root)
+            .unwrap_or(entry_path)
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        entries.push(WorkspaceFileEntry {
+            name,
+            path: rel_path,
+            kind: if is_dir {
+                WorkspaceEntryKind::Dir
+            } else {
+                WorkspaceEntryKind::File
+            },
+        });
+    }
+
+    Ok(entries)
+}
+
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn read_file_base64(
     path: String,
@@ -3799,6 +3913,87 @@ pub async fn rename_file_tree_entry(
     Ok(rel)
 }
 
+/// Move a file/directory into a different directory of the same workspace,
+/// keeping its name. `source_path` and `dest_dir` are both workspace-relative
+/// (forward slashes); `dest_dir` is `""` for the workspace root. Returns the new
+/// workspace-relative path of the moved entry.
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn move_file_tree_entry(
+    root_path: String,
+    source_path: String,
+    dest_dir: String,
+) -> Result<String, AppCommandError> {
+    let root = PathBuf::from(&root_path);
+    if !root.exists() || !root.is_dir() {
+        return Err(AppCommandError::not_found("Folder does not exist"));
+    }
+
+    let source = resolve_tree_path(&root, &source_path)?;
+    // `symlink_metadata` doesn't follow the final component, so a (possibly
+    // dangling) symlink entry the tree still shows counts as existing — and
+    // `fs::rename` moves the link itself rather than whatever it points at.
+    match std::fs::symlink_metadata(&source) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(AppCommandError::not_found("Source file does not exist"));
+        }
+        Err(e) => return Err(AppCommandError::io(e)),
+    }
+    if source == root {
+        return Err(AppCommandError::invalid_input("Cannot move workspace root"));
+    }
+
+    let dest = resolve_tree_path(&root, &dest_dir)?;
+    if !dest.is_dir() {
+        return Err(AppCommandError::invalid_input(
+            "Destination is not a directory",
+        ));
+    }
+
+    // Reject moving a directory into itself or one of its own descendants —
+    // `starts_with` is component-wise, so `src` is not mistaken for `src-utils`.
+    if dest == source || dest.starts_with(&source) {
+        return Err(AppCommandError::invalid_input(
+            "Cannot move a directory into itself",
+        ));
+    }
+
+    let name = source
+        .file_name()
+        .ok_or_else(|| AppCommandError::invalid_input("Cannot move path without a name"))?;
+    let target = dest.join(name);
+
+    // Dropping onto the current parent is a no-op — report the unchanged path
+    // rather than erroring so the UI can simply do nothing.
+    if target == source {
+        return Ok(source_path);
+    }
+    // Collision check via `symlink_metadata`: a same-name entry of ANY kind —
+    // including a dangling symlink, which `Path::exists()` reports as absent —
+    // must block the move so `fs::rename` can't silently clobber it.
+    match std::fs::symlink_metadata(&target) {
+        Ok(_) => {
+            return Err(AppCommandError::already_exists(
+                "An entry with this name already exists in the destination",
+            ));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(AppCommandError::io(e)),
+    }
+
+    std::fs::rename(&source, &target).map_err(AppCommandError::io)?;
+
+    let rel = target
+        .strip_prefix(&root)
+        .map_err(|e| {
+            AppCommandError::invalid_input("Failed to compute relative path")
+                .with_detail(e.to_string())
+        })?
+        .to_string_lossy()
+        .to_string();
+    Ok(rel)
+}
+
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn delete_file_tree_entry(
     root_path: String,
@@ -3911,28 +4106,67 @@ pub async fn create_file_tree_entry(
     Ok(rel)
 }
 
+// A Tauri command deserializes each named arg from JS, so the query knobs stay
+// flat positional params rather than a bundled options struct.
+#[allow(clippy::too_many_arguments)]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn git_log(
     path: String,
     limit: Option<u32>,
     branch: Option<String>,
     remote: Option<String>,
+    skip: Option<u32>,
+    author: Option<String>,
+    all_branches: Option<bool>,
+    with_files: Option<bool>,
 ) -> Result<GitLogResult, AppCommandError> {
     ensure_git_repo(&path)?;
 
     const COMMIT_META_PREFIX: &str = "__COMMIT__\0";
     const MESSAGE_END_MARKER: &str = "__COMMIT_MESSAGE_END__";
 
+    let all_branches = all_branches.unwrap_or(false);
+    // Per-commit file changes (`--raw --numstat`) diff every commit against its
+    // parent, which dominates the cost of a page. Callers that only need the
+    // commit list (the log tab, which lazy-loads a commit's files on expand via
+    // git_commit_files) pass with_files=false to skip it. Defaults to true for
+    // back-compat (e.g. the push window renders files inline).
+    let with_files = with_files.unwrap_or(true);
+
+    // Offset for paginated (infinite-scroll) loading: the frontend requests
+    // successive pages by their running commit count.
+    let skip = skip.unwrap_or(0);
     let limit_str = format!("-{}", limit.unwrap_or(100));
     let mut args = vec![
         "log".to_string(),
         limit_str,
         format!("--format=__COMMIT__%x00%h%x00%H%x00%an%x00%aI%n%B%n{MESSAGE_END_MARKER}"),
-        "--raw".to_string(),
-        "--numstat".to_string(),
-        "--no-renames".to_string(),
     ];
-    if let Some(ref b) = branch {
+    if with_files {
+        args.push("--raw".to_string());
+        args.push("--numstat".to_string());
+        args.push("--no-renames".to_string());
+    }
+    if skip > 0 {
+        args.push(format!("--skip={}", skip));
+    }
+    // Author filter (IDEA-style "User" filter): match the EXACT author name via
+    // an anchored, BRE-escaped pattern (see git_author_match_pattern) so e.g.
+    // "Alice" does not also match "Alice Smith" or a commit whose email contains
+    // "alice". `--basic-regexp` pins the pattern language so a user's
+    // grep.patternType config can't reinterpret it. Must precede the
+    // revision/pathspec arg below.
+    if let Some(ref a) = author {
+        if !a.is_empty() {
+            args.push("--basic-regexp".to_string());
+            args.push(format!("--author={}", git_author_match_pattern(a)));
+        }
+    }
+    // `--all` (all refs) is the default "all branches" view; an explicit branch
+    // narrows to that ref. `--all` wins if both are somehow set.
+    if all_branches {
+        args.push("--all".to_string());
+    } else if let Some(ref b) = branch {
         args.push(b.clone());
     }
     let output = crate::process::tokio_command("git")
@@ -4014,11 +4248,24 @@ pub async fn git_log(
         entries.push(entry.finish());
     }
 
-    let log_limit = limit.unwrap_or(100);
-    let (unpushed_hashes, has_upstream) =
-        get_unpushed_hashes(&path, log_limit, remote.as_deref(), branch.as_deref())
-            .await
-            .unwrap_or((None, false));
+    // Cover the full fetched range (skip + limit) so pushed status stays correct
+    // on deeper pages — get_unpushed_hashes caps its rev-list to this count. The
+    // all-branches path passes `author` through so the same filter narrows that
+    // window (a sparse match still lands inside it); the single-branch upstream
+    // paths below are not author-filtered, so a matched commit deep past the
+    // window there can still report an inaccurate badge — an accepted limit for
+    // that (rarer) branch+author combination.
+    let log_limit = skip.saturating_add(limit.unwrap_or(100));
+    let (unpushed_hashes, has_upstream) = get_unpushed_hashes(
+        &path,
+        log_limit,
+        remote.as_deref(),
+        branch.as_deref(),
+        all_branches,
+        author.as_deref(),
+    )
+    .await
+    .unwrap_or((None, false));
     for entry in entries.iter_mut() {
         entry.pushed = unpushed_hashes
             .as_ref()
@@ -4074,40 +4321,195 @@ pub async fn git_commit_branches(
     Ok(branches)
 }
 
-struct GitLogEntryBuilder {
-    hash: String,
-    full_hash: String,
-    author: String,
-    date: String,
-    message: String,
+/// Build a `git log --author` pattern matching EXACTLY the given author name
+/// (`%an`) — not a substring, and not a match inside the email. The name is
+/// escaped for basic regular expressions (BRE) and anchored to the start of the
+/// "Name <email>" author ident with a trailing " <", so "Alice" matches
+/// "Alice <…>" but not "Alice Smith <…>" nor "Bob <alice@…>". Pair with
+/// `--basic-regexp` so the escaping is interpreted as BRE regardless of the
+/// user's grep.patternType config. Note `|`, `+`, `?`, `(`, `)`, `{`, `}` are
+/// literal in BRE, so they are intentionally left unescaped. Pure — unit-tested
+/// without a repo.
+fn git_author_match_pattern(name: &str) -> String {
+    let mut escaped = String::with_capacity(name.len() + 4);
+    for ch in name.chars() {
+        if matches!(ch, '\\' | '.' | '*' | '[' | ']' | '^' | '$') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    format!("^{escaped} <")
+}
+
+/// The configured commit author name (`git config user.name`) so the author
+/// filter can offer a pinned "me" quick-select. Best-effort: absent/blank →
+/// None. Cheap (no history walk), unlike a full repo author scan.
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn git_current_user(path: String) -> Result<Option<String>, AppCommandError> {
+    ensure_git_repo(&path)?;
+
+    let output = crate::process::tokio_command("git")
+        .args(["config", "user.name"])
+        .current_dir(&path)
+        .output()
+        .await
+        .map_err(AppCommandError::io)?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(if name.is_empty() { None } else { Some(name) })
+}
+
+/// Parse `git shortlog -sne` output into a de-duplicated, frequency-ordered list
+/// of author names whose name contains `query` (case-insensitive). shortlog lines
+/// look like `"   123\tAlice <alice@example.com>"` (a padded count, a tab, then
+/// `Name <email>`); we return just the display names. Pure — unit-tested without
+/// a repo.
+fn filter_shortlog_authors(stdout: &str, query: &str, limit: usize) -> Vec<String> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for line in stdout.lines() {
+        // Strip the leading count column ("   123\t").
+        let rest = match line.split_once('\t') {
+            Some((_count, rest)) => rest.trim(),
+            None => continue,
+        };
+        // Drop the trailing " <email>" so we key on the display name only (the
+        // author filter matches names, see git_author_match_pattern).
+        let name = match rest.rsplit_once(" <") {
+            Some((name, _email)) => name.trim(),
+            None => rest,
+        };
+        if name.is_empty() || !name.to_lowercase().contains(&needle) {
+            continue;
+        }
+        // Same author under two emails collapses to one name (first = most
+        // frequent, since shortlog is count-sorted).
+        if seen.insert(name.to_string()) {
+            out.push(name.to_string());
+            if out.len() >= limit {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// On-demand author search for the log filter: real commit authors whose name
+/// matches `query` (case-insensitive substring), most-active first. Backed by
+/// `git shortlog -s -n -e --all` (dedup + counts across all refs). Unlike a full
+/// upfront author scan (removed for perf), this runs only while the user is
+/// actively typing in the filter box (debounced client-side), so the history walk
+/// is paid on demand.
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn git_search_authors(
+    path: String,
+    query: String,
+    limit: Option<u32>,
+) -> Result<Vec<String>, AppCommandError> {
+    ensure_git_repo(&path)?;
+
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // `--all` summarizes every ref; `-s -n -e` = counts only, sorted by count
+    // desc, identities distinguished by email. stdin is nulled so shortlog never
+    // blocks trying to read a revision range from a (possibly piped) stdin.
+    let output = crate::process::tokio_command("git")
+        .args(["shortlog", "-s", "-n", "-e", "--all"])
+        .current_dir(&path)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .map_err(AppCommandError::io)?;
+
+    if !output.status.success() {
+        return Err(git_command_error("shortlog", &output.stderr));
+    }
+
+    let limit = limit.unwrap_or(20).clamp(1, 100) as usize;
+    Ok(filter_shortlog_authors(
+        &String::from_utf8_lossy(&output.stdout),
+        trimmed,
+        limit,
+    ))
+}
+
+/// File changes for a single commit, loaded on demand when a commit row is
+/// expanded (git_log with with_files=false omits these to keep the list fast).
+/// Same `--raw`/`--numstat` shape as git_log so the same parsing applies.
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn git_commit_files(
+    path: String,
+    commit: String,
+) -> Result<Vec<GitLogFileChange>, AppCommandError> {
+    ensure_git_repo(&path)?;
+
+    // `--first-parent` keeps merge commits on a normal (first-parent) diff
+    // instead of git show's default combined (`--cc`) output, whose `--raw`
+    // section uses a different shape that would mis-parse (files defaulting to
+    // "M"). This matches the first-parent diff git_log itself produces.
+    let output = crate::process::tokio_command("git")
+        .args(["-c", "core.quotePath=false"])
+        .args([
+            "show",
+            "--format=",
+            "--first-parent",
+            "--raw",
+            "--numstat",
+            "--no-renames",
+            &commit,
+        ])
+        .current_dir(&path)
+        .output()
+        .await
+        .map_err(AppCommandError::io)?;
+
+    if !output.status.success() {
+        return Err(git_command_error("show", &output.stderr));
+    }
+
+    // `git show` for a single commit emits the same `:`-prefixed raw lines and
+    // numstat lines git_log parses; reuse the same builder to merge them.
+    let mut builder = GitLogFilesBuilder::default();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with(':') {
+            if let Some((status, file_path)) = parse_raw_file_line(line) {
+                builder.get_or_insert_file(file_path).status = status;
+            }
+            continue;
+        }
+        if let Some((additions, deletions, file_path)) = parse_numstat_file_line(line) {
+            let file = builder.get_or_insert_file(file_path);
+            file.additions = additions;
+            file.deletions = deletions;
+        }
+    }
+
+    Ok(builder.files)
+}
+
+/// Accumulates a commit's file changes, merging the `--raw` (status) and
+/// `--numstat` (+/-) lines that describe the same path. Shared by git_log's
+/// per-commit builder and the standalone git_commit_files command.
+#[derive(Default)]
+struct GitLogFilesBuilder {
     files: Vec<GitLogFileChange>,
     index_by_path: HashMap<String, usize>,
 }
 
-impl GitLogEntryBuilder {
-    fn new(parts: Vec<&str>) -> Self {
-        Self {
-            hash: parts[0].to_string(),
-            full_hash: parts[1].to_string(),
-            author: parts[2].to_string(),
-            date: parts[3].to_string(),
-            message: String::new(),
-            files: Vec::new(),
-            index_by_path: HashMap::new(),
-        }
-    }
-
-    fn push_message_line(&mut self, line: &str) {
-        if !self.message.is_empty() {
-            self.message.push('\n');
-        }
-        self.message.push_str(line);
-    }
-
-    fn finalize_message(&mut self) {
-        self.message = self.message.trim_end_matches('\n').to_string();
-    }
-
+impl GitLogFilesBuilder {
     fn get_or_insert_file(&mut self, path: String) -> &mut GitLogFileChange {
         let index = if let Some(index) = self.index_by_path.get(&path) {
             *index
@@ -4125,6 +4527,43 @@ impl GitLogEntryBuilder {
 
         &mut self.files[index]
     }
+}
+
+struct GitLogEntryBuilder {
+    hash: String,
+    full_hash: String,
+    author: String,
+    date: String,
+    message: String,
+    files: GitLogFilesBuilder,
+}
+
+impl GitLogEntryBuilder {
+    fn new(parts: Vec<&str>) -> Self {
+        Self {
+            hash: parts[0].to_string(),
+            full_hash: parts[1].to_string(),
+            author: parts[2].to_string(),
+            date: parts[3].to_string(),
+            message: String::new(),
+            files: GitLogFilesBuilder::default(),
+        }
+    }
+
+    fn push_message_line(&mut self, line: &str) {
+        if !self.message.is_empty() {
+            self.message.push('\n');
+        }
+        self.message.push_str(line);
+    }
+
+    fn finalize_message(&mut self) {
+        self.message = self.message.trim_end_matches('\n').to_string();
+    }
+
+    fn get_or_insert_file(&mut self, path: String) -> &mut GitLogFileChange {
+        self.files.get_or_insert_file(path)
+    }
 
     fn finish(self) -> GitLogEntry {
         GitLogEntry {
@@ -4133,7 +4572,7 @@ impl GitLogEntryBuilder {
             author: self.author,
             date: self.date,
             message: self.message,
-            files: self.files,
+            files: self.files.files,
             pushed: None,
         }
     }
@@ -4174,8 +4613,62 @@ async fn get_unpushed_hashes(
     limit: u32,
     remote_override: Option<&str>,
     branch: Option<&str>,
+    all_branches: bool,
+    author: Option<&str>,
 ) -> Result<(Option<HashSet<String>>, bool), AppCommandError> {
     let limit_arg = format!("-{}", limit);
+
+    // All-branches view: a commit counts as "pushed" iff it is reachable from any
+    // remote-tracking ref. "unpushed" = commits the log (`git log --all`) shows
+    // that sit on no remote. Two things must line up with git_log so every
+    // *displayed* commit gets a correct, definite badge:
+    //  - Walk the SAME `--all` ref universe (not just `--branches`), so tag-/
+    //    stash-only commits that appear in the log are classified too (walking
+    //    only `--branches` would leave them absent from the set → wrongly
+    //    "pushed").
+    //  - Apply the SAME `--author` filter (anchored BRE, see
+    //    git_author_match_pattern), so a sparse author-filtered page's commits
+    //    fall inside the `-{limit}` window instead of being pushed past it by
+    //    unrelated commits and mislabeled "pushed".
+    // The status is always definite (never "unknown"): with no remote-tracking
+    // refs `--not --remotes` is a no-op, so every listed commit reads "not
+    // pushed" — accurate, nothing is on a remote — instead of a question mark.
+    if all_branches {
+        // Drives only the has_upstream flag; push status is resolved regardless.
+        let has_remotes = crate::process::tokio_command("git")
+            .args(["for-each-ref", "--count=1", "refs/remotes"])
+            .current_dir(path)
+            .output()
+            .await
+            .map(|o| {
+                o.status.success()
+                    && !String::from_utf8_lossy(&o.stdout).trim().is_empty()
+            })
+            .unwrap_or(false);
+        let mut rev_args = vec!["rev-list".to_string(), limit_arg.clone()];
+        if let Some(a) = author.filter(|a| !a.is_empty()) {
+            rev_args.push("--basic-regexp".to_string());
+            rev_args.push(format!("--author={}", git_author_match_pattern(a)));
+        }
+        rev_args.push("--all".to_string());
+        rev_args.push("--not".to_string());
+        rev_args.push("--remotes".to_string());
+        let output = crate::process::tokio_command("git")
+            .args(&rev_args)
+            .current_dir(path)
+            .output()
+            .await
+            .map_err(AppCommandError::io)?;
+        if !output.status.success() {
+            return Ok((None, has_remotes));
+        }
+        let hashes = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| line.to_string())
+            .collect::<HashSet<_>>();
+        return Ok((Some(hashes), has_remotes));
+    }
 
     // If viewing a remote branch (e.g. "origin/main"), all commits are pushed
     if let Some(b) = branch {
@@ -4352,6 +4845,37 @@ mod tests {
     use crate::models::agent::AgentType;
 
     #[test]
+    fn git_author_match_pattern_anchors_and_escapes() {
+        // Anchored to the name start + trailing " <" so it can't match a longer
+        // name or the email portion.
+        assert_eq!(git_author_match_pattern("Alice"), "^Alice <");
+        // BRE metacharacters are backslash-escaped...
+        assert_eq!(git_author_match_pattern("a.b*c"), "^a\\.b\\*c <");
+        assert_eq!(git_author_match_pattern("na[me]"), "^na\\[me\\] <");
+        assert_eq!(
+            git_author_match_pattern("back\\slash"),
+            "^back\\\\slash <"
+        );
+        // ...but `|` is literal in BRE, so a name like `程相|cx` is left as-is.
+        assert_eq!(git_author_match_pattern("程相|cx"), "^程相|cx <");
+    }
+
+    #[test]
+    fn filter_shortlog_authors_matches_dedupes_and_caps() {
+        // Real shortlog rows: a space-padded count, a tab, then `Name <email>`.
+        let out = "    10\tAlice <alice@example.com>\n     5\tBob <bob@example.com>\n     3\tAlice <alice@other.com>\n     1\tCarol <carol@example.com>\n";
+        // Case-insensitive substring on the name; the same name under two emails
+        // collapses to a single entry (first/most-frequent wins).
+        assert_eq!(filter_shortlog_authors(out, "ali", 20), vec!["Alice"]);
+        assert_eq!(filter_shortlog_authors(out, "B", 20), vec!["Bob"]);
+        // Empty / whitespace query → no candidates.
+        assert!(filter_shortlog_authors(out, "  ", 20).is_empty());
+        // The limit caps the result count.
+        let many = "   3\tAaa <a@x>\n   2\tAab <b@x>\n   1\tAac <c@x>\n";
+        assert_eq!(filter_shortlog_authors(many, "aa", 2), vec!["Aaa", "Aab"]);
+    }
+
+    #[test]
     fn emit_folder_upsert_broadcasts_on_folder_channel() {
         // A headlessly-created folder must reach every client on
         // `folder://changed` carrying its full detail, so the sidebar can place a
@@ -4377,6 +4901,7 @@ mod tests {
                 color: "inherit".to_string(),
                 parent_id: Some(1),
                 kind: FolderKind::Regular,
+                alias: None,
             },
         );
 
@@ -4386,6 +4911,83 @@ mod tests {
         assert_eq!(p["kind"], "upsert");
         assert_eq!(p["folder"]["id"], 7);
         assert_eq!(p["folder"]["parent_id"], 1);
+    }
+
+    /// Create `rel` (relative to `root`) as a file, making parent dirs.
+    fn write_file(root: &std::path::Path, rel: &str, contents: &str) {
+        let full = root.join(rel);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).expect("create parent dirs");
+        }
+        std::fs::write(full, contents).expect("write file");
+    }
+
+    #[tokio::test]
+    async fn list_workspace_files_includes_deep_and_prunes_ignored() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        // A file nested 12 levels deep — beyond the old hardcoded depth-10 cap
+        // this command replaces. It must still be discovered (the core fix).
+        let deep_rel = "a/b/c/d/e/f/g/h/i/j/k/deep.txt";
+        write_file(root, deep_rel, "deep");
+
+        // Gitignore rules must be honored even without a real git repo
+        // (`require_git(false)`), pruning ignored trees during the walk.
+        write_file(root, ".gitignore", "node_modules/\nignored.txt\n");
+        write_file(root, "node_modules/pkg/index.js", "junk");
+        write_file(root, "ignored.txt", "junk");
+
+        // The hardcoded ignores (mirroring FILE_TREE_IGNORED_DIRS) must be pruned.
+        write_file(root, ".git/config", "[core]");
+        write_file(root, "src/.DS_Store", "junk");
+
+        // A normal file that must survive.
+        write_file(root, "src/main.rs", "fn main() {}");
+
+        let entries = list_workspace_files(root.to_string_lossy().to_string())
+            .await
+            .expect("list_workspace_files");
+        let paths: std::collections::HashSet<&str> =
+            entries.iter().map(|e| e.path.as_str()).collect();
+
+        // Deep and normal files are reachable.
+        assert!(
+            paths.contains(deep_rel),
+            "deep file must be listed, got {paths:?}"
+        );
+        assert!(paths.contains("src/main.rs"), "normal file must be listed");
+
+        // Gitignored entries are pruned during traversal.
+        assert!(
+            !paths.iter().any(|p| p.starts_with("node_modules")),
+            "gitignored node_modules must be pruned, got {paths:?}"
+        );
+        assert!(
+            !paths.contains("ignored.txt"),
+            "gitignored file must be pruned"
+        );
+
+        // Hardcoded ignores are pruned.
+        // Precisely the `.git` dir / its contents — not `.gitignore`, which is
+        // intentionally listed.
+        assert!(
+            !paths.iter().any(|p| *p == ".git" || p.starts_with(".git/")),
+            ".git dir must be pruned, got {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p.ends_with(".DS_Store")),
+            ".DS_Store must be pruned"
+        );
+
+        // Intermediate directory entries are emitted alongside files — the
+        // `@`-mention picker relies on directories being present.
+        assert!(
+            entries.iter().any(
+                |e| e.path == "a" && matches!(e.kind, WorkspaceEntryKind::Dir)
+            ),
+            "directory entries must be present"
+        );
     }
 
     /// Run a git command in `dir`, supplying identity via env so the test does
@@ -4500,6 +5102,186 @@ mod tests {
                 .await
                 .expect("branch"),
             None
+        );
+    }
+
+    /// Like `git_run` but returns the command's trimmed stdout (e.g. a resolved
+    /// commit hash), with the same isolated identity/config env.
+    fn git_capture(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .output()
+            .expect("spawn git");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    // All-branches push status: with no remote-tracking refs every listed commit
+    // is a definite "not pushed" (never the old unknown/None), and the classified
+    // set walks the same `--all` universe as the log so a tag-only commit shown in
+    // the log is covered too (a `--branches`-only walk would miss it → wrongly
+    // "pushed").
+    #[tokio::test]
+    async fn git_log_all_branches_no_remote_marks_every_commit_not_pushed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        git_run(p, &["init", "-q"]);
+        git_run(p, &["commit", "-q", "--allow-empty", "-m", "c1"]);
+        git_run(p, &["commit", "-q", "--allow-empty", "-m", "c2"]);
+        // A tag-only commit: create c3, tag it, then move the branch back so c3 is
+        // reachable only via refs/tags — shown by `git log --all` but absent from
+        // `--branches`.
+        git_run(p, &["commit", "-q", "--allow-empty", "-m", "c3"]);
+        let c3 = git_capture(p, &["rev-parse", "HEAD"]);
+        git_run(p, &["tag", "v1"]);
+        git_run(p, &["reset", "-q", "--hard", "HEAD~1"]);
+
+        let result = git_log(
+            p.to_string_lossy().to_string(),
+            None,        // limit
+            None,        // branch
+            None,        // remote
+            None,        // skip
+            None,        // author
+            Some(true),  // all_branches
+            Some(false), // with_files
+        )
+        .await
+        .expect("git_log");
+
+        assert!(
+            result.entries.iter().any(|e| e.full_hash == c3),
+            "tag-only commit must be listed (proves the --all universe is walked)"
+        );
+        for e in &result.entries {
+            assert_eq!(
+                e.pushed,
+                Some(false),
+                "commit {} must read not-pushed, got {:?}",
+                e.hash,
+                e.pushed
+            );
+        }
+        assert!(!result.has_upstream, "no remotes → has_upstream=false");
+    }
+
+    // A commit reachable from a remote-tracking ref reads "pushed"; commits ahead
+    // of it read "not pushed". The remote-tracking ref is faked with update-ref so
+    // the test needs no network.
+    #[tokio::test]
+    async fn git_log_all_branches_marks_remote_reachable_commits_pushed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        git_run(p, &["init", "-q"]);
+        git_run(p, &["commit", "-q", "--allow-empty", "-m", "c1"]);
+        let c1 = git_capture(p, &["rev-parse", "HEAD"]);
+        git_run(p, &["commit", "-q", "--allow-empty", "-m", "c2"]);
+        let c2 = git_capture(p, &["rev-parse", "HEAD"]);
+        git_run(p, &["commit", "-q", "--allow-empty", "-m", "c3"]);
+        let c3 = git_capture(p, &["rev-parse", "HEAD"]);
+        // "Pushed up to c2" without a network: point a remote-tracking ref at c2.
+        git_run(p, &["update-ref", "refs/remotes/origin/main", &c2]);
+
+        let result = git_log(
+            p.to_string_lossy().to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(true),
+            Some(false),
+        )
+        .await
+        .expect("git_log");
+
+        let pushed_of = |hash: &str| {
+            result
+                .entries
+                .iter()
+                .find(|e| e.full_hash == hash)
+                .unwrap_or_else(|| panic!("commit {hash} missing from log"))
+                .pushed
+        };
+        assert_eq!(pushed_of(&c1), Some(true), "c1 is on the remote → pushed");
+        assert_eq!(pushed_of(&c2), Some(true), "c2 is the remote tip → pushed");
+        assert_eq!(
+            pushed_of(&c3),
+            Some(false),
+            "c3 is ahead of the remote → not pushed"
+        );
+        assert!(result.has_upstream, "a remote-tracking ref → has_upstream");
+    }
+
+    // An author-filtered match that sits past the status rev-list's `-{limit}`
+    // window in unfiltered history must still be classified: the status walk
+    // applies the same `--author` filter as the log, so the sparse match stays
+    // inside the window. An unfiltered walk would drop it and mislabel it
+    // "pushed".
+    #[tokio::test]
+    async fn git_log_all_branches_author_match_past_window_stays_not_pushed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        git_run(p, &["init", "-q"]);
+        git_run(
+            p,
+            &[
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "a1",
+                "--author=Alice <alice@example.com>",
+            ],
+        );
+        let alice = git_capture(p, &["rev-parse", "HEAD"]);
+        // Six Bob commits push Alice (the root) to rank 7, past a `-5` window.
+        for i in 0..6 {
+            let msg = format!("b{i}");
+            git_run(
+                p,
+                &[
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    &msg,
+                    "--author=Bob <bob@example.com>",
+                ],
+            );
+        }
+
+        let result = git_log(
+            p.to_string_lossy().to_string(),
+            Some(5),                   // limit → status window is `-5`
+            None,
+            None,
+            None,
+            Some("Alice".to_string()), // author filter
+            Some(true),
+            Some(false),
+        )
+        .await
+        .expect("git_log");
+
+        assert_eq!(result.entries.len(), 1, "only the one Alice commit matches");
+        let e = &result.entries[0];
+        assert_eq!(e.full_hash, alice);
+        assert_eq!(
+            e.pushed,
+            Some(false),
+            "author-filtered match past the unfiltered window must read not-pushed"
         );
     }
 
@@ -4742,6 +5524,107 @@ branch refs/heads/main";
             .expect("clear agent");
         assert_eq!(cleared.default_agent_type, None);
     }
+
+    #[tokio::test]
+    async fn move_file_tree_entry_moves_file_into_subdir() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::write(root.path().join("a.txt"), b"x").expect("write");
+        std::fs::create_dir(root.path().join("sub")).expect("mkdir");
+
+        let new_rel = move_file_tree_entry(
+            root.path().to_string_lossy().into_owned(),
+            "a.txt".to_string(),
+            "sub".to_string(),
+        )
+        .await
+        .expect("move");
+
+        assert_eq!(new_rel.replace('\\', "/"), "sub/a.txt");
+        assert!(!root.path().join("a.txt").exists());
+        assert!(root.path().join("sub/a.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn move_file_tree_entry_moves_back_to_root() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::create_dir(root.path().join("sub")).expect("mkdir");
+        std::fs::write(root.path().join("sub/a.txt"), b"x").expect("write");
+
+        let new_rel = move_file_tree_entry(
+            root.path().to_string_lossy().into_owned(),
+            "sub/a.txt".to_string(),
+            String::new(),
+        )
+        .await
+        .expect("move to root");
+
+        assert_eq!(new_rel, "a.txt");
+        assert!(root.path().join("a.txt").exists());
+        assert!(!root.path().join("sub/a.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn move_file_tree_entry_rejects_move_into_own_descendant() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::create_dir_all(root.path().join("src/inner")).expect("mkdir");
+
+        let res = move_file_tree_entry(
+            root.path().to_string_lossy().into_owned(),
+            "src".to_string(),
+            "src/inner".to_string(),
+        )
+        .await;
+        assert!(res.is_err(), "moving a dir into its own descendant must fail");
+        assert!(root.path().join("src/inner").is_dir(), "source untouched");
+    }
+
+    #[tokio::test]
+    async fn move_file_tree_entry_rejects_existing_target() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::write(root.path().join("a.txt"), b"1").expect("write");
+        std::fs::create_dir(root.path().join("sub")).expect("mkdir");
+        std::fs::write(root.path().join("sub/a.txt"), b"2").expect("write");
+
+        let res = move_file_tree_entry(
+            root.path().to_string_lossy().into_owned(),
+            "a.txt".to_string(),
+            "sub".to_string(),
+        )
+        .await;
+        assert!(res.is_err(), "name collision in destination must fail");
+        assert!(root.path().join("a.txt").exists(), "source untouched");
+    }
+
+    #[tokio::test]
+    async fn move_file_tree_entry_same_parent_is_noop() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::create_dir(root.path().join("sub")).expect("mkdir");
+        std::fs::write(root.path().join("sub/a.txt"), b"x").expect("write");
+
+        let rel = move_file_tree_entry(
+            root.path().to_string_lossy().into_owned(),
+            "sub/a.txt".to_string(),
+            "sub".to_string(),
+        )
+        .await
+        .expect("no-op move");
+        assert_eq!(rel, "sub/a.txt");
+        assert!(root.path().join("sub/a.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn move_file_tree_entry_rejects_parent_escape() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::write(root.path().join("a.txt"), b"x").expect("write");
+
+        let res = move_file_tree_entry(
+            root.path().to_string_lossy().into_owned(),
+            "a.txt".to_string(),
+            "../evil".to_string(),
+        )
+        .await;
+        assert!(res.is_err(), "dest containing '..' must be rejected");
+    }
 }
 
 // Symlink confinement that `read_workspace_file_base64` relies on. Unix-only
@@ -4792,5 +5675,59 @@ mod workspace_confinement_tests {
         let link = root.path().join("asset.txt");
         symlink(&secret, &link).expect("symlink");
         assert!(ensure_path_in_workspace(root.path(), &link).is_err());
+    }
+
+    #[tokio::test]
+    async fn move_file_tree_entry_does_not_clobber_dangling_symlink() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::write(root.path().join("a.txt"), b"real").expect("write");
+        std::fs::create_dir(root.path().join("sub")).expect("mkdir");
+        // A dangling symlink occupies the destination name. `Path::exists()`
+        // follows it and reports `false`, so the collision check must instead
+        // use `symlink_metadata` or `fs::rename` would destroy the link.
+        symlink(
+            root.path().join("nonexistent-target"),
+            root.path().join("sub/a.txt"),
+        )
+        .expect("symlink");
+
+        let res = move_file_tree_entry(
+            root.path().to_string_lossy().into_owned(),
+            "a.txt".to_string(),
+            "sub".to_string(),
+        )
+        .await;
+        assert!(res.is_err(), "must not clobber a dangling destination symlink");
+        assert!(
+            std::fs::symlink_metadata(root.path().join("sub/a.txt")).is_ok(),
+            "dangling symlink must remain intact",
+        );
+        assert!(root.path().join("a.txt").exists(), "source untouched");
+    }
+
+    #[tokio::test]
+    async fn move_file_tree_entry_moves_a_symlink_entry() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::write(root.path().join("target.txt"), b"x").expect("write");
+        symlink(
+            root.path().join("target.txt"),
+            root.path().join("link.txt"),
+        )
+        .expect("symlink");
+        std::fs::create_dir(root.path().join("sub")).expect("mkdir");
+
+        let new_rel = move_file_tree_entry(
+            root.path().to_string_lossy().into_owned(),
+            "link.txt".to_string(),
+            "sub".to_string(),
+        )
+        .await
+        .expect("move symlink");
+        assert_eq!(new_rel.replace('\\', "/"), "sub/link.txt");
+        // The moved entry is still a symlink (the link itself moved, not its target).
+        let meta = std::fs::symlink_metadata(root.path().join("sub/link.txt"))
+            .expect("moved link exists");
+        assert!(meta.file_type().is_symlink(), "entry stays a symlink");
+        assert!(!root.path().join("link.txt").exists(), "old link gone");
     }
 }

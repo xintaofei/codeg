@@ -16,6 +16,7 @@ import {
 } from "@/components/chat/composer/invocation-reference"
 import type { ReferenceAttrs } from "@/components/chat/composer/types"
 import { useAgentSkills } from "@/hooks/use-agent-skills"
+import { rankByTextMatch } from "@/lib/fuzzy-text-match"
 import { cn } from "@/lib/utils"
 import type {
   AgentSkillItem,
@@ -103,23 +104,19 @@ export function useComposerInvocations({
   const commands = useMemo(() => {
     if (!open || triggerChar !== "/" || availableCommands.length === 0)
       return []
-    const f = filter.toLowerCase()
-    return availableCommands.filter((c) => c.name.toLowerCase().includes(f))
+    return rankByTextMatch(filter, availableCommands, (c) => c.name)
   }, [open, triggerChar, availableCommands, filter])
 
   const matchedSkills = useMemo(() => {
     // Skills autocomplete is Codex-only and triggered by `$`.
     if (!isCodex || !open || triggerChar !== "$" || skills.length === 0)
       return []
-    const f = filter.toLowerCase()
-    if (!f) return skills
-    const nameMatches: AgentSkillItem[] = []
-    const idOnlyMatches: AgentSkillItem[] = []
-    for (const skill of skills) {
-      if (skill.name.toLowerCase().includes(f)) nameMatches.push(skill)
-      else if (skill.id.toLowerCase().includes(f)) idOnlyMatches.push(skill)
-    }
-    return [...nameMatches, ...idOnlyMatches]
+    return rankByTextMatch(
+      filter,
+      skills,
+      (skill) => skill.name,
+      (skill) => skill.id
+    )
   }, [isCodex, open, triggerChar, skills, filter])
 
   const count = commands.length + matchedSkills.length

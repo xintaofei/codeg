@@ -56,7 +56,7 @@ export function BackgroundTaskCard({
     <div
       data-testid="background-task-group"
       className={cn(
-        "overflow-hidden rounded-lg border text-xs",
+        "overflow-hidden rounded-lg border text-xs ws-msg-card",
         allFailed
           ? "border-destructive/30 bg-destructive/5"
           : "border-border bg-card"

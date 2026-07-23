@@ -151,3 +151,100 @@ pub struct ImportResult {
     pub updated: u32,
     pub skipped: u32,
 }
+
+/// Reconciliation state of one locally-discovered session against the codeg DB,
+/// keyed by `(external_id, agent_type)` — the same identity `import_one` uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScanSessionStatus {
+    /// Not in the DB — importable.
+    New,
+    /// At least one live (non-deleted) row exists — already imported.
+    Imported,
+    /// Only soft-deleted rows exist — never resurrected by import.
+    Deleted,
+}
+
+/// One locally-discovered agent session in the import-picker scan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanSession {
+    /// The agent's own session id (`ConversationSummary::id`).
+    pub external_id: String,
+    pub agent_type: AgentType,
+    pub title: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub ended_at: Option<DateTime<Utc>>,
+    pub message_count: u32,
+    pub model: Option<String>,
+    pub git_branch: Option<String>,
+    pub status: ScanSessionStatus,
+}
+
+/// One folder group in the import-picker scan: all sessions sharing a
+/// normalize-matched cwd, plus how that path reconciles against the `folder`
+/// table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanFolder {
+    /// Display/import path. When a folder row normalize-matches the sessions'
+    /// cwd this is the ROW's stored string (the unique key `add_folder` upserts
+    /// on), so importing can never mint a near-duplicate row from a trailing-
+    /// slash or separator variant.
+    pub path: String,
+    pub name: String,
+    /// A live (non-deleted) folder row exists for this path. `false` with a
+    /// `folder_id` means the row is soft-deleted and import will reopen it.
+    pub exists_in_codeg: bool,
+    pub folder_id: Option<i32>,
+    pub agent_types: Vec<AgentType>,
+    pub sessions: Vec<ScanSession>,
+}
+
+/// Result of scanning every local agent's sessions for the import picker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanResult {
+    pub folders: Vec<ScanFolder>,
+    /// Sessions whose transcript carries no cwd — not importable (an import
+    /// target folder cannot be derived), surfaced only as a count.
+    pub no_folder_count: u32,
+    pub total_sessions: u32,
+    pub importable_count: u32,
+}
+
+/// Selection key sent back by the import picker: identifies one scanned
+/// session by the same `(agent_type, external_id)` identity the DB dedups on.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectedSessionKey {
+    pub agent_type: AgentType,
+    pub external_id: String,
+}
+
+/// Per-folder tally of one batch import.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportFolderOutcome {
+    pub path: String,
+    pub folder_id: i32,
+    /// No live folder row existed before this import (freshly created, or a
+    /// soft-deleted row was reopened).
+    pub created: bool,
+    pub imported: u32,
+    pub updated: u32,
+    pub skipped: u32,
+}
+
+/// Aggregate result of `import_selected_sessions`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportSelectedResult {
+    pub imported: u32,
+    pub updated: u32,
+    pub skipped: u32,
+    /// Selection keys that no longer resolved to a scanned session (deleted on
+    /// disk between scan and import, or bogus input).
+    pub not_found: u32,
+    /// Sessions that failed because their folder group errored.
+    pub failed: u32,
+    pub created_folders: u32,
+    pub folders: Vec<ImportFolderOutcome>,
+    /// Human-readable per-folder failure messages, capped by the command.
+    pub errors: Vec<String>,
+}

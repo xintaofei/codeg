@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
-import { ChevronDown, Play, Plus, Square } from "lucide-react"
+import { Play, Plus, Square, Terminal } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
 import {
@@ -19,6 +19,11 @@ import {
   terminalKill,
 } from "@/lib/api"
 import type { FolderCommand } from "@/lib/types"
+import {
+  resolveLiveCommandTerminalId,
+  useCommandTerminalLinkStore,
+} from "@/stores/command-terminal-link-store"
+import { cn } from "@/lib/utils"
 import { CommandManageDialog } from "./command-manage-dialog"
 
 function getSelectedCommandId(folderId: number): number | null {
@@ -52,52 +57,44 @@ export function CommandDropdown() {
   const [selectedCommandId, setSelectedCommandIdState] = useState<
     number | null
   >(null)
-  const [runningCommandTerminals, setRunningCommandTerminals] = useState<
-    Record<number, string>
-  >({})
-  const runningCommandTerminalsRef = useRef<Record<number, string>>({})
+  // The command↔terminal linkage lives in a module-level store so it survives
+  // this component unmounting when the right sidebar is closed (see the store
+  // for the full rationale). Liveness is derived against the terminal context
+  // below, so a persisted link whose terminal has since ended reads as
+  // not-running rather than a stale "Stop".
+  const links = useCommandTerminalLinkStore((s) => s.links)
+  const setLink = useCommandTerminalLinkStore((s) => s.setLink)
+  const clearLink = useCommandTerminalLinkStore((s) => s.clearLink)
+  const pruneTerminals = useCommandTerminalLinkStore((s) => s.pruneTerminals)
 
   const folderId = folder?.id ?? 0
   const folderPath = folder?.path ?? ""
 
-  useEffect(() => {
-    runningCommandTerminalsRef.current = runningCommandTerminals
-  }, [runningCommandTerminals])
+  const isTerminalLive = useCallback(
+    (terminalId: string) =>
+      !exitedTerminals.has(terminalId) &&
+      terminalTabs.some((t) => t.id === terminalId),
+    [exitedTerminals, terminalTabs]
+  )
 
-  // React to process exits reported by the terminal context
+  // Drop links whose terminal has exited or whose tab was closed. These also
+  // reconcile on (re)mount, so reopening the sidebar sheds any link whose
+  // terminal vanished while it was closed.
   useEffect(() => {
     if (exitedTerminals.size === 0) return
-    setRunningCommandTerminals((prev) => {
-      if (Object.keys(prev).length === 0) return prev
-      let changed = false
-      const next = { ...prev }
-      for (const [cmdId, termId] of Object.entries(prev)) {
-        if (exitedTerminals.has(termId)) {
-          delete next[Number(cmdId)]
-          changed = true
-        }
-      }
-      return changed ? next : prev
-    })
-  }, [exitedTerminals])
+    pruneTerminals((termId) => exitedTerminals.has(termId))
+  }, [exitedTerminals, pruneTerminals])
 
-  // React to terminal tabs being closed (e.g. user closes the tab directly)
   useEffect(() => {
-    setRunningCommandTerminals((prev) => {
-      if (Object.keys(prev).length === 0) return prev
-      const tabIds = new Set(terminalTabs.map((t) => t.id))
-      let changed = false
-      const next = { ...prev }
-      for (const [cmdId, termId] of Object.entries(prev)) {
-        if (!tabIds.has(termId)) {
-          delete next[Number(cmdId)]
-          changed = true
-        }
-      }
-      return changed ? next : prev
-    })
-  }, [terminalTabs])
+    const tabIds = new Set(terminalTabs.map((t) => t.id))
+    pruneTerminals((termId) => !tabIds.has(termId))
+  }, [terminalTabs, pruneTerminals])
 
+  // The remembered selection is persisted to localStorage ONLY here — i.e. only
+  // on an explicit user pick or a run (see handleSelectCommand / runCommand) —
+  // so it survives the panel reopening and folder switches, and is never
+  // clobbered by a transient fallback. Display self-heals via `activeCmd`'s
+  // `?? commands[0]` when the remembered command is missing.
   const selectCommand = useCallback(
     (commandId: number) => {
       if (!folderId) return
@@ -170,33 +167,47 @@ export function CommandDropdown() {
   const runCommand = useCallback(
     async (cmd: FolderCommand) => {
       if (!folderPath) return
-      if (runningCommandTerminalsRef.current[cmd.id]) return
+      // Don't double-launch a command that already has a *live* terminal; a
+      // stale link (dead terminal) must not block a restart, hence the liveness
+      // check rather than a bare presence check.
+      if (
+        resolveLiveCommandTerminalId(
+          useCommandTerminalLinkStore.getState().links,
+          cmd.id,
+          isTerminalLive
+        )
+      )
+        return
 
       selectCommand(cmd.id)
       const terminalId = await createTerminalWithCommand(cmd.name, cmd.command)
       if (!terminalId) return
 
-      setRunningCommandTerminals((prev) => ({ ...prev, [cmd.id]: terminalId }))
+      setLink(cmd.id, terminalId)
     },
-    [createTerminalWithCommand, folderPath, selectCommand]
+    [
+      createTerminalWithCommand,
+      folderPath,
+      isTerminalLive,
+      selectCommand,
+      setLink,
+    ]
   )
 
-  const stopCommand = useCallback(async (cmd: FolderCommand) => {
-    const terminalId = runningCommandTerminalsRef.current[cmd.id]
-    if (!terminalId) return
+  const stopCommand = useCallback(
+    async (cmd: FolderCommand) => {
+      const terminalId = useCommandTerminalLinkStore.getState().links[cmd.id]
+      if (!terminalId) return
 
-    setRunningCommandTerminals((prev) => {
-      if (!(cmd.id in prev)) return prev
-      const next = { ...prev }
-      delete next[cmd.id]
-      return next
-    })
-    try {
-      await terminalKill(terminalId)
-    } catch (err) {
-      console.error("Failed to stop command terminal:", err)
-    }
-  }, [])
+      clearLink(cmd.id)
+      try {
+        await terminalKill(terminalId)
+      } catch (err) {
+        console.error("Failed to stop command terminal:", err)
+      }
+    },
+    [clearLink]
+  )
 
   const activeCmd = useMemo(
     () =>
@@ -204,18 +215,9 @@ export function CommandDropdown() {
     [commands, selectedCommandId]
   )
   const activeTerminalId = activeCmd
-    ? runningCommandTerminals[activeCmd.id]
+    ? resolveLiveCommandTerminalId(links, activeCmd.id, isTerminalLive)
     : undefined
   const isActiveCommandRunning = Boolean(activeTerminalId)
-
-  useEffect(() => {
-    if (!activeCmd && selectedCommandId !== null) {
-      setSelectedCommandIdState(null)
-      return
-    }
-    if (!activeCmd || selectedCommandId === activeCmd.id) return
-    selectCommand(activeCmd.id)
-  }, [activeCmd, selectedCommandId, selectCommand])
 
   const handleRunOrStop = useCallback(() => {
     if (!activeCmd) return
@@ -246,7 +248,7 @@ export function CommandDropdown() {
         <Button
           variant="ghost"
           size="sm"
-          className="h-6 px-2 text-xs gap-1 hover:text-foreground/80"
+          className="h-6 rounded-full px-2 text-xs gap-1 hover:text-foreground/80"
           onClick={() => setManageOpen(true)}
           disabled={bootstrapping}
         >
@@ -254,14 +256,23 @@ export function CommandDropdown() {
           {bootstrapping ? t("loading") : t("addCommand")}
         </Button>
       ) : (
-        // Has commands → split button: [name ▼] [run/stop]
-        <div className="flex items-center">
+        // Has commands → one cohesive control: [name ▼ | run/stop]. The whole
+        // pill highlights as a SINGLE unit on hover (background overlay on the
+        // group container, not on each half), so the two affordances read as one
+        // command block rather than two adjacent buttons. `bg-foreground/10` is a
+        // translucent overlay on purpose: the status-bar surface is already
+        // `--muted`, so a `bg-muted`/`bg-accent` hover would be invisible against
+        // it in light mode.
+        <div className="group/cmd flex items-center rounded-full text-xs transition-colors hover:bg-foreground/10">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" className="h-6 hover:text-foreground/80">
+              <button
+                type="button"
+                className="flex h-6 min-w-0 items-center gap-1 rounded-l-full pr-1.5 pl-2 text-muted-foreground outline-none transition-colors hover:text-foreground"
+              >
+                <Terminal className="h-3 w-3 shrink-0" />
                 <span className="max-w-24 truncate">{activeCmd?.name}</span>
-                <ChevronDown className="h-3 w-3" />
-              </Button>
+              </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-56">
               {commands.map((cmd) => (
@@ -284,27 +295,34 @@ export function CommandDropdown() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Button
-            variant="ghost"
-            size="sm"
-            className={`h-6 px-2 text-xs gap-1 ${
-              isActiveCommandRunning
-                ? "text-destructive hover:text-destructive"
-                : "hover:text-foreground/80"
-            }`}
+          {/* Hairline divider stays visible — and brightens — while the block
+              is hovered, so the two halves read as separate actions inside the
+              shared pill. Each half lights only its own text/icon on hover. */}
+          <span
+            aria-hidden
+            className="h-3 w-px shrink-0 bg-border/70 transition-colors group-hover/cmd:bg-foreground/20"
+          />
+          <button
+            type="button"
             onClick={handleRunOrStop}
             title={
               isActiveCommandRunning
                 ? t("stopCommandTitle", { command: activeCmd?.command ?? "" })
                 : t("runCommandTitle", { command: activeCmd?.command ?? "" })
             }
+            className={cn(
+              "flex h-6 items-center rounded-r-full pr-2 pl-1.5 outline-none transition-colors",
+              isActiveCommandRunning
+                ? "text-destructive"
+                : "text-muted-foreground hover:text-foreground"
+            )}
           >
             {isActiveCommandRunning ? (
               <Square className="h-3 w-3" />
             ) : (
               <Play className="h-3 w-3" />
             )}
-          </Button>
+          </button>
         </div>
       )}
 

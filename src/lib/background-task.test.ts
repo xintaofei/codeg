@@ -249,6 +249,85 @@ describe("buildBackgroundTaskRows", () => {
     expect(rows[0].isInFlight).toBe(true)
   })
 
+  it("drops an in-flight poll whose task_id has not streamed in yet", () => {
+    // claude-agent-acp emits an arg-less initial tool_call (rawInput `{}`) and
+    // fills the real args only on a later update, so a still-blocking live poll
+    // has no envelope and no input id. It must NOT render as an anonymous row.
+    const rows = buildBackgroundTaskRows([
+      poll({ input: "{}", output: null, state: "input-available" }),
+    ])
+    expect(rows).toHaveLength(0)
+  })
+
+  it("does not stack repeated id-less in-flight re-polls into duplicate rows", () => {
+    // The reported bug: N concurrent/re-issued anonymous polls each became a
+    // separate "background task running" row. With one real task attributed and
+    // three id-less in-flight checks, only the attributed row survives.
+    const rows = buildBackgroundTaskRows([
+      poll({
+        toolCallId: "done",
+        output: COMPLETED,
+        state: "output-available",
+      }),
+      poll({
+        toolCallId: "x1",
+        input: "{}",
+        output: null,
+        state: "input-available",
+      }),
+      poll({
+        toolCallId: "x2",
+        input: null,
+        output: null,
+        state: "input-available",
+      }),
+      poll({
+        toolCallId: "x3",
+        input: "{}",
+        output: null,
+        state: "input-streaming",
+      }),
+    ])
+    expect(rows).toHaveLength(1)
+    expect(rows[0].taskId).toBe("bfb5xnq1t")
+  })
+
+  it("drops a promoted orphan (output-available but status still unsettled)", () => {
+    // COMPLETE_TURN promotes the unpruned arg-less TaskOutput orphan: its state
+    // flips to output-available, but its forwarded status stays pending. It must
+    // not re-stack as an anonymous "background task running" row post-turn.
+    const rows = buildBackgroundTaskRows([
+      poll({
+        toolCallId: "done",
+        output: COMPLETED,
+        state: "output-available",
+      }),
+      poll({
+        toolCallId: "orphan",
+        input: "{}",
+        output: null,
+        state: "output-available",
+        toolStatus: "pending",
+      }),
+    ])
+    expect(rows).toHaveLength(1)
+    expect(rows[0].taskId).toBe("bfb5xnq1t")
+  })
+
+  it("still shows an id-less poll once it carries an envelope", () => {
+    // A settled/output-available poll that parsed an envelope (even without a
+    // resolvable id) is real content and keeps its row.
+    const noIdEnvelope = `<retrieval_status>success</retrieval_status>
+<status>completed</status>
+<exit_code>0</exit_code>
+<output>ok</output>`
+    const rows = buildBackgroundTaskRows([
+      poll({ input: null, output: noIdEnvelope, state: "output-available" }),
+    ])
+    expect(rows).toHaveLength(1)
+    expect(rows[0].badge).toBe("completed")
+  })
+
   it("derives a stopped badge + command from a TaskStop ack", () => {
     const rows = buildBackgroundTaskRows([
       poll({

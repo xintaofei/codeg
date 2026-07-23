@@ -42,8 +42,35 @@ describe("remarkRewriteFileUriLinks", () => {
     expect(rewrite("file:///Users/a/b.ts")).toBe("/Users/a/b.ts")
   })
 
-  it("strips the leading slash before a Windows drive letter", () => {
-    expect(rewrite("file:///C:/x/y.ts")).toBe("C:/x/y.ts")
+  it("keeps the leading slash before a Windows drive letter (sanitize-safe)", () => {
+    // A bare `C:/…` would make rehype-sanitize read `C:` as a URL protocol and
+    // strip the href (→ harden's "[blocked]"); `/C:/…` keeps `C:` out of
+    // protocol position. Downstream link-safety strips the slash before opening.
+    expect(rewrite("file:///C:/x/y.ts")).toBe("/C:/x/y.ts")
+  })
+
+  it("prefixes a slash onto a bare Windows drive path (forward slashes)", () => {
+    expect(rewrite("E:/Desktop/docs/G.docx")).toBe("/E:/Desktop/docs/G.docx")
+  })
+
+  it("prefixes a slash onto a bare Windows drive path (backslashes)", () => {
+    expect(rewrite("C:\\Users\\a\\b.docx")).toBe("/C:\\Users\\a\\b.docx")
+  })
+
+  it("prefixes a slash onto a Chinese/encoded bare Windows drive path", () => {
+    expect(rewrite("E:/桌面/使用手册/G手册.docx")).toBe(
+      "/E:/桌面/使用手册/G手册.docx"
+    )
+    expect(rewrite("E:/My%20Docs/%E6%89%8B%E5%86%8C.docx")).toBe(
+      "/E:/My%20Docs/%E6%89%8B%E5%86%8C.docx"
+    )
+  })
+
+  it("leaves a bare relative path untouched (not a drive path)", () => {
+    // `C:` needs a following slash to be a drive path; `src/main.rs` and a
+    // schemeless relative path stay as-is (not openable — existing behavior).
+    expect(rewrite("src/main.rs")).toBe("src/main.rs")
+    expect(rewrite("notes.md")).toBe("notes.md")
   })
 
   it("emits a UNC file:// URI as a backslash UNC path (unambiguously local)", () => {

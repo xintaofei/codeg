@@ -21,6 +21,14 @@ interface TabItemProps {
   tab: TabItemData
   isActive: boolean
   isTileMode: boolean
+  /** Browser-style shrink: fill/shrink to share the row width instead of a
+   *  fixed intrinsic size (title-bar embedded strips). Off = mobile scroll row. */
+  embedded?: boolean
+  /** Whether this tab immediately precedes/follows the active tab. With a
+   *  workspace background image the active tab's transparent reverse-corner foot
+   *  flares 0.5rem over this neighbour; the strip drives this so the neighbour can
+   *  inset its baseline to meet the foot instead of poking a stub under it. */
+  adjacentActive?: "before" | "after"
   folderName: string | null
   folderBranch: string | null
   onSwitch: (tabId: string) => void
@@ -39,6 +47,8 @@ export const TabItem = memo(function TabItem({
   tab,
   isActive,
   isTileMode,
+  embedded = false,
+  adjacentActive,
   folderName,
   folderBranch,
   onSwitch,
@@ -113,12 +123,37 @@ export const TabItem = memo(function TabItem({
       whileDrag={whileDrag}
       {...gestureHandlers}
       onLayoutAnimationComplete={clearResidualStyles}
+      data-tab-item
+      data-active={embedded && isActive ? "true" : undefined}
+      data-adjacent-active={embedded ? adjacentActive : undefined}
       className={cn(
-        "shrink-0 rounded-full cursor-grab active:cursor-grabbing",
-        !isCoarsePointer && "active:opacity-90 active:shadow-md active:z-50",
+        "cursor-grab active:cursor-grabbing",
+        // Embedded (browser-style): every tab is EQUAL width (`basis-48` = 12rem,
+        // `grow-0` so they don't stretch to fill), so a long title and a short one
+        // read uniform instead of one wide / one narrow. They still `shrink`
+        // together (down to `min-w-0`, the label fades) once the row fills; above
+        // that the fixed basis keeps them equal. The new-conversation button hugs
+        // the last tab and the leftover row stays a window-drag region.
+        // `browser-tab-item` draws the left-edge hairline separator (globals.css)
+        // as a 1px divider at each shared edge; tabs sit flush (no gutter) so the
+        // line is the only separation, and the inner row owns its own
+        // `overflow-hidden`. The active tab is raised (`z-10`) so its reverse-corner
+        // seat is never covered by a hovered neighbour's flare. Standalone: rounded
+        // pill, intrinsic size + horizontal scroll (mobile).
+        embedded
+          ? "browser-tab-item min-w-0 grow-0 shrink basis-48 data-[active=true]:z-10"
+          : "rounded-full shrink-0",
+        !isCoarsePointer &&
+          (embedded
+            ? "active:z-50"
+            : "active:opacity-90 active:shadow-md active:z-50"),
         isTouchSorting && "z-50 opacity-90 shadow-md ring-1 ring-primary/25"
       )}
     >
+      {/* Reverse (concave) bottom corners — the browser-tab seat (globals.css).
+          Absolute + decorative, so it never affects layout. Rendered for every
+          embedded tab; CSS reveals it when the tab is active or hovered. */}
+      {embedded && <span aria-hidden className="browser-tab-seat" />}
       <ContextMenu>
         <ContextMenuTrigger asChild disabled={isTouchSorting}>
           <div
@@ -128,12 +163,41 @@ export const TabItem = memo(function TabItem({
             onDoubleClick={handleDoubleClick}
             onMouseDown={(event) => handleMiddleClickClose(event, handleClose)}
             className={cn(
-              "group/tab relative flex items-center h-full gap-1.5 px-3 text-xs rounded-full",
-              "cursor-pointer select-none shrink-0",
-              "hover:bg-primary/8 transition-colors",
-              isActive
-                ? "bg-primary/10 text-foreground"
-                : "text-muted-foreground"
+              "group/tab relative flex items-center h-full gap-1.5 text-xs",
+              "cursor-pointer select-none transition-colors",
+              embedded
+                ? [
+                    // Browser-style tab: seats against the shaded strip with a
+                    // white (bg-background) active fill and a rounded top, reaching
+                    // the strip's bottom so it merges into the detail header below.
+                    // With a workspace background image on, the whole strip + all
+                    // tabs go transparent (reveal the image); a hairline bottom
+                    // border (ws-strip-line) runs under every non-active region
+                    // while the active tab omits it and instead is outlined by a
+                    // top+side "archway" (the browser-tab-item `::after`, globals.css)
+                    // whose reverse-corner feet (browser-tab-seat) drop back onto
+                    // that line — so the active tab is a gap the border detours
+                    // around, not a filled box.
+                    // `overflow-hidden` clips the shrunken
+                    // row so a tight tab can't paint/click over its neighbor.
+                    // `pb-1.5` balances the group's `pt-1.5` gap so the content
+                    // (dot/title/close) centers on the h-10 strip's midline, not
+                    // 3px low in the shorter tab box (the fill still reaches the
+                    // strip bottom — padding only insets the content).
+                    // `browser-tab-content` is the hover anchor for the label's
+                    // state-driven fade (globals.css `.browser-tab-content:hover`
+                    // widens the mask so the close button never covers the title).
+                    "browser-tab-content w-full min-w-0 overflow-hidden rounded-t-lg px-2 pb-1.5",
+                    isActive
+                      ? "bg-background ws-transparent-bg text-foreground"
+                      : "isolate browser-tab-hover text-muted-foreground hover:text-foreground ws-strip-line",
+                  ]
+                : [
+                    "shrink-0 rounded-full px-3 hover:bg-primary/8",
+                    isActive
+                      ? "bg-primary/10 text-foreground"
+                      : "text-muted-foreground",
+                  ]
             )}
           >
             <ConversationStatusDot
@@ -141,7 +205,13 @@ export const TabItem = memo(function TabItem({
             />
             <span
               className={cn(
-                "truncate max-w-[140px]",
+                // Embedded: grow + shrink as the tab tightens, but instead of an
+                // ellipsis the overflowing title fades out on the right
+                // (browser-tab-label mask) — dissolving toward the close button so
+                // the whole width is used. Standalone: ellipsis cap in the scroll row.
+                embedded
+                  ? "min-w-0 flex-1 overflow-hidden whitespace-nowrap browser-tab-label"
+                  : "truncate max-w-[140px]",
                 !tab.isPinned && "[font-style:oblique]"
               )}
               title={tooltip}
@@ -151,10 +221,23 @@ export const TabItem = memo(function TabItem({
             <button
               type="button"
               className={cn(
-                "rounded-full p-0.5 hover:bg-muted",
+                "rounded-md hover:bg-foreground/10",
+                // Embedded: an absolute overlay pinned to the right edge, so it
+                // claims no row space — the label runs the full width and fades
+                // under it (browser-tab-label), instead of the label stopping
+                // short of an always-reserved in-flow button. Centered via
+                // `top-0 bottom-1.5 my-auto` (no transform → crisp on WebKit; the
+                // `bottom-1.5` mirrors the content's `pb-1.5` so it lines up with
+                // the title). Pointer events are gated off while hidden so it can't
+                // eat clicks. Standalone: an in-flow chip in the scroll row.
+                embedded
+                  ? "absolute right-2 top-0 bottom-1.5 my-auto flex h-4 w-4 items-center justify-center"
+                  : "shrink-0 p-0.5",
                 isActive
                   ? "opacity-100"
-                  : "opacity-0 group-hover/tab:opacity-100"
+                  : embedded
+                    ? "opacity-0 pointer-events-none group-hover/tab:opacity-100 group-hover/tab:pointer-events-auto"
+                    : "opacity-0 group-hover/tab:opacity-100"
               )}
               onClick={(event) => {
                 event.stopPropagation()

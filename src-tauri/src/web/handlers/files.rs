@@ -78,6 +78,14 @@ pub struct RenameFileTreeEntryParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MoveFileTreeEntryParams {
+    pub root_path: String,
+    pub source_path: String,
+    pub dest_dir: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteFileTreeEntryParams {
     pub root_path: String,
     pub path: String,
@@ -156,6 +164,18 @@ pub async fn rename_file_tree_entry(
     let result =
         folder_commands::rename_file_tree_entry(params.root_path, params.path, params.new_name)
             .await?;
+    Ok(Json(result))
+}
+
+pub async fn move_file_tree_entry(
+    Json(params): Json<MoveFileTreeEntryParams>,
+) -> Result<Json<String>, AppCommandError> {
+    let result = folder_commands::move_file_tree_entry(
+        params.root_path,
+        params.source_path,
+        params.dest_dir,
+    )
+    .await?;
     Ok(Json(result))
 }
 

@@ -18,6 +18,7 @@ import type {
   DbConversationSummary,
 } from "@/lib/types"
 import { useFileTree, type FlatFileEntry } from "@/hooks/use-file-tree"
+import { rankFileMatches } from "@/lib/file-search-match"
 import { AGENT_LABELS, compareAgentType } from "@/lib/types"
 import { AgentIcon } from "@/components/agent-icon"
 import { ConversationStatusDot } from "@/components/conversations/conversation-status-dot"
@@ -86,20 +87,12 @@ export function SearchCommandDialog({
     new Set(conversations.map((c) => c.agent_type))
   ).sort(compareAgentType)
 
-  // Filter files by query using pre-computed lowercase fields
-  const filteredFiles = useMemo(() => {
-    const trimmed = query.trim()
-    if (!trimmed) return allFiles.slice(0, 100)
-    const lower = trimmed.toLowerCase()
-    const matched: FlatFileEntry[] = []
-    for (const f of allFiles) {
-      if (f.lowerName.includes(lower) || f.lowerPath.includes(lower)) {
-        matched.push(f)
-        if (matched.length >= 100) break
-      }
-    }
-    return matched
-  }, [allFiles, query])
+  // Rank files by relevance (name/path tiers + fuzzy subsequence), scanning the
+  // full list so a deeply nested match isn't crowded out by shallower ones.
+  const filteredFiles = useMemo(
+    () => rankFileMatches(query, allFiles, 100),
+    [allFiles, query]
+  )
 
   const doSearch = useCallback(
     async (q: string, agent: AgentType | null) => {

@@ -234,6 +234,26 @@ export function expandedKeysForBranch(
 }
 
 /**
+ * The expansion keys of every prefix group in `nodes`, in render order. Used to
+ * seed the branch selector's default-collapsed set so prefix groups start
+ * folded while their section stays open. Sections and the multi-remote wrapper
+ * are keyed outside the tree, so they're never included here.
+ */
+export function collectGroupKeys(nodes: BranchTreeNode[]): string[] {
+  const keys: string[] = []
+  const walk = (current: BranchTreeNode[]) => {
+    for (const node of current) {
+      if (node.type === "group") {
+        keys.push(node.key)
+        walk(node.children)
+      }
+    }
+  }
+  walk(nodes)
+  return keys
+}
+
+/**
  * Bucket remote branches by remote name and build a tree per remote. Mirrors the
  * existing UX: a single remote strips its prefix with no wrapper level; multiple
  * remotes keep the remote name as the top-level group. Leaves always keep the

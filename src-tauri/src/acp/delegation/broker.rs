@@ -86,6 +86,13 @@ const DEFAULT_COMPLETED_CACHE_CAP_BYTES: usize = 512 * 1024 * 1024;
 /// never the eviction victim in `insert_completed`.
 const COMPLETED_TEXT_CAP: usize = 256 * 1024;
 
+/// Cap on the `task_preview` carried by the `DelegationStarted` event and the
+/// parent-card meta writes. The full task text lives in the MCP call (and, on
+/// most hosts, in the parent tool call's own `raw_input`); the preview only
+/// has to label the delegation card, so it shares the status-preview budget
+/// rather than the multi-KiB result cap.
+const TASK_PREVIEW_CAP: usize = 2 * 1024;
+
 /// Cap on the inline `text_preview` carried by the `DelegationCompleted` event
 /// and the terminal meta, so the parent card can render the result inline
 /// without re-fetching the child session.
@@ -179,6 +186,15 @@ struct RunningTask {
     parent_tool_use_id: String,
     /// Target agent — surfaced in status reports.
     agent_type: AgentType,
+    /// Bounded preview of the delegated task text ([`TASK_PREVIEW_CAP`]).
+    /// Carried so TERMINAL meta writes can keep labeling the parent card —
+    /// meta is replace-wholesale on the ToolCallState, so a terminal write
+    /// that dropped the task text would erase what the running write supplied.
+    task_preview: String,
+    /// The broker-minted task id — duplicates this entry's key in `running`
+    /// because the cancel/teardown paths hand around the drained
+    /// `RunningTask` by value without its map key.
+    task_id: String,
     /// MCP-side opaque handle minted by the companion per `tools/call`. The
     /// listener forwards it through `DelegationRequest`; we keep it here so
     /// `cancel_by_external_handle` can find the entry. `None` for delegations
@@ -975,18 +991,22 @@ const PRE_CANCELED_CAP: usize = 256;
 ///   behind earlier long-running ones, so a count cap would drop a
 ///   still-pending keyed id and orphan its card.
 /// * `consumed` — ids that were already claimed by a prior
-///   round-trip. NEITHER subject to TTL eviction NOR to a per-bucket
+///   round-trip, or terminal-tombstoned (`tombstone_pending_tool_call`).
+///   NEITHER subject to TTL eviction NOR to a per-bucket
 ///   cap: a delegated child agent may run for minutes to hours, and
 ///   the host can re-emit the same `tool_call` (e.g. as a `completed`
 ///   status flip) at the end of that run, so the consumed memory
 ///   must outlast the entire parent-side tool call lifetime. It is
 ///   scoped to the parent connection's lifetime instead, cleared by
 ///   `drop_pending_tool_calls_for_parent` on disconnect. The growth
-///   is naturally bounded by how many `delegate_to_agent` calls a
-///   single parent session issues — typically tens at most, with
-///   each `(String, Instant)` entry costing well under 100 bytes —
-///   so an unbounded set is comfortable for realistic high-fan-out
-///   sessions without OOM risk in the typical operating envelope.
+///   is bounded by how many entries ever register for the parent:
+///   `delegate_to_agent` calls (typically tens at most) plus, on
+///   Cursor connections, one identity-less "MCP: tool" candidate per
+///   MCP call the session makes (see `acp::lifecycle`'s
+///   `CURSOR_IDENTITYLESS_MCP_TITLE` registration) — with each
+///   `(String, Instant)` entry costing well under 100 bytes, an
+///   unbounded set stays comfortable for realistic sessions without
+///   OOM risk in the typical operating envelope.
 ///
 /// Co-locating the two halves under one lock makes the
 /// claim → mark-consumed pair atomic. A host re-emit racing with the
@@ -1035,6 +1055,17 @@ struct PendingToolCall {
     /// claimable ONLY via the post-budget FIFO fallback
     /// (`take_pending_tool_call`), never the in-loop key-match path.
     match_key: Option<DelegationMatchKey>,
+    /// True when the entry came from an identity-less MCP announcement
+    /// (Cursor's `"MCP: tool"` + empty input — see
+    /// `lifecycle::CURSOR_IDENTITYLESS_MCP_TITLE`). Such an id belongs to
+    /// *some* codeg-mcp call whose identity only the companion round-trip can
+    /// reveal, so it is additionally claimable by
+    /// [`DelegationBroker::rewrite_identityless_tool_call`] (the
+    /// `get_delegation_status` / `cancel_delegation` call-time rename), and a
+    /// `delegate_to_agent` claim that lands on one triggers the identity
+    /// write. Plain unkeyed entries (a delegation invocation whose args were
+    /// unparseable) keep `false` and are never renamed.
+    identityless: bool,
     registered_at: Instant,
 }
 
@@ -1042,6 +1073,13 @@ struct PendingToolCall {
 struct ToolCallTrackerBucket {
     pending: VecDeque<PendingToolCall>,
     consumed: VecDeque<(String, Instant)>,
+    /// Sticky "this parent has EVER announced an identity-less MCP call" flag.
+    /// Gates [`DelegationBroker::rewrite_identityless_tool_call`]'s poll: on
+    /// hosts that ship real identities (Claude/Codex/…) no identity-less
+    /// entry ever registers, the flag stays `false`, and every status/cancel
+    /// round-trip skips the rename at zero cost instead of burning the poll
+    /// budget. Never cleared on claim — only with the bucket on teardown.
+    identityless_seen: bool,
 }
 
 /// Maximum age before a `pending` entry is discarded as stale — but ONLY for
@@ -1091,6 +1129,17 @@ const PENDING_TOOL_CALL_TTL: Duration = Duration::from_secs(60);
 /// through to the synthetic id after the budget, exactly as before.
 const CLAIM_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const CLAIM_POLL_ATTEMPTS: usize = 200;
+
+/// Poll budget for the status/cancel call-time rename
+/// ([`DelegationBroker::rewrite_identityless_tool_call`]): 30 × 10 ms = 300 ms.
+/// Much shorter than the delegate claim budget because the rename is
+/// best-effort (a miss falls back to the completion-time result sniff) and the
+/// poll delays the status snapshot the LLM is waiting on. It only has to
+/// absorb the in-process ordering race between the ACP announcement landing in
+/// the lifecycle dispatcher and the companion's UDS round-trip reaching the
+/// listener — sub-5 ms in practice; the sticky `identityless_seen` gate keeps
+/// hosts that never announce identity-less calls at zero cost.
+const IDENTITYLESS_RENAME_POLL_ATTEMPTS: usize = 30;
 
 /// The broker is intentionally `Clone` (cheap — only `Arc`s inside) so
 /// listener/handler code can hand copies to spawned tasks without lifetime
@@ -1235,6 +1284,30 @@ impl DelegationBroker {
             parent_connection_id,
             tool_call_id,
             None,
+            false,
+            Instant::now(),
+        )
+        .await;
+    }
+
+    /// Register an id announced with NO identity at all — Cursor's
+    /// `"MCP: tool"` + empty-input shape, where the wire never reveals which
+    /// MCP tool the call is. The entry is unkeyed (claimable by the
+    /// post-budget FIFO fallback, exactly like a keyless delegation
+    /// invocation) and additionally marked `identityless`, which (a) makes it
+    /// claimable by the status/cancel call-time rename
+    /// ([`Self::rewrite_identityless_tool_call`]) and (b) triggers the
+    /// identity write when a `delegate_to_agent` claim lands on it.
+    pub async fn register_identityless_tool_call(
+        &self,
+        parent_connection_id: &str,
+        tool_call_id: String,
+    ) {
+        self.register_pending_tool_call_with_key_at(
+            parent_connection_id,
+            tool_call_id,
+            None,
+            true,
             Instant::now(),
         )
         .await;
@@ -1257,6 +1330,7 @@ impl DelegationBroker {
             parent_connection_id,
             tool_call_id,
             match_key,
+            false,
             Instant::now(),
         )
         .await;
@@ -1293,10 +1367,14 @@ impl DelegationBroker {
         parent_connection_id: &str,
         tool_call_id: String,
         match_key: Option<DelegationMatchKey>,
+        identityless: bool,
         now: Instant,
     ) {
         let mut map = self.tool_calls.inner.lock().await;
         let bucket = map.entry(parent_connection_id.to_string()).or_default();
+        if identityless {
+            bucket.identityless_seen = true;
+        }
         // Tier 1: recently consumed. No TTL — the consumed memory must
         // outlast the entire parent-side tool call lifetime (minutes
         // to hours) so a host re-emit at terminal status flip is
@@ -1337,6 +1415,7 @@ impl DelegationBroker {
         bucket.pending.push_back(PendingToolCall {
             tool_call_id,
             match_key,
+            identityless,
             registered_at: now,
         });
     }
@@ -1349,6 +1428,7 @@ impl DelegationBroker {
     pub async fn take_pending_tool_call(&self, parent_connection_id: &str) -> Option<String> {
         self.take_pending_tool_call_at(parent_connection_id, Instant::now())
             .await
+            .map(|(id, _)| id)
     }
 
     /// `take_pending_tool_call` with an injected "as of" instant. The
@@ -1356,17 +1436,47 @@ impl DelegationBroker {
     /// a future instant to exercise TTL eviction without sleeping past
     /// [`PENDING_TOOL_CALL_TTL`].
     ///
-    /// Anonymous claim: returns the oldest *unkeyed* pending id, GC'ing stale
-    /// unkeyed entries along the way. KEYED entries are stepped over and left
-    /// in place — they're reserved for their exact-key-match round-trip and
-    /// must never be handed out by this arrival-order path (doing so would
-    /// steal an in-flight delegation's id). Returns `None` when no unkeyed
-    /// entry is claimable, even if keyed entries remain.
+    /// Anonymous claim: returns the oldest *unkeyed* pending id (plus its
+    /// `identityless` mark, so the delegate-claim path knows to restore the
+    /// call's identity), GC'ing stale unkeyed entries along the way. KEYED
+    /// entries are stepped over and left in place — they're reserved for
+    /// their exact-key-match round-trip and must never be handed out by this
+    /// arrival-order path (doing so would steal an in-flight delegation's
+    /// id). Returns `None` when no unkeyed entry is claimable, even if keyed
+    /// entries remain.
     async fn take_pending_tool_call_at(
         &self,
         parent_connection_id: &str,
         now: Instant,
-    ) -> Option<String> {
+    ) -> Option<(String, bool)> {
+        self.take_unkeyed_tool_call_at(parent_connection_id, now, false)
+            .await
+    }
+
+    /// Claim the oldest pending entry that was registered as IDENTITY-LESS
+    /// (Cursor's `"MCP: tool"` announcements) — used by the status/cancel
+    /// call-time rename. Unlike `take_pending_tool_call_at` this NEVER hands
+    /// out a plain unkeyed entry: that one is a delegation invocation whose
+    /// args merely didn't parse, and renaming it to a status tool would
+    /// mislabel a real delegate card.
+    async fn take_identityless_tool_call(&self, parent_connection_id: &str) -> Option<String> {
+        self.take_unkeyed_tool_call_at(parent_connection_id, Instant::now(), true)
+            .await
+            .map(|(id, _)| id)
+    }
+
+    /// Shared FIFO claim over unkeyed entries. `identityless_only` restricts
+    /// eligibility to entries carrying the identity-less mark; keyed entries
+    /// are always stepped over (reserved for their exact-key-match
+    /// round-trip), and stale unkeyed entries are GC'd along the way
+    /// regardless of the filter so the queue stays bounded from either
+    /// caller.
+    async fn take_unkeyed_tool_call_at(
+        &self,
+        parent_connection_id: &str,
+        now: Instant,
+        identityless_only: bool,
+    ) -> Option<(String, bool)> {
         let mut map = self.tool_calls.inner.lock().await;
         let bucket = map.get_mut(parent_connection_id)?;
         // Anonymous claim (post-budget last resort + legacy single-delegation
@@ -1375,10 +1485,10 @@ impl DelegationBroker {
         // exact-key-match round-trip; grabbing it here would steal that
         // delegation's id and make IT the dead card. Walk oldest→newest,
         // GC'ing stale unkeyed entries and stepping over keyed ones, until we
-        // find the oldest fresh unkeyed id. When only keyed siblings remain we
-        // return `None` — the caller then mints a synthetic id rather than
-        // mis-binding a sibling.
-        let mut claimed: Option<String> = None;
+        // find the oldest fresh eligible id. When only keyed siblings remain we
+        // return `None` — the delegate caller then mints a synthetic id rather
+        // than mis-binding a sibling.
+        let mut claimed: Option<(String, bool)> = None;
         let mut idx = 0;
         while idx < bucket.pending.len() {
             if bucket.pending[idx].match_key.is_some() {
@@ -1396,7 +1506,14 @@ impl DelegationBroker {
                 // `remove` shifted later entries left into `idx`; re-check it.
                 continue;
             }
-            claimed = bucket.pending.remove(idx).map(|p| p.tool_call_id);
+            if identityless_only && !bucket.pending[idx].identityless {
+                idx += 1; // plain unkeyed: reserved for the delegate FIFO path
+                continue;
+            }
+            claimed = bucket
+                .pending
+                .remove(idx)
+                .map(|p| (p.tool_call_id, p.identityless));
             break;
         }
         // Same mutex span: record the claim into the consumed memory so
@@ -1405,13 +1522,71 @@ impl DelegationBroker {
         // entries persist for the whole parent connection lifetime
         // (no TTL, no cap — see `ToolCallTrackerBucket`) and are only
         // released when the parent disconnects.
-        if let Some(id) = &claimed {
+        if let Some((id, _)) = &claimed {
             bucket.consumed.push_back((id.clone(), now));
         }
-        if bucket.pending.is_empty() && bucket.consumed.is_empty() {
+        if bucket.pending.is_empty() && bucket.consumed.is_empty() && !bucket.identityless_seen {
             map.remove(parent_connection_id);
         }
         claimed
+    }
+
+    /// Whether this parent has EVER registered an identity-less candidate —
+    /// the zero-cost gate for [`Self::rewrite_identityless_tool_call`]'s poll.
+    async fn has_seen_identityless_tool_calls(&self, parent_connection_id: &str) -> bool {
+        self.tool_calls
+            .inner
+            .lock()
+            .await
+            .get(parent_connection_id)
+            .is_some_and(|b| b.identityless_seen)
+    }
+
+    /// Restore the identity of a pending identity-less MCP tool call at
+    /// companion round-trip time: claim the oldest such candidate for this
+    /// parent and rewrite its live `title` + `raw_input` to the actual
+    /// codeg-mcp tool (`get_delegation_status` / `cancel_delegation`) with
+    /// its real arguments — flipping the card from the generic "MCP: tool"
+    /// WHILE the call runs, instead of only at the completion-time result
+    /// sniff (which, for a `wait_ms`-blocked status long-poll, can be minutes
+    /// away).
+    ///
+    /// Best-effort by design: on hosts that ship real identities the sticky
+    /// `identityless_seen` gate skips everything at zero cost; on an
+    /// identity-less host whose announcement hasn't registered yet, a short
+    /// bounded poll (well under the ACP-vs-companion race in practice)
+    /// absorbs the ordering, and a miss simply leaves the rename to the
+    /// completion sniff. Mis-pairing under PARALLEL identity-less calls in
+    /// one burst is the same accepted arrival-order residual as the delegate
+    /// FIFO fallback — Cursor executes tool calls sequentially, so announce
+    /// order matches round-trip order in practice.
+    pub async fn rewrite_identityless_tool_call(
+        &self,
+        parent_connection_id: &str,
+        title: &str,
+        raw_input: serde_json::Value,
+    ) -> Option<String> {
+        if !self
+            .has_seen_identityless_tool_calls(parent_connection_id)
+            .await
+        {
+            return None;
+        }
+        for attempt in 0..IDENTITYLESS_RENAME_POLL_ATTEMPTS {
+            if attempt > 0 {
+                tokio::time::sleep(CLAIM_POLL_INTERVAL).await;
+            }
+            if let Some(id) = self.take_identityless_tool_call(parent_connection_id).await {
+                tracing::info!(
+                    "[delegation] renaming identity-less tool_call_id={id} on conn={parent_connection_id} to {title}"
+                );
+                self.meta_writer
+                    .write_tool_call_identity(parent_connection_id, &id, title, raw_input)
+                    .await;
+                return Some(id);
+            }
+        }
+        None
     }
 
     /// Claim the pending `tool_call_id` for `parent_connection_id` whose
@@ -1642,16 +1817,21 @@ impl DelegationBroker {
     /// flight (the entry's age is no proof a key won't still arrive). A
     /// synthetic id only results when no unkeyed id is claimable for the whole
     /// budget — only keyed siblings remain, or the queue stays genuinely empty.
+    /// Returns the claimed id plus its `identityless` mark — `true` only for
+    /// the post-budget FIFO claim of an identity-less announcement (Cursor),
+    /// which tells `start_delegation` to restore the call's identity on the
+    /// live tool call. Exact-key claims are by definition NOT identity-less
+    /// (the key was parsed from the wire's own `raw_input`).
     async fn claim_pending_tool_call_with_brief_wait(
         &self,
         parent_connection_id: &str,
         key: &DelegationMatchKey,
-    ) -> Option<String> {
+    ) -> Option<(String, bool)> {
         if let Some(id) = self
             .take_matching_tool_call(parent_connection_id, key)
             .await
         {
-            return Some(id);
+            return Some((id, false));
         }
         for _ in 0..CLAIM_POLL_ATTEMPTS {
             tokio::time::sleep(CLAIM_POLL_INTERVAL).await;
@@ -1659,7 +1839,7 @@ impl DelegationBroker {
                 .take_matching_tool_call(parent_connection_id, key)
                 .await
             {
-                return Some(id);
+                return Some((id, false));
             }
         }
         // Budget exhausted with no key match. As a last resort claim the
@@ -1671,7 +1851,8 @@ impl DelegationBroker {
         // round-trip, so when only keyed siblings remain the caller falls
         // through to a synthetic id rather than stealing a sibling's binding
         // (which would just move the dead card from one delegation to another).
-        self.take_pending_tool_call(parent_connection_id).await
+        self.take_pending_tool_call_at(parent_connection_id, Instant::now())
+            .await
     }
 
     /// Remove `handle` from the pre-cancel set, returning whether it was
@@ -1923,16 +2104,42 @@ impl DelegationBroker {
                 task: req.task.clone(),
                 working_dir: req.requested_working_dir.clone(),
             };
-            req.parent_tool_use_id = self
+            let claimed = self
                 .claim_pending_tool_call_with_brief_wait(&req.parent_connection_id, &match_key)
-                .await
-                .unwrap_or_else(|| {
-                    tracing::warn!(
-                        "[delegation] synthetic fallback for parent_tool_use_id on conn={} (no ACP tool_call_id arrived within claim budget)",
-                        req.parent_connection_id
-                    );
-                    format!("delegation-{}", uuid::Uuid::new_v4())
-                });
+                .await;
+            let claimed_identityless = matches!(claimed, Some((_, true)));
+            req.parent_tool_use_id = claimed.map(|(id, _)| id).unwrap_or_else(|| {
+                tracing::warn!(
+                    "[delegation] synthetic fallback for parent_tool_use_id on conn={} (no ACP tool_call_id arrived within claim budget)",
+                    req.parent_connection_id
+                );
+                format!("delegation-{}", uuid::Uuid::new_v4())
+            });
+            // The claimed announcement never carried an identity (Cursor's
+            // "MCP: tool" + "{}" — the wire will not re-send title/arguments):
+            // restore it NOW, before the multi-second spawn, so the live card
+            // shows the canonical delegate tool with its real arguments while
+            // the child is still starting. Hosts whose wire carried the
+            // identity (keyed or explicit-id claims) are left untouched — a
+            // reconstructed `raw_input` would clobber host-specific fields.
+            if claimed_identityless {
+                let mut raw_input = serde_json::Map::new();
+                raw_input.insert("task".into(), serde_json::Value::String(req.task.clone()));
+                if let Ok(at) = serde_json::to_value(req.agent_type) {
+                    raw_input.insert("agent_type".into(), at);
+                }
+                if let Some(dir) = req.requested_working_dir.as_deref() {
+                    raw_input.insert("working_dir".into(), serde_json::Value::String(dir.into()));
+                }
+                self.meta_writer
+                    .write_tool_call_identity(
+                        &req.parent_connection_id,
+                        &req.parent_tool_use_id,
+                        crate::acp::delegation::DELEGATE_TOOL_REWRITE_TITLE,
+                        serde_json::Value::Object(raw_input),
+                    )
+                    .await;
+            }
         } else {
             // The client gave us the real ACP tool_call_id directly
             // (`_meta.tool_use_id`), so we skip the claim path — but the
@@ -2051,6 +2258,10 @@ impl DelegationBroker {
 
         // --- Send linked prompt ------------------------------------------------
         let call_id = uuid::Uuid::new_v4().to_string();
+        // Bounded task label used by the started event and every meta write —
+        // the frontend card's fallback when the parent tool call's `raw_input`
+        // never carried the arguments (Cursor's identity-less announcements).
+        let task_preview = truncate_on_char_boundary(&req.task, TASK_PREVIEW_CAP);
         // Now that the child connection and task id exist, fill the span's empty
         // fields so every subsequent log line in this delegation carries the
         // parent→child linkage (see the `delegation_task` span on this fn).
@@ -2128,6 +2339,8 @@ impl DelegationBroker {
                 None,
                 // No meaningful elapsed yet — the child just started.
                 None,
+                Some(&task_preview),
+                Some(&call_id),
             ),
         )
         .await;
@@ -2144,6 +2357,8 @@ impl DelegationBroker {
             &child_connection_id,
             child_conversation_id,
             req.agent_type,
+            &task_preview,
+            &call_id,
         )
         .await;
 
@@ -2260,6 +2475,8 @@ impl DelegationBroker {
                             parent_connection_id: req.parent_connection_id.clone(),
                             parent_tool_use_id: req.parent_tool_use_id.clone(),
                             agent_type: req.agent_type,
+                            task_preview: task_preview.clone(),
+                            task_id: call_id.clone(),
                             external_handle: req.external_handle.clone(),
                             started_at,
                         },
@@ -2284,6 +2501,8 @@ impl DelegationBroker {
                     req.agent_type,
                     setup_duration_ms,
                     &outcome,
+                    &task_preview,
+                    &call_id,
                 )
                 .await;
                 self.result_notify.notify_waiters();
@@ -2309,6 +2528,8 @@ impl DelegationBroker {
                         Some("canceled"),
                         None,
                         Some(setup_duration_ms),
+                        Some(&task_preview),
+                        Some(&call_id),
                     ),
                 )
                 .await;
@@ -2381,6 +2602,8 @@ impl DelegationBroker {
                             Some("canceled"),
                             None,
                             Some(duration_ms),
+                            Some(&task_preview),
+                            Some(&call_id),
                         ),
                     )
                     .await;
@@ -2467,6 +2690,8 @@ impl DelegationBroker {
                 task.agent_type,
                 duration_ms,
                 &outcome,
+                &task.task_preview,
+                &task.task_id,
             )
             .await;
             self.result_notify.notify_waiters();
@@ -2494,6 +2719,8 @@ impl DelegationBroker {
         agent_type: AgentType,
         duration_ms: u64,
         outcome: &DelegationOutcome,
+        task_preview: &str,
+        task_id: &str,
     ) {
         let meta = match outcome {
             DelegationOutcome::Ok(ok) => build_delegation_meta(
@@ -2503,6 +2730,8 @@ impl DelegationBroker {
                 None,
                 build_text_preview(&ok.text).as_deref(),
                 Some(duration_ms),
+                Some(task_preview),
+                Some(task_id),
             ),
             DelegationOutcome::Err { code, .. } => build_delegation_meta(
                 "failed",
@@ -2511,6 +2740,8 @@ impl DelegationBroker {
                 Some(code),
                 None,
                 Some(duration_ms),
+                Some(task_preview),
+                Some(task_id),
             ),
         };
         self.write_meta_if_real(parent_connection_id, parent_tool_use_id, meta)
@@ -2554,6 +2785,7 @@ impl DelegationBroker {
     /// event rides the parent's stream so the frontend `DelegationContext`
     /// receives it via the parent's per-connection attach stream in
     /// web/server mode (not only via the desktop firehose).
+    #[allow(clippy::too_many_arguments)]
     async fn emit_started_if_real(
         &self,
         parent_connection_id: &str,
@@ -2561,6 +2793,8 @@ impl DelegationBroker {
         child_connection_id: &str,
         child_conversation_id: i32,
         agent_type: AgentType,
+        task_preview: &str,
+        task_id: &str,
     ) {
         if is_synthetic_parent_tool_use_id(parent_tool_use_id) {
             return;
@@ -2572,6 +2806,8 @@ impl DelegationBroker {
                 child_connection_id,
                 child_conversation_id,
                 agent_type,
+                task_preview,
+                task_id,
             )
             .await;
     }
@@ -2834,6 +3070,8 @@ impl DelegationBroker {
                 Some("canceled"),
                 None,
                 Some(duration_ms),
+                Some(&task.task_preview),
+                Some(&task.task_id),
             ),
         )
         .await;
@@ -4159,7 +4397,7 @@ mod tests {
         // finishes after the pending eviction window).
         let long_after = Instant::now() + PENDING_TOOL_CALL_TTL * 10;
         broker
-            .register_pending_tool_call_with_key_at("p1", "tc-a".into(), None, long_after)
+            .register_pending_tool_call_with_key_at("p1", "tc-a".into(), None, false, long_after)
             .await;
         assert!(
             broker
@@ -4281,6 +4519,7 @@ mod tests {
             broker
                 .take_pending_tool_call_at("p1", future_now)
                 .await
+                .map(|(id, _)| id)
                 .as_deref(),
             Some("fresh")
         );
@@ -4489,7 +4728,7 @@ mod tests {
             .claim_pending_tool_call_with_brief_wait("p1", &task_key("task B"))
             .await;
         register_late.await.unwrap();
-        assert_eq!(claimed.as_deref(), Some("tc-B"));
+        assert_eq!(claimed.map(|(id, _)| id).as_deref(), Some("tc-B"));
         // tc-A remains for its own key.
         assert_eq!(
             broker
@@ -4646,7 +4885,7 @@ mod tests {
             .await;
         register_late.await.unwrap();
         assert_eq!(
-            claimed.as_deref(),
+            claimed.map(|(id, _)| id).as_deref(),
             Some("tc-B"),
             "must wait for its own registration, not FIFO-steal the unkeyed sibling"
         );
@@ -5482,6 +5721,263 @@ mod tests {
         );
         enable_delegation(&broker).await;
         broker
+    }
+
+    #[tokio::test]
+    async fn meta_writes_carry_task_preview_and_task_id_on_every_write() {
+        // Meta is replace-wholesale on the ToolCallState, so BOTH the running
+        // and the terminal writes must carry the task label + broker task id —
+        // they are the persisted card's only label source on hosts whose
+        // raw_input never carries the arguments (Cursor).
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-conn-t".into())).await;
+        mock.queue_send(Ok(42)).await;
+        let writer = Arc::new(MockMetaWriter::new());
+        let broker = broker_with_meta(mock.clone(), writer.clone()).await;
+
+        let driver = {
+            let broker = broker.clone();
+            tokio::spawn(async move { broker.handle_request(request(1, "pt-task")).await })
+        };
+        let call_id = loop {
+            if let Some(id) = broker.peek_first_pending_call_id().await {
+                break id;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        broker
+            .complete_call(
+                &call_id,
+                DelegationOutcome::Ok(DelegationSuccess {
+                    text: "done".into(),
+                    child_conversation_id: 42,
+                    child_agent_type: AgentType::ClaudeCode,
+                    turn_count: 1,
+                    duration_ms: 5,
+                    token_usage: None,
+                }),
+            )
+            .await;
+        driver.await.unwrap();
+
+        let calls = writer.snapshot().await;
+        assert_eq!(calls.len(), 2);
+        for call in &calls {
+            let inner = call
+                .meta
+                .get("codeg.delegation")
+                .unwrap()
+                .as_object()
+                .unwrap();
+            assert_eq!(
+                inner.get("task_preview").unwrap().as_str().unwrap(),
+                "do x",
+                "every write must keep the task label (status={})",
+                inner.get("status").unwrap()
+            );
+            assert_eq!(
+                inner.get("task_id").unwrap().as_str().unwrap(),
+                &call_id,
+                "task_id must be the broker call id on every write"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn identityless_fifo_claim_restores_delegate_identity() {
+        // Cursor path: the ACP announcement registered an identity-less
+        // candidate ("MCP: tool" + "{}"), the MCP round-trip arrives with no
+        // explicit tool_use id. The post-budget FIFO claim must land on the
+        // candidate AND restore the call's identity (canonical delegate title
+        // + reconstructed arguments) on the live tool call.
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-conn-i".into())).await;
+        mock.queue_send(Ok(43)).await;
+        let writer = Arc::new(MockMetaWriter::new());
+        let broker = broker_with_meta(mock.clone(), writer.clone()).await;
+        broker
+            .register_identityless_tool_call("parent-conn", "call-cursor-7\nfc_x_0".into())
+            .await;
+
+        let driver = {
+            let broker = broker.clone();
+            // Empty tool_use id → claim path (2s budget, then FIFO).
+            tokio::spawn(async move { broker.handle_request(request(1, "")).await })
+        };
+        let call_id = loop {
+            if let Some(id) = broker.peek_first_pending_call_id().await {
+                break id;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        broker
+            .complete_call(
+                &call_id,
+                DelegationOutcome::Ok(DelegationSuccess {
+                    text: "done".into(),
+                    child_conversation_id: 43,
+                    child_agent_type: AgentType::ClaudeCode,
+                    turn_count: 1,
+                    duration_ms: 5,
+                    token_usage: None,
+                }),
+            )
+            .await;
+        driver.await.unwrap();
+
+        let identities = writer.identity_snapshot().await;
+        assert_eq!(identities.len(), 1, "exactly one identity restoration");
+        let id_write = &identities[0];
+        assert_eq!(id_write.parent_connection_id, "parent-conn");
+        assert_eq!(id_write.tool_call_id, "call-cursor-7\nfc_x_0");
+        assert_eq!(
+            id_write.title,
+            crate::acp::delegation::DELEGATE_TOOL_REWRITE_TITLE
+        );
+        assert_eq!(
+            id_write.raw_input.get("task").unwrap().as_str().unwrap(),
+            "do x"
+        );
+        assert_eq!(
+            id_write
+                .raw_input
+                .get("agent_type")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "claude_code"
+        );
+        // The meta writes bound to the REAL claimed id, not a synthetic one.
+        let metas = writer.snapshot().await;
+        assert!(metas
+            .iter()
+            .all(|m| m.parent_tool_use_id == "call-cursor-7\nfc_x_0"));
+    }
+
+    #[tokio::test]
+    async fn keyed_claim_does_not_rewrite_host_identity() {
+        // A host that shipped real raw_input (keyed registration) keeps its
+        // own wire identity — reconstructing raw_input would clobber
+        // host-specific fields.
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-conn-k".into())).await;
+        mock.queue_send(Ok(44)).await;
+        let writer = Arc::new(MockMetaWriter::new());
+        let broker = broker_with_meta(mock.clone(), writer.clone()).await;
+        broker
+            .register_pending_tool_call_with_key(
+                "parent-conn",
+                "tc-keyed".into(),
+                Some(DelegationMatchKey {
+                    agent_type: AgentType::ClaudeCode,
+                    task: "do x".into(),
+                    working_dir: None,
+                }),
+            )
+            .await;
+
+        let driver = {
+            let broker = broker.clone();
+            tokio::spawn(async move { broker.handle_request(request(1, "")).await })
+        };
+        let call_id = loop {
+            if let Some(id) = broker.peek_first_pending_call_id().await {
+                break id;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        broker
+            .complete_call(
+                &call_id,
+                DelegationOutcome::Ok(DelegationSuccess {
+                    text: "done".into(),
+                    child_conversation_id: 44,
+                    child_agent_type: AgentType::ClaudeCode,
+                    turn_count: 1,
+                    duration_ms: 5,
+                    token_usage: None,
+                }),
+            )
+            .await;
+        driver.await.unwrap();
+
+        assert!(
+            writer.identity_snapshot().await.is_empty(),
+            "keyed (host-identified) claims must not be rewritten"
+        );
+        let metas = writer.snapshot().await;
+        assert!(metas.iter().all(|m| m.parent_tool_use_id == "tc-keyed"));
+    }
+
+    #[tokio::test]
+    async fn rewrite_identityless_tool_call_claims_and_writes_status_identity() {
+        let writer = Arc::new(MockMetaWriter::new());
+        let broker = broker_with_meta(Arc::new(MockSpawner::new()), writer.clone()).await;
+        broker
+            .register_identityless_tool_call("parent-conn", "call-status-1".into())
+            .await;
+
+        let claimed = broker
+            .rewrite_identityless_tool_call(
+                "parent-conn",
+                crate::acp::delegation::STATUS_TOOL_REWRITE_TITLE,
+                serde_json::json!({"task_ids": ["t-1"], "wait_ms": 0}),
+            )
+            .await;
+        assert_eq!(claimed.as_deref(), Some("call-status-1"));
+        let identities = writer.identity_snapshot().await;
+        assert_eq!(identities.len(), 1);
+        assert_eq!(
+            identities[0].title,
+            crate::acp::delegation::STATUS_TOOL_REWRITE_TITLE
+        );
+        assert_eq!(
+            identities[0].raw_input.get("task_ids").unwrap()[0]
+                .as_str()
+                .unwrap(),
+            "t-1"
+        );
+        // Consumed: the candidate can't be claimed again by the delegate FIFO.
+        assert!(broker.take_pending_tool_call("parent-conn").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn rewrite_skips_connections_that_never_announced_identityless() {
+        // Plain unkeyed registration (a keyless delegation invocation) must
+        // NOT be renamed — and the sticky gate must return instantly (no
+        // 300 ms poll) for such connections. Also: the entry stays claimable
+        // by the delegate FIFO afterwards.
+        let writer = Arc::new(MockMetaWriter::new());
+        let broker = broker_with_meta(Arc::new(MockSpawner::new()), writer.clone()).await;
+        broker
+            .register_pending_tool_call("parent-conn", "tc-plain".into())
+            .await;
+
+        let started = std::time::Instant::now();
+        let claimed = broker
+            .rewrite_identityless_tool_call(
+                "parent-conn",
+                crate::acp::delegation::STATUS_TOOL_REWRITE_TITLE,
+                serde_json::json!({"task_ids": ["t-1"]}),
+            )
+            .await;
+        assert!(claimed.is_none());
+        // The poll path sleeps ≥300 ms (30 × 10 ms lower bounds); the gate
+        // path sleeps zero. 280 ms discriminates the two while leaving slack
+        // for full-suite parallel-load scheduling jitter.
+        assert!(
+            started.elapsed() < Duration::from_millis(280),
+            "sticky gate must skip the poll for hosts without identity-less announcements"
+        );
+        assert!(writer.identity_snapshot().await.is_empty());
+        assert_eq!(
+            broker
+                .take_pending_tool_call("parent-conn")
+                .await
+                .as_deref(),
+            Some("tc-plain"),
+            "the plain unkeyed entry must remain for the delegate FIFO"
+        );
     }
 
     #[tokio::test]
@@ -7260,12 +7756,18 @@ mod tests {
                 child_connection_id,
                 child_conversation_id,
                 agent_type,
+                task_preview,
+                task_id,
             } => {
                 assert_eq!(parent_connection_id, "parent-conn");
                 assert_eq!(parent_tool_use_id, "pt-started");
                 assert_eq!(child_connection_id, "child-conn-started");
                 assert_eq!(*child_conversation_id, 88);
                 assert_eq!(*agent_type, AgentType::ClaudeCode);
+                // The event labels the card even when the parent tool call's
+                // raw_input never carried the arguments (identity-less hosts).
+                assert_eq!(task_preview, "do x");
+                assert!(!task_id.is_empty(), "broker-minted task id must ride the event");
             }
             other => panic!("expected DelegationStarted, got {other:?}"),
         }

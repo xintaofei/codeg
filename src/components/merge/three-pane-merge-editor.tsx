@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import dynamic from "next/dynamic"
+import { useMonaco } from "@monaco-editor/react"
 import type { OnMount } from "@monaco-editor/react"
 import type { editor as MonacoEditorNs, IRange } from "monaco-editor"
 import { ArrowLeft, ArrowRight, CheckCheck } from "lucide-react"
@@ -9,7 +10,7 @@ import { useTranslations } from "next-intl"
 import {
   defineMonacoThemes,
   MONACO_UNICODE_HIGHLIGHT_OPTIONS,
-  useMonacoThemeSync,
+  useMonacoWorkspaceTheme,
 } from "@/lib/monaco-themes"
 import { useZoomLevel, useEditorFont } from "@/hooks/use-appearance"
 import { cn } from "@/lib/utils"
@@ -59,7 +60,10 @@ export function ThreePaneMergeEditor({
   onConflictStatusChange,
 }: ThreePaneMergeEditorProps) {
   const t = useTranslations("MergePage")
-  const editorTheme = useMonacoThemeSync()
+  // Conditionally mounted (only when a merge is shown), so useMonaco() here is
+  // already lazy — Monaco is loading for these editors anyway.
+  const monaco = useMonaco()
+  const editorTheme = useMonacoWorkspaceTheme(monaco)
   const { zoomLevel } = useZoomLevel()
   const { editorFontStack, editorFontSize, editorLigatures, editorWordWrap } =
     useEditorFont()

@@ -9,6 +9,11 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   // `rawInput.command` — the command card would fall through to the generic
   // tool renderer (raw ANSI, no terminal title) instead of the Terminal card.
   run_terminal_command: "bash",
+  // Cursor's history parser (`parsers/cursor.rs`) emits the CLI's own tool
+  // identifiers; `shell` carries `rawInput.command`, so alias it to the
+  // Terminal card. Cursor's other tool names (read/edit/grep/glob/ls) already
+  // match their canonical kinds verbatim.
+  shell: "bash",
   exec_command: "exec_command",
   "functions.exec_command": "exec_command",
   "functions.read": "read",
@@ -241,6 +246,23 @@ function inferFromInput(
   const parsed = tryParseInputObject(rawInput)
   if (!parsed) return null
 
+  // Cursor live MCP calls (`mcpToolCall`): rawInput carries the provider and
+  // tool identity. Resolve to `<provider>__<tool>` — the same shape the
+  // history parser emits — so MCP-routed tools (the delegation companions
+  // et al) reach their dedicated cards, and before the `args` key below
+  // misreads the payload as a terminal command.
+  const mcpProvider = parsed.providerIdentifier
+  const mcpTool = parsed.toolName
+  if (
+    typeof mcpProvider === "string" &&
+    typeof mcpTool === "string" &&
+    mcpTool
+  ) {
+    return normalizeToolName(
+      mcpProvider ? `${mcpProvider}__${mcpTool}` : mcpTool
+    )
+  }
+
   if (
     hasAnyKey(parsed, [
       "command",
@@ -269,11 +291,27 @@ function inferFromInput(
   // stream resolves to "question" before the tool result arrives.
   if (hasAnyKey(parsed, ["question", "questions"])) return "question"
 
-  if (hasAnyKey(parsed, ["subagent_type"])) {
+  // `subagent_type` is the Claude Code Task shape; `subagentType` is Cursor's
+  // task tool (a protobuf-es oneof object on the live wire).
+  if (hasAnyKey(parsed, ["subagent_type", "subagentType"])) {
     return "agent"
   }
   if (hasAnyKey(parsed, ["taskId", "task_id", "subject"])) {
     return "task"
+  }
+
+  // Cursor stamps the semantic tool identity in `_toolName` for calls whose
+  // args may not have streamed yet. `task` is Cursor's sub-agent tool — route
+  // it to the Agent card even when the input snapshot is otherwise empty (the
+  // live tool_call is announced before its args are populated). Other values
+  // (`createPlan`, `generateImage`, …) collapse via camelCase → snake_case to
+  // the canonical names the history parser emits.
+  const hinted = parsed._toolName
+  if (typeof hinted === "string" && hinted) {
+    if (hinted === "task") return "agent"
+    return normalizeToolName(
+      hinted.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase()
+    )
   }
 
   const hasPath = hasAnyKey(parsed, ["file_path", "notebook_path", "path"])
@@ -419,6 +457,22 @@ export function inferLiveToolName(params: {
   if (metaToolName) {
     const normalizedMeta = normalizeToolName(metaToolName)
     if (DELEGATION_COMPANION_TOOLS.has(normalizedMeta)) return normalizedMeta
+  }
+
+  // The delegation broker stamps `meta["codeg.delegation"]` onto the parent's
+  // `delegate_to_agent` tool call (meta_writer.rs) — an authoritative,
+  // codeg-minted marker no other tool ever carries. It is the ONLY live
+  // identity signal on hosts whose wire loses the MCP tool name entirely:
+  // Cursor announces MCP calls as title "MCP: tool" with empty rawInput and
+  // never resends either, so when the broker claims the call and writes the
+  // running meta, this is what flips the card to the delegation renderer
+  // mid-run (the title-sniff rewrite only lands at completion).
+  if (
+    params.meta &&
+    typeof params.meta === "object" &&
+    "codeg.delegation" in params.meta
+  ) {
+    return "delegate_to_agent"
   }
 
   // Delegation companion tools also carry their identity in the TITLE on hosts

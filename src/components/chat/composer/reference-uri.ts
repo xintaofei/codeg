@@ -11,7 +11,8 @@ const AGENT_URI = /^codeg:\/\/agent\/(.+)$/i
 const SESSION_URI = /^codeg:\/\/session\/(.+)$/i
 const COMMIT_URI = /^codeg:\/\/commit\/.*@(.+)$/i
 // command / skill / expert tokens, surfaced as badges in transcript user messages
-// (message/user-message-segments.ts). The label carries the literal `/`·`$` prefix.
+// (message/user-message-segments.ts). The label arrives with the literal `/`·`$`
+// prefix, which the skill branch strips so the badge reads the bare name.
 const SKILL_URI = /^codeg:\/\/skill\/(.+)$/i
 
 // A path-less attached file (local-desktop paste/drop of inline bytes — an
@@ -118,10 +119,13 @@ export function parseCodegReferenceUri(
     }
     return {
       refType: "skill",
-      // The link text keeps the literal token (`/build` / `$deploy`); fall back
-      // to a `/`-prefixed id only if it was somehow empty.
+      // The link text carries the literal invocation token (`/build` / `$deploy`);
+      // strip a single leading `/`·`$` so the badge reads `build` — matching the
+      // composer's live-inserted command/skill badge (whose label is the bare,
+      // prefix-less name), the way the agent branch above strips a leading `@`.
+      // Fall back to the bare id when the label is empty.
       id,
-      label: label || `/${id}`,
+      label: (label || id).replace(/^[/$]/, "") || id,
       uri,
       meta: null,
     }

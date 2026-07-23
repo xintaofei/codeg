@@ -231,6 +231,42 @@ pub enum FolderChange {
     },
 }
 
+/// Per-agent progress of the import picker's local-session scan. Emitted by
+/// `scan_importable_sessions` once per parser so the picker window can render
+/// a live checklist while the (potentially seconds-long) filesystem walk runs.
+/// Broadcast like every other side-channel — windows not in the `scanning`
+/// phase simply ignore it.
+pub const IMPORT_SCAN_PROGRESS_EVENT: &str = "import-scan://progress";
+
+/// Payload for [`IMPORT_SCAN_PROGRESS_EVENT`].
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportScanProgress {
+    pub agent_type: crate::models::AgentType,
+    /// Parsers completed so far (1-based, monotonic).
+    pub done: u32,
+    pub total: u32,
+    /// Importable root sessions this parser contributed.
+    pub session_count: u32,
+}
+
+/// One-shot "a batch import finished" nudge. Deliberately a NEW channel rather
+/// than a [`ConversationChange`] variant: the frontend's `conversation://changed`
+/// handler routes any unknown `kind` into its status branch (clobbering state
+/// with `undefined`s on stale clients), whereas an unknown channel simply has no
+/// subscriber. Carries ids only — clients respond with a single full refetch,
+/// which also covers the per-row title refreshes, so a large batch never floods
+/// the bus with thousands of upserts (created folders still broadcast
+/// individually on [`FOLDER_CHANGED_EVENT`]).
+pub const CONVERSATIONS_BULK_CHANGED_EVENT: &str = "conversations://bulk-changed";
+
+/// Payload for [`CONVERSATIONS_BULK_CHANGED_EVENT`].
+#[derive(Debug, Clone, Serialize)]
+pub struct ConversationsBulkChanged {
+    pub imported: u32,
+    pub updated: u32,
+    pub folder_ids: Vec<i32>,
+}
+
 /// Global side-channel for cross-client open-tab sync. Mirrors
 /// [`CONVERSATION_CHANGED_EVENT`]: a single [`emit_event`] reaches the Tauri
 /// webview and every WebSocket client.
@@ -554,6 +590,7 @@ mod tests {
                     color: "inherit".to_string(),
                     parent_id: Some(7),
                     kind: FolderKind::Regular,
+                    alias: None,
                 }),
             },
         );

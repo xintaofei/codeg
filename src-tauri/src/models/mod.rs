@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod automation;
+pub mod background;
 pub mod chat_channel;
 pub mod conversation;
 pub mod folder;
@@ -19,8 +20,9 @@ pub use automation::{
 pub use chat_channel::{ChannelStatusInfo, ChatChannelInfo, ChatChannelMessageLogInfo};
 pub use conversation::{
     AgentConversationCount, AgentStats, ConversationDetail, ConversationSummary,
-    DbConversationDetail, DbConversationSummary, FolderInfo, ImportResult, SessionStats,
-    SidebarData,
+    DbConversationDetail, DbConversationSummary, FolderInfo, ImportFolderOutcome, ImportResult,
+    ImportSelectedResult, ScanFolder, ScanResult, ScanSession, ScanSessionStatus,
+    SelectedSessionKey, SessionStats, SidebarData,
 };
 pub use folder::{
     FolderCommandInfo, FolderDetail, FolderHistoryEntry, OpenedTab, OpenedTabsSnapshot,

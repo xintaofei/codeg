@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   excludeChatFolders,
   filterTopLevelFolders,
+  formatFolderLabelWithAlias,
   resolveFolderDisplayName,
   resolvePickerSelectedFolderId,
 } from "@/lib/folder-display"
@@ -89,5 +90,31 @@ describe("resolvePickerSelectedFolderId", () => {
 
   it("returns the parent id for a worktree folder", () => {
     expect(resolvePickerSelectedFolderId({ id: 7, parent_id: 3 })).toBe(3)
+  })
+})
+
+describe("formatFolderLabelWithAlias", () => {
+  it("renders `alias [ name ]` (spaced) when an alias is set", () => {
+    expect(
+      formatFolderLabelWithAlias({ name: "codeg", alias: "My Project" })
+    ).toBe("My Project [ codeg ]")
+  })
+
+  it("falls back to the bare name when alias is null", () => {
+    expect(formatFolderLabelWithAlias({ name: "codeg", alias: null })).toBe(
+      "codeg"
+    )
+  })
+
+  it("treats an empty / whitespace-only alias as unset", () => {
+    expect(formatFolderLabelWithAlias({ name: "codeg", alias: "   " })).toBe(
+      "codeg"
+    )
+  })
+
+  it("trims surrounding whitespace from the alias", () => {
+    expect(
+      formatFolderLabelWithAlias({ name: "codeg", alias: "  Work  " })
+    ).toBe("Work [ codeg ]")
   })
 })

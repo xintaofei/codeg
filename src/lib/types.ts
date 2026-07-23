@@ -10,6 +10,7 @@ export type AgentType =
   | "kimi_code"
   | "pi"
   | "grok"
+  | "cursor"
 
 export type AppErrorCode =
   | "invalid_input"
@@ -140,6 +141,14 @@ export type ContentBlock =
       tool_use_id: string | null
       tool_name: string
       input_preview: string | null
+      /**
+       * ACP tool-call status when known. Live and promoted turns forward it
+       * from `ToolCallInfo.status` in `buildStreamingTurnsFromLiveMessage`;
+       * DB-persisted rows omit it (`undefined`). Lets the render layer tell a
+       * still-unsettled orphan (interrupted/retried arg-less call promoted into
+       * `localTurns`) from a completed no-op. See `dropEmptyInFlightToolCalls`.
+       */
+      status?: string | null
       /**
        * ACP extensibility metadata for this tool call. Opaque pass-through
        * — both the live snapshot (`ToolCallState.meta`) and the persisted
@@ -278,6 +287,13 @@ export interface FolderDetail {
    * sidebar "Chat" group and folder-bound chrome is hidden while one is active.
    */
   kind: FolderKind
+  /**
+   * User-supplied display alias, or null when unset. When present, the sidebar
+   * folder header and conversation header render `alias [name]`
+   * (see `formatFolderLabelWithAlias`). Display-only — never used for the
+   * folder's real `path`/`id`.
+   */
+  alias: string | null
 }
 
 /**
@@ -404,6 +420,100 @@ export interface ImportResult {
   skipped: number
 }
 
+/** Mirrors Rust `ScanSessionStatus` — how one locally-discovered session
+ *  reconciles against the DB by `(external_id, agent_type)`. `deleted` means
+ *  only soft-deleted rows exist; import never resurrects those. */
+export type ScanSessionStatus = "new" | "imported" | "deleted"
+
+/** Mirrors Rust `ScanSession`: one locally-discovered agent session in the
+ *  import-picker scan. */
+export interface ScanSession {
+  external_id: string
+  agent_type: AgentType
+  title: string | null
+  started_at: string
+  ended_at: string | null
+  message_count: number
+  model: string | null
+  git_branch: string | null
+  status: ScanSessionStatus
+}
+
+/** Mirrors Rust `ScanFolder`: sessions sharing a normalize-matched cwd, plus
+ *  how that path reconciles against the folder table. `exists_in_codeg: false`
+ *  with a `folder_id` means the row is soft-deleted and import will reopen it. */
+export interface ScanFolder {
+  path: string
+  name: string
+  exists_in_codeg: boolean
+  folder_id: number | null
+  agent_types: AgentType[]
+  sessions: ScanSession[]
+}
+
+/** Mirrors Rust `ScanResult` — response of `scan_importable_sessions`. */
+export interface ScanResult {
+  folders: ScanFolder[]
+  /** Sessions with no cwd in their transcript — not importable, count only. */
+  no_folder_count: number
+  total_sessions: number
+  importable_count: number
+}
+
+/** Mirrors Rust `SelectedSessionKey` (camelCase over the wire): identifies one
+ *  scanned session for `import_selected_sessions`. */
+export interface SelectedSessionKey {
+  agentType: AgentType
+  externalId: string
+}
+
+/** Mirrors Rust `ImportFolderOutcome`: per-folder tally of one batch import. */
+export interface ImportFolderOutcome {
+  path: string
+  folder_id: number
+  created: boolean
+  imported: number
+  updated: number
+  skipped: number
+}
+
+/** Mirrors Rust `ImportSelectedResult` — response of
+ *  `import_selected_sessions`. */
+export interface ImportSelectedResult {
+  imported: number
+  updated: number
+  skipped: number
+  not_found: number
+  failed: number
+  created_folders: number
+  folders: ImportFolderOutcome[]
+  errors: string[]
+}
+
+/** Mirrors Rust `ImportScanProgress` — payload of the per-agent
+ *  `import-scan://progress` broadcast while `scan_importable_sessions` walks
+ *  the local session stores. */
+export interface ImportScanProgress {
+  agent_type: AgentType
+  done: number
+  total: number
+  session_count: number
+}
+
+export const IMPORT_SCAN_PROGRESS_EVENT = "import-scan://progress"
+
+/** Payload of the one-shot `conversations://bulk-changed` nudge a batch import
+ *  broadcasts on completion. Clients respond with a single full conversation
+ *  refetch (covers inserted rows and refreshed titles alike) instead of
+ *  applying thousands of per-row upserts. */
+export interface ConversationsBulkChanged {
+  imported: number
+  updated: number
+  folder_ids: number[]
+}
+
+export const CONVERSATIONS_BULK_CHANGED_EVENT = "conversations://bulk-changed"
+
 export interface DbConversationDetail {
   summary: DbConversationSummary
   turns: MessageTurn[]
@@ -469,6 +579,7 @@ export const AGENT_DISPLAY_ORDER: AgentType[] = [
   "kimi_code",
   "pi",
   "grok",
+  "cursor",
 ]
 
 const AGENT_DISPLAY_ORDER_INDEX = new Map(
@@ -493,6 +604,7 @@ export const ALL_AGENT_TYPES: AgentType[] = [
   "kimi_code",
   "pi",
   "grok",
+  "cursor",
 ]
 
 export const MODEL_PROVIDER_AGENT_TYPES: AgentType[] = [
@@ -784,6 +896,7 @@ export const AGENT_LABELS: Record<AgentType, string> = {
   kimi_code: "Kimi Code",
   pi: "Pi",
   grok: "Grok",
+  cursor: "Cursor",
 }
 
 export const AGENT_COLORS: Record<AgentType, string> = {
@@ -798,6 +911,7 @@ export const AGENT_COLORS: Record<AgentType, string> = {
   kimi_code: "bg-[#1783FF]",
   pi: "bg-[#0D9488]",
   grok: "bg-neutral-900",
+  cursor: "bg-zinc-800",
 }
 
 // ACP connection status (matches Rust ConnectionStatus)
@@ -1261,6 +1375,12 @@ export type AcpEvent =
       child_connection_id: string
       child_conversation_id: number
       agent_type: AgentType
+      /** Bounded preview of the delegated task text. Labels the card on
+       *  hosts whose parent tool call never carries the arguments in
+       *  `raw_input` (Cursor). Optional for older-backend tolerance. */
+      task_preview?: string | null
+      /** Broker-minted task id (the `task_id=` embedded in the running ack). */
+      task_id?: string | null
     }
   /**
    * The child sub-session has finished (or errored / timed out / been
@@ -1467,6 +1587,11 @@ export interface ActiveDelegationState {
   child_connection_id: string
   child_conversation_id: number
   agent_type: AgentType
+  /** Task label + broker task id mirrored from `delegation_started` so a
+   *  snapshot re-attach reseeds the binding WITH its label (required on
+   *  hosts whose tool call `raw_input` never carries the arguments). */
+  task_preview?: string | null
+  task_id?: string | null
 }
 
 /** Lifecycle of a live-feedback note (mirror of Rust `FeedbackStatus`). */
@@ -1588,6 +1713,12 @@ export interface AcpAgentInfo {
   /** Parsed scalar settings backing the Grok panel's structured controls. Only
    * populated for the Grok agent; derived from grok_config_toml. */
   grok_settings: GrokSettings | null
+  /** Raw ~/.cursor/cli-config.json text, for the Cursor panel's advanced view. */
+  cursor_cli_config_json: string | null
+  /** Parsed scalar settings backing the Cursor panel's structured controls
+   * (sandbox / permission rules; the Run Everything permission mode is a
+   * launch flag, not a config key). Cursor agent only. */
+  cursor_settings: CursorSettings | null
   model_provider_id: number | null
 }
 
@@ -1629,12 +1760,96 @@ export interface GrokStructuredConfig {
   autoCompactThresholdPercent: number | null
 }
 
+/** Parsed keys from ~/.cursor/cli-config.json (shared with the Cursor CLI's
+ * own /config UI). Only the codeg-managed subset is projected; everything
+ * else is preserved verbatim on write. */
+export interface CursorSettings {
+  /** sandbox.mode — "enabled" | "disabled". */
+  sandbox_mode: string | null
+  /** permissions.allow rules, e.g. Shell(ls). */
+  permissions_allow: string[]
+  /** permissions.deny rules. */
+  permissions_deny: string[]
+}
+
+/** Structured-control values the Cursor settings panel sends on save. Null
+ * fields leave the key untouched; non-null fields replace it (lists
+ * wholesale; an empty-string scalar removes the key). camelCase on the wire
+ * to match the request body. */
+export interface CursorStructuredConfig {
+  sandboxMode?: string | null
+  permissionsAllow?: string[] | null
+  permissionsDeny?: string[] | null
+}
+
+/** Result of probing `cursor-agent status --format json` (auth card). */
+export interface CursorAuthStatus {
+  installed: boolean
+  is_authenticated: boolean
+  raw_status: string | null
+  email: string | null
+  membership: string | null
+  error: string | null
+  /** Absolute path to the cursor-agent binary codeg would launch; the panel
+   * builds a copy-pasteable `"<binary_path>" login` command from it (the
+   * managed binary isn't on PATH). Null when not installed. */
+  binary_path?: string | null
+}
+
+/** One `cursor-agent models` entry: `<id> - <label> [(default)]`. The picker
+ * shows `label` (falling back to `id`) and passes `id` to the CLI as --model. */
+export interface CursorModelInfo {
+  id: string
+  label: string
+  is_default: boolean
+}
+
+/** Result of `cursor-agent models` (model picker). */
+export interface CursorModelsResult {
+  models: CursorModelInfo[]
+  default_model: string | null
+  error: string | null
+}
+
 // Lightweight agent status returned by acp_get_agent_status
 export interface AcpAgentStatus {
   agent_type: AgentType
   available: boolean
   enabled: boolean
   installed_version: string | null
+}
+
+// Environment diagnostics (returned by acp_env_diagnostics). Mirrors the Rust
+// AgentDiagnosticsReport in src-tauri/src/acp/types.rs (snake_case response DTO).
+export type DiagLevel = "ok" | "warn" | "fail" | "info"
+
+export interface DiagCheck {
+  label: string
+  value: string
+  status: DiagLevel
+  hint: string | null
+}
+
+export interface DiagSection {
+  title: string
+  checks: DiagCheck[]
+}
+
+export interface DiagnosticsVerdict {
+  level: DiagLevel
+  // Stable id localized via DiagnosticsSettings.verdict.<code>.
+  code: string
+  // Pre-formatted English sentence; used only in plain_text (copy blob).
+  summary: string
+}
+
+export interface AgentDiagnosticsReport {
+  generated_at: string
+  agent_type: AgentType | null
+  verdict: DiagnosticsVerdict
+  sections: DiagSection[]
+  // Backend-rendered text for the "copy all" button.
+  plain_text: string
 }
 
 export type AgentSkillScope = "global" | "project"
@@ -1979,6 +2194,7 @@ export type McpAppType =
   | "code_buddy"
   | "kimi_code"
   | "grok"
+  | "cursor"
 
 export interface LocalMcpServer {
   id: string
@@ -2173,6 +2389,14 @@ export interface GitStashEntry {
 export type FileTreeNode =
   | { kind: "file"; name: string; path: string }
   | { kind: "dir"; name: string; path: string; children: FileTreeNode[] }
+
+/** Flat gitignore-aware workspace entry returned by `list_workspace_files`. */
+export interface WorkspaceFileEntry {
+  name: string
+  /** Path relative to the workspace root, always forward-slashed. */
+  path: string
+  kind: "file" | "dir"
+}
 
 export interface DirectoryEntry {
   name: string

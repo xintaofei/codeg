@@ -234,4 +234,63 @@ describe("AskQuestionResultCard", () => {
     expect(screen.getByText("Approach")).toBeInTheDocument()
     expect(screen.queryByRole("radio")).toBeNull()
   })
+
+  it("renders nothing for an in-flight question whose input hasn't streamed in", () => {
+    // claude-agent-acp's arg-less initial tool_call leaves the input empty, so no
+    // question parses. The live question is answered via the pinned card, so this
+    // in-stream placeholder is pure noise — it must not render an anonymous
+    // "awaiting your answer" card (they stacked into visible duplicates).
+    const { container } = renderWithIntl(
+      <AskQuestionResultCard input="{}" state="input-available" />
+    )
+    expect(container.firstChild).toBeNull()
+    expect(screen.queryByText(result.awaiting)).not.toBeInTheDocument()
+  })
+
+  it("matches grok's header-less questions to their empty-header answers", () => {
+    // Grok's native ask carries no `header`; the connection bridge (live) and the
+    // history parser both emit header-less questions + answers with `header: ""`.
+    // The answer↔question match key (header + question) must still align so the
+    // capsule shows the pick, not the "no selection" fallback. Regression guard
+    // for the in-stream grok card (both the live and reloaded paths).
+    const input = JSON.stringify({
+      questions: [
+        {
+          question: "你更喜欢哪种演示方式？",
+          multiSelect: false,
+          options: [
+            { label: "单选示例", description: "" },
+            { label: "多选示例", description: "" },
+            { label: "随便看看", description: "" },
+          ],
+        },
+      ],
+    })
+    const output = JSON.stringify({
+      answers: [
+        {
+          header: "",
+          question: "你更喜欢哪种演示方式？",
+          selected: ["随便看看"],
+        },
+      ],
+      declined: false,
+    })
+    renderWithIntl(
+      <AskQuestionResultCard
+        input={input}
+        output={output}
+        state="output-available"
+      />
+    )
+
+    // Collapsed capsule shows the pick — NOT the noSelection fallback.
+    expect(screen.getByText("随便看看")).toBeInTheDocument()
+    expect(screen.queryByText(result.noSelection)).toBeNull()
+    // Expanded: the question renders and the chosen option is checked + disabled.
+    expand()
+    const chosen = screen.getByRole("radio", { name: "随便看看" })
+    expect(chosen).toBeChecked()
+    expect(chosen).toBeDisabled()
+  })
 })

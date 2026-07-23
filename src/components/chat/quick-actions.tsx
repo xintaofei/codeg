@@ -440,22 +440,45 @@ export function QuickActions({ onSelect, agentType }: QuickActionsProps) {
 
   return (
     <Tabs value={tab} onValueChange={handleTabChange}>
-      <TabsList className="mx-auto">
+      {/* Mirror the AgentSelector pill (agent-selector.tsx): a translucent
+          `bg-muted/50` surface with the selected trigger a raised `bg-background`
+          pill (shadow-sm + a subtle `ring-border/50` edge), so the active tab
+          reads clearly against the bar instead of blending into it — a `bg-card/50`
+          bar sat too close to the active `bg-background` fill to tell them apart.
+          tailwind-merge drops the list's default `bg-muted`; with a workspace
+          background image the bar reveals it at 50%, off (no image) it's a muted
+          surface over the page. */}
+      <TabsList className="mx-auto border bg-muted/50">
         <TabsTrigger
           value="coding"
-          className="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+          // Selected pill mirrors the AgentSelector droplet: bg + shadow + a
+          // subtle ring edge. The `data-[state=active]:focus-visible:*` pair
+          // re-asserts the 3px accent focus ring at higher specificity — without
+          // it the 1px selected ring (emitted after the base `focus-visible`
+          // rule) would swallow the keyboard focus indicator on the active tab.
+          className="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-border/50 data-[state=active]:focus-visible:ring-[3px] data-[state=active]:focus-visible:ring-ring/50"
         >
           {t("tabs.coding")}
         </TabsTrigger>
         <TabsTrigger
           value="office"
-          className="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+          // Selected pill mirrors the AgentSelector droplet: bg + shadow + a
+          // subtle ring edge. The `data-[state=active]:focus-visible:*` pair
+          // re-asserts the 3px accent focus ring at higher specificity — without
+          // it the 1px selected ring (emitted after the base `focus-visible`
+          // rule) would swallow the keyboard focus indicator on the active tab.
+          className="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-border/50 data-[state=active]:focus-visible:ring-[3px] data-[state=active]:focus-visible:ring-ring/50"
         >
           {t("tabs.office")}
         </TabsTrigger>
         <TabsTrigger
           value="research"
-          className="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+          // Selected pill mirrors the AgentSelector droplet: bg + shadow + a
+          // subtle ring edge. The `data-[state=active]:focus-visible:*` pair
+          // re-asserts the 3px accent focus ring at higher specificity — without
+          // it the 1px selected ring (emitted after the base `focus-visible`
+          // rule) would swallow the keyboard focus indicator on the active tab.
+          className="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm data-[state=active]:ring-1 data-[state=active]:ring-border/50 data-[state=active]:focus-visible:ring-[3px] data-[state=active]:focus-visible:ring-ring/50"
         >
           {t("tabs.research")}
         </TabsTrigger>

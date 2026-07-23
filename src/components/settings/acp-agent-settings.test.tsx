@@ -7,6 +7,7 @@ import {
   buildVersionCheck,
   configTextForClaudeSave,
   getAgentChecks,
+  inferGrokMode,
   patchImportantConfigText,
 } from "./acp-agent-settings"
 import type { AcpAgentInfo, AgentType, PreflightResult } from "@/lib/types"
@@ -34,6 +35,8 @@ function makeAgent(overrides: Partial<AcpAgentInfo>): AcpAgentInfo {
     grok_config_toml: null,
     grok_settings: null,
     hermes_config_yaml: null,
+    cursor_cli_config_json: null,
+    cursor_settings: null,
     model_provider_id: null,
     ...overrides,
   }
@@ -52,10 +55,13 @@ function fixDisabled(fix: unknown): boolean {
 
 // A full Grok draft, custom-model + compaction fields defaulted empty. Typed
 // from the function's own parameter so it stays in sync with the panel shape.
+// Defaults to the `custom` auth method so the custom-model save cases below
+// exercise the [model.<id>] path; non-custom gating is covered separately.
 type GrokDraftInput = Parameters<typeof buildGrokStructuredConfig>[0]
 const grokDraft = (
   overrides: Partial<GrokDraftInput> = {}
 ): GrokDraftInput => ({
+  grokAuthMode: "custom",
   grokPermissionMode: "",
   grokReasoningEffort: "",
   grokCustomModelId: "",
@@ -173,6 +179,35 @@ describe("buildGrokStructuredConfig — Grok panel save payload", () => {
       autoCompactThresholdPercent: 100,
     })
   })
+
+  // The custom-model group is written ONLY in the `custom` auth method. In
+  // subscription / api_key mode the [model.<id>] block is dropped even if the
+  // (now-hidden) custom fields still hold values — so switching away removes it,
+  // while method-independent fields (reasoning effort) still pass through.
+  it("drops the custom model when the auth method isn't custom", () => {
+    const filled = {
+      grokCustomModelId: "my-grok",
+      grokCustomBaseUrl: "https://gw/v1",
+      grokCustomApiKey: "xai-123",
+      grokCustomApiBackend: "chat_completions",
+      grokCustomContextWindow: "131072",
+    }
+    for (const mode of ["subscription", "api_key"] as const) {
+      expect(
+        buildGrokStructuredConfig(
+          grokDraft({
+            ...filled,
+            grokAuthMode: mode,
+            grokReasoningEffort: "high",
+          })
+        )
+      ).toEqual({
+        permissionMode: null,
+        defaultReasoningEffort: "high",
+        ...emptyCustoms,
+      })
+    }
+  })
 })
 
 describe("buildGrokSaveOptions — one save persists both surfaces", () => {
@@ -218,6 +253,48 @@ describe("buildGrokSaveOptions — one save persists both surfaces", () => {
       buildGrokSaveOptions({ ...base, grokConfigTomlText: "x" }, null)
         .grokConfigTomlText
     ).toBe("x")
+  })
+})
+
+describe("inferGrokMode — Grok auth-method recognition", () => {
+  // An explicit knob always wins, even against a present/absent key.
+  it("honors an explicit GROK_AUTH_MODE knob", () => {
+    expect(inferGrokMode({ GROK_AUTH_MODE: "subscription" })).toBe(
+      "subscription"
+    )
+    expect(inferGrokMode({ GROK_AUTH_MODE: "api_key", XAI_API_KEY: "" })).toBe(
+      "api_key"
+    )
+    // Subscription wins even if a stale key lingers in env.
+    expect(
+      inferGrokMode({ GROK_AUTH_MODE: "subscription", XAI_API_KEY: "xai-1" })
+    ).toBe("subscription")
+  })
+
+  // Legacy rows (no knob): a saved key implies api_key, else subscription.
+  it("falls back to XAI_API_KEY presence for legacy rows", () => {
+    expect(inferGrokMode({ XAI_API_KEY: "xai-abc" })).toBe("api_key")
+    expect(inferGrokMode({ XAI_API_KEY: "   " })).toBe("subscription")
+    expect(inferGrokMode({})).toBe("subscription")
+  })
+
+  // An unrecognized knob value is ignored, falling through to key presence.
+  it("ignores an unknown knob value", () => {
+    expect(inferGrokMode({ GROK_AUTH_MODE: "bogus" })).toBe("subscription")
+    expect(
+      inferGrokMode({ GROK_AUTH_MODE: "bogus", XAI_API_KEY: "xai-1" })
+    ).toBe("api_key")
+  })
+
+  // The custom-endpoint method: an explicit knob wins; else a configured custom
+  // model (in config.toml, surfaced via the hasCustomModel flag) implies it and
+  // outranks a lingering key.
+  it("recognizes the custom endpoint method", () => {
+    expect(inferGrokMode({ GROK_AUTH_MODE: "custom" })).toBe("custom")
+    expect(inferGrokMode({}, true)).toBe("custom")
+    expect(inferGrokMode({ XAI_API_KEY: "xai-1" }, true)).toBe("custom")
+    // An explicit knob still wins over the custom-model flag.
+    expect(inferGrokMode({ GROK_AUTH_MODE: "api_key" }, true)).toBe("api_key")
   })
 })
 

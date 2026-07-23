@@ -6,6 +6,7 @@ pub use network::proxy::init_proxy_from_db;
 mod app_error;
 pub mod app_state;
 pub mod automation;
+pub mod backgrounds;
 pub mod chat_channel;
 pub mod commands;
 pub mod db;
@@ -26,6 +27,7 @@ pub mod preferences;
 pub mod process;
 pub mod supervise;
 mod terminal;
+pub mod turn_timings;
 pub mod update;
 pub mod web;
 pub mod workspace_state;
@@ -47,7 +49,7 @@ mod tauri_app {
     use crate::chat_channel::manager::ChatChannelManager;
     use crate::commands::{
         acp as acp_commands, app_update as app_update_commands,
-        automation as automation_commands, backup,
+        automation as automation_commands, background as background_commands, backup,
         chat_channel as chat_channel_commands, conversations,
         custom_skills as custom_skills_commands, delegation as delegation_commands,
         experts as experts_commands, feedback as feedback_commands, file_io, folder_commands,
@@ -680,7 +682,15 @@ mod tauri_app {
                         .title("Codeg")
                         .inner_size(1260.0, 860.0)
                         .min_inner_size(400.0, 600.0);
-                    if let Ok(w) = windows::apply_platform_window_style(builder).build() {
+                    let builder = windows::apply_platform_window_style(builder);
+                    // The workspace title bar is taller than the shared default
+                    // (it hosts the tab strips), so nudge the native macOS
+                    // traffic lights down to stay vertically centred.
+                    #[cfg(target_os = "macos")]
+                    let builder = builder.traffic_light_position(
+                        windows::workspace_window_traffic_light_position(),
+                    );
+                    if let Ok(w) = builder.build() {
                         windows::post_window_setup(&w);
                     }
                 }
@@ -872,6 +882,8 @@ mod tauri_app {
                 conversations::list_opened_tabs,
                 conversations::save_opened_tabs,
                 conversations::import_local_conversations,
+                conversations::scan_importable_sessions,
+                conversations::import_selected_sessions,
                 conversations::get_folder_conversation,
                 conversations::list_folders,
                 conversations::get_stats,
@@ -895,6 +907,7 @@ mod tauri_app {
                 folders::remove_folder_from_workspace,
                 folders::reorder_folders,
                 folders::update_folder_color,
+                folders::update_folder_alias,
                 folders::update_folder_default_agent,
                 folders::add_folder_to_history,
                 folders::remove_folder_from_history,
@@ -952,6 +965,7 @@ mod tauri_app {
                 folders::list_directory_entries,
                 folders::list_directory_with_files,
                 folders::get_file_tree,
+                folders::list_workspace_files,
                 folders::read_file_base64,
                 folders::read_workspace_file_base64,
                 folders::read_file_preview,
@@ -959,9 +973,13 @@ mod tauri_app {
                 folders::save_file_content,
                 folders::save_file_copy,
                 folders::rename_file_tree_entry,
+                folders::move_file_tree_entry,
                 folders::delete_file_tree_entry,
                 folders::create_file_tree_entry,
                 folders::git_log,
+                folders::git_current_user,
+                folders::git_commit_files,
+                folders::git_search_authors,
                 folders::git_commit_branches,
                 windows::open_folder_window,
                 windows::open_commit_window,
@@ -970,6 +988,7 @@ mod tauri_app {
                 windows::open_stash_window,
                 windows::open_push_window,
                 windows::open_project_boot_window,
+                windows::open_import_sessions_window,
                 remote_workspace_commands::list_remote_workspace_connections,
                 remote_workspace_commands::create_remote_workspace_connection,
                 remote_workspace_commands::update_remote_workspace_connection,
@@ -1017,6 +1036,9 @@ mod tauri_app {
                 pet_commands::pet_celebrate,
                 pet_commands::pet_get_current_state,
                 pet_commands::pet_list_active_sessions,
+                background_commands::background_read,
+                background_commands::background_set,
+                background_commands::background_clear,
                 app_update_commands::app_update_state,
                 app_update_commands::perform_app_update,
                 app_update_commands::restart_app,
@@ -1060,6 +1082,8 @@ mod tauri_app {
                 version_control::get_account_token,
                 version_control::delete_account_token,
                 acp_commands::acp_preflight,
+                acp_commands::acp_cursor_auth_status,
+                acp_commands::acp_cursor_list_models,
                 acp_commands::acp_connect,
                 acp_commands::acp_prompt,
                 acp_commands::acp_set_mode,
@@ -1078,6 +1102,7 @@ mod tauri_app {
                 acp_commands::acp_find_connection_for_conversation,
                 acp_commands::acp_list_agents,
                 acp_commands::acp_get_agent_status,
+                acp_commands::acp_env_diagnostics,
                 acp_commands::acp_clear_binary_cache,
                 acp_commands::acp_download_agent_binary,
                 acp_commands::acp_install_uv_tool,

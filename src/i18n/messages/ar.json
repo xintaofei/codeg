@@ -117,6 +117,29 @@
       "sectionTitle": "منطقة اختيار الوضع",
       "sectionDescription": "بطاقات الاختصار «تطوير الكود / الأعمال المكتبية» التي تظهر أعلى مربع الإدخال في صفحة المحادثة الجديدة.",
       "showQuickActions": "العرض في صفحة المحادثة الجديدة"
+    },
+    "workspaceBackground": {
+      "sectionTitle": "خلفية مساحة العمل",
+      "sectionDescription": "عرض صورة خلف مساحة العمل بالكامل. يصبح الشريط الجانبي واللوحات شبه شفافة ومصنفرة لتظهر الصورة من خلالها، ويحافظ القناع على وضوح النص.",
+      "enable": "تفعيل صورة الخلفية",
+      "image": "الصورة",
+      "chooseImage": "اختيار صورة",
+      "replaceImage": "استبدال الصورة",
+      "removeImage": "إزالة",
+      "fillMode": "وضع الملء",
+      "fillModes": {
+        "cover": "تغطية",
+        "contain": "احتواء",
+        "center": "توسيط",
+        "tile": "تكرار"
+      },
+      "maskOpacity": "عتامة القناع",
+      "maskOpacityHint": "القيم الأعلى تمزج الصورة نحو لون خلفية السمة، مما يحسّن تباين النص.",
+      "imageBlur": "تمويه الصورة",
+      "panelOpacity": "عتامة اللوحات",
+      "panelOpacityHint": "مدى عتامة الشريط الجانبي واللوحات وأشرطة التبويب. الأقل يُظهر المزيد من الصورة.",
+      "errorTooLarge": "الصورة كبيرة جدًا (16 ميجابايت كحد أقصى).",
+      "errorUploadFailed": "فشل تعيين صورة الخلفية."
     }
   },
   "SystemSettings": {
@@ -588,7 +611,8 @@
       "saveCodeBuddyConfig": "حفظ إعدادات CodeBuddy",
       "saveKimiCodeConfig": "حفظ إعدادات Kimi Code",
       "customInstall": "تثبيت مخصص",
-      "saveKimiCodeRawConfig": "Save config.toml"
+      "saveKimiCodeRawConfig": "Save config.toml",
+      "diagnose": "تشخيص"
     },
     "status": {
       "enabled": "مفعّل",
@@ -615,9 +639,17 @@
       "effortXhigh": "الأقصى",
       "optionDefault": "استخدام الافتراضي",
       "authTitle": "المصادقة",
+      "authMode": "طريقة المصادقة",
+      "authModeApiKey": "مفتاح XAI API",
+      "authModeApiKeyHint": "المصادقة باستخدام XAI_API_KEY من وحدة تحكم xAI — للتشغيل غير التفاعلي أو بدون واجهة. يُخزَّن في بيئة هذا الوكيل.",
+      "authModeCustom": "نقطة نهاية مخصّصة",
+      "authModeCustomHint": "استخدم نقطة نهاية خاصة بك (BYO): عرّف نموذجًا مخصّصًا في الأسفل مع عنوان URL أساسي ومفتاح API خاصين به. يصبح النموذج الافتراضي لـ Grok.",
+      "subscriptionHint": "سجّل الدخول باستخدام `grok login` (SuperGrok / X Premium+). لا يُخزَّن أي مفتاح API.",
+      "loginHint": "نفّذ هذا في الطرفية لتسجيل الدخول، ثم أعد فتح هذه الإعدادات:",
+      "commandCopied": "تم نسخ الأمر إلى الحافظة",
+      "copyCommand": "نسخ الأمر",
       "authKeyConfigured": "XAI_API_KEY مُهيَّأ.",
       "authKeyMissing": "لم يتم تعيين XAI_API_KEY.",
-      "authLoginHint": "عيّن XAI_API_KEY هنا، أو نفّذ `grok login` لتسجيل الدخول بالاشتراك (SuperGrok / X Premium+).",
       "advancedToggle": "متقدم (config.toml الخام)",
       "configTomlNative": "config.toml (أصلي)",
       "configTomlHint": "يُحفظ حرفيًا كملف ~/.grok/config.toml بالكامل. يُرفض TOML غير الصالح حتى لا يقتطع خطأ مطبعي ملفك أبدًا.",
@@ -639,6 +671,49 @@
       "customContextWindowHint": "اختياري. يحدّد توقيت الضغط التلقائي؛ اتركه فارغًا لاستخدام القيمة الافتراضية لنقطة النهاية.",
       "autoCompactLabel": "عتبة الضغط التلقائي (%)",
       "autoCompactHint": "يضغط المحادثة عندما يبلغ استخدام السياق هذه النسبة المئوية (الافتراضي في Grok هو 85). يُكتَب في `[session]`."
+    },
+    "cursor": {
+      "configDescription": "اضبط Cursor هنا. اختر طريقة مصادقة — اشتراك رسمي (تسجيل دخول عبر المتصفح) أو مفتاح Cursor API للأجهزة بدون واجهة أو الخوادم — ثم اختر نموذجًا وحرّر قواعد أذونات CLI وبيئة الحماية. يكتبها codeg في ~/.cursor/cli-config.json، بالمشاركة مع أداة cursor-agent.",
+      "authTitle": "المصادقة",
+      "authChecking": "جارٍ التحقق…",
+      "authNotInstalled": "cursor-agent غير مثبّت",
+      "authLoggedIn": "تم تسجيل الدخول",
+      "authNotLoggedIn": "غير مسجّل الدخول",
+      "loginHint": "شغّل هذا الأمر في الطرفية لتسجيل الدخول إلى حساب Cursor (سيفتح المتصفح)، ثم اضغط تحديث:",
+      "apiKeyLabel": "مفتاح Cursor API",
+      "apiKeyPlaceholder": "المفتاح من cursor.com/dashboard",
+      "apiKeyHint": "CURSOR_API_KEY — مفتاح حساب من لوحة تحكم Cursor، بديل لتسجيل الدخول عبر المتصفح للأجهزة بدون واجهة أو الخوادم. ليس مفتاحًا خارجيًا أو من OpenAI.",
+      "modelTitle": "النموذج الافتراضي",
+      "loadModels": "جلب النماذج",
+      "modelsUnavailable": "قائمة النماذج غير متاحة",
+      "modelHint": "يُمرَّر إلى CLI عبر ‎--model عند بدء الجلسة. اتركه افتراضيًا ليختار Cursor بنفسه.",
+      "permissionsTitle": "الأذونات ووضع الحماية",
+      "permissionsDescription": "محرّر بصري لقواعد أذونات CLI‏ (cli-config.json). القواعد المسموحة تُنفَّذ دون تأكيد؛ والمرفوضة تُحظر دائمًا.",
+      "permissionModeLabel": "وضع الأذونات",
+      "permissionModeDefault": "السؤال قبل التنفيذ (افتراضي)",
+      "permissionModeForce": "تشغيل كل شيء (--force)",
+      "permissionModeHint": "يبدأ وضع Run Everything الجلسات بـ --force: يُسمح تلقائيًا بجميع استدعاءات الأدوات باستثناء قواعد الرفض دون طلب تأكيد (قد تقيّده سياسة المؤسسة بقواعد السماح فقط). يسري على الجلسات الجديدة.",
+      "optionDefault": "افتراضي (غير محدد)",
+      "sandboxLabel": "وضع الحماية",
+      "sandboxEnabled": "مفعّل",
+      "sandboxDisabled": "معطّل",
+      "allowRulesLabel": "قواعد السماح",
+      "denyRulesLabel": "قواعد الرفض",
+      "addRule": "إضافة قاعدة",
+      "rulesSyntaxHint": "صيغة القواعد: Shell(أمر)، Read(مسار/نمط)، Write(مسار/نمط)، WebFetch(نطاق)، Mcp(خادم:أداة) — قواعد الرفض لها الأولوية دائمًا.",
+      "saveConfig": "حفظ الإعدادات",
+      "advancedToggle": "متقدم: cli-config.json الخام",
+      "advancedHint": "ملف ‎~/.cursor/cli-config.json كاملًا. الحفظ هنا يكتب الملف كما هو؛ أما عناصر التحكم أعلاه فتُدمج فيه.",
+      "saveRawConfig": "حفظ الملف",
+      "authMode": "طريقة المصادقة",
+      "subscriptionHint": "سجّل الدخول بحساب Cursor واستخدم نماذج Cursor.",
+      "customApiKeyRequired": "مفتاح Cursor API مطلوب.",
+      "authModeApiKey": "مفتاح Cursor API (بدون واجهة/خادم)",
+      "authModeApiKeyHint": "المصادقة باستخدام مفتاح API لحساب Cursor من لوحة تحكم Cursor (للأجهزة بدون واجهة أو الخوادم). هذا مفتاح حساب Cursor وليس نقطة نهاية خارجية/OpenAI — إذ يتصل cursor-agent بخادم Cursor الخاص فقط. لاستخدام نقطة نهاية متوافقة مع codex/OpenAI، استخدم وكيل Codex بدلاً من ذلك.",
+      "modelPickerPlaceholder": "ابحث عن النماذج…",
+      "modelNoMatch": "لا يوجد نموذج مطابق",
+      "modelsNeedAuth": "سجّل الدخول لتحميل قائمة النماذج.",
+      "modelDefaultBadge": "افتراضي"
     },
     "codex": {
       "configDescription": "يدعم الإعداد السريع لعنوان API ومفتاح API واسم النموذج وجهد الاستدلال، مع المزامنة مع `auth.json` / `config.toml`.",
@@ -921,6 +996,8 @@
       "grokSaved": "تم حفظ إعدادات Grok",
       "saveGrokNativeFailed": "فشل حفظ إعدادات Grok الأصلية",
       "saveGrokApiKeyFailed": "تم حفظ الإعدادات، لكن تعذّر حفظ مفتاح API",
+      "cursorSaved": "تم حفظ إعدادات Cursor",
+      "saveCursorConfigFailed": "فشل حفظ إعدادات Cursor",
       "codexSaved": "تم حفظ إعداد Codex",
       "saveCodexNativeFailed": "فشل حفظ إعداد Codex الأصلي",
       "geminiSaved": "تم حفظ إعداد Gemini",
@@ -1126,6 +1203,49 @@
     "applyLeftNonConflicting": "تطبيق المحلي",
     "applyRightNonConflicting": "تطبيق البعيد"
   },
+  "ImportSessions": {
+    "title": "استيراد الجلسات المحلية",
+    "scanningTitle": "جارٍ فحص جلسات الوكلاء المحلية…",
+    "scanningHint": "يجري المرور على مخزن الجلسات المحلي لكل وكيل. قد يستغرق ذلك بعض الوقت مع السجلات الكبيرة.",
+    "scanFailed": "فشل الفحص",
+    "retry": "إعادة المحاولة",
+    "rescan": "إعادة الفحص",
+    "empty": "لم يُعثر على جلسات محلية",
+    "emptyHint": "لم يُعثر على مخازن جلسات للوكلاء على هذا الجهاز.",
+    "noMatches": "لا توجد جلسات مطابقة للمرشحات الحالية",
+    "searchPlaceholder": "ابحث في العنوان أو المسار…",
+    "allAgents": "جميع الوكلاء",
+    "onlyImportable": "القابلة للاستيراد فقط",
+    "selectAll": "تحديد الكل",
+    "clearSelection": "مسح",
+    "expandAll": "توسيع الكل",
+    "collapseAll": "طي الكل",
+    "summaryCounts": "{total} جلسة · {importable} قابلة للاستيراد · {folders} مجلدًا",
+    "noFolderSkipped": "تم تخطي {count} بدون مجلد مشروع",
+    "folderNew": "جديد",
+    "folderCounts": "قابلة للاستيراد {importable}/{total}",
+    "toggleFolderAria": "تحديد كل الجلسات القابلة للاستيراد في {name}",
+    "toggleSessionAria": "تحديد الجلسة {title}",
+    "statusImported": "مستوردة",
+    "statusDeleted": "محذوفة",
+    "untitled": "جلسة بلا عنوان",
+    "messageCount": "{count} رسالة",
+    "selectedCount": "{count} محددة",
+    "importSelected": "استيراد المحدد",
+    "importing": "جارٍ الاستيراد…",
+    "close": "إغلاق",
+    "doneTitle": "اكتمل الاستيراد",
+    "doneImported": "مستوردة",
+    "doneUpdated": "عناوين محدّثة",
+    "doneSkipped": "متخطاة",
+    "doneCreatedFolders": "مجلدات منشأة",
+    "doneNotFound": "غير موجودة",
+    "doneFailed": "فاشلة",
+    "continueImport": "متابعة الاستيراد",
+    "toasts": {
+      "importFailed": "فشل الاستيراد: {message}"
+    }
+  },
   "Folder": {
     "workspaceStatus": {
       "degradedTitle": "التحديثات الفورية غير متاحة",
@@ -1189,6 +1309,7 @@
         "removeFolderFailed": "فشل إزالة المجلد: {message}",
         "reorderFoldersFailed": "فشل إعادة ترتيب المجلدات: {message}",
         "changeFolderColorFailed": "فشل تغيير اللون: {message}",
+        "setFolderAliasFailed": "فشل تعيين الاسم المستعار: {message}",
         "changeFolderDefaultAgentFailed": "فشل تعيين الوكيل الافتراضي: {message}"
       },
       "statsLabel": "{folders} مجلدات · {convos} محادثة",
@@ -1197,6 +1318,7 @@
       "searchPlaceholder": "بحث عن محادثات...",
       "viewOptions": "خيارات العرض",
       "showCompleted": "عرض المحادثات المكتملة",
+      "showWorktrees": "عرض مجلدات worktree",
       "moreOptions": "المزيد من الخيارات",
       "sortBy": "الترتيب حسب",
       "sortByCreatedAt": "وقت الإنشاء",
@@ -1220,6 +1342,11 @@
         "defaultAgentNone": "بدون افتراضي (استخدام العام)",
         "agentUnavailableSuffix": "(غير متاح)",
         "loadingAgents": "جارٍ تحميل الوكلاء…",
+        "setAlias": "تعيين اسم مستعار…",
+        "setAliasTitle": "تعيين اسم مستعار للمجلد",
+        "setAliasPlaceholder": "أدخل اسمًا مستعارًا (اتركه فارغًا للمسح)",
+        "setAliasSave": "حفظ",
+        "setAliasCancel": "إلغاء",
         "removeFromWorkspace": "إزالة من مساحة العمل"
       },
       "manageConversations": {
@@ -1247,6 +1374,7 @@
       "sectionFolders": "المجلدات",
       "sectionChats": "محادثة",
       "noChats": "لا توجد محادثات",
+      "noFolders": "لا توجد مجلدات مفتوحة",
       "newChatAction": "محادثة جديدة",
       "automations": "الأتمتة",
       "loadingSubsessions": "جارٍ تحميل المحادثات الفرعية…"
@@ -1289,10 +1417,12 @@
         "system": "النظام",
         "toolResult": "النتيجة",
         "toolError": "خطأ"
-      }
+      },
+      "moreActions": "إجراءات إضافية"
     },
     "sessionDetails": {
       "menuLabel": "تفاصيل الجلسة",
+      "noActiveSession": "لا توجد جلسة نشطة",
       "title": "تفاصيل الجلسة",
       "subtitle": "بيانات الجلسة الوصفية واستخدام الرموز",
       "fieldTitle": "العنوان",
@@ -1434,7 +1564,8 @@
       "preview": "معاينة",
       "editSource": "تحرير المصدر",
       "maximize": "تكبير",
-      "restore": "استعادة"
+      "restore": "استعادة",
+      "emptyDirectory": "مجلد فارغ"
     },
     "terminal": {
       "rename": "إعادة تسمية",
@@ -1609,7 +1740,11 @@
         "confirmApply": "تطبيق التخبئة {ref} على دليل العمل؟",
         "cancel": "إلغاء"
       },
-      "deleteBranch": "حذف الفرع"
+      "deleteBranch": "حذف الفرع",
+      "searchPlaceholder": "البحث في الفروع والإجراءات",
+      "searchAriaLabel": "البحث في الفروع والإجراءات",
+      "branchListLabel": "الفروع والإجراءات",
+      "noMatches": "لا توجد نتائج"
     },
     "commitDialog": {
       "toasts": {
@@ -1695,13 +1830,13 @@
       "copyMessage": "نسخ الرسالة",
       "author": "المؤلف",
       "noFileChangeDetails": "لا توجد تفاصيل تغييرات ملفات متاحة.",
+      "loadingFiles": "جارٍ تحميل الملفات...",
       "branchesTitle": "الفروع",
       "loadingBranches": "جارٍ تحميل الفروع...",
       "noContainingBranches": "لم يتم العثور على فروع تحتوي هذا الالتزام.",
       "newBranch": "فرع جديد...",
       "resetToHere": "إعادة الضبط إلى هنا",
       "resetDisabledReasonNotCurrentBranchView": "متاح فقط عند عرض الفرع الحالي",
-      "viewCommitDiffAria": "عرض diff للالتزام {hash}",
       "copyFullCommitHashAria": "نسخ hash الكامل للالتزام {hash}",
       "pushStatus": {
         "pushed": "تم الدفع إلى البعيد",
@@ -1724,12 +1859,28 @@
         "resetSuccessDescription": "تمت إعادة ضبط {branch} إلى {shortHash} باستخدام {mode}",
         "resetFailed": "فشلت إعادة الضبط"
       },
+      "authorFilter": {
+        "label": "المؤلف",
+        "searchPlaceholder": "بحث عن مؤلف",
+        "noAuthors": "لم يتم العثور على مؤلفين",
+        "you": "أنت",
+        "filterByAuthorAria": "تصفية الإيداعات حسب المؤلف",
+        "filterByQuery": "تصفية حسب \"{query}\"",
+        "clearAuthorFilterAria": "مسح تصفية المؤلف",
+        "recent": "الأخيرة",
+        "matchingAuthors": "المؤلفون المطابقون",
+        "removeFromRecent": "إزالة {name} من الأخيرة"
+      },
       "branchSelector": {
+        "label": "الفرع",
+        "searchBranch": "بحث عن فرع...",
+        "noBranches": "لا توجد فروع",
         "selectBranchPlaceholder": "اختر فرعًا...",
         "localBranches": "الفروع المحلية",
         "current": "الحالي",
         "remoteBranches": "الفروع البعيدة",
-        "refreshCommitHistory": "تحديث سجل الالتزامات"
+        "refreshCommitHistory": "تحديث سجل الالتزامات",
+        "clearBranchFilterAria": "مسح تصفية الفرع"
       },
       "dialogs": {
         "newBranchTitle": "فرع جديد",
@@ -1866,6 +2017,7 @@
         "addToVcsFailed": "فشلت الإضافة إلى VCS",
         "loadBranchesFailed": "فشل تحميل الفروع",
         "renameFailed": "فشل إعادة التسمية",
+        "moveFailed": "فشل النقل",
         "deleteFailed": "فشل الحذف",
         "rolledBack": "تم التراجع عن {name}",
         "rollbackFailed": "فشل التراجع",
@@ -2157,7 +2309,8 @@
         "enableAgentFirstPlaceholder": "فعّل وكيلًا واحدًا على الأقل قبل بدء جلسة...",
         "prepareSessionFailed": "تعذّر تحضير جلسة الدردشة. يرجى المحاولة مرة أخرى.",
         "createConversationFailed": "تعذّر إنشاء المحادثة. يرجى المحاولة مرة أخرى.",
-        "askAnythingPlaceholder": "اسأل أي شيء..."
+        "askAnythingPlaceholder": "اسأل أي شيء...",
+        "agentNotInstalled": "{agent} غير مثبّت · افتح إعدادات Agents لتثبيته"
       },
       "welcomePanel": {
         "greeting": "ماذا تودّ أن <highlight>تفعل اليوم</highlight>؟",
@@ -2257,7 +2410,8 @@
       },
       "agentSelector": {
         "noEnabledAgents": "لا يوجد وكلاء مفعّلون",
-        "openAgentsSettings": "فتح إعدادات الوكلاء"
+        "openAgentsSettings": "فتح إعدادات الوكلاء",
+        "notInstalled": "غير مثبّت"
       },
       "subAgentOverlay": {
         "title": "الوكلاء الفرعيون",
@@ -2342,7 +2496,9 @@
         "tokenCacheWrite": "كتابة التخزين المؤقت",
         "duration": "المدة",
         "completedAt": "وقت الإنجاز",
-        "jumpToPreviousUserMessage": "الانتقال إلى رسالة المستخدم"
+        "jumpToPreviousUserMessage": "الانتقال إلى رسالة المستخدم",
+        "showMore": "عرض المزيد",
+        "showLess": "طي"
       },
       "liveTurnStats": {
         "thinking": "جارٍ التفكير...",
@@ -2660,7 +2816,7 @@
       "noFolders": "No folders",
       "noBranches": "No branches",
       "noBranch": "(no branch)",
-      "chatModeLabel": "وضع بدون مجلد",
+      "chatModeLabel": "وضع الدردشة",
       "commit": "Commit",
       "push": "Push",
       "merge": "Merge",
@@ -3272,7 +3428,7 @@
       "deleteConfirm": "حذف الحيوان «{name}»؟ سيُحذف من القرص.",
       "summon": "استدعاء نافذة الحيوان",
       "openCodexHelp": "يجب أن توجد حيوانات Codex داخل ~/.codex/pets/. لم يُعثر على شيء.",
-      "specRequirement": "يجب أن يكون السبرايت PNG أو WebP بحجم 1536x1872 مع شفافية.",
+      "specRequirement": "يجب أن يكون السبرايت بعرض 1536 بكسل وارتفاع من مضاعفات 208 بكسل (مثل 1872 أو 2288)، بصيغة PNG أو WebP مع شفافية.",
       "form": {
         "id": "معرف الحيوان",
         "idHelp": "حروف صغيرة، أرقام، '-' و '_' فقط. حد أقصى 64 حرفًا.",
@@ -3836,5 +3992,27 @@
     "groupInstructions": "الوصف وموجّه النظام",
     "fieldDescription": "الوصف",
     "baseInstructions": "موجّه النظام (base_instructions)"
+  },
+  "DiagnosticsSettings": {
+    "title": "تشخيص البيئة",
+    "description": "يتحقق من كيفية تحليل هذا التطبيق لواجهة سطر أوامر الوكيل داخل عمليته الخاصة، وقد يختلف ذلك عن الطرفية لديك.",
+    "loading": "جارٍ تشغيل التشخيص…",
+    "error": "فشل التشخيص",
+    "rerun": "إعادة التشغيل",
+    "copyAll": "نسخ الكل",
+    "copied": "تم نسخ التشخيص إلى الحافظة",
+    "button": "تشخيص",
+    "verdict": {
+      "ok": "تبدو البيئة سليمة. إذا استمر ظهوره كغير مُثبَّت، فأعد تشغيل التطبيق بالكامل لتحديث ذاكرة التخزين المؤقتة للبادئة.",
+      "node_missing": "لم يتم العثور على Node.js في مسار PATH الخاص بالتطبيق.",
+      "npm_missing": "لم يتم العثور على npm في مسار PATH الخاص بالتطبيق.",
+      "not_installed": "يبدو أن هذا الوكيل غير مُثبَّت.",
+      "installed_but_unresolved": "مُسجَّل كمُثبَّت، لكن لا يستطيع التطبيق تحديد موقع الملف التنفيذي.",
+      "user_prefix_not_on_path": "تم التثبيت في بادئة الاحتياط (~/.codeg/npm-global)، وهي ليست في مسار PATH الخاص بالتطبيق. أعد تشغيل التطبيق بالكامل وحاول مرة أخرى.",
+      "homebrew_bin_not_on_path": "تم التثبيت ضمن مجلد bin الخاص بـ Homebrew، وهو ليس في مسار PATH الخاص بالتطبيق (فصل keg على Apple Silicon).",
+      "terminal_only_path": "يُحلَّل الأمر في الطرفية لديك لكن ليس في التطبيق — وهي فجوة في مسار PATH لواجهة المستخدم الرسومية. شغّل التطبيق من الطرفية أو أعد التثبيت من إعدادات الوكلاء.",
+      "npm_prefix_timeout": "كان npm prefix -g بطيئًا جدًا (أكثر من 1.5 ثانية)، لذا تم تخطّي الكشف الاحتياطي. أعد تشغيل التطبيق وحاول مرة أخرى.",
+      "node_too_old": "إصدار Node.js النشط أقدم مما يتطلبه هذا الوكيل. يرجى ترقية Node.js."
+    }
   }
 }

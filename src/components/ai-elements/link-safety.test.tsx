@@ -177,6 +177,26 @@ describe("link safety direct opening", () => {
     expect(window.open).not.toHaveBeenCalled()
   })
 
+  it("opens a Windows drive link through the real chat path (remark-rewritten /C:/ form)", async () => {
+    // In chat, remark-file-uri-links rewrites a bare `E:/…` (and file:///E:/…)
+    // to the sanitize-safe `/E:/…` form BEFORE MarkdownLink sees it. That
+    // rewritten href must route to the file opener as `E:/…` (leading slash
+    // stripped), not the browser.
+    render(<LinkSafetyHarness url="/E:/Desktop/docs/G.docx" />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Trigger link" }))
+
+    await waitFor(() => {
+      expect(mocks.openFilePreview).toHaveBeenCalledWith(
+        "E:/Desktop/docs/G.docx",
+        {
+          line: undefined,
+        }
+      )
+    })
+    expect(window.open).not.toHaveBeenCalled()
+  })
+
   it("passes ~ paths through for home expansion by the opener", async () => {
     render(<LinkSafetyHarness url="~/.claude/plans/notes.md" />)
 

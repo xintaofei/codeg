@@ -117,6 +117,29 @@
       "sectionTitle": "Mode selection area",
       "sectionDescription": "The Code Development / Office Work shortcut cards shown above the composer on the new conversation page.",
       "showQuickActions": "Show on the new conversation page"
+    },
+    "workspaceBackground": {
+      "sectionTitle": "Workspace background",
+      "sectionDescription": "Show a picture behind the whole workspace. Sidebar and panels turn translucent and frosted so the image shows through, and a mask keeps text readable.",
+      "enable": "Enable background image",
+      "image": "Image",
+      "chooseImage": "Choose image",
+      "replaceImage": "Replace image",
+      "removeImage": "Remove",
+      "fillMode": "Fill mode",
+      "fillModes": {
+        "cover": "Cover",
+        "contain": "Contain",
+        "center": "Center",
+        "tile": "Tile"
+      },
+      "maskOpacity": "Mask opacity",
+      "maskOpacityHint": "Higher values fade the image toward the theme background, improving text contrast.",
+      "imageBlur": "Image blur",
+      "panelOpacity": "Panel opacity",
+      "panelOpacityHint": "How opaque the sidebar, panels and tab bars are. Lower lets more of the image show through.",
+      "errorTooLarge": "Image is too large (max 16 MB).",
+      "errorUploadFailed": "Failed to set the background image."
     }
   },
   "SystemSettings": {
@@ -588,7 +611,8 @@
       "saveCodeBuddyConfig": "Save CodeBuddy Config",
       "saveKimiCodeConfig": "Save Kimi Code Config",
       "customInstall": "Custom install",
-      "saveKimiCodeRawConfig": "Save config.toml"
+      "saveKimiCodeRawConfig": "Save config.toml",
+      "diagnose": "Diagnose"
     },
     "status": {
       "enabled": "Enabled",
@@ -615,9 +639,17 @@
       "effortXhigh": "Max",
       "optionDefault": "Use default",
       "authTitle": "Authentication",
+      "authMode": "Authentication method",
+      "authModeApiKey": "XAI API key",
+      "authModeApiKeyHint": "Authenticate with an XAI_API_KEY from the xAI console — for non-interactive or headless runs. Stored in this agent's environment.",
+      "authModeCustom": "Custom endpoint",
+      "authModeCustomHint": "Use a bring-your-own endpoint: define a custom model below with its own base URL and API key. It becomes Grok's default model.",
+      "subscriptionHint": "Sign in with `grok login` (SuperGrok / X Premium+). No API key is stored.",
+      "loginHint": "Run this in a terminal to sign in, then reopen these settings:",
+      "commandCopied": "Command copied to clipboard",
+      "copyCommand": "Copy command",
       "authKeyConfigured": "XAI_API_KEY is configured.",
       "authKeyMissing": "No XAI_API_KEY set.",
-      "authLoginHint": "Set XAI_API_KEY here, or run `grok login` for subscription sign-in (SuperGrok / X Premium+).",
       "advancedToggle": "Advanced (raw config.toml)",
       "configTomlNative": "config.toml (native)",
       "configTomlHint": "Saved verbatim as the whole ~/.grok/config.toml. Invalid TOML is rejected so a typo never truncates your file.",
@@ -639,6 +671,49 @@
       "customContextWindowHint": "Optional. Drives auto-compact timing; leave empty for the endpoint default.",
       "autoCompactLabel": "Auto-compact threshold (%)",
       "autoCompactHint": "Compact the conversation when context usage reaches this percent (Grok default 85). Written to `[session]`."
+    },
+    "cursor": {
+      "configDescription": "Configure Cursor here. Choose an authentication method — official subscription (browser sign-in) or a Cursor API key for headless/server machines — then pick a model and edit the CLI's permission rules and sandbox. codeg writes them into ~/.cursor/cli-config.json, shared with the cursor-agent CLI.",
+      "authTitle": "Authentication",
+      "authChecking": "Checking…",
+      "authNotInstalled": "cursor-agent is not installed",
+      "authLoggedIn": "Logged in",
+      "authNotLoggedIn": "Not logged in",
+      "loginHint": "Run this in a terminal to sign in with your Cursor account (a browser window opens), then hit refresh:",
+      "apiKeyLabel": "Cursor API key",
+      "apiKeyPlaceholder": "key from cursor.com/dashboard",
+      "apiKeyHint": "CURSOR_API_KEY — a Cursor Dashboard account key, an alternative to browser login for headless/server machines. Not a third-party or OpenAI key.",
+      "modelTitle": "Default model",
+      "loadModels": "Load models",
+      "modelsUnavailable": "Model list unavailable",
+      "modelHint": "Passed to the CLI as --model at session start. Leave on default to let Cursor choose.",
+      "permissionsTitle": "Permissions & sandbox",
+      "permissionsDescription": "Visual editor for the CLI's permission rules (cli-config.json). Allow rules run without prompting; deny rules are always blocked.",
+      "permissionModeLabel": "Permission mode",
+      "permissionModeDefault": "Ask before running (default)",
+      "permissionModeForce": "Run Everything (--force)",
+      "permissionModeHint": "Run Everything launches sessions with --force: every tool call is auto-allowed except deny rules, with no confirmation prompts (an organization policy may downgrade it to allow-rule matching). Takes effect for new sessions.",
+      "optionDefault": "Default (unset)",
+      "sandboxLabel": "Sandbox",
+      "sandboxEnabled": "Enabled",
+      "sandboxDisabled": "Disabled",
+      "allowRulesLabel": "Allow rules",
+      "denyRulesLabel": "Deny rules",
+      "addRule": "Add rule",
+      "rulesSyntaxHint": "Rule syntax: Shell(cmd), Read(path/glob), Write(path/glob), WebFetch(domain), Mcp(server:tool) — deny rules always win.",
+      "saveConfig": "Save configuration",
+      "advancedToggle": "Advanced: raw cli-config.json",
+      "advancedHint": "The whole ~/.cursor/cli-config.json. Saving writes the file verbatim — the structured controls above merge into it instead.",
+      "saveRawConfig": "Save file",
+      "authMode": "Authentication method",
+      "subscriptionHint": "Sign in with your Cursor account and use Cursor's models.",
+      "customApiKeyRequired": "A Cursor API key is required.",
+      "authModeApiKey": "Cursor API key (headless)",
+      "authModeApiKeyHint": "Authenticate with a Cursor account API key from the Cursor dashboard — for headless or server machines. This is a Cursor account key, not a third-party/OpenAI endpoint: cursor-agent only talks to Cursor's own backend. To use a codex/OpenAI-compatible endpoint, use the Codex agent instead.",
+      "modelPickerPlaceholder": "Search models…",
+      "modelNoMatch": "No matching model",
+      "modelsNeedAuth": "Sign in to load the model list.",
+      "modelDefaultBadge": "default"
     },
     "codex": {
       "configDescription": "Supports quick configuration for API URL, API Key, model name and reasoning effort, and syncs with `auth.json` / `config.toml`.",
@@ -921,6 +996,8 @@
       "grokSaved": "Grok config saved",
       "saveGrokNativeFailed": "Failed to save Grok native config",
       "saveGrokApiKeyFailed": "Settings saved, but the API key couldn't be saved",
+      "cursorSaved": "Cursor config saved",
+      "saveCursorConfigFailed": "Failed to save Cursor config",
       "codexSaved": "Codex config saved",
       "saveCodexNativeFailed": "Failed to save Codex native config",
       "geminiSaved": "Gemini config saved",
@@ -1126,6 +1203,49 @@
     "applyLeftNonConflicting": "Apply Local",
     "applyRightNonConflicting": "Apply Remote"
   },
+  "ImportSessions": {
+    "title": "Import Local Sessions",
+    "scanningTitle": "Scanning local agent sessions…",
+    "scanningHint": "Walking each agent's local session store. Large histories can take a moment.",
+    "scanFailed": "Scan failed",
+    "retry": "Retry",
+    "rescan": "Rescan",
+    "empty": "No local sessions found",
+    "emptyHint": "No agent session stores were found on this machine.",
+    "noMatches": "No sessions match the current filters",
+    "searchPlaceholder": "Search title or path…",
+    "allAgents": "All agents",
+    "onlyImportable": "Importable only",
+    "selectAll": "Select all",
+    "clearSelection": "Clear",
+    "expandAll": "Expand all",
+    "collapseAll": "Collapse all",
+    "summaryCounts": "{total} sessions · {importable} importable · {folders} folders",
+    "noFolderSkipped": "{count} without a project folder skipped",
+    "folderNew": "New",
+    "folderCounts": "{importable}/{total} importable",
+    "toggleFolderAria": "Select all importable sessions in {name}",
+    "toggleSessionAria": "Select session {title}",
+    "statusImported": "Imported",
+    "statusDeleted": "Deleted",
+    "untitled": "Untitled session",
+    "messageCount": "{count} msgs",
+    "selectedCount": "{count} selected",
+    "importSelected": "Import selected",
+    "importing": "Importing…",
+    "close": "Close",
+    "doneTitle": "Import finished",
+    "doneImported": "Imported",
+    "doneUpdated": "Titles updated",
+    "doneSkipped": "Skipped",
+    "doneCreatedFolders": "Folders created",
+    "doneNotFound": "Not found",
+    "doneFailed": "Failed",
+    "continueImport": "Continue importing",
+    "toasts": {
+      "importFailed": "Import failed: {message}"
+    }
+  },
   "Folder": {
     "workspaceStatus": {
       "degradedTitle": "Live updates unavailable",
@@ -1189,6 +1309,7 @@
         "removeFolderFailed": "Failed to remove folder: {message}",
         "reorderFoldersFailed": "Failed to reorder folders: {message}",
         "changeFolderColorFailed": "Failed to change folder color: {message}",
+        "setFolderAliasFailed": "Failed to set alias: {message}",
         "changeFolderDefaultAgentFailed": "Failed to set default agent: {message}"
       },
       "statsLabel": "{folders} folders · {convos} conversations",
@@ -1197,6 +1318,7 @@
       "searchPlaceholder": "Search conversations...",
       "viewOptions": "View options",
       "showCompleted": "Show completed conversations",
+      "showWorktrees": "Show worktree folders",
       "moreOptions": "More options",
       "sortBy": "Sort by",
       "sortByCreatedAt": "Created time",
@@ -1220,6 +1342,11 @@
         "defaultAgentNone": "No default (use global)",
         "agentUnavailableSuffix": "(unavailable)",
         "loadingAgents": "Loading agents…",
+        "setAlias": "Set alias…",
+        "setAliasTitle": "Set folder alias",
+        "setAliasPlaceholder": "Enter an alias (leave empty to clear)",
+        "setAliasSave": "Save",
+        "setAliasCancel": "Cancel",
         "removeFromWorkspace": "Remove from workspace"
       },
       "manageConversations": {
@@ -1247,6 +1374,7 @@
       "sectionFolders": "Folders",
       "sectionChats": "Chat",
       "noChats": "No chats",
+      "noFolders": "No folders open",
       "newChatAction": "New chat",
       "automations": "Automations",
       "loadingSubsessions": "Loading sub-conversations…"
@@ -1289,10 +1417,12 @@
         "system": "System",
         "toolResult": "Result",
         "toolError": "Error"
-      }
+      },
+      "moreActions": "More actions"
     },
     "sessionDetails": {
       "menuLabel": "Session Details",
+      "noActiveSession": "No active session",
       "title": "Session Details",
       "subtitle": "Session metadata and token usage",
       "fieldTitle": "Title",
@@ -1434,7 +1564,8 @@
       "preview": "Preview",
       "editSource": "Edit Source",
       "maximize": "Maximize",
-      "restore": "Restore"
+      "restore": "Restore",
+      "emptyDirectory": "Empty folder"
     },
     "terminal": {
       "rename": "Rename",
@@ -1609,7 +1740,11 @@
         "confirmApply": "Apply stash {ref} to working directory?",
         "cancel": "Cancel"
       },
-      "deleteBranch": "Delete branch"
+      "deleteBranch": "Delete branch",
+      "searchPlaceholder": "Search branches and actions",
+      "searchAriaLabel": "Search branches and actions",
+      "branchListLabel": "Branches and actions",
+      "noMatches": "No matches"
     },
     "commitDialog": {
       "toasts": {
@@ -1695,13 +1830,13 @@
       "copyMessage": "Copy message",
       "author": "Author",
       "noFileChangeDetails": "No file change details available.",
+      "loadingFiles": "Loading files...",
       "branchesTitle": "Branches",
       "loadingBranches": "Loading branches...",
       "noContainingBranches": "No containing branches found.",
       "newBranch": "New branch...",
       "resetToHere": "Reset to Here",
       "resetDisabledReasonNotCurrentBranchView": "Available only when viewing current branch",
-      "viewCommitDiffAria": "View diff for commit {hash}",
       "copyFullCommitHashAria": "Copy full commit hash {hash}",
       "pushStatus": {
         "pushed": "Pushed to remote",
@@ -1724,12 +1859,28 @@
         "resetSuccessDescription": "{branch} reset to {shortHash} with {mode}",
         "resetFailed": "Reset failed"
       },
+      "authorFilter": {
+        "label": "Author",
+        "searchPlaceholder": "Search author",
+        "noAuthors": "No authors found",
+        "you": "you",
+        "filterByAuthorAria": "Filter commits by author",
+        "filterByQuery": "Filter by \"{query}\"",
+        "clearAuthorFilterAria": "Clear author filter",
+        "recent": "Recent",
+        "matchingAuthors": "Matching authors",
+        "removeFromRecent": "Remove {name} from recent"
+      },
       "branchSelector": {
+        "label": "Branch",
+        "searchBranch": "Search branch...",
+        "noBranches": "No branches",
         "selectBranchPlaceholder": "Select branch...",
         "localBranches": "Local branches",
         "current": "Current",
         "remoteBranches": "Remote branches",
-        "refreshCommitHistory": "Refresh commit history"
+        "refreshCommitHistory": "Refresh commit history",
+        "clearBranchFilterAria": "Clear branch filter"
       },
       "dialogs": {
         "newBranchTitle": "New branch",
@@ -1866,6 +2017,7 @@
         "addToVcsFailed": "Failed to add to VCS",
         "loadBranchesFailed": "Failed to load branches",
         "renameFailed": "Rename failed",
+        "moveFailed": "Move failed",
         "deleteFailed": "Delete failed",
         "rolledBack": "Rolled back {name}",
         "rollbackFailed": "Rollback failed",
@@ -2157,7 +2309,8 @@
         "enableAgentFirstPlaceholder": "Enable at least one agent before starting a session...",
         "prepareSessionFailed": "Couldn't prepare the chat session. Please try again.",
         "createConversationFailed": "Couldn't create the conversation. Please try again.",
-        "askAnythingPlaceholder": "Ask anything..."
+        "askAnythingPlaceholder": "Ask anything...",
+        "agentNotInstalled": "{agent} is not installed — open Agents settings to install it"
       },
       "welcomePanel": {
         "greeting": "What would you like to <highlight>do today</highlight>?",
@@ -2257,7 +2410,8 @@
       },
       "agentSelector": {
         "noEnabledAgents": "No enabled agents",
-        "openAgentsSettings": "Open Agents settings"
+        "openAgentsSettings": "Open Agents settings",
+        "notInstalled": "Not installed"
       },
       "subAgentOverlay": {
         "title": "Sub-agents",
@@ -2342,7 +2496,9 @@
         "tokenCacheWrite": "Cache write",
         "duration": "Duration",
         "completedAt": "Completed at",
-        "jumpToPreviousUserMessage": "Jump to user message"
+        "jumpToPreviousUserMessage": "Jump to user message",
+        "showMore": "Show more",
+        "showLess": "Show less"
       },
       "liveTurnStats": {
         "thinking": "Thinking...",
@@ -2660,7 +2816,7 @@
       "noFolders": "No folders",
       "noBranches": "No branches",
       "noBranch": "(no branch)",
-      "chatModeLabel": "No-folder mode",
+      "chatModeLabel": "Chat mode",
       "commit": "Commit",
       "push": "Push",
       "merge": "Merge",
@@ -3284,7 +3440,7 @@
       "deleteConfirm": "Delete pet \"{name}\"? It will be removed from disk.",
       "summon": "Summon pet window",
       "openCodexHelp": "Codex pets must be installed under ~/.codex/pets/. None found.",
-      "specRequirement": "Spritesheet must be 1536x1872 PNG or WebP with transparency.",
+      "specRequirement": "Spritesheet must be 1536px wide with a height in 208px rows (e.g. 1872 or 2288), PNG or WebP with transparency.",
       "form": {
         "id": "Pet ID",
         "idHelp": "Lowercase letters, digits, '-' and '_'. Max 64 chars.",
@@ -3836,5 +3992,27 @@
     "groupInstructions": "Description & system prompt",
     "fieldDescription": "Description",
     "baseInstructions": "System prompt (base_instructions)"
+  },
+  "DiagnosticsSettings": {
+    "title": "Environment diagnostics",
+    "description": "Checks how this app resolves the agent CLI inside its own process, which can differ from your terminal.",
+    "loading": "Running diagnostics…",
+    "error": "Diagnostics failed",
+    "rerun": "Re-run",
+    "copyAll": "Copy all",
+    "copied": "Diagnostics copied to clipboard",
+    "button": "Diagnose",
+    "verdict": {
+      "ok": "Environment looks healthy. If it still shows as not installed, fully restart the app so the prefix cache refreshes.",
+      "node_missing": "Node.js was not found on the app PATH.",
+      "npm_missing": "npm was not found on the app PATH.",
+      "not_installed": "This agent does not appear to be installed.",
+      "installed_but_unresolved": "The agent is recorded as installed, but the app cannot locate its executable.",
+      "user_prefix_not_on_path": "Installed into the fallback prefix (~/.codeg/npm-global), which is not on the app PATH. Fully restart the app and try again.",
+      "homebrew_bin_not_on_path": "Installed under the Homebrew bin, which is not on the app PATH (Apple Silicon keg split).",
+      "terminal_only_path": "The command resolves in your terminal but not in the app — a GUI PATH gap. Launch the app from a terminal, or reinstall from Agent Settings.",
+      "npm_prefix_timeout": "npm prefix -g was too slow (over 1.5s), so fallback detection was skipped. Restart the app and try again.",
+      "node_too_old": "Your active Node.js is older than this agent requires. Upgrade Node.js."
+    }
   }
 }

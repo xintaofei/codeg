@@ -97,7 +97,7 @@ export function DelegationStatusCard({
     <div
       data-testid="delegation-status-card"
       className={cn(
-        "overflow-hidden rounded-lg border text-xs",
+        "overflow-hidden rounded-lg border text-xs ws-msg-card",
         isError
           ? "border-destructive/30 bg-destructive/5"
           : "border-border bg-card"

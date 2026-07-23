@@ -12,6 +12,7 @@ use tokio::task::JoinHandle;
 use super::shutdown::ShutdownSignal;
 use super::ws_attach::{self, ClientMsg, DetachReason, ServerMsg, OUTBOUND_CAPACITY};
 use crate::app_state::AppState;
+use crate::logging::throttle::{LagLogThrottle, LAG_LOG_WINDOW};
 
 /// One entry per live attach subscription. The `epoch` is the per-WS-session
 /// monotonic counter assigned at spawn time; it threads through the cleanup
@@ -124,6 +125,11 @@ async fn handle_ws_connection(
         }
     }
 
+    // Throttles the per-connection global-firehose lag WARN so a slow client
+    // reading behind a steady side-channel stream can't trickle near-duplicate
+    // lines. Task-local: one instance per WS connection.
+    let mut lag_throttle = LagLogThrottle::new(LAG_LOG_WINDOW);
+
     loop {
         tokio::select! {
             // Server-initiated shutdown: notify any active attach
@@ -191,7 +197,15 @@ async fn handle_ws_connection(
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!("[WS][WARN] global receiver lagged, skipped {n} events");
+                        if let Some(s) = lag_throttle.record(n) {
+                            tracing::warn!(
+                                "[WS][WARN] global receiver lagged: skipped {} events across \
+                                 {} occurrence(s) in the last {}s",
+                                s.dropped,
+                                s.occurrences,
+                                LAG_LOG_WINDOW.as_secs()
+                            );
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         break;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  buildDelegationTaskRows,
   deriveBadge,
   formatDuration,
   parseStatusReport,
@@ -8,6 +9,7 @@ import {
   parseTaskId,
   parseTaskIds,
 } from "./delegation-status"
+import type { AdaptedToolCallPart } from "@/lib/adapters/ai-elements-adapter"
 
 // Mirrors the MCP CallToolResult envelope the companion emits.
 function envelope(report: Record<string, unknown>, isError = false): string {
@@ -410,5 +412,108 @@ describe("formatDuration", () => {
     expect(formatDuration(1234)).toBe("1.2s")
     expect(formatDuration(12_000)).toBe("12s")
     expect(formatDuration(119_999)).toBe("2m 0s")
+  })
+})
+
+describe("buildDelegationTaskRows", () => {
+  function statusPoll(
+    over: Partial<AdaptedToolCallPart> = {}
+  ): AdaptedToolCallPart {
+    return {
+      type: "tool-call",
+      toolCallId: "sp",
+      toolName: "get_delegation_status",
+      input: null,
+      state: "output-available",
+      ...over,
+    }
+  }
+
+  const doneReport = envelope({
+    status: "completed",
+    task_id: "t1",
+    text: "ok",
+    duration_ms: 1000,
+  })
+
+  it("collapses repeated polls of one task into a single row", () => {
+    const rows = buildDelegationTaskRows([
+      statusPoll({
+        toolCallId: "p1",
+        input: JSON.stringify({ task_ids: ["t1"] }),
+        output: doneReport,
+      }),
+      statusPoll({
+        toolCallId: "p2",
+        input: JSON.stringify({ task_ids: ["t1"] }),
+        output: doneReport,
+      }),
+    ])
+    expect(rows).toHaveLength(1)
+    expect(rows[0].taskId).toBe("t1")
+  })
+
+  it("drops a live arg-less in-flight orphan poll (no id, nothing to show)", () => {
+    const rows = buildDelegationTaskRows([
+      statusPoll({ input: "{}", output: null, state: "input-available" }),
+    ])
+    expect(rows).toHaveLength(0)
+  })
+
+  it("drops a promoted orphan (output-available but status still unsettled)", () => {
+    // COMPLETE_TURN promotes the unpruned orphan: its state flips to
+    // output-available, but its forwarded ACP status stays pending. It must not
+    // re-stack as an anonymous row after the turn completes.
+    const rows = buildDelegationTaskRows([
+      statusPoll({
+        input: "{}",
+        output: null,
+        state: "output-available",
+        toolStatus: "pending",
+      }),
+    ])
+    expect(rows).toHaveLength(0)
+  })
+
+  it("keeps a settled id-less interim note (a real message, not an orphan)", () => {
+    // Has real text → not "nothing to show", so the drop never fires. Guards
+    // against over-dropping genuine notes that happen to lack an id.
+    const rows = buildDelegationTaskRows([
+      statusPoll({
+        input: "{}",
+        output: "still working on it",
+        state: "output-available",
+        toolStatus: "completed",
+      }),
+    ])
+    expect(rows).toHaveLength(1)
+  })
+
+  it("does not stack promoted orphans next to the real task row", () => {
+    // The reported bug: after the turn completed, orphan polls re-appeared as
+    // anonymous "等待任务执行结果" rows beside the real #t1 row.
+    const rows = buildDelegationTaskRows([
+      statusPoll({
+        toolCallId: "real",
+        input: JSON.stringify({ task_ids: ["t1"] }),
+        output: doneReport,
+      }),
+      statusPoll({
+        toolCallId: "orphan1",
+        input: "{}",
+        output: null,
+        state: "output-available",
+        toolStatus: "pending",
+      }),
+      statusPoll({
+        toolCallId: "orphan2",
+        input: "{}",
+        output: null,
+        state: "output-available",
+        toolStatus: "in_progress",
+      }),
+    ])
+    expect(rows).toHaveLength(1)
+    expect(rows[0].taskId).toBe("t1")
   })
 })

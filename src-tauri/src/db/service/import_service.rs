@@ -11,6 +11,7 @@ use crate::parsers::claude::ClaudeParser;
 use crate::parsers::cline::ClineParser;
 use crate::parsers::codebuddy::CodeBuddyParser;
 use crate::parsers::codex::CodexParser;
+use crate::parsers::cursor::CursorParser;
 use crate::parsers::gemini::GeminiParser;
 use crate::parsers::grok::GrokParser;
 use crate::parsers::hermes::HermesParser;
@@ -20,63 +21,129 @@ use crate::parsers::openclaw::OpenClawParser;
 use crate::parsers::opencode::OpenCodeParser;
 use crate::parsers::{path_eq_for_matching, AgentParser};
 
-/// Import (and refresh the titles of) the local agent sessions under
-/// `folder_path`. Returns the tally plus the ids of already-imported
-/// conversations whose title was refreshed, so the caller can broadcast a
-/// sidebar upsert for each without re-querying.
-pub async fn import_local_conversations(
-    conn: &DatabaseConnection,
-    folder_id: i32,
-    folder_path: &str,
-) -> Result<(ImportResult, Vec<i32>), DbError> {
-    let path = folder_path.to_string();
+/// Every locally-parsable agent, in the canonical parser order.
+const ALL_PARSER_AGENTS: [AgentType; 12] = [
+    AgentType::ClaudeCode,
+    AgentType::Codex,
+    AgentType::OpenCode,
+    AgentType::Gemini,
+    AgentType::OpenClaw,
+    AgentType::Cline,
+    AgentType::Hermes,
+    AgentType::CodeBuddy,
+    AgentType::KimiCode,
+    AgentType::Pi,
+    AgentType::Grok,
+    AgentType::Cursor,
+];
 
-    // Run parsers in blocking task since they do filesystem I/O
-    let summaries = tokio::task::spawn_blocking(move || {
-        let parsers: Vec<(AgentType, Box<dyn AgentParser>)> = vec![
-            (AgentType::ClaudeCode, Box::new(ClaudeParser::new())),
-            (AgentType::Codex, Box::new(CodexParser::new())),
-            (AgentType::OpenCode, Box::new(OpenCodeParser::new())),
-            (AgentType::Gemini, Box::new(GeminiParser::new())),
-            (AgentType::OpenClaw, Box::new(OpenClawParser::new())),
-            (AgentType::Cline, Box::new(ClineParser::new())),
-            (AgentType::Hermes, Box::new(HermesParser::new())),
-            (AgentType::CodeBuddy, Box::new(CodeBuddyParser::new())),
-            (AgentType::KimiCode, Box::new(KimiCodeParser::new())),
-            (AgentType::Pi, Box::new(PiParser::new())),
-            (AgentType::Grok, Box::new(GrokParser::new())),
-        ];
+fn build_parser(agent_type: AgentType) -> Box<dyn AgentParser> {
+    match agent_type {
+        AgentType::ClaudeCode => Box::new(ClaudeParser::new()),
+        AgentType::Codex => Box::new(CodexParser::new()),
+        AgentType::OpenCode => Box::new(OpenCodeParser::new()),
+        AgentType::Gemini => Box::new(GeminiParser::new()),
+        AgentType::OpenClaw => Box::new(OpenClawParser::new()),
+        AgentType::Cline => Box::new(ClineParser::new()),
+        AgentType::Hermes => Box::new(HermesParser::new()),
+        AgentType::CodeBuddy => Box::new(CodeBuddyParser::new()),
+        AgentType::KimiCode => Box::new(KimiCodeParser::new()),
+        AgentType::Pi => Box::new(PiParser::new()),
+        AgentType::Grok => Box::new(GrokParser::new()),
+        AgentType::Cursor => Box::new(CursorParser::new()),
+    }
+}
 
-        let mut matched = Vec::new();
-        for (at, parser) in &parsers {
-            match parser.list_conversations() {
-                Ok(convs) => {
-                    for c in convs {
-                        if c.folder_path
-                            .as_deref()
-                            .map(|p| path_eq_for_matching(p, path.as_str()))
-                            .unwrap_or(false)
-                        {
-                            matched.push((*at, c));
+/// List every local agent's sessions — one `spawn_blocking` per parser so the
+/// filesystem walks run concurrently (each closure captures only the Copy
+/// `AgentType` and constructs its parser inside, since `dyn AgentParser` is
+/// not `Send`). `on_agent_done(agent, done, total, session_count)` fires once
+/// per parser (in fixed parser order) so callers can surface scan progress. A
+/// parser error is logged and contributes zero sessions; the scan still
+/// completes.
+///
+/// Delegation children (`parent_id.is_some()`) are filtered out here: they are
+/// captured live by the delegation flow with their parent linkage, and
+/// `import_one` inserts new rows with `parent_id: None` — importing one from a
+/// parser listing would surface a sub-session as a root conversation.
+/// Duplicates are dropped by `(agent_type, id)`, matching
+/// `list_conversations_sync`.
+pub(crate) async fn collect_local_summaries<F>(
+    mut on_agent_done: F,
+) -> Vec<(AgentType, ConversationSummary)>
+where
+    F: FnMut(AgentType, u32, u32, u32),
+{
+    let total = ALL_PARSER_AGENTS.len() as u32;
+
+    let tasks: Vec<(AgentType, tokio::task::JoinHandle<Vec<ConversationSummary>>)> =
+        ALL_PARSER_AGENTS
+            .into_iter()
+            .map(|at| {
+                (
+                    at,
+                    tokio::task::spawn_blocking(move || {
+                        match build_parser(at).list_conversations() {
+                            Ok(convs) => convs,
+                            Err(e) => {
+                                tracing::error!("Error listing {} conversations: {}", at, e);
+                                Vec::new()
+                            }
                         }
+                    }),
+                )
+            })
+            .collect();
+
+    let mut all: Vec<(AgentType, ConversationSummary)> = Vec::new();
+    let mut seen: std::collections::HashSet<(AgentType, String)> = std::collections::HashSet::new();
+    let mut done = 0u32;
+
+    // Awaiting in parser order only affects callback ordering — all twelve
+    // walks already run concurrently on the blocking pool.
+    for (at, task) in tasks {
+        let mut count = 0u32;
+        match task.await {
+            Ok(convs) => {
+                for c in convs {
+                    if c.parent_id.is_some() {
+                        continue;
+                    }
+                    if seen.insert((at, c.id.clone())) {
+                        all.push((at, c));
+                        count += 1;
                     }
                 }
-                Err(e) => {
-                    tracing::error!("Error listing {} conversations: {}", at, e);
-                }
+            }
+            Err(e) => {
+                tracing::error!("Session listing task for {} panicked: {}", at, e);
             }
         }
-        matched
-    })
-    .await
-    .map_err(|e| DbError::Migration(e.to_string()))?;
+        done += 1;
+        on_agent_done(at, done, total, count);
+    }
 
+    all
+}
+
+/// Reconcile a batch of parsed summaries into `folder_id` via [`import_one`].
+/// Returns the tally plus the ids of already-imported conversations whose title
+/// was refreshed, so the caller can broadcast a sidebar upsert without
+/// re-querying. Strict: the first row error aborts and propagates — this is the
+/// legacy per-folder import's contract, so its public command still surfaces DB
+/// failures rather than silently returning `0/0/0`. The batch importer uses the
+/// resilient [`import_summaries_resilient`] instead.
+pub(crate) async fn import_summaries(
+    conn: &DatabaseConnection,
+    folder_id: i32,
+    items: &[(AgentType, ConversationSummary)],
+) -> Result<(ImportResult, Vec<i32>), DbError> {
     let mut imported = 0u32;
     let mut updated = 0u32;
     let mut skipped = 0u32;
     let mut updated_ids: Vec<i32> = Vec::new();
 
-    for (agent_type, summary) in &summaries {
+    for (agent_type, summary) in items {
         match import_one(conn, folder_id, agent_type, summary).await? {
             ImportOutcome::Imported => imported += 1,
             ImportOutcome::Updated(id) => {
@@ -88,6 +155,69 @@ pub async fn import_local_conversations(
     }
 
     Ok((ImportResult { imported, updated, skipped }, updated_ids))
+}
+
+/// Like [`import_summaries`] but resilient — a single row's DB error is logged
+/// and counted in the returned `failed` count rather than aborting the group.
+/// The batch importer wants this because each `import_one` insert autocommits:
+/// a mid-loop `?`-abort would strand already-committed rows uncounted and leave
+/// their (already-created) folder unbroadcast, and imports are idempotent so a
+/// re-run finishes the rest — rolling good rows back would be worse. Callers
+/// surface the `failed` count in their own structured result.
+pub(crate) async fn import_summaries_resilient(
+    conn: &DatabaseConnection,
+    folder_id: i32,
+    items: &[(AgentType, ConversationSummary)],
+) -> (ImportResult, Vec<i32>, u32) {
+    let mut imported = 0u32;
+    let mut updated = 0u32;
+    let mut skipped = 0u32;
+    let mut failed = 0u32;
+    let mut updated_ids: Vec<i32> = Vec::new();
+
+    for (agent_type, summary) in items {
+        match import_one(conn, folder_id, agent_type, summary).await {
+            Ok(ImportOutcome::Imported) => imported += 1,
+            Ok(ImportOutcome::Updated(id)) => {
+                updated += 1;
+                updated_ids.push(id);
+            }
+            Ok(ImportOutcome::Skipped) => skipped += 1,
+            Err(e) => {
+                failed += 1;
+                tracing::error!(
+                    "Failed to import session {} ({}): {}",
+                    summary.id,
+                    agent_type,
+                    e
+                );
+            }
+        }
+    }
+
+    (ImportResult { imported, updated, skipped }, updated_ids, failed)
+}
+
+/// Import (and refresh the titles of) the local agent sessions under
+/// `folder_path`. Strict: a DB error surfaces to the caller (the legacy
+/// command's back-compat contract).
+pub async fn import_local_conversations(
+    conn: &DatabaseConnection,
+    folder_id: i32,
+    folder_path: &str,
+) -> Result<(ImportResult, Vec<i32>), DbError> {
+    let summaries = collect_local_summaries(|_, _, _, _| {}).await;
+    let matched: Vec<(AgentType, ConversationSummary)> = summaries
+        .into_iter()
+        .filter(|(_, c)| {
+            c.folder_path
+                .as_deref()
+                .map(|p| path_eq_for_matching(p, folder_path))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    import_summaries(conn, folder_id, &matched).await
 }
 
 /// Outcome of reconciling a single parsed session against the DB.

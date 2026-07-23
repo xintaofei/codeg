@@ -22,7 +22,7 @@ import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
-} from "@/components/ui/collapsible"
+} from "@/components/ui/instant-collapsible"
 import {
   Tool,
   ToolHeader,
@@ -2619,7 +2619,7 @@ const ToolGroupPart = memo(function ToolGroupPart({
     <Collapsible open={open} onOpenChange={setOpen} className="w-full">
       <CollapsibleTrigger
         className={cn(
-          "group inline-flex max-w-full items-center gap-1.5 rounded-full bg-muted/60 px-3.5 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          "group inline-flex max-w-full items-center gap-1.5 rounded-full bg-muted/60 px-3.5 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground ws-msg-chip"
         )}
       >
         <ChevronRightIcon

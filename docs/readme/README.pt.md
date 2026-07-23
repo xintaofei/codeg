@@ -19,7 +19,7 @@
   <a href="./README.ar.md">العربية</a>
 </p>
 
-Codeg (Code Generation) é um workspace de codificação multiagente. Ele reúne vários agentes (Claude Code, Codex CLI, OpenCode, Gemini CLI, OpenClaw, Cline, Hermes Agent, CodeBuddy, Kimi Code, Pi, Grok Build, etc.) em um único workspace, com suporte à agregação de conversas e à colaboração multiagente, além de instalação desktop e implantação em servidor/Docker.
+Codeg (Code Generation) é um workspace de codificação multiagente. Ele reúne vários agentes (Claude Code, Codex CLI, OpenCode, Gemini CLI, OpenClaw, Cline, Hermes Agent, CodeBuddy, Kimi Code, Pi, Grok Build, Cursor, etc.) em um único workspace, com suporte à agregação de conversas e à colaboração multiagente, além de instalação desktop e implantação em servidor/Docker.
 
 ![gallery](../images/gallery.svg)
 
@@ -46,6 +46,13 @@ Codeg (Code Generation) é um workspace de codificação multiagente. Ele reúne
       <strong><a href="https://hezu.ink/sign-up?aff=0wVz">合租巴士</a></strong>
     </td>
     <td>Agradecemos ao 合租巴士 por patrocinar este projeto! O 合租巴士 é uma plataforma de retransmissão de IA confiável e eficiente, oferecendo retransmissão de alta estabilidade para modelos populares como Codex e Claude Code. A proporção de recarga é transparente (1:1), com subsídios de taxa do Codex a partir de apenas 0,08. <a href="https://hezu.ink/sign-up?aff=0wVz">Entre no grupo pelo site oficial para ganhar US$ 5 de crédito de teste</a>.</td>
+  </tr>
+  <tr>
+    <td align="center" width="220">
+      <a href="https://onehop.ai/platform/login?ref=CODEG&utm_source=github&utm_medium=readme_sponsor&utm_campaign=codeg&utm_content=sponsor_cta" target="_blank"><img src="../images/onehop.jpg" alt="OneHop" width="120" /></a><br/>
+      <strong><a href="https://onehop.ai/platform/login?ref=CODEG&utm_source=github&utm_medium=readme_sponsor&utm_campaign=codeg&utm_content=sponsor_cta">OneHop</a></strong>
+    </td>
+    <td>Agradecemos ao OneHop por patrocinar este projeto! O OneHop oferece aos usuários do Codeg uma única chave de API compatível com OpenAI para centenas de modelos líderes, incluindo GPT, Claude, Gemini, DeepSeek, Kimi e Qwen. Troque de modelo sem gerenciar várias contas de provedores nem alterar seu código repetidamente, e pague apenas pelo que usar. <a href="https://onehop.ai/platform/login?ref=CODEG&utm_source=github&utm_medium=readme_sponsor&utm_campaign=codeg&utm_content=sponsor_cta">Cadastre-se pelo Codeg</a> para receber US$ 1 em crédito e, além disso, participe da comunidade OneHop e da atividade de boas-vindas para ganhar mais US$ 5 — até US$ 6 em crédito de teste no total.</td>
   </tr>
 </table>
 
@@ -100,6 +107,7 @@ Codeg (Code Generation) é um workspace de codificação multiagente. Ele reúne
 | Kimi Code    | `$KIMI_CODE_HOME/sessions`            | `~/.kimi-code/sessions`               | `%USERPROFILE%\\.kimi-code\\sessions`                 |
 | Pi           | `$PI_CODING_AGENT_SESSION_DIR`        | `~/.pi/agent/sessions`                | `%USERPROFILE%\\.pi\\agent\\sessions`                 |
 | Grok Build   | `$GROK_HOME/sessions`                 | `~/.grok/sessions`                    | `%USERPROFILE%\\.grok\\sessions`                      |
+| Cursor       | `$CURSOR_CONFIG_DIR/chats`            | `~/.cursor/chats`                     | `%USERPROFILE%\\.cursor\\chats`                       |
 
 > Nota: as variáveis de ambiente têm prioridade sobre os caminhos padrão.
 

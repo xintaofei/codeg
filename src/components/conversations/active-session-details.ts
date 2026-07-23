@@ -20,6 +20,19 @@ export interface ActiveSessionDetails {
 }
 
 /**
+ * The slice of a runtime session this resolver actually reads. Narrowed on
+ * purpose: these fields change only at turn boundaries, so a caller can
+ * subscribe to just them (e.g. via `useShallow`) and avoid the ~60/s re-render
+ * a whole-session-object selector incurs during streaming. A full
+ * `ConversationRuntimeSession` is still assignable here, so existing callers
+ * that pass the whole session are unaffected.
+ */
+export type RuntimeSessionForDetails = Pick<
+  ConversationRuntimeSession,
+  "detail" | "sessionStats" | "localTurns"
+>
+
+/**
  * Pick the conversation's model from its turns. Only assistant turns carry a
  * `model`, and a conversation can switch models mid-session, so the most recent
  * turn with a model is the best "current model" signal. Returns `null` when no
@@ -50,7 +63,7 @@ export function pickModelFromTurns(turns: MessageTurn[]): string | null {
  */
 export function resolveActiveSessionDetails(
   tab: ActiveSessionTabRef | null,
-  getSession: (id: number) => ConversationRuntimeSession | null,
+  getSession: (id: number) => RuntimeSessionForDetails | null,
   conversations: DbConversationSummary[]
 ): ActiveSessionDetails {
   const runtimeId = tab?.runtimeConversationId ?? tab?.conversationId ?? null

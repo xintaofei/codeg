@@ -11,7 +11,7 @@
  */
 
 import { extractEmbeddedJsonObject } from "@/lib/embedded-json"
-import { type AgentType } from "@/lib/types"
+import { ALL_AGENT_TYPES, type AgentType } from "@/lib/types"
 import {
   type DelegationBinding,
   type DelegationStatus,
@@ -37,24 +37,26 @@ export type ParsedInput = {
   workingDir: string | null
 }
 
-const KNOWN_AGENT_TYPES: ReadonlySet<string> = new Set<AgentType>([
-  "claude_code",
-  "codex",
-  "open_code",
-  "gemini",
-  "cline",
-  "open_claw",
-  "hermes",
-  "code_buddy",
-  "kimi_code",
-  "pi",
-])
+// Derived from the canonical `ALL_AGENT_TYPES` so a newly added agent is
+// recognized here automatically. A hand-maintained duplicate previously drifted
+// (it omitted `grok` and `cursor`), so their delegation cards resolved
+// `agentType: null` — rendering the blank "unknown sub-agent" avatar/label
+// instead of the agent's icon. Keep this sourced from one place.
+const KNOWN_AGENT_TYPES: ReadonlySet<string> = new Set<AgentType>(
+  ALL_AGENT_TYPES
+)
 
 export type ParsedMeta = {
   status: DelegationStatus
   childConnectionId: string | null
   childConversationId: number | null
   errorCode: string | null
+  /** Bounded task text the broker stamped onto the meta — the label source
+   *  when `raw_input` never carried the arguments (Cursor) and the live
+   *  binding is gone (refresh / persisted transcript). */
+  task: string | null
+  /** Broker-minted task id, mirrored on every meta write. */
+  taskId: string | null
 }
 
 /**
@@ -64,7 +66,7 @@ export type ParsedMeta = {
  *
  * The shape mirrors what the broker writes via `DelegationMetaWriter`:
  *   `{ "codeg.delegation": { status, child_connection_id?,
- *     child_conversation_id?, error_code? } }`
+ *     child_conversation_id?, error_code?, task_preview?, task_id? } }`
  */
 export function parseDelegationMeta(
   meta: Record<string, unknown> | null | undefined
@@ -94,6 +96,8 @@ export function parseDelegationMeta(
   const child_connection_id = obj["child_connection_id"]
   const child_conversation_id = obj["child_conversation_id"]
   const error_code = obj["error_code"]
+  const task_preview = obj["task_preview"]
+  const task_id = obj["task_id"]
   return {
     status,
     childConnectionId:
@@ -101,6 +105,9 @@ export function parseDelegationMeta(
     childConversationId:
       typeof child_conversation_id === "number" ? child_conversation_id : null,
     errorCode: typeof error_code === "string" ? error_code : null,
+    task:
+      typeof task_preview === "string" && task_preview ? task_preview : null,
+    taskId: typeof task_id === "string" && task_id ? task_id : null,
   }
 }
 
@@ -113,15 +120,18 @@ const EMPTY_PARSED_INPUT: ParsedInput = {
 // Wrapper keys that hosts use to nest the actual tool arguments. JSON-RPC
 // servers and various MCP relays will pack the call as `{name, arguments}`
 // or `{params: {...}}`; some agents stash the args under a generic
-// `input`/`payload` key alongside metadata. Walked recursively (small
+// `input`/`payload` key alongside metadata; Cursor's MCP calls surface as
+// `{providerIdentifier, toolName, args: {...}}`. Walked recursively (small
 // depth cap) so any single layer of wrapping peels off without false
-// positives on legitimate shallow fields.
+// positives on legitimate shallow fields. Mirrors `ARGS_WRAPPER_KEYS` in
+// `acp/lifecycle.rs` — the two walkers must peel the same shapes.
 const ARGS_WRAPPER_KEYS = [
   "arguments",
   "input",
   "params",
   "payload",
   "_meta",
+  "args",
 ] as const
 
 function findDelegationArgs(
@@ -208,10 +218,20 @@ export function parseInput(raw: string | null | undefined): ParsedInput {
   }
   const obj = findDelegationArgs(parsed)
   if (!obj) {
-    warnDelegationInputUnparseable(
-      describeShape(parsed),
-      "no known wrapper matched"
-    )
+    // An empty object is the EXPECTED shape on identity-less hosts (Cursor
+    // announces every MCP call with raw_input "{}") — nothing to diagnose,
+    // so don't spam the console on every render of those cards.
+    const isEmptyObject =
+      parsed !== null &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      Object.keys(parsed as Record<string, unknown>).length === 0
+    if (!isEmptyObject) {
+      warnDelegationInputUnparseable(
+        describeShape(parsed),
+        "no known wrapper matched"
+      )
+    }
     return EMPTY_PARSED_INPUT
   }
   const at = typeof obj.agent_type === "string" ? obj.agent_type : null

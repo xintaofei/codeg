@@ -1737,6 +1737,42 @@ describe("ConversationRuntimeProvider viewer user-turn synthesis", () => {
   })
 })
 
+describe("buildStreamingTurnsFromLiveMessage — orphan status provenance", () => {
+  // The forward that lets the render layer drop an interrupted arg-less orphan
+  // after it is promoted into localTurns at COMPLETE_TURN (see
+  // dropEmptyInFlightToolCalls). Without it, the promoted block loses its ACP
+  // status and the orphan re-inflates the "运行 N 个命令" count post-completion.
+  it("forwards the ACP tool status onto the promoted tool_use block", () => {
+    const blocks = buildStreamingTurnsFromLiveMessage(1, {
+      id: "lm-orphan",
+      role: "assistant",
+      startedAt: 0,
+      content: [
+        {
+          type: "tool_call",
+          info: {
+            tool_call_id: "tc-orphan",
+            title: "bash",
+            kind: "execute",
+            status: "pending",
+            content: null,
+            raw_input: "{}",
+            raw_output_chunks: [],
+            raw_output_total_bytes: 0,
+            locations: null,
+            meta: null,
+            images: [],
+          },
+        },
+      ],
+    }).turns.flatMap((t) => t.blocks)
+    const toolUse = blocks.find((b) => b.type === "tool_use")
+    expect(toolUse?.type === "tool_use" ? toolUse.status : "MISSING").toBe(
+      "pending"
+    )
+  })
+})
+
 describe("buildStreamingTurnsFromLiveMessage — Kimi TodoList suppression", () => {
   function kimiToolCall(
     rawInput: string | null,
@@ -1924,4 +1960,89 @@ describe("buildStreamingTurnsFromLiveMessage — Kimi TodoList suppression", () 
       expect(toolUses(blocks)).toHaveLength(1)
     }
   )
+})
+
+/**
+ * Cursor announces its `task` tool with rawInput = `{_toolName:"task"}` (args
+ * stream in later frames the CLI never resends) and puts the only human-
+ * readable label in the wire title ("Task: <description>"). The live builder
+ * folds that title into the input as `description` so the Agent card shows a
+ * real title instead of the "starting…" placeholder.
+ */
+describe("buildStreamingTurnsFromLiveMessage — cursor task title folding", () => {
+  function cursorTaskCall(
+    rawInput: string | null,
+    title: string,
+    overrides: Partial<ToolCallInfo> = {}
+  ): LiveContentBlock {
+    return {
+      type: "tool_call",
+      info: {
+        tool_call_id: "tc-cursor-task-1",
+        title,
+        kind: "other",
+        status: "in_progress",
+        content: null,
+        raw_input: rawInput,
+        raw_output_chunks: [],
+        raw_output_total_bytes: 0,
+        locations: null,
+        meta: null,
+        images: [],
+        ...overrides,
+      },
+    }
+  }
+
+  function firstToolUseInput(content: LiveContentBlock[]): string | null {
+    const result = buildStreamingTurnsFromLiveMessage(1, {
+      id: "lm-cursor",
+      role: "assistant",
+      startedAt: 0,
+      content,
+    })
+    const block = result.turns
+      .flatMap((t) => t.blocks)
+      .find((b) => b.type === "tool_use")
+    if (!block || block.type !== "tool_use") throw new Error("no tool_use")
+    return block.input_preview ?? null
+  }
+
+  it("folds the wire title into `description` for a bare identity stamp", () => {
+    const input = firstToolUseInput([
+      cursorTaskCall(
+        JSON.stringify({ _toolName: "task" }),
+        "Task: run the build"
+      ),
+    ])
+    expect(JSON.parse(input as string)).toEqual({
+      _toolName: "task",
+      description: "run the build",
+    })
+  })
+
+  it("never overwrites a description the args already carry", () => {
+    const explicit = JSON.stringify({
+      _toolName: "task",
+      description: "real description",
+      prompt: "…",
+    })
+    const input = firstToolUseInput([
+      cursorTaskCall(explicit, "Task: stale wire title"),
+    ])
+    expect(input).toBe(explicit)
+  })
+
+  it("leaves non-task agent payloads untouched (claude Task, codex spawn)", () => {
+    const claude = JSON.stringify({
+      subagent_type: "Explore",
+      description: "map the repo",
+    })
+    const input = firstToolUseInput([
+      // Claude's live Task carries subagent_type — classified "agent", but
+      // there's no `_toolName` stamp, so the title must not be folded in.
+      cursorTaskCall(claude, "Task: something else"),
+    ])
+    expect(input).toBe(claude)
+  })
 })

@@ -421,6 +421,205 @@ pub fn build_outcome(questions: &[QuestionSpec], answer: &QuestionAnswer) -> Que
     }
 }
 
+/// Grok's native `ask_user_question` tool has NO `header` (the short category
+/// chip codeg renders); synthesize one from the leading characters of the
+/// question text, bounded to [`MAX_HEADER_CHARS`]. Always returns a non-empty,
+/// in-bounds string so [`validate_specs`] accepts it.
+fn synthesize_grok_header(question: &str) -> String {
+    let header: String = question.trim().chars().take(MAX_HEADER_CHARS).collect();
+    let header = header.trim();
+    if header.is_empty() {
+        "Ask".to_string()
+    } else {
+        header.to_string()
+    }
+}
+
+/// Convert grok's native `_x.ai/ask_user_question` ext-request params into codeg
+/// [`QuestionSpec`]s, so grok's own questions render in the SAME interactive card
+/// as the `codeg-mcp` ask tool (grok emits an ACP ext request and blocks on the
+/// reply; if codeg doesn't answer it, grok falls back to inert fire-and-forget
+/// rendering — see the connection handler). Grok's wire shape per question is
+/// `{question, options:[{label, description}], multiSelect}` — no `header`, which
+/// we synthesize. Counts are clamped to codeg's bounds because
+/// [`crate::acp::manager::ConnectionManager::register_question`] re-runs
+/// [`validate_specs`] and would otherwise decline the whole ask: more than
+/// [`MAX_QUESTIONS`] questions or [`MAX_OPTIONS`] options are truncated (logged,
+/// never silently dropped), and duplicate option labels — which `validate_specs`
+/// rejects as ambiguous — are deduped. A question left with fewer than
+/// [`MIN_OPTIONS`] usable options is not a real choice and fails the request
+/// (grok then falls back — no worse than before the bridge existed).
+pub fn parse_grok_ext_questions(params: &Value) -> Result<Vec<QuestionSpec>, String> {
+    let arr = params
+        .get("questions")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "ask_user_question ext request missing `questions` array".to_string())?;
+    if arr.is_empty() {
+        return Err("ask_user_question ext request has no questions".to_string());
+    }
+    if arr.len() > MAX_QUESTIONS {
+        tracing::warn!(
+            "[grok ask] dropping {} question(s) past the max of {MAX_QUESTIONS}",
+            arr.len() - MAX_QUESTIONS
+        );
+    }
+    let mut out = Vec::with_capacity(arr.len().min(MAX_QUESTIONS));
+    for (qi, q) in arr.iter().take(MAX_QUESTIONS).enumerate() {
+        let question = q
+            .get("question")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("questions[{qi}] is missing a non-empty `question`"))?;
+        let multi_select = q
+            .get("multiSelect")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let opts = q
+            .get("options")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| format!("questions[{qi}] is missing an `options` array"))?;
+        if opts.len() > MAX_OPTIONS {
+            tracing::warn!(
+                "[grok ask] questions[{qi}] has {} options; truncating to {MAX_OPTIONS}",
+                opts.len()
+            );
+        }
+        let mut options = Vec::with_capacity(opts.len().min(MAX_OPTIONS));
+        let mut seen_labels = std::collections::HashSet::new();
+        for o in opts {
+            if options.len() == MAX_OPTIONS {
+                break;
+            }
+            let label = o
+                .get("label")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let Some(label) = label else { continue };
+            // `validate_specs` rejects duplicate labels (the label is the card's
+            // React key + selection identity); dedup rather than fail the ask.
+            if !seen_labels.insert(label.to_string()) {
+                continue;
+            }
+            let description: String = o
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .chars()
+                .take(MAX_QUESTION_TEXT_CHARS)
+                .collect();
+            options.push(QuestionOption {
+                label: label.chars().take(MAX_QUESTION_TEXT_CHARS).collect(),
+                description,
+            });
+        }
+        if options.len() < MIN_OPTIONS {
+            return Err(format!(
+                "questions[{qi}] has fewer than {MIN_OPTIONS} usable options"
+            ));
+        }
+        out.push(QuestionSpec {
+            id: uuid::Uuid::new_v4().to_string(),
+            question: question.chars().take(MAX_QUESTION_TEXT_CHARS).collect(),
+            header: synthesize_grok_header(question),
+            multi_select,
+            options,
+        });
+    }
+    Ok(out)
+}
+
+/// Serialize a resolved [`QuestionOutcome`] into grok's `AskUserQuestionExtResponse`
+/// — the reply to a `_x.ai/ask_user_question` ext request. Verified against grok
+/// 0.2.101 on a real run: the response is internally tagged by `outcome`; the
+/// `accepted` variant carries an `answers` map keyed by the QUESTION TEXT (grok's
+/// questions have no id and it correlates the answer by text) whose value is a
+/// bare string for single-select or an array for multi-select (grok's
+/// `StringOrVec`), plus an empty `partial_answers`. A declined card maps to
+/// `skip_interview` (a variant grok's enum accepts). A wrong shape only makes grok
+/// fall back to inert rendering, so this can never regress the pre-bridge state.
+pub fn build_grok_ext_response(outcome: &QuestionOutcome) -> Value {
+    if outcome.declined {
+        return grok_ext_skip_response();
+    }
+    let mut answers = serde_json::Map::new();
+    for item in &outcome.answers {
+        let value = if item.multi_select {
+            Value::Array(item.selected.iter().cloned().map(Value::String).collect())
+        } else {
+            // Single-select keeps exactly one label (capped in `build_outcome`);
+            // grok's `StringOrVec` wants a bare string here, not a 1-element array.
+            match item.selected.first() {
+                Some(label) => Value::String(label.clone()),
+                None => continue,
+            }
+        };
+        answers.insert(item.question.clone(), value);
+    }
+    serde_json::json!({
+        "outcome": "accepted",
+        "answers": Value::Object(answers),
+        "partial_answers": Value::Object(serde_json::Map::new()),
+    })
+}
+
+/// The `_x.ai/ask_user_question` reply for a declined card or an ask that was
+/// canceled/torn down before the user submitted (the answer one-shot dropped).
+/// Grok's `skip_interview` outcome — chosen over `cancelled` because the ACP
+/// response enum only exposes `Accepted`/`ChatAboutThis`/`SkipInterview`.
+pub fn grok_ext_skip_response() -> Value {
+    serde_json::json!({ "outcome": "skip_interview" })
+}
+
+/// Build the `raw_input` (questions) for the in-stream `AskQuestionResultCard`
+/// codeg synthesizes for a grok native ask. Grok never emits a *completed* tool
+/// result into the ACP `updates.jsonl` stream (it resolves the answer over the
+/// `_x.ai/ask_user_question` ext round-trip instead), so the connection handler
+/// emits this itself once the user submits — see `handle_grok_ask_user_question`.
+///
+/// Deliberately omits `header`: grok's native questions have none (the chip
+/// header we synthesize for the interactive card is an internal detail), so the
+/// frontend parses `header:""` here. The paired [`grok_result_card_output`] uses
+/// the SAME empty header, and the history parser (`grok.rs`) emits `header:""`
+/// too, so the card's answer↔question match key (`header + question`) aligns and
+/// a conversation renders identically live and after reload. Built from the
+/// already-clamped [`QuestionSpec`]s so input and output stay in lockstep.
+pub fn grok_result_card_input(specs: &[QuestionSpec]) -> Value {
+    let questions: Vec<Value> = specs
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "question": s.question,
+                "multiSelect": s.multi_select,
+                "options": s.options,
+            })
+        })
+        .collect();
+    serde_json::json!({ "questions": questions })
+}
+
+/// Build the `raw_output` (`{answers, declined}` envelope) for the in-stream
+/// `AskQuestionResultCard` — the codeg-mcp `structuredContent` shape the frontend
+/// already parses (`parseAskQuestionOutcome`). Emits `header:""` to match
+/// [`grok_result_card_input`] (see its docs). Companion to [`grok_result_card_input`].
+pub fn grok_result_card_output(outcome: &QuestionOutcome) -> Value {
+    let answers: Vec<Value> = outcome
+        .answers
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "header": "",
+                "question": a.question,
+                "multi_select": a.multi_select,
+                "selected": a.selected,
+            })
+        })
+        .collect();
+    serde_json::json!({ "answers": answers, "declined": outcome.declined })
+}
+
 /// The hot-swappable feature config read at MCP injection time. Kept tiny and
 /// separate from `FeedbackConfig` / `DelegationConfig` so the three features
 /// toggle independently — `codeg-mcp` is injected when ANY is enabled, and each
@@ -762,5 +961,225 @@ mod tests {
         assert!(!cfg.is_enabled().await);
         cfg.set(QuestionConfig { enabled: true }).await;
         assert!(cfg.is_enabled().await);
+    }
+
+    fn grok_params(questions: Value) -> Value {
+        json!({
+            "sessionId": "s-1",
+            "toolCallId": "call-1",
+            "questions": questions,
+            "mode": "default",
+        })
+    }
+
+    #[test]
+    fn parse_grok_ext_maps_shape_and_synthesizes_header() {
+        // Grok's wire shape: no `header`, camelCase `multiSelect`.
+        let specs = parse_grok_ext_questions(&grok_params(json!([{
+            "question": "What is your favorite color?",
+            "options": [
+                { "label": "Red", "description": "warm" },
+                { "label": "Blue", "description": "cool" }
+            ],
+            "multiSelect": false
+        }])))
+        .unwrap();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].question, "What is your favorite color?");
+        assert!(!specs[0].multi_select);
+        assert_eq!(specs[0].options.len(), 2);
+        // Header is synthesized, non-empty, and within the chip bound.
+        assert!(!specs[0].header.is_empty());
+        assert!(specs[0].header.chars().count() <= MAX_HEADER_CHARS);
+        // Whatever we synthesize MUST satisfy the register-time re-validation,
+        // else `register_question` silently declines the whole ask.
+        validate_specs(&specs).expect("synthesized specs must pass validate_specs");
+    }
+
+    #[test]
+    fn parse_grok_ext_clamps_questions_and_options_to_bounds() {
+        // 6 questions, each with 6 options — both past codeg's maxima.
+        let many: Vec<Value> = (0..6)
+            .map(|qi| {
+                let opts: Vec<Value> = (0..6)
+                    .map(|oi| json!({ "label": format!("q{qi}o{oi}"), "description": "" }))
+                    .collect();
+                json!({ "question": format!("Question {qi}?"), "options": opts })
+            })
+            .collect();
+        let specs = parse_grok_ext_questions(&grok_params(json!(many))).unwrap();
+        assert_eq!(specs.len(), MAX_QUESTIONS, "questions clamped");
+        assert!(specs.iter().all(|s| s.options.len() == MAX_OPTIONS), "options clamped");
+        validate_specs(&specs).unwrap();
+    }
+
+    #[test]
+    fn parse_grok_ext_dedups_option_labels() {
+        // Duplicate labels would fail validate_specs; we dedup, keeping enough.
+        let specs = parse_grok_ext_questions(&grok_params(json!([{
+            "question": "Pick one",
+            "options": [
+                { "label": "A", "description": "" },
+                { "label": "A", "description": "dup" },
+                { "label": "B", "description": "" }
+            ]
+        }])))
+        .unwrap();
+        assert_eq!(specs[0].options.len(), 2);
+        validate_specs(&specs).unwrap();
+    }
+
+    #[test]
+    fn parse_grok_ext_rejects_degenerate_and_malformed() {
+        // Fewer than two usable options is not a real choice → fail (grok falls back).
+        assert!(parse_grok_ext_questions(&grok_params(json!([{
+            "question": "Only one",
+            "options": [{ "label": "Solo", "description": "" }]
+        }])))
+        .is_err());
+        // Missing questions array.
+        assert!(parse_grok_ext_questions(&json!({ "mode": "default" })).is_err());
+        // Empty questions.
+        assert!(parse_grok_ext_questions(&grok_params(json!([]))).is_err());
+    }
+
+    #[test]
+    fn build_grok_ext_response_single_select_is_bare_string() {
+        let outcome = QuestionOutcome {
+            answers: vec![QuestionAnsweredItem {
+                question: "What is your favorite color?".into(),
+                header: "What is your".into(),
+                multi_select: false,
+                selected: vec!["Red".into()],
+            }],
+            declined: false,
+        };
+        let v = build_grok_ext_response(&outcome);
+        assert_eq!(v["outcome"], "accepted");
+        // Keyed by question text; single-select value is a bare string.
+        assert_eq!(v["answers"]["What is your favorite color?"], json!("Red"));
+        assert!(v["partial_answers"].as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn build_grok_ext_response_multi_select_is_array() {
+        let outcome = QuestionOutcome {
+            answers: vec![QuestionAnsweredItem {
+                question: "Which modules?".into(),
+                header: "Which module".into(),
+                multi_select: true,
+                selected: vec!["auth".into(), "billing".into()],
+            }],
+            declined: false,
+        };
+        let v = build_grok_ext_response(&outcome);
+        assert_eq!(v["outcome"], "accepted");
+        assert_eq!(v["answers"]["Which modules?"], json!(["auth", "billing"]));
+    }
+
+    #[test]
+    fn build_grok_ext_response_declined_is_skip_interview() {
+        let outcome = QuestionOutcome {
+            answers: vec![],
+            declined: true,
+        };
+        assert_eq!(build_grok_ext_response(&outcome), json!({ "outcome": "skip_interview" }));
+        assert_eq!(grok_ext_skip_response(), json!({ "outcome": "skip_interview" }));
+    }
+
+    #[test]
+    fn grok_result_card_input_omits_header_and_keeps_shape() {
+        // Built from parsed specs (which DO carry a synthesized header) — the card
+        // input must nonetheless drop it, so the frontend parses `header:""`.
+        let specs = parse_grok_ext_questions(&grok_params(json!([{
+            "question": "Which colors?",
+            "options": [
+                { "label": "Red", "description": "warm" },
+                { "label": "Green", "description": "cool" }
+            ],
+            "multiSelect": true
+        }])))
+        .unwrap();
+        let input = grok_result_card_input(&specs);
+        let q = &input["questions"][0];
+        assert_eq!(q["question"], "Which colors?");
+        assert_eq!(q["multiSelect"], true);
+        assert_eq!(q["options"][0]["label"], "Red");
+        // No header field is serialized (the frontend reads it as "").
+        assert!(q.get("header").is_none(), "input must not carry a header");
+    }
+
+    #[test]
+    fn grok_result_card_output_single_select_empty_header() {
+        let outcome = QuestionOutcome {
+            answers: vec![QuestionAnsweredItem {
+                question: "你更喜欢哪种演示方式？".into(),
+                header: "你更喜欢哪种".into(), // synthesized upstream; must be dropped here
+                multi_select: false,
+                selected: vec!["随便看看".into()],
+            }],
+            declined: false,
+        };
+        let out = grok_result_card_output(&outcome);
+        assert_eq!(out["declined"], false);
+        let a = &out["answers"][0];
+        // Header is forced empty to align with the header-less card input.
+        assert_eq!(a["header"], "");
+        assert_eq!(a["question"], "你更喜欢哪种演示方式？");
+        assert_eq!(a["selected"], json!(["随便看看"]));
+    }
+
+    #[test]
+    fn grok_result_card_output_multi_and_declined() {
+        let multi = QuestionOutcome {
+            answers: vec![QuestionAnsweredItem {
+                question: "Which colors?".into(),
+                header: "Which colors".into(),
+                multi_select: true,
+                selected: vec!["Red".into(), "Green".into()],
+            }],
+            declined: false,
+        };
+        assert_eq!(
+            grok_result_card_output(&multi)["answers"][0]["selected"],
+            json!(["Red", "Green"])
+        );
+        let declined = QuestionOutcome {
+            answers: vec![],
+            declined: true,
+        };
+        let out = grok_result_card_output(&declined);
+        assert_eq!(out["declined"], true);
+        assert_eq!(out["answers"], json!([]));
+    }
+
+    #[test]
+    fn grok_result_card_input_output_question_texts_align() {
+        // The frontend matches answers to questions by (header, question); with
+        // header empty on both sides, the question text must match verbatim so the
+        // capsule shows the pick rather than "未选择". `build_outcome` copies the
+        // spec's question into the answer, so a full round trip stays aligned.
+        let specs = parse_grok_ext_questions(&grok_params(json!([{
+            "question": "Pick one",
+            "options": [
+                { "label": "A", "description": "" },
+                { "label": "B", "description": "" }
+            ]
+        }])))
+        .unwrap();
+        let outcome = build_outcome(
+            &specs,
+            &QuestionAnswer {
+                answers: vec![QuestionAnswerItem {
+                    question_id: specs[0].id.clone(),
+                    labels: vec!["A".into()],
+                }],
+                declined: false,
+            },
+        );
+        let input = grok_result_card_input(&specs);
+        let output = grok_result_card_output(&outcome);
+        assert_eq!(input["questions"][0]["question"], output["answers"][0]["question"]);
+        assert_eq!(output["answers"][0]["header"], "");
     }
 }

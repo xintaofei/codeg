@@ -214,7 +214,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <div
-            className="relative h-[2rem] bg-sidebar"
+            className="relative h-[2rem] bg-sidebar ws-transparent-bg"
             data-conv-key={`${conversation.agent_type}:${conversation.id}`}
             // Per-level indent: shift the shared rail axis right by one step per
             // depth. Root rows (depth 0) leave the var untouched so they inherit

@@ -38,6 +38,35 @@ describe("inferLiveToolName meta.claudeCode.toolName override", () => {
     ).not.toBe("memory_recall")
   })
 
+  it("resolves delegate_to_agent from broker delegation meta on identity-less wires", () => {
+    // Cursor announces MCP calls as the literal "MCP: tool" with an empty
+    // rawInput and never resends either — the broker's
+    // meta["codeg.delegation"] write is the only live identity signal.
+    expect(
+      inferLiveToolName({
+        title: "MCP: tool",
+        kind: "other",
+        rawInput: "{}",
+        meta: {
+          "codeg.delegation": { status: "running", child_conversation_id: 42 },
+        },
+      })
+    ).toBe("delegate_to_agent")
+  })
+
+  it("keeps input-shape priority for calls without delegation meta", () => {
+    // A generic "MCP: tool" call WITHOUT the broker meta must stay generic —
+    // the delegation resolution is scoped to the codeg-minted marker.
+    expect(
+      inferLiveToolName({
+        title: "MCP: tool",
+        kind: "other",
+        rawInput: "{}",
+        meta: null,
+      })
+    ).not.toBe("delegate_to_agent")
+  })
+
   it("returns canonical lower-case 'agent' for the SDK Agent tool before rawInput streams in", () => {
     // claude-agent-acp reports the Agent/Task tool as `Agent` (capitalised) and
     // often emits the initial ToolCall before `rawInput` (which carries
@@ -384,5 +413,74 @@ describe("normalizeToolName Grok terminal tool", () => {
     // via the generic tool shell (raw ANSI, no terminal title) instead of the
     // Terminal card.
     expect(normalizeToolName("run_terminal_command")).toBe("bash")
+  })
+})
+
+describe("inferLiveToolName cursor task and MCP shapes", () => {
+  it("routes cursor's task tool to the Agent card from the bare _toolName snapshot", () => {
+    // Cursor announces the tool_call before its args stream in, so the live
+    // rawInput is often just the identity stamp — and with no args the wire
+    // title is the placeholder "Task: Subagent task", which would otherwise
+    // resolve to the generic task card via the freeform `^task` matcher.
+    expect(
+      inferLiveToolName({
+        title: "Task: Subagent task",
+        kind: "other",
+        rawInput: JSON.stringify({ _toolName: "task" }),
+      })
+    ).toBe("agent")
+  })
+
+  it("routes a fully-populated cursor task payload to the Agent card", () => {
+    expect(
+      inferLiveToolName({
+        title: "Task: run the build",
+        kind: "other",
+        rawInput: JSON.stringify({
+          _toolName: "task",
+          prompt: "Run pnpm build and report back.",
+          description: "run the build",
+          subagentType: { case: "generalPurpose", value: {} },
+        }),
+      })
+    ).toBe("agent")
+  })
+
+  it("resolves cursor MCP calls to <provider>__<tool> instead of bash", () => {
+    // Cursor's mcpToolCall rawInput carries an `args` object — without the
+    // provider/tool resolution the `args` key heuristic would misclassify
+    // the call as a terminal command.
+    expect(
+      inferLiveToolName({
+        title: "codeg-mcp: delegate_to_agent",
+        kind: "other",
+        rawInput: JSON.stringify({
+          providerIdentifier: "codeg-mcp",
+          toolName: "delegate_to_agent",
+          args: { agent_type: "codex", task: "run build" },
+        }),
+      })
+    ).toBe("delegate_to_agent")
+    expect(
+      inferLiveToolName({
+        title: "srv: custom_tool",
+        kind: "other",
+        rawInput: JSON.stringify({
+          providerIdentifier: "srv",
+          toolName: "custom_tool",
+          args: { command: "echo hi" },
+        }),
+      })
+    ).not.toBe("bash")
+  })
+
+  it("collapses other cursor _toolName hints to their canonical snake_case names", () => {
+    expect(
+      inferLiveToolName({
+        title: "Create Plan: refactor",
+        kind: "other",
+        rawInput: JSON.stringify({ _toolName: "createPlan", name: "refactor" }),
+      })
+    ).toBe("create_plan")
   })
 })

@@ -57,6 +57,11 @@ describe("BackgroundTaskCard", () => {
     renderCard([poll({ output: FAILED })])
     expect(screen.getByText("Failed")).toBeInTheDocument()
     expect(screen.getByText("exit 1")).toBeInTheDocument()
+    // The all-failed (destructive) card still carries the workspace-bg frosted
+    // surface class so it matches its non-error siblings over a background image.
+    expect(screen.getByTestId("background-task-group")).toHaveClass(
+      "ws-msg-card"
+    )
   })
 
   it("shows a running badge for an in-flight poll", () => {

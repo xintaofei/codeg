@@ -44,6 +44,12 @@ export interface DelegationBinding {
   agentType: AgentType
   status: DelegationStatus
   errorCode?: string
+  /** Bounded task text from `delegation_started`. The card's fallback when
+   *  the tool call's `raw_input` never carried the arguments (Cursor's
+   *  identity-less announcements). */
+  task: string | null
+  /** Broker-minted task id from `delegation_started`. */
+  taskId: string | null
 }
 
 interface DelegationContextValue {
@@ -112,6 +118,8 @@ export function DelegationProvider({ children }: { children: ReactNode }) {
           childConversationId: envelope.child_conversation_id,
           agentType: envelope.agent_type,
           status: "running",
+          task: envelope.task_preview ?? null,
+          taskId: envelope.task_id ?? null,
         }
         setByToolUseId((prev) => {
           const m = new Map(prev)
@@ -149,6 +157,10 @@ export function DelegationProvider({ children }: { children: ReactNode }) {
             childConversationId: envelope.child_conversation_id,
             agentType: envelope.agent_type,
             status: "running",
+            // Missed-start synthesis: the completion event carries no task
+            // label; the card recovers it from the terminal meta instead.
+            task: null,
+            taskId: null,
           }
           const updated: DelegationBinding =
             envelope.result.kind === "ok"

@@ -62,6 +62,8 @@ function bindingOf(overrides: Partial<DelegationBinding>): DelegationBinding {
     childConversationId: 99,
     agentType: "codex",
     status: "running",
+    task: null,
+    taskId: null,
     ...overrides,
   }
 }

@@ -72,6 +72,9 @@ vi.mock("@/components/chat/conversation-context-bar", () => ({
   }: {
     extraContent?: React.ReactNode
   }) => <div data-testid="ctx-bar">{extraContent}</div>,
+  // The composer imports these to render the below-input folder/branch row.
+  // Keep it hidden here (visibility → false) so these tests exercise the bare
+  // composer without pulling in the picker's tab-store/git dependencies.
   ConversationFolderBranchPicker: () => null,
   useConversationFolderBranchPickerVisible: () => false,
 }))
@@ -249,6 +252,109 @@ describe("MessageInput attach-to-chat insertion position", () => {
       expect(serializeDocToText(editor.state.doc)).toContain(link)
     )
     assertBetweenHelloAndWorld(serializeDocToText(editor.state.doc), link)
+  })
+})
+
+describe("MessageInput file-tree drag-and-drop", () => {
+  afterEach(() => {
+    cleanup()
+    composerHandle.current = null
+  })
+
+  // A minimal DataTransfer carrying a file-tree drag: the private JSON payload
+  // plus a text/plain absolute-path fallback (jsdom's DataTransfer can't do
+  // setData/getData/types faithfully).
+  function treeDrag(payload: {
+    rootPath: string
+    relPath: string
+    absPath: string
+    name: string
+    kind: "file" | "dir"
+  }) {
+    const store = new Map<string, string>([
+      ["application/x-codeg-tree-entry", JSON.stringify(payload)],
+      ["text/plain", payload.absPath],
+    ])
+    return {
+      getData: (f: string) => store.get(String(f).toLowerCase()) ?? "",
+      setData: (f: string, v: string) => store.set(String(f).toLowerCase(), v),
+      get types() {
+        return Array.from(store.keys())
+      },
+      dropEffect: "none",
+      effectAllowed: "all",
+      files: [] as File[],
+      items: [] as DataTransferItem[],
+    }
+  }
+
+  async function mountWithHost() {
+    const { container } = renderInput({ attachmentTabId: "tab-1" })
+    await waitFor(
+      () => expect(composerHandle.current?.getEditor()).toBeTruthy(),
+      { timeout: 5000 }
+    )
+    const editor = composerHandle.current?.getEditor()
+    if (!editor) throw new Error("composer editor not mounted")
+    const host = container.firstElementChild as HTMLElement
+    return { editor, host }
+  }
+
+  const OVERLAY = enMessages.Folder.chat.messageInput.dropFilesToAttach
+  const PAYLOAD = {
+    rootPath: "/repo",
+    relPath: "src/app.ts",
+    absPath: "/repo/src/app.ts",
+    name: "app.ts",
+    kind: "file" as const,
+  }
+  const LINK = "[app.ts](file:///repo/src/app.ts)"
+
+  it("inserts a single reference (no literal path) when dropped on the chrome", async () => {
+    const { editor, host } = await mountWithHost()
+    const dt = treeDrag(PAYLOAD)
+
+    act(() => {
+      fireEvent.dragOver(host, { dataTransfer: dt })
+    })
+    // The drag overlay shows while a valid drag hovers the composer.
+    expect(screen.queryByText(OVERLAY)).not.toBeNull()
+
+    act(() => {
+      fireEvent.drop(host, { dataTransfer: dt })
+    })
+    await waitFor(() =>
+      expect(serializeDocToText(editor.state.doc)).toContain(LINK)
+    )
+    // Exactly one reference and no stray text/plain absolute-path insertion.
+    expect(serializeDocToText(editor.state.doc).trim()).toBe(LINK)
+    // The overlay is cleared by the drop.
+    expect(screen.queryByText(OVERLAY)).toBeNull()
+  })
+
+  it("clears the overlay and inserts once when dropped on the editor surface", async () => {
+    const { editor, host } = await mountWithHost()
+    const textbox = host.querySelector('[role="textbox"]') as HTMLElement
+    const dt = treeDrag(PAYLOAD)
+
+    // Hover raises the overlay (container-level dragover)…
+    act(() => {
+      fireEvent.dragOver(host, { dataTransfer: dt })
+    })
+    expect(screen.queryByText(OVERLAY)).not.toBeNull()
+
+    // …then drop directly on the editor. Whether ProseMirror's handleDrop
+    // consumes it (stopping propagation) or it bubbles to the container, the
+    // result must be one reference and no lingering overlay — the regression
+    // being that an editor-consumed drop left the overlay stuck.
+    act(() => {
+      fireEvent.drop(textbox, { dataTransfer: dt })
+    })
+    await waitFor(() =>
+      expect(serializeDocToText(editor.state.doc)).toContain(LINK)
+    )
+    expect(serializeDocToText(editor.state.doc).trim()).toBe(LINK)
+    expect(screen.queryByText(OVERLAY)).toBeNull()
   })
 })
 

@@ -178,6 +178,34 @@ pub async fn import_local_conversations(
     ))
 }
 
+pub async fn scan_importable_sessions(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<ScanResult>, AppCommandError> {
+    Ok(Json(
+        conv_commands::scan_importable_sessions_core(&state.db.conn, &state.emitter).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSelectedSessionsParams {
+    pub selections: Vec<SelectedSessionKey>,
+}
+
+pub async fn import_selected_sessions(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<ImportSelectedSessionsParams>,
+) -> Result<Json<ImportSelectedResult>, AppCommandError> {
+    Ok(Json(
+        conv_commands::import_selected_sessions_core(
+            &state.db.conn,
+            &state.emitter,
+            params.selections,
+        )
+        .await?,
+    ))
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateConversationParams {

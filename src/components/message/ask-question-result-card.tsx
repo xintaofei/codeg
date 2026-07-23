@@ -106,7 +106,7 @@ export function AskQuestionResultCard({
     <div
       data-testid="ask-question-result-card"
       className={cn(
-        "mb-2 overflow-hidden rounded-xl border bg-card",
+        "mb-2 overflow-hidden rounded-xl border bg-card ws-msg-card",
         isError ? "border-destructive/30" : "border-primary/30"
       )}
     >
@@ -140,17 +140,24 @@ export function AskQuestionResultCard({
   }
 
   if (isInFlight) {
+    // A live pending question is answered through the PINNED AskQuestionCard
+    // (driven by the connection's `pendingAskQuestion`), not this in-stream
+    // record. Until the question text streams onto the wire, claude-agent-acp's
+    // arg-less initial `tool_call` leaves `input` empty, so `questions` is []:
+    // rendering the bare "awaiting your answer" placeholder here only stacks
+    // anonymous duplicates of the same wait — one per in-flight (or stranded)
+    // question call. Drop it; the card reappears with its Q&A the moment the
+    // input or the answer resolves, and the settled transcript is unaffected.
+    if (questions.length === 0) return null
     return shell(
       t("awaiting"),
-      questions.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5">
-          {questions.map((q, i) => (
-            <Badge key={i} variant="outline" className="text-[10px]">
-              {q.header || q.question}
-            </Badge>
-          ))}
-        </div>
-      ) : undefined
+      <div className="flex flex-wrap gap-1.5">
+        {questions.map((q, i) => (
+          <Badge key={i} variant="outline" className="text-[10px]">
+            {q.header || q.question}
+          </Badge>
+        ))}
+      </div>
     )
   }
 
@@ -207,7 +214,7 @@ export function AskQuestionResultCard({
       aria-expanded={expanded}
       data-testid="ask-question-result-card"
       className={cn(
-        "flex w-full items-center gap-2 rounded-full border border-primary/30 bg-card px-3 py-1.5 text-left transition-colors hover:bg-muted/40",
+        "flex w-full items-center gap-2 rounded-full border border-primary/30 bg-card ws-msg-card px-3 py-1.5 text-left transition-colors hover:bg-muted/40",
         !expanded && "mb-2"
       )}
     >

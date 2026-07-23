@@ -117,6 +117,29 @@
       "sectionTitle": "모드 선택 영역",
       "sectionDescription": "새 대화 페이지에서 입력창 위에 표시되는 '코드 개발 / 일상 업무' 바로가기 카드입니다.",
       "showQuickActions": "새 대화 페이지에 표시"
+    },
+    "workspaceBackground": {
+      "sectionTitle": "작업 공간 배경",
+      "sectionDescription": "작업 공간 전체 뒤에 이미지를 표시합니다. 사이드바와 패널이 반투명 유리 효과로 바뀌어 이미지가 비쳐 보이며, 마스크가 텍스트 가독성을 유지합니다.",
+      "enable": "배경 이미지 사용",
+      "image": "이미지",
+      "chooseImage": "이미지 선택",
+      "replaceImage": "이미지 변경",
+      "removeImage": "제거",
+      "fillMode": "채우기 방식",
+      "fillModes": {
+        "cover": "채우기",
+        "contain": "맞춤",
+        "center": "가운데",
+        "tile": "바둑판식"
+      },
+      "maskOpacity": "마스크 불투명도",
+      "maskOpacityHint": "값이 높을수록 이미지가 테마 배경색으로 흐려져 텍스트 대비가 좋아집니다.",
+      "imageBlur": "이미지 흐림",
+      "panelOpacity": "패널 불투명도",
+      "panelOpacityHint": "사이드바, 패널, 탭 바의 불투명도입니다. 낮을수록 이미지가 더 많이 비쳐 보입니다.",
+      "errorTooLarge": "이미지가 너무 큽니다(최대 16 MB).",
+      "errorUploadFailed": "배경 이미지 설정에 실패했습니다."
     }
   },
   "SystemSettings": {
@@ -588,7 +611,8 @@
       "saveCodeBuddyConfig": "CodeBuddy 구성 저장",
       "saveKimiCodeConfig": "Kimi Code 구성 저장",
       "customInstall": "사용자 지정 설치",
-      "saveKimiCodeRawConfig": "Save config.toml"
+      "saveKimiCodeRawConfig": "Save config.toml",
+      "diagnose": "진단"
     },
     "status": {
       "enabled": "활성화됨",
@@ -615,9 +639,17 @@
       "effortXhigh": "최대",
       "optionDefault": "기본값 사용",
       "authTitle": "인증",
+      "authMode": "인증 방식",
+      "authModeApiKey": "XAI API 키",
+      "authModeApiKeyHint": "xAI 콘솔의 XAI_API_KEY로 인증합니다. 비대화형·헤드리스 실행에 적합하며 이 에이전트의 환경 변수에 저장됩니다.",
+      "authModeCustom": "사용자 지정 엔드포인트",
+      "authModeCustomHint": "자체 엔드포인트(BYO)를 사용합니다. 아래에서 자체 base URL과 API 키를 가진 사용자 지정 모델을 정의하면 Grok의 기본 모델이 됩니다.",
+      "subscriptionHint": "`grok login`으로 로그인합니다(SuperGrok / X Premium+). API 키는 저장되지 않습니다.",
+      "loginHint": "터미널에서 다음 명령을 실행해 로그인한 뒤 이 설정을 다시 여세요:",
+      "commandCopied": "명령을 클립보드에 복사했습니다",
+      "copyCommand": "명령 복사",
       "authKeyConfigured": "XAI_API_KEY가 구성되어 있습니다.",
       "authKeyMissing": "XAI_API_KEY가 설정되지 않았습니다.",
-      "authLoginHint": "여기에서 XAI_API_KEY를 설정하거나 `grok login`으로 구독 로그인(SuperGrok / X Premium+)을 실행하세요.",
       "advancedToggle": "고급(원본 config.toml)",
       "configTomlNative": "config.toml(네이티브)",
       "configTomlHint": "~/.grok/config.toml 전체로 그대로 저장됩니다. 잘못된 TOML은 거부되어 오타로 파일이 잘리지 않습니다.",
@@ -639,6 +671,49 @@
       "customContextWindowHint": "선택 사항. 자동 압축 타이밍에 사용됩니다. 비워 두면 엔드포인트 기본값을 사용합니다.",
       "autoCompactLabel": "자동 압축 임계값(%)",
       "autoCompactHint": "컨텍스트 사용량이 이 비율에 도달하면 대화를 압축합니다(Grok 기본값 85). `[session]`에 기록됩니다."
+    },
+    "cursor": {
+      "configDescription": "여기에서 Cursor를 설정합니다. 먼저 인증 방식을 선택하세요——공식 구독(브라우저 로그인) 또는 헤드리스/서버용 Cursor API 키——그런 다음 모델을 선택하고 CLI의 권한 규칙과 샌드박스를 편집합니다. codeg는 이를 ~/.cursor/cli-config.json에 기록하며 cursor-agent CLI와 공유합니다.",
+      "authTitle": "인증",
+      "authChecking": "확인 중…",
+      "authNotInstalled": "cursor-agent가 설치되지 않았습니다",
+      "authLoggedIn": "로그인됨",
+      "authNotLoggedIn": "로그인되지 않음",
+      "loginHint": "터미널에서 아래 명령을 실행해 Cursor 계정으로 로그인(브라우저가 열립니다)한 뒤 새로고침을 누르세요:",
+      "apiKeyLabel": "Cursor API 키",
+      "apiKeyPlaceholder": "cursor.com/dashboard에서 발급",
+      "apiKeyHint": "CURSOR_API_KEY —— Cursor 대시보드의 계정 키로, 헤드리스/서버 환경에서 브라우저 로그인 대신 사용합니다. 서드파티나 OpenAI 키가 아닙니다.",
+      "modelTitle": "기본 모델",
+      "loadModels": "모델 목록 가져오기",
+      "modelsUnavailable": "모델 목록을 가져올 수 없음",
+      "modelHint": "세션 시작 시 --model로 CLI에 전달됩니다. 기본값이면 Cursor가 선택합니다.",
+      "permissionsTitle": "권한 및 샌드박스",
+      "permissionsDescription": "CLI 권한 규칙(cli-config.json)의 시각 편집기입니다. 허용 규칙은 확인 없이 실행되고 거부 규칙은 항상 차단됩니다.",
+      "permissionModeLabel": "권한 모드",
+      "permissionModeDefault": "실행 전 확인(기본)",
+      "permissionModeForce": "Run Everything(--force)",
+      "permissionModeHint": "Run Everything은 --force로 세션을 시작합니다. deny 규칙을 제외한 모든 도구 호출이 확인 없이 자동 허용됩니다(조직 정책에 따라 allow 규칙 일치로 제한될 수 있음). 새 세션부터 적용됩니다.",
+      "optionDefault": "기본(미설정)",
+      "sandboxLabel": "샌드박스",
+      "sandboxEnabled": "사용",
+      "sandboxDisabled": "사용 안 함",
+      "allowRulesLabel": "허용 규칙",
+      "denyRulesLabel": "거부 규칙",
+      "addRule": "규칙 추가",
+      "rulesSyntaxHint": "규칙 구문: Shell(명령), Read(경로/글롭), Write(경로/글롭), WebFetch(도메인), Mcp(서버:도구) — deny 규칙이 항상 우선합니다.",
+      "saveConfig": "설정 저장",
+      "advancedToggle": "고급: 원본 cli-config.json",
+      "advancedHint": "~/.cursor/cli-config.json 전체입니다. 여기서 저장하면 그대로 기록되며, 위 구조화 컨트롤은 병합 방식으로 기록됩니다.",
+      "saveRawConfig": "파일 저장",
+      "authMode": "인증 방식",
+      "subscriptionHint": "Cursor 계정으로 로그인하고 Cursor의 모델을 사용합니다.",
+      "customApiKeyRequired": "Cursor API 키가 필요합니다.",
+      "authModeApiKey": "Cursor API 키 (헤드리스/서버)",
+      "authModeApiKeyHint": "Cursor 대시보드에서 발급한 계정 API 키로 인증합니다(헤드리스/서버 환경용). 이는 Cursor 계정 키이며 서드파티/OpenAI 엔드포인트가 아닙니다——cursor-agent는 Cursor 자체 백엔드에만 연결됩니다. codex/OpenAI 호환 엔드포인트를 사용하려면 Codex 에이전트를 대신 사용하세요.",
+      "modelPickerPlaceholder": "모델 검색…",
+      "modelNoMatch": "일치하는 모델 없음",
+      "modelsNeedAuth": "로그인하면 모델 목록을 불러옵니다.",
+      "modelDefaultBadge": "기본값"
     },
     "codex": {
       "configDescription": "API URL, API Key, 모델 이름, reasoning effort를 빠르게 설정하고 `auth.json` / `config.toml`과 동기화합니다.",
@@ -921,6 +996,8 @@
       "grokSaved": "Grok 설정이 저장됨",
       "saveGrokNativeFailed": "Grok 네이티브 설정 저장 실패",
       "saveGrokApiKeyFailed": "설정은 저장되었지만 API 키를 저장하지 못했습니다",
+      "cursorSaved": "Cursor 설정이 저장되었습니다",
+      "saveCursorConfigFailed": "Cursor 설정 저장 실패",
       "codexSaved": "Codex 설정 저장됨",
       "saveCodexNativeFailed": "Codex 네이티브 구성 저장 실패",
       "geminiSaved": "Gemini 설정 저장됨",
@@ -1126,6 +1203,49 @@
     "applyLeftNonConflicting": "로컬 적용",
     "applyRightNonConflicting": "원격 적용"
   },
+  "ImportSessions": {
+    "title": "로컬 세션 가져오기",
+    "scanningTitle": "로컬 에이전트 세션 검색 중…",
+    "scanningHint": "각 에이전트의 로컬 세션 저장소를 탐색하고 있습니다. 기록이 많으면 시간이 걸릴 수 있습니다.",
+    "scanFailed": "검색 실패",
+    "retry": "다시 시도",
+    "rescan": "다시 검색",
+    "empty": "로컬 세션을 찾을 수 없습니다",
+    "emptyHint": "이 컴퓨터에서 에이전트 세션 저장소를 찾지 못했습니다.",
+    "noMatches": "현재 필터와 일치하는 세션이 없습니다",
+    "searchPlaceholder": "제목 또는 경로 검색…",
+    "allAgents": "모든 에이전트",
+    "onlyImportable": "가져오기 가능만",
+    "selectAll": "모두 선택",
+    "clearSelection": "지우기",
+    "expandAll": "모두 펼치기",
+    "collapseAll": "모두 접기",
+    "summaryCounts": "세션 {total}개 · 가져오기 가능 {importable}개 · 폴더 {folders}개",
+    "noFolderSkipped": "프로젝트 폴더가 없는 {count}개 건너뜀",
+    "folderNew": "신규",
+    "folderCounts": "가져오기 가능 {importable}/{total}",
+    "toggleFolderAria": "{name}의 가져오기 가능한 세션 모두 선택",
+    "toggleSessionAria": "세션 {title} 선택",
+    "statusImported": "가져옴",
+    "statusDeleted": "삭제됨",
+    "untitled": "제목 없는 세션",
+    "messageCount": "메시지 {count}개",
+    "selectedCount": "{count}개 선택됨",
+    "importSelected": "선택 항목 가져오기",
+    "importing": "가져오는 중…",
+    "close": "닫기",
+    "doneTitle": "가져오기 완료",
+    "doneImported": "가져옴",
+    "doneUpdated": "제목 갱신",
+    "doneSkipped": "건너뜀",
+    "doneCreatedFolders": "생성된 폴더",
+    "doneNotFound": "찾을 수 없음",
+    "doneFailed": "실패",
+    "continueImport": "계속 가져오기",
+    "toasts": {
+      "importFailed": "가져오기 실패: {message}"
+    }
+  },
   "Folder": {
     "workspaceStatus": {
       "degradedTitle": "실시간 업데이트를 사용할 수 없음",
@@ -1189,6 +1309,7 @@
         "removeFolderFailed": "폴더 제거 실패: {message}",
         "reorderFoldersFailed": "폴더 순서 변경 실패: {message}",
         "changeFolderColorFailed": "색상 변경 실패: {message}",
+        "setFolderAliasFailed": "별칭 설정 실패: {message}",
         "changeFolderDefaultAgentFailed": "기본 에이전트 설정 실패: {message}"
       },
       "statsLabel": "{folders}개 폴더 · {convos}개 대화",
@@ -1197,6 +1318,7 @@
       "searchPlaceholder": "대화 검색...",
       "viewOptions": "보기 옵션",
       "showCompleted": "완료된 대화 표시",
+      "showWorktrees": "워크트리 폴더 표시",
       "moreOptions": "더 많은 옵션",
       "sortBy": "정렬 기준",
       "sortByCreatedAt": "생성 시간순",
@@ -1220,6 +1342,11 @@
         "defaultAgentNone": "설정 없음(전역 사용)",
         "agentUnavailableSuffix": "(사용 불가)",
         "loadingAgents": "에이전트 로드 중…",
+        "setAlias": "별칭 설정…",
+        "setAliasTitle": "폴더 별칭 설정",
+        "setAliasPlaceholder": "별칭 입력 (비우면 지움)",
+        "setAliasSave": "저장",
+        "setAliasCancel": "취소",
         "removeFromWorkspace": "워크스페이스에서 제거"
       },
       "manageConversations": {
@@ -1247,6 +1374,7 @@
       "sectionFolders": "폴더",
       "sectionChats": "채팅",
       "noChats": "채팅 없음",
+      "noFolders": "열린 폴더 없음",
       "newChatAction": "새 채팅",
       "automations": "자동화",
       "loadingSubsessions": "하위 대화 로드 중…"
@@ -1289,10 +1417,12 @@
         "system": "시스템",
         "toolResult": "결과",
         "toolError": "오류"
-      }
+      },
+      "moreActions": "추가 작업"
     },
     "sessionDetails": {
       "menuLabel": "세션 세부 정보",
+      "noActiveSession": "활성 세션이 없습니다",
       "title": "세션 세부 정보",
       "subtitle": "세션 메타데이터 및 토큰 사용량",
       "fieldTitle": "제목",
@@ -1434,7 +1564,8 @@
       "preview": "미리보기",
       "editSource": "소스 편집",
       "maximize": "최대화",
-      "restore": "복원"
+      "restore": "복원",
+      "emptyDirectory": "빈 폴더"
     },
     "terminal": {
       "rename": "이름 변경",
@@ -1609,7 +1740,11 @@
         "confirmApply": "스태시 {ref}을(를) 작업 디렉토리에 적용하시겠습니까?",
         "cancel": "취소"
       },
-      "deleteBranch": "브랜치 삭제"
+      "deleteBranch": "브랜치 삭제",
+      "searchPlaceholder": "브랜치 및 작업 검색",
+      "searchAriaLabel": "브랜치 및 작업 검색",
+      "branchListLabel": "브랜치 및 작업",
+      "noMatches": "일치하는 항목 없음"
     },
     "commitDialog": {
       "toasts": {
@@ -1695,13 +1830,13 @@
       "copyMessage": "메시지 복사",
       "author": "작성자",
       "noFileChangeDetails": "파일 변경 상세 정보가 없습니다.",
+      "loadingFiles": "파일 로딩 중…",
       "branchesTitle": "브랜치",
       "loadingBranches": "브랜치 로딩 중...",
       "noContainingBranches": "포함하는 브랜치를 찾을 수 없습니다.",
       "newBranch": "새 브랜치...",
       "resetToHere": "여기로 리셋",
       "resetDisabledReasonNotCurrentBranchView": "현재 브랜치 보기에서만 사용할 수 있습니다",
-      "viewCommitDiffAria": "커밋 {hash}의 diff 보기",
       "copyFullCommitHashAria": "전체 커밋 해시 {hash} 복사",
       "pushStatus": {
         "pushed": "원격에 푸시됨",
@@ -1724,12 +1859,28 @@
         "resetSuccessDescription": "{branch}을(를) {mode}로 {shortHash}에 리셋했습니다",
         "resetFailed": "리셋 실패"
       },
+      "authorFilter": {
+        "label": "작성자",
+        "searchPlaceholder": "작성자 검색",
+        "noAuthors": "작성자를 찾을 수 없습니다",
+        "you": "나",
+        "filterByAuthorAria": "작성자별로 커밋 필터링",
+        "filterByQuery": "\"{query}\"(으)로 필터링",
+        "clearAuthorFilterAria": "작성자 필터 지우기",
+        "recent": "최근",
+        "matchingAuthors": "일치하는 작성자",
+        "removeFromRecent": "최근에서 {name} 제거"
+      },
       "branchSelector": {
+        "label": "브랜치",
+        "searchBranch": "브랜치 검색...",
+        "noBranches": "브랜치 없음",
         "selectBranchPlaceholder": "브랜치 선택...",
         "localBranches": "로컬 브랜치",
         "current": "현재",
         "remoteBranches": "원격 브랜치",
-        "refreshCommitHistory": "커밋 히스토리 새로고침"
+        "refreshCommitHistory": "커밋 히스토리 새로고침",
+        "clearBranchFilterAria": "브랜치 필터 지우기"
       },
       "dialogs": {
         "newBranchTitle": "새 브랜치",
@@ -1866,6 +2017,7 @@
         "addToVcsFailed": "VCS에 추가하지 못했습니다",
         "loadBranchesFailed": "브랜치를 불러오지 못했습니다",
         "renameFailed": "이름 변경에 실패했습니다",
+        "moveFailed": "이동에 실패했습니다",
         "deleteFailed": "삭제에 실패했습니다",
         "rolledBack": "{name}을(를) 롤백했습니다",
         "rollbackFailed": "롤백에 실패했습니다",
@@ -2157,7 +2309,8 @@
         "enableAgentFirstPlaceholder": "세션을 시작하기 전에 최소 한 개의 에이전트를 활성화하세요...",
         "prepareSessionFailed": "채팅 세션을 준비하지 못했습니다. 다시 시도해 주세요.",
         "createConversationFailed": "대화를 만들지 못했습니다. 다시 시도해 주세요.",
-        "askAnythingPlaceholder": "무엇이든 물어보세요..."
+        "askAnythingPlaceholder": "무엇이든 물어보세요...",
+        "agentNotInstalled": "{agent}이(가) 설치되지 않았습니다 · 클릭하여 Agents 설정에서 설치하세요"
       },
       "welcomePanel": {
         "greeting": "오늘은 <highlight>무엇을</highlight> 해볼까요?",
@@ -2257,7 +2410,8 @@
       },
       "agentSelector": {
         "noEnabledAgents": "활성화된 에이전트가 없습니다",
-        "openAgentsSettings": "에이전트 설정 열기"
+        "openAgentsSettings": "에이전트 설정 열기",
+        "notInstalled": "설치되지 않음"
       },
       "subAgentOverlay": {
         "title": "서브 에이전트",
@@ -2342,7 +2496,9 @@
         "tokenCacheWrite": "캐시 쓰기",
         "duration": "소요 시간",
         "completedAt": "완료 시각",
-        "jumpToPreviousUserMessage": "이전 사용자 메시지로 이동"
+        "jumpToPreviousUserMessage": "이전 사용자 메시지로 이동",
+        "showMore": "더보기",
+        "showLess": "접기"
       },
       "liveTurnStats": {
         "thinking": "생각 중...",
@@ -2660,7 +2816,7 @@
       "noFolders": "No folders",
       "noBranches": "No branches",
       "noBranch": "(no branch)",
-      "chatModeLabel": "폴더 없음 모드",
+      "chatModeLabel": "채팅 모드",
       "commit": "Commit",
       "push": "Push",
       "merge": "Merge",
@@ -3272,7 +3428,7 @@
       "deleteConfirm": "펫 \"{name}\"을(를) 삭제할까요? 디스크에서도 함께 제거됩니다.",
       "summon": "펫 창 호출",
       "openCodexHelp": "Codex 펫은 ~/.codex/pets/ 아래에 설치되어야 합니다. 찾을 수 없습니다.",
-      "specRequirement": "스프라이트 시트는 1536x1872 PNG 또는 WebP(투명) 이어야 합니다.",
+      "specRequirement": "스프라이트 시트는 너비 1536px, 높이는 208px의 배수(예: 1872 또는 2288)인 투명 PNG 또는 WebP여야 합니다.",
       "form": {
         "id": "펫 ID",
         "idHelp": "소문자/숫자/'-'/'_' 만 가능. 최대 64자.",
@@ -3836,5 +3992,27 @@
     "groupInstructions": "설명 및 시스템 프롬프트",
     "fieldDescription": "설명",
     "baseInstructions": "시스템 프롬프트(base_instructions)"
+  },
+  "DiagnosticsSettings": {
+    "title": "환경 진단",
+    "description": "이 앱이 자체 프로세스에서 에이전트 CLI를 어떻게 확인하는지 점검합니다(터미널과 다를 수 있음).",
+    "loading": "진단 실행 중…",
+    "error": "진단 실패",
+    "rerun": "다시 실행",
+    "copyAll": "전체 복사",
+    "copied": "진단 정보를 클립보드에 복사했습니다",
+    "button": "진단",
+    "verdict": {
+      "ok": "환경이 정상입니다. 그래도 설치되지 않았다고 표시되면 앱을 완전히 재시작하여 프리픽스 캐시를 새로 고치세요.",
+      "node_missing": "앱 PATH에서 Node.js를 찾을 수 없습니다.",
+      "npm_missing": "앱 PATH에서 npm을 찾을 수 없습니다.",
+      "not_installed": "이 에이전트가 설치되지 않은 것 같습니다.",
+      "installed_but_unresolved": "설치된 것으로 기록되어 있지만 앱이 실행 파일을 찾지 못합니다.",
+      "user_prefix_not_on_path": "폴백 프리픽스(~/.codeg/npm-global)에 설치되었지만 앱 PATH에 없습니다. 앱을 완전히 재시작한 후 다시 시도하세요.",
+      "homebrew_bin_not_on_path": "Homebrew bin에 설치되었지만 앱 PATH에 없습니다(Apple Silicon keg 분리).",
+      "terminal_only_path": "이 명령은 터미널에서는 확인되지만 앱에서는 확인되지 않습니다. GUI PATH 불일치입니다. 터미널에서 앱을 실행하거나 에이전트 설정에서 다시 설치하세요.",
+      "npm_prefix_timeout": "npm prefix -g가 너무 느립니다(1.5초 초과). 폴백 감지를 건너뛰었습니다. 앱을 재시작한 후 다시 시도하세요.",
+      "node_too_old": "현재 Node.js가 이 에이전트의 요구 버전보다 낮습니다. Node.js를 업그레이드하세요."
+    }
   }
 }

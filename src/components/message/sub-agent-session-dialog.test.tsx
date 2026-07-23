@@ -405,7 +405,7 @@ describe("SubAgentSessionDialog", () => {
     expect(list).toHaveAttribute("data-has-on-reload", "false")
     expect(list).toHaveAttribute("data-has-on-new-session", "false")
     expect(list).toHaveAttribute("data-has-send-signal", "false")
-    // isActive=false suppresses session-stats side effects on the active panel.
+    // isActive=false marks this as a passive embed, not the live active panel.
     expect(list).toHaveAttribute("data-is-active", "false")
     expect(list).toHaveAttribute("data-conversation-id", "99")
   })

@@ -117,6 +117,29 @@
       "sectionTitle": "模式选择区域",
       "sectionDescription": "新会话页面输入框上方显示的「代码开发 / 日常办公」快捷卡片区域。",
       "showQuickActions": "在新会话页面显示"
+    },
+    "workspaceBackground": {
+      "sectionTitle": "工作区背景",
+      "sectionDescription": "在整个工作区背后显示一张图片。侧栏与面板会变半透明并磨砂让图片透出，遮罩保证文字可读。",
+      "enable": "启用背景图片",
+      "image": "图片",
+      "chooseImage": "选择图片",
+      "replaceImage": "更换图片",
+      "removeImage": "移除",
+      "fillMode": "填充方式",
+      "fillModes": {
+        "cover": "覆盖",
+        "contain": "适应",
+        "center": "居中",
+        "tile": "平铺"
+      },
+      "maskOpacity": "遮罩不透明度",
+      "maskOpacityHint": "数值越高，图片越向主题背景色淡化，文字对比越清晰。",
+      "imageBlur": "图片模糊",
+      "panelOpacity": "面板不透明度",
+      "panelOpacityHint": "侧栏、面板与标签栏的不透明程度。越低，透出的图片越多。",
+      "errorTooLarge": "图片太大（最大 16 MB）。",
+      "errorUploadFailed": "设置背景图片失败。"
     }
   },
   "SystemSettings": {
@@ -588,7 +611,8 @@
       "saveCodeBuddyConfig": "保存 CodeBuddy 配置",
       "saveKimiCodeConfig": "保存 Kimi Code 配置",
       "customInstall": "自定义安装",
-      "saveKimiCodeRawConfig": "保存 config.toml"
+      "saveKimiCodeRawConfig": "保存 config.toml",
+      "diagnose": "诊断"
     },
     "status": {
       "enabled": "启用",
@@ -615,9 +639,17 @@
       "effortXhigh": "最高",
       "optionDefault": "使用默认",
       "authTitle": "认证",
+      "authMode": "认证方式",
+      "authModeApiKey": "XAI API 密钥",
+      "authModeApiKeyHint": "使用 xAI 控制台的 XAI_API_KEY 认证——适用于非交互/无头运行。保存在该智能体的环境变量中。",
+      "authModeCustom": "自定义接口",
+      "authModeCustomHint": "使用自定义接口（BYO 端点）：在下方定义一个带有独立 base URL 和 API 密钥的自定义模型，它将成为 Grok 的默认模型。",
+      "subscriptionHint": "使用 `grok login` 登录（SuperGrok / X Premium+）。不保存 API 密钥。",
+      "loginHint": "在终端运行以下命令登录，然后重新打开此设置：",
+      "commandCopied": "命令已复制到剪贴板",
+      "copyCommand": "复制命令",
       "authKeyConfigured": "已配置 XAI_API_KEY。",
       "authKeyMissing": "未设置 XAI_API_KEY。",
-      "authLoginHint": "在此设置 XAI_API_KEY，或运行 `grok login` 进行订阅登录（SuperGrok / X Premium+）。",
       "advancedToggle": "高级（原始 config.toml）",
       "configTomlNative": "config.toml（原生）",
       "configTomlHint": "按原样整体写入 ~/.grok/config.toml。非法 TOML 会被拒绝，绝不因笔误截断文件。",
@@ -639,6 +671,49 @@
       "customContextWindowHint": "可选。用于自动压缩计时；留空则使用端点默认值。",
       "autoCompactLabel": "自动压缩阈值（%）",
       "autoCompactHint": "当上下文使用率达到该百分比时压缩对话（Grok 默认 85）。写入 `[session]`。"
+    },
+    "cursor": {
+      "configDescription": "在此配置 Cursor。先选择认证方式——官网订阅（浏览器登录）或用于无头/服务器的 Cursor API 密钥——然后选择模型并编辑 CLI 的权限规则与沙箱。codeg 会写入 ~/.cursor/cli-config.json，与 cursor-agent CLI 共享。",
+      "authTitle": "鉴权",
+      "authChecking": "检测中…",
+      "authNotInstalled": "cursor-agent 未安装",
+      "authLoggedIn": "已登录",
+      "authNotLoggedIn": "未登录",
+      "loginHint": "在终端运行以下命令登录 Cursor 账号（会打开浏览器），完成后点刷新：",
+      "apiKeyLabel": "Cursor API 密钥",
+      "apiKeyPlaceholder": "在 cursor.com/dashboard 获取",
+      "apiKeyHint": "CURSOR_API_KEY —— Cursor Dashboard 的账号密钥，在无头/服务器环境下替代浏览器登录。不是第三方或 OpenAI 密钥。",
+      "modelTitle": "默认模型",
+      "loadModels": "获取模型列表",
+      "modelsUnavailable": "模型列表不可用",
+      "modelHint": "会话启动时通过 --model 传给 CLI；保持默认则由 Cursor 自行选择。",
+      "permissionsTitle": "权限与沙箱",
+      "permissionsDescription": "可视化编辑 CLI 权限规则（cli-config.json）。允许规则免确认执行；拒绝规则始终拦截。",
+      "permissionModeLabel": "权限模式",
+      "permissionModeDefault": "执行前询问（默认）",
+      "permissionModeForce": "全部放行 Run Everything（--force）",
+      "permissionModeHint": "Run Everything 以 --force 启动会话：除 deny 规则外的所有工具调用自动放行、不再弹确认（组织策略可能将其降级为仅按 allow 规则放行）。对新会话生效。",
+      "optionDefault": "默认（未设置）",
+      "sandboxLabel": "沙箱",
+      "sandboxEnabled": "启用",
+      "sandboxDisabled": "禁用",
+      "allowRulesLabel": "允许规则",
+      "denyRulesLabel": "拒绝规则",
+      "addRule": "添加规则",
+      "rulesSyntaxHint": "规则语法：Shell(命令)、Read(路径/通配)、Write(路径/通配)、WebFetch(域名)、Mcp(服务器:工具)——deny 规则始终优先。",
+      "saveConfig": "保存配置",
+      "advancedToggle": "高级：原始 cli-config.json",
+      "advancedHint": "完整的 ~/.cursor/cli-config.json。此处保存按原文写入；上方结构化控件则以合并方式写入。",
+      "saveRawConfig": "保存文件",
+      "authMode": "认证方式",
+      "subscriptionHint": "使用 Cursor 账号登录，使用 Cursor 的模型。",
+      "customApiKeyRequired": "需要填写 Cursor API 密钥。",
+      "authModeApiKey": "Cursor API 密钥（无头/服务器）",
+      "authModeApiKeyHint": "用 Cursor 官网 Dashboard 生成的账号 API 密钥认证（适用于无头/服务器环境）。这是 Cursor 账号密钥，不是第三方/OpenAI 端点——cursor-agent 只连 Cursor 自己的后端。要使用 codex/OpenAI 兼容端点，请改用 Codex 智能体。",
+      "modelPickerPlaceholder": "搜索模型…",
+      "modelNoMatch": "没有匹配的模型",
+      "modelsNeedAuth": "登录后加载模型列表。",
+      "modelDefaultBadge": "默认"
     },
     "codex": {
       "configDescription": "支持 API URL、API Key、模型名称、Reasoning Effort 快捷配置，并与 `auth.json` / `config.toml` 双向联动。",
@@ -921,6 +996,8 @@
       "grokSaved": "Grok 配置已保存",
       "saveGrokNativeFailed": "保存 Grok 原生配置失败",
       "saveGrokApiKeyFailed": "设置已保存，但 API Key 未能保存",
+      "cursorSaved": "Cursor 配置已保存",
+      "saveCursorConfigFailed": "保存 Cursor 配置失败",
       "codexSaved": "Codex 配置已保存",
       "saveCodexNativeFailed": "保存 Codex 原生配置失败",
       "geminiSaved": "Gemini 配置已保存",
@@ -1126,6 +1203,49 @@
     "applyLeftNonConflicting": "应用本地",
     "applyRightNonConflicting": "应用远程"
   },
+  "ImportSessions": {
+    "title": "导入本地会话",
+    "scanningTitle": "正在扫描本地智能体会话…",
+    "scanningHint": "正在遍历各智能体的本地会话存储，历史较多时可能需要一些时间。",
+    "scanFailed": "扫描失败",
+    "retry": "重试",
+    "rescan": "重新扫描",
+    "empty": "未发现本地会话",
+    "emptyHint": "本机未找到任何智能体的会话存储。",
+    "noMatches": "没有匹配当前筛选的会话",
+    "searchPlaceholder": "搜索标题或路径…",
+    "allAgents": "全部智能体",
+    "onlyImportable": "仅显示可导入",
+    "selectAll": "全选",
+    "clearSelection": "清空",
+    "expandAll": "全部展开",
+    "collapseAll": "全部折叠",
+    "summaryCounts": "共 {total} 个会话 · {importable} 个可导入 · {folders} 个文件夹",
+    "noFolderSkipped": "已跳过 {count} 个无项目目录的会话",
+    "folderNew": "新建",
+    "folderCounts": "可导入 {importable}/{total}",
+    "toggleFolderAria": "选择 {name} 中的全部可导入会话",
+    "toggleSessionAria": "选择会话 {title}",
+    "statusImported": "已导入",
+    "statusDeleted": "已删除",
+    "untitled": "未命名会话",
+    "messageCount": "{count} 条消息",
+    "selectedCount": "已选 {count} 个",
+    "importSelected": "导入所选",
+    "importing": "导入中…",
+    "close": "关闭",
+    "doneTitle": "导入完成",
+    "doneImported": "新导入",
+    "doneUpdated": "标题已刷新",
+    "doneSkipped": "已跳过",
+    "doneCreatedFolders": "新建文件夹",
+    "doneNotFound": "未找到",
+    "doneFailed": "失败",
+    "continueImport": "继续导入",
+    "toasts": {
+      "importFailed": "导入失败：{message}"
+    }
+  },
   "Folder": {
     "workspaceStatus": {
       "degradedTitle": "实时更新不可用",
@@ -1189,6 +1309,7 @@
         "removeFolderFailed": "移除文件夹失败：{message}",
         "reorderFoldersFailed": "重新排序文件夹失败：{message}",
         "changeFolderColorFailed": "修改颜色失败：{message}",
+        "setFolderAliasFailed": "设置别名失败：{message}",
         "changeFolderDefaultAgentFailed": "设置默认智能体失败：{message}"
       },
       "statsLabel": "{folders} 个文件夹 · {convos} 个会话",
@@ -1197,6 +1318,7 @@
       "searchPlaceholder": "搜索会话...",
       "viewOptions": "显示选项",
       "showCompleted": "显示已完成会话",
+      "showWorktrees": "显示工作树文件夹",
       "moreOptions": "更多选项",
       "sortBy": "排序方式",
       "sortByCreatedAt": "按创建时间排序",
@@ -1220,6 +1342,11 @@
         "defaultAgentNone": "不设置（使用全局默认）",
         "agentUnavailableSuffix": "（不可用）",
         "loadingAgents": "正在加载代理…",
+        "setAlias": "设置别名…",
+        "setAliasTitle": "设置文件夹别名",
+        "setAliasPlaceholder": "输入别名（留空清除）",
+        "setAliasSave": "保存",
+        "setAliasCancel": "取消",
         "removeFromWorkspace": "从工作区移除"
       },
       "manageConversations": {
@@ -1247,6 +1374,7 @@
       "sectionFolders": "文件夹",
       "sectionChats": "聊天",
       "noChats": "没有聊天",
+      "noFolders": "没有打开的文件夹",
       "newChatAction": "新建聊天",
       "automations": "自动化",
       "loadingSubsessions": "正在加载子会话…"
@@ -1289,10 +1417,12 @@
         "system": "系统",
         "toolResult": "结果",
         "toolError": "错误"
-      }
+      },
+      "moreActions": "更多操作"
     },
     "sessionDetails": {
       "menuLabel": "会话详情",
+      "noActiveSession": "暂无活动会话",
       "title": "会话详情",
       "subtitle": "会话元信息与 Token 用量",
       "fieldTitle": "标题",
@@ -1434,7 +1564,8 @@
       "preview": "预览",
       "editSource": "编辑源码",
       "maximize": "最大化",
-      "restore": "还原"
+      "restore": "还原",
+      "emptyDirectory": "空目录"
     },
     "terminal": {
       "rename": "重命名",
@@ -1609,7 +1740,11 @@
         "confirmApply": "将贮藏 {ref} 应用到工作目录？",
         "cancel": "取消"
       },
-      "deleteBranch": "删除分支"
+      "deleteBranch": "删除分支",
+      "searchPlaceholder": "搜索分支和操作",
+      "searchAriaLabel": "搜索分支和操作",
+      "branchListLabel": "分支和操作",
+      "noMatches": "无匹配项"
     },
     "commitDialog": {
       "toasts": {
@@ -1695,13 +1830,13 @@
       "copyMessage": "复制提交消息",
       "author": "作者",
       "noFileChangeDetails": "暂无文件变更详情。",
+      "loadingFiles": "正在加载文件…",
       "branchesTitle": "分支",
       "loadingBranches": "正在加载分支...",
       "noContainingBranches": "未找到包含此提交的分支。",
       "newBranch": "新建分支...",
       "resetToHere": "重置到此处",
       "resetDisabledReasonNotCurrentBranchView": "仅在查看当前分支时可用",
-      "viewCommitDiffAria": "查看提交 {hash} 的差异",
       "copyFullCommitHashAria": "复制完整提交哈希 {hash}",
       "pushStatus": {
         "pushed": "已推送到远程",
@@ -1724,12 +1859,28 @@
         "resetSuccessDescription": "已将 {branch} 以 {mode} 重置到 {shortHash}",
         "resetFailed": "重置失败"
       },
+      "authorFilter": {
+        "label": "作者",
+        "searchPlaceholder": "搜索作者",
+        "noAuthors": "未找到作者",
+        "you": "你",
+        "filterByAuthorAria": "按作者筛选提交",
+        "filterByQuery": "按“{query}”过滤",
+        "clearAuthorFilterAria": "清除作者过滤",
+        "recent": "最近",
+        "matchingAuthors": "匹配的作者",
+        "removeFromRecent": "从最近列表移除 {name}"
+      },
       "branchSelector": {
+        "label": "分支",
+        "searchBranch": "搜索分支...",
+        "noBranches": "无分支",
         "selectBranchPlaceholder": "选择分支...",
         "localBranches": "本地分支",
         "current": "当前",
         "remoteBranches": "远程分支",
-        "refreshCommitHistory": "刷新提交记录"
+        "refreshCommitHistory": "刷新提交记录",
+        "clearBranchFilterAria": "清除分支过滤"
       },
       "dialogs": {
         "newBranchTitle": "新建分支",
@@ -1866,6 +2017,7 @@
         "addToVcsFailed": "添加到 VCS 失败",
         "loadBranchesFailed": "加载分支失败",
         "renameFailed": "重命名失败",
+        "moveFailed": "移动失败",
         "deleteFailed": "删除失败",
         "rolledBack": "已回滚 {name}",
         "rollbackFailed": "回滚失败",
@@ -2157,7 +2309,8 @@
         "enableAgentFirstPlaceholder": "请先启用至少一个 Agent 后开始会话...",
         "prepareSessionFailed": "无法准备聊天会话，请重试。",
         "createConversationFailed": "无法创建会话，请重试。",
-        "askAnythingPlaceholder": "请开始输入..."
+        "askAnythingPlaceholder": "请开始输入...",
+        "agentNotInstalled": "{agent} 尚未安装 · 点击前往 Agents 设置安装"
       },
       "welcomePanel": {
         "greeting": "今天准备<highlight>做些什么</highlight>呢？",
@@ -2257,7 +2410,8 @@
       },
       "agentSelector": {
         "noEnabledAgents": "暂无已启用的 Agent",
-        "openAgentsSettings": "打开 Agents 设置"
+        "openAgentsSettings": "打开 Agents 设置",
+        "notInstalled": "未安装"
       },
       "subAgentOverlay": {
         "title": "子智能体",
@@ -2342,7 +2496,9 @@
         "tokenCacheWrite": "缓存写入",
         "duration": "耗时",
         "completedAt": "完成时间",
-        "jumpToPreviousUserMessage": "跳转到上一条用户消息"
+        "jumpToPreviousUserMessage": "跳转到上一条用户消息",
+        "showMore": "展开",
+        "showLess": "收起"
       },
       "liveTurnStats": {
         "thinking": "思考中...",
@@ -2660,7 +2816,7 @@
       "noFolders": "暂无文件夹",
       "noBranches": "暂无分支",
       "noBranch": "（无分支）",
-      "chatModeLabel": "无文件夹模式",
+      "chatModeLabel": "聊天模式",
       "commit": "提交",
       "push": "推送",
       "merge": "合并",
@@ -3284,7 +3440,7 @@
       "deleteConfirm": "确认删除宠物 \"{name}\" 吗？会从磁盘上一并移除。",
       "summon": "召唤宠物窗口",
       "openCodexHelp": "Codex 宠物需位于 ~/.codex/pets/ 目录下,但未找到。",
-      "specRequirement": "精灵图必须是 1536x1872 像素的带透明通道 PNG 或 WebP。",
+      "specRequirement": "精灵图宽度必须为 1536 像素，高度需为 208 像素的整数倍（如 1872 或 2288），并为带透明通道的 PNG 或 WebP。",
       "form": {
         "id": "宠物 ID",
         "idHelp": "仅允许小写字母、数字、'-' 和 '_',最多 64 字符。",
@@ -3836,5 +3992,27 @@
     "groupInstructions": "描述与系统提示词",
     "fieldDescription": "描述",
     "baseInstructions": "系统提示词（base_instructions）"
+  },
+  "DiagnosticsSettings": {
+    "title": "环境诊断",
+    "description": "检查本应用在自身进程中如何解析该智能体的 CLI——这可能与你的终端不同。",
+    "loading": "正在运行诊断…",
+    "error": "诊断失败",
+    "rerun": "重新运行",
+    "copyAll": "复制全部",
+    "copied": "诊断信息已复制到剪贴板",
+    "button": "诊断",
+    "verdict": {
+      "ok": "环境正常。若仍提示未安装，请彻底重启应用以刷新前缀缓存。",
+      "node_missing": "在应用的 PATH 上未找到 Node.js。",
+      "npm_missing": "在应用的 PATH 上未找到 npm。",
+      "not_installed": "该智能体似乎尚未安装。",
+      "installed_but_unresolved": "记录显示已安装，但应用无法定位其可执行文件。",
+      "user_prefix_not_on_path": "安装到了回退前缀（~/.codeg/npm-global），但它不在应用的 PATH 上。请彻底重启应用后重试。",
+      "homebrew_bin_not_on_path": "安装在 Homebrew 的 bin 目录下，但它不在应用的 PATH 上（Apple Silicon keg 拆分）。",
+      "terminal_only_path": "该命令在你的终端能解析，但在应用中不能——这是 GUI PATH 差异。请从终端启动应用，或在智能体设置中重新安装。",
+      "npm_prefix_timeout": "npm prefix -g 太慢（超过 1.5 秒），已跳过回退检测。请重启应用后重试。",
+      "node_too_old": "当前 Node.js 版本低于该智能体的要求。请升级 Node.js。"
+    }
   }
 }

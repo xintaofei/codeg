@@ -15,21 +15,44 @@ use crate::db::service::app_metadata_service;
 use crate::db::AppDatabase;
 use crate::models::FolderDetail;
 
-/// Base traffic-light position (logical px) at 100 % zoom.
+/// Base traffic-light position (logical px) at 100 % zoom, tuned for the
+/// standard h-8 (32px) overlay title bar shared by the auxiliary windows
+/// (commit / merge / push / stash / settings / …).
 #[cfg(target_os = "macos")]
 const TRAFFIC_LIGHT_X: f64 = 12.0;
 #[cfg(target_os = "macos")]
 const TRAFFIC_LIGHT_Y: f64 = 17.0;
+/// The workspace windows (local `main` + remote workspace) render the taller
+/// h-10 (40px) `FolderTitleBar` that hosts the relocated conversation + file
+/// tab strips, so their traffic lights sit ~4px lower to stay vertically
+/// centred within the taller bar.
+#[cfg(target_os = "macos")]
+const WORKSPACE_TRAFFIC_LIGHT_Y: f64 = 21.0;
 
 #[cfg(target_os = "macos")]
 static CURRENT_ZOOM: AtomicU32 = AtomicU32::new(100);
 
 #[cfg(target_os = "macos")]
-fn traffic_light_position() -> tauri::LogicalPosition<f64> {
+fn traffic_light_position_at(base_y: f64) -> tauri::LogicalPosition<f64> {
     let zoom = CURRENT_ZOOM.load(AtomicOrdering::Relaxed) as f64;
     // Only Y scales with zoom: overlay content shifts vertically with
     // font-size changes, but the horizontal inset remains constant.
-    tauri::LogicalPosition::new(TRAFFIC_LIGHT_X, TRAFFIC_LIGHT_Y * zoom / 100.0)
+    tauri::LogicalPosition::new(TRAFFIC_LIGHT_X, base_y * zoom / 100.0)
+}
+
+/// Traffic-light position for the shared/auxiliary windows (standard bar).
+#[cfg(target_os = "macos")]
+fn traffic_light_position() -> tauri::LogicalPosition<f64> {
+    traffic_light_position_at(TRAFFIC_LIGHT_Y)
+}
+
+/// Traffic-light position for the workspace windows (taller bar): the local
+/// `main` window and every remote workspace window, both of which load the
+/// `/workspace` route. macOS only; call sites are guarded with
+/// `#[cfg(target_os = "macos")]`.
+#[cfg(target_os = "macos")]
+pub(crate) fn workspace_window_traffic_light_position() -> tauri::LogicalPosition<f64> {
+    traffic_light_position_at(WORKSPACE_TRAFFIC_LIGHT_Y)
 }
 
 const ZOOM_LEVEL_DB_KEY: &str = "appearance_zoom_level";
@@ -421,6 +444,7 @@ struct WindowTitles {
     stash: &'static str,
     push: &'static str,
     project_boot: &'static str,
+    import_sessions: &'static str,
 }
 
 fn window_titles_for(locale: crate::models::system::AppLocale) -> WindowTitles {
@@ -433,6 +457,7 @@ fn window_titles_for(locale: crate::models::system::AppLocale) -> WindowTitles {
             stash: "储藏",
             push: "推送",
             project_boot: "项目启动器",
+            import_sessions: "导入本地会话",
         },
         AppLocale::ZhTw => WindowTitles {
             settings: "設定",
@@ -441,6 +466,7 @@ fn window_titles_for(locale: crate::models::system::AppLocale) -> WindowTitles {
             stash: "暫存",
             push: "推送",
             project_boot: "專案啟動器",
+            import_sessions: "匯入本機工作階段",
         },
         AppLocale::Ja => WindowTitles {
             settings: "設定",
@@ -449,6 +475,7 @@ fn window_titles_for(locale: crate::models::system::AppLocale) -> WindowTitles {
             stash: "スタッシュ",
             push: "プッシュ",
             project_boot: "プロジェクトブート",
+            import_sessions: "ローカルセッションをインポート",
         },
         AppLocale::Ko => WindowTitles {
             settings: "설정",
@@ -457,6 +484,7 @@ fn window_titles_for(locale: crate::models::system::AppLocale) -> WindowTitles {
             stash: "스태시",
             push: "푸시",
             project_boot: "프로젝트 부트",
+            import_sessions: "로컬 세션 가져오기",
         },
         AppLocale::Es => WindowTitles {
             settings: "Configuración",
@@ -465,6 +493,7 @@ fn window_titles_for(locale: crate::models::system::AppLocale) -> WindowTitles {
             stash: "Reserva",
             push: "Enviar",
             project_boot: "Inicio de Proyecto",
+            import_sessions: "Importar sesiones locales",
         },
         AppLocale::De => WindowTitles {
             settings: "Einstellungen",
@@ -473,6 +502,7 @@ fn window_titles_for(locale: crate::models::system::AppLocale) -> WindowTitles {
             stash: "Stash",
             push: "Push",
             project_boot: "Projekt-Starter",
+            import_sessions: "Lokale Sitzungen importieren",
         },
         AppLocale::Fr => WindowTitles {
             settings: "Paramètres",
@@ -481,6 +511,7 @@ fn window_titles_for(locale: crate::models::system::AppLocale) -> WindowTitles {
             stash: "Réserve",
             push: "Pousser",
             project_boot: "Lanceur de projet",
+            import_sessions: "Importer les sessions locales",
         },
         AppLocale::Pt => WindowTitles {
             settings: "Configurações",
@@ -489,6 +520,7 @@ fn window_titles_for(locale: crate::models::system::AppLocale) -> WindowTitles {
             stash: "Stash",
             push: "Enviar",
             project_boot: "Inicializador de Projeto",
+            import_sessions: "Importar sessões locais",
         },
         AppLocale::Ar => WindowTitles {
             settings: "الإعدادات",
@@ -497,6 +529,7 @@ fn window_titles_for(locale: crate::models::system::AppLocale) -> WindowTitles {
             stash: "إخفاء",
             push: "دفع",
             project_boot: "مُنشئ المشروع",
+            import_sessions: "استيراد الجلسات المحلية",
         },
         AppLocale::En => WindowTitles {
             settings: "Settings",
@@ -505,6 +538,7 @@ fn window_titles_for(locale: crate::models::system::AppLocale) -> WindowTitles {
             stash: "Stash",
             push: "Push",
             project_boot: "Project Boot",
+            import_sessions: "Import Local Sessions",
         },
     }
 }
@@ -702,6 +736,92 @@ pub async fn open_settings_window(
     settings_window
         .set_focus()
         .map_err(|e| AppCommandError::window("Failed to focus settings window", e.to_string()))?;
+    Ok(())
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn open_import_sessions_window(
+    app: AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    focus_path: Option<String>,
+    locale: Option<crate::models::system::AppLocale>,
+    remote_connection_id: Option<i32>,
+) -> Result<(), AppCommandError> {
+    let label = match remote_connection_id {
+        Some(remote_id) => format!("remote-import-sessions-{remote_id}"),
+        None => "import-sessions".to_string(),
+    };
+
+    let trimmed_focus = focus_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty());
+
+    if let Some(existing) = app.get_webview_window(&label) {
+        // Re-anchor an already-open picker to the newly requested folder (the
+        // folder context-menu entry passes its path) by navigating the existing
+        // webview, mirroring the settings window's eval-nav on reuse. Preserve
+        // the window's existing remote context. The global entry (no focus_path)
+        // just refocuses so an in-progress selection is never reset.
+        if let Some(path) = trimmed_focus {
+            let existing_remote_window_id = remote_window_id_from_window(&existing);
+            let route = append_remote_context(
+                append_query_param(
+                    "import-sessions".to_string(),
+                    "focusPath",
+                    &urlencoding::encode(path),
+                ),
+                remote_connection_id,
+                existing_remote_window_id.as_deref(),
+            );
+            let target_path = format!("/{route}");
+            let target_json = serde_json::to_string(&target_path).map_err(|e| {
+                AppCommandError::window(
+                    "Failed to build import navigation target",
+                    e.to_string(),
+                )
+            })?;
+            existing
+                .eval(format!("window.location.replace({target_json});"))
+                .map_err(|e| {
+                    AppCommandError::window(
+                        "Failed to navigate import sessions window",
+                        e.to_string(),
+                    )
+                })?;
+        }
+        let _ = existing.unminimize();
+        existing.set_focus().map_err(|e| {
+            AppCommandError::window("Failed to focus import sessions window", e.to_string())
+        })?;
+        return Ok(());
+    }
+
+    let titles = resolve_window_titles(&db.conn, locale).await;
+    let mut route = "import-sessions".to_string();
+    if let Some(path) = trimmed_focus {
+        // `append_query_param` does not percent-encode, and filesystem paths
+        // carry '&'/'#'/'?'-hostile characters — encode explicitly.
+        route = append_query_param(route, "focusPath", &urlencoding::encode(path));
+    }
+    let (url_str, remote_window_id) = route_with_new_remote_window(route, remote_connection_id);
+    let url = WebviewUrl::App(url_str.into());
+    let builder = WebviewWindowBuilder::new(&app, &label, url)
+        .title(titles.import_sessions)
+        .inner_size(1080.0, 720.0)
+        .min_inner_size(860.0, 560.0)
+        .center();
+    // Independent top-level window — same rationale as settings: `.parent()`
+    // on macOS would make it move/minimize together with the opener.
+    let import_window = apply_platform_window_style(builder).build().map_err(|e| {
+        AppCommandError::window("Failed to open import sessions window", e.to_string())
+    })?;
+    register_remote_window_cleanup(&app, &import_window, remote_window_id.as_deref());
+    post_window_setup(&import_window);
+    import_window.set_focus().map_err(|e| {
+        AppCommandError::window("Failed to focus import sessions window", e.to_string())
+    })?;
     Ok(())
 }
 
