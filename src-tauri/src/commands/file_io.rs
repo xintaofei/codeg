@@ -112,20 +112,20 @@ fn looks_like_filesystem_path(app: &str) -> bool {
 fn editor_launch_candidates(editor: &str) -> Vec<String> {
     #[cfg(target_os = "macos")]
     {
-        return if editor == "vscode" {
+        if editor == "vscode" {
             vec!["Visual Studio Code".into()]
         } else {
             vec!["Cursor".into()]
-        };
+        }
     }
 
     #[cfg(target_os = "linux")]
     {
-        return if editor == "vscode" {
+        if editor == "vscode" {
             vec!["code".into(), "code-insiders".into()]
         } else {
             vec!["cursor".into()]
-        };
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -182,7 +182,7 @@ fn editor_launch_candidates(editor: &str) -> Vec<String> {
             out.push("cursor.cmd".into());
             out.push("cursor".into());
         }
-        return out;
+        out
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
