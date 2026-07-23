@@ -157,12 +157,12 @@ export interface ConversationRuntimeSession {
   // promotion time. Consumed by `isPureViewerSession`.
   lastTurnOwned: boolean
 
-  // Read-only delegation-child viewer marker. When true, `getTimelineTurns`
-  // suppresses the persisted copy of the (single) reply turn while this
-  // session has a live or just-promoted reply — so the sub-agent dialog shows
-  // the kickoff + live/local reply exactly once, never a persisted partial
-  // beside the live stream. Off for normal panels (which never set it), so
-  // their multi-turn history is untouched. See `getTimelineTurns`.
+  // Read-only multi-turn delegation-child viewer marker. When true,
+  // `getTimelineTurns` suppresses only the CURRENT reply's persisted partial
+  // while this session has a live or just-promoted reply — so the sub-agent
+  // dialog keeps prior continue history and never shows a persisted partial
+  // beside the live stream. Off for normal panels (which never set it).
+  // See `getTimelineTurns`.
   liveOwnsActiveTurn: boolean
 
   // Known kickoff prompt text for a delegation-child viewer (the parent's
@@ -2380,28 +2380,47 @@ function computeTimelinePrefix(
 
   // Phase 1: DB historical turns.
   // When liveOwnsActiveTurn is set (sub-agent dialog), the live/local reply
-  // is authoritative for the child's current (only) reply. Strip any
-  // persisted assistant turns while there's a live or just-promoted local
-  // reply in this session — only the kickoff prefix (everything before the
-  // first assistant turn) is shown from the DB. This eliminates the
-  // partial-plus-live duplicate for all timing scenarios, including a
-  // connection-id-null open where we can't read the live store during fetch.
+  // is authoritative for the child's CURRENT reply. Hide only the persisted
+  // partial of THAT reply so it does not double-render beside the stream —
+  // do NOT strip earlier completed turns. `continue_with_session` makes
+  // children multi-turn: history before the latest user prompt must stay
+  // visible while the follow-up streams.
   //
-  // Delegation children are SINGLE-REPLY (one-shot): stripping from the
-  // first assistant turn onward removes exactly the persisted copy of that
-  // one reply. (A hypothetical multi-turn child would have earlier replies
-  // hidden during the live/grace window — not a case the viewer supports.)
+  // Cut rule while live/local owns the reply:
+  //   - Prefer `in_flight_user_turn_id` (backend stamp of the active prompt).
+  //   - Else the last persisted user turn.
+  //   - Keep everything through that user turn; drop assistant turns after it.
+  //   - If no user turn has landed yet (transcript lag), hide all assistants
+  //     and let the kickoff synthesizer + live stream cover the open turn.
   const rawPersistedTurns = session.detail?.turns ?? []
   const hasLiveOrLocalReply =
     session.liveOwnsActiveTurn &&
     (session.liveMessage !== null || session.localTurns.length > 0)
-  const firstAssistantIdx = hasLiveOrLocalReply
-    ? rawPersistedTurns.findIndex((t) => t.role === "assistant")
-    : -1
-  const persistedTurns =
-    hasLiveOrLocalReply && firstAssistantIdx !== -1
-      ? rawPersistedTurns.slice(0, firstAssistantIdx)
-      : rawPersistedTurns
+  let persistedTurns = rawPersistedTurns
+  if (hasLiveOrLocalReply) {
+    const inFlightId = session.detail?.in_flight_user_turn_id ?? null
+    let cutUserIdx = -1
+    if (inFlightId != null) {
+      cutUserIdx = rawPersistedTurns.findIndex(
+        (t) => t.role === "user" && t.id === inFlightId
+      )
+    }
+    if (cutUserIdx === -1) {
+      for (let i = rawPersistedTurns.length - 1; i >= 0; i--) {
+        if (rawPersistedTurns[i].role === "user") {
+          cutUserIdx = i
+          break
+        }
+      }
+    }
+    if (cutUserIdx === -1) {
+      persistedTurns = rawPersistedTurns.filter((t) => t.role !== "assistant")
+    } else {
+      persistedTurns = rawPersistedTurns.filter(
+        (t, i) => i <= cutUserIdx || t.role !== "assistant"
+      )
+    }
+  }
 
   // Suppress the persisted PARTIAL in-flight reply for a non-delegation
   // cross-client viewer. While a reply is streaming, some agents (OpenCode,

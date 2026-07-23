@@ -1377,7 +1377,8 @@
       "noFolders": "열린 폴더 없음",
       "newChatAction": "새 채팅",
       "automations": "자동화",
-      "loadingSubsessions": "하위 대화 로드 중…"
+      "loadingSubsessions": "하위 대화 로드 중…",
+      "showSubsessions": "하위 세션 표시"
     },
     "conversation": {
       "reloadFailed": "대화 다시 불러오기 실패: {message}",
@@ -1470,7 +1471,11 @@
       "markCompleted": "완료로 표시",
       "reopen": "다시 열기",
       "expandSubsessions": "하위 대화 펼치기",
-      "collapseSubsessions": "하위 대화 접기"
+      "collapseSubsessions": "하위 대화 접기",
+      "subsessionBadge": "하위",
+      "subsessionBadgeTitle": "위임 하위 세션",
+      "subsessionCountLabel": "+{count}",
+      "subsessionCountHint": "{count} nested sub-sessions (enable Show sub-sessions)"
     },
     "search": {
       "dialogTitle": "검색",
@@ -2562,9 +2567,16 @@
             "child_max_turn_requests": "서브에이전트: 요청 한도",
             "child_empty": "서브에이전트 응답 없음",
             "child_unknown": "서브에이전트: 오류",
-            "unknown": "알 수 없는 작업"
+            "unknown": "알 수 없는 작업",
+            "session_still_running": "still running",
+            "session_closed": "session closed",
+            "not_continuable": "not continuable"
           }
-        }
+        },
+        "continueTask": "Continuing task {task}",
+        "continueTaskNoTask": "Continuing sub-session",
+        "closeTask": "Closing task {task}",
+        "closeTaskNoTask": "Closing sub-session"
       },
       "contentParts": {
         "showingTailOutput": "성능을 위해 스트리밍 중에는 출력의 끝부분만 표시합니다.",

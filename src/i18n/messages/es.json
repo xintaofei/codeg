@@ -1377,7 +1377,8 @@
       "noFolders": "No hay carpetas abiertas",
       "newChatAction": "Nuevo chat",
       "automations": "Automatizaciones",
-      "loadingSubsessions": "Cargando subconversaciones…"
+      "loadingSubsessions": "Cargando subconversaciones…",
+      "showSubsessions": "Mostrar subsesiones"
     },
     "conversation": {
       "reloadFailed": "No se pudo recargar la conversación: {message}",
@@ -1470,7 +1471,11 @@
       "markCompleted": "Marcar como completada",
       "reopen": "Reabrir",
       "expandSubsessions": "Expandir subconversaciones",
-      "collapseSubsessions": "Contraer subconversaciones"
+      "collapseSubsessions": "Contraer subconversaciones",
+      "subsessionBadge": "Sub",
+      "subsessionBadgeTitle": "Subsesión delegada",
+      "subsessionCountLabel": "+{count}",
+      "subsessionCountHint": "{count} nested sub-sessions (enable Show sub-sessions)"
     },
     "search": {
       "dialogTitle": "Buscar",
@@ -2562,9 +2567,16 @@
             "child_max_turn_requests": "subagente: límite de solicitudes",
             "child_empty": "subagente sin salida",
             "child_unknown": "subagente: error",
-            "unknown": "tarea desconocida"
+            "unknown": "tarea desconocida",
+            "session_still_running": "still running",
+            "session_closed": "session closed",
+            "not_continuable": "not continuable"
           }
-        }
+        },
+        "continueTask": "Continuing task {task}",
+        "continueTaskNoTask": "Continuing sub-session",
+        "closeTask": "Closing task {task}",
+        "closeTaskNoTask": "Closing sub-session"
       },
       "contentParts": {
         "showingTailOutput": "Mostrando la salida final durante el streaming para mejorar el rendimiento.",

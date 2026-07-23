@@ -183,6 +183,27 @@ pub struct BrokerSessionRequest {
     pub max_messages: Option<u32>,
 }
 
+/// Continue a previously-settled delegated child with a follow-up message.
+/// Backs `continue_with_session`. Authenticated like `Call`; returns a
+/// [`super::types::DelegationTaskReport`] (usually a Running ack).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerContinueRequest {
+    pub token: String,
+    pub parent_connection_id: String,
+    /// Optional ACP tool_use_id for the continue MCP call (identity rewrite).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_tool_use_id: Option<String>,
+    pub task_id: String,
+    pub message: String,
+}
+
+/// Permanently close a delegated child session. Backs `close_session`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerCloseSessionRequest {
+    pub token: String,
+    pub task_id: String,
+}
+
 /// Tagged top-level message dispatched by the listener. Adding new variants
 /// is the wire-stable way to grow the broker protocol without touching the
 /// frame layer.
@@ -193,6 +214,8 @@ pub enum BrokerMessage {
     Cancel(BrokerCancelRequest),
     Status(BrokerStatusRequest),
     CancelTask(BrokerCancelTaskRequest),
+    Continue(BrokerContinueRequest),
+    CloseSession(BrokerCloseSessionRequest),
     Feedback(BrokerFeedbackRequest),
     CommitFeedback(BrokerCommitFeedbackRequest),
     Ask(BrokerAskRequest),
@@ -300,6 +323,22 @@ pub async fn client_cancel_task_round_trip(
     req: &BrokerCancelTaskRequest,
 ) -> io::Result<BrokerResponse> {
     message_round_trip(socket_path, &BrokerMessage::CancelTask(req.clone())).await
+}
+
+/// Dispatch a `continue_with_session` request and read back the task report.
+pub async fn client_continue_round_trip(
+    socket_path: &str,
+    req: &BrokerContinueRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::Continue(req.clone())).await
+}
+
+/// Dispatch a `close_session` request and read back the task report.
+pub async fn client_close_session_round_trip(
+    socket_path: &str,
+    req: &BrokerCloseSessionRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::CloseSession(req.clone())).await
 }
 
 /// Dispatch a `check_user_feedback` query and read back the

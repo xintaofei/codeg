@@ -641,8 +641,9 @@ describe("ConversationRuntimeProvider removeOptimisticTurn (bounce rollback)", (
 /**
  * Delegation-child viewer projection in `getTimelineTurns`. When the sub-agent
  * dialog marks a session `liveOwnsActiveTurn` and supplies the kickoff task:
- *   - the persisted copy of the reply is stripped while a live/local reply
- *     owns the turn (no partial-plus-stream duplicate), and
+ *   - only the CURRENT reply's persisted partial is stripped while live/local
+ *     owns the turn (prior multi-turn history from continue_with_session stays;
+ *     no partial-plus-stream duplicate), and
  *   - the kickoff USER turn is synthesized from the known task text while the
  *     async JSONL transcript still lags — then automatically replaced by the
  *     real persisted user turn once it lands (no duplicate, no cleanup).
@@ -829,6 +830,45 @@ describe("ConversationRuntimeProvider delegation kickoff projection", () => {
     const timeline = api().getTimelineTurns(99)
     expect(timeline.some((t) => t.key === "kickoff-99")).toBe(false)
     expect(timeline.some((t) => t.turn.role === "assistant")).toBe(true)
+  })
+
+  it("keeps prior history during continue_with_session (multi-turn live)", async () => {
+    // First-turn history + continue user prompt already persisted; live owns
+    // the follow-up reply. Prior assistant turns must remain visible.
+    mockGetFolderConversation.mockResolvedValueOnce(
+      detailWithTurns([
+        userTurn("u1"),
+        assistantTurn("a1"),
+        assistantTurn("a2"),
+        userTurn("u2"),
+      ])
+    )
+    renderProvider(<RuntimeCapture />)
+    const api = () => runtimeHolder.current!
+
+    act(() => {
+      api().setLiveOwnsActiveTurn(99, true, "original kickoff")
+    })
+    act(() => {
+      api().setLiveMessage(99, LIVE_MSG, true)
+    })
+    await act(async () => {
+      api().refetchDetail(99, { preserveLive: true })
+      await Promise.resolve()
+    })
+
+    const timeline = api().getTimelineTurns(99)
+    const users = timeline.filter((t) => t.turn.role === "user")
+    const persistedAssistants = timeline.filter(
+      (t) => t.phase === "persisted" && t.turn.role === "assistant"
+    )
+    expect(users.map((t) => t.turn.id)).toEqual(["u1", "u2"])
+    expect(persistedAssistants.map((t) => t.turn.id)).toEqual(["a1", "a2"])
+    // Live stream may render as streaming phase or as empty when the live
+    // message has no content yet — the history-preservation assertion above
+    // is the regression guard for continue_with_session.
+    expect(timeline.some((t) => t.turn.id === "u1")).toBe(true)
+    expect(timeline.some((t) => t.turn.id === "a1")).toBe(true)
   })
 })
 

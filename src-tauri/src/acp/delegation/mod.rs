@@ -25,10 +25,12 @@
 //!   parent LLM ◄── MCP tool_result ◄── DelegationOutcome ◄───┘
 //! ```
 //!
-//! v1 is one-shot (function-call semantics): after the child's first
-//! `TurnComplete`, the broker resolves the pending call, sends `disconnect`
-//! to the child, and returns. v2 will introduce `continue_with_session` /
-//! `close_session` tools without protocol breakage.
+//! After each child turn settles, the broker keeps the child process alive
+//! (completed / failed) so `continue_with_session` can send follow-ups in the
+//! SAME session with full prior context. `close_session` (or cancel / parent
+//! teardown) permanently retires the child. Re-spawning with the child's
+//! agent `external_id` covers the case where the process was reaped while the
+//! conversation row still exists.
 
 pub mod broker;
 pub mod companion;
@@ -55,3 +57,5 @@ pub mod types;
 pub const DELEGATE_TOOL_REWRITE_TITLE: &str = "codeg-mcp__delegate_to_agent";
 pub const STATUS_TOOL_REWRITE_TITLE: &str = "codeg-mcp__get_delegation_status";
 pub const CANCEL_TOOL_REWRITE_TITLE: &str = "codeg-mcp__cancel_delegation";
+pub const CONTINUE_TOOL_REWRITE_TITLE: &str = "codeg-mcp__continue_with_session";
+pub const CLOSE_TOOL_REWRITE_TITLE: &str = "codeg-mcp__close_session";

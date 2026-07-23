@@ -1319,6 +1319,7 @@
       "viewOptions": "显示选项",
       "showCompleted": "显示已完成会话",
       "showWorktrees": "显示工作树文件夹",
+      "showSubsessions": "显示委托子会话",
       "moreOptions": "更多选项",
       "sortBy": "排序方式",
       "sortByCreatedAt": "按创建时间排序",
@@ -1470,7 +1471,11 @@
       "markCompleted": "标记为已完成",
       "reopen": "重新打开",
       "expandSubsessions": "展开子会话",
-      "collapseSubsessions": "折叠子会话"
+      "collapseSubsessions": "折叠子会话",
+      "subsessionBadge": "子会话",
+      "subsessionBadgeTitle": "由主会话 delegate 产生的子会话",
+      "subsessionCountLabel": "{count} 子",
+      "subsessionCountHint": "含 {count} 个子会话。打开右上角筛选，勾选「显示子会话」后可展开查看。"
     },
     "search": {
       "dialogTitle": "搜索",
@@ -2538,6 +2543,10 @@
         "waitForResultNoTask": "等待任务执行结果",
         "cancelTask": "取消 {task} 任务",
         "cancelTaskNoTask": "取消任务",
+        "continueTask": "续跑 {task} 任务",
+        "continueTaskNoTask": "续跑子会话",
+        "closeTask": "关闭 {task} 任务",
+        "closeTaskNoTask": "关闭子会话",
         "resultPageOf": "{current} / {total}",
         "prevResult": "上一个结果",
         "nextResult": "下一个结果",
@@ -2562,7 +2571,10 @@
             "child_max_turn_requests": "子代理超出请求上限",
             "child_empty": "子代理无响应",
             "child_unknown": "子代理未知错误",
-            "unknown": "未知任务"
+            "unknown": "未知任务",
+            "session_still_running": "仍在运行",
+            "session_closed": "会话已关闭",
+            "not_continuable": "无法续跑"
           }
         }
       },

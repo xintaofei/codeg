@@ -2321,13 +2321,16 @@ pub struct ConnectionManagerSpawner {
     pub data_dir: Arc<PathBuf>,
 }
 
-#[async_trait::async_trait]
-impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpawner {
-    async fn spawn(
+impl ConnectionManagerSpawner {
+    /// Shared spawn path for first-turn cold starts and continue-time resume.
+    /// `session_id` is the agent-side id (`conversation.external_id`); `None`
+    /// always creates a brand-new agent session.
+    async fn spawn_child_inner(
         &self,
         parent_connection_id: &str,
         agent_type: AgentType,
         working_dir: Option<String>,
+        session_id: Option<String>,
         preferred_mode_id: Option<String>,
         preferred_config_values: BTreeMap<String, String>,
     ) -> Result<String, crate::acp::delegation::spawner::SpawnerError> {
@@ -2374,7 +2377,7 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
             .spawn_agent(
                 agent_type,
                 effective_working_dir,
-                None,
+                session_id,
                 runtime_env,
                 owner_window,
                 emitter,
@@ -2383,6 +2386,48 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
             )
             .await
             .map_err(|e| SpawnerError::Spawn(e.to_string()))
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpawner {
+    async fn spawn(
+        &self,
+        parent_connection_id: &str,
+        agent_type: AgentType,
+        working_dir: Option<String>,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
+    ) -> Result<String, crate::acp::delegation::spawner::SpawnerError> {
+        self.spawn_child_inner(
+            parent_connection_id,
+            agent_type,
+            working_dir,
+            None,
+            preferred_mode_id,
+            preferred_config_values,
+        )
+        .await
+    }
+
+    async fn spawn_for_resume(
+        &self,
+        parent_connection_id: &str,
+        agent_type: AgentType,
+        working_dir: Option<String>,
+        session_id: Option<String>,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
+    ) -> Result<String, crate::acp::delegation::spawner::SpawnerError> {
+        self.spawn_child_inner(
+            parent_connection_id,
+            agent_type,
+            working_dir,
+            session_id,
+            preferred_mode_id,
+            preferred_config_values,
+        )
+        .await
     }
 
     async fn send_prompt_linked_for_delegation(
@@ -2433,6 +2478,45 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
                 "send_prompt_linked succeeded but no conversation_id was bound".into(),
             )
         })
+    }
+
+    async fn send_followup_prompt(
+        &self,
+        conn_id: &str,
+        message: String,
+        conversation_id: i32,
+        folder_id: i32,
+    ) -> Result<(), crate::acp::delegation::spawner::SpawnerError> {
+        use crate::acp::delegation::spawner::SpawnerError;
+        // No delegation link: the child row already has parent_id /
+        // delegation_call_id from the first turn. Pass conversation_id so a
+        // freshly resumed connection adopts the existing row (Branch A).
+        self.manager
+            .send_prompt_linked(
+                &self.db,
+                conn_id,
+                vec![PromptInputBlock::Text { text: message }],
+                Some(folder_id),
+                Some(conversation_id),
+                None,
+            )
+            .await
+            .map_err(|e| SpawnerError::Send(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn is_alive(&self, conn_id: &str) -> bool {
+        use crate::acp::types::ConnectionStatus;
+        let Some(state) = self.manager.get_state(conn_id).await else {
+            return false;
+        };
+        let s = state.read().await;
+        // Match discovery's "live" contract: Disconnected / Error are not
+        // attachable and must not receive follow-ups.
+        !matches!(
+            s.status,
+            ConnectionStatus::Disconnected | ConnectionStatus::Error
+        )
     }
 
     async fn cancel(

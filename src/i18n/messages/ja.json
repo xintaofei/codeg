@@ -1377,7 +1377,8 @@
       "noFolders": "開いているフォルダがありません",
       "newChatAction": "新しいチャット",
       "automations": "オートメーション",
-      "loadingSubsessions": "サブ会話を読み込み中…"
+      "loadingSubsessions": "サブ会話を読み込み中…",
+      "showSubsessions": "サブセッションを表示"
     },
     "conversation": {
       "reloadFailed": "会話の再読み込みに失敗しました: {message}",
@@ -1470,7 +1471,11 @@
       "markCompleted": "完了にする",
       "reopen": "再開する",
       "expandSubsessions": "サブ会話を展開",
-      "collapseSubsessions": "サブ会話を折りたたむ"
+      "collapseSubsessions": "サブ会話を折りたたむ",
+      "subsessionBadge": "子",
+      "subsessionBadgeTitle": "委譲サブセッション",
+      "subsessionCountLabel": "+{count}",
+      "subsessionCountHint": "{count} nested sub-sessions (enable Show sub-sessions)"
     },
     "search": {
       "dialogTitle": "検索",
@@ -2562,9 +2567,16 @@
             "child_max_turn_requests": "サブエージェント: 要求上限",
             "child_empty": "サブエージェント応答なし",
             "child_unknown": "サブエージェント: エラー",
-            "unknown": "不明なタスク"
+            "unknown": "不明なタスク",
+            "session_still_running": "still running",
+            "session_closed": "session closed",
+            "not_continuable": "not continuable"
           }
-        }
+        },
+        "continueTask": "Continuing task {task}",
+        "continueTaskNoTask": "Continuing sub-session",
+        "closeTask": "Closing task {task}",
+        "closeTaskNoTask": "Closing sub-session"
       },
       "contentParts": {
         "showingTailOutput": "パフォーマンスのため、ストリーミング中は末尾出力を表示しています。",
