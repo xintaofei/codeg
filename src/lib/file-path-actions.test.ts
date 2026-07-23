@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
 import {
-  EXTERNAL_EDITOR_OPEN_WITH,
+  getExternalEditorOpenWith,
   resolveFilePathTargets,
   systemExplorerLabelKey,
 } from "./file-path-actions"
@@ -35,9 +35,16 @@ describe("systemExplorerLabelKey", () => {
   })
 })
 
-describe("EXTERNAL_EDITOR_OPEN_WITH", () => {
-  it("maps editors to CLI names the opener plugin understands", () => {
-    expect(EXTERNAL_EDITOR_OPEN_WITH.vscode).toBe("code")
-    expect(EXTERNAL_EDITOR_OPEN_WITH.cursor).toBe("cursor")
+describe("getExternalEditorOpenWith", () => {
+  it("uses full app names on macOS for open -a", () => {
+    expect(getExternalEditorOpenWith("vscode", "macos")).toBe(
+      "Visual Studio Code"
+    )
+    expect(getExternalEditorOpenWith("cursor", "macos")).toBe("Cursor")
+  })
+
+  it("uses CLI shims on Windows and Linux", () => {
+    expect(getExternalEditorOpenWith("vscode", "windows")).toBe("code")
+    expect(getExternalEditorOpenWith("cursor", "linux")).toBe("cursor")
   })
 })

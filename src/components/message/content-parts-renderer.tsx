@@ -9,6 +9,12 @@ import {
   toNativeAbsoluteFilePath,
 } from "@/lib/file-path-display"
 import {
+  isFilePathToolName,
+  pathFromToolTitle,
+} from "@/lib/tool-file-path-guard"
+import { toast } from "sonner"
+import { toErrorMessage } from "@/lib/app-error"
+import {
   classifyToolKind,
   TOOL_KIND_ORDER,
   type ToolKindLabel,
@@ -234,26 +240,7 @@ function shortPath(p: string): string {
  * Strip a tool-title prefix (English or localized) to recover the file path
  * segment, e.g. "Read AGENTS.md" / "读取 AGENTS.md" → "AGENTS.md".
  */
-function pathFromToolTitle(title: string | null | undefined): string | null {
-  if (!title) return null
-  const trimmed = title.trim()
-  // English prefixes from deriveToolTitle
-  const en = trimmed.match(/^(?:Read|Edit|Write|NotebookEdit)\s+(.+)$/i)
-  if (en?.[1]?.trim()) return en[1].trim()
-  // Common localized prefixes (zh-CN / zh-TW / ja / ko …)
-  const localized = trimmed.match(
-    /^(?:读取|讀取|编辑|編輯|写入|寫入|読み取り|읽기)\s+(.+)$/u
-  )
-  if (localized?.[1]?.trim()) return localized[1].trim()
-  // i18n templates sometimes put the path only: still a plausible file path
-  if (/[/\\]/.test(trimmed) || /\.[A-Za-z0-9]{1,12}$/.test(trimmed)) {
-    // Avoid matching pure status words
-    if (!/^(Read|Edit|Write|Command|TodoWrite)$/i.test(trimmed)) {
-      return trimmed
-    }
-  }
-  return null
-}
+// pathFromToolTitle: @/lib/tool-file-path-guard (strict; unit-tested)
 
 /**
  * Pull the primary file path out of a tool input/output envelope (same fields
@@ -282,7 +269,8 @@ function extractToolFilePath(
   toolName: string,
   input: string | null,
   output?: string | null,
-  displayTitle?: string | null
+  displayTitle?: string | null,
+  opts?: { allowTitleFallback?: boolean }
 ): string | null {
   const titleSource = input ?? output ?? null
   const parsedInput = input ? tryParseJson(input) : null
@@ -301,6 +289,8 @@ function extractToolFilePath(
       name === "editfile")
   ) {
     const files = parseApplyPatchFilesFromUnknownInput(titleSource, parsed)
+    // Multi-file edits: no single path for menu / open / abs tooltip
+    if (files.length > 1) return null
     if (files.length === 1) {
       const file = files[0]
       const path =
@@ -312,6 +302,8 @@ function extractToolFilePath(
     const fromDiff = extractPathFromDiffText(titleSource)
     if (fromDiff) return fromDiff
   }
+
+  if (opts?.allowTitleFallback === false) return null
   return pathFromToolTitle(displayTitle)
 }
 
@@ -960,26 +952,7 @@ function getToolIcon(
 
 // ── title derivation ──────────────────────────────────────────────────
 
-/** True for tools that primarily target a single file path. */
-function isFilePathToolName(toolName: string): boolean {
-  const name = toolName.toLowerCase()
-  return (
-    name === "read" ||
-    name === "read file" ||
-    name === "read_file" ||
-    name === "read_text_file" ||
-    name === "readfile" ||
-    name === "view" ||
-    name === "write" ||
-    name === "write_file" ||
-    name === "writefile" ||
-    name === "notebookedit" ||
-    name === "edit" ||
-    name === "edit_file" ||
-    name === "editfile" ||
-    name === "apply_patch"
-  )
-}
+// isFilePathToolName: @/lib/tool-file-path-guard
 
 /**
  * Shared field lookup used by both title derivation and path tooltips / menus.
@@ -2358,27 +2331,20 @@ const ToolCallPart = memo(function ToolCallPart({
       ) => string),
     [rawToolTitle, t]
   )
-  // Path for tool-row context menu + full-path tooltip on the collapsed header.
-  const toolFilePath = useMemo(
-    () =>
-      extractToolFilePath(
-        normalizedToolName,
-        part.input,
-        part.output ?? part.errorText ?? null,
-        rawToolTitle ?? part.displayTitle ?? null
-      ),
-    [
+  // Payload-only + isFilePathToolName: never hang menus on WebFetch/Glob/Grep,
+  // never re-absolutize shortPath titles to the wrong file.
+  const toolFilePath = useMemo(() => {
+    if (!isFilePathToolName(normalizedToolName)) return null
+    return extractToolFilePath(
       normalizedToolName,
       part.input,
-      part.output,
-      part.errorText,
-      rawToolTitle,
-      part.displayTitle,
-    ]
-  )
+      part.output ?? part.errorText ?? null,
+      null,
+      { allowTitleFallback: false }
+    )
+  }, [normalizedToolName, part.input, part.output, part.errorText])
   const titleTooltip = useMemo(() => {
     if (!toolFilePath) return undefined
-    // Prefer absolute native path so Read rows match Edit's hover behavior.
     const abs = toNativeAbsoluteFilePath(toolFilePath, folder?.path)
     if (abs) return abs
     return toFolderRelativePath(toolFilePath, folder?.path) || toolFilePath
@@ -2386,7 +2352,9 @@ const ToolCallPart = memo(function ToolCallPart({
 
   const openToolFileInCodeg = useCallback(() => {
     if (!toolFilePath) return
-    void openFilePreview(normalizeSlashPath(toolFilePath))
+    void openFilePreview(normalizeSlashPath(toolFilePath)).catch((error) => {
+      toast.error(toErrorMessage(error))
+    })
   }, [openFilePreview, toolFilePath])
   const lineChangeStats = useMemo(() => {
     if (toolNameLower !== "edit" && toolNameLower !== "apply_patch") {
@@ -2725,10 +2693,8 @@ const ToolCallPart = memo(function ToolCallPart({
 
   return (
     <Tool open={open} onOpenChange={setManualOpen}>
-      {toolFilePath ? (
-        // Outer native `title` div: browsers only show the element under the
-        // cursor's own title attribute (not ancestors). Put the absolute path
-        // on BOTH this div and the context-menu trigger + CollapsibleTrigger.
+      {toolFilePath && isFilePathToolName(normalizedToolName) ? (
+        // Gated by isFilePathToolName so WebFetch/Glob/Grep never get a file menu.
         <div className="w-full min-w-0" title={titleTooltip}>
           <FilePathContextMenu
             filePath={toolFilePath}

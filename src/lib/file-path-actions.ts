@@ -9,11 +9,28 @@ import {
   toNativeAbsoluteFilePath,
 } from "@/lib/file-path-display"
 import { isLocalDesktop, openPath, revealItemInDir } from "@/lib/platform"
+import { detectPlatform, type PlatformType } from "@/hooks/use-platform"
 import { copyTextFromMenu } from "@/lib/utils"
 
 export type ExternalEditorId = "vscode" | "cursor"
 
-/** CLI / opener names passed to `openPath(path, openWith)`. */
+/**
+ * Resolve the `openWith` argument for Tauri opener.
+ *
+ * macOS `open -a` matches application names (short CLI shims like `code`
+ * fail). Windows/Linux keep CLI shims when those are on PATH.
+ */
+export function getExternalEditorOpenWith(
+  editor: ExternalEditorId,
+  platform: PlatformType = detectPlatform()
+): string {
+  if (platform === "macos") {
+    return editor === "vscode" ? "Visual Studio Code" : "Cursor"
+  }
+  return editor === "vscode" ? "code" : "cursor"
+}
+
+/** CLI shim defaults (non-macOS). Prefer {@link getExternalEditorOpenWith}. */
 export const EXTERNAL_EDITOR_OPEN_WITH: Record<ExternalEditorId, string> = {
   vscode: "code",
   cursor: "cursor",
@@ -37,8 +54,6 @@ export function resolveFilePathTargets(
 }
 
 export async function copyPathText(text: string): Promise<boolean> {
-  // Defer until the context menu closes so the execCommand fallback works in
-  // non-secure web contexts (same pattern as the file-tree copy action).
   return copyTextFromMenu(text)
 }
 
@@ -59,10 +74,9 @@ export async function openFileWithExternalEditor(
   editor: ExternalEditorId
 ): Promise<void> {
   if (!isLocalDesktop()) return
-  await openPath(absolutePath, EXTERNAL_EDITOR_OPEN_WITH[editor])
+  await openPath(absolutePath, getExternalEditorOpenWith(editor))
 }
 
-/** Platform-aware label key suffix for the system file manager entry. */
 export function systemExplorerLabelKey(
   platformHint?: string
 ): "openInFinder" | "openInExplorer" | "openInFileManager" {

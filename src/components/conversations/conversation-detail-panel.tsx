@@ -1804,15 +1804,15 @@ export function ConversationDetailPanel() {
 
   const handleContextMenuTriggerPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (event.button !== 2) return
-      // File-path menus (message nav / reply artifacts) own right-clicks on
-      // their rows — don't let selection-preservation logic interfere.
+      // File-path menus own right-click *and* touch/pen long-press.
       if (
         event.target instanceof Element &&
-        event.target.closest("[data-file-path-menu]")
+        event.target.closest("[data-file-path-menu]") &&
+        (event.button === 2 || event.pointerType !== "mouse")
       ) {
         return
       }
+      if (event.button !== 2) return
       const selection = window.getSelection()
       if (selection && !selection.isCollapsed) {
         event.preventDefault()

@@ -189,8 +189,12 @@ export function FilePathContextMenu({
     event.stopPropagation()
   }, [])
 
+  // Touch / pen long-press uses button 0 + Radix's 700ms path; only stopping
+  // button === 2 left both menus open and the outer modal ate pointer events.
   const claimRightPointer = useCallback((event: ReactPointerEvent) => {
-    if (event.button === 2) event.stopPropagation()
+    if (event.button === 2 || event.pointerType !== "mouse") {
+      event.stopPropagation()
+    }
   }, [])
 
   // Prefer an explicit title, otherwise the resolved absolute path so hover on
