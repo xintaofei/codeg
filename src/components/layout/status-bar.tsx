@@ -11,12 +11,15 @@ export function StatusBar() {
   const isMobile = useIsMobile()
 
   if (isMobile) {
-    // Mobile mirrors the desktop bar's right side: the command launcher +
-    // alerts. `h-8` (matching desktop) gives the h-6 command control room. The
-    // branch selector and context-window circle now live in the below-composer
-    // row, so the bar has nothing on the left and right-aligns its controls.
+    // Mobile mirrors the desktop bar: workspace stats on the left, the command
+    // launcher + alerts on the right. `h-8` (matching desktop) gives the h-6
+    // command control room. The branch selector and context-window circle live
+    // in the below-composer row, so those are the bar's only two clusters.
     return (
-      <div className="h-8 shrink-0 border-t border-border ws-chrome-border ws-surface-muted px-3 flex items-center justify-end text-xs text-muted-foreground">
+      <div className="h-8 shrink-0 border-t border-border ws-chrome-border ws-surface-muted px-3 flex items-center justify-between text-xs text-muted-foreground">
+        <div className="flex items-center gap-3">
+          <StatusBarStats />
+        </div>
         <div className="flex items-center gap-3">
           <CommandDropdown />
           <StatusBarAlerts />
