@@ -1211,6 +1211,7 @@ mod tauri_app {
                 notification::send_notification,
                 file_io::save_binary_file,
                 file_io::save_text_file,
+                file_io::open_path_in_editor,
                 backup::backup_create,
                 backup::backup_inspect,
                 backup::backup_scan_external_conflicts,
