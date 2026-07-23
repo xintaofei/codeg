@@ -226,6 +226,14 @@ export function selectPinnedWithReuse(
 ): DbConversationSummary[] {
   const next: DbConversationSummary[] = []
   for (const conv of conversations) {
+    // Pinned section is still root-only — never pin-surface a delegation child.
+    if (
+      conv.parent_id != null ||
+      conv.kind === "delegate" ||
+      (conv.delegation_call_id != null && conv.delegation_call_id !== "")
+    ) {
+      continue
+    }
     if (conv.pinned_at != null) next.push(conv)
   }
   next.sort(compareByPinnedAtDesc)

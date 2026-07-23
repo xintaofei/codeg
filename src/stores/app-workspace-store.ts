@@ -11,6 +11,7 @@ import {
   removeFolderFromWorkspace as apiRemoveFolderFromWorkspace,
   reorderFolders as apiReorderFolders,
 } from "@/lib/api"
+import { isSidebarRootConversation } from "@/lib/conversation-sidebar"
 import { toErrorMessage } from "@/lib/app-error"
 import type {
   AgentStats,
@@ -183,7 +184,10 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
       set({ conversationsLoading: true })
       try {
         const list = await listAllConversations()
-        set({ ...withConversations(list), conversationsError: null })
+        // Defense-in-depth: backend already drops delegation children, but never
+        // surface a child (parent_id set / kind=delegate) as a root sidebar row.
+        const roots = list.filter(isSidebarRootConversation)
+        set({ ...withConversations(roots), conversationsError: null })
       } catch (err) {
         set({ conversationsError: toErrorMessage(err) })
       } finally {
@@ -230,10 +234,10 @@ export const useAppWorkspaceStore = create<AppWorkspaceStoreState>()(
     },
 
     // Insert-or-replace a conversation by id (create + field updates). Root-only:
-    // delegation children (parent_id set) are not sidebar rows. New rows prepend
-    // (most-recent-first); existing rows replace in place to keep their position.
+    // delegation children (parent_id / kind=delegate) are not sidebar rows.
+    // New rows prepend (most-recent-first); existing rows replace in place.
     applyConversationUpsert: (summary) => {
-      if (summary.parent_id != null) return
+      if (!isSidebarRootConversation(summary)) return
       if (deletedIds.has(summary.id)) return
       const prev = get().conversations
       const idx = prev.findIndex((c) => c.id === summary.id)

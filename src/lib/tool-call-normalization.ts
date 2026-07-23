@@ -79,6 +79,10 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   mcp__codeg__delegate_to_agent: "delegate_to_agent",
   get_delegation_status: "get_delegation_status",
   cancel_delegation: "cancel_delegation",
+  continue_with_session: "continue_with_session",
+  "mcp__codeg-mcp__continue_with_session": "continue_with_session",
+  close_session: "close_session",
+  "mcp__codeg-mcp__close_session": "close_session",
   // codeg-mcp live-feedback poll (server prefix varies by host; the suffix rule
   // in `normalizeToolName` covers the other separators). Codex persists it under
   // the bare `check_user_feedback` name, dropping the `mcp__codeg_mcp` namespace.
@@ -375,6 +379,9 @@ export function normalizeToolName(toolName: string): string {
   if (/[^a-z0-9]get_delegation_status$/.test(canonical))
     return "get_delegation_status"
   if (/[^a-z0-9]cancel_delegation$/.test(canonical)) return "cancel_delegation"
+  if (/[^a-z0-9]continue_with_session$/.test(canonical))
+    return "continue_with_session"
+  if (/[^a-z0-9]close_session$/.test(canonical)) return "close_session"
   if (/[^a-z0-9]create_goal$/.test(canonical)) return "create_goal"
   if (/[^a-z0-9]update_goal$/.test(canonical)) return "update_goal"
 
@@ -410,6 +417,8 @@ const DELEGATION_COMPANION_TOOLS: ReadonlySet<string> = new Set([
   "delegate_to_agent",
   "get_delegation_status",
   "cancel_delegation",
+  "continue_with_session",
+  "close_session",
 ])
 
 export function inferLiveToolName(params: {

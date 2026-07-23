@@ -469,7 +469,14 @@ pub async fn list_all(
     query = query.filter(conversation::Column::Kind.ne(ConversationKind::Loop));
 
     if !include_children {
-        query = query.filter(conversation::Column::ParentId.is_null());
+        // Root list: no parent_id, never kind=delegate, and no broker task id.
+        // Invariant is parent_id set ⟺ delegate ⟺ delegation_call_id set;
+        // all three filters keep a half-migrated / partially-backfilled row out
+        // of the workspace list (children only surface via list_children).
+        query = query
+            .filter(conversation::Column::ParentId.is_null())
+            .filter(conversation::Column::Kind.ne(ConversationKind::Delegate))
+            .filter(conversation::Column::DelegationCallId.is_null());
     }
 
     match folder_ids {

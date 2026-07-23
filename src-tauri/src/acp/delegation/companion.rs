@@ -5,16 +5,18 @@
 //! The companion speaks newline-delimited JSON-RPC 2.0 on stdio:
 //! one request → one response per line, with concurrent dispatch so
 //! `notifications/cancelled` can race an in-flight `tools/call`. It exposes up
-//! to six tools — `delegate_to_agent` (async; returns a `task_id` ack),
+//! up to eight tools — `delegate_to_agent` (async; returns a `task_id` ack),
 //! `get_delegation_status` (poll/long-poll for the result), `cancel_delegation`,
-//! `check_user_feedback` (pull the user's mid-turn steering notes),
-//! `ask_user_question` (block on a multiple-choice card), and `get_session_info`
-//! (resolve a referenced session by id) — whose schemas are embedded at compile
-//! time from [`TOOL_SCHEMA_JSON`] and gated by the `--features` groups (delegation
-//! / feedback / ask / sessions). Only `delegate_to_agent` registers a broker-side
-//! cancel handle; canceling a status / cancel / feedback / session round-trip
-//! merely suppresses its response — and for `check_user_feedback` also skips the
-//! delivery commit, so a cancelled note stays pending.
+//! `continue_with_session` (follow-up in the same child session), `close_session`
+//! (permanently retire a child), `check_user_feedback` (pull the user's mid-turn
+//! steering notes), `ask_user_question` (block on a multiple-choice card), and
+//! `get_session_info` (resolve a referenced session by id) — whose schemas are
+//! embedded at compile time from [`TOOL_SCHEMA_JSON`] and gated by the
+//! `--features` groups (delegation / feedback / ask / sessions). Only
+//! `delegate_to_agent` registers a broker-side cancel handle; canceling a status
+//! / cancel / continue / close / feedback / session round-trip merely suppresses
+//! its response — and for `check_user_feedback` also skips the delivery commit,
+//! so a cancelled note stays pending.
 //!
 //! Notifications (id = None) produce no response, matching MCP's expectation
 //! that `notifications/initialized` etc. are fire-and-forget.
@@ -42,11 +44,13 @@ use serde_json::{json, Value};
 use tokio::sync::{oneshot, Mutex};
 
 use crate::acp::delegation::transport::{
-    client_ask_round_trip, client_cancel, client_cancel_task_round_trip, client_commit_feedback,
+    client_ask_round_trip, client_cancel, client_cancel_task_round_trip,
+    client_close_session_round_trip, client_commit_feedback, client_continue_round_trip,
     client_feedback_round_trip, client_round_trip, client_session_round_trip,
     client_status_round_trip, BrokerAskRequest, BrokerCancelRequest, BrokerCancelTaskRequest,
-    BrokerCommitFeedbackRequest, BrokerFeedbackRequest, BrokerRequest, BrokerResponse,
-    BrokerSessionRequest, BrokerStatusRequest,
+    BrokerCloseSessionRequest, BrokerCommitFeedbackRequest, BrokerContinueRequest,
+    BrokerFeedbackRequest, BrokerRequest, BrokerResponse, BrokerSessionRequest,
+    BrokerStatusRequest,
 };
 use crate::acp::question::parse_questions;
 use crate::acp::session_info::MAX_SESSION_MESSAGES;
@@ -179,7 +183,11 @@ impl CompanionFeatures {
             "check_user_feedback" => self.feedback,
             "ask_user_question" => self.ask,
             "get_session_info" => self.sessions,
-            "delegate_to_agent" | "get_delegation_status" | "cancel_delegation" => self.delegation,
+            "delegate_to_agent"
+            | "get_delegation_status"
+            | "cancel_delegation"
+            | "continue_with_session"
+            | "close_session" => self.delegation,
             _ => false,
         }
     }
@@ -477,6 +485,62 @@ async fn build_tools_call_spawn(
             };
             let round_trip =
                 Box::pin(async move { client_cancel_task_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_task_report).await
+        }
+        "continue_with_session" => {
+            let task_id = match arguments.get("task_id").and_then(|v| v.as_str()) {
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => {
+                    return LineAction::Respond(err(
+                        id,
+                        -32602,
+                        "continue_with_session requires a non-empty string task_id",
+                    ));
+                }
+            };
+            let message = match arguments.get("message").and_then(|v| v.as_str()) {
+                Some(s) if !s.trim().is_empty() => s.to_string(),
+                _ => {
+                    return LineAction::Respond(err(
+                        id,
+                        -32602,
+                        "continue_with_session requires a non-empty string message",
+                    ));
+                }
+            };
+            let tool_use_id = params
+                .get("_meta")
+                .and_then(|m| m.get("tool_use_id"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let req = BrokerContinueRequest {
+                token: ctx.token.clone(),
+                parent_connection_id: ctx.parent_connection_id.clone(),
+                parent_tool_use_id: tool_use_id,
+                task_id,
+                message,
+            };
+            let round_trip =
+                Box::pin(async move { client_continue_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_task_report).await
+        }
+        "close_session" => {
+            let task_id = match arguments.get("task_id").and_then(|v| v.as_str()) {
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => {
+                    return LineAction::Respond(err(
+                        id,
+                        -32602,
+                        "close_session requires a non-empty string task_id",
+                    ));
+                }
+            };
+            let req = BrokerCloseSessionRequest {
+                token: ctx.token.clone(),
+                task_id,
+            };
+            let round_trip =
+                Box::pin(async move { client_close_session_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_task_report).await
         }
         "check_user_feedback" => {
@@ -1202,16 +1266,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_returns_three_delegation_tools() {
+    async fn tools_list_returns_five_delegation_tools() {
         let line = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
         let resp = unwrap_respond(dispatch_for_test(line).await);
         let result = resp.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 3);
+        assert_eq!(tools.len(), 5);
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"delegate_to_agent"));
         assert!(names.contains(&"get_delegation_status"));
         assert!(names.contains(&"cancel_delegation"));
+        assert!(names.contains(&"continue_with_session"));
+        assert!(names.contains(&"close_session"));
         // delegate_to_agent schema still enumerates all 12 agent types.
         let delegate = tools
             .iter()
@@ -1694,7 +1760,7 @@ mod tests {
             dispatch_for_test(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await,
         );
         assert!(!names.contains(&"check_user_feedback".to_string()));
-        assert_eq!(names.len(), 3);
+        assert_eq!(names.len(), 5);
     }
 
     #[tokio::test]
@@ -1703,7 +1769,7 @@ mod tests {
             dispatch_with_features(BOTH, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await,
         );
         assert!(names.contains(&"check_user_feedback".to_string()));
-        assert_eq!(names.len(), 4);
+        assert_eq!(names.len(), 6);
     }
 
     #[tokio::test]
