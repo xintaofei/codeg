@@ -611,7 +611,8 @@
       "saveCodeBuddyConfig": "CodeBuddy 구성 저장",
       "saveKimiCodeConfig": "Kimi Code 구성 저장",
       "customInstall": "사용자 지정 설치",
-      "saveKimiCodeRawConfig": "Save config.toml"
+      "saveKimiCodeRawConfig": "Save config.toml",
+      "diagnose": "진단"
     },
     "status": {
       "enabled": "활성화됨",
@@ -1372,6 +1373,7 @@
       "sectionFolders": "폴더",
       "sectionChats": "채팅",
       "noChats": "채팅 없음",
+      "noFolders": "열린 폴더 없음",
       "newChatAction": "새 채팅",
       "automations": "자동화",
       "loadingSubsessions": "하위 대화 로드 중…"
@@ -1737,7 +1739,11 @@
         "confirmApply": "스태시 {ref}을(를) 작업 디렉토리에 적용하시겠습니까?",
         "cancel": "취소"
       },
-      "deleteBranch": "브랜치 삭제"
+      "deleteBranch": "브랜치 삭제",
+      "searchPlaceholder": "브랜치 및 작업 검색",
+      "searchAriaLabel": "브랜치 및 작업 검색",
+      "branchListLabel": "브랜치 및 작업",
+      "noMatches": "일치하는 항목 없음"
     },
     "commitDialog": {
       "toasts": {
@@ -3979,5 +3985,27 @@
     "groupInstructions": "설명 및 시스템 프롬프트",
     "fieldDescription": "설명",
     "baseInstructions": "시스템 프롬프트(base_instructions)"
+  },
+  "DiagnosticsSettings": {
+    "title": "환경 진단",
+    "description": "이 앱이 자체 프로세스에서 에이전트 CLI를 어떻게 확인하는지 점검합니다(터미널과 다를 수 있음).",
+    "loading": "진단 실행 중…",
+    "error": "진단 실패",
+    "rerun": "다시 실행",
+    "copyAll": "전체 복사",
+    "copied": "진단 정보를 클립보드에 복사했습니다",
+    "button": "진단",
+    "verdict": {
+      "ok": "환경이 정상입니다. 그래도 설치되지 않았다고 표시되면 앱을 완전히 재시작하여 프리픽스 캐시를 새로 고치세요.",
+      "node_missing": "앱 PATH에서 Node.js를 찾을 수 없습니다.",
+      "npm_missing": "앱 PATH에서 npm을 찾을 수 없습니다.",
+      "not_installed": "이 에이전트가 설치되지 않은 것 같습니다.",
+      "installed_but_unresolved": "설치된 것으로 기록되어 있지만 앱이 실행 파일을 찾지 못합니다.",
+      "user_prefix_not_on_path": "폴백 프리픽스(~/.codeg/npm-global)에 설치되었지만 앱 PATH에 없습니다. 앱을 완전히 재시작한 후 다시 시도하세요.",
+      "homebrew_bin_not_on_path": "Homebrew bin에 설치되었지만 앱 PATH에 없습니다(Apple Silicon keg 분리).",
+      "terminal_only_path": "이 명령은 터미널에서는 확인되지만 앱에서는 확인되지 않습니다. GUI PATH 불일치입니다. 터미널에서 앱을 실행하거나 에이전트 설정에서 다시 설치하세요.",
+      "npm_prefix_timeout": "npm prefix -g가 너무 느립니다(1.5초 초과). 폴백 감지를 건너뛰었습니다. 앱을 재시작한 후 다시 시도하세요.",
+      "node_too_old": "현재 Node.js가 이 에이전트의 요구 버전보다 낮습니다. Node.js를 업그레이드하세요."
+    }
   }
 }

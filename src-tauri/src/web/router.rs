@@ -597,6 +597,10 @@ pub fn build_router(
             post(handlers::acp::acp_get_agent_status),
         )
         .route("/acp_list_agents", post(handlers::acp::acp_list_agents))
+        .route(
+            "/acp_env_diagnostics",
+            post(handlers::acp::acp_env_diagnostics),
+        )
         .route("/acp_connect", post(handlers::acp::acp_connect))
         .route("/acp_disconnect", post(handlers::acp::acp_disconnect))
         .route(

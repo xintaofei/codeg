@@ -18,7 +18,11 @@ import { matchShortcutEvent } from "@/lib/keyboard-shortcuts"
 import { cn } from "@/lib/utils"
 
 import { buildComposerExtensions } from "./editor-config"
-import { textToDoc, textToInlineContent } from "./plain-text-content"
+import {
+  decidePastedPlainText,
+  textToDoc,
+  textToInlineContent,
+} from "./plain-text-content"
 import { serializeDocToText } from "./to-prompt-blocks"
 import { decideComposerKey } from "./submit-key"
 import type {
@@ -355,8 +359,28 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
           }
           return false
         },
-        handlePaste: (_view, event) =>
-          onPasteFilesRef.current?.(event) === true,
+        handlePaste: (_view, event) => {
+          // Images/files first: the host may consume them as attachments
+          // out-of-band, in which case the editor must not also insert text.
+          if (onPasteFilesRef.current?.(event) === true) return true
+          // Plain-text composer: prefer the clipboard's text/plain over an
+          // external text/html fragment. Copying a URL from a browser address
+          // bar puts `<a href="URL">Page Title</a>` on the clipboard; the
+          // default HTML parse drops the href (no Link mark) and keeps the
+          // title, so the URL would paste as the page title. See
+          // decidePastedPlainText for what still defers to ProseMirror (pure
+          // plain text, and our own reference badges).
+          const editor = editorInstanceRef.current
+          const clipboard = event.clipboardData
+          if (!editor || !clipboard) return false
+          const inline = decidePastedPlainText({
+            html: clipboard.getData("text/html"),
+            text: clipboard.getData("text/plain"),
+          })
+          if (!inline) return false
+          editor.chain().insertContent(inline).run()
+          return true
+        },
         handleDrop: (_view, event) => onDropFilesRef.current?.(event) === true,
       },
       onCreate: ({ editor }) => {

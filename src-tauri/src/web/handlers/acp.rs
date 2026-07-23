@@ -8,8 +8,8 @@ use crate::acp::error::AcpError;
 use crate::acp::opencode_plugins::PluginCheckSummary;
 use crate::acp::preflight::PreflightResult;
 use crate::acp::types::{
-    AcpAgentInfo, AcpAgentStatus, AgentSkillContent, AgentSkillLayout, AgentSkillScope,
-    AgentSkillsListResult, ConnectionInfo, ForkResultInfo,
+    AcpAgentInfo, AcpAgentStatus, AgentDiagnosticsReport, AgentSkillContent, AgentSkillLayout,
+    AgentSkillScope, AgentSkillsListResult, ConnectionInfo, ForkResultInfo,
 };
 use crate::app_error::{AppCommandError, AppErrorCode};
 use crate::app_state::AppState;
@@ -38,6 +38,24 @@ pub async fn acp_list_agents(
 ) -> Result<Json<Vec<AcpAgentInfo>>, AppCommandError> {
     let db = &state.db;
     let result = acp_commands::acp_list_agents_core(db)
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(result))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpEnvDiagnosticsParams {
+    #[serde(default)]
+    pub agent_type: Option<AgentType>,
+}
+
+pub async fn acp_env_diagnostics(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<AcpEnvDiagnosticsParams>,
+) -> Result<Json<AgentDiagnosticsReport>, AppCommandError> {
+    let db = &state.db;
+    let result = acp_commands::acp_env_diagnostics_core(db, params.agent_type)
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(result))
@@ -863,9 +881,11 @@ pub async fn acp_detect_agent_local_version(
     Json(params): Json<AgentTypeParams>,
 ) -> Result<Json<Option<String>>, AppCommandError> {
     let db = &state.db;
-    let result = acp_commands::acp_detect_agent_local_version_core(params.agent_type, &db.conn)
-        .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    let emitter = state.emitter.clone();
+    let result =
+        acp_commands::acp_detect_agent_local_version_core(params.agent_type, &db.conn, &emitter)
+            .await
+            .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(result))
 }
 

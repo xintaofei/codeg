@@ -611,7 +611,8 @@
       "saveCodeBuddyConfig": "保存 CodeBuddy 配置",
       "saveKimiCodeConfig": "保存 Kimi Code 配置",
       "customInstall": "自定义安装",
-      "saveKimiCodeRawConfig": "保存 config.toml"
+      "saveKimiCodeRawConfig": "保存 config.toml",
+      "diagnose": "诊断"
     },
     "status": {
       "enabled": "启用",
@@ -1372,6 +1373,7 @@
       "sectionFolders": "文件夹",
       "sectionChats": "聊天",
       "noChats": "没有聊天",
+      "noFolders": "没有打开的文件夹",
       "newChatAction": "新建聊天",
       "automations": "自动化",
       "loadingSubsessions": "正在加载子会话…"
@@ -1737,7 +1739,11 @@
         "confirmApply": "将贮藏 {ref} 应用到工作目录？",
         "cancel": "取消"
       },
-      "deleteBranch": "删除分支"
+      "deleteBranch": "删除分支",
+      "searchPlaceholder": "搜索分支和操作",
+      "searchAriaLabel": "搜索分支和操作",
+      "branchListLabel": "分支和操作",
+      "noMatches": "无匹配项"
     },
     "commitDialog": {
       "toasts": {
@@ -3979,5 +3985,27 @@
     "groupInstructions": "描述与系统提示词",
     "fieldDescription": "描述",
     "baseInstructions": "系统提示词（base_instructions）"
+  },
+  "DiagnosticsSettings": {
+    "title": "环境诊断",
+    "description": "检查本应用在自身进程中如何解析该智能体的 CLI——这可能与你的终端不同。",
+    "loading": "正在运行诊断…",
+    "error": "诊断失败",
+    "rerun": "重新运行",
+    "copyAll": "复制全部",
+    "copied": "诊断信息已复制到剪贴板",
+    "button": "诊断",
+    "verdict": {
+      "ok": "环境正常。若仍提示未安装，请彻底重启应用以刷新前缀缓存。",
+      "node_missing": "在应用的 PATH 上未找到 Node.js。",
+      "npm_missing": "在应用的 PATH 上未找到 npm。",
+      "not_installed": "该智能体似乎尚未安装。",
+      "installed_but_unresolved": "记录显示已安装，但应用无法定位其可执行文件。",
+      "user_prefix_not_on_path": "安装到了回退前缀（~/.codeg/npm-global），但它不在应用的 PATH 上。请彻底重启应用后重试。",
+      "homebrew_bin_not_on_path": "安装在 Homebrew 的 bin 目录下，但它不在应用的 PATH 上（Apple Silicon keg 拆分）。",
+      "terminal_only_path": "该命令在你的终端能解析，但在应用中不能——这是 GUI PATH 差异。请从终端启动应用，或在智能体设置中重新安装。",
+      "npm_prefix_timeout": "npm prefix -g 太慢（超过 1.5 秒），已跳过回退检测。请重启应用后重试。",
+      "node_too_old": "当前 Node.js 版本低于该智能体的要求。请升级 Node.js。"
+    }
   }
 }

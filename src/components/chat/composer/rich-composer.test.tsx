@@ -270,3 +270,83 @@ describe("RichComposer paste without formatting (Ctrl/⌘+Shift+V)", () => {
     expect(event.defaultPrevented).toBe(false)
   })
 })
+
+/** Dispatch a `paste` carrying the given clipboard flavors at the editor. */
+function dispatchPaste(
+  dom: HTMLElement,
+  flavors: { html?: string; text?: string }
+): void {
+  const html = flavors.html ?? ""
+  const text = flavors.text ?? ""
+  const clipboardData = {
+    getData: (type: string) =>
+      type === "text/html" ? html : type === "text/plain" ? text : "",
+    setData: () => {},
+    clearData: () => {},
+    types: [html && "text/html", text && "text/plain"].filter(Boolean),
+    files: [] as unknown as FileList,
+    items: [] as unknown,
+  }
+  const event = new Event("paste", { bubbles: true, cancelable: true })
+  Object.defineProperty(event, "clipboardData", { value: clipboardData })
+  act(() => {
+    dom.dispatchEvent(event)
+  })
+}
+
+describe("RichComposer text paste (plain-text schema)", () => {
+  it("pastes a URL as text/plain, not the browser's title-bearing <a> fragment", async () => {
+    const { ref } = await mount()
+    act(() => ref.current?.focus())
+    const dom = ref.current?.getEditor()?.view.dom as HTMLElement
+    // Exactly what a browser writes when a URL is copied from the address bar:
+    // the anchor text is the page <title>, so the default HTML parse (no Link
+    // mark) would keep the title. We must insert the URL instead.
+    dispatchPaste(dom, {
+      html: '<a href="https://github.com/">GitHub · Change is constant. GitHub keeps you ahead. · GitHub</a>',
+      text: "https://github.com/",
+    })
+    expect(ref.current?.getText()).toBe("https://github.com/")
+  })
+
+  it("preserves structure for content copied from within the editor (data-pm-slice), without blank lines", async () => {
+    const { ref } = await mount()
+    act(() => ref.current?.focus())
+    const dom = ref.current?.getEditor()?.view.dom as HTMLElement
+    // A native ProseMirror copy of two paragraphs: HTML tagged with data-pm-slice,
+    // and text/plain "one\n\ntwo" (block separator is "\n\n"). We must defer to
+    // the native HTML paste — forcing text/plain would serialize back to
+    // "one\n\ntwo", introducing a blank line the composer never had.
+    dispatchPaste(dom, {
+      html: '<p data-pm-slice="0 0 []">one</p><p>two</p>',
+      text: "one\n\ntwo",
+    })
+    expect(ref.current?.getText()).toBe("one\ntwo")
+  })
+
+  it("reconstructs a reference badge pasted from within the composer", async () => {
+    const { ref } = await mount()
+    act(() => ref.current?.focus())
+    const dom = ref.current?.getEditor()?.view.dom as HTMLElement
+    // A real composer copy carries both the slice wrapper and the badge span;
+    // defer to ProseMirror so the badge round-trips instead of collapsing to its
+    // plain-text token.
+    dispatchPaste(dom, {
+      html: '<p data-pm-slice="0 0 []"><span data-reference data-ref-type="file" data-ref-id="a.ts" data-label="a.ts" data-uri="file:///a.ts">a.ts</span></p>',
+      text: "a.ts",
+    })
+    expect(JSON.stringify(ref.current?.getJSON())).toContain(
+      '"type":"reference"'
+    )
+  })
+
+  it("does not insert text when the host consumes the paste as files", async () => {
+    const onPasteFiles = vi.fn(() => true)
+    const { ref } = await mount({ onPasteFiles })
+    act(() => ref.current?.focus())
+    const dom = ref.current?.getEditor()?.view.dom as HTMLElement
+    dispatchPaste(dom, { html: "<a href='x'>x</a>", text: "some text" })
+    expect(onPasteFiles).toHaveBeenCalledTimes(1)
+    expect(ref.current?.getText()).toBe("")
+  })
+})

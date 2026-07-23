@@ -29,6 +29,7 @@ import {
   Plus,
   RefreshCw,
   Save,
+  Stethoscope,
   Trash2,
   Wrench,
 } from "lucide-react"
@@ -121,6 +122,7 @@ import {
   OpenCodeConnectDialog,
   OpenCodeCustomProviderDialog,
 } from "@/components/settings/opencode-connect-dialog"
+import { AgentDiagnosticsDialog } from "@/components/settings/agent-diagnostics-dialog"
 import {
   buildConnectedModelOptions,
   buildConnectedProviders,
@@ -3992,6 +3994,7 @@ export function AcpAgentSettings() {
   // effect deps (which would re-run the effect and self-cancel the request).
   const openCodeCatalogRequestedRef = useRef(false)
   const [openCodeConnectOpen, setOpenCodeConnectOpen] = useState(false)
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
   // Add-a-custom-provider dialog (separate from the catalog connect dialog).
   const [openCodeCustomOpen, setOpenCodeCustomOpen] = useState(false)
   // When set, the connect dialog opens in edit mode for this connected provider.
@@ -7282,7 +7285,7 @@ export function AcpAgentSettings() {
                       {selectedAgent.distribution_type}
                     </Badge>
                   </div>
-                  <div className="flex items-center shrink-0">
+                  <div className="flex items-center gap-2 shrink-0">
                     <button
                       type="button"
                       role="switch"
@@ -7350,6 +7353,12 @@ export function AcpAgentSettings() {
                 </p>
               </div>
 
+              <AgentDiagnosticsDialog
+                open={diagnosticsOpen}
+                onOpenChange={setDiagnosticsOpen}
+                agentType={selectedAgent.agent_type}
+              />
+
               <div className="flex-1 overflow-y-auto p-4 space-y-4">
                 <div className="space-y-2">
                   {selectedCurrent?.error && (
@@ -7358,9 +7367,20 @@ export function AcpAgentSettings() {
                       <span className="break-all">{selectedCurrent.error}</span>
                     </div>
                   )}
-                  <div className="text-[11px] text-muted-foreground flex items-center gap-1">
-                    <CheckCircle2 className="h-3 w-3" />
-                    {t("preflight.count", { count: selectedChecks.length })}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[11px] text-muted-foreground flex items-center gap-1">
+                      <CheckCircle2 className="h-3 w-3" />
+                      {t("preflight.count", { count: selectedChecks.length })}
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      onClick={() => setDiagnosticsOpen(true)}
+                    >
+                      <Stethoscope className="h-3.5 w-3.5" />
+                      {t("actions.diagnose")}
+                    </Button>
                   </div>
                   {selectedChecks.length > 0 ? (
                     selectedChecks.map((check) =>

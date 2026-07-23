@@ -3,8 +3,9 @@
 import { useCallback, useSyncExternalStore } from "react"
 import { Coins } from "lucide-react"
 import { useTranslations } from "next-intl"
-import { useSessionStats } from "@/contexts/session-stats-context"
 import { useConnectionStore } from "@/contexts/acp-connections-context"
+import { useTabStore } from "@/contexts/tab-context"
+import { useConversationRuntimeStore } from "@/stores/conversation-runtime-store"
 import { formatTokenCount } from "@/lib/token-format"
 import { formatContextWindowPercent } from "@/lib/context-window"
 import {
@@ -18,42 +19,53 @@ const ICON_CENTER = 8
 const ICON_VIEWBOX = 16
 const ICON_CIRCUMFERENCE = 2 * Math.PI * ICON_RADIUS
 
-export function StatusBarTokens() {
+/**
+ * Context-window usage circle (+ token breakdown popover) shown in the row below
+ * the composer. Scoped to its own conversation via `tabId`: the live context
+ * window comes from that tab's connection (`contextKey`), and the fallback /
+ * token breakdown from that conversation's own runtime-store session stats — so
+ * every loaded/tiled composer shows its own context, not the active one's.
+ */
+export function ComposerContextUsage({ tabId }: { tabId: string | null }) {
   const t = useTranslations("Folder.statusBar.tokens")
   const store = useConnectionStore()
-  const { sessionStats } = useSessionStats()
+  // This tab's own conversation → its per-conversation session stats, read
+  // straight from the runtime store where every panel already keeps them (keyed
+  // by the tab's runtime conversation id — the same resolution the panel uses
+  // for `effectiveConversationId`: runtimeConversationId ?? conversationId).
+  // Reading per-conversation (rather than one shared "active session" value) is
+  // what lets every loaded / tiled composer show its own context.
+  const runtimeConversationId = useTabStore((s) => {
+    const tab = s.tabs.find((x) => x.id === tabId)
+    if (!tab || tab.kind !== "conversation") return null
+    return tab.runtimeConversationId ?? tab.conversationId ?? null
+  })
+  const sessionStats = useConversationRuntimeStore((s) =>
+    runtimeConversationId != null
+      ? (s.byConversationId.get(runtimeConversationId)?.sessionStats ?? null)
+      : null
+  )
   const usage = sessionStats?.total_usage
-
-  const subscribeActiveKey = useCallback(
-    (cb: () => void) => store.subscribeActiveKey(cb),
-    [store]
-  )
-  const getActiveKey = useCallback(() => store.getActiveKey(), [store])
-  const activeKey = useSyncExternalStore(
-    subscribeActiveKey,
-    getActiveKey,
-    getActiveKey
-  )
 
   const subscribeConn = useCallback(
     (cb: () => void) => {
-      if (!activeKey) return () => {}
-      return store.subscribeKey(activeKey, cb)
+      if (!tabId) return () => {}
+      return store.subscribeKey(tabId, cb)
     },
-    [store, activeKey]
+    [store, tabId]
   )
   const getConnSnapshot = useCallback(
-    () => (activeKey ? store.getConnection(activeKey) : undefined),
-    [store, activeKey]
+    () => (tabId ? store.getConnection(tabId) : undefined),
+    [store, tabId]
   )
-  const activeConn = useSyncExternalStore(
+  const conn = useSyncExternalStore(
     subscribeConn,
     getConnSnapshot,
     getConnSnapshot
   )
 
-  const rawLiveUsed = activeConn?.usage?.used ?? null
-  const rawLiveSize = activeConn?.usage?.size ?? null
+  const rawLiveUsed = conn?.usage?.used ?? null
+  const rawLiveSize = conn?.usage?.size ?? null
   // Treat live used=0 as "no data" so we fall back to sessionStats —
   // Claude Code sends used=0 for synthetic local commands (/context etc.)
   const liveContextUsed =
@@ -108,10 +120,21 @@ export function StatusBarTokens() {
 
   if (!hasContext && !hasTokenSection) return null
 
+  // Native hover hint mirroring the popover's headline (the popover stays for
+  // the full breakdown on click).
+  const triggerTitle = hasContext
+    ? contextUsed != null && contextMax != null
+      ? `${t("contextWindow")}: ${formatContextWindowPercent(contextPercent)} (${formatTokenCount(contextUsed)} / ${formatTokenCount(contextMax)})`
+      : `${t("contextWindow")}: ${formatContextWindowPercent(contextPercent)}`
+    : `${t("tokenUsage")}: ${formatTokenCount(total ?? 0)}`
+
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <button className="flex items-center gap-1 hover:text-foreground transition-colors">
+        <button
+          title={triggerTitle}
+          className="flex items-center gap-1 hover:text-foreground transition-colors"
+        >
           {hasContext ? (
             <>
               <svg

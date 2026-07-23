@@ -157,8 +157,11 @@ pub fn ensure_node_in_path() {
     }
 }
 
-/// Search common Node.js version manager directories for a `node` binary and
-/// return the containing bin directory.
+/// Every candidate Node.js version-manager bin directory, newest-version-first
+/// within each manager, WITHOUT checking which actually contains a `node`
+/// binary — the caller decides. Read-only: never mutates PATH. Used by
+/// [`find_node_bin_dir`] (which takes the first candidate that has `node`) and
+/// by env diagnostics (which reports every candidate + whether it has `node`).
 ///
 /// `home` may be `None` in minimal environments (Docker, systemd without HOME).
 /// When `None`, only version managers whose location is determined by an
@@ -175,10 +178,8 @@ pub fn ensure_node_in_path() {
 /// - **n** (Unix) — `$N_PREFIX` or `/usr/local`
 /// - **Homebrew** (macOS) — `/opt/homebrew/opt/node` or `/usr/local/opt/node`
 /// - **Scoop** (Windows) — `%SCOOP%\apps\nodejs*\current`
-fn find_node_bin_dir(home: Option<&std::path::Path>) -> Option<PathBuf> {
+pub(crate) fn node_bin_dir_candidates(home: Option<&std::path::Path>) -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
-
-    let node_bin = if cfg!(windows) { "node.exe" } else { "node" };
 
     /// Extract a (major, minor, patch) tuple from a version directory name
     /// like `v20.11.1` or `20.11.1` for correct numeric sorting.
@@ -465,8 +466,14 @@ fn find_node_bin_dir(home: Option<&std::path::Path>) -> Option<PathBuf> {
         }
     }
 
-    // Return the first candidate that actually contains a `node` binary.
     candidates
+}
+
+/// The first version-manager candidate bin directory that actually contains a
+/// `node` binary. Thin wrapper over [`node_bin_dir_candidates`].
+fn find_node_bin_dir(home: Option<&std::path::Path>) -> Option<PathBuf> {
+    let node_bin = if cfg!(windows) { "node.exe" } else { "node" };
+    node_bin_dir_candidates(home)
         .into_iter()
         .find(|dir| dir.join(node_bin).is_file())
 }

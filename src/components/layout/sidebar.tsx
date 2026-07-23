@@ -252,43 +252,43 @@ export function Sidebar() {
             window's top edge, so its empty space must move the window. */}
         <div data-tauri-drag-region className="h-full min-w-0 flex-1" />
         <div className="flex items-center gap-0.5">
-          {/* Locate + expand/collapse move off the mobile header on desktop:
-              locate → the conversation detail header; expand/collapse → the
-              view-options menu below. Mobile keeps both standalone buttons so
-              its layout is unchanged. */}
+          {/* Locate the active conversation in the list below (moved here from
+              the conversation detail header). Always shown, sitting just before
+              the view-options funnel. The sidebar is unmounted while collapsed,
+              so `listRef` is live whenever this button is visible. */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 shrink-0 text-muted-foreground"
+            onClick={() => listRef.current?.scrollToActive()}
+            title={t("locateActiveConversation")}
+            aria-label={t("locateActiveConversation")}
+          >
+            <Crosshair aria-hidden="true" className="h-3.5 w-3.5" />
+          </Button>
+          {/* Expand/collapse-all keeps a standalone header button on mobile; on
+              desktop it's folded into the view-options menu below. */}
           {isMobile && (
-            <>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 shrink-0 text-muted-foreground"
-                onClick={() => listRef.current?.scrollToActive()}
-                title={t("locateActiveConversation")}
-                aria-label={t("locateActiveConversation")}
-              >
-                <Crosshair aria-hidden="true" className="h-3.5 w-3.5" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 shrink-0 text-muted-foreground"
-                onClick={handleToggleExpandAll}
-                title={toggleExpandLabel}
-                aria-label={toggleExpandLabel}
-              >
-                {allExpanded ? (
-                  <ListChevronsDownUp
-                    aria-hidden="true"
-                    className="h-3.5 w-3.5"
-                  />
-                ) : (
-                  <ListChevronsUpDown
-                    aria-hidden="true"
-                    className="h-3.5 w-3.5"
-                  />
-                )}
-              </Button>
-            </>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 shrink-0 text-muted-foreground"
+              onClick={handleToggleExpandAll}
+              title={toggleExpandLabel}
+              aria-label={toggleExpandLabel}
+            >
+              {allExpanded ? (
+                <ListChevronsDownUp
+                  aria-hidden="true"
+                  className="h-3.5 w-3.5"
+                />
+              ) : (
+                <ListChevronsUpDown
+                  aria-hidden="true"
+                  className="h-3.5 w-3.5"
+                />
+              )}
+            </Button>
           )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

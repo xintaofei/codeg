@@ -26,9 +26,7 @@ import {
 import { DelegationProvider } from "@/contexts/delegation-context"
 import { ConversationRuntimeProvider } from "@/contexts/conversation-runtime-context"
 import { TabProvider, useTabStore, useTabActions } from "@/contexts/tab-context"
-import { SessionStatsProvider } from "@/contexts/session-stats-context"
 import { SidebarProvider, useSidebarContext } from "@/contexts/sidebar-context"
-import { ConversationLocateProvider } from "@/contexts/conversation-locate-context"
 import { SearchDialogProvider } from "@/contexts/search-dialog-context"
 import { AutomationsViewProvider } from "@/contexts/automations-view-context"
 import {
@@ -1149,30 +1147,26 @@ function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
                       {/* Always mounted: external-change conflicts must be
                             resolvable even with the aux file tree closed. */}
                       <ExternalConflictDialog />
-                      <SessionStatsProvider>
-                        <SidebarProvider>
-                          <AuxPanelProvider>
-                            <TerminalProvider>
-                              <SearchDialogProvider>
-                                <AutomationsViewProvider>
-                                  <WorkbenchRouteProvider>
-                                    <WorkbenchRouteConversationSync />
-                                    {/* Inside WorkbenchRouteProvider: the
+                      <SidebarProvider>
+                        <AuxPanelProvider>
+                          <TerminalProvider>
+                            <SearchDialogProvider>
+                              <AutomationsViewProvider>
+                                <WorkbenchRouteProvider>
+                                  <WorkbenchRouteConversationSync />
+                                  {/* Inside WorkbenchRouteProvider: the
                                           listener calls openConversations() to
                                           surface a launcher-opened folder. */}
-                                    <WorkspaceOpenFolderListener />
-                                    <ConversationLocateProvider>
-                                      <FolderLayoutShell>
-                                        {children}
-                                      </FolderLayoutShell>
-                                    </ConversationLocateProvider>
-                                  </WorkbenchRouteProvider>
-                                </AutomationsViewProvider>
-                              </SearchDialogProvider>
-                            </TerminalProvider>
-                          </AuxPanelProvider>
-                        </SidebarProvider>
-                      </SessionStatsProvider>
+                                  <WorkspaceOpenFolderListener />
+                                  <FolderLayoutShell>
+                                    {children}
+                                  </FolderLayoutShell>
+                                </WorkbenchRouteProvider>
+                              </AutomationsViewProvider>
+                            </SearchDialogProvider>
+                          </TerminalProvider>
+                        </AuxPanelProvider>
+                      </SidebarProvider>
                     </TabProvider>
                   </WorkspaceProvider>
                 </ConversationRuntimeProvider>

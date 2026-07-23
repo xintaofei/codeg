@@ -1,19 +1,20 @@
 /**
  * Shared context-window percentage helpers.
  *
- * The bottom status bar (`status-bar-tokens.tsx`) and the Session Details dialog
- * both show a context-window usage percentage; keeping the precedence and the
- * one-decimal formatting here ensures the two never drift apart.
+ * The below-composer context indicator (`composer-context-usage.tsx`) and the
+ * Session Details dialog both show a context-window usage percentage; keeping
+ * the precedence and the one-decimal formatting here ensures the two never
+ * drift apart.
  */
 
 /**
  * Resolve the context-window usage percentage from a session-stats snapshot,
- * mirroring the status bar's session-stats branch: trust the backend-provided
+ * mirroring the context indicator's session-stats branch: trust the backend-provided
  * `percent`, and only recompute from `used / max` when the backend figure is
  * absent. The result is clamped into 0–100. Returns `null` when nothing is
  * known.
  *
- * (The status bar layers a live-connection tier on top of this — it prefers a
+ * (The context indicator layers a live-connection tier on top of this — it prefers a
  * `used/max` recompute from the live ACP connection before falling back to the
  * session stats handled here — but the dialog has no live connection, so it maps
  * onto exactly this branch.)
@@ -31,7 +32,7 @@ export function resolveContextWindowPercent(
 
 /**
  * Format a context-window percentage keeping one decimal place (e.g. `87.3%`),
- * matching the bottom status bar. Returns `--` for an unknown value.
+ * matching the below-composer context indicator. Returns `--` for an unknown value.
  */
 export function formatContextWindowPercent(percent: number | null): string {
   if (percent == null) return "--"

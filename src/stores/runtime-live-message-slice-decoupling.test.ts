@@ -9,8 +9,8 @@ import {
 const CID = 42
 
 // A complete runtime session (mirrors the store's internal `createEmptySession`)
-// with distinct non-null references for the three fields the conversation panel
-// reads from it, seeded straight into the store.
+// with distinct non-null references for the fields exercised here, seeded
+// straight into the store.
 function seedSession(sessionStats: SessionStats) {
   useConversationRuntimeStore.setState({
     byConversationId: new Map([
@@ -50,30 +50,40 @@ const liveMsg = (id: string): LiveMessage => ({
   startedAt: 0,
 })
 
-// The three fields the keep-alive panel actually reads from its session.
+// The two fields the keep-alive panel reads from its session via `useShallow`.
 function panelSlice() {
   const s = useConversationRuntimeStore.getState().byConversationId.get(CID)
   return {
-    sessionStats: s?.sessionStats ?? null,
     externalId: s?.externalId ?? null,
     syncState: s?.syncState ?? "idle",
   }
 }
 
+// `sessionStats` is no longer part of the panel slice; the below-composer context
+// indicator reads it per-conversation from this same store, so its reference
+// stability across streaming is asserted separately here.
+function sessionStatsOf() {
+  return (
+    useConversationRuntimeStore.getState().byConversationId.get(CID)
+      ?.sessionStats ?? null
+  )
+}
+
 // The keep-alive conversation panel (`ConversationTabView`) subscribes to a
-// `useShallow` slice of {sessionStats, externalId, syncState} from its runtime
-// session — NOT the whole session object. The live-message sink rewrites the
-// session object on every streaming batch (~60/s, via SET_LIVE_MESSAGE); a
-// whole-object selector would re-render the panel per token. These tests encode
-// the store invariant that narrowing depends on: SET_LIVE_MESSAGE replaces the
-// session object (so the OLD whole-object selector churned) while preserving the
-// references of those three fields (so the slice is Object.is-stable and
-// `useShallow` bails → no re-render) — and that a real change to one of the
-// three still propagates (no over-suppression).
+// `useShallow` slice of {externalId, syncState} from its runtime session — NOT
+// the whole session object. The live-message sink rewrites the session object on
+// every streaming batch (~60/s, via SET_LIVE_MESSAGE); a whole-object selector
+// would re-render the panel per token. These tests encode the store invariant
+// that narrowing depends on: SET_LIVE_MESSAGE replaces the session object (so the
+// OLD whole-object selector churned) while preserving the references of those two
+// fields (so the slice is Object.is-stable and `useShallow` bails → no re-render)
+// — and that a real change to one still propagates (no over-suppression).
+// `sessionStats` (read per-conversation by the context indicator) must survive
+// streaming with the same reference too, so that read stays inert to live tokens.
 describe("runtime session panel slice is decoupled from live-message streaming", () => {
   afterEach(() => resetConversationRuntimeStore())
 
-  it("replaces the session object but keeps the panel's three fields stable across a streaming batch", () => {
+  it("replaces the session object but keeps the panel slice + sessionStats stable across a streaming batch", () => {
     const stats: SessionStats = { total_usage: null, total_duration_ms: 0 }
     seedSession(stats)
 
@@ -81,6 +91,7 @@ describe("runtime session panel slice is decoupled from live-message streaming",
       .getState()
       .byConversationId.get(CID)
     const beforeSlice = panelSlice()
+    const beforeStats = sessionStatsOf()
 
     // A streaming batch lands: the connection sink writes liveMessage (isLive).
     useConversationRuntimeStore
@@ -98,10 +109,12 @@ describe("runtime session panel slice is decoupled from live-message streaming",
     // ...but every field the panel's narrow slice reads kept its identity, so
     // `useShallow` shallow-compares equal and the panel does NOT re-render.
     const afterSlice = panelSlice()
-    expect(afterSlice.sessionStats).toBe(beforeSlice.sessionStats)
-    expect(afterSlice.sessionStats).toBe(stats)
     expect(afterSlice.externalId).toBe(beforeSlice.externalId)
     expect(afterSlice.syncState).toBe(beforeSlice.syncState)
+    // sessionStats (read per-conversation by the context indicator) is likewise
+    // reference-stable across the streaming batch.
+    expect(sessionStatsOf()).toBe(beforeStats)
+    expect(sessionStatsOf()).toBe(stats)
   })
 
   it("still propagates a real change to a slice field (no over-suppression)", () => {
@@ -116,8 +129,8 @@ describe("runtime session panel slice is decoupled from live-message streaming",
     const afterSlice = panelSlice()
     expect(afterSlice.syncState).toBe("idle")
     expect(afterSlice.syncState).not.toBe(beforeSlice.syncState)
-    // Unrelated slice fields keep their identity across the syncState change.
-    expect(afterSlice.sessionStats).toBe(beforeSlice.sessionStats)
+    // Unrelated fields keep their identity across the syncState change.
     expect(afterSlice.externalId).toBe(beforeSlice.externalId)
+    expect(sessionStatsOf()).toBe(stats)
   })
 })

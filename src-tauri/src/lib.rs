@@ -1101,6 +1101,7 @@ mod tauri_app {
                 acp_commands::acp_find_connection_for_conversation,
                 acp_commands::acp_list_agents,
                 acp_commands::acp_get_agent_status,
+                acp_commands::acp_env_diagnostics,
                 acp_commands::acp_clear_binary_cache,
                 acp_commands::acp_download_agent_binary,
                 acp_commands::acp_install_uv_tool,

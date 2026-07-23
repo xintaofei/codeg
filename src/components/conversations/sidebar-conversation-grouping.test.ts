@@ -335,8 +335,14 @@ describe("buildRows", () => {
     ])
   })
 
-  it("returns an empty array when there are no folders and nothing pinned", () => {
-    expect(folderRows([], new Map(), {}, new Map())).toEqual([])
+  it("emits the Folders header + empty hint when there are no open folders", () => {
+    // folderRows trims the trailing Chat section, so this is just the Folders
+    // portion: the header is always present (a permanent entry point) and an
+    // expanded empty section shows a single folders-empty hint.
+    expect(folderRows([], new Map(), {}, new Map())).toEqual([
+      foldersHeader(0),
+      { kind: "folders-empty" },
+    ])
   })
 
   it("hides every folder row when the Folders section is collapsed", () => {
@@ -399,10 +405,12 @@ describe("buildRows", () => {
       chatConversations: [],
       chatsExpanded: true,
     })
-    // Pinned section collapsed → header only; the always-present Chat section
-    // trails (empty → header + hint).
+    // Pinned section collapsed → header only; the always-present Folders and Chat
+    // sections trail (both empty → header + hint).
     expect(rows).toEqual([
       { kind: "section", section: "pinned", expanded: false, count: 1 },
+      { kind: "section", section: "folders", expanded: true, count: 0 },
+      { kind: "folders-empty" },
       { kind: "section", section: "chats", expanded: true, count: 0 },
       { kind: "chats-empty" },
     ])
@@ -554,11 +562,14 @@ describe("buildRows", () => {
       byFolder: new Map(),
       folderExpanded: {},
       folderTotalCounts: new Map(),
-      foldersExpanded: true,
+      // Folders collapsed too, so this test stays focused on the Chat section:
+      // both sections show only their header (no empty hint) when collapsed.
+      foldersExpanded: false,
       chatConversations: [],
       chatsExpanded: false,
     })
     expect(rows).toEqual([
+      { kind: "section", section: "folders", expanded: false, count: 0 },
       { kind: "section", section: "chats", expanded: false, count: 0 },
     ])
   })
@@ -571,13 +582,42 @@ describe("buildRows", () => {
       byFolder: new Map(),
       folderExpanded: {},
       folderTotalCounts: new Map(),
-      foldersExpanded: true,
+      foldersExpanded: false,
       chatConversations: [conv(1, 99)],
       chatsExpanded: false,
     })
     expect(rows).toEqual([
+      { kind: "section", section: "folders", expanded: false, count: 0 },
       { kind: "section", section: "chats", expanded: false, count: 1 },
     ])
+  })
+
+  it("always emits the Folders section, with an empty hint when no folders are open", () => {
+    // Mirrors the Chat section: with chats present but no open folders, the
+    // Folders header + a single folders-empty hint still render. (The fully-empty
+    // initial workspace — no folders AND no conversations — is handled by the
+    // list's open-folder call-to-action, not buildRows.)
+    const rows = buildRows({
+      pinned: [],
+      pinnedExpanded: true,
+      orderedFolderIds: [],
+      byFolder: new Map(),
+      folderExpanded: {},
+      folderTotalCounts: new Map(),
+      foldersExpanded: true,
+      chatConversations: [conv(1, 99)],
+      chatsExpanded: true,
+    })
+    const foldersIdx = rows.findIndex(
+      (r) => r.kind === "section" && r.section === "folders"
+    )
+    expect(rows[foldersIdx]).toEqual({
+      kind: "section",
+      section: "folders",
+      expanded: true,
+      count: 0,
+    })
+    expect(rows[foldersIdx + 1]).toEqual({ kind: "folders-empty" })
   })
 
   // ── Delegation sub-session subtree (recursive expansion) ─────────────────

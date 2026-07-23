@@ -611,7 +611,8 @@
       "saveCodeBuddyConfig": "CodeBuddy 設定を保存",
       "saveKimiCodeConfig": "Kimi Code の設定を保存",
       "customInstall": "カスタムインストール",
-      "saveKimiCodeRawConfig": "Save config.toml"
+      "saveKimiCodeRawConfig": "Save config.toml",
+      "diagnose": "診断"
     },
     "status": {
       "enabled": "有効",
@@ -1372,6 +1373,7 @@
       "sectionFolders": "フォルダ",
       "sectionChats": "チャット",
       "noChats": "チャットがありません",
+      "noFolders": "開いているフォルダがありません",
       "newChatAction": "新しいチャット",
       "automations": "オートメーション",
       "loadingSubsessions": "サブ会話を読み込み中…"
@@ -1737,7 +1739,11 @@
         "confirmApply": "スタッシュ {ref} を作業ディレクトリに適用しますか？",
         "cancel": "キャンセル"
       },
-      "deleteBranch": "ブランチを削除"
+      "deleteBranch": "ブランチを削除",
+      "searchPlaceholder": "ブランチと操作を検索",
+      "searchAriaLabel": "ブランチと操作を検索",
+      "branchListLabel": "ブランチと操作",
+      "noMatches": "一致する項目がありません"
     },
     "commitDialog": {
       "toasts": {
@@ -3979,5 +3985,27 @@
     "groupInstructions": "説明とシステムプロンプト",
     "fieldDescription": "説明",
     "baseInstructions": "システムプロンプト（base_instructions）"
+  },
+  "DiagnosticsSettings": {
+    "title": "環境診断",
+    "description": "このアプリが自身のプロセス内でエージェントの CLI をどう解決するかを確認します（ターミナルとは異なる場合があります）。",
+    "loading": "診断を実行中…",
+    "error": "診断に失敗しました",
+    "rerun": "再実行",
+    "copyAll": "すべてコピー",
+    "copied": "診断情報をクリップボードにコピーしました",
+    "button": "診断",
+    "verdict": {
+      "ok": "環境は正常です。それでも未インストールと表示される場合は、アプリを完全に再起動してプレフィックスキャッシュを更新してください。",
+      "node_missing": "アプリの PATH に Node.js が見つかりませんでした。",
+      "npm_missing": "アプリの PATH に npm が見つかりませんでした。",
+      "not_installed": "このエージェントはインストールされていないようです。",
+      "installed_but_unresolved": "インストール済みと記録されていますが、アプリが実行ファイルを見つけられません。",
+      "user_prefix_not_on_path": "フォールバックのプレフィックス（~/.codeg/npm-global）にインストールされていますが、アプリの PATH に含まれていません。アプリを完全に再起動して再試行してください。",
+      "homebrew_bin_not_on_path": "Homebrew の bin にインストールされていますが、アプリの PATH に含まれていません（Apple Silicon の keg 分割）。",
+      "terminal_only_path": "このコマンドはターミナルでは解決されますが、アプリでは解決されません。GUI の PATH のずれです。ターミナルからアプリを起動するか、エージェント設定から再インストールしてください。",
+      "npm_prefix_timeout": "npm prefix -g が遅すぎました（1.5 秒超）。フォールバック検出をスキップしました。アプリを再起動して再試行してください。",
+      "node_too_old": "使用中の Node.js がこのエージェントの要件より古いです。Node.js をアップグレードしてください。"
+    }
   }
 }

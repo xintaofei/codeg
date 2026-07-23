@@ -1801,6 +1801,39 @@ export interface AcpAgentStatus {
   installed_version: string | null
 }
 
+// Environment diagnostics (returned by acp_env_diagnostics). Mirrors the Rust
+// AgentDiagnosticsReport in src-tauri/src/acp/types.rs (snake_case response DTO).
+export type DiagLevel = "ok" | "warn" | "fail" | "info"
+
+export interface DiagCheck {
+  label: string
+  value: string
+  status: DiagLevel
+  hint: string | null
+}
+
+export interface DiagSection {
+  title: string
+  checks: DiagCheck[]
+}
+
+export interface DiagnosticsVerdict {
+  level: DiagLevel
+  // Stable id localized via DiagnosticsSettings.verdict.<code>.
+  code: string
+  // Pre-formatted English sentence; used only in plain_text (copy blob).
+  summary: string
+}
+
+export interface AgentDiagnosticsReport {
+  generated_at: string
+  agent_type: AgentType | null
+  verdict: DiagnosticsVerdict
+  sections: DiagSection[]
+  // Backend-rendered text for the "copy all" button.
+  plain_text: string
+}
+
 export type AgentSkillScope = "global" | "project"
 export type AgentSkillLayout = "markdown_file" | "skill_directory"
 

@@ -31,6 +31,7 @@ import type {
   QuestionAnswer,
   AcpAgentInfo,
   AcpAgentStatus,
+  AgentDiagnosticsReport,
   GrokStructuredConfig,
   CursorStructuredConfig,
   CursorAuthStatus,
@@ -330,6 +331,13 @@ export async function acpGetAgentStatus(
   agentType: AgentType
 ): Promise<AcpAgentStatus> {
   return getTransport().call("acp_get_agent_status", { agentType })
+}
+
+// Run environment diagnostics for an agent (or a base env report when omitted).
+export async function acpEnvDiagnostics(
+  agentType?: AgentType
+): Promise<AgentDiagnosticsReport> {
+  return getTransport().call("acp_env_diagnostics", { agentType })
 }
 
 export async function acpClearBinaryCache(agentType: AgentType): Promise<void> {

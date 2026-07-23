@@ -611,7 +611,8 @@
       "saveCodeBuddyConfig": "CodeBuddy-Konfiguration speichern",
       "saveKimiCodeConfig": "Kimi-Code-Konfiguration speichern",
       "customInstall": "Benutzerdefinierte Installation",
-      "saveKimiCodeRawConfig": "Save config.toml"
+      "saveKimiCodeRawConfig": "Save config.toml",
+      "diagnose": "Diagnose"
     },
     "status": {
       "enabled": "Aktiviert",
@@ -1372,6 +1373,7 @@
       "sectionFolders": "Ordner",
       "sectionChats": "Chat",
       "noChats": "Keine Chats",
+      "noFolders": "Keine Ordner geöffnet",
       "newChatAction": "Neuer Chat",
       "automations": "Automatisierungen",
       "loadingSubsessions": "Unterkonversationen werden geladen…"
@@ -1737,7 +1739,11 @@
         "confirmApply": "Stash {ref} auf das Arbeitsverzeichnis anwenden?",
         "cancel": "Abbrechen"
       },
-      "deleteBranch": "Branch löschen"
+      "deleteBranch": "Branch löschen",
+      "searchPlaceholder": "Branches und Aktionen suchen",
+      "searchAriaLabel": "Branches und Aktionen suchen",
+      "branchListLabel": "Branches und Aktionen",
+      "noMatches": "Keine Treffer"
     },
     "commitDialog": {
       "toasts": {
@@ -3979,5 +3985,27 @@
     "groupInstructions": "Beschreibung & System-Prompt",
     "fieldDescription": "Beschreibung",
     "baseInstructions": "System-Prompt (base_instructions)"
+  },
+  "DiagnosticsSettings": {
+    "title": "Umgebungsdiagnose",
+    "description": "Prüft, wie diese App die Agent-CLI im eigenen Prozess auflöst – das kann sich von deinem Terminal unterscheiden.",
+    "loading": "Diagnose wird ausgeführt…",
+    "error": "Diagnose fehlgeschlagen",
+    "rerun": "Erneut ausführen",
+    "copyAll": "Alles kopieren",
+    "copied": "Diagnose in die Zwischenablage kopiert",
+    "button": "Diagnose",
+    "verdict": {
+      "ok": "Die Umgebung sieht in Ordnung aus. Wird trotzdem „nicht installiert“ angezeigt, starte die App komplett neu, um den Prefix-Cache zu aktualisieren.",
+      "node_missing": "Node.js wurde im PATH der App nicht gefunden.",
+      "npm_missing": "npm wurde im PATH der App nicht gefunden.",
+      "not_installed": "Dieser Agent scheint nicht installiert zu sein.",
+      "installed_but_unresolved": "Als installiert vermerkt, aber die App findet die ausführbare Datei nicht.",
+      "user_prefix_not_on_path": "In das Ausweich-Prefix (~/.codeg/npm-global) installiert, das nicht im PATH der App liegt. Starte die App komplett neu und versuche es erneut.",
+      "homebrew_bin_not_on_path": "Unter dem Homebrew-bin installiert, das nicht im PATH der App liegt (Apple-Silicon-Keg-Trennung).",
+      "terminal_only_path": "Der Befehl wird in deinem Terminal aufgelöst, aber nicht in der App – eine GUI-PATH-Lücke. Starte die App aus einem Terminal oder installiere sie in den Agent-Einstellungen neu.",
+      "npm_prefix_timeout": "npm prefix -g war zu langsam (über 1,5 s), daher wurde die Ausweicherkennung übersprungen. Starte die App neu und versuche es erneut.",
+      "node_too_old": "Dein aktives Node.js ist älter als von diesem Agenten benötigt. Aktualisiere Node.js."
+    }
   }
 }

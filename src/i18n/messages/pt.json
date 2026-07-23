@@ -611,7 +611,8 @@
       "saveCodeBuddyConfig": "Salvar configuração do CodeBuddy",
       "saveKimiCodeConfig": "Salvar configuração do Kimi Code",
       "customInstall": "Instalação personalizada",
-      "saveKimiCodeRawConfig": "Save config.toml"
+      "saveKimiCodeRawConfig": "Save config.toml",
+      "diagnose": "Diagnosticar"
     },
     "status": {
       "enabled": "Habilitado",
@@ -1372,6 +1373,7 @@
       "sectionFolders": "Pastas",
       "sectionChats": "Chat",
       "noChats": "Sem chats",
+      "noFolders": "Nenhuma pasta aberta",
       "newChatAction": "Novo chat",
       "automations": "Automações",
       "loadingSubsessions": "Carregando subconversas…"
@@ -1737,7 +1739,11 @@
         "confirmApply": "Aplicar stash {ref} ao diretório de trabalho?",
         "cancel": "Cancelar"
       },
-      "deleteBranch": "Excluir branch"
+      "deleteBranch": "Excluir branch",
+      "searchPlaceholder": "Pesquisar ramos e ações",
+      "searchAriaLabel": "Pesquisar ramos e ações",
+      "branchListLabel": "Ramos e ações",
+      "noMatches": "Nenhuma correspondência"
     },
     "commitDialog": {
       "toasts": {
@@ -3979,5 +3985,27 @@
     "groupInstructions": "Descrição e prompt do sistema",
     "fieldDescription": "Descrição",
     "baseInstructions": "Prompt do sistema (base_instructions)"
+  },
+  "DiagnosticsSettings": {
+    "title": "Diagnóstico do ambiente",
+    "description": "Verifica como este app resolve a CLI do agente no próprio processo, que pode diferir do seu terminal.",
+    "loading": "Executando diagnóstico…",
+    "error": "Falha no diagnóstico",
+    "rerun": "Executar novamente",
+    "copyAll": "Copiar tudo",
+    "copied": "Diagnóstico copiado para a área de transferência",
+    "button": "Diagnosticar",
+    "verdict": {
+      "ok": "O ambiente parece saudável. Se ainda aparecer como não instalado, reinicie o app completamente para atualizar o cache do prefixo.",
+      "node_missing": "Node.js não foi encontrado no PATH do app.",
+      "npm_missing": "npm não foi encontrado no PATH do app.",
+      "not_installed": "Este agente não parece estar instalado.",
+      "installed_but_unresolved": "Consta como instalado, mas o app não consegue localizar o executável.",
+      "user_prefix_not_on_path": "Instalado no prefixo de fallback (~/.codeg/npm-global), que não está no PATH do app. Reinicie o app completamente e tente novamente.",
+      "homebrew_bin_not_on_path": "Instalado no bin do Homebrew, que não está no PATH do app (divisão de keg no Apple Silicon).",
+      "terminal_only_path": "O comando é resolvido no seu terminal, mas não no app: uma diferença de PATH da GUI. Inicie o app por um terminal ou reinstale nas Configurações de agentes.",
+      "npm_prefix_timeout": "npm prefix -g foi muito lento (mais de 1,5 s), então a detecção de fallback foi ignorada. Reinicie o app e tente novamente.",
+      "node_too_old": "Seu Node.js ativo é mais antigo do que este agente requer. Atualize o Node.js."
+    }
   }
 }

@@ -309,6 +309,17 @@ export interface ChatsEmptyRow {
 }
 
 /**
+ * The single empty-state hint shown under an expanded but empty "Folders"
+ * section ("No folders open"). Like {@link ChatsEmptyRow} it is folderless — it
+ * stands in for the whole (empty) folder list rather than one folder — so it
+ * carries no folder id and renders with a flat (non-rail) indent. Distinct from
+ * {@link EmptyHintRow}, which is the per-folder "this folder is empty" hint.
+ */
+export interface FoldersEmptyRow {
+  kind: "folders-empty"
+}
+
+/**
  * A collapsible section heading. Three exist: "pinned" (above the folders, shown
  * only when there are pinned conversations), "folders" (wraps the whole folder
  * list), and "chats" (below the folders, a flat list of folderless chat-mode
@@ -342,6 +353,7 @@ export type SidebarRow =
   | ConversationRow
   | EmptyHintRow
   | ChatsEmptyRow
+  | FoldersEmptyRow
   | SubsessionLoadingRow
 
 const MAX_RENDER_DEPTH = 32
@@ -445,13 +457,18 @@ function pushConversationRow(
  * that order:
  * - The "Pinned" section header + its conversations appear only when `pinned`
  *   is non-empty, and its rows only when `pinnedExpanded`.
- * - The "Folders" section header appears whenever there are folders; its folder
- *   rows appear only when `foldersExpanded`. Within it, order follows
- *   `orderedFolderIds`: a collapsed folder contributes only its header; an
- *   expanded empty folder contributes header + one empty-hint row; an expanded
- *   non-empty folder contributes header + its (already sorted) bucket. `byFolder`
- *   / `folderTotalCounts` exclude pinned conversations (they live in the Pinned
- *   section), so a folder whose only conversations are pinned reads as empty.
+ * - The "Folders" section header ALWAYS appears (like "Chat"), so the section
+ *   stays a permanent entry point — its Open-folder / Clone / Import actions stay
+ *   reachable even with nothing open. Its rows appear only when `foldersExpanded`:
+ *   when expanded with no open folders it contributes a single `folders-empty`
+ *   hint row; otherwise its folder rows follow `orderedFolderIds`: a collapsed
+ *   folder contributes only its header; an expanded empty folder contributes
+ *   header + one (per-folder) empty-hint row; an expanded non-empty folder
+ *   contributes header + its (already sorted) bucket. `byFolder` /
+ *   `folderTotalCounts` exclude pinned conversations (they live in the Pinned
+ *   section), so a folder whose only conversations are pinned reads as empty. The
+ *   fully-empty initial workspace (no folders AND no conversations) never reaches
+ *   buildRows — the list renders its dedicated open-folder call-to-action there.
  * - The "Chat" section header ALWAYS appears (even with zero chat
  *   conversations), so the section is a permanent entry point — its New-chat
  *   affordance and an empty hint stay reachable. When expanded and empty it
@@ -527,41 +544,48 @@ export function buildRows(args: {
 
   // The Folders and Chat sections sit below the (always-top) Pinned section in
   // an order the user controls via `sectionOrder`. Each is its own closure so
-  // the order they emit into `rows` is a one-line swap below — the conditional
-  // logic inside each (folders gated on count, chats header always present)
+  // the order they emit into `rows` is a one-line swap below — the row logic
+  // inside each (both headers always present, each with its own empty hint)
   // stays intact regardless of position.
   const pushFolders = () => {
-    if (orderedFolderIds.length === 0) return
+    // The Folders section header is always present (a permanent entry point),
+    // mirroring the Chat section — so a workspace with chats but no open folders
+    // still shows the "Folders" heading and its "add a folder" actions. The
+    // fully-empty initial workspace (no folders AND no conversations) never
+    // reaches buildRows; the list renders a dedicated open-folder CTA there.
     rows.push({
       kind: "section",
       section: "folders",
       expanded: foldersExpanded,
       count: orderedFolderIds.length,
     })
-    if (foldersExpanded) {
-      for (const folderId of orderedFolderIds) {
-        rows.push({ kind: "folder", folderId })
-        const expanded = folderExpanded[folderId] ?? true
-        if (!expanded) continue
-        const convs = byFolder.get(folderId)
-        if (!convs || convs.length === 0) {
-          rows.push({
-            kind: "empty",
-            folderId,
-            totalConversationCount: folderTotalCounts.get(folderId) ?? 0,
-          })
-          continue
-        }
-        for (const conv of convs) {
-          pushConversationRow(
-            rows,
-            conv,
-            0,
-            conversationExpanded,
-            childrenByParent,
-            childrenLoading
-          )
-        }
+    if (!foldersExpanded) return
+    if (orderedFolderIds.length === 0) {
+      rows.push({ kind: "folders-empty" })
+      return
+    }
+    for (const folderId of orderedFolderIds) {
+      rows.push({ kind: "folder", folderId })
+      const expanded = folderExpanded[folderId] ?? true
+      if (!expanded) continue
+      const convs = byFolder.get(folderId)
+      if (!convs || convs.length === 0) {
+        rows.push({
+          kind: "empty",
+          folderId,
+          totalConversationCount: folderTotalCounts.get(folderId) ?? 0,
+        })
+        continue
+      }
+      for (const conv of convs) {
+        pushConversationRow(
+          rows,
+          conv,
+          0,
+          conversationExpanded,
+          childrenByParent,
+          childrenLoading
+        )
       }
     }
   }
