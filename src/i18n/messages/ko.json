@@ -2299,7 +2299,11 @@
         "saveEdit": "저장",
         "cancelEdit": "편집 취소",
         "editItem": "편집",
-        "deleteItem": "삭제"
+        "deleteItem": "삭제",
+        "repeatIntentTitle": "반복 메시지를 대기열에 넣을까요?",
+        "repeatIntentDescription": "「{text}」내용으로 대기 메시지 {count}개를 만들까요?",
+        "repeatIntentConfirm": "{count}개 대기열에 추가",
+        "repeatIntentCancel": "취소"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "설정 > 에이전트",

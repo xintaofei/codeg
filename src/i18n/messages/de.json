@@ -2299,7 +2299,11 @@
         "saveEdit": "Speichern",
         "cancelEdit": "Bearbeitung abbrechen",
         "editItem": "Bearbeiten",
-        "deleteItem": "Entfernen"
+        "deleteItem": "Entfernen",
+        "repeatIntentTitle": "Wiederholte Nachrichten einreihen?",
+        "repeatIntentDescription": "{count} ausstehende Nachrichten mit: \"{text}\" erstellen?",
+        "repeatIntentConfirm": "{count} Nachrichten einreihen",
+        "repeatIntentCancel": "Abbrechen"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "Einstellungen > Agenten",

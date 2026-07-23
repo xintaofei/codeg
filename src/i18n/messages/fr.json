@@ -2299,7 +2299,11 @@
         "saveEdit": "Enregistrer",
         "cancelEdit": "Annuler la modification",
         "editItem": "Modifier",
-        "deleteItem": "Supprimer"
+        "deleteItem": "Supprimer",
+        "repeatIntentTitle": "Mettre des messages répétés en file ?",
+        "repeatIntentDescription": "Créer {count} messages en attente avec : \"{text}\" ?",
+        "repeatIntentConfirm": "Mettre {count} messages en file",
+        "repeatIntentCancel": "Annuler"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "Paramètres > Agents",

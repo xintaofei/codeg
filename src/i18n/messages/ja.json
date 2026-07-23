@@ -2299,7 +2299,11 @@
         "saveEdit": "保存",
         "cancelEdit": "編集をキャンセル",
         "editItem": "編集",
-        "deleteItem": "削除"
+        "deleteItem": "削除",
+        "repeatIntentTitle": "同じメッセージをキューに入れますか？",
+        "repeatIntentDescription": "「{text}」を {count} 件の送信待ちとして作成しますか？",
+        "repeatIntentConfirm": "{count} 件をキューに追加",
+        "repeatIntentCancel": "キャンセル"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "設定 > エージェント",

@@ -2299,7 +2299,11 @@
         "saveEdit": "Save",
         "cancelEdit": "Cancel edit",
         "editItem": "Edit",
-        "deleteItem": "Remove"
+        "deleteItem": "Remove",
+        "repeatIntentTitle": "Queue repeated messages?",
+        "repeatIntentDescription": "Create {count} pending messages with: \"{text}\"",
+        "repeatIntentConfirm": "Queue {count} messages",
+        "repeatIntentCancel": "Cancel"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "Settings > Agents",
