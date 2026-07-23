@@ -61,6 +61,11 @@ import { cn } from "@/lib/utils"
 /** Attribute the conversation-panel ContextMenu looks for to yield ownership. */
 export const FILE_PATH_MENU_ATTR = "data-file-path-menu"
 
+/** Short-lived feedback for copy / add-to-chat (workspace Toaster defaults to 15s). */
+const TOAST_SUCCESS_MS = 2500
+/** Slightly longer for failures so the user can read the reason. */
+const TOAST_ERROR_MS = 5000
+
 export interface FilePathContextMenuProps {
   /** Agent-reported path (absolute or workspace-relative). */
   filePath: string
@@ -123,9 +128,9 @@ export function FilePathContextMenu({
     async (text: string, successKey: "pathCopied" | "fileNameCopied") => {
       const ok = await copyPathText(text)
       if (ok) {
-        toast.success(t(successKey))
+        toast.success(t(successKey), { duration: TOAST_SUCCESS_MS })
       } else {
-        toast.error(t("copyFailed"))
+        toast.error(t("copyFailed"), { duration: TOAST_ERROR_MS })
       }
     },
     [t]
@@ -138,6 +143,7 @@ export function FilePathContextMenu({
       } catch (error) {
         toast.error(t("openFailed"), {
           description: toErrorMessage(error),
+          duration: TOAST_ERROR_MS,
         })
       }
     },
@@ -164,14 +170,16 @@ export function FilePathContextMenu({
 
   const handleAddToChat = useCallback(() => {
     if (!activeSessionTabId || !attachPath) {
-      toast.error(t("noActiveConversation"))
+      toast.error(t("noActiveConversation"), { duration: TOAST_ERROR_MS })
       return
     }
     emitAttachFileToSession({
       tabId: activeSessionTabId,
       path: attachPath,
     })
-    toast.success(t("addToChatDone", { label: fileName }))
+    toast.success(t("addToChatDone", { label: fileName }), {
+      duration: TOAST_SUCCESS_MS,
+    })
   }, [activeSessionTabId, attachPath, fileName, t])
 
   // Own the gesture before it reaches ConversationDetailPanel's ContextMenu.
