@@ -2927,6 +2927,7 @@
     "hide": "Masquer",
     "show": "Afficher",
     "copy": "Copier",
+    "copyFailed": "Échec de la copie",
     "qrcode": "Code QR",
     "qrcodeTitle": "Scanner pour ouvrir",
     "qrcodeHint": "Scannez avec votre téléphone pour ouvrir Codeg dans un navigateur",
@@ -2945,6 +2946,25 @@
       "permissionDenied": "Permission refusée. Utilisez un port supérieur à 1024 ou exécutez avec des privilèges plus élevés.",
       "addressUnavailable": "Cette adresse n'est pas disponible sur cette machine",
       "bindFailed": "Échec de la liaison à l'adresse"
+    },
+    "funnelTitle": "Public Access (Tailscale Funnel)",
+    "funnelDescription": "Expose this Web Service on a public HTTPS URL via Codeg's private Tailscale node.",
+    "funnelEnable": "Enable Funnel",
+    "funnelEnableHint": "Requires local Web Service running. Does not use or replace system Tailscale.",
+    "funnelState": "Funnel status",
+    "funnelLogin": "Open Tailscale login",
+    "funnelUrl": "Public URL",
+    "funnelTokenNote": "Your Codeg access token is still required after opening the public URL.",
+    "funnelPrivateNodeNote": "Codeg keeps Tailscale state under its own data directory and never manages system Tailscale.",
+    "funnelUnsupported": "Funnel sidecar is unavailable in this install",
+    "funnelErrors": {
+      "sidecarMissing": "codeg-tsnet sidecar binary not found",
+      "startFailed": "Failed to start Tailscale sidecar",
+      "loginTimeout": "Tailscale login timed out",
+      "funnelDenied": "Funnel is not permitted for this Tailscale account/policy",
+      "funnelFailed": "Failed to enable Funnel",
+      "authkeyRequired": "CODEG_TS_AUTHKEY is required for headless Funnel",
+      "unsupported": "Tailscale Funnel is not supported here"
     }
   },
   "DirectoryBrowser": {

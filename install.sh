@@ -12,7 +12,7 @@ REPO="xintaofei/codeg"
 INSTALL_DIR="${CODEG_INSTALL_DIR:-/usr/local/bin}"
 WEB_DIR="${CODEG_WEB_DIR:-/usr/local/share/codeg/web}"
 VERSION=""
-# Stale codeg-server / codeg-mcp binaries elsewhere in PATH are removed by
+# Stale codeg-server / codeg-mcp / codeg-tsnet binaries elsewhere in PATH are removed by
 # default so the user's `codeg-server` command always runs the freshly
 # installed binary AND the runtime locates the matching companion via the
 # exe-sibling lookup. Set CODEG_NO_CLEANUP=1 (or pass --no-cleanup) to
@@ -27,7 +27,7 @@ fi
 # layer spawns per session for delegation. Both must live in the same
 # directory — `locate_codeg_mcp_binary()` in src-tauri/src/acp/connection.rs
 # resolves the companion as a sibling of the running server executable.
-MANAGED_BINS=(codeg-server codeg-mcp)
+MANAGED_BINS=(codeg-server codeg-mcp codeg-tsnet)
 
 # ── Parse arguments ──
 
@@ -453,6 +453,7 @@ fi
 echo ""
 echo "codeg-server installed to ${INSTALL_DIR}/codeg-server"
 echo "codeg-mcp    installed to ${INSTALL_DIR}/codeg-mcp"
+echo "codeg-tsnet  installed to ${INSTALL_DIR}/codeg-tsnet"
 INSTALLED_VER=$("${INSTALL_DIR}/codeg-server" --version 2>/dev/null || echo "${TARGET_VER}")
 echo "Version: ${INSTALLED_VER}"
 
@@ -464,6 +465,12 @@ if [ ! -x "${INSTALL_DIR}/codeg-mcp" ]; then
   echo ""
   echo "Error: ${INSTALL_DIR}/codeg-mcp missing or not executable after install."
   echo "       Delegation (sub-agent tooling) will not work. Re-run the installer."
+  EXIT_STATUS=1
+fi
+if [ ! -x "${INSTALL_DIR}/codeg-tsnet" ]; then
+  echo ""
+  echo "Error: ${INSTALL_DIR}/codeg-tsnet missing or not executable after install."
+  echo "       Tailscale Funnel public access will not work. Re-run the installer."
   EXIT_STATUS=1
 fi
 

@@ -278,6 +278,7 @@ async fn async_main() -> ExitCode {
         emitter,
         data_dir,
         web_server_state: WebServerState::new(),
+        tailscale: std::sync::Arc::new(codeg_lib::web::tailscale::TailscaleController::new()),
         chat_channel_manager: codeg_lib::app_state::default_chat_channel_manager(),
         workspace_transfer: Arc::new(
             codeg_lib::workspace_transfer::WorkspaceTransferManager::new_from_env(),
@@ -521,13 +522,19 @@ async fn async_main() -> ExitCode {
         tracing::info!("  {}", addr);
     }
 
+    // Optional Tailscale Funnel public HTTPS. Failures never take down the
+    // local server; headless mode requires CODEG_TS_AUTHKEY.
+    codeg_lib::web::tailscale::maybe_enable_funnel_after_web_start(&state, actual_port, true).await;
+
     // Start serving
     if let Err(e) = axum::serve(listener, router).await {
         tracing::error!("[SERVER] Server error: {}", e);
+        state.tailscale.shutdown().await;
         return ExitCode::from(1);
     }
     // Graceful shutdown: release any live office watch preview servers
     // (kill_on_drop is the backstop, but this frees their ports promptly).
+    state.tailscale.shutdown().await;
     codeg_lib::office_watch::stop_all_office_watches();
     ExitCode::SUCCESS
 }

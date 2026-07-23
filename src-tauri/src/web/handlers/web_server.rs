@@ -77,6 +77,8 @@ pub async fn stop_web_server(
             "Cannot stop web server from within web mode",
         ));
     }
+    // Best-effort Funnel teardown before stopping the local listener.
+    state.tailscale.shutdown().await;
     do_stop_web_server(&state.web_server_state).await;
     Ok(Json(()))
 }

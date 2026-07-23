@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod event_bridge;
 pub mod handlers;
+pub mod tailscale;
 pub mod port_probe;
 pub mod router;
 pub mod shutdown;
@@ -27,6 +28,7 @@ use crate::db::service::app_metadata_service;
 const WEB_SERVICE_TOKEN_KEY: &str = "web_service_token";
 const WEB_SERVICE_PORT_KEY: &str = "web_service_port";
 const WEB_SERVICE_AUTO_START_KEY: &str = "web_service_auto_start";
+const WEB_SERVICE_FUNNEL_ENABLED_KEY: &str = "web_service_funnel_enabled";
 pub const DEFAULT_WEB_SERVICE_PORT: u16 = 3080;
 
 pub struct WebServerState {
@@ -91,6 +93,14 @@ impl WebServerState {
     /// this state must be a no-op.
     pub fn is_externally_managed(&self) -> bool {
         self.handle.lock().unwrap().is_none() && self.running.load(Ordering::Acquire)
+    }
+
+    /// Bound localhost port while the web service is running, else `0`.
+    pub fn current_port(&self) -> u16 {
+        if !self.running.load(Ordering::Acquire) {
+            return 0;
+        }
+        self.port.load(Ordering::Relaxed)
     }
 }
 
@@ -233,6 +243,7 @@ pub struct WebServiceConfig {
     pub token: Option<String>,
     pub port: Option<u16>,
     pub auto_start: bool,
+    pub funnel_enabled: bool,
 }
 
 pub async fn load_web_service_config(
@@ -251,10 +262,16 @@ pub async fn load_web_service_config(
             .await
             .map_err(AppCommandError::from)?,
     );
+    let funnel_enabled = parse_bool_metadata(
+        app_metadata_service::get_value(conn, WEB_SERVICE_FUNNEL_ENABLED_KEY)
+            .await
+            .map_err(AppCommandError::from)?,
+    );
     Ok(WebServiceConfig {
         token: token.filter(|value| !value.trim().is_empty()),
         port,
         auto_start,
+        funnel_enabled,
     })
 }
 
@@ -265,6 +282,12 @@ pub async fn update_web_service_config_core(
     let token = config.token.unwrap_or_default().trim().to_string();
     let port = config.port.unwrap_or(DEFAULT_WEB_SERVICE_PORT);
     let auto_start = if config.auto_start { "true" } else { "false" }.to_string();
+    let funnel_enabled = if config.funnel_enabled {
+        "true"
+    } else {
+        "false"
+    }
+    .to_string();
     let port_str = port.to_string();
 
     conn.transaction::<_, (), AppCommandError>(move |txn| {
@@ -278,6 +301,13 @@ pub async fn update_web_service_config_core(
             app_metadata_service::upsert_value(txn, WEB_SERVICE_AUTO_START_KEY, &auto_start)
                 .await
                 .map_err(AppCommandError::from)?;
+            app_metadata_service::upsert_value(
+                txn,
+                WEB_SERVICE_FUNNEL_ENABLED_KEY,
+                &funnel_enabled,
+            )
+            .await
+            .map_err(AppCommandError::from)?;
             Ok(())
         })
     })
@@ -620,6 +650,8 @@ pub(crate) async fn do_start_web_server_with_state(
     guard.disarm();
 
     let addresses = addresses_for_bind(&advertised_host, actual_port);
+    // Best-effort Funnel enable; local web remains up on Funnel failure.
+    crate::web::tailscale::maybe_enable_funnel_after_web_start(&app_state, actual_port, false).await;
     Ok(WebServerInfo {
         port: actual_port,
         token,
@@ -784,6 +816,12 @@ pub(crate) async fn do_start_web_server_tauri(
             &app.path().app_data_dir().unwrap_or_default(),
         ),
         web_server_state: WebServerState::new(), // placeholder; not used by handlers
+        // Reuse the shared controller so Funnel status/commands and the
+        // embedded router see the same sidecar process.
+        tailscale: app
+            .state::<std::sync::Arc<crate::web::tailscale::TailscaleController>>()
+            .inner()
+            .clone(),
         chat_channel_manager: crate::app_state::default_chat_channel_manager(),
         workspace_transfer: app
             .try_state::<Arc<crate::workspace_transfer::WorkspaceTransferManager>>()
@@ -880,6 +918,53 @@ pub(crate) async fn do_start_web_server_tauri(
     guard.disarm();
 
     let addresses = addresses_for_bind(&advertised_host, actual_port);
+    // Best-effort Funnel enable after local bind succeeds.
+    {
+        let controller = app
+            .state::<std::sync::Arc<crate::web::tailscale::TailscaleController>>()
+            .inner()
+            .clone();
+        let db = app.state::<crate::db::AppDatabase>();
+        let data_dir = crate::paths::resolve_effective_data_dir(
+            &app.path().app_data_dir().unwrap_or_default(),
+        );
+        let enabled = match load_web_service_config(&db.conn).await {
+            Ok(cfg) => cfg.funnel_enabled,
+            Err(err) => {
+                tracing::warn!(%err, "[tailscale] failed to load funnel config");
+                false
+            }
+        };
+        let env_enabled = matches!(
+            std::env::var("CODEG_TS_FUNNEL").as_deref(),
+            Ok("1") | Ok("true") | Ok("yes")
+        );
+        if enabled || env_enabled {
+            match controller
+                .enable_funnel(crate::web::tailscale::EnableFunnelOpts {
+                    data_dir,
+                    localhost_port: actual_port,
+                    auth_key: std::env::var("CODEG_TS_AUTHKEY")
+                        .ok()
+                        .filter(|s| !s.trim().is_empty()),
+                    require_auth_key: false,
+                    state_dir_override: std::env::var_os("CODEG_TS_STATE_DIR")
+                        .map(std::path::PathBuf::from),
+                    hostname_override: std::env::var("CODEG_TS_HOSTNAME")
+                        .ok()
+                        .filter(|s| !s.trim().is_empty()),
+                })
+                .await
+            {
+                Ok(st) => tracing::info!(
+                    state = %st.state,
+                    funnel_url = ?st.funnel_url,
+                    "[tailscale] Funnel status after web start"
+                ),
+                Err(err) => tracing::warn!(%err, "[tailscale] Funnel not enabled"),
+            }
+        }
+    }
     Ok(WebServerInfo {
         port: actual_port,
         token,
@@ -902,8 +987,14 @@ pub async fn start_web_server(
 #[cfg(feature = "tauri-runtime")]
 #[tauri::command]
 pub async fn stop_web_server(
+    app: tauri::AppHandle,
     state: tauri::State<'_, WebServerState>,
 ) -> Result<(), AppCommandError> {
+    use tauri::Manager;
+    if let Some(controller) = app.try_state::<std::sync::Arc<crate::web::tailscale::TailscaleController>>()
+    {
+        controller.shutdown().await;
+    }
     do_stop_web_server(&state).await;
     Ok(())
 }

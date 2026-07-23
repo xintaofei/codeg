@@ -3230,6 +3230,7 @@ export interface WebServiceConfig {
   token: string | null
   port: number | null
   autoStart: boolean
+  funnelEnabled: boolean
 }
 
 export async function getWebServiceConfig(): Promise<WebServiceConfig> {
@@ -3255,6 +3256,45 @@ export async function probeWebServicePort(
   return getTransport().call("probe_web_service_port", {
     port: port ?? null,
   })
+}
+
+export type TailscaleFunnelState =
+  | "stopped"
+  | "starting"
+  | "needs_login"
+  | "connecting"
+  | "online"
+  | "funnel_enabling"
+  | "funnel_ready"
+  | "error"
+  | "stopping"
+
+export interface TailscaleFunnelStatus {
+  supported: boolean
+  enabled: boolean
+  state: TailscaleFunnelState | string
+  loginUrl?: string
+  funnelUrl?: string
+  hostname?: string
+  ipv4?: string
+  lastError?: string
+  errorKey?: string
+}
+
+export async function getTailscaleFunnelStatus(): Promise<TailscaleFunnelStatus> {
+  return getTransport().call("get_tailscale_funnel_status")
+}
+
+export async function setTailscaleFunnelEnabled(
+  enabled: boolean
+): Promise<TailscaleFunnelStatus> {
+  return getTransport().call("set_tailscale_funnel_enabled", { enabled })
+}
+
+export async function openTailscaleLogin(): Promise<{
+  loginUrl?: string | null
+}> {
+  return getTransport().call("open_tailscale_login")
 }
 
 // ─── Chat Channels ───

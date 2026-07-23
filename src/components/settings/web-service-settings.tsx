@@ -38,6 +38,7 @@ import {
   type WebServerInfo,
   type WebServicePortProbe,
 } from "@/lib/api"
+import { WebServiceFunnelSection } from "@/components/settings/web-service-funnel-section"
 
 const DEFAULT_PORT = 3080
 import { openUrl } from "@/lib/platform"
@@ -304,6 +305,7 @@ export function WebServiceSettings() {
         token: null,
         port: null,
         autoStart: false,
+        funnelEnabled: false as boolean,
       }
       const [info, configResult] = await Promise.all([
         getWebServerStatus(),
@@ -379,10 +381,21 @@ export function WebServiceSettings() {
       }
 
       try {
+        // Funnel enablement is owned by WebServiceFunnelSection via its own
+        // API. Re-read the persisted flag so port/token autosave cannot clobber
+        // a concurrent Funnel toggle with a stale local value.
+        let nextFunnelEnabled = false
+        try {
+          const current = await getWebServiceConfig()
+          nextFunnelEnabled = current.funnelEnabled ?? false
+        } catch {
+          // Config unavailable; leave funnel disabled in this write.
+        }
         await updateWebServiceConfig({
           port: portNum,
           token: token.trim() || null,
           autoStart: nextAutoStart,
+          funnelEnabled: nextFunnelEnabled,
         })
       } catch {
         setError(t("saveConfigFailed"))
@@ -595,6 +608,8 @@ export function WebServiceSettings() {
               )}
             </div>
           )}
+
+          <WebServiceFunnelSection webRunning={isRunning} />
         </div>
       </div>
     </ScrollArea>

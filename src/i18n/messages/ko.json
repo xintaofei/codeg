@@ -2927,6 +2927,7 @@
     "hide": "숨기기",
     "show": "표시",
     "copy": "복사",
+    "copyFailed": "복사에 실패했습니다",
     "qrcode": "QR 코드",
     "qrcodeTitle": "스캔하여 열기",
     "qrcodeHint": "휴대폰으로 스캔하여 브라우저에서 Codeg를 엽니다",
@@ -2945,6 +2946,25 @@
       "permissionDenied": "권한이 부족합니다. 1024 이상의 포트를 사용하거나 더 높은 권한으로 실행하세요",
       "addressUnavailable": "이 주소는 현재 시스템에서 사용할 수 없습니다",
       "bindFailed": "주소 바인딩에 실패했습니다"
+    },
+    "funnelTitle": "Public Access (Tailscale Funnel)",
+    "funnelDescription": "Expose this Web Service on a public HTTPS URL via Codeg's private Tailscale node.",
+    "funnelEnable": "Enable Funnel",
+    "funnelEnableHint": "Requires local Web Service running. Does not use or replace system Tailscale.",
+    "funnelState": "Funnel status",
+    "funnelLogin": "Open Tailscale login",
+    "funnelUrl": "Public URL",
+    "funnelTokenNote": "Your Codeg access token is still required after opening the public URL.",
+    "funnelPrivateNodeNote": "Codeg keeps Tailscale state under its own data directory and never manages system Tailscale.",
+    "funnelUnsupported": "Funnel sidecar is unavailable in this install",
+    "funnelErrors": {
+      "sidecarMissing": "codeg-tsnet sidecar binary not found",
+      "startFailed": "Failed to start Tailscale sidecar",
+      "loginTimeout": "Tailscale login timed out",
+      "funnelDenied": "Funnel is not permitted for this Tailscale account/policy",
+      "funnelFailed": "Failed to enable Funnel",
+      "authkeyRequired": "CODEG_TS_AUTHKEY is required for headless Funnel",
+      "unsupported": "Tailscale Funnel is not supported here"
     }
   },
   "DirectoryBrowser": {
