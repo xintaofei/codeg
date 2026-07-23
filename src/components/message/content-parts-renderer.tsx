@@ -2695,17 +2695,18 @@ const ToolCallPart = memo(function ToolCallPart({
     <Tool open={open} onOpenChange={setManualOpen}>
       {toolFilePath && isFilePathToolName(normalizedToolName) ? (
         // Gated by isFilePathToolName so WebFetch/Glob/Grep never get a file menu.
-        <div className="w-full min-w-0" title={titleTooltip}>
-          <FilePathContextMenu
-            filePath={toolFilePath}
-            folderPath={folder?.path}
-            onOpenInCodeg={openToolFileInCodeg}
-            title={titleTooltip}
-            className="w-full"
-          >
+        // Default asChild slots onto the div (no illegal span>div wrapper).
+        <FilePathContextMenu
+          filePath={toolFilePath}
+          folderPath={folder?.path}
+          onOpenInCodeg={openToolFileInCodeg}
+          title={titleTooltip}
+          className="w-full min-w-0"
+        >
+          <div className="w-full min-w-0" title={titleTooltip}>
             {toolHeader}
-          </FilePathContextMenu>
-        </div>
+          </div>
+        </FilePathContextMenu>
       ) : (
         toolHeader
       )}

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
 import {
   getExternalEditorOpenWith,
+  resolveExternalEditorOpenWithCandidates,
   resolveFilePathTargets,
   systemExplorerLabelKey,
 } from "./file-path-actions"
@@ -46,5 +47,37 @@ describe("getExternalEditorOpenWith", () => {
   it("uses CLI shims on Windows and Linux", () => {
     expect(getExternalEditorOpenWith("vscode", "windows")).toBe("code")
     expect(getExternalEditorOpenWith("cursor", "linux")).toBe("cursor")
+  })
+})
+
+describe("resolveExternalEditorOpenWithCandidates", () => {
+  it("returns macOS application names only", async () => {
+    await expect(
+      resolveExternalEditorOpenWithCandidates("cursor", "macos")
+    ).resolves.toEqual(["Cursor"])
+    await expect(
+      resolveExternalEditorOpenWithCandidates("vscode", "macos")
+    ).resolves.toEqual(["Visual Studio Code"])
+  })
+
+  it("ends Windows cursor candidates with .cmd then bare name (exe first when LocalAppData works)", async () => {
+    const candidates = await resolveExternalEditorOpenWithCandidates(
+      "cursor",
+      "windows"
+    )
+    expect(candidates.length).toBeGreaterThanOrEqual(2)
+    expect(candidates.at(-2)).toBe("cursor.cmd")
+    expect(candidates.at(-1)).toBe("cursor")
+    // Prefer real EXE when path API is available (Tauri); otherwise PATH only.
+    const exe = candidates.find((c) => /Cursor\.exe$/i.test(c))
+    if (exe) {
+      expect(exe).toMatch(/Programs/i)
+    }
+  })
+
+  it("lists Linux CLI shims", async () => {
+    await expect(
+      resolveExternalEditorOpenWithCandidates("vscode", "linux")
+    ).resolves.toEqual(["code", "code-insiders"])
   })
 })

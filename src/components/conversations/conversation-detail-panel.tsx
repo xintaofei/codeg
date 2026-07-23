@@ -7,7 +7,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react"
 import {
@@ -1802,9 +1801,11 @@ export function ConversationDetailPanel() {
         : null
   }, [])
 
+  // File-path menus claim right-click / long-press via stopPropagation on the
+  // trigger. Here we only skip selection-preservation so we do not
+  // preventDefault those gestures before the nested menu can open.
   const handleContextMenuTriggerPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
-      // File-path menus own right-click *and* touch/pen long-press.
       if (
         event.target instanceof Element &&
         event.target.closest("[data-file-path-menu]") &&
@@ -1816,28 +1817,6 @@ export function ConversationDetailPanel() {
       const selection = window.getSelection()
       if (selection && !selection.isCollapsed) {
         event.preventDefault()
-      }
-    },
-    []
-  )
-
-  /**
-   * Nested file-path ContextMenus sit inside this panel menu. Radix runs the
-   * trigger's user `onContextMenu` first and skips its own open when
-   * `defaultPrevented` — so yield ownership when the event originated under
-   * `[data-file-path-menu]` (message navigator + reply artifact rows).
-   */
-  const handlePanelContextMenu = useCallback(
-    (event: ReactMouseEvent<HTMLDivElement>) => {
-      if (
-        event.target instanceof Element &&
-        event.target.closest("[data-file-path-menu]")
-      ) {
-        // Radix runs this user handler before opening the panel menu; when
-        // defaultPrevented it skips open. Also stop bubble so nothing else
-        // competes with the nested file-path menu.
-        event.preventDefault()
-        event.stopPropagation()
       }
     },
     []
@@ -2095,7 +2074,6 @@ export function ConversationDetailPanel() {
             <div
               className="relative min-h-0 flex-1 overflow-hidden"
               onPointerDown={handleContextMenuTriggerPointerDown}
-              onContextMenu={handlePanelContextMenu}
             >
               {/* Stable wrapper across canTile flip — otherwise sibling tabs remount and a live streaming response is torn down. */}
               <TileScrollContainer canTile={canTile}>

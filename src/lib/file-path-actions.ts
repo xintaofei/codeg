@@ -15,11 +15,10 @@ import { copyTextFromMenu } from "@/lib/utils"
 export type ExternalEditorId = "vscode" | "cursor"
 
 /**
- * Resolve the `openWith` argument for Tauri opener across platforms.
- *
- * - **macOS**: full application names for `open -a` (`code`/`Code` fail)
- * - **Windows**: CLI shims on PATH (`code.cmd` / `cursor.cmd` via `code`/`cursor`)
- * - **Linux**: same CLI shims, or desktop-file basenames when available
+ * Resolve a single preferred `openWith` name for the platform (macOS app name
+ * or CLI shim). Windows should prefer {@link resolveExternalEditorOpenWithCandidates}
+ * so we open `Cursor.exe` / `Code.exe` instead of a bare name that ShellExecute
+ * can resolve to the install directory.
  */
 export function getExternalEditorOpenWith(
   editor: ExternalEditorId,
@@ -28,8 +27,86 @@ export function getExternalEditorOpenWith(
   if (platform === "macos") {
     return editor === "vscode" ? "Visual Studio Code" : "Cursor"
   }
-  // Windows + Linux + unknown: CLI entry points (must be on PATH)
+  // Windows + Linux: CLI entry points (must be on PATH). On Windows bare
+  // "cursor" is unreliable — see resolveExternalEditorOpenWithCandidates.
   return editor === "vscode" ? "code" : "cursor"
+}
+
+/**
+ * Ordered openWith candidates for the current platform.
+ *
+ * On Windows, `open::with(path, "cursor")` often launches the Cursor *install
+ * folder* (ShellExecute name lookup) instead of opening `path` in the editor.
+ * Prefer the real `.exe` under `%LOCALAPPDATA%\\Programs\\...` first, then
+ * `.cmd` shims that forward arguments correctly.
+ */
+export async function resolveExternalEditorOpenWithCandidates(
+  editor: ExternalEditorId,
+  platform: PlatformType = detectPlatform()
+): Promise<string[]> {
+  if (platform === "macos") {
+    return [getExternalEditorOpenWith(editor, "macos")]
+  }
+
+  if (platform === "linux") {
+    // CLI shims first; some distros also register desktop ids.
+    return editor === "vscode"
+      ? ["code", "code-insiders"]
+      : ["cursor", "cursor.AppImage"]
+  }
+
+  // Windows
+  let localAppData = ""
+  try {
+    const { localDataDir } = await import("@tauri-apps/api/path")
+    localAppData = await localDataDir()
+  } catch {
+    // Fall through to PATH-only candidates
+  }
+
+  const join = (base: string, ...parts: string[]) =>
+    [base.replace(/[\\/]+$/, ""), ...parts].join("\\")
+
+  if (editor === "vscode") {
+    const candidates: string[] = []
+    if (localAppData) {
+      candidates.push(
+        join(localAppData, "Programs", "Microsoft VS Code", "Code.exe"),
+        join(localAppData, "Programs", "Microsoft VS Code", "bin", "code.cmd")
+      )
+    }
+    candidates.push("code.cmd", "code")
+    return candidates
+  }
+
+  // Cursor — install layout varies slightly by version/channel
+  const candidates: string[] = []
+  if (localAppData) {
+    candidates.push(
+      join(localAppData, "Programs", "cursor", "Cursor.exe"),
+      join(localAppData, "Programs", "Cursor", "Cursor.exe"),
+      join(
+        localAppData,
+        "Programs",
+        "cursor",
+        "resources",
+        "app",
+        "bin",
+        "cursor.cmd"
+      ),
+      join(
+        localAppData,
+        "Programs",
+        "Cursor",
+        "resources",
+        "app",
+        "bin",
+        "cursor.cmd"
+      )
+    )
+  }
+  candidates.push("cursor.cmd", "cursor")
+  return candidates
 }
 
 /** CLI shim defaults (non-macOS). Prefer {@link getExternalEditorOpenWith}. */
@@ -76,7 +153,19 @@ export async function openFileWithExternalEditor(
   editor: ExternalEditorId
 ): Promise<void> {
   if (!isLocalDesktop()) return
-  await openPath(absolutePath, getExternalEditorOpenWith(editor))
+  const candidates = await resolveExternalEditorOpenWithCandidates(editor)
+  let lastError: unknown
+  for (const app of candidates) {
+    try {
+      await openPath(absolutePath, app)
+      return
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`Failed to open with ${editor}`)
 }
 
 export function systemExplorerLabelKey(

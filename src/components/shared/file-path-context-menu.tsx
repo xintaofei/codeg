@@ -3,13 +3,15 @@
 /**
  * VS Code-style right-click menu for a workspace / session file path.
  *
- * Used by the per-conversation message navigator and the per-reply artifacts
- * card so both surfaces share the same copy / open / mention actions.
+ * Used by the message navigator, reply artifacts, tool rows, and FilePathLink.
  *
- * Nested under ConversationDetailPanel's full-surface ContextMenu — that
- * ancestor steals right-clicks unless we (1) stopPropagation on our trigger
- * and (2) mark `[data-file-path-menu]` so the panel can suppress its own open
- * when the event still bubbles (see conversation-detail-panel).
+ * Nested under ConversationDetailPanel's full-surface ContextMenu. Ownership
+ * is claimed by stopPropagation on contextmenu / non-mouse pointerdown, and by
+ * stamping `data-file-path-menu` so the panel skips selection-preservation on
+ * those gestures (see conversation-detail-panel).
+ *
+ * Default `asChild`: Slot merges the trigger onto a single DOM child (button
+ * or card div) so we never render an illegal span>div wrapper.
  */
 
 import {
@@ -81,13 +83,13 @@ export interface FilePathContextMenuProps {
   onOpenInCodeg?: () => void
   /**
    * Native HTML tooltip for the trigger surface (e.g. absolute path on a
-   * tool-row wrapper). Applied on the trigger element that receives hover.
+   * tool-row wrapper). Applied on the trigger / slotted child.
    */
   title?: string
   /**
-   * Merge trigger props onto `children` (must be a single element that accepts
-   * a ref). Use for tool headers (`CollapsibleTrigger`) so the whole row owns
-   * the right-click without an extra wrapping span.
+   * When true (default), merge trigger props onto a single child via Slot.
+   * Child must accept a ref (native button/div). Set false only for rare
+   * non-element children that need the built-in block wrapper.
    */
   asChild?: boolean
   className?: string
@@ -100,7 +102,7 @@ export function FilePathContextMenu({
   externalOpenDisabled = false,
   onOpenInCodeg,
   title,
-  asChild = false,
+  asChild = true,
   className,
   children,
 }: FilePathContextMenuProps) {
@@ -182,9 +184,9 @@ export function FilePathContextMenu({
     })
   }, [activeSessionTabId, attachPath, fileName, t])
 
-  // Own the gesture before it reaches ConversationDetailPanel's ContextMenu.
-  // Always stamp `data-file-path-menu` so the panel can `preventDefault` its
-  // own open via composeEventHandlers when the event still bubbles.
+  // Claim the gesture so ConversationDetailPanel's ContextMenu does not open.
+  // stopPropagation is the primary mechanism; data-file-path-menu is only for
+  // the panel's pointerdown selection-preservation early-return.
   const claimContextMenu = useCallback((event: ReactMouseEvent) => {
     event.stopPropagation()
   }, [])
