@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use sacp::schema::{
     BlobResourceContents, CancelNotification, ClientCapabilities, ContentBlock, ContentChunk,
@@ -33,7 +35,9 @@ use crate::acp::error::AcpError;
 use crate::acp::file_system_runtime::{FileSystemRuntime, FileSystemRuntimeError};
 use crate::acp::registry::{self, AgentDistribution};
 use crate::acp::session_state::SessionState;
-use crate::acp::terminal_runtime::{TerminalRuntime, TerminalRuntimeError};
+use crate::acp::terminal_runtime::{
+    TerminalCleanupReport, TerminalRuntime, TerminalRuntimeError,
+};
 use crate::acp::types::{
     AcpEvent, AvailableCommandInfo, ConnectionInfo, ConnectionStatus, GrokEffortSpec,
     PermissionOptionInfo, PlanEntryInfo, PromptCapabilitiesInfo, PromptInputBlock,
@@ -46,6 +50,15 @@ use crate::network::proxy;
 use crate::web::event_bridge::{emit_with_state, EventEmitter};
 
 const DEFAULT_COMMAND_COLOR_ENV: [(&str, &str); 1] = [("CLICOLOR_FORCE", "1")];
+const CANCEL_TERMINAL_CLEANUP_DEADLINE: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CancelCleanupOutcome {
+    Completed,
+    Failed(usize),
+    TimedOut,
+    TaskFailed,
+}
 
 fn merge_agent_env(
     env: &[(&'static str, &'static str)],
@@ -2294,6 +2307,88 @@ fn canonical_spec_to_mcp_server(name: &str, spec: &serde_json::Value) -> Result<
         }
         other => Err(format!("unsupported MCP transport type '{other}'")),
     }
+}
+
+async fn finish_cancelled_turn_after_cleanup<F>(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    session_id: &str,
+    agent_type: AgentType,
+    cleanup: F,
+    deadline: Duration,
+) -> CancelCleanupOutcome
+where
+    F: Future<Output = TerminalCleanupReport> + Send + 'static,
+{
+    let started = std::time::Instant::now();
+    let cleanup_task = tokio::spawn(cleanup);
+    let (outcome, diagnostic) = match tokio::time::timeout(deadline, cleanup_task).await {
+        Ok(Ok(report)) if report.is_clean() => (CancelCleanupOutcome::Completed, None),
+        Ok(Ok(report)) => {
+            let count = report.failure_count();
+            (
+                CancelCleanupOutcome::Failed(count),
+                Some(format!(
+                    "{count} terminal cleanup operation(s) failed; cancellation state was recovered"
+                )),
+            )
+        }
+        Ok(Err(err)) => (
+            CancelCleanupOutcome::TaskFailed,
+            Some(format!(
+                "terminal cleanup task failed; cancellation state was recovered: {err}"
+            )),
+        ),
+        Err(_) => (
+            CancelCleanupOutcome::TimedOut,
+            Some(format!(
+                "terminal cleanup exceeded {} seconds; cancellation state was recovered and cleanup continues in background",
+                deadline.as_secs()
+            )),
+        ),
+    };
+
+    if let Some(message) = diagnostic {
+        tracing::warn!(
+            session_id,
+            agent_type = %agent_type,
+            elapsed_ms = started.elapsed().as_millis(),
+            ?outcome,
+            "[ACP] forcing cancelled turn state convergence after terminal cleanup issue"
+        );
+        emit_with_state(
+            state,
+            emitter,
+            AcpEvent::Error {
+                message,
+                agent_type: agent_type.to_string(),
+                code: Some("terminal_cleanup_incomplete".to_string()),
+                terminal: false,
+            },
+        )
+        .await;
+    } else {
+        tracing::info!(
+            session_id,
+            agent_type = %agent_type,
+            elapsed_ms = started.elapsed().as_millis(),
+            ?outcome,
+            "[ACP] terminal cleanup completed for cancelled turn"
+        );
+    }
+
+    emit_with_state(
+        state,
+        emitter,
+        AcpEvent::TurnComplete {
+            session_id: session_id.to_string(),
+            stop_reason: "cancelled".to_string(),
+            agent_type: agent_type.to_string(),
+        },
+    )
+    .await;
+
+    outcome
 }
 
 /// The main ACP connection loop.
@@ -4893,12 +4988,6 @@ async fn run_conversation_loop<'a>(
                                         Agent,
                                         CancelNotification::new(sid.clone()),
                                     );
-                                    // Also terminate any command runtimes created for this
-                                    // session so cancellation does not hang on long-running
-                                    // terminal tools.
-                                    terminal_runtime
-                                        .release_all_for_session(sid.0.as_ref())
-                                        .await;
                                     tracked_terminal_tool_calls.clear();
                                     // Also cancel any pending permission requests
                                     let mut locked = perms.lock().await;
@@ -4908,18 +4997,26 @@ async fn run_conversation_loop<'a>(
                                         ));
                                     }
                                     drop(locked);
-                                    // Immediately emit TurnComplete so the frontend
-                                    // transitions out of "prompting" and the user can
-                                    // send new messages.  Don't wait for the agent --
-                                    // it may be slow to respond or not respond at all.
-                                    emit_with_state(
+
+                                    // Give isolated terminal groups a bounded chance to
+                                    // finish their staged shutdown. The cleanup task owns
+                                    // the removed terminal handles and remains detached if
+                                    // this outer deadline expires. In every outcome the
+                                    // helper emits TurnComplete, reopening prompt admission.
+                                    let cleanup_runtime = Arc::clone(&terminal_runtime);
+                                    let cleanup_session_id = sid.0.to_string();
+                                    let completion_session_id = cleanup_session_id.clone();
+                                    let _ = finish_cancelled_turn_after_cleanup(
                                         state,
                                         emitter,
-                                        AcpEvent::TurnComplete {
-                                            session_id: sid.0.to_string(),
-                                            stop_reason: "cancelled".into(),
-                                            agent_type: agent_type.to_string(),
+                                        &completion_session_id,
+                                        agent_type,
+                                        async move {
+                                            cleanup_runtime
+                                                .release_all_for_session(&cleanup_session_id)
+                                                .await
                                         },
+                                        CANCEL_TERMINAL_CLEANUP_DEADLINE,
                                     )
                                     .await;
                                     // Cascade-cancel any in-flight delegations owned by
@@ -6504,6 +6601,75 @@ mod tests {
             d = d.old_text(o.to_string());
         }
         ToolCallContent::Diff(d)
+    }
+
+    #[tokio::test]
+    async fn terminal_cleanup_timeout_still_completes_cancelled_turn() {
+        let mut initial = SessionState::new(
+            "cancel-timeout-conn".to_string(),
+            AgentType::Grok,
+            None,
+            "test-window".to_string(),
+            None,
+        );
+        initial.status = ConnectionStatus::Prompting;
+        initial.turn_in_flight = true;
+        initial.apply_event(&AcpEvent::ToolCall {
+            tool_call_id: "blocked-terminal".to_string(),
+            title: "terminal".to_string(),
+            kind: "execute".to_string(),
+            status: "in_progress".to_string(),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            locations: None,
+            meta: None,
+            images: None,
+        });
+        let state = Arc::new(RwLock::new(initial));
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let outcome = finish_cancelled_turn_after_cleanup(
+            &state,
+            &EventEmitter::Noop,
+            "cancel-timeout-session",
+            AgentType::Grok,
+            async move {
+                let _ = release_rx.await;
+                let _ = finished_tx.send(());
+                TerminalCleanupReport::default()
+            },
+            Duration::from_millis(25),
+        )
+        .await;
+
+        {
+            let settled = state.read().await;
+            assert_eq!(outcome, CancelCleanupOutcome::TimedOut);
+            assert_eq!(settled.status, ConnectionStatus::Connected);
+            assert!(
+                !settled.turn_in_flight,
+                "the next prompt admission gate must reopen"
+            );
+            assert!(settled.active_tool_calls.is_empty());
+            assert!(settled.pending_permission.is_none());
+            assert_eq!(
+                settled
+                    .last_error
+                    .as_ref()
+                    .and_then(|error| error.code.as_deref()),
+                Some("terminal_cleanup_incomplete")
+            );
+        }
+
+        release_tx
+            .send(())
+            .expect("detached cleanup still owns receiver");
+        tokio::time::timeout(Duration::from_secs(1), finished_rx)
+            .await
+            .expect("detached cleanup finishes")
+            .expect("cleanup completion signal");
     }
 
     #[test]
