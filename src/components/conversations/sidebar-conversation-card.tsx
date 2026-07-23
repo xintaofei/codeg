@@ -52,6 +52,7 @@ import { Input } from "@/components/ui/input"
 import { ConversationStatusDot } from "./conversation-status-dot"
 import { SessionDetailsDialog } from "./session-details-dialog"
 import { AgentIcon } from "@/components/agent-icon"
+import { isDelegationSubsession } from "@/lib/conversation-sidebar"
 
 /**
  * Horizontal indent added per delegation-nesting level. Chosen so a child's
@@ -211,11 +212,11 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   const isCancelled = status === "cancelled"
   const isPinned = conversation.pinned_at != null
   const isCompleted = status === "completed"
-  // Delegation sub-sessions (a child of another conversation) don't get the
-  // hover quick actions: pinning a sub-agent run to the root Pinned section or
-  // hand-toggling its status doesn't fit — its lifecycle is the sub-agent's. The
-  // time / running badge then stays visible on hover (nothing swaps in for it).
-  const isSubsession = conversation.parent_id != null || depth > 0
+  // Delegation sub-sessions only — must NOT use `depth > 0`. Worktree layout
+  // also indents ordinary root sessions at depth 1 (repo root-group / worktree
+  // buckets under "Show worktree folders"); those are still top-level
+  // conversations, not delegated children.
+  const isSubsession = isDelegationSubsession(conversation)
 
   return (
     <>
