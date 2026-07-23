@@ -52,6 +52,10 @@ function pointerDown(element: HTMLElement, button: number) {
   fireEvent(element, new MouseEvent("pointerdown", { bubbles: true, button }))
 }
 
+function keyDown(element: HTMLElement, key: string) {
+  fireEvent.keyDown(element, { key })
+}
+
 beforeEach(() => {
   testState.scrollRef.current = null
 })
@@ -71,6 +75,21 @@ describe("VirtualizedMessageThread focus origin", () => {
 
     fireEvent.blur(viewport)
     expect(viewport).not.toHaveAttribute("data-focus-origin")
+  })
+
+  it("clears the pointer marker on keyboard input so the ring returns", () => {
+    renderThread()
+    const viewport = screen.getByTestId("viewport")
+
+    pointerDown(screen.getByTestId("content"), 0)
+    expect(viewport).toHaveAttribute("data-focus-origin", "pointer")
+
+    // Switching to keyboard scrolling drops the marker, so the suppressing
+    // `data-[focus-origin=pointer]` selector no longer matches and the
+    // keyboard focus ring becomes visible again.
+    keyDown(viewport, "ArrowDown")
+    expect(viewport).not.toHaveAttribute("data-focus-origin")
+    expect(document.activeElement).toBe(viewport)
   })
 
   it("keeps keyboard-origin focus distinguishable", () => {

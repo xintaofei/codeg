@@ -125,9 +125,16 @@ function VirtualizedMessageThreadImpl<T>({
     }
     el.addEventListener("pointerdown", onPointerDown)
     el.addEventListener("blur", clearPointerFocus)
+    // Once the user drives the viewport with the keyboard (Arrow/Page/Home/End
+    // to scroll), drop the pointer-origin marker so the focus ring reappears —
+    // keeping the keyboard focus indicator visible per WCAG 2.4.7. The ring is
+    // only suppressed for the mouse click that focused the viewport, not for
+    // subsequent keyboard use.
+    el.addEventListener("keydown", clearPointerFocus)
     return () => {
       el.removeEventListener("pointerdown", onPointerDown)
       el.removeEventListener("blur", clearPointerFocus)
+      el.removeEventListener("keydown", clearPointerFocus)
       clearPointerFocus()
     }
   }, [scrollRef])
