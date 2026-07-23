@@ -212,6 +212,10 @@ impl DelegationListener {
                 reports_response(reports)?
             }
             BrokerMessage::CancelTask(req) => report_response(self.process_cancel_task(req).await)?,
+            BrokerMessage::Continue(req) => report_response(self.process_continue(req).await)?,
+            BrokerMessage::CloseSession(req) => {
+                report_response(self.process_close_session(req).await)?
+            }
             BrokerMessage::Feedback(req) => {
                 // at-least-once delivery: READ pending notes (no mutation),
                 // WRITE the response, and COMMIT them delivered ONLY on a
@@ -412,6 +416,83 @@ impl DelegationListener {
             .await;
         self.broker
             .cancel_task_by_id(
+                &entry.parent_connection_id,
+                parent_conversation_id,
+                &req.task_id,
+            )
+            .await
+    }
+
+    /// Validate the token and continue a settled child session. Backs
+    /// `continue_with_session`.
+    async fn process_continue(
+        &self,
+        req: crate::acp::delegation::transport::BrokerContinueRequest,
+    ) -> DelegationTaskReport {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
+            return unknown_report(&req.task_id);
+        };
+        if entry.parent_connection_id != req.parent_connection_id {
+            return unknown_report(&req.task_id);
+        }
+        // Identity restoration for identity-less hosts (Cursor).
+        let mut rename_input = serde_json::Map::new();
+        rename_input.insert(
+            "task_id".into(),
+            serde_json::Value::String(req.task_id.clone()),
+        );
+        rename_input.insert(
+            "message".into(),
+            serde_json::Value::String(req.message.clone()),
+        );
+        self.broker
+            .rewrite_identityless_tool_call(
+                &entry.parent_connection_id,
+                crate::acp::delegation::CONTINUE_TOOL_REWRITE_TITLE,
+                serde_json::Value::Object(rename_input),
+            )
+            .await;
+        let parent_conversation_id = self
+            .parent_lookup
+            .current_conversation_id(&entry.parent_connection_id)
+            .await;
+        self.broker
+            .continue_delegation(
+                &entry.parent_connection_id,
+                parent_conversation_id,
+                &req.task_id,
+                req.message,
+            )
+            .await
+    }
+
+    /// Validate the token and permanently close a child session. Backs
+    /// `close_session`.
+    async fn process_close_session(
+        &self,
+        req: crate::acp::delegation::transport::BrokerCloseSessionRequest,
+    ) -> DelegationTaskReport {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
+            return unknown_report(&req.task_id);
+        };
+        let mut rename_input = serde_json::Map::new();
+        rename_input.insert(
+            "task_id".into(),
+            serde_json::Value::String(req.task_id.clone()),
+        );
+        self.broker
+            .rewrite_identityless_tool_call(
+                &entry.parent_connection_id,
+                crate::acp::delegation::CLOSE_TOOL_REWRITE_TITLE,
+                serde_json::Value::Object(rename_input),
+            )
+            .await;
+        let parent_conversation_id = self
+            .parent_lookup
+            .current_conversation_id(&entry.parent_connection_id)
+            .await;
+        self.broker
+            .close_delegation_session(
                 &entry.parent_connection_id,
                 parent_conversation_id,
                 &req.task_id,

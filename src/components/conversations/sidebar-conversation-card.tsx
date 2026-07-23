@@ -13,6 +13,7 @@ import {
   CheckCircle2,
   Info,
   ChevronRight,
+  GitBranch,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import type { DbConversationSummary, ConversationStatus } from "@/lib/types"
@@ -117,6 +118,12 @@ interface SidebarConversationCardProps {
   /** True when `child_count > 0`: the conversation has delegation children, so
    *  the expand chevron is shown. */
   hasChildren?: boolean
+  /**
+   * When sub-session trees are hidden via the funnel filter, show this count
+   * on a parent root so nested work is still discoverable. Omit when nested
+   * rows are visible (chevron handles that).
+   */
+  childCountHint?: number
   /** Whether this conversation's sub-session subtree is currently expanded. */
   expanded?: boolean
   /** Toggle this conversation's sub-session subtree (lazily loads on expand). */
@@ -137,6 +144,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   onTogglePin,
   depth = 0,
   hasChildren = false,
+  childCountHint,
   expanded = false,
   onToggleExpand,
 }: SidebarConversationCardProps) {
@@ -207,7 +215,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   // hover quick actions: pinning a sub-agent run to the root Pinned section or
   // hand-toggling its status doesn't fit — its lifecycle is the sub-agent's. The
   // time / running badge then stays visible on hover (nothing swaps in for it).
-  const isSubsession = conversation.parent_id != null
+  const isSubsession = conversation.parent_id != null || depth > 0
 
   return (
     <>
@@ -216,6 +224,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
           <div
             className="relative h-[2rem] bg-sidebar ws-transparent-bg"
             data-conv-key={`${conversation.agent_type}:${conversation.id}`}
+            data-subsession={isSubsession ? "true" : undefined}
             // Per-level indent: shift the shared rail axis right by one step per
             // depth. Root rows (depth 0) leave the var untouched so they inherit
             // the list's `--conv-rail-axis: 0.875rem` and render exactly as
@@ -236,7 +245,12 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                 "transition-colors duration-[120ms]",
                 isSelected
                   ? "bg-sidebar-primary/8"
-                  : "hover:bg-[color-mix(in_oklab,var(--sidebar-accent),var(--sidebar-foreground)_2%)]"
+                  : isSubsession
+                    ? "hover:bg-[color-mix(in_oklab,var(--sidebar-accent),var(--sidebar-foreground)_3%)]"
+                    : "hover:bg-[color-mix(in_oklab,var(--sidebar-accent),var(--sidebar-foreground)_2%)]",
+                // Nested sub-sessions: slightly dimmer fill so the tree reads
+                // as secondary to root sessions at a glance.
+                isSubsession && !isSelected && "bg-sidebar-accent/25"
               )}
             >
               <button
@@ -308,12 +322,51 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                 <span
                   className={cn(
                     "relative min-w-0 flex-1 truncate text-[0.875rem] font-normal",
-                    isOpenInTab && "text-primary"
+                    isOpenInTab && "text-primary",
+                    isSubsession && !isOpenInTab && "text-muted-foreground"
                   )}
                 >
                   {formatConversationTitle(conversation.title) ||
                     t("untitledConversation")}
                 </span>
+                {/* Nested row: always label as a delegated sub-session. */}
+                {isSubsession && (
+                  <span
+                    className={cn(
+                      "relative inline-flex shrink-0 items-center gap-0.5",
+                      "rounded-[0.25rem] px-[0.3125rem] py-px",
+                      "text-[0.625rem] font-semibold leading-none tracking-wide",
+                      "border border-violet-500/30 bg-violet-500/15 text-violet-700",
+                      "dark:text-violet-300"
+                    )}
+                    title={t("subsessionBadgeTitle")}
+                  >
+                    <GitBranch
+                      aria-hidden
+                      className="h-[0.625rem] w-[0.625rem]"
+                    />
+                    {t("subsessionBadge")}
+                  </span>
+                )}
+                {/* Root with children while trees are hidden: clear affordance
+                    that nested work exists (funnel → Show sub-sessions). */}
+                {childCountHint != null && childCountHint > 0 && (
+                  <span
+                    className={cn(
+                      "relative inline-flex shrink-0 items-center gap-0.5",
+                      "rounded-[0.25rem] px-[0.3125rem] py-px",
+                      "text-[0.625rem] font-semibold leading-none tabular-nums",
+                      "border border-primary/25 bg-primary/12 text-primary"
+                    )}
+                    title={t("subsessionCountHint", { count: childCountHint })}
+                  >
+                    <GitBranch
+                      aria-hidden
+                      className="h-[0.625rem] w-[0.625rem]"
+                    />
+                    {t("subsessionCountLabel", { count: childCountHint })}
+                  </span>
+                )}
               </button>
 
               {/* Expand/collapse affordance for delegation children. It overlays

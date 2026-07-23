@@ -33,9 +33,10 @@ import { DelegationStatusGroupCard } from "@/components/message/delegation-statu
 
 interface Props {
   /** Which companion tool this card represents — selects the label + icon. */
-  kind: "status" | "cancel"
+  kind: "status" | "cancel" | "continue" | "close"
   /** Raw JSON arguments sent to the tool — status: `{ task_ids, wait_ms? }` (or
-   *  a legacy `{ task_id }` in historical transcripts); cancel: `{ task_id }`. */
+   *  a legacy `{ task_id }` in historical transcripts); cancel/continue/close:
+   *  `{ task_id }` (+ `message` for continue). */
   input?: string | null
   output?: string | null
   errorText?: string | null
@@ -69,18 +70,21 @@ export function DelegationStatusCard({
     [input, output, errorText, state]
   )
 
-  // Cancel: always a single task — keep the single-report path.
-  const cancelReport = useMemo(
+  // Cancel / continue / close: always a single task — keep the single-report path.
+  const singleReport = useMemo(
     () => parseStatusReport(output, errorText),
     [output, errorText]
   )
-  const cancelTaskId = useMemo(
-    () => parseTaskId(input) ?? cancelReport.taskId,
-    [input, cancelReport]
+  const singleTaskId = useMemo(
+    () => parseTaskId(input) ?? singleReport.taskId,
+    [input, singleReport]
   )
-  const cancelBadge = useMemo(
-    () => deriveBadge("cancel", cancelReport, state, !!errorText),
-    [cancelReport, state, errorText]
+  // continue uses status-like badge semantics; close/cancel treat terminal
+  // cancel/closed outcomes as success for the tool intent.
+  const badgeKind = kind === "continue" ? "status" : "cancel"
+  const singleBadge = useMemo(
+    () => deriveBadge(badgeKind, singleReport, state, !!errorText),
+    [badgeKind, singleReport, state, errorText]
   )
 
   if (kind === "status") {
@@ -92,7 +96,7 @@ export function DelegationStatusCard({
     )
   }
 
-  const isError = cancelBadge.status === "err"
+  const isError = singleBadge.status === "err"
   return (
     <div
       data-testid="delegation-status-card"
@@ -104,10 +108,10 @@ export function DelegationStatusCard({
       )}
     >
       <DelegationStatusRow
-        kind="cancel"
-        taskId={cancelTaskId}
-        report={cancelReport}
-        badge={cancelBadge}
+        kind={kind}
+        taskId={singleTaskId}
+        report={singleReport}
+        badge={singleBadge}
       />
     </div>
   )

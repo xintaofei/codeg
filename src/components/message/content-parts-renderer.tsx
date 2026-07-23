@@ -2382,6 +2382,28 @@ const ToolCallPart = memo(function ToolCallPart({
       />
     )
   }
+  if (toolNameLower === "continue_with_session") {
+    return (
+      <DelegationStatusCard
+        kind="continue"
+        input={part.input ?? null}
+        output={part.output ?? null}
+        errorText={part.errorText ?? null}
+        state={part.state}
+      />
+    )
+  }
+  if (toolNameLower === "close_session") {
+    return (
+      <DelegationStatusCard
+        kind="close"
+        input={part.input ?? null}
+        output={part.output ?? null}
+        errorText={part.errorText ?? null}
+        state={part.state}
+      />
+    )
+  }
 
   // codeg-mcp ask_user_question: render the asked question(s) and the user's
   // selection as a dedicated read-only card instead of the generic tool shell.

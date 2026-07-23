@@ -45,10 +45,12 @@ import { leftChromeReserve } from "@/lib/window-chrome"
 import {
   loadShowCompleted,
   loadShowWorktrees,
+  loadShowSubsessions,
   loadSortMode,
   loadSectionOrder,
   saveShowCompleted,
   saveShowWorktrees,
+  saveShowSubsessions,
   saveSortMode,
   saveSectionOrder,
   type SidebarSortMode,
@@ -132,11 +134,12 @@ export function Sidebar() {
   // rem-sized overlay buttons. Mobile has no overlay (the sidebar is a Sheet).
   const leftReserve = leftChromeReserve(platformIsMac && isDesktop(), zoomLevel)
 
-  // Both default ON (the mount effect below reconciles a persisted "false").
-  // The initial value matches that default so the pre-hydration render doesn't
-  // flash from off → on.
+  // showCompleted / showWorktrees default ON (mount effect reconciles a
+  // persisted "false"). showSubsessions defaults OFF — delegation children
+  // only expand when the user opts in via the funnel menu.
   const [showCompleted, setShowCompleted] = useState(true)
   const [showWorktrees, setShowWorktrees] = useState(true)
+  const [showSubsessions, setShowSubsessions] = useState(false)
   const [sortMode, setSortMode] = useState<SidebarSortMode>("created")
   const [sectionOrder, setSectionOrder] =
     useState<SidebarSectionOrder>("folders-first")
@@ -162,6 +165,7 @@ export function Sidebar() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setShowCompleted(loadShowCompleted())
     setShowWorktrees(loadShowWorktrees())
+    setShowSubsessions(loadShowSubsessions())
     setSortMode(loadSortMode())
     setSectionOrder(loadSectionOrder())
   }, [])
@@ -174,6 +178,11 @@ export function Sidebar() {
   const handleSetShowWorktrees = useCallback((value: boolean) => {
     setShowWorktrees(value)
     saveShowWorktrees(value)
+  }, [])
+
+  const handleSetShowSubsessions = useCallback((value: boolean) => {
+    setShowSubsessions(value)
+    saveShowSubsessions(value)
   }, [])
 
   const handleSetSortMode = useCallback((value: string) => {
@@ -342,6 +351,12 @@ export function Sidebar() {
               >
                 {t("showWorktrees")}
               </DropdownMenuCheckboxItem>
+              <DropdownMenuCheckboxItem
+                checked={showSubsessions}
+                onCheckedChange={handleSetShowSubsessions}
+              >
+                {t("showSubsessions")}
+              </DropdownMenuCheckboxItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel>{t("sortBy")}</DropdownMenuLabel>
               <DropdownMenuRadioGroup
@@ -437,6 +452,7 @@ export function Sidebar() {
           ref={listRef}
           showCompleted={showCompleted}
           showWorktrees={showWorktrees}
+          showSubsessions={showSubsessions}
           sortMode={sortMode}
           sectionOrder={sectionOrder}
         />

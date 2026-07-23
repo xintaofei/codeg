@@ -51,7 +51,7 @@ pub enum SpawnerError {
 #[async_trait]
 pub trait ConnectionSpawner: Send + Sync {
     /// Spawn a fresh child ACP connection of `agent_type` in `working_dir`.
-    /// Delegation children are always brand-new sessions (no resume), but the
+    /// First-turn delegations pass no agent session id (cold start). The
     /// broker may inject per-agent defaults configured in
     /// `DelegationConfig::agent_defaults`:
     ///   * `preferred_mode_id` — applied via `session/set_mode`
@@ -78,6 +78,21 @@ pub trait ConnectionSpawner: Send + Sync {
         preferred_config_values: BTreeMap<String, String>,
     ) -> Result<String, SpawnerError>;
 
+    /// Spawn (or reuse) a connection for a *resumed* child session.
+    /// `session_id` is the agent-side id (`conversation.external_id`); when
+    /// `Some`, `ConnectionManager::spawn_agent` reuses a live process for that
+    /// session or reloads it via `session/load`. When `None`, behaves like a
+    /// cold `spawn` (last-resort continue when no external id was recorded).
+    async fn spawn_for_resume(
+        &self,
+        parent_connection_id: &str,
+        agent_type: AgentType,
+        working_dir: Option<String>,
+        session_id: Option<String>,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
+    ) -> Result<String, SpawnerError>;
+
     /// Send the delegation task as the child's first prompt. The
     /// `DelegationLink` is persisted onto the new conversation row so the
     /// lifecycle subscriber can later notify the broker on `TurnComplete`.
@@ -90,13 +105,27 @@ pub trait ConnectionSpawner: Send + Sync {
         link: DelegationLink,
     ) -> Result<i32, SpawnerError>;
 
+    /// Send a follow-up prompt on an already-created child conversation
+    /// (`continue_with_session`). Adopts `conversation_id` when the connection
+    /// is not yet linked (post-resume), otherwise reuses the live link.
+    async fn send_followup_prompt(
+        &self,
+        conn_id: &str,
+        message: String,
+        conversation_id: i32,
+        folder_id: i32,
+    ) -> Result<(), SpawnerError>;
+
+    /// Whether `conn_id` still refers to a live (non-terminal) ACP connection.
+    async fn is_alive(&self, conn_id: &str) -> bool;
+
     /// Cancel any in-flight prompt on the child connection. Idempotent:
     /// calling on a connection with nothing in flight is a no-op success.
     async fn cancel(&self, conn_id: &str) -> Result<(), SpawnerError>;
 
-    /// Tear down the child connection. Always called after the broker has
-    /// resolved (or failed) the pending call, to enforce v1's one-shot
-    /// semantics.
+    /// Tear down the child connection. Used by cancel / close_session / parent
+    /// teardown — not by a normal completed/failed turn (those keep the
+    /// process for `continue_with_session`).
     async fn disconnect(&self, conn_id: &str) -> Result<(), SpawnerError>;
 }
 
@@ -117,9 +146,14 @@ pub mod mock {
     pub struct MockSpawner {
         pub spawn_results: Mutex<VecDeque<Result<String, SpawnerError>>>,
         pub send_results: Mutex<VecDeque<Result<i32, SpawnerError>>>,
+        pub followup_results: Mutex<VecDeque<Result<(), SpawnerError>>>,
         pub cancels: Mutex<Vec<String>>,
         pub disconnects: Mutex<Vec<String>>,
         pub spawn_args: Mutex<Vec<SpawnCallArgs>>,
+        pub resume_args: Mutex<Vec<ResumeCallArgs>>,
+        pub followups: Mutex<Vec<FollowupCallArgs>>,
+        /// Connection ids reported as dead by [`ConnectionSpawner::is_alive`].
+        pub dead_connections: Mutex<std::collections::HashSet<String>>,
         /// When set, `send_prompt_linked_for_delegation` awaits this receiver
         /// before returning — lets a test hold `handle_request` in the window
         /// AFTER it has reserved the child (post-spawn) but BEFORE it parks the
@@ -143,6 +177,24 @@ pub mod mock {
         pub preferred_config_values: BTreeMap<String, String>,
     }
 
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ResumeCallArgs {
+        pub parent_connection_id: String,
+        pub agent_type: AgentType,
+        pub working_dir: Option<String>,
+        pub session_id: Option<String>,
+        pub preferred_mode_id: Option<String>,
+        pub preferred_config_values: BTreeMap<String, String>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct FollowupCallArgs {
+        pub conn_id: String,
+        pub message: String,
+        pub conversation_id: i32,
+        pub folder_id: i32,
+    }
+
     impl MockSpawner {
         pub fn new() -> Self {
             Self::default()
@@ -154,6 +206,14 @@ pub mod mock {
 
         pub async fn queue_send(&self, r: Result<i32, SpawnerError>) {
             self.send_results.lock().await.push_back(r);
+        }
+
+        pub async fn queue_followup(&self, r: Result<(), SpawnerError>) {
+            self.followup_results.lock().await.push_back(r);
+        }
+
+        pub async fn mark_dead(&self, conn_id: impl Into<String>) {
+            self.dead_connections.lock().await.insert(conn_id.into());
         }
 
         /// Install a one-shot gate that holds the next
@@ -208,6 +268,30 @@ pub mod mock {
                 .unwrap_or_else(|| Err(SpawnerError::Spawn("no queued spawn result".into())))
         }
 
+        async fn spawn_for_resume(
+            &self,
+            parent_connection_id: &str,
+            agent_type: AgentType,
+            working_dir: Option<String>,
+            session_id: Option<String>,
+            preferred_mode_id: Option<String>,
+            preferred_config_values: BTreeMap<String, String>,
+        ) -> Result<String, SpawnerError> {
+            self.resume_args.lock().await.push(ResumeCallArgs {
+                parent_connection_id: parent_connection_id.to_string(),
+                agent_type,
+                working_dir,
+                session_id,
+                preferred_mode_id,
+                preferred_config_values,
+            });
+            self.spawn_results
+                .lock()
+                .await
+                .pop_front()
+                .unwrap_or_else(|| Err(SpawnerError::Spawn("no queued spawn result".into())))
+        }
+
         async fn send_prompt_linked_for_delegation(
             &self,
             _conn_id: &str,
@@ -228,6 +312,30 @@ pub mod mock {
                 .unwrap_or_else(|| Err(SpawnerError::Send("no queued send result".into())))
         }
 
+        async fn send_followup_prompt(
+            &self,
+            conn_id: &str,
+            message: String,
+            conversation_id: i32,
+            folder_id: i32,
+        ) -> Result<(), SpawnerError> {
+            self.followups.lock().await.push(FollowupCallArgs {
+                conn_id: conn_id.to_string(),
+                message,
+                conversation_id,
+                folder_id,
+            });
+            self.followup_results
+                .lock()
+                .await
+                .pop_front()
+                .unwrap_or(Ok(()))
+        }
+
+        async fn is_alive(&self, conn_id: &str) -> bool {
+            !self.dead_connections.lock().await.contains(conn_id)
+        }
+
         async fn cancel(&self, conn_id: &str) -> Result<(), SpawnerError> {
             self.cancels.lock().await.push(conn_id.to_string());
             Ok(())
@@ -235,6 +343,7 @@ pub mod mock {
 
         async fn disconnect(&self, conn_id: &str) -> Result<(), SpawnerError> {
             self.disconnects.lock().await.push(conn_id.to_string());
+            self.dead_connections.lock().await.insert(conn_id.to_string());
             Ok(())
         }
     }

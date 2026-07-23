@@ -41,6 +41,8 @@ export const TOOL_KIND_ORDER: ToolKindLabel[] = [
 const DELEGATE_TO_AGENT_SUFFIX_RE = /[^a-z0-9]delegate_to_agent$/
 const GET_DELEGATION_STATUS_SUFFIX_RE = /[^a-z0-9]get_delegation_status$/
 const CANCEL_DELEGATION_SUFFIX_RE = /[^a-z0-9]cancel_delegation$/
+const CONTINUE_WITH_SESSION_SUFFIX_RE = /[^a-z0-9]continue_with_session$/
+const CLOSE_SESSION_SUFFIX_RE = /[^a-z0-9]close_session$/
 const CREATE_GOAL_SUFFIX_RE = /[^a-z0-9]create_goal$/
 const UPDATE_GOAL_SUFFIX_RE = /[^a-z0-9]update_goal$/
 const ASK_USER_QUESTION_SUFFIX_RE = /[^a-z0-9]ask_user_question$/
@@ -57,6 +59,8 @@ export function isAgentLikeToolName(toolName: string): boolean {
     name === "delegate_to_agent" ||
     name === "get_delegation_status" ||
     name === "cancel_delegation" ||
+    name === "continue_with_session" ||
+    name === "close_session" ||
     name === "create_goal" ||
     name === "update_goal" ||
     // codeg-mcp ask_user_question — owns the AskQuestionResultCard, so it must
@@ -76,6 +80,8 @@ export function isAgentLikeToolName(toolName: string): boolean {
   if (DELEGATE_TO_AGENT_SUFFIX_RE.test(name)) return true
   if (GET_DELEGATION_STATUS_SUFFIX_RE.test(name)) return true
   if (CANCEL_DELEGATION_SUFFIX_RE.test(name)) return true
+  if (CONTINUE_WITH_SESSION_SUFFIX_RE.test(name)) return true
+  if (CLOSE_SESSION_SUFFIX_RE.test(name)) return true
   if (CREATE_GOAL_SUFFIX_RE.test(name)) return true
   if (UPDATE_GOAL_SUFFIX_RE.test(name)) return true
   if (ASK_USER_QUESTION_SUFFIX_RE.test(name)) return true

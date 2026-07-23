@@ -34,7 +34,11 @@
 //!         [`DelegationBroker::cancel_by_parent_turn`]), or the LLM's own
 //!         [`DelegationBroker::cancel_task_by_id`].
 //!
-//! v1 is explicitly one-shot — no session reuse.
+//! After a child turn settles (completed / failed), the child process is kept
+//! alive so [`DelegationBroker::continue_delegation`] can send follow-ups in the
+//! same session. [`DelegationBroker::close_delegation_session`], cancel paths,
+//! and parent teardown disconnect the child. If the process dies while the
+//! conversation remains, continue re-spawns with the child's agent session id.
 //!
 //! Result durability: child output is NOT stored in codeg's DB, so the broker
 //! caches the completed text in `completed` (parent-scoped, FIFO-capped). Once
@@ -118,6 +122,15 @@ pub struct ChildStatusRecord {
     /// the DB fallback to the calling parent so one parent can't read another's
     /// task by guessing a UUID.
     pub parent_id: Option<i32>,
+    /// Folder the child conversation lives in — required to adopt the row when
+    /// `continue_with_session` re-spawns a dead process.
+    pub folder_id: i32,
+    /// Agent-side session id (`conversation.external_id`) for `session/load`.
+    pub external_id: Option<String>,
+    /// Original parent tool_use_id (for meta rewrites on continue).
+    pub parent_tool_use_id: Option<String>,
+    /// Workspace path for resume spawn (folder path when available).
+    pub working_dir: Option<String>,
 }
 
 /// DB fallback for `get_delegation_status` / `cancel_delegation` once a task's
@@ -214,6 +227,9 @@ struct RunningTask {
 struct CompletedTask {
     parent_connection_id: String,
     child_conversation_id: i32,
+    /// Last known child ACP connection. `Some` while the process was kept
+    /// alive after completed/failed; `None` after cancel/close/disconnect.
+    child_connection_id: Option<String>,
     agent_type: AgentType,
     status: TaskStatus,
     /// Result text for `Completed` (capped at [`COMPLETED_TEXT_CAP`]). `None`
@@ -222,6 +238,21 @@ struct CompletedTask {
     error_code: Option<String>,
     message: Option<String>,
     duration_ms: u64,
+    /// Parent `delegate_to_agent` tool_use_id — used to re-write meta on
+    /// continue and to re-emit started events.
+    parent_tool_use_id: String,
+    /// Last task/follow-up preview shown on the parent card (kept for meta
+    /// continuity if a later path re-writes without a new preview).
+    #[allow(dead_code)]
+    task_preview: String,
+    /// Permanently retired via `close_session` (or parent connection teardown).
+    /// `continue_with_session` refuses closed tasks.
+    closed: bool,
+    /// Snapshotted at settle time so continue can re-spawn without a DB hit
+    /// when the process is already dead. May be incomplete in pure unit tests.
+    folder_id: Option<i32>,
+    external_id: Option<String>,
+    working_dir: Option<String>,
 }
 
 #[derive(Default)]
@@ -622,23 +653,51 @@ fn terminal_fields(
 }
 
 /// Build a [`CompletedTask`] from a resolved outcome for the completed-cache.
+#[allow(clippy::too_many_arguments)]
 fn build_completed(
     parent_connection_id: &str,
     child_conversation_id: i32,
     agent_type: AgentType,
     duration_ms: u64,
     outcome: &DelegationOutcome,
+    child_connection_id: Option<String>,
+    parent_tool_use_id: String,
+    task_preview: String,
+    closed: bool,
+    folder_id: Option<i32>,
+    external_id: Option<String>,
+    working_dir: Option<String>,
 ) -> CompletedTask {
     let (status, text, error_code, message) = terminal_fields(outcome);
+    // Nudge the parent LLM toward continue_with_session on failed/completed.
+    let message = match (&status, message) {
+        (TaskStatus::Failed, Some(m)) => Some(format!(
+            "{m} Use continue_with_session(task_id, message) to resume this \
+             sub-agent with its prior context instead of re-delegating."
+        )),
+        (TaskStatus::Completed, None) => Some(
+            "Completed. Use continue_with_session(task_id, message) for \
+             follow-ups in the same sub-agent session, or close_session when done."
+                .to_string(),
+        ),
+        (_, other) => other,
+    };
     CompletedTask {
         parent_connection_id: parent_connection_id.to_string(),
         child_conversation_id,
+        child_connection_id,
         agent_type,
         status,
         text,
         error_code,
         message,
         duration_ms,
+        parent_tool_use_id,
+        task_preview,
+        closed,
+        folder_id,
+        external_id,
+        working_dir,
     }
 }
 
@@ -673,6 +732,8 @@ fn drain_and_record_canceled(
         let task = inner.running.remove(&k).expect("key just observed");
         let outcome = canceled_outcome(task.child_conversation_id, reason);
         let duration_ms = task.started_at.elapsed().as_millis() as u64;
+        // Cancel tears the process down — clear connection id so continue must
+        // re-spawn (if allowed) rather than talking to a dead conn.
         inner.insert_completed(
             &k,
             build_completed(
@@ -681,6 +742,13 @@ fn drain_and_record_canceled(
                 task.agent_type,
                 duration_ms,
                 &outcome,
+                None,
+                task.parent_tool_use_id.clone(),
+                task.task_preview.clone(),
+                false,
+                None,
+                None,
+                None,
             ),
         );
         out.push((task, duration_ms));
@@ -754,7 +822,9 @@ fn running_ack(
     let message = format!(
         "Delegation successful. task_id={call_id}. Call get_delegation_status \
          with this id in the task_ids array (optionally wait_ms) to collect the \
-         result, or cancel_delegation to stop it."
+         result, continue_with_session to send a follow-up in the same sub-agent \
+         session after it finishes, cancel_delegation to stop it, or \
+         close_session when you are done with the child."
     );
     DelegationTaskReport {
         task_id: Some(call_id),
@@ -2421,6 +2491,13 @@ impl DelegationBroker {
             // neither running nor completed. The `Running` arm inserts the live
             // task instead of parking a `oneshot` — the caller returns the ack.
             let record = |inner: &mut PendingInner, outcome: &DelegationOutcome| {
+                // Setup-window terminal: process is about to be torn down on
+                // cancel, or kept only briefly — keep_connection only for
+                // non-cancel outcomes (child finished during setup).
+                let keep = !matches!(
+                    outcome,
+                    DelegationOutcome::Err { code, .. } if code == "canceled"
+                );
                 inner.insert_completed(
                     &call_id,
                     build_completed(
@@ -2429,6 +2506,13 @@ impl DelegationBroker {
                         req.agent_type,
                         setup_duration_ms,
                         outcome,
+                        keep.then(|| child_connection_id.clone()),
+                        req.parent_tool_use_id.clone(),
+                        task_preview.clone(),
+                        false,
+                        None,
+                        None,
+                        None,
                     ),
                 );
             };
@@ -2584,6 +2668,13 @@ impl DelegationBroker {
                                 req.agent_type,
                                 duration_ms,
                                 &outcome,
+                                None,
+                                req.parent_tool_use_id.clone(),
+                                task_preview.clone(),
+                                false,
+                                None,
+                                None,
+                                None,
                             ),
                         );
                         Some(duration_ms)
@@ -2640,8 +2731,8 @@ impl DelegationBroker {
     /// (success path) or by error mappers (failure path).
     ///
     /// Migrates the task from `running` into `completed` (atomically, under one
-    /// lock) and then finalizes (terminal meta + `DelegationCompleted` event +
-    /// child teardown) and wakes any `get_delegation_status` long-poll.
+    /// lock) and then finalizes (terminal meta + `DelegationCompleted` event;
+    /// disconnect only on cancel) and wakes any `get_delegation_status` long-poll.
     ///
     /// If no entry is in `running` under `call_id`, the outcome is buffered for
     /// a racing `start_delegation` to drain at registration — but ONLY while the
@@ -2653,6 +2744,10 @@ impl DelegationBroker {
     /// the `call_id` is no longer reserved the call was already resolved by
     /// another terminal path, so the buffer is skipped (silent no-op).
     pub async fn complete_call(&self, call_id: &str, outcome: DelegationOutcome) {
+        let is_canceled = matches!(
+            &outcome,
+            DelegationOutcome::Err { code, .. } if code == "canceled"
+        );
         let task = {
             let mut inner = self.pending.inner.lock().await;
             match inner.running.remove(call_id) {
@@ -2660,6 +2755,8 @@ impl DelegationBroker {
                     // Atomic running → completed so a concurrent status query
                     // never sees the task as neither running nor completed.
                     let duration_ms = task.started_at.elapsed().as_millis() as u64;
+                    // Keep the process for continue_with_session unless canceled.
+                    let keep_conn = (!is_canceled).then(|| task.child_connection_id.clone());
                     inner.insert_completed(
                         call_id,
                         build_completed(
@@ -2668,6 +2765,13 @@ impl DelegationBroker {
                             task.agent_type,
                             duration_ms,
                             &outcome,
+                            keep_conn,
+                            task.parent_tool_use_id.clone(),
+                            task.task_preview.clone(),
+                            false,
+                            None,
+                            None,
+                            None,
                         ),
                     );
                     Some((task, duration_ms))
@@ -2694,18 +2798,39 @@ impl DelegationBroker {
                 &task.task_id,
             )
             .await;
+            // Best-effort: stamp resume metadata (folder / external_id / cwd)
+            // onto the completed-cache entry so continue_with_session does not
+            // depend solely on a later DB round-trip after process death.
+            self.enrich_completed_resume_meta(call_id).await;
             self.result_notify.notify_waiters();
         }
     }
 
-    /// Write the terminal meta, emit `DelegationCompleted`, and tear down the
-    /// child for a resolved delegation. Shared by `complete_call` and
-    /// `start_delegation`'s early-terminal pickup. Mirrors the resolution onto
-    /// the parent's `delegate_to_agent` ToolCallState meta (including a bounded
-    /// `text_preview` on the completed path so a post-refresh snapshot renders
-    /// the result inline) so snapshot recovery shows the final state without the
-    /// live `delegation_completed` event. Does not touch the pending maps — the
-    /// caller owns the `running` → `completed` migration.
+    /// Fill `folder_id` / `external_id` / `working_dir` on a just-settled task
+    /// from the DB (or leave untouched when the lookup fails).
+    async fn enrich_completed_resume_meta(&self, call_id: &str) {
+        let Some(rec) = self.status_lookup.find_by_call_id(call_id).await else {
+            return;
+        };
+        let mut inner = self.pending.inner.lock().await;
+        let Some(c) = inner.completed.get_mut(call_id) else {
+            return;
+        };
+        if c.folder_id.is_none() {
+            c.folder_id = Some(rec.folder_id);
+        }
+        if c.external_id.is_none() {
+            c.external_id = rec.external_id;
+        }
+        if c.working_dir.is_none() {
+            c.working_dir = rec.working_dir;
+        }
+    }
+
+    /// Write the terminal meta and emit `DelegationCompleted`. Shared by
+    /// `complete_call` and `start_delegation`'s early-terminal pickup.
+    /// Disconnects the child **only** when the outcome is canceled; completed /
+    /// failed keep the process for `continue_with_session`.
     ///
     /// `duration_ms` is the broker-measured elapsed time (from `started_at`),
     /// carried onto the event summary so the parent UI shows a real duration.
@@ -2755,8 +2880,15 @@ impl DelegationBroker {
             outcome_to_summary(outcome, duration_ms),
         )
         .await;
-        // v1 one-shot: always tear down the child.
-        let _ = self.spawner.disconnect(child_connection_id).await;
+        // Keep completed/failed children alive for continue_with_session.
+        // Cancel still tears down (user / parent no longer wants the child).
+        let should_disconnect = matches!(
+            outcome,
+            DelegationOutcome::Err { code, .. } if code == "canceled"
+        );
+        if should_disconnect {
+            let _ = self.spawner.disconnect(child_connection_id).await;
+        }
     }
 
     /// Internal helper — apply the meta write iff the parent's
@@ -2931,10 +3063,39 @@ impl DelegationBroker {
     /// `consumed`) since the connection is going away. Runs fully inline — the
     /// connection is already exiting, so there is no next prompt to unblock.
     pub async fn cancel_by_parent(&self, parent_connection_id: &str) {
+        // Disconnect any kept-alive settled children before dropping the cache.
+        let settled_conns = self
+            .take_settled_child_connections(parent_connection_id)
+            .await;
+        for cid in settled_conns {
+            let _ = self.spawner.disconnect(&cid).await;
+        }
         let drained = self
             .drain_for_parent_cancel(parent_connection_id, false)
             .await;
         self.finalize_parent_cancel(drained).await;
+    }
+
+    /// Collect and clear `child_connection_id`s for this parent's settled
+    /// (completed/failed) tasks so parent teardown can free kept-alive children.
+    async fn take_settled_child_connections(&self, parent_connection_id: &str) -> Vec<String> {
+        let mut inner = self.pending.inner.lock().await;
+        let mut out = Vec::new();
+        let ids: Vec<String> = inner
+            .completed
+            .iter()
+            .filter(|(_, c)| c.parent_connection_id == parent_connection_id)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for id in ids {
+            if let Some(c) = inner.completed.get_mut(&id) {
+                if let Some(cid) = c.child_connection_id.take() {
+                    c.closed = true;
+                    out.push(cid);
+                }
+            }
+        }
+        out
     }
 
     /// Cascade-cancel every pending delegation owned by `parent_connection_id`
@@ -2956,6 +3117,9 @@ impl DelegationBroker {
     /// mis-bind the next same-key delegation on this live connection — see
     /// `drop_tool_calls_for_parent`.
     pub async fn cancel_by_parent_turn(&self, parent_connection_id: &str) {
+        // Only running children are canceled. Settled (completed/failed)
+        // children stay alive so the parent can still `continue_with_session`
+        // on them after the turn ends.
         let drained = self
             .drain_for_parent_cancel(parent_connection_id, true)
             .await;
@@ -3317,6 +3481,382 @@ impl DelegationBroker {
         }
     }
 
+    /// Backs `continue_with_session`: send a follow-up into an existing child
+    /// session (same `task_id`) so the sub-agent keeps prior context.
+    ///
+    /// Prefers a still-live child connection; otherwise re-spawns with the
+    /// agent's `external_id` and adopts the existing conversation row. Same
+    /// `task_id` is re-registered as `Running` and collected via
+    /// `get_delegation_status`.
+    pub async fn continue_delegation(
+        &self,
+        parent_connection_id: &str,
+        parent_conversation_id: Option<i32>,
+        task_id: &str,
+        message: String,
+    ) -> DelegationTaskReport {
+        let message = message.trim().to_string();
+        if message.is_empty() {
+            return report_err(
+                AgentType::ClaudeCode,
+                DelegationError::NotContinuable("message is empty".into()),
+                None,
+            )
+            .with_task_id(task_id);
+        }
+
+        // Snapshot settled state under the lock, then do I/O outside.
+        let settled = {
+            let mut inner = self.pending.inner.lock().await;
+            if let Some(r) = inner.running.get(task_id) {
+                if r.parent_connection_id != parent_connection_id {
+                    return unknown_report(task_id);
+                }
+                return report_err(
+                    r.agent_type,
+                    DelegationError::SessionStillRunning,
+                    Some(r.child_conversation_id),
+                )
+                .with_task_id(task_id);
+            }
+            match inner.completed.get(task_id) {
+                Some(c) if c.parent_connection_id == parent_connection_id => {
+                    if c.closed {
+                        return report_err(
+                            c.agent_type,
+                            DelegationError::SessionClosed,
+                            Some(c.child_conversation_id),
+                        )
+                        .with_task_id(task_id);
+                    }
+                    // Remove so a concurrent continue cannot double-start; we
+                    // re-insert as running after the follow-up is sent (or put
+                    // back on failure).
+                    inner.completed.remove(task_id)
+                }
+                Some(_) => return unknown_report(task_id),
+                None => None,
+            }
+        };
+
+        // DB fallback when the completed-cache entry was evicted.
+        let mut settled = match settled {
+            Some(c) => c,
+            None => match self
+                .load_settled_from_db(parent_connection_id, parent_conversation_id, task_id)
+                .await
+            {
+                Ok(c) => c,
+                Err(report) => return report,
+            },
+        };
+
+        // Resolve a live child connection, or resume the agent session.
+        let child_connection_id = match settled.child_connection_id.as_deref() {
+            Some(cid) if self.spawner.is_alive(cid).await => cid.to_string(),
+            _ => {
+                let (folder_id, external_id, working_dir) = self
+                    .resolve_resume_meta(parent_conversation_id, task_id, &settled)
+                    .await;
+                let Some(folder_id) = folder_id.or(settled.folder_id) else {
+                    let agent_type = settled.agent_type;
+                    let child_conversation_id = settled.child_conversation_id;
+                    self.reinsert_completed(task_id, settled).await;
+                    return report_err(
+                        agent_type,
+                        DelegationError::NotContinuable(
+                            "missing folder_id for child conversation".into(),
+                        ),
+                        Some(child_conversation_id),
+                    )
+                    .with_task_id(task_id);
+                };
+                settled.folder_id = Some(folder_id);
+                let external_id = external_id.or(settled.external_id.clone());
+                settled.external_id = external_id.clone();
+                let working_dir = working_dir.or(settled.working_dir.clone());
+                settled.working_dir = working_dir.clone();
+
+                let cfg = self.config_snapshot().await;
+                let (preferred_mode_id, preferred_config_values) = cfg
+                    .agent_defaults
+                    .get(&settled.agent_type)
+                    .map(|d: &AgentDelegationDefaults| (d.mode_id.clone(), d.config_values.clone()))
+                    .unwrap_or((None, BTreeMap::new()));
+
+                match self
+                    .spawner
+                    .spawn_for_resume(
+                        parent_connection_id,
+                        settled.agent_type,
+                        working_dir,
+                        external_id,
+                        preferred_mode_id,
+                        preferred_config_values,
+                    )
+                    .await
+                {
+                    Ok(id) => id,
+                    Err(e) => {
+                        let agent_type = settled.agent_type;
+                        let child_conversation_id = settled.child_conversation_id;
+                        self.reinsert_completed(task_id, settled).await;
+                        return report_err(
+                            agent_type,
+                            DelegationError::SpawnFailed(e.to_string()),
+                            Some(child_conversation_id),
+                        )
+                        .with_task_id(task_id);
+                    }
+                }
+            }
+        };
+
+        let folder_id = match settled.folder_id {
+            Some(id) => id,
+            None => {
+                let (folder_id, _, _) = self
+                    .resolve_resume_meta(parent_conversation_id, task_id, &settled)
+                    .await;
+                match folder_id {
+                    Some(id) => {
+                        settled.folder_id = Some(id);
+                        id
+                    }
+                    None => {
+                        let agent_type = settled.agent_type;
+                        let child_conversation_id = settled.child_conversation_id;
+                        self.reinsert_completed(task_id, settled).await;
+                        return report_err(
+                            agent_type,
+                            DelegationError::NotContinuable(
+                                "missing folder_id for child conversation".into(),
+                            ),
+                            Some(child_conversation_id),
+                        )
+                        .with_task_id(task_id);
+                    }
+                }
+            }
+        };
+
+        if let Err(e) = self
+            .spawner
+            .send_followup_prompt(
+                &child_connection_id,
+                message.clone(),
+                settled.child_conversation_id,
+                folder_id,
+            )
+            .await
+        {
+            let agent_type = settled.agent_type;
+            let child_conversation_id = settled.child_conversation_id;
+            self.reinsert_completed(task_id, settled).await;
+            return report_err(
+                agent_type,
+                DelegationError::SubagentRuntimeError(e.to_string()),
+                Some(child_conversation_id),
+            )
+            .with_task_id(task_id);
+        }
+
+        // Register as running under the SAME task_id so status/cancel keep working.
+        let task_preview = truncate_on_char_boundary(&message, TASK_PREVIEW_CAP);
+        let running = RunningTask {
+            child_connection_id: child_connection_id.clone(),
+            child_conversation_id: settled.child_conversation_id,
+            parent_connection_id: parent_connection_id.to_string(),
+            parent_tool_use_id: settled.parent_tool_use_id.clone(),
+            agent_type: settled.agent_type,
+            task_preview: task_preview.clone(),
+            task_id: task_id.to_string(),
+            external_handle: None,
+            started_at: Instant::now(),
+        };
+
+        {
+            let mut inner = self.pending.inner.lock().await;
+            // Drop any stale completed entry (we already removed it) and park.
+            inner.running.insert(task_id.to_string(), running);
+        }
+
+        // Meta + started event so the original parent card reflects "running" again.
+        self.write_meta_if_real(
+            parent_connection_id,
+            &settled.parent_tool_use_id,
+            build_delegation_meta(
+                "running",
+                Some(&child_connection_id),
+                Some(settled.child_conversation_id),
+                None,
+                None,
+                None,
+                Some(&task_preview),
+                Some(task_id),
+            ),
+        )
+        .await;
+        self.emit_started_if_real(
+            parent_connection_id,
+            &settled.parent_tool_use_id,
+            &child_connection_id,
+            settled.child_conversation_id,
+            settled.agent_type,
+            &task_preview,
+            task_id,
+        )
+        .await;
+
+        let mut ack = running_ack(
+            task_id.to_string(),
+            settled.child_conversation_id,
+            settled.agent_type,
+        );
+        ack.message = Some(format!(
+            "Continue successful. task_id={task_id}. Call get_delegation_status \
+             with this id in the task_ids array (optionally wait_ms) to collect the \
+             new turn's result, or cancel_delegation / close_session when done."
+        ));
+        ack
+    }
+
+    /// Backs `close_session`: permanently retire a delegated child.
+    /// Cancels if still running, disconnects any kept-alive process, and marks
+    /// the completed entry `closed` so `continue_with_session` refuses it.
+    pub async fn close_delegation_session(
+        &self,
+        parent_connection_id: &str,
+        parent_conversation_id: Option<i32>,
+        task_id: &str,
+    ) -> DelegationTaskReport {
+        // Running → cancel + disconnect first (reuse cancel_task_by_id path).
+        {
+            let inner = self.pending.inner.lock().await;
+            if let Some(r) = inner.running.get(task_id) {
+                if r.parent_connection_id != parent_connection_id {
+                    return unknown_report(task_id);
+                }
+                drop(inner);
+                let _ = self
+                    .cancel_task_by_id(parent_connection_id, parent_conversation_id, task_id)
+                    .await;
+            }
+        }
+
+        // Mark completed closed + disconnect any lingering connection.
+        let (report, conn_to_drop) = {
+            let mut inner = self.pending.inner.lock().await;
+            match inner.completed.get_mut(task_id) {
+                Some(c) if c.parent_connection_id == parent_connection_id => {
+                    c.closed = true;
+                    let conn = c.child_connection_id.take();
+                    c.message = Some(
+                        "Session closed. Start a new delegate_to_agent for further work."
+                            .to_string(),
+                    );
+                    (completed_report(task_id, c), conn)
+                }
+                Some(_) => return unknown_report(task_id),
+                None => {
+                    drop(inner);
+                    // Not in memory — try DB and still return status.
+                    return self.status_from_db(parent_conversation_id, task_id).await;
+                }
+            }
+        };
+        if let Some(cid) = conn_to_drop {
+            let _ = self.spawner.disconnect(&cid).await;
+        }
+        report
+    }
+
+    /// Put a settled entry back after a failed continue attempt.
+    async fn reinsert_completed(&self, task_id: &str, settled: CompletedTask) {
+        let mut inner = self.pending.inner.lock().await;
+        inner.insert_completed(task_id, settled);
+    }
+
+    /// Build a [`CompletedTask`] from the DB when the in-memory cache was
+    /// evicted. Errors map to ready-to-return task reports.
+    async fn load_settled_from_db(
+        &self,
+        parent_connection_id: &str,
+        parent_conversation_id: Option<i32>,
+        task_id: &str,
+    ) -> Result<CompletedTask, DelegationTaskReport> {
+        let Some(rec) = self.status_lookup.find_by_call_id(task_id).await else {
+            return Err(unknown_report(task_id));
+        };
+        if parent_conversation_id.is_none() || rec.parent_id != parent_conversation_id {
+            return Err(unknown_report(task_id));
+        }
+        if matches!(rec.status, TaskStatus::Running) {
+            return Err(report_err(
+                rec.agent_type,
+                DelegationError::SessionStillRunning,
+                Some(rec.child_conversation_id),
+            )
+            .with_task_id(task_id));
+        }
+        // Synthetic completed shell for continue; parent_connection_id is the
+        // live parent (cache was parent-scoped; DB only has conversation ids).
+        Ok(CompletedTask {
+            parent_connection_id: parent_connection_id.to_string(),
+            child_conversation_id: rec.child_conversation_id,
+            child_connection_id: None,
+            agent_type: rec.agent_type,
+            status: rec.status,
+            text: None,
+            error_code: None,
+            message: None,
+            duration_ms: 0,
+            parent_tool_use_id: rec
+                .parent_tool_use_id
+                .clone()
+                .unwrap_or_else(|| format!("delegation-{task_id}")),
+            task_preview: String::new(),
+            closed: false,
+            folder_id: Some(rec.folder_id),
+            external_id: rec.external_id.clone(),
+            working_dir: rec.working_dir.clone(),
+        })
+    }
+
+    /// Fill resume metadata from DB when the settled cache entry is incomplete.
+    async fn resolve_resume_meta(
+        &self,
+        parent_conversation_id: Option<i32>,
+        task_id: &str,
+        settled: &CompletedTask,
+    ) -> (Option<i32>, Option<String>, Option<String>) {
+        if settled.folder_id.is_some()
+            && (settled.external_id.is_some() || settled.working_dir.is_some())
+        {
+            return (
+                settled.folder_id,
+                settled.external_id.clone(),
+                settled.working_dir.clone(),
+            );
+        }
+        match self.status_lookup.find_by_call_id(task_id).await {
+            Some(rec)
+                if parent_conversation_id.is_some() && rec.parent_id == parent_conversation_id =>
+            {
+                (
+                    Some(rec.folder_id),
+                    rec.external_id,
+                    rec.working_dir,
+                )
+            }
+            _ => (
+                settled.folder_id,
+                settled.external_id.clone(),
+                settled.working_dir.clone(),
+            ),
+        }
+    }
+
     /// DB status fallback for a task evicted from / never in the in-memory maps.
     /// Scopes to the caller's conversation: a child whose `parent_id` doesn't
     /// match (or when the caller has no active conversation) reports `Unknown`.
@@ -3483,11 +4023,24 @@ impl ChildStatusLookup for DbChildStatusLookup {
             "cancelled" => TaskStatus::Canceled,
             _ => TaskStatus::Unknown,
         };
+        // Resolve workspace path for resume spawn (folder path).
+        let working_dir = crate::db::service::folder_service::get_folder_by_id(
+            &self.db.conn,
+            summary.folder_id,
+        )
+        .await
+        .ok()
+        .flatten()
+        .map(|f| f.path);
         Some(ChildStatusRecord {
             child_conversation_id: summary.id,
             status,
             agent_type: summary.agent_type,
             parent_id: summary.parent_id,
+            folder_id: summary.folder_id,
+            external_id: summary.external_id,
+            parent_tool_use_id: summary.parent_tool_use_id,
+            working_dir,
         })
     }
 }
@@ -3637,8 +4190,219 @@ mod tests {
             other => panic!("expected Ok, got {other:?}"),
         }
         assert_eq!(broker.pending_count().await, 0);
-        // complete_call disconnects the child once.
+        // completed/failed keep the child process for continue_with_session.
+        assert!(
+            mock.disconnects.lock().await.is_empty(),
+            "complete_call must not disconnect on success"
+        );
+    }
+
+    /// After a completed turn, continue_with_session reuses the same child
+    /// connection and re-registers the same task_id as Running.
+    #[tokio::test]
+    async fn continue_reuses_live_child_connection() {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-conn-1".into())).await;
+        mock.queue_send(Ok(42)).await;
+        mock.queue_followup(Ok(())).await;
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
+
+        let driver = {
+            let broker = broker.clone();
+            tokio::spawn(async move { broker.handle_request(request(1, "pt-1")).await })
+        };
+        let call_id = loop {
+            if let Some(id) = broker.peek_first_pending_call_id().await {
+                break id;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        broker
+            .complete_call(
+                &call_id,
+                DelegationOutcome::Ok(DelegationSuccess {
+                    text: "first turn".into(),
+                    child_conversation_id: 42,
+                    child_agent_type: AgentType::Codex,
+                    turn_count: 1,
+                    duration_ms: 10,
+                    token_usage: None,
+                }),
+            )
+            .await;
+        let _ = driver.await.unwrap();
+
+        // Enrich settled entry with folder_id so continue doesn't need DB.
+        {
+            let mut inner = broker.pending.inner.lock().await;
+            if let Some(c) = inner.completed.get_mut(&call_id) {
+                c.folder_id = Some(7);
+                c.child_connection_id = Some("child-conn-1".into());
+            }
+        }
+
+        let cont = broker
+            .continue_delegation("parent-conn", Some(1), &call_id, "do the next step".into())
+            .await;
+        assert_eq!(cont.status, TaskStatus::Running);
+        assert_eq!(cont.task_id.as_deref(), Some(call_id.as_str()));
+        assert_eq!(cont.child_conversation_id, Some(42));
+
+        let followups = mock.followups.lock().await;
+        assert_eq!(followups.len(), 1);
+        assert_eq!(followups[0].conn_id, "child-conn-1");
+        assert_eq!(followups[0].message, "do the next step");
+        assert_eq!(followups[0].conversation_id, 42);
+        assert_eq!(followups[0].folder_id, 7);
+        drop(followups);
+
+        // Still running under the same id.
+        assert_eq!(broker.pending_count().await, 1);
+
+        // Second complete settles again without disconnect.
+        broker
+            .complete_call(
+                &call_id,
+                DelegationOutcome::Ok(DelegationSuccess {
+                    text: "second turn".into(),
+                    child_conversation_id: 42,
+                    child_agent_type: AgentType::Codex,
+                    turn_count: 1,
+                    duration_ms: 5,
+                    token_usage: None,
+                }),
+            )
+            .await;
+        assert!(mock.disconnects.lock().await.is_empty());
+
+        let status = broker
+            .get_task_status(
+                "parent-conn",
+                Some(1),
+                &call_id,
+                StatusWait::Immediate,
+            )
+            .await;
+        assert_eq!(status.status, TaskStatus::Completed);
+        assert_eq!(status.text.as_deref(), Some("second turn"));
+    }
+
+    /// close_session disconnects a kept-alive child and blocks further continue.
+    #[tokio::test]
+    async fn close_session_blocks_continue() {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-conn-1".into())).await;
+        mock.queue_send(Ok(42)).await;
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
+
+        let driver = {
+            let broker = broker.clone();
+            tokio::spawn(async move { broker.handle_request(request(1, "pt-1")).await })
+        };
+        let call_id = loop {
+            if let Some(id) = broker.peek_first_pending_call_id().await {
+                break id;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        broker
+            .complete_call(
+                &call_id,
+                DelegationOutcome::Ok(DelegationSuccess {
+                    text: "done".into(),
+                    child_conversation_id: 42,
+                    child_agent_type: AgentType::Codex,
+                    turn_count: 1,
+                    duration_ms: 10,
+                    token_usage: None,
+                }),
+            )
+            .await;
+        let _ = driver.await.unwrap();
+
+        {
+            let mut inner = broker.pending.inner.lock().await;
+            if let Some(c) = inner.completed.get_mut(&call_id) {
+                c.folder_id = Some(7);
+                c.child_connection_id = Some("child-conn-1".into());
+            }
+        }
+
+        let closed = broker
+            .close_delegation_session("parent-conn", Some(1), &call_id)
+            .await;
+        assert_eq!(closed.status, TaskStatus::Completed);
         assert_eq!(mock.disconnects.lock().await.as_slice(), &["child-conn-1"]);
+
+        let cont = broker
+            .continue_delegation("parent-conn", Some(1), &call_id, "more".into())
+            .await;
+        assert_eq!(cont.status, TaskStatus::Failed);
+        assert_eq!(cont.error_code.as_deref(), Some("session_closed"));
+    }
+
+    /// Dead connection path: continue re-spawns via spawn_for_resume.
+    #[tokio::test]
+    async fn continue_respawns_when_child_dead() {
+        let mock = Arc::new(MockSpawner::new());
+        mock.queue_spawn(Ok("child-conn-1".into())).await;
+        mock.queue_send(Ok(42)).await;
+        mock.queue_spawn(Ok("child-conn-2".into())).await; // resume spawn
+        mock.queue_followup(Ok(())).await;
+        let broker =
+            DelegationBroker::new(mock.clone() as Arc<dyn ConnectionSpawner>, shallow_lookup());
+        enable_delegation(&broker).await;
+
+        let driver = {
+            let broker = broker.clone();
+            tokio::spawn(async move { broker.handle_request(request(1, "pt-1")).await })
+        };
+        let call_id = loop {
+            if let Some(id) = broker.peek_first_pending_call_id().await {
+                break id;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        broker
+            .complete_call(
+                &call_id,
+                DelegationOutcome::Ok(DelegationSuccess {
+                    text: "first".into(),
+                    child_conversation_id: 42,
+                    child_agent_type: AgentType::Codex,
+                    turn_count: 1,
+                    duration_ms: 10,
+                    token_usage: None,
+                }),
+            )
+            .await;
+        let _ = driver.await.unwrap();
+
+        mock.mark_dead("child-conn-1").await;
+        {
+            let mut inner = broker.pending.inner.lock().await;
+            if let Some(c) = inner.completed.get_mut(&call_id) {
+                c.folder_id = Some(7);
+                c.external_id = Some("sess-xyz".into());
+                c.working_dir = Some("/work".into());
+                c.child_connection_id = Some("child-conn-1".into());
+            }
+        }
+
+        let cont = broker
+            .continue_delegation("parent-conn", Some(1), &call_id, "resume please".into())
+            .await;
+        assert_eq!(cont.status, TaskStatus::Running);
+        let resumes = mock.resume_args.lock().await;
+        assert_eq!(resumes.len(), 1);
+        assert_eq!(resumes[0].session_id.as_deref(), Some("sess-xyz"));
+        drop(resumes);
+        let followups = mock.followups.lock().await;
+        assert_eq!(followups[0].conn_id, "child-conn-2");
     }
 
     /// `StatusWait::Infinite` (the explicit `wait_ms = 0` escape hatch) must
@@ -6262,7 +7026,11 @@ mod tests {
         assert_eq!(broker.reserved_call_count().await, 0);
         assert_eq!(broker.reserved_child_count().await, 0);
         assert_eq!(broker.early_complete_count().await, 0);
-        assert_eq!(mock.disconnects.lock().await.as_slice(), &["c-fast-ok"]);
+        // Ok early-complete keeps the child for continue_with_session.
+        assert!(
+            mock.disconnects.lock().await.is_empty(),
+            "early Ok complete must not disconnect"
+        );
 
         // Meta trail: running (written pre-park) then completed (pickup).
         let calls = writer.snapshot().await;
@@ -7910,12 +8678,19 @@ mod tests {
         CompletedTask {
             parent_connection_id: parent.to_string(),
             child_conversation_id: 1,
+            child_connection_id: None,
             agent_type: AgentType::ClaudeCode,
             status: TaskStatus::Completed,
             text: Some("x".repeat(text_len)),
             error_code: None,
             message: None,
             duration_ms: 0,
+            parent_tool_use_id: "tool-1".into(),
+            task_preview: String::new(),
+            closed: false,
+            folder_id: Some(1),
+            external_id: None,
+            working_dir: None,
         }
     }
 

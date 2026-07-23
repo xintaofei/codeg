@@ -5518,6 +5518,9 @@ fn cursor_companion_title_from_content(content: Option<&str>) -> Option<&'static
     if text.starts_with("Delegation successful. task_id=") {
         return Some(crate::acp::delegation::DELEGATE_TOOL_REWRITE_TITLE);
     }
+    if text.starts_with("Continue successful. task_id=") {
+        return Some(crate::acp::delegation::CONTINUE_TOOL_REWRITE_TITLE);
+    }
     // Cheap guards before the full JSON parse: the status report is a JSON
     // object whose first key is `tasks`.
     if !text.starts_with('{') || !text.contains("\"tasks\"") {

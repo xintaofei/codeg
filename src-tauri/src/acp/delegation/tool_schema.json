@@ -1,7 +1,7 @@
 [
   {
     "name": "delegate_to_agent",
-    "description": "Hand off a self-contained sub-task to a separate local AI agent that runs in its own session. ASYNCHRONOUS: returns a task_id right away and the sub-agent keeps working in the background — this call never blocks. So you can fan out several delegations at once and keep working, then collect the results with get_delegation_status by passing the task_ids array (one id to poll a single task, or many at once to poll the whole fan-out in one call) — or stop one early with cancel_delegation(task_id). The sub-agent CANNOT see this conversation, your open files, or earlier turns — it starts cold, so `task` must carry everything it needs. Best for independent, parallelizable work you can describe up front; not for steps that need your ongoing back-and-forth. RECOGNIZING AN EXPLICIT DELEGATION REQUEST: the user can name a sub-agent directly in their message — it appears as `@AgentName` or as a Markdown link `[@AgentName](codeg://agent/<agent_type>)`. Such a mention IS an explicit instruction to delegate the associated work to that agent, even when the user never names this tool. If the message names several agents, make one call per agent, each carrying that agent's slice of the work.",
+    "description": "Hand off a self-contained sub-task to a separate local AI agent that runs in its own session. ASYNCHRONOUS: returns a task_id right away and the sub-agent keeps working in the background — this call never blocks. So you can fan out several delegations at once and keep working, then collect the results with get_delegation_status by passing the task_ids array (one id to poll a single task, or many at once to poll the whole fan-out in one call) — or stop one early with cancel_delegation(task_id). After a task finishes (completed or failed), prefer continue_with_session(task_id, message) to send a follow-up in THAT SAME child session (keeps the sub-agent's prior context and avoids redoing work) instead of calling delegate_to_agent again. Use close_session(task_id) when you are done with a child and want to free it. The sub-agent CANNOT see this conversation, your open files, or earlier turns on the FIRST turn — it starts cold, so `task` must carry everything it needs. Best for independent, parallelizable work you can describe up front; not for steps that need your ongoing back-and-forth. RECOGNIZING AN EXPLICIT DELEGATION REQUEST: the user can name a sub-agent directly in their message — it appears as `@AgentName` or as a Markdown link `[@AgentName](codeg://agent/<agent_type>)`. Such a mention IS an explicit instruction to delegate the associated work to that agent, even when the user never names this tool. If the message names several agents, make one call per agent, each carrying that agent's slice of the work.",
     "inputSchema": {
       "type": "object",
       "required": ["agent_type", "task"],
@@ -37,7 +37,7 @@
   },
   {
     "name": "get_delegation_status",
-    "description": "Collect delegated task results — or check on them — by the task_ids from delegate_to_agent. Pass a single id in the array to poll one task, or many at once to poll a whole fan-out in a single call. The response is ALWAYS a JSON object {\"tasks\":[...]} with one entry per id, in the order you asked — one entry for a single id, several for a fan-out; every entry carries that task's task_id and status, so you can always tell which task it is and where it stands. The wait_ms argument picks the mode: omit it for a non-blocking snapshot (poll), or pass wait_ms to wait — wait_ms>0 blocks up to that many ms (capped at 60000; re-call to keep waiting), wait_ms=0 blocks with no timeout for as long as the sub-agent runs. When polling several, the wait returns as soon as ANY requested task reaches a terminal state, so re-call to keep collecting the rest. When you just need the results, prefer blocking over repeated polling. Each task reports its current state — running, or a terminal completed / failed / canceled (or unknown if the id isn't recognized); a finished task includes its full result text. While tasks are still running and you are simply waiting, do NOT emit any user-facing message between calls — just call again silently. Skip status narration like \"still running\", \"not returned yet\", or \"continuing to wait\"; it fragments the conversation. Speak to the user only when there is a terminal result to report or something genuinely needs their input.",
+    "description": "Collect delegated task results — or check on them — by the task_ids from delegate_to_agent or continue_with_session. Pass a single id in the array to poll one task, or many at once to poll a whole fan-out in a single call. The response is ALWAYS a JSON object {\"tasks\":[...]} with one entry per id, in the order you asked — one entry for a single id, several for a fan-out; every entry carries that task's task_id and status, so you can always tell which task it is and where it stands. The wait_ms argument picks the mode: omit it for a non-blocking snapshot (poll), or pass wait_ms to wait — wait_ms>0 blocks up to that many ms (capped at 60000; re-call to keep waiting), wait_ms=0 blocks with no timeout for as long as the sub-agent runs. When polling several, the wait returns as soon as ANY requested task reaches a terminal state, so re-call to keep collecting the rest. When you just need the results, prefer blocking over repeated polling. Each task reports its current state — running, or a terminal completed / failed / canceled (or unknown if the id isn't recognized); a finished task includes its full result text. After completed/failed, prefer continue_with_session(task_id, message) for follow-ups instead of a new delegate_to_agent. While tasks are still running and you are simply waiting, do NOT emit any user-facing message between calls — just call again silently. Skip status narration like \"still running\", \"not returned yet\", or \"continuing to wait\"; it fragments the conversation. Speak to the user only when there is a terminal result to report or something genuinely needs their input.",
     "inputSchema": {
       "type": "object",
       "required": ["task_ids"],
@@ -58,7 +58,39 @@
   },
   {
     "name": "cancel_delegation",
-    "description": "Stop a running delegated task by its task_id and tear down its sub-agent — use this only when you no longer want the result. Don't cancel just because a task is taking a while: substantial work can legitimately run for a long time, so prefer waiting on it (get_delegation_status with wait_ms) over canceling. If the task has already finished, nothing is canceled and its final result is returned instead.",
+    "description": "Stop a running delegated task by its task_id and tear down its sub-agent — use this only when you no longer want the result. Don't cancel just because a task is taking a while: substantial work can legitimately run for a long time, so prefer waiting on it (get_delegation_status with wait_ms) over canceling. If the task has already finished, nothing is canceled and its final result is returned instead. After cancel, you may still try continue_with_session if the child conversation remains (best-effort resume); prefer close_session only when you want to permanently retire the child.",
+    "inputSchema": {
+      "type": "object",
+      "required": ["task_id"],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "The task_id returned by delegate_to_agent."
+        }
+      }
+    }
+  },
+  {
+    "name": "continue_with_session",
+    "description": "Send a follow-up message into an EXISTING delegated sub-agent session (same task_id from delegate_to_agent) so it continues with full prior context — do NOT start a new delegate_to_agent for the same work. Use this when a previous delegation completed, failed partway, or needs another step (fix, refine, finish remaining items). ASYNCHRONOUS: returns a Running ack for the same task_id immediately; collect the new turn's result with get_delegation_status. Rejects if the task is still running (wait or cancel first), was permanently closed with close_session, or is unknown to this parent. Prefer this over re-delegating to avoid redoing exploration and burning tokens.",
+    "inputSchema": {
+      "type": "object",
+      "required": ["task_id", "message"],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "The task_id returned by delegate_to_agent (or still shown by get_delegation_status)."
+        },
+        "message": {
+          "type": "string",
+          "description": "The follow-up prompt for the SAME sub-agent session. It already has the prior turns of that session — only send what is new (corrections, next steps, remaining work)."
+        }
+      }
+    }
+  },
+  {
+    "name": "close_session",
+    "description": "Permanently retire a delegated sub-agent session by task_id: cancel if still running, disconnect the child process, and mark the task closed so continue_with_session will refuse it. Use when you no longer need that child (fan-out cleanup, abandoned branch). Prefer leave sessions open if you may continue them. If already finished and closed, returns the last known status.",
     "inputSchema": {
       "type": "object",
       "required": ["task_id"],

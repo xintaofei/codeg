@@ -67,7 +67,12 @@ describe("isAgentLikeToolName", () => {
   })
 
   it("matches the delegation companion tools across host naming conventions", () => {
-    for (const tool of ["get_delegation_status", "cancel_delegation"]) {
+    for (const tool of [
+      "get_delegation_status",
+      "cancel_delegation",
+      "continue_with_session",
+      "close_session",
+    ]) {
       // Bare canonical form (live-streaming path, post-inferLiveToolName)
       expect(isAgentLikeToolName(tool)).toBe(true)
       // Claude Code style (current + legacy server names)
