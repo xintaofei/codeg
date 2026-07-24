@@ -64,17 +64,19 @@ pub async fn open_path_in_editor(path: String, editor: String) -> Result<(), App
 
 #[cfg(feature = "tauri-runtime")]
 fn open_path_in_editor_impl(path: &str, editor: &str) -> Result<(), AppCommandError> {
-    let file = Path::new(path);
-    if !file.exists() {
-        return Err(AppCommandError::not_found(format!(
-            "file does not exist: {path}"
-        )));
-    }
-
+    // Validate editor first so invalid args do not depend on path existence
+    // (and unit tests stay cross-platform when using a dummy path).
     let editor = editor.trim().to_ascii_lowercase();
     if editor != "vscode" && editor != "cursor" {
         return Err(AppCommandError::invalid_input(format!(
             "unknown editor: {editor}"
+        )));
+    }
+
+    let file = Path::new(path);
+    if !file.exists() {
+        return Err(AppCommandError::not_found(format!(
+            "file does not exist: {path}"
         )));
     }
 
@@ -283,10 +285,24 @@ mod tests {
 
     #[test]
     fn open_path_in_editor_rejects_unknown_editor() {
+        // Path need not exist: editor is validated first.
         let err = open_path_in_editor_impl("/tmp/x", "notepad").expect_err("unknown");
         assert!(matches!(
             err.code,
             crate::app_error::AppErrorCode::InvalidInput
+        ));
+    }
+
+    #[test]
+    fn open_path_in_editor_rejects_missing_file() {
+        let err = open_path_in_editor_impl(
+            "/this/path/definitely/does/not/exist-codeg-open-editor",
+            "vscode",
+        )
+        .expect_err("missing file");
+        assert!(matches!(
+            err.code,
+            crate::app_error::AppErrorCode::NotFound
         ));
     }
 
