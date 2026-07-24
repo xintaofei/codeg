@@ -26,6 +26,7 @@ import {
   acpCancel,
   acpRespondPermission,
   acpAnswerQuestion,
+  acpAnswerPlanApproval,
   acpDisconnect,
   acpTouchConnection,
   acpGetSessionSnapshot,
@@ -51,6 +52,8 @@ import type {
   PermissionOptionInfo,
   PendingQuestionState,
   QuestionAnswer,
+  PendingPlanApprovalState,
+  PlanApprovalAnswer,
   SessionConfigOptionInfo,
   SessionModeStateInfo,
   SessionUsageUpdateInfo,
@@ -179,6 +182,10 @@ export interface ConnectionState {
    *  `pending_question`; cleared on `question_resolved` or turn end. Distinct
    *  from the free-text `pendingQuestion` above. */
   pendingAskQuestion: PendingQuestionState | null
+  /** Awaiting-decision Grok `exit_plan_mode` approval (the plan the agent is
+   *  blocked on). Set from a `plan_approval_request` event or a snapshot's
+   *  `pending_plan_approval`; cleared on `plan_approval_resolved` or turn end. */
+  pendingPlanApproval: PendingPlanApprovalState | null
   claudeApiRetry: ClaudeApiRetryState | null
   error: string | null
   /**
@@ -445,6 +452,18 @@ type Action =
       /** When present, only clear if the current question_id matches (guards a
        *  late `question_resolved` from wiping a freshly-raised question). */
       questionId?: string
+    }
+  | {
+      type: "SET_PLAN_APPROVAL"
+      contextKey: string
+      pendingPlanApproval: PendingPlanApprovalState
+    }
+  | {
+      type: "CLEAR_PLAN_APPROVAL"
+      contextKey: string
+      /** When present, only clear if the current approval_id matches (guards a
+       *  late `plan_approval_resolved` from wiping a freshly-raised approval). */
+      approvalId?: string
     }
   | { type: "SESSION_STARTED"; contextKey: string; sessionId: string }
   | {
@@ -1134,6 +1153,7 @@ function connectionsReducer(
         pendingUserMessage: null,
         pendingQuestion: null,
         pendingAskQuestion: null,
+        pendingPlanApproval: null,
         claudeApiRetry: null,
         error: null,
         loadError: null,
@@ -1190,6 +1210,7 @@ function connectionsReducer(
         pendingUserMessage: null,
         pendingQuestion: null,
         pendingAskQuestion: null,
+        pendingPlanApproval: null,
         claudeApiRetry: null,
         error: null,
         loadError: null,
@@ -1300,6 +1321,7 @@ function connectionsReducer(
         liveMessage: hydratedLiveMessage,
         pendingPermission: hydratedPendingPermission,
         pendingAskQuestion: action.patch.pendingAskQuestion,
+        pendingPlanApproval: action.patch.pendingPlanApproval,
         pendingUserMessage: action.patch.pendingUserMessage,
         promptCapabilities: mergedPromptCapabilities,
         selectorsReady: mergedSelectorsReady,
@@ -1377,6 +1399,9 @@ function connectionsReducer(
         // clears it via `question_resolved`; this is the safety net for a turn
         // that ended without one (agent error / abandoned block).
         updated.pendingAskQuestion = null
+        // Likewise a blocked exit_plan_mode approval — cleared via
+        // `plan_approval_resolved` normally; this is the turn-end safety net.
+        updated.pendingPlanApproval = null
       }
       next.set(action.contextKey, updated)
       return next
@@ -1900,6 +1925,34 @@ function connectionsReducer(
       return next
     }
 
+    case "SET_PLAN_APPROVAL": {
+      const conn = state.get(action.contextKey)
+      if (!conn) return state
+      const next = new Map(state)
+      next.set(action.contextKey, {
+        ...conn,
+        pendingPlanApproval: action.pendingPlanApproval,
+      })
+      return next
+    }
+
+    case "CLEAR_PLAN_APPROVAL": {
+      const conn = state.get(action.contextKey)
+      if (!conn) return state
+      if (
+        action.approvalId !== undefined &&
+        conn.pendingPlanApproval?.approval_id !== action.approvalId
+      ) {
+        return state
+      }
+      const next = new Map(state)
+      next.set(action.contextKey, {
+        ...conn,
+        pendingPlanApproval: null,
+      })
+      return next
+    }
+
     case "SESSION_STARTED": {
       const conn = state.get(action.contextKey)
       if (!conn) return state
@@ -2272,6 +2325,11 @@ export interface AcpActionsValue {
     contextKey: string,
     questionId: string,
     answer: QuestionAnswer
+  ): Promise<void>
+  answerPlanApproval(
+    contextKey: string,
+    approvalId: string,
+    answer: PlanApprovalAnswer
   ): Promise<void>
   setActiveKey(key: string | null): void
   touchActivity(contextKey: string): void
@@ -2946,6 +3004,31 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             type: "CLEAR_ASK_QUESTION",
             contextKey,
             questionId: e.question_id,
+          })
+          break
+        case "plan_approval_request":
+          // Grok called `exit_plan_mode`: it's blocked on the user's approval of
+          // the plan. Flush queued streaming so the card renders against current
+          // content, then raise the interactive plan-approval card.
+          flushStreamingQueue()
+          dispatch({
+            type: "SET_PLAN_APPROVAL",
+            contextKey,
+            pendingPlanApproval: {
+              approval_id: e.approval_id,
+              tool_call_id: e.tool_call_id,
+              plan_markdown: e.plan_markdown,
+              created_at: new Date().toISOString(),
+            },
+          })
+          break
+        case "plan_approval_resolved":
+          // The approval was answered (this or another window) or canceled.
+          // Matched by approval_id so a stale event can't wipe a fresh one.
+          dispatch({
+            type: "CLEAR_PLAN_APPROVAL",
+            contextKey,
+            approvalId: e.approval_id,
           })
           break
         case "background_activity": {
@@ -4472,6 +4555,35 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     [dispatch]
   )
 
+  const answerPlanApproval = useCallback(
+    async (
+      contextKey: string,
+      approvalId: string,
+      answer: PlanApprovalAnswer
+    ) => {
+      const conn = storeRef.current.connections.get(contextKey)
+      if (!conn) {
+        // Throw, don't silently return: PlanApprovalCard awaits this and holds a
+        // disabled in-flight state until it resolves. A silent resolve would
+        // leave the card stuck; the throw routes to its retryable inline error.
+        throw new Error(
+          `[AcpConnections] answerPlanApproval: no connection for ${contextKey}`
+        )
+      }
+      try {
+        lastActivityRef.current.set(contextKey, Date.now())
+        await acpAnswerPlanApproval(conn.connectionId, approvalId, answer)
+        // Optimistically clear; the backend also broadcasts
+        // plan_approval_resolved (idempotent on the matched id).
+        dispatch({ type: "CLEAR_PLAN_APPROVAL", contextKey, approvalId })
+      } catch (e) {
+        console.error("[AcpConnections] answerPlanApproval failed:", e)
+        throw e
+      }
+    },
+    [dispatch]
+  )
+
   const attachDelegationChild = useCallback(
     (args: {
       connectionId: string
@@ -4553,6 +4665,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       cancel,
       respondPermission,
       answerQuestion,
+      answerPlanApproval,
       setActiveKey,
       touchActivity,
       registerOpenTabKeys,
@@ -4573,6 +4686,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       cancel,
       respondPermission,
       answerQuestion,
+      answerPlanApproval,
       setActiveKey,
       touchActivity,
       registerOpenTabKeys,

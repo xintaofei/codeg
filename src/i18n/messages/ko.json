@@ -2743,6 +2743,17 @@
         "submit": "제출",
         "submitError": "제출하지 못했습니다. 다시 시도해 주세요."
       },
+      "planApproval": {
+        "title": "에이전트가 계획을 제시했습니다 — 검토하세요",
+        "emptyPlan": "에이전트가 계획을 작성하지 않았습니다. 승인하여 구현을 시작하거나 변경을 요청하세요.",
+        "approve": "승인하고 시작",
+        "requestChanges": "변경 요청",
+        "abandon": "포기",
+        "feedbackPlaceholder": "무엇을 변경할까요?",
+        "sendChanges": "보내기",
+        "cancel": "취소",
+        "submitError": "제출하지 못했습니다. 다시 시도하세요."
+      },
       "feedbackCheckResult": {
         "count": "피드백 {count}개",
         "expand": "모든 피드백 표시",

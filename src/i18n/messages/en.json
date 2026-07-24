@@ -2743,6 +2743,17 @@
         "submit": "Submit",
         "submitError": "Couldn't submit. Please try again."
       },
+      "planApproval": {
+        "title": "The agent has a plan — review it",
+        "emptyPlan": "The agent didn't write a plan. Approve to start building, or request changes.",
+        "approve": "Approve & build",
+        "requestChanges": "Request changes",
+        "abandon": "Abandon",
+        "feedbackPlaceholder": "What should change?",
+        "sendChanges": "Send",
+        "cancel": "Cancel",
+        "submitError": "Couldn't submit. Please try again."
+      },
       "feedbackCheckResult": {
         "count": "{count, plural, =1 {1 feedback note} other {# feedback notes}}",
         "expand": "Show all feedback",

@@ -2743,6 +2743,17 @@
         "submit": "إرسال",
         "submitError": "تعذّر الإرسال. حاول مرة أخرى."
       },
+      "planApproval": {
+        "title": "لدى الوكيل خطة — راجعها",
+        "emptyPlan": "لم يكتب الوكيل خطة. وافق للبدء في التنفيذ أو اطلب تعديلات.",
+        "approve": "الموافقة والبدء",
+        "requestChanges": "طلب تعديلات",
+        "abandon": "تجاهل",
+        "feedbackPlaceholder": "ما الذي ينبغي تغييره؟",
+        "sendChanges": "إرسال",
+        "cancel": "إلغاء",
+        "submitError": "تعذّر الإرسال. حاول مرة أخرى."
+      },
       "feedbackCheckResult": {
         "count": "{count} ملاحظة",
         "expand": "عرض كل الملاحظات",

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::acp::event_stream::{ConnectionEventStream, RecentEventsBuffer};
 use crate::acp::feedback::{FeedbackItem, FeedbackStatus};
+use crate::acp::plan_approval::PendingPlanApprovalState;
 use crate::acp::question::PendingQuestionState;
 use crate::acp::types::{
     AcpEvent, AvailableCommandInfo, ConfigStaleKind, ConnectionStatus, EventEnvelope,
@@ -247,6 +248,16 @@ pub struct SessionState {
     /// the backend's `pending_questions` registry keys the answer one-shot.
     pub pending_question: Option<PendingQuestionState>,
 
+    /// The agent's in-flight Grok `exit_plan_mode` approval (the plan awaiting the
+    /// user's Approve / Request-changes / Abandon decision). Set by
+    /// `PlanApprovalRequest`, cleared by a matching `PlanApprovalResolved` (and
+    /// defensively on `TurnComplete`). Carried on `to_snapshot()` so a client
+    /// attaching mid-turn re-renders the approval card the one-shot event won't
+    /// replay for it. At most one is pending (the agent is blocked in its
+    /// `exit_plan_mode` tool call); the connection parks the ext responder keyed
+    /// by `approval_id`.
+    pub pending_plan_approval: Option<PendingPlanApprovalState>,
+
     /// In-flight (running) sub-agent delegations keyed by `parent_tool_use_id`.
     /// `DelegationStarted` inserts; `DelegationCompleted` removes. UNLIKE
     /// `active_tool_calls`, NOT cleared on `TurnComplete` (an async delegation
@@ -446,6 +457,7 @@ impl SessionState {
             active_tool_calls: BTreeMap::new(),
             pending_permission: None,
             pending_question: None,
+            pending_plan_approval: None,
             active_delegations: BTreeMap::new(),
             feedback: Vec::new(),
             background_outstanding: 0,
@@ -713,6 +725,29 @@ impl SessionState {
                     self.pending_question = None;
                 }
             }
+            AcpEvent::PlanApprovalRequest {
+                approval_id,
+                tool_call_id,
+                plan_markdown,
+            } => {
+                self.pending_plan_approval = Some(PendingPlanApprovalState {
+                    approval_id: approval_id.clone(),
+                    tool_call_id: tool_call_id.clone(),
+                    plan_markdown: plan_markdown.clone(),
+                    created_at: Utc::now(),
+                });
+            }
+            AcpEvent::PlanApprovalResolved { approval_id } => {
+                // Mirror `QuestionResolved`: only clear when the resolved id
+                // matches the current one, so a late event for an already-
+                // replaced approval can't wipe a live card from under the user.
+                if matches!(
+                    &self.pending_plan_approval,
+                    Some(p) if p.approval_id == *approval_id,
+                ) {
+                    self.pending_plan_approval = None;
+                }
+            }
             AcpEvent::TurnComplete { stop_reason, .. } => {
                 // Diagnostic only (no behavior change): pairs with the
                 // StatusChanged log above. This is the ACTUAL point the turn
@@ -788,6 +823,10 @@ impl SessionState {
                 // answer one-shot is cleaned via the listener's peer-close race;
                 // this just keeps the snapshot honest.
                 self.pending_question = None;
+                // Likewise a blocked `exit_plan_mode` approval: the parked ext
+                // responder is drained by the connection's teardown/cancel path;
+                // this just keeps the snapshot honest if the turn settles first.
+                self.pending_plan_approval = None;
                 self.status = ConnectionStatus::Connected;
             }
             AcpEvent::UserMessage { message_id, blocks } => {
@@ -820,6 +859,11 @@ impl SessionState {
                 self.feedback.clear();
                 // A new user turn supersedes any stale pending question.
                 self.pending_question = None;
+                // Likewise a stale plan approval: a new turn started without a
+                // clean TurnComplete (fork/resume re-prompt, error recovery, or a
+                // queued prompt sent instead of answering) must not leave a dead
+                // approval in the snapshot for a mid-turn attach to render.
+                self.pending_plan_approval = None;
             }
             AcpEvent::ConversationLinked {
                 conversation_id,
@@ -1214,6 +1258,7 @@ impl SessionState {
             active_tool_calls: self.active_tool_calls.values().cloned().collect(),
             pending_permission: self.pending_permission.clone(),
             pending_question: self.pending_question.clone(),
+            pending_plan_approval: self.pending_plan_approval.clone(),
             pending_user_message: self.pending_user_message.clone(),
             active_delegations: self.active_delegations.values().cloned().collect(),
             feedback: self.feedback.clone(),
@@ -1269,6 +1314,13 @@ pub struct LiveSessionSnapshot {
     /// the wire so every snapshot stays byte-identical with the pre-feature shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_question: Option<PendingQuestionState>,
+    /// The agent's in-flight Grok `exit_plan_mode` approval (see
+    /// `SessionState.pending_plan_approval`). `#[serde(default)]` so older
+    /// payloads deserialize; `skip_serializing_if` keeps the common no-approval
+    /// case off the wire so every snapshot stays byte-identical with the
+    /// pre-feature shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_plan_approval: Option<PendingPlanApprovalState>,
     /// The in-flight user prompt for the current turn (see
     /// `SessionState.pending_user_message`). `#[serde(default)]` so older
     /// payloads still deserialize; `skip_serializing_if` so the no-pending case
@@ -1431,6 +1483,71 @@ mod tests {
             "win-test".to_string(),
             None,
         )
+    }
+
+    #[test]
+    fn plan_approval_applies_clears_by_id_and_survives_snapshot() {
+        let mut s = fresh_state();
+        // Request → pending set + carried on the snapshot for mid-turn attach.
+        s.apply_event(&AcpEvent::PlanApprovalRequest {
+            approval_id: "ap-1".into(),
+            tool_call_id: "call-1".into(),
+            plan_markdown: "# Plan".into(),
+        });
+        let pending = s.pending_plan_approval.clone().expect("pending set");
+        assert_eq!(pending.approval_id, "ap-1");
+        assert_eq!(pending.tool_call_id, "call-1");
+        assert_eq!(pending.plan_markdown, "# Plan");
+        assert!(s.to_snapshot().pending_plan_approval.is_some());
+
+        // A resolve for a DIFFERENT id must not wipe the live approval.
+        s.apply_event(&AcpEvent::PlanApprovalResolved {
+            approval_id: "other".into(),
+        });
+        assert!(s.pending_plan_approval.is_some());
+
+        // Matching resolve clears it (and the snapshot).
+        s.apply_event(&AcpEvent::PlanApprovalResolved {
+            approval_id: "ap-1".into(),
+        });
+        assert!(s.pending_plan_approval.is_none());
+        assert!(s.to_snapshot().pending_plan_approval.is_none());
+    }
+
+    #[test]
+    fn turn_complete_clears_pending_plan_approval() {
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::PlanApprovalRequest {
+            approval_id: "ap-1".into(),
+            tool_call_id: "c".into(),
+            plan_markdown: String::new(),
+        });
+        assert!(s.pending_plan_approval.is_some());
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "sid".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "grok".into(),
+        });
+        assert!(s.pending_plan_approval.is_none());
+    }
+
+    #[test]
+    fn user_message_supersedes_stale_pending_plan_approval() {
+        // A new turn starting without a clean TurnComplete (fork/resume re-prompt,
+        // queued prompt sent instead of answering) must not leave a dead approval
+        // in the snapshot for a mid-turn attach to render.
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::PlanApprovalRequest {
+            approval_id: "ap-1".into(),
+            tool_call_id: "c".into(),
+            plan_markdown: "# plan".into(),
+        });
+        assert!(s.pending_plan_approval.is_some());
+        s.apply_event(&AcpEvent::UserMessage {
+            message_id: "m1".into(),
+            blocks: vec![],
+        });
+        assert!(s.pending_plan_approval.is_none());
     }
 
     #[test]

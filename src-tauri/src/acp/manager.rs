@@ -16,6 +16,9 @@ use crate::acp::feedback::{
     bounded_feedback_batch, FeedbackItem, FeedbackStatus, PendingFeedback,
     SessionFeedbackAccess, MAX_FEEDBACK_CHARS, MAX_FEEDBACK_RESPONSE_BYTES,
 };
+use crate::acp::plan_approval::{
+    PlanApprovalAnswer, RegisteredPlanApproval, SessionPlanApprovalAccess,
+};
 use crate::acp::question::{
     build_outcome, QuestionAnswer, QuestionOutcome, QuestionSpec, RegisteredQuestion,
     SessionQuestionAccess,
@@ -210,6 +213,14 @@ pub struct ConnectionManager {
     /// no cap, no cumulative growth; entries are removed on answer / cancel /
     /// connection teardown.
     pending_questions: Arc<Mutex<HashMap<String, PendingQuestionEntry>>>,
+    /// In-flight Grok `exit_plan_mode` approvals awaiting the user's decision,
+    /// keyed by the globally-unique `approval_id`. The connection's ext handler
+    /// parks on the receiver; the answer / cancel path resolves (and removes) the
+    /// matching sender. Shared across `clone_ref` clones so the connection-facing
+    /// `register_plan_approval` and the command-facing `answer_plan_approval`
+    /// touch the same map. At most one per connection (the agent is blocked in
+    /// its `exit_plan_mode` call) — no cap, no cumulative growth.
+    pending_plan_approvals: Arc<Mutex<HashMap<String, PendingPlanApprovalEntry>>>,
 }
 
 /// A parked `ask_user_question` awaiting its answer. The `sender` resolves the
@@ -219,6 +230,14 @@ struct PendingQuestionEntry {
     parent_connection_id: String,
     questions: Vec<QuestionSpec>,
     sender: tokio::sync::oneshot::Sender<QuestionOutcome>,
+}
+
+/// A parked Grok `exit_plan_mode` approval awaiting the user's decision. The
+/// `sender` resolves the blocked ext-request round-trip in the connection's
+/// handler. `parent_connection_id` routes the resolved event + answer.
+struct PendingPlanApprovalEntry {
+    parent_connection_id: String,
+    sender: tokio::sync::oneshot::Sender<PlanApprovalAnswer>,
 }
 
 impl Default for ConnectionManager {
@@ -236,6 +255,7 @@ impl ConnectionManager {
             delegation_injection: Arc::new(std::sync::OnceLock::new()),
             probe_locks: Arc::new(Mutex::new(HashMap::new())),
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
+            pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -248,6 +268,7 @@ impl ConnectionManager {
             delegation_injection: self.delegation_injection.clone(),
             probe_locks: self.probe_locks.clone(),
             pending_questions: self.pending_questions.clone(),
+            pending_plan_approvals: self.pending_plan_approvals.clone(),
         }
     }
 
@@ -273,6 +294,7 @@ impl ConnectionManager {
             delegation_injection: Arc::new(std::sync::OnceLock::new()),
             probe_locks: Arc::new(Mutex::new(HashMap::new())),
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
+            pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -2220,6 +2242,159 @@ impl ConnectionManager {
         }
     }
 
+    /// Register a pending Grok `exit_plan_mode` approval on `conn_id`, broadcast
+    /// `PlanApprovalRequest` (so every attached client renders the card and a
+    /// mid-turn attach recovers it from the snapshot), and return the receiver
+    /// the connection's ext handler awaits. `None` when the connection is gone
+    /// (nothing to approve) OR when one is already pending on it (the agent is
+    /// blocked in a single `exit_plan_mode` call; a second would orphan the
+    /// first). Mirrors [`Self::register_question`].
+    pub async fn register_plan_approval(
+        &self,
+        conn_id: &str,
+        tool_call_id: String,
+        plan_markdown: String,
+    ) -> Option<RegisteredPlanApproval> {
+        let (state, emitter) = self.get_state_and_emitter(conn_id).await?;
+        let approval_id = uuid::Uuid::new_v4().to_string();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        {
+            let mut reg = self.pending_plan_approvals.lock().await;
+            if reg.values().any(|e| e.parent_connection_id == conn_id) {
+                return None;
+            }
+            reg.insert(
+                approval_id.clone(),
+                PendingPlanApprovalEntry {
+                    parent_connection_id: conn_id.to_string(),
+                    sender: tx,
+                },
+            );
+        }
+        // Ungated emit: the agent is blocked in the tool call, so the card must
+        // show regardless of any turn-flag timing.
+        emit_with_state(
+            &state,
+            &emitter,
+            AcpEvent::PlanApprovalRequest {
+                approval_id: approval_id.clone(),
+                tool_call_id,
+                plan_markdown,
+            },
+        )
+        .await;
+        // Teardown event-ordering race (mirrors `register_question`): the
+        // cleanup guard's `cancel_plan_approvals_by_parent` may have drained this
+        // entry between the insert above and the emit just now — its
+        // `PlanApprovalResolved` could then have raced ahead of our
+        // `PlanApprovalRequest`, leaving a card up with no live backend waiter.
+        // Emit a compensating `PlanApprovalResolved` (ordered after our request)
+        // and decline.
+        if self
+            .compensate_if_plan_approval_drained(&approval_id, &state, &emitter)
+            .await
+        {
+            return None;
+        }
+        Some(RegisteredPlanApproval {
+            approval_id,
+            answer_rx: rx,
+        })
+    }
+
+    /// Returns `true` — after emitting a clearing `PlanApprovalResolved` — when
+    /// `approval_id` is no longer pending, i.e. a teardown sweep drained it in the
+    /// window after its `PlanApprovalRequest` was broadcast. Mirrors
+    /// [`Self::compensate_if_question_drained`].
+    async fn compensate_if_plan_approval_drained(
+        &self,
+        approval_id: &str,
+        state: &std::sync::Arc<tokio::sync::RwLock<crate::acp::SessionState>>,
+        emitter: &EventEmitter,
+    ) -> bool {
+        if self.pending_plan_approvals.lock().await.contains_key(approval_id) {
+            return false;
+        }
+        emit_with_state(
+            state,
+            emitter,
+            AcpEvent::PlanApprovalResolved {
+                approval_id: approval_id.to_string(),
+            },
+        )
+        .await;
+        true
+    }
+
+    /// Resolve a pending plan approval with the user's decision (from any
+    /// client). Removes the one-shot atomically (first answer wins; a duplicate /
+    /// already-resolved id is an idempotent no-op), sends the decision to the
+    /// blocked ext handler, and broadcasts `PlanApprovalResolved` so the card
+    /// clears on every client. Routing uses the entry's stored parent connection
+    /// (the `approval_id` is the authoritative key), so a stale `conn_id` from the
+    /// caller can't misroute. Mirrors [`Self::answer_question`].
+    pub async fn answer_plan_approval(
+        &self,
+        conn_id: &str,
+        approval_id: &str,
+        answer: PlanApprovalAnswer,
+    ) -> Result<(), AcpError> {
+        let _ = conn_id;
+        let entry = self.pending_plan_approvals.lock().await.remove(approval_id);
+        let Some(entry) = entry else {
+            // Already answered / canceled / gone elsewhere — idempotent success.
+            return Ok(());
+        };
+        // Ignore a dropped receiver: the handler may have abandoned the wait
+        // (teardown) at the same instant; the resolved event below still clears
+        // the card.
+        let _ = entry.sender.send(answer);
+        if let Some((state, emitter)) =
+            self.get_state_and_emitter(&entry.parent_connection_id).await
+        {
+            emit_with_state(
+                &state,
+                &emitter,
+                AcpEvent::PlanApprovalResolved {
+                    approval_id: approval_id.to_string(),
+                },
+            )
+            .await;
+        }
+        Ok(())
+    }
+
+    /// Cancel every pending plan approval parked on a connection that is tearing
+    /// down (the `run_connection` cleanup guard calls this). Dropping each
+    /// entry's sender resolves the handler's await as a disconnect (Grok keeps
+    /// plan mode active, re-surfaces on reconnect); the `PlanApprovalResolved`
+    /// broadcast clears the card. Mirrors [`Self::cancel_questions_by_parent`].
+    pub async fn cancel_plan_approvals_by_parent(&self, conn_id: &str) {
+        let drained: Vec<String> = {
+            let mut reg = self.pending_plan_approvals.lock().await;
+            let ids: Vec<String> = reg
+                .iter()
+                .filter(|(_, e)| e.parent_connection_id == conn_id)
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in &ids {
+                reg.remove(id);
+            }
+            ids
+        };
+        if drained.is_empty() {
+            return;
+        }
+        // Best-effort card clear: the connection may already be out of the map
+        // (disconnect removes it before this sweep), so tolerate `None`.
+        if let Some((state, emitter)) = self.get_state_and_emitter(conn_id).await {
+            for approval_id in drained {
+                emit_with_state(&state, &emitter, AcpEvent::PlanApprovalResolved { approval_id })
+                    .await;
+            }
+        }
+    }
+
     /// Resolve a conversation_id to its currently-active connection id, if any.
     /// Used by the by-conversation snapshot endpoint and the LifecycleSubscriber.
     /// Per-session state is acquired via `read().await` to avoid the
@@ -2534,6 +2709,35 @@ impl SessionQuestionAccess for ConnectionManagerQuestionLookup {
     async fn cancel_questions_by_parent(&self, parent_connection_id: &str) {
         self.manager
             .cancel_questions_by_parent(parent_connection_id)
+            .await
+    }
+}
+
+/// Production impl of [`SessionPlanApprovalAccess`] for the Grok `exit_plan_mode`
+/// ext bridge. Registers / cancels the parent connection's pending plan approval
+/// by delegating to `ConnectionManager`. Mirrors `ConnectionManagerQuestionLookup`
+/// so the connection handler stays unit-testable with an in-memory stub.
+#[derive(Clone)]
+pub struct ConnectionManagerPlanApprovalLookup {
+    pub manager: Arc<ConnectionManager>,
+}
+
+#[async_trait::async_trait]
+impl SessionPlanApprovalAccess for ConnectionManagerPlanApprovalLookup {
+    async fn register_plan_approval(
+        &self,
+        parent_connection_id: &str,
+        tool_call_id: String,
+        plan_markdown: String,
+    ) -> Option<RegisteredPlanApproval> {
+        self.manager
+            .register_plan_approval(parent_connection_id, tool_call_id, plan_markdown)
+            .await
+    }
+
+    async fn cancel_plan_approvals_by_parent(&self, parent_connection_id: &str) {
+        self.manager
+            .cancel_plan_approvals_by_parent(parent_connection_id)
             .await
     }
 }
@@ -5507,6 +5711,104 @@ mod tests {
             .await
             .unwrap();
         assert!(reg_b.answer_rx.await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn register_then_answer_plan_approval_resolves_and_clears() {
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection("pa", AgentType::Grok, None, EventEmitter::Noop)
+            .await;
+        let reg = mgr
+            .register_plan_approval("pa", "call-1".into(), "# Plan\n- step".into())
+            .await
+            .expect("registered");
+        // SessionState reflects the pending approval for snapshot recovery.
+        {
+            let state = mgr.get_state("pa").await.unwrap();
+            let guard = state.read().await;
+            let pending = guard.pending_plan_approval.as_ref().expect("pending set");
+            assert_eq!(pending.plan_markdown, "# Plan\n- step");
+            assert_eq!(pending.tool_call_id, "call-1");
+        }
+
+        mgr.answer_plan_approval(
+            "pa",
+            &reg.approval_id,
+            crate::acp::plan_approval::PlanApprovalAnswer {
+                decision: crate::acp::plan_approval::PlanApprovalDecision::RequestChanges,
+                feedback: Some("use SSE".into()),
+            },
+        )
+        .await
+        .unwrap();
+
+        // The blocked ext handler's receiver resolves with the user's decision.
+        let got = reg.answer_rx.await.expect("answer delivered");
+        assert_eq!(
+            got.decision,
+            crate::acp::plan_approval::PlanApprovalDecision::RequestChanges
+        );
+        assert_eq!(got.feedback.as_deref(), Some("use SSE"));
+        // pending_plan_approval cleared after resolve.
+        assert!(mgr
+            .get_state("pa")
+            .await
+            .unwrap()
+            .read()
+            .await
+            .pending_plan_approval
+            .is_none());
+
+        // Idempotent: answering an already-resolved id is a no-op success.
+        mgr.answer_plan_approval(
+            "pa",
+            &reg.approval_id,
+            crate::acp::plan_approval::PlanApprovalAnswer {
+                decision: crate::acp::plan_approval::PlanApprovalDecision::Approve,
+                feedback: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn register_plan_approval_refuses_second_pending_on_same_connection() {
+        // At most one approval per connection (the agent is blocked in exit_plan_mode).
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection("pa2", AgentType::Grok, None, EventEmitter::Noop)
+            .await;
+        let _reg = mgr
+            .register_plan_approval("pa2", "c1".into(), "plan".into())
+            .await
+            .expect("first registers");
+        assert!(mgr
+            .register_plan_approval("pa2", "c2".into(), "plan2".into())
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn cancel_plan_approvals_by_parent_drops_sender_and_clears() {
+        let mgr = ConnectionManager::new();
+        mgr.insert_test_connection("pax", AgentType::Grok, None, EventEmitter::Noop)
+            .await;
+        let reg = mgr
+            .register_plan_approval("pax", "c".into(), "plan".into())
+            .await
+            .unwrap();
+        mgr.cancel_plan_approvals_by_parent("pax").await;
+        // Dropping the sender surfaces to the parked handler as a recv error
+        // (which it renders as a disconnect reply — plan mode stays active).
+        assert!(reg.answer_rx.await.is_err());
+        assert!(mgr
+            .get_state("pax")
+            .await
+            .unwrap()
+            .read()
+            .await
+            .pending_plan_approval
+            .is_none());
     }
 
     #[tokio::test]

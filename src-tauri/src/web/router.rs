@@ -629,6 +629,10 @@ pub fn build_router(
             post(handlers::acp::acp_answer_question),
         )
         .route(
+            "/acp_answer_plan_approval",
+            post(handlers::acp::acp_answer_plan_approval),
+        )
+        .route(
             "/acp_list_connections",
             post(handlers::acp::acp_list_connections),
         )

@@ -2743,6 +2743,17 @@
         "submit": "提交",
         "submitError": "提交失敗，請重試。"
       },
+      "planApproval": {
+        "title": "智慧代理已提出計畫——請審閱",
+        "emptyPlan": "智慧代理未寫入計畫。可核准開始實作，或要求修改。",
+        "approve": "核准並開始",
+        "requestChanges": "要求修改",
+        "abandon": "放棄",
+        "feedbackPlaceholder": "需要修改什麼？",
+        "sendChanges": "傳送",
+        "cancel": "取消",
+        "submitError": "提交失敗，請重試。"
+      },
       "feedbackCheckResult": {
         "count": "{count} 則回饋",
         "expand": "展開全部回饋",

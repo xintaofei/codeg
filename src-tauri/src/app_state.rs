@@ -170,6 +170,11 @@ pub fn build_delegation_stack(
         questions: Arc::new(crate::acp::manager::ConnectionManagerQuestionLookup {
             manager: Arc::new(connection_manager.clone_ref()),
         }) as Arc<dyn crate::acp::question::SessionQuestionAccess>,
+        // Grok `exit_plan_mode` bridge — always wired (native plan mode, no
+        // feature flag), same backing manager as the question lookup.
+        plan_approvals: Arc::new(crate::acp::manager::ConnectionManagerPlanApprovalLookup {
+            manager: Arc::new(connection_manager.clone_ref()),
+        }) as Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
     });
 
     (broker, tokens, socket_path, feedback, ask, sessions)

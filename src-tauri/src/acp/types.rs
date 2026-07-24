@@ -331,6 +331,23 @@ pub enum AcpEvent {
     /// (the tool call was aborted / the connection drained). Carries only the
     /// `question_id`; clients clear the matching card. Idempotent on apply.
     QuestionResolved { question_id: String },
+    /// A Grok `exit_plan_mode` call: the agent finished planning and is BLOCKED
+    /// on the user's approval of the plan before it leaves plan mode and starts
+    /// implementing (Grok's native `_x.ai/exit_plan_mode` ext request). Broadcast
+    /// so every client viewing this conversation renders the interactive
+    /// plan-approval card above the input box, and captured into
+    /// `SessionState.pending_plan_approval` so a client attaching mid-turn (cold
+    /// attach, reconnect, another window) recovers it from the snapshot. The
+    /// backend parks the blocked ext-request responder keyed by `approval_id`.
+    PlanApprovalRequest {
+        approval_id: String,
+        tool_call_id: String,
+        plan_markdown: String,
+    },
+    /// A previously-pending plan approval was answered (from any client) or
+    /// canceled (the connection drained). Carries only the `approval_id`; clients
+    /// clear the matching card. Idempotent on apply.
+    PlanApprovalResolved { approval_id: String },
     /// The agent's effective settings (env vars / model provider / native config
     /// files) changed AFTER this connection was spawned, so the running process
     /// is still using its launch-time config. Emitted by

@@ -207,6 +207,7 @@ function makeConnState(overrides: Partial<ConnectionState>): ConnectionState {
     pendingPermission: null,
     pendingQuestion: null,
     pendingAskQuestion: null,
+    pendingPlanApproval: null,
     claudeApiRetry: null,
     error: null,
     loadError: null,

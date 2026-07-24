@@ -84,6 +84,7 @@ import {
   type ConversationStatus,
   type EventEnvelope,
   type MessageTurn,
+  type PlanApprovalAnswer,
   type PromptDraft,
   type QuestionAnswer,
   type UserMessageBlock,
@@ -1336,6 +1337,14 @@ const ConversationTabView = memo(function ConversationTabView({
     [acpActions, tabId]
   )
 
+  // Grok `exit_plan_mode` approval: resolve the blocked ext request. The backend
+  // broadcasts `plan_approval_resolved` to clear the card on every client.
+  const handleAnswerPlanApproval = useCallback(
+    (approvalId: string, answer: PlanApprovalAnswer) =>
+      acpActions.answerPlanApproval(tabId, approvalId, answer),
+    [acpActions, tabId]
+  )
+
   // Queue edit flow: derive editing draft text from queue state
   const editingQueueDraftText = useMemo(() => {
     if (!mqEditingItemId) return null
@@ -1471,12 +1480,14 @@ const ConversationTabView = memo(function ConversationTabView({
       pendingPermission={conn.pendingPermission}
       pendingQuestion={conn.pendingQuestion}
       pendingAskQuestion={conn.pendingAskQuestion}
+      pendingPlanApproval={conn.pendingPlanApproval}
       onFocus={handleFocus}
       onSend={handleSend}
       onCancel={handleCancel}
       onRespondPermission={handleRespondPermission}
       onAnswerQuestion={handleAnswerQuestion}
       onAnswerAskQuestion={handleAnswerAskQuestion}
+      onAnswerPlanApproval={handleAnswerPlanApproval}
       modes={connectionModes}
       configOptions={connectionConfigOptions}
       modeLoading={modeLoading}

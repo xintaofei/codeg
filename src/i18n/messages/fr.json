@@ -2743,6 +2743,17 @@
         "submit": "Envoyer",
         "submitError": "Échec de l'envoi. Veuillez réessayer."
       },
+      "planApproval": {
+        "title": "L'agent a un plan — à vérifier",
+        "emptyPlan": "L'agent n'a pas rédigé de plan. Approuvez pour commencer ou demandez des modifications.",
+        "approve": "Approuver et lancer",
+        "requestChanges": "Demander des modifications",
+        "abandon": "Abandonner",
+        "feedbackPlaceholder": "Que faut-il changer ?",
+        "sendChanges": "Envoyer",
+        "cancel": "Annuler",
+        "submitError": "Échec de l'envoi. Veuillez réessayer."
+      },
       "feedbackCheckResult": {
         "count": "{count, plural, =1 {1 retour} other {# retours}}",
         "expand": "Afficher tous les retours",

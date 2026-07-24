@@ -7704,6 +7704,19 @@ pub async fn acp_answer_question(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_answer_plan_approval(
+    connection_id: String,
+    approval_id: String,
+    answer: crate::acp::plan_approval::PlanApprovalAnswer,
+    manager: State<'_, ConnectionManager>,
+) -> Result<(), AcpError> {
+    manager
+        .answer_plan_approval(&connection_id, &approval_id, answer)
+        .await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn acp_disconnect(
     connection_id: String,
     manager: State<'_, ConnectionManager>,

@@ -390,7 +390,9 @@ mod tests {
             .expect("get");
         // Imported rows are surfaced for review, not marked done — so they stay
         // visible even when the sidebar hides completed conversations.
-        assert_eq!(got.status, conversation::ConversationStatus::PendingReview);
+        // `DbConversationSummary.status` is the serde-serialized string
+        // (`rename_all = "snake_case"`), not the enum.
+        assert_eq!(got.status, "pending_review");
     }
 
     #[tokio::test]

@@ -2743,6 +2743,17 @@
         "submit": "送信",
         "submitError": "送信できませんでした。もう一度お試しください。"
       },
+      "planApproval": {
+        "title": "エージェントが計画を提示しました — 確認してください",
+        "emptyPlan": "エージェントは計画を作成しませんでした。承認して実装を開始するか、変更を依頼してください。",
+        "approve": "承認して開始",
+        "requestChanges": "変更を依頼",
+        "abandon": "破棄",
+        "feedbackPlaceholder": "何を変更しますか？",
+        "sendChanges": "送信",
+        "cancel": "キャンセル",
+        "submitError": "送信できませんでした。もう一度お試しください。"
+      },
       "feedbackCheckResult": {
         "count": "フィードバック {count} 件",
         "expand": "すべてのフィードバックを表示",

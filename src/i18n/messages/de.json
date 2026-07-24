@@ -2743,6 +2743,17 @@
         "submit": "Senden",
         "submitError": "Senden fehlgeschlagen. Bitte versuche es erneut."
       },
+      "planApproval": {
+        "title": "Der Agent hat einen Plan – bitte prüfen",
+        "emptyPlan": "Der Agent hat keinen Plan geschrieben. Genehmige, um zu starten, oder fordere Änderungen an.",
+        "approve": "Genehmigen & starten",
+        "requestChanges": "Änderungen anfordern",
+        "abandon": "Verwerfen",
+        "feedbackPlaceholder": "Was soll geändert werden?",
+        "sendChanges": "Senden",
+        "cancel": "Abbrechen",
+        "submitError": "Senden fehlgeschlagen. Bitte erneut versuchen."
+      },
       "feedbackCheckResult": {
         "count": "{count, plural, =1 {1 Rückmeldung} other {# Rückmeldungen}}",
         "expand": "Alle Rückmeldungen anzeigen",

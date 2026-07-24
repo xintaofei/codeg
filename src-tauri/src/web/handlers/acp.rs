@@ -469,6 +469,26 @@ pub async fn acp_answer_question(
     Ok(Json(()))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpAnswerPlanApprovalParams {
+    pub connection_id: String,
+    pub approval_id: String,
+    pub answer: crate::acp::plan_approval::PlanApprovalAnswer,
+}
+
+pub async fn acp_answer_plan_approval(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<AcpAnswerPlanApprovalParams>,
+) -> Result<Json<()>, AppCommandError> {
+    let manager = &state.connection_manager;
+    manager
+        .answer_plan_approval(&params.connection_id, &params.approval_id, params.answer)
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(()))
+}
+
 pub async fn acp_list_connections(
     Extension(state): Extension<Arc<AppState>>,
 ) -> Result<Json<Vec<ConnectionInfo>>, AppCommandError> {

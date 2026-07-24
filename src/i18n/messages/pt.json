@@ -2743,6 +2743,17 @@
         "submit": "Enviar",
         "submitError": "Falha ao enviar. Tente novamente."
       },
+      "planApproval": {
+        "title": "O agente tem um plano — revise",
+        "emptyPlan": "O agente não escreveu um plano. Aprove para começar ou solicite alterações.",
+        "approve": "Aprovar e construir",
+        "requestChanges": "Solicitar alterações",
+        "abandon": "Descartar",
+        "feedbackPlaceholder": "O que deve mudar?",
+        "sendChanges": "Enviar",
+        "cancel": "Cancelar",
+        "submitError": "Não foi possível enviar. Tente novamente."
+      },
       "feedbackCheckResult": {
         "count": "{count, plural, =1 {1 comentário} other {# comentários}}",
         "expand": "Mostrar todos os comentários",

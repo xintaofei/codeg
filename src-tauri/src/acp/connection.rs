@@ -892,6 +892,11 @@ pub async fn spawn_agent_connection(
             // companion's ask socket to close (which a reparented/hard-killed
             // agent may never do); the dropped sender declines the tool cleanly.
             inj.questions.cancel_questions_by_parent(&conn_id).await;
+            // Likewise reclaim a parked Grok `exit_plan_mode` approval; the
+            // dropped sender replies disconnect so grok keeps plan mode active.
+            inj.plan_approvals
+                .cancel_plan_approvals_by_parent(&conn_id)
+                .await;
         }
 
         if let Err(e) = result {
@@ -2015,6 +2020,14 @@ pub struct DelegationInjection {
     /// the delegation `broker.cancel_by_parent` cleanup. Shares the same backing
     /// `ConnectionManager` as the listener's question lookup.
     pub questions: Arc<dyn crate::acp::question::SessionQuestionAccess>,
+    /// Plan-approval registry handle for Grok's `exit_plan_mode` ext bridge.
+    /// Unlike delegation / ask / feedback this is NOT a codeg-mcp feature — it is
+    /// Grok's native plan mode — so it has no runtime on/off flag and is always
+    /// wired. Shares the same backing `ConnectionManager` as the question lookup.
+    /// The `run_connection` handler registers approvals + parks on the reply
+    /// through this, and the cleanup guard calls `cancel_plan_approvals_by_parent`
+    /// on disconnect (mirroring the question teardown cascade).
+    pub plan_approvals: Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
 }
 
 /// Locate the `codeg-mcp` companion binary across the supported deployment
@@ -2352,6 +2365,14 @@ async fn run_connection(
         .as_ref()
         .map(|inj| (Arc::clone(&inj.questions), inj.ask.clone()));
     let grok_ask_conn_id = connection_id.clone();
+    // Grok `exit_plan_mode` bridge access — always wired in production (native
+    // plan mode, no feature flag). `None` only on the test paths that spin up
+    // `run_connection` without a delegation stack; the handler then replies
+    // disconnect and grok keeps plan mode active.
+    let grok_plan_access = delegation_injection
+        .as_ref()
+        .map(|inj| Arc::clone(&inj.plan_approvals));
+    let grok_plan_conn_id = connection_id.clone();
     // The ext handler emits the answered in-stream card (`AskQuestionResultCard`)
     // itself once the user submits — grok never emits a completed tool result into
     // the ACP stream — so it needs this connection's session state + emitter.
@@ -2510,6 +2531,19 @@ async fn run_connection(
                         responder,
                     )
                     .await;
+                    Ok(())
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let access = grok_plan_access.clone();
+                let conn_id = grok_plan_conn_id.clone();
+                async move |req: GrokExitPlanModeRequest,
+                            responder: Responder<serde_json::Value>,
+                            _cx: ConnectionTo<Agent>| {
+                    handle_grok_exit_plan_mode(&access, &conn_id, req, responder).await;
                     Ok(())
                 }
             },
@@ -3190,6 +3224,18 @@ async fn run_connection(
 #[serde(transparent)]
 struct GrokAskUserQuestionRequest(serde_json::Value);
 
+/// Store the plan-approval responder and render the approval card. Grok's native
+/// `exit_plan_mode` tool issues this ACP ext request (`_x.ai/exit_plan_mode`) and
+/// BLOCKS on the reply — the agent won't leave plan mode until the user acts.
+/// Transparent over the raw params object (`{sessionId, toolCallId, planContent}`);
+/// the fields codeg needs are read by
+/// [`crate::acp::plan_approval::parse_grok_exit_plan_request`]. sacp routes typed
+/// handlers on the RAW wire method, so the derive keeps the leading `_`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonRpcRequest)]
+#[request(method = "_x.ai/exit_plan_mode", response = serde_json::Value)]
+#[serde(transparent)]
+struct GrokExitPlanModeRequest(serde_json::Value);
+
 /// Bridge grok's native `_x.ai/ask_user_question` ext request into codeg's
 /// interactive question card. Grok blocks on the reply, so codeg registers the
 /// questions through the shared [`crate::acp::question::SessionQuestionAccess`] —
@@ -3290,6 +3336,83 @@ async fn handle_grok_ask_user_question(
             // nothing to render; let grok fall back via skip_interview.
             Err(_) => {
                 let _ = responder.respond(crate::acp::question::grok_ext_skip_response());
+            }
+        }
+    });
+}
+
+/// Bridge grok's native `_x.ai/exit_plan_mode` ext request into codeg's
+/// interactive plan-approval card. Grok BLOCKS on the reply — it won't leave plan
+/// mode until the user acts — so codeg registers the approval through the shared
+/// [`crate::acp::plan_approval::SessionPlanApprovalAccess`] (which sets
+/// `pending_plan_approval`, broadcasts `PlanApprovalRequest`, and renders the card
+/// above the composer), then answers the ext request with the user's decision once
+/// they submit. Unlike the ask bridge there is no synthesized in-stream card:
+/// grok's own `exit_plan_mode` tool_call renders the plan in the transcript (via
+/// `PlanModeCard`), mirroring how the permission dialog coexists with the tool
+/// call. Every early return replies with the disconnect-shaped response so grok
+/// keeps plan mode active — it can never be read as a silent approval.
+async fn handle_grok_exit_plan_mode(
+    access: &Option<Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>>,
+    connection_id: &str,
+    req: GrokExitPlanModeRequest,
+    responder: Responder<serde_json::Value>,
+) {
+    // Log the wire SHAPE (top-level field names), not the raw request — the plan
+    // body can be large and carry file paths / source. The keys are what
+    // wire-format verification needs (confirm `sessionId`/`toolCallId`/`planContent`
+    // on the first real run); the malformed path below logs more if parsing fails.
+    tracing::info!(
+        "[grok exit_plan] received _x.ai/exit_plan_mode ext request: keys={:?}",
+        req.0
+            .as_object()
+            .map(|o| o.keys().map(String::as_str).collect::<Vec<_>>())
+    );
+    let Some(access) = access else {
+        let _ =
+            responder.respond(crate::acp::plan_approval::grok_exit_plan_disconnect_response());
+        return;
+    };
+    let (plan_markdown, tool_call_id) =
+        match crate::acp::plan_approval::parse_grok_exit_plan_request(&req.0) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                tracing::warn!("[grok exit_plan] rejecting malformed ext request: {e}");
+                let _ = responder
+                    .respond(crate::acp::plan_approval::grok_exit_plan_disconnect_response());
+                return;
+            }
+        };
+    tracing::info!(
+        "[grok exit_plan] toolCallId={tool_call_id:?} plan_chars={}",
+        plan_markdown.chars().count()
+    );
+    let Some(registered) = access
+        .register_plan_approval(connection_id, tool_call_id, plan_markdown)
+        .await
+    else {
+        // Connection gone, or an approval is already pending on this connection.
+        let _ =
+            responder.respond(crate::acp::plan_approval::grok_exit_plan_disconnect_response());
+        return;
+    };
+    // The user answers out-of-band (the HTTP `answer_plan_approval` endpoint
+    // resolves the one-shot below), so await it on a task — keeping the ACP
+    // dispatch loop free — then reply to grok's blocked ext request. The manager's
+    // `answer_plan_approval` / teardown emit `PlanApprovalResolved` to clear the
+    // card; this task only unblocks grok.
+    tokio::spawn(async move {
+        match registered.answer_rx.await {
+            Ok(answer) => {
+                let _ = responder.respond(
+                    crate::acp::plan_approval::build_grok_exit_plan_response(&answer),
+                );
+            }
+            // Sender dropped: the approval was canceled or the connection tore
+            // down — reply disconnect so grok keeps plan mode active.
+            Err(_) => {
+                let _ = responder
+                    .respond(crate::acp::plan_approval::grok_exit_plan_disconnect_response());
             }
         }
     });
@@ -4952,6 +5075,26 @@ async fn run_conversation_loop<'a>(
                                     // DelegationCompleted emit.
                                     if let Some(inj) = delegation_injection {
                                         inj.broker.cancel_by_parent_turn(conn_id).await;
+                                        // Reclaim any parked `ask_user_question` /
+                                        // Grok `exit_plan_mode` approval owned by this
+                                        // connection. Unlike `perms` (drained inline
+                                        // above), these registries live on the manager
+                                        // and are otherwise only drained on full
+                                        // connection teardown -- but a turn-scoped
+                                        // Cancel keeps the connection alive. Without
+                                        // this the entry lingers, and the
+                                        // one-pending-per-connection guard in
+                                        // `register_{question,plan_approval}` then
+                                        // silently rejects the NEXT one on this
+                                        // connection (its card never shows). Idempotent
+                                        // with the cleanup-guard drain (empty map ->
+                                        // no-op); the dropped sender declines the tool /
+                                        // replies disconnect, exactly like the
+                                        // permission drain above.
+                                        inj.questions.cancel_questions_by_parent(conn_id).await;
+                                        inj.plan_approvals
+                                            .cancel_plan_approvals_by_parent(conn_id)
+                                            .await;
                                     }
                                     // Drain the prompt response in the background so
                                     // the SACP library doesn't log "receiver dropped"
@@ -8688,6 +8831,19 @@ mod tests {
             async fn cancel_question(&self, _parent_connection_id: &str, _question_id: &str) {}
             async fn cancel_questions_by_parent(&self, _parent_connection_id: &str) {}
         }
+        struct NoPlanApprovals;
+        #[async_trait::async_trait]
+        impl crate::acp::plan_approval::SessionPlanApprovalAccess for NoPlanApprovals {
+            async fn register_plan_approval(
+                &self,
+                _parent_connection_id: &str,
+                _tool_call_id: String,
+                _plan_markdown: String,
+            ) -> Option<crate::acp::plan_approval::RegisteredPlanApproval> {
+                None
+            }
+            async fn cancel_plan_approvals_by_parent(&self, _parent_connection_id: &str) {}
+        }
         let injection = DelegationInjection {
             broker,
             tokens: Arc::new(TokenRegistry::default()),
@@ -8697,6 +8853,8 @@ mod tests {
             sessions: crate::acp::session_info::SessionInfoRuntimeConfig::new(),
             questions: Arc::new(NoQuestions)
                 as Arc<dyn crate::acp::question::SessionQuestionAccess>,
+            plan_approvals: Arc::new(NoPlanApprovals)
+                as Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
         };
 
         let mut servers: Vec<McpServer> = Vec::new();

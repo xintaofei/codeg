@@ -2743,6 +2743,17 @@
         "submit": "提交",
         "submitError": "提交失败，请重试。"
       },
+      "planApproval": {
+        "title": "智能体已给出计划——请审阅",
+        "emptyPlan": "智能体未写入计划。可批准开始实施，或要求修改。",
+        "approve": "批准并开始",
+        "requestChanges": "要求修改",
+        "abandon": "放弃",
+        "feedbackPlaceholder": "需要修改什么？",
+        "sendChanges": "发送",
+        "cancel": "取消",
+        "submitError": "提交失败，请重试。"
+      },
       "feedbackCheckResult": {
         "count": "{count} 条反馈",
         "expand": "展开全部反馈",

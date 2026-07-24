@@ -46,7 +46,13 @@ import {
 } from "@/contexts/acp-connections-context"
 import { PermissionDialog } from "@/components/chat/permission-dialog"
 import { AskQuestionCard } from "@/components/chat/ask-question-card"
-import { AGENT_LABELS, type AgentType, type QuestionAnswer } from "@/lib/types"
+import { PlanApprovalCard } from "@/components/chat/plan-approval-card"
+import {
+  AGENT_LABELS,
+  type AgentType,
+  type PlanApprovalAnswer,
+  type QuestionAnswer,
+} from "@/lib/types"
 
 interface Props {
   open: boolean
@@ -320,7 +326,8 @@ function SubAgentSessionBody({
   // raise a permission request. The parent card no longer answers it inline
   // (it only badges "awaiting approval"); this dialog is where the user
   // resolves it. Route the response through the CHILD connection id.
-  const { respondPermission, answerQuestion } = useAcpActions()
+  const { respondPermission, answerQuestion, answerPlanApproval } =
+    useAcpActions()
   const childPendingPermission = childConn?.pendingPermission ?? null
   const onRespondPermission = useCallback(
     (requestId: string, optionId: string) => {
@@ -344,6 +351,19 @@ function SubAgentSessionBody({
       return answerQuestion(childConnectionId, questionId, answer)
     },
     [childConnectionId, answerQuestion]
+  )
+
+  // A child Grok session may enter plan mode and call `exit_plan_mode`, raising
+  // the blocking plan-approval card. Same shape as the ask path: surface the
+  // child's live `pendingPlanApproval` and route the decision back through the
+  // child connection id so the delegated agent isn't left blocked with no card.
+  const childPendingPlanApproval = childConn?.pendingPlanApproval ?? null
+  const onAnswerPlanApproval = useCallback(
+    (approvalId: string, answer: PlanApprovalAnswer) => {
+      if (!childConnectionId) return
+      return answerPlanApproval(childConnectionId, approvalId, answer)
+    },
+    [childConnectionId, answerPlanApproval]
   )
 
   return (
@@ -378,6 +398,15 @@ function SubAgentSessionBody({
             />
           </div>
         )}
+      {childConnectionId && childPendingPlanApproval && (
+        <div className="border-b border-border px-4 py-3">
+          <PlanApprovalCard
+            key={childPendingPlanApproval.approval_id}
+            approval={childPendingPlanApproval}
+            onAnswer={onAnswerPlanApproval}
+          />
+        </div>
+      )}
       <div className="flex-1 min-h-0 px-4 py-3">
         <MessageListView
           conversationId={childConversationId}
