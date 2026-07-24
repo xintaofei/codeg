@@ -1506,6 +1506,21 @@
   }
 }
 
+/* Keep-alive conversation tabs (see ConversationDetailPanel) hide the inactive
+   tab with `visibility: hidden` (Tailwind `invisible`) while staying mounted so
+   the active tab can reuse their layout. Tailwind v4's `transition-all` resolves
+   to `transition-property: all`, which includes `visibility`; a visible→hidden
+   `visibility` transition keeps the element painted for its whole duration. As
+   `visibility` inherits, every descendant carrying `transition-all` (AgentSelector
+   pills, QuickActions tabs, composer buttons) would otherwise linger 150–300ms as
+   pointer-events-none ghosts over the newly-active conversation. Nothing in a
+   hidden tab is visible, so drop all transitions in the subtree and let
+   visibility snap immediately. */
+.conversation-tab-hidden,
+.conversation-tab-hidden * {
+  transition-property: none !important;
+}
+
 .select-none {
   -webkit-user-select: none;
   -moz-user-select: none;

@@ -3,7 +3,6 @@
 import {
   memo,
   useCallback,
-  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -1718,15 +1717,6 @@ export function ConversationDetailPanel() {
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)
   const tabs = useTabStore((s) => s.tabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
-  // Content-priority active id. The per-tab wrapper's show/hide reads the urgent
-  // `activeTabId`, so the outgoing tab (notably the new-session welcome page)
-  // hides in the same frame as the click; the heavy per-tab subtree only flips
-  // its `isActive`/`showActiveFlow` when this deferred value catches up — a
-  // non-blocking transition a frame later. Previously both tabs' large memoized
-  // bodies re-rendered in the same synchronous commit that hid the old tab, so
-  // the browser couldn't paint the hidden state until that work finished and the
-  // welcome components appeared to linger before disappearing.
-  const deferredActiveTabId = useDeferredValue(activeTabId)
   const isTileMode = useTabStore((s) => s.isTileMode)
   const { openNewConversationTab, closeTab, switchTab, onPreviewTabReplaced } =
     useTabActions()
@@ -2035,12 +2025,7 @@ export function ConversationDetailPanel() {
   }
 
   const tabElements = tabs.map((tab, index) => {
-    // `active` drives the urgent show/hide (below); `contentActive` (deferred)
-    // drives the tab body's active-only work, so a switch paints the visibility
-    // change before re-rendering the heavy subtrees. They agree once the
-    // deferred value settles a frame later.
     const active = tab.id === activeTabId
-    const contentActive = tab.id === deferredActiveTabId
     const folderPath = allFolders.find((f) => f.id === tab.folderId)?.path
     const view = (
       <ConversationTabView
@@ -2048,8 +2033,8 @@ export function ConversationDetailPanel() {
         conversationId={tab.conversationId}
         agentType={tab.agentType}
         workingDir={tab.workingDir ?? folderPath}
-        isActive={contentActive}
-        showActiveFlow={canTile && contentActive}
+        isActive={active}
+        showActiveFlow={canTile && active}
         reloadSignal={reloadByTabId[tab.id] ?? 0}
       />
     )
@@ -2071,7 +2056,7 @@ export function ConversationDetailPanel() {
               )
             : active
               ? "h-full"
-              : "absolute inset-0 invisible pointer-events-none"
+              : "conversation-tab-hidden absolute inset-0 invisible pointer-events-none"
         )}
         onPointerDownCapture={
           canTile && !active ? () => switchTab(tab.id) : undefined
