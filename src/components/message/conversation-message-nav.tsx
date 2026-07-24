@@ -17,6 +17,7 @@ import {
   CommitFileAdditions,
   CommitFileDeletions,
 } from "@/components/ai-elements/commit"
+import { FilePathContextMenu } from "@/components/shared/file-path-context-menu"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -217,62 +218,69 @@ export const ConversationMessageNav = memo(function ConversationMessageNav({
                         folder?.path
                       )
                       const isRemoved = isRemovedFileDiff(file.diff)
+                      const openInCodeg = () =>
+                        handleFileClick(
+                          file.path,
+                          file.diff,
+                          entry.ordinal,
+                          fileIndex
+                        )
 
                       return (
-                        <li key={file.id}>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleFileClick(
-                                file.path,
-                                file.diff,
-                                entry.ordinal,
-                                fileIndex
-                              )
-                            }
-                            title={displayPath}
-                            className={cn(
-                              "flex w-full min-w-0 items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors",
-                              isRemoved
-                                ? "border-destructive/30 bg-destructive/10 hover:bg-destructive/20"
-                                : "border-border bg-transparent hover:bg-accent/40"
-                            )}
+                        <li key={file.id} className="min-w-0">
+                          <FilePathContextMenu
+                            filePath={file.path}
+                            folderPath={folder?.path}
+                            externalOpenDisabled={isRemoved}
+                            onOpenInCodeg={openInCodeg}
                           >
-                            <FileIcon
+                            <button
+                              type="button"
+                              onClick={openInCodeg}
+                              title={displayPath}
                               className={cn(
-                                "h-3.5 w-3.5 shrink-0",
+                                "flex w-full min-w-0 items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors",
                                 isRemoved
-                                  ? "text-destructive"
-                                  : "text-muted-foreground"
-                              )}
-                            />
-                            <span
-                              className={cn(
-                                "min-w-0 flex-1 truncate text-xs",
-                                isRemoved
-                                  ? "text-destructive"
-                                  : "text-foreground"
+                                  ? "border-destructive/30 bg-destructive/10 hover:bg-destructive/20"
+                                  : "border-border bg-transparent hover:bg-accent/40"
                               )}
                             >
-                              {fileNameOf(displayPath)}
-                            </span>
-                            {isRemoved ? (
-                              <span className="inline-flex shrink-0 items-center rounded-md border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 font-mono text-[10px] text-destructive">
-                                {t("remove")}
+                              <FileIcon
+                                className={cn(
+                                  "h-3.5 w-3.5 shrink-0",
+                                  isRemoved
+                                    ? "text-destructive"
+                                    : "text-muted-foreground"
+                                )}
+                              />
+                              <span
+                                className={cn(
+                                  "min-w-0 flex-1 truncate text-xs",
+                                  isRemoved
+                                    ? "text-destructive"
+                                    : "text-foreground"
+                                )}
+                              >
+                                {fileNameOf(displayPath)}
                               </span>
-                            ) : (
-                              <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-muted/40 px-1.5 py-0.5 font-mono text-[10px] text-foreground">
-                                <CommitFileAdditions
-                                  count={file.additions}
-                                  className="text-[10px]"
-                                />
-                                <CommitFileDeletions
-                                  count={file.deletions}
-                                  className="text-[10px]"
-                                />
-                              </span>
-                            )}
-                          </button>
+                              {isRemoved ? (
+                                <span className="inline-flex shrink-0 items-center rounded-md border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 font-mono text-[10px] text-destructive">
+                                  {t("remove")}
+                                </span>
+                              ) : (
+                                <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-muted/40 px-1.5 py-0.5 font-mono text-[10px] text-foreground">
+                                  <CommitFileAdditions
+                                    count={file.additions}
+                                    className="text-[10px]"
+                                  />
+                                  <CommitFileDeletions
+                                    count={file.deletions}
+                                    className="text-[10px]"
+                                  />
+                                </span>
+                              )}
+                            </button>
+                          </FilePathContextMenu>
                         </li>
                       )
                     })}

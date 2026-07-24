@@ -38,9 +38,35 @@
     {
       "identifier": "opener:allow-open-path",
       "allow": [
-        {
-          "path": "$HOME/**"
-        }
+        { "path": "$HOME/**" },
+        { "path": "$HOME/**", "app": true },
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DOCUMENT/**", "app": true },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DESKTOP/**", "app": true },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$DOWNLOAD/**", "app": true },
+        { "path": "$PUBLIC/**" },
+        { "path": "$PUBLIC/**", "app": true },
+        { "path": "$TEMP/**" },
+        { "path": "$TEMP/**", "app": true },
+        { "path": "/**" },
+        { "path": "/**", "app": true },
+        { "path": "**" },
+        { "path": "**", "app": true }
+      ]
+    },
+    {
+      "identifier": "opener:allow-reveal-item-in-dir",
+      "allow": [
+        { "path": "$HOME/**" },
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$PUBLIC/**" },
+        { "path": "$TEMP/**" },
+        { "path": "/**" },
+        { "path": "**" }
       ]
     },
     "dialog:default",

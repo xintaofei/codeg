@@ -2732,6 +2732,26 @@
         "remove": "Remover",
         "noDiffDataAvailable": "Nenhum dado de diff disponível para {filePath}"
       },
+      "filePathMenu": {
+        "openInCodeg": "Abrir no Codeg",
+        "addToChat": "Adicionar ao chat",
+        "addToChatDone": "{label} adicionado à conversa",
+        "noActiveConversation": "Nenhuma conversa ativa para adicionar",
+        "openInFinder": "Mostrar no Finder",
+        "openInExplorer": "Mostrar no Explorador",
+        "openInFileManager": "Mostrar no gerenciador de arquivos",
+        "openWith": "Abrir com",
+        "openWithDefault": "Aplicativo padrão",
+        "openWithVsCode": "Visual Studio Code",
+        "openWithCursor": "Cursor",
+        "copyRelativePath": "Copiar caminho relativo",
+        "copyAbsolutePath": "Copiar caminho absoluto",
+        "copyFileName": "Copiar nome do arquivo",
+        "pathCopied": "Caminho copiado",
+        "fileNameCopied": "Nome do arquivo copiado",
+        "copyFailed": "Falha ao copiar",
+        "openFailed": "Falha ao abrir o arquivo"
+      },
       "askQuestion": {
         "title": "O agente precisa da sua escolha",
         "subtitle": "Responda e envie. Você pode pular a qualquer momento.",

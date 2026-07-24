@@ -2732,6 +2732,26 @@
         "remove": "移除",
         "noDiffDataAvailable": "未找到 {filePath} 的差异数据"
       },
+      "filePathMenu": {
+        "openInCodeg": "在 Codeg 中打开",
+        "addToChat": "添加到会话",
+        "addToChatDone": "已将 {label} 加入会话",
+        "noActiveConversation": "当前没有可添加的会话",
+        "openInFinder": "在访达中显示",
+        "openInExplorer": "在资源管理器中显示",
+        "openInFileManager": "在文件管理器中显示",
+        "openWith": "打开方式",
+        "openWithDefault": "默认应用",
+        "openWithVsCode": "Visual Studio Code",
+        "openWithCursor": "Cursor",
+        "copyRelativePath": "复制相对路径",
+        "copyAbsolutePath": "复制绝对路径",
+        "copyFileName": "复制文件名",
+        "pathCopied": "已复制路径",
+        "fileNameCopied": "已复制文件名",
+        "copyFailed": "复制失败",
+        "openFailed": "打开文件失败"
+      },
       "askQuestion": {
         "title": "智能体需要你的选择",
         "subtitle": "回答后点击提交，可随时跳过",

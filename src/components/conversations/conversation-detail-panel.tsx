@@ -1848,8 +1848,18 @@ export function ConversationDetailPanel() {
         : null
   }, [])
 
+  // File-path menus claim right-click / long-press via stopPropagation on the
+  // trigger. Here we only skip selection-preservation so we do not
+  // preventDefault those gestures before the nested menu can open.
   const handleContextMenuTriggerPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (
+        event.target instanceof Element &&
+        event.target.closest("[data-file-path-menu]") &&
+        (event.button === 2 || event.pointerType !== "mouse")
+      ) {
+        return
+      }
       if (event.button !== 2) return
       const selection = window.getSelection()
       if (selection && !selection.isCollapsed) {

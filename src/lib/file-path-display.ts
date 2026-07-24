@@ -4,6 +4,8 @@
  * card). Extracted so both call sites stay in sync.
  */
 
+import { joinFsPath } from "@/lib/path-utils"
+
 /** True when a unified diff represents a file deletion. */
 export function isRemovedFileDiff(diff: string | null): boolean {
   if (!diff) return false
@@ -108,4 +110,35 @@ export function toFolderRelativePath(
 export function fileNameOf(displayPath: string): string {
   const lastSlash = displayPath.lastIndexOf("/")
   return lastSlash >= 0 ? displayPath.slice(lastSlash + 1) : displayPath
+}
+
+/**
+ * Absolute path using the OS's native separators — for clipboard copy and for
+ * handing paths to the shell / opener. Relative agent paths are joined onto
+ * `folderPath` via {@link joinFsPath} so Windows workspaces keep `\`.
+ *
+ * Unlike {@link toAbsoluteFilePath} (always slash-normalized for UI compare),
+ * this preserves Windows backslashes when the workspace path uses them.
+ * Returns null when the result cannot be made absolute.
+ */
+export function toNativeAbsoluteFilePath(
+  filePath: string,
+  folderPath?: string
+): string | null {
+  const trimmed = filePath.trim()
+  if (!trimmed) return null
+
+  if (isAbsoluteFilePath(trimmed)) {
+    // Prefer the folder's separator style when known so clipboard matches
+    // Explorer/Finder paths users already copy from the OS.
+    if (folderPath?.includes("\\") || WINDOWS_ABSOLUTE_PATH.test(trimmed)) {
+      return trimmed.replace(/\//g, "\\")
+    }
+    return normalizeSlashPath(trimmed)
+  }
+
+  if (!folderPath) return null
+  const rel = normalizeSlashPath(trimmed).replace(/^\.\/+/, "")
+  if (!rel) return null
+  return joinFsPath(folderPath, rel)
 }

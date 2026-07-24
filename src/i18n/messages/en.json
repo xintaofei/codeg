@@ -2732,6 +2732,26 @@
         "remove": "Remove",
         "noDiffDataAvailable": "No diff data available for {filePath}"
       },
+      "filePathMenu": {
+        "openInCodeg": "Open in Codeg",
+        "addToChat": "Add to chat",
+        "addToChatDone": "Added {label} to chat",
+        "noActiveConversation": "No active chat to add to",
+        "openInFinder": "Reveal in Finder",
+        "openInExplorer": "Reveal in File Explorer",
+        "openInFileManager": "Reveal in file manager",
+        "openWith": "Open with",
+        "openWithDefault": "Default application",
+        "openWithVsCode": "Visual Studio Code",
+        "openWithCursor": "Cursor",
+        "copyRelativePath": "Copy Relative Path",
+        "copyAbsolutePath": "Copy Absolute Path",
+        "copyFileName": "Copy File Name",
+        "pathCopied": "Path copied",
+        "fileNameCopied": "File name copied",
+        "copyFailed": "Failed to copy",
+        "openFailed": "Failed to open file"
+      },
       "askQuestion": {
         "title": "The agent needs your input",
         "subtitle": "Answer below, then submit. You can skip anytime.",

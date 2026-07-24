@@ -2732,6 +2732,26 @@
         "remove": "移除",
         "noDiffDataAvailable": "找不到 {filePath} 的差異資料"
       },
+      "filePathMenu": {
+        "openInCodeg": "在 Codeg 中開啟",
+        "addToChat": "加入對話",
+        "addToChatDone": "已將 {label} 加入對話",
+        "noActiveConversation": "目前沒有可加入的對話",
+        "openInFinder": "在 Finder 中顯示",
+        "openInExplorer": "在檔案總管中顯示",
+        "openInFileManager": "在檔案管理員中顯示",
+        "openWith": "開啟方式",
+        "openWithDefault": "預設應用程式",
+        "openWithVsCode": "Visual Studio Code",
+        "openWithCursor": "Cursor",
+        "copyRelativePath": "複製相對路徑",
+        "copyAbsolutePath": "複製絕對路徑",
+        "copyFileName": "複製檔案名稱",
+        "pathCopied": "已複製路徑",
+        "fileNameCopied": "已複製檔案名稱",
+        "copyFailed": "複製失敗",
+        "openFailed": "開啟檔案失敗"
+      },
       "askQuestion": {
         "title": "智能體需要你的選擇",
         "subtitle": "回答後點擊提交，可隨時跳過",
