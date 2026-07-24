@@ -2615,6 +2615,8 @@
           "remaining": "剩余",
           "elapsed": "耗时",
           "tokens": "tokens",
+          "pause": "暂停",
+          "clear": "清除",
           "status": {
             "active": "进行中",
             "paused": "已暂停",
@@ -2794,6 +2796,10 @@
         "opClose": "结束子智能体",
         "opResume": "恢复子智能体"
       },
+      "contextCompaction": {
+        "compacting": "正在压缩上下文…",
+        "compacted": "上下文已压缩"
+      },
       "backgroundTasks": {
         "running": "{count} 个后台任务运行中",
         "settling": "正在同步后台结果…",
@@ -2803,6 +2809,10 @@
         "cardCompleted": "后台任务已完成",
         "cardFinishedWithStatus": "后台任务已结束（{status}）",
         "cardResultPending": "结果尚未返回"
+      },
+      "proposedPlan": {
+        "title": "计划提案",
+        "planning": "规划中…"
       }
     },
     "diffPreview": {

@@ -11,6 +11,8 @@ function collabBlock(opts: {
   /** ACP tool-call status. */
   status?: string
   prompt?: string
+  model?: string
+  reasoningEffort?: string
   agents: Record<string, { status: string; message?: string | null }>
 }): LiveContentBlock {
   const agentsStates: Record<string, unknown> = {}
@@ -30,6 +32,10 @@ function collabBlock(opts: {
         senderThreadId: "main",
         receiverThreadIds: Object.keys(opts.agents),
         agentsStates,
+        ...(opts.model ? { model: opts.model } : {}),
+        ...(opts.reasoningEffort
+          ? { reasoningEffort: opts.reasoningEffort }
+          : {}),
         status: "inProgress",
       }),
       raw_output_chunks: [],
@@ -212,6 +218,37 @@ describe("collapseLiveCollabBlocks", () => {
     expect(agent?.status).toBe("errored")
     // Never waited → fallback message kept on the execution capsule.
     expect(agent?.message).toBe("boom")
+  })
+
+  it("preserves top-level model/reasoningEffort on the execution capsule (codex-acp #304)", () => {
+    const input: LiveContentBlock[] = [
+      collabBlock({
+        id: "spawn",
+        title: "spawnAgent",
+        prompt: "go",
+        model: "gpt-5-codex",
+        reasoningEffort: "high",
+        agents: { A: { status: "pendingInit" } },
+      }),
+      collabBlock({
+        id: "wait",
+        title: "wait",
+        agents: { A: { status: "completed", message: "R" } },
+      }),
+    ]
+    const out = collapseLiveCollabBlocks(input)
+    const spawn = out.find(
+      (b) =>
+        b.type === "tool_call" && classifyCollabOp(b.info.title) === "spawn"
+    )
+    // The rewrite rebuilds agentsStates but must carry top-level fields through
+    // (it spreads `...parsed`), so model/effort survive onto the execution card.
+    const info =
+      spawn?.type === "tool_call"
+        ? parseCollabToolInput(spawn.info.raw_input)
+        : null
+    expect(info?.model).toBe("gpt-5-codex")
+    expect(info?.reasoningEffort).toBe("high")
   })
 
   it("keeps an orphan close that has no spawn to fold into", () => {

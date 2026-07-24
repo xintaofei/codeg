@@ -2615,6 +2615,8 @@
           "remaining": "남음",
           "elapsed": "경과",
           "tokens": "tokens",
+          "pause": "일시정지",
+          "clear": "지우기",
           "status": {
             "active": "진행 중",
             "paused": "일시 중지",
@@ -2794,6 +2796,10 @@
         "opClose": "서브 에이전트 종료 중",
         "opResume": "서브 에이전트 재개 중"
       },
+      "contextCompaction": {
+        "compacting": "컨텍스트 압축 중…",
+        "compacted": "컨텍스트 압축 완료"
+      },
       "backgroundTasks": {
         "running": "백그라운드 작업 {count}개 실행 중",
         "settling": "백그라운드 결과 동기화 중…",
@@ -2803,6 +2809,10 @@
         "cardCompleted": "백그라운드 작업 완료",
         "cardFinishedWithStatus": "백그라운드 작업 종료 ({status})",
         "cardResultPending": "결과가 아직 반환되지 않았습니다"
+      },
+      "proposedPlan": {
+        "title": "제안된 계획",
+        "planning": "계획 중…"
       }
     },
     "diffPreview": {

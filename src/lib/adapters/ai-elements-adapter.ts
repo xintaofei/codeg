@@ -108,6 +108,20 @@ export type AdaptedPlanPart = {
   isStreaming: boolean
 }
 
+/**
+ * A codex Plan-mode `<proposed_plan>…</proposed_plan>` block, lifted out of the
+ * assistant's message text and rendered as a dedicated card. Unlike
+ * `AdaptedPlanPart` (a TodoWrite checklist), the body is free-form markdown (the
+ * plan document codex proposes), so it renders through the normal markdown
+ * pipeline inside card chrome. Detection lives purely in the frontend adapter,
+ * so live and reload converge (both hand raw assistant text to the same path).
+ */
+export type AdaptedProposedPlanPart = {
+  type: "proposed-plan"
+  markdown: string
+  isStreaming: boolean
+}
+
 export type AdaptedContentPart =
   | { type: "text"; text: string }
   | AdaptedToolCallPart
@@ -150,6 +164,7 @@ export type AdaptedContentPart =
   | AdaptedGoalRunPart
   | AdaptedGeneratedImagePart
   | AdaptedPlanPart
+  | AdaptedProposedPlanPart
 
 export interface UserResourceDisplay {
   name: string
@@ -395,6 +410,64 @@ function parseInlineToolResultPayload(payload: string): {
       isError: false,
     }
   }
+}
+
+const PROPOSED_PLAN_OPEN = "<proposed_plan>"
+const PROPOSED_PLAN_CLOSE = "</proposed_plan>"
+
+/**
+ * Lift codex Plan-mode `<proposed_plan>…</proposed_plan>` block(s) out of an
+ * assistant text block into dedicated `proposed-plan` parts, leaving surrounding
+ * prose as normal text. Returns `null` when the text has no such block (so it
+ * falls through to the normal text path). While the turn streams, an as-yet
+ * unclosed block renders as a streaming card (its markdown grows in place);
+ * once `</proposed_plan>` arrives it settles. The open/close markers are always
+ * consumed so the raw tags never render, even for an empty or truncated block.
+ */
+function expandProposedPlanText(
+  text: string,
+  isStreaming: boolean
+): AdaptedContentPart[] | null {
+  if (!text.includes(PROPOSED_PLAN_OPEN)) return null
+
+  const parts: AdaptedContentPart[] = []
+  let cursor = 0
+  let sawPlan = false
+
+  for (;;) {
+    const open = text.indexOf(PROPOSED_PLAN_OPEN, cursor)
+    if (open === -1) break
+    sawPlan = true
+
+    const lead = text.slice(cursor, open)
+    if (lead.trim().length > 0) parts.push({ type: "text", text: lead })
+
+    const bodyStart = open + PROPOSED_PLAN_OPEN.length
+    const close = text.indexOf(PROPOSED_PLAN_CLOSE, bodyStart)
+    const stillStreaming = close === -1
+    const body = (
+      stillStreaming ? text.slice(bodyStart) : text.slice(bodyStart, close)
+    ).trim()
+    const streamingCard = stillStreaming && isStreaming
+    if (body.length > 0 || streamingCard) {
+      parts.push({
+        type: "proposed-plan",
+        markdown: body,
+        isStreaming: streamingCard,
+      })
+    }
+
+    if (stillStreaming) {
+      cursor = text.length
+      break
+    }
+    cursor = close + PROPOSED_PLAN_CLOSE.length
+  }
+
+  const trail = text.slice(cursor)
+  if (trail.trim().length > 0) parts.push({ type: "text", text: trail })
+
+  return sawPlan ? parts : null
 }
 
 function expandInlineToolText(
@@ -1668,6 +1741,15 @@ export function adaptMessageTurn(
       )
       if (expandedParts) {
         adaptedContent.push(...expandedParts)
+        continue
+      }
+
+      // Codex Plan mode emits its plan as a `<proposed_plan>…</proposed_plan>`
+      // block inside the assistant text; render it as a dedicated card instead
+      // of raw text with visible tags. Covers live + reload (same adapter).
+      const proposedPlanParts = expandProposedPlanText(block.text, isStreaming)
+      if (proposedPlanParts) {
+        adaptedContent.push(...proposedPlanParts)
         continue
       }
     }

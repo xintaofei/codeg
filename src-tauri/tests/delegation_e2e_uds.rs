@@ -466,6 +466,7 @@ async fn end_to_end_uds_ask_question_round_trip() {
                         description: String::new(),
                     },
                 ],
+                is_secret: false,
             }],
         };
         client_ask_round_trip(&socket_str, &req).await
@@ -601,6 +602,7 @@ async fn end_to_end_uds_ask_revoked_after_register_declines() {
                     description: String::new(),
                 },
             ],
+            is_secret: false,
         }],
     };
     let resp = client_ask_round_trip(&socket.to_string_lossy(), &req)

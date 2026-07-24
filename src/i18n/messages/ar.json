@@ -2615,6 +2615,8 @@
           "remaining": "المتبقي",
           "elapsed": "المدة",
           "tokens": "tokens",
+          "pause": "إيقاف مؤقت",
+          "clear": "مسح",
           "status": {
             "active": "نشط",
             "paused": "متوقف مؤقتًا",
@@ -2794,6 +2796,10 @@
         "opClose": "إغلاق الوكيل الفرعي",
         "opResume": "استئناف الوكيل الفرعي"
       },
+      "contextCompaction": {
+        "compacting": "جارٍ ضغط السياق…",
+        "compacted": "تم ضغط السياق"
+      },
       "backgroundTasks": {
         "running": "{count, plural, one {مهمة خلفية واحدة قيد التشغيل} two {مهمتا خلفية قيد التشغيل} few {# مهام خلفية قيد التشغيل} other {# مهمة خلفية قيد التشغيل}}",
         "settling": "جارٍ مزامنة نتائج الخلفية…",
@@ -2803,6 +2809,10 @@
         "cardCompleted": "اكتملت مهمة الخلفية",
         "cardFinishedWithStatus": "انتهت مهمة الخلفية ({status})",
         "cardResultPending": "لم تصل النتيجة بعد"
+      },
+      "proposedPlan": {
+        "title": "الخطة المقترحة",
+        "planning": "جارٍ التخطيط…"
       }
     },
     "diffPreview": {

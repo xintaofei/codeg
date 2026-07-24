@@ -2615,6 +2615,8 @@
           "remaining": "Verbleibend",
           "elapsed": "Verstrichen",
           "tokens": "tokens",
+          "pause": "Pausieren",
+          "clear": "Löschen",
           "status": {
             "active": "aktiv",
             "paused": "pausiert",
@@ -2794,6 +2796,10 @@
         "opClose": "Sub-Agent wird geschlossen",
         "opResume": "Sub-Agent wird fortgesetzt"
       },
+      "contextCompaction": {
+        "compacting": "Kontext wird komprimiert…",
+        "compacted": "Kontext komprimiert"
+      },
       "backgroundTasks": {
         "running": "{count, plural, one {# Hintergrundaufgabe läuft} other {# Hintergrundaufgaben laufen}}",
         "settling": "Hintergrundergebnisse werden synchronisiert…",
@@ -2803,6 +2809,10 @@
         "cardCompleted": "Hintergrundaufgabe abgeschlossen",
         "cardFinishedWithStatus": "Hintergrundaufgabe beendet ({status})",
         "cardResultPending": "Ergebnis steht noch aus"
+      },
+      "proposedPlan": {
+        "title": "Vorgeschlagener Plan",
+        "planning": "Wird geplant…"
       }
     },
     "diffPreview": {

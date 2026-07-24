@@ -972,13 +972,17 @@ export interface QuestionOption {
 }
 
 /** A single multiple-choice question (mirror of Rust `QuestionSpec`). `id` is
- *  the backend-minted correlation key the answer is submitted against. */
+ *  the backend-minted correlation key the answer is submitted against. Empty
+ *  `options` means free-text: the card renders only its "Other" input (codex
+ *  elicitation / MCP-server forms ask open questions this way). `is_secret`
+ *  masks that input (absent on the wire for non-secret sources). */
 export interface QuestionSpec {
   id: string
   question: string
   header: string
   multi_select: boolean
   options: QuestionOption[]
+  is_secret?: boolean
 }
 
 /** Awaiting-answer question set on the session (mirror of `PendingQuestionState`). */
@@ -1340,6 +1344,16 @@ export type AcpEvent =
       agent_type: string
       /** Stable backend error identifier for localization (e.g. "initialize_timeout"). */
       code: string | null
+    }
+  | {
+      // codex-acp #289: a retryable turn error that keeps the turn alive (codex
+      // auto-retries). NOT a turn failure — rendered as a transient retry
+      // indicator that reuses the Claude API-retry banner and clears at the
+      // next turn boundary. `error_status` is the HTTP status when codex's
+      // `codexErrorInfo` carried one.
+      type: "turn_retrying"
+      message: string
+      error_status?: number
     }
   | {
       type: "session_load_failed"

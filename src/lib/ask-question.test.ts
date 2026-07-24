@@ -58,6 +58,7 @@ describe("parseAskQuestionInput", () => {
           { label: "Incremental", description: "Smaller steps" },
           { label: "Rewrite", description: "Start fresh" },
         ],
+        isSecret: false,
       },
     ])
   })
@@ -86,6 +87,7 @@ describe("parseAskQuestionInput", () => {
         header: "H",
         multiSelect: false,
         options: [{ label: "A", description: "" }],
+        isSecret: false,
       },
     ])
   })
@@ -130,8 +132,39 @@ describe("parseAskQuestionInput", () => {
         header: "Approach",
         multiSelect: false,
         options: [{ label: "Incremental", description: "Smaller steps" }],
+        isSecret: false,
       },
     ])
+  })
+
+  it("reads codex's isSecret marker (and the snake_case variant)", () => {
+    const input = JSON.stringify({
+      questions: [
+        { question: "API key?", header: "Key", options: [], isSecret: true },
+        { question: "Token?", header: "Tok", options: [], is_secret: true },
+        { question: "Name?", header: "Name", options: [] },
+      ],
+    })
+    const result = parseAskQuestionInput(input)
+    expect(result.map((q) => q.isSecret)).toEqual([true, true, false])
+  })
+
+  it("captures codex's per-question id (and leaves it undefined otherwise)", () => {
+    // codex `request_user_input` keys each question with a stable id; its answer
+    // envelope is keyed by that id (see parseAskQuestionOutcome below).
+    const input = JSON.stringify({
+      questions: [
+        {
+          id: "drink_preference",
+          header: "饮品偏好",
+          question: "工作时你更喜欢喝哪一种饮品？",
+          options: [{ label: "咖啡（推荐）" }, { label: "茶" }],
+        },
+        { question: "No id here", header: "H", options: [{ label: "A" }] },
+      ],
+    })
+    const result = parseAskQuestionInput(input)
+    expect(result.map((q) => q.id)).toEqual(["drink_preference", undefined])
   })
 
   it("returns [] for malformed JSON, missing questions, or nullish input", () => {
@@ -284,6 +317,42 @@ describe("parseAskQuestionOutcome", () => {
       error: null,
     })
     expect(parseAskQuestionOutcome(output)?.answers[0].selected).toEqual(["A"])
+  })
+
+  it("parses codex request_user_input's object-keyed answers", () => {
+    // Verbatim function_call_output shape from ~/.codex/sessions: answers are
+    // keyed by the question id, each carrying its own `answers` array — NOT the
+    // codeg-mcp `{answers:[{…,selected}]}` envelope. Without this the card shows
+    // "no selection" (the reported bug).
+    const output = JSON.stringify({
+      answers: { drink_preference: { answers: ["咖啡（推荐）"] } },
+    })
+    expect(parseAskQuestionOutcome(output)).toEqual({
+      declined: false,
+      answers: [
+        {
+          id: "drink_preference",
+          header: "",
+          question: "",
+          selected: ["咖啡（推荐）"],
+        },
+      ],
+    })
+  })
+
+  it("parses a multi-question codex answer envelope", () => {
+    const output = JSON.stringify({
+      answers: {
+        q1: { answers: ["A"] },
+        q2: { answers: ["X", "Y"] },
+      },
+    })
+    const parsed = parseAskQuestionOutcome(output)
+    expect(parsed?.declined).toBe(false)
+    expect(parsed?.answers).toEqual([
+      { id: "q1", header: "", question: "", selected: ["A"] },
+      { id: "q2", header: "", question: "", selected: ["X", "Y"] },
+    ])
   })
 
   it("keeps an option label containing a comma intact as one entry", () => {

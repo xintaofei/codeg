@@ -11,14 +11,16 @@
  * running, ✓/⚠ suffix, auto-open on error). The sub-agent UUID(s) are shown in
  * the pill via `idBadge` so execution and wait capsules read uniformly.
  *
- * The full sub-agent transcript is NOT available live — codex-acp drops
- * `subAgentActivity` and emits no `rawOutput` for collab calls; the richer
- * reconstructed capsule only appears on history reload. Detection, op-merge and
- * status classification live in `@/lib/collab-tool`.
+ * The full sub-agent transcript is NOT available live — codex-acp's separate
+ * `subAgentActivity` signal (codex-acp #304) is suppressed as redundant and
+ * carries no transcript content anyway; the richer reconstructed capsule only
+ * appears on history reload. The sub-agent's `model` / `reasoningEffort` (also
+ * #304) ARE available live and shown on the execution (spawn) capsule. Detection,
+ * op-merge and status classification live in `@/lib/collab-tool`.
  */
 
 import { useMemo } from "react"
-import { AlertTriangle, Check } from "lucide-react"
+import { AlertTriangle, Check, Cpu } from "lucide-react"
 import { useTranslations } from "next-intl"
 
 import {
@@ -48,6 +50,15 @@ export function CollabAgentCard({ input, errorText, state }: Props) {
   const agents = info?.agents ?? []
   const opStatus = info?.status ?? null
   const op = info?.op ?? null
+  const model = info?.model ?? null
+  const reasoningEffort = info?.reasoningEffort ?? null
+  // model/effort describe HOW the sub-agent runs — meaningful on the execution
+  // (spawn) capsule, the one collab card that survives live collapse as the
+  // sub-agent's definition. Gating to spawn also preserves live/reload parity:
+  // the reconstructed `wait` capsule (Rust `build_collab_wait_input`) carries no
+  // model/effort, so a live `wait` card must not show them either.
+  const showRunMeta =
+    classifyCollabOp(op) === "spawn" && (!!model || !!reasoningEffort)
 
   const hasErrorAgent = agents.some((a) =>
     isErrorCollabStatusKind(classifyCollabStatus(a.status))
@@ -108,6 +119,17 @@ export function CollabAgentCard({ input, errorText, state }: Props) {
       idBadge={idBadge}
       statusLabel={title}
     >
+      {/* Sub-agent model + reasoning effort (codex-acp #304), execution capsule
+          only. Live-side enrichment: previously visible only after reload. */}
+      {showRunMeta && (
+        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <Cpu className="size-3 shrink-0" />
+          {model && <span className="font-mono">{model}</span>}
+          {model && reasoningEffort && <span aria-hidden>·</span>}
+          {reasoningEffort && <span>{reasoningEffort}</span>}
+        </div>
+      )}
+
       {/* Prompt — the execution capsule's task (spawn only; wait has none). */}
       {prompt && (
         <div className="space-y-1">

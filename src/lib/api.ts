@@ -218,6 +218,16 @@ export async function acpSetConfigOption(
   })
 }
 
+/** Pause or clear the session's active Codex goal (codex-acp #293). The backend
+ *  sources the sessionId from the live session, so only the connection + action
+ *  are needed here. */
+export async function acpGoalControl(
+  connectionId: string,
+  action: "pause" | "clear"
+): Promise<void> {
+  return getTransport().call("acp_goal_control", { connectionId, action })
+}
+
 export async function acpCancel(connectionId: string): Promise<void> {
   return getTransport().call("acp_cancel", { connectionId })
 }

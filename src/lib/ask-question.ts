@@ -23,6 +23,13 @@ export interface AskQuestion {
   /** The wire field is `multiSelect` (camelCase); we also accept `multi_select`. */
   multiSelect: boolean
   options: AskQuestionOption[]
+  /** Codex `request_user_input` marks secret answers (API keys etc.) with
+   *  `isSecret`; the read-only card masks them. */
+  isSecret: boolean
+  /** Codex `request_user_input` gives each question a stable `id`; its chosen
+   *  answer envelope is keyed by that id rather than the question text (unlike
+   *  the codeg-mcp ask, which the card matches by header+question). */
+  id?: string
 }
 
 export interface AskQuestionAnswer {
@@ -32,6 +39,10 @@ export interface AskQuestionAnswer {
    *  "Other" answer (empty when nothing was chosen). Partition against the
    *  question's options with `matchSelections`. */
   selected: string[]
+  /** Present for codex `request_user_input`, whose answers are keyed by the
+   *  question `id` rather than its header/question text; the card matches on it
+   *  when set, otherwise on the header+question signature. */
+  id?: string
 }
 
 export interface AskQuestionOutcome {
@@ -122,6 +133,8 @@ export function parseAskQuestionInput(
       header: asString(obj.header),
       multiSelect: obj.multiSelect === true || obj.multi_select === true,
       options,
+      isSecret: obj.isSecret === true || obj.is_secret === true,
+      id: typeof obj.id === "string" && obj.id ? obj.id : undefined,
     })
   }
   return out
@@ -164,10 +177,36 @@ function parseAnswers(raw: unknown): AskQuestionAnswer[] {
 }
 
 /**
+ * codex `request_user_input` records its answers keyed by question id rather
+ * than as the codeg-mcp array envelope:
+ *   { "answers": { "<questionId>": { "answers": ["label", ...] } } }
+ * Return one answer per id (carrying that id so the card can match it against
+ * the question's own id), or `null` when `answers` isn't the object map — so a
+ * codeg-mcp / Claude result (whose `answers` is an ARRAY) never lands here.
+ */
+function parseCodexAnswers(
+  source: Record<string, unknown> | null | undefined
+): AskQuestionAnswer[] | null {
+  if (!source) return null
+  const map = source.answers
+  if (!map || typeof map !== "object" || Array.isArray(map)) return null
+  const out: AskQuestionAnswer[] = []
+  for (const [id, entry] of Object.entries(map as Record<string, unknown>)) {
+    const raw = asRecord(entry)?.answers
+    const selected = Array.isArray(raw)
+      ? raw.filter((x): x is string => typeof x === "string")
+      : []
+    out.push({ id, header: "", question: "", selected })
+  }
+  return out.length > 0 ? out : null
+}
+
+/**
  * Parse the structured `{ answers, declined }` envelope the agent CLI persists
  * for the tool result (the companion's `structuredContent`). It may sit at the
- * top level or nested under `structuredContent`. Returns `null` when `output`
- * is not that envelope, so the text fallback can take over.
+ * top level or nested under `structuredContent`. Also recognizes codex's
+ * object-keyed `request_user_input` envelope (see `parseCodexAnswers`). Returns
+ * `null` when `output` is neither, so the text fallback can take over.
  */
 function parseOutcomeJson(output: string): AskQuestionOutcome | null {
   let parsed: unknown
@@ -196,12 +235,24 @@ function parseOutcomeJson(output: string): AskQuestionOutcome | null {
   const result = asRecord(top.result)
   const resultOk = result ? (asRecord(result.Ok) ?? asRecord(result.ok)) : null
   const env = envelopeOf(top) ?? envelopeOf(result) ?? envelopeOf(resultOk)
-  if (!env) return null
-  if (!Array.isArray(env.answers) && typeof env.declined !== "boolean") {
-    return null
+  if (
+    env &&
+    (Array.isArray(env.answers) || typeof env.declined === "boolean")
+  ) {
+    if (env.declined === true) return { declined: true, answers: [] }
+    return { declined: false, answers: parseAnswers(env.answers) }
   }
-  if (env.declined === true) return { declined: true, answers: [] }
-  return { declined: false, answers: parseAnswers(env.answers) }
+
+  // codex `request_user_input`: object-keyed answers. Checked after the
+  // array-shaped envelope above so a codeg-mcp result never falls through here.
+  const codex =
+    parseCodexAnswers(top) ??
+    parseCodexAnswers(asRecord(top.structuredContent)) ??
+    parseCodexAnswers(result) ??
+    parseCodexAnswers(resultOk)
+  if (codex) return { declined: false, answers: codex }
+
+  return null
 }
 
 /**

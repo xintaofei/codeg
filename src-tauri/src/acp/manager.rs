@@ -10,7 +10,9 @@ use sea_orm::{
     TransactionTrait,
 };
 
-use crate::acp::connection::{spawn_agent_connection, AgentConnection, ConnectionCommand};
+use crate::acp::connection::{
+    spawn_agent_connection, AgentConnection, ConnectionCommand, GoalControlAction,
+};
 use crate::acp::error::AcpError;
 use crate::acp::feedback::{
     bounded_feedback_batch, FeedbackItem, FeedbackStatus, PendingFeedback,
@@ -1175,6 +1177,27 @@ impl ConnectionManager {
                 config_id,
                 value_id,
             })
+            .await
+            .map_err(|_| AcpError::ProcessExited)
+    }
+
+    /// Pause or clear the session's active Codex goal via the connection loop
+    /// (codex-acp #293). Looked up by connectionId; the loop sources the
+    /// sessionId from the live session, so callers only supply the action.
+    pub async fn goal_control(
+        &self,
+        conn_id: &str,
+        action: GoalControlAction,
+    ) -> Result<(), AcpError> {
+        let cmd_tx = {
+            let connections = self.connections.lock().await;
+            let conn = connections
+                .get(conn_id)
+                .ok_or_else(|| AcpError::ConnectionNotFound(conn_id.into()))?;
+            conn.cmd_tx.clone()
+        };
+        cmd_tx
+            .send(ConnectionCommand::GoalControl { action })
             .await
             .map_err(|_| AcpError::ProcessExited)
     }
@@ -5595,6 +5618,7 @@ mod tests {
                     description: String::new(),
                 },
             ],
+            is_secret: false,
         }]
     }
 

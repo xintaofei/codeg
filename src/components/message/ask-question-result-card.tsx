@@ -75,6 +75,7 @@ export function AskQuestionResultCard({
         header: q.header,
         multi_select: q.multiSelect,
         options: q.options,
+        is_secret: q.isSecret,
       })),
     }
   }, [questions])
@@ -84,14 +85,25 @@ export function AskQuestionResultCard({
   const initialSelections = useMemo(() => {
     const sel: Record<string, { chosen: string[]; otherText: string }> = {}
     if (!pending || outcome?.declined) return sel
+    // codex `request_user_input` answers carry the question `id`; codeg-mcp / grok
+    // asks carry none and match on the header+question signature instead.
+    const byId = new Map(
+      (outcome?.answers ?? [])
+        .filter((a) => a.id)
+        .map((a) => [a.id as string, a.selected])
+    )
     const bySig = new Map(
       (outcome?.answers ?? []).map((a) => [
         `${a.header}${KEY_SEP}${a.question}`,
         a.selected,
       ])
     )
-    pending.questions.forEach((q) => {
-      const values = bySig.get(`${q.header}${KEY_SEP}${q.question}`) ?? []
+    pending.questions.forEach((q, i) => {
+      const qid = questions[i]?.id
+      const values =
+        (qid ? byId.get(qid) : undefined) ??
+        bySig.get(`${q.header}${KEY_SEP}${q.question}`) ??
+        []
       const { selected, other } = matchSelections(
         values,
         q.options.map((o) => o.label)
@@ -99,7 +111,7 @@ export function AskQuestionResultCard({
       sel[q.id] = { chosen: selected, otherText: other.join(", ") }
     })
     return sel
-  }, [pending, outcome])
+  }, [pending, outcome, questions])
 
   // Compact header card for the states with no answered selection to render.
   const shell = (subtitle: string | null, body?: ReactNode) => (

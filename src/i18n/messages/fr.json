@@ -2615,6 +2615,8 @@
           "remaining": "Restant",
           "elapsed": "Écoulé",
           "tokens": "tokens",
+          "pause": "Pause",
+          "clear": "Effacer",
           "status": {
             "active": "actif",
             "paused": "en pause",
@@ -2794,6 +2796,10 @@
         "opClose": "Fermeture du sous-agent",
         "opResume": "Reprise du sous-agent"
       },
+      "contextCompaction": {
+        "compacting": "Compactage du contexte…",
+        "compacted": "Contexte compacté"
+      },
       "backgroundTasks": {
         "running": "{count, plural, one {# tâche en arrière-plan en cours} other {# tâches en arrière-plan en cours}}",
         "settling": "Synchronisation des résultats d'arrière-plan…",
@@ -2803,6 +2809,10 @@
         "cardCompleted": "Tâche en arrière-plan terminée",
         "cardFinishedWithStatus": "Tâche en arrière-plan terminée ({status})",
         "cardResultPending": "Résultat pas encore reçu"
+      },
+      "proposedPlan": {
+        "title": "Plan proposé",
+        "planning": "Planification…"
       }
     },
     "diffPreview": {

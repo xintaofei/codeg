@@ -557,6 +557,57 @@ describe("groupGoalRuns", () => {
   })
 })
 
+describe("adaptMessageTurn proposed plan", () => {
+  const wrap = (text: string, streaming = false) =>
+    adaptMessageTurn(
+      {
+        id: "pp-turn",
+        role: "assistant" as const,
+        timestamp: "2026-07-22T00:00:00.000Z",
+        blocks: [{ type: "text", text }],
+      },
+      {
+        attachedResources: "Attached resources",
+        toolCallFailed: "Tool failed",
+      },
+      streaming
+    )
+
+  it("lifts a closed <proposed_plan> block into a card with surrounding prose", () => {
+    const adapted = wrap(
+      "Here is my plan.\n<proposed_plan>\n# Plan\n\n- step one\n</proposed_plan>\nProceeding."
+    )
+    expect(adapted.content.map((p) => p.type)).toEqual([
+      "text",
+      "proposed-plan",
+      "text",
+    ])
+    const card = adapted.content[1] as {
+      markdown: string
+      isStreaming: boolean
+    }
+    expect(card.isStreaming).toBe(false)
+    expect(card.markdown).toContain("# Plan")
+    expect(card.markdown).toContain("- step one")
+    // The raw tags never leak into rendered content.
+    expect(JSON.stringify(adapted.content)).not.toContain("<proposed_plan>")
+  })
+
+  it("renders an unclosed block as a streaming card while the turn streams", () => {
+    const adapted = wrap("<proposed_plan>\n# Draft", true)
+    expect(adapted.content.map((p) => p.type)).toEqual(["proposed-plan"])
+    expect(adapted.content[0]).toMatchObject({
+      type: "proposed-plan",
+      isStreaming: true,
+    })
+  })
+
+  it("leaves ordinary assistant text untouched", () => {
+    const adapted = wrap("Just a normal reply.")
+    expect(adapted.content.map((p) => p.type)).toEqual(["text"])
+  })
+})
+
 describe("adaptMessageTurn goal update text", () => {
   it("converts streaming Codex goal update text into a running goal card", () => {
     const adapted = adaptMessageTurn(

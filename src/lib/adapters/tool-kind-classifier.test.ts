@@ -98,6 +98,12 @@ describe("isAgentLikeToolName", () => {
     expect(isAgentLikeToolName("codeg-mcp:ask_user_question")).toBe(true)
   })
 
+  it("matches codex's Plan-mode request_user_input", () => {
+    // History keeps the raw name (the live path collapses it to "question"); it
+    // owns the AskQuestionResultCard, so it must render standalone, not folded.
+    expect(isAgentLikeToolName("request_user_input")).toBe(true)
+  })
+
   it("matches check_user_feedback across host naming conventions", () => {
     expect(isAgentLikeToolName("check_user_feedback")).toBe(true)
     expect(isAgentLikeToolName("mcp__codeg-mcp__check_user_feedback")).toBe(

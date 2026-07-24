@@ -293,4 +293,46 @@ describe("AskQuestionResultCard", () => {
     expect(chosen).toBeChecked()
     expect(chosen).toBeDisabled()
   })
+
+  it("echoes codex request_user_input answers keyed by question id", () => {
+    // The reported bug: codex Plan-mode `request_user_input` rendered "no
+    // selection" because its answer envelope is keyed by the question id
+    // ({answers:{<id>:{answers:[label]}}}), not the codeg-mcp array shape. The
+    // card must match the answer to the question by that id and echo the pick.
+    const input = JSON.stringify({
+      questions: [
+        {
+          id: "drink_preference",
+          header: "饮品偏好",
+          question: "工作时你更喜欢喝哪一种饮品？",
+          options: [
+            { label: "咖啡（推荐）", description: "浓郁提神" },
+            { label: "茶", description: "清爽温和" },
+            { label: "果汁", description: "甜味水果" },
+          ],
+        },
+      ],
+    })
+    const output = JSON.stringify({
+      answers: { drink_preference: { answers: ["咖啡（推荐）"] } },
+    })
+    renderWithIntl(
+      <AskQuestionResultCard
+        input={input}
+        output={output}
+        state="output-available"
+      />
+    )
+
+    // Collapsed capsule echoes the pick — NOT the noSelection fallback.
+    expect(screen.getByText("咖啡（推荐）")).toBeInTheDocument()
+    expect(screen.queryByText(result.noSelection)).toBeNull()
+    // Expanded: the chosen option is checked + disabled, others not. (The radio's
+    // accessible name folds in its description, so match on the label substring.)
+    expand()
+    const chosen = screen.getByRole("radio", { name: /咖啡/ })
+    expect(chosen).toBeChecked()
+    expect(chosen).toBeDisabled()
+    expect(screen.getByRole("radio", { name: /茶/ })).not.toBeChecked()
+  })
 })

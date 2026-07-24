@@ -2615,6 +2615,8 @@
           "remaining": "Remaining",
           "elapsed": "Elapsed",
           "tokens": "tokens",
+          "pause": "Pause",
+          "clear": "Clear",
           "status": {
             "active": "active",
             "paused": "paused",
@@ -2794,6 +2796,10 @@
         "opClose": "Closing sub-agent",
         "opResume": "Resuming sub-agent"
       },
+      "contextCompaction": {
+        "compacting": "Compacting context…",
+        "compacted": "Context compacted"
+      },
       "backgroundTasks": {
         "running": "{count, plural, one {# background task running} other {# background tasks running}}",
         "settling": "Syncing background results…",
@@ -2803,6 +2809,10 @@
         "cardCompleted": "Background task completed",
         "cardFinishedWithStatus": "Background task finished ({status})",
         "cardResultPending": "Result not returned yet"
+      },
+      "proposedPlan": {
+        "title": "Proposed plan",
+        "planning": "Planning…"
       }
     },
     "diffPreview": {

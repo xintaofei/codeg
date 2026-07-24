@@ -7607,6 +7607,16 @@ pub async fn acp_set_config_option(
         .await
 }
 
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_goal_control(
+    connection_id: String,
+    action: crate::acp::connection::GoalControlAction,
+    manager: State<'_, ConnectionManager>,
+) -> Result<(), AcpError> {
+    manager.goal_control(&connection_id, action).await
+}
+
 /// Spawn a transient ACP connection for `agent_type` with a silent emitter,
 /// read whatever `SessionConfigOptions` / `SessionModes` the agent advertises,
 /// and tear it down. The returned snapshot drives the delegation-settings UI

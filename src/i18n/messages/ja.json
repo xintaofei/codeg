@@ -2615,6 +2615,8 @@
           "remaining": "残り",
           "elapsed": "経過時間",
           "tokens": "tokens",
+          "pause": "一時停止",
+          "clear": "クリア",
           "status": {
             "active": "実行中",
             "paused": "一時停止",
@@ -2794,6 +2796,10 @@
         "opClose": "サブエージェントを終了中",
         "opResume": "サブエージェントを再開中"
       },
+      "contextCompaction": {
+        "compacting": "コンテキストを圧縮しています…",
+        "compacted": "コンテキストを圧縮しました"
+      },
       "backgroundTasks": {
         "running": "{count} 件のバックグラウンドタスクを実行中",
         "settling": "バックグラウンド結果を同期中…",
@@ -2803,6 +2809,10 @@
         "cardCompleted": "バックグラウンドタスクが完了しました",
         "cardFinishedWithStatus": "バックグラウンドタスクが終了しました（{status}）",
         "cardResultPending": "結果はまだ返っていません"
+      },
+      "proposedPlan": {
+        "title": "提案された計画",
+        "planning": "計画中…"
       }
     },
     "diffPreview": {

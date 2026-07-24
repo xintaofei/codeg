@@ -10,7 +10,7 @@
  * data it actually has.
  */
 
-import { useState, type ReactNode } from "react"
+import { Children, useState, type ReactNode } from "react"
 import { ChevronRightIcon } from "lucide-react"
 
 import { Shimmer } from "@/components/ai-elements/shimmer"
@@ -52,6 +52,14 @@ export function AgentCapsule({
   defaultOpen,
   children,
 }: AgentCapsuleProps) {
+  // Whether there's any real body content. `Children.toArray` flattens the
+  // caller's conditional children (`{cond && <…/>}`, `.map(a => … ? <…/> : null)`)
+  // and drops the `false`/`null` entries, so an all-absent body yields length 0.
+  // A bodyless capsule then renders as a bare pill rather than an empty bordered
+  // frame — the long-standing sub-agent "white box", which the newer codex now
+  // triggers on every `wait_agent` (its wait carries no per-agent result).
+  const hasBody = Children.toArray(children).length > 0
+
   const [bodyOpen, setBodyOpen] = useState(defaultOpen ?? isError)
 
   // Respond to prop transitions with the canonical React tracked-previous-state
@@ -76,16 +84,15 @@ export function AgentCapsule({
     }
   }
 
-  return (
-    <Collapsible open={bodyOpen} onOpenChange={setBodyOpen} className="w-full">
-      {/* Pill trigger — matches ToolGroupPart structure with themed emphasis. */}
-      <CollapsibleTrigger
-        className={cn(
-          "group inline-flex max-w-full items-center gap-1.5 rounded-full bg-primary/10 px-3.5 py-2 text-xs font-medium text-foreground transition-colors hover:bg-primary/15 ws-msg-chip",
-          isError && "text-destructive"
-        )}
-        aria-label={statusLabel}
-      >
+  const pillClass = cn(
+    "group inline-flex max-w-full items-center gap-1.5 rounded-full bg-primary/10 px-3.5 py-2 text-xs font-medium text-foreground transition-colors ws-msg-chip",
+    hasBody && "hover:bg-primary/15",
+    isError && "text-destructive"
+  )
+
+  const pillInner = (
+    <>
+      {hasBody && (
         <ChevronRightIcon
           aria-hidden="true"
           className={cn(
@@ -93,25 +100,44 @@ export function AgentCapsule({
             bodyOpen && "rotate-90"
           )}
         />
-        <span className="min-w-0 truncate">
-          {isRunning ? (
-            <Shimmer as="span" duration={1} shineColor="var(--primary)">
-              {title}
-            </Shimmer>
-          ) : (
-            title
-          )}
+      )}
+      <span className="min-w-0 truncate">
+        {isRunning ? (
+          <Shimmer as="span" duration={1} shineColor="var(--primary)">
+            {title}
+          </Shimmer>
+        ) : (
+          title
+        )}
+      </span>
+      {idBadge != null && (
+        <span className="shrink-0 font-mono text-[10px] font-normal text-muted-foreground/70">
+          {idBadge}
         </span>
-        {idBadge != null && (
-          <span className="shrink-0 font-mono text-[10px] font-normal text-muted-foreground/70">
-            {idBadge}
-          </span>
-        )}
-        {rightSuffix != null && (
-          <span className="flex shrink-0 items-center text-muted-foreground/60">
-            {rightSuffix}
-          </span>
-        )}
+      )}
+      {rightSuffix != null && (
+        <span className="flex shrink-0 items-center text-muted-foreground/60">
+          {rightSuffix}
+        </span>
+      )}
+    </>
+  )
+
+  // Nothing to expand → a bare, non-interactive pill (no chevron, no bordered
+  // frame). This is the fix for the empty sub-agent "white box".
+  if (!hasBody) {
+    return (
+      <div className={pillClass} aria-label={statusLabel}>
+        {pillInner}
+      </div>
+    )
+  }
+
+  return (
+    <Collapsible open={bodyOpen} onOpenChange={setBodyOpen} className="w-full">
+      {/* Pill trigger — matches ToolGroupPart structure with themed emphasis. */}
+      <CollapsibleTrigger className={pillClass} aria-label={statusLabel}>
+        {pillInner}
       </CollapsibleTrigger>
 
       {/* Body — sits below the pill. Internal sections retain their own affordances. */}

@@ -42,6 +42,10 @@ import {
 import { AgentToolCallPart } from "./agent-tool-call"
 import { AskQuestionResultCard } from "./ask-question-result-card"
 import { CollabAgentCard } from "./collab-agent-card"
+import {
+  ContextCompactionCard,
+  isContextCompactionMeta,
+} from "./context-compaction-card"
 import { FeedbackCheckResultCard } from "./feedback-check-result-card"
 import { COLLAB_AGENT_TOOL_NAME } from "@/lib/collab-tool"
 import { DelegatedSubThread } from "./delegated-sub-thread"
@@ -60,6 +64,7 @@ import {
   TerminalIcon,
   SearchIcon,
   GlobeIcon,
+  ClipboardListIcon,
   ListTodoIcon,
   SparklesIcon,
   CircleCheckIcon,
@@ -2304,6 +2309,13 @@ const ToolCallPart = memo(function ToolCallPart({
       toolNameLower === "exitplanmode" ||
       isFileTool) &&
     !part.errorText
+  // codex-acp #288: the context-compaction lifecycle is a `tool_call` tagged
+  // with `_meta.contextCompaction` (not addressed by tool name) → a subtle
+  // status card instead of the generic tool shell.
+  if (isContextCompactionMeta(part.meta)) {
+    return <ContextCompactionCard state={part.state} />
+  }
+
   // Agent/subagent tools get a dedicated container rendering
   if (toolNameLower === "agent") {
     return (
@@ -2563,6 +2575,34 @@ const PlanPart = memo(function PlanPart({
   return <PlanCard entries={part.entries} isStreaming={part.isStreaming} />
 })
 
+// Codex Plan-mode `<proposed_plan>` block: free-form markdown plan document
+// rendered inside card chrome (distinct from the TodoWrite checklist PlanCard).
+const ProposedPlanPart = memo(function ProposedPlanPart({
+  part,
+}: {
+  part: Extract<AdaptedContentPart, { type: "proposed-plan" }>
+}) {
+  const t = useTranslations("Folder.chat.proposedPlan")
+  const markdown = part.markdown.trim()
+  return (
+    <div className="overflow-hidden rounded-lg border bg-card/50 ws-msg-card">
+      <div className="flex items-center gap-2 border-b px-3 py-2">
+        <ClipboardListIcon className="size-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate text-sm font-medium">
+          {t("title")}
+        </span>
+      </div>
+      <div className="px-3 py-2 text-sm">
+        {markdown.length > 0 ? (
+          <MessageResponse>{markdown}</MessageResponse>
+        ) : (
+          <span className="text-muted-foreground">{t("planning")}</span>
+        )}
+      </div>
+    </div>
+  )
+})
+
 const ToolGroupPart = memo(function ToolGroupPart({
   part,
 }: {
@@ -2717,6 +2757,10 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
 
     if (part.type === "plan") {
       return <PlanPart key={`plan-${keyId}`} part={part} />
+    }
+
+    if (part.type === "proposed-plan") {
+      return <ProposedPlanPart key={`proposed-plan-${keyId}`} part={part} />
     }
 
     if (part.type === "generated-image") {

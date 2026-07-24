@@ -1859,6 +1859,7 @@ mod tests {
                         description: String::new(),
                     },
                 ],
+                is_secret: false,
             }],
         })
     }
