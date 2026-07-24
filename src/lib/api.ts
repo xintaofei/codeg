@@ -9,6 +9,8 @@ import {
 import { getCodegToken } from "./transport/web-auth"
 import { notifyWebUnauthorized } from "./transport/web-connection-store"
 import { getCurrentEffectiveAppLocale } from "./i18n"
+import { emitOpenCommitDialog } from "./commit-dialog-events"
+import { emitOpenSettingsDialog } from "./settings-dialog-events"
 import { TurnBusyError, isTurnInProgressRejection } from "./turn-busy"
 import type { FolderThemeColor } from "./theme-presets"
 import type {
@@ -1963,7 +1965,7 @@ export async function openCommitWindow(folderId: number): Promise<void> {
     "open_commit_window",
     { folderId, locale }
   )
-  window.open(result.path, `commit-${folderId}`)
+  emitOpenCommitDialog(result.path)
 }
 
 export type SettingsSection =
@@ -1994,7 +1996,7 @@ export async function openSettingsWindow(
       remoteConnectionId: getActiveRemoteConnectionId(),
     })
   }
-  // Web mode: open in new window
+  // Web mode: render the existing settings route in the page-level modal.
   const result = await getTransport().call<{ path: string }>(
     "open_settings_window",
     {
@@ -2003,7 +2005,7 @@ export async function openSettingsWindow(
       locale,
     }
   )
-  window.open(result.path, `settings-${section ?? "general"}`)
+  emitOpenSettingsDialog(result.path)
 }
 
 export interface OpenImportSessionsWindowOptions {
