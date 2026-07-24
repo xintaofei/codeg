@@ -1,4 +1,11 @@
-use std::path::{Path, PathBuf};
+// Path / process helpers are only used by open_path_in_editor (desktop).
+// PathBuf is Windows-only (LOCALAPPDATA candidate paths). Gate imports so
+// clippy -D warnings stays clean on macOS/Linux desktop and server builds.
+#[cfg(feature = "tauri-runtime")]
+use std::path::Path;
+#[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+use std::path::PathBuf;
+#[cfg(feature = "tauri-runtime")]
 use std::process::{Command, Stdio};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
