@@ -185,14 +185,14 @@ describe("Sidebar — Show completed default", () => {
     mockState.activeFolder = { id: 7, path: "/x" }
   })
 
-  it("defaults Show completed on and threads it to the conversation list", () => {
-    renderSidebar()
-    expect(spies.listProps?.showCompleted).toBe(true)
-  })
-
-  it("respects an explicitly-stored 'false' from localStorage", () => {
-    localStorage.setItem("workspace:sidebar-show-completed", "false")
+  it("defaults Show completed off and threads it to the conversation list", () => {
     renderSidebar()
     expect(spies.listProps?.showCompleted).toBe(false)
+  })
+
+  it("respects an explicitly-stored 'true' from localStorage", () => {
+    localStorage.setItem("workspace:sidebar-show-completed", "true")
+    renderSidebar()
+    expect(spies.listProps?.showCompleted).toBe(true)
   })
 })

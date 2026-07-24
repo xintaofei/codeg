@@ -83,17 +83,18 @@ export function saveConversationExpanded(ids: number[]): void {
 }
 
 /** Whether completed conversations are shown in the sidebar list. Defaults to
- *  ON; only an explicitly-stored "false" (the user unchecked it) hides them. */
+ *  OFF so finished/imported sessions stay out of the way; only an
+ *  explicitly-stored "true" (the user turned it on) reveals them. */
 export function loadShowCompleted(): boolean {
-  if (typeof window === "undefined") return true
+  if (typeof window === "undefined") return false
   try {
     const raw = localStorage.getItem(SHOW_COMPLETED_KEY)
-    if (raw === "false") return false
     if (raw === "true") return true
+    if (raw === "false") return false
   } catch {
     /* ignore */
   }
-  return true
+  return false
 }
 
 export function saveShowCompleted(value: boolean): void {

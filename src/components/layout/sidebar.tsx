@@ -132,10 +132,11 @@ export function Sidebar() {
   // rem-sized overlay buttons. Mobile has no overlay (the sidebar is a Sheet).
   const leftReserve = leftChromeReserve(platformIsMac && isDesktop(), zoomLevel)
 
-  // Both default ON (the mount effect below reconciles a persisted "false").
-  // The initial value matches that default so the pre-hydration render doesn't
-  // flash from off → on.
-  const [showCompleted, setShowCompleted] = useState(true)
+  // `showCompleted` defaults OFF and `showWorktrees` defaults ON (the mount
+  // effect below reconciles a persisted override). Each initial value matches
+  // its own default so the pre-hydration render doesn't flash as the stored
+  // preference is applied.
+  const [showCompleted, setShowCompleted] = useState(false)
   const [showWorktrees, setShowWorktrees] = useState(true)
   const [sortMode, setSortMode] = useState<SidebarSortMode>("created")
   const [sectionOrder, setSectionOrder] =
