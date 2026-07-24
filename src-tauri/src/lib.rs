@@ -1,3 +1,12 @@
+// The ACP connection driver (`acp::connection`) wraps the enormous
+// `run_connection` future in a `block_on(async move { … })` frame whose type
+// layout nests deep enough to blow rustc's default query depth of 128 (it
+// overflowed by ~130 when computing the async block's layout). This is a
+// compile-time type-recursion knob, unrelated to any runtime limit — bump it
+// so the giant future's layout resolves. See the big-stack thread in
+// `acp/connection.rs` for the sibling *runtime* mitigation of the same frame.
+#![recursion_limit = "256"]
+
 pub mod acp;
 pub use acp::{
     idle_sweep_task, idle_timeout_from_env, lifecycle_subscriber_task, SWEEP_INTERVAL_SECS,
