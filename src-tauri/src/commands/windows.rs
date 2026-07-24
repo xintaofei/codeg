@@ -24,10 +24,10 @@ const TRAFFIC_LIGHT_X: f64 = 12.0;
 const TRAFFIC_LIGHT_Y: f64 = 17.0;
 /// The workspace windows (local `main` + remote workspace) render the taller
 /// h-10 (40px) `FolderTitleBar` that hosts the relocated conversation + file
-/// tab strips, so their traffic lights sit ~4px lower to stay vertically
+/// tab strips, so their traffic lights sit ~5px lower to stay vertically
 /// centred within the taller bar.
 #[cfg(target_os = "macos")]
-const WORKSPACE_TRAFFIC_LIGHT_Y: f64 = 21.0;
+const WORKSPACE_TRAFFIC_LIGHT_Y: f64 = 22.0;
 
 #[cfg(target_os = "macos")]
 static CURRENT_ZOOM: AtomicU32 = AtomicU32::new(100);
