@@ -60,6 +60,7 @@ const OUTBOUND_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 use crate::app_error::{
     AppCommandError, AppErrorCode, UPLOAD_I18N_KEY_NOT_A_FILE, UPLOAD_I18N_KEY_TOO_LARGE,
 };
+use crate::commands::local_attachment::{read_image_file, read_upload_file, UPLOAD_MAX_BYTES};
 use crate::db::service::remote_workspace_connection_service;
 use crate::db::AppDatabase;
 use crate::workspace_transfer::{
@@ -355,14 +356,6 @@ pub async fn remote_http_call(
 
 // ─── Multipart upload proxy ───────────────────────────────────────────
 
-/// Hard ceiling for `read_local_file_for_upload`. Mirrors the server-side
-/// `UPLOAD_MAX_BYTES` in `web/handlers/files.rs`; kept here as a local
-/// constant so this command can reject oversize reads *before* incurring
-/// the file I/O cost — the remote `/api/upload_attachment` enforces the
-/// same cap regardless, but a 100 MB read followed by a base64 encode and
-/// an IPC trip would be a noticeable waste compared to early rejection.
-const UPLOAD_MAX_BYTES: u64 = 2 * 1024 * 1024;
-
 /// Maximum tolerated base64 payload length, pre-decode. Exactly
 /// `ceil(UPLOAD_MAX_BYTES / 3) * 4` — that formula already accounts for
 /// padding to the nearest 4-byte boundary, so a legitimate envelope of
@@ -417,15 +410,9 @@ fn sanitize_upload_file_name(raw: &str) -> String {
     }
 }
 
-/// Stream a local file into a base64-wrapped JSON envelope ready to be
-/// passed to `remote_upload_attachment`. Two callers need this today: the
-/// Tauri-native drag-drop path (which receives OS paths from the webview
-/// drag handler) and a future "attach this local path" command palette.
-///
-/// Rejects anything larger than `UPLOAD_MAX_BYTES` with a structured
-/// `IoError` carrying the limit in `detail` so the frontend can format an
-/// `attachUploadTooLarge` toast without round-tripping through the actual
-/// upload endpoint.
+/// Base64-wrapped bytes read through one of the fixed-purpose local attachment
+/// readers. Ordinary uploads are capped at 2 MiB; inline images are capped at
+/// 20,000,000 bytes. Both limits are selected and enforced by Rust.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalFileForUpload {
@@ -435,55 +422,36 @@ pub struct LocalFileForUpload {
     pub data_base64: String,
 }
 
-#[tauri::command]
-pub async fn read_local_file_for_upload(
-    path: String,
-) -> Result<LocalFileForUpload, AppCommandError> {
-    let path_buf = std::path::PathBuf::from(&path);
-    // Use symlink_metadata + explicit `is_file()` so a webview-driven
-    // invoke can't follow a `/tmp/symlink → /etc/shadow` into reading
-    // anything outside the user's intent. The same guard rejects FIFOs
-    // and device nodes — `tokio::fs::read` would otherwise block on a
-    // FIFO until the writing side closes, hanging this command (and the
-    // calling webview's drag-drop handler) indefinitely.
-    let metadata = tokio::fs::symlink_metadata(&path_buf).await.map_err(|e| {
-        AppCommandError::io_error("Failed to stat local file for upload")
-            .with_detail(format!("{}: {e}", path_buf.display()))
-    })?;
-    if !metadata.file_type().is_file() {
-        return Err(AppCommandError::io_error("Not a regular file")
-            .with_detail(path_buf.display().to_string())
-            .with_i18n(UPLOAD_I18N_KEY_NOT_A_FILE, BTreeMap::new()));
-    }
-    let size = metadata.len();
-    if size > UPLOAD_MAX_BYTES {
-        return Err(
-            AppCommandError::io_error("Local file exceeds the upload size limit")
-                .with_detail(format!("size={size} limit={UPLOAD_MAX_BYTES}"))
-                .with_i18n(
-                    UPLOAD_I18N_KEY_TOO_LARGE,
-                    upload_i18n_params([
-                        ("size", size.to_string()),
-                        ("limit", UPLOAD_MAX_BYTES.to_string()),
-                    ]),
-                ),
-        );
-    }
-    let bytes = tokio::fs::read(&path_buf).await.map_err(|e| {
-        AppCommandError::io_error("Failed to read local file for upload")
-            .with_detail(format!("{}: {e}", path_buf.display()))
-    })?;
+fn local_attachment_from_bytes(path_buf: PathBuf, bytes: Vec<u8>) -> LocalFileForUpload {
     let file_name = path_buf
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "file".to_string());
     let mime_type = guess_mime_from_path(&path_buf);
-    Ok(LocalFileForUpload {
+    LocalFileForUpload {
         file_name: sanitize_upload_file_name(&file_name),
         mime_type,
-        size,
+        size: bytes.len() as u64,
         data_base64: STANDARD.encode(&bytes),
-    })
+    }
+}
+
+#[tauri::command]
+pub async fn read_local_file_for_upload(
+    path: String,
+) -> Result<LocalFileForUpload, AppCommandError> {
+    let path_buf = PathBuf::from(path);
+    let bytes = read_upload_file(&path_buf).await?;
+    Ok(local_attachment_from_bytes(path_buf, bytes))
+}
+
+#[tauri::command]
+pub async fn read_local_image_for_attachment(
+    path: String,
+) -> Result<LocalFileForUpload, AppCommandError> {
+    let path_buf = PathBuf::from(path);
+    let bytes = read_image_file(&path_buf).await?;
+    Ok(local_attachment_from_bytes(path_buf, bytes))
 }
 
 /// Forward a multipart upload (file bytes + optional session bucket) to the

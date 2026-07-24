@@ -21,19 +21,20 @@ use crate::db::error::DbError;
 // becomes a loud CI failure rather than a silent demotion to the
 // generic "upload failed" toast.
 
-/// Error key emitted when an upload payload exceeds `UPLOAD_MAX_BYTES`,
-/// at any of three layers (local pre-read, base64 pre-decode, post-decode).
+/// Error key emitted when an attachment exceeds its Rust-controlled size
+/// limit, including local pre-read and post-read checks and remote upload
+/// base64 pre-decode/post-decode checks.
 /// Frontend params: `size`, `limit`.
 pub const UPLOAD_I18N_KEY_TOO_LARGE: &str = "errors.upload.tooLarge";
 
-/// Error key emitted when `read_local_file_for_upload` is handed a path
-/// that resolves to a directory, FIFO, device node, or other non-regular
-/// file. No params.
+/// Error key emitted when a local attachment reader is handed a path that is
+/// a symlink, directory, FIFO, device node, or other non-regular file. No
+/// params.
 ///
-/// Only `commands/remote_proxy.rs` emits this today (the command is gated
-/// on `feature = "tauri-runtime"`), so the server-only build won't see a
-/// use site. The constant still has to exist there because it is part of
-/// the wire-format contract the frontend depends on, hence `allow(dead_code)`.
+/// Production readers are gated on `feature = "tauri-runtime"`, so the
+/// server-only build won't see a use site outside tests. The constant still
+/// has to exist there because it is part of the frontend wire-format contract,
+/// hence `allow(dead_code)`.
 #[allow(dead_code)]
 pub const UPLOAD_I18N_KEY_NOT_A_FILE: &str = "errors.upload.notAFile";
 

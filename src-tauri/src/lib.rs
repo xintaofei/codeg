@@ -1004,6 +1004,7 @@ mod tauri_app {
                 remote_proxy_commands::remote_download_workspace_file,
                 remote_proxy_commands::remote_download_workspace_dir,
                 remote_proxy_commands::read_local_file_for_upload,
+                remote_proxy_commands::read_local_image_for_attachment,
                 remote_proxy_commands::remote_ws_subscribe,
                 remote_proxy_commands::remote_ws_unsubscribe,
                 remote_proxy_commands::remote_ws_send_text,

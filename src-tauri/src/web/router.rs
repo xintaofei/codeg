@@ -18,6 +18,8 @@ use super::{auth, handlers, ws};
 use crate::app_state::AppState;
 use tracing::Instrument;
 
+const ACP_PROMPT_MAX_BYTES: usize = 32 * 1024 * 1024;
+
 pub fn build_router(
     state: Arc<AppState>,
     token: String,
@@ -607,7 +609,13 @@ pub fn build_router(
             "/acp_touch_connection",
             post(handlers::acp::acp_touch_connection),
         )
-        .route("/acp_prompt", post(handlers::acp::acp_prompt))
+        .route(
+            "/acp_prompt",
+            // Browser image prompts carry the pasted file inline as base64.
+            // The native image-read path permits 20 MB, which expands to about
+            // 26.7 MB before the surrounding JSON is added.
+            post(handlers::acp::acp_prompt).layer(DefaultBodyLimit::max(ACP_PROMPT_MAX_BYTES)),
+        )
         .route("/acp_preflight", post(handlers::acp::acp_preflight))
         .route("/acp_set_mode", post(handlers::acp::acp_set_mode))
         .route(
@@ -1366,4 +1374,44 @@ async fn api_not_found(uri: axum::http::Uri) -> impl IntoResponse {
             "message": format!("API endpoint '{}' is not available in web mode", command),
         })),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum_test::TestServer;
+
+    #[tokio::test]
+    async fn acp_prompt_accepts_image_payload_above_axum_default_limit() {
+        let temp_dir = tempfile::tempdir().expect("create test data directory");
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let state = Arc::new(AppState::new_for_test(db, temp_dir.path().to_path_buf()));
+        let router = build_router(
+            state,
+            "test-token".to_owned(),
+            temp_dir.path().to_path_buf(),
+            Arc::new(ShutdownSignal::new()),
+        );
+        let server = TestServer::new(router).expect("create test server");
+
+        let response = server
+            .post("/api/acp_prompt")
+            .authorization_bearer("test-token")
+            .json(&serde_json::json!({
+                "connectionId": "missing-connection",
+                "blocks": [{
+                    "type": "image",
+                    "data": "A".repeat(2 * 1024 * 1024),
+                    "mime_type": "image/png",
+                    "uri": null
+                }],
+                "folderId": null,
+                "conversationId": null,
+                "clientMessageId": null
+            }))
+            .await;
+
+        assert_eq!(response.status_code(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(response.text().contains("connection not found"));
+    }
 }

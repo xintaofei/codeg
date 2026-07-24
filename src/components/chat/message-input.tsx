@@ -75,6 +75,7 @@ import {
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import {
   readFileBase64,
+  readLocalImagePathForAttachment,
   quickMessagesList,
   uploadAttachment,
   uploadLocalPathToRemote,
@@ -153,6 +154,11 @@ import {
   RichComposer,
   type RichComposerHandle,
 } from "@/components/chat/composer/rich-composer"
+import {
+  mimeTypeFromPath,
+  partitionAttachmentFiles,
+  partitionAttachmentPaths,
+} from "@/components/chat/attachment-routing"
 import {
   composerLeafText,
   docToPromptBlocks,
@@ -255,43 +261,8 @@ interface MessageInputProps {
   onInjectConsumed?: () => void
 }
 
-const MIME_BY_EXT: Record<string, string> = {
-  txt: "text/plain",
-  md: "text/markdown",
-  json: "application/json",
-  yaml: "application/yaml",
-  yml: "application/yaml",
-  csv: "text/csv",
-  html: "text/html",
-  css: "text/css",
-  js: "text/javascript",
-  mjs: "text/javascript",
-  cjs: "text/javascript",
-  ts: "text/typescript",
-  tsx: "text/tsx",
-  jsx: "text/jsx",
-  py: "text/x-python",
-  rs: "text/rust",
-  go: "text/x-go",
-  java: "text/x-java-source",
-  xml: "application/xml",
-  toml: "application/toml",
-  pdf: "application/pdf",
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  webp: "image/webp",
-  svg: "image/svg+xml",
-}
-
 function fileNameFromPath(path: string): string {
   return path.split(/[/\\]/).pop() || path
-}
-
-function mimeTypeFromPath(path: string): string | null {
-  const ext = path.split(".").pop()?.toLowerCase() ?? ""
-  return MIME_BY_EXT[ext] ?? null
 }
 
 function hasDragFiles(dataTransfer: DataTransfer | null): boolean {
@@ -378,7 +349,7 @@ const TEXT_LIKE_MIME_PREFIXES = [
   "application/javascript",
   "application/typescript",
 ]
-const DRAG_DROP_IMAGE_MAX_BYTES = 20_000_000
+const IMAGE_ATTACHMENT_MAX_BYTES = 20_000_000
 
 function isTextLikeFile(file: File): boolean {
   const mime = file.type.toLowerCase()
@@ -390,7 +361,7 @@ function isTextLikeFile(file: File): boolean {
   const ext = file.name.split(".").pop()?.toLowerCase()
   if (!ext) return false
   return Boolean(
-    MIME_BY_EXT[ext]?.startsWith("text/") ||
+    mimeTypeFromPath(file.name)?.startsWith("text/") ||
     ["json", "yaml", "yml", "xml", "toml", "md", "csv"].includes(ext)
   )
 }
@@ -1485,34 +1456,76 @@ export function MessageInput({
     ]
   )
 
-  const appendImageAttachments = useCallback(async (files: File[]) => {
-    if (files.length === 0) return
-    const parsed = await Promise.all(
-      files.map(async (file, index) => {
-        const mimeType =
-          file.type && file.type.startsWith("image/")
-            ? file.type
-            : (mimeTypeFromPath(file.name) ?? "image/png")
-        const base64Data = await blobToBase64(file)
-        return {
-          id: `image:${Date.now()}:${index}:${randomUUID()}`,
-          type: "image" as const,
-          data: base64Data,
-          uri: null,
-          name: file.name || `image-${Date.now()}-${index + 1}`,
-          mimeType,
+  const appendImageAttachments = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return
+      const oversized = files.filter(
+        (file) => file.size > IMAGE_ATTACHMENT_MAX_BYTES
+      )
+      const accepted = files.filter(
+        (file) => file.size <= IMAGE_ATTACHMENT_MAX_BYTES
+      )
+      if (oversized.length > 0) {
+        toast.error(
+          tAttach("attachUploadTooLarge", {
+            limit: IMAGE_ATTACHMENT_MAX_BYTES / 1_000_000,
+            names: oversized.map((file) => file.name).join(", "),
+          })
+        )
+      }
+      if (accepted.length === 0) return
+
+      const settled = await Promise.allSettled(
+        accepted.map(async (file, index) => {
+          const mimeType =
+            file.type && file.type.startsWith("image/")
+              ? file.type
+              : (mimeTypeFromPath(file.name) ?? "image/png")
+          const base64Data = await blobToBase64(file)
+          return {
+            id: `image:${Date.now()}:${index}:${randomUUID()}`,
+            type: "image" as const,
+            data: base64Data,
+            uri: null,
+            name: file.name || `image-${Date.now()}-${index + 1}`,
+            mimeType,
+          }
+        })
+      )
+      const parsed: ImageInputAttachment[] = []
+      const failed: string[] = []
+      settled.forEach((result, index) => {
+        if (result.status === "fulfilled") {
+          parsed.push(result.value)
+          return
         }
+        const name = accepted[index].name
+        failed.push(name)
+        console.error(
+          `[MessageInput] image attachment read failed (${name}):`,
+          result.reason
+        )
       })
-    )
-    setAttachments((prev) => [...prev, ...parsed])
-  }, [])
+      if (failed.length > 0) {
+        toast.error(
+          tAttach("attachUploadFailed", {
+            names: failed.join(", "),
+          })
+        )
+      }
+      if (parsed.length > 0) {
+        setAttachments((prev) => [...prev, ...parsed])
+      }
+    },
+    [tAttach]
+  )
 
   const appendImagePathAttachments = useCallback(
     async (paths: string[]) => {
       if (paths.length === 0 || !canAttachImages) return
       const settled = await Promise.allSettled(
         paths.map(async (path, index) => {
-          const data = await readFileBase64(path, DRAG_DROP_IMAGE_MAX_BYTES)
+          const data = await readFileBase64(path, IMAGE_ATTACHMENT_MAX_BYTES)
           return {
             id: `image:${Date.now()}:${index}:${randomUUID()}`,
             type: "image" as const,
@@ -1542,29 +1555,21 @@ export function MessageInput({
   )
 
   const appendPathsFromDrop = useCallback(
-    async (paths: string[]) => {
+    async (paths: string[], opts: { atCaret?: boolean } = {}) => {
       if (paths.length === 0) return
       const normalized = paths.filter(
         (path): path is string => typeof path === "string" && path.length > 0
       )
       if (normalized.length === 0) return
 
-      const imagePaths: string[] = []
-      const resourcePaths: string[] = []
-      for (const path of normalized) {
-        const mimeType = mimeTypeFromPath(path) ?? ""
-        if (canAttachImages && mimeType.startsWith("image/")) {
-          imagePaths.push(path)
-        } else {
-          resourcePaths.push(path)
-        }
-      }
+      const { images: imagePaths, resources: resourcePaths } =
+        partitionAttachmentPaths(normalized, canAttachImages)
 
       if (imagePaths.length > 0) {
         await appendImagePathAttachments(imagePaths)
       }
       if (resourcePaths.length > 0) {
-        appendResourceAttachments(resourcePaths)
+        appendResourceAttachments(resourcePaths, opts)
       }
     },
     [appendImagePathAttachments, appendResourceAttachments, canAttachImages]
@@ -1575,40 +1580,61 @@ export function MessageInput({
     appendPathsFromDropRef.current = appendPathsFromDrop
   }, [appendPathsFromDrop])
 
-  // Remote-workspace counterpart of `appendPathsFromDrop`. Reads each
-  // local path through Rust, ships the bytes via the upload proxy, then
-  // appends the resulting server-side paths as ResourceLinks. Failures
-  // (oversize, ENOENT, network) are reported in a single aggregated toast
-  // matching `uploadAndAppendFiles`.
+  // Remote-workspace counterpart of `appendPathsFromDrop`. Images stay as
+  // in-memory prompt blocks after the bounded local Rust read; resources use
+  // the existing upload proxy and become server-side ResourceLinks.
   const uploadPathsToRemote = useCallback(
     async (paths: string[]) => {
       const normalized = paths.filter(
         (p): p is string => typeof p === "string" && p.length > 0
       )
       if (normalized.length === 0) return
+      const { images: imagePaths, resources: resourcePaths } =
+        partitionAttachmentPaths(normalized, canAttachImages)
+      const jobs = [
+        ...imagePaths.map((path) => ({ path, image: true as const })),
+        ...resourcePaths.map((path) => ({ path, image: false as const })),
+      ]
 
-      const limitMb = Math.round(UPLOAD_MAX_BYTES / (1024 * 1024))
+      const uploadLimitMb = Math.round(UPLOAD_MAX_BYTES / (1024 * 1024))
       const succeeded: string[] = []
+      const parsedImages: ImageInputAttachment[] = []
       const failed: Array<{ name: string; reason: unknown }> = []
-      const oversize: string[] = []
+      const oversizedImages: string[] = []
+      const oversizedResources: string[] = []
       const directories: string[] = []
       const quotaRejected: string[] = []
 
       const CONCURRENCY = 3
       let cursor = 0
       const workers = Array.from(
-        { length: Math.min(CONCURRENCY, normalized.length) },
+        { length: Math.min(CONCURRENCY, jobs.length) },
         async () => {
-          while (cursor < normalized.length) {
+          while (cursor < jobs.length) {
             const idx = cursor++
-            const path = normalized[idx]
+            const { path, image } = jobs[idx]
             const name = path.split(/[/\\]/).pop() || path
             try {
-              const r = await uploadLocalPathToRemote(
-                path,
-                attachmentTabId ?? null
-              )
-              succeeded.push(r.path)
+              if (image) {
+                const file = await readLocalImagePathForAttachment(path)
+                parsedImages.push({
+                  id: `image:${Date.now()}:${idx}:${randomUUID()}`,
+                  type: "image",
+                  data: file.dataBase64,
+                  uri: buildFileUri(path),
+                  name: file.fileName || name,
+                  mimeType:
+                    file.mimeType?.startsWith("image/") === true
+                      ? file.mimeType
+                      : (mimeTypeFromPath(path) ?? "image/png"),
+                })
+              } else {
+                const r = await uploadLocalPathToRemote(
+                  path,
+                  attachmentTabId ?? null
+                )
+                succeeded.push(r.path)
+              }
             } catch (error) {
               if (isEmptyAttachmentError(error)) {
                 console.warn(
@@ -1625,7 +1651,8 @@ export function MessageInput({
               const appError = extractAppCommandError(error)
               const i18nKey = appError?.i18n_key ?? null
               if (i18nKey === UPLOAD_I18N_KEY_TOO_LARGE) {
-                oversize.push(name)
+                if (image) oversizedImages.push(name)
+                else oversizedResources.push(name)
               } else if (i18nKey === UPLOAD_I18N_KEY_NOT_A_FILE) {
                 // Dragging a directory or a special file (FIFO, device
                 // node) lands here. The Rust guard short-circuits before
@@ -1643,11 +1670,19 @@ export function MessageInput({
       )
       await Promise.all(workers)
 
-      if (oversize.length > 0) {
+      if (oversizedImages.length > 0) {
         toast.error(
           tAttach("attachUploadTooLarge", {
-            limit: limitMb,
-            names: oversize.join(", "),
+            limit: IMAGE_ATTACHMENT_MAX_BYTES / 1_000_000,
+            names: oversizedImages.join(", "),
+          })
+        )
+      }
+      if (oversizedResources.length > 0) {
+        toast.error(
+          tAttach("attachUploadTooLarge", {
+            limit: uploadLimitMb,
+            names: oversizedResources.join(", "),
           })
         )
       }
@@ -1681,8 +1716,11 @@ export function MessageInput({
       if (succeeded.length > 0) {
         appendResourceAttachments(succeeded)
       }
+      if (parsedImages.length > 0) {
+        setAttachments((prev) => [...prev, ...parsedImages])
+      }
     },
-    [appendResourceAttachments, attachmentTabId, tAttach]
+    [appendResourceAttachments, attachmentTabId, canAttachImages, tAttach]
   )
 
   const uploadPathsToRemoteRef = useRef(uploadPathsToRemote)
@@ -1693,16 +1731,8 @@ export function MessageInput({
   const appendFilesFromInput = useCallback(
     async (files: File[]) => {
       if (files.length === 0) return
-      const imageFiles: File[] = []
-      const resourceFiles: File[] = []
-      for (const file of files) {
-        const mimeType = file.type || mimeTypeFromPath(file.name) || ""
-        if (canAttachImages && mimeType.startsWith("image/")) {
-          imageFiles.push(file)
-        } else {
-          resourceFiles.push(file)
-        }
-      }
+      const { images: imageFiles, resources: resourceFiles } =
+        partitionAttachmentFiles(files, canAttachImages)
 
       if (imageFiles.length > 0) {
         await appendImageAttachments(imageFiles)
@@ -2028,11 +2058,11 @@ export function MessageInput({
       })
       if (!selected) return
       const picked = Array.isArray(selected) ? selected : [selected]
-      appendResourceAttachments(picked.filter((item): item is string => !!item))
+      await appendPathsFromDrop(picked.filter((item): item is string => !!item))
     } catch (error) {
       console.error("[MessageInput] pick files failed:", error)
     }
-  }, [appendResourceAttachments, defaultPath, disabled])
+  }, [appendPathsFromDrop, defaultPath, disabled])
 
   const [serverFilePickerOpen, setServerFilePickerOpen] = useState(false)
 
@@ -2040,25 +2070,25 @@ export function MessageInput({
     if (disabled) return
     // Open a hidden <input type="file"> to grab File objects (browsers and
     // Tauri webviews both produce blob-style File objects from this control,
-    // never raw OS paths), then upload each one — `uploadAttachment` picks
-    // the right transport (direct fetch in web mode, IPC-proxied multipart
-    // in remote-desktop mode).
+    // never raw OS paths), then route images inline and upload resources.
     const input = document.createElement("input")
     input.type = "file"
     input.multiple = true
     input.onchange = async () => {
       const all = input.files ? Array.from(input.files) : []
-      await uploadAndAppendFiles(all)
+      await appendFilesFromInput(all)
     }
     input.click()
-  }, [disabled, uploadAndAppendFiles])
+  }, [appendFilesFromInput, disabled])
 
   const handleServerFilesSelected = useCallback(
     (paths: string[]) => {
       if (paths.length === 0) return
-      appendResourceAttachments(paths)
+      void appendPathsFromDrop(paths).catch((error) => {
+        console.error("[MessageInput] select server files failed:", error)
+      })
     },
-    [appendResourceAttachments]
+    [appendPathsFromDrop]
   )
 
   const loadQuickMessages = useCallback(async () => {
@@ -2236,7 +2266,9 @@ export function MessageInput({
       if (range) {
         appendFileRangeAttachment(path, range, { atCaret: true })
       } else {
-        appendResourceAttachments([path], { atCaret: true })
+        void appendPathsFromDrop([path], { atCaret: true }).catch((error) => {
+          console.error("[MessageInput] attach session file failed:", error)
+        })
       }
     }
 
@@ -2244,7 +2276,7 @@ export function MessageInput({
     return () => {
       window.removeEventListener(ATTACH_FILE_TO_SESSION_EVENT, handleAttachFile)
     }
-  }, [appendResourceAttachments, appendFileRangeAttachment, attachmentTabId])
+  }, [appendPathsFromDrop, appendFileRangeAttachment, attachmentTabId])
 
   useEffect(() => {
     if (!attachmentTabId) return
