@@ -178,11 +178,70 @@ function collectLeaves(nodes: BranchTreeNode[]): BranchTreeLeaf[] {
   return leaves
 }
 
-function matchesLeaf(leaf: BranchTreeLeaf, q: string): boolean {
-  return (
-    leaf.fullName.toLowerCase().includes(q) ||
-    leaf.label.toLowerCase().includes(q)
-  )
+// How strongly a text matches the query, higher = stronger. This is the "match
+// degree" the search results sort by: an exact hit outranks a prefix hit, a
+// prefix outranks a match that begins right after a "/" segment boundary, and
+// those all outrank a plain mid-string substring hit.
+const MATCH_NONE = 0
+const MATCH_SUBSTRING = 1
+const MATCH_SEGMENT = 2
+const MATCH_PREFIX = 3
+const MATCH_EXACT = 4
+
+interface MatchRank {
+  /** One of the MATCH_* tiers; MATCH_NONE means the query isn't present. */
+  tier: number
+  /** Index of the first hit in the text (earlier = better); -1 when absent. */
+  index: number
+}
+
+/** Rank a single already-lowercased query `q` against `text`. */
+function scoreText(text: string, q: string): MatchRank {
+  const lower = text.toLowerCase()
+  const index = lower.indexOf(q)
+  if (index === -1) return { tier: MATCH_NONE, index }
+  let tier: number
+  if (lower === q) tier = MATCH_EXACT
+  else if (index === 0) tier = MATCH_PREFIX
+  else if (lower[index - 1] === "/") tier = MATCH_SEGMENT
+  else tier = MATCH_SUBSTRING
+  return { tier, index }
+}
+
+/**
+ * Best rank of a leaf, scoring both its full ref AND its (possibly collapsed)
+ * display label and keeping the stronger — so searching "login" treats a leaf
+ * whose visible label is exactly "login" as an exact hit even though its full
+ * ref is "feature/auth/login".
+ */
+function rankLeaf(leaf: BranchTreeLeaf, q: string): MatchRank {
+  const full = scoreText(leaf.fullName, q)
+  const label = scoreText(leaf.label, q)
+  if (full.tier !== label.tier) return full.tier > label.tier ? full : label
+  // Same tier: prefer the earlier hit position.
+  return full.index <= label.index ? full : label
+}
+
+/**
+ * Keep the leaves matching `q`, ordered by relevance: exact hits first, then
+ * prefix, then segment-boundary, then substring; within a tier, an earlier
+ * match position wins, then the ref name breaks ties for a stable order.
+ */
+function matchAndRankLeaves(
+  leaves: BranchTreeLeaf[],
+  q: string
+): BranchTreeLeaf[] {
+  return leaves
+    .map((leaf) => ({ leaf, rank: rankLeaf(leaf, q) }))
+    .filter((entry) => entry.rank.tier > MATCH_NONE)
+    .sort((a, b) => {
+      if (a.rank.tier !== b.rank.tier) return b.rank.tier - a.rank.tier
+      if (a.rank.index !== b.rank.index) return a.rank.index - b.rank.index
+      return a.leaf.fullName.localeCompare(b.leaf.fullName, undefined, {
+        sensitivity: "base",
+      })
+    })
+    .map((entry) => entry.leaf)
 }
 
 /**
@@ -192,8 +251,10 @@ function matchesLeaf(leaf: BranchTreeLeaf, q: string): boolean {
  *   descending only expanded groups) → Remote section (single-remote strips the
  *   wrapper; multi-remote nests each remote as a group). Sections default open.
  * - Non-empty query: operations whose label matches → separator → matched local
- *   leaves and matched remote leaves, flat under their section headers (groups
- *   dropped, collapse state ignored); empty sections omitted.
+ *   leaves then matched remote leaves, flat under their section headers and
+ *   ranked by relevance (exact > prefix > "/"-segment boundary > substring, ties
+ *   broken by earlier match position then name); groups dropped, collapse state
+ *   ignored, empty sections omitted.
  *
  * Indentation depth: operations flat; a section header is depth 0; its children
  * are depth 1 (and deeper per nesting).
@@ -243,9 +304,7 @@ export function buildBranchRows(input: BuildBranchRowsInput): BranchRow[] {
   const branchRows: BranchRow[] = []
 
   if (searching) {
-    const localMatches = collectLeaves(localNodes).filter((l) =>
-      matchesLeaf(l, q)
-    )
+    const localMatches = matchAndRankLeaves(collectLeaves(localNodes), q)
     if (localMatches.length > 0) {
       branchRows.push({
         kind: "section",
@@ -257,12 +316,13 @@ export function buildBranchRows(input: BuildBranchRowsInput): BranchRow[] {
       for (const leaf of localMatches) emitLeaf(branchRows, leaf, 1, false, ctx)
     }
 
-    const remoteMatches: BranchTreeLeaf[] = []
-    for (const section of remoteSections) {
-      for (const leaf of collectLeaves(section.nodes)) {
-        if (matchesLeaf(leaf, q)) remoteMatches.push(leaf)
-      }
-    }
+    // Rank every remote's leaves together so a strong hit under the second
+    // remote still outranks a weak hit under the first (the per-remote wrapper
+    // groups are already dropped in search mode, so the list is flat anyway).
+    const remoteMatches = matchAndRankLeaves(
+      remoteSections.flatMap((section) => collectLeaves(section.nodes)),
+      q
+    )
     if (remoteMatches.length > 0) {
       branchRows.push({
         kind: "section",

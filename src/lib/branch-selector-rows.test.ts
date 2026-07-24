@@ -226,7 +226,9 @@ describe("buildBranchRows — search mode", () => {
     const rows = buildBranchRows(
       baseInput({ localNodes: localTree(LOCAL), localCount: 4, query: "e" })
     )
-    // "Pull code" matches "e"; "Push..." does not. "main" has no "e".
+    // "Pull code" matches "e"; "Push..." does not. "main" has no "e". All three
+    // branch hits are equal-tier substrings at the same position, so they keep a
+    // stable alphabetical order.
     expect(rows.map(summarize)).toEqual([
       "op:pull",
       "sep",
@@ -234,6 +236,87 @@ describe("buildBranchRows — search mode", () => {
       "leaf:feature/auth/login@1",
       "leaf:feature/auth/logout@1",
       "leaf:release/1.0@1",
+    ])
+  })
+})
+
+describe("buildBranchRows — search relevance ranking", () => {
+  it("orders exact > prefix > segment-boundary > substring", () => {
+    const rows = buildBranchRows(
+      baseInput({
+        // domain: mid-string "main"; maintenance: prefix; feature/main:
+        // "/"-segment boundary; main: exact.
+        localNodes: localTree([
+          "domain",
+          "maintenance",
+          "feature/main",
+          "main",
+        ]),
+        localCount: 4,
+        query: "main",
+      })
+    )
+    expect(rows.map(summarize)).toEqual([
+      "section:local(4)+",
+      "leaf:main@1",
+      "leaf:maintenance@1",
+      "leaf:feature/main@1",
+      "leaf:domain@1",
+    ])
+  })
+
+  it("ranks a prefix hit above a substring hit regardless of render order", () => {
+    const rows = buildBranchRows(
+      baseInput({
+        // Alphabetically "prerelease" (substring) sorts before "release/api"
+        // (prefix); relevance ranking must flip them.
+        localNodes: localTree(["prerelease", "release/api"]),
+        localCount: 2,
+        query: "release",
+      })
+    )
+    expect(rows.map(summarize)).toEqual([
+      "section:local(2)+",
+      "leaf:release/api@1",
+      "leaf:prerelease@1",
+    ])
+  })
+
+  it("breaks equal-tier ties alphabetically by full ref", () => {
+    const rows = buildBranchRows(
+      baseInput({
+        localNodes: localTree(["feature/beta", "feature/alpha"]),
+        localCount: 2,
+        query: "feature",
+      })
+    )
+    expect(rows.map(summarize)).toEqual([
+      "section:local(2)+",
+      "leaf:feature/alpha@1",
+      "leaf:feature/beta@1",
+    ])
+  })
+
+  it("scores the collapsed leaf label, so an exact label hit ranks first", () => {
+    const remoteSections = buildRemoteBranchSections([
+      "origin/main-old",
+      "origin/main",
+    ])
+    const rows = buildBranchRows(
+      baseInput({
+        operations: [],
+        remoteSections,
+        remoteCount: 2,
+        query: "main",
+      })
+    )
+    // Both refs contain "main", but "origin/main"'s display label is exactly
+    // "main" (exact) while "main-old" is only a prefix. In search mode an empty
+    // local side emits no section, so the remote section leads.
+    expect(rows.map(summarize)).toEqual([
+      "section:remote(2)+",
+      "leaf:origin/main@1",
+      "leaf:origin/main-old@1",
     ])
   })
 })
