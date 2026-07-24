@@ -950,7 +950,11 @@
       "effortLevel_low": "低",
       "effortLevel_medium": "中",
       "effortLevel_high": "高",
-      "effortLevel_xhigh": "超高"
+      "effortLevel_xhigh": "超高",
+      "sendAttributionHeader": "向接口发送归属/计费标识",
+      "sendAttributionHeaderAria": "向接口发送 Claude Code 归属/计费标识",
+      "disableNonessentialTraffic": "禁用遥测或多余的网络请求",
+      "disableNonessentialTrafficAria": "禁用 Claude Code 遥测或多余的网络请求"
     },
     "dialogs": {
       "confirmDeleteProvider": "确认删除 Provider {providerId}？",

@@ -950,7 +950,11 @@
       "effortLevel_low": "Niedrig",
       "effortLevel_medium": "Mittel",
       "effortLevel_high": "Hoch",
-      "effortLevel_xhigh": "Sehr Hoch"
+      "effortLevel_xhigh": "Sehr Hoch",
+      "sendAttributionHeader": "Attributions-/Abrechnungskennung an die API senden",
+      "sendAttributionHeaderAria": "Attributions-/Abrechnungskennung von Claude Code an die API senden",
+      "disableNonessentialTraffic": "Telemetrie oder überflüssige Netzwerkanfragen deaktivieren",
+      "disableNonessentialTrafficAria": "Telemetrie oder überflüssige Netzwerkanfragen von Claude Code deaktivieren"
     },
     "dialogs": {
       "confirmDeleteProvider": "Provider {providerId} löschen?",

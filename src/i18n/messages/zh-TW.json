@@ -950,7 +950,11 @@
       "effortLevel_low": "低",
       "effortLevel_medium": "中",
       "effortLevel_high": "高",
-      "effortLevel_xhigh": "超高"
+      "effortLevel_xhigh": "超高",
+      "sendAttributionHeader": "向介面傳送歸屬/計費識別碼",
+      "sendAttributionHeaderAria": "向介面傳送 Claude Code 歸屬/計費識別碼",
+      "disableNonessentialTraffic": "停用遙測或多餘的網路請求",
+      "disableNonessentialTrafficAria": "停用 Claude Code 遙測或多餘的網路請求"
     },
     "dialogs": {
       "confirmDeleteProvider": "確認刪除 Provider {providerId}？",

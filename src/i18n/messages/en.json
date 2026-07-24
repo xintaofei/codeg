@@ -950,7 +950,11 @@
       "effortLevel_low": "Low",
       "effortLevel_medium": "Medium",
       "effortLevel_high": "High",
-      "effortLevel_xhigh": "Extra High"
+      "effortLevel_xhigh": "Extra High",
+      "sendAttributionHeader": "Send attribution/billing identifier to the API",
+      "sendAttributionHeaderAria": "Send Claude Code attribution/billing identifier to the API",
+      "disableNonessentialTraffic": "Disable telemetry or redundant network requests",
+      "disableNonessentialTrafficAria": "Disable Claude Code telemetry or redundant network requests"
     },
     "dialogs": {
       "confirmDeleteProvider": "Delete Provider {providerId}?",

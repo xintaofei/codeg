@@ -950,7 +950,11 @@
       "effortLevel_low": "낮음",
       "effortLevel_medium": "중간",
       "effortLevel_high": "높음",
-      "effortLevel_xhigh": "매우 높음"
+      "effortLevel_xhigh": "매우 높음",
+      "sendAttributionHeader": "API에 속성/청구 식별자 전송",
+      "sendAttributionHeaderAria": "API에 Claude Code 속성/청구 식별자 전송",
+      "disableNonessentialTraffic": "텔레메트리 또는 불필요한 네트워크 요청 비활성화",
+      "disableNonessentialTrafficAria": "Claude Code 텔레메트리 또는 불필요한 네트워크 요청 비활성화"
     },
     "dialogs": {
       "confirmDeleteProvider": "Provider {providerId}를 삭제하시겠습니까?",

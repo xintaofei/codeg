@@ -950,7 +950,11 @@
       "effortLevel_low": "منخفض",
       "effortLevel_medium": "متوسط",
       "effortLevel_high": "مرتفع",
-      "effortLevel_xhigh": "مرتفع جداً"
+      "effortLevel_xhigh": "مرتفع جداً",
+      "sendAttributionHeader": "إرسال معرّف الإسناد/الفوترة إلى الواجهة",
+      "sendAttributionHeaderAria": "إرسال معرّف الإسناد/الفوترة الخاص بـ Claude Code إلى الواجهة",
+      "disableNonessentialTraffic": "تعطيل القياس عن بُعد أو طلبات الشبكة غير الضرورية",
+      "disableNonessentialTrafficAria": "تعطيل القياس عن بُعد أو طلبات الشبكة غير الضرورية في Claude Code"
     },
     "dialogs": {
       "confirmDeleteProvider": "حذف المزود {providerId}؟",

@@ -950,7 +950,11 @@
       "effortLevel_low": "Bas",
       "effortLevel_medium": "Moyen",
       "effortLevel_high": "Élevé",
-      "effortLevel_xhigh": "Très Élevé"
+      "effortLevel_xhigh": "Très Élevé",
+      "sendAttributionHeader": "Envoyer l'identifiant d'attribution/facturation à l'API",
+      "sendAttributionHeaderAria": "Envoyer l'identifiant d'attribution/facturation de Claude Code à l'API",
+      "disableNonessentialTraffic": "Désactiver la télémétrie ou les requêtes réseau superflues",
+      "disableNonessentialTrafficAria": "Désactiver la télémétrie ou les requêtes réseau superflues de Claude Code"
     },
     "dialogs": {
       "confirmDeleteProvider": "Supprimer le provider {providerId} ?",

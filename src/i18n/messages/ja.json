@@ -950,7 +950,11 @@
       "effortLevel_low": "低",
       "effortLevel_medium": "中",
       "effortLevel_high": "高",
-      "effortLevel_xhigh": "超高"
+      "effortLevel_xhigh": "超高",
+      "sendAttributionHeader": "API に帰属/課金識別子を送信",
+      "sendAttributionHeaderAria": "API に Claude Code の帰属/課金識別子を送信",
+      "disableNonessentialTraffic": "テレメトリや不要なネットワークリクエストを無効化",
+      "disableNonessentialTrafficAria": "Claude Code のテレメトリや不要なネットワークリクエストを無効化"
     },
     "dialogs": {
       "confirmDeleteProvider": "Provider {providerId} を削除しますか？",

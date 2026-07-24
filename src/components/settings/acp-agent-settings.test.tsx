@@ -4,11 +4,14 @@ import {
   applyClaudeProviderToConfigText,
   buildGrokSaveOptions,
   buildGrokStructuredConfig,
+  buildMergeConfigPayload,
   buildVersionCheck,
   configTextForClaudeSave,
   getAgentChecks,
   inferGrokMode,
+  materializeClaudeHardeningFlags,
   patchImportantConfigText,
+  setClaudeEnvFlagInConfigText,
 } from "./acp-agent-settings"
 import type { AcpAgentInfo, AgentType, PreflightResult } from "@/lib/types"
 
@@ -572,6 +575,25 @@ describe("applyClaudeProviderToConfigText — provider-bound stale config", () =
     expect(env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME).toBe("GW Opus")
     expect(env.ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION).toBe("via gateway")
   })
+
+  // The hardening toggles are not provider-controlled, so a provider-authoritative
+  // rewrite must leave them intact while it overwrites the model keys.
+  it("preserves a hardening env flag through the provider rewrite", () => {
+    const withFlag = JSON.stringify({
+      env: {
+        CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
+        ANTHROPIC_MODEL: "old-main",
+      },
+    })
+    const next = applyClaudeProviderToConfigText(withFlag, {
+      api_url: "https://gw.example/v1",
+      api_key: "sk-x",
+      model: JSON.stringify({ main: "prov-main" }),
+    })
+    const env = envOf(next)
+    expect(env.CLAUDE_CODE_ATTRIBUTION_HEADER).toBe("0")
+    expect(env.ANTHROPIC_MODEL).toBe("prov-main")
+  })
 })
 
 describe("configTextForClaudeSave — bound-Claude save payload", () => {
@@ -621,5 +643,142 @@ describe("configTextForClaudeSave — bound-Claude save payload", () => {
     expect(
       configTextForClaudeSave(cfg, "codex" as AgentType, 7, provider)
     ).toBe(cfg)
+  })
+})
+
+describe("setClaudeEnvFlagInConfigText — Claude hardening toggles", () => {
+  const KEY = "CLAUDE_CODE_ATTRIBUTION_HEADER"
+
+  function envOf(configText: string): Record<string, string> {
+    const parsed = JSON.parse(configText) as { env?: Record<string, string> }
+    return parsed.env ?? {}
+  }
+
+  it("sets the flag value while preserving other env + root keys", () => {
+    const base = JSON.stringify({
+      model: "opus",
+      env: { ANTHROPIC_BASE_URL: "https://gw" },
+    })
+    const next = setClaudeEnvFlagInConfigText(base, KEY, "1")
+    expect(next.recoveredFromInvalid).toBe(false)
+    const parsed = JSON.parse(next.configText) as {
+      model?: string
+      env?: Record<string, string>
+    }
+    expect(parsed.model).toBe("opus")
+    expect(parsed.env?.[KEY]).toBe("1")
+    expect(parsed.env?.ANTHROPIC_BASE_URL).toBe("https://gw")
+  })
+
+  it("creates the env when the config has none", () => {
+    const next = setClaudeEnvFlagInConfigText("", KEY, "0")
+    expect(next.recoveredFromInvalid).toBe(false)
+    expect(envOf(next.configText)[KEY]).toBe("0")
+  })
+
+  it("overwrites an existing value (off → on) and keeps siblings", () => {
+    const base = JSON.stringify({
+      env: { [KEY]: "0", ANTHROPIC_MODEL: "keep" },
+    })
+    const next = setClaudeEnvFlagInConfigText(base, KEY, "1")
+    const env = envOf(next.configText)
+    expect(env[KEY]).toBe("1")
+    expect(env.ANTHROPIC_MODEL).toBe("keep")
+  })
+
+  it("recovers from invalid JSON and writes a fresh config", () => {
+    const next = setClaudeEnvFlagInConfigText("{ not json", KEY, "1")
+    expect(next.recoveredFromInvalid).toBe(true)
+    expect(envOf(next.configText)[KEY]).toBe("1")
+  })
+})
+
+describe("buildMergeConfigPayload — merge-strategy save diff", () => {
+  const KEY = "CLAUDE_CODE_ATTRIBUTION_HEADER"
+
+  // Toggling off the only flag empties configText; the diff against the original
+  // must still emit env: null so the backend merge deletes it from disk.
+  it("nulls a removed env key when the config emptied out", () => {
+    const original = JSON.stringify({ env: { [KEY]: "0" } })
+    const payload = buildMergeConfigPayload("", original)
+    expect(payload).not.toBeNull()
+    expect(JSON.parse(payload as string)).toEqual({ env: null })
+  })
+
+  it("returns null when both current and original are empty", () => {
+    expect(buildMergeConfigPayload("", null)).toBeNull()
+    expect(buildMergeConfigPayload("", "")).toBeNull()
+  })
+
+  it("nulls only the removed key when siblings remain", () => {
+    const original = JSON.stringify({ env: { [KEY]: "0", OTHER: "x" } })
+    const current = JSON.stringify({ env: { OTHER: "x" } })
+    const payload = buildMergeConfigPayload(current, original)
+    expect(JSON.parse(payload as string)).toEqual({
+      env: { OTHER: "x", [KEY]: null },
+    })
+  })
+
+  it("passes a fresh config through with no null patches", () => {
+    const current = JSON.stringify({ env: { [KEY]: "0" } })
+    const payload = buildMergeConfigPayload(current, null)
+    expect(JSON.parse(payload as string)).toEqual({ env: { [KEY]: "0" } })
+  })
+})
+
+describe("materializeClaudeHardeningFlags — save-time toggle defaults", () => {
+  const ATTR = "CLAUDE_CODE_ATTRIBUTION_HEADER"
+  const TRAFFIC = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
+
+  function envOf(configText: string): Record<string, string> {
+    const parsed = JSON.parse(configText) as { env?: Record<string, string> }
+    return parsed.env ?? {}
+  }
+
+  // Fresh config + the intended defaults: don't send the header ("0"), disable
+  // telemetry ("1") — written into BOTH the native config env and envText.
+  it("writes both flags per the defaults into config env and envText", () => {
+    const { configText, envText } = materializeClaudeHardeningFlags("", "", {
+      sendAttributionHeader: false,
+      disableNonessentialTraffic: true,
+    })
+    const env = envOf(configText)
+    expect(env[ATTR]).toBe("0")
+    expect(env[TRAFFIC]).toBe("1")
+    expect(envText).toContain(`${ATTR}=0`)
+    expect(envText).toContain(`${TRAFFIC}=1`)
+  })
+
+  it("writes both on when both toggles are enabled, preserving other keys", () => {
+    const base = JSON.stringify({ model: "opus", env: { KEEP: "y" } })
+    const { configText, envText } = materializeClaudeHardeningFlags(
+      base,
+      "KEEP=y",
+      { sendAttributionHeader: true, disableNonessentialTraffic: true }
+    )
+    const parsed = JSON.parse(configText) as {
+      model?: string
+      env?: Record<string, string>
+    }
+    expect(parsed.model).toBe("opus")
+    expect(parsed.env?.[ATTR]).toBe("1")
+    expect(parsed.env?.[TRAFFIC]).toBe("1")
+    expect(parsed.env?.KEEP).toBe("y")
+    expect(envText).toContain("KEEP=y")
+    expect(envText).toContain(`${ATTR}=1`)
+  })
+
+  // Regression: invalid JSON must be returned UNCHANGED (never recovered to a
+  // minimal {env}), so persistConfig rejects it instead of the merge diff
+  // deleting every other on-disk key.
+  it("leaves invalid config JSON untouched (no recovery, no data loss)", () => {
+    const invalid = "{ not valid json"
+    const { configText, envText } = materializeClaudeHardeningFlags(
+      invalid,
+      "EXISTING=1",
+      { sendAttributionHeader: false, disableNonessentialTraffic: true }
+    )
+    expect(configText).toBe(invalid)
+    expect(envText).toBe("EXISTING=1")
   })
 })
