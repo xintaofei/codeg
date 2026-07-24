@@ -2798,7 +2798,8 @@
       },
       "contextCompaction": {
         "compacting": "컨텍스트 압축 중…",
-        "compacted": "컨텍스트 압축 완료"
+        "compacted": "컨텍스트 압축 완료",
+        "compactedTokens": "컨텍스트 압축 완료 · {before} → {after} 토큰"
       },
       "backgroundTasks": {
         "running": "백그라운드 작업 {count}개 실행 중",

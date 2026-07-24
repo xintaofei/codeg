@@ -19,16 +19,28 @@
 //!     mode stays active (the user can iterate).
 //!   * **Abandon** — abandon the plan and turn plan mode off.
 //!
-//! ## Wire-format note
+//! ## Wire-format (confirmed against Grok 0.2.111, live ACP capture)
 //!
-//! The request shape (`planContent` / `toolCallId`) is high-confidence. The
-//! reply `ExitPlanModeExtResponse` is a 2-field struct (a decision + optional
-//! feedback) whose exact serde encoding is INFERRED from binary analysis, not yet
-//! captured from a live run (the same state `ask_user_question` was in before it
-//! was confirmed against Grok 0.2.101). [`build_grok_exit_plan_response`] is the
-//! single isolated function to correct once the first real run confirms the shape;
-//! a wrong reply only fails Grok's tool (plan mode stays active, reappears on
-//! reconnect) — strictly better and recoverable versus the current silent stall.
+//! Request `ExitPlanModeExtRequest = { sessionId, toolCallId, planContent }`.
+//! Note `planContent` is often `null` — Grok does NOT embed the plan body in the
+//! request; after approval it reads `plan.md` itself, so the card's plan preview
+//! can be empty here.
+//!
+//! Reply `ExitPlanModeExtResponse = { "outcome": <string>, "feedback": <string> }`
+//! (the field is `outcome`, NOT `decision`). Only two outcome values are
+//! recognized; every other value (and a missing field) falls through Grok's
+//! `#[serde(other)]` catch-all to keep-planning, and the reply `feedback` is then
+//! discarded:
+//!   * `"approved"`  — leave plan mode and start implementing. A non-empty
+//!     `feedback` becomes "approve with review comments".
+//!   * `"abandoned"` — abandon the plan and turn plan mode off.
+//!   * anything else (we send `"keep_planning"`) — stay in plan mode. Grok drops
+//!     the reply `feedback`, so the user's revision notes must be delivered
+//!     out-of-band as a follow-up prompt (mirroring Grok's own TUI, where
+//!     "request changes" moves focus to the prompt).
+//!
+//! An earlier inferred shape (`{ decision: "approve"/... }`) was wrong: Grok
+//! silently defaulted it to keep-planning, so "Approve" read as "request changes".
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -171,34 +183,34 @@ pub fn parse_grok_exit_plan_request(params: &Value) -> Result<(String, String), 
 }
 
 /// Serialize the user's decision into Grok's `ExitPlanModeExtResponse` — the
-/// reply to a blocked `_x.ai/exit_plan_mode` ext request.
+/// reply to a blocked `_x.ai/exit_plan_mode` ext request. See the module-level
+/// wire-format note; the encoding is confirmed against Grok 0.2.111.
 ///
-/// **Verify-on-real-run function.** The reply is a 2-field struct; the exact
-/// serde field names/variant strings are inferred (`{ decision, feedback }` with
-/// `approve` / `request_changes` / `abandon`) and should be confirmed against the
-/// `[grok exit_plan]` request log on the first real run, then corrected HERE if
-/// Grok rejects the shape. Everything else in the pipeline is shape-agnostic, so
-/// this is the only place to touch. A wrong reply fails Grok's tool (plan mode
-/// stays active) rather than corrupting state.
+/// `RequestChanges` maps to `"keep_planning"` (any non-approve/non-abandon value
+/// keeps Grok in plan mode via its `#[serde(other)]` catch-all). Grok discards the
+/// reply `feedback` on that path, so the revision notes are ALSO delivered as a
+/// follow-up prompt by the frontend — this field is carried for future-proofing
+/// and is harmless if ignored.
 pub fn build_grok_exit_plan_response(answer: &PlanApprovalAnswer) -> Value {
-    let decision = match answer.decision {
-        PlanApprovalDecision::Approve => "approve",
-        PlanApprovalDecision::RequestChanges => "request_changes",
-        PlanApprovalDecision::Abandon => "abandon",
+    let outcome = match answer.decision {
+        PlanApprovalDecision::Approve => "approved",
+        PlanApprovalDecision::RequestChanges => "keep_planning",
+        PlanApprovalDecision::Abandon => "abandoned",
     };
     serde_json::json!({
-        "decision": decision,
+        "outcome": outcome,
         "feedback": answer.normalized_feedback(),
     })
 }
 
 /// The `_x.ai/exit_plan_mode` reply for a connection tearing down mid-approval
 /// (the parked responder is drained without a user decision). Mirrors Grok's own
-/// "client disconnected mid-approval; plan mode stays active" behavior: report an
-/// error-shaped reply so Grok keeps plan mode active and re-surfaces the approval
-/// on reconnect, rather than silently proceeding as if approved.
+/// "client disconnected mid-approval; plan mode stays active" behavior: reply with
+/// the keep-planning outcome so Grok keeps plan mode active and re-surfaces the
+/// approval on reconnect, rather than silently proceeding as if approved. Must be
+/// neither `"approved"` nor `"abandoned"` (both leave plan mode).
 pub fn grok_exit_plan_disconnect_response() -> Value {
-    serde_json::json!({ "decision": "cancelled", "feedback": "" })
+    serde_json::json!({ "outcome": "keep_planning", "feedback": "" })
 }
 
 #[cfg(test)]
@@ -248,27 +260,36 @@ mod tests {
 
     #[test]
     fn build_response_maps_each_decision() {
+        // Confirmed against Grok 0.2.111: field is `outcome`; approve/abandon are
+        // past-tense; request-changes uses the keep-planning catch-all value.
         let approve = PlanApprovalAnswer {
             decision: PlanApprovalDecision::Approve,
             feedback: None,
         };
-        assert_eq!(build_grok_exit_plan_response(&approve)["decision"], "approve");
+        assert_eq!(build_grok_exit_plan_response(&approve)["outcome"], "approved");
         assert_eq!(build_grok_exit_plan_response(&approve)["feedback"], "");
+        // The obsolete `decision` field must be gone (it was silently defaulted).
+        assert!(build_grok_exit_plan_response(&approve)
+            .get("decision")
+            .is_none());
 
         let changes = PlanApprovalAnswer {
             decision: PlanApprovalDecision::RequestChanges,
             feedback: Some("  use SSE instead  ".into()),
         };
         let v = build_grok_exit_plan_response(&changes);
-        assert_eq!(v["decision"], "request_changes");
-        // Feedback is trimmed.
+        assert_eq!(v["outcome"], "keep_planning");
+        // Feedback is trimmed (carried for future-proofing; Grok ignores it here).
         assert_eq!(v["feedback"], "use SSE instead");
 
         let abandon = PlanApprovalAnswer {
             decision: PlanApprovalDecision::Abandon,
             feedback: None,
         };
-        assert_eq!(build_grok_exit_plan_response(&abandon)["decision"], "abandon");
+        assert_eq!(
+            build_grok_exit_plan_response(&abandon)["outcome"],
+            "abandoned"
+        );
     }
 
     #[test]
@@ -299,8 +320,12 @@ mod tests {
     }
 
     #[test]
-    fn disconnect_response_is_not_an_approval() {
+    fn disconnect_response_keeps_planning() {
+        // On disconnect Grok must stay in plan mode: neither of the two
+        // plan-mode-leaving outcomes.
         let v = grok_exit_plan_disconnect_response();
-        assert_ne!(v["decision"], "approve");
+        assert_eq!(v["outcome"], "keep_planning");
+        assert_ne!(v["outcome"], "approved");
+        assert_ne!(v["outcome"], "abandoned");
     }
 }

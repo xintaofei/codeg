@@ -156,6 +156,30 @@ describe("groupConsecutiveToolCalls", () => {
       groupConsecutiveToolCalls([poll("switch_mode")]).map((p) => p.type)
     ).toEqual(["tool-call"])
   })
+
+  it("leaves a context-compaction card standalone (no '调用 N 个工具' wrapper)", () => {
+    // codex `_meta.contextCompaction` and Grok's synthesized auto_compact card
+    // render through the dedicated subtle <ContextCompactionCard>; a lone one
+    // must break the run and render standalone, not fold into a single-item
+    // tool-group. Recognition is by meta, not tool name.
+    const compaction: AdaptedToolCallPart = {
+      type: "tool-call",
+      toolCallId: "compact-1",
+      toolName: "context_compaction",
+      input: null,
+      state: "output-available",
+      meta: { contextCompaction: true, tokensBefore: 51777, tokensAfter: 4616 },
+    }
+    expect(
+      groupConsecutiveToolCalls([compaction]).map((p) => p.type)
+    ).toEqual(["tool-call"])
+    // It also breaks a surrounding run instead of folding in.
+    expect(
+      groupConsecutiveToolCalls([poll("read"), compaction, poll("read")]).map(
+        (p) => p.type
+      )
+    ).toEqual(["tool-group", "tool-call", "tool-group"])
+  })
 })
 
 describe("dropHiddenFeedbackChecks", () => {

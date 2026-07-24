@@ -484,3 +484,54 @@ describe("inferLiveToolName cursor task and MCP shapes", () => {
     ).toBe("create_plan")
   })
 })
+
+describe("inferLiveToolName Grok plan-mode via x.ai/tool.kind", () => {
+  it("resolves enter_plan_mode from x.ai/tool.kind despite the mutating title", () => {
+    // Grok's live tool_call title drifts `enter_plan_mode` → "Plan: Enter" →
+    // "Plan mode entered" while `_meta["x.ai/tool"].kind` stays `enter_plan`.
+    // The completed frame (worst case) must still resolve to the canonical name
+    // — which normalizes to "enterplanmode" so it hits <PlanModeCard> + the
+    // tool-group run-break, matching the historical path.
+    const name = inferLiveToolName({
+      title: "Plan mode entered",
+      kind: "other",
+      rawInput: JSON.stringify({ variant: "EnterPlanMode" }),
+      meta: {
+        "x.ai/tool": {
+          name: "enter_plan_mode",
+          kind: "enter_plan",
+          namespace: "grok_build",
+          label: "Enter Plan Mode",
+        },
+      },
+    })
+    expect(name).toBe("enter_plan_mode")
+    expect(normalizeToolName(name)).toBe("enterplanmode")
+  })
+
+  it("resolves exit_plan_mode from x.ai/tool.kind", () => {
+    const name = inferLiveToolName({
+      title: "Plan: Exit",
+      kind: "other",
+      rawInput: JSON.stringify({ variant: "ExitPlanMode" }),
+      meta: { "x.ai/tool": { name: "exit_plan_mode", kind: "exit_plan" } },
+    })
+    expect(name).toBe("exit_plan_mode")
+    expect(normalizeToolName(name)).toBe("exitplanmode")
+  })
+
+  it("does NOT hijack other Grok tools carrying x.ai/tool meta", () => {
+    // A non-plan-mode Grok tool (run_terminal_command, kind "execute") keeps its
+    // normal resolution — the plan-mode shortcut is scoped to enter/exit_plan.
+    expect(
+      inferLiveToolName({
+        title: "run_terminal_command",
+        kind: "execute",
+        rawInput: JSON.stringify({ command: "pnpm build" }),
+        meta: {
+          "x.ai/tool": { name: "run_terminal_command", kind: "execute" },
+        },
+      })
+    ).toBe("bash")
+  })
+})

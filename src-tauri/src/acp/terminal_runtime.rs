@@ -332,14 +332,18 @@ impl TerminalRuntime {
         // Spawn the command. Try a direct exec first so a real program — one
         // resolved on PATH, an absolute path, or a relative/space-containing
         // path reachable through the request's cwd and env — runs exactly as
-        // before, in the real spawn context. Only if the OS cannot find the
-        // program (`NotFound`) AND the request looks like a whole shell line
-        // crammed into `command` (empty args + embedded whitespace, the shape
-        // CodeBuddy sends, e.g. "pnpm build") do we retry through the platform
-        // shell so its `&&`, pipes, `$VAR`, and globs evaluate. Deciding off a
-        // real failed spawn — rather than a pre-spawn `which` guess that runs
-        // in codeg's own cwd/env — means we never reroute a command that would
-        // otherwise have run.
+        // before, in the real spawn context. Only if the OS rejects the program
+        // as unrunnable (`NotFound`, or `InvalidFilename` when the whole line is
+        // longer than the OS path limit — grok crams `<shell> -lc "<script>"`
+        // into `command`, so a multi-KB heredoc exceeds PATH_MAX and the direct
+        // exec fails with ENAMETOOLONG, not ENOENT) AND the request looks like a
+        // whole shell line crammed into `command` (empty args + embedded
+        // whitespace, the shape CodeBuddy and grok send) do we retry through the
+        // platform shell so its `&&`, pipes, `$VAR`, and globs evaluate. A path
+        // that long can never be a real executable, so rerouting it is always at
+        // least as correct. Deciding off a real failed spawn — rather than a
+        // pre-spawn `which` guess that runs in codeg's own cwd/env — means we
+        // never reroute a command that would otherwise have run.
         let mut direct = crate::process::tokio_command(&request.command);
         direct.args(&request.args);
         self.configure_command(&mut direct, &request);
@@ -347,8 +351,10 @@ impl TerminalRuntime {
         let mut child = match direct.spawn() {
             Ok(child) => child,
             Err(err)
-                if err.kind() == std::io::ErrorKind::NotFound
-                    && request.args.is_empty()
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidFilename
+                ) && request.args.is_empty()
                     && request.command.contains(char::is_whitespace) =>
             {
                 let mut shell = shell_wrapped_command(&request.command);
@@ -836,6 +842,29 @@ mod tests {
         assert!(
             output.contains("OK"),
             "shell operators did not evaluate; got:\n{output}"
+        );
+    }
+
+    /// A whole shell line longer than the OS path limit still runs through the
+    /// shell. grok crams `<shell> -lc "<script>"` into `command` with empty
+    /// args; a multi-KB heredoc makes the direct exec fail with ENAMETOOLONG →
+    /// `ErrorKind::InvalidFilename` (not `NotFound`), which the fallback guard
+    /// must also catch. The marker exceeds Linux's PATH_MAX (4096) so the direct
+    /// exec fails with ENAMETOOLONG on both macOS (1024) and Linux — a sub-limit
+    /// line would return `NotFound` and silently exercise the other branch.
+    #[tokio::test]
+    async fn overlong_command_line_falls_back_to_shell() {
+        let runtime = TerminalRuntime::with_base_env(BTreeMap::new());
+
+        let session_id = SessionId::new("overlong-cmd".to_string());
+        let marker = "x".repeat(5000);
+        let request =
+            CreateTerminalRequest::new(session_id.clone(), format!("echo {marker}"));
+        let output = run_and_capture(&runtime, &session_id, request).await;
+        assert!(
+            output.contains(&marker),
+            "overlong command line did not run via the shell fallback; got {} bytes",
+            output.len()
         );
     }
 

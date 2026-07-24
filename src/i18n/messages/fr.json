@@ -2798,7 +2798,8 @@
       },
       "contextCompaction": {
         "compacting": "Compactage du contexte…",
-        "compacted": "Contexte compacté"
+        "compacted": "Contexte compacté",
+        "compactedTokens": "Contexte compacté · {before} → {after} tokens"
       },
       "backgroundTasks": {
         "running": "{count, plural, one {# tâche en arrière-plan en cours} other {# tâches en arrière-plan en cours}}",

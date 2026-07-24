@@ -1343,10 +1343,65 @@ const ConversationTabView = memo(function ConversationTabView({
 
   // Grok `exit_plan_mode` approval: resolve the blocked ext request. The backend
   // broadcasts `plan_approval_resolved` to clear the card on every client.
+  //
+  // "Request changes" is special. Grok discards the reply `feedback` on the
+  // keep-planning path (confirmed against 0.2.111 — only `approved`/`abandoned`
+  // consume it), and its own TUI instead delivers the revision notes as a
+  // follow-up user turn (`s` moves focus to the prompt). Mirror that: after
+  // resolving keep-planning, send the notes as a normal prompt so Grok — still
+  // in plan mode — revises and re-presents the plan. The send path queues the
+  // prompt if the keep-planning turn is still winding down, then flushes when
+  // idle (same optimistic-turn + re-queue dance as `handleAnswerQuestion`).
   const handleAnswerPlanApproval = useCallback(
-    (approvalId: string, answer: PlanApprovalAnswer) =>
-      acpActions.answerPlanApproval(tabId, approvalId, answer),
-    [acpActions, tabId]
+    (approvalId: string, answer: PlanApprovalAnswer) => {
+      const result = acpActions.answerPlanApproval(tabId, approvalId, answer)
+      const notes = answer.feedback?.trim()
+      if (
+        answer.decision === "request_changes" &&
+        notes &&
+        connStatus === "connected"
+      ) {
+        const optimisticTurn: MessageTurn = {
+          id: `optimistic-${randomUUID()}`,
+          role: "user",
+          blocks: [{ type: "text", text: notes }],
+          timestamp: new Date().toISOString(),
+        }
+        const draft: PromptDraft = {
+          blocks: [{ type: "text", text: notes }],
+          displayText: notes,
+        }
+        appendOptimisticTurn(
+          effectiveConversationId,
+          optimisticTurn,
+          optimisticTurn.id
+        )
+        setSendSignal((prev) => prev + 1)
+        setSyncState(effectiveConversationId, "awaiting_persist")
+        lifecycleSend(draft, null, {
+          clientMessageId: optimisticTurn.id,
+          // Rejected because the keep-planning turn was still in flight — roll
+          // back the optimistic turn and re-queue at the tail so it isn't lost.
+          onTurnInProgress: () => {
+            lastFlushBounceAtRef.current = Date.now()
+            removeOptimisticTurn(effectiveConversationId, optimisticTurn.id)
+            mqEnqueue(draft, null)
+          },
+        })
+      }
+      return result
+    },
+    [
+      acpActions,
+      tabId,
+      connStatus,
+      appendOptimisticTurn,
+      removeOptimisticTurn,
+      mqEnqueue,
+      effectiveConversationId,
+      lifecycleSend,
+      setSyncState,
+    ]
   )
 
   // Queue edit flow: derive editing draft text from queue state

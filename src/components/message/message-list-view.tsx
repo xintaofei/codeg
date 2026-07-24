@@ -6,7 +6,9 @@ import {
   useConversationRuntimeStore,
 } from "@/stores/conversation-runtime-store"
 import { ContentPartsRenderer } from "./content-parts-renderer"
+import { ContextCompactionCard } from "./context-compaction-card"
 import { CollapsibleUserMessage } from "./collapsible-user-message"
+import { isContextCompactionMeta } from "@/lib/context-compaction"
 import {
   createMessageTurnAdapter,
   groupGoalRuns,
@@ -127,6 +129,19 @@ export type ThreadRenderItem =
   | {
       key: string
       kind: "typing"
+    }
+  | {
+      // A context-compaction event hoisted OUT of an assistant turn into its own
+      // standalone timeline element. In history the compaction lands as its own
+      // (assistant-role) turn between the reply that preceded `/compact` and the
+      // next message; rendering it as a "turn" would let
+      // `mergeConsecutiveAssistantTurns` fold it into the preceding reply (so the
+      // divider showed up wedged before that reply's file cards + footer). As a
+      // dedicated kind it breaks the assistant-merge run and renders as a
+      // chrome-less centered divider in the correct between-turns position.
+      key: string
+      kind: "compaction"
+      meta: Record<string, unknown> | null
     }
 
 // Module-scope so the reference is stable across renders — lets the memoized
@@ -272,6 +287,30 @@ function isEmptyTurnItem(item: ThreadRenderItem): boolean {
   if (g.resources.length > 0) return false
   if (g.images.length > 0) return false
   return true
+}
+
+/**
+ * When a resolved group's ONLY meaningful content is a single context-compaction
+ * tool-call part, return that part's `_meta` (so the caller can hoist it to a
+ * standalone `"compaction"` divider item); otherwise `null`. Empty text parts are
+ * ignored so a bare compaction turn still qualifies. Scoped to assistant groups
+ * with no user resources/images. A compaction part always carries a truthy
+ * `_meta` (`contextCompaction === true`), so a non-null return is unambiguous.
+ */
+function compactionOnlyMeta(
+  group: ResolvedMessageGroup
+): Record<string, unknown> | null {
+  if (group.role !== "assistant") return null
+  if (group.resources.length > 0 || group.images.length > 0) return null
+  const meaningful = group.parts.filter(
+    (p) => !(p.type === "text" && p.text.trim().length === 0)
+  )
+  if (meaningful.length !== 1) return null
+  const only = meaningful[0]
+  if (only.type !== "tool-call" || !isContextCompactionMeta(only.meta)) {
+    return null
+  }
+  return only.meta ?? null
 }
 
 /**
@@ -694,12 +733,20 @@ export function MessageListView({
         }
         groupCache.set(msg, group)
       }
+      // Include phase so a turn that briefly coexists across phases (e.g.
+      // a streaming turn that has just been promoted to localTurns while the
+      // liveMessage is still attached) doesn't collide with itself in the
+      // virtualized list. Index disambiguates further within a phase.
+      const key = `${phase}-${msg.id}-${i}`
+      // Hoist a compaction-only turn to its own standalone divider item so it
+      // renders BETWEEN turns instead of being merged into (and wedged inside)
+      // the preceding assistant reply by `mergeConsecutiveAssistantTurns`.
+      const compactionMeta = compactionOnlyMeta(group)
+      if (compactionMeta !== null) {
+        return { key, kind: "compaction" as const, meta: compactionMeta }
+      }
       return {
-        // Include phase so a turn that briefly coexists across phases (e.g.
-        // a streaming turn that has just been promoted to localTurns while the
-        // liveMessage is still attached) doesn't collide with itself in the
-        // virtualized list. Index disambiguates further within a phase.
-        key: `${phase}-${msg.id}-${i}`,
+        key,
         kind: "turn" as const,
         group,
         phase,
@@ -797,6 +844,13 @@ export function MessageListView({
       }
       case "typing":
         return <PendingTypingIndicator />
+      case "compaction":
+        // Chrome-less centered divider between turns (no avatar / stats footer).
+        return (
+          <div className="px-1 py-2">
+            <ContextCompactionCard meta={item.meta} />
+          </div>
+        )
       default:
         return null
     }

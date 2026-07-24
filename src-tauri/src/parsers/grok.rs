@@ -547,6 +547,49 @@ fn parse_updates(path: &Path) -> ParsedUpdates {
                 turn_meta = GrokTurnMeta::default();
                 tool_result_idx.clear();
             }
+            // Grok's auto-compaction (`/compact` or threshold-triggered) lands in
+            // updates.jsonl on the namespaced `_x.ai/session/update` method as
+            // `auto_compact_completed` {tokens_before, tokens_after}. Mirror the
+            // live synthesis (connection.rs::map_grok_ext_notification): a completed
+            // ToolUse tagged `meta.contextCompaction` so the history path renders the
+            // shared ContextCompactionCard with the token delta instead of dropping
+            // it. The paired ToolResult keeps the block well-formed (no orphan
+            // tool_use). The `/compact` command itself is not recoverable — Grok
+            // never persists slash commands as `user_message_chunk`s — so only the
+            // compaction OUTCOME shows, not a "/compact" user bubble.
+            "auto_compact_completed" => {
+                out.content_events += 1;
+                let mut meta = serde_json::Map::new();
+                meta.insert("contextCompaction".to_string(), Value::Bool(true));
+                if let Some(before) = update.get("tokens_before").and_then(Value::as_u64) {
+                    meta.insert("tokensBefore".to_string(), before.into());
+                }
+                if let Some(after) = update.get("tokens_after").and_then(Value::as_u64) {
+                    meta.insert("tokensAfter".to_string(), after.into());
+                }
+                // A stable id from the event id (deterministic across re-parses);
+                // the paired blocks are self-contained, so no `tool_result_idx`
+                // registration or later update is needed.
+                let id = params_meta
+                    .and_then(|m| m.get("eventId"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("grok-compaction-{}", out.content_events));
+                let turn = ensure_assistant(&mut assistant, now);
+                turn.blocks.push(ContentBlock::ToolUse {
+                    tool_use_id: Some(id.clone()),
+                    tool_name: "context_compaction".to_string(),
+                    input_preview: None,
+                    meta: Some(Value::Object(meta)),
+                });
+                turn.blocks.push(ContentBlock::ToolResult {
+                    tool_use_id: Some(id),
+                    output_preview: None,
+                    is_error: false,
+                    agent_stats: None,
+                    images: Vec::new(),
+                });
+            }
             // task_backgrounded / plan / other extension updates carry no
             // distinct rendered content beyond what the tool stream already has.
             _ => {}
@@ -1196,6 +1239,59 @@ mod tests {
             ContentBlock::ToolResult { output_preview, is_error, .. }
                 if output_preview.as_deref() == Some("build ok") && !*is_error
         ));
+    }
+
+    #[test]
+    fn history_renders_auto_compaction_as_context_compaction_tool() {
+        // Grok's auto-compaction lands on the namespaced `_x.ai/session/update`
+        // method as `auto_compact_completed` (real capture, session 019f9432:
+        // 51777 → 4616 tokens), preceded by a `compaction_checkpoint` (ignored).
+        // History must surface the outcome as a completed ToolUse tagged
+        // `meta.contextCompaction` with the token delta — mirroring the live path —
+        // rather than dropping it.
+        let updates = concat!(
+            r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"plan a page"},"_meta":{"promptIndex":0}}},"timestamp":1783584019}"#, "\n",
+            r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ok"}}},"timestamp":1783584020}"#, "\n",
+            r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"turn_completed","stop_reason":"end_turn"}},"timestamp":1783584021}"#, "\n",
+            r#"{"method":"_x.ai/session/update","params":{"sessionId":"s","update":{"sessionUpdate":"compaction_checkpoint","checkpoint_id":"c1","prompt_index_at_compaction":0},"_meta":{"eventId":"ev-compact-1"}},"timestamp":1783584030}"#, "\n",
+            r#"{"method":"_x.ai/session/update","params":{"sessionId":"s","update":{"sessionUpdate":"auto_compact_completed","tokens_before":51777,"tokens_after":4616,"summary_preview":null},"_meta":{"eventId":"ev-compact-2"}},"timestamp":1783584030}"#, "\n",
+            r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hi"},"_meta":{"promptIndex":1}}},"timestamp":1783584031}"#, "\n",
+        );
+        let (_tmp, sessions) = fixture(SUMMARY, updates);
+        let parser = GrokParser::with_base_dir(sessions);
+        let detail = parser
+            .get_conversation("019f45e3-e1ef-7690-a29f-fe2554382b49")
+            .unwrap();
+        // The compaction ToolUse carries the shared card's meta anywhere in the
+        // timeline (rendered between the prior turn and the next "hi" prompt).
+        let compaction = detail
+            .turns
+            .iter()
+            .flat_map(|t| &t.blocks)
+            .find_map(|b| match b {
+                ContentBlock::ToolUse { meta: Some(m), .. }
+                    if m.get("contextCompaction").and_then(|v| v.as_bool()) == Some(true) =>
+                {
+                    Some(m.clone())
+                }
+                _ => None,
+            })
+            .expect("compaction tool_use present in history");
+        assert_eq!(
+            compaction.get("tokensBefore").and_then(|v| v.as_u64()),
+            Some(51777)
+        );
+        assert_eq!(
+            compaction.get("tokensAfter").and_then(|v| v.as_u64()),
+            Some(4616)
+        );
+        // The paired ToolResult keeps the block well-formed (no orphan tool_use).
+        let has_result = detail
+            .turns
+            .iter()
+            .flat_map(|t| &t.blocks)
+            .any(|b| matches!(b, ContentBlock::ToolResult { .. }));
+        assert!(has_result, "compaction tool_result present");
     }
 
     #[test]

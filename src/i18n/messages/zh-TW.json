@@ -2798,7 +2798,8 @@
       },
       "contextCompaction": {
         "compacting": "正在壓縮上下文…",
-        "compacted": "上下文已壓縮"
+        "compacted": "上下文已壓縮",
+        "compactedTokens": "上下文已壓縮 · {before} → {after} tokens"
       },
       "backgroundTasks": {
         "running": "{count} 個背景任務執行中",

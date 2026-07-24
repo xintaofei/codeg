@@ -3094,7 +3094,7 @@ async fn run_connection(
                                     })
                                     .await
                                     .otherwise(async |dispatch| {
-                                        maybe_emit_claude_sdk_ext_notification(&st, &h, dispatch).await;
+                                        maybe_emit_ext_notification(&st, &h, agent_type, dispatch).await;
                                         Ok(())
                                     })
                                     .await;
@@ -5028,7 +5028,7 @@ async fn run_conversation_loop<'a>(
                                 )
                                 .await
                                 .otherwise(async |dispatch| {
-                                    maybe_emit_claude_sdk_ext_notification(&st, &h, dispatch).await;
+                                    maybe_emit_ext_notification(&st, &h, agent_type, dispatch).await;
                                     Ok(())
                                 })
                                 .await;
@@ -5191,6 +5191,15 @@ async fn run_conversation_loop<'a>(
                                     let session_id = sid.clone();
                                     let cwd_opt = Some(cwd);
                                     let dispatch = fix_usage_update_nulls(dispatch);
+                                    // grok reports `/compact` results on ext methods
+                                    // that bypass the typed pipeline below and emit a
+                                    // compaction card/error from `.otherwise`. Count
+                                    // that as turn output up front (the dispatch is
+                                    // about to be consumed) so a compaction-only turn
+                                    // isn't misclassified as `"empty"` at turn end.
+                                    if grok_ext_notification_is_turn_output(&dispatch, agent_type) {
+                                        turn_had_agent_output = true;
+                                    }
                                     if let Err(e) = MatchDispatch::new(dispatch)
                                         .if_notification(
                                             async |notif: SessionNotification| {
@@ -5217,7 +5226,7 @@ async fn run_conversation_loop<'a>(
                                         )
                                         .await
                                         .otherwise(async |dispatch| {
-                                            maybe_emit_claude_sdk_ext_notification(&st, &h, dispatch).await;
+                                            maybe_emit_ext_notification(&st, &h, agent_type, dispatch).await;
                                             Ok(())
                                         })
                                         .await
@@ -6622,16 +6631,126 @@ fn map_claude_sdk_ext_notification(notification: &UntypedMessage) -> Option<AcpE
     })
 }
 
-async fn maybe_emit_claude_sdk_ext_notification(
+/// The JSON-RPC methods grok uses for its private, namespaced session updates.
+/// Both share the standard `session/update` envelope (`params.update.
+/// sessionUpdate` + fields, verified live against grok 0.2.111) but carry
+/// variants the typed ACP pipeline can't deserialize, so codeg drops them.
+const GROK_EXT_UPDATE_METHODS: [&str; 2] =
+    ["_x.ai/session_notification", "_x.ai/session/update"];
+
+/// A stable id for a synthetic event derived from a grok ext notification —
+/// grok stamps `params._meta.eventId`; fall back to a fresh uuid.
+fn grok_ext_event_id(params: &serde_json::Value) -> String {
+    params
+        .get("_meta")
+        .and_then(|m| m.get("eventId"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("grok-ext-{}", uuid::Uuid::new_v4().simple()))
+}
+
+/// Map grok's private context-compaction ext notifications into `AcpEvent`s.
+///
+/// grok reports `/compact` (and auto-compaction) results on
+/// `_x.ai/session_notification` / `_x.ai/session/update` rather than as normal
+/// `agent_message_chunk`s. Those methods never match the typed `session/update`
+/// pipeline, so without this the whole turn is blank and `/compact` looks like
+/// it failed. Only grok emits these, so gate on the agent. Turn-level failures
+/// are intentionally NOT handled here — the `session/prompt` response path
+/// (`turn_failure_error_event`) already surfaces those, and duplicating them
+/// would double-report.
+fn map_grok_ext_notification(
+    notification: &UntypedMessage,
+    agent_type: AgentType,
+) -> Option<AcpEvent> {
+    if !matches!(agent_type, AgentType::Grok) {
+        return None;
+    }
+    if !GROK_EXT_UPDATE_METHODS.contains(&notification.method()) {
+        return None;
+    }
+    let params = notification.params();
+    let update = params.get("update")?;
+    match update.get("sessionUpdate").and_then(|v| v.as_str())? {
+        // grok always emits `completed` (even a no-op where before == after).
+        // Render the shared context-compaction card (recognized frontend-side by
+        // `_meta.contextCompaction`, same as codex) carrying the token delta.
+        "auto_compact_completed" => {
+            let mut meta = serde_json::Map::new();
+            meta.insert(
+                "contextCompaction".to_string(),
+                serde_json::Value::Bool(true),
+            );
+            if let Some(before) = update.get("tokens_before").and_then(|v| v.as_u64()) {
+                meta.insert("tokensBefore".to_string(), before.into());
+            }
+            if let Some(after) = update.get("tokens_after").and_then(|v| v.as_u64()) {
+                meta.insert("tokensAfter".to_string(), after.into());
+            }
+            Some(AcpEvent::ToolCall {
+                tool_call_id: grok_ext_event_id(params),
+                title: "Context compaction".to_string(),
+                kind: "other".to_string(),
+                status: "completed".to_string(),
+                content: None,
+                raw_input: None,
+                raw_output: None,
+                locations: None,
+                meta: Some(serde_json::Value::Object(meta)),
+                images: None,
+            })
+        }
+        // Compaction itself blew up (e.g. the summarizer model call failed) while
+        // the turn still ended cleanly — surface a non-terminal error so the
+        // result isn't a silent blank.
+        "auto_compact_failed" => Some(AcpEvent::Error {
+            message: format!(
+                "Context compaction failed{}",
+                update
+                    .get("reason")
+                    .or_else(|| update.get("message"))
+                    .and_then(|v| v.as_str())
+                    .map(|d| format!(": {d}"))
+                    .unwrap_or_default()
+            ),
+            agent_type: agent_type.to_string(),
+            code: None,
+            terminal: false,
+        }),
+        _ => None,
+    }
+}
+
+/// Whether a dispatch is a grok ext notification that
+/// `map_grok_ext_notification` renders as visible turn output (a compaction card
+/// or a compaction error). The active-turn loop consults this BEFORE the typed
+/// pipeline to mark the turn as non-empty: a `/compact` turn emits only these
+/// ext notifications and no standard `agent_message_chunk`, so without this its
+/// `end_turn` is reclassified as `"empty"` and re-surfaced as a spurious error —
+/// the exact symptom this change removes. Reuses `map_grok_ext_notification` so
+/// the handled-variant set can never drift from what actually emits.
+fn grok_ext_notification_is_turn_output(dispatch: &Dispatch, agent_type: AgentType) -> bool {
+    match dispatch {
+        Dispatch::Notification(notification) => {
+            map_grok_ext_notification(notification, agent_type).is_some()
+        }
+        _ => false,
+    }
+}
+
+async fn maybe_emit_ext_notification(
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
+    agent_type: AgentType,
     dispatch: Dispatch,
 ) {
     let Dispatch::Notification(notification) = dispatch else {
         return;
     };
 
-    if let Some(event) = map_claude_sdk_ext_notification(&notification) {
+    if let Some(event) = map_claude_sdk_ext_notification(&notification)
+        .or_else(|| map_grok_ext_notification(&notification, agent_type))
+    {
         emit_with_state(state, emitter, event).await;
     }
 }
@@ -7772,6 +7891,145 @@ mod tests {
         let missing_fields =
             UntypedMessage::new("_claude/sdkMessage", serde_json::json!({"sessionId": 1})).unwrap();
         assert!(map_claude_sdk_ext_notification(&missing_fields).is_none());
+    }
+
+    /// The exact `_x.ai/session_notification` envelope captured from grok 0.2.111
+    /// running `/compact` — `auto_compact_completed` under `params.update`, with
+    /// the token delta and an `_meta.eventId`.
+    #[test]
+    fn map_grok_ext_notification_maps_auto_compact_completed() {
+        let raw = UntypedMessage::new(
+            "_x.ai/session_notification",
+            serde_json::json!({
+                "sessionId": "019f9475-c67f-7390-9ee5-a09d29986a6c",
+                "update": {
+                    "sessionUpdate": "auto_compact_completed",
+                    "tokens_before": 45389,
+                    "tokens_after": 16486,
+                    "summary_preview": null
+                },
+                "_meta": {
+                    "eventId": "019f9475-c67f-7390-9ee5-a09d29986a6c-4",
+                    "agentTimestampMs": 1784902203750u64
+                }
+            }),
+        )
+        .unwrap();
+
+        let event = map_grok_ext_notification(&raw, AgentType::Grok)
+            .expect("auto_compact_completed should map to a compaction card");
+        match event {
+            AcpEvent::ToolCall {
+                tool_call_id,
+                status,
+                meta,
+                ..
+            } => {
+                assert_eq!(tool_call_id, "019f9475-c67f-7390-9ee5-a09d29986a6c-4");
+                assert_eq!(status, "completed");
+                let meta = meta.expect("compaction card needs meta");
+                assert_eq!(meta.get("contextCompaction").and_then(|v| v.as_bool()), Some(true));
+                assert_eq!(meta.get("tokensBefore").and_then(|v| v.as_u64()), Some(45389));
+                assert_eq!(meta.get("tokensAfter").and_then(|v| v.as_u64()), Some(16486));
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    /// The same variant may arrive on the sibling `_x.ai/session/update` method.
+    #[test]
+    fn map_grok_ext_notification_handles_session_update_method() {
+        let raw = UntypedMessage::new(
+            "_x.ai/session/update",
+            serde_json::json!({
+                "sessionId": "s",
+                "update": { "sessionUpdate": "auto_compact_completed", "tokens_before": 100, "tokens_after": 100 }
+            }),
+        )
+        .unwrap();
+        // No `_meta.eventId` → a generated id, but it must still map.
+        assert!(matches!(
+            map_grok_ext_notification(&raw, AgentType::Grok),
+            Some(AcpEvent::ToolCall { .. })
+        ));
+    }
+
+    #[test]
+    fn map_grok_ext_notification_auto_compact_failed_surfaces_error() {
+        let raw = UntypedMessage::new(
+            "_x.ai/session_notification",
+            serde_json::json!({
+                "sessionId": "s",
+                "update": { "sessionUpdate": "auto_compact_failed", "reason": "API error (status 503)" }
+            }),
+        )
+        .unwrap();
+        match map_grok_ext_notification(&raw, AgentType::Grok) {
+            Some(AcpEvent::Error { message, terminal, .. }) => {
+                assert!(message.contains("503"), "error should carry the reason; got: {message}");
+                assert!(!terminal, "compaction failure must not kill the connection");
+            }
+            other => panic!("expected non-terminal Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_grok_ext_notification_is_grok_gated_and_scoped() {
+        let compact = serde_json::json!({
+            "sessionId": "s",
+            "update": { "sessionUpdate": "auto_compact_completed", "tokens_before": 1, "tokens_after": 1 }
+        });
+        // Non-grok agent: ignored even for the same payload.
+        let raw = UntypedMessage::new("_x.ai/session_notification", compact.clone()).unwrap();
+        assert!(map_grok_ext_notification(&raw, AgentType::Codex).is_none());
+
+        // Turn-level state is intentionally left to the prompt-response path.
+        let turn = UntypedMessage::new(
+            "_x.ai/session_notification",
+            serde_json::json!({
+                "sessionId": "s",
+                "update": { "sessionUpdate": "turn_completed", "stop_reason": "error", "agent_result": "boom" }
+            }),
+        )
+        .unwrap();
+        assert!(map_grok_ext_notification(&turn, AgentType::Grok).is_none());
+
+        // Unrelated method: ignored.
+        let other = UntypedMessage::new("session/update", compact).unwrap();
+        assert!(map_grok_ext_notification(&other, AgentType::Grok).is_none());
+    }
+
+    /// The turn-loop consults this to keep a compaction-only `/compact` turn
+    /// from being reclassified as `"empty"` (which re-surfaces a spurious error).
+    /// It must count exactly the compaction outcomes that emit a card/error.
+    #[test]
+    fn grok_ext_notification_is_turn_output_marks_compaction_outcomes() {
+        let notif = |variant: &str| {
+            Dispatch::Notification(
+                UntypedMessage::new(
+                    "_x.ai/session_notification",
+                    serde_json::json!({
+                        "sessionId": "s",
+                        "update": {
+                            "sessionUpdate": variant,
+                            "tokens_before": 9, "tokens_after": 8, "reason": "x"
+                        }
+                    }),
+                )
+                .unwrap(),
+            )
+        };
+        // Both compaction outcomes are visible turn output.
+        assert!(grok_ext_notification_is_turn_output(&notif("auto_compact_completed"), AgentType::Grok));
+        assert!(grok_ext_notification_is_turn_output(&notif("auto_compact_failed"), AgentType::Grok));
+        // turn_completed is deliberately left to the prompt-response path — it is
+        // NOT counted here (otherwise a genuinely empty turn would be masked).
+        assert!(!grok_ext_notification_is_turn_output(&notif("turn_completed"), AgentType::Grok));
+        // Never fires for a non-grok agent.
+        assert!(!grok_ext_notification_is_turn_output(
+            &notif("auto_compact_completed"),
+            AgentType::Codex
+        ));
     }
 
     #[test]

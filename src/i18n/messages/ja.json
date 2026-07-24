@@ -2798,7 +2798,8 @@
       },
       "contextCompaction": {
         "compacting": "コンテキストを圧縮しています…",
-        "compacted": "コンテキストを圧縮しました"
+        "compacted": "コンテキストを圧縮しました",
+        "compactedTokens": "コンテキストを圧縮 · {before} → {after} トークン"
       },
       "backgroundTasks": {
         "running": "{count} 件のバックグラウンドタスクを実行中",

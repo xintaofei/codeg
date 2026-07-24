@@ -2313,7 +2313,7 @@ const ToolCallPart = memo(function ToolCallPart({
   // with `_meta.contextCompaction` (not addressed by tool name) → a subtle
   // status card instead of the generic tool shell.
   if (isContextCompactionMeta(part.meta)) {
-    return <ContextCompactionCard state={part.state} />
+    return <ContextCompactionCard state={part.state} meta={part.meta} />
   }
 
   // Agent/subagent tools get a dedicated container rendering
