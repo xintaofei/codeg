@@ -83,6 +83,16 @@ export async function installMarketplacePet(
   return getTransport().call("pet_marketplace_install", { ...request })
 }
 
+// Proxy a marketplace image (poster / preview / spritesheet) through the
+// backend. The webview can't always reach codex-pets.net directly, but the
+// backend can, so it fetches the bytes and returns them as `{ mime, dataBase64 }`
+// (same shape as `readPetSpritesheet`) for the renderer to turn into a blob URL.
+export async function fetchMarketplaceAsset(
+  url: string
+): Promise<PetSpriteAsset> {
+  return getTransport().call("pet_marketplace_asset", { url })
+}
+
 export async function getPetSettings(): Promise<PetWindowConfig> {
   return getTransport().call("pet_get_settings")
 }

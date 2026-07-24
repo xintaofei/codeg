@@ -1220,6 +1220,10 @@ pub fn build_router(
             "/pet_marketplace_install",
             post(handlers::pet::pet_marketplace_install),
         )
+        .route(
+            "/pet_marketplace_asset",
+            post(handlers::pet::pet_marketplace_asset),
+        )
         .route("/pet_celebrate", post(handlers::pet::pet_celebrate))
         .route(
             "/pet_get_current_state",

@@ -1042,6 +1042,7 @@ mod tauri_app {
                 pet_commands::pet_save_window_state,
                 pet_commands::pet_marketplace_list,
                 pet_commands::pet_marketplace_install,
+                pet_commands::pet_marketplace_asset,
                 pet_commands::pet_celebrate,
                 pet_commands::pet_get_current_state,
                 pet_commands::pet_list_active_sessions,

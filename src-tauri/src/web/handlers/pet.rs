@@ -143,6 +143,20 @@ pub async fn pet_marketplace_install(
         .map(Json)
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PetAssetParams {
+    pub url: String,
+}
+
+pub async fn pet_marketplace_asset(
+    Json(params): Json<PetAssetParams>,
+) -> Result<Json<PetSpriteAsset>, AppCommandError> {
+    pet_commands::pet_marketplace_asset_core(params.url)
+        .await
+        .map(Json)
+}
+
 pub async fn pet_get_current_state(
     Extension(state): Extension<Arc<AppState>>,
 ) -> Result<Json<PetState>, AppCommandError> {
