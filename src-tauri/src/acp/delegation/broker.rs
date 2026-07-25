@@ -4914,7 +4914,12 @@ mod tests {
             DelegationOutcome::Ok(s) => assert_eq!(s.text, "done"),
             other => panic!("expected Ok, got {other:?}"),
         }
-        assert_eq!(mock.disconnects.lock().await.as_slice(), &["c1"]);
+        // Success keeps the child process for continue_with_session; only
+        // cancel / close_session tear it down.
+        assert!(
+            mock.disconnects.lock().await.is_empty(),
+            "complete_call must not disconnect on success"
+        );
     }
 
     // -- Task 4.6: parent-cancel cascade -----------------------------------
