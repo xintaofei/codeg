@@ -42,6 +42,17 @@ pub enum SpawnerError {
     Cancel(String),
 }
 
+/// D3.1 continuation capability an agent self-reported on `initialize`
+/// (`agent_capabilities.load_session` / `session_capabilities.resume`). Read
+/// off a connection's session state; consumed by the broker's
+/// `get_continuation_availability` to tell a persistent-resume agent from a
+/// live-only one whose context dies with the process.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AgentContinuationCapability {
+    pub supports_load_session: bool,
+    pub supports_resume: bool,
+}
+
 /// Capabilities the delegation broker needs from whatever owns the ACP
 /// connections. v1 production impl is `Arc<ConnectionManager>` (see
 /// `acp/manager.rs`); tests use `mock::MockSpawner`.
@@ -98,6 +109,64 @@ pub trait ConnectionSpawner: Send + Sync {
     /// resolved (or failed) the pending call, to enforce v1's one-shot
     /// semantics.
     async fn disconnect(&self, conn_id: &str) -> Result<(), SpawnerError>;
+
+    /// Like [`ConnectionSpawner::spawn`], but revives a child that has already
+    /// existed: `session_id` is the child conversation row's persisted
+    /// `external_id` (the agent-assigned ACP session id), handed to
+    /// `session/resume` → `session/load` so the revived process keeps the
+    /// earlier turns' context. `None` means "no resume credential available" —
+    /// the impl then behaves exactly like `spawn` (cold session, context lost),
+    /// which the caller must surface to the user rather than silently accept.
+    ///
+    /// Passing a `session_id` also opts into `ConnectionManager`'s connection
+    /// dedup, so a still-live process for the same (agent, working_dir,
+    /// session) is reused instead of double-spawned.
+    ///
+    /// Returns the connection id to use for the next prompt.
+    async fn spawn_for_resume(
+        &self,
+        parent_connection_id: &str,
+        agent_type: AgentType,
+        working_dir: Option<String>,
+        session_id: Option<String>,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
+    ) -> Result<String, SpawnerError>;
+
+    /// Send a follow-up prompt onto a child that ALREADY owns a conversation
+    /// row — i.e. every turn after the delegation's first one.
+    ///
+    /// Unlike [`ConnectionSpawner::send_prompt_linked_for_delegation`], this
+    /// must NOT carry a `DelegationLink`: the link is what drives the
+    /// create-a-new-child-row branch, so reusing it here would append a second
+    /// child conversation per follow-up. The impl adopts the existing row by
+    /// passing `conversation_id` + `folder_id` with `delegation: None`.
+    async fn send_followup_prompt(
+        &self,
+        conn_id: &str,
+        message: String,
+        conversation_id: i32,
+        folder_id: i32,
+    ) -> Result<(), SpawnerError>;
+
+    /// Whether `conn_id` still names a usable connection — i.e. it is
+    /// registered and its status is neither `Disconnected` nor `Error`.
+    /// The broker uses this to choose between sending straight onto a kept
+    /// alive connection and going through `spawn_for_resume`. Unknown ids are
+    /// dead (a swept / never-existing connection is equally unusable).
+    async fn is_alive(&self, conn_id: &str) -> bool;
+
+    /// The continuation capability the agent on `conn_id` self-reported at
+    /// `initialize` (D3.1), read off its session state. `None` when the
+    /// connection is unknown — its state left with the process, so the caller
+    /// falls back to an optimistic verdict and the actual resume attempt
+    /// reports `resume_unavailable` if the capability was truly absent.
+    ///
+    /// Default `None` keeps every existing test spawner compiling; the
+    /// production impl and `MockSpawner` override it.
+    async fn continuation_capability(&self, _conn_id: &str) -> Option<AgentContinuationCapability> {
+        None
+    }
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -117,9 +186,28 @@ pub mod mock {
     pub struct MockSpawner {
         pub spawn_results: Mutex<VecDeque<Result<String, SpawnerError>>>,
         pub send_results: Mutex<VecDeque<Result<i32, SpawnerError>>>,
+        /// Pre-queued results for `send_followup_prompt`, staged with
+        /// [`MockSpawner::queue_followup`]. Kept separate from `send_results`
+        /// so a test can't accidentally satisfy a follow-up with a first-prompt
+        /// result (they return different types and mean different branches).
+        pub followup_results: Mutex<VecDeque<Result<(), SpawnerError>>>,
         pub cancels: Mutex<Vec<String>>,
         pub disconnects: Mutex<Vec<String>>,
         pub spawn_args: Mutex<Vec<SpawnCallArgs>>,
+        /// Every `spawn_for_resume` invocation, in call order — notably the
+        /// `session_id` the broker forwarded as the resume credential.
+        pub resume_args: Mutex<Vec<ResumeCallArgs>>,
+        /// Every `send_followup_prompt` invocation, in call order.
+        pub followups: Mutex<Vec<FollowupCallArgs>>,
+        /// Connection ids `is_alive` must report as dead. Populated by
+        /// [`MockSpawner::mark_dead`] (simulating idle sweep / process death)
+        /// and by `disconnect` (a torn-down connection cannot be alive).
+        pub dead_connections: Mutex<Vec<String>>,
+        /// Per-connection continuation capability served by
+        /// `continuation_capability`. Staged with [`MockSpawner::set_capability`];
+        /// connections without an entry answer `None` (state gone), matching
+        /// the production behavior for an unknown id.
+        pub capabilities: Mutex<std::collections::HashMap<String, AgentContinuationCapability>>,
         /// When set, `send_prompt_linked_for_delegation` awaits this receiver
         /// before returning — lets a test hold `handle_request` in the window
         /// AFTER it has reserved the child (post-spawn) but BEFORE it parks the
@@ -143,6 +231,29 @@ pub mod mock {
         pub preferred_config_values: BTreeMap<String, String>,
     }
 
+    /// Recorded `spawn_for_resume` call. Same shape as [`SpawnCallArgs`] plus
+    /// the `session_id` resume credential, which is the whole reason the
+    /// resume variant exists.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ResumeCallArgs {
+        pub parent_connection_id: String,
+        pub agent_type: AgentType,
+        pub working_dir: Option<String>,
+        pub session_id: Option<String>,
+        pub preferred_mode_id: Option<String>,
+        pub preferred_config_values: BTreeMap<String, String>,
+    }
+
+    /// Recorded `send_followup_prompt` call. `conversation_id` + `folder_id`
+    /// let a test assert the follow-up adopted the existing child row.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct FollowupCallArgs {
+        pub conn_id: String,
+        pub message: String,
+        pub conversation_id: i32,
+        pub folder_id: i32,
+    }
+
     impl MockSpawner {
         pub fn new() -> Self {
             Self::default()
@@ -154,6 +265,29 @@ pub mod mock {
 
         pub async fn queue_send(&self, r: Result<i32, SpawnerError>) {
             self.send_results.lock().await.push_back(r);
+        }
+
+        /// Stage the next `send_followup_prompt` outcome.
+        pub async fn queue_followup(&self, r: Result<(), SpawnerError>) {
+            self.followup_results.lock().await.push_back(r);
+        }
+
+        /// Bury `conn_id`: subsequent `is_alive` calls report false. Simulates
+        /// idle sweep / agent process death without a real ACP connection.
+        pub async fn mark_dead(&self, conn_id: &str) {
+            let mut dead = self.dead_connections.lock().await;
+            if !dead.iter().any(|c| c == conn_id) {
+                dead.push(conn_id.to_string());
+            }
+        }
+
+        /// Stage the capability `continuation_capability` reports for
+        /// `conn_id`. Unset connections answer `None` (unknown id).
+        pub async fn set_capability(&self, conn_id: &str, cap: AgentContinuationCapability) {
+            self.capabilities
+                .lock()
+                .await
+                .insert(conn_id.to_string(), cap);
         }
 
         /// Install a one-shot gate that holds the next
@@ -235,7 +369,75 @@ pub mod mock {
 
         async fn disconnect(&self, conn_id: &str) -> Result<(), SpawnerError> {
             self.disconnects.lock().await.push(conn_id.to_string());
+            // A torn-down connection must also stop reporting alive, otherwise
+            // a broker test could exercise the impossible
+            // "disconnected but still sendable" state.
+            self.mark_dead(conn_id).await;
             Ok(())
+        }
+
+        async fn spawn_for_resume(
+            &self,
+            parent_connection_id: &str,
+            agent_type: AgentType,
+            working_dir: Option<String>,
+            session_id: Option<String>,
+            preferred_mode_id: Option<String>,
+            preferred_config_values: BTreeMap<String, String>,
+        ) -> Result<String, SpawnerError> {
+            self.resume_args.lock().await.push(ResumeCallArgs {
+                parent_connection_id: parent_connection_id.to_string(),
+                agent_type,
+                working_dir,
+                session_id,
+                preferred_mode_id,
+                preferred_config_values,
+            });
+            // Shares the `spawn_results` queue: from a broker test's point of
+            // view both paths "produce the next child connection id", and the
+            // recorded args (`spawn_args` vs `resume_args`) already distinguish
+            // which path ran.
+            self.spawn_results
+                .lock()
+                .await
+                .pop_front()
+                .unwrap_or_else(|| Err(SpawnerError::Spawn("no queued spawn result".into())))
+        }
+
+        async fn send_followup_prompt(
+            &self,
+            conn_id: &str,
+            message: String,
+            conversation_id: i32,
+            folder_id: i32,
+        ) -> Result<(), SpawnerError> {
+            self.followups.lock().await.push(FollowupCallArgs {
+                conn_id: conn_id.to_string(),
+                message,
+                conversation_id,
+                folder_id,
+            });
+            self.followup_results
+                .lock()
+                .await
+                .pop_front()
+                .unwrap_or_else(|| Err(SpawnerError::Send("no queued followup result".into())))
+        }
+
+        async fn is_alive(&self, conn_id: &str) -> bool {
+            !self
+                .dead_connections
+                .lock()
+                .await
+                .iter()
+                .any(|c| c == conn_id)
+        }
+
+        async fn continuation_capability(
+            &self,
+            conn_id: &str,
+        ) -> Option<AgentContinuationCapability> {
+            self.capabilities.lock().await.get(conn_id).copied()
         }
     }
 
@@ -315,6 +517,85 @@ pub mod mock {
             assert_eq!(args[0].agent_type, AgentType::ClaudeCode);
             assert_eq!(args[0].preferred_mode_id.as_deref(), Some("auto"));
             assert_eq!(args[0].preferred_config_values, cfg);
+        }
+
+        /// `spawn_for_resume` must record the resume credential it was handed
+        /// (`session_id`) so broker tests can assert the `external_id` from the
+        /// DB row is actually forwarded down to `spawn_agent` — the whole point
+        /// of the resume path.
+        #[tokio::test]
+        async fn mock_spawn_for_resume_records_session_id() {
+            let m = MockSpawner::new();
+            m.queue_spawn(Ok("revived-1".into())).await;
+            let id = m
+                .spawn_for_resume(
+                    "p1",
+                    AgentType::ClaudeCode,
+                    Some("/work".into()),
+                    Some("ext-abc".into()),
+                    None,
+                    BTreeMap::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(id, "revived-1");
+            let args = m.resume_args.lock().await;
+            assert_eq!(args.len(), 1);
+            assert_eq!(args[0].session_id.as_deref(), Some("ext-abc"));
+            assert_eq!(args[0].working_dir.as_deref(), Some("/work"));
+            // The plain `spawn` recorder must stay untouched so existing
+            // assertions on fresh spawns can't be satisfied by a resume.
+            assert!(m.spawn_args.lock().await.is_empty());
+        }
+
+        /// `send_followup_prompt` records (conn, message, conversation_id,
+        /// folder_id) so a broker test can assert the follow-up adopted the
+        /// EXISTING child conversation row (Branch A) instead of creating one.
+        #[tokio::test]
+        async fn mock_send_followup_prompt_records_call() {
+            let m = MockSpawner::new();
+            m.queue_followup(Ok(())).await;
+            m.send_followup_prompt("child-1", "round two".into(), 42, 7)
+                .await
+                .unwrap();
+            let calls = m.followups.lock().await;
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].conn_id, "child-1");
+            assert_eq!(calls[0].message, "round two");
+            assert_eq!(calls[0].conversation_id, 42);
+            assert_eq!(calls[0].folder_id, 7);
+        }
+
+        #[tokio::test]
+        async fn mock_unqueued_followup_fails_loudly() {
+            let m = MockSpawner::new();
+            let err = m
+                .send_followup_prompt("child-1", "hi".into(), 1, 2)
+                .await
+                .unwrap_err();
+            match err {
+                SpawnerError::Send(msg) => assert!(msg.contains("no queued")),
+                other => panic!("expected SpawnerError::Send, got {other:?}"),
+            }
+        }
+
+        /// A connection is alive until it is explicitly buried — either by the
+        /// test (`mark_dead`, simulating idle sweep / process death) or by a
+        /// real `disconnect`, which must bury it as a side effect so the broker
+        /// can't be tested against an impossible "disconnected but alive" state.
+        #[tokio::test]
+        async fn mock_is_alive_false_after_mark_dead_or_disconnect() {
+            let m = MockSpawner::new();
+            assert!(m.is_alive("c-live").await);
+
+            m.mark_dead("c-swept").await;
+            assert!(!m.is_alive("c-swept").await);
+
+            m.disconnect("c-gone").await.unwrap();
+            assert!(!m.is_alive("c-gone").await);
+
+            // Unrelated connections are unaffected.
+            assert!(m.is_alive("c-live").await);
         }
     }
 }

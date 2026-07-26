@@ -66,6 +66,18 @@ pub fn build_router(
             post(handlers::delegation::set_delegation_settings),
         )
         .route(
+            "/continue_delegation",
+            post(handlers::delegation::continue_delegation),
+        )
+        .route(
+            "/close_delegation_session",
+            post(handlers::delegation::close_delegation_session),
+        )
+        .route(
+            "/get_continuation_availability",
+            post(handlers::delegation::get_continuation_availability),
+        )
+        .route(
             "/get_feedback_settings",
             post(handlers::feedback::get_feedback_settings),
         )
@@ -614,10 +626,7 @@ pub fn build_router(
             "/acp_set_config_option",
             post(handlers::acp::acp_set_config_option),
         )
-        .route(
-            "/acp_goal_control",
-            post(handlers::acp::acp_goal_control),
-        )
+        .route("/acp_goal_control", post(handlers::acp::acp_goal_control))
         .route(
             "/acp_describe_agent_options",
             post(handlers::acp::acp_describe_agent_options),
@@ -1127,7 +1136,10 @@ pub fn build_router(
             "/automation_list",
             post(handlers::automation::automation_list),
         )
-        .route("/automation_get", post(handlers::automation::automation_get))
+        .route(
+            "/automation_get",
+            post(handlers::automation::automation_get),
+        )
         .route(
             "/automation_runs",
             post(handlers::automation::automation_runs),

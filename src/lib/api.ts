@@ -3509,6 +3509,80 @@ export async function setDelegationSettings(
   return getTransport().call("set_delegation_settings", { settings })
 }
 
+// ─── Delegation continuation (user-side entry, Task 5) ─────────────────
+
+/** Mirror of Rust `TaskStatus` (delegation broker, wire snake_case). */
+export type DelegationTaskStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "canceled"
+  | "unknown"
+
+/** Mirror of Rust `DelegationTaskReport` — the broker's unified answer for
+ * continue / close. Rejections ride this shape (stable `error_code`:
+ * `session_still_running` / `session_released` / `not_continuable` /
+ * `resume_unavailable` / `continuation_conflict` / `rebuilding`), never an
+ * HTTP error. */
+export interface DelegationTaskReport {
+  task_id?: string | null
+  status: DelegationTaskStatus
+  child_conversation_id?: number | null
+  agent_type?: AgentType | null
+  text?: string | null
+  error_code?: string | null
+  message?: string | null
+  duration_ms?: number | null
+}
+
+/** Mirror of Rust `ContinuationAvailability` — the five-tier verdict driving
+ * the Sub Agent Session Dialog input (design §D4). `released` is release
+ * semantics (child process freed; a restart expires the lease), NOT a
+ * permanent close. */
+export type ContinuationAvailability =
+  | "running"
+  | "continuable_live"
+  | "continuable_resume"
+  | "released"
+  | "not_continuable"
+
+/** Send a user follow-up into a delegated child session THROUGH the broker,
+ * under the same task id the parent AI holds. `continuationId` is the
+ * caller-minted idempotency key: generate one per submission and reuse it
+ * when retrying that same submission. */
+export async function continueDelegation(
+  childConversationId: number,
+  message: string,
+  continuationId: string
+): Promise<DelegationTaskReport> {
+  return getTransport().call("continue_delegation", {
+    childConversationId,
+    message,
+    continuationId,
+  })
+}
+
+/** Release a delegated child session (frees its process; further
+ * continuation in this app run is refused — not a permanent close). */
+export async function closeDelegationSession(
+  childConversationId: number,
+  continuationId: string
+): Promise<DelegationTaskReport> {
+  return getTransport().call("close_delegation_session", {
+    childConversationId,
+    continuationId,
+  })
+}
+
+/** Query the five-tier continuation availability for a child conversation. */
+export async function getContinuationAvailability(
+  childConversationId: number
+): Promise<ContinuationAvailability> {
+  return getTransport().call("get_continuation_availability", {
+    childConversationId,
+  })
+}
+
 // ─── Live feedback settings + submit ───────────────────────────────────
 
 /** Mirror of Rust `FeedbackSettings`. */

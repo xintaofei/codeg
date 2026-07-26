@@ -128,6 +128,24 @@ describe("isAgentLikeToolName", () => {
   })
 })
 
+describe("isAgentLikeToolName continue/close session tools (Task 5.4)", () => {
+  it.each([
+    "continue_with_session",
+    "close_session",
+    "mcp__codeg-mcp__continue_with_session",
+    "mcp__codeg-mcp__close_session",
+    "codeg-mcp/continue_with_session",
+    "codeg-mcp/close_session",
+  ])("%s is agent-like (owns a delegation card, breaks the run)", (name) => {
+    expect(isAgentLikeToolName(name)).toBe(true)
+  })
+
+  it("does not match bare suffix-less lookalikes", () => {
+    expect(isAgentLikeToolName("xcontinue_with_session")).toBe(false)
+    expect(isAgentLikeToolName("xclose_session")).toBe(false)
+  })
+})
+
 describe("TOOL_KIND_ORDER", () => {
   it("includes every label exactly once", () => {
     const expected: ToolKindLabel[] = [

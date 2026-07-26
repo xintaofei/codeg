@@ -183,6 +183,37 @@ pub struct BrokerSessionRequest {
     pub max_messages: Option<u32>,
 }
 
+/// Continue a previously-settled delegated child with a follow-up message.
+/// Backs `continue_with_session`. Authenticated like `Call`; returns a
+/// [`super::types::DelegationTaskReport`] (usually a Running ack).
+///
+/// `continuation_id` is the caller-generated idempotency key and is REQUIRED
+/// at the wire level (no serde default — R2-B5: the listener never mints one,
+/// otherwise a retried request could not be recognized as a retry).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerContinueRequest {
+    pub token: String,
+    pub parent_connection_id: String,
+    /// Optional ACP tool_use_id for the continue MCP call (identity rewrite).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_tool_use_id: Option<String>,
+    pub task_id: String,
+    pub message: String,
+    pub continuation_id: String,
+}
+
+/// RELEASE a delegated child session (R2-B4 release semantics — the wire tool
+/// name stays `close_session` for upstream PR #375 compatibility, but the
+/// child is freed, not permanently retired; a restart naturally expires the
+/// lease). Backs `close_session`. `continuation_id` is REQUIRED (same ledger
+/// as `Continue` — a replayed close returns the first report).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerCloseSessionRequest {
+    pub token: String,
+    pub task_id: String,
+    pub continuation_id: String,
+}
+
 /// Tagged top-level message dispatched by the listener. Adding new variants
 /// is the wire-stable way to grow the broker protocol without touching the
 /// frame layer.
@@ -193,6 +224,8 @@ pub enum BrokerMessage {
     Cancel(BrokerCancelRequest),
     Status(BrokerStatusRequest),
     CancelTask(BrokerCancelTaskRequest),
+    Continue(BrokerContinueRequest),
+    CloseSession(BrokerCloseSessionRequest),
     Feedback(BrokerFeedbackRequest),
     CommitFeedback(BrokerCommitFeedbackRequest),
     Ask(BrokerAskRequest),
@@ -300,6 +333,22 @@ pub async fn client_cancel_task_round_trip(
     req: &BrokerCancelTaskRequest,
 ) -> io::Result<BrokerResponse> {
     message_round_trip(socket_path, &BrokerMessage::CancelTask(req.clone())).await
+}
+
+/// Dispatch a `continue_with_session` request and read back the task report.
+pub async fn client_continue_round_trip(
+    socket_path: &str,
+    req: &BrokerContinueRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::Continue(req.clone())).await
+}
+
+/// Dispatch a `close_session` request and read back the task report.
+pub async fn client_close_session_round_trip(
+    socket_path: &str,
+    req: &BrokerCloseSessionRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::CloseSession(req.clone())).await
 }
 
 /// Dispatch a `check_user_feedback` query and read back the
@@ -586,5 +635,84 @@ mod tests {
         assert_eq!(resp.outcome["kind"], "ok");
         assert_eq!(resp.outcome["text"], "hello");
         server.await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod continue_close_wire_tests {
+    use super::*;
+    use tokio::io::duplex;
+
+    /// T4.2 red: `continue_with_session` rides a tagged `Continue` variant
+    /// carrying the REQUIRED caller-generated `continuation_id` (R2-B5).
+    #[tokio::test]
+    async fn continue_message_round_trip_in_memory() {
+        let (mut a, mut b) = duplex(8 * 1024);
+        let msg = BrokerMessage::Continue(BrokerContinueRequest {
+            token: "tok".into(),
+            parent_connection_id: "p1".into(),
+            parent_tool_use_id: Some("pt1".into()),
+            task_id: "task-9".into(),
+            message: "carry on".into(),
+            continuation_id: "c-1".into(),
+        });
+        write_frame(&mut a, &msg).await.unwrap();
+        let got: BrokerMessage = read_frame(&mut b).await.unwrap();
+        match got {
+            BrokerMessage::Continue(req) => {
+                assert_eq!(req.token, "tok");
+                assert_eq!(req.parent_connection_id, "p1");
+                assert_eq!(req.parent_tool_use_id.as_deref(), Some("pt1"));
+                assert_eq!(req.task_id, "task-9");
+                assert_eq!(req.message, "carry on");
+                assert_eq!(req.continuation_id, "c-1");
+            }
+            other => panic!("expected Continue variant, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn close_session_message_round_trip_in_memory() {
+        let (mut a, mut b) = duplex(8 * 1024);
+        let msg = BrokerMessage::CloseSession(BrokerCloseSessionRequest {
+            token: "tok".into(),
+            task_id: "task-9".into(),
+            continuation_id: "c-2".into(),
+        });
+        write_frame(&mut a, &msg).await.unwrap();
+        let got: BrokerMessage = read_frame(&mut b).await.unwrap();
+        match got {
+            BrokerMessage::CloseSession(req) => {
+                assert_eq!(req.token, "tok");
+                assert_eq!(req.task_id, "task-9");
+                assert_eq!(req.continuation_id, "c-2");
+            }
+            other => panic!("expected CloseSession variant, got {other:?}"),
+        }
+    }
+
+    /// R2-B5: the listener never mints a `continuation_id` on the caller's
+    /// behalf — the wire type makes an absent id a hard decode failure, so a
+    /// skipped retry can never be silently accepted as a fresh operation.
+    #[test]
+    fn continue_request_missing_continuation_id_fails_to_decode() {
+        let raw = serde_json::json!({
+            "kind": "continue",
+            "token": "tok",
+            "parent_connection_id": "p1",
+            "task_id": "task-9",
+            "message": "carry on",
+        });
+        assert!(serde_json::from_value::<BrokerMessage>(raw).is_err());
+    }
+
+    #[test]
+    fn close_request_missing_continuation_id_fails_to_decode() {
+        let raw = serde_json::json!({
+            "kind": "close_session",
+            "token": "tok",
+            "task_id": "task-9",
+        });
+        assert!(serde_json::from_value::<BrokerMessage>(raw).is_err());
     }
 }

@@ -15,8 +15,8 @@ use crate::acp::connection::{
 };
 use crate::acp::error::AcpError;
 use crate::acp::feedback::{
-    bounded_feedback_batch, FeedbackItem, FeedbackStatus, PendingFeedback,
-    SessionFeedbackAccess, MAX_FEEDBACK_CHARS, MAX_FEEDBACK_RESPONSE_BYTES,
+    bounded_feedback_batch, FeedbackItem, FeedbackStatus, PendingFeedback, SessionFeedbackAccess,
+    MAX_FEEDBACK_CHARS, MAX_FEEDBACK_RESPONSE_BYTES,
 };
 use crate::acp::plan_approval::{
     PlanApprovalAnswer, RegisteredPlanApproval, SessionPlanApprovalAccess,
@@ -449,7 +449,9 @@ impl ConnectionManager {
         let connection_id = uuid::Uuid::new_v4().to_string();
         tracing::info!(
             "[ACP] spawning connection id={} owner_window={} agent={:?}",
-            connection_id, owner_window_label, agent_type
+            connection_id,
+            owner_window_label,
+            agent_type
         );
 
         // `spawn_agent_connection` inserts the entry into `self.connections`,
@@ -617,7 +619,12 @@ impl ConnectionManager {
             }
         }
         for (state, emitter, stale) in targets {
-            emit_with_state(&state, &emitter, AcpEvent::SessionConfigStale { stale, kind }).await;
+            emit_with_state(
+                &state,
+                &emitter,
+                AcpEvent::SessionConfigStale { stale, kind },
+            )
+            .await;
         }
         stale_count
     }
@@ -994,7 +1001,12 @@ impl ConnectionManager {
                 (s.conversation_id, s.external_id.clone())
             };
             if let (Some(cid), Some(eid)) = (cid_opt, eid_opt) {
-                conversation_service::update_external_id(&db.conn, cid, eid)
+                // Resume-safe (Requirement 3.3a): this sync snapshot write also
+                // runs on the continuation follow-up path (Branch A adoption via
+                // `send_followup_prompt`), where `state.external_id` may carry a
+                // fallback `session/new` id — a Delegate row's existing
+                // credential must win over it.
+                conversation_service::update_external_id_resume_safe(&db.conn, cid, eid)
                     .await
                     .map_err(|e| AcpError::protocol(e.to_string()))?;
                 // SessionStarted arrived BEFORE this link, so the lifecycle
@@ -1446,7 +1458,9 @@ impl ConnectionManager {
             // Surface failures even when the caller is gone (the detached task's
             // Result would otherwise be dropped silently).
             if let Err(ref e) = outcome {
-                tracing::error!("[ACP][ERROR] fork persistence failed (conn={conn_id_for_task}): {e}");
+                tracing::error!(
+                    "[ACP][ERROR] fork persistence failed (conn={conn_id_for_task}): {e}"
+                );
             }
             outcome
         });
@@ -1823,7 +1837,8 @@ impl ConnectionManager {
         }
         tracing::info!(
             "[ACP] disconnect by owner window owner_window={} count={}",
-            owner_window_label, disconnected
+            owner_window_label,
+            disconnected
         );
         disconnected
     }
@@ -1865,8 +1880,7 @@ impl ConnectionManager {
         let mut out = Vec::new();
         for (id, conn) in connections.iter() {
             let state = conn.state.read().await;
-            let (Some(conversation_id), Some(folder_id)) =
-                (state.conversation_id, state.folder_id)
+            let (Some(conversation_id), Some(folder_id)) = (state.conversation_id, state.folder_id)
             else {
                 continue;
             };
@@ -1965,11 +1979,8 @@ impl ConnectionManager {
         if !state.read().await.feedback_tool_available {
             return Err(AcpError::FeedbackDisabled);
         }
-        let item = FeedbackItem::new_pending(
-            uuid::Uuid::new_v4().to_string(),
-            text,
-            chrono::Utc::now(),
-        );
+        let item =
+            FeedbackItem::new_pending(uuid::Uuid::new_v4().to_string(), text, chrono::Utc::now());
         // Gate on `turn_in_flight` and append in ONE critical section (via the
         // gated emit): a `TurnComplete` (flips the flag) or `UserMessage`
         // (clears `feedback`) can't slip between the gate and the append+seq, so
@@ -2151,7 +2162,12 @@ impl ConnectionManager {
         state: &std::sync::Arc<tokio::sync::RwLock<crate::acp::SessionState>>,
         emitter: &EventEmitter,
     ) -> bool {
-        if self.pending_questions.lock().await.contains_key(question_id) {
+        if self
+            .pending_questions
+            .lock()
+            .await
+            .contains_key(question_id)
+        {
             return false;
         }
         emit_with_state(
@@ -2189,7 +2205,9 @@ impl ConnectionManager {
         // (peer-close) at the same instant; the resolved-event below still clears
         // the card.
         let _ = entry.sender.send(outcome);
-        if let Some((state, emitter)) = self.get_state_and_emitter(&entry.parent_connection_id).await
+        if let Some((state, emitter)) = self
+            .get_state_and_emitter(&entry.parent_connection_id)
+            .await
         {
             emit_with_state(
                 &state,
@@ -2214,7 +2232,9 @@ impl ConnectionManager {
         let Some(entry) = removed else {
             return;
         };
-        if let Some((state, emitter)) = self.get_state_and_emitter(&entry.parent_connection_id).await
+        if let Some((state, emitter)) = self
+            .get_state_and_emitter(&entry.parent_connection_id)
+            .await
         {
             emit_with_state(
                 &state,
@@ -2335,7 +2355,12 @@ impl ConnectionManager {
         state: &std::sync::Arc<tokio::sync::RwLock<crate::acp::SessionState>>,
         emitter: &EventEmitter,
     ) -> bool {
-        if self.pending_plan_approvals.lock().await.contains_key(approval_id) {
+        if self
+            .pending_plan_approvals
+            .lock()
+            .await
+            .contains_key(approval_id)
+        {
             return false;
         }
         emit_with_state(
@@ -2372,8 +2397,9 @@ impl ConnectionManager {
         // (teardown) at the same instant; the resolved event below still clears
         // the card.
         let _ = entry.sender.send(answer);
-        if let Some((state, emitter)) =
-            self.get_state_and_emitter(&entry.parent_connection_id).await
+        if let Some((state, emitter)) = self
+            .get_state_and_emitter(&entry.parent_connection_id)
+            .await
         {
             emit_with_state(
                 &state,
@@ -2412,8 +2438,12 @@ impl ConnectionManager {
         // (disconnect removes it before this sweep), so tolerate `None`.
         if let Some((state, emitter)) = self.get_state_and_emitter(conn_id).await {
             for approval_id in drained {
-                emit_with_state(&state, &emitter, AcpEvent::PlanApprovalResolved { approval_id })
-                    .await;
+                emit_with_state(
+                    &state,
+                    &emitter,
+                    AcpEvent::PlanApprovalResolved { approval_id },
+                )
+                .await;
             }
         }
     }
@@ -2519,13 +2549,20 @@ pub struct ConnectionManagerSpawner {
     pub data_dir: Arc<PathBuf>,
 }
 
-#[async_trait::async_trait]
-impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpawner {
-    async fn spawn(
+impl ConnectionManagerSpawner {
+    /// Shared body of `spawn` (fresh child, `session_id: None`) and
+    /// `spawn_for_resume` (revive a known child by its persisted
+    /// `external_id`). Everything except the resume credential is identical:
+    /// the child must inherit the parent's emitter / owner window / working_dir
+    /// and get the same codeg-built runtime env, otherwise it emits events no
+    /// frontend sees and skips the user's agent configuration.
+    #[allow(clippy::too_many_arguments)]
+    async fn spawn_child_inner(
         &self,
         parent_connection_id: &str,
         agent_type: AgentType,
         working_dir: Option<String>,
+        session_id: Option<String>,
         preferred_mode_id: Option<String>,
         preferred_config_values: BTreeMap<String, String>,
     ) -> Result<String, crate::acp::delegation::spawner::SpawnerError> {
@@ -2572,7 +2609,7 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
             .spawn_agent(
                 agent_type,
                 effective_working_dir,
-                None,
+                session_id,
                 runtime_env,
                 owner_window,
                 emitter,
@@ -2581,6 +2618,49 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
             )
             .await
             .map_err(|e| SpawnerError::Spawn(e.to_string()))
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpawner {
+    async fn spawn(
+        &self,
+        parent_connection_id: &str,
+        agent_type: AgentType,
+        working_dir: Option<String>,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
+    ) -> Result<String, crate::acp::delegation::spawner::SpawnerError> {
+        // Delegation children are brand-new sessions: no resume credential.
+        self.spawn_child_inner(
+            parent_connection_id,
+            agent_type,
+            working_dir,
+            None,
+            preferred_mode_id,
+            preferred_config_values,
+        )
+        .await
+    }
+
+    async fn spawn_for_resume(
+        &self,
+        parent_connection_id: &str,
+        agent_type: AgentType,
+        working_dir: Option<String>,
+        session_id: Option<String>,
+        preferred_mode_id: Option<String>,
+        preferred_config_values: BTreeMap<String, String>,
+    ) -> Result<String, crate::acp::delegation::spawner::SpawnerError> {
+        self.spawn_child_inner(
+            parent_connection_id,
+            agent_type,
+            working_dir,
+            session_id,
+            preferred_mode_id,
+            preferred_config_values,
+        )
+        .await
     }
 
     async fn send_prompt_linked_for_delegation(
@@ -2652,6 +2732,65 @@ impl crate::acp::delegation::spawner::ConnectionSpawner for ConnectionManagerSpa
             .await
             .map_err(|e| crate::acp::delegation::spawner::SpawnerError::Disconnect(e.to_string()))
     }
+
+    async fn send_followup_prompt(
+        &self,
+        conn_id: &str,
+        message: String,
+        conversation_id: i32,
+        folder_id: i32,
+    ) -> Result<(), crate::acp::delegation::spawner::SpawnerError> {
+        use crate::acp::delegation::spawner::SpawnerError;
+        // Branch A (adopt the caller's existing row): pass both
+        // `conversation_id` and `folder_id`, and `delegation: None`. Passing a
+        // `DelegationLink` here would be rejected outright (the manager refuses
+        // link + caller conversation_id) and, on the create-row branch, would
+        // append a SECOND child conversation row per follow-up. The child's
+        // delegation linkage was already persisted on its first prompt.
+        self.manager
+            .send_prompt_linked(
+                &self.db,
+                conn_id,
+                vec![PromptInputBlock::Text { text: message }],
+                Some(folder_id),
+                Some(conversation_id),
+                None,
+            )
+            .await
+            .map_err(|e| SpawnerError::Send(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn is_alive(&self, conn_id: &str) -> bool {
+        let Some(state) = self.manager.get_state(conn_id).await else {
+            // Unknown id: swept, disconnected-and-removed, or never existed.
+            return false;
+        };
+        let status = state.read().await.status.clone();
+        !matches!(
+            status,
+            crate::acp::types::ConnectionStatus::Disconnected
+                | crate::acp::types::ConnectionStatus::Error
+        )
+    }
+
+    async fn continuation_capability(
+        &self,
+        conn_id: &str,
+    ) -> Option<crate::acp::delegation::spawner::AgentContinuationCapability> {
+        // D3.1: the agent self-reported these on `initialize`; connection.rs
+        // stored them into the SessionState next to its capability log line.
+        // An unknown id (state removed with the process) answers None — the
+        // capability is then unknowable, not "unsupported".
+        let state = self.manager.get_state(conn_id).await?;
+        let s = state.read().await;
+        Some(
+            crate::acp::delegation::spawner::AgentContinuationCapability {
+                supports_load_session: s.agent_supports_load_session,
+                supports_resume: s.agent_supports_resume,
+            },
+        )
+    }
 }
 
 /// Production impl of `ParentSessionLookup` for the delegation listener.
@@ -2685,10 +2824,7 @@ pub struct ConnectionManagerFeedbackLookup {
 
 #[async_trait::async_trait]
 impl SessionFeedbackAccess for ConnectionManagerFeedbackLookup {
-    async fn read_pending_feedback(
-        &self,
-        parent_connection_id: &str,
-    ) -> Vec<PendingFeedback> {
+    async fn read_pending_feedback(&self, parent_connection_id: &str) -> Vec<PendingFeedback> {
         self.manager
             .read_pending_feedback(parent_connection_id)
             .await
@@ -3653,10 +3789,10 @@ mod tests {
         // Empty / whitespace / image-only prompts seed no title (stays NULL,
         // backfilled on first detail load as before).
         assert!(delegation_child_title_seed(&[]).is_none());
-        assert!(
-            delegation_child_title_seed(&[PromptInputBlock::Text { text: "  \n ".into() }])
-                .is_none()
-        );
+        assert!(delegation_child_title_seed(&[PromptInputBlock::Text {
+            text: "  \n ".into()
+        }])
+        .is_none());
         let img = vec![PromptInputBlock::Image {
             data: "x".into(),
             mime_type: "image/png".into(),
@@ -4985,7 +5121,10 @@ mod tests {
         .unwrap();
         let (mgr, join) =
             manager_with_fake_fork("c-restack", pre.id, "session-S2", "session-S1").await;
-        let result = mgr.fork_session(&db, "c-restack", None, None).await.unwrap();
+        let result = mgr
+            .fork_session(&db, "c-restack", None, None)
+            .await
+            .unwrap();
         let _ = join.await;
 
         let current = conversation_service::get_by_id(&db.conn, pre.id)
@@ -5597,7 +5736,11 @@ mod tests {
         let at_bound = "y".repeat(MAX_FEEDBACK_CHARS);
         assert!(mgr.submit_feedback("c1", at_bound).await.is_ok());
         let state = mgr.get_state("c1").await.unwrap();
-        assert_eq!(state.read().await.feedback.len(), 1, "only the valid note stuck");
+        assert_eq!(
+            state.read().await.feedback.len(),
+            1,
+            "only the valid note stuck"
+        );
     }
 
     // --- ask_user_question: register / answer / cancel -------------------
@@ -5907,7 +6050,12 @@ mod tests {
         // The first is still the pending one and still answerable.
         let state = mgr.get_state("cc2").await.unwrap();
         assert_eq!(
-            state.read().await.pending_question.as_ref().map(|p| p.question_id.clone()),
+            state
+                .read()
+                .await
+                .pending_question
+                .as_ref()
+                .map(|p| p.question_id.clone()),
             Some(first.question_id.clone())
         );
         mgr.answer_question(
@@ -5943,12 +6091,7 @@ mod tests {
         assert_eq!(texts, vec!["a", "b"]);
         // A second read still returns them — read is non-destructive, so an
         // abandoned (peer-closed) call leaves the notes retryable.
-        assert_eq!(
-            mgr.read_pending_feedback("c1")
-                .await
-                .len(),
-            2
-        );
+        assert_eq!(mgr.read_pending_feedback("c1").await.len(), 2);
         {
             let state = mgr.get_state("c1").await.unwrap();
             assert!(state
@@ -5963,10 +6106,7 @@ mod tests {
         mgr.commit_feedback_delivered("c1", vec![a.id.clone(), b.id.clone()])
             .await;
         // Now READ returns nothing (delivered notes are filtered out).
-        assert!(mgr
-            .read_pending_feedback("c1")
-            .await
-            .is_empty());
+        assert!(mgr.read_pending_feedback("c1").await.is_empty());
         let state = mgr.get_state("c1").await.unwrap();
         assert!(state
             .read()
@@ -5982,12 +6122,9 @@ mod tests {
     #[tokio::test]
     async fn read_pending_missing_connection_returns_empty() {
         let mgr = ConnectionManager::new();
-        assert!(mgr
-            .read_pending_feedback("nope")
-            .await
-            .is_empty());
+        assert!(mgr.read_pending_feedback("nope").await.is_empty());
         // Commit on a missing connection is a safe no-op.
-        mgr.commit_feedback_delivered("nope", vec!["x".into()]).await;
+        mgr.commit_feedback_delivered("nope", vec!["x".into()])
+            .await;
     }
-
 }

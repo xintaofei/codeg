@@ -125,6 +125,51 @@ pub enum DelegationError {
     Canceled { reason: String },
     #[error("parent session is gone")]
     ParentSessionGone,
+    /// `continue_with_session` targeted a task whose current turn is still
+    /// running (Requirement 2.4).
+    #[error("subagent session is still running; wait for it or cancel first")]
+    SessionStillRunning,
+    /// The session was RELEASED by `close_session` / parent-conversation
+    /// deletion (R2-B4 release semantics — not a permanent close; a process
+    /// restart naturally expires the lease). Upstream PR #375 calls this
+    /// `session_closed`; see [`canonical_continuation_code`].
+    #[error("subagent session was released; start a new delegation for further work")]
+    SessionReleased,
+    /// The task exists but cannot be continued: empty message, missing
+    /// resume credential after process death, binding mismatch, etc.
+    /// (Requirements 3.2, 7.6).
+    #[error("subagent session cannot be continued: {0}")]
+    NotContinuable(String),
+    /// The resume chain cannot restore the prior context. Returned BEFORE any
+    /// prompt side effect — never silently degraded to a context-losing
+    /// `session/new` (Requirements 3.3, 7.7).
+    #[error("resume unavailable: {0}")]
+    ResumeUnavailable(String),
+    /// The same `continuation_id` was reused with a different payload
+    /// (Requirement 2.13 — idempotency keys bind to one exact request).
+    #[error("continuation_id was already used with a different payload")]
+    ContinuationConflict,
+    /// Retryable startup state: the broker is still rebuilding its session
+    /// index (Requirement 7.2) — answering `Unknown` would read as "your
+    /// session is lost", so this distinct code tells callers to retry.
+    #[error("the broker is rebuilding its session index after startup; retry shortly")]
+    Rebuilding,
+}
+
+/// Historical alias accepted on the facade (R2-B4): upstream PR #375 named the
+/// released state `session_closed`; this build reports `session_released`.
+/// Anything comparing / routing on continuation error codes should normalize
+/// through [`canonical_continuation_code`] instead of matching the alias.
+pub const SESSION_CLOSED_LEGACY_ALIAS: &str = "session_closed";
+
+/// Map a wire error code to its canonical form: the upstream `session_closed`
+/// alias folds into `session_released`; every other code passes through.
+pub fn canonical_continuation_code(code: &str) -> &str {
+    if code == SESSION_CLOSED_LEGACY_ALIAS {
+        "session_released"
+    } else {
+        code
+    }
 }
 
 /// The single value the broker hands back to the listener / MCP companion.
@@ -204,6 +249,18 @@ pub struct DelegationTaskReport {
     pub duration_ms: Option<u64>,
 }
 
+impl DelegationTaskReport {
+    /// Attach a known `task_id` onto a setup-style error report that was built
+    /// without one (e.g. continue/close failures after the id is already
+    /// known). Never clobbers an id the report already carries.
+    pub fn with_task_id(mut self, task_id: &str) -> Self {
+        if self.task_id.is_none() {
+            self.task_id = Some(task_id.to_string());
+        }
+        self
+    }
+}
+
 impl DelegationOutcome {
     /// Project a `DelegationError` onto the wire-stable `code` string used by
     /// the frontend and MCP companion. Keep these strings stable — they ship
@@ -222,11 +279,110 @@ impl DelegationOutcome {
             DelegationError::ChildUnknown(_) => "child_unknown",
             DelegationError::Canceled { .. } => "canceled",
             DelegationError::ParentSessionGone => "canceled",
+            DelegationError::SessionStillRunning => "session_still_running",
+            DelegationError::SessionReleased => "session_released",
+            DelegationError::NotContinuable(_) => "not_continuable",
+            DelegationError::ResumeUnavailable(_) => "resume_unavailable",
+            DelegationError::ContinuationConflict => "continuation_conflict",
+            DelegationError::Rebuilding => "rebuilding",
         };
         DelegationOutcome::Err {
             code: code.to_string(),
             message: err.to_string(),
             child_conversation_id,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// T4.1 red: the five continuation error codes (plus `rebuilding`) must be
+    /// typed `DelegationError` variants with wire-stable `from_err` codes —
+    /// not broker-local string constants.
+    #[test]
+    fn from_err_maps_continuation_variants_to_wire_codes() {
+        let cases: Vec<(DelegationError, &str)> = vec![
+            (
+                DelegationError::SessionStillRunning,
+                "session_still_running",
+            ),
+            (DelegationError::SessionReleased, "session_released"),
+            (
+                DelegationError::NotContinuable("x".into()),
+                "not_continuable",
+            ),
+            (
+                DelegationError::ResumeUnavailable("y".into()),
+                "resume_unavailable",
+            ),
+            (
+                DelegationError::ContinuationConflict,
+                "continuation_conflict",
+            ),
+            (DelegationError::Rebuilding, "rebuilding"),
+        ];
+        for (err, want) in cases {
+            match DelegationOutcome::from_err(err, None) {
+                DelegationOutcome::Err { code, .. } => assert_eq!(code, want),
+                other => panic!("expected Err outcome, got {other:?}"),
+            }
+        }
+    }
+
+    /// R2-B4: the facade accepts upstream PR #375's `session_closed` as a
+    /// historical alias for `session_released`; every other code is passed
+    /// through canonical unchanged.
+    #[test]
+    fn session_closed_is_accepted_as_alias_for_session_released() {
+        assert_eq!(
+            canonical_continuation_code("session_closed"),
+            "session_released"
+        );
+        assert_eq!(
+            canonical_continuation_code("session_released"),
+            "session_released"
+        );
+        assert_eq!(
+            canonical_continuation_code("not_continuable"),
+            "not_continuable"
+        );
+    }
+
+    /// `with_task_id` attaches a known id onto a setup-style report built
+    /// without one, and never clobbers an existing id.
+    #[test]
+    fn with_task_id_fills_only_missing_ids() {
+        let report = DelegationTaskReport {
+            task_id: None,
+            status: TaskStatus::Failed,
+            child_conversation_id: None,
+            agent_type: None,
+            text: None,
+            error_code: Some("not_continuable".into()),
+            message: None,
+            duration_ms: None,
+        };
+        let filled = report.with_task_id("t-1");
+        assert_eq!(filled.task_id.as_deref(), Some("t-1"));
+        let kept = filled.with_task_id("t-2");
+        assert_eq!(kept.task_id.as_deref(), Some("t-1"));
+    }
+
+    /// The detail payloads ride the Display string so per-site context
+    /// survives the typed funnel (broker call sites embed the reason).
+    #[test]
+    fn detail_variants_carry_reason_in_message() {
+        let out = DelegationOutcome::from_err(
+            DelegationError::NotContinuable("message is empty".into()),
+            None,
+        );
+        match out {
+            DelegationOutcome::Err { message, .. } => {
+                assert!(message.contains("message is empty"), "got: {message}");
+            }
+            other => panic!("expected Err outcome, got {other:?}"),
         }
     }
 }

@@ -13,6 +13,7 @@ import {
   CheckCircle2,
   Info,
   ChevronRight,
+  GitBranch,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import type { DbConversationSummary, ConversationStatus } from "@/lib/types"
@@ -51,6 +52,7 @@ import { Input } from "@/components/ui/input"
 import { ConversationStatusDot } from "./conversation-status-dot"
 import { SessionDetailsDialog } from "./session-details-dialog"
 import { AgentIcon } from "@/components/agent-icon"
+import { isDelegationSubsession } from "@/lib/conversation-sidebar"
 
 /**
  * Horizontal indent added per delegation-nesting level. Chosen so a child's
@@ -117,6 +119,12 @@ interface SidebarConversationCardProps {
   /** True when `child_count > 0`: the conversation has delegation children, so
    *  the expand chevron is shown. */
   hasChildren?: boolean
+  /**
+   * Number of delegation children to advertise on a PARENT row while nested
+   * rows are hidden by the funnel filter, so the nested work stays
+   * discoverable. Omit when the subtree is visible — the chevron covers it.
+   */
+  childCountHint?: number
   /** Whether this conversation's sub-session subtree is currently expanded. */
   expanded?: boolean
   /** Toggle this conversation's sub-session subtree (lazily loads on expand). */
@@ -137,6 +145,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   onTogglePin,
   depth = 0,
   hasChildren = false,
+  childCountHint,
   expanded = false,
   onToggleExpand,
 }: SidebarConversationCardProps) {
@@ -207,7 +216,9 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   // hover quick actions: pinning a sub-agent run to the root Pinned section or
   // hand-toggling its status doesn't fit — its lifecycle is the sub-agent's. The
   // time / running badge then stays visible on hover (nothing swaps in for it).
-  const isSubsession = conversation.parent_id != null
+  // Decided by the shared DB-marker predicate, never by `depth`: worktree layout
+  // indents ordinary roots too (see `isDelegationSubsession`).
+  const isSubsession = isDelegationSubsession(conversation)
 
   return (
     <>
@@ -216,6 +227,7 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
           <div
             className="relative h-[2rem] bg-sidebar ws-transparent-bg"
             data-conv-key={`${conversation.agent_type}:${conversation.id}`}
+            data-subsession={isSubsession ? "true" : undefined}
             // Per-level indent: shift the shared rail axis right by one step per
             // depth. Root rows (depth 0) leave the var untouched so they inherit
             // the list's `--conv-rail-axis: 0.875rem` and render exactly as
@@ -314,6 +326,46 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                   {formatConversationTitle(conversation.title) ||
                     t("untitledConversation")}
                 </span>
+                {/* Delegated sub-session marker: without it a nested row is
+                    indistinguishable from a worktree-indented ordinary session
+                    (both sit at depth ≥ 1). */}
+                {isSubsession && (
+                  <span
+                    className={cn(
+                      "relative inline-flex shrink-0 items-center gap-0.5",
+                      "rounded-[0.25rem] px-[0.3125rem] py-px",
+                      "text-[0.625rem] font-semibold leading-none tracking-wide",
+                      "border border-violet-500/30 bg-violet-500/15",
+                      "text-violet-700 dark:text-violet-300"
+                    )}
+                    title={t("subsessionBadgeTitle")}
+                  >
+                    <GitBranch
+                      aria-hidden
+                      className="h-[0.625rem] w-[0.625rem]"
+                    />
+                    {t("subsessionBadge")}
+                  </span>
+                )}
+                {/* Parent row while the subtree is filtered out: advertise that
+                    nested work exists, and how to reveal it. */}
+                {childCountHint != null && childCountHint > 0 && (
+                  <span
+                    className={cn(
+                      "relative inline-flex shrink-0 items-center gap-0.5",
+                      "rounded-[0.25rem] px-[0.3125rem] py-px",
+                      "text-[0.625rem] font-semibold leading-none tabular-nums",
+                      "border border-primary/25 bg-primary/12 text-primary"
+                    )}
+                    title={t("subsessionCountHint", { count: childCountHint })}
+                  >
+                    <GitBranch
+                      aria-hidden
+                      className="h-[0.625rem] w-[0.625rem]"
+                    />
+                    {t("subsessionCountLabel", { count: childCountHint })}
+                  </span>
+                )}
               </button>
 
               {/* Expand/collapse affordance for delegation children. It overlays

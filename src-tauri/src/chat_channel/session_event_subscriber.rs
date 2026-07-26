@@ -119,7 +119,11 @@ async fn handle_acp_envelope(
         AcpEvent::SessionStarted { session_id } => {
             let mut guard = bridge.lock().await;
             if let Some(session) = guard.get_mut(connection_id) {
-                let _ = conversation_service::update_external_id(
+                // Root-session-only writer: bridge sessions are chat-channel
+                // ROOT conversations. If this ever points at a `Delegate` row,
+                // its `external_id` is a resume credential the delegation
+                // lifecycle owns — the guarded variant refuses that write.
+                let _ = conversation_service::update_external_id_skip_delegate(
                     db,
                     session.conversation_id,
                     session_id.clone(),
@@ -509,7 +513,9 @@ async fn handle_acp_envelope(
                                  next TurnComplete"
                             );
                         } else {
-                            tracing::error!("[SessionEventSub] failed to send deferred kickoff: {e}");
+                            tracing::error!(
+                                "[SessionEventSub] failed to send deferred kickoff: {e}"
+                            );
                             let msg = RichMessage::error(format!("Failed to send task: {e}"));
                             let _ = manager.send_to_target(&target, &msg).await;
                         }
@@ -949,9 +955,7 @@ mod delegation_relay_tests {
         assert!(is_delegation_title("delegate_to_agent"));
         assert!(is_delegation_title("Delegate To Agent"));
         assert!(is_delegation_title("delegate-to-agent"));
-        assert!(is_delegation_title(
-            "mcp__codeg-mcp__delegate_to_agent"
-        ));
+        assert!(is_delegation_title("mcp__codeg-mcp__delegate_to_agent"));
         assert!(is_delegation_title("Run mcp__codeg__delegate_to_agent"));
         assert!(!is_delegation_title("agent"));
         assert!(!is_delegation_title("write"));
@@ -1576,6 +1580,84 @@ mod error_terminal_gate_tests {
         assert_eq!(
             read_row_status(&db, conv_id).await,
             ConversationStatus::Cancelled
+        );
+    }
+
+    /// The bridge's `SessionStarted` writer is ROOT-session-only: a `kind =
+    /// Delegate` child row's `external_id` is the resume credential owned by
+    /// the delegation lifecycle, so a bridge session that (mis)points at a
+    /// delegate row must never overwrite it — the write is refused, not
+    /// re-pointed.
+    #[tokio::test]
+    async fn session_started_never_overwrites_delegate_resume_credential() {
+        use crate::acp::delegation::spawner::DelegationLink;
+        use crate::db::service::conversation_service;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/chat-delegate-guard").await;
+        let child = conversation_service::create_with_delegation(
+            &db.conn,
+            folder_id,
+            AgentType::ClaudeCode,
+            Some("delegated child".into()),
+            None,
+            Some(DelegationLink {
+                parent_conversation_id: 1,
+                parent_tool_use_id: "tu-guard".into(),
+                delegation_call_id: "call-guard".into(),
+            }),
+        )
+        .await
+        .expect("delegate child row");
+        conversation_service::update_external_id_resume_safe(
+            &db.conn,
+            child.id,
+            "sess-credential".into(),
+        )
+        .await
+        .expect("mint the resume credential");
+
+        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        bridge.lock().await.register(
+            "c-delegate".to_string(),
+            ActiveSession {
+                channel_id: 7,
+                sender_id: "u1".into(),
+                target: crate::chat_channel::types::ChannelMessageTarget::channel(7),
+                conversation_id: child.id,
+                connection_id: "c-delegate".to_string(),
+                agent_type: AgentType::ClaudeCode,
+                content_buffer: String::new(),
+                tool_calls: Vec::new(),
+                tool_call_inputs: std::collections::HashMap::new(),
+                delegation_rendered: std::collections::HashSet::new(),
+                last_flushed: Instant::now(),
+                pending_prompt: None,
+                permission_pending: None,
+            },
+        );
+        let chat_mgr = ChatChannelManager::new();
+        let conn_mgr = ConnectionManager::new();
+        let envelope = EventEnvelope {
+            seq: 1,
+            connection_id: "c-delegate".to_string(),
+            payload: AcpEvent::SessionStarted {
+                session_id: "sess-hijack".into(),
+            },
+        };
+        handle_acp_envelope(&envelope, &bridge, &chat_mgr, &conn_mgr, &db.conn).await;
+
+        use crate::db::entities::conversation;
+        use sea_orm::EntityTrait;
+        let row = conversation::Entity::find_by_id(child.id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .expect("row exists");
+        assert_eq!(
+            row.external_id.as_deref(),
+            Some("sess-credential"),
+            "the delegate row's resume credential must survive a bridge SessionStarted"
         );
     }
 }

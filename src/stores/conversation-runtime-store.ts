@@ -2379,29 +2379,44 @@ function computeTimelinePrefix(
   }
 
   // Phase 1: DB historical turns.
-  // When liveOwnsActiveTurn is set (sub-agent dialog), the live/local reply
-  // is authoritative for the child's current (only) reply. Strip any
-  // persisted assistant turns while there's a live or just-promoted local
-  // reply in this session — only the kickoff prefix (everything before the
-  // first assistant turn) is shown from the DB. This eliminates the
-  // partial-plus-live duplicate for all timing scenarios, including a
-  // connection-id-null open where we can't read the live store during fetch.
+  // When liveOwnsActiveTurn is set (sub-agent dialog), the live/local reply is
+  // authoritative for the reply of the round it owns, so the persisted copy of
+  // THAT reply must not render beside it. Only the round's own assistant turns
+  // are stripped — every earlier round stays visible.
   //
-  // Delegation children are SINGLE-REPLY (one-shot): stripping from the
-  // first assistant turn onward removes exactly the persisted copy of that
-  // one reply. (A hypothetical multi-turn child would have earlier replies
-  // hidden during the live/grace window — not a case the viewer supports.)
+  // Locating the round: the backend names the in-flight prompt
+  // (`detail.in_flight_user_turn_id`), so assistant turns after it are the
+  // partial of the reply now streaming. Without that anchor only the
+  // single-round shape is unambiguous: with at most one persisted user turn
+  // every persisted assistant turn belongs to the round the live/local reply
+  // owns (the delegation kickoff case, where the child's JSONL can even surface
+  // the reply before its prompt). With more than one round persisted and no
+  // anchor we keep everything: a visible duplicate is recoverable, a hidden
+  // completed round is not.
+  //
+  // (Delegation children used to be one-shot, and this stripped from the FIRST
+  // assistant turn onward. They are continuable now — Requirement 4.7 — so that
+  // cut would erase the whole earlier transcript during a continued turn.)
   const rawPersistedTurns = session.detail?.turns ?? []
   const hasLiveOrLocalReply =
     session.liveOwnsActiveTurn &&
     (session.liveMessage !== null || session.localTurns.length > 0)
-  const firstAssistantIdx = hasLiveOrLocalReply
-    ? rawPersistedTurns.findIndex((t) => t.role === "assistant")
-    : -1
-  const persistedTurns =
-    hasLiveOrLocalReply && firstAssistantIdx !== -1
-      ? rawPersistedTurns.slice(0, firstAssistantIdx)
-      : rawPersistedTurns
+  const ownedRoundPromptId = session.detail?.in_flight_user_turn_id ?? null
+  const ownedRoundCut =
+    hasLiveOrLocalReply && ownedRoundPromptId !== null
+      ? rawPersistedTurns.findIndex(
+          (t) => t.role === "user" && t.id === ownedRoundPromptId
+        )
+      : -1
+  const stripOwnedRoundReply =
+    hasLiveOrLocalReply &&
+    (ownedRoundCut !== -1 ||
+      rawPersistedTurns.filter((t) => t.role === "user").length <= 1)
+  const persistedTurns = stripOwnedRoundReply
+    ? rawPersistedTurns.filter(
+        (t, i) => i <= ownedRoundCut || t.role !== "assistant"
+      )
+    : rawPersistedTurns
 
   // Suppress the persisted PARTIAL in-flight reply for a non-delegation
   // cross-client viewer. While a reply is streaming, some agents (OpenCode,

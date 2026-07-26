@@ -355,5 +355,12 @@ pub async fn delete_conversation(
         params.conversation_id,
     )
     .await?;
+    // The conversation is gone for good — release every delegated child it
+    // owned (kept-alive processes freed, further continuation refused;
+    // Requirement 1.4a). A row with no children is a cheap no-op.
+    state
+        .delegation_broker
+        .release_children_of_parent_conversation(params.conversation_id)
+        .await;
     Ok(Json(()))
 }

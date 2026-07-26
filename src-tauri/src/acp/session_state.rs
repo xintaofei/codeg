@@ -373,6 +373,18 @@ pub struct SessionState {
     /// (possibly later-toggled) global setting.
     pub feedback_tool_available: bool,
 
+    /// Continuation capabilities the agent SELF-REPORTED in its `initialize`
+    /// response (design D3.1): `agent_capabilities.load_session`,
+    /// `session_capabilities.resume` (Claude's raw-meta resume), and
+    /// `session_capabilities.fork`. Stored — not just logged — so the broker /
+    /// the user-side continuation-availability query can classify a child as
+    /// `Resumable` (resume or load available) vs `LiveOnly` without static
+    /// tables or failure probing. Fixed for the connection's lifetime (agent
+    /// capabilities can't change after the handshake).
+    pub agent_supports_load_session: bool,
+    pub agent_supports_resume: bool,
+    pub agent_supports_fork: bool,
+
     /// Concatenated text content of the just-completed turn's assistant
     /// message. Captured at TurnComplete (just before live_message is
     /// cleared) so the lifecycle subscriber can surface it as the
@@ -479,6 +491,9 @@ impl SessionState {
             recent_events: RecentEventsBuffer::new(),
             delegation_token: None,
             feedback_tool_available: false,
+            agent_supports_load_session: false,
+            agent_supports_resume: false,
+            agent_supports_fork: false,
             last_assistant_text: None,
             pending_user_message: None,
             pending_user_message_started_at: None,
@@ -984,11 +999,14 @@ impl SessionState {
             AcpEvent::ClaudeSdkMessage { .. }
             | AcpEvent::SessionLoadFailed { .. }
             | AcpEvent::TurnRetrying { .. }
-            | AcpEvent::UserPromptSent { .. } => {
+            | AcpEvent::UserPromptSent { .. }
+            | AcpEvent::DelegationSessionUpdate { .. } => {
                 // 这些事件不直接修改 SessionState 的可见字段。
                 // UserPromptSent 是纯通知事件，仅供 chat-channel 推送消费。
                 // TurnRetrying 与 Claude 的 api_retry 一样是前端瞬态提示（重试横幅），
                 // 不进快照——回合边界会清除它。
+                // DelegationSessionUpdate 是纯通知（Requirement 8.4：查询才是
+                // 状态真源），消费方收到后回查 delegation status，不进快照。
             }
         }
         self.last_activity_at = Utc::now();
@@ -1486,6 +1504,26 @@ mod tests {
             "win-test".to_string(),
             None,
         )
+    }
+
+    /// D3.1 (T4.5 red): the agent's self-reported continuation capabilities
+    /// (`initialize`: `agent_capabilities.load_session` /
+    /// `session_capabilities.resume` / `.fork`) are STORED on the session
+    /// state — queryable via `manager.get_state` by the broker / the
+    /// user-side availability query (T5) — instead of being log-only.
+    #[test]
+    fn continuation_capabilities_default_off_and_are_settable() {
+        let mut s = fresh_state();
+        assert!(
+            !s.agent_supports_load_session && !s.agent_supports_resume && !s.agent_supports_fork,
+            "capabilities default to false until the agent self-reports them"
+        );
+        s.agent_supports_load_session = true;
+        s.agent_supports_resume = true;
+        s.agent_supports_fork = true;
+        assert!(s.agent_supports_load_session);
+        assert!(s.agent_supports_resume);
+        assert!(s.agent_supports_fork);
     }
 
     #[test]

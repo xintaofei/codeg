@@ -57,20 +57,18 @@ mod tauri_app {
     use crate::acp::manager::ConnectionManager;
     use crate::chat_channel::manager::ChatChannelManager;
     use crate::commands::{
-        acp as acp_commands, app_update as app_update_commands,
-        automation as automation_commands, background as background_commands, backup,
-        chat_channel as chat_channel_commands, conversations,
-        custom_skills as custom_skills_commands, delegation as delegation_commands,
+        acp as acp_commands, app_update as app_update_commands, automation as automation_commands,
+        background as background_commands, backup, chat_channel as chat_channel_commands,
+        conversations, custom_skills as custom_skills_commands, delegation as delegation_commands,
         experts as experts_commands, feedback as feedback_commands, file_io, folder_commands,
-        office_tools as office_tools_commands,
         folders, logging as logging_commands, mcp as mcp_commands,
-        model_provider as model_provider_commands, notification, pet as pet_commands, project_boot,
+        model_provider as model_provider_commands, notification,
+        office_tools as office_tools_commands, pet as pet_commands, project_boot,
         question as question_commands, quick_messages as quick_messages_commands,
-        remote_proxy as remote_proxy_commands,
-        remote_workspace as remote_workspace_commands, science as science_commands,
-        session_info as session_info_commands,
-        system_settings, terminal as terminal_commands,
-        version_control, windows, workspace_state as workspace_state_commands,
+        remote_proxy as remote_proxy_commands, remote_workspace as remote_workspace_commands,
+        science as science_commands, session_info as session_info_commands, system_settings,
+        terminal as terminal_commands, version_control, windows,
+        workspace_state as workspace_state_commands,
     };
     use crate::terminal::manager::TerminalManager;
     use crate::{db, git_credential, network, paths, process, web};
@@ -546,6 +544,10 @@ mod tauri_app {
                             &broker_for_init,
                         )
                         .await;
+                        // Rebuild the continuable delegation-session index from
+                        // persisted child rows (Requirement 7.1) before the
+                        // listener starts accepting.
+                        broker_for_init.rebuild_sessions_from_db().await;
                         crate::commands::feedback::apply_persisted_feedback_config(
                             &db_for_init,
                             &feedback_for_init,
@@ -1074,6 +1076,9 @@ mod tauri_app {
                 logging_commands::open_logs_dir,
                 delegation_commands::get_delegation_settings,
                 delegation_commands::set_delegation_settings,
+                delegation_commands::continue_delegation,
+                delegation_commands::close_delegation_session,
+                delegation_commands::get_continuation_availability,
                 feedback_commands::get_feedback_settings,
                 feedback_commands::set_feedback_settings,
                 feedback_commands::submit_session_feedback,

@@ -5,15 +5,18 @@
 //! The companion speaks newline-delimited JSON-RPC 2.0 on stdio:
 //! one request → one response per line, with concurrent dispatch so
 //! `notifications/cancelled` can race an in-flight `tools/call`. It exposes up
-//! to six tools — `delegate_to_agent` (async; returns a `task_id` ack),
+//! to eight tools — `delegate_to_agent` (async; returns a `task_id` ack),
 //! `get_delegation_status` (poll/long-poll for the result), `cancel_delegation`,
-//! `check_user_feedback` (pull the user's mid-turn steering notes),
-//! `ask_user_question` (block on a multiple-choice card), and `get_session_info`
-//! (resolve a referenced session by id) — whose schemas are embedded at compile
-//! time from [`TOOL_SCHEMA_JSON`] and gated by the `--features` groups (delegation
-//! / feedback / ask / sessions). Only `delegate_to_agent` registers a broker-side
-//! cancel handle; canceling a status / cancel / feedback / session round-trip
-//! merely suppresses its response — and for `check_user_feedback` also skips the
+//! `continue_with_session` (follow-up in the same child session),
+//! `close_session` (release a child — free its process and refuse further
+//! continuation in this run), `check_user_feedback` (pull the user's mid-turn
+//! steering notes), `ask_user_question` (block on a multiple-choice card), and
+//! `get_session_info` (resolve a referenced session by id) — whose schemas are
+//! embedded at compile time from [`TOOL_SCHEMA_JSON`] and gated by the
+//! `--features` groups (delegation / feedback / ask / sessions). Only
+//! `delegate_to_agent` registers a broker-side cancel handle; canceling a
+//! status / cancel / continue / close / feedback / session round-trip merely
+//! suppresses its response — and for `check_user_feedback` also skips the
 //! delivery commit, so a cancelled note stays pending.
 //!
 //! Notifications (id = None) produce no response, matching MCP's expectation
@@ -42,11 +45,13 @@ use serde_json::{json, Value};
 use tokio::sync::{oneshot, Mutex};
 
 use crate::acp::delegation::transport::{
-    client_ask_round_trip, client_cancel, client_cancel_task_round_trip, client_commit_feedback,
+    client_ask_round_trip, client_cancel, client_cancel_task_round_trip,
+    client_close_session_round_trip, client_commit_feedback, client_continue_round_trip,
     client_feedback_round_trip, client_round_trip, client_session_round_trip,
     client_status_round_trip, BrokerAskRequest, BrokerCancelRequest, BrokerCancelTaskRequest,
-    BrokerCommitFeedbackRequest, BrokerFeedbackRequest, BrokerRequest, BrokerResponse,
-    BrokerSessionRequest, BrokerStatusRequest,
+    BrokerCloseSessionRequest, BrokerCommitFeedbackRequest, BrokerContinueRequest,
+    BrokerFeedbackRequest, BrokerRequest, BrokerResponse, BrokerSessionRequest,
+    BrokerStatusRequest,
 };
 use crate::acp::question::parse_questions;
 use crate::acp::session_info::MAX_SESSION_MESSAGES;
@@ -179,7 +184,11 @@ impl CompanionFeatures {
             "check_user_feedback" => self.feedback,
             "ask_user_question" => self.ask,
             "get_session_info" => self.sessions,
-            "delegate_to_agent" | "get_delegation_status" | "cancel_delegation" => self.delegation,
+            "delegate_to_agent"
+            | "get_delegation_status"
+            | "cancel_delegation"
+            | "continue_with_session"
+            | "close_session" => self.delegation,
             _ => false,
         }
     }
@@ -477,6 +486,94 @@ async fn build_tools_call_spawn(
             };
             let round_trip =
                 Box::pin(async move { client_cancel_task_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_task_report).await
+        }
+        "continue_with_session" => {
+            let task_id = match arguments.get("task_id").and_then(|v| v.as_str()) {
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => {
+                    return LineAction::Respond(err(
+                        id,
+                        -32602,
+                        "continue_with_session requires a non-empty string task_id",
+                    ));
+                }
+            };
+            let message = match arguments.get("message").and_then(|v| v.as_str()) {
+                Some(s) if !s.trim().is_empty() => s.to_string(),
+                _ => {
+                    return LineAction::Respond(err(
+                        id,
+                        -32602,
+                        "continue_with_session requires a non-empty string message",
+                    ));
+                }
+            };
+            // R2-B5: the caller mints the idempotency key; the companion and
+            // listener never generate one on its behalf (a generated id would
+            // make a retried request unrecognizable as a retry).
+            let continuation_id = match arguments.get("continuation_id").and_then(|v| v.as_str()) {
+                Some(s) if !s.trim().is_empty() => s.to_string(),
+                _ => {
+                    return LineAction::Respond(err(
+                        id,
+                        -32602,
+                        "continue_with_session requires a non-empty string continuation_id \
+                         (mint a fresh unique id per request; reuse the SAME id only when \
+                         retrying this exact request)",
+                    ));
+                }
+            };
+            let tool_use_id = params
+                .get("_meta")
+                .and_then(|m| m.get("tool_use_id"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let req = BrokerContinueRequest {
+                token: ctx.token.clone(),
+                parent_connection_id: ctx.parent_connection_id.clone(),
+                parent_tool_use_id: tool_use_id,
+                task_id,
+                message,
+                continuation_id,
+            };
+            // No external_handle: canceling a continue round-trip only
+            // suppresses its response — the broker's operation ledger makes a
+            // retried request with the same continuation_id idempotent.
+            let round_trip =
+                Box::pin(async move { client_continue_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_task_report).await
+        }
+        "close_session" => {
+            let task_id = match arguments.get("task_id").and_then(|v| v.as_str()) {
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => {
+                    return LineAction::Respond(err(
+                        id,
+                        -32602,
+                        "close_session requires a non-empty string task_id",
+                    ));
+                }
+            };
+            let continuation_id = match arguments.get("continuation_id").and_then(|v| v.as_str()) {
+                Some(s) if !s.trim().is_empty() => s.to_string(),
+                _ => {
+                    return LineAction::Respond(err(
+                        id,
+                        -32602,
+                        "close_session requires a non-empty string continuation_id \
+                         (mint a fresh unique id per request; reuse the SAME id only when \
+                         retrying this exact request)",
+                    ));
+                }
+            };
+            let req = BrokerCloseSessionRequest {
+                token: ctx.token.clone(),
+                task_id,
+                continuation_id,
+            };
+            let round_trip =
+                Box::pin(async move { client_close_session_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_task_report).await
         }
         "check_user_feedback" => {
@@ -957,7 +1054,10 @@ pub fn render_ask_result(outcome: &Value) -> Value {
             } else {
                 selected.join(", ")
             };
-            s.push_str(&format!("{}. [{header}] {question}\n   → {joined}\n", i + 1));
+            s.push_str(&format!(
+                "{}. [{header}] {question}\n   → {joined}\n",
+                i + 1
+            ));
         }
         s
     };
@@ -1100,8 +1200,14 @@ fn render_session_summary_text(o: &Value) -> String {
             .get("truncated")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let suffix = if truncated { ", older turns omitted" } else { "" };
-        out.push_str(&format!("\nRecent messages ({included}/{total}{suffix}):\n"));
+        let suffix = if truncated {
+            ", older turns omitted"
+        } else {
+            ""
+        };
+        out.push_str(&format!(
+            "\nRecent messages ({included}/{total}{suffix}):\n"
+        ));
         if let Some(items) = messages.get("items").and_then(|v| v.as_array()) {
             for item in items {
                 let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("?");
@@ -1202,16 +1308,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_returns_three_delegation_tools() {
+    async fn tools_list_returns_five_delegation_tools() {
         let line = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
         let resp = unwrap_respond(dispatch_for_test(line).await);
         let result = resp.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 3);
+        assert_eq!(tools.len(), 5);
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"delegate_to_agent"));
         assert!(names.contains(&"get_delegation_status"));
         assert!(names.contains(&"cancel_delegation"));
+        assert!(names.contains(&"continue_with_session"));
+        assert!(names.contains(&"close_session"));
+        // continue_with_session requires the caller-minted idempotency key
+        // (R2-B5) — deviation from upstream PR #375, which has no such param.
+        let cont = tools
+            .iter()
+            .find(|t| t["name"] == "continue_with_session")
+            .unwrap();
+        let required: Vec<&str> = cont["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(required.contains(&"continuation_id"));
+        let close = tools.iter().find(|t| t["name"] == "close_session").unwrap();
+        // R2-B4 release semantics: the close description must speak of
+        // releasing/freeing the child, never of a permanent close.
+        let desc = close["description"].as_str().unwrap();
+        assert!(desc.contains("Release"), "close description: {desc}");
+        assert!(!desc.to_lowercase().contains("permanently"));
         // delegate_to_agent schema still enumerates all 12 agent types.
         let delegate = tools
             .iter()
@@ -1252,6 +1379,68 @@ mod tests {
         let e = resp.error.unwrap();
         assert_eq!(e.code, -32602);
         assert!(e.message.contains("task_ids"));
+    }
+
+    // -- T4.2: continue_with_session / close_session argument validation ----
+
+    /// `continuation_id` is a REQUIRED caller-minted idempotency key (R2-B5:
+    /// the companion/listener never generate one — a generated id would make
+    /// a retried request unrecognizable as a retry).
+    #[tokio::test]
+    async fn continue_with_session_missing_continuation_id_is_rejected() {
+        let line = r#"{
+            "jsonrpc":"2.0",
+            "id":31,
+            "method":"tools/call",
+            "params": { "name": "continue_with_session",
+                        "arguments": { "task_id": "t1", "message": "go on" } }
+        }"#;
+        let resp = unwrap_respond(dispatch_for_test(line).await);
+        let e = resp.error.unwrap();
+        assert_eq!(e.code, -32602);
+        assert!(
+            e.message.contains("continuation_id"),
+            "rejection must name the missing field, got: {}",
+            e.message
+        );
+    }
+
+    #[tokio::test]
+    async fn continue_with_session_missing_message_is_rejected() {
+        let line = r#"{
+            "jsonrpc":"2.0",
+            "id":32,
+            "method":"tools/call",
+            "params": { "name": "continue_with_session",
+                        "arguments": { "task_id": "t1", "continuation_id": "c1" } }
+        }"#;
+        let resp = unwrap_respond(dispatch_for_test(line).await);
+        let e = resp.error.unwrap();
+        assert_eq!(e.code, -32602);
+        assert!(
+            e.message.contains("message"),
+            "rejection must name the missing field, got: {}",
+            e.message
+        );
+    }
+
+    #[tokio::test]
+    async fn close_session_missing_continuation_id_is_rejected() {
+        let line = r#"{
+            "jsonrpc":"2.0",
+            "id":33,
+            "method":"tools/call",
+            "params": { "name": "close_session",
+                        "arguments": { "task_id": "t1" } }
+        }"#;
+        let resp = unwrap_respond(dispatch_for_test(line).await);
+        let e = resp.error.unwrap();
+        assert_eq!(e.code, -32602);
+        assert!(
+            e.message.contains("continuation_id"),
+            "rejection must name the missing field, got: {}",
+            e.message
+        );
     }
 
     #[tokio::test]
@@ -1694,7 +1883,7 @@ mod tests {
             dispatch_for_test(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await,
         );
         assert!(!names.contains(&"check_user_feedback".to_string()));
-        assert_eq!(names.len(), 3);
+        assert_eq!(names.len(), 5);
     }
 
     #[tokio::test]
@@ -1703,7 +1892,7 @@ mod tests {
             dispatch_with_features(BOTH, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await,
         );
         assert!(names.contains(&"check_user_feedback".to_string()));
-        assert_eq!(names.len(), 4);
+        assert_eq!(names.len(), 6);
     }
 
     #[tokio::test]
@@ -1767,8 +1956,11 @@ mod tests {
         );
         assert!(!off.contains(&"ask_user_question".to_string()));
         let on = list_tool_names(
-            dispatch_with_features(ASK_ONLY, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)
-                .await,
+            dispatch_with_features(
+                ASK_ONLY,
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            )
+            .await,
         );
         assert_eq!(on, vec!["ask_user_question".to_string()]);
     }
@@ -1899,7 +2091,11 @@ mod tests {
 
     #[tokio::test]
     async fn get_session_info_missing_or_bad_id_rejected_synchronously() {
-        for args in [json!({}), json!({ "session_id": "abc" }), json!({ "session_id": true })] {
+        for args in [
+            json!({}),
+            json!({ "session_id": "abc" }),
+            json!({ "session_id": true }),
+        ] {
             let line = json!({
                 "jsonrpc": "2.0", "id": 32, "method": "tools/call",
                 "params": { "name": "get_session_info", "arguments": args }
@@ -1955,10 +2151,7 @@ mod tests {
             parse_max_messages(&json!({ "max_messages": 4_294_967_296_u64 })),
             200
         );
-        assert_eq!(
-            parse_max_messages(&json!({ "max_messages": 1e30 })),
-            200
-        );
+        assert_eq!(parse_max_messages(&json!({ "max_messages": 1e30 })), 200);
         // Invalid / negative / fractional → default (optional knob, not an error).
         assert_eq!(parse_max_messages(&json!({ "max_messages": "abc" })), 20);
         assert_eq!(parse_max_messages(&json!({ "max_messages": -5 })), 20);
@@ -2091,8 +2284,12 @@ mod tests {
             let (mut c1, _) = listener.accept().await.unwrap();
             let _: BrokerResponse = match read_frame::<_, BrokerMessage>(&mut c1).await.unwrap() {
                 BrokerMessage::Feedback(_) => {
-                    write_frame(&mut c1, &feedback_resp_with_ids(&["f1"])).await.unwrap();
-                    BrokerResponse { outcome: Value::Null }
+                    write_frame(&mut c1, &feedback_resp_with_ids(&["f1"]))
+                        .await
+                        .unwrap();
+                    BrokerResponse {
+                        outcome: Value::Null,
+                    }
                 }
                 other => panic!("expected Feedback, got {other:?}"),
             };
@@ -2101,7 +2298,14 @@ mod tests {
             if let BrokerMessage::CommitFeedback(req) = read_frame(&mut c2).await.unwrap() {
                 committed2.lock().await.push(req.ids);
             }
-            write_frame(&mut c2, &BrokerResponse { outcome: Value::Null }).await.unwrap();
+            write_frame(
+                &mut c2,
+                &BrokerResponse {
+                    outcome: Value::Null,
+                },
+            )
+            .await
+            .unwrap();
         });
 
         let inflight = Arc::new(InflightCalls::new());
@@ -2110,7 +2314,9 @@ mod tests {
             Value::from(1),
             sock,
             "tok".into(),
-            BrokerFeedbackRequest { token: "tok".into() },
+            BrokerFeedbackRequest {
+                token: "tok".into(),
+            },
         )
         .await;
         let LineAction::Spawn(call) = action else {
@@ -2200,6 +2406,9 @@ mod tests {
         );
         server.abort();
         // Crucially: no commit was sent for a cancelled (undelivered) check.
-        assert!(!*saw_commit.lock().await, "a cancelled check must not commit");
+        assert!(
+            !*saw_commit.lock().await,
+            "a cancelled check must not commit"
+        );
     }
 }

@@ -79,6 +79,15 @@ export function DelegationProvider({ children }: { children: ReactNode }) {
     Map<string, DelegationBinding>
   >(() => new Map())
 
+  // Ref mirror so `handleEnvelope` (stable callback) can look bindings up by
+  // task id / child conversation id without re-subscribing on every state
+  // change — `delegation_session_update` is session-addressed, not keyed by
+  // the map's `parent_tool_use_id`.
+  const byToolUseIdRef = useRef(byToolUseId)
+  useEffect(() => {
+    byToolUseIdRef.current = byToolUseId
+  }, [byToolUseId])
+
   // Stable refs so the event-subscription effect doesn't tear down on
   // every action identity change (the actions object is memoized but
   // its members are stable callbacks; still, defensive ref-pinning
@@ -140,6 +149,44 @@ export function DelegationProvider({ children }: { children: ReactNode }) {
           parentToolUseId: envelope.parent_tool_use_id,
           agentType: envelope.agent_type,
         })
+        return
+      }
+      if (envelope.type === "delegation_session_update") {
+        // Terminal announcement for a CONTINUED round (turn_version > 1) —
+        // the broker suppresses the second `delegation_completed` against the
+        // already-terminal tool call (Requirement 2.8a) and sends this
+        // session-addressed replacement instead. Without consuming it the
+        // card would flip to "running" on the continuation's re-announced
+        // `delegation_started` and never settle back. The event carries no
+        // outcome (pure notification; the authoritative result comes from
+        // `get_delegation_status`), so flip to "ok" and let the detail views
+        // re-query, mirroring the completed path's detach scheduling.
+        let settled: DelegationBinding | undefined
+        for (const b of byToolUseIdRef.current.values()) {
+          if (
+            (envelope.task_id && b.taskId === envelope.task_id) ||
+            b.childConversationId === envelope.child_conversation_id
+          ) {
+            settled = b
+            break
+          }
+        }
+        if (!settled || settled.status !== "running") return
+        const parentToolUseId = settled.parentToolUseId
+        const childConnectionId = settled.childConnectionId
+        setByToolUseId((prev) => {
+          const existing = prev.get(parentToolUseId)
+          if (!existing || existing.status !== "running") return prev
+          const m = new Map(prev)
+          m.set(parentToolUseId, { ...existing, status: "ok" })
+          return m
+        })
+        cancelDetachTimer(parentToolUseId)
+        const timer = setTimeout(() => {
+          detachTimersRef.current.delete(parentToolUseId)
+          detachRef.current(childConnectionId)
+        }, CHILD_DETACH_GRACE_MS)
+        detachTimersRef.current.set(parentToolUseId, timer)
         return
       }
       if (envelope.type === "delegation_completed") {

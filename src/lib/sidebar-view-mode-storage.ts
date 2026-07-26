@@ -3,6 +3,7 @@
 const FOLDER_EXPANDED_KEY = "workspace:sidebar-folder-expanded"
 const SHOW_COMPLETED_KEY = "workspace:sidebar-show-completed"
 const SHOW_WORKTREES_KEY = "workspace:sidebar-show-worktrees"
+const SHOW_SUBSESSIONS_KEY = "workspace:sidebar-show-subsessions"
 const SORT_MODE_KEY = "workspace:sidebar-sort-mode"
 const SECTION_ORDER_KEY = "workspace:sidebar-section-order"
 const SECTION_COLLAPSED_KEY = "workspace:sidebar-section-collapsed"
@@ -126,6 +127,31 @@ export function saveShowWorktrees(value: boolean): void {
   if (typeof window === "undefined") return
   try {
     localStorage.setItem(SHOW_WORKTREES_KEY, String(value))
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Whether the sidebar renders delegation sub-session subtrees under their
+ *  parents. Defaults to OFF so a fan-out of sub-agents doesn't bury the root
+ *  conversations; only an explicitly-stored "true" reveals the nested rows (the
+ *  parent still advertises its child count while they are hidden). */
+export function loadShowSubsessions(): boolean {
+  if (typeof window === "undefined") return false
+  try {
+    const raw = localStorage.getItem(SHOW_SUBSESSIONS_KEY)
+    if (raw === "true") return true
+    if (raw === "false") return false
+  } catch {
+    /* ignore */
+  }
+  return false
+}
+
+export function saveShowSubsessions(value: boolean): void {
+  if (typeof window === "undefined") return
+  try {
+    localStorage.setItem(SHOW_SUBSESSIONS_KEY, String(value))
   } catch {
     /* ignore */
   }

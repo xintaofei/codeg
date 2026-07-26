@@ -2394,6 +2394,30 @@ const ToolCallPart = memo(function ToolCallPart({
       />
     )
   }
+  // Continue / close (v2 keep-alive contract): compact single-row cards in
+  // the same family. `close_session` renders with RELEASE wording (R2-B4).
+  if (toolNameLower === "continue_with_session") {
+    return (
+      <DelegationStatusCard
+        kind="continue"
+        input={part.input ?? null}
+        output={part.output ?? null}
+        errorText={part.errorText ?? null}
+        state={part.state}
+      />
+    )
+  }
+  if (toolNameLower === "close_session") {
+    return (
+      <DelegationStatusCard
+        kind="close"
+        input={part.input ?? null}
+        output={part.output ?? null}
+        errorText={part.errorText ?? null}
+        state={part.state}
+      />
+    )
+  }
 
   // codeg-mcp ask_user_question: render the asked question(s) and the user's
   // selection as a dedicated read-only card instead of the generic tool shell.

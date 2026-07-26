@@ -70,7 +70,10 @@ pub async fn create_with_delegation(
     } else {
         ConversationKind::Regular
     };
-    create_inner(conn, folder_id, agent_type, title, git_branch, delegation, kind).await
+    create_inner(
+        conn, folder_id, agent_type, title, git_branch, delegation, kind,
+    )
+    .await
 }
 
 async fn create_inner(
@@ -267,6 +270,81 @@ pub async fn update_external_id(
     Ok(())
 }
 
+/// Resume-safe variant of [`update_external_id`] (Requirement 3.3a): for a
+/// `kind = Delegate` child row, `external_id` is the RESUME CREDENTIAL — once
+/// set, a DIFFERING incoming session id can only originate from a
+/// context-losing `session/new` fallback (`session/resume` / `session/load`
+/// both keep the agent-side id stable), so the write is refused as a silent
+/// no-op rather than destroying the credential. Root/regular rows keep the
+/// historical full-overwrite semantics (session churn on reconnect is
+/// legitimate there), as do delegate rows whose credential is still empty
+/// (the first spawn's id is the credential being minted).
+///
+/// This is the single choke point for the guard: every `SessionStarted`-driven
+/// writer (lifecycle subscriber, `send_prompt_linked`'s sync snapshot) routes
+/// through here so no path can silently swap a child's credential.
+pub async fn update_external_id_resume_safe(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+    external_id: String,
+) -> Result<(), DbError> {
+    let Some(row) = conversation::Entity::find_by_id(conversation_id)
+        .filter(conversation::Column::DeletedAt.is_null())
+        .one(conn)
+        .await?
+    else {
+        // No live row — same silent no-op contract as `update_external_id`.
+        return Ok(());
+    };
+    if row.kind == ConversationKind::Delegate {
+        if let Some(existing) = row.external_id.as_deref() {
+            if !existing.is_empty() && existing != external_id {
+                tracing::info!(
+                    "[conversation] refusing to overwrite delegate row {conversation_id}'s \
+                     resume credential (existing session id kept; incoming id looks like a \
+                     context-losing session/new fallback — Requirement 3.3a)"
+                );
+                return Ok(());
+            }
+        }
+    }
+    update_external_id(conn, conversation_id, external_id).await
+}
+
+/// Root-writer variant of [`update_external_id`]: refuses to touch a
+/// `kind = Delegate` child row at all. For delegate children `external_id` is
+/// the RESUME CREDENTIAL owned by the delegation lifecycle
+/// ([`update_external_id_resume_safe`] is its guarded writer); the callers
+/// here — the chat-channel bridge's `SessionStarted` handler and the viewer's
+/// stale-id re-resolution — only ever manage ROOT conversations, and the ids
+/// they carry are root-session artifacts (a bridge session id / a heuristic
+/// transcript match). Unlike the resume-safe variant this refuses even the
+/// minting write on an EMPTY credential: a root-session id must never BECOME
+/// a delegate row's resume credential.
+pub async fn update_external_id_skip_delegate(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+    external_id: String,
+) -> Result<(), DbError> {
+    let Some(row) = conversation::Entity::find_by_id(conversation_id)
+        .filter(conversation::Column::DeletedAt.is_null())
+        .one(conn)
+        .await?
+    else {
+        // No live row — same silent no-op contract as `update_external_id`.
+        return Ok(());
+    };
+    if row.kind == ConversationKind::Delegate {
+        tracing::warn!(
+            "[conversation] refusing root-writer external_id update on delegate row \
+             {conversation_id} (external_id is the resume credential; this writer \
+             only manages root conversations)"
+        );
+        return Ok(());
+    }
+    update_external_id(conn, conversation_id, external_id).await
+}
+
 pub async fn soft_delete(conn: &DatabaseConnection, conversation_id: i32) -> Result<(), DbError> {
     let conv = conversation::Entity::find_by_id(conversation_id)
         .filter(conversation::Column::DeletedAt.is_null())
@@ -375,6 +453,21 @@ pub async fn get_by_id(
     Ok(summary)
 }
 
+/// Like [`get_by_id`] but "not found" is a legitimate answer (`Ok(None)`),
+/// not an error. Used by the user-side delegation entry, where an unknown id
+/// must fold into a non-disclosing `Unknown` report rather than an HTTP
+/// failure — while a real DB fault still propagates as `Err`.
+pub async fn get_by_id_optional(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+) -> Result<Option<DbConversationSummary>, DbError> {
+    let conv = conversation::Entity::find_by_id(conversation_id)
+        .filter(conversation::Column::DeletedAt.is_null())
+        .one(conn)
+        .await?;
+    Ok(conv.map(conv_to_summary))
+}
+
 /// Look up a child conversation by its `delegation_call_id` (the broker's
 /// `task_id`). Returns `Ok(None)` when no row matches — used by the broker's
 /// `ChildStatusLookup` DB fallback to recover a delegation task's terminal
@@ -449,9 +542,10 @@ pub async fn list_by_folder(
 /// returns conversations across every non-deleted folder (open or not).
 ///
 /// `include_children` controls visibility of delegation sub-sessions. When
-/// `false` (the default for the top-level list), rows whose `parent_id` is
-/// non-null are filtered out — they belong to their parent's tool-call view,
-/// not the workspace conversation list. Rows with `kind = 'loop'` are always
+/// `false` (the default for the top-level list), rows carrying ANY delegation
+/// marker (`parent_id`, `kind = 'delegate'`, `delegation_call_id`) are filtered
+/// out — they belong to their parent's tool-call view / sidebar subtree, not the
+/// workspace conversation list. Rows with `kind = 'loop'` are always
 /// excluded — they belong to the loops workbench.
 pub async fn list_all(
     conn: &DatabaseConnection,
@@ -469,7 +563,16 @@ pub async fn list_all(
     query = query.filter(conversation::Column::Kind.ne(ConversationKind::Loop));
 
     if !include_children {
-        query = query.filter(conversation::Column::ParentId.is_null());
+        // Root list = no delegation children. All three markers are checked
+        // independently (not just `parent_id`): `create_with_delegation` writes
+        // them together, so a row carrying any one of them belongs to a
+        // delegation task — an orphan whose `parent_id` was cleared must still
+        // stay out of the root list instead of surfacing as a folder peer.
+        // Mirrors the frontend `isSidebarRootConversation` predicate.
+        query = query
+            .filter(conversation::Column::ParentId.is_null())
+            .filter(conversation::Column::Kind.ne(ConversationKind::Delegate))
+            .filter(conversation::Column::DelegationCallId.is_null());
     }
 
     match folder_ids {
@@ -643,9 +746,15 @@ mod tests {
     async fn list_children_orders_newest_first() {
         let db = fresh_in_memory_db().await;
         let folder = seed_folder(&db, "/tmp/codeg-list-children-order").await;
-        let parent = create(&db.conn, folder, AgentType::ClaudeCode, Some("P".into()), None)
-            .await
-            .expect("parent");
+        let parent = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("P".into()),
+            None,
+        )
+        .await
+        .expect("parent");
         // Two children created oldest → newest under the same parent.
         let first = create_with_delegation(
             &db.conn,
@@ -744,7 +853,9 @@ mod tests {
         let folder = seed_folder(&db, "/tmp/codeg-child-count-deleted").await;
         let (parent, child) = seed_parent_with_child(&db.conn, folder).await;
 
-        soft_delete(&db.conn, child).await.expect("soft delete child");
+        soft_delete(&db.conn, child)
+            .await
+            .expect("soft delete child");
 
         // A removed sub-session must not keep the parent's chevron alive: the
         // aggregate filters deleted_at IS NULL, matching list_children.
@@ -762,9 +873,15 @@ mod tests {
     async fn update_pin_sets_and_clears_without_bumping_updated_at() {
         let db = fresh_in_memory_db().await;
         let folder = seed_folder(&db, "/tmp/codeg-update-pin").await;
-        let conv = create(&db.conn, folder, AgentType::ClaudeCode, Some("c".into()), None)
-            .await
-            .expect("create");
+        let conv = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("c".into()),
+            None,
+        )
+        .await
+        .expect("create");
 
         // Freshly created rows are unpinned, and the summary projection carries
         // the field through (conv_to_summary mapping).
@@ -779,7 +896,10 @@ mod tests {
         // preference, not activity).
         update_pin(&db.conn, conv.id, true).await.expect("pin");
         let pinned = get_by_id(&db.conn, conv.id).await.expect("get pinned");
-        assert!(pinned.pinned_at.is_some(), "pinned_at must be set after pin");
+        assert!(
+            pinned.pinned_at.is_some(),
+            "pinned_at must be set after pin"
+        );
         assert_eq!(
             pinned.updated_at, updated_at_before,
             "pinning must not bump updated_at"
@@ -817,11 +937,20 @@ mod tests {
     async fn create_leaves_title_unlocked() {
         let db = fresh_in_memory_db().await;
         let folder = seed_folder(&db, "/tmp/codeg-title-unlocked").await;
-        let row = create(&db.conn, folder, AgentType::ClaudeCode, Some("hi".into()), None)
-            .await
-            .expect("create");
+        let row = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("hi".into()),
+            None,
+        )
+        .await
+        .expect("create");
         let summary = get_by_id(&db.conn, row.id).await.expect("get");
-        assert!(!summary.title_locked, "new conversation must start unlocked");
+        assert!(
+            !summary.title_locked,
+            "new conversation must start unlocked"
+        );
     }
 
     #[tokio::test]
@@ -837,6 +966,157 @@ mod tests {
         let summary = get_by_id(&db.conn, row.id).await.expect("get");
         assert_eq!(summary.title.as_deref(), Some("My name"));
         assert!(summary.title_locked, "manual rename must lock the title");
+    }
+
+    /// Requirement 3.3a (T4.5 red): a Delegate child row's `external_id` is
+    /// the RESUME CREDENTIAL — a differing overwrite can only come from a
+    /// context-losing `session/new` fallback (resume/load keep the same id),
+    /// so the resume-safe write refuses it. Root rows keep the historical
+    /// full-overwrite semantics (session churn on reconnect is legitimate).
+    #[tokio::test]
+    async fn resume_safe_write_never_overwrites_a_delegate_rows_credential() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-extid-guard").await;
+        let parent = create(&db.conn, folder, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("parent");
+        let child = create_with_delegation(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            None,
+            None,
+            Some(crate::acp::delegation::spawner::DelegationLink {
+                parent_conversation_id: parent.id,
+                parent_tool_use_id: "pt-guard".into(),
+                delegation_call_id: "task-guard".into(),
+            }),
+        )
+        .await
+        .expect("delegate child");
+
+        async fn raw(conn: &DatabaseConnection, id: i32) -> conversation::Model {
+            conversation::Entity::find_by_id(id)
+                .one(conn)
+                .await
+                .expect("query")
+                .expect("row")
+        }
+
+        // 1. Empty credential → the first write lands.
+        update_external_id_resume_safe(&db.conn, child.id, "sess-original".into())
+            .await
+            .expect("first write");
+        assert_eq!(
+            raw(&db.conn, child.id).await.external_id.as_deref(),
+            Some("sess-original")
+        );
+
+        // 2. A DIFFERING overwrite (the session/new fallback shape) is
+        //    refused — silent no-op, never an error (3.3a).
+        update_external_id_resume_safe(&db.conn, child.id, "sess-cold-fallback".into())
+            .await
+            .expect("refusal must be a no-op, not an error");
+        assert_eq!(
+            raw(&db.conn, child.id).await.external_id.as_deref(),
+            Some("sess-original"),
+            "a delegate row's resume credential must never be overwritten"
+        );
+
+        // 3. Re-writing the SAME value is an idempotent no-op.
+        update_external_id_resume_safe(&db.conn, child.id, "sess-original".into())
+            .await
+            .expect("idempotent rewrite");
+        assert_eq!(
+            raw(&db.conn, child.id).await.external_id.as_deref(),
+            Some("sess-original")
+        );
+
+        // 4. Root rows keep the historical overwrite semantics.
+        update_external_id_resume_safe(&db.conn, parent.id, "root-s1".into())
+            .await
+            .expect("root first");
+        update_external_id_resume_safe(&db.conn, parent.id, "root-s2".into())
+            .await
+            .expect("root overwrite");
+        assert_eq!(
+            raw(&db.conn, parent.id).await.external_id.as_deref(),
+            Some("root-s2"),
+            "root conversations still update freely on session churn"
+        );
+    }
+
+    /// The skip-delegate (root-writer) variant refuses BOTH shapes on a
+    /// delegate row — overwriting an existing credential AND minting one on
+    /// an empty credential (stricter than resume-safe: a root-session id or
+    /// heuristic transcript match must never become a credential). Root rows
+    /// keep the full-overwrite semantics.
+    #[tokio::test]
+    async fn skip_delegate_write_never_touches_a_delegate_row() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-extid-skipdelegate").await;
+        let parent = create(&db.conn, folder, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("parent");
+        let child = create_with_delegation(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            None,
+            None,
+            Some(crate::acp::delegation::spawner::DelegationLink {
+                parent_conversation_id: parent.id,
+                parent_tool_use_id: "pt-skip".into(),
+                delegation_call_id: "task-skip".into(),
+            }),
+        )
+        .await
+        .expect("delegate child");
+
+        async fn raw(conn: &DatabaseConnection, id: i32) -> conversation::Model {
+            conversation::Entity::find_by_id(id)
+                .one(conn)
+                .await
+                .expect("query")
+                .expect("row")
+        }
+
+        // 1. EMPTY credential: even the minting write is refused (this is the
+        //    behavioral difference from `update_external_id_resume_safe`).
+        update_external_id_skip_delegate(&db.conn, child.id, "not-a-credential".into())
+            .await
+            .expect("refusal must be a silent no-op, not an error");
+        assert_eq!(
+            raw(&db.conn, child.id).await.external_id,
+            None,
+            "a root-writer id must never mint a delegate row's credential"
+        );
+
+        // 2. EXISTING credential: refused as well.
+        update_external_id_resume_safe(&db.conn, child.id, "sess-real".into())
+            .await
+            .expect("mint via the delegation-owned writer");
+        update_external_id_skip_delegate(&db.conn, child.id, "sess-hijack".into())
+            .await
+            .expect("no-op");
+        assert_eq!(
+            raw(&db.conn, child.id).await.external_id.as_deref(),
+            Some("sess-real"),
+            "a delegate row's credential must survive a root-writer update"
+        );
+
+        // 3. Root rows keep the historical full-overwrite semantics.
+        update_external_id_skip_delegate(&db.conn, parent.id, "root-a".into())
+            .await
+            .expect("root first");
+        update_external_id_skip_delegate(&db.conn, parent.id, "root-b".into())
+            .await
+            .expect("root overwrite");
+        assert_eq!(
+            raw(&db.conn, parent.id).await.external_id.as_deref(),
+            Some("root-b"),
+            "root conversations still update freely"
+        );
     }
 
     #[tokio::test]
@@ -1076,6 +1356,96 @@ mod tests {
         assert!(
             !rows.iter().any(|r| r.title.as_deref() == Some("hide")),
             "loop row must be excluded"
+        );
+    }
+
+    /// A delegation child whose `parent_id` was lost (parent hard-deleted, or a
+    /// partially-written row) must still be kept out of the ROOT list: the
+    /// `kind = 'delegate'` and `delegation_call_id` markers are each sufficient
+    /// on their own. Without this the orphan surfaces as a folder peer, exactly
+    /// what the sidebar sub-session filter is meant to prevent.
+    #[tokio::test]
+    async fn list_all_root_filter_excludes_delegate_kind_without_parent_id() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-root-filter-orphan").await;
+        let (parent, child) = seed_parent_with_child(&db.conn, folder).await;
+
+        // Simulate the orphan: clear parent_id but keep the other two markers.
+        let row = conversation::Entity::find_by_id(child)
+            .one(&db.conn)
+            .await
+            .expect("find child")
+            .expect("child row");
+        let mut active: conversation::ActiveModel = row.into();
+        active.parent_id = Set(None);
+        active.update(&db.conn).await.expect("orphan the child");
+
+        let rows = list_all(&db.conn, None, None, None, None, None, false)
+            .await
+            .expect("list");
+        let ids: Vec<i32> = rows.iter().map(|r| r.id).collect();
+        assert!(ids.contains(&parent), "parent must remain visible: {ids:?}");
+        assert!(
+            !ids.contains(&child),
+            "orphaned delegate row must stay out of the root list: {ids:?}"
+        );
+    }
+
+    /// The third marker alone (`delegation_call_id` set on an otherwise regular
+    /// row) is also disqualifying — the broker stamps it at spawn, so its
+    /// presence means the row belongs to a delegation task.
+    #[tokio::test]
+    async fn list_all_root_filter_excludes_rows_carrying_a_delegation_call_id() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-root-filter-callid").await;
+        let keep = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("keep".into()),
+            None,
+        )
+        .await
+        .expect("keep");
+        let stamped = create(
+            &db.conn,
+            folder,
+            AgentType::Codex,
+            Some("stamped".into()),
+            None,
+        )
+        .await
+        .expect("stamped");
+        let mut active: conversation::ActiveModel = stamped.clone().into();
+        active.delegation_call_id = Set(Some("call-orphan".into()));
+        active.update(&db.conn).await.expect("stamp call id");
+
+        let rows = list_all(&db.conn, None, None, None, None, None, false)
+            .await
+            .expect("list");
+        let ids: Vec<i32> = rows.iter().map(|r| r.id).collect();
+        assert!(ids.contains(&keep.id), "regular row stays: {ids:?}");
+        assert!(
+            !ids.contains(&stamped.id),
+            "row carrying a delegation_call_id must stay out of the root list: {ids:?}"
+        );
+    }
+
+    /// `include_children = true` is the sub-session-aware path (the child fetch
+    /// behind an expanded parent), so none of the three markers may filter there.
+    #[tokio::test]
+    async fn list_all_include_children_keeps_delegation_rows() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-root-filter-include").await;
+        let (parent, child) = seed_parent_with_child(&db.conn, folder).await;
+
+        let rows = list_all(&db.conn, None, None, None, None, None, true)
+            .await
+            .expect("list");
+        let ids: Vec<i32> = rows.iter().map(|r| r.id).collect();
+        assert!(
+            ids.contains(&parent) && ids.contains(&child),
+            "include_children must not apply the root markers filter: {ids:?}"
         );
     }
 }

@@ -483,7 +483,7 @@ export function parseStatusReports(
  * — i.e. a poll that is genuinely still in flight (`input-*`, no result yet).
  */
 export function deriveBadge(
-  kind: "status" | "cancel",
+  kind: "status" | "cancel" | "continue" | "close",
   report: StatusReport,
   state: ToolCallState | undefined,
   hasError: boolean
@@ -501,9 +501,11 @@ export function deriveBadge(
     case "failed":
       return { status: "err", errorCode: report.errorCode ?? undefined }
     case "canceled":
-      // Canceling is the *success* outcome for `cancel_delegation`; for a
-      // status query a canceled task is a terminal error.
-      return kind === "cancel"
+      // Canceling is the *success* outcome for `cancel_delegation` — and for
+      // `close_session`, whose release of a still-running task cancels the
+      // in-flight turn by design (Requirement 2.9). For a status or continue
+      // call a canceled task is a terminal error.
+      return kind === "cancel" || kind === "close"
         ? { status: "ok" }
         : { status: "err", errorCode: report.errorCode ?? "canceled" }
     default:

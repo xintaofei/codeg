@@ -295,6 +295,26 @@ pub enum AcpEvent {
         agent_type: crate::models::agent::AgentType,
         result: DelegationResultSummary,
     },
+    /// A CONTINUED delegation turn (turn_version > 1, dispatched via
+    /// `continue_with_session` or the user-side entry) reached a terminal
+    /// state. Session-addressed — it replaces the tool-scoped
+    /// `DelegationCompleted`, which is emitted ONLY for the original turn (a
+    /// tool call completes exactly once; Requirement 2.8a). Consumers treat
+    /// this as an increment NOTIFICATION and re-query the delegation status
+    /// as the authoritative source; `turn_version` orders events (drop lower
+    /// than last applied, re-query on gaps — Requirements 8.3/8.4).
+    DelegationSessionUpdate {
+        parent_connection_id: String,
+        child_conversation_id: i32,
+        /// Broker task id — stable across every continuation of the session.
+        task_id: String,
+        /// Broker-internal id of the settled turn.
+        turn_id: String,
+        /// Monotonic per-session dispatch counter (1 = original delegation).
+        turn_version: u64,
+        /// Who dispatched the settled turn (`parent_agent` / `user`).
+        origin: crate::acp::delegation::broker::TurnOrigin,
+    },
     /// A human submitted a prompt from the Codeg conversation UI (desktop or
     /// web). Synthetic, notification-only event: it mutates no `SessionState`
     /// field and exists purely to drive the chat-channel "user message" push.
@@ -373,10 +393,7 @@ pub enum AcpEvent {
     /// clear its "restart to apply" banner. Carried into `SessionState` so a
     /// snapshot attach (web reconnect, window refresh, new tile) recovers the
     /// staleness the one-shot event won't replay for it.
-    SessionConfigStale {
-        stale: bool,
-        kind: ConfigStaleKind,
-    },
+    SessionConfigStale { stale: bool, kind: ConfigStaleKind },
 }
 
 /// One background task settled by a `<task-notification>` transcript record,

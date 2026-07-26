@@ -186,7 +186,17 @@ pub(crate) async fn handle_event(
             };
             let conversation_id = state_arc.read().await.conversation_id;
             if let Some(cid) = conversation_id {
-                conversation_service::update_external_id(db_conn, cid, session_id.clone()).await?;
+                // Resume-safe (Requirement 3.3a): a Delegate child row's
+                // credential is never overwritten by a differing session id —
+                // that shape only arises from the resume chain's silent
+                // `session/new` fallback, and recording it would permanently
+                // destroy the resume credential. Root rows update as before.
+                conversation_service::update_external_id_resume_safe(
+                    db_conn,
+                    cid,
+                    session_id.clone(),
+                )
+                .await?;
                 // The external_id just landed on the row. The create-time
                 // sidebar upsert carried `external_id: null` (no session yet),
                 // so re-broadcast the full summary on `conversation://changed`

@@ -300,6 +300,62 @@ describe("normalizeToolName collapses delegation companion tools across hosts", 
   })
 })
 
+describe("normalizeToolName collapses continue/close session tools across hosts (Task 5.4)", () => {
+  it.each([
+    "continue_with_session",
+    "mcp__codeg-mcp__continue_with_session",
+    "mcp__codeg-delegate__continue_with_session",
+    "mcp__codeg__continue_with_session",
+    "codeg-mcp/continue_with_session",
+    "codeg-delegate.continue_with_session",
+    "codeg-delegate:continue_with_session",
+  ])("%s -> continue_with_session", (input) => {
+    expect(normalizeToolName(input)).toBe("continue_with_session")
+  })
+
+  it.each([
+    "close_session",
+    "mcp__codeg-mcp__close_session",
+    "mcp__codeg-delegate__close_session",
+    "mcp__codeg__close_session",
+    "codeg-mcp/close_session",
+    "codeg-delegate.close_session",
+    "codeg-delegate:close_session",
+  ])("%s -> close_session", (input) => {
+    expect(normalizeToolName(input)).toBe("close_session")
+  })
+
+  it("does not match suffixes without a separator", () => {
+    expect(normalizeToolName("xcontinue_with_session")).not.toBe(
+      "continue_with_session"
+    )
+    expect(normalizeToolName("xclose_session")).not.toBe("close_session")
+  })
+
+  it("resolves both from meta.claudeCode.toolName ahead of input shape", () => {
+    // Same live-wire story as the other companion tools: `{task_id, message}`
+    // would otherwise fall into generic input-shape classification.
+    expect(
+      inferLiveToolName({
+        title: "MCP: tool",
+        kind: "other",
+        rawInput: JSON.stringify({ task_id: "t-1", message: "more" }),
+        meta: {
+          claudeCode: { toolName: "mcp__codeg-mcp__continue_with_session" },
+        },
+      })
+    ).toBe("continue_with_session")
+    expect(
+      inferLiveToolName({
+        title: "MCP: tool",
+        kind: "other",
+        rawInput: JSON.stringify({ task_id: "t-1" }),
+        meta: { claudeCode: { toolName: "mcp__codeg-mcp__close_session" } },
+      })
+    ).toBe("close_session")
+  })
+})
+
 describe("normalizeToolName collapses ask_user_question across hosts", () => {
   it.each([
     "question",

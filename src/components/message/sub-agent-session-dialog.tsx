@@ -26,8 +26,21 @@
  * own DB writes, surfaced via `useConversationDetail`.
  */
 
-import { useCallback, useEffect, useRef, useSyncExternalStore } from "react"
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react"
+import { ExternalLink, Info, SendHorizontal } from "lucide-react"
 import { useTranslations } from "next-intl"
+
+import {
+  continueDelegation,
+  getContinuationAvailability,
+  type ContinuationAvailability,
+} from "@/lib/api"
 
 import { AgentIcon } from "@/components/agent-icon"
 import { MessageListView } from "@/components/message/message-list-view"
@@ -38,9 +51,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { useConversationDetail } from "@/hooks/use-conversation-detail"
+import { useTabActions } from "@/stores/tab-store"
 import { useConversationRuntimeActions } from "@/stores/conversation-runtime-store"
 import {
   useAcpActions,
+  useAcpEvent,
   useConnectionStore,
   type ConnectionState,
 } from "@/contexts/acp-connections-context"
@@ -155,17 +170,28 @@ function useChildLiveBridge(
   // and promotes the live reply. This stays correct across the transition
   // because the mirror-live effect's cleanup gates on `connStatusRef` (which
   // still reads "prompting" at cleanup time, since React updates it only in a
-  // later setup pass) rather than on effect declaration order. We also latch
-  // whether we ever observed streaming this mount, so the adopt-settled-reply
-  // effect below can tell a fresh "reopened after the child already finished"
-  // mount from a normal streaming→settled handoff.
+  // later setup pass) rather than on effect declaration order.
+  //
+  // Promotion bookkeeping is PER ROUND, keyed by the reply's `liveMessage.id`
+  // (minted fresh per prompt cycle), because a delegation child is continuable
+  // (Requirement 4.7): a mount-wide latch would make every path below dead
+  // after round one. `streamedReplyIds` records the replies we saw stream, so
+  // the adopt effect can tell them from a round that was already settled when
+  // we first observed it; `promotedReplyIds` records what has been promoted, so
+  // the two paths never double-count one round. Both are bounded by the number
+  // of rounds taken while the dialog stays open.
   const prevStatusRef = useRef(connStatus)
-  const everPromptingRef = useRef(connStatus === "prompting")
+  const streamedReplyIdsRef = useRef(new Set<string>())
+  const promotedReplyIdsRef = useRef(new Set<string>())
   useEffect(() => {
     const wasPrompting = prevStatusRef.current === "prompting"
     prevStatusRef.current = connStatus
-    if (connStatus === "prompting") everPromptingRef.current = true
-    if (!wasPrompting || connStatus === "prompting") return
+    if (connStatus === "prompting") {
+      if (liveMessage != null) streamedReplyIdsRef.current.add(liveMessage.id)
+      return
+    }
+    if (!wasPrompting) return
+    if (liveMessage != null) promotedReplyIdsRef.current.add(liveMessage.id)
     completeTurn(childConversationId, liveMessage)
     startMetadataSync()
   }, [
@@ -191,26 +217,29 @@ function useChildLiveBridge(
     }
   }, [liveMessage, connStatus, childConversationId, setLiveMessage])
 
-  // Adopt-settled-reply: handle reopening the dialog onto a child that ALREADY
-  // finished but whose connection still carries its final liveMessage (kept for
-  // CHILD_DETACH_GRACE_MS after completion to bridge DB lag). For such a mount
-  // the streaming→settled completeTurn edge never fires (we never saw
-  // "prompting"), and the non-live mirror above is rejected by the
-  // SET_LIVE_MESSAGE guard while the mount fetch is loading — so without this
-  // the final reply would vanish whenever the persisted transcript still lags
-  // (empty / user-only / partial detail). Adopt the retained reply directly:
-  // bridge it as live (a one-shot child's liveMessage is unambiguously its own
-  // reply, never a stale reconnect replay) then promote it to a COMPLETED local
-  // turn (no streaming affordance), where the `liveOwnsActiveTurn` projection
-  // keeps it and dedupes the persisted copy once the DB catches up. Runs at most
-  // once, and never when streaming was observed (that path promotes via the
-  // settled edge).
-  const adoptedRef = useRef(false)
+  // Adopt-settled-reply: handle observing a child reply that is ALREADY settled
+  // but whose connection still carries it (kept for CHILD_DETACH_GRACE_MS after
+  // completion to bridge DB lag) — either because the dialog was reopened onto a
+  // finished child, or because a continued round's streaming→settled edge never
+  // reached us (events coalesced). For such a reply the completeTurn edge above
+  // never fires and the non-live mirror is rejected by the SET_LIVE_MESSAGE
+  // guard while the mount fetch is loading — so without this the reply would
+  // vanish whenever the persisted transcript still lags (empty / user-only /
+  // partial detail). Adopt it directly: bridge it as live (the child's retained
+  // liveMessage is unambiguously its own latest reply, never a stale reconnect
+  // replay) then promote it to a COMPLETED local turn (no streaming affordance),
+  // where the `liveOwnsActiveTurn` projection keeps it and dedupes the persisted
+  // copy once the DB catches up.
+  //
+  // Per-round, not per-mount (Requirement 4.7): a reply is adopted at most once
+  // (`promotedReplyIds`), and never when we watched it stream (that path
+  // promotes via the settled edge), but a LATER round is still eligible.
   useEffect(() => {
-    if (adoptedRef.current || everPromptingRef.current) return
     if (connStatus == null || connStatus === "prompting") return
     if (liveMessage == null) return
-    adoptedRef.current = true
+    if (promotedReplyIdsRef.current.has(liveMessage.id)) return
+    if (streamedReplyIdsRef.current.has(liveMessage.id)) return
+    promotedReplyIdsRef.current.add(liveMessage.id)
     setLiveMessage(childConversationId, liveMessage, true)
     completeTurn(childConversationId, liveMessage)
     startMetadataSync()
@@ -261,6 +290,7 @@ export function SubAgentSessionDialog({
             childConnectionId={childConnectionId}
             agentType={agentType}
             kickoffTask={kickoffTask}
+            onCloseRequest={() => onOpenChange(false)}
           />
         ) : null}
       </DialogContent>
@@ -273,11 +303,14 @@ function SubAgentSessionBody({
   childConnectionId,
   agentType,
   kickoffTask,
+  onCloseRequest,
 }: {
   childConversationId: number
   childConnectionId: string | null
   agentType: AgentType | null
   kickoffTask?: string | null
+  /** Dismiss the dialog once the child has been handed off to a full tab. */
+  onCloseRequest: () => void
 }) {
   const t = useTranslations("Folder.chat.delegation")
 
@@ -300,20 +333,63 @@ function SubAgentSessionBody({
 
   // Single persisted-detail fetch on mount, always `preserveLive: true` so the
   // bridged/promoted reply is never wiped — the render-time projection above
-  // handles dedup against the persisted copy. No settle-time refetch: when the
-  // child finishes, `completeTurn` promotes its (complete) live reply into
-  // localTurns, which the projection keeps showing; replacing it from the DB
-  // would race the still-lagging transcript and could blank the reply.
+  // handles dedup against the persisted copy. No refetch on the live bridge's
+  // own settle edge: `completeTurn` promotes the (complete) live reply into
+  // localTurns and a DB refetch would race the still-lagging transcript. The
+  // ONE settle-time refetch is the session-update effect below, which covers
+  // rounds the bridge never saw — and stays `preserveLive` for the same
+  // reason.
   useEffect(() => {
     refetchDetail(childConversationId, { preserveLive: true })
   }, [childConversationId, refetchDetail])
 
+  // Settle-time transcript refresh for CONTINUED rounds: when a continuation
+  // of THIS child settles (`delegation_session_update` — the 2.8a replacement
+  // for the suppressed second completion), re-fetch the persisted detail.
+  // The live bridge only covers rounds whose connection events reach this
+  // dialog; a round it missed (user-origin settle, coalesced events) would
+  // otherwise stay frozen at the mount-time snapshot until reopen.
+  // `preserveLive: true` keeps any bridged reply, same as the mount fetch.
+  useAcpEvent(
+    useCallback(
+      (envelope) => {
+        if (
+          envelope.type === "delegation_session_update" &&
+          envelope.child_conversation_id === childConversationId
+        ) {
+          refetchDetail(childConversationId, { preserveLive: true })
+        }
+      },
+      [childConversationId, refetchDetail]
+    )
+  )
+
   // Reader only — its built-in auto-fetch is disabled; the effect above is
-  // the sole fetch path.
-  const { loading, error, acpLoadError } = useConversationDetail(
+  // the sole fetch path. `detail.summary` is also the only place the child's
+  // folder id is available (the card knows the conversation id, not the folder),
+  // so "Open in tab" stays disabled until the persisted summary lands.
+  const { detail, loading, error, acpLoadError } = useConversationDetail(
     childConversationId,
     { enabled: false }
   )
+
+  const { openTab } = useTabActions()
+  const childFolderId = detail?.summary.folder_id ?? null
+  const tabAgentType = detail?.summary.agent_type ?? agentType
+  const handleOpenInTab = useCallback(() => {
+    if (childFolderId == null || tabAgentType == null) return
+    // Same path the sidebar uses for a sub-session row (`handleSelect` →
+    // `openTab`); openTab itself brings the conversation pane forward via its
+    // `activateConversationPane` side effect, so no route call is needed here.
+    openTab(childFolderId, childConversationId, tabAgentType)
+    onCloseRequest()
+  }, [
+    childFolderId,
+    tabAgentType,
+    childConversationId,
+    openTab,
+    onCloseRequest,
+  ])
 
   // While streaming, mask loading as false: the live bridge owns the reply and
   // the synthesized kickoff covers the user turn, so we don't want a skeleton
@@ -379,6 +455,28 @@ function SubAgentSessionBody({
         <span className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">
           {agentType ? AGENT_LABELS[agentType] : t("unknownAgent")}
         </span>
+        {/* Hand off to the child's own workspace tab, where it is a fully
+            interactive panel. Disabled until the persisted summary lands —
+            that is the only source of the child's folder id, and openTab keys
+            its dedupe on (folderId, conversationId, agentType). */}
+        <button
+          type="button"
+          onClick={handleOpenInTab}
+          disabled={childFolderId == null || tabAgentType == null}
+          title={t("openInTab")}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs font-medium text-foreground/80 transition-colors hover:bg-muted/60 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+          {t("openInTab")}
+        </button>
+      </div>
+      {/* M1 capability boundary (design.md §M1 · R1-A7): the full tab sends
+          straight to the child's ACP connection, bypassing the delegation
+          broker — so the parent AI never learns about those turns. State it up
+          front instead of letting the user discover it. */}
+      <div className="flex items-start gap-2 border-b border-border bg-muted/40 px-5 py-2 text-xs text-muted-foreground">
+        <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+        <span>{t("openInTabNotSyncedNotice")}</span>
       </div>
       {childPendingPermission && (
         <div className="border-b border-border px-4 py-3">
@@ -420,6 +518,170 @@ function SubAgentSessionBody({
           showMessageNav={false}
         />
       </div>
+      <SubAgentContinuationComposer childConversationId={childConversationId} />
+    </div>
+  )
+}
+
+/**
+ * User-side continuation input (Task 5.3 · Requirement 4.1/4.6).
+ *
+ * Unlike the full tab (whose sends bypass the broker — see the notice bar
+ * above), everything submitted here goes through `continueDelegation`, so the
+ * turn lands under the same `task_id` the parent AI tracks and shows up in
+ * its next `get_delegation_status`.
+ *
+ * Availability drives the input per design §D4's five tiers; the verdict is
+ * re-queried on mount, whenever a delegation event for THIS child arrives
+ * (`delegation_completed` / `delegation_session_update`), and after a failed
+ * send. The frontend never derives the tier itself (no parallel truth).
+ *
+ * Idempotency: one `continuation_id` is minted per submission and REUSED when
+ * retrying the same text (a broker replay then returns the first report
+ * instead of double-dispatching). Editing the text is a new submission and
+ * gets a fresh id — reusing the old one would be a `continuation_conflict`.
+ */
+function SubAgentContinuationComposer({
+  childConversationId,
+}: {
+  childConversationId: number
+}) {
+  const t = useTranslations("Folder.chat.delegation")
+  const [availability, setAvailability] =
+    useState<ContinuationAvailability | null>(null)
+  const [text, setText] = useState("")
+  const [sending, setSending] = useState(false)
+  const [errorCode, setErrorCode] = useState<string | null>(null)
+  const pendingOpRef = useRef<{ id: string; message: string } | null>(null)
+
+  // Latest-wins guard: a slow older query must not clobber a newer verdict.
+  const querySeqRef = useRef(0)
+  const refreshAvailability = useCallback(() => {
+    const seq = ++querySeqRef.current
+    getContinuationAvailability(childConversationId)
+      .then((verdict) => {
+        if (querySeqRef.current === seq) setAvailability(verdict)
+      })
+      .catch(() => {
+        // Query failure: keep the last known verdict rather than flashing the
+        // input off; the next refresh trigger re-tries.
+      })
+  }, [childConversationId])
+
+  useEffect(() => {
+    refreshAvailability()
+  }, [refreshAvailability])
+
+  useAcpEvent(
+    useCallback(
+      (envelope) => {
+        if (
+          (envelope.type === "delegation_completed" ||
+            envelope.type === "delegation_session_update") &&
+          envelope.child_conversation_id === childConversationId
+        ) {
+          refreshAvailability()
+        }
+      },
+      [childConversationId, refreshAvailability]
+    )
+  )
+
+  const handleSend = useCallback(async () => {
+    const message = text.trim()
+    if (!message || sending) return
+    const pending = pendingOpRef.current
+    const continuationId =
+      pending && pending.message === message ? pending.id : crypto.randomUUID()
+    pendingOpRef.current = { id: continuationId, message }
+    setSending(true)
+    setErrorCode(null)
+    try {
+      const report = await continueDelegation(
+        childConversationId,
+        message,
+        continuationId
+      )
+      if (report.error_code) {
+        // Refusal (session_still_running / released / not_continuable / …):
+        // surface the stable code, keep the draft + continuation id so a
+        // retry of the SAME submission stays idempotent, and re-sync the
+        // availability verdict.
+        setErrorCode(report.error_code)
+        refreshAvailability()
+        return
+      }
+      // Accepted — the turn is running under the parent's task id.
+      pendingOpRef.current = null
+      setText("")
+      setAvailability("running")
+    } catch {
+      // Transport-level failure (backend unreachable). Keep draft + id for an
+      // idempotent retry.
+      setErrorCode("transport_error")
+      refreshAvailability()
+    } finally {
+      setSending(false)
+    }
+  }, [text, sending, childConversationId, refreshAvailability])
+
+  const inputEnabled =
+    availability === "continuable_live" || availability === "continuable_resume"
+  const notice =
+    availability === "running"
+      ? t("continueUnavailableRunning")
+      : availability === "released"
+        ? t("continueUnavailableReleased")
+        : availability === "not_continuable"
+          ? t("continueUnavailableNotContinuable")
+          : availability === "continuable_resume"
+            ? t("continueResumeHint")
+            : null
+
+  return (
+    <div
+      data-testid="continuation-composer"
+      className="border-t border-border px-4 py-3"
+    >
+      {notice && <p className="mb-2 text-xs text-muted-foreground">{notice}</p>}
+      {errorCode && (
+        <p role="alert" className="mb-2 text-xs text-destructive">
+          {t("continueRejected", { code: errorCode })}
+        </p>
+      )}
+      <form
+        className="flex items-end gap-2"
+        onSubmit={(e) => {
+          e.preventDefault()
+          void handleSend()
+        }}
+      >
+        <textarea
+          data-testid="continuation-input"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault()
+              void handleSend()
+            }
+          }}
+          placeholder={t("continueInputPlaceholder")}
+          disabled={!inputEnabled || sending}
+          rows={2}
+          className="min-h-0 flex-1 resize-none rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+        />
+        <button
+          type="submit"
+          data-testid="continuation-send"
+          disabled={!inputEnabled || sending || text.trim() === ""}
+          title={t("continueSend")}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border px-3 py-2 text-xs font-medium text-foreground/80 transition-colors hover:bg-muted/60 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <SendHorizontal className="h-3.5 w-3.5" aria-hidden />
+          {t("continueSend")}
+        </button>
+      </form>
     </div>
   )
 }

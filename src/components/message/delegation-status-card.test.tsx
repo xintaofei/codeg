@@ -68,6 +68,44 @@ describe("DelegationStatusCard", () => {
     expect(screen.getByText("Canceling task #abc12345")).toBeInTheDocument()
   })
 
+  it("uses the continue label for continue_with_session (Task 5.4)", () => {
+    renderWithIntl(
+      <DelegationStatusCard
+        kind="continue"
+        input={JSON.stringify({ task_id: "abc12345", message: "round 2" })}
+        state="input-available"
+      />
+    )
+    expect(screen.getByText("Continuing task #abc12345")).toBeInTheDocument()
+  })
+
+  it("uses the RELEASE wording for close_session (Task 5.4 · R2-B4)", () => {
+    renderWithIntl(
+      <DelegationStatusCard
+        kind="close"
+        input={JSON.stringify({ task_id: "abc12345" })}
+        state="input-available"
+      />
+    )
+    expect(screen.getByText("Releasing task #abc12345")).toBeInTheDocument()
+  })
+
+  it("treats a canceled report as the SUCCESS outcome for close (releasing a running task cancels it)", () => {
+    renderWithIntl(
+      <DelegationStatusCard
+        kind="close"
+        input={JSON.stringify({ task_id: "abc12345" })}
+        output={envelope({
+          task_id: "abc12345",
+          status: "canceled",
+          message: "session released",
+        })}
+        state="output-available"
+      />
+    )
+    expect(screen.getByText("done")).toBeInTheDocument()
+  })
+
   it("falls back to a task-less label when the task_id can't be parsed", () => {
     // A settled poll that returned a note but no resolvable id still shows the
     // task-less label (there is content to surface).

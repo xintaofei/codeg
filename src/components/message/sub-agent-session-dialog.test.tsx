@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -18,10 +18,34 @@ const mockGetSession = vi.fn()
 const mockGetTimelineTurns = vi.fn(() => [])
 const mockRespondPermission = vi.fn()
 const mockAnswerQuestion = vi.fn()
+const mockOpenTab = vi.fn()
 // syncTurnMetadata returns a cancel function; hand back a spy so tests can
 // assert both that the backfill is kicked off and that it's cancelled on close.
 const mockSyncCancel = vi.fn()
 const mockSyncTurnMetadata = vi.fn(() => mockSyncCancel)
+
+// User-side continuation entry (Task 5.3): the composer queries the five-tier
+// availability and submits through the broker-backed `continueDelegation`.
+const mockGetContinuationAvailability = vi.fn()
+const mockContinueDelegation = vi.fn()
+vi.mock("@/lib/api", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api")
+  return {
+    ...actual,
+    // Tests that don't stage a verdict (the pre-existing bridge suite) get a
+    // benign resolved default so the composer's mount query never rejects the
+    // whole render tree.
+    getContinuationAvailability: (...args: unknown[]) =>
+      mockGetContinuationAvailability(...args) ??
+      Promise.resolve("not_continuable"),
+    continueDelegation: (...args: unknown[]) => mockContinueDelegation(...args),
+  }
+})
+
+// `useAcpEvent` needs the AcpConnectionsProvider; the dialog tests render
+// without one, so capture the handlers instead — a test fires them to
+// simulate a delegation event reaching the composer's availability refresh.
+let acpEventHandlers: Array<(envelope: unknown) => void> = []
 
 vi.mock("@/stores/conversation-runtime-store", async () => {
   const actual = await vi.importActual<
@@ -92,6 +116,11 @@ vi.mock("@/contexts/acp-connections-context", async () => {
       respondPermission: mockRespondPermission,
       answerQuestion: mockAnswerQuestion,
     }),
+    useAcpEvent: (handler: (envelope: unknown) => void) => {
+      // The hook runs every render; the composer's handler is useCallback-
+      // stable, so dedupe by identity (the real hook stores one ref).
+      if (!acpEventHandlers.includes(handler)) acpEventHandlers.push(handler)
+    },
   }
 })
 
@@ -142,9 +171,11 @@ vi.mock("@/components/chat/ask-question-card", () => ({
 
 // useConversationDetail drives the persisted-detail fetch. We don't need
 // to exercise the real fetch — just expose a controlled `loading` flag so
-// tests can step through the detail-load lifecycle.
+// tests can step through the detail-load lifecycle. `detail.summary` also
+// carries the child's folder id / agent type, which the "Open in tab" handoff
+// needs, so tests can swap in a summary to enable that button.
 let mockDetailState: {
-  detail: null
+  detail: { summary: { folder_id: number; agent_type: string } } | null
   loading: boolean
   error: string | null
   acpLoadError: string | null
@@ -157,6 +188,19 @@ let mockDetailState: {
 vi.mock("@/hooks/use-conversation-detail", () => ({
   useConversationDetail: () => mockDetailState,
 }))
+
+// Tab store — the "Open in tab" control hands the child off through `openTab`.
+// Record the call so we can assert it targets the child's OWN folder/id/agent.
+vi.mock("@/stores/tab-store", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/stores/tab-store")>(
+      "@/stores/tab-store"
+    )
+  return {
+    ...actual,
+    useTabActions: () => ({ openTab: mockOpenTab }),
+  }
+})
 
 // MessageListView pulls in the full runtime provider + virtualization
 // stack. Stub it to a sentinel that records the props we care about,
@@ -239,6 +283,7 @@ describe("SubAgentSessionDialog", () => {
     mockGetTimelineTurns.mockClear()
     mockRespondPermission.mockReset()
     mockAnswerQuestion.mockReset()
+    mockOpenTab.mockReset()
     mockSyncCancel.mockReset()
     mockSyncTurnMetadata.mockClear()
     mockSyncTurnMetadata.mockReturnValue(mockSyncCancel)
@@ -787,5 +832,337 @@ describe("SubAgentSessionDialog", () => {
     const closeButton = screen.getByRole("button", { name: /close/i })
     fireEvent.click(closeButton)
     expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
+  // M1 · Requirement 4.5 + the §M1 capability boundary (R1-A7). The dialog is
+  // read-only; the full tab is where the child can be driven — but sends from
+  // there bypass the broker, so the limitation must be stated in the UI, not
+  // left for the user to discover.
+  it("hands the child off to its own workspace tab once the summary lands", () => {
+    mockDetailState = {
+      detail: { summary: { folder_id: 7, agent_type: "codex" } },
+      loading: false,
+      error: null,
+      acpLoadError: null,
+    }
+    const onOpenChange = vi.fn()
+    renderWithIntl(
+      <SubAgentSessionDialog
+        open
+        onOpenChange={onOpenChange}
+        childConversationId={99}
+        childConnectionId="c1"
+        agentType="codex"
+      />
+    )
+    const openInTab = screen.getByRole("button", { name: /open in tab/i })
+    expect(openInTab).not.toBeDisabled()
+    fireEvent.click(openInTab)
+    // Targets the CHILD's own folder / conversation / agent — openTab keys its
+    // dedupe on that triple, so a wrong folder id would fork a duplicate tab.
+    expect(mockOpenTab).toHaveBeenCalledWith(7, 99, "codex")
+    // And the (now redundant) read-only dialog steps aside.
+    expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
+  it("keeps the tab handoff disabled while the child's folder id is unknown", () => {
+    // No persisted summary yet ⇒ no folder id ⇒ openTab would be unroutable.
+    renderWithIntl(
+      <SubAgentSessionDialog
+        open
+        onOpenChange={() => {}}
+        childConversationId={99}
+        childConnectionId="c1"
+        agentType="codex"
+      />
+    )
+    const openInTab = screen.getByRole("button", { name: /open in tab/i })
+    expect(openInTab).toBeDisabled()
+    fireEvent.click(openInTab)
+    expect(mockOpenTab).not.toHaveBeenCalled()
+  })
+
+  it("states the M1 boundary: messages sent from the full tab are not synced to the main AI", () => {
+    renderWithIntl(
+      <SubAgentSessionDialog
+        open
+        onOpenChange={() => {}}
+        childConversationId={99}
+        childConnectionId="c1"
+        agentType="codex"
+      />
+    )
+    expect(
+      screen.getByText(
+        enMessages.Folder.chat.delegation.openInTabNotSyncedNotice
+      )
+    ).toBeInTheDocument()
+  })
+})
+
+/**
+ * Multi-round continuation (Requirement 4.7 · design.md Property 5). A
+ * delegation child is no longer one-shot: after the first reply settles the
+ * session can be continued, so every "promote the retained reply" path must be
+ * re-entrant per ROUND. A mount-wide latch would silently drop round 2+.
+ */
+describe("SubAgentSessionDialog multi-round continuation", () => {
+  beforeEach(() => {
+    mockSetLiveMessage.mockReset()
+    mockCompleteTurn.mockReset()
+    mockRemoveConversation.mockReset()
+    mockRefetchDetail.mockReset()
+    mockSetLiveOwnsActiveTurn.mockReset()
+    mockSyncCancel.mockReset()
+    mockSyncTurnMetadata.mockClear()
+    mockSyncTurnMetadata.mockReturnValue(mockSyncCancel)
+    mockChildConnection = undefined
+    storeCallbacks = []
+    mockDetailState = {
+      detail: null,
+      loading: false,
+      error: null,
+      acpLoadError: null,
+    }
+  })
+
+  const reply = (id: string) => ({
+    id,
+    role: "assistant" as const,
+    content: [],
+    startedAt: Date.now(),
+  })
+
+  it("adopts a SECOND retained reply after already adopting the first (settled → settled rounds)", () => {
+    const first = reply("live-round-1")
+    mockChildConnection = makeConnState({
+      status: "connected",
+      liveMessage: first,
+    })
+    renderWithIntl(
+      <SubAgentSessionDialog
+        open
+        onOpenChange={() => {}}
+        childConversationId={99}
+        childConnectionId="c1"
+        agentType="codex"
+      />
+    )
+    expect(mockCompleteTurn).toHaveBeenCalledWith(99, first)
+
+    // A continuation runs and settles; the connection now retains round 2's
+    // reply. The dialog never saw "prompting" for it (events can coalesce), so
+    // only the adopt path can promote it.
+    const second = reply("live-round-2")
+    mockChildConnection = makeConnState({
+      status: "connected",
+      liveMessage: second,
+    })
+    act(() => {
+      notifyStore()
+    })
+    expect(mockCompleteTurn).toHaveBeenCalledWith(99, second)
+    expect(mockSyncTurnMetadata).toHaveBeenCalledTimes(2)
+  })
+
+  it("adopts a later round's retained reply even after streaming was observed earlier", () => {
+    const first = reply("live-round-1")
+    mockChildConnection = makeConnState({
+      status: "prompting",
+      liveMessage: first,
+    })
+    renderWithIntl(
+      <SubAgentSessionDialog
+        open
+        onOpenChange={() => {}}
+        childConversationId={99}
+        childConnectionId="c1"
+        agentType="codex"
+      />
+    )
+    // Round 1 settles through the streaming → settled edge.
+    mockChildConnection = makeConnState({
+      status: "connected",
+      liveMessage: first,
+    })
+    act(() => {
+      notifyStore()
+    })
+    expect(mockCompleteTurn).toHaveBeenCalledTimes(1)
+    expect(mockCompleteTurn).toHaveBeenCalledWith(99, first)
+
+    // Round 2's reply appears already settled — the mount-wide
+    // "ever streamed" latch must not disqualify it.
+    const second = reply("live-round-2")
+    mockChildConnection = makeConnState({
+      status: "connected",
+      liveMessage: second,
+    })
+    act(() => {
+      notifyStore()
+    })
+    expect(mockCompleteTurn).toHaveBeenCalledWith(99, second)
+  })
+
+  it("promotes each reply exactly once — the settle edge and the adopt path never double-count the same round", () => {
+    const first = reply("live-round-1")
+    mockChildConnection = makeConnState({
+      status: "prompting",
+      liveMessage: first,
+    })
+    renderWithIntl(
+      <SubAgentSessionDialog
+        open
+        onOpenChange={() => {}}
+        childConversationId={99}
+        childConnectionId="c1"
+        agentType="codex"
+      />
+    )
+    mockChildConnection = makeConnState({
+      status: "connected",
+      liveMessage: first,
+    })
+    act(() => {
+      notifyStore()
+    })
+    // Idle re-notify with the SAME retained reply (grace window ticks).
+    act(() => {
+      notifyStore()
+    })
+    expect(
+      mockCompleteTurn.mock.calls.filter((c) => c[1] === first)
+    ).toHaveLength(1)
+  })
+})
+
+describe("SubAgentSessionDialog continuation composer (Task 5.3)", () => {
+  beforeEach(() => {
+    mockGetContinuationAvailability.mockReset()
+    mockContinueDelegation.mockReset()
+    acpEventHandlers = []
+    mockChildConnection = undefined
+    storeCallbacks = []
+    mockDetailState = {
+      detail: null,
+      loading: false,
+      error: null,
+      acpLoadError: null,
+    }
+  })
+
+  function renderDialog() {
+    return renderWithIntl(
+      <SubAgentSessionDialog
+        open
+        onOpenChange={() => {}}
+        childConversationId={99}
+        childConnectionId="c1"
+        agentType="codex"
+      />
+    )
+  }
+
+  it("queries availability on mount; continuable_live enables the input and submit routes through continueDelegation", async () => {
+    mockGetContinuationAvailability.mockResolvedValue("continuable_live")
+    mockContinueDelegation.mockResolvedValue({
+      task_id: "t-1",
+      status: "running",
+    })
+    renderDialog()
+    expect(mockGetContinuationAvailability).toHaveBeenCalledWith(99)
+
+    const input = await screen.findByTestId("continuation-input")
+    await waitFor(() => expect(input).not.toBeDisabled())
+    fireEvent.change(input, { target: { value: "one more thing" } })
+    fireEvent.click(screen.getByTestId("continuation-send"))
+
+    await waitFor(() => expect(mockContinueDelegation).toHaveBeenCalledTimes(1))
+    const [convId, message, continuationId] =
+      mockContinueDelegation.mock.calls[0]
+    expect(convId).toBe(99)
+    expect(message).toBe("one more thing")
+    expect(typeof continuationId).toBe("string")
+    expect((continuationId as string).length).toBeGreaterThan(0)
+    // Accepted → the input clears and the composer reflects the running turn.
+    await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe(""))
+  })
+
+  it("released availability disables the input and shows the release notice", async () => {
+    mockGetContinuationAvailability.mockResolvedValue("released")
+    renderDialog()
+    const input = await screen.findByTestId("continuation-input")
+    await waitFor(() => expect(input).toBeDisabled())
+    expect(
+      screen.getByText(
+        enMessages.Folder.chat.delegation.continueUnavailableReleased
+      )
+    ).toBeInTheDocument()
+  })
+
+  it("a rejected send surfaces the error code and a retry of the SAME text reuses the continuation id", async () => {
+    mockGetContinuationAvailability.mockResolvedValue("continuable_live")
+    mockContinueDelegation.mockResolvedValue({
+      task_id: "t-1",
+      status: "failed",
+      error_code: "session_still_running",
+    })
+    renderDialog()
+    const input = await screen.findByTestId("continuation-input")
+    await waitFor(() => expect(input).not.toBeDisabled())
+    fireEvent.change(input, { target: { value: "retry me" } })
+    fireEvent.click(screen.getByTestId("continuation-send"))
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "session_still_running"
+      )
+    )
+    // The draft survives a rejection so the user can retry.
+    expect((input as HTMLTextAreaElement).value).toBe("retry me")
+
+    fireEvent.click(screen.getByTestId("continuation-send"))
+    await waitFor(() => expect(mockContinueDelegation).toHaveBeenCalledTimes(2))
+    const idFirst = mockContinueDelegation.mock.calls[0][2]
+    const idRetry = mockContinueDelegation.mock.calls[1][2]
+    expect(idRetry).toBe(idFirst)
+  })
+
+  it("a delegation event for THIS child re-queries availability", async () => {
+    mockGetContinuationAvailability.mockResolvedValue("running")
+    renderDialog()
+    await waitFor(() =>
+      expect(mockGetContinuationAvailability).toHaveBeenCalledTimes(1)
+    )
+    act(() => {
+      for (const h of acpEventHandlers) {
+        h({
+          type: "delegation_session_update",
+          parent_connection_id: "p1",
+          child_conversation_id: 99,
+          task_id: "t-1",
+          turn_id: "turn-2",
+          turn_version: 2,
+          origin: "user",
+        })
+      }
+    })
+    await waitFor(() =>
+      expect(mockGetContinuationAvailability).toHaveBeenCalledTimes(2)
+    )
+    // An event for a DIFFERENT child must not trigger a refresh.
+    act(() => {
+      for (const h of acpEventHandlers) {
+        h({
+          type: "delegation_session_update",
+          parent_connection_id: "p1",
+          child_conversation_id: 12345,
+          task_id: "t-other",
+          turn_id: "turn-9",
+          turn_version: 3,
+          origin: "parent_agent",
+        })
+      }
+    })
+    expect(mockGetContinuationAvailability).toHaveBeenCalledTimes(2)
   })
 })

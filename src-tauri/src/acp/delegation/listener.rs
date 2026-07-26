@@ -34,7 +34,6 @@ use serde_json::Value;
 /// `wait_ms = 0` opts out of the ceiling and blocks until the task is terminal.
 const STATUS_WAIT_MAX_MS: u64 = 60_000;
 
-
 /// Pluggable "what conversation is this parent currently in?" lookup. The
 /// production impl wraps `ConnectionManager.get_state`; tests use an
 /// in-memory map.
@@ -212,6 +211,10 @@ impl DelegationListener {
                 reports_response(reports)?
             }
             BrokerMessage::CancelTask(req) => report_response(self.process_cancel_task(req).await)?,
+            BrokerMessage::Continue(req) => report_response(self.process_continue(req).await)?,
+            BrokerMessage::CloseSession(req) => {
+                report_response(self.process_close_session(req).await)?
+            }
             BrokerMessage::Feedback(req) => {
                 // at-least-once delivery: READ pending notes (no mutation),
                 // WRITE the response, and COMMIT them delivered ONLY on a
@@ -224,10 +227,7 @@ impl DelegationListener {
                         write_frame(conn, &feedback_response(&[])?).await?;
                     }
                     Some(parent_conn_id) => {
-                        let pending = self
-                            .feedback
-                            .read_pending_feedback(&parent_conn_id)
-                            .await;
+                        let pending = self.feedback.read_pending_feedback(&parent_conn_id).await;
                         // Read-only: the response carries the note ids
                         // (`_commit_ids`); delivery is committed LATER, by the
                         // companion's `CommitFeedback` once it actually returns
@@ -415,6 +415,97 @@ impl DelegationListener {
                 &entry.parent_connection_id,
                 parent_conversation_id,
                 &req.task_id,
+            )
+            .await
+    }
+
+    /// Validate the token and continue a settled child session under the SAME
+    /// `task_id` (Requirement 2.3). Backs `continue_with_session`. The
+    /// `continuation_id` arrived REQUIRED on the wire (R2-B5 — never minted
+    /// here); the broker enforces non-empty and runs the operation ledger.
+    async fn process_continue(
+        &self,
+        req: crate::acp::delegation::transport::BrokerContinueRequest,
+    ) -> DelegationTaskReport {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
+            return unknown_report(&req.task_id);
+        };
+        if entry.parent_connection_id != req.parent_connection_id {
+            return unknown_report(&req.task_id);
+        }
+        // Identity restoration for identity-less hosts (Cursor) — same
+        // call-time rename as `process_status` / `process_cancel_task`.
+        let mut rename_input = serde_json::Map::new();
+        rename_input.insert(
+            "task_id".into(),
+            serde_json::Value::String(req.task_id.clone()),
+        );
+        rename_input.insert(
+            "message".into(),
+            serde_json::Value::String(req.message.clone()),
+        );
+        rename_input.insert(
+            "continuation_id".into(),
+            serde_json::Value::String(req.continuation_id.clone()),
+        );
+        self.broker
+            .rewrite_identityless_tool_call(
+                &entry.parent_connection_id,
+                crate::acp::delegation::CONTINUE_TOOL_REWRITE_TITLE,
+                serde_json::Value::Object(rename_input),
+            )
+            .await;
+        let parent_conversation_id = self
+            .parent_lookup
+            .current_conversation_id(&entry.parent_connection_id)
+            .await;
+        self.broker
+            .continue_delegation(
+                &entry.parent_connection_id,
+                parent_conversation_id,
+                &req.task_id,
+                req.message,
+                &req.continuation_id,
+                crate::acp::delegation::broker::TurnOrigin::ParentAgent,
+            )
+            .await
+    }
+
+    /// Validate the token and RELEASE a child session (R2-B4 release
+    /// semantics). Backs `close_session`.
+    async fn process_close_session(
+        &self,
+        req: crate::acp::delegation::transport::BrokerCloseSessionRequest,
+    ) -> DelegationTaskReport {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
+            return unknown_report(&req.task_id);
+        };
+        let mut rename_input = serde_json::Map::new();
+        rename_input.insert(
+            "task_id".into(),
+            serde_json::Value::String(req.task_id.clone()),
+        );
+        rename_input.insert(
+            "continuation_id".into(),
+            serde_json::Value::String(req.continuation_id.clone()),
+        );
+        self.broker
+            .rewrite_identityless_tool_call(
+                &entry.parent_connection_id,
+                crate::acp::delegation::CLOSE_TOOL_REWRITE_TITLE,
+                serde_json::Value::Object(rename_input),
+            )
+            .await;
+        let parent_conversation_id = self
+            .parent_lookup
+            .current_conversation_id(&entry.parent_connection_id)
+            .await;
+        self.broker
+            .close_delegation_session(
+                &entry.parent_connection_id,
+                parent_conversation_id,
+                &req.task_id,
+                &req.continuation_id,
             )
             .await
     }
@@ -742,10 +833,7 @@ mod tests {
     }
     #[async_trait]
     impl SessionFeedbackAccess for StubFeedback {
-        async fn read_pending_feedback(
-            &self,
-            parent_connection_id: &str,
-        ) -> Vec<PendingFeedback> {
+        async fn read_pending_feedback(&self, parent_connection_id: &str) -> Vec<PendingFeedback> {
             *self.read_conn.lock().await = Some(parent_connection_id.to_string());
             self.items.lock().await.clone()
         }
@@ -765,9 +853,7 @@ mod tests {
     #[derive(Default)]
     struct StubQuestion {
         pending: tokio::sync::Mutex<HashMap<String, oneshot::Sender<QuestionOutcome>>>,
-        registered: tokio::sync::Mutex<
-            Vec<(String, Vec<crate::acp::question::QuestionSpec>)>,
-        >,
+        registered: tokio::sync::Mutex<Vec<(String, Vec<crate::acp::question::QuestionSpec>)>>,
         canceled: tokio::sync::Mutex<Vec<String>>,
     }
     #[async_trait]
@@ -1636,7 +1722,10 @@ mod tests {
         let commit_ids = resp.outcome["_commit_ids"].as_array().unwrap();
         assert_eq!(commit_ids, &vec!["f1", "f2"]);
         // Read was scoped to the token's parent connection id.
-        assert_eq!(feedback.read_conn.lock().await.as_deref(), Some("parent-conn"));
+        assert_eq!(
+            feedback.read_conn.lock().await.as_deref(),
+            Some("parent-conn")
+        );
         // The Feedback arm is READ-ONLY — it does NOT commit (delivery is
         // committed later, by the companion's CommitFeedback).
         assert!(feedback.committed.lock().await.is_empty());
@@ -1955,7 +2044,10 @@ mod tests {
             .await
             .expect("serve_one must return after peer close");
         result.unwrap().unwrap();
-        assert_eq!(questions.canceled.lock().await.as_slice(), &["q-1".to_string()]);
+        assert_eq!(
+            questions.canceled.lock().await.as_slice(),
+            &["q-1".to_string()]
+        );
     }
 
     /// An invalid token never registers a question and returns a `declined`
@@ -1963,7 +2055,8 @@ mod tests {
     #[tokio::test]
     async fn ask_invalid_token_declined() {
         let questions = Arc::new(StubQuestion::default());
-        let listener = make_question_listener(Arc::new(TokenRegistry::default()), questions.clone());
+        let listener =
+            make_question_listener(Arc::new(TokenRegistry::default()), questions.clone());
         let (mut client, mut server) = duplex(8 * 1024);
         let server_task = tokio::spawn(async move {
             listener.serve_one(&mut server).await.unwrap();
@@ -1977,4 +2070,111 @@ mod tests {
         assert!(questions.registered.lock().await.is_empty());
     }
 
+    // -- T4.2: continue_with_session / close_session dispatch ---------------
+
+    /// The `Continue` arm dispatches through the broker under the token's
+    /// parent identity; an unknown task id yields an `unknown` report (no
+    /// existence leak).
+    #[tokio::test]
+    async fn continue_dispatch_round_trips_unknown_task() {
+        let broker = make_broker(Arc::new(MockSpawner::new())).await;
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let listener = make_listener(broker, tokens, Some(1));
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let msg =
+            BrokerMessage::Continue(crate::acp::delegation::transport::BrokerContinueRequest {
+                token: "tok".into(),
+                parent_connection_id: "parent-conn".into(),
+                parent_tool_use_id: None,
+                task_id: "no-such-task".into(),
+                message: "carry on".into(),
+                continuation_id: "c-listener-1".into(),
+            });
+        write_frame(&mut client, &msg).await.unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+        assert_eq!(resp.outcome["status"], "unknown");
+        assert_eq!(resp.outcome["task_id"], "no-such-task");
+    }
+
+    /// A token whose parent doesn't match the request's claimed parent
+    /// connection is rejected as `unknown` — same no-leak posture as status.
+    #[tokio::test]
+    async fn continue_token_parent_mismatch_reports_unknown() {
+        let broker = make_broker(Arc::new(MockSpawner::new())).await;
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "other-parent".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let listener = make_listener(broker, tokens, Some(1));
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let msg =
+            BrokerMessage::Continue(crate::acp::delegation::transport::BrokerContinueRequest {
+                token: "tok".into(),
+                parent_connection_id: "parent-conn".into(),
+                parent_tool_use_id: None,
+                task_id: "task-x".into(),
+                message: "carry on".into(),
+                continuation_id: "c-listener-2".into(),
+            });
+        write_frame(&mut client, &msg).await.unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+        assert_eq!(resp.outcome["status"], "unknown");
+    }
+
+    /// The `CloseSession` arm resolves the parent from the token (the wire
+    /// request carries no parent id, mirroring `cancel_delegation`).
+    #[tokio::test]
+    async fn close_session_dispatch_round_trips_unknown_task() {
+        let broker = make_broker(Arc::new(MockSpawner::new())).await;
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let listener = make_listener(broker, tokens, Some(1));
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let msg = BrokerMessage::CloseSession(
+            crate::acp::delegation::transport::BrokerCloseSessionRequest {
+                token: "tok".into(),
+                task_id: "no-such-task".into(),
+                continuation_id: "c-listener-3".into(),
+            },
+        );
+        write_frame(&mut client, &msg).await.unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+        assert_eq!(resp.outcome["status"], "unknown");
+        assert_eq!(resp.outcome["task_id"], "no-such-task");
+    }
 }

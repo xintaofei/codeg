@@ -1427,6 +1427,29 @@ export type AcpEvent =
       result: DelegationResultSummary
     }
   /**
+   * A CONTINUED delegation turn (turn_version > 1, dispatched via
+   * `continue_with_session` or the user-side entry) reached a terminal state.
+   * Session-addressed — replaces the tool-scoped `delegation_completed`,
+   * which fires only for the original turn (a tool call completes exactly
+   * once). Pure notification: consumers re-query the delegation status /
+   * continuation availability as the authoritative source. `turn_version`
+   * orders events — drop anything lower than the last applied version and
+   * re-query on gaps.
+   */
+  | {
+      type: "delegation_session_update"
+      parent_connection_id: string
+      child_conversation_id: number
+      /** Broker task id — stable across every continuation of the session. */
+      task_id: string
+      /** Broker-internal id of the settled turn. */
+      turn_id: string
+      /** Monotonic per-session dispatch counter (1 = original delegation). */
+      turn_version: number
+      /** Who dispatched the settled turn. */
+      origin: "parent_agent" | "user"
+    }
+  /**
    * The user's submitted prompt, broadcast on the connection stream so OTHER
    * clients viewing this conversation synthesize the user turn in real time.
    * The sending client renders its own optimistic turn and ignores this echo.

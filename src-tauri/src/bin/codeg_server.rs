@@ -213,9 +213,7 @@ async fn async_main() -> ExitCode {
         // bearer credential and must never enter the durable log files or the
         // in-app log viewer. `eprintln!` bypasses the tracing sinks (file +
         // ring buffer); only the local terminal / Docker stderr sees it.
-        eprintln!(
-            "[SERVER] No CODEG_TOKEN set; generated an access token (persisted): {token}"
-        );
+        eprintln!("[SERVER] No CODEG_TOKEN set; generated an access token (persisted): {token}");
         eprintln!("[SERVER] Pin your own by setting the CODEG_TOKEN environment variable.");
     }
 
@@ -306,6 +304,11 @@ async fn async_main() -> ExitCode {
     // timeout to apply here.
     codeg_lib::commands::delegation::apply_persisted_config(&state.db.conn, &delegation_broker)
         .await;
+    // Rebuild the continuable delegation-session index from persisted child
+    // conversation rows (Requirement 7.1) before the listener / HTTP surface
+    // starts serving — so a post-restart continuation resolves instead of
+    // reading as "unknown task".
+    delegation_broker.rebuild_sessions_from_db().await;
     // Same for the live-feedback enable flag, so the first companion launch
     // sees the operator's configured behavior.
     codeg_lib::commands::feedback::apply_persisted_feedback_config(
@@ -508,9 +511,11 @@ async fn async_main() -> ExitCode {
     // Publish runtime state so the settings page (served by us) shows
     // the truth — running on `actual_port` with this token — instead of
     // the placeholder "stopped" that triggers the stale-port banner.
-    state
-        .web_server_state
-        .mark_externally_running(advertised_host.clone(), actual_port, token.clone());
+    state.web_server_state.mark_externally_running(
+        advertised_host.clone(),
+        actual_port,
+        token.clone(),
+    );
     let addresses = addresses_for_bind(&advertised_host, actual_port);
 
     // Token on stderr ONLY (bearer credential — keep it out of the log files

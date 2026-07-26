@@ -24,10 +24,15 @@ use std::sync::Arc;
 use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 
-use crate::acp::delegation::broker::{DelegationBroker, DelegationConfig};
-use crate::acp::delegation::types::AgentDelegationDefaults;
+use crate::acp::delegation::broker::TurnOrigin;
+use crate::acp::delegation::broker::{
+    ContinuationAvailability, DelegationBroker, DelegationConfig,
+};
+use crate::acp::delegation::types::{
+    AgentDelegationDefaults, DelegationError, DelegationOutcome, DelegationTaskReport, TaskStatus,
+};
 use crate::app_error::AppCommandError;
-use crate::db::service::app_metadata_service;
+use crate::db::service::{app_metadata_service, conversation_service};
 use crate::models::AgentType;
 
 pub const KEY_DELEGATION_ENABLED: &str = "delegation.enabled";
@@ -109,6 +114,9 @@ impl DelegationSettings {
             // value from wrapping on 32-bit `usize` targets.
             completed_cache_cap_bytes: (self.completed_cache_max_mb as usize)
                 .saturating_mul(1024 * 1024),
+            // Not user-configurable yet: `kept_alive_cap` rides the broker
+            // default until a settings surface exists (T5 scope).
+            ..DelegationConfig::default()
         }
     }
 }
@@ -197,6 +205,172 @@ pub async fn set_delegation_settings_core(
     Ok(clamped)
 }
 
+// -------- User-side continuation entry (Task 5 · design §用户侧) -------------
+
+/// Synthetic "connection id" stamped on user-side continuation dispatches.
+/// The broker's ownership check runs on the parent CONVERSATION id (D5); the
+/// connection id only labels the run lease + in-flight registration, and this
+/// value never collides with a real ACP connection UUID — so a parent
+/// connection teardown can never sweep a user-dispatched turn by accident.
+pub const USER_ENTRY_CONNECTION_ID: &str = "user-entry";
+
+/// How a user-supplied child conversation id resolves against the DB.
+enum DelegationTarget {
+    /// No live row with that id — answered with a non-disclosing `Unknown`.
+    NotFound,
+    /// A row exists but is not a delegation subsession (`parent_id` null or
+    /// no `delegation_call_id`) — refused: a regular conversation can never
+    /// be driven through the delegation broker.
+    NotASubsession,
+    /// A delegation child: the broker task id (= `delegation_call_id`) plus
+    /// its owning parent conversation id.
+    Target {
+        task_id: String,
+        parent_conversation_id: i32,
+    },
+}
+
+/// Resolve a child conversation id to its broker task (D5: the user side
+/// addresses sessions by conversation id; the broker speaks task ids).
+async fn resolve_delegation_target(
+    conn: &DatabaseConnection,
+    child_conversation_id: i32,
+) -> Result<DelegationTarget, AppCommandError> {
+    let Some(row) = conversation_service::get_by_id_optional(conn, child_conversation_id)
+        .await
+        .map_err(AppCommandError::from)?
+    else {
+        return Ok(DelegationTarget::NotFound);
+    };
+    match (row.parent_id, row.delegation_call_id) {
+        (Some(parent_conversation_id), Some(task_id)) if !task_id.trim().is_empty() => {
+            Ok(DelegationTarget::Target {
+                task_id,
+                parent_conversation_id,
+            })
+        }
+        _ => Ok(DelegationTarget::NotASubsession),
+    }
+}
+
+/// The non-disclosing verdict for an id with no live conversation row —
+/// mirrors the broker's own `unknown_report` shape (status `Unknown`, no
+/// error code) so callers can't tell "never existed" from "not yours".
+fn unknown_target_report() -> DelegationTaskReport {
+    DelegationTaskReport {
+        task_id: None,
+        status: TaskStatus::Unknown,
+        child_conversation_id: None,
+        agent_type: None,
+        text: None,
+        error_code: None,
+        message: Some(
+            "Unknown conversation — it never existed, is not a delegation \
+             subsession you can address, or was deleted."
+                .to_string(),
+        ),
+        duration_ms: None,
+    }
+}
+
+/// Refusal report for a conversation that exists but is not a delegation
+/// subsession. Rides `types.rs`' error contract (`not_continuable`) so the
+/// frontend surfaces the same stable code the broker uses.
+fn not_a_subsession_report(child_conversation_id: i32) -> DelegationTaskReport {
+    let err =
+        DelegationError::NotContinuable("this conversation is not a delegation subsession".into());
+    match DelegationOutcome::from_err(err, Some(child_conversation_id)) {
+        DelegationOutcome::Err {
+            code,
+            message,
+            child_conversation_id,
+        } => DelegationTaskReport {
+            task_id: None,
+            status: TaskStatus::Failed,
+            child_conversation_id,
+            agent_type: None,
+            text: None,
+            error_code: Some(code),
+            message: Some(message),
+            duration_ms: None,
+        },
+        DelegationOutcome::Ok(_) => unreachable!("from_err never yields Ok"),
+    }
+}
+
+/// User-side continue: locate the broker task by the child CONVERSATION id
+/// (D5) and dispatch the follow-up under the same `task_id` the parent AI
+/// holds (Requirement 4.2), with `TurnOrigin::User`. `continuation_id` is the
+/// caller-minted idempotency key — the frontend reuses it on retry.
+pub async fn continue_delegation_core(
+    conn: &DatabaseConnection,
+    broker: &DelegationBroker,
+    child_conversation_id: i32,
+    message: String,
+    continuation_id: String,
+) -> Result<DelegationTaskReport, AppCommandError> {
+    match resolve_delegation_target(conn, child_conversation_id).await? {
+        DelegationTarget::NotFound => Ok(unknown_target_report()),
+        DelegationTarget::NotASubsession => Ok(not_a_subsession_report(child_conversation_id)),
+        DelegationTarget::Target {
+            task_id,
+            parent_conversation_id,
+        } => Ok(broker
+            .continue_delegation(
+                USER_ENTRY_CONNECTION_ID,
+                Some(parent_conversation_id),
+                &task_id,
+                message,
+                &continuation_id,
+                TurnOrigin::User,
+            )
+            .await),
+    }
+}
+
+/// User-side close (RELEASE semantics — frees the child process; not a
+/// permanent close). Same target resolution as continue.
+pub async fn close_delegation_session_core(
+    conn: &DatabaseConnection,
+    broker: &DelegationBroker,
+    child_conversation_id: i32,
+    continuation_id: String,
+) -> Result<DelegationTaskReport, AppCommandError> {
+    match resolve_delegation_target(conn, child_conversation_id).await? {
+        DelegationTarget::NotFound => Ok(unknown_target_report()),
+        DelegationTarget::NotASubsession => Ok(not_a_subsession_report(child_conversation_id)),
+        DelegationTarget::Target {
+            task_id,
+            parent_conversation_id,
+        } => Ok(broker
+            .close_delegation_session(
+                USER_ENTRY_CONNECTION_ID,
+                Some(parent_conversation_id),
+                &task_id,
+                &continuation_id,
+            )
+            .await),
+    }
+}
+
+/// User-side availability query (design §D4 five tiers). Ids that don't
+/// resolve to a delegation subsession fold into `NotContinuable` — one
+/// verdict, no existence disclosure.
+pub async fn get_continuation_availability_core(
+    conn: &DatabaseConnection,
+    broker: &DelegationBroker,
+    child_conversation_id: i32,
+) -> Result<ContinuationAvailability, AppCommandError> {
+    match resolve_delegation_target(conn, child_conversation_id).await? {
+        DelegationTarget::NotFound | DelegationTarget::NotASubsession => {
+            Ok(ContinuationAvailability::NotContinuable)
+        }
+        DelegationTarget::Target { .. } => Ok(broker
+            .get_continuation_availability(child_conversation_id)
+            .await),
+    }
+}
+
 // -------- Tauri commands -----------------------------------------------------
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
@@ -227,6 +401,73 @@ pub async fn set_delegation_settings(
     #[cfg(not(feature = "tauri-runtime"))]
     {
         let _ = settings;
+        Err(AppCommandError::configuration_invalid("tauri-only command"))
+    }
+}
+
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn continue_delegation(
+    #[cfg(feature = "tauri-runtime")] db: tauri::State<'_, crate::db::AppDatabase>,
+    #[cfg(feature = "tauri-runtime")] broker: tauri::State<'_, Arc<DelegationBroker>>,
+    child_conversation_id: i32,
+    message: String,
+    continuation_id: String,
+) -> Result<DelegationTaskReport, AppCommandError> {
+    #[cfg(feature = "tauri-runtime")]
+    {
+        continue_delegation_core(
+            &db.conn,
+            broker.inner(),
+            child_conversation_id,
+            message,
+            continuation_id,
+        )
+        .await
+    }
+    #[cfg(not(feature = "tauri-runtime"))]
+    {
+        let _ = (child_conversation_id, message, continuation_id);
+        Err(AppCommandError::configuration_invalid("tauri-only command"))
+    }
+}
+
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn close_delegation_session(
+    #[cfg(feature = "tauri-runtime")] db: tauri::State<'_, crate::db::AppDatabase>,
+    #[cfg(feature = "tauri-runtime")] broker: tauri::State<'_, Arc<DelegationBroker>>,
+    child_conversation_id: i32,
+    continuation_id: String,
+) -> Result<DelegationTaskReport, AppCommandError> {
+    #[cfg(feature = "tauri-runtime")]
+    {
+        close_delegation_session_core(
+            &db.conn,
+            broker.inner(),
+            child_conversation_id,
+            continuation_id,
+        )
+        .await
+    }
+    #[cfg(not(feature = "tauri-runtime"))]
+    {
+        let _ = (child_conversation_id, continuation_id);
+        Err(AppCommandError::configuration_invalid("tauri-only command"))
+    }
+}
+
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn get_continuation_availability(
+    #[cfg(feature = "tauri-runtime")] db: tauri::State<'_, crate::db::AppDatabase>,
+    #[cfg(feature = "tauri-runtime")] broker: tauri::State<'_, Arc<DelegationBroker>>,
+    child_conversation_id: i32,
+) -> Result<ContinuationAvailability, AppCommandError> {
+    #[cfg(feature = "tauri-runtime")]
+    {
+        get_continuation_availability_core(&db.conn, broker.inner(), child_conversation_id).await
+    }
+    #[cfg(not(feature = "tauri-runtime"))]
+    {
+        let _ = child_conversation_id;
         Err(AppCommandError::configuration_invalid("tauri-only command"))
     }
 }
