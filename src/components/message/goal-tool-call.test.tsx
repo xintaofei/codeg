@@ -4,6 +4,7 @@ import { NextIntlClientProvider } from "next-intl"
 import { describe, expect, it } from "vitest"
 
 import { GoalRunPart, GoalToolCallPart } from "./goal-tool-call"
+import { GoalControlProvider } from "./goal-control-context"
 import enMessages from "@/i18n/messages/en.json"
 import zhMessages from "@/i18n/messages/zh-CN.json"
 
@@ -138,5 +139,71 @@ describe("GoalToolCallPart", () => {
     )
 
     expect(screen.getByText("目标：分析 README 文件")).toBeInTheDocument()
+  })
+})
+
+describe("GoalCard goal control (codex-acp #293)", () => {
+  function renderGoal(
+    ui: ReactElement,
+    onGoalControl: ((action: "pause" | "clear") => void) | null
+  ) {
+    return render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <GoalControlProvider value={{ onGoalControl }}>
+          {ui}
+        </GoalControlProvider>
+      </NextIntlClientProvider>
+    )
+  }
+
+  function goalWith(status: string): ReactElement {
+    const toolName = status === "active" ? "create_goal" : "update_goal"
+    return (
+      <GoalToolCallPart
+        part={{
+          type: "tool-call",
+          toolCallId: `g-${status}`,
+          toolName,
+          input: JSON.stringify({ status }),
+          state: "output-available",
+          output: JSON.stringify({
+            goal: { objective: "Ship the release", status },
+          }),
+        }}
+      />
+    )
+  }
+
+  it("offers Pause + Clear on a live active goal and routes the action", () => {
+    const calls: string[] = []
+    renderGoal(goalWith("active"), (a) => calls.push(a))
+    // Controls live in the (collapsed) body — expand first.
+    fireEvent.click(screen.getByRole("button"))
+    fireEvent.click(screen.getByText("Pause"))
+    fireEvent.click(screen.getByText("Clear"))
+    expect(calls).toEqual(["pause", "clear"])
+  })
+
+  it("offers only Clear on a paused goal (codex has no resume control)", () => {
+    renderGoal(goalWith("paused"), () => {})
+    fireEvent.click(screen.getByRole("button"))
+    expect(screen.getByText("Clear")).toBeInTheDocument()
+    expect(screen.queryByText("Pause")).not.toBeInTheDocument()
+  })
+
+  it("shows no controls on a terminal goal", () => {
+    renderGoal(goalWith("complete"), () => {})
+    fireEvent.click(screen.getByRole("button"))
+    expect(screen.queryByText("Pause")).not.toBeInTheDocument()
+    expect(screen.queryByText("Clear")).not.toBeInTheDocument()
+  })
+
+  it("hides controls when the session isn't live (no provider callback)", () => {
+    // Reload / viewer / sub-agent dialog → onGoalControl null → no buttons even
+    // for an active goal.
+    renderGoal(goalWith("active"), null)
+    fireEvent.click(screen.getByRole("button"))
+    expect(screen.queryByText("Pause")).not.toBeInTheDocument()
+    expect(screen.queryByText("Clear")).not.toBeInTheDocument()
   })
 })

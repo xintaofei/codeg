@@ -1737,6 +1737,42 @@ describe("ConversationRuntimeProvider viewer user-turn synthesis", () => {
   })
 })
 
+describe("buildStreamingTurnsFromLiveMessage — orphan status provenance", () => {
+  // The forward that lets the render layer drop an interrupted arg-less orphan
+  // after it is promoted into localTurns at COMPLETE_TURN (see
+  // dropEmptyInFlightToolCalls). Without it, the promoted block loses its ACP
+  // status and the orphan re-inflates the "运行 N 个命令" count post-completion.
+  it("forwards the ACP tool status onto the promoted tool_use block", () => {
+    const blocks = buildStreamingTurnsFromLiveMessage(1, {
+      id: "lm-orphan",
+      role: "assistant",
+      startedAt: 0,
+      content: [
+        {
+          type: "tool_call",
+          info: {
+            tool_call_id: "tc-orphan",
+            title: "bash",
+            kind: "execute",
+            status: "pending",
+            content: null,
+            raw_input: "{}",
+            raw_output_chunks: [],
+            raw_output_total_bytes: 0,
+            locations: null,
+            meta: null,
+            images: [],
+          },
+        },
+      ],
+    }).turns.flatMap((t) => t.blocks)
+    const toolUse = blocks.find((b) => b.type === "tool_use")
+    expect(toolUse?.type === "tool_use" ? toolUse.status : "MISSING").toBe(
+      "pending"
+    )
+  })
+})
+
 describe("buildStreamingTurnsFromLiveMessage — Kimi TodoList suppression", () => {
   function kimiToolCall(
     rawInput: string | null,

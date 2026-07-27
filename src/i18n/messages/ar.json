@@ -186,6 +186,14 @@
     "restartingIn": "إعادة التشغيل خلال {seconds} ثانية...",
     "waitingForServer": "في انتظار عودة الخادم...",
     "restartToUpdate": "أعد التشغيل للتحديث",
+    "newVersionBadge": "إصدار جديد v{version}",
+    "updateAvailableTitle": "يتوفر تحديث",
+    "releaseNotesTitle": "ما الجديد",
+    "remindLater": "لاحقًا",
+    "retry": "إعادة المحاولة",
+    "stepDownload": "التنزيل",
+    "stepInstall": "التثبيت",
+    "stepRestart": "إعادة التشغيل",
     "updateReadyHint": "تم تنزيل التحديث — أعد التشغيل لتطبيقه.",
     "restarting": "جارٍ إعادة التشغيل...",
     "dockerUpgradeHint": "يؤدي هذا إلى ترقية الحاوية قيد التشغيل الآن. وتُفقد عند إعادة إنشاء الحاوية — وللاحتفاظ بها، اسحب أو ابنِ صورة بالإصدار الجديد ثم أعد إنشاء الحاوية.",
@@ -611,7 +619,8 @@
       "saveCodeBuddyConfig": "حفظ إعدادات CodeBuddy",
       "saveKimiCodeConfig": "حفظ إعدادات Kimi Code",
       "customInstall": "تثبيت مخصص",
-      "saveKimiCodeRawConfig": "Save config.toml"
+      "saveKimiCodeRawConfig": "Save config.toml",
+      "diagnose": "تشخيص"
     },
     "status": {
       "enabled": "مفعّل",
@@ -729,6 +738,34 @@
       "enableSkillsAria": "تفعيل Skills لـ Codex",
       "enableFast": "تفعيل Fast",
       "enableFastAria": "تفعيل مستوى خدمة Fast لـ Codex",
+      "sandboxGroupTitle": "بيئة العزل والموافقات",
+      "sandboxGroupHint": "تُكتب في ~/.codex/config.toml العام، لذا تراها أيضًا جلسات codex CLI وبيئة التطوير. هذه قيم افتراضية للمحادثة: تحكم الأدوار التي يبدأها codex بنفسه (‏/goal و‏/review و‏/compact). أما الرسائل العادية فتستخدم إعداد الموافقة المحدد في صندوق الإدخال. أعد تشغيل الجلسة لتطبيق التغييرات.",
+      "sandboxShadowedWarning": "يضبط config.toml المفتاح default_permissions، لذا يحسم codex الأذونات عبر ذلك الملف الشخصي ويتجاهل sandbox_mode تمامًا. احذف default_permissions لاستخدام عناصر التحكم أدناه.",
+      "sandboxPermissionsTableWarning": "يعرّف config.toml ملفات [permissions] دون default_permissions، وهو ما يمنع codex من العمل. اضبطه في المحرر الخام أدناه.",
+      "approvalPolicyLabel": "سياسة الموافقة",
+      "approvalPolicyUnset": "غير محددة (افتراضي codex: عند الطلب)",
+      "approvalPolicy_on-request": "عند الطلب — النموذج يقرر متى يسأل",
+      "approvalPolicy_untrusted": "غير موثوق — تُنفَّذ تلقائيًا أوامر القراءة الآمنة المعروفة فقط",
+      "approvalPolicy_never": "أبدًا — بدون أي طلبات موافقة",
+      "approvalPolicy_granular": "تفصيلي — اختر حسب نوع الطلب",
+      "granularHint": "الإيقاف يعني رفض هذا النوع من الطلبات تلقائيًا بدلًا من عرضه عليك.",
+      "granular_sandbox_approval": "تصعيد صلاحيات أوامر الصدفة",
+      "granular_rules": "مطالبات قواعد execpolicy",
+      "granular_skill_approval": "مطالبات تنفيذ نصوص المهارات",
+      "granular_request_permissions": "مطالبات أداة request_permissions",
+      "granular_mcp_elicitations": "مطالبات elicitation في MCP",
+      "sandboxModeLabel": "وضع بيئة العزل",
+      "sandboxModeUnset": "غير محدد (المجلدات الموثوقة تعود إلى الكتابة في مساحة العمل)",
+      "sandboxMode_read-only": "قراءة فقط",
+      "sandboxMode_workspace-write": "الكتابة في مساحة العمل",
+      "sandboxMode_danger-full-access": "وصول كامل (بدون عزل)",
+      "sandboxModeHint": "على Windows، تُخفَّض الكتابة في مساحة العمل إلى قراءة فقط ما لم تُفعَّل بيئة العزل التجريبية الخاصة بـ codex.",
+      "writableRootsLabel": "مجلدات إضافية قابلة للكتابة",
+      "writableRootsHint": "مسار مطلق واحد في كل سطر، إضافةً إلى مجلد العمل.",
+      "sandboxRootsRelativeError": "يجب أن يكون مسارًا مطلقًا — يحسم codex المسارات النسبية داخل ~/.codex: {path}",
+      "networkAccessLabel": "السماح بالوصول إلى الشبكة",
+      "excludeTmpdirLabel": "استبعاد TMPDIR من الجذور القابلة للكتابة",
+      "excludeSlashTmpLabel": "استبعاد /tmp من الجذور القابلة للكتابة",
       "authJsonNative": "auth.json (أصلي)",
       "configTomlNative": "config.toml (أصلي)",
       "loginButton": "تسجيل الدخول باستخدام ChatGPT",
@@ -949,7 +986,11 @@
       "effortLevel_low": "منخفض",
       "effortLevel_medium": "متوسط",
       "effortLevel_high": "مرتفع",
-      "effortLevel_xhigh": "مرتفع جداً"
+      "effortLevel_xhigh": "مرتفع جداً",
+      "sendAttributionHeader": "إرسال معرّف الإسناد/الفوترة إلى الواجهة",
+      "sendAttributionHeaderAria": "إرسال معرّف الإسناد/الفوترة الخاص بـ Claude Code إلى الواجهة",
+      "disableNonessentialTraffic": "تعطيل القياس عن بُعد أو طلبات الشبكة غير الضرورية",
+      "disableNonessentialTrafficAria": "تعطيل القياس عن بُعد أو طلبات الشبكة غير الضرورية في Claude Code"
     },
     "dialogs": {
       "confirmDeleteProvider": "حذف المزود {providerId}؟",
@@ -1124,7 +1165,46 @@
       "trustDescription": "عندما يربط codeg أداة pi بمجلد، يضع علامة موثوق على ذلك المجلد ليحمّل pi إعدادات المشروع المحلية ومهاراته دون تأكيد منفصل.",
       "trustHint": "يُوثَق فقط بالمجلدات التي تفتحها هنا، وليس جهازك بالكامل، كما أن ذلك يؤثر على تحميل الإعدادات فقط، لا على ما يُسمح لـ pi بتشغيله.",
       "configDirSkillsNote": "عند تحديد دليل إعدادات مخصص، لن تنطبق المهارات والخبراء وأدوات المكتب المُدارة في الإعدادات على pi هذا — أدِر مهاراته مباشرةً في ذلك المجلد."
-    }
+    },
+    "addCustomAgent": "إضافة وكيل مخصص",
+    "addCustomAgentHint": "سجّل أي وكيل متوافق مع ACP. اختر واحدًا من سجل ACP العام، أو الصق معلومات السجل الخاصة به.",
+    "customAgentFromRegistry": "سجل ACP",
+    "customAgentManual": "يدوي",
+    "customAgentSearchPlaceholder": "البحث عن الوكلاء…",
+    "customAgentLoadingCatalog": "جارٍ تحميل سجل ACP…",
+    "customAgentRetry": "إعادة المحاولة",
+    "customAgentNoResults": "لا يوجد وكلاء مطابقون",
+    "customAgentAdd": "إضافة",
+    "customAgentAlreadyAdded": "تمت الإضافة",
+    "customAgentUnsupportedPlatform": "لا يوجد إصدار متاح لهذه المنصة",
+    "customAgentAdded": "تمت إضافة {name}",
+    "customAgentIdLabel": "معرّف السجل",
+    "customAgentNameLabel": "الاسم المعروض",
+    "customAgentVersionLabel": "الإصدار",
+    "customAgentSpecLabel": "التوزيع (JSON)",
+    "customAgentSpecHint": "الصق كائن distribution الخاص بالوكيل من سجل ACP، أو مدخل سجل كاملًا.",
+    "customAgentKindLabel": "التشغيل عبر",
+    "customAgentInvalidJson": "JSON غير صالح",
+    "customAgentNoDistribution": "لم يتم العثور على توزيع npx أو uvx أو binary",
+    "customAgentCancel": "إلغاء",
+    "customAgentSave": "إضافة الوكيل",
+    "customAgentRemove": "إزالة الوكيل",
+    "customAgentRemoveHint": "يحذف تعريف الوكيل. تحتفظ المحادثات الحالية بسجلها، ولن يصبح بالإمكان تشغيل الوكيل فحسب.",
+    "customAgentIconLabel": "الأيقونة (اختياري)",
+    "customAgentIconUpload": "رفع",
+    "customAgentIconReplace": "استبدال",
+    "customAgentIconClear": "إزالة الأيقونة",
+    "customAgentIconHint": "يُحفظ مع الوكيل، لذا يعمل دون اتصال. وبدونه يُستخدم حرف أول ملوّن.",
+    "customAgentSkillsLabel": "Skills (‎.agents/skills المشترك)",
+    "customAgentSkillsHint": "يُعلن أن هذا الوكيل يقرأ مخزن .agents/skills المشترك (المجلدين العام والخاص بالمشروع) ويضيفه إلى جميع مصفوفات المهارات. المهارات المرتبطة هناك تكون مرئية لكل وكيل يقرأ هذا المخزن المشترك.",
+    "customAgentIconNotAnImage": "اختر ملف صورة.",
+    "customAgentIconTooLarge": "يجب أن يكون حجم الأيقونة أقل من {limit} كيلوبايت.",
+    "customAgentIconReadFailed": "تعذّرت قراءة تلك الصورة.",
+    "customAgentRemoveConfirm": "إزالة {name}؟ ستبقى المحادثات الحالية، لكن لن يمكن تشغيل الوكيل بعد الآن.",
+    "customAgentRemoveWithData": "حذف سجل المحادثات المسجل أيضًا",
+    "customAgentRemoved": "تمت إزالة {name}",
+    "customAgentBadge": "مخصص",
+    "customAgentNotLaunchable": "لا يمكن تشغيل هذا الوكيل هنا: {reason}"
   },
   "SettingsPages": {
     "agentsLoading": "جارٍ تحميل إعدادات الوكلاء...",
@@ -1317,6 +1397,7 @@
       "searchPlaceholder": "بحث عن محادثات...",
       "viewOptions": "خيارات العرض",
       "showCompleted": "عرض المحادثات المكتملة",
+      "showWorktrees": "عرض مجلدات worktree",
       "moreOptions": "المزيد من الخيارات",
       "sortBy": "الترتيب حسب",
       "sortByCreatedAt": "وقت الإنشاء",
@@ -1372,6 +1453,7 @@
       "sectionFolders": "المجلدات",
       "sectionChats": "محادثة",
       "noChats": "لا توجد محادثات",
+      "noFolders": "لا توجد مجلدات مفتوحة",
       "newChatAction": "محادثة جديدة",
       "automations": "الأتمتة",
       "loadingSubsessions": "جارٍ تحميل المحادثات الفرعية…"
@@ -1548,6 +1630,16 @@
       "closeConversationTab": "إغلاق تبويب المحادثة",
       "close": "إغلاق",
       "closeOthers": "إغلاق البقية",
+      "splitRight": "تقسيم لليمين",
+      "splitDown": "تقسيم للأسفل",
+      "splitAndMoveRight": "تقسيم ونقل لليمين",
+      "splitAndMoveDown": "تقسيم ونقل للأسفل",
+      "moveToOppositeGroup": "نقل إلى المجموعة المقابلة",
+      "moveToGroup": "نقل إلى مجموعة",
+      "groupLabel": "المجموعة {index}",
+      "changeSplitterOrientation": "تبديل اتجاه الفاصل",
+      "unsplit": "إلغاء التقسيم",
+      "unsplitAll": "إلغاء كل التقسيمات",
       "closeAll": "إغلاق الكل",
       "tileDisplay": "عرض متجانب",
       "untileDisplay": "إلغاء التجانب"
@@ -1737,7 +1829,11 @@
         "confirmApply": "تطبيق التخبئة {ref} على دليل العمل؟",
         "cancel": "إلغاء"
       },
-      "deleteBranch": "حذف الفرع"
+      "deleteBranch": "حذف الفرع",
+      "searchPlaceholder": "البحث في الفروع والإجراءات",
+      "searchAriaLabel": "البحث في الفروع والإجراءات",
+      "branchListLabel": "الفروع والإجراءات",
+      "noMatches": "لا توجد نتائج"
     },
     "commitDialog": {
       "toasts": {
@@ -1821,8 +1917,11 @@
       "hash": "بصمة الالتزام",
       "copyHash": "نسخ الـ hash",
       "copyMessage": "نسخ الرسالة",
+      "showMore": "عرض المزيد",
+      "showLess": "طي",
       "author": "المؤلف",
       "noFileChangeDetails": "لا توجد تفاصيل تغييرات ملفات متاحة.",
+      "loadingFiles": "جارٍ تحميل الملفات...",
       "branchesTitle": "الفروع",
       "loadingBranches": "جارٍ تحميل الفروع...",
       "noContainingBranches": "لم يتم العثور على فروع تحتوي هذا الالتزام.",
@@ -1851,14 +1950,28 @@
         "resetSuccessDescription": "تمت إعادة ضبط {branch} إلى {shortHash} باستخدام {mode}",
         "resetFailed": "فشلت إعادة الضبط"
       },
+      "authorFilter": {
+        "label": "المؤلف",
+        "searchPlaceholder": "بحث عن مؤلف",
+        "noAuthors": "لم يتم العثور على مؤلفين",
+        "you": "أنت",
+        "filterByAuthorAria": "تصفية الإيداعات حسب المؤلف",
+        "filterByQuery": "تصفية حسب \"{query}\"",
+        "clearAuthorFilterAria": "مسح تصفية المؤلف",
+        "recent": "الأخيرة",
+        "matchingAuthors": "المؤلفون المطابقون",
+        "removeFromRecent": "إزالة {name} من الأخيرة"
+      },
       "branchSelector": {
+        "label": "الفرع",
         "searchBranch": "بحث عن فرع...",
         "noBranches": "لا توجد فروع",
         "selectBranchPlaceholder": "اختر فرعًا...",
         "localBranches": "الفروع المحلية",
         "current": "الحالي",
         "remoteBranches": "الفروع البعيدة",
-        "refreshCommitHistory": "تحديث سجل الالتزامات"
+        "refreshCommitHistory": "تحديث سجل الالتزامات",
+        "clearBranchFilterAria": "مسح تصفية الفرع"
       },
       "dialogs": {
         "newBranchTitle": "فرع جديد",
@@ -2205,7 +2318,8 @@
           "initSessionDescription": "جارٍ إنشاء الجلسة وتحميل الإعدادات"
         },
         "errors": {
-          "connectionFailed": "فشل الاتصال"
+          "connectionFailed": "فشل الاتصال",
+          "sendPromptFailed": "فشل إرسال الرسالة: {error}"
         }
       },
       "shared": {
@@ -2262,6 +2376,7 @@
         "attachUploadFailed": "فشل تحميل {names}.",
         "attachUploadNotAFile": "{names} ليس ملفاً عادياً (مجلد أو ملف خاص) وتم تخطيه.",
         "attachUploadQuotaExceeded": "نفدت مساحة التحميل على الخادم، تعذر رفع {names}.",
+        "attachUploadInProgress": "لا تزال الصور قيد الرفع — حاول مرة أخرى بعد قليل.",
         "mentionEmpty": "لا توجد نتائج مطابقة",
         "mentionLoading": "جارٍ البحث…",
         "mentionListLabel": "الإشارات",
@@ -2589,6 +2704,8 @@
           "remaining": "المتبقي",
           "elapsed": "المدة",
           "tokens": "tokens",
+          "pause": "إيقاف مؤقت",
+          "clear": "مسح",
           "status": {
             "active": "نشط",
             "paused": "متوقف مؤقتًا",
@@ -2717,6 +2834,17 @@
         "submit": "إرسال",
         "submitError": "تعذّر الإرسال. حاول مرة أخرى."
       },
+      "planApproval": {
+        "title": "لدى الوكيل خطة — راجعها",
+        "emptyPlan": "لم يكتب الوكيل خطة. وافق للبدء في التنفيذ أو اطلب تعديلات.",
+        "approve": "الموافقة والبدء",
+        "requestChanges": "طلب تعديلات",
+        "abandon": "تجاهل",
+        "feedbackPlaceholder": "ما الذي ينبغي تغييره؟",
+        "sendChanges": "إرسال",
+        "cancel": "إلغاء",
+        "submitError": "تعذّر الإرسال. حاول مرة أخرى."
+      },
       "feedbackCheckResult": {
         "count": "{count} ملاحظة",
         "expand": "عرض كل الملاحظات",
@@ -2757,6 +2885,11 @@
         "opClose": "إغلاق الوكيل الفرعي",
         "opResume": "استئناف الوكيل الفرعي"
       },
+      "contextCompaction": {
+        "compacting": "جارٍ ضغط السياق…",
+        "compacted": "تم ضغط السياق",
+        "compactedTokens": "تم ضغط السياق · {before} → {after} رمز"
+      },
       "backgroundTasks": {
         "running": "{count, plural, one {مهمة خلفية واحدة قيد التشغيل} two {مهمتا خلفية قيد التشغيل} few {# مهام خلفية قيد التشغيل} other {# مهمة خلفية قيد التشغيل}}",
         "settling": "جارٍ مزامنة نتائج الخلفية…",
@@ -2766,6 +2899,10 @@
         "cardCompleted": "اكتملت مهمة الخلفية",
         "cardFinishedWithStatus": "انتهت مهمة الخلفية ({status})",
         "cardResultPending": "لم تصل النتيجة بعد"
+      },
+      "proposedPlan": {
+        "title": "الخطة المقترحة",
+        "planning": "جارٍ التخطيط…"
       }
     },
     "diffPreview": {
@@ -3964,5 +4101,27 @@
     "groupInstructions": "الوصف وموجّه النظام",
     "fieldDescription": "الوصف",
     "baseInstructions": "موجّه النظام (base_instructions)"
+  },
+  "DiagnosticsSettings": {
+    "title": "تشخيص البيئة",
+    "description": "يتحقق من كيفية تحليل هذا التطبيق لواجهة سطر أوامر الوكيل داخل عمليته الخاصة، وقد يختلف ذلك عن الطرفية لديك.",
+    "loading": "جارٍ تشغيل التشخيص…",
+    "error": "فشل التشخيص",
+    "rerun": "إعادة التشغيل",
+    "copyAll": "نسخ الكل",
+    "copied": "تم نسخ التشخيص إلى الحافظة",
+    "button": "تشخيص",
+    "verdict": {
+      "ok": "تبدو البيئة سليمة. إذا استمر ظهوره كغير مُثبَّت، فأعد تشغيل التطبيق بالكامل لتحديث ذاكرة التخزين المؤقتة للبادئة.",
+      "node_missing": "لم يتم العثور على Node.js في مسار PATH الخاص بالتطبيق.",
+      "npm_missing": "لم يتم العثور على npm في مسار PATH الخاص بالتطبيق.",
+      "not_installed": "يبدو أن هذا الوكيل غير مُثبَّت.",
+      "installed_but_unresolved": "مُسجَّل كمُثبَّت، لكن لا يستطيع التطبيق تحديد موقع الملف التنفيذي.",
+      "user_prefix_not_on_path": "تم التثبيت في بادئة الاحتياط (~/.codeg/npm-global)، وهي ليست في مسار PATH الخاص بالتطبيق. أعد تشغيل التطبيق بالكامل وحاول مرة أخرى.",
+      "homebrew_bin_not_on_path": "تم التثبيت ضمن مجلد bin الخاص بـ Homebrew، وهو ليس في مسار PATH الخاص بالتطبيق (فصل keg على Apple Silicon).",
+      "terminal_only_path": "يُحلَّل الأمر في الطرفية لديك لكن ليس في التطبيق — وهي فجوة في مسار PATH لواجهة المستخدم الرسومية. شغّل التطبيق من الطرفية أو أعد التثبيت من إعدادات الوكلاء.",
+      "npm_prefix_timeout": "كان npm prefix -g بطيئًا جدًا (أكثر من 1.5 ثانية)، لذا تم تخطّي الكشف الاحتياطي. أعد تشغيل التطبيق وحاول مرة أخرى.",
+      "node_too_old": "إصدار Node.js النشط أقدم مما يتطلبه هذا الوكيل. يرجى ترقية Node.js."
+    }
   }
 }

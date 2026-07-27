@@ -83,6 +83,11 @@ beforeEach(() => {
   subscribe.mockClear()
   mockGetProxy.mockReset()
   liveHandler = null
+  // The provider caches the last availability check in localStorage, which
+  // jsdom keeps across tests in a file — clear it so each case starts from a
+  // cold "never checked" state rather than inheriting the previous one's
+  // release.
+  localStorage.clear()
 })
 
 // A new server reporting an available update + rollback + the live-progress

@@ -13,9 +13,9 @@ use crate::models::{
 };
 use crate::parsers::{
     compute_session_stats, folder_name_from_path, infer_context_window_max_tokens,
-    is_safe_subagent_id, latest_turn_total_usage_tokens, merge_context_window_stats,
-    relocate_orphaned_tool_results, resolve_patch_line_numbers, structurize_read_tool_output,
-    title_from_user_text, truncate_str, AgentParser, ParseError,
+    is_safe_subagent_id, merge_context_window_stats, relocate_orphaned_tool_results,
+    resolve_patch_line_numbers, structurize_read_tool_output, title_from_user_text, truncate_str,
+    AgentParser, ParseError,
 };
 
 /// Resolve Kimi Code's data home, honoring `KIMI_CODE_HOME`, else `~/.kimi-code`
@@ -186,7 +186,12 @@ impl KimiCodeParser {
         resolve_patch_line_numbers(&mut turns, cwd.as_deref());
 
         let model = read_session_log_model(session_dir).or_else(|| parsed.model_alias.clone());
-        let used_tokens = latest_turn_total_usage_tokens(&turns);
+        // Context-window occupancy is the LATEST step's snapshot, never the
+        // per-turn sum (which re-counts the cached prefix once per step).
+        let used_tokens = parsed
+            .last_step_usage
+            .as_ref()
+            .and_then(kimi_context_window_used_tokens_from_usage);
         let max_tokens = infer_context_window_max_tokens(model.as_deref());
         let session_stats =
             merge_context_window_stats(compute_session_stats(&turns), used_tokens, max_tokens);
@@ -295,6 +300,13 @@ struct WireParse {
     /// Number of content-bearing records — used to decide whether the session is
     /// worth listing at all.
     content_events: u32,
+    /// The most recent *single* `usage.record` snapshot — NOT the per-turn sum
+    /// that lands on the messages' `usage`. Kimi emits one usage record per step,
+    /// and every step's `inputCacheRead` re-reads the same growing context prefix,
+    /// so summing a multi-step turn's records over-counts the cached context many
+    /// times over. The context window's current occupancy is the input side of the
+    /// latest step alone (see `kimi_context_window_used_tokens_from_usage`).
+    last_step_usage: Option<TurnUsage>,
 }
 
 fn main_wire_path(session_dir: &Path) -> PathBuf {
@@ -488,6 +500,10 @@ fn parse_wire(path: &Path, agents_dir: Option<&Path>) -> WireParse {
             }
             "usage.record" => {
                 if let Some(usage) = usage_from_record(value.get("usage")) {
+                    // Snapshot the latest step for the context-window occupancy
+                    // (see `WireParse::last_step_usage`), then fold it into the
+                    // per-turn sum that feeds the cumulative usage meter.
+                    wp.last_step_usage = Some(usage.clone());
                     pending_usage = Some(match pending_usage.take() {
                         Some(prev) => add_usage(prev, usage),
                         None => usage,
@@ -770,6 +786,24 @@ fn add_usage(a: TurnUsage, b: TurnUsage) -> TurnUsage {
             .cache_read_input_tokens
             .saturating_add(b.cache_read_input_tokens),
     }
+}
+
+/// The context-window *occupancy* implied by a single `usage.record`: the input
+/// side of that one request (`inputOther + inputCacheRead + inputCacheCreation`).
+/// Output tokens are excluded — they are the model's reply, not context the
+/// request occupied — mirroring the Claude parser's occupancy formula.
+///
+/// This must be fed the LATEST step's record, never the per-turn sum: Kimi emits
+/// one record per step and each step's `inputCacheRead` re-reads the same growing
+/// prefix, so summing a multi-step turn's records over-counts the cached context
+/// many times over (a 26-step turn reported ~840K "used" against a 262K window — a
+/// false 100%). The final step's input side is the true current occupancy.
+fn kimi_context_window_used_tokens_from_usage(usage: &TurnUsage) -> Option<u64> {
+    let used = usage
+        .input_tokens
+        .saturating_add(usage.cache_creation_input_tokens)
+        .saturating_add(usage.cache_read_input_tokens);
+    (used > 0).then_some(used)
 }
 
 fn text_message(
@@ -1135,6 +1169,71 @@ mod tests {
         assert_eq!(usage.output_tokens, 37 + 36);
         assert_eq!(usage.input_tokens, 7962 + 265);
         assert_eq!(usage.cache_read_input_tokens, 9472 + 17408);
+
+        // Context-window occupancy is the LATEST step's input side (265 + 17408),
+        // NOT the per-turn sum (8227 + 26880) that the cumulative meter reports —
+        // summing every step would re-count the cached prefix and inflate the bar.
+        assert_eq!(
+            detail
+                .session_stats
+                .as_ref()
+                .and_then(|s| s.context_window_used_tokens),
+            Some(265 + 17408),
+        );
+    }
+
+    #[test]
+    fn context_window_used_is_last_step_snapshot_not_turn_sum() {
+        // Reproduces the reported bug: a single turn whose many tool-use steps
+        // each re-read the growing context from cache. Summing every step's
+        // `inputCacheRead` blows past the context window (a false 100%); the true
+        // occupancy is the LAST step's input side.
+        let root = unique_root("ctxwindow");
+        let sid = "sess-ctx";
+        write_session(
+            &root,
+            "wd_app_feed",
+            sid,
+            &json!({"title":"long single turn"}),
+            &[
+                json!({"type":"turn.prompt","input":[{"type":"text","text":"do a lot of work"}],"origin":{"kind":"user"},"time":1782276649000i64}),
+                // step 1
+                json!({"type":"context.append_loop_event","event":{"type":"tool.call","toolCallId":"t1","name":"Bash","args":{"command":"a"}},"time":1782276650000i64}),
+                json!({"type":"context.append_loop_event","event":{"type":"tool.result","toolCallId":"t1","result":{"output":"ok"}},"time":1782276650500i64}),
+                json!({"type":"usage.record","usage":{"inputOther":1000,"output":50,"inputCacheRead":100000,"inputCacheCreation":0},"usageScope":"turn","time":1782276650600i64}),
+                // step 2
+                json!({"type":"context.append_loop_event","event":{"type":"tool.call","toolCallId":"t2","name":"Bash","args":{"command":"b"}},"time":1782276651000i64}),
+                json!({"type":"context.append_loop_event","event":{"type":"tool.result","toolCallId":"t2","result":{"output":"ok"}},"time":1782276651500i64}),
+                json!({"type":"usage.record","usage":{"inputOther":500,"output":40,"inputCacheRead":150000,"inputCacheCreation":0},"usageScope":"turn","time":1782276651600i64}),
+                // step 3 (final) — the snapshot that represents current occupancy
+                json!({"type":"context.append_loop_event","event":{"type":"content.part","part":{"type":"text","text":"done"}},"time":1782276652000i64}),
+                json!({"type":"usage.record","usage":{"inputOther":200,"output":30,"inputCacheRead":180000,"inputCacheCreation":0},"usageScope":"turn","time":1782276652100i64}),
+            ],
+        );
+
+        let parser = KimiCodeParser::with_base_dir(root.clone());
+        let stats = parser
+            .get_conversation(sid)
+            .expect("detail")
+            .session_stats
+            .expect("session stats");
+
+        // Context window = LAST step's input side (200 + 0 + 180000), NOT the sum
+        // of every step's cache read (100000 + 150000 + 180000 = 430000), which
+        // would exceed a Kimi context window and clamp to a false 100%.
+        assert_eq!(
+            stats.context_window_used_tokens,
+            Some(200 + 180000),
+            "context window uses the latest step snapshot, not the per-turn sum"
+        );
+
+        // The cumulative usage meter is UNCHANGED: it still sums every step.
+        let total = stats.total_usage.expect("total usage");
+        assert_eq!(total.cache_read_input_tokens, 100000 + 150000 + 180000);
+        assert_eq!(total.input_tokens, 1000 + 500 + 200);
+        assert_eq!(total.output_tokens, 50 + 40 + 30);
+
+        std::fs::remove_dir_all(root.parent().unwrap_or(&root)).ok();
     }
 
     #[test]

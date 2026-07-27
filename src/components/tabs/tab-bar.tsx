@@ -2,32 +2,63 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Reorder } from "motion/react"
+import type { PanInfo } from "motion/react"
 import { SquarePen } from "lucide-react"
 import { useTranslations } from "next-intl"
+import { cn } from "@/lib/utils"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
 import type { TabItem as TabItemData } from "@/contexts/tab-context"
+import { groupOfTab } from "@/stores/tab-store"
+import {
+  firstLeafId,
+  leafIds,
+  type SplitDirection,
+} from "@/lib/tab-group-layout"
+import {
+  clientPointFromDrag,
+  dropIndexFromMidpoints,
+} from "@/lib/tab-drag-drop"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useIsCoarsePointer } from "@/hooks/use-is-coarse-pointer"
-import { TabItem } from "./tab-item"
+import { TabItem, type TabMoveTarget } from "./tab-item"
 
-// Rendered only inside the desktop conversation-column title strip (embedded).
-// The old standalone mobile variant is gone — mobile shows the conversation
-// detail header instead and navigates tabs from the sidebar.
-export function TabBar() {
+interface TabBarProps {
+  /** Split-group strip: render only this group's tabs, highlight the GROUP's
+   *  selected tab, and target new tabs/reorders at the group. Omitted = the
+   *  single title-bar strip shown while unsplit. */
+  groupId?: string
+}
+
+// Rendered inside the desktop conversation-column title strip while unsplit,
+// or once per group shell (with `groupId`) while split. The old standalone
+// mobile variant is gone — mobile shows the conversation detail header instead
+// and navigates tabs from the sidebar.
+export function TabBar({ groupId }: TabBarProps) {
   const t = useTranslations("Folder.conversationCard")
   const tabs = useTabStore((s) => s.tabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
-  const isTileMode = useTabStore((s) => s.isTileMode)
+  const groupOf = useTabStore((s) => s.groupOf)
+  const groupLayout = useTabStore((s) => s.groupLayout)
+  const groupSelection = useTabStore((s) => s.groupSelection)
+  const tileByGroup = useTabStore((s) => s.tileByGroup)
   const {
     switchTab,
     closeTab,
     closeOtherTabs,
     closeAllTabs,
     pinTab,
-    toggleTileMode,
+    toggleGroupTile,
+    splitTab,
+    moveTabToGroup,
+    toggleGroupOrientation,
+    dissolveGroup,
+    unsplitAll,
     reorderTabs,
+    reorderGroupTabs,
+    updateTabDrag,
+    endTabDrag,
     openNewConversationTab,
     openChatModeTab,
   } = useTabActions()
@@ -36,18 +67,179 @@ export function TabBar() {
   const { activeFolder } = useActiveFolder()
   const { openConversations } = useWorkbenchRoute()
 
+  // The group this strip represents (unsplit strip = the single first leaf),
+  // its tabs, and its displayed "active" tab: the GROUP's selected tab — for
+  // the focused group (and the unsplit strip) that IS the global active tab.
+  const stripGroupId = groupId ?? firstLeafId(groupLayout)
+  const groupTabs = useMemo(
+    () =>
+      groupId == null
+        ? tabs
+        : tabs.filter(
+            (tab) => groupOfTab(groupOf, groupLayout, tab.id) === groupId
+          ),
+    [tabs, groupId, groupOf, groupLayout]
+  )
+  const displayActiveId =
+    groupId == null ? activeTabId : (groupSelection[groupId] ?? null)
+  const isTileMode = !!tileByGroup[stripGroupId]
+  const handleToggleTile = useCallback(
+    () => toggleGroupTile(stripGroupId),
+    [toggleGroupTile, stripGroupId]
+  )
+
+  // Split-group context-menu wiring, shared by every tab in this strip.
+  const orderedLeaves = useMemo(() => leafIds(groupLayout), [groupLayout])
+  const isSplit = orderedLeaves.length > 1
+  const canSplitMove = groupTabs.length >= 2
+  const moveTargets = useMemo<TabMoveTarget[]>(() => {
+    if (!isSplit) return []
+    return orderedLeaves
+      .map((leafId, index) => ({
+        groupId: leafId,
+        index: index + 1,
+        title:
+          tabs.find((tab) => tab.id === groupSelection[leafId])?.title ?? null,
+      }))
+      .filter((target) => target.groupId !== stripGroupId)
+  }, [isSplit, orderedLeaves, tabs, groupSelection, stripGroupId])
+  const handleSplit = useCallback(
+    (tabId: string, direction: SplitDirection, move: boolean) =>
+      splitTab(tabId, direction, { move }),
+    [splitTab]
+  )
+  const handleToggleSplitOrientation = useCallback(
+    () => toggleGroupOrientation(stripGroupId),
+    [toggleGroupOrientation, stripGroupId]
+  )
+  const handleUnsplit = useCallback(
+    () => dissolveGroup(stripGroupId),
+    [dissolveGroup, stripGroupId]
+  )
+
+  // ── Cross-group drag & drop (split-group strips only) ────────────────────
+  // The dragged tab itself is axis-locked to its own strip (Reorder drag="x" +
+  // overflow clipping), so crossing groups is pointer-based: hit-test the
+  // element under the cursor for another group's strip or shell, highlight it,
+  // and commit the move on release. Same-group hits resolve to null — a drop
+  // there is just the ordinary within-strip reorder.
+  const isDropTarget = useTabStore(
+    (s) => groupId != null && s.tabDrag?.overGroupId === groupId
+  )
+  const resolveDropTarget = useCallback(
+    (
+      clientX: number,
+      clientY: number
+    ): { gid: string; el: Element; strip: boolean } | null => {
+      if (groupId == null) return null
+      const el = document.elementFromPoint(clientX, clientY)
+      if (!el) return null
+      const strip = el.closest("[data-conv-group-strip]")
+      if (strip) {
+        const gid = strip.getAttribute("data-conv-group-strip")
+        return gid && gid !== groupId ? { gid, el: strip, strip: true } : null
+      }
+      const shell = el.closest("[data-conv-group-shell]")
+      if (shell) {
+        const gid = shell.getAttribute("data-conv-group-shell")
+        return gid && gid !== groupId ? { gid, el: shell, strip: false } : null
+      }
+      return null
+    },
+    [groupId]
+  )
+  const handleTabDrag = useCallback(
+    (
+      tab: TabItemData,
+      event: MouseEvent | TouchEvent | PointerEvent,
+      info: PanInfo
+    ) => {
+      const { x, y } = clientPointFromDrag(event, info)
+      const target = resolveDropTarget(x, y)
+      updateTabDrag({
+        tabId: tab.id,
+        title: tab.title,
+        x,
+        y,
+        overGroupId: target?.gid ?? null,
+      })
+    },
+    [resolveDropTarget, updateTabDrag]
+  )
+  const handleTabDragEnd = useCallback(
+    (
+      tab: TabItemData,
+      event: MouseEvent | TouchEvent | PointerEvent,
+      info: PanInfo
+    ) => {
+      const { x, y } = clientPointFromDrag(event, info)
+      const target = resolveDropTarget(x, y)
+      endTabDrag()
+      if (!target) return
+      // Strip drop: land at the cursor position (midpoint count). Shell-body
+      // drop: append (the store clamps the oversized index to the tail).
+      const index = target.strip
+        ? dropIndexFromMidpoints(
+            x,
+            Array.from(target.el.querySelectorAll("[data-tab-id]")).map(
+              (tabEl) => {
+                const rect = tabEl.getBoundingClientRect()
+                return rect.left + rect.width / 2
+              }
+            )
+          )
+        : Number.MAX_SAFE_INTEGER
+      moveTabToGroup(tab.id, target.gid, { index })
+    },
+    [resolveDropTarget, endTabDrag, moveTabToGroup]
+  )
+  const crossDragEnabled = groupId != null && isSplit
+
   // New-conversation affordance at the end of the tab strip. Mirrors the
   // sidebar's "New chat": return to the conversation workspace, then open a
-  // draft in the active folder — or a folderless chat when nothing is open, so
-  // the button is never a dead end.
+  // draft — or a folderless chat when no context resolves, so the button is
+  // never a dead end. Group strips seed from the GROUP's own selection (its
+  // folder / chat mode) rather than the globally-active folder: each group is
+  // its own workspace slice, and the focused group may be a different one.
   const handleNewConversation = useCallback(() => {
     openConversations()
+    const groupOptions = groupId != null ? { targetGroup: groupId } : undefined
+    if (groupId != null) {
+      const selTab =
+        groupTabs.find((tab) => tab.id === displayActiveId) ?? groupTabs[0]
+      const selFolder = selTab
+        ? allFolders.find((f) => f.id === selTab.folderId)
+        : undefined
+      if (selTab?.isChat === true || selFolder?.kind === "chat") {
+        openChatModeTab(groupOptions)
+        return
+      }
+      if (selTab && selFolder) {
+        openNewConversationTab(
+          selFolder.id,
+          selTab.workingDir ?? selFolder.path,
+          groupOptions
+        )
+        return
+      }
+      // Group context unresolvable (folder deleted) — fall through to the
+      // active-folder default.
+    }
     if (!activeFolder) {
-      openChatModeTab()
+      openChatModeTab(groupOptions)
       return
     }
-    openNewConversationTab(activeFolder.id, activeFolder.path)
-  }, [activeFolder, openChatModeTab, openConversations, openNewConversationTab])
+    openNewConversationTab(activeFolder.id, activeFolder.path, groupOptions)
+  }, [
+    activeFolder,
+    allFolders,
+    displayActiveId,
+    groupId,
+    groupTabs,
+    openChatModeTab,
+    openConversations,
+    openNewConversationTab,
+  ])
 
   const folderIndex = useMemo(() => {
     const map = new Map<number, { name: string }>()
@@ -62,17 +254,23 @@ export function TabBar() {
   )
 
   useEffect(() => {
-    if (!activeTabId || !scrollRef.current) return
-    const el = scrollRef.current.querySelector(`[data-tab-id="${activeTabId}"]`)
+    if (!displayActiveId || !scrollRef.current) return
+    const el = scrollRef.current.querySelector(
+      `[data-tab-id="${displayActiveId}"]`
+    )
     el?.scrollIntoView({ block: "nearest", inline: "nearest" })
-  }, [activeTabId])
+  }, [displayActiveId])
 
   const handleReorder = useCallback(
     (nextTabs: TabItemData[]) => {
       if (isCoarsePointer && !touchSortingTabId) return
-      reorderTabs(nextTabs)
+      if (groupId == null) {
+        reorderTabs(nextTabs)
+      } else {
+        reorderGroupTabs(groupId, nextTabs)
+      }
     },
-    [isCoarsePointer, reorderTabs, touchSortingTabId]
+    [groupId, isCoarsePointer, reorderGroupTabs, reorderTabs, touchSortingTabId]
   )
 
   const handleTouchSortingEnd = useCallback(
@@ -80,14 +278,14 @@ export function TabBar() {
     []
   )
 
-  if (tabs.length === 0) return null
+  if (groupTabs.length === 0) return null
 
-  const activeIndex = tabs.findIndex((tab) => tab.id === activeTabId)
+  const activeIndex = groupTabs.findIndex((tab) => tab.id === displayActiveId)
   // When the LAST tab is active, the trailing new-conversation wrapper is its
   // right neighbour — it needs the same baseline inset a tab neighbour gets
   // (`data-adjacent-active`), so the active tab's right reverse-corner foot
   // doesn't leave a stray line poking out from under it (globals.css).
-  const lastTabActive = activeIndex >= 0 && activeIndex === tabs.length - 1
+  const lastTabActive = activeIndex >= 0 && activeIndex === groupTabs.length - 1
 
   return (
     <Reorder.Group
@@ -95,8 +293,11 @@ export function TabBar() {
       ref={scrollRef}
       role="tablist"
       axis="x"
-      values={tabs}
+      values={groupTabs}
       onReorder={handleReorder}
+      // Cross-group drop target: group strips advertise their group id for the
+      // drag hit-test and tint while a foreign tab hovers.
+      data-conv-group-strip={groupId ?? undefined}
       // Fills the title-bar strip and shrinks browser-style to share the row (see
       // TabItem): flush (`gap-0`) so hairline separators read as dividers, no
       // scrollbar (`overflow-hidden` still scrolls programmatically), and no
@@ -109,9 +310,12 @@ export function TabBar() {
       // seam-patch, but there's NO right padding so the trailing wrapper's
       // `ws-strip-line` reaches the group's right edge and the bottom hairline
       // stays continuous into the right reserve.
-      className="pt-1.5 flex h-full min-w-0 flex-1 items-stretch gap-0 overflow-hidden pl-2"
+      className={cn(
+        "pt-1.5 flex h-full min-w-0 flex-1 items-stretch gap-0 overflow-hidden pl-2",
+        isDropTarget && "bg-primary/8"
+      )}
     >
-      {tabs.map((tab, index) => {
+      {groupTabs.map((tab, index) => {
         const folderInfo = folderIndex.get(tab.folderId)
         // Neighbours of the active tab inset their workspace-bg baseline so the
         // active tab's transparent reverse-corner foot (which flares over them)
@@ -128,18 +332,28 @@ export function TabBar() {
           <TabItem
             key={tab.id}
             tab={tab}
-            isActive={tab.id === activeTabId}
+            isActive={tab.id === displayActiveId}
             isTileMode={isTileMode}
             embedded
             adjacentActive={adjacentActive}
             folderName={folderInfo?.name ?? null}
             folderBranch={branches.get(tab.folderId) ?? null}
+            isSplit={isSplit}
+            canSplitMove={canSplitMove}
+            moveTargets={moveTargets}
+            onTabDrag={crossDragEnabled ? handleTabDrag : undefined}
+            onTabDragEnd={crossDragEnabled ? handleTabDragEnd : undefined}
             onSwitch={switchTab}
             onClose={closeTab}
             onCloseOthers={closeOtherTabs}
             onCloseAll={closeAllTabs}
             onPin={pinTab}
-            onToggleTile={toggleTileMode}
+            onToggleTile={handleToggleTile}
+            onSplit={handleSplit}
+            onMoveToGroup={moveTabToGroup}
+            onToggleSplitOrientation={handleToggleSplitOrientation}
+            onUnsplit={handleUnsplit}
+            onUnsplitAll={unsplitAll}
             isCoarsePointer={isCoarsePointer}
             isTouchSorting={touchSortingTabId === tab.id}
             onTouchSortingStart={setTouchSortingTabId}
@@ -195,7 +409,12 @@ export function TabBar() {
             when many tabs overflow and squeeze this region, a grabbable
             window-drag gap always remains to the RIGHT of the new-conversation
             button, so the button never reaches the strip's right edge and the
-            packed title bar stays draggable. */}
+            packed strip stays draggable. Group strips keep the drag region too:
+            while split there is NO dedicated title-bar row above the shells
+            (the workspace layout drops it), so each strip's tail is that
+            group's slice of the window-drag surface — for the top row it IS
+            the title bar, and lower rows offer the same grab area, mirroring
+            the unsplit strip. */}
         <div data-tauri-drag-region className="h-full min-w-10 flex-1" />
       </div>
     </Reorder.Group>

@@ -56,7 +56,11 @@ export function ExpertsBody({
       setExperts(expertList)
       // A pi pointed at a custom PI_CODING_AGENT_DIR isn't managed by the
       // default-dir skill store, so it doesn't get a column here.
-      setAgents(agentList.filter((agent) => !piUsesCustomAgentDir(agent)))
+      setAgents(
+        agentList.filter(
+          (agent) => agent.skills_capable && !piUsesCustomAgentDir(agent)
+        )
+      )
       setReloadKey((k) => k + 1)
     } catch (err) {
       setLoadError(toErrorMessage(err))

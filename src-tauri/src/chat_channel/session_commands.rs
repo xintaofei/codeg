@@ -1687,8 +1687,28 @@ fn agent_type_to_string(at: AgentType) -> String {
 }
 
 fn parse_agent_type(name: &str) -> Option<AgentType> {
-    let normalized = name.to_lowercase().replace([' ', '-'], "_");
-    serde_json::from_value(serde_json::Value::String(normalized)).ok()
+    let trimmed = name.trim();
+    // Custom agents are `custom:<registry-id>` and their ids legitimately
+    // contain `-` (`custom:qwen-code`), which the built-in normalization below
+    // would mangle. Accept both the full wire form and the bare id shown in the
+    // agent list — but only for ids the user has actually registered:
+    // `AgentType::from_wire` validates the slug's SHAPE, not its existence, so
+    // without this gate any typo would resolve to a phantom agent.
+    let custom_candidate = trimmed
+        .strip_prefix(crate::models::agent::CUSTOM_AGENT_WIRE_PREFIX)
+        .unwrap_or(trimmed);
+    if crate::acp::custom_registry::is_registered(custom_candidate) {
+        if let Some(custom) = AgentType::custom(custom_candidate) {
+            return Some(custom);
+        }
+    }
+    // Built-in names are snake_case; accept the spaced/dashed spellings a user
+    // is likely to type ("Claude Code", "claude-code").
+    let normalized = trimmed.to_lowercase().replace([' ', '-'], "_");
+    match AgentType::from_wire(&normalized) {
+        Some(agent) if !agent.is_custom() => Some(agent),
+        _ => None,
+    }
 }
 
 fn resolve_agent_type(
@@ -2121,5 +2141,58 @@ mod tests {
             &blocks[0],
             PromptInputBlock::Text { text } if text == "continue task"
         ));
+    }
+
+    #[test]
+    fn parses_builtin_agent_names_in_the_spellings_users_type() {
+        assert_eq!(parse_agent_type("claude_code"), Some(AgentType::ClaudeCode));
+        assert_eq!(parse_agent_type("claude-code"), Some(AgentType::ClaudeCode));
+        assert_eq!(parse_agent_type("Claude Code"), Some(AgentType::ClaudeCode));
+        assert_eq!(parse_agent_type("  codex  "), Some(AgentType::Codex));
+        assert_eq!(parse_agent_type("not-an-agent"), None);
+    }
+
+    #[test]
+    fn parses_custom_agents_without_mangling_dashes_in_their_ids() {
+        // `hydrate` publishes a process-global map; share the registry's own
+        // lock so this can't race the custom-registry tests.
+        let _guard = crate::acp::custom_registry::hydrate_test_guard();
+        let def = crate::acp::custom_registry::CustomAgentDef {
+            registry_id: "chat-cmd-qwen-code".into(),
+            name: "Qwen Code".into(),
+            description: String::new(),
+            version: "0.21.0".into(),
+            distribution_kind: crate::acp::custom_registry::CustomDistributionKind::Npx,
+            spec: crate::acp::custom_registry::CustomAgentSpec {
+                npx: Some(crate::acp::custom_registry::NpxSpec {
+                    package: "@qwen-code/qwen-code@0.21.0".into(),
+                    cmd: Some("qwen".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            icon_url: None,
+            skills_shared_store: false,
+        };
+        crate::acp::custom_registry::hydrate(std::slice::from_ref(&def));
+
+        let expected = AgentType::custom("chat-cmd-qwen-code").unwrap();
+        // Full wire form, and the bare id as shown in the agent list. The old
+        // `-` → `_` normalization would have produced an unregistered id.
+        assert_eq!(
+            parse_agent_type("custom:chat-cmd-qwen-code"),
+            Some(expected)
+        );
+        assert_eq!(parse_agent_type("chat-cmd-qwen-code"), Some(expected));
+        // Underscore spelling is NOT the registered id, and the built-in
+        // normalization must not invent a phantom custom agent from it.
+        assert_eq!(parse_agent_type("chat_cmd_qwen_code"), None);
+        // An unregistered id is unknown, not a silently-accepted agent —
+        // `AgentType::custom` validates a slug's shape, never its existence.
+        assert_eq!(parse_agent_type("custom:never-registered"), None);
+        assert_eq!(parse_agent_type("never-registered"), None);
+
+        crate::acp::custom_registry::hydrate(&[]);
+        assert_eq!(parse_agent_type("chat-cmd-qwen-code"), None);
     }
 }

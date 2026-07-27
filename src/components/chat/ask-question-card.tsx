@@ -302,17 +302,42 @@ export function AskQuestionCard({
   const renderOptions = (q: QuestionSpec) => {
     const s = state[q.id]
     const otherId = `${q.id}-other`
+    // Secret questions (codex marks API keys etc. with `is_secret`) mask the
+    // typed answer.
+    const inputType = q.is_secret ? "password" : "text"
+    const inputClass =
+      "w-full rounded-md border border-border/60 bg-background px-2.5 py-1.5 text-sm outline-none focus:border-ring disabled:cursor-not-allowed disabled:opacity-60"
+
+    // Free-text question (no options — codex elicitation and MCP-server forms
+    // ask open questions this way): the text input IS the answer field, always
+    // visible, with no "Other" toggle to click through first. Typing marks the
+    // question answered (`setOtherText` activates the free-text state).
+    if (q.options.length === 0) {
+      return (
+        <input
+          id={otherId}
+          type={inputType}
+          aria-label={q.question}
+          disabled={locked}
+          value={s?.otherText ?? ""}
+          onChange={(e) => setOtherText(q, e.target.value)}
+          placeholder={t("otherPlaceholder")}
+          className={inputClass}
+        />
+      )
+    }
+
     const otherInput = s?.otherActive ? (
       <input
         id={otherId}
-        type="text"
+        type={inputType}
         autoFocus
         aria-label={t("other")}
         disabled={locked}
         value={s.otherText}
         onChange={(e) => setOtherText(q, e.target.value)}
         placeholder={t("otherPlaceholder")}
-        className="w-full rounded-md border border-border/60 bg-background px-2.5 py-1.5 text-sm outline-none focus:border-ring disabled:cursor-not-allowed disabled:opacity-60"
+        className={inputClass}
       />
     ) : null
 

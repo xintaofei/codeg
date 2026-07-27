@@ -1,11 +1,12 @@
 "use client"
 
-import { memo, useEffect, useId, useRef, useState } from "react"
+import { memo } from "react"
 import { useTranslations } from "next-intl"
 import { ChevronDown, ChevronUp } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import type { AdaptedContentPart } from "@/lib/adapters/ai-elements-adapter"
+import { useCollapsibleOverflow } from "@/hooks/use-collapsible-overflow"
 
 import { ContentPartsRenderer } from "./content-parts-renderer"
 
@@ -22,31 +23,8 @@ export const CollapsibleUserMessage = memo(function CollapsibleUserMessage({
   parts: AdaptedContentPart[]
 }) {
   const t = useTranslations("Folder.chat.messageList")
-  const contentRef = useRef<HTMLDivElement>(null)
-  const [isOverflowing, setIsOverflowing] = useState(false)
-  const [expanded, setExpanded] = useState(false)
-  const contentId = useId()
-
-  useEffect(() => {
-    // Nothing useful to redetect once expanded: the clamp class below is
-    // removed, so clientHeight === scrollHeight trivially and this would
-    // misreport `false`, dropping the "Show less" toggle. Freeze the last
-    // known value instead.
-    if (expanded) return
-    const el = contentRef.current
-    if (!el) return
-    const measure = () => {
-      // Both reads are on this same, currently `max-h-60`-clamped node: no
-      // numeric threshold duplicated from CSS. clientHeight is capped by the
-      // class below; scrollHeight always reports the untruncated height.
-      setIsOverflowing(el.scrollHeight > el.clientHeight + 1)
-    }
-    measure() // Synchronous initial read — doesn't depend on the
-    // ResizeObserver callback firing (the jsdom test stub never invokes it).
-    const observer = new ResizeObserver(measure)
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [parts, expanded])
+  const { contentRef, contentId, isOverflowing, expanded, toggle } =
+    useCollapsibleOverflow<HTMLDivElement>(parts)
 
   const clipped = !expanded
 
@@ -59,7 +37,7 @@ export const CollapsibleUserMessage = memo(function CollapsibleUserMessage({
         className={cn(
           "min-w-0",
           clipped && "max-h-60 overflow-hidden",
-          clipped && isOverflowing && "collapsed-user-message-fade"
+          clipped && isOverflowing && "collapsed-content-fade"
         )}
       >
         <ContentPartsRenderer parts={parts} role="user" />
@@ -68,7 +46,7 @@ export const CollapsibleUserMessage = memo(function CollapsibleUserMessage({
         <button
           type="button"
           data-testid="collapsible-user-message-toggle"
-          onClick={() => setExpanded((v) => !v)}
+          onClick={toggle}
           aria-expanded={expanded}
           aria-controls={contentId}
           className="flex shrink-0 items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"

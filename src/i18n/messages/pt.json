@@ -186,6 +186,14 @@
     "restartingIn": "Reiniciando em {seconds} s...",
     "waitingForServer": "Aguardando o servidor voltar...",
     "restartToUpdate": "Reiniciar para atualizar",
+    "newVersionBadge": "Nova v{version}",
+    "updateAvailableTitle": "Atualização disponível",
+    "releaseNotesTitle": "Novidades",
+    "remindLater": "Mais tarde",
+    "retry": "Tentar novamente",
+    "stepDownload": "Download",
+    "stepInstall": "Instalação",
+    "stepRestart": "Reinício",
     "updateReadyHint": "Atualização baixada — reinicie para aplicar.",
     "restarting": "Reiniciando...",
     "dockerUpgradeHint": "Isto atualiza o contêiner em execução agora. Perde-se se o contêiner for recriado — para mantê-lo, baixe ou crie uma imagem na nova versão e recrie o contêiner.",
@@ -611,7 +619,8 @@
       "saveCodeBuddyConfig": "Salvar configuração do CodeBuddy",
       "saveKimiCodeConfig": "Salvar configuração do Kimi Code",
       "customInstall": "Instalação personalizada",
-      "saveKimiCodeRawConfig": "Save config.toml"
+      "saveKimiCodeRawConfig": "Save config.toml",
+      "diagnose": "Diagnosticar"
     },
     "status": {
       "enabled": "Habilitado",
@@ -729,6 +738,34 @@
       "enableSkillsAria": "Habilitar Skills para Codex",
       "enableFast": "Habilitar Fast",
       "enableFastAria": "Habilitar nível de serviço Fast para Codex",
+      "sandboxGroupTitle": "Sandbox e aprovações",
+      "sandboxGroupHint": "Gravado no ~/.codex/config.toml global, portanto as sessões do codex CLI e do IDE também usam. São padrões do thread: valem para os turnos que o codex inicia sozinho (/goal, /review, /compact). Mensagens comuns usam a predefinição de aprovação do compositor. Reinicie a sessão para aplicar as alterações.",
+      "sandboxShadowedWarning": "O config.toml define default_permissions, então o codex resolve as permissões por esse perfil e ignora sandbox_mode por completo. Remova default_permissions para usar os controles abaixo.",
+      "sandboxPermissionsTableWarning": "O config.toml define perfis [permissions] sem default_permissions, o que faz o codex recusar a iniciar. Defina um no editor bruto abaixo.",
+      "approvalPolicyLabel": "Política de aprovação",
+      "approvalPolicyUnset": "Não definida (padrão do codex: sob demanda)",
+      "approvalPolicy_on-request": "Sob demanda — o modelo decide quando perguntar",
+      "approvalPolicy_untrusted": "Não confiável — só comandos de leitura reconhecidos como seguros rodam sem confirmação",
+      "approvalPolicy_never": "Nunca — nenhum pedido de aprovação",
+      "approvalPolicy_granular": "Granular — escolha por tipo de solicitação",
+      "granularHint": "Desligado significa que esse tipo de solicitação é recusado automaticamente em vez de exibido a você.",
+      "granular_sandbox_approval": "Escalonamentos de comandos de shell",
+      "granular_rules": "Avisos de regras do execpolicy",
+      "granular_skill_approval": "Avisos de scripts de habilidades",
+      "granular_request_permissions": "Avisos da ferramenta request_permissions",
+      "granular_mcp_elicitations": "Avisos de elicitação MCP",
+      "sandboxModeLabel": "Modo de sandbox",
+      "sandboxModeUnset": "Não definido (pastas confiáveis caem para escrita no espaço de trabalho)",
+      "sandboxMode_read-only": "Somente leitura",
+      "sandboxMode_workspace-write": "Escrita no espaço de trabalho",
+      "sandboxMode_danger-full-access": "Acesso total (sem sandbox)",
+      "sandboxModeHint": "No Windows, a escrita no espaço de trabalho é rebaixada para somente leitura, a menos que o sandbox experimental do Windows do codex esteja ativado.",
+      "writableRootsLabel": "Pastas graváveis extras",
+      "writableRootsHint": "Um caminho absoluto por linha, além do diretório de trabalho.",
+      "sandboxRootsRelativeError": "Precisa ser um caminho absoluto — o codex resolve caminhos relativos dentro de ~/.codex: {path}",
+      "networkAccessLabel": "Permitir acesso à rede",
+      "excludeTmpdirLabel": "Excluir TMPDIR das raízes graváveis",
+      "excludeSlashTmpLabel": "Excluir /tmp das raízes graváveis",
       "authJsonNative": "auth.json (nativo)",
       "configTomlNative": "config.toml (nativo)",
       "loginButton": "Entrar com ChatGPT",
@@ -949,7 +986,11 @@
       "effortLevel_low": "Baixo",
       "effortLevel_medium": "Médio",
       "effortLevel_high": "Alto",
-      "effortLevel_xhigh": "Extra Alto"
+      "effortLevel_xhigh": "Extra Alto",
+      "sendAttributionHeader": "Enviar identificador de atribuição/cobrança para a API",
+      "sendAttributionHeaderAria": "Enviar o identificador de atribuição/cobrança do Claude Code para a API",
+      "disableNonessentialTraffic": "Desativar a telemetria ou solicitações de rede desnecessárias",
+      "disableNonessentialTrafficAria": "Desativar a telemetria ou solicitações de rede desnecessárias do Claude Code"
     },
     "dialogs": {
       "confirmDeleteProvider": "Excluir o provedor {providerId}?",
@@ -1124,7 +1165,46 @@
       "trustDescription": "Quando o codeg conecta o pi a uma pasta, marca essa pasta como confiável para que o pi carregue a configuração e as habilidades locais do projeto sem uma confirmação separada.",
       "trustHint": "Apenas as pastas que você abre aqui são confiáveis, nunca a máquina inteira — e isso afeta somente o carregamento da configuração, não o que o pi pode executar.",
       "configDirSkillsNote": "Com um diretório de configuração personalizado, as habilidades, os especialistas e as ferramentas de escritório gerenciados nas Configurações não se aplicam a este pi — gerencie as habilidades dele diretamente nessa pasta."
-    }
+    },
+    "addCustomAgent": "Adicionar agente personalizado",
+    "addCustomAgentHint": "Registre qualquer agente compatível com ACP. Escolha um no registro público do ACP ou cole as informações de registro dele.",
+    "customAgentFromRegistry": "Registro ACP",
+    "customAgentManual": "Manual",
+    "customAgentSearchPlaceholder": "Buscar agentes…",
+    "customAgentLoadingCatalog": "Carregando o registro ACP…",
+    "customAgentRetry": "Tentar novamente",
+    "customAgentNoResults": "Nenhum agente correspondente",
+    "customAgentAdd": "Adicionar",
+    "customAgentAlreadyAdded": "Adicionado",
+    "customAgentUnsupportedPlatform": "Nenhuma compilação disponível para esta plataforma",
+    "customAgentAdded": "{name} adicionado",
+    "customAgentIdLabel": "ID do registro",
+    "customAgentNameLabel": "Nome exibido",
+    "customAgentVersionLabel": "Versão",
+    "customAgentSpecLabel": "Distribuição (JSON)",
+    "customAgentSpecHint": "Cole o objeto distribution do agente vindo do registro ACP, ou uma entrada completa do registro.",
+    "customAgentKindLabel": "Iniciar via",
+    "customAgentInvalidJson": "JSON inválido",
+    "customAgentNoDistribution": "Nenhuma distribuição npx, uvx ou binary encontrada",
+    "customAgentCancel": "Cancelar",
+    "customAgentSave": "Adicionar agente",
+    "customAgentRemove": "Remover agente",
+    "customAgentRemoveHint": "Exclui a definição do agente. As conversas existentes mantêm o histórico; o agente apenas não pode mais ser iniciado.",
+    "customAgentIconLabel": "Ícone (opcional)",
+    "customAgentIconUpload": "Enviar",
+    "customAgentIconReplace": "Substituir",
+    "customAgentIconClear": "Remover ícone",
+    "customAgentIconHint": "Salvo junto com o agente, portanto funciona offline. Sem um ícone, usa-se uma inicial colorida.",
+    "customAgentSkillsLabel": "Skills (.agents/skills compartilhado)",
+    "customAgentSkillsHint": "Declara que este agente lê o repositório compartilhado .agents/skills (diretórios global e de projeto) e o adiciona a todas as matrizes de habilidades. Habilidades vinculadas lá ficam visíveis para todos os agentes que leem esse repositório compartilhado.",
+    "customAgentIconNotAnImage": "Selecione um arquivo de imagem.",
+    "customAgentIconTooLarge": "O ícone deve ter menos de {limit} KB.",
+    "customAgentIconReadFailed": "Não foi possível ler essa imagem.",
+    "customAgentRemoveConfirm": "Remover {name}? As conversas existentes permanecem, mas o agente não poderá mais ser iniciado.",
+    "customAgentRemoveWithData": "Excluir também o histórico de conversas registrado",
+    "customAgentRemoved": "{name} removido",
+    "customAgentBadge": "Personalizado",
+    "customAgentNotLaunchable": "Este agente não pode ser iniciado aqui: {reason}"
   },
   "SettingsPages": {
     "agentsLoading": "Carregando configurações de agentes...",
@@ -1317,6 +1397,7 @@
       "searchPlaceholder": "Buscar conversas...",
       "viewOptions": "Opções de exibição",
       "showCompleted": "Mostrar conversas concluídas",
+      "showWorktrees": "Mostrar pastas de worktree",
       "moreOptions": "Mais opções",
       "sortBy": "Ordenar por",
       "sortByCreatedAt": "Data de criação",
@@ -1372,6 +1453,7 @@
       "sectionFolders": "Pastas",
       "sectionChats": "Chat",
       "noChats": "Sem chats",
+      "noFolders": "Nenhuma pasta aberta",
       "newChatAction": "Novo chat",
       "automations": "Automações",
       "loadingSubsessions": "Carregando subconversas…"
@@ -1548,6 +1630,16 @@
       "closeConversationTab": "Fechar aba de conversa",
       "close": "Fechar",
       "closeOthers": "Fechar outros",
+      "splitRight": "Dividir à direita",
+      "splitDown": "Dividir abaixo",
+      "splitAndMoveRight": "Dividir e mover para a direita",
+      "splitAndMoveDown": "Dividir e mover para baixo",
+      "moveToOppositeGroup": "Mover para o grupo oposto",
+      "moveToGroup": "Mover para o grupo",
+      "groupLabel": "Grupo {index}",
+      "changeSplitterOrientation": "Alternar orientação do divisor",
+      "unsplit": "Desfazer divisão",
+      "unsplitAll": "Desfazer todas as divisões",
       "closeAll": "Fechar tudo",
       "tileDisplay": "Exibição em mosaico",
       "untileDisplay": "Sair do mosaico"
@@ -1737,7 +1829,11 @@
         "confirmApply": "Aplicar stash {ref} ao diretório de trabalho?",
         "cancel": "Cancelar"
       },
-      "deleteBranch": "Excluir branch"
+      "deleteBranch": "Excluir branch",
+      "searchPlaceholder": "Pesquisar ramos e ações",
+      "searchAriaLabel": "Pesquisar ramos e ações",
+      "branchListLabel": "Ramos e ações",
+      "noMatches": "Nenhuma correspondência"
     },
     "commitDialog": {
       "toasts": {
@@ -1821,8 +1917,11 @@
       "hash": "Hash do commit",
       "copyHash": "Copiar hash",
       "copyMessage": "Copiar mensagem",
+      "showMore": "Mostrar mais",
+      "showLess": "Mostrar menos",
       "author": "Autor",
       "noFileChangeDetails": "Sem detalhes de alteração de arquivos disponíveis.",
+      "loadingFiles": "Carregando arquivos...",
       "branchesTitle": "Branches Git",
       "loadingBranches": "Carregando branches...",
       "noContainingBranches": "Nenhuma branch contendo este commit foi encontrada.",
@@ -1851,14 +1950,28 @@
         "resetSuccessDescription": "{branch} foi resetada para {shortHash} com {mode}",
         "resetFailed": "Falha no reset"
       },
+      "authorFilter": {
+        "label": "Autor",
+        "searchPlaceholder": "Pesquisar autor",
+        "noAuthors": "Nenhum autor encontrado",
+        "you": "você",
+        "filterByAuthorAria": "Filtrar commits por autor",
+        "filterByQuery": "Filtrar por \"{query}\"",
+        "clearAuthorFilterAria": "Limpar filtro de autor",
+        "recent": "Recentes",
+        "matchingAuthors": "Autores correspondentes",
+        "removeFromRecent": "Remover {name} dos recentes"
+      },
       "branchSelector": {
+        "label": "Branch",
         "searchBranch": "Pesquisar branch...",
         "noBranches": "Nenhum branch",
         "selectBranchPlaceholder": "Selecionar branch...",
         "localBranches": "Branches locais",
         "current": "Atual",
         "remoteBranches": "Branches remotas",
-        "refreshCommitHistory": "Atualizar histórico de commits"
+        "refreshCommitHistory": "Atualizar histórico de commits",
+        "clearBranchFilterAria": "Limpar filtro de branch"
       },
       "dialogs": {
         "newBranchTitle": "Nova branch",
@@ -2205,7 +2318,8 @@
           "initSessionDescription": "Creating session and loading configuration"
         },
         "errors": {
-          "connectionFailed": "Falha na conexão"
+          "connectionFailed": "Falha na conexão",
+          "sendPromptFailed": "Falha ao enviar a mensagem: {error}"
         }
       },
       "shared": {
@@ -2262,6 +2376,7 @@
         "attachUploadFailed": "Falha ao enviar {names}.",
         "attachUploadNotAFile": "{names} não é um arquivo regular (diretório ou arquivo especial) e foi ignorado.",
         "attachUploadQuotaExceeded": "O servidor ficou sem espaço para uploads; {names} não pôde ser enviado.",
+        "attachUploadInProgress": "As imagens ainda estão sendo enviadas — tente novamente em instantes.",
         "mentionEmpty": "Nenhuma correspondência",
         "mentionLoading": "Pesquisando…",
         "mentionListLabel": "Menções",
@@ -2589,6 +2704,8 @@
           "remaining": "Restante",
           "elapsed": "Decorrido",
           "tokens": "tokens",
+          "pause": "Pausar",
+          "clear": "Limpar",
           "status": {
             "active": "ativo",
             "paused": "pausado",
@@ -2717,6 +2834,17 @@
         "submit": "Enviar",
         "submitError": "Falha ao enviar. Tente novamente."
       },
+      "planApproval": {
+        "title": "O agente tem um plano — revise",
+        "emptyPlan": "O agente não escreveu um plano. Aprove para começar ou solicite alterações.",
+        "approve": "Aprovar e construir",
+        "requestChanges": "Solicitar alterações",
+        "abandon": "Descartar",
+        "feedbackPlaceholder": "O que deve mudar?",
+        "sendChanges": "Enviar",
+        "cancel": "Cancelar",
+        "submitError": "Não foi possível enviar. Tente novamente."
+      },
       "feedbackCheckResult": {
         "count": "{count, plural, =1 {1 comentário} other {# comentários}}",
         "expand": "Mostrar todos os comentários",
@@ -2757,6 +2885,11 @@
         "opClose": "Encerrando subagente",
         "opResume": "Retomando subagente"
       },
+      "contextCompaction": {
+        "compacting": "Compactando o contexto…",
+        "compacted": "Contexto compactado",
+        "compactedTokens": "Contexto compactado · {before} → {after} tokens"
+      },
       "backgroundTasks": {
         "running": "{count, plural, one {# tarefa em segundo plano em execução} other {# tarefas em segundo plano em execução}}",
         "settling": "Sincronizando resultados em segundo plano…",
@@ -2766,6 +2899,10 @@
         "cardCompleted": "Tarefa em segundo plano concluída",
         "cardFinishedWithStatus": "Tarefa em segundo plano encerrada ({status})",
         "cardResultPending": "Resultado ainda não retornou"
+      },
+      "proposedPlan": {
+        "title": "Plano proposto",
+        "planning": "A planear…"
       }
     },
     "diffPreview": {
@@ -3964,5 +4101,27 @@
     "groupInstructions": "Descrição e prompt do sistema",
     "fieldDescription": "Descrição",
     "baseInstructions": "Prompt do sistema (base_instructions)"
+  },
+  "DiagnosticsSettings": {
+    "title": "Diagnóstico do ambiente",
+    "description": "Verifica como este app resolve a CLI do agente no próprio processo, que pode diferir do seu terminal.",
+    "loading": "Executando diagnóstico…",
+    "error": "Falha no diagnóstico",
+    "rerun": "Executar novamente",
+    "copyAll": "Copiar tudo",
+    "copied": "Diagnóstico copiado para a área de transferência",
+    "button": "Diagnosticar",
+    "verdict": {
+      "ok": "O ambiente parece saudável. Se ainda aparecer como não instalado, reinicie o app completamente para atualizar o cache do prefixo.",
+      "node_missing": "Node.js não foi encontrado no PATH do app.",
+      "npm_missing": "npm não foi encontrado no PATH do app.",
+      "not_installed": "Este agente não parece estar instalado.",
+      "installed_but_unresolved": "Consta como instalado, mas o app não consegue localizar o executável.",
+      "user_prefix_not_on_path": "Instalado no prefixo de fallback (~/.codeg/npm-global), que não está no PATH do app. Reinicie o app completamente e tente novamente.",
+      "homebrew_bin_not_on_path": "Instalado no bin do Homebrew, que não está no PATH do app (divisão de keg no Apple Silicon).",
+      "terminal_only_path": "O comando é resolvido no seu terminal, mas não no app: uma diferença de PATH da GUI. Inicie o app por um terminal ou reinstale nas Configurações de agentes.",
+      "npm_prefix_timeout": "npm prefix -g foi muito lento (mais de 1,5 s), então a detecção de fallback foi ignorada. Reinicie o app e tente novamente.",
+      "node_too_old": "Seu Node.js ativo é mais antigo do que este agente requer. Atualize o Node.js."
+    }
   }
 }

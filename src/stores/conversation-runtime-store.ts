@@ -941,6 +941,12 @@ export function buildStreamingTurnsFromLiveMessage(
           tool_use_id: block.info.tool_call_id,
           tool_name: toolName,
           input_preview: resolveLiveToolInput(toolName, block.info),
+          // Forward the ACP status so the render layer can drop an interrupted
+          // arg-less orphan that survives promotion into `localTurns` at
+          // COMPLETE_TURN: post-completion its adapted state is no longer
+          // "running", but this status stays unsettled (pending/in_progress)
+          // until an authoritative detail reload. See dropEmptyInFlightToolCalls.
+          status: block.info.status ?? null,
           // Forward the ACP `meta` field downstream so the renderer can
           // read delegation state (`meta["codeg.delegation"]`) for
           // pre-binding / post-refresh fallback rendering of

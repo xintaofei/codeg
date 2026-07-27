@@ -15,7 +15,6 @@ import {
   CommitFileAdditions,
   CommitFileDeletions,
 } from "@/components/ai-elements/commit"
-import { UnifiedDiffPreview } from "@/components/diff/unified-diff-preview"
 import {
   Tooltip,
   TooltipContent,
@@ -49,12 +48,14 @@ import { cn } from "@/lib/utils"
  *    reveals it in the OS file manager. Open by default — a freshly written
  *    file is usually the thing you want to jump into. The grid scrolls
  *    within the same bounded max-height as the changed list.
- *  - "Files changed": modified/removed files as a single-open accordion (only
- *    one diff expanded at a time). Collapsed by default. Each row expands its
- *    diff inline within the SAME bordered card (no double border), and the
- *    list scrolls within a bounded max-height.
+ *  - "Files changed": modified/removed files, each rendered as its own card in
+ *    the same responsive grid as "New files". A modified file's card opens the
+ *    file in the workspace tabs on click (with a reveal-in-folder side button),
+ *    mirroring the "New files" cards but with a neutral (non-green) accent — no
+ *    inline diff. A removed file renders as a static destructive card (nothing
+ *    to open). Collapsed by default; the grid scrolls within a bounded height.
  *
- * Diffs are parsed lazily and ONLY once the reply is persisted
+ * File changes are parsed lazily and ONLY once the reply is persisted
  * (`isResponseComplete`), so the streaming hot path never runs diff parsing.
  */
 export const ReplyArtifacts = memo(function ReplyArtifacts({
@@ -65,12 +66,11 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
   isResponseComplete: boolean
 }) {
   const t = useTranslations("Folder.chat.replyArtifacts")
+  const tCommon = useTranslations("Folder.common")
   const { activeFolder: folder } = useActiveFolder()
-  const { openFilePreview } = useWorkspaceActions()
+  const { openFilePreview, openSessionFileDiff } = useWorkspaceActions()
   const [newFilesOpen, setNewFilesOpen] = useState(true)
   const [changedOpen, setChangedOpen] = useState(false)
-  // Single-open accordion: the path of the one changed file whose diff is open.
-  const [openPath, setOpenPath] = useState<string | null>(null)
 
   // Guard parsing behind completion so mid-stream renders stay diff-free.
   const files = useMemo(
@@ -78,9 +78,9 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
     [isResponseComplete, sourceTurns]
   )
 
-  // Split created files (their own cards) from modified/removed files (the
-  // accordion). Removal wins over creation, so a create+delete in the same
-  // reply lands in "changed", not "new files".
+  // Split created files from modified/removed files — each lands in its own
+  // section ("New files" vs "Files changed"). Removal wins over creation, so a
+  // create+delete in the same reply lands in "changed", not "new files".
   const { addedFiles, changedFiles } = useMemo(() => {
     const addedFiles: FileChangeStat[] = []
     const changedFiles: FileChangeStat[] = []
@@ -109,6 +109,19 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
   const revealInFolder = (file: FileChangeStat) => {
     const absolute = toAbsoluteFilePath(file.path, folderPath)
     if (absolute) void revealItemInDir(absolute)
+  }
+
+  // Open the file's unified diff in an editor tab. Keyed by the reply's first
+  // turn id so the same file changed by two different replies opens as two
+  // distinct diff tabs instead of colliding into one. Works in web too (unlike
+  // reveal), so it stays ungated by `isLocalDesktop()`.
+  const replyDiffKey = sourceTurns[0]?.id ?? "reply"
+  const viewDiff = (file: FileChangeStat) => {
+    openSessionFileDiff(
+      file.path,
+      file.diff ?? t("noDiffDataAvailable", { filePath: file.path }),
+      replyDiffKey
+    )
   }
 
   const totalAdditions = changedFiles.reduce((sum, f) => sum + f.additions, 0)
@@ -258,101 +271,135 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
           </button>
 
           {changedOpen && (
-            <ul className="max-h-80 space-y-1.5 overflow-y-auto border-t border-border p-2">
-              {changedFiles.map((file) => {
-                const displayPath = toFolderRelativePath(file.path, folderPath)
-                const name = fileNameOf(displayPath)
-                const dir =
-                  displayPath === name
-                    ? ""
-                    : displayPath.slice(0, displayPath.length - name.length - 1)
-                const isRemoved = isRemovedFileDiff(file.diff)
-                const isOpen = openPath === file.path
+            <TooltipProvider delayDuration={300}>
+              <div className="@container max-h-80 overflow-y-auto border-t border-border p-2">
+                <div className="grid gap-2 @md:grid-cols-2">
+                  {changedFiles.map((file) => {
+                    const displayPath = toFolderRelativePath(
+                      file.path,
+                      folderPath
+                    )
+                    const name = fileNameOf(displayPath)
+                    const dir =
+                      displayPath === name
+                        ? ""
+                        : displayPath.slice(
+                            0,
+                            displayPath.length - name.length - 1
+                          )
+                    const isRemoved = isRemovedFileDiff(file.diff)
 
-                return (
-                  <li
-                    key={file.id}
-                    className={cn(
-                      "overflow-hidden rounded-md border transition-colors",
-                      isRemoved ? "border-destructive/30" : "border-border",
-                      isOpen && "bg-muted/20"
-                    )}
-                  >
-                    <button
-                      type="button"
-                      aria-expanded={isOpen}
-                      onClick={() => setOpenPath(isOpen ? null : file.path)}
-                      title={displayPath}
-                      className={cn(
-                        "flex w-full min-w-0 items-center gap-2 px-2 py-1.5 text-left transition-colors",
-                        isRemoved
-                          ? "hover:bg-destructive/10"
-                          : "hover:bg-accent/40",
-                        isOpen &&
-                          (isRemoved
-                            ? "border-b border-destructive/30"
-                            : "border-b border-border")
-                      )}
-                    >
-                      <ChevronRight
-                        className={cn(
-                          "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
-                          isOpen && "rotate-90"
-                        )}
-                      />
-                      <FileIcon
-                        className={cn(
-                          "h-3.5 w-3.5 shrink-0",
-                          isRemoved
-                            ? "text-destructive"
-                            : "text-muted-foreground"
-                        )}
-                      />
-                      <span className="flex min-w-0 flex-1 items-baseline gap-2">
-                        <span
-                          className={cn(
-                            "min-w-0 truncate text-xs",
-                            isRemoved ? "text-destructive" : "text-foreground"
-                          )}
+                    // Removed files no longer exist on disk — there is nothing
+                    // to open or reveal, so render a static (non-interactive)
+                    // card that keeps the destructive accent and remove badge.
+                    if (isRemoved) {
+                      return (
+                        <div
+                          key={file.id}
+                          title={displayPath}
+                          className="flex items-center gap-2 overflow-hidden rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-2"
                         >
-                          {name}
-                        </span>
-                        {dir && (
-                          <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground">
-                            {dir}
+                          <FileIcon className="h-4 w-4 shrink-0 text-destructive" />
+                          <span className="flex min-w-0 flex-1 flex-col">
+                            <span className="truncate text-xs font-medium text-destructive">
+                              {name}
+                            </span>
+                            {dir && (
+                              <span className="truncate text-[10px] text-muted-foreground">
+                                {dir}
+                              </span>
+                            )}
                           </span>
-                        )}
-                      </span>
-                      {isRemoved ? (
-                        <span className="inline-flex shrink-0 items-center rounded-md border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 font-mono text-[10px] text-destructive">
-                          {t("remove")}
-                        </span>
-                      ) : (
-                        <span className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-muted/40 px-1.5 py-0.5 font-mono text-[10px] text-foreground">
-                          <CommitFileAdditions
-                            count={file.additions}
-                            className="text-[10px]"
-                          />
-                          <CommitFileDeletions
-                            count={file.deletions}
-                            className="text-[10px]"
-                          />
-                        </span>
-                      )}
-                    </button>
+                          <span className="inline-flex shrink-0 items-center rounded-md border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 font-mono text-[10px] text-destructive">
+                            {t("remove")}
+                          </span>
+                        </div>
+                      )
+                    }
 
-                    {isOpen &&
-                      (file.diff ? (
-                        <UnifiedDiffPreview diffText={file.diff} embedded />
-                      ) : (
-                        <p className="px-3 py-2 text-xs text-muted-foreground">
-                          {t("noDiffDataAvailable", { filePath: displayPath })}
-                        </p>
-                      ))}
-                  </li>
-                )
-              })}
-            </ul>
+                    return (
+                      <div
+                        key={file.id}
+                        className="flex items-stretch overflow-hidden rounded-md border border-border bg-muted/20 transition-colors hover:bg-accent/40"
+                      >
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              type="button"
+                              onClick={() => openInTabs(file)}
+                              title={displayPath}
+                              aria-label={t("openFile", {
+                                filePath: displayPath,
+                              })}
+                              className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-2.5 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                            >
+                              <FileIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                              <span className="flex min-w-0 flex-1 flex-col">
+                                <span className="truncate text-xs font-medium text-foreground">
+                                  {name}
+                                </span>
+                                {dir && (
+                                  <span className="truncate text-[10px] text-muted-foreground">
+                                    {dir}
+                                  </span>
+                                )}
+                              </span>
+                              <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[10px]">
+                                <CommitFileAdditions
+                                  count={file.additions}
+                                  className="text-[10px]"
+                                />
+                                <CommitFileDeletions
+                                  count={file.deletions}
+                                  className="text-[10px]"
+                                />
+                              </span>
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent side="top">
+                            {t("openInEditor")}
+                          </TooltipContent>
+                        </Tooltip>
+
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              type="button"
+                              onClick={() => viewDiff(file)}
+                              aria-label={tCommon("viewDiff")}
+                              className="flex w-9 shrink-0 items-center justify-center border-l border-border text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                            >
+                              <FileDiff className="h-3.5 w-3.5" />
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent side="top">
+                            {tCommon("viewDiff")}
+                          </TooltipContent>
+                        </Tooltip>
+
+                        {isLocalDesktop() && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                type="button"
+                                onClick={() => revealInFolder(file)}
+                                aria-label={t("revealInFolder")}
+                                className="flex w-9 shrink-0 items-center justify-center border-l border-border text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                              >
+                                <ExternalLink className="h-3.5 w-3.5" />
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent side="top">
+                              {t("revealInFolder")}
+                            </TooltipContent>
+                          </Tooltip>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </TooltipProvider>
           )}
         </div>
       )}

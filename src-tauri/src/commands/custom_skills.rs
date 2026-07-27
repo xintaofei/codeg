@@ -829,6 +829,52 @@ mod tests {
         assert!(agents.iter().all(|a| skill_storage_spec(*a).is_some()));
     }
 
+    #[test]
+    fn a_custom_agent_joins_the_matrix_only_by_declaring_the_shared_store() {
+        use crate::acp::custom_registry::{
+            hydrate, hydrate_test_guard, CustomAgentDef, CustomAgentSpec, CustomDistributionKind,
+            NpxSpec,
+        };
+        let _guard = hydrate_test_guard();
+        let mut def = CustomAgentDef {
+            registry_id: "skills-matrix-agent".into(),
+            name: "Skills Matrix Agent".into(),
+            description: String::new(),
+            version: "1.0.0".into(),
+            distribution_kind: CustomDistributionKind::Npx,
+            spec: CustomAgentSpec {
+                npx: Some(NpxSpec {
+                    package: "skills-matrix-agent@1.0.0".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            icon_url: None,
+            skills_shared_store: false,
+        };
+        let agent = crate::models::agent::AgentType::custom("skills-matrix-agent").unwrap();
+
+        assert!(hydrate(std::slice::from_ref(&def)).is_empty());
+        assert!(
+            skill_storage_spec(agent).is_none(),
+            "undeclared custom agents expose no skill store"
+        );
+        assert!(!supported_agents().contains(&agent));
+
+        def.skills_shared_store = true;
+        assert!(hydrate(std::slice::from_ref(&def)).is_empty());
+        let spec = skill_storage_spec(agent).expect("declared agent joins the matrix");
+        assert!(supported_agents().contains(&agent));
+        // The declaration means exactly the shared `.agents/skills` store —
+        // global and project-local — nothing agent-specific to list first.
+        assert_eq!(spec.project_rel_dirs, vec![".agents/skills"]);
+        assert_eq!(spec.global_dirs.len(), 1);
+        assert!(spec.global_dirs[0].ends_with(".agents/skills"));
+
+        assert!(hydrate(&[]).is_empty());
+        assert!(skill_storage_spec(agent).is_none());
+    }
+
     #[tokio::test]
     async fn apply_links_does_not_deadlock() {
         let ops = vec![

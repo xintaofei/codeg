@@ -13,8 +13,9 @@ import {
 import { Shimmer } from "@/components/ai-elements/shimmer"
 import { normalizeToolName } from "@/lib/tool-call-normalization"
 import { cn } from "@/lib/utils"
-import { ChevronRightIcon } from "lucide-react"
+import { ChevronRightIcon, PauseIcon, XIcon } from "lucide-react"
 import { useTranslations } from "next-intl"
+import { useGoalControl } from "./goal-control-context"
 
 type GoalToolPart = Extract<AdaptedContentPart, { type: "tool-call" }>
 
@@ -236,6 +237,17 @@ function GoalCard({
 
   const errorText = endPart?.errorText ?? startPart.errorText
 
+  // Pause/Clear are only offered for a live, controllable goal (the provider
+  // supplies a callback only when the session is live and the user owns it; it
+  // is `null` on history reload / for viewers / in the read-only sub-agent
+  // dialog). Pause applies to an active goal; Clear to active OR paused. Codex
+  // exposes no "resume" control — resuming is re-issuing the `/goal` prompt.
+  const { onGoalControl } = useGoalControl()
+  const showPause = Boolean(onGoalControl) && normalizedStatus === "active"
+  const showClear =
+    Boolean(onGoalControl) &&
+    (normalizedStatus === "active" || normalizedStatus === "paused")
+
   return (
     <Collapsible open={bodyOpen} onOpenChange={setBodyOpen} className="w-full">
       <CollapsibleTrigger
@@ -345,6 +357,31 @@ function GoalCard({
                 </span>
               )}
             </div>
+
+            {(showPause || showClear) && (
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                {showPause && (
+                  <button
+                    type="button"
+                    onClick={() => onGoalControl?.("pause")}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border/60 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  >
+                    <PauseIcon aria-hidden="true" className="size-3" />
+                    {t("pause")}
+                  </button>
+                )}
+                {showClear && (
+                  <button
+                    type="button"
+                    onClick={() => onGoalControl?.("clear")}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border/60 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  >
+                    <XIcon aria-hidden="true" className="size-3" />
+                    {t("clear")}
+                  </button>
+                )}
+              </div>
+            )}
 
             {isError && errorText && (
               <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-destructive/10 p-3 text-xs text-destructive">

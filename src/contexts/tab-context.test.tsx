@@ -16,7 +16,14 @@ import {
   resetAppWorkspaceStore,
   useAppWorkspaceStore,
 } from "@/stores/app-workspace-store"
-import { resetTabStore } from "@/stores/tab-store"
+import {
+  groupOfTab,
+  isReparentUnmount,
+  resetTabStore,
+  selectIsSplit,
+  useTabStore,
+} from "@/stores/tab-store"
+import { leafIds } from "@/lib/tab-group-layout"
 
 const listOpenedTabsMock = vi.fn()
 const saveOpenedTabsMock = vi.fn()
@@ -183,6 +190,10 @@ function seedWorkspaceStore() {
     foldersHydrated: true,
     setActiveFolderId: setActiveFolderIdMock,
   })
+  // Drop device-local group/tile blobs BEFORE the reset re-reads them —
+  // `persistGroupState` writes localStorage during hydrated tests and would
+  // otherwise leak split layouts across tests.
+  localStorage.clear()
   // The tab store is a module-level singleton: reset it (state + coordination
   // vars + injected runtime + one-shot correction/recovery flags) after seeding
   // the workspace store so `lastConversations` aligns with the seeded list.
@@ -1673,5 +1684,681 @@ describe("TabProvider sub-session tabs", () => {
     })
     await act(async () => {})
     expect(getFolderConversationMock).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe("TabProvider tab groups", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    seedWorkspaceStore()
+    listOpenedTabsMock.mockResolvedValue({ items: [], version: 1 })
+    saveOpenedTabsMock.mockResolvedValue({
+      accepted: true,
+      version: 2,
+      tabs: [],
+    })
+    getFolderConversationMock.mockReset()
+    getFolderConversationMock.mockReturnValue(new Promise(() => {}))
+    tabsChangedHandler = null
+    conversationChangedHandler = null
+    subscribeMock.mockImplementation((event: string, handler: unknown) => {
+      if (event === TABS_CHANGED_EVENT)
+        tabsChangedHandler = handler as (change: TabsChanged) => void
+      if (event === CONVERSATION_CHANGED_EVENT)
+        conversationChangedHandler = handler as (
+          change: ConversationChange
+        ) => void
+      return Promise.resolve(() => {})
+    })
+    disconnectMock.mockResolvedValue(undefined)
+    onTransportReconnectMock.mockReturnValue(() => {})
+  })
+
+  /** Hydrate from an explicit snapshot so the post-hydration recovery never
+   *  synthesizes a draft tab under the tests' feet. */
+  async function renderWithTabs(items: OpenedTab[]) {
+    listOpenedTabsMock.mockResolvedValue({ items, version: 1 })
+    const result = renderTabs()
+    await act(async () => {})
+    return result
+  }
+
+  const store = () => useTabStore.getState()
+  const leaves = () => leafIds(store().groupLayout)
+  const groupOfId = (tabId: string) =>
+    groupOfTab(store().groupOf, store().groupLayout, tabId)
+  /** The leaf that is NOT in `known` — the group a split just created. */
+  const newLeafBeside = (...known: string[]) => {
+    const other = leaves().filter((id) => !known.includes(id))
+    expect(other).toHaveLength(1)
+    return other[0]
+  }
+
+  it("split-and-move creates a second group with the tab and focuses it", async () => {
+    await renderWithTabs([tabItem(1, 1, true), tabItem(1, 2)])
+    const home = leaves()[0]
+
+    act(() => {
+      store().splitTab("conv-1-codex-2", "right", { move: true })
+    })
+
+    expect(selectIsSplit(store())).toBe(true)
+    expect(leaves()).toHaveLength(2)
+    const g1 = newLeafBeside(home)
+    expect(groupOfId("conv-1-codex-1")).toBe(home)
+    expect(groupOfId("conv-1-codex-2")).toBe(g1)
+    expect(store().activeTabId).toBe("conv-1-codex-2")
+    expect(store().groupSelection[home]).toBe("conv-1-codex-1")
+    expect(store().groupSelection[g1]).toBe("conv-1-codex-2")
+  })
+
+  it("split-and-move is a no-op when the tab is alone in its group", async () => {
+    await renderWithTabs([tabItem(1, 1, true)])
+
+    act(() => {
+      store().splitTab("conv-1-codex-1", "right", { move: true })
+    })
+
+    expect(selectIsSplit(store())).toBe(false)
+    expect(leaves()).toHaveLength(1)
+  })
+
+  it("plain split seeds the new group with a draft inheriting the context tab", async () => {
+    await renderWithTabs([tabItem(1, 1, true)])
+    const home = leaves()[0]
+
+    act(() => {
+      store().splitTab("conv-1-codex-1", "down", { move: false })
+    })
+
+    expect(leaves()).toHaveLength(2)
+    const g1 = newLeafBeside(home)
+    const draft = store().rawTabs.find((t) => t.conversationId == null)
+    expect(draft).toBeDefined()
+    expect(draft?.folderId).toBe(1)
+    expect(draft?.agentType).toBe("codex")
+    expect(draft?.workingDir).toBe("/repo")
+    expect(groupOfId(draft!.id)).toBe(g1)
+    expect(store().activeTabId).toBe(draft!.id)
+    expect(groupOfId("conv-1-codex-1")).toBe(home)
+    const layout = store().groupLayout
+    expect(layout.type === "split" && layout.orientation).toBe("vertical")
+  })
+
+  it("plain split from a chat draft seeds a chat draft (one draft per group)", async () => {
+    await renderWithTabs([tabItem(1, 1, true)])
+    act(() => {
+      store().openChatModeTab()
+    })
+    const chatDraftId = store().activeTabId!
+    expect(chatDraftId).toMatch(/^new-/)
+
+    act(() => {
+      store().splitTab(chatDraftId, "right", { move: false })
+    })
+
+    const drafts = store().rawTabs.filter((t) => t.conversationId == null)
+    expect(drafts).toHaveLength(2)
+    const newDraft = drafts.find((t) => t.id !== chatDraftId)
+    expect(newDraft?.isChat).toBe(true)
+    expect(newDraft?.folderId).toBe(0)
+    expect(groupOfId(newDraft!.id)).not.toBe(groupOfId(chatDraftId))
+  })
+
+  it("same-direction splits flatten into siblings; cross-direction splits nest", async () => {
+    await renderWithTabs([tabItem(1, 1, true), tabItem(1, 2), tabItem(2, 3)])
+
+    act(() => {
+      store().splitTab("conv-1-codex-2", "right", { move: true })
+    })
+    act(() => {
+      store().splitTab("conv-2-codex-3", "right", { move: true })
+    })
+    // conv-2-codex-3 was still in the home group, and home's parent split is
+    // already horizontal — so this second right-split inserts a SIBLING,
+    // giving one flat 3-way split rather than nesting.
+    const root = store().groupLayout
+    expect(root.type).toBe("split")
+    if (root.type !== "split") return
+    expect(root.orientation).toBe("horizontal")
+    expect(root.children).toHaveLength(3)
+    expect(root.children.every((c) => c.type === "group")).toBe(true)
+
+    // Splitting downward from inside the row nests a vertical split.
+    act(() => {
+      store().splitTab("conv-2-codex-3", "down", { move: false })
+    })
+    const nested = store().groupLayout
+    expect(nested.type).toBe("split")
+    if (nested.type !== "split") return
+    expect(nested.orientation).toBe("horizontal")
+    const verticalChild = nested.children.find((c) => c.type === "split")
+    expect(verticalChild).toBeDefined()
+    expect(verticalChild?.type === "split" && verticalChild.orientation).toBe(
+      "vertical"
+    )
+  })
+
+  it("closing a group's last tab collapses the split and focuses the neighbor's selection", async () => {
+    await renderWithTabs([tabItem(1, 1, true), tabItem(1, 2)])
+
+    act(() => {
+      store().splitTab("conv-1-codex-2", "right", { move: true })
+    })
+    expect(selectIsSplit(store())).toBe(true)
+
+    act(() => {
+      store().closeTab("conv-1-codex-2")
+    })
+
+    expect(selectIsSplit(store())).toBe(false)
+    expect(leaves()).toHaveLength(1)
+    expect(store().activeTabId).toBe("conv-1-codex-1")
+    expect(Object.keys(store().groupOf)).not.toContain("conv-1-codex-2")
+  })
+
+  it("moveTabToGroup moves and focuses; draining a group collapses it", async () => {
+    await renderWithTabs([tabItem(1, 1, true), tabItem(1, 2)])
+    const home = leaves()[0]
+
+    act(() => {
+      store().splitTab("conv-1-codex-2", "right", { move: true })
+    })
+    const g1 = newLeafBeside(home)
+
+    act(() => {
+      store().moveTabToGroup("conv-1-codex-1", g1)
+    })
+
+    // Home drained → the tree collapses back to a single group (g1).
+    expect(selectIsSplit(store())).toBe(false)
+    expect(leaves()).toEqual([g1])
+    expect(store().activeTabId).toBe("conv-1-codex-1")
+    expect(store().groupSelection[g1]).toBe("conv-1-codex-1")
+  })
+
+  it("dissolveGroup merges its tabs into the neighbor without reordering rawTabs", async () => {
+    await renderWithTabs([tabItem(1, 1, true), tabItem(1, 2)])
+    const home = leaves()[0]
+
+    act(() => {
+      store().splitTab("conv-1-codex-2", "right", { move: true })
+    })
+    const g1 = newLeafBeside(home)
+
+    act(() => {
+      store().dissolveGroup(g1)
+    })
+
+    expect(selectIsSplit(store())).toBe(false)
+    expect(store().rawTabs.map((t) => t.id)).toEqual([
+      "conv-1-codex-1",
+      "conv-1-codex-2",
+    ])
+    expect(groupOfId("conv-1-codex-2")).toBe(home)
+  })
+
+  it("unsplitAll flattens every group and keeps the rawTabs order", async () => {
+    await renderWithTabs([tabItem(1, 1, true), tabItem(1, 2), tabItem(2, 3)])
+
+    act(() => {
+      store().splitTab("conv-1-codex-2", "right", { move: true })
+    })
+    act(() => {
+      store().splitTab("conv-2-codex-3", "right", { move: true })
+    })
+    expect(leaves()).toHaveLength(3)
+
+    act(() => {
+      store().unsplitAll()
+    })
+
+    expect(selectIsSplit(store())).toBe(false)
+    expect(store().rawTabs.map((t) => t.id)).toEqual([
+      "conv-1-codex-1",
+      "conv-1-codex-2",
+      "conv-2-codex-3",
+    ])
+  })
+
+  it("group actions on the already-active tab never dirty the synced payload", async () => {
+    await renderWithTabs([tabItem(1, 1), tabItem(1, 2, true)])
+
+    const home = leaves()[0]
+    act(() => {
+      store().splitTab("conv-1-codex-2", "right", { move: true })
+    })
+    const g1 = newLeafBeside(home)
+    act(() => {
+      store().toggleGroupTile(g1)
+      store().toggleGroupOrientation(g1)
+      store().resizeGroupSplit(store().groupLayout.id, 0, 0.3)
+      store().dissolveGroup(g1)
+      store().unsplitAll()
+    })
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 700))
+    })
+    expect(saveOpenedTabsMock).not.toHaveBeenCalled()
+  })
+
+  it("closeOtherTabs while split only closes the group's own siblings", async () => {
+    await renderWithTabs([tabItem(1, 1, true), tabItem(1, 2), tabItem(2, 3)])
+
+    act(() => {
+      store().splitTab("conv-2-codex-3", "right", { move: true })
+    })
+
+    act(() => {
+      store().closeOtherTabs("conv-1-codex-1")
+    })
+
+    expect(
+      store()
+        .rawTabs.map((t) => t.id)
+        .sort()
+    ).toEqual(["conv-1-codex-1", "conv-2-codex-3"])
+    expect(selectIsSplit(store())).toBe(true)
+    expect(store().activeTabId).toBe("conv-1-codex-1")
+  })
+
+  it("reorderGroupTabs permutes only its group's slots in rawTabs", async () => {
+    await renderWithTabs([tabItem(1, 1, true), tabItem(1, 2), tabItem(2, 3)])
+    const home = leaves()[0]
+
+    act(() => {
+      store().splitTab("conv-2-codex-3", "right", { move: true })
+    })
+    const g1 = newLeafBeside(home)
+    act(() => {
+      store().moveTabToGroup("conv-1-codex-2", g1)
+    })
+    expect(store().rawTabs.map((t) => t.id)).toEqual([
+      "conv-1-codex-1",
+      "conv-1-codex-2",
+      "conv-2-codex-3",
+    ])
+
+    const g1Tabs = store().tabs.filter((t) => groupOfId(t.id) === g1)
+    act(() => {
+      store().reorderGroupTabs(g1, [g1Tabs[1], g1Tabs[0]])
+    })
+
+    // g1 occupied slots 1 and 2; slot 0 (the other group) is untouched.
+    expect(store().rawTabs.map((t) => t.id)).toEqual([
+      "conv-1-codex-1",
+      "conv-2-codex-3",
+      "conv-1-codex-2",
+    ])
+
+    // Mismatched ids are refused outright.
+    const before = store().rawTabs
+    act(() => {
+      store().reorderGroupTabs(g1, [g1Tabs[0]])
+    })
+    expect(store().rawTabs).toBe(before)
+  })
+
+  it("per-group draft singleton: each group reuses its own draft", async () => {
+    await renderWithTabs([tabItem(1, 1, true)])
+    const home = leaves()[0]
+
+    act(() => {
+      store().splitTab("conv-1-codex-1", "right", { move: false })
+    })
+    const g1 = newLeafBeside(home)
+    const draftInG1 = store().rawTabs.find((t) => t.conversationId == null)!
+
+    // Focused group is g1 (the draft) — reuses that draft, no new tab.
+    act(() => {
+      store().openNewConversationTab(1, "/repo")
+    })
+    expect(
+      store().rawTabs.filter((t) => t.conversationId == null)
+    ).toHaveLength(1)
+    expect(store().activeTabId).toBe(draftInG1.id)
+
+    // Explicitly targeting the home group creates a second, per-group draft.
+    act(() => {
+      store().openNewConversationTab(1, "/repo", { targetGroup: home })
+    })
+    const drafts = store().rawTabs.filter((t) => t.conversationId == null)
+    expect(drafts).toHaveLength(2)
+    expect(drafts.map((d) => groupOfId(d.id)).sort()).toEqual([home, g1].sort())
+  })
+
+  it("persists the split layout and restores it across a restart", async () => {
+    const first = await renderWithTabs([tabItem(1, 1, true), tabItem(1, 2)])
+
+    act(() => {
+      store().splitTab("conv-1-codex-2", "right", { move: true })
+    })
+    const movedGroup = groupOfId("conv-1-codex-2")
+
+    const blobRaw = localStorage.getItem("workspace:tab-groups:v1")
+    expect(blobRaw).not.toBeNull()
+    const blob = JSON.parse(blobRaw!) as {
+      assignments: Record<string, string>
+      layout: { type: string }
+    }
+    expect(blob.layout.type).toBe("split")
+    expect(blob.assignments["conv-1-codex-2"]).toBe(movedGroup)
+    expect(
+      Object.keys(blob.assignments).every((key) => !key.startsWith("new-"))
+    ).toBe(true)
+
+    // Simulate a restart: fresh store (re-reads localStorage), fresh provider.
+    first.unmount()
+    act(() => {
+      resetTabStore()
+    })
+    await renderWithTabs([tabItem(1, 1, true), tabItem(1, 2)])
+
+    expect(selectIsSplit(store())).toBe(true)
+    expect(groupOfId("conv-1-codex-2")).toBe(movedGroup)
+    expect(groupOfId("conv-1-codex-1")).not.toBe(movedGroup)
+  })
+
+  it("prunes a restored group whose tabs no longer exist after hydration", async () => {
+    const first = await renderWithTabs([tabItem(1, 1, true), tabItem(1, 2)])
+    act(() => {
+      store().splitTab("conv-1-codex-2", "right", { move: true })
+    })
+    expect(selectIsSplit(store())).toBe(true)
+
+    // Restart, but conv 2 was closed elsewhere — its group must collapse.
+    first.unmount()
+    act(() => {
+      resetTabStore()
+    })
+    await renderWithTabs([tabItem(1, 1, true)])
+
+    expect(selectIsSplit(store())).toBe(false)
+    expect(leaves()).toHaveLength(1)
+  })
+
+  it("seeds the first group's tile flag from the legacy tile-mode key", () => {
+    localStorage.setItem("workspace:tile-mode", "true")
+    act(() => {
+      resetTabStore()
+    })
+    const firstGroup = leaves()[0]
+    expect(store().tileByGroup[firstGroup]).toBe(true)
+  })
+
+  it("binding a split-group draft persists its group under the canonical id", async () => {
+    await renderWithTabs([tabItem(1, 1, true)])
+    const home = leaves()[0]
+
+    act(() => {
+      store().splitTab("conv-1-codex-1", "right", { move: false })
+    })
+    const g1 = newLeafBeside(home)
+    const draft = store().rawTabs.find((t) => t.conversationId == null)!
+    expect(groupOfId(draft.id)).toBe(g1)
+
+    act(() => {
+      store().bindConversationTab(draft.id, 99, "codex", "Bound", -1)
+    })
+
+    expect(groupOfId(draft.id)).toBe(g1)
+    const blob = JSON.parse(
+      localStorage.getItem("workspace:tab-groups:v1")!
+    ) as { assignments: Record<string, string> }
+    expect(blob.assignments["conv-1-codex-99"]).toBe(g1)
+  })
+
+  it("remote snapshots keep open tabs' groups, default new tabs to the first group, and keep drafts", async () => {
+    await renderWithTabs([tabItem(1, 1, true)])
+    expect(tabsChangedHandler).not.toBeNull()
+    const home = leaves()[0]
+
+    act(() => {
+      store().splitTab("conv-1-codex-1", "right", { move: false })
+    })
+    const g1 = newLeafBeside(home)
+    const draft = store().rawTabs.find((t) => t.conversationId == null)!
+
+    act(() => {
+      tabsChangedHandler?.({
+        version: 7,
+        origin: "other-device",
+        tabs: [tabItem(1, 1), tabItem(1, 2)],
+      })
+    })
+
+    expect(groupOfId("conv-1-codex-1")).toBe(home)
+    expect(groupOfId("conv-1-codex-2")).toBe(home)
+    expect(store().rawTabs.some((t) => t.id === draft.id)).toBe(true)
+    expect(groupOfId(draft.id)).toBe(g1)
+    expect(selectIsSplit(store())).toBe(true)
+  })
+
+  it("keeps the focused group's selection glued to the active tab across switches", async () => {
+    await renderWithTabs([tabItem(1, 1, true), tabItem(1, 2), tabItem(2, 3)])
+    const home = leaves()[0]
+
+    act(() => {
+      store().splitTab("conv-2-codex-3", "right", { move: true })
+    })
+    const g1 = newLeafBeside(home)
+
+    act(() => {
+      store().switchTab("conv-1-codex-1")
+    })
+    expect(store().groupSelection[home]).toBe("conv-1-codex-1")
+    expect(store().groupSelection[g1]).toBe("conv-2-codex-3")
+
+    act(() => {
+      store().switchTab("conv-2-codex-3")
+    })
+    expect(store().groupSelection[home]).toBe("conv-1-codex-1")
+    expect(store().groupSelection[g1]).toBe("conv-2-codex-3")
+    expect(store().activeTabId).toBe("conv-2-codex-3")
+  })
+
+  // Cross-group drag drops land at a specific position via
+  // `moveTabToGroup(..., { index })`; menu moves stay index-less (assignment
+  // only, no reorder). The index path is a partition insert: only the target
+  // group gains a slot, every other group's relative order is untouched.
+  describe("moveTabToGroup with index (drag drops)", () => {
+    /** 4 tabs, then split-move conv-3 right → home [1,2,4], g1 [3]. */
+    async function splitFour() {
+      await renderWithTabs([
+        tabItem(1, 1, true),
+        tabItem(1, 2),
+        tabItem(1, 3),
+        tabItem(1, 4),
+      ])
+      const home = leaves()[0]
+      act(() => {
+        store().splitTab("conv-1-codex-3", "right", { move: true })
+      })
+      return { home, g1: newLeafBeside(home) }
+    }
+
+    it("inserts before the target group's k-th member", async () => {
+      const { home, g1 } = await splitFour()
+
+      act(() => {
+        store().moveTabToGroup("conv-1-codex-1", g1, { index: 0 })
+      })
+
+      expect(groupOfId("conv-1-codex-1")).toBe(g1)
+      expect(store().activeTabId).toBe("conv-1-codex-1")
+      // g1 display order: dropped tab first, then the old member.
+      expect(
+        store()
+          .rawTabs.filter((t) => groupOfId(t.id) === g1)
+          .map((t) => t.id)
+      ).toEqual(["conv-1-codex-1", "conv-1-codex-3"])
+      // Partition insert: home's remaining tabs keep their relative order.
+      expect(
+        store()
+          .rawTabs.filter((t) => groupOfId(t.id) === home)
+          .map((t) => t.id)
+      ).toEqual(["conv-1-codex-2", "conv-1-codex-4"])
+    })
+
+    it("appends past the last member when the index overshoots", async () => {
+      const { g1 } = await splitFour()
+
+      act(() => {
+        store().moveTabToGroup("conv-1-codex-2", g1, { index: 99 })
+      })
+
+      expect(
+        store()
+          .rawTabs.filter((t) => groupOfId(t.id) === g1)
+          .map((t) => t.id)
+      ).toEqual(["conv-1-codex-3", "conv-1-codex-2"])
+    })
+
+    it("keeps the menu move (no index) free of rawTabs reorder and saves", async () => {
+      const { g1 } = await splitFour()
+      const orderBefore = store().rawTabs.map((t) => t.id)
+
+      act(() => {
+        store().moveTabToGroup("conv-1-codex-1", g1)
+      })
+
+      expect(store().rawTabs.map((t) => t.id)).toEqual(orderBefore)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 700))
+      })
+      expect(saveOpenedTabsMock).not.toHaveBeenCalled()
+    })
+
+    it("syncs a bound-tab drag insert like any user reorder", async () => {
+      const { g1 } = await splitFour()
+
+      act(() => {
+        store().moveTabToGroup("conv-1-codex-1", g1, { index: 0 })
+      })
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 700))
+      })
+      expect(saveOpenedTabsMock).toHaveBeenCalled()
+    })
+
+    it("lets a dragged draft join a group that already holds one, without dirtying the synced payload", async () => {
+      await renderWithTabs([tabItem(1, 1, true), tabItem(1, 2)])
+      const home = leaves()[0]
+      // Seed g1 with a split draft, then a second draft in the home group
+      // (per-group creation singleton allows one per group).
+      act(() => {
+        store().splitTab("conv-1-codex-1", "right", { move: false })
+      })
+      const g1 = newLeafBeside(home)
+      const g1Draft = store().rawTabs.find(
+        (t) => t.conversationId == null && groupOfId(t.id) === g1
+      )
+      expect(g1Draft).toBeTruthy()
+      act(() => {
+        store().openNewConversationTab(1, "/w1", { targetGroup: home })
+      })
+      const homeDraft = store().rawTabs.find(
+        (t) => t.conversationId == null && groupOfId(t.id) === home
+      )
+      expect(homeDraft).toBeTruthy()
+
+      // Focusing the drafts flips is_active off the bound tabs, which is a
+      // legitimate (pre-existing) save. Flush it so the assertion below
+      // isolates the DRAG itself.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 700))
+      })
+      saveOpenedTabsMock.mockClear()
+
+      // Drag the home draft into g1: two drafts in one group is allowed — the
+      // singleton is a creation-time dedupe, not a hard invariant.
+      act(() => {
+        store().moveTabToGroup(homeDraft!.id, g1, { index: 99 })
+      })
+
+      const g1Drafts = store().rawTabs.filter(
+        (t) => t.conversationId == null && groupOfId(t.id) === g1
+      )
+      expect(g1Drafts.map((t) => t.id)).toEqual([g1Draft!.id, homeDraft!.id])
+      expect(store().activeTabId).toBe(homeDraft!.id)
+
+      // Drafts never enter the synced payload, so even the index (reorder)
+      // path stays save-free when only a draft moved.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 700))
+      })
+      expect(saveOpenedTabsMock).not.toHaveBeenCalled()
+    })
+  })
+
+  // The unmount classifier that decides whether a vanishing conversation view
+  // keeps its ACP connection. Getting this wrong in either direction is
+  // expensive: too broad leaks viewer subscriptions (the idle sweep skips
+  // viewers), too narrow kills a live agent CLI mid-stream on a group move.
+  describe("isReparentUnmount", () => {
+    it("is false when the surface unmounts with the tab left in place", async () => {
+      await renderWithTabs([tabItem(1, 1, true), tabItem(1, 2)])
+      const home = leaves()[0]
+
+      // Mobile conversation→file pane switch / workbench route overlay: the
+      // whole surface unmounts, but nothing about the tab or its group moved.
+      expect(isReparentUnmount(store(), "conv-1-codex-1", home)).toBe(false)
+      expect(isReparentUnmount(store(), "conv-1-codex-2", home)).toBe(false)
+    })
+
+    it("is false for a closed tab so the connection still tears down", async () => {
+      await renderWithTabs([tabItem(1, 1, true), tabItem(1, 2)])
+      const home = leaves()[0]
+
+      act(() => {
+        store().closeTab("conv-1-codex-2")
+      })
+
+      expect(isReparentUnmount(store(), "conv-1-codex-2", home)).toBe(false)
+    })
+
+    it("is true only for the tab a cross-group move actually reparents", async () => {
+      await renderWithTabs([tabItem(1, 1, true), tabItem(1, 2)])
+      const home = leaves()[0]
+      act(() => {
+        store().splitTab("conv-1-codex-2", "right", { move: true })
+      })
+      const g1 = newLeafBeside(home)
+
+      // The moved view rendered under `home` and now belongs to `g1`.
+      expect(isReparentUnmount(store(), "conv-1-codex-2", home)).toBe(true)
+      // Its sibling never left `home`, so its unmount would be a real one.
+      expect(isReparentUnmount(store(), "conv-1-codex-1", home)).toBe(false)
+      // And once remounted under g1, a later surface teardown is not a
+      // reparent either.
+      expect(isReparentUnmount(store(), "conv-1-codex-2", g1)).toBe(false)
+    })
+
+    it("is true for tabs merged back by dissolve and unsplit-all", async () => {
+      await renderWithTabs([tabItem(1, 1, true), tabItem(1, 2)])
+      const home = leaves()[0]
+      act(() => {
+        store().splitTab("conv-1-codex-2", "right", { move: true })
+      })
+      const g1 = newLeafBeside(home)
+
+      act(() => {
+        store().dissolveGroup(g1)
+      })
+      expect(isReparentUnmount(store(), "conv-1-codex-2", g1)).toBe(true)
+
+      act(() => {
+        store().splitTab("conv-1-codex-2", "down", { move: true })
+      })
+      const g2 = newLeafBeside(home)
+      act(() => {
+        store().unsplitAll()
+      })
+      expect(isReparentUnmount(store(), "conv-1-codex-2", g2)).toBe(true)
+      // The tab that stayed in the surviving group is untouched.
+      expect(isReparentUnmount(store(), "conv-1-codex-1", home)).toBe(false)
+    })
   })
 })

@@ -86,6 +86,30 @@ describe("mergeConsecutiveAssistantTurns", () => {
     const item = merged[0] as TurnItem
     expect(item.group.completed_at).toBe("2026-07-19T05:25:22.851Z")
   })
+
+  it("does not fold a compaction divider into the preceding assistant reply", () => {
+    // The compaction event sits BETWEEN two assistant replies (the reply before
+    // `/compact` and the next). Two bare assistant turns would merge into one;
+    // the dedicated "compaction" item must break that run so the divider renders
+    // standalone in the correct between-turns position (and the first reply keeps
+    // its own footer).
+    const compaction: ThreadItem = {
+      key: "persisted-compact",
+      kind: "compaction",
+      meta: { contextCompaction: true, tokensBefore: 51777, tokensAfter: 4616 },
+    }
+    // Sanity: without the divider, the two assistant turns DO merge to one.
+    expect(
+      mergeConsecutiveAssistantTurns([assistantItem("a"), assistantItem("b")])
+    ).toHaveLength(1)
+    // With the divider between them, the run is broken → 3 standalone items.
+    const merged = mergeConsecutiveAssistantTurns([
+      assistantItem("a"),
+      compaction,
+      assistantItem("b"),
+    ])
+    expect(merged.map((it) => it.kind)).toEqual(["turn", "compaction", "turn"])
+  })
 })
 
 function makeGroup(

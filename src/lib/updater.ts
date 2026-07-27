@@ -16,9 +16,20 @@ type Update = any
 
 export type ServerUpdateCapability = "supervised" | "reexec"
 
+/** The three release fields the UI actually renders. Deliberately plain data:
+ * the download is driven by the BACKEND (`perform_app_update` re-checks on its
+ * own — see `src-tauri/src/commands/app_update.rs`), so no caller needs to hold
+ * on to Tauri's `Update` resource handle. */
+export interface AppUpdateInfo {
+  version: string
+  body: string
+  date?: string | null
+}
+
 export interface AppUpdateCheckResult {
   currentVersion: string
-  update: Update | null
+  /** The newer release, or null when already up to date. */
+  update: AppUpdateInfo | null
   // Server-mode only (absent in desktop). Whether THIS server process can
   // apply the update in place, how it would restart, the deployment kind,
   // the restart delay to drive the frontend countdown, and whether a
@@ -141,6 +152,41 @@ export interface AppUpdateErrorInfo {
   rawMessage: string
 }
 
+/**
+ * Message key (under the `SystemSettings` namespace) that explains an update
+ * failure to the user. Shared by every surface that reports one — the settings
+ * page's inline banner and the provider's toast — so a given failure reads the
+ * same wherever it shows up. An unclassifiable failure during an install is
+ * still an install failure; during a check it's genuinely unknown.
+ */
+export type AppUpdateErrorMessageKey =
+  | "updateErrors.sourceUnavailable"
+  | "updateErrors.network"
+  | "updateErrors.downloadFailed"
+  | "updateErrors.installFailed"
+  | "updateErrors.unknown"
+
+export function appUpdateErrorMessageKey(
+  kind: AppUpdateErrorKind,
+  action: "check" | "install"
+): AppUpdateErrorMessageKey {
+  switch (kind) {
+    case "source_unreachable":
+      return "updateErrors.sourceUnavailable"
+    case "network":
+      return "updateErrors.network"
+    case "download_failed":
+      return "updateErrors.downloadFailed"
+    case "install_failed":
+      return "updateErrors.installFailed"
+    case "unknown":
+    default:
+      return action === "install"
+        ? "updateErrors.installFailed"
+        : "updateErrors.unknown"
+  }
+}
+
 export async function getCurrentAppVersion(): Promise<string> {
   if (!usesTauriUpdater()) {
     // Read the running version from a LOCAL source, never the
@@ -166,14 +212,65 @@ export async function getCurrentAppVersion(): Promise<string> {
   }
 }
 
-export async function checkAppUpdate(): Promise<AppUpdateCheckResult> {
+/**
+ * Bound on the manifest fetch. `tauri-plugin-updater` defaults to NO timeout,
+ * so a black-holed network (dropped packets, captive portal, no RST) would
+ * leave `check()` pending forever — and with it the caller's in-flight guard,
+ * killing update checks for the rest of the session. Matches the standalone
+ * server's own manifest budget (8s connect + 15s total in
+ * `src-tauri/src/update/version.rs`), so every runtime fails in about the same
+ * time. The server and remote-desktop paths are already bounded by their
+ * transports (60s / 30s).
+ */
+const MANIFEST_TIMEOUT_MS = 15_000
+
+/**
+ * Ask the release source whether a newer version exists, normalized to plain
+ * data across both runtimes.
+ *
+ * Desktop goes through `tauri-plugin-updater`, whose `check()` resolves to a
+ * resource-backed `Update` handle. We copy the three fields we render and
+ * release the handle immediately — nothing downstream needs it (the actual
+ * download runs in Rust via `perform_app_update`, which re-checks itself), so
+ * holding it would only leak an entry in Tauri's resource table on every
+ * periodic check.
+ *
+ * Server/remote hits `check_app_update`, which already answers in this shape.
+ */
+export async function checkAppUpdateInfo(): Promise<AppUpdateCheckResult> {
   if (!usesTauriUpdater()) {
     return getTransport().call<AppUpdateCheckResult>("check_app_update")
   }
   const { getVersion } = await import("@tauri-apps/api/app")
   const { check } = await import("@tauri-apps/plugin-updater")
-  const [currentVersion, update] = await Promise.all([getVersion(), check()])
-  return { currentVersion, update }
+  const [currentVersion, update] = await Promise.all([
+    getVersion(),
+    check({ timeout: MANIFEST_TIMEOUT_MS }),
+  ])
+  if (!update) return { currentVersion, update: null }
+  try {
+    return {
+      currentVersion,
+      update: {
+        version: update.version,
+        body: update.body ?? "",
+        date: update.date ?? null,
+      },
+    }
+  } finally {
+    // Best-effort: a failed close costs one resource-table slot, never the
+    // check result the caller is waiting on.
+    try {
+      await closeUpdateHandle(update)
+    } catch (err) {
+      console.error("[Update] release updater resource failed:", err)
+    }
+  }
+}
+
+async function closeUpdateHandle(update: NonNullable<Update>): Promise<void> {
+  if (typeof update?.close !== "function") return
+  await update.close()
 }
 
 /**
@@ -290,13 +387,6 @@ export async function confirmRollbackVersion(
     if (i < attempts - 1) await sleep(interval)
   }
   return everRead ? "unchanged" : "unreachable"
-}
-
-export async function closeAppUpdate(
-  update: NonNullable<Update>
-): Promise<void> {
-  if (typeof update?.close !== "function") return
-  await update.close()
 }
 
 export function normalizeAppUpdateError(error: unknown): AppUpdateErrorInfo {

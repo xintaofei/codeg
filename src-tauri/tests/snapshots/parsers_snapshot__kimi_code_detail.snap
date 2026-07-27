@@ -88,8 +88,8 @@ expression: detail
     },
     "total_tokens": 4180,
     "total_duration_ms": 0,
-    "context_window_used_tokens": 4180,
+    "context_window_used_tokens": 2060,
     "context_window_max_tokens": 262144,
-    "context_window_usage_percent": 1.59454345703125
+    "context_window_usage_percent": 0.78582763671875
   }
 }

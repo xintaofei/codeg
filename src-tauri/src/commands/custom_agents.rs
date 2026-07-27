@@ -1,0 +1,682 @@
+//! Commands for managing **custom ACP agents** — agents the user registers by
+//! supplying ACP-registry information rather than agents codeg ships support
+//! for.
+//!
+//! The whole surface is deliberately thin: add / edit / remove a definition,
+//! and browse the public ACP registry to add one in a click. There is
+//! intentionally no per-agent configuration here — a custom agent is driven
+//! purely by the protocol (see `crate::acp::custom_registry`).
+
+#[cfg(feature = "tauri-runtime")]
+use tauri::State;
+
+use serde::{Deserialize, Serialize};
+
+use crate::acp::custom_registry::{
+    derive_command_name, CustomAgentDef, CustomAgentSpec, CustomDistributionKind,
+};
+use crate::acp::error::AcpError;
+use crate::acp::remote_registry::{self, RegistryCatalogAgent};
+use crate::acp::{custom_registry, registry};
+use crate::commands::acp::emit_acp_agents_updated;
+use crate::db::service::custom_agent_service;
+use crate::db::AppDatabase;
+use crate::models::agent::AgentType;
+use crate::web::event_bridge::EventEmitter;
+
+/// A registered custom agent, as shown in the settings list.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomAgentInfo {
+    pub registry_id: String,
+    /// Wire form of the agent type (`custom:<id>`) — what the frontend passes
+    /// back as an `AgentType`.
+    pub agent_type: AgentType,
+    pub name: String,
+    pub description: String,
+    pub version: String,
+    pub distribution_kind: String,
+    pub spec: CustomAgentSpec,
+    pub icon_url: Option<String>,
+    /// Mirrors [`CustomAgentDef::skills_shared_store`] so the edit form can
+    /// prefill the declaration.
+    pub skills_shared_store: bool,
+    /// False when the stored definition cannot produce launch metadata (e.g.
+    /// a binary-only agent with no release for this platform). The row still
+    /// lists, with the reason, instead of vanishing.
+    pub launchable: bool,
+    pub problem: Option<String>,
+}
+
+fn info_from_def(def: &CustomAgentDef) -> CustomAgentInfo {
+    // `validate`, not `build_meta`: the settings list re-renders on every
+    // refresh and this result is thrown away, while building metadata leaks the
+    // arg/env/platform slices it interns (see `custom_registry::build_meta`).
+    let problem = custom_registry::validate(def).err().map(|e| e.to_string());
+    CustomAgentInfo {
+        agent_type: AgentType::custom(&def.registry_id)
+            // An unparseable id cannot reach the database (`upsert` validates),
+            // so this is unreachable in practice; degrade rather than panic.
+            .unwrap_or(AgentType::Custom("")),
+        registry_id: def.registry_id.clone(),
+        name: def.name.clone(),
+        description: def.description.clone(),
+        version: def.version.clone(),
+        distribution_kind: def.distribution_kind.as_str().to_string(),
+        spec: def.spec.clone(),
+        icon_url: def.icon_url.clone(),
+        skills_shared_store: def.skills_shared_store,
+        launchable: problem.is_none(),
+        problem,
+    }
+}
+
+pub async fn acp_list_custom_agents_core(db: &AppDatabase) -> Result<Vec<CustomAgentInfo>, AcpError> {
+    let defs = custom_agent_service::list_defs(&db.conn)
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+    Ok(defs.iter().map(info_from_def).collect())
+}
+
+pub async fn acp_save_custom_agent_core(
+    def: CustomAgentDef,
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+) -> Result<(), AcpError> {
+    let mut def = def;
+    def.icon_url = normalize_icon(def.icon_url.take()).await;
+    custom_agent_service::upsert(&db.conn, &def)
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+    // Republish immediately so the agent is launchable without a restart.
+    custom_agent_service::hydrate_registry(&db.conn)
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+    emit_acp_agents_updated(
+        emitter,
+        "custom_agent_saved",
+        AgentType::custom(&def.registry_id),
+    );
+    Ok(())
+}
+
+pub async fn acp_delete_custom_agent_core(
+    registry_id: String,
+    delete_transcripts: bool,
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+) -> Result<(), AcpError> {
+    let existed = custom_agent_service::delete(&db.conn, &registry_id)
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+    if !existed {
+        return Err(AcpError::protocol(format!(
+            "custom agent not found: {registry_id}"
+        )));
+    }
+    custom_agent_service::hydrate_registry(&db.conn)
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+
+    // MCP assignments are configuration that belongs to the agent — always
+    // dropped with it, unlike the transcripts below (history, opt-in).
+    crate::commands::mcp::remove_custom_agent_mcp_store(&registry_id);
+
+    // Conversations keep their `custom:<id>` rows either way; dropping the
+    // transcripts is what actually loses history, so it is opt-in.
+    if delete_transcripts {
+        if let Err(e) = crate::acp_transcript::remove_agent_transcripts_in(
+            &crate::paths::codeg_acp_transcripts_root(),
+            &registry_id,
+        ) {
+            tracing::warn!("[custom-agent] failed to remove transcripts for {registry_id}: {e}");
+        }
+    }
+    emit_acp_agents_updated(emitter, "custom_agent_deleted", None);
+    Ok(())
+}
+
+/// Fetch the public ACP registry, annotated with which entries codeg already
+/// ships natively and which the user has already added.
+pub async fn acp_fetch_registry_catalog_core(
+    db: &AppDatabase,
+) -> Result<Vec<RegistryCatalogAgent>, AcpError> {
+    let installed: Vec<String> = custom_agent_service::list(&db.conn)
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?
+        .into_iter()
+        .map(|row| row.registry_id)
+        .collect();
+    remote_registry::fetch_catalog(&installed)
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))
+}
+
+/// Add an agent straight from the ACP registry by id.
+///
+/// For npx/uvx entries the console-script name is resolved from npm metadata
+/// when possible — the registry does not publish it and guessing from the
+/// package name is wrong for e.g. `@github/copilot` (bin: `copilot`).
+pub async fn acp_add_registry_agent_core(
+    registry_id: String,
+    distribution_kind: Option<String>,
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+) -> Result<(), AcpError> {
+    if registry::builtin_acp_agents()
+        .into_iter()
+        .any(|a| registry::registry_id_for(a) == registry_id)
+    {
+        return Err(AcpError::protocol(format!(
+            "{registry_id} is already built into codeg"
+        )));
+    }
+    let catalog = acp_fetch_registry_catalog_core(db).await?;
+    let entry = catalog
+        .iter()
+        .find(|e| e.registry_id == registry_id)
+        .ok_or_else(|| {
+            AcpError::protocol(format!("{registry_id} is not in the ACP registry"))
+        })?;
+
+    let kind = match distribution_kind.as_deref() {
+        Some(raw) => Some(CustomDistributionKind::parse(raw).ok_or_else(|| {
+            AcpError::protocol(format!("unknown distribution kind: {raw}"))
+        })?),
+        None => None,
+    };
+
+    // Resolve the channel ONCE and pass it down. Deriving it separately here
+    // would let this and `catalog_entry_to_def` disagree — an entry whose
+    // preferred binary has no release for this platform is added through npx,
+    // and guessing "binary" here would skip the console-script lookup below and
+    // leave the definition with a command name derived from the package
+    // (`qwen-code` for `@qwen-code/qwen-code`, whose real bin is `qwen`).
+    let kind = remote_registry::effective_kind(entry, kind)
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+    let cmd_override = match kind {
+        CustomDistributionKind::Npx => match entry.spec.npx.as_ref() {
+            Some(npx) => resolve_npm_bin(&npx.package).await,
+            None => None,
+        },
+        // uvx console scripts are not discoverable without resolving the
+        // wheel; the derived name is the honest default and the user can edit
+        // it in the manual form.
+        _ => None,
+    };
+
+    let def = remote_registry::catalog_entry_to_def(entry, Some(kind), cmd_override)
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+    // The registry's `icon` rides along on `def`; `acp_save_custom_agent_core`
+    // inlines it.
+    acp_save_custom_agent_core(def, db, emitter).await
+}
+
+/// Largest icon codeg will inline. Registry marks are 650 B–5 KB SVGs, so this
+/// is far above anything real; it exists so a hostile or mistyped URL cannot
+/// push an arbitrary blob into the database.
+pub const MAX_ICON_BYTES: usize = 256 * 1024;
+
+/// The same bound expressed for an already-encoded `data:` URL (base64 costs
+/// 4 bytes per 3, plus the `data:<mime>;base64,` prefix).
+pub const MAX_ICON_DATA_URL_CHARS: usize = MAX_ICON_BYTES * 4 / 3 + 128;
+
+/// How long an icon fetch may take before the save proceeds without it. Saving
+/// an agent must not hang on an unreachable icon host.
+const ICON_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Decide what to persist as an agent's icon.
+///
+/// * An uploaded / already-inlined `data:` URL is kept, bounded by
+///   [`MAX_ICON_DATA_URL_CHARS`] so a client cannot push an arbitrary blob into
+///   the row (oversized ones are dropped — the initial glyph is a fine
+///   fallback and a bloated row is not).
+/// * A remote URL is downloaded and inlined, so rendering it later needs no
+///   network. If the fetch fails the URL is kept as-is: the webview may still
+///   be able to reach it, and if it can't, the icon simply falls back.
+/// * Anything else (a `file://` path, a relative path, empty) is dropped.
+async fn normalize_icon(raw: Option<String>) -> Option<String> {
+    let raw = raw?;
+    let url = raw.trim();
+    if url.is_empty() {
+        return None;
+    }
+    if url.starts_with("data:") {
+        if url.len() > MAX_ICON_DATA_URL_CHARS {
+            tracing::warn!(
+                "[custom-agent] dropping an icon of {} chars (limit {MAX_ICON_DATA_URL_CHARS})",
+                url.len()
+            );
+            return None;
+        }
+        return Some(url.to_string());
+    }
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return None;
+    }
+    Some(inline_icon(url).await.unwrap_or_else(|| url.to_string()))
+}
+
+/// Download an icon and turn it into a `data:` URL. `None` on any failure — a
+/// non-image response, an oversized body, or no network.
+///
+/// Callers go through [`normalize_icon`]; this is the http(s) half of it.
+async fn inline_icon(url: &str) -> Option<String> {
+    let client = reqwest::Client::builder()
+        .timeout(ICON_FETCH_TIMEOUT)
+        .build()
+        .ok()?;
+    let response = client.get(url).send().await.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        // Strip `; charset=utf-8`, which SVG responses commonly carry.
+        .and_then(|v| v.split(';').next())
+        .map(|v| v.trim().to_ascii_lowercase())
+        .or_else(|| mime_from_extension(url))?;
+    if !content_type.starts_with("image/") {
+        return None;
+    }
+
+    let bytes = read_body_capped(response, MAX_ICON_BYTES).await?;
+    if bytes.is_empty() {
+        return None;
+    }
+    Some(build_data_url(&content_type, &bytes))
+}
+
+/// Read a response body, giving up as soon as it exceeds `limit`.
+///
+/// The URL is remote and only loosely trusted (a registry entry, or whatever
+/// the user typed), so the cap has to bound what is ALLOCATED, not just what is
+/// accepted: buffering the whole body first and measuring it afterwards would
+/// let any URL decide how much memory this process takes.
+async fn read_body_capped(response: reqwest::Response, limit: usize) -> Option<Vec<u8>> {
+    use futures_util::StreamExt as _;
+    // A server that declares an oversized body is rejected without reading it
+    // at all. The header is only a hint, so the streaming check below is what
+    // actually enforces the cap.
+    if response.content_length().is_some_and(|n| n > limit as u64) {
+        return None;
+    }
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.ok()?;
+        if body.len() + chunk.len() > limit {
+            return None;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Some(body)
+}
+
+/// Fallback MIME for a server that answers without a usable `Content-Type`.
+fn mime_from_extension(url: &str) -> Option<String> {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let ext = path.rsplit('.').next()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "svg" => Some("image/svg+xml".to_string()),
+        "png" => Some("image/png".to_string()),
+        "jpg" | "jpeg" => Some("image/jpeg".to_string()),
+        "webp" => Some("image/webp".to_string()),
+        "gif" => Some("image/gif".to_string()),
+        "ico" => Some("image/x-icon".to_string()),
+        _ => None,
+    }
+}
+
+fn build_data_url(content_type: &str, bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    format!(
+        "data:{content_type};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    )
+}
+
+/// Best-effort lookup of the console script an npm package installs.
+///
+/// Reads the package's `bin` field from the public npm registry. Returns the
+/// bin name when the package installs exactly one, or the one matching the
+/// package's own short name when it installs several; `None` on any failure,
+/// which leaves [`derive_command_name`] as the fallback.
+pub async fn resolve_npm_bin(package_spec: &str) -> Option<String> {
+    let (name, version) = split_npm_spec(package_spec);
+    let url = match version {
+        Some(v) => format!("https://registry.npmjs.org/{name}/{v}"),
+        None => format!("https://registry.npmjs.org/{name}/latest"),
+    };
+    let response = reqwest::Client::new().get(&url).send().await.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let doc: serde_json::Value = response.json().await.ok()?;
+    let bin = doc.get("bin")?;
+    // `"bin": "./cli.js"` — npm names the script after the package.
+    if bin.is_string() {
+        return Some(derive_command_name(package_spec));
+    }
+    let obj = bin.as_object()?;
+    let short = derive_command_name(package_spec);
+    if let Some(exact) = obj.keys().find(|k| **k == short) {
+        return Some(exact.clone());
+    }
+    match obj.keys().collect::<Vec<_>>().as_slice() {
+        [only] => Some((*only).clone()),
+        _ => None,
+    }
+}
+
+/// Split `@scope/name@1.2.3` into (`@scope/name`, `1.2.3`). A spec with no
+/// version yields `None` for the version.
+fn split_npm_spec(spec: &str) -> (&str, Option<&str>) {
+    let spec = spec.trim();
+    let search_from = if spec.starts_with('@') {
+        spec.find('/').map(|i| i + 1).unwrap_or(0)
+    } else {
+        0
+    };
+    match spec[search_from..].find('@') {
+        Some(idx) => {
+            let at = search_from + idx;
+            (&spec[..at], Some(&spec[at + 1..]))
+        }
+        None => (spec, None),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tauri commands (desktop). The web handlers call the `_core` functions above.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveCustomAgentParams {
+    pub registry_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub version: String,
+    pub distribution_kind: String,
+    pub spec: CustomAgentSpec,
+    #[serde(default)]
+    pub icon_url: Option<String>,
+    /// See [`CustomAgentDef::skills_shared_store`]. Defaults off so saves from
+    /// older frontends keep the agent out of the skills surfaces.
+    #[serde(default)]
+    pub skills_shared_store: bool,
+}
+
+impl SaveCustomAgentParams {
+    pub fn into_def(self) -> Result<CustomAgentDef, AcpError> {
+        let distribution_kind =
+            CustomDistributionKind::parse(&self.distribution_kind).ok_or_else(|| {
+                AcpError::protocol(format!(
+                    "unknown distribution kind: {}",
+                    self.distribution_kind
+                ))
+            })?;
+        Ok(CustomAgentDef {
+            registry_id: self.registry_id.trim().to_string(),
+            name: self.name,
+            description: self.description,
+            version: self.version,
+            distribution_kind,
+            spec: self.spec,
+            icon_url: self.icon_url,
+            skills_shared_store: self.skills_shared_store,
+        })
+    }
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn acp_list_custom_agents(
+    db: State<'_, AppDatabase>,
+) -> Result<Vec<CustomAgentInfo>, AcpError> {
+    acp_list_custom_agents_core(&db).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn acp_save_custom_agent(
+    params: SaveCustomAgentParams,
+    db: State<'_, AppDatabase>,
+    app: tauri::AppHandle,
+) -> Result<(), AcpError> {
+    let emitter = EventEmitter::Tauri(app);
+    acp_save_custom_agent_core(params.into_def()?, &db, &emitter).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn acp_delete_custom_agent(
+    registry_id: String,
+    delete_transcripts: bool,
+    db: State<'_, AppDatabase>,
+    app: tauri::AppHandle,
+) -> Result<(), AcpError> {
+    let emitter = EventEmitter::Tauri(app);
+    acp_delete_custom_agent_core(registry_id, delete_transcripts, &db, &emitter).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn acp_fetch_registry_catalog(
+    db: State<'_, AppDatabase>,
+) -> Result<Vec<RegistryCatalogAgent>, AcpError> {
+    acp_fetch_registry_catalog_core(&db).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn acp_add_registry_agent(
+    registry_id: String,
+    distribution_kind: Option<String>,
+    db: State<'_, AppDatabase>,
+    app: tauri::AppHandle,
+) -> Result<(), AcpError> {
+    let emitter = EventEmitter::Tauri(app);
+    acp_add_registry_agent_core(registry_id, distribution_kind, &db, &emitter).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::acp::custom_registry::{BinaryPlatformSpec, NpxSpec};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn npm_specs_split_into_name_and_version() {
+        assert_eq!(
+            split_npm_spec("@qwen-code/qwen-code@0.21.0"),
+            ("@qwen-code/qwen-code", Some("0.21.0"))
+        );
+        assert_eq!(split_npm_spec("cline@3.0.46"), ("cline", Some("3.0.46")));
+        assert_eq!(split_npm_spec("@scope/pkg"), ("@scope/pkg", None));
+        assert_eq!(split_npm_spec("plain"), ("plain", None));
+    }
+
+    #[test]
+    fn save_params_reject_an_unknown_distribution_kind() {
+        let params = SaveCustomAgentParams {
+            registry_id: "x".into(),
+            name: "X".into(),
+            description: String::new(),
+            version: "1".into(),
+            distribution_kind: "carrier-pigeon".into(),
+            spec: CustomAgentSpec::default(),
+            icon_url: None,
+            skills_shared_store: false,
+        };
+        assert!(params.into_def().is_err());
+    }
+
+    #[test]
+    fn save_params_trim_the_registry_id() {
+        let params = SaveCustomAgentParams {
+            registry_id: "  goose  ".into(),
+            name: "Goose".into(),
+            description: String::new(),
+            version: "1".into(),
+            distribution_kind: "npx".into(),
+            spec: CustomAgentSpec::default(),
+            icon_url: None,
+            skills_shared_store: false,
+        };
+        assert_eq!(params.into_def().unwrap().registry_id, "goose");
+    }
+
+    #[test]
+    fn info_flags_a_definition_that_cannot_launch() {
+        // Binary-only with no release for this platform: still listed, with a
+        // reason, so the user can fix it instead of wondering where it went.
+        let mut binary = BTreeMap::new();
+        binary.insert(
+            "some-unreal-platform".to_string(),
+            BinaryPlatformSpec {
+                archive: "https://example.com/a.tar.gz".into(),
+                cmd: "./a".into(),
+                ..Default::default()
+            },
+        );
+        let def = CustomAgentDef {
+            registry_id: "unreachable-agent".into(),
+            name: "Unreachable".into(),
+            description: String::new(),
+            version: "1".into(),
+            distribution_kind: CustomDistributionKind::Binary,
+            spec: CustomAgentSpec {
+                binary,
+                ..Default::default()
+            },
+            icon_url: None,
+            skills_shared_store: false,
+        };
+        let info = info_from_def(&def);
+        assert!(!info.launchable);
+        assert!(info.problem.unwrap().contains("no binary release"));
+    }
+
+    #[tokio::test]
+    async fn icon_normalization_keeps_uploads_and_refuses_what_it_must_not_fetch() {
+        // An uploaded icon arrives already inlined; saving must not touch the
+        // network for it.
+        let uploaded = "data:image/svg+xml;base64,PHN2Zy8+".to_string();
+        assert_eq!(
+            normalize_icon(Some(uploaded.clone())).await.as_deref(),
+            Some(uploaded.as_str())
+        );
+        // An oversized one is dropped rather than persisted.
+        let huge = format!("data:image/png;base64,{}", "A".repeat(MAX_ICON_DATA_URL_CHARS));
+        assert_eq!(normalize_icon(Some(huge)).await, None);
+        // Anything that is not http(s) is dropped, never fetched — notably
+        // `file://`, which would otherwise read local disk.
+        assert_eq!(normalize_icon(Some("file:///etc/passwd".into())).await, None);
+        assert_eq!(normalize_icon(Some("/local/path.svg".into())).await, None);
+        assert_eq!(normalize_icon(Some("   ".into())).await, None);
+        assert_eq!(normalize_icon(None).await, None);
+    }
+
+    #[tokio::test]
+    async fn icon_download_enforces_its_cap_while_streaming() {
+        use axum::http::header::CONTENT_TYPE;
+        use axum::routing::get;
+
+        let app = axum::Router::new()
+            // Declares an oversized length up front — rejected without reading
+            // the body at all.
+            .route(
+                "/declared.png",
+                get(|| async { ([(CONTENT_TYPE, "image/png")], vec![0u8; MAX_ICON_BYTES * 2]) }),
+            )
+            // Chunked with NO content-length, so only the running total can
+            // stop it. This is the case a length check alone would miss.
+            .route(
+                "/chunked.png",
+                get(|| async {
+                    let chunks = futures_util::stream::iter(
+                        (0..8).map(|_| Ok::<_, std::io::Error>(vec![0u8; MAX_ICON_BYTES / 4])),
+                    );
+                    axum::response::Response::builder()
+                        .header(CONTENT_TYPE, "image/png")
+                        .body(axum::body::Body::from_stream(chunks))
+                        .unwrap()
+                }),
+            )
+            .route(
+                "/small.png",
+                get(|| async { ([(CONTENT_TYPE, "image/png")], vec![7u8; 16]) }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+
+        assert_eq!(inline_icon(&format!("http://{addr}/declared.png")).await, None);
+        assert_eq!(inline_icon(&format!("http://{addr}/chunked.png")).await, None);
+        // An icon within the cap still round-trips into a data URL.
+        let small = inline_icon(&format!("http://{addr}/small.png"))
+            .await
+            .expect("a small icon inlines");
+        assert!(small.starts_with("data:image/png;base64,"));
+        assert!(small.len() <= MAX_ICON_DATA_URL_CHARS);
+
+        server.abort();
+    }
+
+    #[test]
+    fn icon_mime_falls_back_to_the_url_extension() {
+        assert_eq!(
+            mime_from_extension("https://cdn.example.com/registry/v1/goose.svg").as_deref(),
+            Some("image/svg+xml")
+        );
+        // Query strings and fragments must not be mistaken for the extension.
+        assert_eq!(
+            mime_from_extension("https://e/i.png?v=2#x").as_deref(),
+            Some("image/png")
+        );
+        assert_eq!(mime_from_extension("https://e/icon").as_deref(), None);
+        assert_eq!(mime_from_extension("https://e/i.exe").as_deref(), None);
+    }
+
+    #[test]
+    fn data_urls_are_built_in_the_shape_an_img_tag_accepts() {
+        assert_eq!(
+            build_data_url("image/svg+xml", b"<svg/>"),
+            "data:image/svg+xml;base64,PHN2Zy8+"
+        );
+    }
+
+    #[test]
+    fn info_carries_the_wire_agent_type() {
+        let def = CustomAgentDef {
+            registry_id: "qwen-code".into(),
+            name: "Qwen".into(),
+            description: String::new(),
+            version: "0.21.0".into(),
+            distribution_kind: CustomDistributionKind::Npx,
+            spec: CustomAgentSpec {
+                npx: Some(NpxSpec {
+                    package: "@qwen-code/qwen-code@0.21.0".into(),
+                    cmd: Some("qwen".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            icon_url: None,
+            skills_shared_store: false,
+        };
+        let info = info_from_def(&def);
+        assert!(info.launchable);
+        assert_eq!(info.problem, None);
+        assert_eq!(
+            serde_json::to_value(info.agent_type).unwrap(),
+            serde_json::json!("custom:qwen-code")
+        );
+    }
+}

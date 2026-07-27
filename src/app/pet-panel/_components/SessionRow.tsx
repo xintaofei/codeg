@@ -1,8 +1,8 @@
 "use client"
 
 import { useTranslations } from "next-intl"
+import { getAgentLabel } from "@/lib/custom-agents"
 import { AgentIcon } from "@/components/agent-icon"
-import { AGENT_LABELS } from "@/lib/types"
 import { closePetPanel, focusConversation } from "@/lib/pet/api"
 import type { PetSessionEntry } from "@/lib/pet/types"
 import {
@@ -59,7 +59,7 @@ export function SessionRow({ session }: SessionRowProps) {
         <AgentIcon agentType={session.agentType} className="h-4 w-4 shrink-0" />
         <span className="min-w-0 flex-1 truncate text-sm">
           {formatConversationTitle(session.title) ||
-            AGENT_LABELS[session.agentType]}
+            getAgentLabel(session.agentType)}
         </span>
         <span className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
           <span

@@ -49,6 +49,9 @@ const MAX_MANIFEST_ENTRY_BYTES: usize = 64 * 1024;
 /// so a malformed package fails fast during extraction instead of after a
 /// full uncompress.
 const MAX_SPRITESHEET_ENTRY_BYTES: usize = 16 * 1024 * 1024;
+/// Cap for a proxied marketplace image (poster / preview / spritesheet).
+/// Matches the spritesheet entry cap so an oversized asset fails fast.
+const MAX_ASSET_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Per-pet-id locks serializing concurrent `install(...)` calls. Keys are
 /// pet ids; entries are kept indefinitely (each is a small `Arc<Mutex<()>>`
@@ -417,6 +420,56 @@ async fn read_capped_response(
     Ok(buf)
 }
 
+// ─── asset proxy ─────────────────────────────────────────────────────────
+
+/// Proxy a marketplace image asset (poster / preview / spritesheet) through the
+/// backend. The desktop webview can't always reach codex-pets.net directly
+/// (Cloudflare is unreachable on some networks), yet this backend already talks
+/// to the service for the listing and install. Fetching the bytes here and
+/// handing them to the renderer as a blob URL makes the images load wherever
+/// the listing itself does.
+///
+/// Only `https://codex-pets.net/...` URLs are honored — the same host guard as
+/// [`absolute_download_url`], so a forged URL can't turn this into an open proxy
+/// / SSRF vector. Returns the response content type (defaulting to `image/webp`)
+/// alongside the raw bytes.
+pub async fn fetch_asset(url: &str) -> Result<(String, Vec<u8>), AppCommandError> {
+    let trimmed = url.trim();
+    // The trailing-slash prefix prevents subdomain bypasses like
+    // `https://codex-pets.net.evil/` and rejects the `http://` scheme.
+    if !trimmed.starts_with(MARKETPLACE_URL_PREFIX) {
+        return Err(AppCommandError::invalid_input(format!(
+            "Asset URL must point to {MARKETPLACE_BASE_URL}."
+        )));
+    }
+
+    let response = client()?
+        .get(trimmed)
+        .send()
+        .await
+        .map_err(|e| AppCommandError::network(format!("Failed to fetch pet asset: {e}")))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(AppCommandError::network(format!(
+            "Pet asset returned HTTP {status}"
+        )));
+    }
+
+    // Capture the content type before `read_capped_response` consumes the body.
+    // Keep only `image/*` types; anything else (e.g. an HTML error page served
+    // with 200) falls back to the canonical `image/webp` these assets use.
+    let mime = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(';').next().unwrap_or(s).trim().to_string())
+        .filter(|m| m.starts_with("image/"))
+        .unwrap_or_else(|| "image/webp".to_string());
+
+    let bytes = read_capped_response(response, MAX_ASSET_BYTES, "Pet asset").await?;
+    Ok((mime, bytes))
+}
+
 fn install_from_zip_bytes(
     expected_id: &str,
     bytes: &[u8],
@@ -654,6 +707,20 @@ mod tests {
     #[test]
     fn absolute_download_url_rejects_http_scheme() {
         assert!(absolute_download_url("http://codex-pets.net/api/pets/foo/download").is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_asset_rejects_non_marketplace_urls() {
+        // Host guard short-circuits before any network call, so these resolve
+        // without touching the wire.
+        assert!(fetch_asset("https://evil.example/x.webp").await.is_err());
+        assert!(fetch_asset("https://codex-pets.net.evil/x.webp")
+            .await
+            .is_err());
+        assert!(fetch_asset("http://codex-pets.net/assets/x.webp")
+            .await
+            .is_err());
+        assert!(fetch_asset("/assets/pets/x.webp").await.is_err());
     }
 
     #[tokio::test(flavor = "multi_thread")]

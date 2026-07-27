@@ -293,4 +293,90 @@ describe("AskQuestionResultCard", () => {
     expect(chosen).toBeChecked()
     expect(chosen).toBeDisabled()
   })
+
+  it("echoes kimi's answers keyed by bare question text", () => {
+    // The reported bug: Kimi Code's native AskUserQuestion persists
+    // {"answers":{"<question text>":"<label>"}} — string values keyed by the
+    // question TEXT, no header. The card showed "no selection" (live and
+    // reloaded) because the string values parsed to empty selections and the
+    // header+question signature never matched. Input/output verbatim from a
+    // real kimi wire.jsonl.
+    const input = JSON.stringify({
+      questions: [
+        {
+          question: "你最近在用哪种编程语言最多？",
+          header: "编程",
+          options: [
+            { label: "Rust", description: "系统级编程语言" },
+            { label: "TypeScript", description: "前端/全栈开发" },
+            { label: "Python", description: "脚本/数据/AI" },
+            { label: "Go", description: "后端/云原生" },
+          ],
+        },
+      ],
+    })
+    const output = JSON.stringify({
+      answers: { "你最近在用哪种编程语言最多？": "Rust" },
+    })
+    renderWithIntl(
+      <AskQuestionResultCard
+        input={input}
+        output={output}
+        state="output-available"
+      />
+    )
+
+    // Collapsed capsule echoes the pick — NOT the noSelection fallback.
+    expect(screen.getByText("Rust")).toBeInTheDocument()
+    expect(screen.queryByText(result.noSelection)).toBeNull()
+    // Expanded: the answer (keyed by question text alone) still seeds the
+    // header-carrying question; the chosen option is checked + disabled.
+    expand()
+    const chosen = screen.getByRole("radio", { name: /Rust/ })
+    expect(chosen).toBeChecked()
+    expect(chosen).toBeDisabled()
+    expect(screen.getByRole("radio", { name: /Python/ })).not.toBeChecked()
+  })
+
+  it("echoes codex request_user_input answers keyed by question id", () => {
+    // The reported bug: codex Plan-mode `request_user_input` rendered "no
+    // selection" because its answer envelope is keyed by the question id
+    // ({answers:{<id>:{answers:[label]}}}), not the codeg-mcp array shape. The
+    // card must match the answer to the question by that id and echo the pick.
+    const input = JSON.stringify({
+      questions: [
+        {
+          id: "drink_preference",
+          header: "饮品偏好",
+          question: "工作时你更喜欢喝哪一种饮品？",
+          options: [
+            { label: "咖啡（推荐）", description: "浓郁提神" },
+            { label: "茶", description: "清爽温和" },
+            { label: "果汁", description: "甜味水果" },
+          ],
+        },
+      ],
+    })
+    const output = JSON.stringify({
+      answers: { drink_preference: { answers: ["咖啡（推荐）"] } },
+    })
+    renderWithIntl(
+      <AskQuestionResultCard
+        input={input}
+        output={output}
+        state="output-available"
+      />
+    )
+
+    // Collapsed capsule echoes the pick — NOT the noSelection fallback.
+    expect(screen.getByText("咖啡（推荐）")).toBeInTheDocument()
+    expect(screen.queryByText(result.noSelection)).toBeNull()
+    // Expanded: the chosen option is checked + disabled, others not. (The radio's
+    // accessible name folds in its description, so match on the label substring.)
+    expand()
+    const chosen = screen.getByRole("radio", { name: /咖啡/ })
+    expect(chosen).toBeChecked()
+    expect(chosen).toBeDisabled()
+    expect(screen.getByRole("radio", { name: /茶/ })).not.toBeChecked()
+  })
 })

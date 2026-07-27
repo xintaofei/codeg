@@ -34,15 +34,6 @@ fn system_tag_regex() -> &'static Regex {
     })
 }
 
-/// Regex that matches an optional model capacity suffix like `[1M]` / `[500k]`.
-fn model_capacity_suffix_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?i)\[\s*([0-9]+(?:\.[0-9]+)?)\s*([km])\s*\]\s*$")
-            .expect("valid model capacity regex")
-    })
-}
-
 /// Sentinel prefixing the structured lifecycle payload the parser writes into
 /// an async-launch ack's `output_preview` (see
 /// `ClaudeRecordAccumulator::finalize_background_lifecycle`). The frontend
@@ -275,38 +266,34 @@ fn is_synthetic_assistant(value: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 
-fn parse_model_capacity_suffix(model: &str) -> Option<u64> {
-    let captures = model_capacity_suffix_regex().captures(model.trim())?;
-    let value = captures.get(1)?.as_str().parse::<f64>().ok()?;
-    if !value.is_finite() || value <= 0.0 {
-        return None;
-    }
-
-    let unit = captures
-        .get(2)
-        .map(|m| m.as_str().to_ascii_lowercase())
-        .unwrap_or_default();
-    let multiplier = match unit.as_str() {
-        "m" => 1_000_000.0,
-        "k" => 1_000.0,
-        _ => return None,
-    };
-
-    Some((value * multiplier) as u64)
-}
-
+/// Context window to display for a *file-parsed* Claude Code session, which
+/// carries no authoritative window of its own (live sessions get one from the
+/// ACP `usage_update.size` and never reach here).
+///
+/// Deliberately defaults higher than [`super::infer_context_window_max_tokens`]
+/// does for the same `claude-*` model, because the two read different inputs:
+/// Claude Code's transcripts record the *resolved* model with the 1M marker
+/// stripped — a session launched as `claude-opus-5[1m]` is written to the
+/// JSONL as plain `claude-opus-5` — so neither the bracket spelling nor the
+/// `-1m` id spelling survives to be detected, and any per-session guess is
+/// unavoidable. Assuming the 1M lane keeps the meter from over-reporting
+/// pressure ~5x on the extended-context models most sessions run; the cost is
+/// under-reporting for a session that really was on the 200K lane. Other
+/// agents' transcripts keep the id verbatim, so that path can detect the lane
+/// and defaults to 200K instead. Change one of these without the other and
+/// they silently disagree again.
 fn claude_context_window_max_tokens_for_model(model: Option<&str>) -> Option<u64> {
     let model = model?.trim();
     if model.is_empty() {
         return None;
     }
 
-    // If user/model config contains an explicit capacity suffix, prefer it.
-    if let Some(suffixed_limit) = parse_model_capacity_suffix(model) {
+    // A capacity suffix that did survive (hand-written config, non-CLI writer)
+    // is authoritative.
+    if let Some(suffixed_limit) = super::parse_model_capacity_suffix(model) {
         return Some(suffixed_limit);
     }
 
-    // Claude models default to 1M when no explicit capacity is provided.
     if model.to_ascii_lowercase().starts_with("claude") {
         return Some(1_000_000);
     }
@@ -1996,23 +1983,26 @@ mod tests {
     }
 
     #[test]
-    fn parses_model_capacity_suffix() {
+    fn honours_surviving_capacity_suffix() {
         assert_eq!(
-            parse_model_capacity_suffix("claude-sonnet-4-6[1.5M]"),
-            Some(1_500_000)
-        );
-        assert_eq!(
-            parse_model_capacity_suffix("claude-opus-4-6 [500k]"),
+            claude_context_window_max_tokens_for_model(Some("claude-opus-4-6 [500k]")),
             Some(500_000)
         );
-        assert_eq!(parse_model_capacity_suffix("claude-sonnet-4-6"), None);
     }
 
     #[test]
     fn defaults_context_limit_for_claude_models() {
+        // Claude Code strips the 1M marker when it writes the transcript, so a
+        // bare id has to be assumed to be the extended lane here — unlike the
+        // shared inference other agents' parsers use. See the doc comment on
+        // `claude_context_window_max_tokens_for_model`.
         assert_eq!(
             claude_context_window_max_tokens_for_model(Some("claude-sonnet-4-6")),
             Some(1_000_000)
+        );
+        assert_eq!(
+            super::super::infer_context_window_max_tokens(Some("claude-sonnet-4-6")),
+            Some(200_000)
         );
         assert_eq!(
             claude_context_window_max_tokens_for_model(Some("custom-model-x")),

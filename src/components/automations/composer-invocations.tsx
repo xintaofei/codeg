@@ -11,6 +11,7 @@ import {
 import { BookOpenText } from "lucide-react"
 import type { RichComposerHandle } from "@/components/chat/composer/rich-composer"
 import {
+  commandInvocationToken,
   commandToReference,
   skillToReference,
 } from "@/components/chat/composer/invocation-reference"
@@ -271,7 +272,9 @@ export function ComposerInvocationsPopup({
               inv.selectCommand(cmd)
             }}
           >
-            <span className="shrink-0 font-mono text-primary">/{cmd.name}</span>
+            <span className="shrink-0 font-mono text-primary">
+              {commandInvocationToken(cmd.name)}
+            </span>
             <span className="truncate text-xs text-muted-foreground">
               {cmd.description}
             </span>

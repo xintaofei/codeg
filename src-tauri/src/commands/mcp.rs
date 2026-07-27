@@ -45,8 +45,7 @@ fn mcp_i18n_params<const N: usize>(pairs: [(&str, &str); N]) -> BTreeMap<String,
         .collect()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum McpAppType {
     ClaudeCode,
     Codex,
@@ -59,6 +58,72 @@ pub enum McpAppType {
     KimiCode,
     Grok,
     Cursor,
+    /// A custom ACP agent, by interned registry id. Serialized as
+    /// `custom:<id>` — the same wire form as `AgentType::Custom` — so the
+    /// frontend passes an agent type string in both places. Custom agents
+    /// have no native config file; their assignments live in codeg's own
+    /// per-agent store (see `read_custom_agent_servers`).
+    Custom(&'static str),
+}
+
+impl McpAppType {
+    fn as_wire(&self) -> std::borrow::Cow<'static, str> {
+        match self {
+            McpAppType::ClaudeCode => std::borrow::Cow::Borrowed("claude_code"),
+            McpAppType::Codex => std::borrow::Cow::Borrowed("codex"),
+            McpAppType::Gemini => std::borrow::Cow::Borrowed("gemini"),
+            McpAppType::OpenClaw => std::borrow::Cow::Borrowed("open_claw"),
+            McpAppType::OpenCode => std::borrow::Cow::Borrowed("open_code"),
+            McpAppType::Cline => std::borrow::Cow::Borrowed("cline"),
+            McpAppType::Hermes => std::borrow::Cow::Borrowed("hermes"),
+            McpAppType::CodeBuddy => std::borrow::Cow::Borrowed("code_buddy"),
+            McpAppType::KimiCode => std::borrow::Cow::Borrowed("kimi_code"),
+            McpAppType::Grok => std::borrow::Cow::Borrowed("grok"),
+            McpAppType::Cursor => std::borrow::Cow::Borrowed("cursor"),
+            McpAppType::Custom(id) => std::borrow::Cow::Owned(format!(
+                "{}{id}",
+                crate::models::agent::CUSTOM_AGENT_WIRE_PREFIX
+            )),
+        }
+    }
+
+    fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            "claude_code" => Some(McpAppType::ClaudeCode),
+            "codex" => Some(McpAppType::Codex),
+            "gemini" => Some(McpAppType::Gemini),
+            "open_claw" => Some(McpAppType::OpenClaw),
+            "open_code" => Some(McpAppType::OpenCode),
+            "cline" => Some(McpAppType::Cline),
+            "hermes" => Some(McpAppType::Hermes),
+            "code_buddy" => Some(McpAppType::CodeBuddy),
+            "kimi_code" => Some(McpAppType::KimiCode),
+            "grok" => Some(McpAppType::Grok),
+            "cursor" => Some(McpAppType::Cursor),
+            // `custom:<id>` — reuse the AgentType parser for slug validation
+            // and process-lifetime interning. Note `pi` is deliberately NOT an
+            // MCP app (pi-acp drops wire MCP), so anything unmatched above
+            // other than a valid custom slug is rejected.
+            other => match crate::models::agent::AgentType::from_wire(other) {
+                Some(crate::models::agent::AgentType::Custom(id)) => Some(McpAppType::Custom(id)),
+                _ => None,
+            },
+        }
+    }
+}
+
+impl Serialize for McpAppType {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.as_wire())
+    }
+}
+
+impl<'de> Deserialize<'de> for McpAppType {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        McpAppType::from_wire(&raw)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown MCP app type: {raw}")))
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -400,21 +465,7 @@ pub async fn mcp_upsert_local_server(
             "none of the selected agents can host this MCP server's transport (e.g. Codex does not support SSE)",
         ));
     }
-    let all_apps = [
-        McpAppType::ClaudeCode,
-        McpAppType::Codex,
-        McpAppType::Gemini,
-        McpAppType::OpenClaw,
-        McpAppType::OpenCode,
-        McpAppType::Cline,
-        McpAppType::Hermes,
-        McpAppType::CodeBuddy,
-        McpAppType::KimiCode,
-        McpAppType::Grok,
-        McpAppType::Cursor,
-    ];
-
-    for app in all_apps {
+    for app in all_mcp_app_types() {
         if target_set.contains(&app) {
             upsert_server_for_app(app, &server_id, &canonical_spec)?;
         } else {
@@ -475,19 +526,9 @@ pub async fn mcp_remove_server(
 ) -> Result<bool, AppCommandError> {
     let target_apps = match apps {
         Some(selected) => normalize_apps(selected),
-        None => vec![
-            McpAppType::ClaudeCode,
-            McpAppType::Codex,
-            McpAppType::Gemini,
-            McpAppType::OpenClaw,
-            McpAppType::OpenCode,
-            McpAppType::Cline,
-            McpAppType::Hermes,
-            McpAppType::CodeBuddy,
-            McpAppType::KimiCode,
-            McpAppType::Grok,
-            McpAppType::Cursor,
-        ],
+        // "Remove everywhere" includes every registered custom agent's
+        // store, or a deleted server would linger in their sessions.
+        None => all_mcp_app_types(),
     };
 
     if target_apps.is_empty() {
@@ -499,6 +540,40 @@ pub async fn mcp_remove_server(
         removed |= remove_server_for_app(app, &server_id)?;
     }
     Ok(removed)
+}
+
+/// Every registered custom agent as an MCP app target, in registry order.
+fn custom_mcp_app_types() -> Vec<McpAppType> {
+    crate::acp::custom_registry::all()
+        .into_iter()
+        .filter_map(|a| match a {
+            crate::models::agent::AgentType::Custom(id) => Some(McpAppType::Custom(id)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The full universe an assignment can range over: the eleven built-in apps
+/// followed by every registered custom agent. This is the single source for
+/// "reconcile against everything" call sites — the upsert loop and
+/// remove-everywhere — so a custom agent can never be visible to one write
+/// path and invisible to the other.
+fn all_mcp_app_types() -> Vec<McpAppType> {
+    let mut all = vec![
+        McpAppType::ClaudeCode,
+        McpAppType::Codex,
+        McpAppType::Gemini,
+        McpAppType::OpenClaw,
+        McpAppType::OpenCode,
+        McpAppType::Cline,
+        McpAppType::Hermes,
+        McpAppType::CodeBuddy,
+        McpAppType::KimiCode,
+        McpAppType::Grok,
+        McpAppType::Cursor,
+    ];
+    all.extend(custom_mcp_app_types());
+    all
 }
 
 fn normalize_apps(apps: Vec<McpAppType>) -> Vec<McpAppType> {
@@ -2409,6 +2484,18 @@ fn scan_local_servers() -> Result<Vec<LocalMcpServer>, AppCommandError> {
         entry.1.insert(McpAppType::Cursor);
     }
 
+    for app in custom_mcp_app_types() {
+        let McpAppType::Custom(registry_id) = app else {
+            continue;
+        };
+        for (id, spec) in read_custom_agent_servers(registry_id)? {
+            let entry = merged
+                .entry(id)
+                .or_insert_with(|| (spec.clone(), BTreeSet::new()));
+            entry.1.insert(app);
+        }
+    }
+
     Ok(merged
         .into_iter()
         .map(|(id, (spec, apps))| LocalMcpServer {
@@ -2437,6 +2524,119 @@ fn upsert_server_for_app(app: McpAppType, id: &str, spec: &Value) -> Result<(), 
         McpAppType::KimiCode => upsert_kimi_code_server(id, spec),
         McpAppType::Grok => upsert_grok_server(id, spec),
         McpAppType::Cursor => upsert_cursor_server(id, spec),
+        McpAppType::Custom(registry_id) => upsert_custom_agent_server(registry_id, id, spec),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Custom ACP agents  (codeg-owned store: <custom-mcp root>/<registry-id>.json)
+//
+// Built-in agents keep MCP servers in their own native config files, which
+// codeg edits in place. A custom agent has no native file — its servers are
+// forwarded purely over the ACP wire (`session/new.mcpServers`) — so codeg
+// owns the storage: one JSON object per agent mapping server name → canonical
+// spec, exactly the shape `read_servers_for_agent_type` returns. The registry
+// id is validated as a path-safe slug before it ever reaches the database, so
+// it is usable as a file name as-is.
+
+fn custom_agent_servers_path_in(root: &Path, registry_id: &str) -> PathBuf {
+    root.join(format!("{registry_id}.json"))
+}
+
+fn read_custom_agent_servers_in(
+    root: &Path,
+    registry_id: &str,
+) -> Result<BTreeMap<String, Value>, AppCommandError> {
+    let path = custom_agent_servers_path_in(root, registry_id);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(e) => {
+            return Err(mcp_configuration_invalid(format!(
+                "failed to read {}: {e}",
+                path.display()
+            )))
+        }
+    };
+    serde_json::from_str(&text)
+        .map_err(|e| mcp_configuration_invalid(format!("failed to parse {}: {e}", path.display())))
+}
+
+fn write_custom_agent_servers_in(
+    root: &Path,
+    registry_id: &str,
+    servers: &BTreeMap<String, Value>,
+) -> Result<(), AppCommandError> {
+    let path = custom_agent_servers_path_in(root, registry_id);
+    if servers.is_empty() {
+        // An empty map and a missing file read identically; prefer no file so
+        // removing an agent's last server leaves nothing behind to clean up.
+        match std::fs::remove_file(&path) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => {
+                return Err(mcp_configuration_invalid(format!(
+                    "failed to remove {}: {e}",
+                    path.display()
+                )))
+            }
+        }
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| mcp_configuration_invalid(format!("failed to create {}: {e}", parent.display())))?;
+    }
+    let text = serde_json::to_string_pretty(servers)
+        .map_err(|e| mcp_configuration_invalid(format!("failed to serialize MCP servers: {e}")))?;
+    std::fs::write(&path, text)
+        .map_err(|e| mcp_configuration_invalid(format!("failed to write {}: {e}", path.display())))
+}
+
+fn read_custom_agent_servers(registry_id: &str) -> Result<BTreeMap<String, Value>, AppCommandError> {
+    read_custom_agent_servers_in(&crate::paths::codeg_custom_mcp_root(), registry_id)
+}
+
+fn upsert_custom_agent_server(
+    registry_id: &str,
+    id: &str,
+    spec: &Value,
+) -> Result<(), AppCommandError> {
+    // Gate on registration so a stale frontend cannot resurrect a deleted
+    // agent's store; removal below stays ungated for the same reason in
+    // reverse (cleaning up after a deleted agent must always work).
+    if !crate::acp::custom_registry::is_registered(registry_id) {
+        return Err(mcp_invalid_input(format!(
+            "unknown custom agent: {registry_id}"
+        )));
+    }
+    let root = crate::paths::codeg_custom_mcp_root();
+    let mut servers = read_custom_agent_servers_in(&root, registry_id)?;
+    servers.insert(id.to_string(), spec.clone());
+    write_custom_agent_servers_in(&root, registry_id, &servers)
+}
+
+fn remove_custom_agent_server(registry_id: &str, id: &str) -> Result<bool, AppCommandError> {
+    let root = crate::paths::codeg_custom_mcp_root();
+    let mut servers = read_custom_agent_servers_in(&root, registry_id)?;
+    let removed = servers.remove(id).is_some();
+    if removed {
+        write_custom_agent_servers_in(&root, registry_id, &servers)?;
+    }
+    Ok(removed)
+}
+
+/// Drop a custom agent's whole MCP store. Called when the agent itself is
+/// deleted — the assignments are configuration that belongs to the agent, so
+/// unlike transcripts (history, opt-in) they never outlive it.
+pub fn remove_custom_agent_mcp_store(registry_id: &str) {
+    let path = custom_agent_servers_path_in(&crate::paths::codeg_custom_mcp_root(), registry_id);
+    if let Err(e) = std::fs::remove_file(&path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(
+                "[mcp] failed to remove custom agent MCP store {}: {e}",
+                path.display()
+            );
+        }
     }
 }
 
@@ -2459,6 +2659,10 @@ pub fn read_servers_for_agent_type(
         // pi-acp drops ACP-wire MCP and pi has no native MCP (it needs a
         // third-party extension), so codeg manages no MCP servers for pi (v1).
         AgentType::Pi => Ok(BTreeMap::new()),
+        // Custom agents get MCP purely over the ACP wire (`session/new`'s
+        // `mcpServers`); codeg knows nothing about their native config files,
+        // so the servers come from codeg's own per-agent store.
+        AgentType::Custom(id) => read_custom_agent_servers(id),
     }
 }
 
@@ -3375,6 +3579,7 @@ fn remove_server_for_app(app: McpAppType, id: &str) -> Result<bool, AppCommandEr
         McpAppType::KimiCode => remove_kimi_code_server(id),
         McpAppType::Grok => remove_grok_server(id),
         McpAppType::Cursor => remove_cursor_server(id),
+        McpAppType::Custom(registry_id) => remove_custom_agent_server(registry_id, id),
     }
 }
 
@@ -5130,6 +5335,117 @@ fn resolve_smithery_install_spec_with_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_app_types_round_trip_their_wire_form() {
+        let builtins = [
+            (McpAppType::ClaudeCode, "claude_code"),
+            (McpAppType::Codex, "codex"),
+            (McpAppType::Gemini, "gemini"),
+            (McpAppType::OpenClaw, "open_claw"),
+            (McpAppType::OpenCode, "open_code"),
+            (McpAppType::Cline, "cline"),
+            (McpAppType::Hermes, "hermes"),
+            (McpAppType::CodeBuddy, "code_buddy"),
+            (McpAppType::KimiCode, "kimi_code"),
+            (McpAppType::Grok, "grok"),
+            (McpAppType::Cursor, "cursor"),
+        ];
+        for (app, wire) in builtins {
+            assert_eq!(serde_json::to_value(app).unwrap(), serde_json::json!(wire));
+            assert_eq!(
+                serde_json::from_value::<McpAppType>(serde_json::json!(wire)).unwrap(),
+                app
+            );
+        }
+        let custom: McpAppType =
+            serde_json::from_value(serde_json::json!("custom:goose-mcp")).unwrap();
+        assert_eq!(custom, McpAppType::Custom(crate::intern::intern("goose-mcp")));
+        assert_eq!(
+            serde_json::to_value(custom).unwrap(),
+            serde_json::json!("custom:goose-mcp")
+        );
+        // pi is deliberately not an MCP app, and a custom slug that could
+        // escape the store directory must never parse.
+        assert!(serde_json::from_value::<McpAppType>(serde_json::json!("pi")).is_err());
+        assert!(serde_json::from_value::<McpAppType>(serde_json::json!("custom:../x")).is_err());
+        assert!(serde_json::from_value::<McpAppType>(serde_json::json!("carrier-pigeon")).is_err());
+    }
+
+    #[test]
+    fn the_assignment_universe_reaches_registered_custom_agents() {
+        use crate::acp::custom_registry::{
+            hydrate, hydrate_test_guard, CustomAgentDef, CustomAgentSpec, CustomDistributionKind,
+            NpxSpec,
+        };
+        let _guard = hydrate_test_guard();
+        assert!(hydrate(&[]).is_empty());
+        assert_eq!(
+            all_mcp_app_types().len(),
+            11,
+            "no customs → the eleven built-in apps"
+        );
+
+        let def = CustomAgentDef {
+            registry_id: "mcp-universe-agent".into(),
+            name: "Universe Agent".into(),
+            description: String::new(),
+            version: "1.0.0".into(),
+            distribution_kind: CustomDistributionKind::Npx,
+            spec: CustomAgentSpec {
+                npx: Some(NpxSpec {
+                    package: "universe-agent@1.0.0".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            icon_url: None,
+            skills_shared_store: false,
+        };
+        assert!(hydrate(std::slice::from_ref(&def)).is_empty());
+        let all = all_mcp_app_types();
+        // The upsert reconcile loop and remove-everywhere both range over this
+        // list; a custom agent missing here silently drops its assignment.
+        assert_eq!(
+            all.last().copied(),
+            Some(McpAppType::Custom(crate::intern::intern(
+                "mcp-universe-agent"
+            ))),
+            "registered customs append after the built-ins"
+        );
+        assert_eq!(all.len(), 12);
+
+        assert!(hydrate(&[]).is_empty());
+        assert_eq!(all_mcp_app_types().len(), 11);
+    }
+
+    #[test]
+    fn custom_agent_mcp_store_round_trips_and_vanishes_when_emptied() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // Missing file reads as empty rather than erroring.
+        assert!(read_custom_agent_servers_in(root, "goose").unwrap().is_empty());
+
+        let mut servers = BTreeMap::new();
+        servers.insert(
+            "context7".to_string(),
+            serde_json::json!({"type": "stdio", "command": "npx", "args": ["-y", "context7"]}),
+        );
+        write_custom_agent_servers_in(root, "goose", &servers).unwrap();
+        assert_eq!(read_custom_agent_servers_in(root, "goose").unwrap(), servers);
+        assert!(custom_agent_servers_path_in(root, "goose").is_file());
+
+        // Writing an empty map removes the file entirely.
+        write_custom_agent_servers_in(root, "goose", &BTreeMap::new()).unwrap();
+        assert!(!custom_agent_servers_path_in(root, "goose").exists());
+        assert!(read_custom_agent_servers_in(root, "goose").unwrap().is_empty());
+
+        // A corrupt store surfaces an error instead of silently reading empty
+        // (which would let a later write erase the user's config).
+        std::fs::write(custom_agent_servers_path_in(root, "goose"), "{not json").unwrap();
+        assert!(read_custom_agent_servers_in(root, "goose").is_err());
+    }
 
     #[test]
     fn normalize_mcp_type_canonical_pass_through() {

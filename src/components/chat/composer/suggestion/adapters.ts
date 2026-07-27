@@ -2,11 +2,11 @@ import type { FlatFileEntry } from "@/hooks/use-file-tree"
 import { formatConversationTitle } from "@/lib/conversation-title"
 import { buildFileUri } from "@/lib/reference-link"
 import {
-  AGENT_LABELS,
   type AcpAgentInfo,
   type DbConversationSummary,
   type GitLogEntry,
 } from "@/lib/types"
+import { getAgentLabel } from "@/lib/custom-agents"
 
 import type { SuggestionItem } from "./types"
 
@@ -46,7 +46,7 @@ export function agentToSuggestion(agent: AcpAgentInfo): SuggestionItem {
     reference: {
       refType: "agent",
       id: agent.agent_type,
-      label: agent.name || AGENT_LABELS[agent.agent_type],
+      label: agent.name || getAgentLabel(agent.agent_type),
       uri: `codeg://agent/${agent.agent_type}`,
       meta: { agentType: agent.agent_type, available: agent.available },
     },

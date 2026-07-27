@@ -47,4 +47,40 @@ describe("shouldDisconnectOnUnmount", () => {
       })
     ).toBe(true)
   })
+
+  // A transient unmount (the tab was REPARENTED across split groups, not
+  // closed) never disconnects: the remounted view re-attaches to the same
+  // connection under the same contextKey.
+  it("keeps an idle owner alive across a transient (reparent) unmount", () => {
+    expect(
+      shouldDisconnectOnUnmount({
+        status: "connected",
+        isViewer: false,
+        backgroundOutstanding: 0,
+        transientUnmount: true,
+      })
+    ).toBe(false)
+  })
+
+  it("keeps a viewer attached across a transient (reparent) unmount", () => {
+    expect(
+      shouldDisconnectOnUnmount({
+        status: "connected",
+        isViewer: true,
+        backgroundOutstanding: 0,
+        transientUnmount: true,
+      })
+    ).toBe(false)
+  })
+
+  it("explicit transientUnmount=false preserves the close-path behavior", () => {
+    expect(
+      shouldDisconnectOnUnmount({
+        status: "connected",
+        isViewer: false,
+        backgroundOutstanding: 0,
+        transientUnmount: false,
+      })
+    ).toBe(true)
+  })
 })

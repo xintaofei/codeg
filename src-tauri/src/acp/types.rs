@@ -200,6 +200,21 @@ pub enum AcpEvent {
         #[serde(skip, default)]
         terminal: bool,
     },
+    /// A retryable turn error that keeps the turn alive (codex-acp #289,
+    /// v1.1.3+). Codex reports a transient, auto-retried error as
+    /// `session_info_update._meta.codex.error` (only when `willRetry == true`)
+    /// and continues the turn rather than terminating it. Surfaced as a
+    /// transient "retrying" indicator on the active turn — it is NOT a turn
+    /// failure and must not be rendered as one. The frontend reuses the Claude
+    /// API-retry banner and clears it at the next turn boundary.
+    TurnRetrying {
+        /// Human-readable transient error (`_meta.codex.error.message`).
+        message: String,
+        /// HTTP status pulled from a `codexErrorInfo` object variant
+        /// (e.g. `responseStreamDisconnected.httpStatusCode`), when present.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error_status: Option<i64>,
+    },
     /// `session/load` failed in a non-recoverable way (e.g. the agent has no
     /// record of this `session_id`). Emitted instead of silently falling back
     /// to `session/new`, so the frontend can surface the failure with reload
@@ -331,6 +346,23 @@ pub enum AcpEvent {
     /// (the tool call was aborted / the connection drained). Carries only the
     /// `question_id`; clients clear the matching card. Idempotent on apply.
     QuestionResolved { question_id: String },
+    /// A Grok `exit_plan_mode` call: the agent finished planning and is BLOCKED
+    /// on the user's approval of the plan before it leaves plan mode and starts
+    /// implementing (Grok's native `_x.ai/exit_plan_mode` ext request). Broadcast
+    /// so every client viewing this conversation renders the interactive
+    /// plan-approval card above the input box, and captured into
+    /// `SessionState.pending_plan_approval` so a client attaching mid-turn (cold
+    /// attach, reconnect, another window) recovers it from the snapshot. The
+    /// backend parks the blocked ext-request responder keyed by `approval_id`.
+    PlanApprovalRequest {
+        approval_id: String,
+        tool_call_id: String,
+        plan_markdown: String,
+    },
+    /// A previously-pending plan approval was answered (from any client) or
+    /// canceled (the connection drained). Carries only the `approval_id`; clients
+    /// clear the matching card. Idempotent on apply.
+    PlanApprovalResolved { approval_id: String },
     /// The agent's effective settings (env vars / model provider / native config
     /// files) changed AFTER this connection was spawned, so the running process
     /// is still using its launch-time config. Emitted by
@@ -614,6 +646,10 @@ pub struct ConversationConnectionInfo {
 #[derive(Debug, Clone, Serialize)]
 pub struct AcpAgentInfo {
     pub agent_type: crate::models::agent::AgentType,
+    /// Whether this agent has a codeg-known skill store — every built-in, and
+    /// custom agents that declared the shared `.agents/skills` store. Gates
+    /// the skills matrices frontend-side.
+    pub skills_capable: bool,
     pub registry_id: String,
     pub registry_version: Option<String>,
     pub name: String,
@@ -633,6 +669,10 @@ pub struct AcpAgentInfo {
     /// list) round-tripped into the settings editor. Only populated for
     /// `AgentType::Codex`, and only in api-key mode (no bound provider).
     pub codex_model_catalog: Option<String>,
+    /// Parsed sandbox / approval keys from `~/.codex/config.toml` backing the
+    /// Codex panel's structured controls. Only populated for `AgentType::Codex`.
+    /// Derived from `codex_config_toml`.
+    pub codex_sandbox_settings: Option<CodexSandboxSettings>,
     pub cline_secrets_json: Option<String>,
     /// Raw `~/.hermes/config.yaml` text, attached for the Hermes settings panel's
     /// advanced editor. Only populated for `AgentType::Hermes`.
@@ -654,6 +694,156 @@ pub struct AcpAgentInfo {
     /// for `AgentType::Cursor`. Derived from `cursor_cli_config_json`.
     pub cursor_settings: Option<CursorSettings>,
     pub model_provider_id: Option<i32>,
+    /// Display icon for a custom ACP agent — normally an inlined
+    /// `data:image/…;base64,…` URL (see
+    /// `crate::acp::custom_registry::CustomAgentDef::icon_url`). Always `None`
+    /// for built-ins, which ship hand-drawn marks in the frontend.
+    pub icon_url: Option<String>,
+}
+
+/// The `~/.codex/config.toml` sandbox / approval keys surfaced as structured
+/// controls in the Codex settings panel.
+///
+/// ## Why these keys matter even though the composer already has a preset
+///
+/// codex-acp attaches `approvalPolicy` + `sandboxPolicy` to EVERY normal turn
+/// (`runTurn`), sourced from the composer's mode preset — so for ordinary
+/// prompts these config keys are overridden per turn and invisible. `/goal` is
+/// different: `thread/goal/set` only records the objective and the turn is then
+/// started SERVER-side with no policy attached (same for `/review` and
+/// `/compact`), so those turns fall back to the thread defaults — i.e. exactly
+/// these config.toml keys. Without them a user who picked "Agent (full access)"
+/// still gets `on-request` + `workspace-write` + no network inside `/goal`.
+///
+/// Vocabulary is pinned to codex-cli 0.145.0: `AskForApproval`
+/// (codex-rs/protocol/src/protocol.rs) and `SandboxMode`
+/// (codex-rs/protocol/src/config_types.rs).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CodexSandboxSettings {
+    /// Root `approval_policy` when it is one of the plain string variants
+    /// (`untrusted` / `on-request` / `never`). The legacy `on-failure` spelling
+    /// is a serde ALIAS of `on-request` upstream, so it is normalized to
+    /// `on-request` on read. `None` when the key is absent or when the granular
+    /// table form is in use — the enum is externally tagged, so a value is
+    /// either a string or the table below, never both.
+    pub approval_policy: Option<String>,
+    /// The `approval_policy = { granular = { … } }` variant.
+    pub granular: Option<CodexGranularApproval>,
+    /// Root `sandbox_mode` — `read-only` / `workspace-write` / `danger-full-access`.
+    /// `None` = absent, in which case codex falls back to `workspace-write` for
+    /// any directory carrying a `[projects]` trust decision, else `read-only`
+    /// (and on Windows without the experimental sandbox, `workspace-write` is
+    /// further downgraded to `read-only`).
+    pub sandbox_mode: Option<String>,
+    /// `[sandbox_workspace_write]`.
+    pub workspace_write: CodexWorkspaceWrite,
+    /// `default_permissions` is set, which makes codex resolve permissions
+    /// through the profile pipeline and ignore `sandbox_mode` entirely
+    /// (`resolve_permission_config_syntax` evaluates `default_permissions` after
+    /// `sandbox_mode` within a layer, so it wins). Verified against 0.145:
+    /// `default_permissions = ":read-only"` alongside
+    /// `sandbox_mode = "danger-full-access"` yields a read-only sandbox. The
+    /// panel disables the sandbox controls and says why.
+    pub shadowed_by_default_permissions: bool,
+    /// A `[permissions]` profile table exists. Combined with an absent
+    /// `default_permissions` that is a hard startup error upstream ("config
+    /// defines `[permissions]` profiles but does not set `default_permissions`"),
+    /// so the panel surfaces it instead of writing into a config that cannot
+    /// load.
+    pub has_permissions_table: bool,
+}
+
+/// `approval_policy = { granular = { … } }` — `GranularApprovalConfig` upstream.
+///
+/// Field names stay snake_case on BOTH the read projection and the write payload
+/// (unlike the camelCase parent payload) so one type serves both directions.
+///
+/// `sandbox_approval`, `rules` and `mcp_elicitations` carry no `#[serde(default)]`
+/// upstream: omitting any of them makes codex refuse to load the config
+/// (verified — `thread/start` fails with "missing field `sandbox_approval`"), so
+/// all five keys are always written together.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct CodexGranularApproval {
+    /// Shell command approval requests, including inline
+    /// `with_additional_permissions` / `require_escalated` escalations.
+    pub sandbox_approval: bool,
+    /// Prompts triggered by execpolicy `prompt` rules.
+    pub rules: bool,
+    /// Prompts triggered by skill script execution.
+    pub skill_approval: bool,
+    /// Prompts triggered by the `request_permissions` tool.
+    pub request_permissions: bool,
+    /// MCP elicitation prompts.
+    pub mcp_elicitations: bool,
+}
+
+/// `[sandbox_workspace_write]` — only consulted when the effective sandbox mode
+/// is `workspace-write`. Every field defaults to false/empty upstream, so an
+/// absent key and an explicit `false` are equivalent; codeg writes only the
+/// non-default ones to keep the file tidy.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CodexWorkspaceWrite {
+    /// Extra writable folders beyond cwd. Upstream these are `AbsolutePathBuf`,
+    /// but a RELATIVE entry is not rejected — codex resolves it against
+    /// `CODEX_HOME` (verified: `"rel/dir"` became `~/.codex/rel/dir`). codeg
+    /// therefore refuses to write relative entries rather than let a user
+    /// silently grant write access inside `~/.codex`.
+    pub writable_roots: Vec<String>,
+    /// Allow outbound network access from inside the sandbox.
+    pub network_access: bool,
+    /// Drop the per-user `TMPDIR` from the default writable roots.
+    pub exclude_tmpdir_env_var: bool,
+    /// Drop `/tmp` from the default writable roots (UNIX).
+    pub exclude_slash_tmp: bool,
+}
+
+/// `absent` vs `null` for a nullable field: serde folds both into `None` on a
+/// plain `Option<T>`, so a field that must distinguish "not sent" from "sent as
+/// null" needs `Option<Option<T>>` plus this deserializer.
+fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::deserialize(deserializer).map(Some)
+}
+
+/// The structured-control values the Codex settings panel sends on save. Merged
+/// format-preservingly (via `toml_edit`) onto the current `~/.codex/config.toml`
+/// so comments and unmanaged keys survive. camelCase on the wire to match the
+/// enclosing request body, except the nested `granular` object (see
+/// [`CodexGranularApproval`]).
+///
+/// **This is a per-field PATCH, not a snapshot.** An absent field leaves its key
+/// exactly as the merge base has it. That matters because the settings panel
+/// sends the raw config.toml text alongside this patch and the patch is applied
+/// last: if it carried the whole group, any key the user had hand-edited in the
+/// raw editor — a surface the panel never parses back into its controls — would
+/// be silently reverted by the panel's stale value for that key. Sending only
+/// what the user actually moved keeps the two surfaces from fighting.
+///
+/// Field semantics:
+/// - `approval_policy` / `granular`: move as a PAIR (the upstream enum is one
+///   externally tagged key, either a string or a table). Both absent leaves the
+///   key untouched; both `Some(None)` removes it; exactly one carrying a value
+///   writes that form; both carrying values is rejected.
+/// - `sandbox_mode`: absent leaves, `Some(None)` removes, `Some(Some(v))` sets.
+/// - workspace-write fields: absent leaves; a value sets it, and `false` / an
+///   empty list removes the key (identical to codex's own defaults). A section
+///   left with no keys is removed wholesale.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexSandboxStructuredConfig {
+    #[serde(default, deserialize_with = "double_option")]
+    pub approval_policy: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub granular: Option<Option<CodexGranularApproval>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub sandbox_mode: Option<Option<String>>,
+    pub writable_roots: Option<Vec<String>>,
+    pub network_access: Option<bool>,
+    pub exclude_tmpdir_env_var: Option<bool>,
+    pub exclude_slash_tmp: Option<bool>,
 }
 
 /// The subset of `~/.grok/config.toml` keys surfaced as structured controls in
@@ -801,6 +991,63 @@ pub struct AcpAgentStatus {
     pub available: bool,
     pub enabled: bool,
     pub installed_version: Option<String>,
+}
+
+/// Severity of a single diagnostics check / the overall verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagLevel {
+    /// Healthy / expected.
+    Ok,
+    /// Suspicious but not necessarily broken (e.g. slow `npm prefix -g`).
+    Warn,
+    /// A concrete problem that explains a failure.
+    Fail,
+    /// Neutral information (not a pass/fail signal).
+    Info,
+}
+
+/// One labelled probe result inside a [`DiagSection`]. `value` and `hint` carry
+/// dynamic data (paths, versions) and are rendered as plain text in the UI —
+/// they are NEVER fed through i18n/ICU (see `label`, which is a language-neutral
+/// technical string emitted by the backend).
+#[derive(Debug, Clone, Serialize)]
+pub struct DiagCheck {
+    pub label: String,
+    pub value: String,
+    pub status: DiagLevel,
+    pub hint: Option<String>,
+}
+
+/// A titled group of [`DiagCheck`]s.
+#[derive(Debug, Clone, Serialize)]
+pub struct DiagSection {
+    pub title: String,
+    pub checks: Vec<DiagCheck>,
+}
+
+/// The one-line "likely cause" conclusion. `code` is a stable identifier the
+/// frontend localizes via `DiagnosticsSettings.verdict.<code>`; `summary` is a
+/// pre-formatted English sentence used only inside [`AgentDiagnosticsReport::plain_text`]
+/// so a copied report reads the same regardless of UI locale.
+#[derive(Debug, Clone, Serialize)]
+pub struct DiagnosticsVerdict {
+    pub level: DiagLevel,
+    pub code: String,
+    pub summary: String,
+}
+
+/// Full environment-diagnostics report returned by `acp_env_diagnostics`.
+///
+/// Plain `Serialize` with snake_case fields (the repo convention for response
+/// DTOs), mirrored field-for-field by the `AgentDiagnosticsReport` TS interface.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentDiagnosticsReport {
+    pub generated_at: String,
+    pub agent_type: Option<crate::models::agent::AgentType>,
+    pub verdict: DiagnosticsVerdict,
+    pub sections: Vec<DiagSection>,
+    pub plain_text: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

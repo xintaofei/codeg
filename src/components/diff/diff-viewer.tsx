@@ -1,6 +1,13 @@
 "use client"
 
-import { useCallback, useMemo, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import dynamic from "next/dynamic"
 import { ChevronLeft, ChevronRight } from "lucide-react"
 import { useMonaco } from "@monaco-editor/react"
@@ -23,6 +30,13 @@ const MonacoDiffEditor = dynamic(
   },
   { ssr: false }
 )
+
+// Commit-synchronous on the client so the teardown below runs in the deletion
+// commit — strictly before the library's passive unmount cleanup, whatever the
+// parent/child effect order is; a no-op-safe passive effect during the
+// static-export prerender where `useLayoutEffect` would warn.
+const useIsomorphicLayoutEffect =
+  typeof window !== "undefined" ? useLayoutEffect : useEffect
 
 export interface DiffViewerProps {
   original: string
@@ -55,6 +69,9 @@ export function DiffViewer({
     []
   )
   const [currentChangeIndex, setCurrentChangeIndex] = useState(-1)
+  // Initial diff read, deferred because the first computation lands after
+  // mount. Cancelled on unmount so it can never poke a disposed widget.
+  const initialDiffReadRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const handleEditorMount: DiffOnMount = useCallback((editor) => {
     diffEditorRef.current = editor
@@ -79,8 +96,39 @@ export function DiffViewer({
     }
 
     editor.onDidUpdateDiff(updateDiffs)
-    setTimeout(updateDiffs, 300)
+    initialDiffReadRef.current = setTimeout(updateDiffs, 300)
   }, [])
+
+  // @monaco-editor/react tears the diff editor down in the wrong order on
+  // unmount: it disposes both text models and only then the widget. Monaco
+  // flags that as a self-check bug ("TextModel got disposed before
+  // DiffEditorWidget model got reset") and its default handler rethrows it from
+  // a timeout, i.e. an uncaught error in the dev overlay on every diff→file tab
+  // switch or dialog close. Do the teardown first, correctly: detach the models
+  // (which drops the widget's onWillDispose listeners), then dispose them —
+  // nothing else in the app owns or tracks them, since no model path is passed
+  // and Monaco hands out an anonymous URI per model. The library then reads a
+  // null model and only disposes the widget.
+  //
+  // This assumes the subtree is being DESTROYED. Layout cleanup also fires when
+  // a subtree is merely hidden (`<Activity mode="hidden">`, a Suspense
+  // fallback); no host does that today, and if one ever wraps a diff that way
+  // the models must be re-created on re-show instead of disposed here.
+  useIsomorphicLayoutEffect(
+    () => () => {
+      if (initialDiffReadRef.current) {
+        clearTimeout(initialDiffReadRef.current)
+        initialDiffReadRef.current = null
+      }
+      const editor = diffEditorRef.current
+      diffEditorRef.current = null
+      const model = editor?.getModel()
+      editor?.setModel(null)
+      model?.original.dispose()
+      model?.modified.dispose()
+    },
+    []
+  )
 
   const navigateToChange = useCallback(
     (index: number) => {
@@ -112,6 +160,35 @@ export function DiffViewer({
       navigateToChange(currentChangeIndex + 1)
     }
   }, [currentChangeIndex, diffChanges.length, navigateToChange])
+
+  // Stable identity: the library runs `updateOptions` on every change of this
+  // prop, so an inline literal would re-push the whole option set each render.
+  const diffOptions = useMemo<MonacoEditorNs.IDiffEditorConstructionOptions>(
+    () => ({
+      readOnly: true,
+      renderSideBySide: true,
+      renderSideBySideInlineBreakpoint: 0,
+      automaticLayout: true,
+      fontSize: (editorFontSize * zoomLevel) / 100,
+      fontFamily: editorFontStack,
+      fontLigatures: editorLigatures,
+      wordWrap: editorWordWrap ? "on" : "off",
+      minimap: { enabled: false },
+      unicodeHighlight: MONACO_UNICODE_HIGHLIGHT_OPTIONS,
+      scrollBeyondLastLine: false,
+      renderOverviewRuler: false,
+      ignoreTrimWhitespace: true,
+      renderIndicators: true,
+      originalEditable: false,
+    }),
+    [
+      zoomLevel,
+      editorFontStack,
+      editorFontSize,
+      editorLigatures,
+      editorWordWrap,
+    ]
+  )
 
   const { additions, deletions } = useMemo(() => {
     let add = 0
@@ -192,23 +269,7 @@ export function DiffViewer({
               Loading diff viewer...
             </div>
           }
-          options={{
-            readOnly: true,
-            renderSideBySide: true,
-            renderSideBySideInlineBreakpoint: 0,
-            automaticLayout: true,
-            fontSize: (editorFontSize * zoomLevel) / 100,
-            fontFamily: editorFontStack,
-            fontLigatures: editorLigatures,
-            wordWrap: editorWordWrap ? "on" : "off",
-            minimap: { enabled: false },
-            unicodeHighlight: MONACO_UNICODE_HIGHLIGHT_OPTIONS,
-            scrollBeyondLastLine: false,
-            renderOverviewRuler: false,
-            ignoreTrimWhitespace: true,
-            renderIndicators: true,
-            originalEditable: false,
-          }}
+          options={diffOptions}
         />
       </div>
     </div>

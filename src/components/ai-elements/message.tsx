@@ -40,10 +40,14 @@ export type MessageProps = HTMLAttributes<HTMLDivElement> & {
 export const Message = ({ className, from, ...props }: MessageProps) => (
   <div
     className={cn(
-      "group flex w-full flex-col gap-2",
+      "group flex flex-col gap-2",
       from === "user"
-        ? "is-user ml-auto justify-end max-w-[88%]"
-        : "is-assistant",
+        ? // Outer user capsule hugs its content (`w-fit`) instead of always
+          // reserving the full `max-w-[88%]` box — the inner bubble
+          // (`MessageContent`) is already `w-fit`, so this just drops the
+          // phantom full-width wrapper. Assistant keeps `w-full`.
+          "is-user ml-auto justify-end w-fit max-w-[88%]"
+        : "is-assistant w-full",
       className
     )}
     {...props}

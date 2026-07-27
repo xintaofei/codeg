@@ -216,6 +216,56 @@ describe("AskQuestionCard", () => {
     })
   })
 
+  it("renders a free-text question (no options) as a bare input and submits it", () => {
+    // Codex elicitation / MCP-server forms ask open questions with 0 options:
+    // the input is the answer field — no "Other" toggle to click through.
+    const freeText: PendingQuestionState = {
+      question_id: "q-free",
+      created_at: "2026-01-01T00:00:00Z",
+      questions: [
+        {
+          id: "qf",
+          question: "What is the base URL?",
+          header: "URL",
+          multi_select: false,
+          options: [],
+        },
+      ],
+    }
+    const onAnswer = renderCard(freeText)
+    expect(screen.queryByRole("radio")).toBeNull()
+    const input = screen.getByPlaceholderText("Type your answer…")
+    const submit = screen.getByRole("button", { name: "Submit" })
+    expect(submit).toBeDisabled()
+    fireEvent.change(input, { target: { value: "https://api.example.com" } })
+    expect(submit).toBeEnabled()
+    fireEvent.click(submit)
+    expect(onAnswer).toHaveBeenCalledWith("q-free", {
+      answers: [{ questionId: "qf", labels: ["https://api.example.com"] }],
+      declined: false,
+    })
+  })
+
+  it("masks the input for a secret question", () => {
+    const secret: PendingQuestionState = {
+      question_id: "q-secret",
+      created_at: "2026-01-01T00:00:00Z",
+      questions: [
+        {
+          id: "qs",
+          question: "Paste your API key",
+          header: "Key",
+          multi_select: false,
+          options: [],
+          is_secret: true,
+        },
+      ],
+    }
+    renderCard(secret)
+    const input = screen.getByPlaceholderText("Type your answer…")
+    expect(input).toHaveAttribute("type", "password")
+  })
+
   it("skips with a declined answer", () => {
     const onAnswer = renderCard(single)
     fireEvent.click(screen.getByRole("button", { name: "Skip" }))

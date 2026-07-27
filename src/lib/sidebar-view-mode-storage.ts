@@ -2,6 +2,7 @@
 
 const FOLDER_EXPANDED_KEY = "workspace:sidebar-folder-expanded"
 const SHOW_COMPLETED_KEY = "workspace:sidebar-show-completed"
+const SHOW_WORKTREES_KEY = "workspace:sidebar-show-worktrees"
 const SORT_MODE_KEY = "workspace:sidebar-sort-mode"
 const SECTION_ORDER_KEY = "workspace:sidebar-section-order"
 const SECTION_COLLAPSED_KEY = "workspace:sidebar-section-collapsed"
@@ -81,11 +82,15 @@ export function saveConversationExpanded(ids: number[]): void {
   }
 }
 
+/** Whether completed conversations are shown in the sidebar list. Defaults to
+ *  OFF so finished/imported sessions stay out of the way; only an
+ *  explicitly-stored "true" (the user turned it on) reveals them. */
 export function loadShowCompleted(): boolean {
   if (typeof window === "undefined") return false
   try {
     const raw = localStorage.getItem(SHOW_COMPLETED_KEY)
     if (raw === "true") return true
+    if (raw === "false") return false
   } catch {
     /* ignore */
   }
@@ -96,6 +101,31 @@ export function saveShowCompleted(value: boolean): void {
   if (typeof window === "undefined") return
   try {
     localStorage.setItem(SHOW_COMPLETED_KEY, String(value))
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Whether the sidebar splits each repo's worktree child folders into their own
+ *  indented sub-groups (instead of merging them flat into the parent group).
+ *  Defaults to ON; only an explicitly-stored "false" (the user unchecked it)
+ *  falls back to the flattened layout. */
+export function loadShowWorktrees(): boolean {
+  if (typeof window === "undefined") return true
+  try {
+    const raw = localStorage.getItem(SHOW_WORKTREES_KEY)
+    if (raw === "false") return false
+    if (raw === "true") return true
+  } catch {
+    /* ignore */
+  }
+  return true
+}
+
+export function saveShowWorktrees(value: boolean): void {
+  if (typeof window === "undefined") return
+  try {
+    localStorage.setItem(SHOW_WORKTREES_KEY, String(value))
   } catch {
     /* ignore */
   }

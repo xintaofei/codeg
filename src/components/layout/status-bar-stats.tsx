@@ -1,10 +1,10 @@
 "use client"
 
 import { useMemo } from "react"
+import { getAgentLabel } from "@/lib/custom-agents"
 import { BarChart3, MonitorCloud } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { AGENT_LABELS } from "@/lib/types"
 import { AgentIcon } from "@/components/agent-icon"
 import { useRemoteConnection } from "@/contexts/remote-connection-context"
 import {
@@ -76,7 +76,7 @@ export function StatusBarStats() {
                 >
                   <AgentIcon agentType={a.agent_type} className="w-3.5 h-3.5" />
                   <span className="text-muted-foreground">
-                    {AGENT_LABELS[a.agent_type]}
+                    {getAgentLabel(a.agent_type)}
                   </span>
                   <span className="ml-auto text-muted-foreground">
                     {a.conversation_count}

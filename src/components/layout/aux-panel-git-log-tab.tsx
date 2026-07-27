@@ -28,6 +28,8 @@ import {
   RefreshCw,
   RotateCcw,
   Upload,
+  User,
+  X,
 } from "lucide-react"
 import {
   Commit,
@@ -82,6 +84,7 @@ import {
 } from "@/components/ui/command"
 import { Skeleton } from "@/components/ui/skeleton"
 import { AuxPanelNoFolderEmpty } from "@/components/layout/aux-panel-no-folder-empty"
+import { GitLogCommitMessage } from "@/components/layout/git-log-commit-message"
 import { subscribe } from "@/lib/platform"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useWorkspaceActions } from "@/contexts/workspace-context"
@@ -90,10 +93,13 @@ import { useIsMobile } from "@/hooks/use-mobile"
 import {
   getGitBranch,
   gitCommitBranches,
+  gitCommitFiles,
+  gitCurrentUser,
   gitListAllBranches,
   gitLog,
   gitNewBranch,
   gitReset,
+  gitSearchAuthors,
   openPushWindow,
 } from "@/lib/api"
 import type {
@@ -120,6 +126,92 @@ import { useBranchTreeExpansion } from "@/hooks/use-branch-tree-expansion"
 // end (VSCode/IDEA-style incremental history loading).
 const PAGE_SIZE = 100
 const LOAD_MORE_PX = 800
+
+// Recently-filtered authors, persisted per folder (IDEA-style "recent users").
+// We deliberately do NOT scan the whole repo for authors (slow); the dropdown is
+// seeded from this local history plus the current user, with free-text search.
+const RECENT_AUTHORS_KEY_PREFIX = "codeg:gitlog:recent-authors:"
+const RECENT_AUTHORS_MAX = 8
+
+function loadRecentAuthors(folderPath: string): string[] {
+  if (typeof window === "undefined") return []
+  try {
+    const raw = window.localStorage.getItem(
+      RECENT_AUTHORS_KEY_PREFIX + folderPath
+    )
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter((x): x is string => typeof x === "string")
+      .slice(0, RECENT_AUTHORS_MAX)
+  } catch {
+    return []
+  }
+}
+
+function saveRecentAuthors(folderPath: string, authors: string[]): void {
+  if (typeof window === "undefined") return
+  try {
+    window.localStorage.setItem(
+      RECENT_AUTHORS_KEY_PREFIX + folderPath,
+      JSON.stringify(authors)
+    )
+  } catch {
+    // Ignore quota / serialization errors — recent authors are best-effort.
+  }
+}
+
+// Prepend `author` to the recent list, dedupe (exact match), cap length. Pure.
+export function addRecentAuthor(recent: string[], author: string): string[] {
+  return [author, ...recent.filter((a) => a !== author)].slice(
+    0,
+    RECENT_AUTHORS_MAX
+  )
+}
+
+// Drop `author` from the recent list (exact match). Pure.
+export function removeRecentAuthor(recent: string[], author: string): string[] {
+  return recent.filter((a) => a !== author)
+}
+
+// The last branch/author filter, persisted per folder path so the tab reopens on
+// the same view. `null` for either means the default (all branches / all
+// authors); when both are null the entry is dropped to keep storage tidy.
+const SELECTION_KEY_PREFIX = "codeg:gitlog:selection:"
+
+type GitLogSelection = { branch: string | null; author: string | null }
+
+function loadSelection(folderPath: string): GitLogSelection {
+  if (typeof window === "undefined") return { branch: null, author: null }
+  try {
+    const raw = window.localStorage.getItem(SELECTION_KEY_PREFIX + folderPath)
+    if (!raw) return { branch: null, author: null }
+    const parsed = JSON.parse(raw)
+    return {
+      branch: typeof parsed?.branch === "string" ? parsed.branch : null,
+      author: typeof parsed?.author === "string" ? parsed.author : null,
+    }
+  } catch {
+    return { branch: null, author: null }
+  }
+}
+
+function saveSelection(folderPath: string, selection: GitLogSelection): void {
+  if (typeof window === "undefined") return
+  try {
+    if (selection.branch == null && selection.author == null) {
+      window.localStorage.removeItem(SELECTION_KEY_PREFIX + folderPath)
+      return
+    }
+    window.localStorage.setItem(
+      SELECTION_KEY_PREFIX + folderPath,
+      JSON.stringify(selection)
+    )
+  } catch {
+    // Best-effort — a failed persist just means the view won't be restored.
+  }
+}
 
 const emitEvent = async (event: string, payload?: unknown) => {
   try {
@@ -562,15 +654,12 @@ function BranchSelector({
   currentBranch,
   selectedBranch,
   onBranchChange,
-  onRefresh,
-  refreshing,
 }: {
   branchList: GitBranchList
   currentBranch: string | null
+  // null = the default "all branches" view (git log --all).
   selectedBranch: string | null
-  onBranchChange: (branch: string) => void
-  onRefresh: () => void
-  refreshing: boolean
+  onBranchChange: (branch: string | null) => void
 }) {
   const t = useTranslations("Folder.gitLogTab.branchSelector")
   const [popoverOpen, setPopoverOpen] = useState(false)
@@ -615,7 +704,7 @@ function BranchSelector({
 
   const { isExpanded, toggle } = useBranchTreeExpansion(popoverOpen, seedKeys)
 
-  const handleSelect = (branch: string) => {
+  const handleSelect = (branch: string | null) => {
     setPopoverOpen(false)
     if (branch !== selectedBranch) onBranchChange(branch)
   }
@@ -704,22 +793,42 @@ function BranchSelector({
   }
 
   return (
-    // Borderless, edge-aligned header mirroring the session-details tab: the
-    // branch trigger sits flush-left (px-0 lands its icon on the header's px-3
-    // inset) and the refresh button flush-right, spread by justify-between.
-    <div className="flex w-full items-center justify-between gap-2">
+    // The popover trigger and the clear (✕) button are siblings — never nested
+    // — mirroring AuthorFilter. The rounded hover/open background lives on THIS
+    // wrapper (not the trigger) so hovering either the trigger or the ✕ lights
+    // the whole control as one pill (mirrors the bottom status-bar branch
+    // selector). -ml-1 pulls the wrapper's left rim out to the 8px guide so the
+    // pill lines up with the expanded commit card's border (8px row inset); the
+    // trigger's pl-1 then drops the branch glyph onto the 13px guide (8px + 1px
+    // card border + 4px), flush with each commit's leading push glyph. Default
+    // (no selection) shows just the "Branch" label; a ✕ appears once a branch is
+    // picked to clear back to the all-branches view.
+    <div className="-ml-1 flex min-w-0 shrink items-center rounded-full transition-colors hover:bg-foreground/10 has-data-[state=open]:bg-foreground/10">
       <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
         <PopoverTrigger asChild>
           <Button
             variant="ghost"
             size="sm"
-            className="h-8 min-w-0 justify-start gap-1.5 px-0 text-sm font-normal hover:bg-transparent hover:text-foreground/80 aria-expanded:bg-transparent dark:hover:bg-transparent"
+            className={cn(
+              "h-8 max-w-[12rem] min-w-0 shrink justify-start gap-1.5 rounded-full pl-1 text-sm font-normal hover:bg-transparent aria-expanded:bg-transparent dark:hover:bg-transparent",
+              // Selected: the trailing chevron is gone (replaced by the sibling
+              // ✕ button), so drop the trailing padding to pr-0.5. The ✕ button's
+              // own ~5px of internal padding then leaves a tight ~7px gap from the
+              // branch name instead of the old 13px chasm. Unselected keeps pr-2
+              // so the chevron has breathing room.
+              selectedBranch
+                ? "pr-0.5 text-foreground/80 hover:text-foreground"
+                : "pr-2 text-muted-foreground hover:text-foreground/80"
+            )}
+            title={selectedBranch ?? t("label")}
           >
-            <GitBranch className="size-3.5 shrink-0 text-muted-foreground" />
+            <GitBranch className="size-3.5 shrink-0" />
             <span className="min-w-0 truncate text-left">
-              {selectedBranch || t("selectBranchPlaceholder")}
+              {selectedBranch ?? t("label")}
             </span>
-            <ChevronDown className="size-3 shrink-0 opacity-50" />
+            {!selectedBranch && (
+              <ChevronDown className="size-3 shrink-0 opacity-50" />
+            )}
           </Button>
         </PopoverTrigger>
         <PopoverContent
@@ -784,22 +893,391 @@ function BranchSelector({
           </Command>
         </PopoverContent>
       </Popover>
-      {/* justify-end flushes the glyph to the trailing edge (13px inset,
-          mirroring the branch trigger's flush-left glyph), and a text-only hover
-          drops ghost's padded bg box — hover:bg-transparent + its dark twin — so
-          the two header edges read symmetrically instead of the right growing a
-          wider box on hover. size-8 stays for the click target. */}
-      <Button
-        variant="ghost"
-        size="icon"
-        className="size-8 shrink-0 justify-end text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
-        onClick={onRefresh}
-        disabled={refreshing}
-        title={t("refreshCommitHistory")}
-        aria-label={t("refreshCommitHistory")}
-      >
-        <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />
-      </Button>
+      {selectedBranch && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-6 shrink-0 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
+          onClick={() => handleSelect(null)}
+          title={t("clearBranchFilterAria")}
+          aria-label={t("clearBranchFilterAria")}
+        >
+          <X className="size-3.5" />
+        </Button>
+      )}
+    </div>
+  )
+}
+
+function RefreshButton({
+  onRefresh,
+  refreshing,
+  className,
+}: {
+  onRefresh: () => void
+  refreshing: boolean
+  className?: string
+}) {
+  const t = useTranslations("Folder.gitLogTab.branchSelector")
+  return (
+    // Round hover circle, part of the header's one control system: same h-8
+    // height + rounded-full + foreground/10 hover as the branch/author pills
+    // (foreground/10 in both themes, overriding the ghost variant's muted
+    // default). -mr-1 pushes the circle's right rim out to the 8px guide so it
+    // lines up with the expanded commit card's border and mirrors the branch
+    // pill's left rim; size-8 (not a narrow w-6) keeps it a clean circle with the
+    // glyph centered.
+    <Button
+      variant="ghost"
+      size="icon"
+      className={cn(
+        "-mr-1 size-8 shrink-0 rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground dark:hover:bg-foreground/10",
+        className
+      )}
+      onClick={onRefresh}
+      disabled={refreshing}
+      title={t("refreshCommitHistory")}
+      aria-label={t("refreshCommitHistory")}
+    >
+      <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />
+    </Button>
+  )
+}
+
+function AuthorFilter({
+  meName,
+  recentAuthors,
+  selectedAuthor,
+  folderPath,
+  onAuthorChange,
+  onRemoveRecent,
+}: {
+  meName: string | null
+  recentAuthors: string[]
+  selectedAuthor: string | null
+  folderPath: string | null
+  onAuthorChange: (author: string | null) => void
+  onRemoveRecent: (name: string) => void
+}) {
+  const t = useTranslations("Folder.gitLogTab.authorFilter")
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState("")
+  // Clear the search each time the popover closes.
+  const [prevOpen, setPrevOpen] = useState(open)
+  if (open !== prevOpen) {
+    setPrevOpen(open)
+    if (!open) setQuery("")
+  }
+
+  // Backend author search: real repo authors matching the query, most-active
+  // first (git shortlog). Runs only while typing — debounced — so there is no
+  // upfront full-repo scan. Empty query falls back to the local quick-picks
+  // (me + recents). Results are tagged with the query they belong to so the
+  // render can tell "still searching" from "searched, no hits" without a separate
+  // loading flag — and so the effect never calls setState synchronously.
+  const [results, setResults] = useState<{
+    folder: string | null
+    query: string
+    names: string[]
+  }>({ folder: null, query: "", names: [] })
+  const trimmed = query.trim()
+  const isSearching = trimmed.length > 0
+
+  useEffect(() => {
+    if (!trimmed || !folderPath) return
+    let cancelled = false
+    const handle = setTimeout(() => {
+      gitSearchAuthors(folderPath, trimmed, 20)
+        .then((names) => {
+          if (!cancelled)
+            setResults({ folder: folderPath, query: trimmed, names })
+        })
+        .catch(() => {
+          if (!cancelled)
+            setResults({ folder: folderPath, query: trimmed, names: [] })
+        })
+    }, 200)
+    return () => {
+      cancelled = true
+      clearTimeout(handle)
+    }
+  }, [folderPath, trimmed])
+
+  // Results apply to the current query only once their tag matches BOTH the query
+  // and the folder (so a popover surviving a repo switch never shows the previous
+  // repo's same-query results); until then we're still searching (keeping the
+  // "no matches" empty state hidden).
+  const resultsReady =
+    results.query === trimmed && results.folder === folderPath
+  const searchResults = resultsReady ? results.names : []
+  const searchPending = isSearching && !resultsReady
+
+  // Recent authors minus "me" (me is pinned separately above them).
+  const recentWithoutMe = useMemo(
+    () => recentAuthors.filter((name) => name !== meName),
+    [recentAuthors, meName]
+  )
+
+  // Fallback "Filter by "<query>"" item so an author can always be filtered by
+  // the literal typed name even if the backend surfaced nothing (or is
+  // unavailable). Hidden when the query already matches a surfaced candidate.
+  const showCreate =
+    isSearching &&
+    trimmed !== meName &&
+    !recentAuthors.includes(trimmed) &&
+    !searchResults.includes(trimmed)
+
+  const handleSelect = (author: string | null) => {
+    setOpen(false)
+    if (author !== selectedAuthor) onAuthorChange(author)
+  }
+
+  return (
+    // The trigger and the clear (✕) button are siblings — never nested (no
+    // button-in-button). The rounded hover/open background lives on THIS wrapper
+    // (not the trigger) so hovering either the trigger or the ✕ lights the whole
+    // control as one pill, mirroring the bottom status-bar branch selector.
+    // pl-1 pr-2 matches the branch trigger so the user glyph sits the same 5px
+    // inside its pill (13px guide), keeping both selectors' glyphs on one column.
+    <div className="flex min-w-0 shrink items-center rounded-full transition-colors hover:bg-foreground/10 has-data-[state=open]:bg-foreground/10">
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            variant="ghost"
+            size="sm"
+            className={cn(
+              "h-8 max-w-[9rem] min-w-0 shrink justify-start gap-1.5 rounded-full pl-1 text-sm font-normal hover:bg-transparent aria-expanded:bg-transparent dark:hover:bg-transparent",
+              // Selected: chevron gone (replaced by the sibling ✕), so drop the
+              // trailing padding to pr-0.5 — matches the branch trigger so the ✕
+              // sits the same tight ~7px gap from the author name.
+              selectedAuthor
+                ? "pr-0.5 text-foreground/80 hover:text-foreground"
+                : "pr-2 text-muted-foreground hover:text-foreground/80"
+            )}
+            title={selectedAuthor ?? t("filterByAuthorAria")}
+            aria-label={t("filterByAuthorAria")}
+          >
+            <User className="size-3.5 shrink-0" />
+            <span className="min-w-0 truncate text-left">
+              {selectedAuthor ?? t("label")}
+            </span>
+            {!selectedAuthor && (
+              <ChevronDown className="size-3 shrink-0 opacity-50" />
+            )}
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="end"
+          sideOffset={6}
+          className="w-64 overflow-hidden p-0"
+        >
+          {/* shouldFilter=false: the quick-picks (me + recents) and the backend
+              search results are both curated here; cmdk must not re-fuzzy-filter
+              the already server-filtered results. */}
+          <Command className="rounded-2xl" shouldFilter={false}>
+            <CommandInput
+              placeholder={t("searchPlaceholder")}
+              aria-label={t("searchPlaceholder")}
+              value={query}
+              onValueChange={setQuery}
+            />
+            <CommandList>
+              {isSearching ? (
+                <>
+                  {searchResults.length > 0 && (
+                    <CommandGroup heading={t("matchingAuthors")}>
+                      {searchResults.map((name) => (
+                        <CommandItem
+                          key={name}
+                          value={`result:${name}`}
+                          title={name}
+                          onSelect={() => handleSelect(name)}
+                        >
+                          <User className="size-3.5 shrink-0 text-muted-foreground" />
+                          <span className="min-w-0 flex-1 truncate">
+                            {name}
+                          </span>
+                          {selectedAuthor === name && (
+                            <Check className="size-3.5 shrink-0" />
+                          )}
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  )}
+                  {showCreate && (
+                    <CommandGroup>
+                      <CommandItem
+                        value={`literal:${trimmed}`}
+                        onSelect={() => handleSelect(trimmed)}
+                      >
+                        <User className="size-3.5 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 flex-1 truncate">
+                          {t("filterByQuery", { query: trimmed })}
+                        </span>
+                      </CommandItem>
+                    </CommandGroup>
+                  )}
+                  {!searchPending &&
+                    searchResults.length === 0 &&
+                    !showCreate && (
+                      <div className="py-6 text-center text-sm text-muted-foreground">
+                        {t("noAuthors")}
+                      </div>
+                    )}
+                </>
+              ) : (
+                <>
+                  {meName && (
+                    <CommandGroup>
+                      <CommandItem
+                        value={`me:${meName}`}
+                        title={meName}
+                        onSelect={() => handleSelect(meName)}
+                      >
+                        <User className="size-3.5 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 flex-1 truncate">
+                          {meName}
+                        </span>
+                        <span className="shrink-0 rounded-sm bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
+                          {t("you")}
+                        </span>
+                        {selectedAuthor === meName && (
+                          <Check className="size-3.5 shrink-0" />
+                        )}
+                      </CommandItem>
+                    </CommandGroup>
+                  )}
+                  {recentWithoutMe.length > 0 && (
+                    <CommandGroup heading={t("recent")}>
+                      {recentWithoutMe.map((name) => (
+                        <CommandItem
+                          key={name}
+                          value={`recent:${name}`}
+                          title={name}
+                          onSelect={() => handleSelect(name)}
+                          className="group/recent"
+                        >
+                          <User className="size-3.5 shrink-0 text-muted-foreground" />
+                          <span className="min-w-0 flex-1 truncate">
+                            {name}
+                          </span>
+                          {selectedAuthor === name && (
+                            <Check className="size-3.5 shrink-0" />
+                          )}
+                          {/* Remove this author from the recent history. Stops the
+                              row's onSelect (cmdk selects on pointer-down/click) so
+                              the click only deletes. Revealed on row hover/active. */}
+                          <button
+                            type="button"
+                            title={t("removeFromRecent", { name })}
+                            aria-label={t("removeFromRecent", { name })}
+                            className="-mr-1 ml-0.5 grid size-5 shrink-0 place-items-center rounded-sm text-muted-foreground/60 opacity-0 transition hover:bg-foreground/10 hover:text-foreground group-hover/recent:opacity-100 group-data-[selected=true]/recent:opacity-100"
+                            onPointerDown={(e) => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                            }}
+                            onClick={(e) => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              onRemoveRecent(name)
+                            }}
+                          >
+                            <X className="size-3" />
+                          </button>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  )}
+                  {!meName && recentWithoutMe.length === 0 && (
+                    <div className="py-6 text-center text-sm text-muted-foreground">
+                      {t("noAuthors")}
+                    </div>
+                  )}
+                </>
+              )}
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+      {selectedAuthor && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-6 shrink-0 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
+          onClick={() => handleSelect(null)}
+          title={t("clearAuthorFilterAria")}
+          aria-label={t("clearAuthorFilterAria")}
+        >
+          <X className="size-3.5" />
+        </Button>
+      )}
+    </div>
+  )
+}
+
+function LogHeader({
+  branchList,
+  currentBranch,
+  selectedBranch,
+  onBranchChange,
+  onRefresh,
+  refreshing,
+  meName,
+  recentAuthors,
+  selectedAuthor,
+  folderPath,
+  onAuthorChange,
+  onRemoveRecent,
+  isMobile,
+}: {
+  branchList: GitBranchList
+  currentBranch: string | null
+  selectedBranch: string | null
+  onBranchChange: (branch: string | null) => void
+  onRefresh: () => void
+  refreshing: boolean
+  meName: string | null
+  recentAuthors: string[]
+  selectedAuthor: string | null
+  folderPath: string | null
+  onAuthorChange: (author: string | null) => void
+  onRemoveRecent: (name: string) => void
+  isMobile: boolean
+}) {
+  const hasBranches =
+    branchList.local.length > 0 || branchList.remote.length > 0
+  if (!hasBranches) return null
+
+  return (
+    <div
+      className={cn(
+        "flex shrink-0 items-center gap-1 border-b px-3",
+        // Match the session-details / conversation / file detail headers:
+        // desktop h-10 + lightened border; mobile keeps its own sizing.
+        isMobile ? "border-border py-2" : "h-10 border-border/50"
+      )}
+    >
+      {/* Branch selector + author filter sit together at the leading edge; the
+          refresh button is pushed to the trailing edge with ml-auto. */}
+      <BranchSelector
+        branchList={branchList}
+        currentBranch={currentBranch}
+        selectedBranch={selectedBranch}
+        onBranchChange={onBranchChange}
+      />
+      <AuthorFilter
+        meName={meName}
+        recentAuthors={recentAuthors}
+        selectedAuthor={selectedAuthor}
+        folderPath={folderPath}
+        onAuthorChange={onAuthorChange}
+        onRemoveRecent={onRemoveRecent}
+      />
+      <RefreshButton
+        onRefresh={onRefresh}
+        refreshing={refreshing}
+        className="ml-auto"
+      />
     </div>
   )
 }
@@ -846,7 +1324,52 @@ export function GitLogTab() {
     worktree_branches: [],
   })
   const [currentBranch, setCurrentBranch] = useState<string | null>(null)
+  // null = the default "all branches" view (git log --all); a name narrows to
+  // that branch.
   const [selectedBranch, setSelectedBranch] = useState<string | null>(null)
+
+  // Author filter state (IDEA-style "User" filter). The dropdown is seeded from
+  // the current user (`meName`) plus a locally-persisted `recentAuthors` list —
+  // no full-repo author scan. `selectedAuthor` (null = all authors) is threaded
+  // into every gitLog call so the whole history filters server-side.
+  const [meName, setMeName] = useState<string | null>(null)
+  const [recentAuthors, setRecentAuthors] = useState<string[]>([])
+  const [selectedAuthor, setSelectedAuthor] = useState<string | null>(null)
+
+  // The folder path whose persisted selection is currently applied. When the
+  // (deferred) folder changes we restore that folder's saved branch/author
+  // filter *synchronously during render* — before the first log fetch — so the
+  // reopened view lands on the same filter in a single fetch, with no
+  // all-branches flash. This is React's "adjust state during render" pattern
+  // (https://react.dev/reference/react/useState#storing-information-from-previous-renders);
+  // it re-renders in place, so fetchLog below is computed with the restored
+  // values. Reading localStorage here is a pure, idempotent read.
+  const [selectionFolder, setSelectionFolder] = useState<string | null>(null)
+  const currentSelectionPath = folder?.path ?? null
+  if (currentSelectionPath !== selectionFolder) {
+    setSelectionFolder(currentSelectionPath)
+    const restored = currentSelectionPath
+      ? loadSelection(currentSelectionPath)
+      : { branch: null, author: null }
+    setSelectedBranch(restored.branch)
+    setSelectedAuthor(restored.author)
+  }
+  // Mirror the live selection into refs so refreshBranches (keyed only on the
+  // folder path) can validate/persist against the latest values without being
+  // recreated — and re-running its effect — on every filter change.
+  const selectedBranchRef = useRef(selectedBranch)
+  selectedBranchRef.current = selectedBranch
+  const selectedAuthorRef = useRef(selectedAuthor)
+  selectedAuthorRef.current = selectedAuthor
+
+  // Lazy per-commit file changes: the log list is fetched without file stats
+  // (withFiles=false) for speed; a commit's files load on demand when its row is
+  // expanded (mirrors branchesByCommit above).
+  const [filesByCommit, setFilesByCommit] = useState<
+    Record<string, GitLogFileChange[]>
+  >({})
+  const [filesLoading, setFilesLoading] = useState<Record<string, boolean>>({})
+  const [filesError, setFilesError] = useState<Record<string, string>>({})
   const [newBranchTarget, setNewBranchTarget] =
     useState<CommitBranchTarget | null>(null)
   const [newBranchName, setNewBranchName] = useState("")
@@ -888,18 +1411,31 @@ export function GitLogTab() {
   entriesRef.current = entries
   const hasMoreRef = useRef(hasMore)
   hasMoreRef.current = hasMore
+  // Always the latest folder path, so an in-flight gitCurrentUser() from a
+  // previous folder can be discarded if it resolves after a switch (see
+  // refreshCurrentUser).
+  const folderPathRef = useRef(folder?.path ?? null)
+  folderPathRef.current = folder?.path ?? null
+  // Bumped ONLY when the per-commit file maps are cleared (a non-inline full
+  // reload / folder switch). fetchCommitFiles captures it so a request from a
+  // superseded view discards its loading/error/data writes — preventing a stale
+  // request from masking a newer one after the maps were cleared and re-fetched.
+  // Deliberately NOT bumped on an inline refresh (which keeps the maps), so a
+  // pending request's finally still clears its loading flag (no latch).
+  const filesGenRef = useRef(0)
 
   // Close the create-branch / reset dialogs the instant the ACTIVE folder
   // changes (keyed on the live id, not the deferred `folder`) so a dialog opened
   // under the previous folder can't create-branch / reset against the new one
-  // after the deferred render settles and it re-mounts.
+  // after the deferred render settles. The branch/author selection is NOT reset
+  // here — it's restored per folder during render (see the selectionFolder
+  // adjustment above), which lands each folder's saved filter before its first
+  // fetch, so the previous folder's filter never leaks into the new query.
   useEffect(() => {
     setNewBranchTarget(null)
     setResetTarget(null)
   }, [activeFolder?.id])
 
-  const hasBranches =
-    branchList.local.length > 0 || branchList.remote.length > 0
   const pushStatusLabels = useMemo(
     () => ({
       pushed: t("pushStatus.pushed"),
@@ -914,27 +1450,101 @@ export function GitLogTab() {
     return (parts[parts.length - 1] ?? path) || t("workspace")
   }, [folder?.path, t])
 
-  const handleBranchChange = useCallback((branch: string) => {
-    setSelectedBranch(branch)
-  }, [])
-
-  const refreshBranches = useCallback(
-    async (nextSelectedBranch?: string | null) => {
-      if (!folder?.path) return
-      try {
-        const [allBranches, current] = await Promise.all([
-          gitListAllBranches(folder.path),
-          getGitBranch(folder.path),
-        ])
-        setBranchList(allBranches)
-        setCurrentBranch(current)
-        setSelectedBranch(nextSelectedBranch ?? current)
-      } catch {
-        // Silently ignore — branches dropdown won't appear
+  const handleBranchChange = useCallback(
+    (branch: string | null) => {
+      setSelectedBranch(branch)
+      // Persist the pick (paired with the current author) so the tab restores it
+      // the next time this folder is opened.
+      if (folder?.path) {
+        saveSelection(folder.path, { branch, author: selectedAuthor })
       }
+    },
+    [folder?.path, selectedAuthor]
+  )
+
+  const handleAuthorChange = useCallback(
+    (author: string | null) => {
+      setSelectedAuthor(author)
+      if (folder?.path) {
+        // Persist the pick (paired with the current branch) so it restores the
+        // next time this folder is opened.
+        saveSelection(folder.path, { branch: selectedBranch, author })
+        // Remember the chosen author so it surfaces in the dropdown next time.
+        if (author) {
+          const path = folder.path
+          setRecentAuthors((prev) => {
+            const next = addRecentAuthor(prev, author)
+            saveRecentAuthors(path, next)
+            return next
+          })
+        }
+      }
+    },
+    [folder?.path, selectedBranch]
+  )
+
+  const handleRemoveRecent = useCallback(
+    (name: string) => {
+      if (!folder?.path) return
+      const path = folder.path
+      setRecentAuthors((prev) => {
+        const next = removeRecentAuthor(prev, name)
+        saveRecentAuthors(path, next)
+        return next
+      })
     },
     [folder?.path]
   )
+
+  // Current user (`git config user.name`) for the "me" quick-pick. Cheap — no
+  // history walk. Guards on the live folder path so a slow response from a
+  // previous folder can't overwrite the current folder's value after a switch.
+  const refreshCurrentUser = useCallback(async () => {
+    const path = folder?.path
+    if (!path) return
+    try {
+      const me = await gitCurrentUser(path)
+      if (folderPathRef.current !== path) return
+      setMeName(me)
+    } catch {
+      if (folderPathRef.current !== path) return
+      setMeName(null)
+    }
+  }, [folder?.path])
+
+  const refreshBranches = useCallback(async () => {
+    const path = folder?.path
+    if (!path) return
+    try {
+      const [allBranches, current] = await Promise.all([
+        gitListAllBranches(path),
+        getGitBranch(path),
+      ])
+      // Ignore a response that resolved after a folder switch.
+      if (folderPathRef.current !== path) return
+      setBranchList(allBranches)
+      setCurrentBranch(current)
+      // A restored/selected branch may no longer exist (deleted since it was
+      // last used). Once we have this repo's authoritative branch list, drop it
+      // back to the all-branches view and forget it so we don't keep restoring a
+      // dead branch (which would make the first fetch error). Read via refs so
+      // this callback stays keyed only on the folder path — else it'd recreate,
+      // and re-run its effect, on every filter change. Otherwise leave
+      // selectedBranch alone: the default is "all branches" (null) and an
+      // explicit pick is owned by the branch selector / restored per folder.
+      const sel = selectedBranchRef.current
+      if (
+        sel &&
+        !allBranches.local.includes(sel) &&
+        !allBranches.remote.includes(sel)
+      ) {
+        setSelectedBranch(null)
+        saveSelection(path, { branch: null, author: selectedAuthorRef.current })
+      }
+    } catch {
+      // Silently ignore — branches dropdown won't appear
+    }
+  }, [folder?.path])
 
   // Fetch branches on mount and when git presence flips — the preflight
   // check in `git_list_all_branches` would short-circuit on non-git folders
@@ -943,6 +1553,21 @@ export function GitLogTab() {
     if (!isGitRepo || notAGitRepo) return
     void refreshBranches()
   }, [isGitRepo, notAGitRepo, refreshBranches])
+
+  // Resolve the current user for the "me" quick-pick on mount / git-presence
+  // flip (cheap; the git-events effect below also refreshes it).
+  useEffect(() => {
+    if (!isGitRepo || notAGitRepo) {
+      setMeName(null)
+      return
+    }
+    void refreshCurrentUser()
+  }, [isGitRepo, notAGitRepo, refreshCurrentUser])
+
+  // Load the per-folder recently-filtered authors when the folder changes.
+  useEffect(() => {
+    setRecentAuthors(folder?.path ? loadRecentAuthors(folder.path) : [])
+  }, [folder?.path])
 
   const fetchCommitBranches = useCallback(
     async (fullHash: string) => {
@@ -972,6 +1597,46 @@ export function GitLogTab() {
     [branchesByCommit, branchesLoading, folder?.path]
   )
 
+  // Lazy-load a commit's file changes on expand (git_log runs with
+  // withFiles=false so the list stays fast). Mirrors fetchCommitBranches, guarded
+  // by filesGenRef: every write is skipped once a full reload / folder switch has
+  // cleared the maps (bumping the gen), so a superseded request can neither latch
+  // "loading" nor mask a newer request's result with a stale error. An inline
+  // refresh does NOT bump the gen, so a pending request still settles normally.
+  const fetchCommitFiles = useCallback(
+    async (fullHash: string) => {
+      if (!folder?.path) return
+      if (filesByCommit[fullHash] || filesLoading[fullHash]) return
+
+      const clearError = (prev: Record<string, string>) => {
+        if (!prev[fullHash]) return prev
+        const next = { ...prev }
+        delete next[fullHash]
+        return next
+      }
+
+      const gen = filesGenRef.current
+      setFilesLoading((prev) => ({ ...prev, [fullHash]: true }))
+      setFilesError(clearError)
+
+      try {
+        const files = await gitCommitFiles(folder.path, fullHash)
+        if (gen !== filesGenRef.current) return
+        setFilesByCommit((prev) => ({ ...prev, [fullHash]: files }))
+        // Clear any prior error so a stale error can't mask loaded files.
+        setFilesError(clearError)
+      } catch (e) {
+        if (gen !== filesGenRef.current) return
+        setFilesError((prev) => ({ ...prev, [fullHash]: toErrorMessage(e) }))
+      } finally {
+        if (gen === filesGenRef.current) {
+          setFilesLoading((prev) => ({ ...prev, [fullHash]: false }))
+        }
+      }
+    },
+    [filesByCommit, filesLoading, folder?.path]
+  )
+
   const fetchLog = useCallback(
     async (options?: { inline?: boolean; branch?: string | null }) => {
       const inline = options?.inline ?? false
@@ -985,6 +1650,12 @@ export function GitLogTab() {
         setBranchesByCommit({})
         setBranchesLoading({})
         setBranchesError({})
+        setFilesByCommit({})
+        setFilesLoading({})
+        setFilesError({})
+        // Invalidate any in-flight fetchCommitFiles bound to the now-cleared
+        // maps so a superseded result can't overwrite the fresh view.
+        filesGenRef.current++
       }
       setError(null)
       setNotAGitRepo(false)
@@ -996,12 +1667,18 @@ export function GitLogTab() {
       fetchingRef.current = true
       setLoadingMore(false)
       try {
+        // selectedBranch === null → the default "all branches" view. Always
+        // skip file stats (withFiles=false) for speed; a commit's files load
+        // lazily on expand.
         const result = await gitLog(
           folder.path,
           PAGE_SIZE,
           branch ?? undefined,
           undefined,
-          0
+          0,
+          selectedAuthor ?? undefined,
+          branch === null,
+          false
         )
         if (gen !== logGenRef.current) return
         setEntries(result.entries)
@@ -1023,6 +1700,15 @@ export function GitLogTab() {
             filterRecordByCommitHashes(prev, commitHashes)
           )
           setBranchesError((prev) =>
+            filterRecordByCommitHashes(prev, commitHashes)
+          )
+          setFilesByCommit((prev) =>
+            filterRecordByCommitHashes(prev, commitHashes)
+          )
+          setFilesLoading((prev) =>
+            filterRecordByCommitHashes(prev, commitHashes)
+          )
+          setFilesError((prev) =>
             filterRecordByCommitHashes(prev, commitHashes)
           )
         }
@@ -1050,7 +1736,7 @@ export function GitLogTab() {
         }
       }
     },
-    [folder?.path, selectedBranch]
+    [folder?.path, selectedBranch, selectedAuthor]
   )
 
   useEffect(() => {
@@ -1059,7 +1745,8 @@ export function GitLogTab() {
 
   const handleRefresh = useCallback(() => {
     void fetchLog({ inline: true })
-  }, [fetchLog])
+    void refreshCurrentUser()
+  }, [fetchLog, refreshCurrentUser])
 
   // Append the next page (older commits) via the backend `skip` offset. Reads
   // live length/flags from refs; a generation mismatch means a page-0 reload
@@ -1083,7 +1770,10 @@ export function GitLogTab() {
         PAGE_SIZE,
         selectedBranch ?? undefined,
         undefined,
-        skip
+        skip,
+        selectedAuthor ?? undefined,
+        selectedBranch === null,
+        false
       )
       if (gen !== logGenRef.current) return
       const next = [...entriesRef.current, ...result.entries]
@@ -1102,7 +1792,7 @@ export function GitLogTab() {
       loadingMoreRef.current = false
       setLoadingMore(false)
     }
-  }, [folder?.path, selectedBranch])
+  }, [folder?.path, selectedBranch, selectedAuthor])
 
   // virtua reports the scroll offset each frame; fetch the next page once the
   // window nears the estimated end.
@@ -1141,7 +1831,9 @@ export function GitLogTab() {
       await gitNewBranch(folder.path, name, newBranchTarget.fullHash)
       setNewBranchTarget(null)
       setNewBranchName("")
-      await refreshBranches(name)
+      // Keep the "all branches" view; just refresh branch metadata (currentBranch
+      // drives reset gating). The all-branches commit set is unchanged.
+      await refreshBranches()
       toast.success(t("toasts.createdAndSwitchedNewBranch"), {
         description: t("toasts.newBranchFromCommit", {
           name,
@@ -1165,8 +1857,12 @@ export function GitLogTab() {
   ])
 
   const isResetAllowed = useMemo(() => {
+    // Reset always targets the CURRENT branch. Allow it from the default
+    // "all branches" view (selectedBranch === null) or when viewing the current
+    // branch; only block while viewing a DIFFERENT specific branch.
     return (
-      !!currentBranch && !!selectedBranch && currentBranch === selectedBranch
+      !!currentBranch &&
+      (selectedBranch === null || currentBranch === selectedBranch)
     )
   }, [currentBranch, selectedBranch])
 
@@ -1193,7 +1889,7 @@ export function GitLogTab() {
     setResetting(true)
     try {
       await gitReset(folder.path, resetTarget.fullHash, resetMode)
-      await refreshBranches(currentBranch)
+      await refreshBranches()
       await fetchLog({ inline: true })
       if (folder.id) {
         void emitEvent("folder://git-branch-changed", {
@@ -1245,9 +1941,36 @@ export function GitLogTab() {
     void fetchLog()
   }, [folder?.path, isGitRepo, fetchLog])
 
-  // Refresh branches & log on branch change, commit, or push
+  // What to run when a git event for the active folder arrives. Held in a ref so
+  // the subscription effect below can depend only on `folder` — NOT on fetchLog /
+  // refreshBranches / refreshCurrentUser, whose identities change on every branch
+  // or author switch. Without this, each filter change would tear down and
+  // re-register all three Tauri listeners (and widen the async-subscribe leak
+  // window below); with it, the listeners persist across filter changes and
+  // always call the latest fetchLog (current branch/author).
+  const onGitEventRef = useRef<() => void>(() => {})
   useEffect(() => {
-    if (!folder) return
+    onGitEventRef.current = () => {
+      void refreshBranches()
+      void refreshCurrentUser()
+      void fetchLog({ inline: true })
+    }
+  }, [refreshBranches, refreshCurrentUser, fetchLog])
+
+  // Refresh branches & log on branch change, commit, or push. Keyed on the
+  // numeric folder id (not the folder object) so a same-id object replacement
+  // from the active-folder context can't churn the subscriptions or open a brief
+  // window where a git event is missed. subscribe() is async (a Tauri IPC round
+  // trip), so this effect can be cleaned up before a subscription resolves: the
+  // `cancelled` flag both silences a callback that fires after cleanup and makes
+  // a listener that RESOLVES after cleanup detach itself immediately, instead of
+  // leaking a zombie whose unlisten fn would land in an array the cleanup already
+  // walked (that zombie would keep firing stale-filter refetches on later events).
+  const folderId = folder?.id ?? null
+  useEffect(() => {
+    if (folderId == null) return
+    let cancelled = false
+    const unlistens: (() => void)[] = []
 
     const events = [
       "folder://git-branch-changed",
@@ -1255,16 +1978,17 @@ export function GitLogTab() {
       "folder://git-push-succeeded",
     ] as const
 
-    const unlistens: ((() => void) | null)[] = events.map(() => null)
-
-    events.forEach((eventName, i) => {
+    events.forEach((eventName) => {
       subscribe<{ folder_id: number }>(eventName, (payload) => {
-        if (payload.folder_id !== folder.id) return
-        void refreshBranches()
-        void fetchLog({ inline: true })
+        if (cancelled || payload.folder_id !== folderId) return
+        onGitEventRef.current()
       })
         .then((fn) => {
-          unlistens[i] = fn
+          if (cancelled) {
+            fn()
+            return
+          }
+          unlistens.push(fn)
         })
         .catch((err) => {
           console.error(`[GitLogTab] failed to listen ${eventName}:`, err)
@@ -1272,11 +1996,10 @@ export function GitLogTab() {
     })
 
     return () => {
-      events.forEach((_eventName, i) => {
-        unlistens[i]?.()
-      })
+      cancelled = true
+      unlistens.forEach((fn) => fn())
     }
-  }, [folder, refreshBranches, fetchLog])
+  }, [folderId])
 
   if (!folder) {
     return <AuxPanelNoFolderEmpty />
@@ -1287,25 +2010,21 @@ export function GitLogTab() {
   if (loading || folderStale) {
     return (
       <div className="flex h-full min-h-0 flex-col">
-        {hasBranches && (
-          <div
-            className={cn(
-              "flex shrink-0 items-center border-b px-3",
-              // Match the session-details / conversation / file detail headers:
-              // desktop h-10 + lightened border; mobile keeps its own sizing.
-              isMobile ? "border-border py-2" : "h-10 border-border/50"
-            )}
-          >
-            <BranchSelector
-              branchList={branchList}
-              currentBranch={currentBranch}
-              selectedBranch={selectedBranch}
-              onBranchChange={handleBranchChange}
-              onRefresh={handleRefresh}
-              refreshing={loading || refreshing}
-            />
-          </div>
-        )}
+        <LogHeader
+          branchList={branchList}
+          currentBranch={currentBranch}
+          selectedBranch={selectedBranch}
+          onBranchChange={handleBranchChange}
+          onRefresh={handleRefresh}
+          refreshing={loading || refreshing}
+          meName={meName}
+          recentAuthors={recentAuthors}
+          selectedAuthor={selectedAuthor}
+          folderPath={folder?.path ?? null}
+          onAuthorChange={handleAuthorChange}
+          onRemoveRecent={handleRemoveRecent}
+          isMobile={isMobile}
+        />
         <ScrollArea className="min-h-0 flex-1 px-3 py-3">
           <div className="space-y-4">
             {Array.from({ length: 6 }).map((_, i) => (
@@ -1352,23 +2071,21 @@ export function GitLogTab() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {hasBranches && (
-        <div
-          className={cn(
-            "flex shrink-0 items-center border-b px-3",
-            isMobile ? "border-border py-2" : "h-10 border-border/50"
-          )}
-        >
-          <BranchSelector
-            branchList={branchList}
-            currentBranch={currentBranch}
-            selectedBranch={selectedBranch}
-            onBranchChange={handleBranchChange}
-            onRefresh={handleRefresh}
-            refreshing={loading || refreshing}
-          />
-        </div>
-      )}
+      <LogHeader
+        branchList={branchList}
+        currentBranch={currentBranch}
+        selectedBranch={selectedBranch}
+        onBranchChange={handleBranchChange}
+        onRefresh={handleRefresh}
+        refreshing={loading || refreshing}
+        meName={meName}
+        recentAuthors={recentAuthors}
+        selectedAuthor={selectedAuthor}
+        folderPath={folder?.path ?? null}
+        onAuthorChange={handleAuthorChange}
+        onRemoveRecent={handleRemoveRecent}
+        isMobile={isMobile}
+      />
       {error ? (
         <ScrollArea className="min-h-0 flex-1 px-3 py-3">
           <div className="pt-1 text-xs text-destructive">
@@ -1422,6 +2139,11 @@ export function GitLogTab() {
                     const commitBranches = branchesByCommit[commitKey]
                     const isBranchLoading = !!branchesLoading[commitKey]
                     const branchError = branchesError[commitKey]
+                    // Lazily-loaded file changes for this commit (undefined until
+                    // its row is first expanded).
+                    const commitFiles = filesByCommit[commitKey]
+                    const isFilesLoading = !!filesLoading[commitKey]
+                    const filesLoadError = filesError[commitKey]
                     const isOpen = !!openByCommit[commitKey]
 
                     return (
@@ -1454,6 +2176,7 @@ export function GitLogTab() {
                                   }))
                                   if (open) {
                                     void fetchCommitBranches(commitKey)
+                                    void fetchCommitFiles(commitKey)
                                   }
                                 }}
                                 open={isOpen}
@@ -1574,17 +2297,45 @@ export function GitLogTab() {
                                         </time>
                                       </span>
                                     </div>
-                                    <div className="group/msg relative rounded-lg border border-border/60 bg-muted/20 p-2.5">
-                                      <p className="text-xs whitespace-pre-wrap break-words pr-6">
-                                        {entry.message}
-                                      </p>
-                                      <CommitCopyButton
-                                        className="absolute top-1.5 right-1.5 size-5 opacity-0 transition-opacity group-hover/msg:opacity-100 group-focus-within/msg:opacity-100"
-                                        hash={entry.message}
-                                        title={t("copyMessage")}
+                                    {/* Long release messages are capped with a
+                                        Show more / Show less toggle so the file
+                                        tree below stays reachable. */}
+                                    <GitLogCommitMessage
+                                      message={entry.message}
+                                    />
+                                    {/* File changes load lazily on expand (the
+                                        list query runs with withFiles=false).
+                                        CommitFilesTree renders its own "Files"
+                                        header, so the loading/error/empty states
+                                        supply their own. */}
+                                    {isFilesLoading && !commitFiles ? (
+                                      <div className="space-y-1">
+                                        <p className="text-[11px] text-muted-foreground">
+                                          {t("filesTitle")}
+                                        </p>
+                                        <p className="text-xs text-muted-foreground">
+                                          {t("loadingFiles")}
+                                        </p>
+                                      </div>
+                                    ) : filesLoadError ? (
+                                      <div className="space-y-1">
+                                        <p className="text-[11px] text-muted-foreground">
+                                          {t("filesTitle")}
+                                        </p>
+                                        <p className="text-xs text-destructive">
+                                          {filesLoadError}
+                                        </p>
+                                      </div>
+                                    ) : commitFiles &&
+                                      commitFiles.length > 0 ? (
+                                      <CommitFilesTree
+                                        commitHash={entry.full_hash}
+                                        files={commitFiles}
+                                        folderName={folderName}
+                                        onOpenCommitDiff={openCommitDiff}
+                                        onOpenFilePreview={openFilePreview}
                                       />
-                                    </div>
-                                    {entry.files.length === 0 ? (
+                                    ) : (
                                       <div className="space-y-1">
                                         <p className="text-[11px] text-muted-foreground">
                                           {t("filesTitle")}
@@ -1593,14 +2344,6 @@ export function GitLogTab() {
                                           {t("noFileChangeDetails")}
                                         </p>
                                       </div>
-                                    ) : (
-                                      <CommitFilesTree
-                                        commitHash={entry.full_hash}
-                                        files={entry.files}
-                                        folderName={folderName}
-                                        onOpenCommitDiff={openCommitDiff}
-                                        onOpenFilePreview={openFilePreview}
-                                      />
                                     )}
                                     <div className="pt-3 space-y-1">
                                       <p className="text-[11px] text-muted-foreground">

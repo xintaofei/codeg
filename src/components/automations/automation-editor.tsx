@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
+import { getAgentLabel } from "@/lib/custom-agents"
 import { ArrowLeft, Folder, Globe, Wand2 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
@@ -41,7 +42,6 @@ import {
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import { automationComputeNextRun } from "@/lib/api"
-import { AGENT_LABELS } from "@/lib/types"
 import type {
   AgentType,
   Automation,
@@ -273,7 +273,7 @@ export function AutomationEditor({
         ? automation.agent_type
         : agentType
       const label_snapshot = {
-        agent_label: AGENT_LABELS[agentType] ?? agentType,
+        agent_label: getAgentLabel(agentType) ?? agentType,
         ...(folderName ? { folder_label: folderName } : {}),
         ...snapshotLabels(snapshot, mode_id, config_values),
       }

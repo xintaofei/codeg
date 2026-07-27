@@ -23,9 +23,11 @@ import {
   acpPrompt,
   acpSetMode,
   acpSetConfigOption,
+  acpGoalControl,
   acpCancel,
   acpRespondPermission,
   acpAnswerQuestion,
+  acpAnswerPlanApproval,
   acpDisconnect,
   acpTouchConnection,
   acpGetSessionSnapshot,
@@ -51,6 +53,8 @@ import type {
   PermissionOptionInfo,
   PendingQuestionState,
   QuestionAnswer,
+  PendingPlanApprovalState,
+  PlanApprovalAnswer,
   SessionConfigOptionInfo,
   SessionModeStateInfo,
   SessionUsageUpdateInfo,
@@ -59,7 +63,7 @@ import type {
   ToolCallImageWire,
   UserMessageBlock,
 } from "@/lib/types"
-import { AGENT_LABELS } from "@/lib/types"
+import { getAgentLabel } from "@/lib/custom-agents"
 import {
   CONNECTION_IDLE_TIMEOUT_MS,
   CONNECTION_KEEPALIVE_INTERVAL_MS,
@@ -179,6 +183,10 @@ export interface ConnectionState {
    *  `pending_question`; cleared on `question_resolved` or turn end. Distinct
    *  from the free-text `pendingQuestion` above. */
   pendingAskQuestion: PendingQuestionState | null
+  /** Awaiting-decision Grok `exit_plan_mode` approval (the plan the agent is
+   *  blocked on). Set from a `plan_approval_request` event or a snapshot's
+   *  `pending_plan_approval`; cleared on `plan_approval_resolved` or turn end. */
+  pendingPlanApproval: PendingPlanApprovalState | null
   claudeApiRetry: ClaudeApiRetryState | null
   error: string | null
   /**
@@ -445,6 +453,18 @@ type Action =
       /** When present, only clear if the current question_id matches (guards a
        *  late `question_resolved` from wiping a freshly-raised question). */
       questionId?: string
+    }
+  | {
+      type: "SET_PLAN_APPROVAL"
+      contextKey: string
+      pendingPlanApproval: PendingPlanApprovalState
+    }
+  | {
+      type: "CLEAR_PLAN_APPROVAL"
+      contextKey: string
+      /** When present, only clear if the current approval_id matches (guards a
+       *  late `plan_approval_resolved` from wiping a freshly-raised approval). */
+      approvalId?: string
     }
   | { type: "SESSION_STARTED"; contextKey: string; sessionId: string }
   | {
@@ -1134,6 +1154,7 @@ function connectionsReducer(
         pendingUserMessage: null,
         pendingQuestion: null,
         pendingAskQuestion: null,
+        pendingPlanApproval: null,
         claudeApiRetry: null,
         error: null,
         loadError: null,
@@ -1190,6 +1211,7 @@ function connectionsReducer(
         pendingUserMessage: null,
         pendingQuestion: null,
         pendingAskQuestion: null,
+        pendingPlanApproval: null,
         claudeApiRetry: null,
         error: null,
         loadError: null,
@@ -1300,6 +1322,7 @@ function connectionsReducer(
         liveMessage: hydratedLiveMessage,
         pendingPermission: hydratedPendingPermission,
         pendingAskQuestion: action.patch.pendingAskQuestion,
+        pendingPlanApproval: action.patch.pendingPlanApproval,
         pendingUserMessage: action.patch.pendingUserMessage,
         promptCapabilities: mergedPromptCapabilities,
         selectorsReady: mergedSelectorsReady,
@@ -1377,6 +1400,9 @@ function connectionsReducer(
         // clears it via `question_resolved`; this is the safety net for a turn
         // that ended without one (agent error / abandoned block).
         updated.pendingAskQuestion = null
+        // Likewise a blocked exit_plan_mode approval — cleared via
+        // `plan_approval_resolved` normally; this is the turn-end safety net.
+        updated.pendingPlanApproval = null
       }
       next.set(action.contextKey, updated)
       return next
@@ -1900,6 +1926,34 @@ function connectionsReducer(
       return next
     }
 
+    case "SET_PLAN_APPROVAL": {
+      const conn = state.get(action.contextKey)
+      if (!conn) return state
+      const next = new Map(state)
+      next.set(action.contextKey, {
+        ...conn,
+        pendingPlanApproval: action.pendingPlanApproval,
+      })
+      return next
+    }
+
+    case "CLEAR_PLAN_APPROVAL": {
+      const conn = state.get(action.contextKey)
+      if (!conn) return state
+      if (
+        action.approvalId !== undefined &&
+        conn.pendingPlanApproval?.approval_id !== action.approvalId
+      ) {
+        return state
+      }
+      const next = new Map(state)
+      next.set(action.contextKey, {
+        ...conn,
+        pendingPlanApproval: null,
+      })
+      return next
+    }
+
     case "SESSION_STARTED": {
       const conn = state.get(action.contextKey)
       if (!conn) return state
@@ -2273,6 +2327,13 @@ export interface AcpActionsValue {
     questionId: string,
     answer: QuestionAnswer
   ): Promise<void>
+  answerPlanApproval(
+    contextKey: string,
+    approvalId: string,
+    answer: PlanApprovalAnswer
+  ): Promise<void>
+  /** Pause or clear the session's active Codex goal (codex-acp #293). */
+  goalControl(contextKey: string, action: "pause" | "clear"): Promise<void>
   setActiveKey(key: string | null): void
   touchActivity(contextKey: string): void
   registerOpenTabKeys(keys: Set<string>): void
@@ -2506,7 +2567,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         return { kind: "missing_config", reason: t("blocked.missingConfig") }
       }
 
-      const agentLabel = AGENT_LABELS[agent.agent_type]
+      const agentLabel = getAgentLabel(agent.agent_type)
       if (!agent.enabled) {
         return {
           kind: "disabled",
@@ -2948,6 +3009,31 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             questionId: e.question_id,
           })
           break
+        case "plan_approval_request":
+          // Grok called `exit_plan_mode`: it's blocked on the user's approval of
+          // the plan. Flush queued streaming so the card renders against current
+          // content, then raise the interactive plan-approval card.
+          flushStreamingQueue()
+          dispatch({
+            type: "SET_PLAN_APPROVAL",
+            contextKey,
+            pendingPlanApproval: {
+              approval_id: e.approval_id,
+              tool_call_id: e.tool_call_id,
+              plan_markdown: e.plan_markdown,
+              created_at: new Date().toISOString(),
+            },
+          })
+          break
+        case "plan_approval_resolved":
+          // The approval was answered (this or another window) or canceled.
+          // Matched by approval_id so a stale event can't wipe a fresh one.
+          dispatch({
+            type: "CLEAR_PLAN_APPROVAL",
+            contextKey,
+            approvalId: e.approval_id,
+          })
+          break
         case "background_activity": {
           // Out-of-turn transcript activity from the backend watcher: async
           // task completions, the agent's continued work after them, cron//
@@ -3010,7 +3096,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           //    sendSystemNotification).
           if (e.settled && e.settled.length > 0) {
             const nc = storeRef.current.connections.get(contextKey)
-            const agentLabel = nc ? AGENT_LABELS[nc.agentType] : "Agent"
+            const agentLabel = nc ? getAgentLabel(nc.agentType) : "Agent"
             const fn = folderNameRef.current
             const title = fn ? `${fn} - Codeg` : "Codeg"
             for (const settled of e.settled) {
@@ -3070,7 +3156,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           {
             const nc = storeRef.current.connections.get(contextKey)
             if (nc) {
-              const agentLabel = AGENT_LABELS[nc.agentType]
+              const agentLabel = getAgentLabel(nc.agentType)
               const fn = folderNameRef.current
               const title = fn ? `${fn} - Codeg` : "Codeg"
               sendSystemNotification(
@@ -3202,6 +3288,26 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             entries: e.entries,
           })
           break
+        case "turn_retrying": {
+          // codex-acp #289: a retryable turn error keeps the turn alive (codex
+          // auto-retries). Reuse the Claude API-retry banner — codex doesn't
+          // report attempt/limit/delay, so those stay null; the banner clears at
+          // the next turn boundary like the Claude path.
+          const retryConn = storeRef.current.connections.get(contextKey)
+          dispatch({
+            type: "CLAUDE_API_RETRY",
+            contextKey,
+            retry: {
+              sessionId: retryConn?.sessionId ?? "",
+              attempt: null,
+              maxRetries: null,
+              error: e.message,
+              errorStatus: e.error_status ?? null,
+              retryDelayMs: null,
+            },
+          })
+          break
+        }
         case "turn_complete": {
           flushStreamingQueue()
           flushPendingToolCallUpdates()
@@ -3243,7 +3349,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           {
             const nc = storeRef.current.connections.get(contextKey)
             if (nc) {
-              const agentLabel = AGENT_LABELS[nc.agentType]
+              const agentLabel = getAgentLabel(nc.agentType)
               const fn = folderNameRef.current
               const title = fn ? `${fn} - Codeg` : "Codeg"
               sendSystemNotification(
@@ -3258,7 +3364,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           flushStreamingQueue()
           const nc = storeRef.current.connections.get(contextKey)
           const agentLabel = nc
-            ? AGENT_LABELS[nc.agentType]
+            ? getAgentLabel(nc.agentType)
             : (e.agent_type as string)
 
           // Localize backend errors via their stable `code` identifier.
@@ -3338,7 +3444,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           // agent message so an unknown future code still surfaces something
           // intelligible rather than getting swallowed.
           const nc = storeRef.current.connections.get(contextKey)
-          const agentLabel = nc ? AGENT_LABELS[nc.agentType] : ""
+          const agentLabel = nc ? getAgentLabel(nc.agentType) : ""
           const localizedMessage = (() => {
             switch (e.code) {
               case "resource_not_found":
@@ -3911,7 +4017,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             message: normalizeErrorMessage(error),
           })
           const failedTitle = t("connectFailedTitle", {
-            agent: AGENT_LABELS[agentType],
+            agent: getAgentLabel(agentType),
           })
           pushAlertRef.current(
             "error",
@@ -3925,7 +4031,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         const blocked = resolveConnectBlockState(configuredAgent)
         if (blocked.kind !== "none") {
           const failedTitle = t("connectFailedTitle", {
-            agent: AGENT_LABELS[agentType],
+            agent: getAgentLabel(agentType),
           })
           const detail =
             blocked.kind === "sdk_missing"
@@ -4200,7 +4306,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           pendingRequest != null && !sameConnectRequest(pendingRequest, request)
         if (!superseded && !isAlertedError(err)) {
           const message = normalizeErrorMessage(err)
-          const agentLabel = AGENT_LABELS[agentType]
+          const agentLabel = getAgentLabel(agentType)
           // Backend safety net: if the agent turned out to be not
           // installed (e.g. the binary was removed between preflight
           // and spawn), surface the same install prompt with a direct
@@ -4424,6 +4530,24 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     await acpCancel(conn.connectionId)
   }, [])
 
+  const goalControl = useCallback(
+    async (contextKey: string, action: "pause" | "clear") => {
+      const conn = storeRef.current.connections.get(contextKey)
+      if (!conn) return
+      // Fire-and-forget: there is no in-flight card UI to settle (unlike
+      // answerQuestion). The resulting goal snapshot arrives as a normal
+      // session_info_update, and a wire failure is surfaced by the backend's
+      // recoverable Error event — so log here and don't rethrow.
+      try {
+        lastActivityRef.current.set(contextKey, Date.now())
+        await acpGoalControl(conn.connectionId, action)
+      } catch (e) {
+        console.error("[AcpConnections] goalControl failed:", e)
+      }
+    },
+    []
+  )
+
   const respondPermission = useCallback(
     async (contextKey: string, requestId: string, optionId: string) => {
       const conn = storeRef.current.connections.get(contextKey)
@@ -4466,6 +4590,35 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         dispatch({ type: "CLEAR_ASK_QUESTION", contextKey, questionId })
       } catch (e) {
         console.error("[AcpConnections] answerQuestion failed:", e)
+        throw e
+      }
+    },
+    [dispatch]
+  )
+
+  const answerPlanApproval = useCallback(
+    async (
+      contextKey: string,
+      approvalId: string,
+      answer: PlanApprovalAnswer
+    ) => {
+      const conn = storeRef.current.connections.get(contextKey)
+      if (!conn) {
+        // Throw, don't silently return: PlanApprovalCard awaits this and holds a
+        // disabled in-flight state until it resolves. A silent resolve would
+        // leave the card stuck; the throw routes to its retryable inline error.
+        throw new Error(
+          `[AcpConnections] answerPlanApproval: no connection for ${contextKey}`
+        )
+      }
+      try {
+        lastActivityRef.current.set(contextKey, Date.now())
+        await acpAnswerPlanApproval(conn.connectionId, approvalId, answer)
+        // Optimistically clear; the backend also broadcasts
+        // plan_approval_resolved (idempotent on the matched id).
+        dispatch({ type: "CLEAR_PLAN_APPROVAL", contextKey, approvalId })
+      } catch (e) {
+        console.error("[AcpConnections] answerPlanApproval failed:", e)
         throw e
       }
     },
@@ -4551,8 +4704,10 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       setMode,
       setConfigOption,
       cancel,
+      goalControl,
       respondPermission,
       answerQuestion,
+      answerPlanApproval,
       setActiveKey,
       touchActivity,
       registerOpenTabKeys,
@@ -4571,8 +4726,10 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       setMode,
       setConfigOption,
       cancel,
+      goalControl,
       respondPermission,
       answerQuestion,
+      answerPlanApproval,
       setActiveKey,
       touchActivity,
       registerOpenTabKeys,

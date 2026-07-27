@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useMemo, useRef } from "react"
 import { Reorder } from "motion/react"
+import type { PanInfo } from "motion/react"
 import { X } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { cn, handleMiddleClickClose } from "@/lib/utils"
@@ -12,10 +13,22 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import { useLongPressDrag } from "@/hooks/use-long-press-drag"
 import type { TabItem as TabItemData } from "@/contexts/tab-context"
+import type { SplitDirection } from "@/lib/tab-group-layout"
+
+/** A group this tab could move to (every group EXCEPT the tab's own), labeled
+ *  by its traversal-order number and its selected tab's title. */
+export interface TabMoveTarget {
+  groupId: string
+  index: number
+  title: string | null
+}
 
 interface TabItemProps {
   tab: TabItemData
@@ -31,12 +44,36 @@ interface TabItemProps {
   adjacentActive?: "before" | "after"
   folderName: string | null
   folderBranch: string | null
+  /** More than one split group exists — shows the group-management items. */
+  isSplit: boolean
+  /** This tab's group has ≥ 2 tabs, so "Split and Move" leaves a non-empty
+   *  group behind (moving the only tab would just shift the group). */
+  canSplitMove: boolean
+  moveTargets: TabMoveTarget[]
+  /** Cross-group drag (split-group strips only): pointer tracking during the
+   *  drag and the drop commit. Undefined = single-group strip, no cross-group
+   *  semantics. */
+  onTabDrag?: (
+    tab: TabItemData,
+    event: MouseEvent | TouchEvent | PointerEvent,
+    info: PanInfo
+  ) => void
+  onTabDragEnd?: (
+    tab: TabItemData,
+    event: MouseEvent | TouchEvent | PointerEvent,
+    info: PanInfo
+  ) => void
   onSwitch: (tabId: string) => void
   onClose: (tabId: string) => void
   onCloseOthers: (tabId: string) => void
   onCloseAll: () => void
   onPin: (tabId: string) => void
   onToggleTile: () => void
+  onSplit: (tabId: string, direction: SplitDirection, move: boolean) => void
+  onMoveToGroup: (tabId: string, targetGroupId: string) => void
+  onToggleSplitOrientation: () => void
+  onUnsplit: () => void
+  onUnsplitAll: () => void
   isCoarsePointer: boolean
   isTouchSorting: boolean
   onTouchSortingStart: (tabId: string) => void
@@ -51,12 +88,22 @@ export const TabItem = memo(function TabItem({
   adjacentActive,
   folderName,
   folderBranch,
+  isSplit,
+  canSplitMove,
+  moveTargets,
+  onTabDrag,
+  onTabDragEnd,
   onSwitch,
   onClose,
   onCloseOthers,
   onCloseAll,
   onPin,
   onToggleTile,
+  onSplit,
+  onMoveToGroup,
+  onToggleSplitOrientation,
+  onUnsplit,
+  onUnsplitAll,
   isCoarsePointer,
   isTouchSorting,
   onTouchSortingStart,
@@ -90,6 +137,26 @@ export const TabItem = memo(function TabItem({
     onEnd: onTouchSortingEnd,
     onDragSettle: clearResidualStyles,
   })
+  // gestureHandlers carries its own onDragEnd (long-press cleanup + post-drag
+  // click suppression). The cross-group drop hook must COMPOSE with it, not
+  // clobber it via spread order.
+  const { onDragEnd: longPressDragEnd, ...restGestureHandlers } =
+    gestureHandlers
+
+  const handleDragMove = useCallback(
+    (event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo) => {
+      onTabDrag?.(tab, event, info)
+    },
+    [onTabDrag, tab]
+  )
+
+  const handleDragEnd = useCallback(
+    (event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo) => {
+      longPressDragEnd()
+      onTabDragEnd?.(tab, event, info)
+    },
+    [longPressDragEnd, onTabDragEnd, tab]
+  )
 
   const handleClick = useCallback(() => {
     onSwitch(tab.id)
@@ -109,6 +176,27 @@ export const TabItem = memo(function TabItem({
     onCloseOthers(tab.id)
   }, [onCloseOthers, tab.id])
 
+  const handleSplitRight = useCallback(
+    () => onSplit(tab.id, "right", false),
+    [onSplit, tab.id]
+  )
+  const handleSplitDown = useCallback(
+    () => onSplit(tab.id, "down", false),
+    [onSplit, tab.id]
+  )
+  const handleSplitMoveRight = useCallback(
+    () => onSplit(tab.id, "right", true),
+    [onSplit, tab.id]
+  )
+  const handleSplitMoveDown = useCallback(
+    () => onSplit(tab.id, "down", true),
+    [onSplit, tab.id]
+  )
+  const handleMoveToOpposite = useCallback(() => {
+    const target = moveTargets[0]
+    if (target) onMoveToGroup(tab.id, target.groupId)
+  }, [moveTargets, onMoveToGroup, tab.id])
+
   const whileDrag = useMemo(() => ({ scale: 1.03 }), [])
 
   return (
@@ -121,7 +209,9 @@ export const TabItem = memo(function TabItem({
       dragControls={dragControls}
       dragListener={!isCoarsePointer}
       whileDrag={whileDrag}
-      {...gestureHandlers}
+      {...restGestureHandlers}
+      onDrag={onTabDrag ? handleDragMove : undefined}
+      onDragEnd={handleDragEnd}
       onLayoutAnimationComplete={clearResidualStyles}
       data-tab-item
       data-active={embedded && isActive ? "true" : undefined}
@@ -254,6 +344,71 @@ export const TabItem = memo(function TabItem({
           <ContextMenuItem onSelect={handleCloseOthers}>
             {t("closeOthers")}
           </ContextMenuItem>
+          <ContextMenuSeparator />
+          {/* IDEA-style split-group vocabulary. Plain "Split" seeds the new
+              group with a fresh draft (a conversation can't be open in two
+              groups at once), "Split and Move" relocates this tab. */}
+          <ContextMenuItem onSelect={handleSplitRight}>
+            {t("splitRight")}
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={handleSplitDown}>
+            {t("splitDown")}
+          </ContextMenuItem>
+          <ContextMenuItem
+            disabled={!canSplitMove}
+            onSelect={handleSplitMoveRight}
+          >
+            {t("splitAndMoveRight")}
+          </ContextMenuItem>
+          <ContextMenuItem
+            disabled={!canSplitMove}
+            onSelect={handleSplitMoveDown}
+          >
+            {t("splitAndMoveDown")}
+          </ContextMenuItem>
+          {isSplit && (
+            <>
+              {moveTargets.length === 1 ? (
+                <ContextMenuItem onSelect={handleMoveToOpposite}>
+                  {t("moveToOppositeGroup")}
+                </ContextMenuItem>
+              ) : (
+                <ContextMenuSub>
+                  <ContextMenuSubTrigger>
+                    {t("moveToGroup")}
+                  </ContextMenuSubTrigger>
+                  <ContextMenuSubContent>
+                    {moveTargets.map((target) => (
+                      <ContextMenuItem
+                        key={target.groupId}
+                        onSelect={() => onMoveToGroup(tab.id, target.groupId)}
+                      >
+                        <span className="shrink-0">
+                          {t("groupLabel", { index: target.index })}
+                        </span>
+                        {target.title && (
+                          <span className="max-w-40 truncate text-muted-foreground">
+                            {target.title}
+                          </span>
+                        )}
+                      </ContextMenuItem>
+                    ))}
+                  </ContextMenuSubContent>
+                </ContextMenuSub>
+              )}
+              <ContextMenuItem onSelect={onToggleSplitOrientation}>
+                {t("changeSplitterOrientation")}
+              </ContextMenuItem>
+              <ContextMenuItem onSelect={onUnsplit}>
+                {t("unsplit")}
+              </ContextMenuItem>
+              {moveTargets.length >= 2 && (
+                <ContextMenuItem onSelect={onUnsplitAll}>
+                  {t("unsplitAll")}
+                </ContextMenuItem>
+              )}
+            </>
+          )}
           <ContextMenuSeparator />
           <ContextMenuItem onSelect={onToggleTile}>
             {isTileMode ? t("untileDisplay") : t("tileDisplay")}

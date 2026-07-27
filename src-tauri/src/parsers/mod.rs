@@ -1,3 +1,4 @@
+pub mod acp_native;
 pub mod claude;
 pub mod cline;
 pub mod codebuddy;
@@ -449,6 +450,23 @@ fn model_capacity_suffix_regex() -> &'static Regex {
     })
 }
 
+/// Matches the SDK's *id* spelling of Anthropic's 1M-context lane, where `1m`
+/// is its own delimited token (`claude-opus-4-6-1m`). `\b1m\b` is the same
+/// test claude-agent-acp's `inferContextWindowFromModel` applies, and it
+/// deliberately does not match embedded runs like `10m`.
+fn claude_one_million_id_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)\b1m\b").expect("valid claude 1m id regex"))
+}
+
+/// Whether `model` names Anthropic's 1M-context lane through the SDK's id
+/// spelling (`claude-opus-4-6-1m`). The CLI's *display* spelling
+/// (`claude-sonnet-5[1m]`) carries the same meaning but is handled by
+/// [`parse_model_capacity_suffix`], which reads the bracketed number directly.
+fn is_claude_one_million_context_id(model: &str) -> bool {
+    claude_one_million_id_regex().is_match(model)
+}
+
 fn parse_model_capacity_suffix(model: &str) -> Option<u64> {
     let captures = model_capacity_suffix_regex().captures(model.trim())?;
     let value = captures.get(1)?.as_str().parse::<f64>().ok()?;
@@ -489,7 +507,15 @@ pub fn infer_context_window_max_tokens(model: Option<&str>) -> Option<u64> {
         .trim()
         .to_ascii_lowercase();
 
+    // Anthropic's default lane is 200K; the 1M lane is opt-in and shows up in
+    // the model id itself. Agents other than Claude Code record the id the way
+    // their backend named it, so the marker survives here — unlike Claude
+    // Code's own transcripts, where it is stripped (see
+    // `claude::claude_context_window_max_tokens_for_model`).
     if normalized.starts_with("claude") {
+        if is_claude_one_million_context_id(&normalized) {
+            return Some(1_000_000);
+        }
         return Some(200_000);
     }
     if normalized.starts_with("gemini") {
@@ -1207,6 +1233,21 @@ mod tests {
         assert_eq!(
             infer_context_window_max_tokens(Some("claude-sonnet-4-6 [1.5M]")),
             Some(1_500_000)
+        );
+        // The 1M lane also travels as a bare id token (`-1m`), which is how the
+        // SDK — and therefore every agent that records the resolved id — spells
+        // it. `\b1m\b` must not fire on an embedded run like `10m`.
+        assert_eq!(
+            infer_context_window_max_tokens(Some("claude-opus-4-6-1m")),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            infer_context_window_max_tokens(Some("my-gateway/claude-opus-4-6-1m")),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            infer_context_window_max_tokens(Some("claude-opus-4-6-10m-preview")),
+            Some(200_000)
         );
         // Grok context windows per x.ai docs: grok-4.5 = 500K, grok-4.3 /
         // grok-4.20 = 1M, the coding/build models = 256K (grok-code-fast-1

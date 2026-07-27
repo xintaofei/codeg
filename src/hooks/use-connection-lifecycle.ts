@@ -2,11 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
+import { toast } from "sonner"
 import { useAcpActions } from "@/contexts/acp-connections-context"
 import { useTaskContext } from "@/contexts/task-context"
 import { useConnection, type UseConnectionReturn } from "@/hooks/use-connection"
+import { extractAppCommandError } from "@/lib/app-error"
 import { TurnBusyError } from "@/lib/turn-busy"
-import { AGENT_LABELS, type AgentType, type PromptDraft } from "@/lib/types"
+import { type AgentType, type PromptDraft } from "@/lib/types"
+import { getAgentLabel } from "@/lib/custom-agents"
 
 interface UseConnectionLifecycleOptions {
   contextKey: string
@@ -20,6 +23,14 @@ interface UseConnectionLifecycleOptions {
    * (cross-client viewing) instead of always spawning a fresh agent.
    */
   conversationId?: number
+  /**
+   * Read at unmount-cleanup time: true when the component is unmounting
+   * because the view is being REPARENTED (its tab moved between split groups /
+   * an unsplit merged it), not closed. A transient unmount must not
+   * disconnect — the remounted instance re-attaches to the same live
+   * connection under the same contextKey.
+   */
+  isTransientUnmount?: () => boolean
 }
 
 export interface UseConnectionLifecycleReturn {
@@ -42,6 +53,16 @@ export interface UseConnectionLifecycleReturn {
        * draft instead of treating it as an error.
        */
       onTurnInProgress?: () => void
+      /**
+       * Called for every OTHER send failure (413, hydration failure, network
+       * drop) after the error toast is shown. The caller must settle any
+       * optimistic state it created for this send — roll back the optimistic
+       * user turn so the conversation doesn't stay `awaiting_persist` (which
+       * would block queue auto-flush) and doesn't display the failed prompt
+       * as though it were sent. The draft is deliberately NOT re-queued: a
+       * deterministic failure would otherwise retry forever.
+       */
+      onSendFailed?: (error: unknown) => void
     }
   ) => void
   handleSetConfigOption: (configId: string, valueId: string) => void
@@ -58,13 +79,18 @@ export interface UseConnectionLifecycleReturn {
  * backend max-age valve expires it). Viewers always tear down: their
  * disconnect only detaches (never kills the owner's agent), and the sweep
  * skips viewers so leaving one attached would leak its subscription.
+ * EXCEPT on a transient unmount (tab reparented across split groups, not
+ * closed): the remounted view re-attaches to the same connection, so neither
+ * owners nor viewers tear down.
  * Exported for tests.
  */
 export function shouldDisconnectOnUnmount(args: {
   status: string | null
   isViewer: boolean
   backgroundOutstanding: number
+  transientUnmount?: boolean
 }): boolean {
+  if (args.transientUnmount) return false
   if (args.isViewer) return true
   const ownerBusy =
     args.status === "prompting" || args.backgroundOutstanding > 0
@@ -88,6 +114,7 @@ export function useConnectionLifecycle({
   workingDir,
   sessionId,
   conversationId,
+  isTransientUnmount,
 }: UseConnectionLifecycleOptions): UseConnectionLifecycleReturn {
   const t = useTranslations("Folder.chat.connectionLifecycle")
   const { setActiveKey, touchActivity } = useAcpActions()
@@ -227,7 +254,7 @@ export function useConnectionLifecycle({
       if (!taskIdRef.current) {
         const id = `acp-connect-${Date.now()}`
         taskIdRef.current = id
-        const agent = AGENT_LABELS[agentType]
+        const agent = getAgentLabel(agentType)
         addTask(
           id,
           t("tasks.connectingTitle", { agent }),
@@ -278,7 +305,7 @@ export function useConnectionLifecycle({
     if (!selectorTaskIdRef.current) {
       const id = `acp-session-init-${Date.now()}`
       selectorTaskIdRef.current = id
-      const agent = AGENT_LABELS[agentType]
+      const agent = getAgentLabel(agentType)
       addTask(
         id,
         t("tasks.initSessionTitle", { agent }),
@@ -302,6 +329,10 @@ export function useConnectionLifecycle({
   useEffect(() => {
     connDisconnectRef.current = connDisconnect
   }, [connDisconnect])
+  const isTransientUnmountRef = useRef(isTransientUnmount)
+  useEffect(() => {
+    isTransientUnmountRef.current = isTransientUnmount
+  }, [isTransientUnmount])
 
   // Clean up on unmount (e.g. tab closed): disconnect the ACP connection
   // so it doesn't leak, and remove lingering tasks.
@@ -327,10 +358,13 @@ export function useConnectionLifecycle({
           status: statusRef.current,
           isViewer: isViewerRef.current,
           backgroundOutstanding: backgroundOutstandingRef.current,
+          transientUnmount: isTransientUnmountRef.current?.() === true,
         })
       ) {
         connDisconnectRef.current().catch(() => {})
       }
+      // Task cleanup stays unconditional even on transient unmounts — the
+      // remounted instance mints fresh task ids, so stale ones would orphan.
       if (taskIdRef.current) {
         removeTask(taskIdRef.current)
       }
@@ -385,10 +419,12 @@ export function useConnectionLifecycle({
         conversationId?: number | null
         clientMessageId?: string | null
         onTurnInProgress?: () => void
+        onSendFailed?: (error: unknown) => void
       }
     ) => {
       touchActivity(contextKey)
       const onTurnInProgress = opts?.onTurnInProgress
+      const onSendFailed = opts?.onSendFailed
       void (async () => {
         const currentModeId = modeIdRef.current
         if (modeId && modeId !== currentModeId) {
@@ -408,9 +444,24 @@ export function useConnectionLifecycle({
           return
         }
         console.error("[ConnLifecycle] sendPrompt:", e)
+        // The composer already cleared itself (sends are fire-and-forget), so
+        // without a toast a failed send — an oversized body 413'd by the
+        // server, a hydration failure, a network drop — looks like the message
+        // simply vanished. Surface the failure; prefer the structured backend
+        // message over a bare stringification.
+        const appError = extractAppCommandError(e)
+        const message =
+          appError?.message ??
+          (e instanceof Error ? e.message : String(e ?? "unknown error"))
+        toast.error(t("errors.sendPromptFailed", { error: message }))
+        // Let the caller settle its optimistic state (roll back the phantom
+        // user turn, drop out of awaiting_persist so the queue keeps
+        // flushing). Runs after the toast so the state rollback can't hide
+        // the failure.
+        onSendFailed?.(e)
       })
     },
-    [connSetMode, sendPrompt, contextKey, touchActivity]
+    [connSetMode, sendPrompt, contextKey, touchActivity, t]
   )
 
   const handleCancel = useCallback(() => {

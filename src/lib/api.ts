@@ -29,9 +29,12 @@ import type {
   LiveSessionSnapshot,
   FeedbackItem,
   QuestionAnswer,
+  PlanApprovalAnswer,
   AcpAgentInfo,
   AcpAgentStatus,
+  AgentDiagnosticsReport,
   GrokStructuredConfig,
+  CodexSandboxStructuredConfig,
   CursorStructuredConfig,
   CursorAuthStatus,
   CursorModelsResult,
@@ -89,6 +92,7 @@ import type {
   FileSaveResult,
   WorkspaceSnapshotResponse,
   GitLogResult,
+  GitLogFileChange,
   AvailableTerminalShells,
   SystemLanguageSettings,
   SystemProxySettings,
@@ -175,6 +179,52 @@ export async function acpConnect(
   })
 }
 
+/**
+ * Drop inline image bytes from blocks whose bytes already live server-side.
+ *
+ * Web / remote-workspace mode uploads each composed image through
+ * `/upload_attachment` and keeps the base64 ONLY for the local thumbnail /
+ * optimistic bubble / queue-edit restore; the sent block carries an empty
+ * payload plus the uploaded file's `file://` uri, and the backend re-inlines
+ * the bytes right before dispatch (`acp::prompt_hydration`). Without this
+ * strip, a couple of screenshots of base64 in the `/acp_prompt` JSON body
+ * would blow axum's 2 MiB `DefaultBodyLimit` and 413 the send.
+ *
+ * `shouldStrip` is false on a local desktop workspace (Tauri IPC has no body
+ * limit and there is no uploads dir to hydrate from), so those blocks pass
+ * through byte-identical. Under `shouldStrip`, a `file://` uri on an image
+ * block can only have come from an upload — every web/remote attach path
+ * routes through `/upload_attachment` first — so uri presence is the marker.
+ * Pure; exported for tests.
+ */
+export function stripUploadedImagePayloads(
+  blocks: PromptInputBlock[],
+  shouldStrip: boolean
+): PromptInputBlock[] {
+  if (!shouldStrip) return blocks
+  return blocks.map((block) => {
+    if (
+      block.type === "image" &&
+      block.data.length > 0 &&
+      block.uri?.startsWith("file://")
+    ) {
+      return { ...block, data: "" }
+    }
+    if (
+      block.type === "resource" &&
+      typeof block.blob === "string" &&
+      block.blob.length > 0 &&
+      (block.mime_type?.startsWith("image/") ?? false) &&
+      block.uri.startsWith("file://")
+    ) {
+      // The embedded-blob shape used for agents that reject native image
+      // blocks (e.g. Grok). Same marker contract: empty blob + uploads uri.
+      return { ...block, blob: "" }
+    }
+    return block
+  })
+}
+
 export async function acpPrompt(
   connectionId: string,
   blocks: PromptInputBlock[],
@@ -185,7 +235,12 @@ export async function acpPrompt(
   try {
     await getTransport().call("acp_prompt", {
       connectionId,
-      blocks,
+      // Strip in every mode where the prompt leaves through an HTTP body:
+      // pure web (`!isDesktop`) and desktop-attached-to-remote-workspace.
+      blocks: stripUploadedImagePayloads(
+        blocks,
+        !isDesktop() || getActiveRemoteConnectionId() !== null
+      ),
       folderId,
       conversationId,
       clientMessageId,
@@ -213,6 +268,16 @@ export async function acpSetConfigOption(
     configId,
     valueId,
   })
+}
+
+/** Pause or clear the session's active Codex goal (codex-acp #293). The backend
+ *  sources the sessionId from the live session, so only the connection + action
+ *  are needed here. */
+export async function acpGoalControl(
+  connectionId: string,
+  action: "pause" | "clear"
+): Promise<void> {
+  return getTransport().call("acp_goal_control", { connectionId, action })
 }
 
 export async function acpCancel(connectionId: string): Promise<void> {
@@ -281,6 +346,25 @@ export async function acpAnswerQuestion(
   })
 }
 
+/**
+ * Submit the user's decision on a blocking Grok `exit_plan_mode` approval
+ * (approve / request-changes / abandon). Resolves the parked ext request on the
+ * backend (and clears the card on every client via the `plan_approval_resolved`
+ * event). Idempotent: answering an already-resolved / unknown `approvalId` is a
+ * no-op success.
+ */
+export async function acpAnswerPlanApproval(
+  connectionId: string,
+  approvalId: string,
+  answer: PlanApprovalAnswer
+): Promise<void> {
+  return getTransport().call("acp_answer_plan_approval", {
+    connectionId,
+    approvalId,
+    answer,
+  })
+}
+
 export async function acpDisconnect(connectionId: string): Promise<void> {
   return getTransport().call("acp_disconnect", { connectionId })
 }
@@ -329,6 +413,13 @@ export async function acpGetAgentStatus(
   agentType: AgentType
 ): Promise<AcpAgentStatus> {
   return getTransport().call("acp_get_agent_status", { agentType })
+}
+
+// Run environment diagnostics for an agent (or a base env report when omitted).
+export async function acpEnvDiagnostics(
+  agentType?: AgentType
+): Promise<AgentDiagnosticsReport> {
+  return getTransport().call("acp_env_diagnostics", { agentType })
 }
 
 export async function acpClearBinaryCache(agentType: AgentType): Promise<void> {
@@ -440,6 +531,10 @@ export async function acpUpdateAgentConfig(
      * `model_catalog_json` catalog files from it (config.toml keys are patched
      * into `codex_config_toml` text by the caller). */
     codex_model_catalog?: string | null
+    /** Codex sandbox / approval controls; merged onto the on-disk config.toml
+     * server-side. Governs the turns codex starts itself (/goal, /review,
+     * /compact) — ordinary turns carry the composer preset's policy instead. */
+    codex_sandbox?: CodexSandboxStructuredConfig | null
     grok_config_toml?: string | null
     /** Grok structured controls (mode / reasoning effort); merged onto the
      * on-disk config.toml server-side. */
@@ -458,6 +553,7 @@ export async function acpUpdateAgentConfig(
     codexAuthJson: params.codex_auth_json ?? null,
     codexConfigToml: params.codex_config_toml ?? null,
     codexModelCatalog: params.codex_model_catalog ?? null,
+    codexSandbox: params.codex_sandbox ?? null,
     grokConfigToml: params.grok_config_toml ?? null,
     grokStructured: params.grok_structured ?? null,
     cursorCliConfigJson: params.cursor_cli_config_json ?? null,
@@ -651,6 +747,126 @@ export async function acpRevealHermesHome(): Promise<void> {
 
 export async function acpReorderAgents(agentTypes: AgentType[]): Promise<void> {
   return getTransport().call("acp_reorder_agents", { agentTypes })
+}
+
+// ---------------------------------------------------------------------------
+// Custom ACP agents — agents the user registers from ACP registry information
+// instead of ones codeg ships hand-written support for.
+// ---------------------------------------------------------------------------
+
+/** One platform's binary release inside a custom agent's distribution spec. */
+export interface CustomAgentBinarySpec {
+  archive: string
+  cmd?: string
+  args?: string[]
+  env?: Record<string, string>
+  sha256?: string
+}
+
+export interface CustomAgentPackageSpec {
+  package: string
+  args?: string[]
+  env?: Record<string, string>
+  /** Console-script name the package installs; derived when omitted. */
+  cmd?: string
+  nodeRequired?: string
+  uvRequired?: string
+  python?: string
+}
+
+/**
+ * A custom agent's launch spec — byte-for-byte the ACP registry's
+ * `distribution` object, so a registry entry can be pasted verbatim.
+ */
+export interface CustomAgentSpec {
+  npx?: CustomAgentPackageSpec
+  uvx?: CustomAgentPackageSpec
+  binary?: Record<string, CustomAgentBinarySpec>
+}
+
+export type CustomDistributionKind = "npx" | "uvx" | "binary"
+
+export interface CustomAgentInfo {
+  registryId: string
+  /** `custom:<registryId>` — pass this wherever an `AgentType` is expected. */
+  agentType: AgentType
+  name: string
+  description: string
+  version: string
+  distributionKind: string
+  spec: CustomAgentSpec
+  iconUrl: string | null
+  /**
+   * User declaration that the agent reads the shared `.agents/skills` store;
+   * gates the skills matrices.
+   */
+  skillsSharedStore: boolean
+  /** False when the definition cannot launch here (e.g. no build for this OS). */
+  launchable: boolean
+  problem: string | null
+}
+
+/** One entry of the public ACP registry, annotated for the picker. */
+export interface RegistryCatalogAgent {
+  registryId: string
+  name: string
+  description: string
+  version: string | null
+  iconUrl: string | null
+  website: string | null
+  repository: string | null
+  license: string | null
+  distributionKinds: string[]
+  /** codeg already ships hand-written support for this agent. */
+  builtin: boolean
+  /** Already registered as a custom agent. */
+  installed: boolean
+  supportedOnPlatform: boolean
+  spec: CustomAgentSpec
+}
+
+export async function acpListCustomAgents(): Promise<CustomAgentInfo[]> {
+  return getTransport().call("acp_list_custom_agents", {})
+}
+
+export async function acpSaveCustomAgent(params: {
+  registryId: string
+  name: string
+  description?: string
+  version?: string
+  distributionKind: CustomDistributionKind
+  spec: CustomAgentSpec
+  iconUrl?: string | null
+  skillsSharedStore?: boolean
+}): Promise<void> {
+  return getTransport().call("acp_save_custom_agent", { params })
+}
+
+export async function acpDeleteCustomAgent(
+  registryId: string,
+  deleteTranscripts: boolean
+): Promise<void> {
+  return getTransport().call("acp_delete_custom_agent", {
+    registryId,
+    deleteTranscripts,
+  })
+}
+
+/** Fetch the public ACP registry (network). */
+export async function acpFetchRegistryCatalog(): Promise<
+  RegistryCatalogAgent[]
+> {
+  return getTransport().call("acp_fetch_registry_catalog", {})
+}
+
+export async function acpAddRegistryAgent(
+  registryId: string,
+  distributionKind?: CustomDistributionKind
+): Promise<void> {
+  return getTransport().call("acp_add_registry_agent", {
+    registryId,
+    distributionKind,
+  })
 }
 
 export async function codexRequestDeviceCode(): Promise<{
@@ -2354,9 +2570,11 @@ export async function listDirectoryWithFiles(
 }
 
 // Hard ceiling for a single attachment, kept in lockstep with the server's
-// `UPLOAD_MAX_BYTES`. Aligned with axum's default multipart body limit (and
-// with the fact that anything larger won't fit a model context anyway).
-export const UPLOAD_MAX_BYTES = 2 * 1024 * 1024
+// `UPLOAD_MAX_BYTES` (`web/handlers/files.rs`, mirrored in
+// `commands/remote_proxy.rs`). Sized to match the desktop drag-drop image
+// limit (`DRAG_DROP_IMAGE_MAX_BYTES`) so the same screenshot attaches in
+// every mode; oversize is rejected up front with a visible toast.
+export const UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 
 // `btoa` only accepts a binary string, and `String.fromCharCode(...bytes)`
 // hits the call-stack limit somewhere around a few hundred KB. Chunk the
@@ -3092,7 +3310,10 @@ export async function gitLog(
   limit?: number,
   branch?: string,
   remote?: string,
-  skip?: number
+  skip?: number,
+  author?: string,
+  allBranches?: boolean,
+  withFiles?: boolean
 ): Promise<GitLogResult> {
   return getTransport().call("git_log", {
     path,
@@ -3100,6 +3321,35 @@ export async function gitLog(
     branch: branch ?? null,
     remote: remote ?? null,
     skip: skip ?? null,
+    author: author ?? null,
+    allBranches: allBranches ?? null,
+    withFiles: withFiles ?? null,
+  })
+}
+
+export async function gitCurrentUser(path: string): Promise<string | null> {
+  return getTransport().call("git_current_user", { path })
+}
+
+export async function gitCommitFiles(
+  path: string,
+  commit: string
+): Promise<GitLogFileChange[]> {
+  return getTransport().call("git_commit_files", { path, commit })
+}
+
+// On-demand author search for the log filter — real repo authors matching
+// `query` (case-insensitive, most-active first). Debounced client-side; no
+// upfront full-repo scan.
+export async function gitSearchAuthors(
+  path: string,
+  query: string,
+  limit?: number
+): Promise<string[]> {
+  return getTransport().call("git_search_authors", {
+    path,
+    query,
+    limit: limit ?? null,
   })
 }
 

@@ -1,10 +1,8 @@
 # Codeg
 
 [![Release](https://img.shields.io/github/v/release/xintaofei/codeg)](https://github.com/xintaofei/codeg/releases)
+[![Docs](https://img.shields.io/badge/docs-docs.codeg.app-3451b2)](https://docs.codeg.app)
 [![License](https://img.shields.io/github/license/xintaofei/codeg)](../../LICENSE)
-[![Tauri](https://img.shields.io/badge/Tauri-2.x-24C8DB)](https://tauri.app/)
-[![Next.js](https://img.shields.io/badge/Next.js-16-black)](https://nextjs.org/)
-[![Docker](https://img.shields.io/badge/Docker-ready-2496ED)](../../Dockerfile)
 
 <p>
   <a href="../../README.md">English</a> |
@@ -19,11 +17,18 @@
   <strong>العربية</strong>
 </p>
 
-Codeg (Code Generation) هو مساحة عمل للبرمجة متعددة الوكلاء. يجمع عدة وكلاء (Claude Code، Codex CLI، OpenCode، Gemini CLI، OpenClaw، Cline، Hermes Agent، CodeBuddy، Kimi Code، Pi، Grok Build، وغيرها) في مساحة عمل واحدة، ويدعم تجميع المحادثات والتعاون بين عدة وكلاء، مع دعم التثبيت على سطح المكتب والنشر على الخادم/Docker.
+Codeg (Code Generation) هو مساحة عمل برمجية متعددة الوكلاء: شغّل كل وكلاء البرمجة بالذكاء الاصطناعي في مكان واحد — ودعهم يعملون معًا.
 
-![gallery](../images/gallery.svg)
+يجمع جلساتك من كل واجهات الوكلاء المدعومة في مساحة عمل واحدة قابلة للبحث، ويتيح للوكيل الرئيسي أن يفوّض إلى وكلاء فرعيين من أنواع أخرى داخل المهمة نفسها، ويعمل كتطبيق سطح مكتب أو خادم مستقل أو حاوية Docker، إضافةً إلى تطبيقَي iOS وAndroid الأصليين لمواصلة العمل بعيدًا عن مكتبك.
 
-## الرعاة
+![مساحة العمل](../images/workspace-light.png#gh-light-mode-only)
+![مساحة العمل](../images/workspace-dark.png#gh-dark-mode-only)
+
+## 📖 التوثيق
+
+**التوثيق الكامل على [docs.codeg.app](https://docs.codeg.app)** — [البداية](https://docs.codeg.app/getting-started/) · [الدليل](https://docs.codeg.app/guide/) · [المرجع](https://docs.codeg.app/reference/)
+
+## 💖 الرعاة
 
 <table>
   <tr>
@@ -58,385 +63,96 @@ Codeg (Code Generation) هو مساحة عمل للبرمجة متعددة ال�
 
 > هل ترغب في أن تصبح راعياً لـ Codeg؟ [راسلنا عبر البريد الإلكتروني.](mailto:itpkcn@gmail.com)
 
-## الواجهة الرئيسية
+## 🤖 الوكلاء المدعومون
 
-![Codeg Light](../images/main-light.png#gh-light-mode-only)
-![Codeg Dark](../images/main-dark.png#gh-dark-mode-only)
+Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · CodeBuddy · Kimi Code · Pi · Grok · Cursor
 
-## التعاون متعدد الوكلاء
+يتولّى Codeg تثبيت معظمهم وتثبيت إصداراتهم وتحديثهم نيابةً عنك. راجع [الوكلاء المدعومون](https://docs.codeg.app/guide/supported-agents) للقائمة الكاملة، ومتطلبات تشغيل كل وكيل، وموضع حفظ جلساته على القرص.
 
-![Codeg Light](../images/collaboration-light.png#gh-light-mode-only)
-![Codeg Dark](../images/collaboration-dark.png#gh-dark-mode-only)
+## 🤝 التعاون متعدد الوكلاء
 
-## سير عمل المكتب
+التعاون متعدد الوكلاء، مختصرًا في ضغطة واحدة: اكتب `@`، اختر وكيلاً، ثم أرسل. يتكفّل Codeg بالتنسيق — يشغّل كل وكيل تذكره كجلسة مستقلة، ويسلّمه المهمة، ثم يعيد بثّ عمله إلى المحادثة التي أنت فيها بالفعل. اذكر اثنين ليعملا جنبًا إلى جنب: Claude Code يكتب المسودة بينما يراجع Codex. بلا تبديل للسياق، وبلا نسخ ولصق بين الطرفيات.
 
-![Codeg Light](../images/office-light.png#gh-light-mode-only)
-![Codeg Dark](../images/office-dark.png#gh-dark-mode-only)
+![تفويض مهمة إلى وكلاء فرعيين من محادثة واحدة في Codeg](../images/collaboration-light.gif#gh-light-mode-only)
+![تفويض مهمة إلى وكلاء فرعيين من محادثة واحدة في Codeg](../images/collaboration-dark.gif#gh-dark-mode-only)
 
-## أبرز المزايا
+## 📄 مستندات Office
 
-- **تجميع المحادثات** — استيراد جلسات جميع الوكلاء المدعومين إلى مساحة عمل موحّدة
-- **التعاون متعدد الوكلاء** — داخل جلسة واحدة، يفوّض الوكيل الرئيسي إلى وكلاء فرعيين من أنواع مختلفة (مثل Claude Code يستدعي Codex وGemini) لإنجاز مهمة بشكل مشترك، مع تشغيل كل وكيل فرعي كجلسة مستقلة
-- تطوير متوازي مع تدفقات `git worktree` مدمجة
-- **مُنشئ المشروع** — إنشاء مشاريع جديدة بصريًا مع معاينة حية
-- **مستندات Office** — أنشئ وحلِّل وراجع وحرِّر ملفات .docx / .xlsx / .pptx عبر مجموعة أدوات officecli المدمجة؛ مع معاينة حية في تبويب الملف تُحدَّث فورًا أثناء تعديلات الوكيل
-- **البحث العلمي** — مهارات علمية مدمجة (توليد الفرضيات، تصميم التجارب، الإحصاء، التمثيل المرئي، التقييم النقدي، البحث في الأدبيات) يمكن لأي وكيل استدعاؤها، وتُدار لكل وكيل
-- **الأتمتة** — احفظ أي إعداد للمُحرِّر كمهمة أتمتة قابلة للإعادة تُنفَّذ بدون واجهة وفق جدول cron أو عند الطلب
-- **قنوات الدردشة** — ربط Telegram وLark (Feishu) وiLink (Weixin) والمزيد بوكلاء البرمجة لاستقبال الإشعارات الفورية والتفاعل الكامل مع الجلسات والتحكم عن بُعد في المهام
-- إدارة MCP (فحص محلي + بحث/تثبيت من السجل)
-- إدارة Skills (نطاق عام ونطاق المشروع)
-- إدارة حسابات Git البعيدة (GitHub وخوادم Git الأخرى)
-- وضع خدمة الويب — الوصول إلى Codeg من أي متصفح للعمل عن بُعد
-- **نشر خادم مستقل** — شغّل `codeg-server` على أي خادم Linux/macOS، والوصول عبر المتصفح
-- **دعم Docker** — `docker compose up` أو `docker run`، مع رمز مصادقة ومنفذ قابلين للتخصيص، واستمرارية البيانات وتحميل مجلدات المشاريع
-- سجلات وقت التشغيل — عارض سجلات في الوقت الفعلي مدمج مع دعم التصفية وضبط مستويات السجل لكل وحدة
-- حلقة هندسية متكاملة (شجرة الملفات، الفروقات، تغييرات git، الإيداع، الطرفية)
+اطلب عرضًا تقديميًا أو تقريرًا أو جدول بيانات، وسينشئ الوكيل ملف `.pptx` / `.docx` / `.xlsx` حقيقيًا — بينما تعرضه لوحة المعاينة مباشرةً. كل تعديل يصل إلى المعاينة من تلقاء نفسه: الشرائح تمتلئ، والجداول تتشكّل، والأرقام تستقر في خلاياها. لم تعجبك الشريحة الرابعة؟ قل ذلك في الرسالة التالية — يعدّل الوكيل الملف نفسه في مكانه، وتلحق به المعاينة. بلا تصدير، وبلا تطبيق Office خارجي، ودون مغادرة Codeg.
 
-## الوكلاء المدعومون
+![وكيل يحرّر مستند Office بجانب معاينته الحية](../images/office-light.png#gh-light-mode-only)
+![وكيل يحرّر مستند Office بجانب معاينته الحية](../images/office-dark.png#gh-dark-mode-only)
 
-| الوكيل       | مسار متغير البيئة                     | الافتراضي في macOS / Linux            | الافتراضي في Windows                                  |
-| ------------ | ------------------------------------- | ------------------------------------- | ----------------------------------------------------- |
-| Claude Code  | `$CLAUDE_CONFIG_DIR/projects`         | `~/.claude/projects`                  | `%USERPROFILE%\\.claude\\projects`                    |
-| Codex CLI    | `$CODEX_HOME/sessions`                | `~/.codex/sessions`                   | `%USERPROFILE%\\.codex\\sessions`                     |
-| OpenCode     | `$XDG_DATA_HOME/opencode/opencode.db` | `~/.local/share/opencode/opencode.db` | `%USERPROFILE%\\.local\\share\\opencode\\opencode.db` |
-| Gemini CLI   | `$GEMINI_CLI_HOME/.gemini`            | `~/.gemini`                           | `%USERPROFILE%\\.gemini`                              |
-| OpenClaw     | —                                     | `~/.openclaw/agents`                  | `%USERPROFILE%\\.openclaw\\agents`                    |
-| Cline        | `$CLINE_DIR`                          | `~/.cline/data/tasks`                 | `%USERPROFILE%\\.cline\\data\\tasks`                  |
-| Hermes Agent | `$HERMES_HOME/state.db`               | `~/.hermes/state.db`                  | `%USERPROFILE%\\.hermes\\state.db`                    |
-| CodeBuddy    | `$CODEBUDDY_CONFIG_DIR/projects`      | `~/.codebuddy/projects`               | `%USERPROFILE%\\.codebuddy\\projects`                 |
-| Kimi Code    | `$KIMI_CODE_HOME/sessions`            | `~/.kimi-code/sessions`               | `%USERPROFILE%\\.kimi-code\\sessions`                 |
-| Pi           | `$PI_CODING_AGENT_SESSION_DIR`        | `~/.pi/agent/sessions`                | `%USERPROFILE%\\.pi\\agent\\sessions`                 |
-| Grok Build   | `$GROK_HOME/sessions`                 | `~/.grok/sessions`                    | `%USERPROFILE%\\.grok\\sessions`                      |
-| Cursor       | `$CURSOR_CONFIG_DIR/chats`            | `~/.cursor/chats`                     | `%USERPROFILE%\\.cursor\\chats`                       |
+## 💻 مساحة العمل
 
-> ملاحظة: متغيرات البيئة لها الأولوية على المسارات الافتراضية.
+مساحة عمل واحدة، وكل الوكلاء. أيًّا كان الوكيل الذي يعمل — Claude Code أو Codex أو Cursor — فهو يعمل داخل المحرّر نفسه، وبالفروقات الحيّة نفسها، وبعميل Git نفسه؛ وما ينتجه ملفات حقيقية في مستودعك، تتغيّر أمام عينيك.
 
-<details>
-<summary><h2>مُنشئ المشروع</h2></summary>
+**الجلسات.** استعِد ما لديك من سجل: جلسات سابقة من كل وكيل مثبَّت، تُستورَد بنقرة واحدة ويمكن استئنافها من حيث توقفت. وبمجرد دخولها لا تبقى جزرًا منفصلة — اذكر جلسة قديمة بـ `@` ليقرأها الوكيل الذي تحادثه، حتى لو كتبها وكيل آخر، فتُكمل جلسة Codex اليوم من حيث انتهت جلسة Claude Code الأسبوع الماضي.
 
-أنشئ مشاريع جديدة بصريًا من خلال واجهة مقسّمة: التكوين على اليسار، والمعاينة الحية على اليمين.
+**الملفات.** تظهر تعديلات الوكيل على هيئة فروقات بجوار المحادثة فور وقوعها. افتح أي ملف في محرّر حقيقي مع إبراز لبنية الشيفرة، وأرسل ملفًا — أو تحديدًا منه فقط — إلى الوكيل مباشرةً بـ `⌘L`، وعايِن Markdown وHTML والصور ومستندات Office في اللوحة نفسها.
 
-![Project Boot Light](../images/project-boot-light.png#gh-light-mode-only)
-![Project Boot Dark](../images/project-boot-dark.png#gh-dark-mode-only)
+**Git.** عميل كامل، لا مجرد عرض للحالة: الإيداع والدفع، وتصفّح السجل مع حالة الدفع لكل إيداع، وإنشاء الفروع والدمج وإعادة الأساس والإخفاء وإعادة الضبط والمقارنة مع فرع آخر. وعند التعارض يُفتح محرّر دمج بثلاث لوحات تقبل فيه التغييرات كتلةً كتلة أو تكتب الحل بنفسك. أما أشجار العمل فتختصر العمل المتوازي إلى إجراء واحد — فرع جديد، ودليل خاص به، ومحادثة جديدة متجذّرة فيه، فيبني أسطول من الوكلاء ميزات مختلفة في الوقت نفسه دون أن يمسّ أحدهم ملفات الآخر.
 
-### الميزات
+## 📱 iPhone وiPad وAndroid
 
-- **تكوين بصري** — اختر النمط وسمة الألوان ومكتبة الأيقونات والخط ونصف قطر الحدود والمزيد من القوائم المنسدلة؛ تتحدث المعاينة فورًا
-- **معاينة حية** — شاهد المظهر الذي اخترته مُصيَّرًا في الوقت الفعلي قبل إنشاء أي شيء
-- **إنشاء بنقرة واحدة** — اضغط "إنشاء مشروع" ويقوم المُشغّل بتنفيذ `shadcn init` مع إعداداتك المسبقة وقالب الإطار (Next.js / Vite / React Router / Astro / Laravel) ومدير الحزم (pnpm / npm / yarn / bun)
-- **اكتشاف مدير الحزم** — يتحقق تلقائيًا من مديري الحزم المثبتين ويعرض إصداراتهم
-- **تكامل سلس** — يُفتح المشروع المُنشأ حديثًا مباشرة في مساحة عمل Codeg
+ابتعد عن مكتبك، لا عن عملك. يتصل تطبيقا iOS وAndroid الأصليان بنسخة Codeg التي تشغّلها أصلًا — **خدمة الويب** في تطبيق سطح المكتب، أو خادم `codeg-server` الخاص بك — ومن هناك تبدأ الجلسات، وتتابع الردود واستدعاءات الأدوات لحظة بلحظة، وتردّ على طلبات الأذونات، وتتصفّح المشاريع والفروع. لا شيء ينتقل إلى الهاتف: ملفاتك وواجهات الوكلاء ومحادثاتك تبقى على الجهاز الذي يشغّل Codeg، ويُحفَظ رمز الوصول في Keychain على iOS أو عبر Android Keystore. التطبيقان مفتوحا المصدر ([iOS](https://github.com/xintaofei/codeg-ios) و[Android](https://github.com/xintaofei/codeg-android))، وهما حاليًا إصدار تجريبي؛ ويتم الاقتران في ثلاث خطوات تجدها في [التطبيقات المحمولة](https://docs.codeg.app/getting-started/installation#mobile-apps).
 
-يدعم حاليًا إنشاء مشاريع **shadcn/ui**، مع تصميم قائم على علامات التبويب جاهز لدعم المزيد من أنواع المشاريع في المستقبل.
+| iPhone وiPad | Android |
+| :---: | :---: |
+| <img src="../images/mobile-ios.jpg" alt="بدء جلسة من تطبيق Codeg على iOS" width="248" /> | <img src="../images/mobile-android.jpg" alt="ردّ وكيل يتدفق مباشرةً داخل تطبيق Codeg على Android" width="248" /> |
 
-</details>
+## ✨ أبرز المزايا
 
-<details>
-<summary><h2>قنوات الدردشة</h2></summary>
+- **[تجميع المحادثات](https://docs.codeg.app/guide/aggregation)** — استورد جلسات كل الوكلاء المدعومين إلى مساحة عمل موحّدة قابلة للبحث، وتابع أيًّا منها من حيث توقفت
+- **[التعاون متعدد الوكلاء](https://docs.codeg.app/guide/multi-agent)** — اذكر أي وكيل بـ `@` لتفويضه: وكلاء فرعيون من أنواع مختلفة يعملون كجلسات مستقلة، بالتوازي، داخل مهمة واحدة
+- **[مساحة العمل](https://docs.codeg.app/guide/workspace)** — حلقة هندسية كاملة بجوار الوكيل: شجرة الملفات، المحرّر والفروقات، تغييرات git، الإيداع، وطرفية مدمجة
+- **[Git والـ worktrees](https://docs.codeg.app/guide/git)** — راجع التغييرات وأودعها، وأدر حسابات Git البعيدة، واعمل بالتوازي عبر تدفقات `git worktree` المدمجة
+- **[قنوات الدردشة](https://docs.codeg.app/guide/chat-channels)** — قُد وكلاءك من Telegram وLark (Feishu) وiLink (Weixin): أنشئ المهام، ووافق على الأذونات، وتابع التحديثات لحظيًا
+- **[الأتمتة](https://docs.codeg.app/guide/automations)** — احفظ إعدادًا كاملاً للمُحرِّر كمهمة أتمتة قابلة لإعادة الاستخدام تعمل بلا واجهة، وفق جدول cron أو عند الطلب
+- **[مستندات Office](https://docs.codeg.app/guide/office)** — أنشئ وحلِّل وراجع وحرِّر ملفات `.docx` / `.xlsx` / `.pptx` عبر `officecli` المدمج، مع معاينة حية داخل التبويب
+- **[البحث العلمي](https://docs.codeg.app/guide/research)** — مهارات بحثية مدمجة (توليد الفرضيات، تصميم التجارب، الإحصاء، التمثيل المرئي، التقييم النقدي، البحث في الأدبيات) يمكن لأي وكيل استدعاؤها
+- **[مُنشئ المشروع](https://docs.codeg.app/guide/project-boot)** — أنشئ مشاريع جديدة بصريًا مع معاينة حية، ثم افتحها مباشرةً في مساحة العمل
+- **[MCP](https://docs.codeg.app/guide/mcp) & [المهارات](https://docs.codeg.app/guide/skills)** — فحص الخوادم المحلية مع البحث والتثبيت من السجل، ومهارات تُدار على النطاق العام أو نطاق المشروع
+- **[سطح المكتب والخادم وDocker](https://docs.codeg.app/getting-started/deployment)** — تطبيق سطح مكتب أصلي، أو خادم `codeg-server` مستقل تصل إليه من أي متصفح، أو `docker compose up`
+- **[iPhone وiPad وAndroid](https://docs.codeg.app/getting-started/installation#mobile-apps)** — تطبيقات محمولة أصلية تتصل بسطح مكتبك أو خادمك: ابدأ الجلسات، وتابع الردود المتدفقة، ووافق على الأذونات، وتصفّح المشاريع من أي مكان
 
-اربط تطبيقات المراسلة المفضلة لديك — Telegram وLark (Feishu) وiLink (Weixin) والمزيد — بوكلاء البرمجة بالذكاء الاصطناعي. أنشئ مهامًا، وأرسل رسائل متابعة، ووافق على الأذونات، واستأنف الجلسات، وراقب النشاط من تطبيق الدردشة — واستقبل ردود الوكلاء الفورية مع تفاصيل استدعاءات الأدوات وطلبات الأذونات وملخصات الإنجاز دون الحاجة لفتح المتصفح.
+## 📦 التثبيت والتشغيل
 
-يمكن للمجموعات الفائقة ذات المنتدى في Telegram استخدام [Telegram topic mode](../chat-channels/telegram-topic-mode.md) لربط كل topic بجلسة Codeg مستقلة.
+**سطح المكتب** — نزّل المثبّت الخاص بـ macOS أو Windows أو Linux من [Releases](https://github.com/xintaofei/codeg/releases)، ثم اتبع [التثبيت](https://docs.codeg.app/getting-started/installation).
 
-### القنوات المدعومة
-
-| القناة         | البروتوكول                  | الحالة |
-| -------------- | --------------------------- | ------ |
-| Telegram       | Bot API (HTTP long-polling) | مدمج   |
-| Lark (Feishu)  | WebSocket + REST API        | مدمج   |
-| iLink (Weixin) | WebSocket + REST API        | مدمج   |
-
-> يُخطَّط لدعم المزيد من القنوات (Discord وSlack وDingTalk وغيرها) في الإصدارات المستقبلية.
-
-</details>
-
-<details>
-<summary><h2>مستندات Office</h2></summary>
-
-تعامَل مع ملفات Word وExcel وPowerPoint كجزء أصيل من سير العمل. تتيح مجموعة أدوات **officecli** المدمجة لوكلائك إنشاء وتحليل ومراجعة وتحرير مستندات .docx و.xlsx و.pptx — مع إمكانية معاينة النتائج مباشرةً داخل Codeg.
-
-### الميزات
-
-- **إنشاء وتحرير** — أنشئ مستندات جديدة أو عدِّل ملفات .docx / .xlsx / .pptx الموجودة، بما في ذلك المخططات والجداول والتنسيق
-- **تحليل ومراجعة** — افحص بنية المستند، واكشف مشكلات التنسيق، وراجع المحتوى
-- **معاينة حية** — افتح ملف .docx / .xlsx / .pptx في تبويب الملف ليُعرَض تلقائيًا ويتحدّث فورًا مع كل تعديل من الوكيل — مدعومًا بخادم `officecli watch` دائم التشغيل (مع بروكسي عكسي ومصادقة قائمة على القدرات في بيئات الويب والخادم)
-- **الإجراءات السريعة** — تتضمن صفحة الترحيب تبويبات «البرمجة» و«Office» و«البحث العلمي» تُتيح بنقرة واحدة إدراج استدعاء المهارة المناسب ونموذج الأمر في المُحرِّر؛ المهارات غير المفعَّلة تظهر بشارة قفل وتوجّهك للتفعيل
-- **إعدادات أدوات Office** — صفحة إعدادات مخصصة لتثبيت `officecli` وإدارة مهاراته عبر مصفوفة مهارة×وكيل: بدِّل أي زوج (مهارة، وكيل) وطبِّق التغييرات على دفعات
-
-</details>
-
-<details>
-<summary><h2>البحث العلمي</h2></summary>
-
-حوِّل أي وكيل إلى مساعد بحثي دقيق. يُضمِّن Codeg مجموعة منتقاة من **مهارات البحث العلمي** المرخّصة بموجب MIT — من توليد الأفكار إلى التحليل إلى الكتابة — تُثبَّت في مخزن المهارات المركزي المشترك وتُربَط بأي وكلاء تختارهم، تمامًا مثل مجموعتَي أدوات الخبراء وOffice.
-
-### الميزات
-
-- **مهارات منتقاة** — توليد الفرضيات، تصميم التجارب، القوة الإحصائية، التحليل الإحصائي، التحليل الاستكشافي للبيانات، التمثيل المرئي العلمي، التقييم النقدي، مراجعة الأقران، إدارة الاستشهادات، تقييم الباحثين، البحث عن الأوراق البحثية، والرسوم التخطيطية بالذكاء الاصطناعي
-- **الإجراءات السريعة** — يُدرج تبويب «البحث العلمي» في صفحة الترحيب استدعاء المهارة المناسب مع نموذج أمر مُترجَم في المُحرِّر بنقرة واحدة
-- **إعدادات البحث العلمي** — صفحة إعدادات مخصصة تدير المهارات عبر مصفوفة مهارة×وكيل، مع شارات تُشير إلى المهارات التي تحتاج مفتاح API أو بيئة Python
-
-</details>
-
-<details>
-<summary><h2>الأتمتة</h2></summary>
-
-احفظ أي إعداد للمُحرِّر — الوكيل والنموذج والأمر ومجلد العمل والخيارات — كـ**مهمة أتمتة** قابلة للإعادة تعمل دون فتح الواجهة.
-
-### الميزات
-
-- **اضبط مرة، استخدم دائمًا** — احفظ إعداد المُحرِّر الكامل كمهمة أتمتة مُسمَّاة
-- **مجدوَلة أو عند الطلب** — شغِّلها وفق جدول cron أو افتحها يدويًا متى أردت
-- **تنفيذ بلا واجهة** — تعمل مهام الأتمتة في الخلفية وتُنشئ جلسات حقيقية يمكن فتحها في مساحة العمل في أي وقت؛ وبعد الإطلاق تعود الواجهة تلقائيًا إلى مساحة العمل
-
-</details>
-
-<details>
-<summary><h2>البدء السريع</h2></summary>
-
-### المتطلبات
-
-- Node.js `>=22` (مُوصى به)
-- pnpm `>=10`
-- Rust stable (2021 edition)
-- تبعيات بناء Tauri 2 (وضع سطح المكتب فقط)
-
-مثال على Linux (Debian/Ubuntu):
-
-```bash
-sudo apt-get update
-sudo apt-get install -y \
-  libwebkit2gtk-4.1-dev \
-  libayatana-appindicator3-dev \
-  librsvg2-dev \
-  patchelf
-```
-
-### الملفات التنفيذية
-
-يوفّر Codeg ثلاثة ملفات تنفيذية بلغة Rust من workspace واحد:
-
-| الملف التنفيذي | الدور                                                                                                                  | البناء                                                                       |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `codeg`        | تطبيق سطح المكتب Tauri (نافذة، شريط النظام، المُحدِّث)                                                                 | `pnpm tauri build` (إصدار) / `pnpm tauri dev` (تطوير)                        |
-| `codeg-server` | خادم HTTP + WebSocket مستقل لعمليات النشر عبر المتصفح/بدون واجهة                                                       | `pnpm server:build` / `pnpm server:dev`                                      |
-| `codeg-mcp`    | رفيق MCP عبر stdio يُشغَّل لكل جلسة، ويُتيح أداة `delegate_to_agent` لواجهات CLI للوكلاء (التعاون متعدد الوكلاء)        | `pnpm tauri:prepare-sidecars` (يُستدعى تلقائيًا من `tauri dev` / `tauri build`) |
-
-يجب أن يكون `codeg-mcp` بجوار ملفه التنفيذي الأصلي وقت التشغيل — برامج التثبيت وصورة Docker ومُجمِّع sidecar الخاص بـ Tauri جميعها تضعه بجوار `codeg` / `codeg-server`. يمكن لعمليات البناء من المصدر والتخطيطات المخصّصة تجاوز البحث باستخدام متغير البيئة `CODEG_MCP_BIN=/مسار/مطلق/codeg-mcp`. في حال غياب الرفيق، يتم تخطّي التفويض (مع تسجيل تحذير واحد) وتستمر باقي جلسة الوكيل في العمل.
-
-### التطوير
-
-```bash
-pnpm install
-
-# الواجهة الأمامية فقط (خادم تطوير Next.js، بدون Rust)
-pnpm dev
-
-# تصدير ثابت للواجهة الأمامية إلى out/
-pnpm build
-
-# تطبيق سطح المكتب الكامل (Tauri + Next.js، يبني sidecar الخاص بـ codeg-mcp تلقائيًا)
-pnpm tauri dev
-
-# بناء إصدار سطح المكتب (يُضمِّن codeg-mcp بوصفه externalBin)
-pnpm tauri build
-
-# خادم مستقل (بدون Tauri/واجهة رسومية)
-pnpm server:dev
-pnpm server:build                  # ملف الإصدار التنفيذي ضمن src-tauri/target/release/codeg-server
-
-# بناء رفيق codeg-mcp بشكل صريح (لثلاثية المضيف)
-pnpm tauri:prepare-sidecars        # الناتج: src-tauri/binaries/codeg-mcp-<triple>
-
-# تخطّي تحضير sidecar عند التكرار على الواجهة الأمامية ولا تحتاج إلى التفويض
-CODEG_SKIP_SIDECAR=1 pnpm tauri dev
-
-# فحص الأكواد
-pnpm eslint .
-
-# اختبارات الواجهة الأمامية (vitest)
-pnpm test
-pnpm test:watch
-pnpm test:coverage
-
-# فحوصات Rust (تنفيذ في src-tauri/)
-cargo check                                                     # سطح المكتب (الميزات الافتراضية)
-cargo check --no-default-features --bin codeg-server            # وضع الخادم
-cargo check --no-default-features --bin codeg-mcp               # رفيق MCP
-cargo clippy --all-targets --features test-utils -- -D warnings
-
-# اختبارات Rust
-cargo test --features test-utils                                # سطح المكتب (يشمل التكامل)
-cargo test --no-default-features --bin codeg-server --lib       # وضع الخادم
-cargo insta review                                              # قبول تحديثات لقطات المُحلِّل
-```
-
-> نصيحة: عند توفّر بناء جديد لـ `codeg-mcp` ضمن `src-tauri/target/release/` وأردت توجيه `codeg-server` مُشغَّل يدويًا إليه دون إعادة التثبيت، صدِّر `CODEG_MCP_BIN=$(pwd)/src-tauri/target/release/codeg-mcp`.
-
-### نشر الخادم
-
-يمكن تشغيل Codeg كخادم ويب مستقل بدون بيئة سطح مكتب.
-
-#### الخيار 1: التثبيت بسطر واحد (Linux / macOS)
+**الخادم** — شغّل Codeg بلا واجهة وادخل إليه من أي متصفح. على Linux أو macOS:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/xintaofei/codeg/main/install.sh | bash
+CODEG_STATIC_DIR=/usr/local/share/codeg/web codeg-server
 ```
 
-تثبيت إصدار محدد أو في دليل مخصص:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/xintaofei/codeg/main/install.sh | bash -s -- --version v0.5.2 --dir ~/.local/bin
-```
-
-ثم التشغيل:
-
-```bash
-codeg-server
-```
-
-#### الخيار 2: التثبيت بسطر واحد (Windows PowerShell)
+على Windows، في PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/xintaofei/codeg/main/install.ps1 | iex
+$env:CODEG_STATIC_DIR="$env:LOCALAPPDATA\codeg\web"; codeg-server
 ```
 
-أو تثبيت إصدار محدد:
-
-```powershell
-.\install.ps1 -Version v0.5.2
-```
-
-#### الخيار 3: التنزيل من GitHub Releases
-
-الملفات التنفيذية المُعدّة مسبقًا (مع موارد الويب المضمّنة) متاحة في صفحة [Releases](https://github.com/xintaofei/codeg/releases):
-
-| المنصة      | الملف                              |
-| ----------- | ---------------------------------- |
-| Linux x64   | `codeg-server-linux-x64.tar.gz`    |
-| Linux arm64 | `codeg-server-linux-arm64.tar.gz`  |
-| macOS x64   | `codeg-server-darwin-x64.tar.gz`   |
-| macOS arm64 | `codeg-server-darwin-arm64.tar.gz` |
-| Windows x64 | `codeg-server-windows-x64.zip`     |
+**Docker** — الخادم نفسه، داخل حاوية واحدة:
 
 ```bash
-# مثال: التنزيل والاستخراج والتشغيل
-tar xzf codeg-server-linux-x64.tar.gz
-cd codeg-server-linux-x64
-CODEG_STATIC_DIR=./web ./codeg-server
-```
-
-> لعمليات النشر غير المُراقَبة، شغّله باستخدام `--supervise` حتى يُتراجَع تلقائيًا عن أي ترقية في المكان تفشل — راجع [التحديث في المكان](#التحديث-في-المكان).
-
-#### الخيار 4: Docker
-
-```bash
-# باستخدام Docker Compose (مُوصى به)
-docker compose up -d
-
-# أو التشغيل مباشرة باستخدام Docker
 docker run -d -p 3080:3080 -v codeg-data:/data ghcr.io/xintaofei/codeg:latest
-
-# مع رمز مصادقة مخصص وتحميل مجلد المشروع
-docker run -d -p 3080:3080 \
-  -v codeg-data:/data \
-  -v /path/to/projects:/projects \
-  -e CODEG_TOKEN=your-secret-token \
-  ghcr.io/xintaofei/codeg:latest
 ```
 
-تستخدم صورة Docker بناءً متعدد المراحل (Node.js + Rust → بيئة تشغيل Debian خفيفة) وتتضمن `git` و`ssh` لعمليات المستودعات. يتم تخزين البيانات بشكل دائم في وحدة التخزين `/data`. يمكنك اختياريًا تحميل مجلدات المشاريع للوصول إلى المستودعات المحلية من داخل الحاوية.
+**الهاتف واللوحي** — ثبّت [تطبيق iOS](https://apps.apple.com/app/codeg-client/id6785199071) أو [حزمة Android APK](https://github.com/xintaofei/codeg-android/releases/latest)، ثم وجّهه إلى **خدمة الويب** في تطبيق سطح المكتب أو إلى خادم `codeg-server` الخاص بك: العنوان والرمز، وانتهى الأمر. خطوات الاقتران في [التطبيقات المحمولة](https://docs.codeg.app/getting-started/installation#mobile-apps).
 
-#### الخيار 5: البناء من المصدر
+يغطي [النشر](https://docs.codeg.app/getting-started/deployment) استخدام Compose والملفات التنفيذية الجاهزة والبناء من المصدر والتحديث في المكان؛ وتجد متغيرات البيئة في [الإعداد](https://docs.codeg.app/getting-started/configuration). ولبناء Codeg نفسه: [التطوير](https://docs.codeg.app/reference/development) و[البنية](https://docs.codeg.app/reference/architecture).
 
-```bash
-pnpm install && pnpm build          # بناء الواجهة الأمامية
-cd src-tauri
-cargo build --release --bin codeg-server --no-default-features
-cargo build --release --bin codeg-mcp --no-default-features    # رفيق التفويض
-CODEG_STATIC_DIR=../out ./target/release/codeg-server          # يتم التقاط codeg-mcp بوصفه ملفًا شقيقًا
-```
+## 🔒 الخصوصية والأمان
 
-إذا احتفظت بالملفين التنفيذيين في دليلين منفصلين، فاضبط `CODEG_MCP_BIN=/مسار/مطلق/إلى/codeg-mcp` حتى يستطيع التشغيل العثور على الرفيق؛ بدون ذلك، يُعطَّل التفويض متعدد الوكلاء بصمت.
-
-#### التحديث في المكان
-
-يمكن للخادم تحديث نفسه من **الإعدادات ← تحديث البرنامج**: إذ يُنزّل الإصدار المُوقَّع الخاص بمنصّته، ويستبدل الملفات التنفيذية وموارد الويب على القرص، ثم يُعيد التشغيل — دون إعادة نشر يدوية. هذه الميزة متاحة على Linux/macOS فقط (مُعطَّلة على Windows). يُحتفَظ بالإصدار السابق كنسخة احتياطية، لذا تُتيح الشاشة نفسها إجراء **التراجع** للعودة إليه.
-
-**شغّله تحت المُشرِف للتراجع التلقائي.** ابدأ الخادم المستقل باستخدام `--supervise` كي تُعاد العملية المُرقّاة حديثًا تلقائيًا إلى الإصدار السابق إذا فشلت في الإقلاع ضمن نافذة التجربة:
-
-```bash
-CODEG_STATIC_DIR=./web ./codeg-server --supervise
-```
-
-بدون `--supervise` لا يزال الخادم يُحدِّث نفسه في المكان (إذ يُعيد تنفيذ نفسه)، لكن الترقية تبقى بأفضل جهد ممكن: لا يوجد مُشرِف يتراجع تلقائيًا عن إصدار يعجز عن البدء. أما صورة Docker فتعمل أصلًا تحت المُشرِف.
-
-**ترقيات Docker تُغيِّر الحاوية لا الصورة.** تُعيد الترقية في المكان كتابة الملفات التنفيذية وموارد الويب داخل الطبقة القابلة للكتابة في الحاوية قيد التشغيل، فتوجد في تلك الحاوية وحدها. تبقى وحدة التخزين `/data` ثابتة، لكن الملفات المُرقّاة **لا تبقى**: إعادة إنشاء الحاوية — عبر `docker compose up --force-recreate` أو `docker run` جديد أو إعادة الإنشاء بعد `docker pull` — تبدأ من الصورة مجددًا وتُسقط الترقية في المكان. (تنفيذ `docker pull` وحده يُحدِّث الصورة المحلية فقط؛ ولا يحدث أي تراجع حتى يُعاد إنشاء الحاوية.) لجعل الترقية دائمة، ابنِ أو اسحب صورة بالإصدار الجديد وأعد إنشاء الحاوية منها.
-
-#### التكوين
-
-متغيرات البيئة:
-
-| المتغير                        | الافتراضي              | الوصف                                                                                                                                                                                                                                                                                                                                                                                                       |
-| ------------------------------ | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CODEG_PORT`                   | `3080`                 | منفذ HTTP                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `CODEG_HOST`                   | `0.0.0.0`              | عنوان الربط                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `CODEG_TOKEN`                  | _(عشوائي)_             | رمز المصادقة (يُطبع في stderr عند البدء)                                                                                                                                                                                                                                                                                                                                                                    |
-| `CODEG_DATA_DIR`               | `~/.local/share/codeg` | دليل قاعدة بيانات SQLite (والجذر أيضاً لـ `uploads/` و `pets/`)                                                                                                                                                                                                                                                                                                                                             |
-| `CODEG_STATIC_DIR`             | `./web` أو `./out`     | دليل التصدير الثابت لـ Next.js                                                                                                                                                                                                                                                                                                                                                                              |
-| `CODEG_MCP_BIN`                | _(غير مُحدّد)_         | المسار المطلق لرفيق `codeg-mcp`. يتجاوز البحث الافتراضي (ملف شقيق للملف التنفيذي + `PATH`). استخدمه لعمليات البناء من المصدر أو التخطيطات المخصّصة التي يقع فيها الرفيق خارج دليل تثبيت الخادم.                                                                                                                                                                                                            |
-| `CODEG_SKIP_SIDECAR`           | _(غير مُحدّد)_         | متغير راحة للواجهة الأمامية فقط لـ `pnpm tauri dev` / `pnpm tauri build` — عند `1` يتم تخطّي بناء sidecar الخاص بـ `codeg-mcp`. يُعطَّل التفويض في هذا البناء؛ ويجب ترك المتغير غير مُحدَّد للقطع الصالحة للشحن.                                                                                                                                                                                            |
-| `CODEG_UPLOAD_MAX_TOTAL_BYTES` | _(غير مُحدّد)_         | حدّ صارم لإجمالي البايتات المقيمة تحت `<data dir>/uploads/`. عدد بايتات عشري (مثلاً `10737418240` لـ 10 GiB). إذا كان غير مُحدّد أو `0` أو قيمة لا يمكن تحليلها فسيتم تعطيل الحدّ وطباعة سطر عند البدء حتى تكون الحالة مرئية. يُطبَّق الحدّ داخل عملية `codeg-server` واحدة — تحتاج عمليات النشر الموسَّعة أفقياً التي تتشارك حجم `uploads/` واحداً إلى تنسيق خارجي (قفل ملف، Redis، حصّة عبر بروكسي عكسي). |
-| `CODEG_UPLOAD_QUOTA_STRICT`    | _(غير مُحدّد)_         | عند كونه صحيحاً (`1` / `true` / `yes` / `on`)، يُلغي البدء برمز خروج 2 إذا كانت `CODEG_UPLOAD_MAX_TOTAL_BYTES` مضبوطة على قيمة لا يمكن تحليلها، بدلاً من المتابعة مع تحذير WARN. استخدم هذا حين تتطلب سياستك الأمنية أن «تكون الحصّة المُعدَّة فعّالة».                                                                                                                                                     |
-
-</details>
-
-<details>
-<summary><h2>الهندسة المعمارية</h2></summary>
-
-```text
-Next.js 16 (Static Export) + React 19
-        |
-        | invoke() (desktop) / fetch() + WebSocket (web)
-        v
-  ┌─────────────────────────┐
-  │   Transport Abstraction  │
-  │  (Tauri IPC or HTTP/WS) │
-  └─────────────────────────┘
-        |
-        v
-┌─── Tauri Desktop ───┐    ┌─── codeg-server ───┐
-│  Tauri 2 Commands    │    │  Axum HTTP + WS    │
-│  (window management) │    │  (standalone mode)  │
-└──────────┬───────────┘    └──────────┬──────────┘
-           └──────────┬───────────────┘
-                      v
-            Shared Rust Core
-              |- AppState
-              |- ACP Manager
-              |- Parsers (conversation ingestion)
-              |- Chat Channels
-              |- Git / File Tree / Terminal
-              |- MCP marketplace + config
-              |- Office Tools (officecli) + Automations
-              |- SeaORM + SQLite
-                      |
-              ┌───────┼───────┐
-              v       v       v
-  Local Filesystem  Git   Chat Channels
-    / Git Repos    Repos  (Telegram, Lark, iLink)
-```
-
-</details>
-
-## الخصوصية والأمان
-
-- محلي أولاً بشكل افتراضي للتحليل والتخزين وعمليات المشروع
-- الوصول إلى الشبكة يحدث فقط عند الإجراءات التي يبدأها المستخدم
+- محلي أولاً بشكل افتراضي في التحليل والتخزين وعمليات المشروع — ولا يحدث أي وصول للشبكة إلا عبر إجراء تبدأه أنت
+- وضعا الويب والخادم محميّان بمصادقة قائمة على الرموز
 - دعم بروكسي النظام لبيئات المؤسسات
-- وضع خدمة الويب يستخدم مصادقة قائمة على الرموز
 
-## المجتمع
+التفاصيل في [الخصوصية والأمان](https://docs.codeg.app/reference/privacy).
+
+## 👥 المجتمع
 
 - امسح رمز QR أدناه للانضمام إلى مجموعة WeChat الخاصة بنا للنقاشات والملاحظات والتحديثات
 
@@ -445,13 +161,13 @@ Next.js 16 (Static Export) + React 19
 
 - شكراً لمجتمع [LinuxDO](https://linux.do) على دعمه
 
-## شكر وتقدير
+## 🙏 شكر وتقدير
 
-- [ACP](https://agentclientprotocol.com) — بروتوكول Agent Client (ACP) هو الأساس الذي يمكّن Codeg من الاتصال بعدة وكلاء
+- [Agent Client Protocol](https://agentclientprotocol.com) — الأساس الذي يمكّن Codeg من الاتصال بكل وكيل يدعمه
 - [Superpowers](https://github.com/obra/superpowers) — يُشغِّل وحدة مهارات الخبراء في Codeg
 - [OfficeCLI](https://github.com/iOfficeAI/OfficeCLI) — يُشغِّل سير عمل مستندات Office في Codeg
 - [scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills) — يُشغِّل مهارات البحث العلمي في Codeg (مجموعة فرعية مرخّصة بموجب MIT)
 
-## الترخيص
+## 📜 الترخيص
 
-Apache-2.0. راجع `LICENSE`.
+Apache-2.0. راجع [LICENSE](../../LICENSE).

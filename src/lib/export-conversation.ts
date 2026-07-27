@@ -5,7 +5,7 @@ import type {
   SessionStats,
   TurnUsage,
 } from "@/lib/types"
-import { AGENT_LABELS } from "@/lib/types"
+import { getAgentLabel } from "@/lib/custom-agents"
 import { downloadImage } from "@/lib/image-download"
 import { isDesktop } from "@/lib/platform"
 import { toPng } from "html-to-image"
@@ -343,7 +343,7 @@ function metadataMarkdown(
   lines.push(`| | |`)
   lines.push(`|---|---|`)
   lines.push(
-    `| **${labels.agent}** | ${AGENT_LABELS[summary.agent_type] ?? summary.agent_type} |`
+    `| **${labels.agent}** | ${getAgentLabel(summary.agent_type) ?? summary.agent_type} |`
   )
   if (summary.model) lines.push(`| **${labels.model}** | ${summary.model} |`)
   lines.push(
@@ -374,7 +374,7 @@ function metadataHtml(
 ): string {
   const rows: string[] = []
   rows.push(
-    `<tr><td>${escapeHtml(labels.agent)}</td><td>${escapeHtml(AGENT_LABELS[summary.agent_type] ?? summary.agent_type)}</td></tr>`
+    `<tr><td>${escapeHtml(labels.agent)}</td><td>${escapeHtml(getAgentLabel(summary.agent_type) ?? summary.agent_type)}</td></tr>`
   )
   if (summary.model)
     rows.push(

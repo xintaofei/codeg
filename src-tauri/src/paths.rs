@@ -12,6 +12,7 @@ const PETS_DIR_NAME: &str = "pets";
 const UPLOADS_DIR_NAME: &str = "uploads";
 const LOGS_DIR_NAME: &str = "logs";
 const TURN_TIMINGS_DIR_NAME: &str = "turn-timings";
+const ACP_TRANSCRIPTS_DIR_NAME: &str = "acp-transcripts";
 const BACKGROUNDS_DIR_NAME: &str = "backgrounds";
 
 /// `$CODEG_HOME` if set (and non-empty), else `~/.codeg/`.
@@ -144,6 +145,47 @@ pub fn codeg_turn_timings_root() -> PathBuf {
     dirs::home_dir()
         .map(|h| h.join(CODEG_DIR_NAME).join(TURN_TIMINGS_DIR_NAME))
         .unwrap_or_else(|| PathBuf::from(CODEG_DIR_NAME).join(TURN_TIMINGS_DIR_NAME))
+}
+
+/// Root directory for codeg's own ACP transcripts (see
+/// `crate::acp_transcript`) — the raw `session/update` stream and outgoing
+/// prompts recorded for **custom ACP agents**, which have no codeg-side
+/// transcript parser of their own. Written by the live connection, read back
+/// by `crate::parsers::acp_native`.
+///
+/// Resolution mirrors [`codeg_turn_timings_root`]:
+/// 1. `$CODEG_HOME/acp-transcripts`
+/// 2. `$CODEG_DATA_DIR/acp-transcripts` (server-mode data directory)
+/// 3. `~/.codeg/acp-transcripts` (desktop default)
+pub fn codeg_acp_transcripts_root() -> PathBuf {
+    if let Some(custom) = std::env::var_os("CODEG_HOME").filter(|s| !s.is_empty()) {
+        return PathBuf::from(custom).join(ACP_TRANSCRIPTS_DIR_NAME);
+    }
+    if let Some(data) = std::env::var_os("CODEG_DATA_DIR").filter(|s| !s.is_empty()) {
+        return PathBuf::from(data).join(ACP_TRANSCRIPTS_DIR_NAME);
+    }
+    dirs::home_dir()
+        .map(|h| h.join(CODEG_DIR_NAME).join(ACP_TRANSCRIPTS_DIR_NAME))
+        .unwrap_or_else(|| PathBuf::from(CODEG_DIR_NAME).join(ACP_TRANSCRIPTS_DIR_NAME))
+}
+
+/// Where codeg keeps the MCP server config it manages for **custom ACP
+/// agents** — one `<registry-id>.json` per agent holding a canonical
+/// name→spec map. Built-in agents have native config files codeg writes
+/// into; custom agents have none, so codeg owns this store and forwards it
+/// over `session/new.mcpServers`. Resolution mirrors
+/// [`codeg_acp_transcripts_root`].
+pub fn codeg_custom_mcp_root() -> PathBuf {
+    const CUSTOM_MCP_DIR_NAME: &str = "custom-mcp";
+    if let Some(custom) = std::env::var_os("CODEG_HOME").filter(|s| !s.is_empty()) {
+        return PathBuf::from(custom).join(CUSTOM_MCP_DIR_NAME);
+    }
+    if let Some(data) = std::env::var_os("CODEG_DATA_DIR").filter(|s| !s.is_empty()) {
+        return PathBuf::from(data).join(CUSTOM_MCP_DIR_NAME);
+    }
+    dirs::home_dir()
+        .map(|h| h.join(CODEG_DIR_NAME).join(CUSTOM_MCP_DIR_NAME))
+        .unwrap_or_else(|| PathBuf::from(CODEG_DIR_NAME).join(CUSTOM_MCP_DIR_NAME))
 }
 
 /// Single source of truth for "where does the database live, and where

@@ -10,14 +10,11 @@ import {
   RotateCcw,
   Wifi,
 } from "lucide-react"
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Update = any
 import { useLocale, useTranslations } from "next-intl"
-import ReactMarkdown from "react-markdown"
-import remarkGfm from "remark-gfm"
 import { toast } from "sonner"
 import { useAppI18n } from "@/components/i18n-provider"
 import { BackupSettings } from "@/components/settings/backup-settings"
+import { ReleaseNotes } from "@/components/settings/release-notes"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -45,11 +42,9 @@ import {
 } from "@/lib/api"
 import { openUrl } from "@/lib/platform"
 import type { AppLocale } from "@/lib/types"
+import { readLastCheck } from "@/lib/update-check-storage"
 import {
-  checkAppUpdate,
-  closeAppUpdate,
-  getCurrentAppVersion,
-  getServerUpdateStatus,
+  appUpdateErrorMessageKey,
   normalizeAppUpdateError,
   usesTauriUpdater,
 } from "@/lib/updater"
@@ -103,34 +98,13 @@ export function SystemNetworkSettings() {
   const [proxyUrl, setProxyUrl] = useState("")
   const [proxyUrlError, setProxyUrlError] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [currentVersion, setCurrentVersion] = useState<string>("")
-  const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null)
-  const [checkingUpdate, setCheckingUpdate] = useState(false)
-  const [updateError, setUpdateError] = useState<string | null>(null)
-  const [lastCheckedAt, setLastCheckedAt] = useState<Date | null>(null)
-  // Server/Docker self-update capability reported by `check_app_update`
-  // (absent in desktop mode). Drives whether the upgrade button performs a
-  // real in-place update or just links to the release page.
-  const [serverSelfUpdate, setServerSelfUpdate] = useState(false)
-  // Whether the (remote) server speaks the detached app_update_state protocol.
-  // Absent on servers older than this feature — a newer client must fall back
-  // to the "view release" link rather than driving the new in-place flow
-  // against the old blocking endpoint. Irrelevant in desktop mode.
-  const [serverLiveProgress, setServerLiveProgress] = useState(false)
-  const [serverRuntime, setServerRuntime] = useState<string | undefined>(
-    undefined
-  )
-  // Whether a previous version is kept on the server (as `.bak`) and can be
-  // restored — drives the manual "roll back" affordance, which covers
-  // regressions the trial-window auto-rollback can't (they surface later).
-  const [serverRollbackAvailable, setServerRollbackAvailable] = useState(false)
   const [rollbackConfirmOpen, setRollbackConfirmOpen] = useState(false)
 
-  // The in-flight download / install / restart lifecycle now lives in the
-  // app-wide UpdateProvider (settings/layout.tsx wraps this page), so its
-  // progress survives navigating between settings pages or closing the page —
-  // this page is just one subscriber to it. It is always mounted inside the
-  // provider, hence the non-null assertion.
+  // Both halves of the update flow — "is a newer release out there" and the
+  // in-flight download / install / restart lifecycle — live in the app-wide
+  // UpdateProvider (settings/layout.tsx wraps this page), so this page and the
+  // workspace status bar always agree and only one manifest fetch happens. It
+  // is always mounted inside the provider, hence the non-null assertion.
   const update = useAppUpdate()!
   const {
     state: updateState,
@@ -139,6 +113,18 @@ export function SystemNetworkSettings() {
     isRollingBack,
     hydrated: updateHydrated,
     isBusy,
+    available: availableUpdate,
+    currentVersion,
+    checking: checkingUpdate,
+    checkError,
+    lastCheckedAt,
+    selfUpdateSupported: serverSelfUpdate,
+    liveProgress: serverLiveProgress,
+    runtime: serverRuntime,
+    rollbackAvailable: serverRollbackAvailable,
+    canInstallInPlace,
+    checkNow,
+    refreshLocalStatus,
     startUpdate,
     restart,
     rollback,
@@ -232,14 +218,9 @@ export function SystemNetworkSettings() {
     setLoadError(null)
 
     try {
-      const [proxySettings, version] = await Promise.all([
-        getSystemProxySettings(),
-        getCurrentAppVersion(),
-      ])
-
+      const proxySettings = await getSystemProxySettings()
       setEnabled(proxySettings.enabled)
       setProxyUrl(proxySettings.proxy_url ?? "")
-      setCurrentVersion(version)
     } catch (err) {
       const message = toErrorMessage(err)
       setLoadError(message)
@@ -253,23 +234,20 @@ export function SystemNetworkSettings() {
     loadSettings().catch((err) => {
       console.error("[Settings] load system settings failed:", err)
     })
-    checkForUpdates().catch((err) => {
-      console.error("[Settings] auto check update failed:", err)
-    })
-    loadServerUpdateStatus().catch((err) => {
-      console.error("[Settings] load server update status failed:", err)
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  useEffect(() => {
-    return () => {
-      if (!availableUpdate) return
-      closeAppUpdate(availableUpdate).catch((err) => {
-        console.error("[Settings] release updater resource failed:", err)
+    // The version, capability bits and "is there an update" answer all come
+    // from the provider: it seeds local status on mount, restores the last
+    // result from storage and runs the periodic manifest check. So opening
+    // this page no longer costs a second check — unless nothing has ever been
+    // checked (read from storage, not from provider state, which the provider
+    // seeds in its own effect and therefore may not have applied yet), or the
+    // last attempt failed, in which case opening this page is a natural retry.
+    if (!readLastCheck() || checkError) {
+      checkNow({ silent: true }).catch((err) => {
+        console.error("[Settings] auto check update failed:", err)
       })
     }
-  }, [availableUpdate])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const saveProxySettings = useCallback(
     async (nextEnabled: boolean, nextProxyUrl: string) => {
@@ -317,24 +295,10 @@ export function SystemNetworkSettings() {
   const formatUpdateError = useCallback(
     (error: unknown, action: UpdateAction): string => {
       const { kind, rawMessage } = normalizeAppUpdateError(error)
-
-      switch (kind) {
-        case "source_unreachable":
-          return t("updateErrors.sourceUnavailable")
-        case "network":
-          return t("updateErrors.network")
-        case "download_failed":
-          return t("updateErrors.downloadFailed")
-        case "install_failed":
-          return t("updateErrors.installFailed")
-        case "unknown":
-        default:
-          if (action === "install") {
-            return t("updateErrors.installFailed")
-          }
-          console.error("[Settings] updater unknown error:", rawMessage)
-          return t("updateErrors.unknown")
+      if (kind === "unknown" && action === "check") {
+        console.error("[Settings] updater unknown error:", rawMessage)
       }
+      return t(appUpdateErrorMessageKey(kind, action))
     },
     [t]
   )
@@ -347,68 +311,14 @@ export function SystemNetworkSettings() {
       ? formatUpdateError(updateState.error, "install")
       : null
 
-  const checkForUpdates = useCallback(async () => {
-    setCheckingUpdate(true)
-    setUpdateError(null)
+  // The shared check records the raw failure; classify it for display here.
+  const updateError = checkError ? formatUpdateError(checkError, "check") : null
 
-    try {
-      const previousUpdate = availableUpdate
-      const result = await checkAppUpdate()
-      setCurrentVersion(result.currentVersion)
-      setLastCheckedAt(new Date())
-
-      // Server-mode capability (undefined in desktop, where Tauri's updater
-      // handles installs and these fields aren't present).
-      setServerSelfUpdate(result.selfUpdateSupported ?? false)
-      setServerLiveProgress(result.liveProgress ?? false)
-      setServerRuntime(result.runtime)
-      setServerRollbackAvailable(result.rollbackAvailable ?? false)
-
-      if (result.update) {
-        setAvailableUpdate(result.update)
-      } else {
-        setAvailableUpdate(null)
-      }
-
-      if (previousUpdate && previousUpdate !== result.update) {
-        await closeAppUpdate(previousUpdate)
-      }
-    } catch (err) {
-      const message = formatUpdateError(err, "check")
-      setUpdateError(message)
-      toast.error(t("checkUpdateFailed", { message }))
-      console.error("[Settings] check app update failed:", err)
-    } finally {
-      setCheckingUpdate(false)
-    }
-  }, [availableUpdate, formatUpdateError, t])
-
-  // Populate the local self-update capability (incl. rollback availability)
-  // independent of the manifest-dependent update check, so the rollback button
-  // stays reachable even when the update source is down. No-op on a genuine
-  // local desktop window (it updates via the Tauri plugin).
-  const loadServerUpdateStatus = useCallback(async () => {
-    try {
-      const status = await getServerUpdateStatus()
-      if (!status) return
-      setCurrentVersion(status.currentVersion)
-      setServerSelfUpdate(status.selfUpdateSupported)
-      setServerLiveProgress(status.liveProgress ?? false)
-      setServerRollbackAvailable(status.rollbackAvailable)
-      setServerRuntime(status.runtime)
-    } catch (err) {
-      console.error("[Settings] load server update status failed:", err)
-    }
-  }, [])
-
-  // Refresh the local rollback availability whenever an in-flight update ends
-  // in error: a failed attempt may have left a fresh `.bak`. A success reloads
-  // the page, so only the failure path needs covering here.
-  useEffect(() => {
-    if (updateState.status === "error") {
-      void loadServerUpdateStatus()
-    }
-  }, [updateState.status, loadServerUpdateStatus])
+  // A user-initiated check, so failures toast (the provider's own periodic
+  // checks stay silent).
+  const checkForUpdates = useCallback(() => {
+    void checkNow({ silent: false })
+  }, [checkNow])
 
   // Close a stale rollback confirm dialog if the lifecycle leaves a
   // rollback-able state — e.g. another window staged an update while the dialog
@@ -426,8 +336,8 @@ export function SystemNetworkSettings() {
   const handleRollback = useCallback(async () => {
     setRollbackConfirmOpen(false)
     await rollback()
-    void loadServerUpdateStatus()
-  }, [rollback, loadServerUpdateStatus])
+    void refreshLocalStatus()
+  }, [rollback, refreshLocalStatus])
 
   if (loading) {
     return (
@@ -517,8 +427,7 @@ export function SystemNetworkSettings() {
                 // In-place upgrade only when this client can actually drive it:
                 // desktop (Tauri plugin) or a server speaking the live-progress
                 // protocol. An older remote server falls back to "view release".
-                usesTauriUpdater() ||
-                (serverSelfUpdate && serverLiveProgress) ? (
+                canInstallInPlace ? (
                   <Button size="sm" onClick={() => void startUpdate()}>
                     <ArrowUpCircle className="h-3.5 w-3.5" />
                     {t("upgradeTo", { version: availableUpdate.version })}
@@ -649,29 +558,11 @@ export function SystemNetworkSettings() {
                     </span>
                   )}
                 </div>
-                <div
-                  className={
-                    "mt-3 max-h-72 overflow-auto rounded-md border bg-background/70 px-3 py-3 leading-6 break-words text-muted-foreground " +
-                    "[&_h1]:text-sm [&_h1]:font-semibold [&_h1]:mb-2 [&_h1]:text-foreground " +
-                    "[&_h2]:text-sm [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-2 [&_h2]:text-foreground " +
-                    "[&_h3]:text-xs [&_h3]:font-semibold [&_h3]:mt-2 [&_h3]:mb-1 [&_h3]:text-foreground " +
-                    "[&_p]:mb-2 [&_p:last-child]:mb-0 " +
-                    "[&_ul]:list-disc [&_ul]:pl-5 [&_ul]:mb-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:mb-2 [&_li]:mb-1 " +
-                    "[&_code]:font-mono [&_code]:text-[11px] [&_code]:bg-muted [&_code]:rounded [&_code]:px-1 " +
-                    "[&_pre]:bg-muted [&_pre]:rounded-md [&_pre]:p-2 [&_pre]:overflow-x-auto [&_pre]:mb-2 " +
-                    "[&_a]:text-primary [&_a]:underline [&_a]:underline-offset-2 " +
-                    "[&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground/80 " +
-                    "[&_hr]:my-2 [&_hr]:border-border"
-                  }
-                >
-                  {updateNotes ? (
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {updateNotes}
-                    </ReactMarkdown>
-                  ) : (
-                    t("none")
-                  )}
-                </div>
+                <ReleaseNotes
+                  notes={updateNotes}
+                  emptyLabel={t("none")}
+                  className="mt-3 max-h-72 overflow-auto rounded-md border bg-background/70 px-3 py-3"
+                />
               </div>
             )}
           </div>

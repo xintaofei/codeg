@@ -87,6 +87,15 @@ pub async fn init_database(
 
     service::app_metadata_service::update_app_version(&conn, app_version).await?;
 
+    // Publish user-registered ACP agents into the process-global launch
+    // registry before anything can ask for agent metadata. This is the single
+    // chokepoint every runtime (desktop, server) goes through, so custom agents
+    // are live from the first `all_acp_agents()` / `get_agent_meta()` call.
+    // A failure here must not block startup — the built-in agents still work.
+    if let Err(e) = service::custom_agent_service::hydrate_registry(&conn).await {
+        tracing::warn!("[custom-agent] failed to hydrate custom agent registry: {e}");
+    }
+
     Ok(AppDatabase { conn })
 }
 

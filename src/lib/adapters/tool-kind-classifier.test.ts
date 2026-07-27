@@ -98,6 +98,20 @@ describe("isAgentLikeToolName", () => {
     expect(isAgentLikeToolName("codeg-mcp:ask_user_question")).toBe(true)
   })
 
+  it("matches codex's Plan-mode request_user_input", () => {
+    // History keeps the raw name (the live path collapses it to "question"); it
+    // owns the AskQuestionResultCard, so it must render standalone, not folded.
+    expect(isAgentLikeToolName("request_user_input")).toBe(true)
+  })
+
+  it("matches Kimi's native AskUserQuestion history name", () => {
+    // The Kimi Code wire.jsonl (and Claude's SDK) record the camel-case tool
+    // name; history passes it raw, so without this the answered capsule was
+    // wrapped inside a generic tool-group (the reported bug).
+    expect(isAgentLikeToolName("AskUserQuestion")).toBe(true)
+    expect(isAgentLikeToolName("askuserquestion")).toBe(true)
+  })
+
   it("matches check_user_feedback across host naming conventions", () => {
     expect(isAgentLikeToolName("check_user_feedback")).toBe(true)
     expect(isAgentLikeToolName("mcp__codeg-mcp__check_user_feedback")).toBe(

@@ -194,6 +194,13 @@ pub struct CompanionContext {
     pub token: String,
     /// Tool groups this launch exposes (see [`CompanionFeatures`]).
     pub features: CompanionFeatures,
+    /// Extra `agent_type` slugs (`custom:<id>` wire forms) appended to
+    /// `delegate_to_agent`'s enum at `tools/list` time. The embedded schema
+    /// only knows the built-in agents; the parent passes the custom agents
+    /// registered at injection time via `--custom-agents`. Empty when the
+    /// parent has none (or predates the flag) — the schema is then served
+    /// byte-identical to the embedded file.
+    pub custom_agents: Vec<String>,
 }
 
 /// Per-in-flight-call state. The companion stashes one of these per
@@ -349,7 +356,7 @@ pub async fn dispatch_line(
                     ));
                 }
             };
-            let tools = match all.as_array() {
+            let mut tools = match all.as_array() {
                 Some(arr) => Value::Array(
                     arr.iter()
                         .filter(|t| {
@@ -363,10 +370,41 @@ pub async fn dispatch_line(
                 ),
                 None => all,
             };
+            append_custom_agents_to_delegate_enum(&mut tools, &ctx.custom_agents);
             LineAction::Respond(ok(id, json!({ "tools": tools })))
         }
         "tools/call" => build_tools_call_spawn(ctx.clone(), inflight, id, req.params).await,
         _ => LineAction::Respond(err(id, -32601, format!("method not found: {}", req.method))),
+    }
+}
+
+/// Append the parent-provided custom-agent slugs to `delegate_to_agent`'s
+/// `agent_type` enum. The embedded schema stays the single source of truth
+/// for the built-in list (and its order); customs are appended after it,
+/// de-duplicated, so a stale double-send can never corrupt the schema. A
+/// missing tool / property / enum array (feature-filtered list, or a future
+/// schema shape change) leaves the tools untouched rather than erroring —
+/// serving the narrower built-in enum is strictly better than serving no
+/// tools at all.
+fn append_custom_agents_to_delegate_enum(tools: &mut Value, custom_agents: &[String]) {
+    if custom_agents.is_empty() {
+        return;
+    }
+    let Some(arr) = tools.as_array_mut() else {
+        return;
+    };
+    let Some(variants) = arr
+        .iter_mut()
+        .find(|t| t.get("name").and_then(|v| v.as_str()) == Some("delegate_to_agent"))
+        .and_then(|t| t.pointer_mut("/inputSchema/properties/agent_type/enum"))
+        .and_then(|e| e.as_array_mut())
+    else {
+        return;
+    };
+    for slug in custom_agents {
+        if !variants.iter().any(|v| v.as_str() == Some(slug)) {
+            variants.push(Value::String(slug.clone()));
+        }
     }
 }
 
@@ -1173,6 +1211,7 @@ mod tests {
             socket_path: "/tmp/codeg-mcp-companion-test-nope.sock".into(),
             token: "tok".into(),
             features,
+            custom_agents: Vec::new(),
         }
     }
 
@@ -1238,6 +1277,47 @@ mod tests {
         assert!(status["inputSchema"]["properties"]["wait_ms"].is_object());
         let required = status["inputSchema"]["required"].as_array().unwrap();
         assert!(required.iter().any(|v| v == "task_ids"));
+    }
+
+    #[tokio::test]
+    async fn custom_agents_extend_the_delegate_enum_after_the_builtins() {
+        let mut ctx = ctx();
+        // The duplicate and the already-built-in slug exercise the de-dup: a
+        // parent that double-sends (or somehow lists a builtin) must not
+        // produce a corrupted enum.
+        ctx.custom_agents = vec![
+            "custom:goose".into(),
+            "custom:amp".into(),
+            "custom:goose".into(),
+            "codex".into(),
+        ];
+        let line = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
+        let resp = unwrap_respond(dispatch_line(&ctx, Arc::new(InflightCalls::new()), line).await);
+        let tools = resp.result.unwrap()["tools"].clone();
+        let delegate = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "delegate_to_agent")
+            .cloned()
+            .unwrap();
+        let agents = delegate["inputSchema"]["properties"]["agent_type"]["enum"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(agents.len(), 14, "12 builtins + 2 distinct customs");
+        // Builtins keep the embedded order and come first.
+        assert_eq!(agents[0], "claude_code");
+        assert_eq!(agents[12], "custom:goose");
+        assert_eq!(agents[13], "custom:amp");
+        // The other delegation tools carry no agent_type and are untouched.
+        let status = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "get_delegation_status")
+            .unwrap();
+        assert!(status["inputSchema"]["properties"]["agent_type"].is_null());
     }
 
     #[tokio::test]
@@ -2168,6 +2248,7 @@ mod tests {
             socket_path: sock,
             token: "tok".into(),
             features: FEEDBACK_ONLY,
+            custom_agents: Vec::new(),
         };
         let inflight = Arc::new(InflightCalls::new());
         // tools/call → Spawn (registers the inflight entry).

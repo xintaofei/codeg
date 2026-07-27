@@ -16,7 +16,7 @@
  *      NOT bleed into the chat context.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Loader2 } from "lucide-react"
 
@@ -31,13 +31,14 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
-  AGENT_LABELS,
   type AgentDelegationDefaults,
   type AgentOptionsSnapshot,
   type AgentType,
   type SessionConfigOptionInfo,
 } from "@/lib/types"
+import { getAgentLabel, isCustomAgentType } from "@/lib/custom-agents"
 import { describeAgentOptions } from "@/lib/api"
+import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { toErrorMessage } from "@/lib/app-error"
 
 // Sentinel `value` slot used by the top "Default" Select item in mode +
@@ -54,7 +55,7 @@ const DEFAULT_SENTINEL = "__codeg_default__"
 // absorbing a mid-click reconsideration.
 const TAB_SWITCH_DEBOUNCE_MS = 250
 
-const AGENT_TYPES: AgentType[] = [
+const BUILTIN_AGENT_TYPES: AgentType[] = [
   "claude_code",
   "codex",
   "open_code",
@@ -102,6 +103,17 @@ export function DelegationAgentDefaultsPanel({
   disabled,
 }: DelegationAgentDefaultsPanelProps) {
   const t = useTranslations("AcpAgentSettings.multiAgent")
+  // Custom ACP agents are delegation targets too (codeg-mcp advertises them
+  // in `delegate_to_agent`'s enum), so they get a defaults tab after the
+  // built-ins. The list mirrors what the agent registry currently holds.
+  const { agents } = useAcpAgents()
+  const agentTypes = useMemo<AgentType[]>(
+    () => [
+      ...BUILTIN_AGENT_TYPES,
+      ...agents.map((a) => a.agent_type).filter(isCustomAgentType),
+    ],
+    [agents]
+  )
   const [selectedAgent, setSelectedAgent] = useState<AgentType>("claude_code")
   const [snapshot, setSnapshot] = useState<AgentOptionsSnapshot | null>(null)
   const [loading, setLoading] = useState(false)
@@ -202,7 +214,7 @@ export function DelegationAgentDefaultsPanel({
         aria-label={t("tabAgentDefaults")}
         className="flex flex-wrap gap-1 rounded-2xl bg-muted p-1"
       >
-        {AGENT_TYPES.map((agent) => (
+        {agentTypes.map((agent) => (
           <button
             key={agent}
             type="button"
@@ -217,7 +229,7 @@ export function DelegationAgentDefaultsPanel({
                 : "text-muted-foreground hover:text-foreground")
             }
           >
-            {AGENT_LABELS[agent]}
+            {getAgentLabel(agent)}
           </button>
         ))}
       </div>

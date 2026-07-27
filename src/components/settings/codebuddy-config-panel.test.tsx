@@ -14,6 +14,7 @@ import type { AcpAgentInfo } from "@/lib/types"
 function makeAgent(env: Record<string, string>): AcpAgentInfo {
   return {
     agent_type: "code_buddy",
+    skills_capable: true,
     registry_id: "codebuddy-code",
     registry_version: "2.109.3",
     name: "CodeBuddy",
@@ -30,6 +31,7 @@ function makeAgent(env: Record<string, string>): AcpAgentInfo {
     codex_auth_json: null,
     codex_config_toml: null,
     codex_model_catalog: null,
+    codex_sandbox_settings: null,
     grok_config_toml: null,
     grok_settings: null,
     cline_secrets_json: null,
@@ -37,6 +39,7 @@ function makeAgent(env: Record<string, string>): AcpAgentInfo {
     cursor_cli_config_json: null,
     cursor_settings: null,
     model_provider_id: null,
+    icon_url: null,
   }
 }
 

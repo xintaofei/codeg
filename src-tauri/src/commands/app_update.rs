@@ -51,6 +51,15 @@ pub async fn perform_app_update(
     Ok(snap)
 }
 
+/// Bound on the pre-download manifest re-check. `tauri-plugin-updater` applies
+/// no timeout of its own, and `try_begin` has already flipped the shared state
+/// to `Downloading` by the time we get here — so a black-holed network would
+/// pin the UI at "downloading, 0 bytes" forever, with `try_begin` refusing
+/// every retry until the app is restarted. Only the check is bounded; the
+/// download itself must stay unbounded so a slow-but-progressing transfer is
+/// never killed mid-stream.
+const CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// Re-check, download, and install the update, driving progress into the shared
 /// handle. On success leaves the state at `ReadyToRestart`. Returns the error
 /// message (already stringified) so the caller can record it.
@@ -60,9 +69,11 @@ async fn run_download(
     emitter: EventEmitter,
 ) -> Result<(), String> {
     let updater = app.updater().map_err(|e| e.to_string())?;
-    let update = updater
-        .check()
+    let update = tokio::time::timeout(CHECK_TIMEOUT, updater.check())
         .await
+        // "timed out" is what the frontend's `normalizeAppUpdateError` keys on
+        // to report this as a network problem rather than a generic failure.
+        .map_err(|_| "Update check timed out".to_string())?
         .map_err(|e| e.to_string())?
         // The renderer only enables the button when a check found an update,
         // but a release could vanish between check and click.

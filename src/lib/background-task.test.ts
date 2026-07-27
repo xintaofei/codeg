@@ -292,6 +292,28 @@ describe("buildBackgroundTaskRows", () => {
     expect(rows[0].taskId).toBe("bfb5xnq1t")
   })
 
+  it("drops a promoted orphan (output-available but status still unsettled)", () => {
+    // COMPLETE_TURN promotes the unpruned arg-less TaskOutput orphan: its state
+    // flips to output-available, but its forwarded status stays pending. It must
+    // not re-stack as an anonymous "background task running" row post-turn.
+    const rows = buildBackgroundTaskRows([
+      poll({
+        toolCallId: "done",
+        output: COMPLETED,
+        state: "output-available",
+      }),
+      poll({
+        toolCallId: "orphan",
+        input: "{}",
+        output: null,
+        state: "output-available",
+        toolStatus: "pending",
+      }),
+    ])
+    expect(rows).toHaveLength(1)
+    expect(rows[0].taskId).toBe("bfb5xnq1t")
+  })
+
   it("still shows an id-less poll once it carries an envelope", () => {
     // A settled/output-available poll that parsed an envelope (even without a
     // resolvable id) is real content and keeps its row.

@@ -24,6 +24,7 @@
  * parsing lives here (same convention as `delegation-status.ts`).
  */
 
+import { isUnsettledToolCall } from "@/lib/tool-call-lifecycle"
 import type { AdaptedToolCallPart } from "@/lib/adapters/ai-elements-adapter"
 
 export interface BackgroundTaskEnvelope {
@@ -275,7 +276,7 @@ export function buildBackgroundTaskRows(
       poll.output ?? poll.errorText ?? null
     )
     const taskId = envelope?.taskId ?? inputTaskId(poll.input) ?? null
-    // Drop an in-flight poll that carries no identity AND no output yet — a live
+    // Drop an unsettled poll that carries no identity AND no output yet — a live
     // `TaskOutput` whose `task_id` hasn't streamed onto the wire. claude-agent-acp
     // emits an arg-less initial `tool_call` (rawInput `{}`) and fills the real
     // args only on a later update, so a still-blocking poll parses to no envelope
@@ -283,8 +284,11 @@ export function buildBackgroundTaskRows(
     // anonymous "background task running" row, stacking identical duplicates of
     // the same wait; it folds into its task's row once the id resolves (and the
     // settled transcript, whose polls always carry the id, is unaffected).
+    // `isUnsettledToolCall` (not a bare live-state check) also covers an orphan
+    // promoted into `localTurns` at COMPLETE_TURN — output-available yet never
+    // settled — which would otherwise re-stack after the turn completes.
     // Mirrors `buildDelegationTaskRows`.
-    if (taskId == null && envelope == null && isInFlightState(poll)) {
+    if (taskId == null && envelope == null && isUnsettledToolCall(poll)) {
       continue
     }
     const key = taskId ?? `__bg__:${poll.toolCallId}`

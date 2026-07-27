@@ -28,10 +28,10 @@ import {
 import { listModelProviders, deleteModelProvider } from "@/lib/api"
 import {
   MODEL_PROVIDER_AGENT_TYPES,
-  AGENT_LABELS,
   type AgentType,
   type ModelProviderInfo,
 } from "@/lib/types"
+import { getAgentLabel } from "@/lib/custom-agents"
 import { AddModelProviderDialog } from "./add-model-provider-dialog"
 import { EditModelProviderDialog } from "./edit-model-provider-dialog"
 
@@ -117,7 +117,7 @@ export function ModelProviderSettings() {
               <SelectItem value="__all__">{t("filterAll")}</SelectItem>
               {MODEL_PROVIDER_AGENT_TYPES.map((at) => (
                 <SelectItem key={at} value={at}>
-                  {AGENT_LABELS[at]}
+                  {getAgentLabel(at)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -160,7 +160,7 @@ export function ModelProviderSettings() {
                       variant="secondary"
                       className="text-[10px] px-1.5 py-0"
                     >
-                      {AGENT_LABELS[p.agent_type] ?? p.agent_type}
+                      {getAgentLabel(p.agent_type) ?? p.agent_type}
                     </Badge>
                   </div>
                 </div>

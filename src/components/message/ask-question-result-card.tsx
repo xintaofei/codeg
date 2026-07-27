@@ -75,6 +75,7 @@ export function AskQuestionResultCard({
         header: q.header,
         multi_select: q.multiSelect,
         options: q.options,
+        is_secret: q.isSecret,
       })),
     }
   }, [questions])
@@ -84,14 +85,34 @@ export function AskQuestionResultCard({
   const initialSelections = useMemo(() => {
     const sel: Record<string, { chosen: string[]; otherText: string }> = {}
     if (!pending || outcome?.declined) return sel
+    // codex `request_user_input` answers carry the question `id`; codeg-mcp / grok
+    // asks carry none and match on the header+question signature instead.
+    const byId = new Map(
+      (outcome?.answers ?? [])
+        .filter((a) => a.id)
+        .map((a) => [a.id as string, a.selected])
+    )
     const bySig = new Map(
       (outcome?.answers ?? []).map((a) => [
         `${a.header}${KEY_SEP}${a.question}`,
         a.selected,
       ])
     )
-    pending.questions.forEach((q) => {
-      const values = bySig.get(`${q.header}${KEY_SEP}${q.question}`) ?? []
+    // Kimi Code's native ask keys its answers by the bare question TEXT (its
+    // envelope carries no header), so the header+question signature misses any
+    // question that has one — fall back to the question text alone.
+    const byQuestion = new Map(
+      (outcome?.answers ?? [])
+        .filter((a) => a.question)
+        .map((a) => [a.question, a.selected])
+    )
+    pending.questions.forEach((q, i) => {
+      const qid = questions[i]?.id
+      const values =
+        (qid ? byId.get(qid) : undefined) ??
+        bySig.get(`${q.header}${KEY_SEP}${q.question}`) ??
+        byQuestion.get(q.question) ??
+        []
       const { selected, other } = matchSelections(
         values,
         q.options.map((o) => o.label)
@@ -99,7 +120,7 @@ export function AskQuestionResultCard({
       sel[q.id] = { chosen: selected, otherText: other.join(", ") }
     })
     return sel
-  }, [pending, outcome])
+  }, [pending, outcome, questions])
 
   // Compact header card for the states with no answered selection to render.
   const shell = (subtitle: string | null, body?: ReactNode) => (
@@ -214,7 +235,7 @@ export function AskQuestionResultCard({
       aria-expanded={expanded}
       data-testid="ask-question-result-card"
       className={cn(
-        "flex w-full items-center gap-2 rounded-full border border-primary/30 bg-card ws-msg-card px-3 py-1.5 text-left transition-colors hover:bg-muted/40",
+        "flex w-fit max-w-full items-center gap-2 rounded-full border border-primary/30 bg-card ws-msg-card px-3 py-1.5 text-left transition-colors hover:bg-muted/40",
         !expanded && "mb-2"
       )}
     >

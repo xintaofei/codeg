@@ -12,10 +12,15 @@ import {
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import {
+  type AppUpdateInfo,
   type AppUpdateState,
+  appUpdateErrorMessageKey,
+  checkAppUpdateInfo,
   confirmRollbackVersion,
   getAppUpdateState,
+  getCurrentAppVersion,
   getRunningServerVersion,
+  getServerUpdateStatus,
   normalizeAppUpdateError,
   readServerVersionStrict,
   restartApp,
@@ -25,11 +30,33 @@ import {
   usesTauriUpdater,
   waitForServerHealthy,
 } from "@/lib/updater"
+import {
+  type CachedUpdateCheck,
+  clearLastCheck,
+  dismissedVersionStorageKey,
+  lastCheckStorageKey,
+  readDismissedVersion,
+  readLastCheck,
+  writeDismissedVersion,
+  writeLastCheck,
+} from "@/lib/update-check-storage"
 import { getTransport } from "@/lib/transport"
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 const IDLE_STATE: AppUpdateState = { seq: 0, status: "idle" }
+
+/** How long a completed check stays fresh. Also the polling period for a
+ * long-lived window — codeg workspaces are commonly left open for days, so a
+ * check-on-boot alone would never surface a release. */
+const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+/** Delay before the first automatic check, so the manifest fetch doesn't
+ * compete with workspace boot (folder scan, session load, agent connect). */
+const FIRST_CHECK_DELAY_MS = 8000
+/** Minimum gap between automatic attempts, independent of whether they
+ * succeeded. Only completions are persisted, so without this an offline window
+ * would re-fetch on every tab focus. */
+const AUTO_RETRY_FLOOR_MS = 10 * 60 * 1000
 
 const LIFECYCLES = new Set([
   "idle",
@@ -69,6 +96,45 @@ export interface UpdateContextValue {
   /** Any action (update / restart / rollback) is in flight — for disabling
    * controls without each consumer re-deriving it. */
   isBusy: boolean
+
+  // ─── Availability (is a newer release out there?) ────────────────────────
+  // Distinct from the lifecycle above, which only describes an update the user
+  // already started. Owned here so the status-bar badge and the settings page
+  // share one answer — and one manifest fetch.
+
+  /** The newer release, or null when up to date / not yet checked. */
+  available: AppUpdateInfo | null
+  /** The running version, from the last check (or "" before the first one). */
+  currentVersion: string
+  /** A check is in flight. */
+  checking: boolean
+  /** Raw failure message from the last check; classify with
+   * {@link normalizeAppUpdateError}. Cleared by the next successful check. */
+  checkError: string | null
+  /** When the last check completed (restored from storage across reloads). */
+  lastCheckedAt: Date | null
+  /** Server-mode capability bits from the last check. Absent on desktop. */
+  selfUpdateSupported: boolean
+  liveProgress: boolean
+  runtime: string | undefined
+  rollbackAvailable: boolean
+  /** This client can actually drive an in-place install — desktop (Tauri
+   * plugin) or a server speaking the live-progress protocol. When false the UI
+   * offers a "view release" link instead. */
+  canInstallInPlace: boolean
+  /** Version the user dismissed the badge for, if any. */
+  dismissedVersion: string | null
+  /** Ask the release source now. De-duplicated: a second call while one is in
+   * flight attaches to it. `silent` (the default) reports failures only through
+   * {@link checkError}; pass false for a user-initiated check that should toast. */
+  checkNow: (opts?: { silent?: boolean }) => Promise<void>
+  /** Stop surfacing the badge for the currently-available version. */
+  dismissAvailable: () => void
+  /** Re-read the LOCAL facts (version, capability, rollback availability)
+   * without contacting the release source — so those stay accurate during an
+   * outage, when a manifest check can't help. */
+  refreshLocalStatus: () => Promise<void>
+
   /** Begin (or attach to) a background download+install of the available
    * update. Progress arrives via {@link state}. */
   startUpdate: () => Promise<void>
@@ -115,6 +181,120 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   // then `state` is the default `idle` placeholder, which consumers must not
   // treat as a real "idle" backend status (e.g. offering rollback).
   const [hydrated, setHydrated] = useState(false)
+
+  // ─── Availability ───────────────────────────────────────────────────────
+  const [available, setAvailable] = useState<AppUpdateInfo | null>(null)
+  const [currentVersion, setCurrentVersion] = useState("")
+  const [checking, setChecking] = useState(false)
+  const [checkError, setCheckError] = useState<string | null>(null)
+  const [lastCheckedAt, setLastCheckedAt] = useState<Date | null>(null)
+  const [selfUpdateSupported, setSelfUpdateSupported] = useState(false)
+  const [liveProgress, setLiveProgress] = useState(false)
+  const [runtime, setRuntime] = useState<string | undefined>(undefined)
+  const [rollbackAvailable, setRollbackAvailable] = useState(false)
+  const [dismissedVersion, setDismissedVersion] = useState<string | null>(null)
+
+  // Completion time of the answer currently applied to state, as a watermark so
+  // a cached result is never adopted over a fresher one we already hold.
+  const appliedAtRef = useRef(0)
+  // The running version the applied answer was computed against. Tracked in
+  // memory because the answer can outlive its storage entry: a sibling window
+  // that installs the update clears the shared cache, and this window — which
+  // never reloaded — would otherwise keep advertising it.
+  const appliedBaselineRef = useRef<string | null>(null)
+  // Version of the applied offer (null = "up to date"), so an equal-timestamp
+  // entry can be told apart from a re-read of the one we already hold. See
+  // `adoptCached`.
+  const appliedOfferRef = useRef<string | null>(null)
+
+  /** Re-read which release the user waved away. Split out from `adoptCached`
+   * because a dismissal moves independently of the check cache: the user can
+   * dismiss a release we ALREADY hold, which writes the dismissal key and
+   * nothing else. */
+  const syncDismissed = useCallback(() => {
+    setDismissedVersion(readDismissedVersion())
+  }, [])
+
+  /** Apply a stored result — ours from a previous run, or one a sibling window
+   * recorded while we sat idle. */
+  const adoptCached = useCallback(
+    (cached: CachedUpdateCheck) => {
+      // Ahead of the freshness guard on purpose. A sibling window's "Later"
+      // leaves `cached.at` untouched, so gating this read on a newer cache
+      // would strand every window that already holds the same answer: they'd
+      // keep showing the full accented badge for a release the user waved away
+      // next door, until their own next check happened to find something newer.
+      syncDismissed()
+      // Strictly older always loses to the answer already applied.
+      if (cached.at < appliedAtRef.current) return
+      // An EQUAL stamp usually means we're re-reading our own entry, and
+      // re-applying it would hand every consumer a fresh `info` object to
+      // re-render against on each visibility change. But it can also be a
+      // sibling that finished its check in the same millisecond and got a
+      // DIFFERENT answer, because a release landed between the two requests.
+      // Discarding that one would be worse than a wasted render: the dismissal
+      // read above has already un-muted us, so the badge would go loud
+      // advertising the older release and its stale notes. Compare the payload
+      // and let content, not the clock, break the tie.
+      if (
+        cached.at === appliedAtRef.current &&
+        (cached.info?.version ?? null) === appliedOfferRef.current &&
+        (!cached.currentVersion ||
+          cached.currentVersion === appliedBaselineRef.current)
+      ) {
+        return
+      }
+      appliedAtRef.current = cached.at
+      appliedOfferRef.current = cached.info?.version ?? null
+      setLastCheckedAt(new Date(cached.at))
+      setAvailable(cached.info)
+      if (cached.currentVersion) {
+        appliedBaselineRef.current = cached.currentVersion
+        setCurrentVersion(cached.currentVersion)
+      }
+    },
+    [syncDismissed]
+  )
+
+  // Seed from the persisted result once on mount, so a reload shows the badge
+  // immediately rather than going quiet until the next check. Reading storage
+  // during render would break the static-export pass, so it happens here.
+  useEffect(() => {
+    syncDismissed()
+    const last = readLastCheck()
+    if (last) adoptCached(last)
+  }, [adoptCached, syncDismissed])
+
+  // `storage` fires in the OTHER windows of this origin, so what one workspace
+  // window learns reaches its siblings right away instead of at whatever point
+  // they next run a check. Belt-and-braces with the reads in `adoptCached`:
+  // this is the immediate path, that one is the reliable fallback if a webview
+  // doesn't deliver the event across windows.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      const key = event.key
+      // A null key means storage was cleared wholesale — that touches both.
+      if (
+        key !== null &&
+        key !== dismissedVersionStorageKey() &&
+        key !== lastCheckStorageKey()
+      ) {
+        return
+      }
+      // Both halves get re-read on either key, because they move together and
+      // NOT atomically: a window that finds a newer release writes the cache
+      // first and only then drops the now-stale dismissal. Watching just the
+      // dismissal would un-mute this window while it still held the previous
+      // offer — a loud badge showing the old version number and old release
+      // notes until its next check. Re-reading both keeps them in step
+      // whichever event arrives first.
+      const last = readLastCheck()
+      if (last) adoptCached(last)
+      else syncDismissed()
+    }
+    window.addEventListener("storage", onStorage)
+    return () => window.removeEventListener("storage", onStorage)
+  }, [adoptCached, syncDismissed])
 
   // Mirror state into a ref so the action callbacks read the latest snapshot
   // without being re-created on every transition.
@@ -202,6 +382,290 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       offReconnect?.()
     }
   }, [applyState])
+
+  // ─── Availability check ─────────────────────────────────────────────────
+
+  // Live for the provider's lifetime; guards state writes from a check that
+  // resolves after the tree is gone.
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  // The in-flight check, so a manual click and the scheduler share one fetch
+  // instead of racing two manifest requests.
+  const inFlightCheckRef = useRef<Promise<void> | null>(null)
+  // Same, for the local-status round-trip (mount, lifecycle error, reconnect).
+  const inFlightRefreshRef = useRef<Promise<void> | null>(null)
+  // The single follow-up pass owed to callers who arrived while that round-trip
+  // was already running. See `refreshLocalStatus`.
+  const trailingRefreshRef = useRef<Promise<void> | null>(null)
+
+  const runCheck = useCallback(
+    async (silent: boolean) => {
+      setChecking(true)
+      try {
+        const result = await checkAppUpdateInfo()
+        if (!mountedRef.current) return
+        setCurrentVersion(result.currentVersion)
+        setAvailable(result.update)
+        setSelfUpdateSupported(result.selfUpdateSupported ?? false)
+        setLiveProgress(result.liveProgress ?? false)
+        setRuntime(result.runtime)
+        setRollbackAvailable(result.rollbackAvailable ?? false)
+        setCheckError(null)
+
+        const now = Date.now()
+        writeLastCheck({
+          at: now,
+          currentVersion: result.currentVersion,
+          info: result.update,
+        })
+        appliedAtRef.current = now
+        appliedOfferRef.current = result.update?.version ?? null
+        appliedBaselineRef.current = result.currentVersion || null
+        setLastCheckedAt(new Date(now))
+
+        // A dismissal silences exactly one release. Once that release is no
+        // longer the newest thing on offer, drop it so the next one surfaces.
+        setDismissedVersion((prev) => {
+          if (!prev || prev === result.update?.version) return prev
+          writeDismissedVersion(null)
+          return null
+        })
+      } catch (err) {
+        const { kind, rawMessage } = normalizeAppUpdateError(err)
+        if (mountedRef.current) setCheckError(rawMessage)
+        if (!silent) {
+          toast.error(
+            t("checkUpdateFailed", {
+              message: t(appUpdateErrorMessageKey(kind, "check")),
+            })
+          )
+        }
+        console.error("[Update] check failed:", err)
+      } finally {
+        if (mountedRef.current) setChecking(false)
+      }
+    },
+    [t]
+  )
+
+  const checkNow = useCallback(
+    (opts?: { silent?: boolean }) => {
+      const existing = inFlightCheckRef.current
+      if (existing) return existing
+      const p = runCheck(opts?.silent ?? true).finally(() => {
+        inFlightCheckRef.current = null
+      })
+      inFlightCheckRef.current = p
+      return p
+    },
+    [runCheck]
+  )
+
+  // Mirrored into a ref so the scheduler below can mount once — re-arming it on
+  // every lifecycle transition would keep resetting the interval and the
+  // first-check delay.
+  const checkNowRef = useRef(checkNow)
+  useEffect(() => {
+    checkNowRef.current = checkNow
+  }, [checkNow])
+
+  /**
+   * Drop an availability answer that was computed against a different running
+   * version than the one actually running now.
+   *
+   * The case that matters is an update landing: the answer says "0.21.9 is
+   * available" while the app is now *running* 0.21.9, and the 6h freshness
+   * guard would keep re-offering the release the user just installed. Two
+   * shapes of it:
+   *   * the window relaunched/reloaded and re-seeded from the shared cache;
+   *   * a *sibling* window that never reloaded (its backend restarted under it)
+   *     still holds the answer in memory, and the initiating window has already
+   *     cleared the shared cache — hence the in-memory baseline check.
+   *
+   * Comparing baselines rather than release versions also covers rollbacks and
+   * sideways installs, with no need for a semver comparator.
+   */
+  const discardStaleAvailability = useCallback((running: string) => {
+    const cached = readLastCheck()
+    const cacheStale =
+      !!cached?.currentVersion && cached.currentVersion !== running
+    const memoryStale =
+      !!appliedBaselineRef.current && appliedBaselineRef.current !== running
+    if (cacheStale) clearLastCheck()
+    if (!cacheStale && !memoryStale) return
+    appliedAtRef.current = 0
+    appliedOfferRef.current = null
+    appliedBaselineRef.current = null
+    setAvailable(null)
+    setLastCheckedAt(null)
+    // Ask again now: waiting for the next scheduled tick could leave the UI
+    // blank for 6h if this landed after the startup timer had already run.
+    void checkNowRef.current({ silent: true })
+  }, [])
+
+  /**
+   * Refresh the LOCAL facts (running version, self-update capability, rollback
+   * availability) without contacting the release source. Must stay reachable
+   * when the manifest is down — the rollback affordance depends on it, and it
+   * is what lets the settings page show a version during an outage.
+   */
+  const runRefresh = useCallback(async () => {
+    let running: string | null = null
+    try {
+      if (usesTauriUpdater()) {
+        const version = await getCurrentAppVersion()
+        running = version === "unknown" ? null : version
+      } else {
+        try {
+          const status = await getServerUpdateStatus()
+          if (status) {
+            running = status.currentVersion
+            if (mountedRef.current) {
+              setSelfUpdateSupported(status.selfUpdateSupported)
+              setLiveProgress(status.liveProgress ?? false)
+              setRuntime(status.runtime)
+              setRollbackAvailable(status.rollbackAvailable)
+            }
+          }
+        } catch (err) {
+          // A newer client talking to an older server 404s here. That must fall
+          // through to /health (present on every build) rather than abort the
+          // whole refresh — same fail-open contract as getCurrentAppVersion().
+          console.error("[Update] status route unavailable:", err)
+        }
+        if (!running) running = await getRunningServerVersion()
+      }
+    } catch (err) {
+      // Never fatal: this only enriches what the UI can show.
+      console.error("[Update] local status refresh failed:", err)
+      return
+    }
+    if (!running || !mountedRef.current) return
+    setCurrentVersion(running)
+    discardStaleAvailability(running)
+  }, [discardStaleAvailability])
+
+  const startRefresh = useCallback((): Promise<void> => {
+    const p = runRefresh().finally(() => {
+      if (inFlightRefreshRef.current === p) inFlightRefreshRef.current = null
+    })
+    inFlightRefreshRef.current = p
+    return p
+  }, [runRefresh])
+
+  /**
+   * Re-read the running version and the backend's update capabilities.
+   *
+   * Overlapping calls coalesce, because this fires on every transport reconnect
+   * and a flapping link would otherwise stack round-trips all asking the same
+   * question. But they coalesce onto a *trailing* pass, not the one already in
+   * flight: a reconnect can mean the backend process was REPLACED (server
+   * self-update, supervisor relaunch, crash), so the running request is
+   * addressed to a process that may no longer exist. Its answer — a stale
+   * version, or an outright failure — says nothing about the new one. Folding
+   * the reconnect into it would leave `currentVersion` and the rollback/self-
+   * update capabilities pinned to the old process until the next reconnect, a
+   * manual check, or the six-hour poll.
+   */
+  const refreshLocalStatus = useCallback((): Promise<void> => {
+    if (!inFlightRefreshRef.current) return startRefresh()
+    // One follow-up covers every caller that arrives during this window: they
+    // all want the same thing, a look at whatever backend we end up connected
+    // to once the current attempt is done.
+    const queued = trailingRefreshRef.current
+    if (queued) return queued
+    const next = inFlightRefreshRef.current
+      // The follow-up is owed whether or not the current attempt succeeded —
+      // a failure against the old process is precisely when it's needed.
+      .catch(() => {})
+      .then(() => {
+        trailingRefreshRef.current = null
+        if (!mountedRef.current) return
+        return startRefresh()
+      })
+    trailingRefreshRef.current = next
+    return next
+  }, [startRefresh])
+
+  // Local status is cheap and offline-safe, so seed it right away rather than
+  // waiting out the first manifest check.
+  useEffect(() => {
+    void refreshLocalStatus()
+  }, [refreshLocalStatus])
+
+  // A reconnect means the backend process may have restarted — including onto a
+  // NEW version, when another window drove a server self-update. That window
+  // reloads itself; this one doesn't, so re-read the running version here or it
+  // would go on advertising the release it is already running. Registered
+  // separately from the lifecycle subscription (both transports keep a Set of
+  // reconnect callbacks) so the seq/epoch effect stays untouched.
+  useEffect(() => {
+    const off = getTransport().onReconnect?.(() => {
+      void refreshLocalStatus()
+    })
+    return () => off?.()
+  }, [refreshLocalStatus])
+
+  // A failed attempt may have left a fresh `.bak` — re-read what can be rolled
+  // back. A success relaunches the app/server, so only the failure path needs
+  // covering here.
+  useEffect(() => {
+    if (state.status === "error") void refreshLocalStatus()
+  }, [state.status, refreshLocalStatus])
+
+  // Floor between automatic attempts, so a failing check (which deliberately
+  // does NOT record a completion time, so recovery isn't blocked for 6h) can't
+  // be re-fired on every tab focus.
+  const lastAttemptRef = useRef(0)
+
+  const dismissAvailable = useCallback(() => {
+    if (!available) return
+    writeDismissedVersion(available.version)
+    setDismissedVersion(available.version)
+  }, [available])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const maybeCheck = () => {
+      if (cancelled) return
+      // Storage is the cross-window source of truth. Adopt a sibling window's
+      // newer answer BEFORE deciding whether to fetch: it is what suppresses
+      // our own request, so skipping without taking it would leave this window
+      // badge-less for the rest of the interval even though an update is out.
+      const last = readLastCheck()
+      if (last) adoptCached(last)
+      // Background tab: skip. `visibilitychange` re-runs this when it returns.
+      if (typeof document !== "undefined" && document.hidden) return
+      // Nothing to discover while an update is already downloading, staged or
+      // restarting — the lifecycle UI owns the status bar then.
+      const status = stateRef.current.status
+      if (status !== "idle" && status !== "error") return
+      if (last && Date.now() - last.at < CHECK_INTERVAL_MS) return
+      if (Date.now() - lastAttemptRef.current < AUTO_RETRY_FLOOR_MS) return
+      lastAttemptRef.current = Date.now()
+      void checkNowRef.current({ silent: true })
+    }
+
+    const first = setTimeout(maybeCheck, FIRST_CHECK_DELAY_MS)
+    const interval = setInterval(maybeCheck, CHECK_INTERVAL_MS)
+    const onVisibility = () => maybeCheck()
+    document.addEventListener("visibilitychange", onVisibility)
+
+    return () => {
+      cancelled = true
+      clearTimeout(first)
+      clearInterval(interval)
+      document.removeEventListener("visibilitychange", onVisibility)
+    }
+    // `adoptCached` is stable, so this still arms exactly once.
+  }, [adoptCached])
 
   // ─── Actions ────────────────────────────────────────────────────────────
 
@@ -406,6 +870,12 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     restartCountdown !== null ||
     state.status === "restarting"
 
+  // Desktop always drives the Tauri updater; a server only when it speaks the
+  // detached live-progress protocol (older ones would block on the legacy
+  // endpoint), so anything else falls back to a "view release" link.
+  const canInstallInPlace =
+    usesTauriUpdater() || (selfUpdateSupported && liveProgress)
+
   const value = useMemo<UpdateContextValue>(
     () => ({
       state,
@@ -415,6 +885,20 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       isRestarting,
       hydrated,
       isBusy,
+      available,
+      currentVersion,
+      checking,
+      checkError,
+      lastCheckedAt,
+      selfUpdateSupported,
+      liveProgress,
+      runtime,
+      rollbackAvailable,
+      canInstallInPlace,
+      dismissedVersion,
+      checkNow,
+      dismissAvailable,
+      refreshLocalStatus,
       startUpdate,
       restart,
       rollback,
@@ -427,6 +911,20 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       isRestarting,
       hydrated,
       isBusy,
+      available,
+      currentVersion,
+      checking,
+      checkError,
+      lastCheckedAt,
+      selfUpdateSupported,
+      liveProgress,
+      runtime,
+      rollbackAvailable,
+      canInstallInPlace,
+      dismissedVersion,
+      checkNow,
+      dismissAvailable,
+      refreshLocalStatus,
       startUpdate,
       restart,
       rollback,

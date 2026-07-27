@@ -26,6 +26,8 @@ function collabInput(o: {
   op?: string
   agents?: Record<string, { status: string; message: string | null }>
   status?: string
+  model?: string
+  reasoningEffort?: string
 }) {
   return JSON.stringify({
     prompt: o.prompt ?? "",
@@ -33,6 +35,8 @@ function collabInput(o: {
     receiverThreadIds: Object.keys(o.agents ?? {}),
     agentsStates: o.agents ?? {},
     status: o.status ?? "inProgress",
+    ...(o.model ? { model: o.model } : {}),
+    ...(o.reasoningEffort ? { reasoningEffort: o.reasoningEffort } : {}),
     ...(o.op ? { [COLLAB_OP_KEY]: o.op } : {}),
   })
 }
@@ -62,6 +66,41 @@ describe("CollabAgentCard", () => {
     expect(screen.queryByText("Running")).not.toBeInTheDocument()
   })
 
+  it("shows the sub-agent model + reasoning effort on a spawn (codex-acp #304)", () => {
+    renderCard({
+      input: collabInput({
+        prompt: "Build the app",
+        op: "spawnAgent",
+        model: "gpt-5-codex",
+        reasoningEffort: "high",
+        agents: { "11110000-aaaa": { status: "running", message: null } },
+      }),
+      state: "input-available",
+    })
+    // Collapsed until expanded; run-meta lives in the body.
+    fireEvent.click(screen.getByRole("button"))
+    expect(screen.getByText("gpt-5-codex")).toBeInTheDocument()
+    expect(screen.getByText("high")).toBeInTheDocument()
+  })
+
+  it("does NOT show model/effort on a wait capsule (live/reload parity)", () => {
+    renderCard({
+      input: collabInput({
+        op: "wait",
+        status: "completed",
+        model: "gpt-5-codex",
+        reasoningEffort: "high",
+        agents: { "22220000-bbbb": { status: "completed", message: "done" } },
+      }),
+      state: "output-available",
+    })
+    fireEvent.click(screen.getByRole("button"))
+    // The reconstructed wait capsule carries no model/effort, so the live wait
+    // capsule must not render them either.
+    expect(screen.queryByText("gpt-5-codex")).not.toBeInTheDocument()
+    expect(screen.queryByText("high")).not.toBeInTheDocument()
+  })
+
   it("gives a wait op an op-aware title and badges the returned agent UUID", () => {
     renderCard({
       input: collabInput({
@@ -73,6 +112,23 @@ describe("CollabAgentCard", () => {
     expect(screen.getByText("Fetching sub-agent result")).toBeInTheDocument()
     expect(screen.queryByText("Sub-agent")).not.toBeInTheDocument()
     expect(screen.getByText("22220000")).toBeInTheDocument()
+  })
+
+  it("renders a resultless wait as a bare pill, not an empty box", () => {
+    // Newer codex `wait_agent` returns no per-agent message, so the capsule has
+    // nothing to show. It must render as a bare, non-expandable pill — NOT an
+    // empty bordered body frame (the sub-agent "white box" bug).
+    renderCard({
+      input: collabInput({
+        op: "wait",
+        status: "completed",
+        agents: { "22220000-bbbb": { status: "completed", message: null } },
+      }),
+      state: "output-available",
+    })
+    expect(screen.getByText("Fetching sub-agent result")).toBeInTheDocument()
+    // No collapsible trigger → bodyless capsule is a bare pill, not a button.
+    expect(screen.queryByRole("button")).not.toBeInTheDocument()
   })
 
   it("op-aware titles survive snake_case op spellings", () => {

@@ -25,13 +25,13 @@ import { createModelProvider } from "@/lib/api"
 import { CodexModelListEditor } from "@/components/settings/codex-model-list-editor"
 import {
   MODEL_PROVIDER_AGENT_TYPES,
-  AGENT_LABELS,
   serializeClaudeProviderModel,
   serializeCodexModelConfig,
   type AgentType,
   type ClaudeProviderModel,
   type CodexModelConfig,
 } from "@/lib/types"
+import { getAgentLabel } from "@/lib/custom-agents"
 
 interface AddModelProviderDialogProps {
   open: boolean
@@ -214,7 +214,7 @@ export function AddModelProviderDialog({
               <SelectContent>
                 {MODEL_PROVIDER_AGENT_TYPES.map((at) => (
                   <SelectItem key={at} value={at}>
-                    {AGENT_LABELS[at]}
+                    {getAgentLabel(at)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -250,7 +250,7 @@ export function AddModelProviderDialog({
                       reasoning: e.target.value,
                     }))
                   }
-                  placeholder="claude-opus-4-8"
+                  placeholder="claude-opus-5"
                 />
               </div>
               <div className="space-y-1.5">
@@ -295,7 +295,7 @@ export function AddModelProviderDialog({
                       opus: e.target.value,
                     }))
                   }
-                  placeholder="claude-opus-4-8"
+                  placeholder="claude-opus-5"
                 />
               </div>
               <div className="space-y-1.5 md:col-span-2">
@@ -310,7 +310,7 @@ export function AddModelProviderDialog({
                       customOption: e.target.value,
                     }))
                   }
-                  placeholder="my-gateway/claude-opus-4-8"
+                  placeholder="my-gateway/claude-opus-5"
                 />
               </div>
               <div className="space-y-1.5">

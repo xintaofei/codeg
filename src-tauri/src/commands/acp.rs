@@ -8,14 +8,17 @@ use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 
 use crate::acp::binary_cache;
+use crate::acp::custom_registry;
 use crate::acp::error::AcpError;
 use crate::acp::manager::ConnectionManager;
 use crate::acp::opencode_plugins::{self, PluginCheckSummary};
 use crate::acp::preflight::{self, PreflightResult};
 use crate::acp::registry;
 use crate::acp::types::{
-    AcpAgentInfo, AgentSkillContent, AgentSkillItem, AgentSkillLayout, AgentSkillLocation,
-    AgentSkillScope, AgentSkillsListResult, ConfigStaleKind, ConnectionStatus, GrokSettings,
+    AcpAgentInfo, AgentDiagnosticsReport, AgentSkillContent, AgentSkillItem, AgentSkillLayout,
+    AgentSkillLocation, AgentSkillScope, AgentSkillsListResult, CodexGranularApproval,
+    CodexSandboxSettings, CodexSandboxStructuredConfig, CodexWorkspaceWrite, ConfigStaleKind,
+    ConnectionStatus, DiagCheck, DiagLevel, DiagSection, DiagnosticsVerdict, GrokSettings,
     GrokStructuredConfig,
 };
 #[cfg(feature = "tauri-runtime")]
@@ -38,7 +41,7 @@ struct AcpAgentsUpdatedEventPayload {
     agent_type: Option<AgentType>,
 }
 
-fn emit_acp_agents_updated(
+pub(crate) fn emit_acp_agents_updated(
     emitter: &EventEmitter,
     reason: &'static str,
     agent_type: Option<AgentType>,
@@ -532,7 +535,10 @@ pub(crate) async fn verify_agent_installed(agent_type: AgentType) -> Result<(), 
 /// Checks both the system global prefix and the user-local prefix
 /// (`~/.codeg/npm-global/`) so packages installed via the EACCES fallback are
 /// found as well.
-async fn detect_npm_global_version(package_name: &str) -> Option<String> {
+///
+/// `pub(crate)` so env diagnostics can report the installed version it sees
+/// (which covers both prefixes, unlike the connect-gate `resolve_npx_command`).
+pub(crate) async fn detect_npm_global_version(package_name: &str) -> Option<String> {
     let npm_path = which::which("npm").ok()?;
 
     // Try the default global prefix first.
@@ -566,6 +572,10 @@ async fn npm_list_version(
     if let Some(p) = prefix {
         cmd.arg(format!("--prefix={}", p.display()));
     }
+    // `kill_on_drop` so a caller that bounds this with `tokio::time::timeout`
+    // (e.g. env diagnostics) actually terminates a hung `npm list` child rather
+    // than orphaning it. No effect on the normal path, which awaits to completion.
+    cmd.kill_on_drop(true);
     let output = cmd.output().await.ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).ok()?;
@@ -597,13 +607,1026 @@ async fn detect_local_version(agent_type: AgentType) -> Option<String> {
             }
             // Dir-tree agents: a user-installed CLI (no codeg cache) still
             // reports a version via `<cmd> --version` (e.g. cursor-agent →
-            // "2026.07.16-899851b").
+            // "2026.07.20-8cc9c0b").
             if dir_entry.is_some() {
                 return system_dir_agent_version(cmd).await;
             }
             None
         }
         registry::AgentDistribution::Uvx { .. } => binary_cache::uvx_prepared_version(agent_type),
+    }
+}
+
+// ============================================================================
+// Environment diagnostics (`acp_env_diagnostics`)
+//
+// Runs a set of READ-ONLY probes IN THE APP PROCESS (so they reflect the PATH
+// the GUI app actually sees — which differs from the user's terminal PATH and
+// is the root of most "installed but shows not-installed" reports). Never
+// mutates PATH; never dumps arbitrary env (only a safe whitelist, redacted).
+// Split into an impure `collect_diag_inputs` and a pure `build_report` so the
+// verdict heuristic and rendering are unit-testable without shelling out.
+// ============================================================================
+
+/// Per-probe timeout for the external commands diagnostics runs.
+const DIAG_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Env var keys whose *values* are safe to surface in a copyable report. Chosen
+/// so none carry credentials; still run through [`redact_secret`] defensively.
+const DIAG_SAFE_ENV_KEYS: &[&str] = &[
+    "SHELL",
+    "NVM_DIR",
+    "FNM_DIR",
+    "FNM_MULTISHELL_PATH",
+    "VOLTA_HOME",
+    "ASDF_DATA_DIR",
+    "MISE_DATA_DIR",
+    "N_PREFIX",
+    "HOMEBREW_PREFIX",
+    "npm_config_prefix",
+    "LANG",
+];
+
+/// Mask a value that may contain a secret, keyed on the env var *name*. If the
+/// name looks credential-bearing the value is partially masked; otherwise it is
+/// returned verbatim. Multibyte-safe (masks by `char`, mirroring the approach in
+/// `models::model_provider::mask_api_key`) so it never panics on a UTF-8 value.
+fn redact_secret(key: &str, value: &str) -> String {
+    let lower = key.to_ascii_lowercase();
+    let secretish = ["key", "token", "secret", "password", "passwd", "auth", "credential"]
+        .iter()
+        .any(|needle| lower.contains(needle));
+    if !secretish {
+        return value.to_string();
+    }
+    let chars: Vec<char> = value.chars().collect();
+    let len = chars.len();
+    if len == 0 {
+        return String::new();
+    }
+    if len <= 8 {
+        return "•".repeat(len);
+    }
+    let first: String = chars[..2].iter().collect();
+    let last: String = chars[len - 2..].iter().collect();
+    format!("{first}{}{last}", "•".repeat(len.saturating_sub(4).min(16)))
+}
+
+/// npm places a package's bin as `<cmd>.cmd` on Windows, bare `<cmd>` elsewhere.
+fn diag_exe_name(cmd: &str) -> String {
+    if cfg!(windows) {
+        format!("{cmd}.cmd")
+    } else {
+        cmd.to_string()
+    }
+}
+
+#[derive(Default, Clone)]
+struct CmdProbe {
+    /// Absolute path `which` resolved to, if any (same resolution the connect
+    /// gate uses).
+    path: Option<String>,
+    /// First `--version`/`-v` output line, if the command ran.
+    version: Option<String>,
+}
+
+#[derive(Default, Clone)]
+struct AgentDiag {
+    name: String,
+    cmd: String,
+    distribution: &'static str,
+    package: Option<String>,
+    node_required: Option<String>,
+    /// Distribution-appropriate launchability, mirroring `verify_agent_installed`:
+    /// npx → `resolve_npx_command`; binary → cached/system binary; uvx →
+    /// `uvx_agent_launchable`. `None` = the agent cannot launch right now. This
+    /// (NOT `resolve_npx`) is what the verdict uses for non-npx agents, so a
+    /// working cached-binary / uvx agent is not misreported as node-missing.
+    launchable: Option<String>,
+    /// `resolve_npx_command(cmd)` — the resolution the new-session page gates on
+    /// (npx agents only; `None` for binary/uvx).
+    resolve_npx: Option<String>,
+    /// `<npm prefix -g>/bin/<cmd>` when it exists.
+    system_prefix_bin: Option<String>,
+    /// `~/.codeg/npm-global/bin/<cmd>` (EACCES fallback) when it exists.
+    user_prefix_bin: Option<String>,
+    /// Homebrew global bin (`/opt/homebrew/bin/<cmd>` etc.) when it exists (macOS).
+    homebrew_bin: Option<String>,
+    /// Version seen by `detect_npm_global_version` (covers BOTH prefixes).
+    detected_version: Option<String>,
+    /// `agent_setting.installed_version` recorded in the DB.
+    db_version: Option<String>,
+}
+
+#[derive(Default, Clone)]
+struct TerminalProbe {
+    /// The login-shell probe actually ran and produced output.
+    ran: bool,
+    /// Dirs in the login-shell PATH that are ABSENT from the app PATH — the
+    /// smoking gun for a GUI PATH gap.
+    extra_dirs: Vec<String>,
+    /// `command -v <cmd>` result in the login shell.
+    cmd_resolved: Option<String>,
+    /// Why the probe didn't run (Windows / no `$SHELL` / timeout).
+    note: Option<String>,
+}
+
+#[derive(Default, Clone)]
+struct DiagInputs {
+    os: String,
+    arch: String,
+    app_version: String,
+    app_path: Vec<String>,
+    path_logs: Vec<String>,
+    node: CmdProbe,
+    npm: CmdProbe,
+    npx: CmdProbe,
+    npm_prefix_g: Option<String>,
+    npm_prefix_g_ms: u128,
+    npm_root_g: Option<String>,
+    npm_config_prefix: Option<String>,
+    cached_prefix: Option<String>,
+    /// (candidate bin dir, whether it contains a `node` binary).
+    node_candidates: Vec<(String, bool)>,
+    selected_node_dir: Option<String>,
+    safe_env: Vec<(String, String)>,
+    agent: Option<AgentDiag>,
+    terminal: TerminalProbe,
+}
+
+/// Run a command with a timeout and return its first non-empty stdout line.
+async fn diag_run(program: &Path, args: &[&str]) -> Option<String> {
+    let mut cmd = crate::process::tokio_command(program);
+    cmd.args(args).kill_on_drop(true);
+    let out = tokio::time::timeout(DIAG_PROBE_TIMEOUT, cmd.output())
+        .await
+        .ok()?
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.lines().find_map(|l| {
+        let t = l.trim();
+        (!t.is_empty()).then(|| t.to_string())
+    })
+}
+
+/// Resolve a command on the app PATH and probe its version.
+async fn diag_cmd_probe(cmd: &str, version_args: &[&str]) -> CmdProbe {
+    let path = resolve_command_on_path(cmd);
+    let version = match &path {
+        Some(p) => diag_run(p, version_args).await,
+        None => None,
+    };
+    CmdProbe {
+        path: path.map(|p| p.to_string_lossy().to_string()),
+        version,
+    }
+}
+
+/// Major version from `v20.11.1` / `20.11.1`.
+fn parse_node_major(v: &str) -> Option<u64> {
+    v.trim().trim_start_matches('v').split('.').next()?.parse().ok()
+}
+
+/// Compare the user's login-shell PATH against the app PATH. Unix-only; on
+/// Windows it returns a note (npm bins there are `.cmd` in the prefix root and a
+/// robust login-shell probe is out of scope for v1).
+#[cfg(not(windows))]
+async fn diag_terminal_probe(cmd: &str, app_path: &[String]) -> TerminalProbe {
+    let mut probe = TerminalProbe::default();
+    let shell = match std::env::var("SHELL") {
+        Ok(s) if !s.trim().is_empty() => s,
+        _ => {
+            probe.note = Some("$SHELL not set".to_string());
+            return probe;
+        }
+    };
+    // `cmd` is a static registry command name — no shell metacharacters.
+    let script =
+        format!("printf 'CODEG_PATH=%s\\n' \"$PATH\"; command -v {cmd} 2>/dev/null || true");
+    let mut c = crate::process::tokio_command(&shell);
+    c.arg("-lic").arg(&script).kill_on_drop(true);
+    let out = match tokio::time::timeout(DIAG_PROBE_TIMEOUT, c.output()).await {
+        Ok(Ok(o)) => o,
+        _ => {
+            probe.note = Some("login shell probe timed out or failed".to_string());
+            return probe;
+        }
+    };
+    probe.ran = true;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut term_path: Option<String> = None;
+    for line in stdout.lines() {
+        if let Some(p) = line.strip_prefix("CODEG_PATH=") {
+            term_path = Some(p.to_string());
+        } else if line.starts_with('/') && probe.cmd_resolved.is_none() {
+            probe.cmd_resolved = Some(line.trim().to_string());
+        }
+    }
+    if let Some(tp) = term_path {
+        let app_set: std::collections::HashSet<&str> = app_path.iter().map(String::as_str).collect();
+        let mut seen = std::collections::HashSet::new();
+        probe.extra_dirs = tp
+            .split(':')
+            .filter(|d| !d.is_empty() && !app_set.contains(*d))
+            .filter(|d| seen.insert(d.to_string()))
+            .map(String::from)
+            .collect();
+    }
+    probe
+}
+
+#[cfg(windows)]
+async fn diag_terminal_probe(_cmd: &str, _app_path: &[String]) -> TerminalProbe {
+    TerminalProbe {
+        note: Some("Windows: compare PATH manually in PowerShell".to_string()),
+        ..Default::default()
+    }
+}
+
+/// Per-agent resolution probes (the core signals for the not-installed symptom).
+async fn collect_agent_diag(
+    db: &AppDatabase,
+    agent_type: AgentType,
+    npm_prefix_g: Option<&str>,
+) -> AgentDiag {
+    let meta = registry::get_agent_meta(agent_type);
+
+    let db_version = agent_setting_service::get_by_agent_type(&db.conn, agent_type)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|m| m.installed_version);
+
+    let mut diag = AgentDiag {
+        name: meta.name.to_string(),
+        db_version,
+        ..Default::default()
+    };
+
+    // Each distribution resolves launchability differently — mirror the exact
+    // gates `verify_agent_installed` uses so the report agrees with connect.
+    match meta.distribution {
+        registry::AgentDistribution::Npx {
+            cmd,
+            package,
+            node_required,
+            ..
+        } => {
+            diag.cmd = cmd.to_string();
+            diag.distribution = "npx";
+            diag.package = Some(package.to_string());
+            diag.node_required = node_required.map(str::to_string);
+
+            let resolve_npx = resolve_npx_command(cmd)
+                .await
+                .map(|p| p.to_string_lossy().to_string());
+            diag.launchable = resolve_npx.clone();
+            diag.resolve_npx = resolve_npx;
+
+            diag.system_prefix_bin = npm_prefix_g.and_then(|p| {
+                let cand = npm_prefix_bin_dir(Path::new(p)).join(diag_exe_name(cmd));
+                cand.is_file().then(|| cand.to_string_lossy().to_string())
+            });
+            diag.user_prefix_bin = crate::process::user_npm_prefix().and_then(|prefix| {
+                let cand = npm_prefix_bin_dir(&prefix).join(diag_exe_name(cmd));
+                cand.is_file().then(|| cand.to_string_lossy().to_string())
+            });
+            diag.homebrew_bin = if cfg!(target_os = "macos") {
+                ["/opt/homebrew/bin", "/usr/local/bin"].iter().find_map(|d| {
+                    let cand = Path::new(d).join(diag_exe_name(cmd));
+                    cand.is_file().then(|| cand.to_string_lossy().to_string())
+                })
+            } else {
+                None
+            };
+            // `npm list` can hang on a stalled global prefix; bound it (the child
+            // is killed on drop via `npm_list_version`'s `kill_on_drop`).
+            diag.detected_version = tokio::time::timeout(
+                DIAG_PROBE_TIMEOUT,
+                detect_npm_global_version(&package_name_from_spec(package)),
+            )
+            .await
+            .ok()
+            .flatten();
+        }
+        registry::AgentDistribution::Binary {
+            cmd,
+            platforms,
+            dir_entry,
+            ..
+        } => {
+            diag.cmd = cmd.to_string();
+            diag.distribution = "binary";
+            // Mirror verify_agent_installed exactly: it first rejects unsupported
+            // platforms, then evaluates
+            // `find_best_cached_binary_for_agent(..)?.is_some() || (dir_entry &&
+            // system)`. So an unsupported platform — and a cache-read *error* —
+            // both FAIL the gate (the latter propagated via `?`) rather than
+            // falling through to the system binary. Reflect both here so
+            // diagnostics never reports "ok" for a case where connect errors out.
+            let supported = platforms
+                .iter()
+                .any(|p| p.platform == registry::current_platform());
+            diag.launchable = if !supported {
+                None
+            } else {
+                match binary_cache::find_best_cached_binary_for_agent(agent_type, cmd) {
+                    Ok(Some((path, _version))) => Some(path),
+                    Ok(None) if dir_entry.is_some() => resolve_system_agent_binary(cmd),
+                    Ok(None) | Err(_) => None,
+                }
+                .map(|p| p.to_string_lossy().to_string())
+            };
+        }
+        registry::AgentDistribution::Uvx {
+            cmd,
+            package,
+            system_cmd,
+            ..
+        } => {
+            diag.cmd = cmd.to_string();
+            diag.distribution = "uvx";
+            diag.package = Some(package.to_string());
+            diag.launchable = uvx_agent_launchable(system_cmd).then(|| {
+                resolve_uvx_command()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| format!("{cmd} (system CLI on PATH)"))
+            });
+        }
+    }
+
+    diag
+}
+
+/// Gather all diagnostics signals (impure: runs commands / reads env, fs, DB).
+async fn collect_diag_inputs(db: &AppDatabase, agent_type: Option<AgentType>) -> DiagInputs {
+    let mut inp = DiagInputs {
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        ..Default::default()
+    };
+
+    if let Some(path_os) = std::env::var_os("PATH") {
+        inp.app_path = std::env::split_paths(&path_os)
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+    }
+
+    inp.path_logs = crate::commands::logging::get_recent_logs_core(20, None, Some("[PATH]"))
+        .into_iter()
+        .map(|r| r.message)
+        .collect();
+
+    inp.node = diag_cmd_probe("node", &["-v"]).await;
+    inp.npm = diag_cmd_probe("npm", &["-v"]).await;
+    inp.npx = diag_cmd_probe("npx", &["-v"]).await;
+
+    if let Some(npm_path) = resolve_command_on_path("npm") {
+        let start = std::time::Instant::now();
+        inp.npm_prefix_g = diag_run(&npm_path, &["prefix", "-g"]).await;
+        inp.npm_prefix_g_ms = start.elapsed().as_millis();
+        inp.npm_root_g = diag_run(&npm_path, &["root", "-g"]).await;
+        inp.npm_config_prefix = diag_run(&npm_path, &["config", "get", "prefix"]).await;
+    }
+    inp.cached_prefix = cached_npm_global_prefix()
+        .await
+        .map(|p| p.to_string_lossy().to_string());
+
+    let home = home_dir_or_default();
+    let node_bin = if cfg!(windows) { "node.exe" } else { "node" };
+    for dir in crate::process::node_bin_dir_candidates(Some(home.as_path())) {
+        let has_node = dir.join(node_bin).is_file();
+        let dir_str = dir.to_string_lossy().to_string();
+        if has_node && inp.selected_node_dir.is_none() {
+            inp.selected_node_dir = Some(dir_str.clone());
+        }
+        inp.node_candidates.push((dir_str, has_node));
+    }
+
+    for &key in DIAG_SAFE_ENV_KEYS {
+        if let Ok(val) = std::env::var(key) {
+            if !val.trim().is_empty() {
+                inp.safe_env.push((key.to_string(), redact_secret(key, &val)));
+            }
+        }
+    }
+
+    if let Some(at) = agent_type {
+        let agent = collect_agent_diag(db, at, inp.npm_prefix_g.as_deref()).await;
+        inp.terminal = diag_terminal_probe(&agent.cmd, &inp.app_path).await;
+        inp.agent = Some(agent);
+    }
+
+    inp
+}
+
+fn diag_check(label: &str, value: &str, status: DiagLevel, hint: Option<&str>) -> DiagCheck {
+    DiagCheck {
+        label: label.to_string(),
+        value: value.to_string(),
+        status,
+        hint: hint.map(str::to_string),
+    }
+}
+
+fn diag_verdict(level: DiagLevel, code: &str, summary: &str) -> DiagnosticsVerdict {
+    DiagnosticsVerdict {
+        level,
+        code: code.to_string(),
+        summary: summary.to_string(),
+    }
+}
+
+/// Pure: derive the one-line "likely cause" from gathered inputs.
+fn compute_verdict(inp: &DiagInputs) -> DiagnosticsVerdict {
+    let agent = match &inp.agent {
+        None => {
+            // Base environment report — Node/npm health only.
+            if inp.node.path.is_none() {
+                return diag_verdict(
+                    DiagLevel::Fail,
+                    "node_missing",
+                    "Node.js was not found on the app's PATH.",
+                );
+            }
+            if inp.npm.path.is_none() {
+                return diag_verdict(
+                    DiagLevel::Fail,
+                    "npm_missing",
+                    "npm was not found on the app's PATH.",
+                );
+            }
+            return diag_verdict(
+                DiagLevel::Ok,
+                "ok",
+                "The base Node.js environment looks healthy.",
+            );
+        }
+        Some(a) => a,
+    };
+
+    // Binary/Uvx agents do not depend on Node/npm — judge them by their own
+    // launch gate so a working cached-binary / uvx agent is never misreported.
+    if agent.distribution != "npx" {
+        if agent.launchable.is_some() {
+            return diag_verdict(
+                DiagLevel::Ok,
+                "ok",
+                "The agent is launchable — the environment looks healthy.",
+            );
+        }
+        if agent.db_version.is_some() {
+            return diag_verdict(
+                DiagLevel::Fail,
+                "installed_but_unresolved",
+                "The agent is recorded as installed, but the app cannot locate its runtime.",
+            );
+        }
+        return diag_verdict(
+            DiagLevel::Info,
+            "not_installed",
+            "This agent does not appear to be installed.",
+        );
+    }
+
+    // NPX agents: Node/npm-aware heuristic.
+    if inp.node.path.is_none() {
+        return diag_verdict(
+            DiagLevel::Fail,
+            "node_missing",
+            "Node.js was not found on the app's PATH.",
+        );
+    }
+    if inp.npm.path.is_none() {
+        return diag_verdict(
+            DiagLevel::Fail,
+            "npm_missing",
+            "npm was not found on the app's PATH.",
+        );
+    }
+
+    if let (Some(req), Some(ver)) = (agent.node_required.as_deref(), inp.node.version.as_deref()) {
+        if let (Some(rmaj), Some(nmaj)) = (parse_node_major(req), parse_node_major(ver)) {
+            if nmaj < rmaj {
+                return diag_verdict(
+                    DiagLevel::Fail,
+                    "node_too_old",
+                    "The active Node.js is older than this agent requires.",
+                );
+            }
+        }
+    }
+
+    if agent.resolve_npx.is_none() {
+        if agent.db_version.is_some() || agent.detected_version.is_some() {
+            if agent.user_prefix_bin.is_some() {
+                return diag_verdict(
+                    DiagLevel::Fail,
+                    "user_prefix_not_on_path",
+                    "Installed into the EACCES fallback prefix (~/.codeg/npm-global), which is not on the app's PATH.",
+                );
+            }
+            if agent.homebrew_bin.is_some() {
+                return diag_verdict(
+                    DiagLevel::Fail,
+                    "homebrew_bin_not_on_path",
+                    "Installed under Homebrew's bin, which is not on the app's PATH (Apple Silicon keg split).",
+                );
+            }
+            if inp.terminal.cmd_resolved.is_some() {
+                return diag_verdict(
+                    DiagLevel::Fail,
+                    "terminal_only_path",
+                    "The command resolves in your terminal but not in the app process — a GUI PATH gap.",
+                );
+            }
+            if inp.npm_prefix_g_ms > NPM_PREFIX_TIMEOUT.as_millis() {
+                return diag_verdict(
+                    DiagLevel::Warn,
+                    "npm_prefix_timeout",
+                    "`npm prefix -g` exceeded the 1.5s probe timeout, so fallback resolution was skipped.",
+                );
+            }
+            return diag_verdict(
+                DiagLevel::Fail,
+                "installed_but_unresolved",
+                "The agent is recorded as installed, but the app cannot locate its executable.",
+            );
+        }
+        return diag_verdict(
+            DiagLevel::Info,
+            "not_installed",
+            "This agent does not appear to be installed.",
+        );
+    }
+
+    diag_verdict(
+        DiagLevel::Ok,
+        "ok",
+        "The agent's command resolves — the environment looks healthy.",
+    )
+}
+
+/// Pure: turn gathered inputs into the structured sections + a copyable text
+/// blob. `generated_at` is injected so the output is deterministic in tests.
+fn build_report(
+    inp: &DiagInputs,
+    generated_at: String,
+    agent_type: Option<AgentType>,
+) -> AgentDiagnosticsReport {
+    let verdict = compute_verdict(inp);
+    let mut sections: Vec<DiagSection> = Vec::new();
+
+    // 1. Runtime
+    let mut runtime = vec![
+        diag_check("os / arch", &format!("{} / {}", inp.os, inp.arch), DiagLevel::Info, None),
+        diag_check("app version", &inp.app_version, DiagLevel::Info, None),
+    ];
+    let fix_failed = inp.path_logs.iter().any(|l| l.contains("fix_path_env failed"));
+    runtime.push(diag_check(
+        "fix_path_env",
+        if fix_failed { "failed at startup" } else { "no failure logged" },
+        if fix_failed { DiagLevel::Warn } else { DiagLevel::Info },
+        Some("app imports the login-shell PATH at startup; a failure leaves a narrow GUI PATH"),
+    ));
+    for (k, v) in &inp.safe_env {
+        runtime.push(diag_check(k, v, DiagLevel::Info, None));
+    }
+    runtime.push(diag_check(
+        "PATH",
+        &format!("{} entries (full list in copied text)", inp.app_path.len()),
+        DiagLevel::Info,
+        None,
+    ));
+    sections.push(DiagSection { title: "Runtime".to_string(), checks: runtime });
+
+    // 2. Node / npm / npx
+    let node_status = |p: &CmdProbe| if p.path.is_some() { DiagLevel::Ok } else { DiagLevel::Fail };
+    let cmd_value = |p: &CmdProbe| match (&p.path, &p.version) {
+        (Some(path), Some(ver)) => format!("{ver}  ({path})"),
+        (Some(path), None) => path.clone(),
+        _ => "NOT FOUND".to_string(),
+    };
+    sections.push(DiagSection {
+        title: "Node / npm".to_string(),
+        checks: vec![
+            diag_check("node", &cmd_value(&inp.node), node_status(&inp.node), None),
+            diag_check("npm", &cmd_value(&inp.npm), node_status(&inp.npm), None),
+            diag_check("npx", &cmd_value(&inp.npx), node_status(&inp.npx), None),
+        ],
+    });
+
+    // 3. npm global prefix
+    let prefix_slow = inp.npm_prefix_g_ms > NPM_PREFIX_TIMEOUT.as_millis();
+    sections.push(DiagSection {
+        title: "npm global prefix".to_string(),
+        checks: vec![
+            diag_check(
+                "npm prefix -g",
+                &format!(
+                    "{}  ({} ms)",
+                    inp.npm_prefix_g.as_deref().unwrap_or("N/A"),
+                    inp.npm_prefix_g_ms
+                ),
+                if prefix_slow { DiagLevel::Warn } else { DiagLevel::Info },
+                prefix_slow.then_some("exceeds the 1.5s gate used at detection time"),
+            ),
+            diag_check("npm root -g", inp.npm_root_g.as_deref().unwrap_or("N/A"), DiagLevel::Info, None),
+            diag_check(
+                "npm config get prefix",
+                inp.npm_config_prefix.as_deref().unwrap_or("N/A"),
+                DiagLevel::Info,
+                None,
+            ),
+            diag_check("cached prefix", inp.cached_prefix.as_deref().unwrap_or("N/A"), DiagLevel::Info, None),
+        ],
+    });
+
+    // 4. Target agent — launchability keyed to its distribution.
+    if let Some(a) = &inp.agent {
+        let launch_label = match a.distribution {
+            "npx" => format!("{} (resolve_npx_command)", a.cmd),
+            "binary" => format!("{} (cached / system binary)", a.cmd),
+            _ => format!("{} (uvx launchable)", a.cmd),
+        };
+        let mut checks = vec![diag_check(
+            &launch_label,
+            a.launchable.as_deref().unwrap_or("NOT RESOLVED"),
+            if a.launchable.is_some() { DiagLevel::Ok } else { DiagLevel::Fail },
+            (a.distribution == "npx").then_some("this is exactly what the new-session page checks"),
+        )];
+        if let Some(p) = &a.package {
+            checks.push(diag_check("package", p, DiagLevel::Info, None));
+        }
+        // npm-prefix detail only applies to npx agents.
+        if a.distribution == "npx" {
+            checks.push(diag_check(
+                "<npm prefix -g>/bin/<cmd>",
+                a.system_prefix_bin.as_deref().unwrap_or("absent"),
+                if a.system_prefix_bin.is_some() { DiagLevel::Ok } else { DiagLevel::Info },
+                None,
+            ));
+            checks.push(diag_check(
+                "~/.codeg/npm-global/bin/<cmd>",
+                a.user_prefix_bin.as_deref().unwrap_or("absent"),
+                if a.user_prefix_bin.is_some() { DiagLevel::Warn } else { DiagLevel::Info },
+                a.user_prefix_bin.as_ref().map(|_| "EACCES fallback dir — reached by the connect gate only if it's on PATH"),
+            ));
+            if cfg!(target_os = "macos") {
+                checks.push(diag_check(
+                    "homebrew bin/<cmd>",
+                    a.homebrew_bin.as_deref().unwrap_or("absent"),
+                    if a.homebrew_bin.is_some() { DiagLevel::Warn } else { DiagLevel::Info },
+                    None,
+                ));
+            }
+            checks.push(diag_check(
+                "detect_npm_global_version",
+                a.detected_version.as_deref().unwrap_or("none"),
+                DiagLevel::Info,
+                Some("covers both prefixes — what the Settings badge uses"),
+            ));
+        }
+        checks.push(diag_check(
+            "DB installed_version",
+            a.db_version.as_deref().unwrap_or("none"),
+            DiagLevel::Info,
+            None,
+        ));
+        if let Some(req) = &a.node_required {
+            let ok = inp
+                .node
+                .version
+                .as_deref()
+                .and_then(parse_node_major)
+                .zip(parse_node_major(req))
+                .map(|(n, r)| n >= r)
+                .unwrap_or(true);
+            checks.push(diag_check(
+                "node_required",
+                &format!("≥ {req}"),
+                if ok { DiagLevel::Ok } else { DiagLevel::Fail },
+                (!ok).then_some("the active Node.js is older than required"),
+            ));
+        }
+        sections.push(DiagSection {
+            title: format!("Agent: {} ({})", a.name, a.distribution),
+            checks,
+        });
+    }
+
+    // 5. Node version managers (candidate bin dirs)
+    if !inp.node_candidates.is_empty() {
+        let checks = inp
+            .node_candidates
+            .iter()
+            .map(|(dir, has)| {
+                let selected = inp.selected_node_dir.as_deref() == Some(dir.as_str());
+                diag_check(
+                    "candidate",
+                    dir,
+                    if *has { DiagLevel::Ok } else { DiagLevel::Info },
+                    selected.then_some("← selected (first with a node binary)"),
+                )
+            })
+            .collect();
+        sections.push(DiagSection {
+            title: "Node version-manager candidates".to_string(),
+            checks,
+        });
+    }
+
+    // 6. Terminal comparison
+    let term_checks = if inp.terminal.ran {
+        vec![
+            diag_check(
+                "command -v <cmd> (login shell)",
+                inp.terminal.cmd_resolved.as_deref().unwrap_or("not found"),
+                DiagLevel::Info,
+                None,
+            ),
+            diag_check(
+                "PATH dirs in terminal but not app",
+                &if inp.terminal.extra_dirs.is_empty() {
+                    "none".to_string()
+                } else {
+                    format!("{} (see copied text)", inp.terminal.extra_dirs.len())
+                },
+                if inp.terminal.extra_dirs.is_empty() { DiagLevel::Ok } else { DiagLevel::Warn },
+                (!inp.terminal.extra_dirs.is_empty())
+                    .then_some("the app can't see these dirs — the likely GUI PATH gap"),
+            ),
+        ]
+    } else {
+        vec![diag_check(
+            "login shell probe",
+            inp.terminal.note.as_deref().unwrap_or("did not run"),
+            DiagLevel::Info,
+            None,
+        )]
+    };
+    sections.push(DiagSection { title: "Terminal comparison".to_string(), checks: term_checks });
+
+    let plain_text = render_plain_text(inp, &verdict, &sections, &generated_at, agent_type);
+
+    AgentDiagnosticsReport {
+        generated_at,
+        agent_type,
+        verdict,
+        sections,
+        plain_text,
+    }
+}
+
+/// Pure: render a copyable text report (structured checks + verbose appendices
+/// that are summarized in the UI).
+fn render_plain_text(
+    inp: &DiagInputs,
+    verdict: &DiagnosticsVerdict,
+    sections: &[DiagSection],
+    generated_at: &str,
+    agent_type: Option<AgentType>,
+) -> String {
+    let glyph = |s: DiagLevel| match s {
+        DiagLevel::Ok => "OK  ",
+        DiagLevel::Warn => "WARN",
+        DiagLevel::Fail => "FAIL",
+        DiagLevel::Info => "--  ",
+    };
+    let mut out = String::new();
+    out.push_str("===== Codeg environment diagnostics =====\n");
+    out.push_str(&format!("generated: {generated_at}\n"));
+    if let Some(at) = agent_type {
+        out.push_str(&format!("agent: {at:?}\n"));
+    }
+    out.push_str(&format!("verdict [{}]: {}\n", verdict.code, verdict.summary));
+    for sec in sections {
+        out.push_str(&format!("\n## {}\n", sec.title));
+        for c in &sec.checks {
+            out.push_str(&format!("  [{}] {}: {}\n", glyph(c.status), c.label, c.value));
+            if let Some(h) = &c.hint {
+                out.push_str(&format!("        ↳ {h}\n"));
+            }
+        }
+    }
+    // Appendices (verbose lists shown only summarized in the UI).
+    out.push_str("\n## PATH (app process, in order)\n");
+    for d in &inp.app_path {
+        out.push_str(&format!("  {d}\n"));
+    }
+    if !inp.terminal.extra_dirs.is_empty() {
+        out.push_str("\n## PATH dirs in terminal but NOT in app\n");
+        for d in &inp.terminal.extra_dirs {
+            out.push_str(&format!("  {d}\n"));
+        }
+    }
+    if !inp.path_logs.is_empty() {
+        out.push_str("\n## recent [PATH] logs\n");
+        for l in &inp.path_logs {
+            out.push_str(&format!("  {l}\n"));
+        }
+    }
+    out.push_str("===== end =====\n");
+    out
+}
+
+/// Gather environment-diagnostics for the given agent (or a base env report when
+/// `agent_type` is `None`). Read-only; safe to call from the session page.
+pub(crate) async fn acp_env_diagnostics_core(
+    db: &AppDatabase,
+    agent_type: Option<AgentType>,
+) -> Result<AgentDiagnosticsReport, AcpError> {
+    let inputs = collect_diag_inputs(db, agent_type).await;
+    let generated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %z").to_string();
+    Ok(build_report(&inputs, generated_at, agent_type))
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_env_diagnostics(
+    agent_type: Option<AgentType>,
+    db: State<'_, AppDatabase>,
+) -> Result<AgentDiagnosticsReport, AcpError> {
+    acp_env_diagnostics_core(&db, agent_type).await
+}
+
+#[cfg(test)]
+mod diagnostics_tests {
+    use super::*;
+
+    fn base_inputs() -> DiagInputs {
+        DiagInputs {
+            node: CmdProbe {
+                path: Some("/usr/bin/node".to_string()),
+                version: Some("v20.11.1".to_string()),
+            },
+            npm: CmdProbe {
+                path: Some("/usr/bin/npm".to_string()),
+                version: Some("10.2.4".to_string()),
+            },
+            ..Default::default()
+        }
+    }
+
+    fn agent_installed_unresolved() -> AgentDiag {
+        AgentDiag {
+            name: "Codex CLI".to_string(),
+            cmd: "codex-acp".to_string(),
+            distribution: "npx",
+            db_version: Some("1.1.2".to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn redact_only_masks_secretish_keys() {
+        assert_eq!(redact_secret("NVM_DIR", "/home/u/.nvm"), "/home/u/.nvm");
+        assert_eq!(redact_secret("SHELL", "/bin/zsh"), "/bin/zsh");
+        // secret-ish key → masked, and multibyte-safe (no panic / no split).
+        let masked = redact_secret("XAI_API_KEY", "sk-测试secret-1234567890");
+        assert!(masked.contains('•'));
+        assert!(!masked.contains("secret"));
+        assert_eq!(redact_secret("MY_TOKEN", "abcd"), "••••");
+    }
+
+    #[test]
+    fn verdict_node_missing() {
+        let inp = DiagInputs::default();
+        assert_eq!(compute_verdict(&inp).code, "node_missing");
+    }
+
+    #[test]
+    fn verdict_ok_without_agent() {
+        assert_eq!(compute_verdict(&base_inputs()).code, "ok");
+    }
+
+    #[test]
+    fn verdict_user_prefix_not_on_path() {
+        let mut inp = base_inputs();
+        let mut a = agent_installed_unresolved();
+        a.user_prefix_bin = Some("/home/u/.codeg/npm-global/bin/codex-acp".to_string());
+        inp.agent = Some(a);
+        let v = compute_verdict(&inp);
+        assert_eq!(v.code, "user_prefix_not_on_path");
+        assert_eq!(v.level, DiagLevel::Fail);
+    }
+
+    #[test]
+    fn verdict_homebrew_bin_not_on_path() {
+        let mut inp = base_inputs();
+        let mut a = agent_installed_unresolved();
+        a.homebrew_bin = Some("/opt/homebrew/bin/codex-acp".to_string());
+        inp.agent = Some(a);
+        assert_eq!(compute_verdict(&inp).code, "homebrew_bin_not_on_path");
+    }
+
+    #[test]
+    fn verdict_terminal_only_path() {
+        let mut inp = base_inputs();
+        let mut a = agent_installed_unresolved();
+        a.detected_version = Some("1.1.2".to_string());
+        inp.agent = Some(a);
+        inp.terminal.cmd_resolved = Some("/Users/u/.nvm/versions/node/v20/bin/codex-acp".to_string());
+        assert_eq!(compute_verdict(&inp).code, "terminal_only_path");
+    }
+
+    #[test]
+    fn verdict_node_too_old() {
+        let mut inp = base_inputs();
+        inp.node.version = Some("v18.19.0".to_string());
+        let mut a = agent_installed_unresolved();
+        a.node_required = Some("20.0.0".to_string());
+        a.resolve_npx = Some("/x/codex-acp".to_string()); // resolves, but node too old
+        inp.agent = Some(a);
+        assert_eq!(compute_verdict(&inp).code, "node_too_old");
+    }
+
+    #[test]
+    fn verdict_ok_when_resolved() {
+        let mut inp = base_inputs();
+        let mut a = agent_installed_unresolved();
+        a.resolve_npx = Some("/usr/local/bin/codex-acp".to_string());
+        inp.agent = Some(a);
+        assert_eq!(compute_verdict(&inp).code, "ok");
+    }
+
+    #[test]
+    fn verdict_not_installed_when_nothing_recorded() {
+        let mut inp = base_inputs();
+        inp.agent = Some(AgentDiag {
+            cmd: "codex-acp".to_string(),
+            distribution: "npx",
+            ..Default::default()
+        });
+        assert_eq!(compute_verdict(&inp).code, "not_installed");
+    }
+
+    #[test]
+    fn verdict_binary_launchable_ignores_node() {
+        // Binary agents (e.g. Cursor) do not need Node; a launchable cached/system
+        // binary must read "ok" even with no node/npm on PATH — regression guard
+        // against the npx model being applied to every distribution.
+        // node & npm absent
+        let inp = DiagInputs {
+            agent: Some(AgentDiag {
+                name: "Cursor".to_string(),
+                cmd: "cursor-agent".to_string(),
+                distribution: "binary",
+                launchable: Some("/Users/u/.local/bin/cursor-agent".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(compute_verdict(&inp).code, "ok");
+    }
+
+    #[test]
+    fn verdict_binary_recorded_but_unresolved() {
+        let inp = DiagInputs {
+            agent: Some(AgentDiag {
+                cmd: "cursor-agent".to_string(),
+                distribution: "binary",
+                db_version: Some("2026.07.16".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(compute_verdict(&inp).code, "installed_but_unresolved");
+    }
+
+    #[test]
+    fn verdict_uvx_launchable_ok_else_not_installed() {
+        let ok = DiagInputs {
+            agent: Some(AgentDiag {
+                cmd: "hermes".to_string(),
+                distribution: "uvx",
+                launchable: Some("/Users/u/.local/bin/uvx".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(compute_verdict(&ok).code, "ok");
+
+        let missing = DiagInputs {
+            agent: Some(AgentDiag {
+                cmd: "hermes".to_string(),
+                distribution: "uvx",
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(compute_verdict(&missing).code, "not_installed");
+    }
+
+    #[test]
+    fn build_report_is_deterministic_and_includes_plain_text() {
+        let inp = base_inputs();
+        let r = build_report(&inp, "FIXED-TS".to_string(), None);
+        assert_eq!(r.generated_at, "FIXED-TS");
+        assert!(r.plain_text.contains("Codeg environment diagnostics"));
+        assert!(r.plain_text.contains("verdict [ok]"));
+        assert!(!r.sections.is_empty());
     }
 }
 
@@ -1601,6 +2624,39 @@ fn codex_config_projection_from_toml(raw_toml: &str) -> serde_json::Map<String, 
         }
     }
 
+    // Sandbox / approval keys. codex reads these when a thread is created
+    // (`thread/start`), never mid-session, so a panel edit must mark running
+    // sessions restart-required — and the fingerprint is the only channel that
+    // does that. Like `modelProvider` above, they deliberately do NOT mirror
+    // into the runtime env; `AgentRuntimeConfig` simply ignores them (it has no
+    // `deny_unknown_fields`). Only non-default values are folded in so an
+    // untouched config keeps its historical fingerprint.
+    let sandbox = parse_codex_sandbox_settings(raw_toml);
+    if let Some(policy) = sandbox.approval_policy {
+        merged.insert(
+            "approvalPolicy".to_string(),
+            serde_json::Value::String(policy),
+        );
+    }
+    if let Some(granular) = sandbox.granular {
+        if let Ok(value) = serde_json::to_value(granular) {
+            merged.insert("approvalGranular".to_string(), value);
+        }
+    }
+    if let Some(mode) = sandbox.sandbox_mode {
+        merged.insert("sandboxMode".to_string(), serde_json::Value::String(mode));
+    }
+    let ws = sandbox.workspace_write;
+    if !ws.writable_roots.is_empty()
+        || ws.network_access
+        || ws.exclude_tmpdir_env_var
+        || ws.exclude_slash_tmp
+    {
+        if let Ok(value) = serde_json::to_value(&ws) {
+            merged.insert("sandboxWorkspaceWrite".to_string(), value);
+        }
+    }
+
     merged
 }
 
@@ -1821,6 +2877,302 @@ fn persist_codex_native_config_files(
     }
 
     Ok(())
+}
+
+/// Read `~/.codex/config.toml` as the base of a structured sandbox merge.
+/// A missing file is an empty base; a real read error fails loudly so a save can
+/// never silently drop the user's existing config.
+fn read_codex_config_or_empty() -> Result<String, AcpError> {
+    let path = codex_config_toml_path();
+    match fs::read_to_string(&path) {
+        Ok(text) => Ok(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(AcpError::protocol(format!(
+            "read codex config.toml failed: {e}"
+        ))),
+    }
+}
+
+/// The plain-string `approval_policy` values codex 0.145 accepts.
+/// `AskForApproval` also has a `Granular(GranularApprovalConfig)` variant, which
+/// is a TOML *table* rather than a string and is handled separately.
+const CODEX_APPROVAL_POLICIES: &[&str] = &["untrusted", "on-request", "never"];
+
+/// `SandboxMode` — the complete upstream vocabulary.
+const CODEX_SANDBOX_MODES: &[&str] = &["read-only", "workspace-write", "danger-full-access"];
+
+/// Parse the sandbox / approval keys backing the Codex panel's structured
+/// controls from a raw `~/.codex/config.toml`. Read-only; uses the `toml` crate
+/// so inline tables (`approval_policy = { granular = { … } }`), dotted keys and
+/// arrays all read correctly. A malformed file yields defaults — the panel then
+/// shows "unset" and the raw editor below it is where the user fixes the syntax.
+fn parse_codex_sandbox_settings(raw_toml: &str) -> CodexSandboxSettings {
+    let Ok(table) = raw_toml.parse::<toml::Table>() else {
+        return CodexSandboxSettings::default();
+    };
+
+    // `approval_policy` is an externally tagged enum: a bare string for the unit
+    // variants, or a single-key table for `granular`. `on-failure` is a serde
+    // alias of `on-request` upstream, so it is folded here rather than shown as
+    // a fourth option the panel would have to round-trip.
+    let approval_item = table.get("approval_policy");
+    let approval_policy = approval_item
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .map(|value| match value {
+            "on-failure" => "on-request",
+            other => other,
+        })
+        .filter(|value| CODEX_APPROVAL_POLICIES.contains(value))
+        .map(str::to_string);
+    let granular = approval_item
+        .and_then(toml::Value::as_table)
+        .and_then(|policy| policy.get("granular"))
+        .and_then(toml::Value::as_table)
+        .map(|granular| {
+            let flag = |key: &str| {
+                granular
+                    .get(key)
+                    .and_then(toml::Value::as_bool)
+                    .unwrap_or(false)
+            };
+            CodexGranularApproval {
+                sandbox_approval: flag("sandbox_approval"),
+                rules: flag("rules"),
+                skill_approval: flag("skill_approval"),
+                request_permissions: flag("request_permissions"),
+                mcp_elicitations: flag("mcp_elicitations"),
+            }
+        });
+
+    let sandbox_mode = table
+        .get("sandbox_mode")
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| CODEX_SANDBOX_MODES.contains(value))
+        .map(str::to_string);
+
+    let ws = table
+        .get("sandbox_workspace_write")
+        .and_then(toml::Value::as_table);
+    let ws_flag = |key: &str| {
+        ws.and_then(|t| t.get(key))
+            .and_then(toml::Value::as_bool)
+            .unwrap_or(false)
+    };
+    let writable_roots = ws
+        .and_then(|t| t.get("writable_roots"))
+        .and_then(toml::Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    CodexSandboxSettings {
+        approval_policy,
+        granular,
+        sandbox_mode,
+        workspace_write: CodexWorkspaceWrite {
+            writable_roots,
+            network_access: ws_flag("network_access"),
+            exclude_tmpdir_env_var: ws_flag("exclude_tmpdir_env_var"),
+            exclude_slash_tmp: ws_flag("exclude_slash_tmp"),
+        },
+        shadowed_by_default_permissions: table.contains_key("default_permissions"),
+        has_permissions_table: table
+            .get("permissions")
+            .and_then(toml::Value::as_table)
+            .is_some_and(|profiles| !profiles.is_empty()),
+    }
+}
+
+/// A `writable_roots` entry codex will accept as-is. Upstream types the field as
+/// `AbsolutePathBuf`, but a relative entry does NOT error — it is resolved
+/// against `CODEX_HOME`, so `"rel/dir"` silently becomes `~/.codex/rel/dir`.
+/// Rejecting it here is the only way the user learns their path was not what
+/// they meant. Both POSIX (`/x`) and Windows (`C:\x`, `\\server\share`) shapes
+/// are accepted regardless of the host, since the config file is portable.
+fn is_absolute_config_path(value: &str) -> bool {
+    let value = value.trim();
+    if value.starts_with('/') || value.starts_with("\\\\") {
+        return true;
+    }
+    let mut chars = value.chars();
+    match (chars.next(), chars.next(), chars.next()) {
+        (Some(drive), Some(':'), Some('\\' | '/')) => drive.is_ascii_alphabetic(),
+        _ => false,
+    }
+}
+
+/// Apply the Codex panel's sandbox / approval PATCH to the raw config.toml text,
+/// format-preservingly (comments and unmanaged keys are kept). Values are
+/// validated against the upstream vocabularies first, so a UI bug can never
+/// write a config codex refuses to load.
+///
+/// Only the fields the patch actually carries are touched — see
+/// [`CodexSandboxStructuredConfig`] for why that matters. Within a carried
+/// field the removal rules match codex's own defaults: an unset approval/sandbox
+/// drops its key; a `false` flag or empty `writable_roots` drops that key; and a
+/// `[sandbox_workspace_write]` left with no keys at all drops the section.
+fn apply_codex_sandbox_config(
+    base_toml: &str,
+    settings: &CodexSandboxStructuredConfig,
+) -> Result<String, AcpError> {
+    let mut doc = base_toml
+        .parse::<toml_edit::Document>()
+        .map_err(|e| AcpError::protocol(format!("invalid codex config.toml: {e}")))?;
+
+    // `approval_policy` is one externally tagged key, so the preset and the
+    // granular table travel together: either both absent (leave the key alone)
+    // or both present with at most one carrying a value.
+    let approval = settings
+        .approval_policy
+        .as_ref()
+        .map(|policy| policy.as_deref());
+    let granular = settings.granular;
+    if approval.is_some() || granular.is_some() {
+        let preset = approval.flatten();
+        let granular = granular.flatten();
+        if preset.is_some() && granular.is_some() {
+            return Err(AcpError::protocol(
+                "approval_policy cannot be both a preset and a granular table",
+            ));
+        }
+        match (preset, granular) {
+            (Some(policy), _) => {
+                let policy = policy.trim();
+                if !CODEX_APPROVAL_POLICIES.contains(&policy) {
+                    return Err(AcpError::protocol(format!(
+                        "unsupported codex approval_policy: {policy}"
+                    )));
+                }
+                // Assigning a value over an existing `[approval_policy.granular]`
+                // table replaces the whole item, which is what switching away
+                // from granular must do — an emptied table would fail to
+                // deserialize.
+                doc["approval_policy"] = toml_edit::value(policy);
+            }
+            (None, Some(granular)) => {
+                // All five keys are always written: `sandbox_approval`, `rules`
+                // and `mcp_elicitations` have no upstream default, so a partial
+                // table makes codex refuse to load the config.
+                let mut table = toml_edit::Table::new();
+                table.insert(
+                    "sandbox_approval",
+                    toml_edit::value(granular.sandbox_approval),
+                );
+                table.insert("rules", toml_edit::value(granular.rules));
+                table.insert("skill_approval", toml_edit::value(granular.skill_approval));
+                table.insert(
+                    "request_permissions",
+                    toml_edit::value(granular.request_permissions),
+                );
+                table.insert(
+                    "mcp_elicitations",
+                    toml_edit::value(granular.mcp_elicitations),
+                );
+                let mut parent = toml_edit::Table::new();
+                parent.insert("granular", toml_edit::Item::Table(table));
+                doc["approval_policy"] = toml_edit::Item::Table(parent);
+            }
+            (None, None) => {
+                doc.remove("approval_policy");
+            }
+        }
+    }
+
+    if let Some(mode) = settings.sandbox_mode.as_ref() {
+        match mode.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+            Some(mode) => {
+                if !CODEX_SANDBOX_MODES.contains(&mode) {
+                    return Err(AcpError::protocol(format!(
+                        "unsupported codex sandbox_mode: {mode}"
+                    )));
+                }
+                doc["sandbox_mode"] = toml_edit::value(mode);
+            }
+            None => {
+                doc.remove("sandbox_mode");
+            }
+        }
+    }
+
+    let roots = match settings.writable_roots.as_ref() {
+        Some(roots) => {
+            let roots: Vec<String> = roots
+                .iter()
+                .map(|root| root.trim().to_string())
+                .filter(|root| !root.is_empty())
+                .collect();
+            if let Some(bad) = roots.iter().find(|root| !is_absolute_config_path(root)) {
+                return Err(AcpError::protocol(format!(
+                    "writable_roots entries must be absolute paths (codex resolves relative entries against CODEX_HOME): {bad}"
+                )));
+            }
+            Some(roots)
+        }
+        None => None,
+    };
+    let ws_flags = [
+        ("network_access", settings.network_access),
+        ("exclude_tmpdir_env_var", settings.exclude_tmpdir_env_var),
+        ("exclude_slash_tmp", settings.exclude_slash_tmp),
+    ];
+    if roots.is_some() || ws_flags.iter().any(|(_, flag)| flag.is_some()) {
+        let item = &mut doc["sandbox_workspace_write"];
+        if item.is_none() {
+            *item = toml_edit::Item::Table(toml_edit::Table::new());
+        } else if item.as_table_like_mut().is_none() {
+            return Err(AcpError::protocol(
+                "cannot set [sandbox_workspace_write]: it exists but is not a table",
+            ));
+        }
+        if let Some(table) = item.as_table_like_mut() {
+            if let Some(roots) = roots {
+                if roots.is_empty() {
+                    table.remove("writable_roots");
+                } else {
+                    let mut array = toml_edit::Array::new();
+                    for root in &roots {
+                        array.push(root.as_str());
+                    }
+                    table.insert("writable_roots", toml_edit::value(array));
+                }
+            }
+            for (key, flag) in ws_flags {
+                match flag {
+                    Some(true) => {
+                        table.insert(key, toml_edit::value(true));
+                    }
+                    // `false` is codex's own default for every flag here, so
+                    // removing the key and writing `= false` are equivalent —
+                    // removing keeps the file minimal.
+                    Some(false) => {
+                        table.remove(key);
+                    }
+                    None => {}
+                }
+            }
+        }
+        // Prune a section the patch just emptied — including one that was
+        // already empty in the base — so no bare `[sandbox_workspace_write]`
+        // header is left behind.
+        if doc
+            .get("sandbox_workspace_write")
+            .and_then(|item| item.as_table_like())
+            .is_some_and(|table| table.is_empty())
+        {
+            doc.remove("sandbox_workspace_write");
+        }
+    }
+
+    Ok(doc.to_string())
 }
 
 /// Read the raw `~/.grok/config.toml` for the Grok settings panel's config-file
@@ -4974,6 +6326,23 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
             ],
             project_rel_dirs: vec![".cursor/skills", ".agents/skills"],
         }),
+        // codeg cannot detect where an arbitrary ACP agent loads skills from,
+        // so custom agents are gated on the user's own declaration that the
+        // agent reads the shared `.agents/skills` store — the cross-agent
+        // convention OpenCode, Gemini, Cline, Codex, pi, and Cursor already
+        // follow. Undeclared (or deleted) agents return `None`, which is also
+        // the gate that keeps them out of the experts / office / science
+        // matrices (`supported_agents` derives from this function). Unlike the
+        // built-ins there is no agent-own directory to list first, so links
+        // land in the shared store itself and are visible to every agent that
+        // reads it — the add-dialog copy says so.
+        AgentType::Custom(id) => crate::acp::custom_registry::skills_shared_store(id).then(|| {
+            SkillStorageSpec {
+                kind: SkillStorageKind::SkillDirectoryOnly,
+                global_dirs: vec![home_dir_or_default().join(".agents").join("skills")],
+                project_rel_dirs: vec![".agents/skills"],
+            }
+        }),
     }
 }
 
@@ -6180,6 +7549,12 @@ fn cascade_update_agent_config(
             // (`acpUpdateAgentEnv`); it does not write provider creds into
             // ~/.grok/config.toml and does not participate in the cascade.
         }
+        AgentType::Custom(_) => {
+            // Custom agents are deliberately configuration-free: codeg writes
+            // no config file for them and they are excluded from the
+            // model-provider surface, so there is nothing to cascade. Whatever
+            // credentials they need go through the generic launch-env panel.
+        }
     }
     Ok(())
 }
@@ -6587,6 +7962,16 @@ pub async fn acp_set_config_option(
         .await
 }
 
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_goal_control(
+    connection_id: String,
+    action: crate::acp::connection::GoalControlAction,
+    manager: State<'_, ConnectionManager>,
+) -> Result<(), AcpError> {
+    manager.goal_control(&connection_id, action).await
+}
+
 /// Spawn a transient ACP connection for `agent_type` with a silent emitter,
 /// read whatever `SessionConfigOptions` / `SessionModes` the agent advertises,
 /// and tear it down. The returned snapshot drives the delegation-settings UI
@@ -6679,6 +8064,19 @@ pub async fn acp_answer_question(
 ) -> Result<(), AcpError> {
     manager
         .answer_question(&connection_id, &question_id, answer)
+        .await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_answer_plan_approval(
+    connection_id: String,
+    approval_id: String,
+    answer: crate::acp::plan_approval::PlanApprovalAnswer,
+    manager: State<'_, ConnectionManager>,
+) -> Result<(), AcpError> {
+    manager
+        .answer_plan_approval(&connection_id, &approval_id, answer)
         .await
 }
 
@@ -7019,6 +8417,17 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
         } else {
             None
         };
+        // Parsed sandbox / approval keys backing the Codex panel's structured
+        // controls. Derived from the same raw text as the advanced editor so the
+        // two stay in sync; an absent config file still yields defaults (all
+        // "unset") so the controls render.
+        let codex_sandbox_settings = if agent_type == AgentType::Codex {
+            Some(parse_codex_sandbox_settings(
+                codex_config_toml.as_deref().unwrap_or(""),
+            ))
+        } else {
+            None
+        };
         let cline_secrets_json = if agent_type == AgentType::Cline {
             load_cline_secrets_json_raw()
         } else {
@@ -7080,6 +8489,7 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
             opencode_auth_json,
             codex_auth_json,
             codex_config_toml,
+            codex_sandbox_settings,
             codex_model_catalog,
             cline_secrets_json,
             hermes_config_yaml,
@@ -7088,6 +8498,15 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
             cursor_cli_config_json,
             cursor_settings,
             model_provider_id: setting.and_then(|m| m.model_provider_id),
+            icon_url: agent_type
+                .custom_id()
+                .and_then(custom_registry::icon_for)
+                .map(ToString::to_string),
+            // Derived server-side so the skills surfaces need no frontend
+            // knowledge of which agents keep a skill store: all builtins do
+            // today, customs only when the user declared the shared
+            // `.agents/skills` store.
+            skills_capable: skill_storage_spec(agent_type).is_some(),
         });
     }
 
@@ -7540,6 +8959,7 @@ pub(crate) async fn acp_update_agent_config_core(
     codex_auth_json: Option<String>,
     codex_config_toml: Option<String>,
     codex_model_catalog: Option<String>,
+    codex_sandbox: Option<CodexSandboxStructuredConfig>,
     grok_config_toml: Option<String>,
     grok_structured: Option<GrokStructuredConfig>,
     cursor_cli_config_json: Option<String>,
@@ -7565,11 +8985,24 @@ pub(crate) async fn acp_update_agent_config_core(
     }
 
     if agent_type == AgentType::Codex {
-        if codex_auth_json.is_some() || codex_config_toml.is_some() {
-            persist_codex_native_config_files(
-                codex_auth_json.as_deref(),
-                codex_config_toml.as_deref(),
-            )?;
+        // Mirrors the Grok/Cursor flow. The advanced raw editor sends the whole
+        // file (`codex_config_toml = Some(text)`), so that text is the verbatim
+        // base; the sandbox/approval controls send only a patch, merged onto the
+        // CURRENT on-disk config (read fresh, failing loudly on a real read
+        // error) so a stale in-memory snapshot can't drop keys written by codex
+        // itself or another window since the panel opened.
+        if codex_auth_json.is_some() || codex_config_toml.is_some() || codex_sandbox.is_some() {
+            let merged_toml = match &codex_sandbox {
+                Some(sandbox) => {
+                    let base = match codex_config_toml {
+                        Some(text) => text,
+                        None => read_codex_config_or_empty()?,
+                    };
+                    Some(apply_codex_sandbox_config(&base, sandbox)?)
+                }
+                None => codex_config_toml,
+            };
+            persist_codex_native_config_files(codex_auth_json.as_deref(), merged_toml.as_deref())?;
         }
         // The frontend has already patched config.toml's `model_catalog_json` +
         // root `model` into `codex_config_toml` (comment-preserving text patch);
@@ -7676,6 +9109,7 @@ pub(crate) async fn acp_update_agent_config_and_refresh(
     codex_auth_json: Option<String>,
     codex_config_toml: Option<String>,
     codex_model_catalog: Option<String>,
+    codex_sandbox: Option<CodexSandboxStructuredConfig>,
     grok_config_toml: Option<String>,
     grok_structured: Option<GrokStructuredConfig>,
     cursor_cli_config_json: Option<String>,
@@ -7692,6 +9126,7 @@ pub(crate) async fn acp_update_agent_config_and_refresh(
         codex_auth_json,
         codex_config_toml,
         codex_model_catalog,
+        codex_sandbox,
         grok_config_toml,
         grok_structured,
         cursor_cli_config_json,
@@ -7712,6 +9147,7 @@ pub async fn acp_update_agent_config(
     codex_auth_json: Option<String>,
     codex_config_toml: Option<String>,
     codex_model_catalog: Option<String>,
+    codex_sandbox: Option<CodexSandboxStructuredConfig>,
     grok_config_toml: Option<String>,
     grok_structured: Option<GrokStructuredConfig>,
     cursor_cli_config_json: Option<String>,
@@ -7733,6 +9169,7 @@ pub async fn acp_update_agent_config(
         codex_auth_json,
         codex_config_toml,
         codex_model_catalog,
+        codex_sandbox,
         grok_config_toml,
         grok_structured,
         cursor_cli_config_json,
@@ -8057,6 +9494,10 @@ pub(crate) async fn acp_download_agent_binary_core(
                 effective_version,
                 &archive_url,
                 cmd,
+                // A custom version rewrites the URL, so the registry's digest
+                // no longer describes what we are about to fetch — only verify
+                // against the pinned release.
+                custom.is_none().then_some(fallback.sha256).flatten(),
                 move |msg| {
                     emit_agent_install_event(
                         &emitter_clone,
@@ -8173,12 +9614,32 @@ pub async fn acp_install_uv_tool(
 pub(crate) async fn acp_detect_agent_local_version_core(
     agent_type: AgentType,
     conn: &sea_orm::DatabaseConnection,
+    emitter: &EventEmitter,
 ) -> Result<Option<String>, AcpError> {
+    // Snapshot the stored version before probing so we can tell whether this
+    // detection actually moves it. The settings page re-runs this for every
+    // agent on each open; emitting unconditionally would fan a reload storm out
+    // to every `useAcpAgents()` consumer, so we only notify on a real change.
+    let previous = agent_setting_service::get_by_agent_type(conn, agent_type)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|m| m.installed_version);
+
     let detected = detect_local_version(agent_type).await;
     if let Some(version) = detected.clone() {
         let _ =
             agent_setting_service::set_installed_version(conn, agent_type, Some(version.clone()))
                 .await;
+        // Heal the composer's install status. The input box reads
+        // `installed_version` straight from this row and shows "not installed"
+        // while it's null (`acp_list_agents_core` never probes npm for it). When
+        // a live probe discovers a version the DB never recorded — an agent
+        // installed outside codeg, or by a build predating version tracking —
+        // wake `useAcpAgents()` so the composer stops claiming it's missing.
+        if previous.as_deref() != Some(version.as_str()) {
+            emit_acp_agents_updated(emitter, "local_version_detected", Some(agent_type));
+        }
         return Ok(Some(version));
     }
 
@@ -8195,15 +9656,15 @@ pub(crate) async fn acp_detect_agent_local_version_core(
         registry::AgentDistribution::Binary { .. }
     ) {
         let _ = agent_setting_service::set_installed_version(conn, agent_type, None).await;
+        // Mirror the heal in the clearing direction: a binary that vanished from
+        // disk must flip the composer back to "not installed".
+        if previous.is_some() {
+            emit_acp_agents_updated(emitter, "local_version_cleared", Some(agent_type));
+        }
         return Ok(None);
     }
 
-    let fallback = agent_setting_service::get_by_agent_type(conn, agent_type)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|m| m.installed_version);
-    Ok(fallback)
+    Ok(previous)
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -8211,8 +9672,10 @@ pub(crate) async fn acp_detect_agent_local_version_core(
 pub async fn acp_detect_agent_local_version(
     agent_type: AgentType,
     db: State<'_, AppDatabase>,
+    app: tauri::AppHandle,
 ) -> Result<Option<String>, AcpError> {
-    acp_detect_agent_local_version_core(agent_type, &db.conn).await
+    let emitter = EventEmitter::Tauri(app);
+    acp_detect_agent_local_version_core(agent_type, &db.conn, &emitter).await
 }
 
 pub(crate) async fn acp_prepare_npx_agent_core(
@@ -9226,6 +10689,400 @@ mod tests {
             incompatible.is_err(),
             "an incompatible non-table section must error, not clobber"
         );
+    }
+
+    // ---- Codex sandbox / approval structured controls -------------------
+    // Every expectation below was verified against a real codex-cli 0.145.0 by
+    // writing the shape into an isolated `CODEX_HOME` and reading the resulting
+    // `thread/start` sandbox back.
+
+    #[test]
+    fn parse_codex_sandbox_settings_reads_plain_keys() {
+        let s = parse_codex_sandbox_settings(
+            "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n",
+        );
+        assert_eq!(s.approval_policy.as_deref(), Some("never"));
+        assert_eq!(s.sandbox_mode.as_deref(), Some("danger-full-access"));
+        assert!(s.granular.is_none());
+        assert!(!s.shadowed_by_default_permissions);
+    }
+
+    #[test]
+    fn parse_codex_sandbox_settings_normalizes_legacy_on_failure() {
+        // `on-failure` is a serde ALIAS of `on-request` upstream, not a distinct
+        // policy, so the panel must show it as `on-request` rather than as an
+        // unknown value it would then clobber.
+        let s = parse_codex_sandbox_settings("approval_policy = \"on-failure\"\n");
+        assert_eq!(s.approval_policy.as_deref(), Some("on-request"));
+    }
+
+    #[test]
+    fn parse_codex_sandbox_settings_reads_granular_in_both_toml_forms() {
+        let inline = parse_codex_sandbox_settings(
+            "approval_policy = { granular = { sandbox_approval = true, rules = false, \
+             skill_approval = true, request_permissions = false, mcp_elicitations = true } }\n",
+        );
+        let section = parse_codex_sandbox_settings(
+            "[approval_policy.granular]\nsandbox_approval = true\nrules = false\n\
+             skill_approval = true\nrequest_permissions = false\nmcp_elicitations = true\n",
+        );
+        for s in [inline, section] {
+            assert!(s.approval_policy.is_none(), "granular is not a string form");
+            let g = s.granular.expect("granular table");
+            assert!(g.sandbox_approval && g.skill_approval && g.mcp_elicitations);
+            assert!(!g.rules && !g.request_permissions);
+        }
+    }
+
+    #[test]
+    fn parse_codex_sandbox_settings_reads_workspace_write_group() {
+        let s = parse_codex_sandbox_settings(
+            "sandbox_mode = \"workspace-write\"\n\n[sandbox_workspace_write]\n\
+             writable_roots = [\"/srv/one\", \"/srv/two\"]\nnetwork_access = true\n\
+             exclude_slash_tmp = true\n",
+        );
+        assert_eq!(s.workspace_write.writable_roots, ["/srv/one", "/srv/two"]);
+        assert!(s.workspace_write.network_access);
+        assert!(s.workspace_write.exclude_slash_tmp);
+        assert!(!s.workspace_write.exclude_tmpdir_env_var);
+    }
+
+    #[test]
+    fn parse_codex_sandbox_settings_flags_profile_shadowing() {
+        // `default_permissions` makes codex resolve permissions through the
+        // profile pipeline and ignore `sandbox_mode` entirely — verified live:
+        // `:read-only` + `danger-full-access` yields a read-only sandbox.
+        let s = parse_codex_sandbox_settings(
+            "sandbox_mode = \"danger-full-access\"\ndefault_permissions = \":read-only\"\n\n\
+             [permissions.tight]\nfile_system = \"restricted\"\n",
+        );
+        assert!(s.shadowed_by_default_permissions);
+        assert!(s.has_permissions_table);
+    }
+
+    #[test]
+    fn parse_codex_sandbox_settings_ignores_unknown_values_and_bad_toml() {
+        let unknown = parse_codex_sandbox_settings(
+            "approval_policy = \"yolo\"\nsandbox_mode = \"wide-open\"\n",
+        );
+        assert!(unknown.approval_policy.is_none());
+        assert!(unknown.sandbox_mode.is_none());
+        let broken = parse_codex_sandbox_settings("== not toml ==");
+        assert!(broken.sandbox_mode.is_none());
+    }
+
+    /// Set a field: `Some(Some(v))`. Clear it: `Some(None)`. Leave it exactly as
+    /// the base has it: `None` (the struct default).
+    fn set<T>(value: T) -> Option<Option<T>> {
+        Some(Some(value))
+    }
+
+    #[test]
+    fn apply_codex_sandbox_config_writes_and_preserves_unmanaged_keys() {
+        let base = "# keep me\nmodel = \"gpt-5\"\n\n[features]\nskills = true\n";
+        let merged = apply_codex_sandbox_config(
+            base,
+            &CodexSandboxStructuredConfig {
+                approval_policy: set("never".into()),
+                sandbox_mode: set("workspace-write".into()),
+                writable_roots: Some(vec!["/srv/extra".into()]),
+                network_access: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(merged.contains("# keep me"), "comments survive");
+        assert!(merged.contains("model = \"gpt-5\""));
+        assert!(merged.contains("skills = true"));
+        let back = parse_codex_sandbox_settings(&merged);
+        assert_eq!(back.approval_policy.as_deref(), Some("never"));
+        assert_eq!(back.sandbox_mode.as_deref(), Some("workspace-write"));
+        assert_eq!(back.workspace_write.writable_roots, ["/srv/extra"]);
+        assert!(back.workspace_write.network_access);
+    }
+
+    #[test]
+    fn apply_codex_sandbox_config_writes_all_five_granular_keys() {
+        // `sandbox_approval`, `rules` and `mcp_elicitations` have no upstream
+        // default: a partial table makes codex refuse to load config.toml
+        // ("missing field `sandbox_approval`"), so all five are always written.
+        let merged = apply_codex_sandbox_config(
+            "",
+            &CodexSandboxStructuredConfig {
+                granular: set(CodexGranularApproval {
+                    sandbox_approval: true,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for key in [
+            "sandbox_approval",
+            "rules",
+            "skill_approval",
+            "request_permissions",
+            "mcp_elicitations",
+        ] {
+            assert!(merged.contains(key), "granular table must carry {key}");
+        }
+        assert!(parse_codex_sandbox_settings(&merged).granular.is_some());
+    }
+
+    #[test]
+    fn apply_codex_sandbox_config_switches_granular_back_to_a_preset() {
+        // The string form must REPLACE the table; an emptied `[approval_policy]`
+        // would fail to deserialize as the externally tagged enum.
+        let base = "[approval_policy.granular]\nsandbox_approval = true\nrules = true\n\
+                    skill_approval = false\nrequest_permissions = false\nmcp_elicitations = true\n";
+        let merged = apply_codex_sandbox_config(
+            base,
+            &CodexSandboxStructuredConfig {
+                approval_policy: set("on-request".into()),
+                granular: Some(None),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let back = parse_codex_sandbox_settings(&merged);
+        assert_eq!(back.approval_policy.as_deref(), Some("on-request"));
+        assert!(back.granular.is_none(), "the granular table is gone");
+        assert!(!merged.contains("sandbox_approval"));
+    }
+
+    #[test]
+    fn apply_codex_sandbox_config_keeps_root_keys_out_of_existing_tables() {
+        // TOML positioning guard: a root scalar or the `[approval_policy]`
+        // granular table must not be emitted AFTER an existing section, which
+        // would silently reparent unrelated root keys into that section.
+        let base = "model = \"gpt-5\"\nmodel_provider = \"codeg\"\n\n\
+                    [features]\nskills = true\n\n\
+                    [mcp_servers.ctx]\ncommand = \"npx\"\n";
+        let merged = apply_codex_sandbox_config(
+            base,
+            &CodexSandboxStructuredConfig {
+                granular: set(CodexGranularApproval {
+                    sandbox_approval: true,
+                    rules: true,
+                    ..Default::default()
+                }),
+                sandbox_mode: set("workspace-write".into()),
+                network_access: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let table = merged
+            .parse::<toml::Table>()
+            .expect("merged config must stay valid TOML");
+        assert_eq!(
+            table.get("model").and_then(toml::Value::as_str),
+            Some("gpt-5"),
+            "root keys must stay at the root"
+        );
+        assert_eq!(
+            table.get("model_provider").and_then(toml::Value::as_str),
+            Some("codeg")
+        );
+        assert_eq!(
+            table
+                .get("features")
+                .and_then(toml::Value::as_table)
+                .and_then(|t| t.get("skills"))
+                .and_then(toml::Value::as_bool),
+            Some(true),
+            "unmanaged sections keep their own keys"
+        );
+        assert!(table.get("mcp_servers").is_some());
+        let back = parse_codex_sandbox_settings(&merged);
+        assert!(back.granular.is_some());
+        assert_eq!(back.sandbox_mode.as_deref(), Some("workspace-write"));
+        assert!(back.workspace_write.network_access);
+    }
+
+    #[test]
+    fn apply_codex_sandbox_config_removes_keys_and_empty_section() {
+        let base = "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n\n\
+                    [sandbox_workspace_write]\nnetwork_access = true\n\n\
+                    [features]\nskills = true\n";
+        let merged = apply_codex_sandbox_config(
+            base,
+            &CodexSandboxStructuredConfig {
+                approval_policy: Some(None),
+                granular: Some(None),
+                sandbox_mode: Some(None),
+                writable_roots: Some(vec![]),
+                network_access: Some(false),
+                exclude_tmpdir_env_var: Some(false),
+                exclude_slash_tmp: Some(false),
+            },
+        )
+        .unwrap();
+        let back = parse_codex_sandbox_settings(&merged);
+        assert!(back.approval_policy.is_none());
+        assert!(back.sandbox_mode.is_none());
+        assert!(
+            !merged.contains("sandbox_workspace_write"),
+            "empty section removed"
+        );
+        assert!(merged.contains("skills = true"), "other sections untouched");
+    }
+
+    #[test]
+    fn apply_codex_sandbox_config_leaves_absent_fields_untouched() {
+        // The core of the patch contract. The settings panel sends the raw
+        // config.toml text alongside this patch and the patch wins, so a field
+        // the user did not move must not be written from the panel's (possibly
+        // stale) view — otherwise a hand-edit in the raw editor gets reverted.
+        let base = "approval_policy = \"never\"\nsandbox_mode = \"read-only\"\n\n\
+                    [sandbox_workspace_write]\nwritable_roots = [\"/srv/keep\"]\n\
+                    network_access = true\nexclude_slash_tmp = true\n";
+        let merged = apply_codex_sandbox_config(
+            base,
+            // Only the sandbox mode moved.
+            &CodexSandboxStructuredConfig {
+                sandbox_mode: set("workspace-write".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let back = parse_codex_sandbox_settings(&merged);
+        assert_eq!(back.sandbox_mode.as_deref(), Some("workspace-write"));
+        assert_eq!(
+            back.approval_policy.as_deref(),
+            Some("never"),
+            "an untouched approval must survive the patch"
+        );
+        assert_eq!(back.workspace_write.writable_roots, ["/srv/keep"]);
+        assert!(back.workspace_write.network_access);
+        assert!(back.workspace_write.exclude_slash_tmp);
+    }
+
+    #[test]
+    fn apply_codex_sandbox_config_empty_patch_is_a_no_op() {
+        let base = "model = \"gpt-5\"\nsandbox_mode = \"read-only\"\n\n\
+                    [approval_policy.granular]\nsandbox_approval = true\nrules = true\n\
+                    skill_approval = false\nrequest_permissions = false\n\
+                    mcp_elicitations = true\n\n\
+                    [sandbox_workspace_write]\nnetwork_access = true\n";
+        // An all-absent patch must not touch a single key.
+        let merged =
+            apply_codex_sandbox_config(base, &CodexSandboxStructuredConfig::default()).unwrap();
+        assert_eq!(merged.trim(), base.trim());
+    }
+
+    #[test]
+    fn apply_codex_sandbox_config_partial_workspace_write_patch() {
+        // Toggling one flag must not disturb its siblings or the roots list.
+        let base = "[sandbox_workspace_write]\nwritable_roots = [\"/srv/keep\"]\n\
+                    network_access = true\n";
+        let merged = apply_codex_sandbox_config(
+            base,
+            &CodexSandboxStructuredConfig {
+                exclude_slash_tmp: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let back = parse_codex_sandbox_settings(&merged);
+        assert_eq!(back.workspace_write.writable_roots, ["/srv/keep"]);
+        assert!(back.workspace_write.network_access);
+        assert!(back.workspace_write.exclude_slash_tmp);
+
+        // Clearing the last remaining key drops the now-bare section header.
+        let emptied = apply_codex_sandbox_config(
+            "[sandbox_workspace_write]\nnetwork_access = true\n",
+            &CodexSandboxStructuredConfig {
+                network_access: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!emptied.contains("sandbox_workspace_write"));
+    }
+
+    #[test]
+    fn apply_codex_sandbox_config_rejects_bad_input() {
+        // Relative writable_roots are NOT rejected by codex — they resolve
+        // against CODEX_HOME ("rel/dir" → ~/.codex/rel/dir), silently granting
+        // write access somewhere the user never meant. So codeg rejects them.
+        assert!(apply_codex_sandbox_config(
+            "",
+            &CodexSandboxStructuredConfig {
+                writable_roots: Some(vec!["rel/dir".into()]),
+                ..Default::default()
+            }
+        )
+        .is_err());
+        assert!(apply_codex_sandbox_config(
+            "",
+            &CodexSandboxStructuredConfig {
+                sandbox_mode: set("wide-open".into()),
+                ..Default::default()
+            }
+        )
+        .is_err());
+        assert!(
+            apply_codex_sandbox_config(
+                "",
+                &CodexSandboxStructuredConfig {
+                    approval_policy: set("never".into()),
+                    granular: set(CodexGranularApproval::default()),
+                    ..Default::default()
+                }
+            )
+            .is_err(),
+            "a string and a granular table cannot coexist"
+        );
+        assert!(
+            apply_codex_sandbox_config("== not toml ==", &CodexSandboxStructuredConfig::default())
+                .is_err(),
+            "a malformed base must error, never silently overwrite the user's config"
+        );
+    }
+
+    #[test]
+    fn apply_codex_sandbox_config_accepts_windows_absolute_roots() {
+        let merged = apply_codex_sandbox_config(
+            "",
+            &CodexSandboxStructuredConfig {
+                writable_roots: Some(vec!["C:\\work\\repo".into(), "\\\\srv\\share".into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            parse_codex_sandbox_settings(&merged)
+                .workspace_write
+                .writable_roots
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn codex_projection_folds_sandbox_keys_for_the_fingerprint() {
+        // These keys only take effect at `thread/start`, so a running session
+        // must be marked restart-required when they change; the projection is
+        // what `fingerprint_config` hashes.
+        let plain = codex_config_projection_from_toml("model = \"gpt-5\"\n");
+        assert!(!plain.contains_key("sandboxMode"));
+        assert!(!plain.contains_key("sandboxWorkspaceWrite"));
+        let with_sandbox = codex_config_projection_from_toml(
+            "model = \"gpt-5\"\napproval_policy = \"never\"\n\
+             sandbox_mode = \"workspace-write\"\n\n\
+             [sandbox_workspace_write]\nnetwork_access = true\n",
+        );
+        assert_eq!(
+            with_sandbox.get("approvalPolicy").and_then(|v| v.as_str()),
+            Some("never")
+        );
+        assert_eq!(
+            with_sandbox.get("sandboxMode").and_then(|v| v.as_str()),
+            Some("workspace-write")
+        );
+        assert!(with_sandbox.contains_key("sandboxWorkspaceWrite"));
+        assert_ne!(plain, with_sandbox, "the fingerprint input must change");
     }
 
     #[test]

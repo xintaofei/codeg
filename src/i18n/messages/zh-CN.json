@@ -186,6 +186,14 @@
     "restartingIn": "将在 {seconds} 秒后重启...",
     "waitingForServer": "正在等待服务恢复...",
     "restartToUpdate": "重启以更新",
+    "newVersionBadge": "新版本 v{version}",
+    "updateAvailableTitle": "发现新版本",
+    "releaseNotesTitle": "更新内容",
+    "remindLater": "稍后",
+    "retry": "重试",
+    "stepDownload": "下载",
+    "stepInstall": "安装",
+    "stepRestart": "重启",
     "updateReadyHint": "新版本已下载，重启以完成更新。",
     "restarting": "正在重启…",
     "dockerUpgradeHint": "现在升级的是正在运行的容器。容器一旦被重建即丢失——如需保留，请拉取或构建新版本镜像后重建容器。",
@@ -611,7 +619,8 @@
       "saveCodeBuddyConfig": "保存 CodeBuddy 配置",
       "saveKimiCodeConfig": "保存 Kimi Code 配置",
       "customInstall": "自定义安装",
-      "saveKimiCodeRawConfig": "保存 config.toml"
+      "saveKimiCodeRawConfig": "保存 config.toml",
+      "diagnose": "诊断"
     },
     "status": {
       "enabled": "启用",
@@ -729,6 +738,34 @@
       "enableSkillsAria": "Codex 启用 Skills",
       "enableFast": "启用 Fast",
       "enableFastAria": "Codex 启用 Fast 服务等级",
+      "sandboxGroupTitle": "沙箱与审批",
+      "sandboxGroupHint": "写入全局 ~/.codex/config.toml，codex CLI 与 IDE 的会话同样生效。这是线程默认值，只作用于 codex 自行发起的回合（/goal、/review、/compact）；普通对话使用输入框里的审批预设。改动需重开会话才生效。",
+      "sandboxShadowedWarning": "config.toml 里设置了 default_permissions，codex 会改走权限配置档并完全忽略 sandbox_mode。删掉 default_permissions 后下面的选项才会生效。",
+      "sandboxPermissionsTableWarning": "config.toml 定义了 [permissions] 配置档却没有 default_permissions，codex 会拒绝启动。请在下方原始编辑器里补上。",
+      "approvalPolicyLabel": "审批策略",
+      "approvalPolicyUnset": "未设置（codex 默认：按需询问）",
+      "approvalPolicy_on-request": "按需询问 — 由模型决定何时请求批准",
+      "approvalPolicy_untrusted": "仅信任只读 — 只有已知安全的只读命令免批准",
+      "approvalPolicy_never": "从不询问 — 完全不弹审批",
+      "approvalPolicy_granular": "精细控制 — 按提示类型分别设置",
+      "granularHint": "关闭表示该类请求被自动拒绝，而不是弹给你确认。",
+      "granular_sandbox_approval": "Shell 命令越权申请",
+      "granular_rules": "Execpolicy 规则提示",
+      "granular_skill_approval": "技能脚本执行提示",
+      "granular_request_permissions": "request_permissions 工具提示",
+      "granular_mcp_elicitations": "MCP elicitation 提示",
+      "sandboxModeLabel": "沙箱模式",
+      "sandboxModeUnset": "未设置（受信任的文件夹回落为可写工作区）",
+      "sandboxMode_read-only": "只读",
+      "sandboxMode_workspace-write": "可写工作区",
+      "sandboxMode_danger-full-access": "完全放开（无沙箱）",
+      "sandboxModeHint": "在 Windows 上，未开启 codex 的实验性 Windows 沙箱时，可写工作区会被降级为只读。",
+      "writableRootsLabel": "额外可写目录",
+      "writableRootsHint": "每行一个绝对路径，作为工作目录之外的额外可写位置。",
+      "sandboxRootsRelativeError": "必须是绝对路径 — codex 会把相对路径解析到 ~/.codex 下：{path}",
+      "networkAccessLabel": "允许网络访问",
+      "excludeTmpdirLabel": "从可写目录中排除 TMPDIR",
+      "excludeSlashTmpLabel": "从可写目录中排除 /tmp",
       "authJsonNative": "auth.json（原生）",
       "configTomlNative": "config.toml（原生）",
       "loginButton": "使用 ChatGPT 登录",
@@ -949,7 +986,11 @@
       "effortLevel_low": "低",
       "effortLevel_medium": "中",
       "effortLevel_high": "高",
-      "effortLevel_xhigh": "超高"
+      "effortLevel_xhigh": "超高",
+      "sendAttributionHeader": "向接口发送归属/计费标识",
+      "sendAttributionHeaderAria": "向接口发送 Claude Code 归属/计费标识",
+      "disableNonessentialTraffic": "禁用遥测或多余的网络请求",
+      "disableNonessentialTrafficAria": "禁用 Claude Code 遥测或多余的网络请求"
     },
     "dialogs": {
       "confirmDeleteProvider": "确认删除 Provider {providerId}？",
@@ -1124,7 +1165,46 @@
       "trustDescription": "codeg 连接 pi 到某个目录时，将该目录标记为受信任，使 pi 无需单独确认即可加载该项目的本地配置与技能。",
       "trustHint": "仅信任你在此打开的目录，绝不涉及整台机器；且只影响配置加载，不影响 pi 能执行什么。",
       "configDirSkillsNote": "设置了自定义配置目录后，设置页中管理的技能、专家与办公工具将不会作用于该 pi；请直接在该目录中管理其技能。"
-    }
+    },
+    "addCustomAgent": "添加自定义智能体",
+    "addCustomAgentHint": "接入任意兼容 ACP 的智能体。可从公开 ACP 注册表中选择，或直接粘贴其注册表信息。",
+    "customAgentFromRegistry": "ACP 注册表",
+    "customAgentManual": "手动填写",
+    "customAgentSearchPlaceholder": "搜索智能体…",
+    "customAgentLoadingCatalog": "正在加载 ACP 注册表…",
+    "customAgentRetry": "重试",
+    "customAgentNoResults": "没有匹配的智能体",
+    "customAgentAdd": "添加",
+    "customAgentAlreadyAdded": "已添加",
+    "customAgentUnsupportedPlatform": "当前平台没有可用的构建",
+    "customAgentAdded": "已添加 {name}",
+    "customAgentIdLabel": "注册表 ID",
+    "customAgentNameLabel": "显示名称",
+    "customAgentVersionLabel": "版本",
+    "customAgentSpecLabel": "分发信息（JSON）",
+    "customAgentSpecHint": "粘贴 ACP 注册表中该智能体的 distribution 对象，或整条注册表条目。",
+    "customAgentKindLabel": "启动方式",
+    "customAgentInvalidJson": "不是合法的 JSON",
+    "customAgentNoDistribution": "未找到 npx、uvx 或 binary 分发方式",
+    "customAgentCancel": "取消",
+    "customAgentSave": "添加智能体",
+    "customAgentRemove": "移除智能体",
+    "customAgentRemoveHint": "删除该智能体定义。已有会话的历史会保留，只是该智能体无法再启动。",
+    "customAgentIconLabel": "图标（可选）",
+    "customAgentIconUpload": "上传",
+    "customAgentIconReplace": "更换",
+    "customAgentIconClear": "移除图标",
+    "customAgentIconHint": "随智能体一起保存，离线也能显示。不上传则使用彩色首字母。",
+    "customAgentSkillsLabel": "Skills（共享 .agents/skills）",
+    "customAgentSkillsHint": "声明该智能体会读取共享的 .agents/skills 目录（全局与项目级），并将其加入所有技能矩阵。链接到共享目录的技能对读取该目录的其他智能体同样可见。",
+    "customAgentIconNotAnImage": "请选择图片文件。",
+    "customAgentIconTooLarge": "图标需小于 {limit} KB。",
+    "customAgentIconReadFailed": "无法读取该图片。",
+    "customAgentRemoveConfirm": "确定移除 {name}？已有会话会保留，但该智能体将无法再启动。",
+    "customAgentRemoveWithData": "同时删除已记录的会话历史",
+    "customAgentRemoved": "已移除 {name}",
+    "customAgentBadge": "自定义",
+    "customAgentNotLaunchable": "该智能体在此环境无法启动：{reason}"
   },
   "SettingsPages": {
     "agentsLoading": "加载 Agent 设置中...",
@@ -1317,6 +1397,7 @@
       "searchPlaceholder": "搜索会话...",
       "viewOptions": "显示选项",
       "showCompleted": "显示已完成会话",
+      "showWorktrees": "显示工作树文件夹",
       "moreOptions": "更多选项",
       "sortBy": "排序方式",
       "sortByCreatedAt": "按创建时间排序",
@@ -1372,6 +1453,7 @@
       "sectionFolders": "文件夹",
       "sectionChats": "聊天",
       "noChats": "没有聊天",
+      "noFolders": "没有打开的文件夹",
       "newChatAction": "新建聊天",
       "automations": "自动化",
       "loadingSubsessions": "正在加载子会话…"
@@ -1548,6 +1630,16 @@
       "closeConversationTab": "关闭会话标签",
       "close": "关闭",
       "closeOthers": "关闭其它",
+      "splitRight": "向右拆分",
+      "splitDown": "向下拆分",
+      "splitAndMoveRight": "拆分并右移",
+      "splitAndMoveDown": "拆分并下移",
+      "moveToOppositeGroup": "移动到对侧分组",
+      "moveToGroup": "移动到分组",
+      "groupLabel": "分组 {index}",
+      "changeSplitterOrientation": "切换分隔方向",
+      "unsplit": "取消拆分",
+      "unsplitAll": "全部取消拆分",
       "closeAll": "关闭所有",
       "tileDisplay": "平铺显示",
       "untileDisplay": "取消平铺"
@@ -1737,7 +1829,11 @@
         "confirmApply": "将贮藏 {ref} 应用到工作目录？",
         "cancel": "取消"
       },
-      "deleteBranch": "删除分支"
+      "deleteBranch": "删除分支",
+      "searchPlaceholder": "搜索分支和操作",
+      "searchAriaLabel": "搜索分支和操作",
+      "branchListLabel": "分支和操作",
+      "noMatches": "无匹配项"
     },
     "commitDialog": {
       "toasts": {
@@ -1821,8 +1917,11 @@
       "hash": "Hash",
       "copyHash": "复制哈希",
       "copyMessage": "复制提交消息",
+      "showMore": "展开",
+      "showLess": "收起",
       "author": "作者",
       "noFileChangeDetails": "暂无文件变更详情。",
+      "loadingFiles": "正在加载文件…",
       "branchesTitle": "分支",
       "loadingBranches": "正在加载分支...",
       "noContainingBranches": "未找到包含此提交的分支。",
@@ -1851,14 +1950,28 @@
         "resetSuccessDescription": "已将 {branch} 以 {mode} 重置到 {shortHash}",
         "resetFailed": "重置失败"
       },
+      "authorFilter": {
+        "label": "作者",
+        "searchPlaceholder": "搜索作者",
+        "noAuthors": "未找到作者",
+        "you": "你",
+        "filterByAuthorAria": "按作者筛选提交",
+        "filterByQuery": "按“{query}”过滤",
+        "clearAuthorFilterAria": "清除作者过滤",
+        "recent": "最近",
+        "matchingAuthors": "匹配的作者",
+        "removeFromRecent": "从最近列表移除 {name}"
+      },
       "branchSelector": {
+        "label": "分支",
         "searchBranch": "搜索分支...",
         "noBranches": "无分支",
         "selectBranchPlaceholder": "选择分支...",
         "localBranches": "本地分支",
         "current": "当前",
         "remoteBranches": "远程分支",
-        "refreshCommitHistory": "刷新提交记录"
+        "refreshCommitHistory": "刷新提交记录",
+        "clearBranchFilterAria": "清除分支过滤"
       },
       "dialogs": {
         "newBranchTitle": "新建分支",
@@ -2205,7 +2318,8 @@
           "initSessionDescription": "正在创建会话并加载配置"
         },
         "errors": {
-          "connectionFailed": "连接失败"
+          "connectionFailed": "连接失败",
+          "sendPromptFailed": "消息发送失败：{error}"
         }
       },
       "shared": {
@@ -2262,6 +2376,7 @@
         "attachUploadFailed": "上传失败：{names}。",
         "attachUploadNotAFile": "{names} 不是常规文件（目录或特殊文件），已跳过。",
         "attachUploadQuotaExceeded": "服务器上传空间已用尽，{names} 未能上传。",
+        "attachUploadInProgress": "图片仍在上传中，请稍候再发送。",
         "mentionEmpty": "无匹配项",
         "mentionLoading": "搜索中…",
         "mentionListLabel": "提及",
@@ -2589,6 +2704,8 @@
           "remaining": "剩余",
           "elapsed": "耗时",
           "tokens": "tokens",
+          "pause": "暂停",
+          "clear": "清除",
           "status": {
             "active": "进行中",
             "paused": "已暂停",
@@ -2717,6 +2834,17 @@
         "submit": "提交",
         "submitError": "提交失败，请重试。"
       },
+      "planApproval": {
+        "title": "智能体已给出计划——请审阅",
+        "emptyPlan": "智能体未写入计划。可批准开始实施，或要求修改。",
+        "approve": "批准并开始",
+        "requestChanges": "要求修改",
+        "abandon": "放弃",
+        "feedbackPlaceholder": "需要修改什么？",
+        "sendChanges": "发送",
+        "cancel": "取消",
+        "submitError": "提交失败，请重试。"
+      },
       "feedbackCheckResult": {
         "count": "{count} 条反馈",
         "expand": "展开全部反馈",
@@ -2757,6 +2885,11 @@
         "opClose": "结束子智能体",
         "opResume": "恢复子智能体"
       },
+      "contextCompaction": {
+        "compacting": "正在压缩上下文…",
+        "compacted": "上下文已压缩",
+        "compactedTokens": "上下文已压缩 · {before} → {after} tokens"
+      },
       "backgroundTasks": {
         "running": "{count} 个后台任务运行中",
         "settling": "正在同步后台结果…",
@@ -2766,6 +2899,10 @@
         "cardCompleted": "后台任务已完成",
         "cardFinishedWithStatus": "后台任务已结束（{status}）",
         "cardResultPending": "结果尚未返回"
+      },
+      "proposedPlan": {
+        "title": "计划提案",
+        "planning": "规划中…"
       }
     },
     "diffPreview": {
@@ -3964,5 +4101,27 @@
     "groupInstructions": "描述与系统提示词",
     "fieldDescription": "描述",
     "baseInstructions": "系统提示词（base_instructions）"
+  },
+  "DiagnosticsSettings": {
+    "title": "环境诊断",
+    "description": "检查本应用在自身进程中如何解析该智能体的 CLI——这可能与你的终端不同。",
+    "loading": "正在运行诊断…",
+    "error": "诊断失败",
+    "rerun": "重新运行",
+    "copyAll": "复制全部",
+    "copied": "诊断信息已复制到剪贴板",
+    "button": "诊断",
+    "verdict": {
+      "ok": "环境正常。若仍提示未安装，请彻底重启应用以刷新前缀缓存。",
+      "node_missing": "在应用的 PATH 上未找到 Node.js。",
+      "npm_missing": "在应用的 PATH 上未找到 npm。",
+      "not_installed": "该智能体似乎尚未安装。",
+      "installed_but_unresolved": "记录显示已安装，但应用无法定位其可执行文件。",
+      "user_prefix_not_on_path": "安装到了回退前缀（~/.codeg/npm-global），但它不在应用的 PATH 上。请彻底重启应用后重试。",
+      "homebrew_bin_not_on_path": "安装在 Homebrew 的 bin 目录下，但它不在应用的 PATH 上（Apple Silicon keg 拆分）。",
+      "terminal_only_path": "该命令在你的终端能解析，但在应用中不能——这是 GUI PATH 差异。请从终端启动应用，或在智能体设置中重新安装。",
+      "npm_prefix_timeout": "npm prefix -g 太慢（超过 1.5 秒），已跳过回退检测。请重启应用后重试。",
+      "node_too_old": "当前 Node.js 版本低于该智能体的要求。请升级 Node.js。"
+    }
   }
 }

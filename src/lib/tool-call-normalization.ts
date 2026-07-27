@@ -432,6 +432,17 @@ export function inferLiveToolName(params: {
   // config") as an Agent card before raw_input is even consulted.
   if ((params.title ?? "").trim().toLowerCase() === "agent") return "agent"
 
+  // Grok plan-mode tools carry their authoritative identity in
+  // `_meta["x.ai/tool"].kind` (`enter_plan`/`exit_plan`), while their human
+  // `title` MUTATES across the lifecycle (`enter_plan_mode` → "Plan: Enter" →
+  // "Plan mode entered"). Resolve them to the canonical name here, ahead of the
+  // title-based fallbacks below, so the live stream routes into the same
+  // <PlanModeCard> (and its tool-group run-break) the historical path resolves
+  // from `x.ai/tool.name`. Scoped to plan-mode so every other Grok tool keeps
+  // its existing resolution. See `extractGrokPlanModeToolName`.
+  const grokPlanMode = extractGrokPlanModeToolName(params.meta)
+  if (grokPlanMode) return grokPlanMode
+
   // codex collab / sub-agent activity (codex-acp 1.0.1 #223). The live ACP
   // tool_call's title is the bare, free-form collab op (`spawn_agent`/
   // `wait_agent`/`close_agent`/…), but its rawInput carries inter-agent fields
@@ -529,4 +540,25 @@ function extractClaudeCodeToolName(
   if (typeof tn !== "string") return null
   const trimmed = tn.trim()
   return trimmed.length > 0 ? trimmed : null
+}
+
+/**
+ * Grok stamps the authoritative tool identity in `_meta["x.ai/tool"]`
+ * (`{ name, kind, namespace, label }`). For its plan-mode tools this returns the
+ * canonical `enter_plan_mode` / `exit_plan_mode` name (which `normalizeToolName`
+ * then aliases to `enterplanmode`/`exitplanmode`); `null` for every other Grok
+ * tool and every non-Grok host, so their existing title/alias resolution is
+ * preserved. Keyed on the stable `kind` discriminator, which — unlike `title` —
+ * does not mutate across the tool_call lifecycle.
+ */
+function extractGrokPlanModeToolName(
+  meta: Record<string, unknown> | null | undefined
+): string | null {
+  if (!meta || typeof meta !== "object") return null
+  const tool = (meta as Record<string, unknown>)["x.ai/tool"]
+  if (!tool || typeof tool !== "object") return null
+  const kind = (tool as Record<string, unknown>).kind
+  if (kind === "enter_plan") return "enter_plan_mode"
+  if (kind === "exit_plan") return "exit_plan_mode"
+  return null
 }

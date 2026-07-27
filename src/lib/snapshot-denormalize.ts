@@ -6,6 +6,7 @@ import type {
   LiveContentBlock as WireLiveContentBlock,
   LiveMessage as WireLiveMessage,
   LiveSessionSnapshot,
+  PendingPlanApprovalState,
   PendingQuestionState,
   PromptCapabilitiesInfo,
   SessionConfigOptionInfo,
@@ -49,6 +50,10 @@ export interface SnapshotPatch {
    *  no question is pending. (Distinct from the frontend-only free-text
    *  `pendingQuestion`, which is NOT in the snapshot.) */
   pendingAskQuestion: PendingQuestionState | null
+  /** Awaiting-decision Grok `exit_plan_mode` approval carried by the snapshot,
+   *  so a client attaching mid-turn re-renders the plan-approval card. `null`
+   *  when no approval is pending. */
+  pendingPlanApproval: PendingPlanApprovalState | null
   /** In-flight user prompt carried by the snapshot, so a client attaching
    *  mid-turn can synthesize the user turn (Bug-2 / cross-client viewing).
    *  `null` when no turn is in flight. */
@@ -114,6 +119,8 @@ export function denormalizeSnapshot(wire: LiveSessionSnapshot): SnapshotPatch {
       : null,
     // The snapshot shape already matches PendingQuestionState; pass through.
     pendingAskQuestion: wire.pending_question ?? null,
+    // The snapshot shape already matches PendingPlanApprovalState; pass through.
+    pendingPlanApproval: wire.pending_plan_approval ?? null,
     pendingUserMessage: wire.pending_user_message
       ? {
           messageId: wire.pending_user_message.message_id,

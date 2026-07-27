@@ -275,6 +275,12 @@ pub fn build_router(
         .route("/git_status", post(handlers::git::git_status))
         .route("/git_init", post(handlers::git::git_init))
         .route("/git_log", post(handlers::git::git_log))
+        .route("/git_current_user", post(handlers::git::git_current_user))
+        .route("/git_commit_files", post(handlers::git::git_commit_files))
+        .route(
+            "/git_search_authors",
+            post(handlers::git::git_search_authors),
+        )
         .route(
             "/git_list_all_branches",
             post(handlers::git::git_list_all_branches),
@@ -392,14 +398,14 @@ pub fn build_router(
         )
         .route(
             "/upload_attachment",
-            // The 2MiB `UPLOAD_MAX_BYTES` is the *file payload* limit; the
-            // raw multipart body also carries boundary markers, the
+            // `UPLOAD_MAX_BYTES` is the *file payload* limit; the raw
+            // multipart body also carries boundary markers, the
             // `Content-Disposition` headers, and the `session_id` field —
             // ~256-512 bytes of overhead. Without this layer, axum's default
-            // 2MiB `DefaultBodyLimit` rejects a perfectly-sized 2MiB file
-            // before our handler ever sees a chunk. Pad by 64KiB so the
-            // handler's own chunk-summing check (in `files.rs`) stays the
-            // authoritative size boundary.
+            // 2MiB `DefaultBodyLimit` would reject anything bigger before our
+            // handler ever sees a chunk. Pad by 64KiB so the handler's own
+            // chunk-summing check (in `files.rs`) stays the authoritative
+            // size boundary.
             post(handlers::files::upload_attachment)
                 .layer(DefaultBodyLimit::max(UPLOAD_MAX_BYTES as usize + 64 * 1024)),
         )
@@ -591,6 +597,10 @@ pub fn build_router(
             post(handlers::acp::acp_get_agent_status),
         )
         .route("/acp_list_agents", post(handlers::acp::acp_list_agents))
+        .route(
+            "/acp_env_diagnostics",
+            post(handlers::acp::acp_env_diagnostics),
+        )
         .route("/acp_connect", post(handlers::acp::acp_connect))
         .route("/acp_disconnect", post(handlers::acp::acp_disconnect))
         .route(
@@ -605,6 +615,10 @@ pub fn build_router(
             post(handlers::acp::acp_set_config_option),
         )
         .route(
+            "/acp_goal_control",
+            post(handlers::acp::acp_goal_control),
+        )
+        .route(
             "/acp_describe_agent_options",
             post(handlers::acp::acp_describe_agent_options),
         )
@@ -617,6 +631,10 @@ pub fn build_router(
         .route(
             "/acp_answer_question",
             post(handlers::acp::acp_answer_question),
+        )
+        .route(
+            "/acp_answer_plan_approval",
+            post(handlers::acp::acp_answer_plan_approval),
         )
         .route(
             "/acp_list_connections",
@@ -713,6 +731,26 @@ pub fn build_router(
         .route(
             "/acp_reorder_agents",
             post(handlers::acp::acp_reorder_agents),
+        )
+        .route(
+            "/acp_list_custom_agents",
+            post(handlers::acp::acp_list_custom_agents),
+        )
+        .route(
+            "/acp_save_custom_agent",
+            post(handlers::acp::acp_save_custom_agent),
+        )
+        .route(
+            "/acp_delete_custom_agent",
+            post(handlers::acp::acp_delete_custom_agent),
+        )
+        .route(
+            "/acp_fetch_registry_catalog",
+            post(handlers::acp::acp_fetch_registry_catalog),
+        )
+        .route(
+            "/acp_add_registry_agent",
+            post(handlers::acp::acp_add_registry_agent),
         )
         .route(
             "/acp_list_agent_skills",
@@ -1201,6 +1239,10 @@ pub fn build_router(
         .route(
             "/pet_marketplace_install",
             post(handlers::pet::pet_marketplace_install),
+        )
+        .route(
+            "/pet_marketplace_asset",
+            post(handlers::pet::pet_marketplace_asset),
         )
         .route("/pet_celebrate", post(handlers::pet::pet_celebrate))
         .route(

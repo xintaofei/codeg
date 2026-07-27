@@ -1,17 +1,34 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const call = vi.fn()
+// Flipped per-test so the desktop (Tauri plugin) branch of the updater can be
+// exercised alongside the server one.
+let desktop = false
 
 vi.mock("@/lib/transport", () => ({
   getTransport: () => ({ call }),
-  isDesktop: () => false,
+  isDesktop: () => desktop,
+  isRemoteDesktopMode: () => false,
+  getActiveRemoteConnectionId: () => null,
+}))
+
+const tauriGetVersion = vi.fn(async () => "0.21.8")
+const tauriCheck = vi.fn()
+vi.mock("@tauri-apps/api/app", () => ({
+  getVersion: () => tauriGetVersion(),
+}))
+vi.mock("@tauri-apps/plugin-updater", () => ({
+  check: (options?: { timeout?: number }) => tauriCheck(options),
 }))
 
 import {
+  appUpdateErrorMessageKey,
+  checkAppUpdateInfo,
   confirmRollbackVersion,
   getCurrentAppVersion,
   getRunningServerVersion,
   getServerUpdateStatus,
+  normalizeAppUpdateError,
   readServerVersionStrict,
   waitForServerHealthy,
 } from "@/lib/updater"
@@ -198,5 +215,131 @@ describe("waitForServerHealthy", () => {
 
     expect(healthy).toBe(false)
     expect(call.mock.calls.length).toBeGreaterThan(0)
+  })
+})
+
+describe("checkAppUpdateInfo", () => {
+  beforeEach(() => {
+    call.mockReset()
+    tauriCheck.mockReset()
+    tauriGetVersion.mockClear()
+    desktop = false
+  })
+
+  it("passes the server's answer through unchanged", async () => {
+    call.mockResolvedValueOnce({
+      currentVersion: "0.21.7",
+      update: { version: "0.21.8", body: "## Notes", date: "2026-07-20" },
+      selfUpdateSupported: true,
+      capability: "supervised",
+      runtime: "standalone",
+      restartDelayMs: 2000,
+      rollbackAvailable: true,
+      liveProgress: true,
+    })
+
+    const result = await checkAppUpdateInfo()
+    expect(call).toHaveBeenCalledWith("check_app_update")
+    expect(result.currentVersion).toBe("0.21.7")
+    expect(result.update).toEqual({
+      version: "0.21.8",
+      body: "## Notes",
+      date: "2026-07-20",
+    })
+    expect(result.liveProgress).toBe(true)
+  })
+
+  it("copies the desktop release fields and releases the updater handle", async () => {
+    // The Tauri `Update` is a resource handle. Since the download is driven in
+    // Rust (which re-checks on its own), holding it would leak an entry in the
+    // resource table on every periodic check.
+    desktop = true
+    const close = vi.fn(async () => {})
+    tauriCheck.mockResolvedValueOnce({
+      version: "0.21.9",
+      body: "fixes",
+      date: "2026-07-24",
+      close,
+    })
+
+    const result = await checkAppUpdateInfo()
+    expect(result).toEqual({
+      currentVersion: "0.21.8",
+      update: { version: "0.21.9", body: "fixes", date: "2026-07-24" },
+    })
+    expect(close).toHaveBeenCalledTimes(1)
+    // Never reaches the server endpoint in desktop mode.
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it("reports no update (and closes nothing) when desktop is up to date", async () => {
+    desktop = true
+    tauriCheck.mockResolvedValueOnce(null)
+
+    const result = await checkAppUpdateInfo()
+    expect(result).toEqual({ currentVersion: "0.21.8", update: null })
+  })
+
+  it("still releases the handle when reading its fields throws", async () => {
+    desktop = true
+    const close = vi.fn(async () => {})
+    tauriCheck.mockResolvedValueOnce({
+      get version(): string {
+        throw new Error("resource gone")
+      },
+      close,
+    })
+
+    await expect(checkAppUpdateInfo()).rejects.toThrow("resource gone")
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+
+  it("bounds the desktop manifest fetch so a black-holed network can't hang it", async () => {
+    // tauri-plugin-updater applies no timeout of its own; without an explicit
+    // one a dropped-packet network leaves check() pending forever, and with it
+    // the provider's in-flight guard — killing checks for the whole session.
+    desktop = true
+    tauriCheck.mockResolvedValueOnce(null)
+
+    await checkAppUpdateInfo()
+
+    const opts = tauriCheck.mock.calls[0]?.[0] as { timeout?: number }
+    expect(opts?.timeout).toBeGreaterThan(0)
+  })
+
+  it("propagates a failed check so the caller can classify it", async () => {
+    desktop = true
+    tauriCheck.mockRejectedValueOnce(new Error("error sending request for url"))
+
+    await expect(checkAppUpdateInfo()).rejects.toThrow()
+  })
+})
+
+describe("appUpdateErrorMessageKey", () => {
+  it("maps each classified kind to its own message", () => {
+    const kinds = [
+      "source_unreachable",
+      "network",
+      "download_failed",
+      "install_failed",
+    ] as const
+    const keys = kinds.map((k) => appUpdateErrorMessageKey(k, "check"))
+    expect(new Set(keys).size).toBe(kinds.length)
+  })
+
+  it("blames the install for an unclassifiable install failure, not the check", () => {
+    expect(appUpdateErrorMessageKey("unknown", "install")).toBe(
+      "updateErrors.installFailed"
+    )
+    expect(appUpdateErrorMessageKey("unknown", "check")).toBe(
+      "updateErrors.unknown"
+    )
+  })
+
+  it("agrees with the classifier on a real network failure string", () => {
+    const { kind } = normalizeAppUpdateError(
+      new Error("error sending request for url")
+    )
+    expect(appUpdateErrorMessageKey(kind, "check")).toBe("updateErrors.network")
   })
 })

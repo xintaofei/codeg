@@ -123,6 +123,16 @@ export const monacoThemeColors = {
     "editor.lineHighlightBackground": "#f4f4f5",
     "editor.selectionBackground": "#e4e4e7",
     "editor.inactiveSelectionBackground": "#f4f4f5",
+    // Side-by-side diff seam. Monaco leaves `diffEditor.border` unset by default,
+    // so the only thing marking the split is the 6px BLURRED `scrollbar.shadow`
+    // its stylesheet paints on both inner edges — a soft smudge instead of a
+    // divider (it reads especially washed out over a workspace background image,
+    // where the canvas is transparent). Naming the colour turns Monaco's own
+    // `border-left/right: 1px solid var(--vscode-diffEditor-border)` rule on; the
+    // blurred shadows are dropped in globals.css so the seam is just this line.
+    // Zinc-300/700: a touch stronger than the widget borders above, so the seam
+    // stays legible between two busy code panes.
+    "diffEditor.border": "#d4d4d8",
     "editorWidget.background": "#ffffff",
     "editorWidget.foreground": "#09090b",
     "editorWidget.border": "#e4e4e7",
@@ -177,6 +187,8 @@ export const monacoThemeColors = {
     "editor.lineHighlightBackground": "#27272a",
     "editor.selectionBackground": "#3f3f46",
     "editor.inactiveSelectionBackground": "#27272a",
+    // Side-by-side diff seam — see the light theme above.
+    "diffEditor.border": "#3f3f46",
     "editorWidget.background": "#18181b",
     "editorWidget.foreground": "#fafafa",
     "editorWidget.border": "#27272a",

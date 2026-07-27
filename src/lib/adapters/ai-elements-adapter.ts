@@ -14,6 +14,8 @@ import {
 } from "@/lib/adapters/tool-kind-classifier"
 import { normalizeToolName } from "@/lib/tool-call-normalization"
 import { isBackgroundTaskToolCall } from "@/lib/background-task"
+import { isContextCompactionMeta } from "@/lib/context-compaction"
+import { isUnsettledToolCall } from "@/lib/tool-call-lifecycle"
 import { feedbackCheckHasContent } from "@/lib/feedback-check"
 import {
   isPlanLikeToolName,
@@ -44,6 +46,17 @@ export type AdaptedToolCallPart = {
   output?: string | null
   errorText?: string
   agentStats?: AgentExecutionStats | null
+  /**
+   * Forwarded ACP tool-call status for live/promoted turns (`ContentBlock.
+   * tool_use.status`); absent/`null` for DB-persisted rows (the Rust `ToolUse`
+   * model has no status field). Consumed via `isUnsettledToolCall` by both the
+   * generic tool-group filter (`dropEmptyInFlightToolCalls`) and the specialized
+   * lane row-builders (`buildDelegationTaskRows` / `buildBackgroundTaskRows`) to
+   * recognise an interrupted arg-less orphan that survives `COMPLETE_TURN`
+   * promotion (its `state` flips to `output-available`, but its status stays
+   * unsettled).
+   */
+  toolStatus?: string | null
   /**
    * ACP extensibility metadata forwarded from `ContentBlock.tool_use.meta`.
    * Opaque pass-through; the only consumer today is `<DelegatedSubThread>`
@@ -96,6 +109,20 @@ export type AdaptedPlanPart = {
   isStreaming: boolean
 }
 
+/**
+ * A codex Plan-mode `<proposed_plan>…</proposed_plan>` block, lifted out of the
+ * assistant's message text and rendered as a dedicated card. Unlike
+ * `AdaptedPlanPart` (a TodoWrite checklist), the body is free-form markdown (the
+ * plan document codex proposes), so it renders through the normal markdown
+ * pipeline inside card chrome. Detection lives purely in the frontend adapter,
+ * so live and reload converge (both hand raw assistant text to the same path).
+ */
+export type AdaptedProposedPlanPart = {
+  type: "proposed-plan"
+  markdown: string
+  isStreaming: boolean
+}
+
 export type AdaptedContentPart =
   | { type: "text"; text: string }
   | AdaptedToolCallPart
@@ -138,6 +165,7 @@ export type AdaptedContentPart =
   | AdaptedGoalRunPart
   | AdaptedGeneratedImagePart
   | AdaptedPlanPart
+  | AdaptedProposedPlanPart
 
 export interface UserResourceDisplay {
   name: string
@@ -383,6 +411,64 @@ function parseInlineToolResultPayload(payload: string): {
       isError: false,
     }
   }
+}
+
+const PROPOSED_PLAN_OPEN = "<proposed_plan>"
+const PROPOSED_PLAN_CLOSE = "</proposed_plan>"
+
+/**
+ * Lift codex Plan-mode `<proposed_plan>…</proposed_plan>` block(s) out of an
+ * assistant text block into dedicated `proposed-plan` parts, leaving surrounding
+ * prose as normal text. Returns `null` when the text has no such block (so it
+ * falls through to the normal text path). While the turn streams, an as-yet
+ * unclosed block renders as a streaming card (its markdown grows in place);
+ * once `</proposed_plan>` arrives it settles. The open/close markers are always
+ * consumed so the raw tags never render, even for an empty or truncated block.
+ */
+function expandProposedPlanText(
+  text: string,
+  isStreaming: boolean
+): AdaptedContentPart[] | null {
+  if (!text.includes(PROPOSED_PLAN_OPEN)) return null
+
+  const parts: AdaptedContentPart[] = []
+  let cursor = 0
+  let sawPlan = false
+
+  for (;;) {
+    const open = text.indexOf(PROPOSED_PLAN_OPEN, cursor)
+    if (open === -1) break
+    sawPlan = true
+
+    const lead = text.slice(cursor, open)
+    if (lead.trim().length > 0) parts.push({ type: "text", text: lead })
+
+    const bodyStart = open + PROPOSED_PLAN_OPEN.length
+    const close = text.indexOf(PROPOSED_PLAN_CLOSE, bodyStart)
+    const stillStreaming = close === -1
+    const body = (
+      stillStreaming ? text.slice(bodyStart) : text.slice(bodyStart, close)
+    ).trim()
+    const streamingCard = stillStreaming && isStreaming
+    if (body.length > 0 || streamingCard) {
+      parts.push({
+        type: "proposed-plan",
+        markdown: body,
+        isStreaming: streamingCard,
+      })
+    }
+
+    if (stillStreaming) {
+      cursor = text.length
+      break
+    }
+    cursor = close + PROPOSED_PLAN_CLOSE.length
+  }
+
+  const trail = text.slice(cursor)
+  if (trail.trim().length > 0) parts.push({ type: "text", text: trail })
+
+  return sawPlan ? parts : null
 }
 
 function expandInlineToolText(
@@ -1114,7 +1200,12 @@ export function groupConsecutiveToolCalls(
       // Claude Code background-task polls (TaskOutput/TaskStop) render through a
       // dedicated <BackgroundTaskCard> that merges a task's repeated polls, so
       // they break the run instead of folding into a "执行 N 个任务" tool-group.
-      !isBackgroundTaskToolCall(part)
+      !isBackgroundTaskToolCall(part) &&
+      // Context-compaction items (codex `_meta.contextCompaction`, and Grok's
+      // synthesized auto_compact card) render through the dedicated subtle
+      // <ContextCompactionCard>, so they break the run and render standalone
+      // instead of being wrapped in a single-item "调用 1 个工具" tool-group.
+      !isContextCompactionMeta(part.meta)
     ) {
       buffer.push(part)
       continue
@@ -1144,6 +1235,89 @@ export function dropHiddenFeedbackChecks(
     // Surface errors (rare) so a failed check isn't silently swallowed.
     if (part.state === "output-error" || part.errorText?.trim()) return true
     return feedbackCheckHasContent(part.output ?? null)
+  })
+}
+
+/**
+ * Whether a tool-call's `input` string carries any real argument. Treats the
+ * empty shapes an arg-less initial `tool_call` serializes to — `null`, `""`,
+ * `"{}"`, `"[]"`, `"null"`, and any JSON that parses to an empty object/array —
+ * as "no input". Non-JSON but non-empty text counts as input.
+ */
+function toolCallHasInput(input: string | null | undefined): boolean {
+  if (input == null) return false
+  const trimmed = input.trim()
+  if (
+    trimmed === "" ||
+    trimmed === "{}" ||
+    trimmed === "[]" ||
+    trimmed === "null"
+  ) {
+    return false
+  }
+  try {
+    const parsed: unknown = JSON.parse(trimmed)
+    if (parsed == null) return false
+    if (Array.isArray(parsed)) return parsed.length > 0
+    if (typeof parsed === "object") return Object.keys(parsed).length > 0
+  } catch {
+    // Non-JSON but non-empty text → treat as real input.
+  }
+  return true
+}
+
+/**
+ * Drop empty, unsettled generic tool-call parts. claude-agent-acp emits an
+ * arg-less initial `tool_call` at `content_block_start` (`rawInput = {}`) and
+ * fills the real args on a later same-id `tool_call_update`. When a turn is
+ * interrupted and retried (connection error / Claude API retry), the aborted
+ * attempt's arg-less `tool_call` — which carries its own id, never gets refined,
+ * and is never written to the JSONL transcript — lingers in `liveMessage`. It
+ * then inflates the "运行 N 个命令" tool-group count and renders as a blank
+ * `bash · 运行中` card. The settled view (rebuilt from the transcript) never
+ * contains it, hence the live-only mismatch.
+ *
+ * Two render passes see the orphan, so the predicate spans both: (1) during
+ * streaming its state is `input-available` (running); (2) after `COMPLETE_TURN`
+ * the same unpruned `liveMessage` is promoted into `localTurns` and re-adapted
+ * with `isStreaming=false`, flipping the unmatched orphan to `output-available`
+ * — still caught, because its forwarded ACP status stays unsettled until an
+ * authoritative detail reload replaces the promoted copy. DB-persisted history
+ * carries no forwarded status, so it is exempt.
+ *
+ * The lane guard mirrors `groupConsecutiveToolCalls`'s fold condition exactly,
+ * so this only ever removes parts that would fold into a generic tool-group.
+ * Every specialized lane (agent/delegation/ask/feedback/goal via
+ * `isAgentLikeToolName`, plan-mode, background-task) is left untouched — those
+ * render through their own cards and handle their own empty in-flight polls
+ * (see commit 1ddf751b, same disease in the other lanes). Runs before
+ * `groupConsecutiveToolCalls`.
+ */
+export function dropEmptyInFlightToolCalls(
+  parts: AdaptedContentPart[]
+): AdaptedContentPart[] {
+  return parts.filter((part) => {
+    if (part.type !== "tool-call") return true
+    // Specialized lanes render standalone — never our concern.
+    if (
+      isAgentLikeToolName(part.toolName) ||
+      isPlanModeToolName(part.toolName) ||
+      isBackgroundTaskToolCall(part)
+    ) {
+      return true
+    }
+    // Keep unless the part is unsettled — still running (live orphan) or carrying
+    // an unsettled forwarded status (a promoted orphan whose state flipped to
+    // output-available at COMPLETE_TURN). DB-persisted rows have no forwarded
+    // status → settled → always kept here. See `isUnsettledToolCall`.
+    if (!isUnsettledToolCall(part)) {
+      return true
+    }
+    if (part.state === "output-error" || part.errorText?.trim()) return true
+    if (part.output && part.output.trim().length > 0) return true // streaming output → keep
+    if (toolCallHasInput(part.input)) return true // has a real command/args → keep
+    // Empty args + unsettled + no output/error → orphaned arg-less initial call.
+    return false
   })
 }
 
@@ -1575,6 +1749,15 @@ export function adaptMessageTurn(
         adaptedContent.push(...expandedParts)
         continue
       }
+
+      // Codex Plan mode emits its plan as a `<proposed_plan>…</proposed_plan>`
+      // block inside the assistant text; render it as a dedicated card instead
+      // of raw text with visible tags. Covers live + reload (same adapter).
+      const proposedPlanParts = expandProposedPlanText(block.text, isStreaming)
+      if (proposedPlanParts) {
+        adaptedContent.push(...proposedPlanParts)
+        continue
+      }
     }
 
     if (block.type === "tool_use") {
@@ -1695,6 +1878,10 @@ export function adaptMessageTurn(
             toolName: block.tool_name,
             input: block.input_preview,
             state: isStreaming ? "input-available" : "output-available",
+            // Forward status so a promoted arg-less orphan (unmatched, no
+            // result) can be recognised after COMPLETE_TURN flips its state to
+            // output-available. See dropEmptyInFlightToolCalls.
+            toolStatus: block.status ?? null,
             meta: block.meta ?? null,
           })
         }
@@ -1744,7 +1931,9 @@ export function adaptMessageTurn(
           groupConsecutiveBackgroundTasks(
             groupConsecutiveDelegationStatus(
               groupConsecutiveToolCalls(
-                dropHiddenFeedbackChecks(adaptedContent)
+                dropEmptyInFlightToolCalls(
+                  dropHiddenFeedbackChecks(adaptedContent)
+                )
               )
             )
           ),

@@ -1,10 +1,8 @@
 # Codeg
 
 [![Release](https://img.shields.io/github/v/release/xintaofei/codeg)](https://github.com/xintaofei/codeg/releases)
+[![Docs](https://img.shields.io/badge/docs-docs.codeg.app-3451b2)](https://docs.codeg.app)
 [![License](https://img.shields.io/github/license/xintaofei/codeg)](../../LICENSE)
-[![Tauri](https://img.shields.io/badge/Tauri-2.x-24C8DB)](https://tauri.app/)
-[![Next.js](https://img.shields.io/badge/Next.js-16-black)](https://nextjs.org/)
-[![Docker](https://img.shields.io/badge/Docker-ready-2496ED)](../../Dockerfile)
 
 <p>
   <a href="../../README.md">English</a> |
@@ -19,11 +17,18 @@
   <a href="./README.ar.md">العربية</a>
 </p>
 
-Codeg(Code Generation)는 멀티 에이전트 코딩 워크스페이스입니다. Claude Code, Codex CLI, OpenCode, Gemini CLI, OpenClaw, Cline, Hermes Agent, CodeBuddy, Kimi Code, Pi, Grok Build, Cursor 등의 여러 에이전트를 하나의 워크스페이스로 통합하며, 대화 집계와 멀티 에이전트 협업을 지원하고 데스크톱 설치와 서버/Docker 배포를 지원합니다.
+Codeg(Code Generation)는 멀티 에이전트 코딩 워크스페이스입니다. 모든 AI 코딩 에이전트를 한곳에서 실행하고, 서로 협업하게 만듭니다.
 
-![gallery](../images/gallery.svg)
+지원되는 모든 에이전트 CLI의 세션을 검색 가능한 하나의 워크스페이스로 모으고, 하나의 작업 안에서 메인 에이전트가 다른 종류의 서브 에이전트에게 위임할 수 있으며, 데스크톱 앱·독립 서버·Docker 컨테이너 어느 형태로든 실행됩니다. 또한 네이티브 iOS·Android 클라이언트가 있어 자리를 비운 사이에도 작업을 이어갈 수 있습니다.
 
-## 스폰서
+![워크스페이스](../images/workspace-light.png#gh-light-mode-only)
+![워크스페이스](../images/workspace-dark.png#gh-dark-mode-only)
+
+## 📖 문서
+
+**전체 문서는 [docs.codeg.app](https://docs.codeg.app)** — [시작하기](https://docs.codeg.app/getting-started/) · [가이드](https://docs.codeg.app/guide/) · [레퍼런스](https://docs.codeg.app/reference/)
+
+## 💖 스폰서
 
 <table>
   <tr>
@@ -58,385 +63,96 @@ Codeg(Code Generation)는 멀티 에이전트 코딩 워크스페이스입니다
 
 > Codeg의 스폰서가 되고 싶으신가요? [이메일로 문의해 주세요.](mailto:itpkcn@gmail.com)
 
-## 메인 인터페이스
+## 🤖 지원 에이전트
 
-![Codeg Light](../images/main-light.png#gh-light-mode-only)
-![Codeg Dark](../images/main-dark.png#gh-dark-mode-only)
+Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · CodeBuddy · Kimi Code · Pi · Grok · Cursor
 
-## 멀티 에이전트 협업
+이 중 대부분은 Codeg가 대신 설치하고, 버전을 고정하고, 업데이트합니다. 전체 목록과 각 에이전트의 실행 환경 요구 사항, 세션이 디스크에 저장되는 위치는 [지원 에이전트](https://docs.codeg.app/guide/supported-agents)를 참고하세요.
 
-![Codeg Light](../images/collaboration-light.png#gh-light-mode-only)
-![Codeg Dark](../images/collaboration-dark.png#gh-dark-mode-only)
+## 🤝 멀티 에이전트 협업
 
-## 오피스 워크플로우
+멀티 에이전트 협업이 키 하나로 끝납니다. `@`를 입력하고, 에이전트를 고르고, 보내기만 하면 됩니다. 나머지 스케줄링은 Codeg가 맡습니다 — 언급된 에이전트를 각각 독립 세션으로 실행하고, 작업을 넘기고, 그 결과를 지금 보고 있는 스레드로 다시 흘려보냅니다. 둘을 언급하면 나란히 진행됩니다. Claude Code가 초안을 쓰는 동안 Codex가 검토하는 식으로요. 컨텍스트 전환도, 터미널 사이를 오가는 복사·붙여넣기도 없습니다.
 
-![Codeg Light](../images/office-light.png#gh-light-mode-only)
-![Codeg Dark](../images/office-dark.png#gh-dark-mode-only)
+![하나의 Codeg 대화에서 서브 에이전트에게 작업을 위임하는 모습](../images/collaboration-light.gif#gh-light-mode-only)
+![하나의 Codeg 대화에서 서브 에이전트에게 작업을 위임하는 모습](../images/collaboration-dark.gif#gh-dark-mode-only)
 
-## 하이라이트
+## 📄 Office 문서
 
-- **세션 통합** — 지원되는 모든 에이전트의 세션을 통합 워크스페이스로 가져오기
-- **멀티 에이전트 협업** — 단일 세션 내에서 메인 에이전트가 다양한 유형의 서브 에이전트(예: Claude Code가 Codex, Gemini 등을 호출)를 호출하여 함께 작업을 완료하며, 각 서브 에이전트는 독립된 세션으로 실행
-- 내장 `git worktree` 플로를 통한 병렬 개발
-- **프로젝트 부트** — 시각적 설정과 실시간 미리보기로 새 프로젝트 생성
-- **Office 문서** — 내장 officecli 툴셋으로 .docx / .xlsx / .pptx 파일 생성, 분석, 교정, 편집. 파일 탭 내 실시간 미리보기 지원, 에이전트 편집 시 즉시 갱신
-- **과학 연구** — 모든 에이전트가 호출할 수 있는 내장 과학 스킬(가설 생성, 실험 설계, 통계, 시각화, 비판적 평가, 문헌 검색); 에이전트별로 관리
-- **자동화** — 컴포저 설정을 재사용 가능한 자동화로 저장하고, cron 스케줄 또는 수동 트리거로 헤드리스 실행
-- **채팅 채널** — Telegram, Lark(Feishu), iLink(Weixin) 등을 코딩 에이전트에 연결하여 실시간 알림 수신, 전체 세션 상호작용 및 원격 작업 제어
-- MCP 관리 (로컬 스캔 + 레지스트리 검색/설치)
-- Skills 관리 (글로벌 및 프로젝트 범위)
-- Git 원격 계정 관리 (GitHub 및 기타 Git 서버)
-- Web 서비스 모드 — 브라우저에서 Codeg에 접속하여 원격 작업 가능
-- **독립형 서버 배포** — 모든 Linux/macOS 서버에서 `codeg-server`를 실행하고 브라우저로 접속
-- **Docker 지원** — `docker compose up` 또는 `docker run` 지원, 사용자 정의 토큰/포트, 데이터 영속화 및 프로젝트 디렉토리 마운트 지원
-- 런타임 로그 — 필터링 및 모듈별 로그 레벨 설정을 지원하는 실시간 로그 뷰어 내장
-- 통합 엔지니어링 루프 (파일 트리, Diff, Git 변경사항, 커밋, 터미널)
+덱이든 보고서든 워크북이든, 요청하면 에이전트가 진짜 `.pptx` / `.docx` / `.xlsx` 파일을 만듭니다 — 오른쪽 패널이 그것을 실시간으로 렌더링하는 동안에요. 수정은 알아서 미리보기에 반영됩니다. 슬라이드가 채워지고, 표가 자리를 잡고, 숫자가 셀에 들어갑니다. 4번 슬라이드가 마음에 들지 않나요? 다음 메시지로 말하면 됩니다 — 에이전트가 같은 파일을 그 자리에서 고치고, 미리보기가 따라옵니다. 내보내기도, 외부 Office 앱도, Codeg를 벗어날 일도 없습니다.
 
-## 지원 에이전트
+![라이브 미리보기를 옆에 두고 Office 문서를 편집하는 에이전트](../images/office-light.png#gh-light-mode-only)
+![라이브 미리보기를 옆에 두고 Office 문서를 편집하는 에이전트](../images/office-dark.png#gh-dark-mode-only)
 
-| Agent        | 환경 변수 경로                        | macOS / Linux 기본값                  | Windows 기본값                                        |
-| ------------ | ------------------------------------- | ------------------------------------- | ----------------------------------------------------- |
-| Claude Code  | `$CLAUDE_CONFIG_DIR/projects`         | `~/.claude/projects`                  | `%USERPROFILE%\\.claude\\projects`                    |
-| Codex CLI    | `$CODEX_HOME/sessions`                | `~/.codex/sessions`                   | `%USERPROFILE%\\.codex\\sessions`                     |
-| OpenCode     | `$XDG_DATA_HOME/opencode/opencode.db` | `~/.local/share/opencode/opencode.db` | `%USERPROFILE%\\.local\\share\\opencode\\opencode.db` |
-| Gemini CLI   | `$GEMINI_CLI_HOME/.gemini`            | `~/.gemini`                           | `%USERPROFILE%\\.gemini`                              |
-| OpenClaw     | —                                     | `~/.openclaw/agents`                  | `%USERPROFILE%\\.openclaw\\agents`                    |
-| Cline        | `$CLINE_DIR`                          | `~/.cline/data/tasks`                 | `%USERPROFILE%\\.cline\\data\\tasks`                  |
-| Hermes Agent | `$HERMES_HOME/state.db`               | `~/.hermes/state.db`                  | `%USERPROFILE%\\.hermes\\state.db`                    |
-| CodeBuddy    | `$CODEBUDDY_CONFIG_DIR/projects`      | `~/.codebuddy/projects`               | `%USERPROFILE%\\.codebuddy\\projects`                 |
-| Kimi Code    | `$KIMI_CODE_HOME/sessions`            | `~/.kimi-code/sessions`               | `%USERPROFILE%\\.kimi-code\\sessions`                 |
-| Pi           | `$PI_CODING_AGENT_SESSION_DIR`        | `~/.pi/agent/sessions`                | `%USERPROFILE%\\.pi\\agent\\sessions`                 |
-| Grok Build   | `$GROK_HOME/sessions`                 | `~/.grok/sessions`                    | `%USERPROFILE%\\.grok\\sessions`                      |
-| Cursor       | `$CURSOR_CONFIG_DIR/chats`            | `~/.cursor/chats`                     | `%USERPROFILE%\\.cursor\\chats`                       |
+## 💻 워크스페이스
 
-> 참고: 환경 변수가 기본 경로보다 우선합니다.
+워크스페이스는 하나, 에이전트는 전부. 무엇이 일하고 있든 — Claude Code든 Codex든 Cursor든 — 같은 에디터, 같은 실시간 diff, 같은 Git 클라이언트 안에서 움직입니다. 그리고 만들어지는 것은 저장소 안의 진짜 파일이며, 보는 앞에서 바뀝니다.
 
-<details>
-<summary><h2>프로젝트 부트</h2></summary>
+**세션.** 이미 가진 기록을 그대로 가져오세요. 설치된 모든 에이전트의 지난 세션을 클릭 한 번으로 불러오고, 멈춘 지점부터 이어갑니다. 들어온 뒤로는 서로 단절된 섬이 아닙니다 — 예전 세션을 `@`로 언급하면 지금 대화 중인 에이전트가 그것을 읽습니다. 다른 에이전트가 남긴 것이어도 마찬가지라, 오늘의 Codex가 지난주 Claude Code가 끝낸 지점에서 이어갑니다.
 
-분할 패널 인터페이스로 새 프로젝트를 시각적으로 생성: 왼쪽에서 설정, 오른쪽에서 실시간 미리보기.
+**파일.** 에이전트의 수정은 반영되는 즉시 대화 옆에 diff로 나타납니다. 어떤 파일이든 구문 강조가 되는 진짜 에디터에서 열고, `⌘L`로 파일 전체나 선택한 부분만 에이전트에게 바로 넘기고, Markdown·HTML·이미지·Office 문서를 같은 패널에서 미리 봅니다.
 
-![Project Boot Light](../images/project-boot-light.png#gh-light-mode-only)
-![Project Boot Dark](../images/project-boot-dark.png#gh-dark-mode-only)
+**Git.** 상태 표시가 아니라 완전한 클라이언트입니다. 커밋과 푸시, 커밋별 푸시 상태가 보이는 히스토리, 브랜치·머지·리베이스·스태시·리셋, 다른 브랜치와의 비교까지. 충돌은 3분할 머지 에디터로 열려 헝크 단위로 받아들이거나 직접 고쳐 씁니다. 그리고 워크트리는 병렬 작업을 한 번의 동작으로 만듭니다 — 새 브랜치, 전용 디렉터리, 그리고 그 안에 뿌리내린 새 대화. 여러 에이전트가 서로의 파일을 건드리지 않고 서로 다른 기능을 동시에 만듭니다.
 
-### 주요 기능
+## 📱 iPhone, iPad & Android
 
-- **시각적 설정** — 드롭다운에서 스타일, 색상 테마, 아이콘 라이브러리, 글꼴, 테두리 반경 등을 선택하면 미리보기가 즉시 업데이트
-- **실시간 미리보기** — 프로젝트 생성 전에 선택한 룩앤필을 실시간으로 확인
-- **원클릭 생성** — "프로젝트 생성"을 클릭하면 프리셋 설정, 프레임워크 템플릿(Next.js / Vite / React Router / Astro / Laravel), 패키지 매니저(pnpm / npm / yarn / bun)로 `shadcn init` 실행
-- **패키지 매니저 감지** — 설치된 패키지 매니저를 자동으로 감지하고 버전 표시
-- **원활한 통합** — 새로 생성된 프로젝트가 Codeg 워크스페이스에서 바로 열림
+책상을 떠나도 작업은 멈추지 않습니다. 네이티브 iOS·Android 클라이언트는 이미 돌아가고 있는 당신의 Codeg —— 데스크톱 앱의 **웹 서비스**, 또는 직접 운영하는 `codeg-server` —— 에 연결됩니다. 거기서 세션을 시작하고, 응답과 도구 호출이 실시간으로 흘러드는 것을 지켜보고, 권한 요청에 답하고, 프로젝트와 브랜치를 둘러볼 수 있습니다. 휴대폰으로 옮겨지는 것은 없습니다. 파일과 에이전트 CLI, 대화는 Codeg가 도는 컴퓨터에 그대로 남고, 액세스 토큰은 iOS 키체인이나 Android 키스토어가 보관합니다. 두 클라이언트 모두 오픈 소스이며([iOS](https://github.com/xintaofei/codeg-ios), [Android](https://github.com/xintaofei/codeg-android)) 현재는 테스트 릴리스입니다. 연결은 세 단계면 끝나며, 자세한 내용은 [모바일 앱](https://docs.codeg.app/getting-started/installation#mobile-apps)에 있습니다.
 
-현재 **shadcn/ui** 프로젝트 스캐폴딩을 지원하며, 탭 기반 디자인으로 향후 더 많은 프로젝트 유형을 지원할 준비가 되어 있습니다.
+| iPhone & iPad | Android |
+| :---: | :---: |
+| <img src="../images/mobile-ios.jpg" alt="Codeg iOS 클라이언트에서 세션을 시작하는 화면" width="248" /> | <img src="../images/mobile-android.jpg" alt="Codeg Android 클라이언트로 흘러드는 에이전트 응답" width="248" /> |
 
-</details>
+## ✨ 하이라이트
 
-<details>
-<summary><h2>채팅 채널</h2></summary>
+- **[대화 통합](https://docs.codeg.app/guide/aggregation)** — 지원되는 모든 에이전트의 세션을 검색 가능한 하나의 워크스페이스로 가져오고, 멈춘 지점부터 이어서 진행합니다
+- **[멀티 에이전트 협업](https://docs.codeg.app/guide/multi-agent)** — `@`로 에이전트를 언급하면 곧 위임입니다. 서로 다른 종류의 서브 에이전트가 각자 독립 세션으로, 하나의 작업 안에서 병렬로 실행됩니다
+- **[워크스페이스](https://docs.codeg.app/guide/workspace)** — 에이전트 옆에 개발의 전 과정이 있습니다: 파일 트리, 에디터와 diff, Git 변경 사항, 커밋, 내장 터미널
+- **[Git과 Worktree](https://docs.codeg.app/guide/git)** — 변경 사항 검토와 커밋, Git 원격 계정 관리, 내장 `git worktree` 흐름을 이용한 병렬 작업
+- **[채팅 채널](https://docs.codeg.app/guide/chat-channels)** — Telegram, Lark(Feishu), iLink(Weixin)에서 에이전트를 조작합니다: 작업 생성, 권한 승인, 실시간 진행 상황 수신
+- **[자동화](https://docs.codeg.app/guide/automations)** — 설정을 마친 입력창을 재사용 가능한 자동화로 저장해 cron 일정이나 필요할 때 헤드리스로 실행합니다
+- **[Office 문서](https://docs.codeg.app/guide/office)** — 내장 `officecli`로 `.docx` / `.xlsx` / `.pptx`를 만들고 분석·교정·편집하며, 탭 안에서 실시간 미리보기를 제공합니다
+- **[과학 연구](https://docs.codeg.app/guide/research)** — 내장 연구 스킬(가설 생성, 실험 설계, 통계, 시각화, 비판적 평가, 문헌 검색)을 어떤 에이전트에서든 호출할 수 있습니다
+- **[프로젝트 부트](https://docs.codeg.app/guide/project-boot)** — 실시간 미리보기와 함께 새 프로젝트를 시각적으로 구성하고, 곧바로 워크스페이스에서 엽니다
+- **[MCP](https://docs.codeg.app/guide/mcp) & [스킬](https://docs.codeg.app/guide/skills)** — 로컬 서버 스캔과 레지스트리 검색/설치, 스킬은 전역 또는 프로젝트 범위로 관리
+- **[데스크톱·서버·Docker](https://docs.codeg.app/getting-started/deployment)** — 네이티브 데스크톱 앱, 브라우저로 접속하는 독립 실행형 `codeg-server`, 또는 `docker compose up`
+- **[iPhone, iPad & Android](https://docs.codeg.app/getting-started/installation#mobile-apps)** — 데스크톱이나 서버에 연결되는 네이티브 모바일 클라이언트: 어디서나 세션을 시작하고, 응답을 스트리밍으로 받고, 권한을 승인하고, 프로젝트를 살펴봅니다
 
-즐겨 사용하는 메신저 앱 — Telegram, Lark(Feishu), iLink(Weixin) 등 — 을 AI 코딩 에이전트에 연결하세요. 채팅에서 직접 작업을 생성하고, 후속 메시지를 보내고, 권한을 승인하고, 세션을 재개하고, 활동을 모니터링할 수 있습니다 — 도구 호출 상세 정보, 권한 프롬프트, 완료 요약이 포함된 실시간 에이전트 응답을 브라우저를 열지 않고도 받을 수 있습니다.
+## 📦 설치 및 실행
 
-Telegram 포럼 슈퍼그룹에서는 [Telegram topic mode](../chat-channels/telegram-topic-mode.md)를 사용해 각 topic을 별도의 Codeg 세션에 바인딩할 수 있습니다.
+**데스크톱** — [Releases](https://github.com/xintaofei/codeg/releases)에서 macOS, Windows, Linux용 설치 프로그램을 내려받은 뒤 [설치](https://docs.codeg.app/getting-started/installation) 안내를 따르세요.
 
-### 지원 채널
-
-| 채널           | 프로토콜              | 상태 |
-| -------------- | --------------------- | ---- |
-| Telegram       | Bot API (HTTP 롱폴링) | 내장 |
-| Lark (Feishu)  | WebSocket + REST API  | 내장 |
-| iLink (Weixin) | WebSocket + REST API  | 내장 |
-
-> 추가 채널(Discord, Slack, DingTalk 등)은 향후 릴리스에서 지원 예정입니다.
-
-</details>
-
-<details>
-<summary><h2>Office 문서</h2></summary>
-
-Word, Excel, PowerPoint 파일을 일급 워크플로우로 사용하세요. 내장된 **officecli** 툴셋을 통해 에이전트가 .docx, .xlsx, .pptx 문서를 생성·분석·교정·편집하고, Codeg 내에서 바로 미리볼 수 있습니다.
-
-### 기능
-
-- **생성 및 편집** — 새 문서 생성 또는 기존 .docx / .xlsx / .pptx 파일 수정 (차트, 표, 서식 포함)
-- **분석 및 교정** — 문서 구조 검사, 서식 문제 발견, 내용 교정
-- **실시간 미리보기** — 파일 탭에서 .docx / .xlsx / .pptx 를 열면 인라인으로 렌더링되고, 에이전트 편집 시 자동 갱신——상시 실행되는 `officecli watch` 서버가 지원 (웹 및 독립 서버 환경에서는 리버스 프록시를 통해 제공, 기능 인증 적용)
-- **빠른 실행** — 웰컴 페이지의 「코딩」, 「Office」, 「과학 연구」 탭에서 해당 스킬 호출과 프롬프트 템플릿을 한 번의 클릭으로 입력창에 삽입; 선택된 에이전트에 활성화되지 않은 스킬은 잠금 뱃지로 표시되며 활성화 위치로 안내
-- **Office 도구 설정** — 전용 설정 페이지에서 `officecli` 설치 및 스킬×에이전트 매트릭스로 문서 스킬 관리: 임의의 (스킬, 에이전트) 쌍 토글, 일괄 활성화/비활성화 지원
-
-</details>
-
-<details>
-<summary><h2>과학 연구</h2></summary>
-
-모든 에이전트를 엄밀한 연구 조수로 탈바꿈시키세요. Codeg는 아이디어 구상부터 분석, 작성까지 아우르는 엄선된 MIT 라이선스 **과학 연구 스킬** 세트를 내장하며, 이 스킬들은 전문가 및 Office 툴셋과 똑같이 공유 중앙 스킬 저장소에 설치되어 원하는 에이전트에 연결됩니다.
-
-### 기능
-
-- **엄선된 스킬** — 가설 생성, 실험 설계, 통계적 검정력, 통계 분석, 탐색적 데이터 분석, 과학적 시각화, 비판적 평가, 동료 심사, 인용 관리, 학자 평가, 논문 검색, AI 도식
-- **빠른 실행** — 웰컴 페이지의 「과학 연구」 탭에서 해당 스킬 호출과 현지화된 프롬프트 템플릿을 한 번의 클릭으로 입력창에 삽입
-- **과학 설정** — 전용 설정 페이지에서 스킬×에이전트 매트릭스로 스킬을 관리하며, API 키나 Python 환경이 필요한 스킬은 뱃지로 표시
-
-</details>
-
-<details>
-<summary><h2>자동화</h2></summary>
-
-컴포저 설정——에이전트, 모델, 프롬프트, 작업 디렉토리, 옵션——을 재사용 가능한 **자동화**로 저장하고, UI 를 열지 않고도 실행하세요.
-
-### 기능
-
-- **한 번 설정, 언제든 재사용** — 완전한 컴포저 설정을 이름 있는 자동화로 저장
-- **예약 또는 온디맨드 실행** — cron 스케줄에 따라 자동 실행하거나, 언제든지 수동으로 트리거
-- **헤드리스 실행** — 자동화는 백그라운드에서 실행되어 실제 세션을 생성하며, 워크스페이스에서 언제든 열 수 있고 시작 후 워크스페이스로 자동 복귀
-
-</details>
-
-<details>
-<summary><h2>빠른 시작</h2></summary>
-
-### 요구 사항
-
-- Node.js `>=22` (권장)
-- pnpm `>=10`
-- Rust stable (2021 edition)
-- Tauri 2 빌드 의존성 (데스크톱 모드만 해당)
-
-Linux (Debian/Ubuntu) 예시:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y \
-  libwebkit2gtk-4.1-dev \
-  libayatana-appindicator3-dev \
-  librsvg2-dev \
-  patchelf
-```
-
-### 바이너리
-
-Codeg는 단일 워크스페이스에서 세 개의 Rust 바이너리를 제공합니다:
-
-| 바이너리       | 역할                                                                                                | 빌드                                                                        |
-| -------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `codeg`        | Tauri 데스크톱 앱 (윈도우, 트레이, 업데이터)                                                        | `pnpm tauri build` (릴리스) / `pnpm tauri dev` (개발)                       |
-| `codeg-server` | 브라우저/헤드리스 배포용 독립형 HTTP + WebSocket 서버                                               | `pnpm server:build` / `pnpm server:dev`                                     |
-| `codeg-mcp`    | 에이전트 CLI에 `delegate_to_agent` 도구를 노출하는 실행별 stdio MCP 컴패니언 (멀티 에이전트 협업) | `pnpm tauri:prepare-sidecars` (`tauri dev` / `tauri build`에서 자동 호출) |
-
-`codeg-mcp`는 런타임에 부모 바이너리 옆에 위치해야 합니다 — 설치 프로그램, Docker 이미지, Tauri 사이드카 번들러 모두 이를 `codeg` / `codeg-server` 옆에 배치합니다. 소스 빌드나 사용자 정의 레이아웃의 경우 `CODEG_MCP_BIN=/abs/path/codeg-mcp` 환경 변수로 조회 위치를 재정의할 수 있습니다. 컴패니언이 누락된 경우 위임은 건너뛰어지고(경고가 한 번 기록됨) 나머지 에이전트 세션은 계속 작동합니다.
-
-### 개발
-
-```bash
-pnpm install
-
-# 프론트엔드 전용 (Next.js 개발 서버, Rust 없음)
-pnpm dev
-
-# 프론트엔드 정적 내보내기 (out/)
-pnpm build
-
-# 전체 데스크톱 앱 (Tauri + Next.js, codeg-mcp 사이드카 자동 빌드)
-pnpm tauri dev
-
-# 데스크톱 릴리스 빌드 (codeg-mcp를 externalBin으로 번들링)
-pnpm tauri build
-
-# 독립형 서버 (Tauri/GUI 불필요)
-pnpm server:dev
-pnpm server:build                  # 릴리스 바이너리 위치: src-tauri/target/release/codeg-server
-
-# codeg-mcp 컴패니언을 명시적으로 빌드 (호스트 트리플용)
-pnpm tauri:prepare-sidecars        # 출력: src-tauri/binaries/codeg-mcp-<triple>
-
-# 프론트엔드 작업 중이고 위임이 필요하지 않을 때 사이드카 준비 건너뛰기
-CODEG_SKIP_SIDECAR=1 pnpm tauri dev
-
-# Lint
-pnpm eslint .
-
-# 프론트엔드 테스트 (vitest)
-pnpm test
-pnpm test:watch
-pnpm test:coverage
-
-# Rust 검사 (src-tauri/에서 실행)
-cargo check                                                     # 데스크톱 (기본 features)
-cargo check --no-default-features --bin codeg-server            # 서버 모드
-cargo check --no-default-features --bin codeg-mcp               # MCP 컴패니언
-cargo clippy --all-targets --features test-utils -- -D warnings
-
-# Rust 테스트
-cargo test --features test-utils                                # 데스크톱 (통합 포함)
-cargo test --no-default-features --bin codeg-server --lib       # 서버 모드
-cargo insta review                                              # 파서 스냅샷 업데이트 승인
-```
-
-> 팁: `src-tauri/target/release/` 아래에 새 `codeg-mcp` 빌드가 있고 재설치 없이 수동으로 실행한 `codeg-server`가 이를 가리키게 하려면, `CODEG_MCP_BIN=$(pwd)/src-tauri/target/release/codeg-mcp`를 export 하십시오.
-
-### 서버 배포
-
-Codeg는 데스크톱 환경 없이 독립형 웹 서버로 실행할 수 있습니다.
-
-#### 옵션 1: 원라인 설치 (Linux / macOS)
+**서버** — Codeg를 헤드리스로 실행하고 어떤 브라우저에서든 접속합니다. Linux 또는 macOS:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/xintaofei/codeg/main/install.sh | bash
+CODEG_STATIC_DIR=/usr/local/share/codeg/web codeg-server
 ```
 
-특정 버전 또는 사용자 지정 디렉토리에 설치:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/xintaofei/codeg/main/install.sh | bash -s -- --version v0.5.2 --dir ~/.local/bin
-```
-
-실행:
-
-```bash
-codeg-server
-```
-
-#### 옵션 2: 원라인 설치 (Windows PowerShell)
+Windows(PowerShell):
 
 ```powershell
 irm https://raw.githubusercontent.com/xintaofei/codeg/main/install.ps1 | iex
+$env:CODEG_STATIC_DIR="$env:LOCALAPPDATA\codeg\web"; codeg-server
 ```
 
-또는 특정 버전 설치:
-
-```powershell
-.\install.ps1 -Version v0.5.2
-```
-
-#### 옵션 3: GitHub Releases에서 다운로드
-
-사전 빌드된 바이너리(웹 에셋 포함)는 [Releases](https://github.com/xintaofei/codeg/releases) 페이지에서 다운로드할 수 있습니다:
-
-| 플랫폼      | 파일                               |
-| ----------- | ---------------------------------- |
-| Linux x64   | `codeg-server-linux-x64.tar.gz`    |
-| Linux arm64 | `codeg-server-linux-arm64.tar.gz`  |
-| macOS x64   | `codeg-server-darwin-x64.tar.gz`   |
-| macOS arm64 | `codeg-server-darwin-arm64.tar.gz` |
-| Windows x64 | `codeg-server-windows-x64.zip`     |
+**Docker** — 같은 서버를, 컨테이너 하나로:
 
 ```bash
-# 예시: 다운로드, 압축 해제, 실행
-tar xzf codeg-server-linux-x64.tar.gz
-cd codeg-server-linux-x64
-CODEG_STATIC_DIR=./web ./codeg-server
-```
-
-> 무인 배포 환경에서는 `--supervise` 옵션과 함께 시작하면 인플레이스 업그레이드 실패 시 자동으로 롤백됩니다 — [인플레이스 업데이트](#인플레이스-업데이트)를 참고하세요.
-
-#### 옵션 4: Docker
-
-```bash
-# Docker Compose 사용 (권장)
-docker compose up -d
-
-# 또는 Docker로 직접 실행
 docker run -d -p 3080:3080 -v codeg-data:/data ghcr.io/xintaofei/codeg:latest
-
-# 사용자 정의 토큰 및 프로젝트 디렉토리 마운트
-docker run -d -p 3080:3080 \
-  -v codeg-data:/data \
-  -v /path/to/projects:/projects \
-  -e CODEG_TOKEN=your-secret-token \
-  ghcr.io/xintaofei/codeg:latest
 ```
 
-Docker 이미지는 멀티 스테이지 빌드(Node.js + Rust → 경량 Debian 런타임)를 사용하며, 저장소 작업을 위한 `git`과 `ssh`가 포함되어 있습니다. 데이터는 `/data` 볼륨에 영속적으로 저장됩니다. 선택적으로 프로젝트 디렉토리를 마운트하여 컨테이너 내에서 로컬 저장소에 접근할 수 있습니다.
+**모바일** — [iOS 앱](https://apps.apple.com/app/codeg-client/id6785199071) 또는 [Android APK](https://github.com/xintaofei/codeg-android/releases/latest)를 설치한 뒤 데스크톱 앱의 **웹 서비스**나 직접 운영하는 `codeg-server`를 가리키게 하세요: 주소와 토큰만 넣으면 끝입니다. 연결 절차는 [모바일 앱](https://docs.codeg.app/getting-started/installation#mobile-apps) 참고.
 
-#### 옵션 5: 소스에서 빌드
+Compose, 사전 빌드 바이너리, 소스 빌드, 무중단 업데이트는 [배포](https://docs.codeg.app/getting-started/deployment)에서, 환경 변수는 [설정](https://docs.codeg.app/getting-started/configuration)에서 다룹니다. Codeg 자체를 빌드하려면 [개발](https://docs.codeg.app/reference/development)과 [아키텍처](https://docs.codeg.app/reference/architecture)를 보세요.
 
-```bash
-pnpm install && pnpm build          # 프론트엔드 빌드
-cd src-tauri
-cargo build --release --bin codeg-server --no-default-features
-cargo build --release --bin codeg-mcp --no-default-features    # 위임 컴패니언
-CODEG_STATIC_DIR=../out ./target/release/codeg-server          # codeg-mcp는 형제 파일로 인식됨
-```
+## 🔒 개인정보 보호 및 보안
 
-두 바이너리를 서로 다른 디렉토리에 두는 경우, 런타임이 컴패니언을 찾을 수 있도록 `CODEG_MCP_BIN=/abs/path/to/codeg-mcp`를 설정하십시오. 설정하지 않으면 멀티 에이전트 위임이 조용히 비활성화됩니다.
+- 파싱·저장·프로젝트 작업은 기본적으로 로컬 우선 — 네트워크 접근은 사용자가 시작한 동작에서만 발생합니다
+- 웹 모드와 서버 모드는 토큰 기반 인증으로 보호됩니다
+- 기업 환경을 위한 시스템 프록시 지원
 
-#### 인플레이스 업데이트
+자세한 내용은 [개인정보 보호 및 보안](https://docs.codeg.app/reference/privacy)을 참고하세요.
 
-서버는 **설정 → 소프트웨어 업데이트**에서 스스로 업데이트할 수 있습니다: 해당 플랫폼용 서명된 릴리스를 다운로드하고, 디스크의 바이너리와 웹 에셋을 교체한 뒤 재시작합니다 — 수동 재배포가 필요 없습니다. 이 기능은 Linux/macOS 전용입니다(Windows에서는 비활성화). 이전 버전은 백업으로 보관되므로, 같은 화면에서 **롤백** 작업으로 이전 버전으로 되돌릴 수 있습니다.
-
-**자동 롤백을 위해 슈퍼바이저 아래에서 실행하세요.** 독립형 서버를 `--supervise` 옵션과 함께 시작하면, 새로 업그레이드된 프로세스가 시험 기간 내에 부팅에 실패할 경우 자동으로 이전 버전으로 되돌아갑니다:
-
-```bash
-CODEG_STATIC_DIR=./web ./codeg-server --supervise
-```
-
-`--supervise` 없이도 서버는 여전히 인플레이스 업데이트를 수행하지만(자기 자신을 re-exec 합니다), 이 업그레이드는 최선 노력(best-effort) 방식입니다: 시작하지 못하는 버전을 자동으로 롤백해 줄 슈퍼바이저가 없습니다. Docker 이미지는 이미 슈퍼바이저 아래에서 실행됩니다.
-
-**Docker 업그레이드는 이미지가 아니라 컨테이너를 변경합니다.** 인플레이스 업그레이드는 실행 중인 컨테이너의 쓰기 가능 계층 내부에 있는 바이너리와 웹 에셋을 다시 씁니다. 따라서 이 파일들은 해당 컨테이너에만 존재합니다. `/data` 볼륨은 유지되지만 업그레이드된 파일은 **그렇지 않습니다**: 컨테이너를 재생성하면 — `docker compose up --force-recreate`, 새로운 `docker run`, 또는 `docker pull` 이후의 재생성 — 다시 이미지에서 시작하여 인플레이스 업그레이드가 사라집니다. (`docker pull` 자체는 로컬 이미지만 새로 고칠 뿐, 컨테이너를 재생성하기 전까지는 아무것도 되돌아가지 않습니다.) 업그레이드를 영구적으로 적용하려면 새 버전의 이미지를 빌드하거나 pull 한 뒤 그 이미지로 컨테이너를 재생성하세요.
-
-#### 구성
-
-환경 변수:
-
-| 변수                           | 기본값                 | 설명                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| ------------------------------ | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CODEG_PORT`                   | `3080`                 | HTTP 포트                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `CODEG_HOST`                   | `0.0.0.0`              | 바인드 주소                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `CODEG_TOKEN`                  | _(랜덤)_               | 인증 토큰 (시작 시 stderr에 출력)                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `CODEG_DATA_DIR`               | `~/.local/share/codeg` | SQLite 데이터베이스 디렉토리(`uploads/`, `pets/`의 루트 역할도 함)                                                                                                                                                                                                                                                                                                                                                                          |
-| `CODEG_STATIC_DIR`             | `./web` 또는 `./out`   | Next.js 정적 내보내기 디렉토리                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `CODEG_MCP_BIN`                | _(설정 안 됨)_         | `codeg-mcp` 컴패니언의 절대 경로. 기본 실행 파일 형제 + `PATH` 조회를 재정의합니다. 컴패니언이 서버의 설치 디렉토리 외부에 있는 소스 빌드나 사용자 정의 레이아웃에 사용하십시오.                                                                                                                                                                                                                                                            |
-| `CODEG_SKIP_SIDECAR`           | _(설정 안 됨)_         | `pnpm tauri dev` / `pnpm tauri build`를 위한 프론트엔드 전용 편의 기능 — `1`일 때 `codeg-mcp` 사이드카 빌드를 건너뜁니다. 해당 빌드에서는 위임이 비활성화됩니다. 출시 품질 산출물에서는 설정하지 않아야 합니다.                                                                                                                                                                                                                              |
-| `CODEG_UPLOAD_MAX_TOTAL_BYTES` | _(설정 안 됨)_         | `<data dir>/uploads/` 아래 상주하는 모든 파일의 총 바이트 수에 대한 하드 한도. 10진수 바이트 수(예: 10 GiB의 경우 `10737418240`). 설정하지 않거나 `0`, 또는 파싱할 수 없는 값이면 한도가 비활성화되며, 현재 상태가 보이도록 시작 시 로그 라인을 출력합니다. 이 한도는 단일 `codeg-server` 프로세스 내에서만 적용됩니다 — 하나의 `uploads/` 볼륨을 공유하는 수평 확장 배포에는 외부 조정(파일 잠금, Redis, 리버스 프록시 쿼터)이 필요합니다. |
-| `CODEG_UPLOAD_QUOTA_STRICT`    | _(설정 안 됨)_         | 참값(`1` / `true` / `yes` / `on`)으로 설정된 경우, `CODEG_UPLOAD_MAX_TOTAL_BYTES`가 파싱할 수 없는 값으로 설정되어 있으면 WARN과 함께 fail-open 하는 대신 종료 코드 2로 시작을 중단합니다. 보안 정책상 "구성된 쿼터가 반드시 적용되어야 한다"는 요구가 있을 때 사용합니다.                                                                                                                                                                  |
-
-</details>
-
-<details>
-<summary><h2>아키텍처</h2></summary>
-
-```text
-Next.js 16 (Static Export) + React 19
-        |
-        | invoke() (desktop) / fetch() + WebSocket (web)
-        v
-  ┌─────────────────────────┐
-  │   Transport Abstraction  │
-  │  (Tauri IPC or HTTP/WS) │
-  └─────────────────────────┘
-        |
-        v
-┌─── Tauri Desktop ───┐    ┌─── codeg-server ───┐
-│  Tauri 2 Commands    │    │  Axum HTTP + WS    │
-│  (window management) │    │  (standalone mode)  │
-└──────────┬───────────┘    └──────────┬──────────┘
-           └──────────┬───────────────┘
-                      v
-            Shared Rust Core
-              |- AppState
-              |- ACP Manager
-              |- Parsers (conversation ingestion)
-              |- Chat Channels
-              |- Git / File Tree / Terminal
-              |- MCP marketplace + config
-              |- Office Tools (officecli) + Automations
-              |- SeaORM + SQLite
-                      |
-              ┌───────┼───────┐
-              v       v       v
-  Local Filesystem  Git   Chat Channels
-    / Git Repos    Repos  (Telegram, Lark, iLink)
-```
-
-</details>
-
-## 개인정보 보호 및 보안
-
-- 파싱, 저장, 프로젝트 작업은 기본적으로 로컬 우선
-- 네트워크 접근은 사용자가 명시적으로 작업을 실행할 때만 발생
-- 엔터프라이즈 환경을 위한 시스템 프록시 지원
-- 웹 서비스 모드에서는 토큰 기반 인증 사용
-
-## 커뮤니티
+## 👥 커뮤니티
 
 - 아래 QR 코드를 스캔하여 토론, 피드백, 업데이트를 위한 WeChat 그룹에 참여하세요
 
@@ -445,13 +161,13 @@ Next.js 16 (Static Export) + React 19
 
 - [LinuxDO](https://linux.do) 커뮤니티의 지원에 감사드립니다
 
-## 감사의 말
+## 🙏 감사의 말
 
-- [ACP](https://agentclientprotocol.com) — Agent Client Protocol(ACP)은 Codeg가 여러 에이전트에 연결할 수 있게 해주는 기반입니다
+- [Agent Client Protocol](https://agentclientprotocol.com) — Codeg가 지원하는 모든 에이전트에 연결할 수 있게 해주는 토대
 - [Superpowers](https://github.com/obra/superpowers) — Codeg의 전문가 스킬 모듈을 지원하는 프로젝트
 - [OfficeCLI](https://github.com/iOfficeAI/OfficeCLI) — Codeg의 Office 문서 워크플로우를 지원하는 프로젝트
 - [scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills) — Codeg의 과학 연구 스킬을 지원하는 프로젝트 (MIT 라이선스 서브셋)
 
-## 라이선스
+## 📜 라이선스
 
-Apache-2.0. `LICENSE` 참고.
+Apache-2.0. [LICENSE](../../LICENSE)를 참고하세요.

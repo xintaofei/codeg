@@ -17,9 +17,16 @@
  *   - hosts that surface only `CallToolResult.content` text — e.g. Claude Code
  *     via claude-agent-acp — give no structured fields, so the badge is derived
  *     from the tool-call state / `is_error`, with no duration.
+ *
+ * On top of that, a host may wrap the result in an envelope of its own — Codex's
+ * live wire sends `{result: <CallToolResult>, error: null}`. `parseResultObject`
+ * peels those first (see `@/lib/mcp-result-envelope`), so the shapes below only
+ * ever face the result itself.
  */
 
 import { extractEmbeddedJsonObject } from "@/lib/embedded-json"
+import { peelMcpResultEnvelope } from "@/lib/mcp-result-envelope"
+import { isUnsettledToolCall } from "@/lib/tool-call-lifecycle"
 import type {
   AdaptedToolCallPart,
   ToolCallState,
@@ -130,6 +137,33 @@ function firstContentText(envelope: Record<string, unknown>): string | null {
   return first ? str(first, "text") : null
 }
 
+/** Whether `obj` is already one of the shapes the resolution below reads — a
+ *  report, a batch, or an MCP content envelope. Stops the host-envelope peel at
+ *  a result that itself happens to carry a `result` key. (A child's arbitrary
+ *  payload is guarded on the other side too: `peelMcpResultEnvelope` only ever
+ *  peels TO a real `CallToolResult`.) */
+function isResolvableResult(obj: Record<string, unknown>): boolean {
+  return (
+    validStatus(obj) !== null ||
+    Array.isArray(obj.tasks) ||
+    Array.isArray(obj.content) ||
+    asObject(obj.structuredContent) !== null
+  )
+}
+
+type ParsedResult = {
+  obj: Record<string, unknown> | null
+  /** codex-acp's `rawOutput.error` — the only text worth showing when the MCP
+   *  call itself failed and carried no result. */
+  hostError: string | null
+}
+
+const NO_RESULT: ParsedResult = { obj: null, hostError: null }
+
+function peeled(obj: Record<string, unknown> | null): ParsedResult {
+  return obj ? peelMcpResultEnvelope(obj, isResolvableResult) : NO_RESULT
+}
+
 /**
  * Parse a tool-result string into its envelope/report object, peeling one layer
  * of double-encoding (JSON-of-JSON). Some hosts re-stringify the RESULT text
@@ -137,24 +171,33 @@ function firstContentText(envelope: Record<string, unknown>): string | null {
  * yields a *string* rather than the payload object. Re-parse that once — falling
  * back to the embedded-JSON scanner so a re-stringified Codex "Wall time:…
  * Output:<json>" wrap still resolves. A parse that yields a non-string non-object
- * (array, number) is null, matching the prior inline behavior. Shared by
- * [`parseStatusReport`] and [`parseStatusReports`] so both honor the same shapes.
+ * (array, number) is null, matching the prior inline behavior.
+ *
+ * The parsed object is then stripped of any host envelope around the MCP result
+ * (`peelMcpResultEnvelope`) — codex's LIVE wire hands us
+ * `{result: <CallToolResult>, error: null}`, which otherwise resolves to no
+ * report at all and paints the raw envelope JSON into the card. (Codex's
+ * PERSISTED rollout carries the bare `Wall time:…\nOutput:\n<json>` instead, so
+ * only the live path was affected.) Shared by [`parseStatusReport`] and
+ * [`parseStatusReports`] so both honor the same shapes.
  */
-function parseResultObject(raw: string): Record<string, unknown> | null {
+function parseResultObject(raw: string): ParsedResult {
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
   } catch {
-    return extractEmbeddedJsonObject(raw)
+    return peeled(extractEmbeddedJsonObject(raw))
   }
   if (typeof parsed === "string") {
     try {
-      return asObject(JSON.parse(parsed)) ?? extractEmbeddedJsonObject(parsed)
+      return peeled(
+        asObject(JSON.parse(parsed)) ?? extractEmbeddedJsonObject(parsed)
+      )
     } catch {
-      return extractEmbeddedJsonObject(parsed)
+      return peeled(extractEmbeddedJsonObject(parsed))
     }
   }
-  return asObject(parsed)
+  return peeled(asObject(parsed))
 }
 
 // Wrapper keys hosts use to nest the actual tool arguments (mirrors
@@ -311,7 +354,7 @@ export function parseStatusReport(
   const raw = (output ?? errorText ?? "").trim()
   if (!raw) return empty
 
-  const obj = parseResultObject(raw)
+  const { obj, hostError } = parseResultObject(raw)
   // Plain text (no recoverable JSON) — the historical content-only shape. The
   // only structured hint left is the backend's running sentinel sentence.
   if (!obj) return { ...empty, status: textRunningStatus(raw), text: raw }
@@ -349,7 +392,9 @@ export function parseStatusReport(
 
   // Parsed JSON but no report (e.g. a content envelope stripped of
   // structuredContent) — still honor the running sentinel in the display text.
-  const fallbackText = contentText ?? raw
+  // A host envelope that failed outright carries no result to show, so its own
+  // error string beats dumping the envelope JSON.
+  const fallbackText = contentText ?? hostError ?? raw
   return {
     ...empty,
     status: textRunningStatus(fallbackText),
@@ -411,7 +456,7 @@ export function parseStatusReports(
 ): StatusReport[] {
   const raw = (output ?? errorText ?? "").trim()
   if (raw) {
-    const obj = parseResultObject(raw)
+    const { obj } = parseResultObject(raw)
     if (obj) {
       const found = findTasksArray(obj)
       if (
@@ -535,12 +580,10 @@ export function buildDelegationTaskRows(
     // gets a (spinner) row immediately instead of all-but-the-first vanishing
     // until the batch resolves.
     const count = Math.max(reports.length, inputIds.length)
-    const inFlight =
-      poll.state === "input-available" || poll.state === "input-streaming"
     for (let i = 0; i < count; i++) {
       const report = reports[i] ?? EMPTY_STATUS_REPORT
       const taskId = report.taskId ?? inputIds[i] ?? null
-      // Drop an in-flight poll that carries no identity AND nothing to show yet.
+      // Drop an unsettled poll that carries no identity AND nothing to show yet.
       // claude-agent-acp ships an arg-less initial `tool_call` (rawInput `{}`)
       // and only fills the real `task_ids` on a later update — which, for a long
       // `wait_ms` status check, lands near completion — so a poll that is still
@@ -548,11 +591,15 @@ export function buildDelegationTaskRows(
       // would otherwise become its own anonymous "waiting for a task's result"
       // row, stacking identical duplicates of the same wait. It folds into its
       // task's row the moment an id or report arrives, and the settled transcript
-      // (whose polls always carry the id) is unaffected. A settled id-less report
-      // — a real interim note or terminal status — still gets its own row below.
+      // (whose polls always carry the id) is unaffected. `isUnsettledToolCall`
+      // (not a bare live-state check) also covers an orphan promoted into
+      // `localTurns` at COMPLETE_TURN — output-available yet never settled — which
+      // would otherwise re-stack after the turn completes. A genuinely settled
+      // id-less report — a real interim note or terminal status — still gets its
+      // own row below.
       if (
         taskId == null &&
-        inFlight &&
+        isUnsettledToolCall(poll) &&
         report.status == null &&
         (report.text == null || report.text.trim() === "")
       ) {

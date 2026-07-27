@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest"
 
 import type { AgentSkillItem, AvailableCommandInfo } from "@/lib/types"
 
-import { commandToReference, skillToReference } from "./invocation-reference"
+import {
+  commandInvocationToken,
+  commandToReference,
+  skillToReference,
+} from "./invocation-reference"
 import { referenceToMarkdown } from "./reference-text"
 
 const cmd = (name: string): AvailableCommandInfo => ({
@@ -32,6 +36,28 @@ describe("commandToReference", () => {
       meta: { invocationPrefix: "/" },
     })
     expect(referenceToMarkdown(ref)).toBe("/build")
+  })
+
+  it("moves the `$` of a Codex skill-as-command into the prefix", () => {
+    // codex-acp advertises Codex skills as commands NAMED `$<skill>`; the `$`
+    // is the trigger, so the badge must serialize to `$deploy` — never the
+    // `/$deploy` a verbatim name+`/` would produce (Codex rejects that form).
+    const ref = commandToReference(cmd("$deploy"))
+    expect(ref).toEqual({
+      refType: "skill",
+      id: "deploy",
+      label: "deploy",
+      uri: null,
+      meta: { invocationPrefix: "$" },
+    })
+    expect(referenceToMarkdown(ref)).toBe("$deploy")
+  })
+})
+
+describe("commandInvocationToken", () => {
+  it("renders `/name` for ordinary commands and the bare `$name` for Codex skills", () => {
+    expect(commandInvocationToken("review")).toBe("/review")
+    expect(commandInvocationToken("$deploy")).toBe("$deploy")
   })
 })
 

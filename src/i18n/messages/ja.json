@@ -186,6 +186,14 @@
     "restartingIn": "{seconds} 秒後に再起動します...",
     "waitingForServer": "サーバーの復帰を待っています...",
     "restartToUpdate": "再起動して更新",
+    "newVersionBadge": "新バージョン v{version}",
+    "updateAvailableTitle": "アップデートがあります",
+    "releaseNotesTitle": "更新内容",
+    "remindLater": "後で",
+    "retry": "再試行",
+    "stepDownload": "ダウンロード",
+    "stepInstall": "インストール",
+    "stepRestart": "再起動",
     "updateReadyHint": "アップデートをダウンロードしました。再起動して適用してください。",
     "restarting": "再起動しています…",
     "dockerUpgradeHint": "いま実行中のコンテナを更新します。コンテナを再作成すると失われます。維持するには、新しいバージョンのイメージを取得またはビルドしてコンテナを再作成してください。",
@@ -611,7 +619,8 @@
       "saveCodeBuddyConfig": "CodeBuddy 設定を保存",
       "saveKimiCodeConfig": "Kimi Code の設定を保存",
       "customInstall": "カスタムインストール",
-      "saveKimiCodeRawConfig": "Save config.toml"
+      "saveKimiCodeRawConfig": "Save config.toml",
+      "diagnose": "診断"
     },
     "status": {
       "enabled": "有効",
@@ -729,6 +738,34 @@
       "enableSkillsAria": "Codex の Skills を有効化",
       "enableFast": "Fast を有効化",
       "enableFastAria": "Codex の Fast サービスティアを有効化",
+      "sandboxGroupTitle": "サンドボックスと承認",
+      "sandboxGroupHint": "グローバルの ~/.codex/config.toml に書き込むため、codex CLI や IDE のセッションにも反映されます。これはスレッドの既定値で、codex 自身が開始するターン（/goal、/review、/compact）にのみ適用されます。通常のプロンプトは入力欄の承認プリセットを使います。変更はセッションを再起動すると有効になります。",
+      "sandboxShadowedWarning": "config.toml に default_permissions が設定されているため、codex は権限プロファイル経由で解決し sandbox_mode を完全に無視します。以下の設定を使うには default_permissions を削除してください。",
+      "sandboxPermissionsTableWarning": "config.toml に [permissions] プロファイルがありますが default_permissions が未設定のため、codex は起動を拒否します。下の生エディタで設定してください。",
+      "approvalPolicyLabel": "承認ポリシー",
+      "approvalPolicyUnset": "未設定（codex の既定: 要求時）",
+      "approvalPolicy_on-request": "要求時 — モデルが確認のタイミングを判断",
+      "approvalPolicy_untrusted": "未信頼 — 安全と分かっている読み取り専用コマンドのみ自動実行",
+      "approvalPolicy_never": "確認しない — 承認プロンプトを一切出さない",
+      "approvalPolicy_granular": "詳細設定 — プロンプト種別ごとに指定",
+      "granularHint": "オフにすると、その種類の要求は表示されずに自動で拒否されます。",
+      "granular_sandbox_approval": "シェルコマンドの権限昇格",
+      "granular_rules": "Execpolicy ルールのプロンプト",
+      "granular_skill_approval": "スキルスクリプトのプロンプト",
+      "granular_request_permissions": "request_permissions ツールのプロンプト",
+      "granular_mcp_elicitations": "MCP elicitation のプロンプト",
+      "sandboxModeLabel": "サンドボックスモード",
+      "sandboxModeUnset": "未設定（信頼済みフォルダはワークスペース書き込みにフォールバック）",
+      "sandboxMode_read-only": "読み取り専用",
+      "sandboxMode_workspace-write": "ワークスペース書き込み",
+      "sandboxMode_danger-full-access": "フルアクセス（サンドボックスなし）",
+      "sandboxModeHint": "Windows では、codex の実験的 Windows サンドボックスが無効な場合、ワークスペース書き込みは読み取り専用に降格されます。",
+      "writableRootsLabel": "追加の書き込み可能フォルダ",
+      "writableRootsHint": "作業ディレクトリに加えて許可する絶対パスを 1 行に 1 つ。",
+      "sandboxRootsRelativeError": "絶対パスである必要があります — codex は相対パスを ~/.codex 基準で解決します: {path}",
+      "networkAccessLabel": "ネットワークアクセスを許可",
+      "excludeTmpdirLabel": "書き込み可能ルートから TMPDIR を除外",
+      "excludeSlashTmpLabel": "書き込み可能ルートから /tmp を除外",
       "authJsonNative": "auth.json（ネイティブ）",
       "configTomlNative": "config.toml（ネイティブ）",
       "loginButton": "ChatGPT でログイン",
@@ -949,7 +986,11 @@
       "effortLevel_low": "低",
       "effortLevel_medium": "中",
       "effortLevel_high": "高",
-      "effortLevel_xhigh": "超高"
+      "effortLevel_xhigh": "超高",
+      "sendAttributionHeader": "API に帰属/課金識別子を送信",
+      "sendAttributionHeaderAria": "API に Claude Code の帰属/課金識別子を送信",
+      "disableNonessentialTraffic": "テレメトリや不要なネットワークリクエストを無効化",
+      "disableNonessentialTrafficAria": "Claude Code のテレメトリや不要なネットワークリクエストを無効化"
     },
     "dialogs": {
       "confirmDeleteProvider": "Provider {providerId} を削除しますか？",
@@ -1124,7 +1165,46 @@
       "trustDescription": "codeg が pi をフォルダーに接続する際、そのフォルダーを信頼済みとして登録し、別途の確認なしにプロジェクトのローカル設定とスキルを読み込めるようにします。",
       "trustHint": "信頼されるのはここで開いたフォルダーのみで、マシン全体ではありません。また影響するのは設定の読み込みだけで、pi が実行できる内容には影響しません。",
       "configDirSkillsNote": "カスタム設定ディレクトリを指定すると、設定画面で管理するスキル・エキスパート・オフィスツールはこの pi に適用されません。スキルはそのフォルダー内で直接管理してください。"
-    }
+    },
+    "addCustomAgent": "カスタムエージェントを追加",
+    "addCustomAgentHint": "ACP 対応のエージェントを追加できます。公開 ACP レジストリから選ぶか、レジストリ情報を貼り付けてください。",
+    "customAgentFromRegistry": "ACP レジストリ",
+    "customAgentManual": "手動入力",
+    "customAgentSearchPlaceholder": "エージェントを検索…",
+    "customAgentLoadingCatalog": "ACP レジストリを読み込み中…",
+    "customAgentRetry": "再試行",
+    "customAgentNoResults": "該当するエージェントがありません",
+    "customAgentAdd": "追加",
+    "customAgentAlreadyAdded": "追加済み",
+    "customAgentUnsupportedPlatform": "このプラットフォーム向けのビルドがありません",
+    "customAgentAdded": "{name} を追加しました",
+    "customAgentIdLabel": "レジストリ ID",
+    "customAgentNameLabel": "表示名",
+    "customAgentVersionLabel": "バージョン",
+    "customAgentSpecLabel": "配布情報（JSON）",
+    "customAgentSpecHint": "ACP レジストリの distribution オブジェクト、またはレジストリ項目全体を貼り付けてください。",
+    "customAgentKindLabel": "起動方法",
+    "customAgentInvalidJson": "JSON として不正です",
+    "customAgentNoDistribution": "npx・uvx・binary のいずれの配布も見つかりません",
+    "customAgentCancel": "キャンセル",
+    "customAgentSave": "エージェントを追加",
+    "customAgentRemove": "エージェントを削除",
+    "customAgentRemoveHint": "エージェント定義を削除します。既存の会話の履歴は残り、エージェントを起動できなくなるだけです。",
+    "customAgentIconLabel": "アイコン（任意）",
+    "customAgentIconUpload": "アップロード",
+    "customAgentIconReplace": "変更",
+    "customAgentIconClear": "アイコンを削除",
+    "customAgentIconHint": "エージェントと共に保存されるためオフラインでも表示できます。指定しない場合は色付きの頭文字を使います。",
+    "customAgentSkillsLabel": "Skills（共有 .agents/skills）",
+    "customAgentSkillsHint": "このエージェントが共有の .agents/skills ディレクトリ（グローバルおよびプロジェクト）を読み取ることを宣言し、すべてのスキルマトリクスに追加します。共有ディレクトリにリンクしたスキルは、同じディレクトリを読むほかのエージェントからも見えます。",
+    "customAgentIconNotAnImage": "画像ファイルを選んでください。",
+    "customAgentIconTooLarge": "アイコンは {limit} KB 未満にしてください。",
+    "customAgentIconReadFailed": "その画像を読み込めませんでした。",
+    "customAgentRemoveConfirm": "{name} を削除しますか？既存の会話は残りますが、起動できなくなります。",
+    "customAgentRemoveWithData": "記録された会話履歴も削除する",
+    "customAgentRemoved": "{name} を削除しました",
+    "customAgentBadge": "カスタム",
+    "customAgentNotLaunchable": "この環境では起動できません: {reason}"
   },
   "SettingsPages": {
     "agentsLoading": "エージェント設定を読み込み中...",
@@ -1317,6 +1397,7 @@
       "searchPlaceholder": "会話を検索...",
       "viewOptions": "表示オプション",
       "showCompleted": "完了した会話を表示",
+      "showWorktrees": "ワークツリーフォルダを表示",
       "moreOptions": "その他のオプション",
       "sortBy": "並び替え",
       "sortByCreatedAt": "作成時刻順",
@@ -1372,6 +1453,7 @@
       "sectionFolders": "フォルダ",
       "sectionChats": "チャット",
       "noChats": "チャットがありません",
+      "noFolders": "開いているフォルダがありません",
       "newChatAction": "新しいチャット",
       "automations": "オートメーション",
       "loadingSubsessions": "サブ会話を読み込み中…"
@@ -1548,6 +1630,16 @@
       "closeConversationTab": "会話タブを閉じる",
       "close": "閉じる",
       "closeOthers": "他を閉じる",
+      "splitRight": "右に分割",
+      "splitDown": "下に分割",
+      "splitAndMoveRight": "分割して右へ移動",
+      "splitAndMoveDown": "分割して下へ移動",
+      "moveToOppositeGroup": "反対側のグループへ移動",
+      "moveToGroup": "グループへ移動",
+      "groupLabel": "グループ {index}",
+      "changeSplitterOrientation": "分割方向を切り替え",
+      "unsplit": "分割を解除",
+      "unsplitAll": "すべての分割を解除",
       "closeAll": "すべて閉じる",
       "tileDisplay": "タイル表示",
       "untileDisplay": "タイル解除"
@@ -1737,7 +1829,11 @@
         "confirmApply": "スタッシュ {ref} を作業ディレクトリに適用しますか？",
         "cancel": "キャンセル"
       },
-      "deleteBranch": "ブランチを削除"
+      "deleteBranch": "ブランチを削除",
+      "searchPlaceholder": "ブランチと操作を検索",
+      "searchAriaLabel": "ブランチと操作を検索",
+      "branchListLabel": "ブランチと操作",
+      "noMatches": "一致する項目がありません"
     },
     "commitDialog": {
       "toasts": {
@@ -1821,8 +1917,11 @@
       "hash": "ハッシュ",
       "copyHash": "ハッシュをコピー",
       "copyMessage": "メッセージをコピー",
+      "showMore": "もっと見る",
+      "showLess": "折りたたむ",
       "author": "作成者",
       "noFileChangeDetails": "ファイル変更の詳細はありません。",
+      "loadingFiles": "ファイルを読み込み中…",
       "branchesTitle": "ブランチ",
       "loadingBranches": "ブランチを読み込み中...",
       "noContainingBranches": "含まれるブランチが見つかりません。",
@@ -1851,14 +1950,28 @@
         "resetSuccessDescription": "{branch} を {mode} で {shortHash} にリセットしました",
         "resetFailed": "リセットに失敗しました"
       },
+      "authorFilter": {
+        "label": "作成者",
+        "searchPlaceholder": "作成者を検索",
+        "noAuthors": "作成者が見つかりません",
+        "you": "あなた",
+        "filterByAuthorAria": "作成者でコミットを絞り込む",
+        "filterByQuery": "「{query}」で絞り込む",
+        "clearAuthorFilterAria": "作成者フィルターをクリア",
+        "recent": "最近",
+        "matchingAuthors": "一致する作成者",
+        "removeFromRecent": "{name} を最近から削除"
+      },
       "branchSelector": {
+        "label": "ブランチ",
         "searchBranch": "ブランチを検索...",
         "noBranches": "ブランチがありません",
         "selectBranchPlaceholder": "ブランチを選択...",
         "localBranches": "ローカルブランチ",
         "current": "現在",
         "remoteBranches": "リモートブランチ",
-        "refreshCommitHistory": "コミット履歴を更新"
+        "refreshCommitHistory": "コミット履歴を更新",
+        "clearBranchFilterAria": "ブランチフィルターをクリア"
       },
       "dialogs": {
         "newBranchTitle": "新規ブランチ",
@@ -2205,7 +2318,8 @@
           "initSessionDescription": "セッションを作成し設定を読み込んでいます"
         },
         "errors": {
-          "connectionFailed": "接続に失敗しました"
+          "connectionFailed": "接続に失敗しました",
+          "sendPromptFailed": "メッセージの送信に失敗しました: {error}"
         }
       },
       "shared": {
@@ -2262,6 +2376,7 @@
         "attachUploadFailed": "{names} のアップロードに失敗しました。",
         "attachUploadNotAFile": "{names} は通常ファイルではなく（ディレクトリまたは特殊ファイル）、スキップされました。",
         "attachUploadQuotaExceeded": "サーバーのアップロード容量が不足しているため、{names} をアップロードできませんでした。",
+        "attachUploadInProgress": "画像はまだアップロード中です。しばらくしてからもう一度お試しください。",
         "mentionEmpty": "一致する項目がありません",
         "mentionLoading": "検索中…",
         "mentionListLabel": "メンション",
@@ -2589,6 +2704,8 @@
           "remaining": "残り",
           "elapsed": "経過時間",
           "tokens": "tokens",
+          "pause": "一時停止",
+          "clear": "クリア",
           "status": {
             "active": "実行中",
             "paused": "一時停止",
@@ -2717,6 +2834,17 @@
         "submit": "送信",
         "submitError": "送信できませんでした。もう一度お試しください。"
       },
+      "planApproval": {
+        "title": "エージェントが計画を提示しました — 確認してください",
+        "emptyPlan": "エージェントは計画を作成しませんでした。承認して実装を開始するか、変更を依頼してください。",
+        "approve": "承認して開始",
+        "requestChanges": "変更を依頼",
+        "abandon": "破棄",
+        "feedbackPlaceholder": "何を変更しますか？",
+        "sendChanges": "送信",
+        "cancel": "キャンセル",
+        "submitError": "送信できませんでした。もう一度お試しください。"
+      },
       "feedbackCheckResult": {
         "count": "フィードバック {count} 件",
         "expand": "すべてのフィードバックを表示",
@@ -2757,6 +2885,11 @@
         "opClose": "サブエージェントを終了中",
         "opResume": "サブエージェントを再開中"
       },
+      "contextCompaction": {
+        "compacting": "コンテキストを圧縮しています…",
+        "compacted": "コンテキストを圧縮しました",
+        "compactedTokens": "コンテキストを圧縮 · {before} → {after} トークン"
+      },
       "backgroundTasks": {
         "running": "{count} 件のバックグラウンドタスクを実行中",
         "settling": "バックグラウンド結果を同期中…",
@@ -2766,6 +2899,10 @@
         "cardCompleted": "バックグラウンドタスクが完了しました",
         "cardFinishedWithStatus": "バックグラウンドタスクが終了しました（{status}）",
         "cardResultPending": "結果はまだ返っていません"
+      },
+      "proposedPlan": {
+        "title": "提案された計画",
+        "planning": "計画中…"
       }
     },
     "diffPreview": {
@@ -3964,5 +4101,27 @@
     "groupInstructions": "説明とシステムプロンプト",
     "fieldDescription": "説明",
     "baseInstructions": "システムプロンプト（base_instructions）"
+  },
+  "DiagnosticsSettings": {
+    "title": "環境診断",
+    "description": "このアプリが自身のプロセス内でエージェントの CLI をどう解決するかを確認します（ターミナルとは異なる場合があります）。",
+    "loading": "診断を実行中…",
+    "error": "診断に失敗しました",
+    "rerun": "再実行",
+    "copyAll": "すべてコピー",
+    "copied": "診断情報をクリップボードにコピーしました",
+    "button": "診断",
+    "verdict": {
+      "ok": "環境は正常です。それでも未インストールと表示される場合は、アプリを完全に再起動してプレフィックスキャッシュを更新してください。",
+      "node_missing": "アプリの PATH に Node.js が見つかりませんでした。",
+      "npm_missing": "アプリの PATH に npm が見つかりませんでした。",
+      "not_installed": "このエージェントはインストールされていないようです。",
+      "installed_but_unresolved": "インストール済みと記録されていますが、アプリが実行ファイルを見つけられません。",
+      "user_prefix_not_on_path": "フォールバックのプレフィックス（~/.codeg/npm-global）にインストールされていますが、アプリの PATH に含まれていません。アプリを完全に再起動して再試行してください。",
+      "homebrew_bin_not_on_path": "Homebrew の bin にインストールされていますが、アプリの PATH に含まれていません（Apple Silicon の keg 分割）。",
+      "terminal_only_path": "このコマンドはターミナルでは解決されますが、アプリでは解決されません。GUI の PATH のずれです。ターミナルからアプリを起動するか、エージェント設定から再インストールしてください。",
+      "npm_prefix_timeout": "npm prefix -g が遅すぎました（1.5 秒超）。フォールバック検出をスキップしました。アプリを再起動して再試行してください。",
+      "node_too_old": "使用中の Node.js がこのエージェントの要件より古いです。Node.js をアップグレードしてください。"
+    }
   }
 }

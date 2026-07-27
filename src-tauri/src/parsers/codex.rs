@@ -894,10 +894,13 @@ impl CodexParser {
         //   - close_agent → folded into the execution capsule (no own capsule);
         //     its result is only a fallback for agents never waited on.
         // codex-acp 1.0.1 (#223) maps `collabAgentToolCall` onto live ACP
-        // `tool_call`s and still drops `subAgentActivity`, so the nested
-        // `agent-<id>.jsonl` stats only exist on history reload. Live and
-        // reconstructed capsules never double-render (live during streaming,
-        // this on reload).
+        // `tool_call`s; 1.1.3+ (#304) additionally emits `subAgentActivity` as a
+        // SEPARATE live `tool_call` (`_meta.codex.subagent`), but codeg
+        // suppresses it (redundant with the collab capsule — see
+        // `is_codex_subagent_activity`) and it carries no transcript content, so
+        // the nested `agent-<id>.jsonl` stats still only exist on history reload.
+        // Live and reconstructed capsules never double-render (live during
+        // streaming, this on reload).
         let mut spawn_agent_call_ids: HashSet<String> = HashSet::new();
         let mut agent_id_to_spawn_call_id: HashMap<String, String> = HashMap::new();
         // Result text used to FILL the execution capsule only as a fallback for

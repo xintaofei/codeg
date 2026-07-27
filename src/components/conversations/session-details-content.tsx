@@ -8,7 +8,8 @@ import type {
   DbConversationSummary,
   SessionStats,
 } from "@/lib/types"
-import { AGENT_LABELS, STATUS_ORDER } from "@/lib/types"
+import { STATUS_ORDER } from "@/lib/types"
+import { getAgentLabel } from "@/lib/custom-agents"
 import { cn, copyTextToClipboard } from "@/lib/utils"
 import { formatConversationTitle } from "@/lib/conversation-title"
 import { formatTokenCount } from "@/lib/token-format"
@@ -308,7 +309,7 @@ export function SessionDetailsContent({
                 className="h-3.5 w-3.5"
               />
             </span>
-            {AGENT_LABELS[summary.agent_type]}
+            {getAgentLabel(summary.agent_type)}
           </span>
           <span className="inline-flex items-center gap-1.5">
             <ConversationStatusDot

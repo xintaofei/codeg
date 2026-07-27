@@ -226,6 +226,7 @@ mod question_request_tests {
                     description: String::new(),
                 })
                 .collect(),
+            is_secret: false,
         }
     }
 

@@ -1,4 +1,14 @@
+// The ACP connection driver (`acp::connection`) wraps the enormous
+// `run_connection` future in a `block_on(async move { … })` frame whose type
+// layout nests deep enough to blow rustc's default query depth of 128 (it
+// overflowed by ~130 when computing the async block's layout). This is a
+// compile-time type-recursion knob, unrelated to any runtime limit — bump it
+// so the giant future's layout resolves. See the big-stack thread in
+// `acp/connection.rs` for the sibling *runtime* mitigation of the same frame.
+#![recursion_limit = "256"]
+
 pub mod acp;
+pub mod acp_transcript;
 pub use acp::{
     idle_sweep_task, idle_timeout_from_env, lifecycle_subscriber_task, SWEEP_INTERVAL_SECS,
 };
@@ -12,6 +22,7 @@ pub mod commands;
 pub mod db;
 pub mod git_credential;
 pub mod git_repo;
+pub mod intern;
 pub mod keyring_store;
 pub mod logging;
 pub mod models;
@@ -977,6 +988,9 @@ mod tauri_app {
                 folders::delete_file_tree_entry,
                 folders::create_file_tree_entry,
                 folders::git_log,
+                folders::git_current_user,
+                folders::git_commit_files,
+                folders::git_search_authors,
                 folders::git_commit_branches,
                 windows::open_folder_window,
                 windows::open_commit_window,
@@ -1030,6 +1044,7 @@ mod tauri_app {
                 pet_commands::pet_save_window_state,
                 pet_commands::pet_marketplace_list,
                 pet_commands::pet_marketplace_install,
+                pet_commands::pet_marketplace_asset,
                 pet_commands::pet_celebrate,
                 pet_commands::pet_get_current_state,
                 pet_commands::pet_list_active_sessions,
@@ -1085,11 +1100,13 @@ mod tauri_app {
                 acp_commands::acp_prompt,
                 acp_commands::acp_set_mode,
                 acp_commands::acp_set_config_option,
+                acp_commands::acp_goal_control,
                 acp_commands::acp_describe_agent_options,
                 acp_commands::acp_cancel,
                 acp_commands::acp_fork,
                 acp_commands::acp_respond_permission,
                 acp_commands::acp_answer_question,
+                acp_commands::acp_answer_plan_approval,
                 acp_commands::acp_disconnect,
                 acp_commands::acp_touch_connection,
                 acp_commands::acp_list_connections,
@@ -1098,6 +1115,7 @@ mod tauri_app {
                 acp_commands::acp_find_connection_for_conversation,
                 acp_commands::acp_list_agents,
                 acp_commands::acp_get_agent_status,
+                acp_commands::acp_env_diagnostics,
                 acp_commands::acp_clear_binary_cache,
                 acp_commands::acp_download_agent_binary,
                 acp_commands::acp_install_uv_tool,
@@ -1118,6 +1136,11 @@ mod tauri_app {
                 acp_commands::acp_open_hermes_setup_terminal,
                 acp_commands::acp_reveal_hermes_home,
                 acp_commands::acp_reorder_agents,
+                crate::commands::custom_agents::acp_list_custom_agents,
+                crate::commands::custom_agents::acp_save_custom_agent,
+                crate::commands::custom_agents::acp_delete_custom_agent,
+                crate::commands::custom_agents::acp_fetch_registry_catalog,
+                crate::commands::custom_agents::acp_add_registry_agent,
                 acp_commands::acp_list_agent_skills,
                 acp_commands::acp_read_agent_skill,
                 acp_commands::acp_save_agent_skill,

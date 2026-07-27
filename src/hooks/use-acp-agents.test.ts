@@ -37,6 +37,7 @@ import { resetAcpAgentsStore, useAcpAgents } from "./use-acp-agents"
 function makeAgent(agentType: AgentType, sortOrder: number): AcpAgentInfo {
   return {
     agent_type: agentType,
+    skills_capable: true,
     registry_id: agentType,
     registry_version: null,
     name: agentType,
@@ -53,6 +54,7 @@ function makeAgent(agentType: AgentType, sortOrder: number): AcpAgentInfo {
     codex_auth_json: null,
     codex_config_toml: null,
     codex_model_catalog: null,
+    codex_sandbox_settings: null,
     grok_config_toml: null,
     grok_settings: null,
     cline_secrets_json: null,
@@ -60,6 +62,7 @@ function makeAgent(agentType: AgentType, sortOrder: number): AcpAgentInfo {
     cursor_cli_config_json: null,
     cursor_settings: null,
     model_provider_id: null,
+    icon_url: null,
   }
 }
 

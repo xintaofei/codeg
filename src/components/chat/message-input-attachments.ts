@@ -30,7 +30,10 @@ export interface ResourceInputAttachment {
 }
 
 /** An image attachment, held as base64 (no data-URI prefix). `uri` is the
- *  `file://` origin when added from a native path, else null. */
+ *  `file://` origin when added from a native path — or, in web / remote-
+ *  workspace mode, the server-side uploads path the bytes were streamed to
+ *  (the transport strips `data` for those and the backend re-inlines it from
+ *  the uri; see `stripUploadedImagePayloads` / `acp::prompt_hydration`). */
 export interface ImageInputAttachment {
   id: string
   type: "image"
@@ -38,6 +41,10 @@ export interface ImageInputAttachment {
   uri: string | null
   name: string
   mimeType: string
+  /** Transient: true while the web/remote upload for this image is still in
+   *  flight (`uri` not yet assigned). Sends are blocked while any image is
+   *  uploading; never serialized into prompt blocks. */
+  uploading?: boolean
 }
 
 export type InputAttachment = ResourceInputAttachment | ImageInputAttachment

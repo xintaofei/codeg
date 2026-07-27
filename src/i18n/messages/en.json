@@ -186,6 +186,14 @@
     "restartingIn": "Restarting in {seconds}s...",
     "waitingForServer": "Waiting for the server to come back...",
     "restartToUpdate": "Restart to update",
+    "newVersionBadge": "New v{version}",
+    "updateAvailableTitle": "Update available",
+    "releaseNotesTitle": "What's new",
+    "remindLater": "Later",
+    "retry": "Retry",
+    "stepDownload": "Download",
+    "stepInstall": "Install",
+    "stepRestart": "Restart",
     "updateReadyHint": "Update downloaded — restart to apply.",
     "restarting": "Restarting...",
     "dockerUpgradeHint": "This upgrades the running container now. It's lost if the container is recreated — to keep it, pull or build an image at the new version and recreate.",
@@ -611,7 +619,8 @@
       "saveCodeBuddyConfig": "Save CodeBuddy Config",
       "saveKimiCodeConfig": "Save Kimi Code Config",
       "customInstall": "Custom install",
-      "saveKimiCodeRawConfig": "Save config.toml"
+      "saveKimiCodeRawConfig": "Save config.toml",
+      "diagnose": "Diagnose"
     },
     "status": {
       "enabled": "Enabled",
@@ -729,6 +738,34 @@
       "enableSkillsAria": "Enable Skills for Codex",
       "enableFast": "Enable Fast",
       "enableFastAria": "Enable Fast service tier for Codex",
+      "sandboxGroupTitle": "Sandbox & approvals",
+      "sandboxGroupHint": "Written to the global ~/.codex/config.toml, so codex CLI and IDE sessions see it too. These are thread defaults: they govern the turns codex starts on its own (/goal, /review, /compact). Ordinary prompts use the composer's approval preset instead. Restart a session to pick up changes.",
+      "sandboxShadowedWarning": "config.toml sets default_permissions, so codex resolves permissions through that profile and ignores sandbox_mode entirely. Remove default_permissions to use the controls below.",
+      "sandboxPermissionsTableWarning": "config.toml defines [permissions] profiles but no default_permissions, which makes codex refuse to start. Set one in the raw editor below.",
+      "approvalPolicyLabel": "Approval policy",
+      "approvalPolicyUnset": "Not set (codex default: on request)",
+      "approvalPolicy_on-request": "On request — the model decides when to ask",
+      "approvalPolicy_untrusted": "Untrusted — only known-safe read-only commands run unattended",
+      "approvalPolicy_never": "Never — no approval prompts at all",
+      "approvalPolicy_granular": "Granular — choose per prompt type",
+      "granularHint": "Off means requests of that kind are auto-rejected instead of shown to you.",
+      "granular_sandbox_approval": "Shell command escalations",
+      "granular_rules": "Execpolicy rule prompts",
+      "granular_skill_approval": "Skill script prompts",
+      "granular_request_permissions": "request_permissions tool prompts",
+      "granular_mcp_elicitations": "MCP elicitation prompts",
+      "sandboxModeLabel": "Sandbox mode",
+      "sandboxModeUnset": "Not set (trusted folders fall back to workspace write)",
+      "sandboxMode_read-only": "Read-only",
+      "sandboxMode_workspace-write": "Workspace write",
+      "sandboxMode_danger-full-access": "Full access (no sandbox)",
+      "sandboxModeHint": "On Windows, workspace write is downgraded to read-only unless codex's experimental Windows sandbox is enabled.",
+      "writableRootsLabel": "Extra writable folders",
+      "writableRootsHint": "One absolute path per line, in addition to the working directory.",
+      "sandboxRootsRelativeError": "Must be an absolute path — codex resolves relative entries against ~/.codex: {path}",
+      "networkAccessLabel": "Allow network access",
+      "excludeTmpdirLabel": "Exclude TMPDIR from writable roots",
+      "excludeSlashTmpLabel": "Exclude /tmp from writable roots",
       "authJsonNative": "auth.json (native)",
       "configTomlNative": "config.toml (native)",
       "loginButton": "Log in with ChatGPT",
@@ -949,7 +986,11 @@
       "effortLevel_low": "Low",
       "effortLevel_medium": "Medium",
       "effortLevel_high": "High",
-      "effortLevel_xhigh": "Extra High"
+      "effortLevel_xhigh": "Extra High",
+      "sendAttributionHeader": "Send attribution/billing identifier to the API",
+      "sendAttributionHeaderAria": "Send Claude Code attribution/billing identifier to the API",
+      "disableNonessentialTraffic": "Disable telemetry or redundant network requests",
+      "disableNonessentialTrafficAria": "Disable Claude Code telemetry or redundant network requests"
     },
     "dialogs": {
       "confirmDeleteProvider": "Delete Provider {providerId}?",
@@ -1124,7 +1165,46 @@
       "trustDescription": "When codeg connects pi to a folder, mark that folder trusted so pi loads the project's local config and skills without a separate prompt.",
       "trustHint": "Only folders you open here are trusted, never your whole machine — and this affects config loading only, not what pi is allowed to run.",
       "configDirSkillsNote": "With a custom config directory, the Skills, Experts, and Office tools managed in Settings won't apply to this pi — manage its skills in that folder directly."
-    }
+    },
+    "addCustomAgent": "Add custom agent",
+    "addCustomAgentHint": "Register any ACP-compatible agent. Pick one from the public ACP registry, or paste its registry information.",
+    "customAgentFromRegistry": "ACP registry",
+    "customAgentManual": "Manual",
+    "customAgentSearchPlaceholder": "Search agents…",
+    "customAgentLoadingCatalog": "Loading the ACP registry…",
+    "customAgentRetry": "Retry",
+    "customAgentNoResults": "No matching agents",
+    "customAgentAdd": "Add",
+    "customAgentAlreadyAdded": "Added",
+    "customAgentUnsupportedPlatform": "No build available for this platform",
+    "customAgentAdded": "Added {name}",
+    "customAgentIdLabel": "Registry ID",
+    "customAgentNameLabel": "Display name",
+    "customAgentVersionLabel": "Version",
+    "customAgentSpecLabel": "Distribution (JSON)",
+    "customAgentSpecHint": "Paste the agent's `distribution` object from the ACP registry, or a whole registry entry.",
+    "customAgentKindLabel": "Launch via",
+    "customAgentInvalidJson": "Not valid JSON",
+    "customAgentNoDistribution": "No npx, uvx, or binary distribution found",
+    "customAgentCancel": "Cancel",
+    "customAgentSave": "Add agent",
+    "customAgentRemove": "Remove agent",
+    "customAgentRemoveHint": "Deletes the agent definition. Existing conversations keep their history; the agent just can no longer be launched.",
+    "customAgentIconLabel": "Icon (optional)",
+    "customAgentIconUpload": "Upload",
+    "customAgentIconReplace": "Replace",
+    "customAgentIconClear": "Remove icon",
+    "customAgentIconHint": "Stored with the agent, so it works offline. Without one, a colored initial is used.",
+    "customAgentSkillsLabel": "Skills (shared .agents/skills)",
+    "customAgentSkillsHint": "Declares that this agent reads the shared .agents/skills store — its global and project directories — and adds it to every skills matrix. Skills linked there are visible to every agent that reads the shared store.",
+    "customAgentIconNotAnImage": "Pick an image file.",
+    "customAgentIconTooLarge": "The icon must be smaller than {limit} KB.",
+    "customAgentIconReadFailed": "Could not read that image.",
+    "customAgentRemoveConfirm": "Remove {name}? Existing conversations stay, but the agent can no longer be launched.",
+    "customAgentRemoveWithData": "Also delete its recorded conversation history",
+    "customAgentRemoved": "Removed {name}",
+    "customAgentBadge": "Custom",
+    "customAgentNotLaunchable": "This agent cannot launch here: {reason}"
   },
   "SettingsPages": {
     "agentsLoading": "Loading agent settings...",
@@ -1317,6 +1397,7 @@
       "searchPlaceholder": "Search conversations...",
       "viewOptions": "View options",
       "showCompleted": "Show completed conversations",
+      "showWorktrees": "Show worktree folders",
       "moreOptions": "More options",
       "sortBy": "Sort by",
       "sortByCreatedAt": "Created time",
@@ -1372,6 +1453,7 @@
       "sectionFolders": "Folders",
       "sectionChats": "Chat",
       "noChats": "No chats",
+      "noFolders": "No folders open",
       "newChatAction": "New chat",
       "automations": "Automations",
       "loadingSubsessions": "Loading sub-conversations…"
@@ -1548,6 +1630,16 @@
       "closeConversationTab": "Close conversation tab",
       "close": "Close",
       "closeOthers": "Close Others",
+      "splitRight": "Split Right",
+      "splitDown": "Split Down",
+      "splitAndMoveRight": "Split and Move Right",
+      "splitAndMoveDown": "Split and Move Down",
+      "moveToOppositeGroup": "Move to Opposite Group",
+      "moveToGroup": "Move to Group",
+      "groupLabel": "Group {index}",
+      "changeSplitterOrientation": "Change Splitter Orientation",
+      "unsplit": "Unsplit",
+      "unsplitAll": "Unsplit All",
       "closeAll": "Close All",
       "tileDisplay": "Tile Display",
       "untileDisplay": "Exit Tile"
@@ -1737,7 +1829,11 @@
         "confirmApply": "Apply stash {ref} to working directory?",
         "cancel": "Cancel"
       },
-      "deleteBranch": "Delete branch"
+      "deleteBranch": "Delete branch",
+      "searchPlaceholder": "Search branches and actions",
+      "searchAriaLabel": "Search branches and actions",
+      "branchListLabel": "Branches and actions",
+      "noMatches": "No matches"
     },
     "commitDialog": {
       "toasts": {
@@ -1821,8 +1917,11 @@
       "hash": "Hash",
       "copyHash": "Copy hash",
       "copyMessage": "Copy message",
+      "showMore": "Show more",
+      "showLess": "Show less",
       "author": "Author",
       "noFileChangeDetails": "No file change details available.",
+      "loadingFiles": "Loading files...",
       "branchesTitle": "Branches",
       "loadingBranches": "Loading branches...",
       "noContainingBranches": "No containing branches found.",
@@ -1851,14 +1950,28 @@
         "resetSuccessDescription": "{branch} reset to {shortHash} with {mode}",
         "resetFailed": "Reset failed"
       },
+      "authorFilter": {
+        "label": "Author",
+        "searchPlaceholder": "Search author",
+        "noAuthors": "No authors found",
+        "you": "you",
+        "filterByAuthorAria": "Filter commits by author",
+        "filterByQuery": "Filter by \"{query}\"",
+        "clearAuthorFilterAria": "Clear author filter",
+        "recent": "Recent",
+        "matchingAuthors": "Matching authors",
+        "removeFromRecent": "Remove {name} from recent"
+      },
       "branchSelector": {
+        "label": "Branch",
         "searchBranch": "Search branch...",
         "noBranches": "No branches",
         "selectBranchPlaceholder": "Select branch...",
         "localBranches": "Local branches",
         "current": "Current",
         "remoteBranches": "Remote branches",
-        "refreshCommitHistory": "Refresh commit history"
+        "refreshCommitHistory": "Refresh commit history",
+        "clearBranchFilterAria": "Clear branch filter"
       },
       "dialogs": {
         "newBranchTitle": "New branch",
@@ -2205,7 +2318,8 @@
           "initSessionDescription": "Creating session and loading configuration"
         },
         "errors": {
-          "connectionFailed": "Connection failed"
+          "connectionFailed": "Connection failed",
+          "sendPromptFailed": "Failed to send the message: {error}"
         }
       },
       "shared": {
@@ -2262,6 +2376,7 @@
         "attachUploadFailed": "Failed to upload {names}.",
         "attachUploadNotAFile": "{names} isn't a regular file (directory or special file) and was skipped.",
         "attachUploadQuotaExceeded": "The server is out of upload storage; {names} couldn't be uploaded.",
+        "attachUploadInProgress": "Images are still uploading — try again in a moment.",
         "mentionEmpty": "No matches",
         "mentionLoading": "Searching…",
         "mentionListLabel": "Mentions",
@@ -2589,6 +2704,8 @@
           "remaining": "Remaining",
           "elapsed": "Elapsed",
           "tokens": "tokens",
+          "pause": "Pause",
+          "clear": "Clear",
           "status": {
             "active": "active",
             "paused": "paused",
@@ -2717,6 +2834,17 @@
         "submit": "Submit",
         "submitError": "Couldn't submit. Please try again."
       },
+      "planApproval": {
+        "title": "The agent has a plan — review it",
+        "emptyPlan": "The agent didn't write a plan. Approve to start building, or request changes.",
+        "approve": "Approve & build",
+        "requestChanges": "Request changes",
+        "abandon": "Abandon",
+        "feedbackPlaceholder": "What should change?",
+        "sendChanges": "Send",
+        "cancel": "Cancel",
+        "submitError": "Couldn't submit. Please try again."
+      },
       "feedbackCheckResult": {
         "count": "{count, plural, =1 {1 feedback note} other {# feedback notes}}",
         "expand": "Show all feedback",
@@ -2757,6 +2885,11 @@
         "opClose": "Closing sub-agent",
         "opResume": "Resuming sub-agent"
       },
+      "contextCompaction": {
+        "compacting": "Compacting context…",
+        "compacted": "Context compacted",
+        "compactedTokens": "Context compacted · {before} → {after} tokens"
+      },
       "backgroundTasks": {
         "running": "{count, plural, one {# background task running} other {# background tasks running}}",
         "settling": "Syncing background results…",
@@ -2766,6 +2899,10 @@
         "cardCompleted": "Background task completed",
         "cardFinishedWithStatus": "Background task finished ({status})",
         "cardResultPending": "Result not returned yet"
+      },
+      "proposedPlan": {
+        "title": "Proposed plan",
+        "planning": "Planning…"
       }
     },
     "diffPreview": {
@@ -3964,5 +4101,27 @@
     "groupInstructions": "Description & system prompt",
     "fieldDescription": "Description",
     "baseInstructions": "System prompt (base_instructions)"
+  },
+  "DiagnosticsSettings": {
+    "title": "Environment diagnostics",
+    "description": "Checks how this app resolves the agent CLI inside its own process, which can differ from your terminal.",
+    "loading": "Running diagnostics…",
+    "error": "Diagnostics failed",
+    "rerun": "Re-run",
+    "copyAll": "Copy all",
+    "copied": "Diagnostics copied to clipboard",
+    "button": "Diagnose",
+    "verdict": {
+      "ok": "Environment looks healthy. If it still shows as not installed, fully restart the app so the prefix cache refreshes.",
+      "node_missing": "Node.js was not found on the app PATH.",
+      "npm_missing": "npm was not found on the app PATH.",
+      "not_installed": "This agent does not appear to be installed.",
+      "installed_but_unresolved": "The agent is recorded as installed, but the app cannot locate its executable.",
+      "user_prefix_not_on_path": "Installed into the fallback prefix (~/.codeg/npm-global), which is not on the app PATH. Fully restart the app and try again.",
+      "homebrew_bin_not_on_path": "Installed under the Homebrew bin, which is not on the app PATH (Apple Silicon keg split).",
+      "terminal_only_path": "The command resolves in your terminal but not in the app — a GUI PATH gap. Launch the app from a terminal, or reinstall from Agent Settings.",
+      "npm_prefix_timeout": "npm prefix -g was too slow (over 1.5s), so fallback detection was skipped. Restart the app and try again.",
+      "node_too_old": "Your active Node.js is older than this agent requires. Upgrade Node.js."
+    }
   }
 }

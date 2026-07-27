@@ -1,45 +1,20 @@
 "use client"
 
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
-  Fragment,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react"
-import {
-  ArchiveRestore,
-  Archive,
-  ChevronRight,
-  CloudDownload,
-  CloudSync,
-  CloudUpload,
-  FolderGit2,
+  ChevronDown,
   FolderOpen,
   GitBranch,
-  GitBranchPlus,
   GitCommitHorizontal,
   GitFork,
-  GitMerge,
-  GitPullRequestArrow,
-  Globe,
-  Loader2,
-  Trash2,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
 import {
   Dialog,
   DialogContent,
@@ -58,7 +33,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -84,24 +58,19 @@ import { ConflictDialog } from "@/components/layout/conflict-dialog"
 import { StashDialog } from "@/components/layout/stash-dialog"
 import { DirectoryBrowserDialog } from "@/components/shared/directory-browser-dialog"
 import { toErrorMessage } from "@/lib/app-error"
-import { resolveFolderDisplayName } from "@/lib/folder-display"
 import { useSwitchToBranch } from "@/hooks/use-switch-to-branch"
 import {
   buildBranchTree,
   buildRemoteBranchSections,
-  containsBranch,
-  expandedKeysForBranch,
   localBranchItems,
-  sectionKey,
-  type BranchTreeLeaf,
-  type BranchTreeNode,
 } from "@/lib/branch-tree"
-import { branchRowPaddingLeft } from "@/components/layout/branch-tree-collapsible"
-import { useBranchTreeExpansion } from "@/hooks/use-branch-tree-expansion"
-import { cn } from "@/lib/utils"
-import type { GitBranchList, GitConflictInfo } from "@/lib/types"
-import { useActiveFolder } from "@/contexts/active-folder-context"
-import { useIsActiveChatMode } from "@/hooks/use-is-active-chat-mode"
+import { BranchSelectorList } from "@/components/layout/branch-selector-list"
+import type {
+  BranchLeafAction,
+  BranchOperationMeta,
+} from "@/lib/branch-selector-rows"
+import { useScrollbarSafeDismiss } from "@/hooks/use-scrollbar-safe-dismiss"
+import type { FolderDetail, GitBranchList, GitConflictInfo } from "@/lib/types"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions } from "@/contexts/tab-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
@@ -135,19 +104,20 @@ interface GitPushSucceededEventPayload {
 }
 
 interface BranchDropdownProps {
-  /** Show the owning-folder name before the branch (default). The bottom
-   *  status-bar instance sets this false to render just the branch name. */
-  showFolderName?: boolean
+  /** The row's OWN folder (each conversation tile passes its own), not the
+   *  active one — so a tiled view keeps every tile's branch chip live. */
+  folder: FolderDetail | null
+  /** Whether this tile is folderless "chat mode" (self-hides the chip). */
+  isChatMode: boolean
 }
 
-export function BranchDropdown({
-  showFolderName = true,
-}: BranchDropdownProps = {}) {
+// The branch chip in the below-composer folder/branch row. It's mounted once per
+// conversation tile with that tile's own `folder`, and carries per-instance
+// machinery (git event subscriptions + dialogs).
+export function BranchDropdown({ folder, isChatMode }: BranchDropdownProps) {
   const t = useTranslations("Folder.branchDropdown")
   const tCommon = useTranslations("Folder.common")
-  const { activeFolder } = useActiveFolder()
-  const isChatMode = useIsActiveChatMode()
-  const allFolders = useAppWorkspaceStore((s) => s.allFolders)
+  const activeFolder = folder
   const refreshFolder = useAppWorkspaceStore((s) => s.refreshFolder)
   const openWorktreeFolder = useAppWorkspaceStore((s) => s.openWorktreeFolder)
   const { openNewConversationTab } = useTabActions()
@@ -156,6 +126,10 @@ export function BranchDropdown({
   const { pushAlert } = useAlertContext()
   const { withCredentialRetry } = useGitCredential()
   const switchToBranch = useSwitchToBranch()
+  // Grabbing the popover's inner scrollbar blurs focus, which WebKit bounces to
+  // an outside element that Radix reads as a dismiss — keep it open (see hook).
+  const { contentRef, onPointerDownOutside, onFocusOutside } =
+    useScrollbarSafeDismiss()
 
   const folderPath = activeFolder?.path ?? ""
   const folderId = activeFolder?.id ?? 0
@@ -208,30 +182,24 @@ export function BranchDropdown({
     () => buildRemoteBranchSections(branchList.remote),
     [branchList.remote]
   )
-  const localSectionKey = sectionKey("local")
-  const remoteSectionKey = sectionKey("remote")
-
-  // Auto-expand the section + prefix groups leading to the current branch once
-  // the branch list has loaded.
-  const seedKeys = useMemo(() => {
-    if (!branch) return []
-    if (containsBranch(localNodes, branch)) {
-      return [localSectionKey, ...expandedKeysForBranch(localNodes, branch)]
-    }
-    for (const section of remoteSections) {
-      if (containsBranch(section.nodes, branch)) {
-        const keys = [
-          remoteSectionKey,
-          ...expandedKeysForBranch(section.nodes, branch),
-        ]
-        if (section.key) keys.push(section.key)
-        return keys
-      }
-    }
-    return []
-  }, [branch, localNodes, remoteSections, localSectionKey, remoteSectionKey])
-
-  const { isExpanded, toggle } = useBranchTreeExpansion(dropdownOpen, seedKeys)
+  // Operations shown as a searchable block at the top of the popup; the list
+  // resolves each id to an icon and dispatches back through `runOperation`.
+  // `groupEnd` inserts a separator after that op (non-search) to restore the old
+  // menu's pull/fetch | commit/push | new | stash | remotes blocking.
+  const operations = useMemo<BranchOperationMeta[]>(
+    () => [
+      { id: "pull", label: t("pullCode") },
+      { id: "fetch", label: t("fetchRemoteBranches"), groupEnd: true },
+      { id: "commit", label: t("openCommitWindow") },
+      { id: "push", label: t("pushCode"), groupEnd: true },
+      { id: "newBranch", label: t("newBranch") },
+      { id: "newWorktree", label: t("newWorktree"), groupEnd: true },
+      { id: "stash", label: t("stashChanges") },
+      { id: "stashPop", label: t("stashPop"), groupEnd: true },
+      { id: "manageRemotes", label: t("manageRemotes") },
+    ],
+    [t]
+  )
 
   const refresh = useCallback(() => {
     if (folderId) void refreshFolder(folderId)
@@ -371,8 +339,7 @@ export function BranchDropdown({
     })
   }
 
-  // Pull, shared by the dropdown menu item and the status-bar quick-pull icon
-  // button beside the branch name (so both entry points behave identically).
+  // Pull, invoked by the dropdown's "Pull Code" menu item.
   function handlePull() {
     setDropdownOpen(false)
     void runGitTask(
@@ -570,483 +537,167 @@ export function BranchDropdown({
     }
   }
 
-  function renderBranchItem(
-    leaf: BranchTreeLeaf,
-    isRemote: boolean,
-    depth: number
-  ) {
-    const b = leaf.fullName
-    const label = leaf.label
-    const paddingLeft = branchRowPaddingLeft("dropdown", depth)
-    const isCurrent = b === branch
-    const isTrackingCurrent =
-      isRemote && !!branch && b.replace(/^[^/]+\//, "") === branch
-    const isWorktree = worktreeBranchSet.has(
-      isRemote ? b.replace(/^[^/]+\//, "") : b
-    )
-    const BranchIcon = isWorktree ? FolderGit2 : GitBranch
-
-    if (isCurrent) {
-      return (
-        <div
-          key={leaf.key}
-          className="flex select-none items-center gap-2.5 rounded-xl py-2 pr-3 text-sm opacity-50"
-          style={{ paddingLeft }}
-          title={b}
-        >
-          <BranchIcon className="h-3.5 w-3.5 shrink-0" />
-          <span className="min-w-0 flex-1 truncate">{label}</span>
-          <span className="shrink-0 pl-2 text-xs">{t("current")}</span>
-        </div>
-      )
+  // Dispatch a top-of-list operation back to its handler. Every op closes the
+  // popover (some then open a dialog/window); `handlePull` closes it too.
+  function runOperation(opId: string) {
+    setDropdownOpen(false)
+    switch (opId) {
+      case "pull":
+        handlePull()
+        break
+      case "fetch":
+        void runGitTask(t("tasks.fetchInfo"), () =>
+          withCredentialRetry((creds) => gitFetch(folderPath, creds), {
+            folderPath,
+          })
+        )
+        break
+      case "commit":
+        if (!folderId) return
+        openCommitWindow(folderId).catch((err) => {
+          const title = t("toasts.openCommitWindowFailed")
+          const msg = toErrorMessage(err)
+          pushAlert("error", title, msg)
+          toast.error(title, { description: msg })
+        })
+        break
+      case "push":
+        if (!folderId) return
+        openPushWindow(folderId).catch((err) => {
+          const title = t("toasts.openPushWindowFailed")
+          const msg = toErrorMessage(err)
+          pushAlert("error", title, msg)
+          toast.error(title, { description: msg })
+        })
+        break
+      case "newBranch":
+        setNewBranchName("")
+        setNewBranchOpen(true)
+        break
+      case "newWorktree":
+        handleOpenWorktreeDialog()
+        break
+      case "stash":
+        setStashDialogOpen(true)
+        break
+      case "stashPop":
+        if (!folderId) return
+        openStashWindow(folderId).catch((err) => {
+          const msg = toErrorMessage(err)
+          pushAlert("error", t("stashPop"), msg)
+        })
+        break
+      case "manageRemotes":
+        setManageRemotesOpen(true)
+        break
     }
-
-    return (
-      <DropdownMenuSub key={leaf.key}>
-        <DropdownMenuSubTrigger
-          className="hover:bg-accent hover:text-accent-foreground"
-          style={{ paddingLeft }}
-          disabled={loading}
-          title={b}
-        >
-          <BranchIcon className="h-3.5 w-3.5 shrink-0" />
-          <span className="min-w-0 flex-1 truncate">{label}</span>
-        </DropdownMenuSubTrigger>
-        <DropdownMenuSubContent>
-          <DropdownMenuItem
-            onSelect={() => {
-              if (isRemote) {
-                void handleCheckoutRemote(b)
-              } else {
-                void handleCheckout(b)
-              }
-            }}
-          >
-            <GitBranch className="h-3.5 w-3.5" />
-            {t("switchToBranch")}
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={() => {
-              setDropdownOpen(false)
-              setConfirmAction({ type: "merge", branchName: b })
-            }}
-          >
-            <GitMerge className="h-3.5 w-3.5" />
-            {t("mergeBranchIntoCurrent", {
-              branchName: b,
-              currentBranch: branch ?? "-",
-            })}
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={() => {
-              setDropdownOpen(false)
-              setConfirmAction({ type: "rebase", branchName: b })
-            }}
-          >
-            <GitPullRequestArrow className="h-3.5 w-3.5" />
-            {t("rebaseCurrentToBranch", {
-              currentBranch: branch ?? "-",
-              branchName: b,
-            })}
-          </DropdownMenuItem>
-          {!isTrackingCurrent && (
-            <>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                variant="destructive"
-                onSelect={() => {
-                  setDropdownOpen(false)
-                  setConfirmAction({
-                    type: isRemote ? "deleteRemote" : "delete",
-                    branchName: b,
-                  })
-                }}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-                {t("deleteBranch")}
-              </DropdownMenuItem>
-            </>
-          )}
-        </DropdownMenuSubContent>
-      </DropdownMenuSub>
-    )
   }
 
-  // Render the prefix tree as a flat sequence of menu items. Group rows are
-  // DropdownMenuItems (not plain Collapsible buttons) so Radix's roving focus /
-  // typeahead can reach them by keyboard; `onSelect` preventDefault keeps the
-  // menu open while toggling. Collapsed children simply aren't rendered.
-  function renderDropdownTree(
-    nodes: BranchTreeNode[],
-    depth: number,
+  // Dispatch an inline branch action: switch checks out directly (that handler
+  // closes the popover itself), the rest open the shared confirm dialog.
+  function runLeafAction(
+    action: BranchLeafAction,
+    fullName: string,
     isRemote: boolean
-  ): React.ReactNode[] {
-    return nodes.flatMap((node) => {
-      if (node.type === "leaf") {
-        return [renderBranchItem(node, isRemote, depth)]
-      }
-      const groupOpen = isExpanded(node.key)
-      return [
-        <DropdownMenuItem
-          key={node.key}
-          aria-expanded={groupOpen}
-          onSelect={(e) => {
-            e.preventDefault()
-            toggle(node.key)
-          }}
-          style={{ paddingLeft: branchRowPaddingLeft("dropdown", depth) }}
-        >
-          <ChevronRight
-            className={cn(
-              "h-3.5 w-3.5 shrink-0 transition-transform",
-              groupOpen && "rotate-90"
-            )}
-          />
-          <span className="min-w-0 flex-1 truncate">{node.label}</span>
-          <span className="shrink-0 pl-2 text-xs text-muted-foreground/70">
-            {node.count}
-          </span>
-        </DropdownMenuItem>,
-        ...(groupOpen
-          ? renderDropdownTree(node.children, depth + 1, isRemote)
-          : []),
-      ]
-    })
+  ) {
+    if (action === "switch") {
+      if (isRemote) void handleCheckoutRemote(fullName)
+      else void handleCheckout(fullName)
+      return
+    }
+    setDropdownOpen(false)
+    setConfirmAction({ type: action, branchName: fullName })
   }
 
-  // Folderless chat conversations have no git branch — hide the top-bar
-  // selector entirely (covers both the mobile and desktop title-bar instances).
+  // Folderless chat conversations have no git branch — hide the branch chip
+  // entirely (the below-composer row still shows the folder chip beside it).
   if (!activeFolder || isChatMode) return null
 
-  // Worktree folders display their parent (root repo) name; paths/ids/git ops
-  // below still use `activeFolder` (the worktree) unchanged.
-  const folderName = resolveFolderDisplayName(activeFolder, allFolders)
-
-  // In the compact bottom status bar (showFolderName=false) the branch name is
-  // the LEFT half of a command-style split control (a quick-pull button sits on
-  // the right): it inherits the bar's text-xs, goes muted→foreground on its own
-  // hover, and drops the primary accent. The mobile combo (showFolderName=true,
-  // `folder | branch`) stays a single text-sm button with a primary-highlighted
-  // branch so the two segments read as distinct.
-  const isStatusBar = !showFolderName
-  const triggerClassName = cn(
-    "flex min-w-0 items-center outline-none transition-colors cursor-default",
-    isStatusBar
-      ? "h-6 gap-1.5 hover:text-foreground"
-      : "gap-1 text-sm tracking-tight hover:text-foreground/80"
-  )
-  const branchAccentClassName = showFolderName ? "text-primary" : undefined
-
   if (!isRepo) {
+    // Non-git folder: no branch and nothing to pull, so a single chip (no split
+    // pull half) opening a one-item popover that offers to init a repo.
     return (
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
+      <Popover open={dropdownOpen} onOpenChange={handleDropdownOpenChange}>
+        <PopoverTrigger asChild>
           <button
-            className={cn(
-              triggerClassName,
-              isStatusBar && "rounded-full px-2 hover:bg-foreground/10"
-            )}
+            type="button"
+            title={t("noBranch")}
+            className="flex h-6 min-w-0 items-center gap-1.5 rounded-full px-2 text-xs text-muted-foreground outline-none transition-colors hover:bg-foreground/10 hover:text-foreground"
           >
-            <GitFork className="h-3 w-3 shrink-0" />
-            <span className="max-w-[320px] truncate">
-              {showFolderName && (
-                <>
-                  {folderName}
-                  <span className="mx-1.5 inline-block h-3 w-px bg-foreground/20 align-middle" />
-                </>
-              )}
-              <span className={branchAccentClassName}>{t("noBranch")}</span>
-            </span>
+            <GitFork className="size-3 shrink-0" />
+            <span className="max-w-[160px] truncate">{t("noBranch")}</span>
           </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent className="min-w-64" align="start">
-          <DropdownMenuItem
+        </PopoverTrigger>
+        <PopoverContent side="top" align="start" className="w-64 p-1">
+          <button
+            type="button"
             disabled={loading}
-            onSelect={() =>
-              runGitTask(t("tasks.initGitRepo"), () => gitInit(folderPath))
-            }
+            onClick={() => {
+              setDropdownOpen(false)
+              void runGitTask(t("tasks.initGitRepo"), () => gitInit(folderPath))
+            }}
+            className="flex w-full select-none items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-50"
           >
-            <GitBranch className="h-3.5 w-3.5" />
+            <GitBranch className="size-3.5 shrink-0" />
             {t("initGitRepo")}
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+          </button>
+        </PopoverContent>
+      </Popover>
     )
   }
 
   return (
     <>
-      <div
-        className={cn(
-          isStatusBar
-            ? "group/branch flex items-center rounded-full transition-colors hover:bg-foreground/10"
-            : "contents"
-        )}
-      >
-        <DropdownMenu
-          open={dropdownOpen}
-          onOpenChange={handleDropdownOpenChange}
-        >
-          <DropdownMenuTrigger asChild>
-            <button
-              className={cn(
-                triggerClassName,
-                isStatusBar && "rounded-l-full pr-1.5 pl-2"
-              )}
-              title={
-                isDetached
-                  ? t("detachedHead", { sha: head?.short_sha ?? "" })
-                  : undefined
-              }
-            >
-              {isDetached ? (
-                <GitCommitHorizontal className="h-3 w-3 shrink-0" />
-              ) : (
-                <GitBranch className="h-3 w-3 shrink-0" />
-              )}
-              <span className="max-w-[320px] truncate">
-                {showFolderName && (
-                  <>
-                    {folderName}
-                    <span className="mx-1.5 inline-block h-3 w-px bg-foreground/20 align-middle" />
-                  </>
-                )}
-                <span className={branchAccentClassName}>
-                  {branch ?? head?.branch ?? head?.short_sha ?? t("noBranch")}
-                </span>
-              </span>
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent className="min-w-64" align="start">
-            <DropdownMenuGroup>
-              <DropdownMenuItem disabled={loading} onSelect={handlePull}>
-                <CloudDownload className="h-3.5 w-3.5" />
-                {t("pullCode")}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={loading}
-                onSelect={() =>
-                  runGitTask(t("tasks.fetchInfo"), () =>
-                    withCredentialRetry(
-                      (creds) => gitFetch(folderPath, creds),
-                      {
-                        folderPath,
-                      }
-                    )
-                  )
-                }
-              >
-                <CloudSync className="h-3.5 w-3.5" />
-                {t("fetchRemoteBranches")}
-              </DropdownMenuItem>
-            </DropdownMenuGroup>
-            <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              <DropdownMenuItem
-                disabled={loading}
-                onSelect={() => {
-                  if (!folderId) return
-                  setDropdownOpen(false)
-                  openCommitWindow(folderId).catch((err) => {
-                    const title = t("toasts.openCommitWindowFailed")
-                    const msg = toErrorMessage(err)
-                    pushAlert("error", title, msg)
-                    toast.error(title, { description: msg })
-                  })
-                }}
-              >
-                <GitCommitHorizontal className="h-3.5 w-3.5" />
-                {t("openCommitWindow")}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={loading}
-                onSelect={() => {
-                  if (!folderId) return
-                  setDropdownOpen(false)
-                  openPushWindow(folderId).catch((err) => {
-                    const title = t("toasts.openPushWindowFailed")
-                    const msg = toErrorMessage(err)
-                    pushAlert("error", title, msg)
-                    toast.error(title, { description: msg })
-                  })
-                }}
-              >
-                <CloudUpload className="h-3.5 w-3.5" />
-                {t("pushCode")}
-              </DropdownMenuItem>
-            </DropdownMenuGroup>
-            <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              <DropdownMenuItem
-                disabled={loading}
-                onSelect={() => {
-                  setNewBranchName("")
-                  setNewBranchOpen(true)
-                }}
-              >
-                <GitBranchPlus className="h-3.5 w-3.5" />
-                {t("newBranch")}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={loading}
-                onSelect={handleOpenWorktreeDialog}
-              >
-                <FolderGit2 className="h-3.5 w-3.5" />
-                {t("newWorktree")}
-              </DropdownMenuItem>
-            </DropdownMenuGroup>
-            <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              <DropdownMenuItem
-                disabled={loading}
-                onSelect={() => {
-                  setDropdownOpen(false)
-                  setStashDialogOpen(true)
-                }}
-              >
-                <Archive className="h-3.5 w-3.5" />
-                {t("stashChanges")}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={loading}
-                onSelect={() => {
-                  if (!folderId) return
-                  openStashWindow(folderId).catch((err) => {
-                    const msg = toErrorMessage(err)
-                    pushAlert("error", t("stashPop"), msg)
-                  })
-                }}
-              >
-                <ArchiveRestore className="h-3.5 w-3.5" />
-                {t("stashPop")}
-              </DropdownMenuItem>
-            </DropdownMenuGroup>
-            <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              <DropdownMenuItem
-                disabled={loading}
-                onSelect={() => {
-                  setDropdownOpen(false)
-                  setManageRemotesOpen(true)
-                }}
-              >
-                <Globe className="h-3.5 w-3.5" />
-                {t("manageRemotes")}
-              </DropdownMenuItem>
-            </DropdownMenuGroup>
-            <DropdownMenuSeparator />
-            {branchLoading ? (
-              <div className="flex items-center justify-center py-3">
-                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-              </div>
+      {/* Single chip: the branch name + chevron opens the searchable popup (pull
+          lives inside it now). Matches the sibling folder chip's ghost xs feel. */}
+      <Popover open={dropdownOpen} onOpenChange={handleDropdownOpenChange}>
+        <PopoverTrigger asChild>
+          <Button
+            variant="ghost"
+            size="xs"
+            title={
+              isDetached
+                ? t("detachedHead", { sha: head?.short_sha ?? "" })
+                : (branch ?? undefined)
+            }
+            className="min-w-0 gap-0.5 px-1.5"
+          >
+            {isDetached ? (
+              <GitCommitHorizontal className="size-3 shrink-0 text-muted-foreground" />
             ) : (
-              <ScrollArea className="max-h-64">
-                <DropdownMenuItem
-                  aria-expanded={isExpanded(localSectionKey)}
-                  onSelect={(e) => {
-                    e.preventDefault()
-                    toggle(localSectionKey)
-                  }}
-                >
-                  <ChevronRight
-                    className={cn(
-                      "h-3.5 w-3.5 shrink-0 transition-transform",
-                      isExpanded(localSectionKey) && "rotate-90"
-                    )}
-                  />
-                  {t("localBranches", { count: branchList.local.length })}
-                </DropdownMenuItem>
-                {isExpanded(localSectionKey) &&
-                  (branchList.local.length === 0 ? (
-                    <DropdownMenuItem disabled>
-                      {t("noLocalBranches")}
-                    </DropdownMenuItem>
-                  ) : (
-                    renderDropdownTree(localNodes, 0, false)
-                  ))}
-
-                <DropdownMenuItem
-                  aria-expanded={isExpanded(remoteSectionKey)}
-                  onSelect={(e) => {
-                    e.preventDefault()
-                    toggle(remoteSectionKey)
-                  }}
-                >
-                  <ChevronRight
-                    className={cn(
-                      "h-3.5 w-3.5 shrink-0 transition-transform",
-                      isExpanded(remoteSectionKey) && "rotate-90"
-                    )}
-                  />
-                  {t("remoteBranches", { count: branchList.remote.length })}
-                </DropdownMenuItem>
-                {isExpanded(remoteSectionKey) &&
-                  (branchList.remote.length === 0 ? (
-                    <DropdownMenuItem disabled>
-                      {t("noRemoteBranches")}
-                    </DropdownMenuItem>
-                  ) : (
-                    remoteSections.map((section) =>
-                      section.remoteName == null ? (
-                        <Fragment key="remote-single">
-                          {renderDropdownTree(section.nodes, 0, true)}
-                        </Fragment>
-                      ) : (
-                        <Fragment key={section.key}>
-                          <DropdownMenuItem
-                            aria-expanded={isExpanded(section.key)}
-                            onSelect={(e) => {
-                              e.preventDefault()
-                              toggle(section.key)
-                            }}
-                            style={{
-                              paddingLeft: branchRowPaddingLeft("dropdown", 0),
-                            }}
-                          >
-                            <ChevronRight
-                              className={cn(
-                                "h-3 w-3 shrink-0 transition-transform",
-                                isExpanded(section.key) && "rotate-90"
-                              )}
-                            />
-                            <span className="min-w-0 flex-1 truncate">
-                              {section.remoteName}
-                            </span>
-                            <span className="shrink-0 pl-2 text-xs text-muted-foreground/70">
-                              {section.count}
-                            </span>
-                          </DropdownMenuItem>
-                          {isExpanded(section.key) &&
-                            renderDropdownTree(section.nodes, 1, true)}
-                        </Fragment>
-                      )
-                    )
-                  ))}
-              </ScrollArea>
+              <GitBranch className="size-3 shrink-0 text-muted-foreground" />
             )}
-          </DropdownMenuContent>
-        </DropdownMenu>
-        {/* Quick-pull button — the right half of the split, mirroring the
-            command block. Its own hover highlights just this icon; the shared
-            container tints the whole pill and the divider brightens. */}
-        {isStatusBar && (
-          <>
-            <span
-              aria-hidden
-              className="h-3 w-px shrink-0 bg-border/70 transition-colors group-hover/branch:bg-foreground/20"
-            />
-            <button
-              type="button"
-              onClick={handlePull}
-              disabled={loading}
-              title={t("pullCode")}
-              className="flex h-6 items-center rounded-r-full pr-2 pl-1.5 text-muted-foreground outline-none transition-colors hover:text-foreground disabled:opacity-50 disabled:hover:text-muted-foreground"
-            >
-              <CloudDownload className="h-3 w-3" />
-            </button>
-          </>
-        )}
-      </div>
+            <span className="max-w-[160px] truncate">
+              {branch ?? head?.branch ?? head?.short_sha ?? t("noBranch")}
+            </span>
+            <ChevronDown className="size-3 shrink-0 text-muted-foreground/60" />
+          </Button>
+        </PopoverTrigger>
+        {/* No `overflow-hidden`: the list's inner shell clips to the rounding so
+            the right-side action bubble can overflow past this edge. */}
+        <PopoverContent
+          ref={contentRef}
+          side="top"
+          align="start"
+          onPointerDownOutside={onPointerDownOutside}
+          onFocusOutside={onFocusOutside}
+          className="w-[22rem] max-w-[calc(100vw-1rem)] p-0"
+        >
+          <BranchSelectorList
+            operations={operations}
+            localNodes={localNodes}
+            remoteSections={remoteSections}
+            localCount={branchList.local.length}
+            remoteCount={branchList.remote.length}
+            branch={branch}
+            worktreeBranchSet={worktreeBranchSet}
+            branchLoading={branchLoading}
+            loading={loading}
+            onRunOperation={runOperation}
+            onLeafAction={runLeafAction}
+          />
+        </PopoverContent>
+      </Popover>
 
       <AlertDialog
         open={confirmAction !== null}

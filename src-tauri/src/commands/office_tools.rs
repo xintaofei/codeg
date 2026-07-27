@@ -1061,9 +1061,13 @@ fn supported_agents() -> Vec<AgentType> {
         AgentType::Grok,
         AgentType::Cursor,
     ];
+    // Custom agents that declared the shared skills store join the built-in
+    // set — the same `skill_storage_spec` gate every skills surface uses, so
+    // this stays in lockstep with the columns the frontend renders.
     ALL.iter()
-        .filter(|a| skill_storage_spec(**a).is_some())
         .copied()
+        .chain(crate::acp::custom_registry::all())
+        .filter(|a| skill_storage_spec(*a).is_some())
         .collect()
 }
 
@@ -1421,6 +1425,49 @@ pub async fn stop_office_watch(root_path: String, path: String) -> Result<(), Ap
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_declared_custom_agent_gains_a_column_here_too() {
+        use crate::acp::custom_registry::{
+            hydrate, hydrate_test_guard, CustomAgentDef, CustomAgentSpec, CustomDistributionKind,
+            NpxSpec,
+        };
+        let _guard = hydrate_test_guard();
+        let mut def = CustomAgentDef {
+            registry_id: "office-pack-agent".into(),
+            name: "Pack Agent".into(),
+            description: String::new(),
+            version: "1.0.0".into(),
+            distribution_kind: CustomDistributionKind::Npx,
+            spec: CustomAgentSpec {
+                npx: Some(NpxSpec {
+                    package: "pack-agent@1.0.0".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            icon_url: None,
+            skills_shared_store: false,
+        };
+        let agent = crate::models::agent::AgentType::custom("office-pack-agent").unwrap();
+
+        assert!(hydrate(std::slice::from_ref(&def)).is_empty());
+        assert!(
+            !supported_agents().contains(&agent),
+            "undeclared custom agents stay out"
+        );
+
+        def.skills_shared_store = true;
+        assert!(hydrate(std::slice::from_ref(&def)).is_empty());
+        assert!(
+            supported_agents().contains(&agent),
+            "declared custom agents get a column"
+        );
+
+        assert!(hydrate(&[]).is_empty());
+        assert!(!supported_agents().contains(&agent));
+    }
+
     use tokio::time::{timeout, Duration};
 
     // Tests use unknown skill ids so they never touch the developer's real skill

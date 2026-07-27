@@ -1,4 +1,5 @@
 use axum::extract::Multipart;
+use axum::http::HeaderMap;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
@@ -205,13 +206,20 @@ pub async fn create_file_tree_entry(
 
 /// Hard cap on a single uploaded attachment.
 ///
-/// Aligned with axum's default 2MB multipart body limit and with the practical
-/// constraint that the file is later embedded as context for an AI agent —
-/// anything larger would not fit a typical model's context window anyway.
-/// The check inside the streaming loop is defense-in-depth: axum's
-/// `DefaultBodyLimit` rejects the request before reaching here, but a future
-/// limit change must not silently allow oversized writes to disk.
-pub const UPLOAD_MAX_BYTES: u64 = 2 * 1024 * 1024;
+/// This is the user-facing attachment ceiling for web / remote-workspace mode
+/// (oversize is rejected with a visible toast), sized to match the desktop
+/// drag-drop image limit (`DRAG_DROP_IMAGE_MAX_BYTES`, 20 MB) so the same
+/// screenshot attaches in every mode. Uploaded images are re-inlined into the
+/// prompt server-side (`acp::prompt_hydration`), so this also bounds that
+/// read-back. The handler streams to disk chunk-by-chunk, so raising the cap
+/// does not change peak memory. The chunk-summing check inside the streaming
+/// loop is the authoritative boundary; the route's `DefaultBodyLimit` (this
+/// value + 64 KiB of multipart overhead, see `router.rs`) rejects grossly
+/// oversized bodies before they stream.
+///
+/// Mirrored by `UPLOAD_MAX_BYTES` in `commands/remote_proxy.rs` and
+/// `src/lib/api.ts` — keep the three in lockstep.
+pub const UPLOAD_MAX_BYTES: u64 = 20 * 1024 * 1024;
 
 /// Env-controlled cap on the *total* bytes resident under
 /// `uploads_root/`. Per-file `UPLOAD_MAX_BYTES` bounds one payload; this
@@ -740,7 +748,29 @@ pub async fn purge_upload_staging() {
     }
 }
 
+/// Bytes to reserve against the total-quota in-flight counter for one upload.
+///
+/// The file's exact size isn't known until the multipart body is drained, but
+/// the request's `Content-Length` is a hard upper bound on it (the multipart
+/// framing only ever ADDS overhead, and hyper enforces the header as a body
+/// framing limit). Reserving `min(Content-Length, UPLOAD_MAX_BYTES)` is
+/// therefore always ≥ the bytes actually written — the streaming loop
+/// independently caps the file at `UPLOAD_MAX_BYTES` — so the quota stays a
+/// hard ceiling while a small upload only reserves its own size. This matters
+/// for operators with `CODEG_UPLOAD_MAX_TOTAL_BYTES` below `UPLOAD_MAX_BYTES`:
+/// a blanket worst-case reservation would reject every upload outright.
+///
+/// A missing/unparseable header (chunked transfer) falls back to the
+/// worst-case reservation, which over-rejects near the cap but never
+/// under-reserves.
+fn upload_reservation_bytes(content_length: Option<u64>) -> u64 {
+    content_length
+        .map(|cl| cl.min(UPLOAD_MAX_BYTES))
+        .unwrap_or(UPLOAD_MAX_BYTES)
+}
+
 pub async fn upload_attachment(
+    headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<Json<UploadAttachmentResult>, AppCommandError> {
     let uploads_root = codeg_uploads_root();
@@ -751,10 +781,10 @@ pub async fn upload_attachment(
             AppCommandError::io_error("Failed to create uploads root").with_detail(e.to_string())
         })?;
 
-    // Quota check, before staging any bytes. We assume the worst-case
-    // payload size (`UPLOAD_MAX_BYTES`) since the actual size isn't
-    // known until the multipart body is drained — admitting a request
-    // we'd reject mid-stream would waste disk and require cleanup races.
+    // Quota check, before staging any bytes. The reservation is bounded by
+    // the request's Content-Length (see `upload_reservation_bytes`) so a
+    // small upload fits a small quota; admitting a request we'd reject
+    // mid-stream would waste disk and require cleanup races.
     //
     // The reservation guard (`_quota_guard`) is bound to a name so its
     // RAII drop runs at function exit, not immediately. Releasing it
@@ -762,8 +792,13 @@ pub async fn upload_attachment(
     // TOCTOU window where two concurrent uploads both saw the same
     // disk-level `used` and admitted past the cap.
     let _quota_guard = if let Some(cap) = upload_quota_config_from_env().cap_bytes() {
+        let content_length = headers
+            .get(axum::http::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok());
+        let reserve = upload_reservation_bytes(content_length);
         let used = current_uploads_total_bytes(&uploads_root).await;
-        match try_reserve_in_flight(&UPLOAD_IN_FLIGHT_BYTES, UPLOAD_MAX_BYTES, used, cap) {
+        match try_reserve_in_flight(&UPLOAD_IN_FLIGHT_BYTES, reserve, used, cap) {
             Ok(guard) => Some(guard),
             Err(()) => {
                 let mut params = BTreeMap::new();
@@ -1216,6 +1251,45 @@ mod tests {
             None,
             "invalid disables the cap — fail-open so a typo doesn't 5xx uploads"
         );
+    }
+
+    // ─── upload_reservation_bytes ─────────────────────────────────────
+
+    #[test]
+    fn reservation_uses_content_length_when_small() {
+        // A 1 MiB upload against a 10 MiB total quota must reserve ~1 MiB,
+        // not the 20 MiB worst case (which would reject every upload on
+        // servers whose quota is below the per-file maximum).
+        let cl = 1024 * 1024 + 300; // file + multipart framing overhead
+        assert_eq!(upload_reservation_bytes(Some(cl)), cl);
+    }
+
+    #[test]
+    fn reservation_clamps_content_length_to_per_file_max() {
+        // The streaming loop caps the file at UPLOAD_MAX_BYTES, so the
+        // reservation never needs to exceed it even when the body (file +
+        // framing) is slightly larger. min(CL, MAX) ≥ bytes written holds:
+        // written ≤ MAX (loop check) and written ≤ CL (hyper framing).
+        assert_eq!(
+            upload_reservation_bytes(Some(UPLOAD_MAX_BYTES + 500)),
+            UPLOAD_MAX_BYTES
+        );
+    }
+
+    #[test]
+    fn reservation_falls_back_to_worst_case_without_content_length() {
+        assert_eq!(upload_reservation_bytes(None), UPLOAD_MAX_BYTES);
+    }
+
+    #[test]
+    fn small_upload_fits_a_quota_below_the_per_file_max() {
+        // Regression for the 2→20 MiB cap raise: cap = 10 MiB, empty disk,
+        // a 1 MiB upload must be admitted via its Content-Length-bounded
+        // reservation.
+        let counter = AtomicU64::new(0);
+        let cap = 10 * 1024 * 1024;
+        let reserve = upload_reservation_bytes(Some(1024 * 1024 + 300));
+        assert!(try_reserve_in_flight(&counter, reserve, 0, cap).is_ok());
     }
 
     // ─── try_reserve_in_flight ────────────────────────────────────────

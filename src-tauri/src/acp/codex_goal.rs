@@ -249,6 +249,36 @@ mod tests {
     }
 
     #[test]
+    fn preserves_v114_slimmed_snapshot_fields() {
+        // codex-acp v1.1.4 (#293) slimmed the goal snapshot: it dropped
+        // `tokensUsed` and added `createdAt` / `controlMethod` (alongside the
+        // existing `tokenBudget` / `timeUsedSeconds`). `goal_marker` clones the
+        // object through, so the new fields survive onto the card output and the
+        // absent `tokensUsed` is simply not present — `GoalCard` reads it as null
+        // and hides that stat, so no display breaks.
+        let goal = json!({
+            "objective": "  Ship the release  ",
+            "status": "active",
+            "tokenBudget": 200000,
+            "timeUsedSeconds": 42,
+            "createdAt": "2026-07-16T10:00:00Z",
+            "controlMethod": "_codex/session/goal_control",
+        });
+        let m = goal_marker(&goal).expect("goal marker");
+        assert_eq!(m.tool_name, "create_goal");
+        let out: Value = serde_json::from_str(&m.output_json).unwrap();
+        let g = &out["goal"];
+        assert_eq!(g["objective"], "Ship the release"); // trimmed
+        assert_eq!(g["status"], "active");
+        assert_eq!(g["tokenBudget"], 200000);
+        assert_eq!(g["timeUsedSeconds"], 42);
+        assert_eq!(g["createdAt"], "2026-07-16T10:00:00Z");
+        assert_eq!(g["controlMethod"], "_codex/session/goal_control");
+        // Slimmed snapshot carries no tokensUsed → the card hides that stat.
+        assert!(g.get("tokensUsed").is_none());
+    }
+
+    #[test]
     fn goal_tool_call_id_is_occurrence_unique() {
         // Occurrence-addressed so two runs sharing an objective never collide.
         assert_eq!(goal_tool_call_id(3), goal_tool_call_id(3));

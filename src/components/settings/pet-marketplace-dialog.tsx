@@ -8,6 +8,7 @@ import {
   Download,
   Eye,
   Heart,
+  ImageOff,
   Loader2,
   RefreshCw,
   Search,
@@ -42,6 +43,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { installMarketplacePet, listMarketplacePets } from "@/lib/pet/api"
+import { useProxiedMarketplaceAsset } from "@/lib/pet/use-proxied-marketplace-asset"
 import type { MarketplacePet } from "@/lib/pet/types"
 import { cn } from "@/lib/utils"
 import { PetActionPreviewGrid } from "./pet-action-preview-grid"
@@ -421,7 +423,7 @@ function PetMarketCard({
   onInstall,
   labels,
 }: PetMarketCardProps) {
-  const previewSrc = pet.posterUrl ?? pet.previewUrl ?? null
+  const poster = useProxiedMarketplaceAsset(pet.posterUrl ?? pet.previewUrl)
   const tags = pet.tags.slice(0, 3)
 
   const togglePreview = useCallback(() => {
@@ -448,15 +450,18 @@ function PetMarketCard({
             className="flex min-h-0 flex-1 flex-col rounded-t-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
           >
             <div className="flex h-24 w-full items-center justify-center bg-muted/40 p-1.5">
-              {previewSrc ? (
+              {poster.src ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
-                  src={previewSrc}
+                  src={poster.src}
                   alt={pet.displayName}
-                  loading="lazy"
                   className="max-h-full max-w-full object-contain"
                 />
-              ) : null}
+              ) : poster.loading ? (
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground/50" />
+              ) : (
+                <ImageOff className="h-5 w-5 text-muted-foreground/40" />
+              )}
             </div>
             <div className="flex min-h-0 flex-1 flex-col gap-2 p-3 pb-1">
               <div className="flex items-start justify-between gap-2">
@@ -548,18 +553,33 @@ function PetMarketCard({
 }
 
 function PetMarketplacePreviewGrid({ pet }: { pet: MarketplacePet }) {
+  // Proxy the filmstrip (or the poster, when there's no preview) through the
+  // backend and drive the grid off the resulting blob URL — the webview can't
+  // fetch codex-pets.net directly on some networks.
+  const asset = useProxiedMarketplaceAsset(pet.previewUrl ?? pet.posterUrl)
+
+  if (!asset.src) {
+    return (
+      <div className="flex h-48 items-center justify-center rounded-md bg-muted/40 p-2">
+        {asset.loading ? (
+          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground/50" />
+        ) : (
+          <ImageOff className="h-6 w-6 text-muted-foreground/40" />
+        )}
+      </div>
+    )
+  }
+
+  // Poster-only pets (no filmstrip) just show the static image.
   if (!pet.previewUrl) {
     return (
       <div className="flex h-48 items-center justify-center rounded-md bg-muted/40 p-2">
-        {pet.posterUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={pet.posterUrl}
-            alt={pet.displayName}
-            loading="lazy"
-            className="max-h-full max-w-full object-contain"
-          />
-        ) : null}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={asset.src}
+          alt={pet.displayName}
+          className="max-h-full max-w-full object-contain"
+        />
       </div>
     )
   }
@@ -567,7 +587,7 @@ function PetMarketplacePreviewGrid({ pet }: { pet: MarketplacePet }) {
   return (
     <PetActionPreviewGrid
       petName={pet.displayName}
-      source={{ type: "marketplace", url: pet.previewUrl }}
+      source={{ type: "marketplace", url: asset.src }}
     />
   )
 }

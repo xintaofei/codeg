@@ -422,11 +422,19 @@ fn parse_version_parts(input: &str) -> Vec<u32> {
 
 /// Same as `ensure_binary_for_agent` but calls `on_progress` with human-readable
 /// status messages during download / extraction.
+/// Download (or reuse) an agent's binary.
+///
+/// `expected_sha256`, when present, is the hex digest the archive must hash to.
+/// Built-in agents pass `None`: their URLs are repository constants reviewed
+/// alongside the code. Custom agents pass the ACP registry's published digest,
+/// because their URL comes from user input or a remote document — see
+/// [`crate::acp::registry::PlatformBinary::sha256`].
 pub async fn ensure_binary_for_agent_with_progress(
     agent_type: AgentType,
     version: &str,
     archive_url: &str,
     cmd_name: &str,
+    expected_sha256: Option<&str>,
     on_progress: impl Fn(&str),
 ) -> Result<PathBuf, AcpError> {
     if let Some(path) = find_cached_binary_for_agent(agent_type, version, cmd_name)? {
@@ -435,7 +443,52 @@ pub async fn ensure_binary_for_agent_with_progress(
     }
 
     let agent_id = agent_cache_key(agent_type);
-    ensure_binary_with_progress(&agent_id, version, archive_url, cmd_name, on_progress).await
+    ensure_binary_with_progress(
+        &agent_id,
+        version,
+        archive_url,
+        cmd_name,
+        expected_sha256,
+        on_progress,
+    )
+    .await
+}
+
+/// Hex SHA-256 of a file, streamed so a large archive never lands in memory.
+fn file_sha256(path: &std::path::Path) -> Result<String, AcpError> {
+    use sha2::{Digest, Sha256};
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| AcpError::DownloadFailed(format!("failed to open archive for hashing: {e}")))?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = std::io::Read::read(&mut file, &mut buf)
+            .map_err(|e| AcpError::DownloadFailed(format!("failed to read archive: {e}")))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
+/// Fail unless the downloaded archive matches `expected`. Comparison is
+/// case-insensitive hex; a blank expectation is treated as "not published".
+fn verify_archive_sha256(path: &std::path::Path, expected: Option<&str>) -> Result<(), AcpError> {
+    let Some(expected) = expected.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(());
+    };
+    let actual = file_sha256(path)?;
+    if actual.eq_ignore_ascii_case(expected) {
+        return Ok(());
+    }
+    Err(AcpError::DownloadFailed(format!(
+        "archive checksum mismatch: expected sha256 {expected}, got {actual}"
+    )))
 }
 
 async fn ensure_binary_with_progress(
@@ -443,6 +496,7 @@ async fn ensure_binary_with_progress(
     version: &str,
     archive_url: &str,
     cmd_name: &str,
+    expected_sha256: Option<&str>,
     on_progress: impl Fn(&str),
 ) -> Result<PathBuf, AcpError> {
     if let Some(path) = find_cached_binary(agent_id, version, cmd_name)? {
@@ -471,6 +525,13 @@ async fn ensure_binary_with_progress(
         let archive_path = tmp_dir.join("archive");
         on_progress(&format!("Downloading {archive_url}"));
         download_file_with_progress(archive_url, &archive_path, &on_progress).await?;
+
+        // Verify BEFORE extracting: a tampered archive must never have its
+        // contents written anywhere but the temp dir this closure cleans up.
+        if expected_sha256.is_some() {
+            on_progress("Verifying checksum...");
+        }
+        verify_archive_sha256(&archive_path, expected_sha256)?;
 
         let extract_dir = tmp_dir.join("extracted");
         std::fs::create_dir_all(&extract_dir)
@@ -815,5 +876,27 @@ mod tests {
         assert_eq!(normalize_version_label("v1.2.15"), "1.2.15");
         assert_eq!(normalize_version_label("V0.9.4 "), "0.9.4");
         assert_eq!(normalize_version_label("1.25.1"), "1.25.1");
+    }
+
+    // Custom agents download from URLs codeg did not vet, so a published
+    // digest must be enforced — and a mismatch must fail BEFORE extraction.
+    #[test]
+    fn archive_checksum_is_enforced_when_published() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("archive");
+        std::fs::write(&archive, b"hello").unwrap();
+        // sha256("hello")
+        let good = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+
+        assert_eq!(file_sha256(&archive).unwrap(), good);
+        verify_archive_sha256(&archive, Some(good)).expect("matching digest passes");
+        // Registries publish lowercase hex, but accept either case.
+        verify_archive_sha256(&archive, Some(&good.to_uppercase())).expect("case-insensitive");
+        // No published digest → nothing to enforce (built-in agents).
+        verify_archive_sha256(&archive, None).expect("absent digest is not an error");
+        verify_archive_sha256(&archive, Some("   ")).expect("blank digest is not an error");
+
+        let err = verify_archive_sha256(&archive, Some("deadbeef")).unwrap_err();
+        assert!(err.to_string().contains("checksum mismatch"), "{err}");
     }
 }

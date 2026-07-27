@@ -141,8 +141,9 @@ describe("AgentToolCallPart cursor task outcome envelope", () => {
       output: '{"durationMs":39894,"isBackground":false}',
     })
     expect(screen.getByText("39.9s")).toBeInTheDocument()
-    // Even with the capsule body expanded, the raw envelope never renders.
-    fireEvent.click(screen.getByRole("button", { name: "Completed" }))
+    // The folded duration has no body, so the capsule is a static "Completed"
+    // chip (not an expandable button) and the raw envelope never renders.
+    expect(screen.getByLabelText("Completed")).toBeInTheDocument()
     expect(screen.queryByText(/durationMs/)).not.toBeInTheDocument()
     expect(screen.queryByText(/isBackground/)).not.toBeInTheDocument()
   })

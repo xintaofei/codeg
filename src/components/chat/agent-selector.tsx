@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
 import type { AgentType, AcpAgentInfo } from "@/lib/types"
-import { AGENT_LABELS } from "@/lib/types"
+import { getAgentLabel } from "@/lib/custom-agents"
 import { AgentIcon } from "@/components/agent-icon"
 import { cn } from "@/lib/utils"
 
@@ -201,7 +201,7 @@ export function AgentSelector({
         // composer) but flagged with a marker + tooltip so it reads as "needs
         // install" instead of looking identical to a ready agent.
         const notInstalled = agent.available && !agent.installed_version
-        const label = AGENT_LABELS[agent.agent_type]
+        const label = getAgentLabel(agent.agent_type)
         return (
           <button
             key={agent.agent_type}

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -8,6 +10,8 @@ use sacp::schema::{
     ReadTextFileRequest, ReadTextFileResponse, WriteTextFileRequest, WriteTextFileResponse,
 };
 use tokio::sync::Semaphore;
+
+use crate::models::agent::AgentType;
 
 const FS_MAX_CONCURRENT_OPS: usize = 8;
 const FS_IO_TIMEOUT: Duration = Duration::from_secs(30);
@@ -31,27 +35,545 @@ impl FileSystemRuntimeError {
     }
 }
 
+/// Per-agent `env_json` / process-env key selecting the path-containment policy
+/// for the ACP `fs/*` channel. `default` | `strict` | `unrestricted`; anything
+/// else warns and falls back to `default`.
+pub(crate) const FS_POLICY_ENV: &str = "CODEG_ACP_FS_POLICY";
+/// Additional **writable** roots, joined with the platform `PATH` separator
+/// (`:` on unix, `;` on Windows — parsed with `std::env::split_paths`, so a
+/// Windows drive letter's colon is not mistaken for a separator).
+pub(crate) const FS_EXTRA_ROOTS_ENV: &str = "CODEG_ACP_FS_EXTRA_ROOTS";
+
+/// Which paths the ACP `fs/read_text_file` / `fs/write_text_file` handlers will
+/// serve.
+///
+/// An EMPTY root list means "unrestricted" for that direction — not "deny
+/// everything". Reads default to unrestricted because the gate buys no safety:
+/// codeg also advertises `terminal(true)`, so an agent that is refused a read
+/// simply `cat`s the file through a shell instead (empirically what grok does —
+/// it fell back to `run_terminal_command` with a `cat > … << 'PLAN_EOF'`
+/// heredoc, re-sending the whole payload as a shell command). Writes keep a
+/// root list mirroring the agents' own sandbox model (grok's `workspace`
+/// profile: CWD + its own home + temp dirs).
+/// NOTE: deliberately NOT `Default` — an all-empty policy means "unrestricted",
+/// so a derived `Default` would let `..Default::default()` or a stray
+/// `FsAccessPolicy::default()` silently open up writes. Construct through the
+/// named constructors instead.
+#[derive(Clone, Debug)]
+pub struct FsAccessPolicy {
+    /// Roots a read may resolve into. Empty ⇒ unrestricted.
+    read_roots: Vec<PathBuf>,
+    /// Roots a write may land in. Empty ⇒ unrestricted.
+    write_roots: Vec<PathBuf>,
+}
+
+impl FsAccessPolicy {
+    /// Today's historical behavior: reads and writes both confined to the
+    /// session working directory. Reachable via `CODEG_ACP_FS_POLICY=strict`.
+    pub fn strict(workspace_root: &Path) -> Self {
+        let roots = vec![canonical_root(workspace_root)];
+        Self {
+            read_roots: roots.clone(),
+            write_roots: roots,
+        }
+    }
+
+    /// No path gate at all in either direction. `CODEG_ACP_FS_POLICY=unrestricted`.
+    pub fn unrestricted() -> Self {
+        Self {
+            read_roots: Vec::new(),
+            write_roots: Vec::new(),
+        }
+    }
+
+    /// The default: unrestricted reads; writes confined to the workspace, the
+    /// agent's own data home (so plan files, skills and session state work),
+    /// the temp dirs (attachments), and any `CODEG_ACP_FS_EXTRA_ROOTS` entries.
+    pub fn permissive(
+        workspace_root: &Path,
+        agent_type: AgentType,
+        runtime_env: &BTreeMap<String, String>,
+    ) -> Self {
+        let mut write_roots = vec![canonical_root(workspace_root)];
+        for root in agent_data_roots(agent_type, runtime_env) {
+            write_roots.push(canonical_root(&root));
+        }
+        for root in temp_roots() {
+            write_roots.push(canonical_root(&root));
+        }
+        for root in extra_write_roots(runtime_env) {
+            write_roots.push(canonical_root(&root));
+        }
+        write_roots.sort();
+        write_roots.dedup();
+
+        Self {
+            read_roots: Vec::new(),
+            write_roots,
+        }
+    }
+
+    /// Resolve the policy for a connection from `CODEG_ACP_FS_POLICY`, checking
+    /// the agent's `runtime_env` first (so it can be set per agent through the
+    /// existing agent-settings `env_json`) then codeg's own process env.
+    pub fn from_env(
+        workspace_root: &Path,
+        agent_type: AgentType,
+        runtime_env: &BTreeMap<String, String>,
+    ) -> Self {
+        match env_value(runtime_env, FS_POLICY_ENV)
+            .as_deref()
+            .map(str::trim)
+        {
+            None | Some("") | Some("default") => {
+                Self::permissive(workspace_root, agent_type, runtime_env)
+            }
+            Some("strict") => Self::strict(workspace_root),
+            Some("unrestricted") => Self::unrestricted(),
+            Some(other) => {
+                tracing::warn!(
+                    "[ACP] unrecognized {FS_POLICY_ENV}={other:?}; falling back to \"default\""
+                );
+                Self::permissive(workspace_root, agent_type, runtime_env)
+            }
+        }
+    }
+
+    /// One-line summary for the connection log.
+    pub fn describe(&self) -> String {
+        fn render(roots: &[PathBuf]) -> String {
+            if roots.is_empty() {
+                "unrestricted".to_string()
+            } else {
+                roots
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        }
+        format!(
+            "read={} write={}",
+            render(&self.read_roots),
+            render(&self.write_roots)
+        )
+    }
+}
+
+/// Read a knob VERBATIM from the agent's `runtime_env` first, then codeg's
+/// process env. Used where the value is a path (or path list) and must not be
+/// normalized: trimming `" / "` into `/` would turn a relative entry into the
+/// filesystem root.
+fn raw_env_value(runtime_env: &BTreeMap<String, String>, key: &str) -> Option<OsString> {
+    match runtime_env.get(key) {
+        Some(value) if value.is_empty() => None,
+        Some(value) => Some(OsString::from(value)),
+        None => std::env::var_os(key).filter(|value| !value.is_empty()),
+    }
+}
+
+/// Read a knob from the agent's `runtime_env` first, then codeg's process env,
+/// trimmed — for values compared as keywords, never as paths.
+///
+/// Mirrors `PI_ACP_TRUST_WORKSPACE` (`commands::acp`): a codeg-only key that
+/// rides along in the per-agent `env_json`, so it is configurable per agent
+/// from the existing settings UI without a new surface.
+fn env_value(runtime_env: &BTreeMap<String, String>, key: &str) -> Option<String> {
+    runtime_env
+        .get(key)
+        .map(|raw| raw.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            std::env::var(key)
+                .ok()
+                .map(|raw| raw.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+}
+
+/// Extra writable roots from `CODEG_ACP_FS_EXTRA_ROOTS`. Relative entries are
+/// dropped for the same reason as relative agent homes: they would be resolved
+/// against codeg's cwd, so `.` or `..` silently widens the policy to an
+/// unrelated tree (or to `/`). Dropping is fail-closed.
+///
+/// The list is read VERBATIM — `split_paths` does not trim entries, so trimming
+/// the value first would rewrite a relative `" / "` entry into `/` and hand out
+/// the whole filesystem. An entry that IS exactly `/` is still honored: widening
+/// is this knob's declared purpose, and then it is the user's explicit choice.
+fn extra_write_roots(runtime_env: &BTreeMap<String, String>) -> Vec<PathBuf> {
+    let Some(raw) = raw_env_value(runtime_env, FS_EXTRA_ROOTS_ENV) else {
+        return Vec::new();
+    };
+
+    std::env::split_paths(&raw)
+        .filter(|path| !path.as_os_str().is_empty())
+        .filter(|path| {
+            if path.is_absolute() {
+                return true;
+            }
+            tracing::warn!(
+                "[ACP] ignoring relative {FS_EXTRA_ROOTS_ENV} entry {}; use an absolute path",
+                path.display()
+            );
+            false
+        })
+        .collect()
+}
+
+/// Temp roots an agent legitimately writes through the `fs/*` channel (image
+/// attachments, scratch files). `std::env::temp_dir()` is the per-user one
+/// (`/var/folders/…` on macOS, which canonicalizes to `/private/var/folders/…`
+/// — hence `canonical_root` on every entry).
+fn temp_roots() -> Vec<PathBuf> {
+    let mut roots = vec![std::env::temp_dir()];
+    // The shared unix temp dirs are extra roots on top of the per-user one;
+    // Windows has none to add. Gated with a runtime `cfg!` rather than
+    // `#[cfg(unix)]` so the binding is still mutated on Windows — a `#[cfg]`
+    // block leaves `mut` unused there, which `-D warnings` rejects.
+    if cfg!(unix) {
+        roots.push(PathBuf::from("/tmp"));
+        roots.push(PathBuf::from("/var/tmp"));
+    }
+    roots
+}
+
+/// The agent's own data home — where it keeps session state, plan files and
+/// skills. Writes there are part of normal operation, not an escape:
+/// grok's plan mode writes `<GROK_HOME>/sessions/<cwd>/<sid>/plan.md` and reads
+/// `<GROK_HOME>/skills/*/SKILL.md`, both outside any workspace.
+///
+/// Reuses the per-agent resolvers in `crate::parsers` (the same ones
+/// `external_transcript_sources` uses) so codeg has exactly ONE notion of where
+/// each agent lives. Where the agent's home is relocatable, the agent's
+/// `runtime_env` wins over codeg's process env — a per-agent `GROK_HOME` in
+/// `env_json` moves the agent's state, so it must move the allowed root too.
+/// Same shape as `commands::acp::pi_agent_dir_for_env`.
+fn agent_data_roots(agent_type: AgentType, runtime_env: &BTreeMap<String, String>) -> Vec<PathBuf> {
+    agent_root_slots(agent_type)
+        .iter()
+        .filter_map(|slot| resolve_root_slot(slot, runtime_env))
+        .collect()
+}
+
+/// One independently-relocatable directory belonging to an agent.
+///
+/// Modelled declaratively because three separate review findings were all the
+/// same mistake — hand-rolling one agent's env semantics slightly differently
+/// from its own resolver.
+struct RootSlot {
+    /// Ordered `(env key, sub-path appended to that key's value)` candidates, in
+    /// the agent resolver's OWN precedence order. First one that reaches the
+    /// child wins. An empty sub-path means the value IS the root.
+    candidates: &'static [(&'static str, &'static str)],
+    /// Home-relative default when none of the candidates reaches the child.
+    default_rel: &'static [&'static str],
+    /// Whether the agent's own resolver TRIMS the value before using it. Hermes
+    /// (`resolve_hermes_home` / `hermes_home_for_launch`) and Cline
+    /// (`cline_data_dir`) do, so a whitespace-only value is genuinely unset for
+    /// them; every other resolver takes the raw `OsString` and only rejects an
+    /// empty one, so trimming on their behalf would misreport the child's path.
+    trims: bool,
+}
+
+/// Resolve one slot to the directory the LAUNCHED agent will actually use, or
+/// `None` when that directory cannot be named safely.
+///
+/// The value is taken VERBATIM apart from the resolver's sub-path — no tilde
+/// expansion, because the launched CLIs treat `~` literally (see
+/// `commands::acp::hermes_home_for_launch`: "a non-empty value is used VERBATIM
+/// … Hermes does NOT expand `~`"). Expanding it here would invent `$HOME` as a
+/// writable root the user never selected.
+fn resolve_root_slot(slot: &RootSlot, runtime_env: &BTreeMap<String, String>) -> Option<PathBuf> {
+    for (key, suffix) in slot.candidates {
+        // Absent for the child ⇒ try the next candidate, exactly as the agent's
+        // own resolver would.
+        let Some(value) = child_env_value(runtime_env, key, slot.trims) else {
+            continue;
+        };
+
+        // A RELATIVE value yields NO root for this slot — and must not fall
+        // through to a lower-precedence candidate or the default.
+        //
+        // Absolutizing it would resolve against CODEG's cwd while the child runs
+        // in the workspace cwd, and that mismatch WIDENS rather than merely
+        // mismatching: `CODEX_HOME="."` with codeg launched from `/` yields the
+        // root `/`, which every absolute path passes `starts_with` against.
+        // Falling through would be wrong too — the child DID receive this value
+        // and uses it, so the default (`~/.codex`) is an inactive profile holding
+        // config and credentials, exactly the tree the isolation invariant keeps
+        // unwritable. So: refuse the slot. That is fail-closed (the agent's write
+        // is rejected), and the user can still name the directory explicitly via
+        // `CODEG_ACP_FS_EXTRA_ROOTS`.
+        let base = PathBuf::from(value);
+        if !base.is_absolute() {
+            tracing::warn!(
+                "[ACP] relative {key}={} cannot be used as an fs write root; \
+                 the agent's own directory is NOT writable this launch. \
+                 Use an absolute path (or {FS_EXTRA_ROOTS_ENV}).",
+                base.display()
+            );
+            return None;
+        }
+
+        return Some(if suffix.is_empty() {
+            base
+        } else {
+            base.join(suffix)
+        });
+    }
+
+    // No relocation reaches the child, so it falls back to a home-relative
+    // default — resolved against the CHILD's home, not codeg's (see
+    // `child_home_dir`).
+    let mut root = child_home_dir(runtime_env)?;
+    for segment in slot.default_rel {
+        root.push(segment);
+    }
+    Some(root)
+}
+
+/// The home directory the CHILD resolves its defaults against.
+///
+/// `merge_agent_env` copies EVERY `runtime_env` entry into the child — `HOME`
+/// included, and overriding it is the classic way to isolate a CLI's config — so
+/// the home-relative defaults must follow the child's home. Using codeg's would
+/// both grant the inactive profile (config/credentials the session never opens)
+/// and refuse the active one.
+///
+/// `None` when the child's home cannot be named as an absolute path, in which
+/// case the caller refuses the slot rather than guessing at a root.
+fn child_home_dir(runtime_env: &BTreeMap<String, String>) -> Option<PathBuf> {
+    // `dirs::home_dir()` ignores `$HOME` on Windows, where the home var the
+    // agents actually read is `USERPROFILE`.
+    #[cfg(windows)]
+    const HOME_KEY: &str = "USERPROFILE";
+    #[cfg(not(windows))]
+    const HOME_KEY: &str = "HOME";
+
+    // The three states are NOT interchangeable, and collapsing the last two is a
+    // real bug: `dirs::home_dir()` consults CODEG's `$HOME` before falling back to
+    // the passwd entry, so it answers for codeg, not for a child whose `HOME` was
+    // removed.
+    let home = match runtime_env.get(HOME_KEY) {
+        // Explicitly REMOVED (blank ⇒ `env_remove`): the child resolves its home
+        // from the OS account database, which we cannot read without duplicating a
+        // passwd lookup — and codeg's `$HOME` is NOT that answer whenever the two
+        // differ. Refuse rather than guess; the user can still name the directory
+        // via `CODEG_ACP_FS_EXTRA_ROOTS`.
+        Some(value) if value.is_empty() => {
+            tracing::warn!(
+                "[ACP] {HOME_KEY} is removed for this launch, so the agent's own \
+                 directory cannot be located and is NOT writable; \
+                 set {FS_EXTRA_ROOTS_ENV} if it needs to be"
+            );
+            return None;
+        }
+        // Overridden: the child sees exactly this.
+        Some(value) => PathBuf::from(value),
+        // Absent: the child inherits codeg's environment, so codeg's answer is
+        // exact — including its own passwd fallback when codeg has no `HOME`.
+        None => {
+            // On Windows the agents' home also derives from `HOMEDRIVE` +
+            // `HOMEPATH` when `USERPROFILE` is absent (Python's rule, which
+            // Hermes follows). If the launch relocates that pair without
+            // relocating `USERPROFILE`, codeg's answer may not be the child's, so
+            // fail closed instead of guessing.
+            #[cfg(windows)]
+            if runtime_env.contains_key("HOMEDRIVE") || runtime_env.contains_key("HOMEPATH") {
+                tracing::warn!(
+                    "[ACP] HOMEDRIVE/HOMEPATH are relocated without {HOME_KEY}; \
+                     the agent's own directory cannot be located and is NOT writable"
+                );
+                return None;
+            }
+            dirs::home_dir()?
+        }
+    };
+
+    // `dirs` accepts a relative `HOME` on unix, and a relative home would be
+    // absolutized against codeg's cwd — the same widening as a relative agent
+    // home, so refuse it the same way.
+    if !home.is_absolute() {
+        tracing::warn!(
+            "[ACP] relative {HOME_KEY}={} cannot anchor the fs write roots; \
+             the agent's own directory is NOT writable this launch",
+            home.display()
+        );
+        return None;
+    }
+
+    Some(home)
+}
+
+/// What the LAUNCHED child will see for `key`, which is NOT simply
+/// "runtime_env else our env":
+///
+/// * non-blank in `runtime_env` — `merge_agent_env` gives `runtime_env` the
+///   highest precedence, so this REPLACES the parent's value in the child.
+/// * blank in `runtime_env` — the vendored spawn layer treats an empty value as
+///   `env_remove` ("an empty value means ensure this var is ABSENT from the
+///   child", `vendor/sacp-tokio/src/acp_agent.rs`). The child therefore does NOT
+///   inherit our value; the agent falls back to its own default. Reading through
+///   to our process env here would point the root at a profile the child never
+///   opens, re-breaking the writes this change exists to allow.
+/// * absent from `runtime_env` — the child inherits our environment.
+///
+/// The value is returned VERBATIM. Only an EXACTLY empty string counts as
+/// removed, because that is the precise test the spawn layer applies
+/// (`if env_var.value.is_empty() { env_remove }`) — a whitespace-only value is
+/// passed through to the child untouched. Trimming here would both under-include
+/// (treating `"  "` as unset when the child receives it) and, worse, WIDEN:
+/// `CODEX_HOME=" / "` reaches the child as a *relative* path, but trimmed it
+/// becomes `/` and would make the entire filesystem writable.
+///
+/// `trims` opts into the normalization the agent's OWN resolver performs: Hermes
+/// and Cline trim their value (so a whitespace-only value really is unset for
+/// them), while the rest take the raw `OsString` and only reject an empty one.
+/// Inherited values go through `var_os` so a non-UTF-8 path is not silently
+/// dropped.
+fn child_env_value(
+    runtime_env: &BTreeMap<String, String>,
+    key: &str,
+    trims: bool,
+) -> Option<OsString> {
+    let raw = match runtime_env.get(key) {
+        // Exactly empty ⇒ the spawn layer `env_remove`s it.
+        Some(value) if value.is_empty() => return None,
+        Some(value) => OsString::from(value),
+        None => std::env::var_os(key)?,
+    };
+
+    if trims {
+        let trimmed = raw.to_string_lossy().trim().to_string();
+        return (!trimmed.is_empty()).then(|| OsString::from(trimmed));
+    }
+
+    (!raw.is_empty()).then_some(raw)
+}
+
+/// Every agent's relocatable directories, mirroring the `resolve_*_from` bodies
+/// in `crate::parsers` (pinned by `root_slots_match_parser_resolvers`).
+///
+/// A wrong sub-path is not cosmetic: dropping Gemini's `.gemini` widens the root
+/// by a whole level (to the bare home directory when `GEMINI_CLI_HOME` is the
+/// home dir), and omitting a key narrows it so the agent's real directory is
+/// rejected again.
+fn agent_root_slots(agent_type: AgentType) -> &'static [RootSlot] {
+    match agent_type {
+        AgentType::Grok => &[RootSlot {
+            candidates: &[("GROK_HOME", "")],
+            trims: false,
+            default_rel: &[".grok"],
+        }],
+        AgentType::ClaudeCode => &[RootSlot {
+            candidates: &[("CLAUDE_CONFIG_DIR", "")],
+            trims: false,
+            default_rel: &[".claude"],
+        }],
+        AgentType::Codex => &[RootSlot {
+            candidates: &[("CODEX_HOME", "")],
+            trims: false,
+            default_rel: &[".codex"],
+        }],
+        // `resolve_gemini_base_dir_from` joins `.gemini` onto GEMINI_CLI_HOME.
+        AgentType::Gemini => &[RootSlot {
+            candidates: &[("GEMINI_CLI_HOME", ".gemini")],
+            trims: false,
+            default_rel: &[".gemini"],
+        }],
+        AgentType::CodeBuddy => &[RootSlot {
+            candidates: &[("CODEBUDDY_CONFIG_DIR", "")],
+            trims: false,
+            default_rel: &[".codebuddy"],
+        }],
+        AgentType::KimiCode => &[RootSlot {
+            candidates: &[("KIMI_CODE_HOME", "")],
+            trims: false,
+            default_rel: &[".kimi-code"],
+        }],
+        // `resolve_cursor_config_from` prefers CURSOR_CONFIG_DIR verbatim and
+        // only then `<XDG_CONFIG_HOME>/cursor` — order matters.
+        AgentType::Cursor => &[RootSlot {
+            candidates: &[("CURSOR_CONFIG_DIR", ""), ("XDG_CONFIG_HOME", "cursor")],
+            trims: false,
+            default_rel: &[".cursor"],
+        }],
+        AgentType::Hermes => &[RootSlot {
+            candidates: &[("HERMES_HOME", "")],
+            trims: true,
+            default_rel: &[".hermes"],
+        }],
+        // `resolve_opencode_base_dir` is `<XDG_DATA_HOME>/opencode`.
+        AgentType::OpenCode => &[RootSlot {
+            candidates: &[("XDG_DATA_HOME", "opencode")],
+            trims: false,
+            default_rel: &[".local", "share", "opencode"],
+        }],
+        AgentType::Cline => &[RootSlot {
+            candidates: &[("CLINE_DIR", "")],
+            trims: true,
+            default_rel: &[".cline", "data"],
+        }],
+        AgentType::OpenClaw => &[RootSlot {
+            candidates: &[],
+            trims: false,
+            default_rel: &[".openclaw"],
+        }],
+        // pi's agent home and its session store relocate INDEPENDENTLY, so both
+        // are genuine roots rather than alternatives. The sessions slot mirrors
+        // `resolve_pi_sessions_dir_from`: the session override wins, else
+        // `<agent dir>/sessions`, else `~/.pi/agent/sessions`.
+        AgentType::Pi => &[
+            RootSlot {
+                candidates: &[("PI_CODING_AGENT_DIR", "")],
+                trims: false,
+                default_rel: &[".pi", "agent"],
+            },
+            RootSlot {
+                candidates: &[
+                    ("PI_CODING_AGENT_SESSION_DIR", ""),
+                    ("PI_CODING_AGENT_DIR", "sessions"),
+                ],
+                trims: false,
+                default_rel: &[".pi", "agent", "sessions"],
+            },
+        ],
+        // A custom ACP agent has no codeg-known private directory layout —
+        // codeg never reads its store (history comes from codeg's own ACP
+        // transcript), so there is nothing to widen the sandbox roots for.
+        AgentType::Custom(_) => &[],
+    }
+}
+
+/// Absolutize + canonicalize a configured root. Falls back to the absolutized
+/// raw path when the directory does not exist yet (a non-existent root simply
+/// never matches, which is the correct outcome).
+fn canonical_root(root: &Path) -> PathBuf {
+    let absolute = if root.is_absolute() {
+        root.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(root)
+    };
+    std::fs::canonicalize(&absolute).unwrap_or(absolute)
+}
+
 #[derive(Clone)]
 pub struct FileSystemRuntime {
-    workspace_root: PathBuf,
-    workspace_root_canonical: Option<PathBuf>,
+    policy: Arc<FsAccessPolicy>,
     io_semaphore: Arc<Semaphore>,
 }
 
 impl FileSystemRuntime {
+    /// Confine both directions to `workspace_root`. Kept as the `new` shape
+    /// because that is what the historical constructor meant; production goes
+    /// through `with_policy`.
     pub fn new(workspace_root: PathBuf) -> Self {
-        let workspace_root = if workspace_root.is_absolute() {
-            workspace_root
-        } else {
-            std::env::current_dir()
-                .unwrap_or_default()
-                .join(workspace_root)
-        };
-        let workspace_root_canonical = std::fs::canonicalize(&workspace_root).ok();
+        Self::with_policy(FsAccessPolicy::strict(&workspace_root))
+    }
 
+    pub fn with_policy(policy: FsAccessPolicy) -> Self {
         Self {
-            workspace_root,
-            workspace_root_canonical,
+            policy: Arc::new(policy),
             io_semaphore: Arc::new(Semaphore::new(FS_MAX_CONCURRENT_OPS)),
         }
     }
@@ -80,8 +602,7 @@ impl FileSystemRuntime {
                 FileSystemRuntimeError::Internal("filesystem runtime closed".to_string())
             })?;
 
-        let workspace_root = self.workspace_root.clone();
-        let workspace_root_canonical = self.workspace_root_canonical.clone();
+        let policy = self.policy.clone();
         let path = request.path;
         let line = request.line;
         let limit = request.limit;
@@ -89,14 +610,8 @@ impl FileSystemRuntime {
         let path_for_log = path.clone();
 
         let response = run_blocking_with_timeout("fs/read_text_file", move || {
-            read_text_file_impl(
-                &path,
-                line,
-                limit,
-                &workspace_root,
-                workspace_root_canonical.as_deref(),
-            )
-            .map(ReadTextFileResponse::new)
+            read_text_file_impl(&path, line, limit, &policy.read_roots)
+                .map(ReadTextFileResponse::new)
         })
         .await;
 
@@ -130,20 +645,14 @@ impl FileSystemRuntime {
                 FileSystemRuntimeError::Internal("filesystem runtime closed".to_string())
             })?;
 
-        let workspace_root = self.workspace_root.clone();
-        let workspace_root_canonical = self.workspace_root_canonical.clone();
+        let policy = self.policy.clone();
         let path = request.path;
         let content = request.content;
         let started_at = Instant::now();
         let path_for_log = path.clone();
 
         let response = run_blocking_with_timeout("fs/write_text_file", move || {
-            ensure_path_in_workspace(
-                &path,
-                &workspace_root,
-                workspace_root_canonical.as_deref(),
-                true,
-            )?;
+            ensure_path_allowed(&path, &policy.write_roots, true)?;
             atomic_write_text(&path, content.as_bytes())?;
             Ok(WriteTextFileResponse::new())
         })
@@ -183,10 +692,9 @@ fn read_text_file_impl(
     path: &Path,
     line: Option<u32>,
     limit: Option<u32>,
-    workspace_root: &Path,
-    workspace_root_canonical: Option<&Path>,
+    read_roots: &[PathBuf],
 ) -> Result<String, FileSystemRuntimeError> {
-    ensure_path_in_workspace(path, workspace_root, workspace_root_canonical, false)?;
+    ensure_path_allowed(path, read_roots, false)?;
 
     let metadata = std::fs::metadata(path).map_err(|err| map_io_error("read", path, err))?;
     if metadata.len() > FS_MAX_FILE_SIZE_BYTES {
@@ -355,30 +863,34 @@ fn sync_directory(_path: &Path) -> Result<(), FileSystemRuntimeError> {
     Ok(())
 }
 
-fn canonical_workspace_root(workspace_root: &Path, canonical: Option<&Path>) -> PathBuf {
-    canonical
-        .map(Path::to_path_buf)
-        .or_else(|| std::fs::canonicalize(workspace_root).ok())
-        .unwrap_or_else(|| workspace_root.to_path_buf())
-}
-
-fn ensure_path_in_workspace(
+/// Gate a path against a root list. An EMPTY list means unrestricted — and it
+/// short-circuits BEFORE canonicalizing, so an unrestricted read reports the
+/// natural `NotFound` from the open() below rather than a containment error.
+///
+/// Containment is checked on the CANONICAL target (`canonical_target_path`
+/// resolves the parent for not-yet-existing writes), which is what makes this
+/// symlink-safe. `Path::starts_with` compares whole components, so root
+/// `/foo/bar` does not admit `/foo/barbaz`.
+fn ensure_path_allowed(
     path: &Path,
-    workspace_root: &Path,
-    workspace_root_canonical: Option<&Path>,
+    roots: &[PathBuf],
     for_write: bool,
 ) -> Result<(), FileSystemRuntimeError> {
-    let root = canonical_workspace_root(workspace_root, workspace_root_canonical);
-    let target = canonical_target_path(path, for_write)?;
-
-    if !target.starts_with(&root) {
-        return Err(FileSystemRuntimeError::InvalidParams(format!(
-            "path is outside workspace root: {}",
-            path.display()
-        )));
+    if roots.is_empty() {
+        return Ok(());
     }
 
-    Ok(())
+    let target = canonical_target_path(path, for_write)?;
+    if roots.iter().any(|root| target.starts_with(root)) {
+        return Ok(());
+    }
+
+    let direction = if for_write { "write" } else { "read" };
+    Err(FileSystemRuntimeError::InvalidParams(format!(
+        "path is outside the allowed {direction} roots: {} \
+         (widen with {FS_EXTRA_ROOTS_ENV}, or set {FS_POLICY_ENV}=unrestricted)",
+        path.display()
+    )))
 }
 
 fn canonical_target_path(path: &Path, for_write: bool) -> Result<PathBuf, FileSystemRuntimeError> {
@@ -441,6 +953,24 @@ mod tests {
         path
     }
 
+    /// Drive prefix that makes a rooted path ABSOLUTE on this platform. On
+    /// Windows `\tmp\x` is rooted but not absolute (it is relative to the
+    /// current drive), so a literal unix path would be dropped by the very
+    /// relative-path guards these tests exercise.
+    #[cfg(windows)]
+    const ABS_PREFIX: &str = "C:";
+    #[cfg(not(windows))]
+    const ABS_PREFIX: &str = "";
+
+    /// An absolute path for the HOST platform, built from unix-style segments.
+    /// `absolute_path("")` is the filesystem root itself (`/`, or `C:/`).
+    ///
+    /// None of these paths are ever opened — they only have to be absolute, so
+    /// the synthetic drive letter needs no counterpart on disk.
+    fn absolute_path(segments: &str) -> PathBuf {
+        PathBuf::from(format!("{ABS_PREFIX}/{segments}"))
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn read_honors_line_and_limit() {
         let workspace = temp_workspace();
@@ -458,27 +988,996 @@ mod tests {
         let _ = fs::remove_dir_all(workspace);
     }
 
+    /// The default policy's shape, pinned to an explicit root list so the
+    /// assertions don't depend on where this machine's temp dir / HOME live.
+    fn reads_open_writes_confined_to(workspace: &Path) -> FsAccessPolicy {
+        FsAccessPolicy {
+            read_roots: Vec::new(),
+            write_roots: vec![canonical_root(workspace)],
+        }
+    }
+
+    fn invalid_params(error: FileSystemRuntimeError) -> String {
+        match error {
+            FileSystemRuntimeError::InvalidParams(message) => message,
+            other => panic!("expected InvalidParams, got: {other:?}"),
+        }
+    }
+
+    /// `strict` is the historical behavior — keep a regression net on it, since
+    /// it is what `CODEG_ACP_FS_POLICY=strict` promises to restore.
     #[tokio::test(flavor = "current_thread")]
-    async fn rejects_path_outside_workspace() {
+    async fn strict_rejects_read_and_write_outside_workspace() {
         let workspace = temp_workspace();
         let outside = std::env::temp_dir().join(format!("outside-{}.txt", uuid::Uuid::new_v4()));
         fs::write(&outside, "x").expect("write outside file");
 
-        let runtime = FileSystemRuntime::new(workspace.clone());
-        let error = runtime
-            .read_text_file(ReadTextFileRequest::new("sid", &outside))
-            .await
-            .expect_err("should reject outside path");
+        let runtime = FileSystemRuntime::with_policy(FsAccessPolicy::strict(&workspace));
 
-        match error {
-            FileSystemRuntimeError::InvalidParams(message) => {
-                assert!(message.contains("outside workspace"));
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        let read_err = invalid_params(
+            runtime
+                .read_text_file(ReadTextFileRequest::new("sid", &outside))
+                .await
+                .expect_err("strict should reject an outside read"),
+        );
+        assert!(
+            read_err.contains("outside the allowed read roots"),
+            "unexpected message: {read_err}"
+        );
+
+        let write_err = invalid_params(
+            runtime
+                .write_text_file(WriteTextFileRequest::new("sid", &outside, "nope"))
+                .await
+                .expect_err("strict should reject an outside write"),
+        );
+        assert!(
+            write_err.contains("outside the allowed write roots"),
+            "unexpected message: {write_err}"
+        );
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside file survives"),
+            "x",
+            "a rejected write must not touch the file"
+        );
 
         let _ = fs::remove_file(outside);
         let _ = fs::remove_dir_all(workspace);
+    }
+
+    /// The regression this whole change exists for: an agent reading its own
+    /// out-of-workspace state (grok's `<GROK_HOME>/skills/*/SKILL.md`,
+    /// attachment images under the temp dir) must succeed by default.
+    #[tokio::test(flavor = "current_thread")]
+    async fn default_allows_read_outside_workspace() {
+        let workspace = temp_workspace();
+        let outside = std::env::temp_dir().join(format!("outside-{}.txt", uuid::Uuid::new_v4()));
+        fs::write(&outside, "agent-owned\n").expect("write outside file");
+
+        let runtime = FileSystemRuntime::with_policy(reads_open_writes_confined_to(&workspace));
+        let response = runtime
+            .read_text_file(ReadTextFileRequest::new("sid", &outside))
+            .await
+            .expect("outside read should be allowed");
+        assert_eq!(response.content, "agent-owned\n");
+
+        let _ = fs::remove_file(outside);
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    /// Unrestricted reads must still surface a real missing file as such, not as
+    /// a containment error (the gate short-circuits before canonicalizing).
+    #[tokio::test(flavor = "current_thread")]
+    async fn unrestricted_read_reports_missing_file_naturally() {
+        let workspace = temp_workspace();
+        let missing = workspace.join("nope.txt");
+
+        let runtime = FileSystemRuntime::with_policy(reads_open_writes_confined_to(&workspace));
+        let message = invalid_params(
+            runtime
+                .read_text_file(ReadTextFileRequest::new("sid", &missing))
+                .await
+                .expect_err("missing file should error"),
+        );
+        assert!(
+            message.contains("failed to read") && !message.contains("allowed read roots"),
+            "unexpected message: {message}"
+        );
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn default_rejects_write_outside_every_root() {
+        let workspace = temp_workspace();
+        let other = temp_workspace();
+        let target = other.join("stray.txt");
+
+        let runtime = FileSystemRuntime::with_policy(reads_open_writes_confined_to(&workspace));
+        let message = invalid_params(
+            runtime
+                .write_text_file(WriteTextFileRequest::new("sid", &target, "stray"))
+                .await
+                .expect_err("write outside every root should be rejected"),
+        );
+        assert!(
+            message.contains("outside the allowed write roots")
+                && message.contains(FS_EXTRA_ROOTS_ENV),
+            "message should name the widening knob: {message}"
+        );
+        assert!(!target.exists(), "rejected write must not create the file");
+
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(other);
+    }
+
+    /// A symlink inside the workspace pointing out of it must not become a
+    /// write tunnel: containment is checked on the canonicalized parent.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn rejects_symlink_escape_on_write() {
+        let workspace = temp_workspace();
+        let outside = temp_workspace();
+        let link = workspace.join("escape");
+        std::os::unix::fs::symlink(&outside, &link).expect("create symlink");
+
+        let runtime = FileSystemRuntime::with_policy(reads_open_writes_confined_to(&workspace));
+        let message = invalid_params(
+            runtime
+                .write_text_file(WriteTextFileRequest::new(
+                    "sid",
+                    link.join("pwned.txt"),
+                    "pwned",
+                ))
+                .await
+                .expect_err("symlink escape should be rejected"),
+        );
+        assert!(
+            message.contains("outside the allowed write roots"),
+            "unexpected message: {message}"
+        );
+        assert!(!outside.join("pwned.txt").exists(), "escape must not write");
+
+        let _ = fs::remove_file(link);
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unrestricted_policy_writes_anywhere() {
+        let workspace = temp_workspace();
+        let elsewhere = temp_workspace();
+        let target = elsewhere.join("free.txt");
+
+        let runtime = FileSystemRuntime::with_policy(FsAccessPolicy::unrestricted());
+        runtime
+            .write_text_file(WriteTextFileRequest::new("sid", &target, "free"))
+            .await
+            .expect("unrestricted write should succeed");
+        assert_eq!(fs::read_to_string(&target).expect("read back"), "free");
+
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(elsewhere);
+    }
+
+    #[test]
+    fn permissive_write_roots_include_workspace_agent_home_and_temp() {
+        let workspace = temp_workspace();
+        let policy = FsAccessPolicy::permissive(&workspace, AgentType::Grok, &BTreeMap::new());
+
+        assert!(
+            policy.read_roots.is_empty(),
+            "default reads must be unrestricted"
+        );
+        for expected in [
+            canonical_root(&workspace),
+            canonical_root(&crate::parsers::grok::resolve_grok_home_dir()),
+            canonical_root(&std::env::temp_dir()),
+        ] {
+            assert!(
+                policy.write_roots.contains(&expected),
+                "missing write root {}: {:?}",
+                expected.display(),
+                policy.write_roots
+            );
+        }
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    /// The reported regression, reproduced in its exact shape: grok's plan mode
+    /// writes `<GROK_HOME>/sessions/<encoded-cwd>/<sid>/plan.md`, which is by
+    /// design outside the workspace. Before this policy existed the write was
+    /// refused and grok fell back to shelling out a `cat > … << 'PLAN_EOF'`
+    /// heredoc — so this asserts the delegated write now simply lands.
+    #[tokio::test(flavor = "current_thread")]
+    async fn permissive_policy_writes_agent_plan_file_outside_workspace() {
+        let workspace = temp_workspace();
+        let grok_home = temp_workspace();
+        let session_dir = grok_home
+            .join("sessions")
+            .join("%2FUsers%2Fme%2Fwork%2Fmy-app")
+            .join("019f9517-cbde-7f63-ae52-d04fa96b4b6b");
+        fs::create_dir_all(&session_dir).expect("create grok session dir");
+        let plan = session_dir.join("plan.md");
+
+        let runtime_env = BTreeMap::from([(
+            "GROK_HOME".to_string(),
+            grok_home.to_string_lossy().to_string(),
+        )]);
+        let runtime = FileSystemRuntime::with_policy(FsAccessPolicy::permissive(
+            &workspace,
+            AgentType::Grok,
+            &runtime_env,
+        ));
+
+        runtime
+            .write_text_file(WriteTextFileRequest::new("sid", &plan, "# Plan\n"))
+            .await
+            .expect("grok must be able to write its own plan file");
+        assert_eq!(fs::read_to_string(&plan).expect("read back"), "# Plan\n");
+
+        // …and read it back, which is how grok fetches the plan body after the
+        // user approves `exit_plan_mode`.
+        let response = runtime
+            .read_text_file(ReadTextFileRequest::new("sid", &plan))
+            .await
+            .expect("grok must be able to read its own plan file back");
+        assert_eq!(response.content, "# Plan\n");
+
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(grok_home);
+    }
+
+    /// End-to-end on the REAL default policy, which is what catches root
+    /// canonicalization mismatches: on macOS the temp dir is handed to us as
+    /// `/var/folders/…` but canonicalizes to `/private/var/folders/…`, and the
+    /// rejected attachment paths in the bug report were the `/private/…` form.
+    /// A raw `starts_with` against the un-canonicalized root would fail here.
+    #[tokio::test(flavor = "current_thread")]
+    async fn permissive_policy_writes_into_temp_dir() {
+        let workspace = temp_workspace();
+        let elsewhere_in_temp = temp_workspace();
+        let target = elsewhere_in_temp.join("attachment.txt");
+
+        let runtime = FileSystemRuntime::with_policy(FsAccessPolicy::permissive(
+            &workspace,
+            AgentType::Grok,
+            &BTreeMap::new(),
+        ));
+        runtime
+            .write_text_file(WriteTextFileRequest::new("sid", &target, "payload"))
+            .await
+            .expect("temp dir should be writable under the default policy");
+        assert_eq!(fs::read_to_string(&target).expect("read back"), "payload");
+
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(elsewhere_in_temp);
+    }
+
+    #[test]
+    fn extra_roots_env_adds_writable_roots() {
+        let workspace = temp_workspace();
+        let extra_a = temp_workspace();
+        let extra_b = temp_workspace();
+        let joined = std::env::join_paths([&extra_a, &extra_b]).expect("join paths");
+
+        let runtime_env = BTreeMap::from([(
+            FS_EXTRA_ROOTS_ENV.to_string(),
+            joined.to_string_lossy().to_string(),
+        )]);
+        let policy = FsAccessPolicy::permissive(&workspace, AgentType::Grok, &runtime_env);
+
+        for extra in [&extra_a, &extra_b] {
+            assert!(
+                policy.write_roots.contains(&canonical_root(extra)),
+                "extra root {} not honored",
+                extra.display()
+            );
+        }
+
+        for dir in [workspace, extra_a, extra_b] {
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn policy_from_env_reads_runtime_env_first() {
+        let workspace = temp_workspace();
+        let policy_for = |value: &str| {
+            FsAccessPolicy::from_env(
+                &workspace,
+                AgentType::Grok,
+                &BTreeMap::from([(FS_POLICY_ENV.to_string(), value.to_string())]),
+            )
+        };
+
+        let strict = policy_for("strict");
+        assert_eq!(strict.read_roots, vec![canonical_root(&workspace)]);
+        assert_eq!(strict.write_roots, vec![canonical_root(&workspace)]);
+
+        let unrestricted = policy_for("unrestricted");
+        assert!(unrestricted.read_roots.is_empty());
+        assert!(unrestricted.write_roots.is_empty());
+
+        // An unrecognized value must degrade to the default, never to a
+        // fail-open or fail-closed surprise.
+        for value in ["default", "totally-bogus"] {
+            let fallback = policy_for(value);
+            assert!(fallback.read_roots.is_empty(), "{value}: reads open");
+            assert!(
+                fallback.write_roots.contains(&canonical_root(&workspace)),
+                "{value}: workspace writable"
+            );
+        }
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    /// A per-agent home relocation must move the allowed root with it, or the
+    /// agent's own state directory falls outside the policy again.
+    ///
+    /// Only the keys whose value IS the data root verbatim belong here; the ones
+    /// their resolver appends a sub-path to (Gemini, OpenCode, Cursor's XDG
+    /// fallback) are covered by `relocation_suffixes_match_the_agents_own_resolvers`.
+    #[test]
+    fn agent_data_roots_honor_runtime_env_relocation() {
+        let relocated = absolute_path("tmp/codeg-relocated-agent-home");
+        let cases = [
+            (AgentType::Grok, "GROK_HOME"),
+            (AgentType::ClaudeCode, "CLAUDE_CONFIG_DIR"),
+            (AgentType::Codex, "CODEX_HOME"),
+            (AgentType::CodeBuddy, "CODEBUDDY_CONFIG_DIR"),
+            (AgentType::KimiCode, "KIMI_CODE_HOME"),
+            (AgentType::Cursor, "CURSOR_CONFIG_DIR"),
+            (AgentType::Hermes, "HERMES_HOME"),
+            (AgentType::Cline, "CLINE_DIR"),
+            (AgentType::Pi, "PI_CODING_AGENT_DIR"),
+        ];
+
+        for (agent_type, key) in cases {
+            let runtime_env =
+                BTreeMap::from([(key.to_string(), relocated.to_string_lossy().to_string())]);
+            let roots = agent_data_roots(agent_type, &runtime_env);
+            assert!(
+                roots.contains(&relocated),
+                "{agent_type:?}: {key} not honored, got {roots:?}"
+            );
+        }
+    }
+
+    /// Each agent's relocation key must land on the SAME directory its own
+    /// resolver would compute for that value — not one level above it. Getting
+    /// Gemini's `.gemini` suffix wrong would make the bare relocation target
+    /// writable, which for `GEMINI_CLI_HOME=$HOME` is the whole home directory.
+    #[test]
+    fn relocation_suffixes_match_the_agents_own_resolvers() {
+        let base = absolute_path("tmp/codeg-relocation-base");
+        let cases = [
+            (AgentType::Gemini, "GEMINI_CLI_HOME", ".gemini"),
+            (AgentType::OpenCode, "XDG_DATA_HOME", "opencode"),
+            (AgentType::Cursor, "XDG_CONFIG_HOME", "cursor"),
+        ];
+
+        for (agent_type, key, suffix) in cases {
+            let runtime_env =
+                BTreeMap::from([(key.to_string(), base.to_string_lossy().to_string())]);
+            let roots = agent_data_roots(agent_type, &runtime_env);
+
+            assert!(
+                roots.contains(&base.join(suffix)),
+                "{agent_type:?}: expected {key} to resolve to <value>/{suffix}, got {roots:?}"
+            );
+            assert!(
+                !roots.contains(&base),
+                "{agent_type:?}: the bare {key} value must NOT become a root \
+                 (that widens it by a level): {roots:?}"
+            );
+        }
+    }
+
+    /// No relocation value may be tilde-expanded: the launched CLIs treat `~`
+    /// literally, so expanding it here would hand out `$HOME` as a writable root
+    /// the user never selected. Hermes' launch contract
+    /// (`commands::acp::hermes_home_for_launch`) is explicit that `~` is NOT
+    /// expanded, and a BLANK value falls back to `~/.hermes` rather than
+    /// re-inheriting the parent.
+    #[test]
+    fn relocation_never_expands_tilde_into_home() {
+        let home = dirs::home_dir().expect("home dir");
+        let cases = [
+            (AgentType::Grok, "GROK_HOME"),
+            (AgentType::Codex, "CODEX_HOME"),
+            (AgentType::ClaudeCode, "CLAUDE_CONFIG_DIR"),
+            (AgentType::Hermes, "HERMES_HOME"),
+            (AgentType::Pi, "PI_CODING_AGENT_DIR"),
+        ];
+
+        for (agent_type, key) in cases {
+            // Pi's sessions slot has a second candidate that could be satisfied
+            // from this machine's environment; skip when that applies.
+            if agent_relocated_by_process_env(agent_type) {
+                continue;
+            }
+            let runtime_env = BTreeMap::from([(key.to_string(), "~".to_string())]);
+            let roots = agent_data_roots(agent_type, &runtime_env);
+
+            // The security property: `~` is never expanded into the home dir.
+            assert!(
+                !roots.contains(&home),
+                "{agent_type:?}: {key}=~ must not add $HOME as a root, got {roots:?}"
+            );
+            // A bare `~` is a RELATIVE path, so the slot yields NO root — not the
+            // inactive default either, since the child really does use the value
+            // it was given (see `relative_agent_root_is_refused_not_absolutized`).
+            assert!(
+                roots.is_empty(),
+                "{agent_type:?}: {key}=~ should yield no root at all, got {roots:?}"
+            );
+        }
+    }
+
+    /// A blank relocation value must fall back to Hermes' default home, not
+    /// re-inherit codeg's process env — mirroring the launch contract.
+    #[test]
+    fn hermes_blank_relocation_falls_back_to_default_home() {
+        let runtime_env = BTreeMap::from([("HERMES_HOME".to_string(), "   ".to_string())]);
+        let roots = agent_data_roots(AgentType::Hermes, &runtime_env);
+        let expected = dirs::home_dir().expect("home dir").join(".hermes");
+        assert_eq!(roots, vec![expected]);
+    }
+
+    /// When `runtime_env` relocates a profile, `merge_agent_env` gives it the
+    /// highest precedence so the child NEVER reads the process-env default. That
+    /// inactive tree holds config and credentials, so it must not stay writable.
+    #[test]
+    fn relocation_excludes_the_inactive_default_root() {
+        let relocated = absolute_path("tmp/codeg-isolated-profile");
+        let cases = [
+            (AgentType::Codex, "CODEX_HOME"),
+            (AgentType::Grok, "GROK_HOME"),
+            (AgentType::ClaudeCode, "CLAUDE_CONFIG_DIR"),
+            (AgentType::Hermes, "HERMES_HOME"),
+        ];
+
+        for (agent_type, key) in cases {
+            let runtime_env =
+                BTreeMap::from([(key.to_string(), relocated.to_string_lossy().to_string())]);
+            let roots = agent_data_roots(agent_type, &runtime_env);
+
+            assert!(
+                roots.contains(&relocated),
+                "{agent_type:?}: relocated root missing, got {roots:?}"
+            );
+            for default_root in builtin_default_roots(agent_type) {
+                assert!(
+                    !roots.contains(&default_root),
+                    "{agent_type:?}: inactive default {} must not stay writable, got {roots:?}",
+                    default_root.display()
+                );
+            }
+        }
+    }
+
+    /// Whether THIS machine's environment already relocates the agent (e.g. an
+    /// exported `CODEX_HOME` / `XDG_DATA_HOME`). Such a relocation legitimately
+    /// produces a root without ever consulting the home directory, so tests that
+    /// assert "no root" for a broken home must skip these agents to stay
+    /// deterministic across developer machines.
+    fn agent_relocated_by_process_env(agent_type: AgentType) -> bool {
+        agent_root_slots(agent_type)
+            .iter()
+            .flat_map(|slot| slot.candidates.iter())
+            .any(|(key, _)| std::env::var_os(key).is_some())
+    }
+
+    /// Force every candidate key "absent for the child" (blank ⇒ `env_remove`)
+    /// so the slots fall through to their home-relative defaults, independent of
+    /// whatever this machine's environment happens to set.
+    fn builtin_default_roots(agent_type: AgentType) -> Vec<PathBuf> {
+        let blanked: BTreeMap<String, String> = agent_root_slots(agent_type)
+            .iter()
+            .flat_map(|slot| slot.candidates.iter())
+            .map(|(key, _)| ((*key).to_string(), String::new()))
+            .collect();
+        agent_data_roots(agent_type, &blanked)
+    }
+
+    /// A BLANK value in `env_json` is not "unset, use ours" — the vendored spawn
+    /// layer `env_remove`s it, so the child falls back to its OWN default. Reading
+    /// through to codeg's process env would aim the root at a profile the child
+    /// never opens, re-breaking the writes this change exists to allow.
+    #[test]
+    fn blank_runtime_value_falls_back_to_the_agents_default_not_our_env() {
+        let home = dirs::home_dir().expect("home dir");
+
+        // Deterministic regardless of this machine's env: blank short-circuits
+        // before any process-env lookup.
+        assert_eq!(
+            agent_data_roots(
+                AgentType::Codex,
+                &BTreeMap::from([("CODEX_HOME".to_string(), String::new())])
+            ),
+            vec![home.join(".codex")]
+        );
+        assert_eq!(
+            agent_data_roots(
+                AgentType::Cursor,
+                &BTreeMap::from([
+                    ("CURSOR_CONFIG_DIR".to_string(), String::new()),
+                    ("XDG_CONFIG_HOME".to_string(), String::new()),
+                ])
+            ),
+            vec![home.join(".cursor")]
+        );
+        assert_eq!(
+            agent_data_roots(
+                AgentType::Pi,
+                &BTreeMap::from([
+                    ("PI_CODING_AGENT_DIR".to_string(), String::new()),
+                    ("PI_CODING_AGENT_SESSION_DIR".to_string(), String::new()),
+                ])
+            ),
+            vec![
+                home.join(".pi").join("agent"),
+                home.join(".pi").join("agent").join("sessions")
+            ]
+        );
+    }
+
+    /// A masked higher-precedence key must fall through to the NEXT candidate,
+    /// not to the masked key's inherited value.
+    #[test]
+    fn blank_runtime_value_falls_through_to_the_next_candidate() {
+        let xdg = absolute_path("tmp/codeg-xdg");
+        let roots = agent_data_roots(
+            AgentType::Cursor,
+            &BTreeMap::from([
+                ("CURSOR_CONFIG_DIR".to_string(), String::new()),
+                (
+                    "XDG_CONFIG_HOME".to_string(),
+                    xdg.to_string_lossy().to_string(),
+                ),
+            ]),
+        );
+        assert_eq!(roots, vec![xdg.join("cursor")]);
+    }
+
+    /// `child_env_value` must distinguish the ways a var reaches (or fails to
+    /// reach) the child, and must NOT normalize the value for resolvers that
+    /// don't. Uses a private key so it cannot race another test.
+    #[test]
+    fn child_env_value_models_the_spawn_layers_env_remove() {
+        let key = "CODEG_TEST_FS_CHILD_ENV";
+        let os = OsString::from;
+
+        temp_env::with_var(key, Some("/parent/value"), || {
+            let runtime = |value: &str| BTreeMap::from([(key.to_string(), value.to_string())]);
+
+            // Silent in runtime_env ⇒ the child inherits codeg's value.
+            assert_eq!(
+                child_env_value(&BTreeMap::new(), key, false),
+                Some(os("/parent/value"))
+            );
+            // EXACTLY empty ⇒ `env_remove` ⇒ the child sees NOTHING, and we must
+            // NOT read through to codeg's value.
+            assert_eq!(child_env_value(&runtime(""), key, false), None);
+            // Whitespace-only is NOT removed by the spawn layer — it reaches the
+            // child verbatim, so a non-trimming resolver must see it verbatim.
+            assert_eq!(child_env_value(&runtime("  "), key, false), Some(os("  ")));
+            // …but IS unset for the resolvers that trim (Hermes, Cline).
+            assert_eq!(child_env_value(&runtime("  "), key, true), None);
+            // Non-empty replaces codeg's value, verbatim when not trimming.
+            assert_eq!(
+                child_env_value(&runtime(" /child/value "), key, false),
+                Some(os(" /child/value "))
+            );
+            assert_eq!(
+                child_env_value(&runtime(" /child/value "), key, true),
+                Some(os("/child/value"))
+            );
+        });
+
+        temp_env::with_var_unset(key, || {
+            assert_eq!(child_env_value(&BTreeMap::new(), key, false), None);
+        });
+    }
+
+    /// A RELATIVE agent home must never become a root. It would be resolved
+    /// against codeg's cwd while the child runs in the workspace cwd, and that
+    /// mismatch widens: `"."` with codeg launched from `/` yields `/`, which every
+    /// absolute path passes `starts_with` against; `".."` grants an unrelated tree.
+    #[test]
+    fn relative_agent_root_is_refused_not_absolutized() {
+        let workspace = temp_workspace();
+
+        for value in [".", "..", "relative/sub", "./x"] {
+            for (agent_type, key) in [
+                (AgentType::Codex, "CODEX_HOME"),
+                (AgentType::Grok, "GROK_HOME"),
+                (AgentType::Hermes, "HERMES_HOME"),
+                (AgentType::Pi, "PI_CODING_AGENT_DIR"),
+            ] {
+                let runtime_env = BTreeMap::from([(key.to_string(), value.to_string())]);
+                let roots = agent_data_roots(agent_type, &runtime_env);
+
+                assert!(
+                    roots.iter().all(|root| root.is_absolute()),
+                    "{agent_type:?}: {key}={value:?} produced a relative root: {roots:?}"
+                );
+                assert!(
+                    roots.iter().all(|root| root != Path::new("/")),
+                    "{agent_type:?}: {key}={value:?} must not admit /: {roots:?}"
+                );
+                // And it must NOT fall through to the inactive default: the child
+                // received this value and uses it, so the default tree holds
+                // config/credentials the session never opens.
+                for inactive in builtin_default_roots(agent_type) {
+                    assert!(
+                        !roots.contains(&inactive),
+                        "{agent_type:?}: {key}={value:?} leaked the inactive default {}: {roots:?}",
+                        inactive.display()
+                    );
+                }
+
+                // End-to-end: the gate must not gain a cwd-derived root either.
+                let policy = FsAccessPolicy::permissive(&workspace, agent_type, &runtime_env);
+                let cwd = std::env::current_dir().expect("cwd");
+                assert!(
+                    !policy.write_roots.contains(&PathBuf::from("/"))
+                        && !policy.write_roots.contains(&cwd),
+                    "{agent_type:?}: {key}={value:?} leaked a cwd-derived write root: {:?}",
+                    policy.write_roots
+                );
+            }
+        }
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    /// `merge_agent_env` copies every `runtime_env` entry into the child, `HOME`
+    /// included — the classic way to isolate a CLI's config. The home-relative
+    /// defaults must therefore follow the CHILD's home: anchoring them on codeg's
+    /// would grant the inactive profile and refuse the active one.
+    #[cfg(not(windows))]
+    #[test]
+    fn home_relative_defaults_follow_the_childs_home() {
+        let codeg_home = dirs::home_dir().expect("home dir");
+        let isolated = PathBuf::from("/tmp/codeg-isolated-home");
+        let runtime_env =
+            BTreeMap::from([("HOME".to_string(), isolated.to_string_lossy().to_string())]);
+
+        for (agent_type, rel) in [
+            (AgentType::Codex, ".codex"),
+            (AgentType::Grok, ".grok"),
+            (AgentType::ClaudeCode, ".claude"),
+        ] {
+            let roots = agent_data_roots(agent_type, &runtime_env);
+            assert!(
+                roots.contains(&isolated.join(rel)),
+                "{agent_type:?}: active root {} missing, got {roots:?}",
+                isolated.join(rel).display()
+            );
+            assert!(
+                !roots.contains(&codeg_home.join(rel)),
+                "{agent_type:?}: inactive {} must not stay writable, got {roots:?}",
+                codeg_home.join(rel).display()
+            );
+        }
+    }
+
+    /// A relative child `HOME` would be absolutized against codeg's cwd — the same
+    /// widening as a relative agent home — so the slot is refused instead.
+    #[cfg(not(windows))]
+    #[test]
+    fn relative_child_home_refuses_the_slot() {
+        for value in [".", "..", "relative/home"] {
+            let runtime_env = BTreeMap::from([("HOME".to_string(), value.to_string())]);
+            for agent_type in ALL_AGENT_TYPES {
+                if agent_relocated_by_process_env(agent_type) {
+                    continue;
+                }
+                let roots = agent_data_roots(agent_type, &runtime_env);
+                assert!(
+                    roots.is_empty(),
+                    "{agent_type:?}: HOME={value:?} should yield no root, got {roots:?}"
+                );
+            }
+        }
+    }
+
+    /// A BLANK `HOME` is `env_remove`d, so the child resolves its home from the OS
+    /// account database — which codeg cannot read without duplicating a passwd
+    /// lookup, and `dirs::home_dir()` does NOT answer because it consults codeg's
+    /// own `$HOME` first. So the slot is refused rather than guessed at.
+    ///
+    /// Asserting "no roots" is stronger than asserting "not codeg's root", and it
+    /// needs no `temp_env`, so it cannot race other tests that read `$HOME`.
+    #[cfg(not(windows))]
+    #[test]
+    fn removed_child_home_refuses_the_slot() {
+        let runtime_env = BTreeMap::from([("HOME".to_string(), String::new())]);
+        let codeg_home = dirs::home_dir().expect("home dir");
+
+        for agent_type in ALL_AGENT_TYPES {
+            if agent_relocated_by_process_env(agent_type) {
+                continue;
+            }
+
+            let roots = agent_data_roots(agent_type, &runtime_env);
+            assert!(
+                roots.is_empty(),
+                "{agent_type:?}: a removed HOME must yield no root (never codeg's \
+                 {}), got {roots:?}",
+                codeg_home.display()
+            );
+        }
+    }
+
+    /// Refusing a slot must never widen the gate: `permissive` still seeds the
+    /// workspace root, so an empty agent-root list cannot collapse into the
+    /// "empty ⇒ unrestricted" sentinel.
+    #[cfg(not(windows))]
+    #[tokio::test(flavor = "current_thread")]
+    async fn refused_agent_slot_does_not_produce_an_unrestricted_policy() {
+        let workspace = temp_workspace();
+        let runtime_env = BTreeMap::from([("HOME".to_string(), String::new())]);
+
+        let policy = FsAccessPolicy::permissive(&workspace, AgentType::Codex, &runtime_env);
+        assert!(
+            !policy.write_roots.is_empty(),
+            "write roots must never be empty (that means unrestricted)"
+        );
+        assert!(policy.write_roots.contains(&canonical_root(&workspace)));
+
+        // The gate must still refuse an unrelated path.
+        let outside = temp_workspace();
+        let runtime = FileSystemRuntime::with_policy(FsAccessPolicy {
+            read_roots: Vec::new(),
+            write_roots: vec![canonical_root(&workspace)],
+        });
+        assert!(runtime
+            .write_text_file(WriteTextFileRequest::new(
+                "sid",
+                outside.join("x.txt"),
+                "nope"
+            ))
+            .await
+            .is_err());
+
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+    /// Same hazard through the user-facing knob.
+    #[test]
+    fn relative_extra_roots_are_dropped() {
+        let absolute = absolute_path("tmp/codeg-abs-extra");
+        let runtime_env = BTreeMap::from([(
+            FS_EXTRA_ROOTS_ENV.to_string(),
+            std::env::join_paths([Path::new("."), absolute.as_path()])
+                .expect("join paths")
+                .to_string_lossy()
+                .to_string(),
+        )]);
+
+        let roots = extra_write_roots(&runtime_env);
+        assert_eq!(roots, vec![absolute]);
+    }
+
+    /// The extra-roots list must be read VERBATIM. `split_paths` does not trim
+    /// entries, so trimming the value first would rewrite the relative entry
+    /// `" / "` into `/` and hand out the entire filesystem.
+    #[test]
+    fn whitespace_padded_extra_root_is_not_trimmed_into_filesystem_root() {
+        let root = absolute_path("");
+        let raw = root.to_string_lossy().to_string();
+
+        for padded in [format!(" {raw} "), format!("\t{raw}"), format!("{raw} ")] {
+            let runtime_env = BTreeMap::from([(FS_EXTRA_ROOTS_ENV.to_string(), padded.clone())]);
+            let roots = extra_write_roots(&runtime_env);
+            assert!(
+                !roots.contains(&root),
+                "{padded:?} must not become the filesystem root, got {roots:?}"
+            );
+        }
+
+        // An entry that IS exactly the filesystem root stays honored — widening
+        // is this knob's declared purpose, so that is the user's explicit choice.
+        let runtime_env = BTreeMap::from([(FS_EXTRA_ROOTS_ENV.to_string(), raw)]);
+        assert_eq!(extra_write_roots(&runtime_env), vec![root]);
+    }
+
+    /// Trimming a relocation value can WIDEN the policy, not just fail to match:
+    /// `" / "` reaches the child as a relative path, but trimmed it becomes the
+    /// filesystem root and would make everything writable.
+    #[test]
+    fn whitespace_padded_root_never_becomes_the_filesystem_root() {
+        let root = absolute_path("");
+        let padded = format!(" {} ", root.to_string_lossy());
+
+        for (agent_type, key) in [
+            (AgentType::Codex, "CODEX_HOME"),
+            (AgentType::Grok, "GROK_HOME"),
+            (AgentType::Pi, "PI_CODING_AGENT_DIR"),
+        ] {
+            let runtime_env = BTreeMap::from([(key.to_string(), padded.clone())]);
+            let roots = agent_data_roots(agent_type, &runtime_env);
+            assert!(
+                !roots.contains(&root),
+                "{agent_type:?}: {key}={padded:?} must not resolve to the filesystem \
+                 root, got {roots:?}"
+            );
+        }
+
+        // And the same value must not slip through the write gate either. Compared
+        // against the CANONICAL root because that is the form `permissive` stores —
+        // on Windows `canonicalize("C:/")` is the verbatim `\\?\C:\`, so comparing
+        // the raw spelling would make this assertion unfalsifiable there.
+        let workspace = temp_workspace();
+        let runtime_env = BTreeMap::from([("CODEX_HOME".to_string(), padded)]);
+        let policy = FsAccessPolicy::permissive(&workspace, AgentType::Codex, &runtime_env);
+        assert!(
+            !policy.write_roots.contains(&canonical_root(&root)),
+            "write roots must not include {}: {:?}",
+            root.display(),
+            policy.write_roots
+        );
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    /// Pins the declarative slot table against the `crate::parsers` resolvers it
+    /// mirrors, so a change to either side cannot drift silently. Skips any agent
+    /// whose relocation vars are set in THIS process, where the resolver would
+    /// legitimately return a relocated path instead of the default.
+    #[test]
+    fn root_slots_match_parser_resolvers() {
+        use crate::parsers;
+
+        let expected: [(AgentType, PathBuf); 11] = [
+            (AgentType::Grok, parsers::grok::resolve_grok_home_dir()),
+            (
+                AgentType::ClaudeCode,
+                parsers::claude::resolve_claude_config_dir(),
+            ),
+            (AgentType::Codex, parsers::codex::resolve_codex_home_dir()),
+            (
+                AgentType::Gemini,
+                parsers::gemini::resolve_gemini_base_dir(),
+            ),
+            (
+                AgentType::CodeBuddy,
+                parsers::codebuddy::resolve_codebuddy_config_dir(),
+            ),
+            (
+                AgentType::KimiCode,
+                parsers::kimi_code::resolve_kimi_code_home_dir(),
+            ),
+            (
+                AgentType::Cursor,
+                parsers::cursor::resolve_cursor_config_dir(),
+            ),
+            (
+                AgentType::Hermes,
+                parsers::hermes::resolve_hermes_home_dir(),
+            ),
+            (
+                AgentType::OpenCode,
+                parsers::opencode::resolve_opencode_base_dir(),
+            ),
+            (AgentType::Cline, parsers::cline::cline_data_dir()),
+            (AgentType::Pi, parsers::pi::resolve_pi_sessions_dir()),
+        ];
+
+        for (agent_type, resolver_root) in expected {
+            let env_configured = agent_root_slots(agent_type)
+                .iter()
+                .flat_map(|slot| slot.candidates.iter())
+                .any(|(key, _)| std::env::var_os(key).is_some());
+            if env_configured {
+                continue;
+            }
+
+            let roots = builtin_default_roots(agent_type);
+            assert!(
+                roots.contains(&resolver_root),
+                "{agent_type:?}: slot default {roots:?} drifted from resolver {}",
+                resolver_root.display()
+            );
+        }
+    }
+
+    /// Cursor's resolver prefers `CURSOR_CONFIG_DIR` over `XDG_CONFIG_HOME`;
+    /// first match must win rather than both being admitted.
+    #[test]
+    fn cursor_relocation_respects_resolver_precedence() {
+        let config_dir = absolute_path("tmp/codeg-cursor");
+        let runtime_env = BTreeMap::from([
+            (
+                "CURSOR_CONFIG_DIR".to_string(),
+                config_dir.to_string_lossy().to_string(),
+            ),
+            (
+                "XDG_CONFIG_HOME".to_string(),
+                absolute_path("tmp/codeg-xdg").to_string_lossy().to_string(),
+            ),
+        ]);
+
+        let roots = agent_data_roots(AgentType::Cursor, &runtime_env);
+        assert_eq!(roots, vec![config_dir]);
+    }
+
+    /// pi relocates its session store independently of its agent home, so a
+    /// `PI_CODING_AGENT_SESSION_DIR` supplied through `env_json` must widen the
+    /// roots on its own — the process-env-only resolver cannot see it.
+    #[test]
+    fn pi_session_dir_relocation_is_honored() {
+        let sessions = absolute_path("tmp/codeg-pi-sessions-elsewhere");
+        let runtime_env = BTreeMap::from([(
+            "PI_CODING_AGENT_SESSION_DIR".to_string(),
+            sessions.to_string_lossy().to_string(),
+        )]);
+
+        let roots = agent_data_roots(AgentType::Pi, &runtime_env);
+        assert!(
+            roots.contains(&sessions),
+            "pi session-dir relocation not honored: {roots:?}"
+        );
+    }
+
+    /// No agent may resolve a root so broad that the gate becomes meaningless —
+    /// checked both with a clean env AND with every relocation key set to `~`,
+    /// since a tilde-expanding bug would only show up in the latter.
+    #[test]
+    fn no_agent_data_root_is_the_home_dir_or_filesystem_root() {
+        let home = dirs::home_dir().expect("home dir");
+
+        let tilde_env: BTreeMap<String, String> = ALL_AGENT_TYPES
+            .iter()
+            .flat_map(|agent_type| agent_root_slots(*agent_type).iter())
+            .flat_map(|slot| slot.candidates.iter())
+            .map(|(key, _)| ((*key).to_string(), "~".to_string()))
+            .collect();
+
+        for env in [BTreeMap::new(), tilde_env] {
+            for agent_type in ALL_AGENT_TYPES {
+                for root in agent_data_roots(agent_type, &env) {
+                    assert!(
+                        root != home && root.parent().is_some() && root != Path::new("/"),
+                        "{agent_type:?} resolved an over-broad root: {}",
+                        root.display()
+                    );
+                }
+            }
+        }
+    }
+
+    const ALL_AGENT_TYPES: [AgentType; 12] = [
+        AgentType::ClaudeCode,
+        AgentType::Codex,
+        AgentType::OpenCode,
+        AgentType::Gemini,
+        AgentType::OpenClaw,
+        AgentType::Cline,
+        AgentType::Hermes,
+        AgentType::CodeBuddy,
+        AgentType::KimiCode,
+        AgentType::Pi,
+        AgentType::Grok,
+        AgentType::Cursor,
+    ];
+
+    #[test]
+    fn every_agent_type_has_a_data_root() {
+        for agent_type in ALL_AGENT_TYPES {
+            let roots = agent_data_roots(agent_type, &BTreeMap::new());
+            assert!(!roots.is_empty(), "{agent_type:?} resolved no data root");
+            assert!(
+                roots.iter().all(|root| root.is_absolute()),
+                "{agent_type:?} produced a relative root: {roots:?}"
+            );
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

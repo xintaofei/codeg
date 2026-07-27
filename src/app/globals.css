@@ -1123,10 +1123,10 @@
   box-shadow: inset 0 0 0 1px var(--border);
 }
 
-/* 折叠态用户消息底部渐隐：遮罩内容本身而非叠加层，跟 .qa-marquee-viewport /
-   .browser-tab-label 同技术，天然适配纯色 bg-secondary 或开工作区背景图后的
-   半透明 ws-msg-secondary。不属于下面的 ws- 门控家族，始终生效。 */
-.collapsed-user-message-fade {
+/* 折叠态内容底部渐隐（会话用户消息、提交 tab 的提交信息…）：遮罩内容本身而非叠加层，跟
+   .qa-marquee-viewport / .browser-tab-label 同技术，天然适配纯色 bg-secondary 或开工作区
+   背景图后的半透明 ws-msg-secondary。不属于下面的 ws- 门控家族，始终生效。 */
+.collapsed-content-fade {
   -webkit-mask-image: linear-gradient(
     to bottom,
     #000 calc(100% - 2.5rem),
@@ -1506,6 +1506,21 @@
   }
 }
 
+/* Keep-alive conversation tabs (see ConversationDetailPanel) hide the inactive
+   tab with `visibility: hidden` (Tailwind `invisible`) while staying mounted so
+   the active tab can reuse their layout. Tailwind v4's `transition-all` resolves
+   to `transition-property: all`, which includes `visibility`; a visible→hidden
+   `visibility` transition keeps the element painted for its whole duration. As
+   `visibility` inherits, every descendant carrying `transition-all` (AgentSelector
+   pills, QuickActions tabs, composer buttons) would otherwise linger 150–300ms as
+   pointer-events-none ghosts over the newly-active conversation. Nothing in a
+   hidden tab is visible, so drop all transitions in the subtree and let
+   visibility snap immediately. */
+.conversation-tab-hidden,
+.conversation-tab-hidden * {
+  transition-property: none !important;
+}
+
 .select-none {
   -webkit-user-select: none;
   -moz-user-select: none;
@@ -1560,6 +1575,18 @@
 .monaco-editor .suggest-widget .monaco-list-row,
 .monaco-editor .peekview-widget .monaco-list-row {
   border-radius: calc(var(--radius) - 2px);
+}
+
+/* 并排 diff 的中缝：Monaco 自带样式在 original / modified 两侧各画一条 6px 模糊的
+   box-shadow（`--vscode-scrollbar-shadow`），而 `diffEditor.border` 默认 null——中缝于是
+   只剩一团柔和阴影、没有实线，看上去发虚（用户反馈「左右中间的竖线/边框很虚」），开背景图
+   时画布透明更糊。这里去掉这两条阴影，中缝改由主题里的 `diffEditor.border`（monaco-themes.ts）
+   画 1px 实线，两者配套。选择器加 `div` 元素限定（0,4,1）压过 Monaco 自己的 (0,4,0) 规则——
+   Monaco 的 CSS 是运行时按需插入的，晚于本表，靠特异性而非顺序取胜。仅并排 diff 生效，普通
+   编辑器滚动时的阴影不受影响。 */
+div.monaco-diff-editor.side-by-side .editor.original,
+div.monaco-diff-editor.side-by-side .editor.modified {
+  box-shadow: none;
 }
 
 .monaco-editor .codeg-dirty-diff-glyph {
@@ -2300,14 +2327,17 @@
   pointer-events: none;
 }
 
-/* 标签条左右两端的补缝：group 的 px-2 在首/末 tab 外各留 0.5rem 无线缝（首 tab 非激活时
-   左端断层、末 tab 与新建按钮间右端空隙）。补缝不能画在 group 上（连续线会盖到激活 tab
-   下方），且必须跟随边缘 tab 的激活态——激活的首/末 tab 该处是拱门脚（反向圆角描边）而非
-   平线，此处绝不能有平线。故补缝画在「非激活」首/末 tab 自己的 ::after 上（激活 tab 的
-   ::after 已改画拱门轮廓，且 :not([data-active]) 排除它）：往 tab 外侧的 px-2 gutter 伸出
-   0.5rem 平线，接上两侧 reserve / 尾部按钮 wrapper 的 ws-strip-line。gutter 落在 group 的
-   padding box 内，overflow-hidden 不裁（同 seat 脚）。宽度 = px-2 = 0.5rem（改 group 内边距
-   需同步）。仅 bg-on 生效，关图无补缝（零回归）。 */
+/* 标签条两端的补缝：group 的 pl-2 在首 tab 外留 0.5rem 无线缝（首 tab 非激活时左端断层）。
+   补缝不能画在 group 上（连续线会盖到激活 tab 下方），且必须跟随边缘 tab 的激活态——激活的
+   边缘 tab 该处是拱门脚（反向圆角描边）而非平线，此处绝不能有平线。故补缝画在「非激活」边缘
+   tab 自己的 ::after 上（激活 tab 的 ::after 已改画拱门轮廓，且 :not([data-active]) 排除它）：
+   往 tab 外侧的 gutter 伸出 0.5rem 平线，接上左侧 reserve 的 ws-strip-line。gutter 落在 group
+   的 padding box 内，overflow-hidden 不裁（同 seat 脚）。宽度 = pl-2 = 0.5rem（改 group 内边距
+   需同步）。仅 bg-on 生效，关图无补缝（零回归）。
+   :last-child 一支目前不会命中：两条嵌入式标签条（会话 tab-bar.tsx / 文件
+   file-workspace-tab-bar.tsx）都把尾部 wrapper 放进 group 当最后一个子元素，末 tab 因此不是
+   :last-child，且 group 右侧无 padding——尾部 wrapper 自己的 ws-strip-line 直接从末 tab 右沿
+   起画，无缝可补。保留该分支是给「末 tab 后确实留了右 gutter」的标签条兜底。 */
 [data-workspace-bg="on"]
   .browser-tab-item:first-child:not([data-active="true"])::after,
 [data-workspace-bg="on"]

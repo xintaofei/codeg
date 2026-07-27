@@ -76,7 +76,7 @@ describe("CollapsibleUserMessage", () => {
     ).not.toBeInTheDocument()
     expect(
       screen.getByTestId("collapsible-user-message-content")
-    ).not.toHaveClass("collapsed-user-message-fade")
+    ).not.toHaveClass("collapsed-content-fade")
   })
 
   it("shows a Show more toggle when content overflows the collapsed height", () => {
@@ -89,7 +89,7 @@ describe("CollapsibleUserMessage", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "false")
     expect(toggle).toHaveTextContent("Show more")
     expect(toggle).toHaveAttribute("aria-controls", content.id)
-    expect(content).toHaveClass("max-h-60", "collapsed-user-message-fade")
+    expect(content).toHaveClass("max-h-60", "collapsed-content-fade")
   })
 
   it("expands to Show less on click and removes the clamp", () => {
@@ -104,7 +104,7 @@ describe("CollapsibleUserMessage", () => {
     expect(toggle).toHaveTextContent("Show less")
     const content = screen.getByTestId("collapsible-user-message-content")
     expect(content).not.toHaveClass("max-h-60")
-    expect(content).not.toHaveClass("collapsed-user-message-fade")
+    expect(content).not.toHaveClass("collapsed-content-fade")
 
     // Clicking again re-collapses.
     fireEvent.click(toggle)

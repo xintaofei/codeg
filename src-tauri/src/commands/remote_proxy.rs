@@ -361,7 +361,7 @@ pub async fn remote_http_call(
 /// the file I/O cost — the remote `/api/upload_attachment` enforces the
 /// same cap regardless, but a 100 MB read followed by a base64 encode and
 /// an IPC trip would be a noticeable waste compared to early rejection.
-const UPLOAD_MAX_BYTES: u64 = 2 * 1024 * 1024;
+const UPLOAD_MAX_BYTES: u64 = 20 * 1024 * 1024;
 
 /// Maximum tolerated base64 payload length, pre-decode. Exactly
 /// `ceil(UPLOAD_MAX_BYTES / 3) * 4` — that formula already accounts for
@@ -518,8 +518,8 @@ pub async fn remote_upload_attachment(
     // buggy webview hitting this command directly would otherwise force
     // a `Vec<u8>` allocation roughly equal to the base64 length before
     // the cap fires server-side. Cap at `ceil(UPLOAD_MAX_BYTES * 4/3) +
-    // padding slack` so a legitimate 2 MiB file (which encodes to
-    // exactly `(2 MiB + 2)/3*4` bytes) always passes.
+    // padding slack` so a legitimate maximum-sized file (which encodes
+    // to exactly `ceil(UPLOAD_MAX_BYTES / 3) * 4` bytes) always passes.
     if data_base64.len() > REMOTE_UPLOAD_MAX_BASE64_LEN {
         return Err(
             AppCommandError::io_error("Upload payload exceeds the size limit")
@@ -2170,26 +2170,29 @@ mod tests {
         // the wire format, the frontend silently demotes to the
         // generic-failure toast — this test pins the contract.
         let err = AppCommandError::io_error("Local file exceeds the upload size limit")
-            .with_detail("size=4194304 limit=2097152")
+            .with_detail("size=41943040 limit=20971520")
             .with_i18n(
                 UPLOAD_I18N_KEY_TOO_LARGE,
                 upload_i18n_params([
-                    ("size", "4194304".to_string()),
-                    ("limit", "2097152".to_string()),
+                    ("size", "41943040".to_string()),
+                    ("limit", UPLOAD_MAX_BYTES.to_string()),
                 ]),
             );
 
         let json = serde_json::to_value(&err).expect("serialize");
         assert_eq!(json["i18n_key"], "errors.upload.tooLarge");
-        assert_eq!(json["i18n_params"]["size"], "4194304");
-        assert_eq!(json["i18n_params"]["limit"], "2097152");
+        assert_eq!(json["i18n_params"]["size"], "41943040");
+        assert_eq!(json["i18n_params"]["limit"], UPLOAD_MAX_BYTES.to_string());
         assert_eq!(json["code"], "io_error");
 
         let parsed: AppCommandError = serde_json::from_value(json).expect("deserialize");
         assert_eq!(parsed.i18n_key.as_deref(), Some("errors.upload.tooLarge"));
         let params = parsed.i18n_params.expect("params");
-        assert_eq!(params.get("size").map(String::as_str), Some("4194304"));
-        assert_eq!(params.get("limit").map(String::as_str), Some("2097152"));
+        assert_eq!(params.get("size").map(String::as_str), Some("41943040"));
+        assert_eq!(
+            params.get("limit").map(String::as_str),
+            Some(UPLOAD_MAX_BYTES.to_string().as_str())
+        );
     }
 
     #[test]

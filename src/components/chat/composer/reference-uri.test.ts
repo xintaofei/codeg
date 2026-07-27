@@ -114,7 +114,7 @@ describe("parseCodegReferenceUri", () => {
     })
   })
 
-  it("parses a skill uri, stripping the leading `/`·`$` from the label", () => {
+  it("parses a skill uri, moving the label's leading `/`·`$` into the prefix", () => {
     expect(
       parseCodegReferenceUri("codeg://skill/review", "/review")
     ).toMatchObject({
@@ -122,18 +122,26 @@ describe("parseCodegReferenceUri", () => {
       id: "review",
       label: "review",
       uri: "codeg://skill/review",
-      meta: null,
+      // The stripped trigger is kept so re-serializing the badge emits the
+      // same `/review` token it was parsed from.
+      meta: { invocationPrefix: "/" },
     })
-    // The `$` prefix ($skill / Codex expert) is stripped the same way.
+    // The `$` prefix ($skill / Codex expert) is stripped — and kept — the same
+    // way, so a `$deploy` token never re-serializes to `/deploy`.
     expect(
-      parseCodegReferenceUri("codeg://skill/deploy", "$deploy")?.label
-    ).toBe("deploy")
+      parseCodegReferenceUri("codeg://skill/deploy", "$deploy")
+    ).toMatchObject({
+      label: "deploy",
+      meta: { invocationPrefix: "$" },
+    })
   })
 
   it("falls back to the bare id for an empty skill label", () => {
-    expect(parseCodegReferenceUri("codeg://skill/deploy", "")?.label).toBe(
-      "deploy"
-    )
+    expect(parseCodegReferenceUri("codeg://skill/deploy", "")).toMatchObject({
+      label: "deploy",
+      // No literal token to read a trigger from → serializer's `/` default.
+      meta: null,
+    })
   })
 
   it("parses an embedded-attachment uri as an inert file badge", () => {

@@ -1,4 +1,5 @@
-export type AgentType =
+/** The twelve agents codeg ships hand-written support for. */
+export type BuiltinAgentType =
   | "claude_code"
   | "codex"
   | "open_code"
@@ -11,6 +12,34 @@ export type AgentType =
   | "pi"
   | "grok"
   | "cursor"
+
+/**
+ * Which agent backs a conversation.
+ *
+ * Open-ended on purpose: besides the built-ins, a user can register any ACP
+ * agent, which arrives as `custom:<registry-id>` (mirrors Rust's
+ * `AgentType::Custom`). The `(string & {})` arm keeps editor autocomplete for
+ * the built-ins while accepting those ids.
+ *
+ * Never index a `Record` with this directly — use `getAgentLabel` /
+ * `getAgentColor`, which fall back for custom agents.
+ */
+export type AgentType = BuiltinAgentType | (string & {})
+
+/** Wire prefix marking a custom (user-registered) ACP agent. */
+export const CUSTOM_AGENT_PREFIX = "custom:"
+
+/** True for a user-registered ACP agent. */
+export function isCustomAgentType(agentType: AgentType): boolean {
+  return agentType.startsWith(CUSTOM_AGENT_PREFIX)
+}
+
+/** The registry id behind `custom:<id>`, or `null` for a built-in. */
+export function customAgentId(agentType: AgentType): string | null {
+  return isCustomAgentType(agentType)
+    ? agentType.slice(CUSTOM_AGENT_PREFIX.length)
+    : null
+}
 
 export type AppErrorCode =
   | "invalid_input"
@@ -141,6 +170,14 @@ export type ContentBlock =
       tool_use_id: string | null
       tool_name: string
       input_preview: string | null
+      /**
+       * ACP tool-call status when known. Live and promoted turns forward it
+       * from `ToolCallInfo.status` in `buildStreamingTurnsFromLiveMessage`;
+       * DB-persisted rows omit it (`undefined`). Lets the render layer tell a
+       * still-unsettled orphan (interrupted/retried arg-less call promoted into
+       * `localTurns`) from a completed no-op. See `dropEmptyInFlightToolCalls`.
+       */
+      status?: string | null
       /**
        * ACP extensibility metadata for this tool call. Opaque pass-through
        * — both the live snapshot (`ToolCallState.meta`) and the persisted
@@ -559,7 +596,7 @@ export const STATUS_COLORS: Record<ConversationStatus, string> = {
   cancelled: "bg-red-500",
 }
 
-export const AGENT_DISPLAY_ORDER: AgentType[] = [
+export const AGENT_DISPLAY_ORDER: BuiltinAgentType[] = [
   "codex",
   "claude_code",
   "open_code",
@@ -574,17 +611,23 @@ export const AGENT_DISPLAY_ORDER: AgentType[] = [
   "cursor",
 ]
 
-const AGENT_DISPLAY_ORDER_INDEX = new Map(
+const AGENT_DISPLAY_ORDER_INDEX = new Map<AgentType, number>(
   AGENT_DISPLAY_ORDER.map((agent, index) => [agent, index])
 )
 
+/**
+ * Sort built-ins into their curated order. Custom agents have no pinned
+ * position, so they fall to the end and tie-break alphabetically among
+ * themselves — a stable order that does not shuffle as agents are added.
+ */
 export function compareAgentType(a: AgentType, b: AgentType): number {
   const aIndex = AGENT_DISPLAY_ORDER_INDEX.get(a) ?? Number.MAX_SAFE_INTEGER
   const bIndex = AGENT_DISPLAY_ORDER_INDEX.get(b) ?? Number.MAX_SAFE_INTEGER
-  return aIndex - bIndex
+  if (aIndex !== bIndex) return aIndex - bIndex
+  return a.localeCompare(b)
 }
 
-export const ALL_AGENT_TYPES: AgentType[] = [
+export const ALL_AGENT_TYPES: BuiltinAgentType[] = [
   "claude_code",
   "codex",
   "open_code",
@@ -599,7 +642,7 @@ export const ALL_AGENT_TYPES: AgentType[] = [
   "cursor",
 ]
 
-export const MODEL_PROVIDER_AGENT_TYPES: AgentType[] = [
+export const MODEL_PROVIDER_AGENT_TYPES: BuiltinAgentType[] = [
   "claude_code",
   "codex",
   "gemini",
@@ -876,7 +919,7 @@ export interface HermesLocalConfig {
   modelCommand?: string
 }
 
-export const AGENT_LABELS: Record<AgentType, string> = {
+export const AGENT_LABELS: Record<BuiltinAgentType, string> = {
   claude_code: "Claude Code",
   codex: "Codex",
   open_code: "OpenCode",
@@ -891,7 +934,7 @@ export const AGENT_LABELS: Record<AgentType, string> = {
   cursor: "Cursor",
 }
 
-export const AGENT_COLORS: Record<AgentType, string> = {
+export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
   claude_code: "bg-[#D97757]",
   codex: "bg-[#7A9DFF]",
   open_code: "bg-black",
@@ -964,13 +1007,17 @@ export interface QuestionOption {
 }
 
 /** A single multiple-choice question (mirror of Rust `QuestionSpec`). `id` is
- *  the backend-minted correlation key the answer is submitted against. */
+ *  the backend-minted correlation key the answer is submitted against. Empty
+ *  `options` means free-text: the card renders only its "Other" input (codex
+ *  elicitation / MCP-server forms ask open questions this way). `is_secret`
+ *  masks that input (absent on the wire for non-secret sources). */
 export interface QuestionSpec {
   id: string
   question: string
   header: string
   multi_select: boolean
   options: QuestionOption[]
+  is_secret?: boolean
 }
 
 /** Awaiting-answer question set on the session (mirror of `PendingQuestionState`). */
@@ -992,6 +1039,29 @@ export interface QuestionAnswerItem {
 export interface QuestionAnswer {
   answers: QuestionAnswerItem[]
   declined: boolean
+}
+
+// --- plan approval (mirror of Rust `crate::acp::plan_approval`) ---
+
+/** Awaiting-decision Grok `exit_plan_mode` approval on the session (mirror of
+ *  Rust `PendingPlanApprovalState`). The agent is blocked until the user acts. */
+export interface PendingPlanApprovalState {
+  approval_id: string
+  tool_call_id: string
+  plan_markdown: string
+  created_at: string
+}
+
+/** Which action the user took on the plan-approval card (mirror of Rust
+ *  `PlanApprovalDecision`). */
+export type PlanApprovalDecision = "approve" | "request_changes" | "abandon"
+
+/** The user's decision submitted to `acp_answer_plan_approval` (mirror of Rust
+ *  `PlanApprovalAnswer`). `feedback` carries the freeform revision notes for a
+ *  `request_changes` decision. */
+export interface PlanApprovalAnswer {
+  decision: PlanApprovalDecision
+  feedback?: string | null
 }
 
 export interface SessionModeInfo {
@@ -1311,6 +1381,16 @@ export type AcpEvent =
       code: string | null
     }
   | {
+      // codex-acp #289: a retryable turn error that keeps the turn alive (codex
+      // auto-retries). NOT a turn failure — rendered as a transient retry
+      // indicator that reuses the Claude API-retry banner and clears at the
+      // next turn boundary. `error_status` is the HTTP status when codex's
+      // `codexErrorInfo` carried one.
+      type: "turn_retrying"
+      message: string
+      error_status?: number
+    }
+  | {
       type: "session_load_failed"
       session_id: string
       message: string
@@ -1429,6 +1509,25 @@ export type AcpEvent =
   | {
       type: "question_resolved"
       question_id: string
+    }
+  /**
+   * A Grok `exit_plan_mode` call: the agent finished planning and is blocked on
+   * the user's approval of the plan. Broadcast so every client renders the
+   * interactive plan-approval card; also captured in the snapshot for attach.
+   */
+  | {
+      type: "plan_approval_request"
+      approval_id: string
+      tool_call_id: string
+      plan_markdown: string
+    }
+  /**
+   * A pending plan approval was answered (from any client) or canceled
+   * (connection drained). Clients clear the matching card.
+   */
+  | {
+      type: "plan_approval_resolved"
+      approval_id: string
     }
   /**
    * The agent's effective settings (env vars / model provider / native config)
@@ -1610,6 +1709,9 @@ export interface LiveSessionSnapshot {
   /** Awaiting-answer `ask_user_question`, recoverable on mid-turn attach.
    *  Absent (omitted) when no question is pending. */
   pending_question?: PendingQuestionState | null
+  /** Awaiting-decision Grok `exit_plan_mode` approval, recoverable on mid-turn
+   *  attach. Absent (omitted) when no approval is pending. */
+  pending_plan_approval?: PendingPlanApprovalState | null
   /** In-flight user prompt for the current turn — lets a client attaching
    *  mid-turn render the user turn. Absent (omitted) when no turn is in flight. */
   pending_user_message?: {
@@ -1669,6 +1771,12 @@ export interface ConversationConnectionInfo {
 // ACP agent info returned by acp_list_agents
 export interface AcpAgentInfo {
   agent_type: AgentType
+  /**
+   * Whether this agent has a codeg-known skill store — every built-in, and
+   * custom agents that declared the shared `.agents/skills` store. Gates the
+   * skills matrices.
+   */
+  skills_capable: boolean
   registry_id: string
   registry_version: string | null
   name: string
@@ -1687,6 +1795,9 @@ export interface AcpAgentInfo {
   /** Compact structured codex model-catalog source (the custom-model list),
    *  round-tripped into the settings editor. Codex + api-key mode only. */
   codex_model_catalog: string | null
+  /** Parsed sandbox / approval keys backing the Codex panel's structured
+   * controls. Codex agent only; derived from codex_config_toml. */
+  codex_sandbox_settings: CodexSandboxSettings | null
   cline_secrets_json: string | null
   /** Raw ~/.hermes/config.yaml text, for the Hermes panel's advanced editor. */
   hermes_config_yaml: string | null
@@ -1702,6 +1813,88 @@ export interface AcpAgentInfo {
    * launch flag, not a config key). Cursor agent only. */
   cursor_settings: CursorSettings | null
   model_provider_id: number | null
+  /** Display icon for a custom ACP agent — normally an inlined
+   *  `data:image/…;base64,…` URL. Always null for built-ins, which ship
+   *  hand-drawn marks in `agent-icon.tsx`. */
+  icon_url: string | null
+}
+
+/** Parsed sandbox / approval keys from ~/.codex/config.toml. Serialized
+ * snake_case to match AcpAgentInfo.
+ *
+ * These only matter for turns codex starts SERVER-side — `/goal`, `/review`,
+ * `/compact` — because codex-acp attaches its own policy to every ordinary
+ * turn from the composer's mode preset. Without them a user on
+ * "Agent (full access)" still gets a workspace-write sandbox inside /goal. */
+export interface CodexSandboxSettings {
+  /** untrusted | on-request | never. The legacy `on-failure` spelling is a
+   * serde alias of on-request upstream and is normalized on read. Null when
+   * absent or when the granular table form is in use. */
+  approval_policy: string | null
+  /** approval_policy = { granular = { … } } — mutually exclusive with the
+   * string form (the upstream enum is externally tagged). */
+  granular: CodexGranularApproval | null
+  /** read-only | workspace-write | danger-full-access. Null = absent, in which
+   * case codex falls back to workspace-write for any directory with a
+   * [projects] trust decision (read-only otherwise). */
+  sandbox_mode: string | null
+  /** [sandbox_workspace_write] — only consulted when the effective mode is
+   * workspace-write. */
+  workspace_write: CodexWorkspaceWrite
+  /** default_permissions is set, so codex resolves permissions through the
+   * profile pipeline and IGNORES sandbox_mode entirely. */
+  shadowed_by_default_permissions: boolean
+  /** A [permissions] profile table exists (a hard startup error upstream when
+   * default_permissions is absent). */
+  has_permissions_table: boolean
+}
+
+/** GranularApprovalConfig upstream. snake_case in BOTH directions (unlike the
+ * camelCase parent payload) so one shape serves read and write. All five keys
+ * are always written together: sandbox_approval / rules / mcp_elicitations have
+ * no upstream default, so a partial table makes codex refuse to load. */
+export interface CodexGranularApproval {
+  sandbox_approval: boolean
+  rules: boolean
+  skill_approval: boolean
+  request_permissions: boolean
+  mcp_elicitations: boolean
+}
+
+/** [sandbox_workspace_write]. Every field defaults to false/empty upstream, so
+ * codeg writes only the non-default ones. */
+export interface CodexWorkspaceWrite {
+  /** Extra writable folders. MUST be absolute: codex does not reject a
+   * relative entry, it resolves it against CODEX_HOME (so "rel/dir" silently
+   * becomes ~/.codex/rel/dir). */
+  writable_roots: string[]
+  network_access: boolean
+  exclude_tmpdir_env_var: boolean
+  exclude_slash_tmp: boolean
+}
+
+/** Structured-control values the Codex settings panel sends on save, merged
+ * format-preservingly onto ~/.codex/config.toml server-side. camelCase on the
+ * wire except the nested `granular` object.
+ *
+ * This is a per-field PATCH, not a snapshot: an ABSENT field leaves its key
+ * exactly as the merge base has it. The panel sends the raw config.toml text
+ * alongside this patch and the patch is applied last, so carrying the whole
+ * group would silently revert any of these keys the user had hand-edited in the
+ * raw editor — a surface the panel never parses back into its controls.
+ *
+ * `approvalPolicy` and `granular` move as a pair (upstream they are one
+ * externally tagged key): both absent leaves it, both `null` removes it,
+ * exactly one non-null writes that form. For the workspace-write fields, absent
+ * leaves the key and `false`/`[]` removes it (identical to codex's defaults). */
+export interface CodexSandboxStructuredConfig {
+  approvalPolicy?: string | null
+  granular?: CodexGranularApproval | null
+  sandboxMode?: string | null
+  writableRoots?: string[]
+  networkAccess?: boolean
+  excludeTmpdirEnvVar?: boolean
+  excludeSlashTmp?: boolean
 }
 
 /** Parsed keys from ~/.grok/config.toml. `null` means the key is absent.
@@ -1799,6 +1992,39 @@ export interface AcpAgentStatus {
   available: boolean
   enabled: boolean
   installed_version: string | null
+}
+
+// Environment diagnostics (returned by acp_env_diagnostics). Mirrors the Rust
+// AgentDiagnosticsReport in src-tauri/src/acp/types.rs (snake_case response DTO).
+export type DiagLevel = "ok" | "warn" | "fail" | "info"
+
+export interface DiagCheck {
+  label: string
+  value: string
+  status: DiagLevel
+  hint: string | null
+}
+
+export interface DiagSection {
+  title: string
+  checks: DiagCheck[]
+}
+
+export interface DiagnosticsVerdict {
+  level: DiagLevel
+  // Stable id localized via DiagnosticsSettings.verdict.<code>.
+  code: string
+  // Pre-formatted English sentence; used only in plain_text (copy blob).
+  summary: string
+}
+
+export interface AgentDiagnosticsReport {
+  generated_at: string
+  agent_type: AgentType | null
+  verdict: DiagnosticsVerdict
+  sections: DiagSection[]
+  // Backend-rendered text for the "copy all" button.
+  plain_text: string
 }
 
 export type AgentSkillScope = "global" | "project"
@@ -2144,6 +2370,9 @@ export type McpAppType =
   | "kimi_code"
   | "grok"
   | "cursor"
+  // A custom ACP agent by wire slug — the same `custom:<id>` string as its
+  // AgentType, assigned into codeg's own per-agent MCP store backend-side.
+  | `custom:${string}`
 
 export interface LocalMcpServer {
   id: string

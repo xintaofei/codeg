@@ -31,7 +31,6 @@ import { importSelectedSessions, scanImportableSessions } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import { subscribe } from "@/lib/platform"
 import {
-  AGENT_LABELS,
   ALL_AGENT_TYPES,
   IMPORT_SCAN_PROGRESS_EVENT,
   type AgentType,
@@ -42,6 +41,7 @@ import {
   type ScanSession,
   type SelectedSessionKey,
 } from "@/lib/types"
+import { getAgentLabel } from "@/lib/custom-agents"
 import { cn } from "@/lib/utils"
 import { FolderHeaderRow, SessionRow, sessionKey } from "./import-sessions-rows"
 
@@ -400,7 +400,7 @@ export function ImportSessionsWindow({
               >
                 <AgentIcon agentType={agent} className="h-3.5 w-3.5 shrink-0" />
                 <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                  {AGENT_LABELS[agent]}
+                  {getAgentLabel(agent)}
                 </span>
                 {entry ? (
                   <span className="tabular-nums text-muted-foreground">
@@ -517,7 +517,7 @@ export function ImportSessionsWindow({
               <SelectItem key={agent} value={agent} className="text-xs">
                 <span className="flex items-center gap-1.5">
                   <AgentIcon agentType={agent} className="h-3.5 w-3.5" />
-                  {AGENT_LABELS[agent]}
+                  {getAgentLabel(agent)}
                 </span>
               </SelectItem>
             ))}

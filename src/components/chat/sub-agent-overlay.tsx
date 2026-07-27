@@ -16,6 +16,7 @@
  */
 
 import { memo, useState } from "react"
+import { getAgentLabel } from "@/lib/custom-agents"
 import { useTranslations } from "next-intl"
 import { BotIcon, ChevronDownIcon } from "lucide-react"
 
@@ -29,7 +30,6 @@ import {
   useDelegationCardModel,
   type DelegationCardSource,
 } from "@/hooks/use-delegation-card-model"
-import { AGENT_LABELS } from "@/lib/types"
 
 interface SubAgentOverlayProps {
   /** The `delegate_to_agent` tool calls in the last assistant reply. */
@@ -145,7 +145,7 @@ const SubAgentOverlayRow = memo(function SubAgentOverlayRow({
           )}
         </span>
         <span className="min-w-0 truncate text-xs font-semibold text-foreground">
-          {agentType ? AGENT_LABELS[agentType] : t("unknownAgent")}
+          {agentType ? getAgentLabel(agentType) : t("unknownAgent")}
         </span>
         {taskId && (
           <span

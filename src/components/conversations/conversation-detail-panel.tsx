@@ -31,17 +31,23 @@ import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
-import { useSessionStats } from "@/contexts/session-stats-context"
+import { groupOfTab, isReparentUnmount } from "@/stores/tab-store"
+import { computeRects, leafIds } from "@/lib/tab-group-layout"
 import { useTaskContext } from "@/contexts/task-context"
 import { cn, copyTextFromMenu, randomUUID } from "@/lib/utils"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
 import { useMessageQueue, type QueuedMessage } from "@/hooks/use-message-queue"
 import { MessageListView } from "@/components/message/message-list-view"
+import {
+  GoalControlProvider,
+  type GoalControlValue,
+} from "@/components/message/goal-control-context"
 import { ConversationShell } from "@/components/chat/conversation-shell"
 import { SessionConfigStaleBanner } from "@/components/chat/session-config-stale-banner"
 import { BackgroundTasksChip } from "@/components/chat/background-tasks-chip"
 import { FeedbackNotesDisplay } from "@/components/chat/feedback-notes-display"
 import { FeedbackDialog } from "@/components/chat/feedback-dialog"
+import { AgentDiagnosticsDialog } from "@/components/settings/agent-diagnostics-dialog"
 import { useFeedbackEnabled } from "@/hooks/use-feedback-enabled"
 import { useSessionFeedback } from "@/hooks/use-session-feedback"
 import { AgentSelector } from "@/components/chat/agent-selector"
@@ -50,6 +56,17 @@ import { WelcomeHero, WelcomeTip } from "@/components/chat/welcome-hero"
 import { QuickActions } from "@/components/chat/quick-actions"
 import type { ComposerInjectContent } from "@/components/chat/message-input"
 import { TileScrollContainer } from "@/components/conversations/tile-scroll-container"
+import { GroupSplitHandle } from "@/components/conversations/group-split-handle"
+import { TabBar } from "@/components/tabs/tab-bar"
+import { TabDragGhost } from "@/components/tabs/tab-drag-ghost"
+import { useSidebarContext } from "@/contexts/sidebar-context"
+import { useAuxPanelContext } from "@/contexts/aux-panel-context"
+import { useWorkspaceView } from "@/contexts/workspace-context"
+import { useIsMobile } from "@/hooks/use-mobile"
+import { usePlatform } from "@/hooks/use-platform"
+import { useZoomLevel } from "@/hooks/use-appearance"
+import { isDesktop } from "@/lib/platform"
+import { leftChromeReserve, rightChromeReserve } from "@/lib/window-chrome"
 import {
   acpFork,
   createChatConversation,
@@ -78,16 +95,17 @@ import {
   getPromptDraftDisplayText,
 } from "@/lib/prompt-draft"
 import {
-  AGENT_LABELS,
   type AgentType,
   type ContentBlock,
   type ConversationStatus,
   type EventEnvelope,
   type MessageTurn,
+  type PlanApprovalAnswer,
   type PromptDraft,
   type QuestionAnswer,
   type UserMessageBlock,
 } from "@/lib/types"
+import { getAgentLabel } from "@/lib/custom-agents"
 import {
   getSavedModeId,
   saveModePreference,
@@ -126,11 +144,16 @@ interface ConversationTabViewProps {
   workingDir?: string
   isActive: boolean
   /** Drive the composer's flowing active-session border. True only for the
-   *  active tab while tiled across multiple sessions — the one place the flow
-   *  serves as the "which tile is active" cue. Distinct from `isActive`, which
-   *  also governs auto-focus/connect and is true even for a lone session. */
+   *  active tab while several sessions are visible (tiled within a group
+   *  and/or split across groups) — the places the flow serves as the "which
+   *  session is active" cue. Distinct from `isActive`, which also governs
+   *  auto-focus/connect and is true even for a lone session. */
   showActiveFlow: boolean
   reloadSignal: number
+  /** The split group this view is rendered under. Used ONLY to tell a
+   *  reparent (the tab moved to another group — remount, keep the connection)
+   *  apart from a real teardown (pane switch / route change — disconnect). */
+  groupId: string
 }
 
 function buildOptimisticUserTurnFromDraft(
@@ -201,9 +224,11 @@ const ConversationTabView = memo(function ConversationTabView({
   isActive,
   showActiveFlow,
   reloadSignal,
+  groupId,
 }: ConversationTabViewProps) {
   const t = useTranslations("Folder.conversation")
   const tWelcome = useTranslations("Folder.chat.welcomeInputPanel")
+  const tDiag = useTranslations("DiagnosticsSettings")
   const sharedT = useTranslations("Folder.chat.shared")
   const refreshConversations = useAppWorkspaceStore(
     (s) => s.refreshConversations
@@ -240,7 +265,6 @@ const ConversationTabView = memo(function ConversationTabView({
     confirmDraftAgent,
     setDraftAgentFromFallback,
   } = useTabActions()
-  const { setSessionStats } = useSessionStats()
   const {
     appendOptimisticTurn,
     removeOptimisticTurn,
@@ -286,6 +310,7 @@ const ConversationTabView = memo(function ConversationTabView({
   const [sendSignal, setSendSignal] = useState(0)
   const [agentsLoaded, setAgentsLoaded] = useState(false)
   const [usableAgentCount, setUsableAgentCount] = useState(0)
+  const [composerDiagnosticsOpen, setComposerDiagnosticsOpen] = useState(false)
   const [agentConnectError, setAgentConnectError] = useState<string | null>(
     null
   )
@@ -424,30 +449,22 @@ const ConversationTabView = memo(function ConversationTabView({
   // session — NOT the whole session object. The live-message sink rewrites the
   // session object on every streaming batch (~60/s, via SET_LIVE_MESSAGE); a
   // whole-object selector here would re-render this keep-alive panel (and the
-  // composer subtree it wraps) on every streaming token, even though none of
-  // these three fields change mid-stream. `useShallow` keeps the returned slice
+  // composer subtree it wraps) on every streaming token, even though neither of
+  // these two fields changes mid-stream. `useShallow` keeps the returned slice
   // reference-stable across batches, so the panel re-renders only when one of
   // them actually changes. (message-list-view subscribes to the session's
-  // liveMessage separately to render the live stream.)
-  const {
-    sessionStats: effectiveSessionStats,
-    externalId: runtimeExternalId,
-    syncState: runtimeSyncState,
-  } = useConversationRuntimeStore(
-    useShallow((s) => {
-      const session = s.byConversationId.get(effectiveConversationId)
-      return {
-        sessionStats: session?.sessionStats ?? null,
-        externalId: session?.externalId ?? null,
-        syncState: session?.syncState ?? "idle",
-      }
-    })
-  )
-
-  useEffect(() => {
-    if (!isActive) return
-    setSessionStats(effectiveSessionStats)
-  }, [effectiveSessionStats, isActive, setSessionStats])
+  // liveMessage separately to render the live stream; the context indicator
+  // reads its own session stats from the runtime store directly.)
+  const { externalId: runtimeExternalId, syncState: runtimeSyncState } =
+    useConversationRuntimeStore(
+      useShallow((s) => {
+        const session = s.byConversationId.get(effectiveConversationId)
+        return {
+          externalId: session?.externalId ?? null,
+          syncState: session?.syncState ?? "idle",
+        }
+      })
+    )
 
   // Two-source resolution for the session id passed to acp_connect:
   //   1. detail.summary.external_id — DB value, available for tabs opened
@@ -528,6 +545,13 @@ const ConversationTabView = memo(function ConversationTabView({
     // Drives cross-client viewer discovery: when another client is already
     // live on this conversation, attach to its connection instead of spawning.
     conversationId: dbConversationId ?? undefined,
+    // A cross-group move / unsplit reparents this view (React remounts it)
+    // while the tab stays open — that unmount must not tear the connection
+    // down. See `isReparentUnmount` for why "still open" alone is too broad.
+    isTransientUnmount: useCallback(
+      () => isReparentUnmount(useTabStore.getState(), tabId, groupId),
+      [tabId, groupId]
+    ),
   })
   const { status: connStatus, sessionId: connSessionId } = conn
   const messageQueue = useMessageQueue()
@@ -624,7 +648,7 @@ const ConversationTabView = memo(function ConversationTabView({
   // appears the moment a not-installed agent is selected, independent of whether
   // a (deduped/superseded) connect attempt ever reached the preflight.
   const composerBlockedMessage = selectedAgentNotInstalled
-    ? tWelcome("agentNotInstalled", { agent: AGENT_LABELS[selectedAgent] })
+    ? tWelcome("agentNotInstalled", { agent: getAgentLabel(selectedAgent) })
     : (autoConnectError ?? agentConnectError)
 
   useEffect(() => {
@@ -946,6 +970,17 @@ const ConversationTabView = memo(function ConversationTabView({
         }
       }
 
+      // Any OTHER send failure (413, image-hydration failure, network drop):
+      // the lifecycle hook already toasts the error; here we roll back the
+      // optimistic user turn so the failed prompt isn't displayed as though
+      // it were sent — and, via REMOVE_OPTIMISTIC_TURN's settle-to-idle, the
+      // conversation drops out of `awaiting_persist` so queue auto-flush
+      // isn't blocked forever. The draft is NOT re-queued (unlike the busy
+      // bounce): a deterministic failure would retry — and toast — forever.
+      const onSendFailed = () => {
+        removeOptimisticTurn(effectiveConversationId, optimisticTurn.id)
+      }
+
       // Pin the tab if it was a temporary preview (single-click opened)
       if (ownTab && !ownTab.isPinned) {
         pinTab(tabId)
@@ -964,6 +999,7 @@ const ConversationTabView = memo(function ConversationTabView({
           // turn by exact id (and never suppresses a different sender's prompt).
           clientMessageId: optimisticTurn.id,
           onTurnInProgress,
+          onSendFailed,
         })
         return
       }
@@ -1067,6 +1103,7 @@ const ConversationTabView = memo(function ConversationTabView({
             conversationId: newConversationId,
             clientMessageId: optimisticTurn.id,
             onTurnInProgress,
+            onSendFailed,
           })
         } catch (e) {
           console.error("[ConversationTabView] create conversation:", e)
@@ -1320,6 +1357,11 @@ const ConversationTabView = memo(function ConversationTabView({
           // re-queues at the front.)
           mqEnqueue(draft, null)
         },
+        // Any other failure: settle the optimistic state (the lifecycle hook
+        // already toasted). No re-queue — deterministic failures would loop.
+        onSendFailed: () => {
+          removeOptimisticTurn(effectiveConversationId, optimisticTurn.id)
+        },
       })
     },
     [
@@ -1341,6 +1383,74 @@ const ConversationTabView = memo(function ConversationTabView({
     (questionId: string, answer: QuestionAnswer) =>
       acpActions.answerQuestion(tabId, questionId, answer),
     [acpActions, tabId]
+  )
+
+  // Grok `exit_plan_mode` approval: resolve the blocked ext request. The backend
+  // broadcasts `plan_approval_resolved` to clear the card on every client.
+  //
+  // "Request changes" is special. Grok discards the reply `feedback` on the
+  // keep-planning path (confirmed against 0.2.111 — only `approved`/`abandoned`
+  // consume it), and its own TUI instead delivers the revision notes as a
+  // follow-up user turn (`s` moves focus to the prompt). Mirror that: after
+  // resolving keep-planning, send the notes as a normal prompt so Grok — still
+  // in plan mode — revises and re-presents the plan. The send path queues the
+  // prompt if the keep-planning turn is still winding down, then flushes when
+  // idle (same optimistic-turn + re-queue dance as `handleAnswerQuestion`).
+  const handleAnswerPlanApproval = useCallback(
+    (approvalId: string, answer: PlanApprovalAnswer) => {
+      const result = acpActions.answerPlanApproval(tabId, approvalId, answer)
+      const notes = answer.feedback?.trim()
+      if (
+        answer.decision === "request_changes" &&
+        notes &&
+        connStatus === "connected"
+      ) {
+        const optimisticTurn: MessageTurn = {
+          id: `optimistic-${randomUUID()}`,
+          role: "user",
+          blocks: [{ type: "text", text: notes }],
+          timestamp: new Date().toISOString(),
+        }
+        const draft: PromptDraft = {
+          blocks: [{ type: "text", text: notes }],
+          displayText: notes,
+        }
+        appendOptimisticTurn(
+          effectiveConversationId,
+          optimisticTurn,
+          optimisticTurn.id
+        )
+        setSendSignal((prev) => prev + 1)
+        setSyncState(effectiveConversationId, "awaiting_persist")
+        lifecycleSend(draft, null, {
+          clientMessageId: optimisticTurn.id,
+          // Rejected because the keep-planning turn was still in flight — roll
+          // back the optimistic turn and re-queue at the tail so it isn't lost.
+          onTurnInProgress: () => {
+            lastFlushBounceAtRef.current = Date.now()
+            removeOptimisticTurn(effectiveConversationId, optimisticTurn.id)
+            mqEnqueue(draft, null)
+          },
+          // Any other failure: settle the optimistic state (the lifecycle
+          // hook already toasted). No re-queue — deterministic failures loop.
+          onSendFailed: () => {
+            removeOptimisticTurn(effectiveConversationId, optimisticTurn.id)
+          },
+        })
+      }
+      return result
+    },
+    [
+      acpActions,
+      tabId,
+      connStatus,
+      appendOptimisticTurn,
+      removeOptimisticTurn,
+      mqEnqueue,
+      effectiveConversationId,
+      lifecycleSend,
+      setSyncState,
+    ]
   )
 
   // Queue edit flow: derive editing draft text from queue state
@@ -1419,23 +1529,44 @@ const ConversationTabView = memo(function ConversationTabView({
     closeTab(tabId)
   }, [closeTab, folder, openNewConversationTab, tabId, workingDirForConnection])
 
+  // Goal pause/clear is a live, owner-only action, so decide availability once
+  // here (where the connection is owned) rather than in the deep goal card.
+  // `null` when the session isn't live or the user is a viewer → the card hides
+  // its buttons. Codex is the only agent that produces goal cards, so no
+  // agent-type gate is needed. Provided only around the main panel's list; the
+  // read-only sub-agent dialog renders its own MessageListView with no provider.
+  const goalControlValue = useMemo<GoalControlValue>(() => {
+    const live =
+      conn.connectionId !== null &&
+      (connStatus === "connected" || connStatus === "prompting") &&
+      !conn.isViewer
+    return {
+      onGoalControl: live
+        ? (action) => {
+            void acpActions.goalControl(tabId, action)
+          }
+        : null,
+    }
+  }, [conn.connectionId, conn.isViewer, connStatus, acpActions, tabId])
+
   const messageListNode = (
-    <MessageListView
-      conversationId={effectiveConversationId}
-      agentType={selectedAgent}
-      connStatus={connStatus}
-      isActive={isActive}
-      sendSignal={sendSignal}
-      sessionStats={effectiveSessionStats}
-      detailLoading={detailLoading}
-      detailError={detailError}
-      acpLoadError={acpLoadError}
-      hideEmptyState={!hasPersistedConversation || hasSentMessage}
-      onReload={canShowDetailErrorActions ? handleReloadDetail : undefined}
-      onNewSession={
-        canShowDetailErrorActions ? handleOpenNewSession : undefined
-      }
-    />
+    <GoalControlProvider value={goalControlValue}>
+      <MessageListView
+        conversationId={effectiveConversationId}
+        agentType={selectedAgent}
+        connStatus={connStatus}
+        isActive={isActive}
+        sendSignal={sendSignal}
+        detailLoading={detailLoading}
+        detailError={detailError}
+        acpLoadError={acpLoadError}
+        hideEmptyState={!hasPersistedConversation || hasSentMessage}
+        onReload={canShowDetailErrorActions ? handleReloadDetail : undefined}
+        onNewSession={
+          canShowDetailErrorActions ? handleOpenNewSession : undefined
+        }
+      />
+    </GoalControlProvider>
   )
 
   // Live-feedback bar gating + the "agent never read your note" resend fallback.
@@ -1473,18 +1604,20 @@ const ConversationTabView = memo(function ConversationTabView({
       status={connStatus}
       promptCapabilities={conn.promptCapabilities}
       defaultPath={workingDirForConnection}
-      agentName={AGENT_LABELS[selectedAgent]}
+      agentName={getAgentLabel(selectedAgent)}
       error={conn.error}
       claudeApiRetry={conn.claudeApiRetry}
       pendingPermission={conn.pendingPermission}
       pendingQuestion={conn.pendingQuestion}
       pendingAskQuestion={conn.pendingAskQuestion}
+      pendingPlanApproval={conn.pendingPlanApproval}
       onFocus={handleFocus}
       onSend={handleSend}
       onCancel={handleCancel}
       onRespondPermission={handleRespondPermission}
       onAnswerQuestion={handleAnswerQuestion}
       onAnswerAskQuestion={handleAnswerAskQuestion}
+      onAnswerPlanApproval={handleAnswerPlanApproval}
       modes={connectionModes}
       configOptions={connectionConfigOptions}
       modeLoading={modeLoading}
@@ -1553,18 +1686,25 @@ const ConversationTabView = memo(function ConversationTabView({
               />
             </div>
             {composerBlockedMessage ? (
-              <button
-                type="button"
-                onClick={handleOpenAgentsSettings}
-                className="w-full cursor-pointer rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-center text-xs text-destructive transition-colors hover:bg-destructive/10"
-              >
-                <div
-                  className="overflow-hidden text-ellipsis whitespace-nowrap text-center"
+              <div className="flex w-full items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                <button
+                  type="button"
+                  onClick={handleOpenAgentsSettings}
                   title={composerBlockedMessage}
+                  className="min-w-0 flex-1 cursor-pointer overflow-hidden text-ellipsis whitespace-nowrap text-left transition-colors hover:text-destructive/80"
                 >
                   {composerBlockedMessage}
-                </div>
-              </button>
+                </button>
+                {selectedAgentNotInstalled ? (
+                  <button
+                    type="button"
+                    onClick={() => setComposerDiagnosticsOpen(true)}
+                    className="shrink-0 rounded border border-destructive/40 px-2 py-0.5 font-medium transition-colors hover:bg-destructive/10"
+                  >
+                    {tDiag("button")}
+                  </button>
+                ) : null}
+              </div>
             ) : null}
             <ChatInput
               // composerConnStatus (not connStatus): a chat draft mid-reconnect
@@ -1573,7 +1713,7 @@ const ConversationTabView = memo(function ConversationTabView({
               status={composerConnStatus}
               promptCapabilities={conn.promptCapabilities}
               defaultPath={workingDirForConnection}
-              agentName={AGENT_LABELS[selectedAgent]}
+              agentName={getAgentLabel(selectedAgent)}
               onFocus={handleFocus}
               onSend={handleSend}
               onCancel={handleCancel}
@@ -1624,18 +1764,25 @@ const ConversationTabView = memo(function ConversationTabView({
               disabled={isConnecting || dbConversationId != null}
             />
             {composerBlockedMessage ? (
-              <button
-                type="button"
-                onClick={handleOpenAgentsSettings}
-                className="mt-2 w-full cursor-pointer rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-center text-xs text-destructive transition-colors hover:bg-destructive/10"
-              >
-                <div
-                  className="overflow-hidden text-ellipsis whitespace-nowrap text-center"
+              <div className="mt-2 flex w-full items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                <button
+                  type="button"
+                  onClick={handleOpenAgentsSettings}
                   title={composerBlockedMessage}
+                  className="min-w-0 flex-1 cursor-pointer overflow-hidden text-ellipsis whitespace-nowrap text-left transition-colors hover:text-destructive/80"
                 >
                   {composerBlockedMessage}
-                </div>
-              </button>
+                </button>
+                {selectedAgentNotInstalled ? (
+                  <button
+                    type="button"
+                    onClick={() => setComposerDiagnosticsOpen(true)}
+                    className="shrink-0 rounded border border-destructive/40 px-2 py-0.5 font-medium transition-colors hover:bg-destructive/10"
+                  >
+                    {tDiag("button")}
+                  </button>
+                ) : null}
+              </div>
             ) : null}
           </div>
           <div className="min-h-0 flex-1">{messageListNode}</div>
@@ -1651,11 +1798,58 @@ const ConversationTabView = memo(function ConversationTabView({
         }}
         onSubmit={feedback.submit}
         submitting={feedback.submitting}
-        agentName={AGENT_LABELS[selectedAgent]}
+        agentName={getAgentLabel(selectedAgent)}
+      />
+      <AgentDiagnosticsDialog
+        open={composerDiagnosticsOpen}
+        onOpenChange={setComposerDiagnosticsOpen}
+        agentType={selectedAgent}
       />
     </ConversationShell>
   )
 })
+
+// A group rect (percentages) counts as touching a container edge within this
+// tolerance — ratio math can land a hair off exact 0 / 100.
+const GROUP_EDGE_EPSILON = 0.1
+
+/**
+ * Corner reserve for a TOP-EDGE split-group strip. While split there is no
+ * dedicated title-bar row above the shells (the workspace layout drops it
+ * entirely instead of leaving a blank drag strip), so the strips along the
+ * window's top edge must reserve the fixed corner overlays' width themselves —
+ * exactly what the unsplit strip row does: left for LeftEdgeChrome while the
+ * sidebar is collapsed (the conversation column then owns the window's left
+ * edge), right for RightEdgeChrome while the column owns the right edge (aux
+ * panel closed + conversation mode). Mobile shows the full-width
+ * FolderTitleBar instead of corner overlays — no reserve. Self-subscribed so
+ * sidebar/aux/zoom toggles re-render these slivers, not the whole panel.
+ */
+function SplitStripCornerReserve({ side }: { side: "left" | "right" }) {
+  const isMobile = useIsMobile()
+  const { isOpen: sidebarOpen } = useSidebarContext()
+  const { isOpen: auxOpen } = useAuxPanelContext()
+  const { mode } = useWorkspaceView()
+  const { isMac, isWindows, isLinux } = usePlatform()
+  const { zoomLevel } = useZoomLevel()
+  if (isMobile) return null
+  const width =
+    side === "left"
+      ? sidebarOpen
+        ? 0
+        : leftChromeReserve(isMac && isDesktop(), zoomLevel)
+      : !auxOpen && mode === "conversation"
+        ? rightChromeReserve(isDesktop() && (isWindows || isLinux), zoomLevel)
+        : 0
+  if (width <= 0) return null
+  return (
+    <div
+      data-tauri-drag-region
+      className="h-full shrink-0 ws-strip-line"
+      style={{ width }}
+    />
+  )
+}
 
 export function ConversationDetailPanel() {
   const t = useTranslations("Folder.conversation")
@@ -1669,9 +1863,20 @@ export function ConversationDetailPanel() {
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)
   const tabs = useTabStore((s) => s.tabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
-  const isTileMode = useTabStore((s) => s.isTileMode)
-  const { openNewConversationTab, closeTab, switchTab, onPreviewTabReplaced } =
-    useTabActions()
+  const groupLayout = useTabStore((s) => s.groupLayout)
+  const groupOf = useTabStore((s) => s.groupOf)
+  const groupSelection = useTabStore((s) => s.groupSelection)
+  const tileByGroup = useTabStore((s) => s.tileByGroup)
+  // Narrow: only the drop-TARGET group id (for the shell highlight ring) — the
+  // per-frame x/y writes during a drag never re-render the panel.
+  const dragOverGroupId = useTabStore((s) => s.tabDrag?.overGroupId ?? null)
+  const {
+    openNewConversationTab,
+    closeTab,
+    switchTab,
+    resizeGroupSplit,
+    onPreviewTabReplaced,
+  } = useTabActions()
   const newConversation = useMemo(() => {
     const activeTab = tabs.find((tab) => tab.id === activeTabId)
     if (!activeTab || activeTab.conversationId != null) return null
@@ -1957,27 +2162,85 @@ export function ConversationDetailPanel() {
     }
   }, [folder, hasNoTabs, newConversation?.workingDir, openNewConversationTab])
 
-  const canTile = isTileMode && tabs.length > 1
+  // Split-group render model: the layout tree only ever produces PERCENTAGE
+  // RECTS — every group shell is an absolutely-positioned SIBLING keyed by its
+  // stable group id, so splits/merges/orientation flips/divider drags are pure
+  // style changes and a tab that stays in its group is never reparented (a
+  // reparent would remount the view and tear down a live streaming response).
+  const { groups: groupRects, handles: groupHandles } = useMemo(
+    () => computeRects(groupLayout),
+    [groupLayout]
+  )
+  const orderedGroupIds = useMemo(() => leafIds(groupLayout), [groupLayout])
+  const isSplit = orderedGroupIds.length > 1
+  const tabsByGroup = useMemo(() => {
+    const byGroup = new Map<string, typeof tabs>()
+    for (const groupId of orderedGroupIds) byGroup.set(groupId, [])
+    for (const tab of tabs) {
+      const groupId = groupOfTab(groupOf, groupLayout, tab.id)
+      const bucket = byGroup.get(groupId)
+      if (bucket) {
+        bucket.push(tab)
+      } else {
+        byGroup.set(groupId, [tab])
+      }
+    }
+    return byGroup
+  }, [tabs, groupOf, groupLayout, orderedGroupIds])
 
   const tileTabRefs = useRef<Map<string, HTMLDivElement | null>>(new Map())
+  const groupContainerRef = useRef<HTMLDivElement | null>(null)
 
+  // Scroll each TILED group's selected tab into view when the selection (or
+  // the group's tiled-ness) changes — the signature string keeps the effect
+  // from refiring on unrelated tab updates.
+  const tiledSelectionKey = useMemo(
+    () =>
+      orderedGroupIds
+        .filter(
+          (groupId) =>
+            tileByGroup[groupId] &&
+            (tabsByGroup.get(groupId)?.length ?? 0) > 1 &&
+            groupSelection[groupId] != null
+        )
+        .map((groupId) => groupSelection[groupId])
+        .join("|"),
+    [orderedGroupIds, tileByGroup, tabsByGroup, groupSelection]
+  )
   useEffect(() => {
-    if (!canTile || !activeTabId) return
-    const el = tileTabRefs.current.get(activeTabId)
-    if (!el) return
-    el.scrollIntoView({
-      behavior: "smooth",
-      inline: "center",
-      block: "nearest",
-    })
-  }, [canTile, activeTabId])
+    if (!tiledSelectionKey) return
+    for (const selectedId of tiledSelectionKey.split("|")) {
+      tileTabRefs.current.get(selectedId)?.scrollIntoView({
+        behavior: "smooth",
+        inline: "center",
+        block: "nearest",
+      })
+    }
+  }, [tiledSelectionKey])
+
+  // Safety valve: if the dragged tab vanishes mid-drag (a remote snapshot
+  // closing it), the drag-end callback on its unmounted item never fires —
+  // clear the transient drag so the ghost/highlight can't linger.
+  useEffect(() => {
+    const st = useTabStore.getState()
+    if (st.tabDrag && !tabs.some((tab) => tab.id === st.tabDrag?.tabId)) {
+      st.endTabDrag()
+    }
+  }, [tabs])
 
   if (hasNoTabs) {
     return null
   }
 
-  const tabElements = tabs.map((tab, index) => {
+  const renderTabWrapper = (
+    tab: (typeof tabs)[number],
+    indexInGroup: number,
+    groupId: string,
+    canTileG: boolean
+  ) => {
     const active = tab.id === activeTabId
+    // Visible = tiled (all group members shown) or the group's selected tab.
+    const visible = canTileG || tab.id === groupSelection[groupId]
     const folderPath = allFolders.find((f) => f.id === tab.folderId)?.path
     const view = (
       <ConversationTabView
@@ -1986,8 +2249,9 @@ export function ConversationDetailPanel() {
         agentType={tab.agentType}
         workingDir={tab.workingDir ?? folderPath}
         isActive={active}
-        showActiveFlow={canTile && active}
+        showActiveFlow={(isSplit || canTileG) && active}
         reloadSignal={reloadByTabId[tab.id] ?? 0}
+        groupId={groupId}
       />
     )
     return (
@@ -2001,34 +2265,131 @@ export function ConversationDetailPanel() {
           }
         }}
         className={cn(
-          canTile
+          canTileG
             ? cn(
                 "relative h-full min-w-[24rem] flex-1 overflow-hidden",
-                index > 0 && "border-l border-border/50"
+                indexInGroup > 0 && "border-l border-border/50"
               )
-            : active
+            : visible
               ? "h-full"
-              : "absolute inset-0 invisible pointer-events-none"
+              : "conversation-tab-hidden absolute inset-0 invisible pointer-events-none"
         )}
         onPointerDownCapture={
-          canTile && !active ? () => switchTab(tab.id) : undefined
+          visible && !active ? () => switchTab(tab.id) : undefined
         }
       >
         {/* The visible active cue is now the composer's flowing gradient border
-            (see message-input.tsx); keep a non-visual cue for assistive tech in
-            tiled mode, where the old top-center icon used to provide it. */}
-        {canTile && active && (
+            (see message-input.tsx); keep a non-visual cue for assistive tech
+            when several sessions are visible (tiled and/or split). */}
+        {(isSplit || canTileG) && active && (
           <span className="sr-only">{t("activeConversationIndicator")}</span>
         )}
         {view}
       </div>
     )
-  })
+  }
 
-  // A single header sits fixed above the horizontally-scrolling tile row, so it
-  // never scrolls on the x-axis when conversations are tiled. It reflects the
-  // ACTIVE conversation (title + owning folder). On mobile there's no tile row —
-  // it's simply the sole conversation's header.
+  // Plain function (NOT a component defined in render — that type identity
+  // would change every render and remount the whole shell subtree).
+  const renderGroupShell = (groupId: string) => {
+    const rect = groupRects.get(groupId)
+    if (!rect) return null
+    const groupTabs = tabsByGroup.get(groupId) ?? []
+    const canTileG = !!tileByGroup[groupId] && groupTabs.length > 1
+    // Only the TOP-edge strips sit under the fixed corner overlays (the split
+    // layout has no title-bar row above them) — the leftmost/rightmost of that
+    // row carry the corner reserves the unsplit strip row normally provides.
+    const touchesTop = rect.y <= GROUP_EDGE_EPSILON
+    const touchesLeft = touchesTop && rect.x <= GROUP_EDGE_EPSILON
+    const touchesRight =
+      touchesTop && rect.x + rect.w >= 100 - GROUP_EDGE_EPSILON
+    // The group's SELECTED tab drives its header — each split group keeps the
+    // full "tabs + conversation title bar" pairing of the unsplit layout.
+    const selTab =
+      groupTabs.find((tab) => tab.id === groupSelection[groupId]) ??
+      groupTabs[0] ??
+      null
+    const selTabFolder = selTab
+      ? allFolders.find((f) => f.id === selTab.folderId)
+      : undefined
+    // NOTE: the strip / header / content stay PLAIN SIBLING SLOTS (no fragment
+    // around any pair) — a `false` conditional is a reconciliation hole, so the
+    // content keeps its slot across split flips; wrapping would shift slots and
+    // remount every live view (see group-shell-reconciliation.test.tsx).
+    return (
+      <div
+        key={groupId}
+        data-conv-group-shell={groupId}
+        className="absolute flex min-h-0 flex-col overflow-hidden"
+        style={{
+          left: `${rect.x}%`,
+          top: `${rect.y}%`,
+          width: `${rect.w}%`,
+          height: `${rect.h}%`,
+        }}
+      >
+        {/* While split, each group owns its own strip (the workspace layout's
+            title-bar row is gone entirely), and the TOP-edge strips add the
+            corner reserves that row normally carries. */}
+        {isSplit && (
+          <div className="flex h-10 shrink-0 items-stretch bg-muted ws-transparent-bg">
+            {touchesLeft && <SplitStripCornerReserve side="left" />}
+            <TabBar groupId={groupId} />
+            {touchesRight && <SplitStripCornerReserve side="right" />}
+          </div>
+        )}
+        {isSplit && selTab && (
+          <div
+            className="shrink-0"
+            // Clicking a non-focused group's title bar focuses that group
+            // (same gesture as clicking its content) — capture phase so the
+            // header's own controls still receive the event afterwards.
+            onPointerDownCapture={() => {
+              const selected = groupSelection[groupId]
+              if (selected && selected !== useTabStore.getState().activeTabId) {
+                switchTab(selected)
+              }
+            }}
+          >
+            <ConversationDetailHeader
+              tabId={selTab.id}
+              conversationId={selTab.conversationId}
+              runtimeConversationId={selTab.runtimeConversationId ?? null}
+              folderId={selTab.folderId}
+              folderPath={selTabFolder?.path}
+              title={selTab.title}
+              status={selTab.status as ConversationStatus | undefined}
+            />
+          </div>
+        )}
+        <div className="relative min-h-0 flex-1 overflow-hidden">
+          <TileScrollContainer canTile={canTileG}>
+            <div
+              className={cn(
+                "relative h-full",
+                canTileG && "flex min-w-full flex-row"
+              )}
+            >
+              {groupTabs.map((tab, indexInGroup) =>
+                renderTabWrapper(tab, indexInGroup, groupId, canTileG)
+              )}
+            </div>
+          </TileScrollContainer>
+          {/* Drop-target cue while a tab from another group hovers here. */}
+          {dragOverGroupId === groupId && (
+            <div className="pointer-events-none absolute inset-0 z-30 bg-primary/5 ring-2 ring-inset ring-primary/30" />
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  // While UNSPLIT, a single header sits fixed above the horizontally-scrolling
+  // tile row, so it never scrolls on the x-axis when conversations are tiled.
+  // It reflects the ACTIVE conversation (title + owning folder). On mobile
+  // there's no tile row — it's simply the sole conversation's header. While
+  // SPLIT, every group shell renders its own header under its strip (the
+  // "tabs + title bar" pairing per group), so the global one steps aside.
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null
   const activeTabFolder = activeTab
     ? allFolders.find((f) => f.id === activeTab.folderId)
@@ -2037,7 +2398,7 @@ export function ConversationDetailPanel() {
   return (
     <>
       <div className="flex h-full min-h-0 flex-col overflow-hidden">
-        {activeTab && (
+        {!isSplit && activeTab && (
           <ConversationDetailHeader
             tabId={activeTab.id}
             conversationId={activeTab.conversationId}
@@ -2051,20 +2412,24 @@ export function ConversationDetailPanel() {
         <ContextMenu onOpenChange={handleContextMenuOpenChange}>
           <ContextMenuTrigger asChild>
             <div
+              ref={groupContainerRef}
               className="relative min-h-0 flex-1 overflow-hidden"
               onPointerDown={handleContextMenuTriggerPointerDown}
             >
-              {/* Stable wrapper across canTile flip — otherwise sibling tabs remount and a live streaming response is torn down. */}
-              <TileScrollContainer canTile={canTile}>
-                <div
-                  className={cn(
-                    "relative h-full",
-                    canTile && "flex min-w-full flex-row"
-                  )}
-                >
-                  {tabElements}
-                </div>
-              </TileScrollContainer>
+              {/* Flat sibling shells keyed by stable group id + divider
+                  overlays — stable across every split/tile flip, otherwise
+                  sibling tabs remount and a live streaming response is torn
+                  down. */}
+              {orderedGroupIds.map((groupId) => renderGroupShell(groupId))}
+              {isSplit &&
+                groupHandles.map((handle) => (
+                  <GroupSplitHandle
+                    key={`${handle.splitId}:${handle.index}`}
+                    handle={handle}
+                    containerRef={groupContainerRef}
+                    onResize={resizeGroupSplit}
+                  />
+                ))}
             </div>
           </ContextMenuTrigger>
           <ContextMenuContent>
@@ -2128,6 +2493,7 @@ export function ConversationDetailPanel() {
           </ContextMenuContent>
         </ContextMenu>
       </div>
+      <TabDragGhost />
       {activeSessionSummary && (
         <SessionDetailsDialog
           open={detailsOpen}

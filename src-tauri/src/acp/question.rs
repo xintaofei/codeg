@@ -29,8 +29,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use sacp::schema::{
+    CreateElicitationRequest, CreateElicitationResponse, ElicitationAcceptAction, ElicitationAction,
+    ElicitationContentValue, ElicitationMode, ElicitationPropertySchema, ElicitationScope,
+    MultiSelectItems, StringPropertySchema,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use tokio::sync::{oneshot, RwLock};
 
 /// Max questions per `ask_user_question` call. Matches Claude Code's
@@ -74,8 +80,17 @@ pub struct QuestionSpec {
     pub header: String,
     /// When true the user may select multiple options.
     pub multi_select: bool,
-    /// The choices ([`MIN_OPTIONS`]..=[`MAX_OPTIONS`]).
+    /// The choices (0..=[`MAX_OPTIONS`]). Empty means free-text: the card
+    /// renders only its always-present "Other" input (codex `request_user_input`
+    /// and MCP-server elicitations both ask open questions this way; the
+    /// codeg-mcp ask tool still requires [`MIN_OPTIONS`] at its own parse
+    /// layer).
     pub options: Vec<QuestionOption>,
+    /// True when the answer is a secret (codex `request_user_input` marks API
+    /// keys etc. with `_meta.codex.isSecret`): the card masks the free-text
+    /// input. Default false — absent on the wire for every non-secret source.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_secret: bool,
 }
 
 /// The pending (awaiting-answer) question set stored on
@@ -276,6 +291,7 @@ pub fn parse_questions(arguments: &Value) -> Result<Vec<QuestionSpec>, String> {
             header: header.to_string(),
             multi_select,
             options,
+            is_secret: false,
         });
     }
     Ok(out)
@@ -323,9 +339,14 @@ pub fn validate_specs(specs: &[QuestionSpec]) -> Result<(), String> {
                 "questions[{qi}] `header` exceeds {MAX_HEADER_CHARS} characters"
             ));
         }
-        if q.options.len() < MIN_OPTIONS || q.options.len() > MAX_OPTIONS {
+        // Unlike `parse_questions` (the codeg-mcp tool contract, which keeps
+        // its [`MIN_OPTIONS`] floor), typed specs allow 0..=[`MAX_OPTIONS`]:
+        // a question with no options is a legal free-text ask — the card
+        // renders its always-present "Other" input alone (codex elicitation
+        // and MCP-server forms ask open questions this way).
+        if q.options.len() > MAX_OPTIONS {
             return Err(format!(
-                "questions[{qi}] must have between {MIN_OPTIONS} and {MAX_OPTIONS} options"
+                "questions[{qi}] must have at most {MAX_OPTIONS} options"
             ));
         }
         let mut seen_labels = std::collections::HashSet::new();
@@ -526,6 +547,7 @@ pub fn parse_grok_ext_questions(params: &Value) -> Result<Vec<QuestionSpec>, Str
             header: synthesize_grok_header(question),
             multi_select,
             options,
+            is_secret: false,
         });
     }
     Ok(out)
@@ -573,19 +595,621 @@ pub fn grok_ext_skip_response() -> Value {
     serde_json::json!({ "outcome": "skip_interview" })
 }
 
-/// Build the `raw_input` (questions) for the in-stream `AskQuestionResultCard`
-/// codeg synthesizes for a grok native ask. Grok never emits a *completed* tool
-/// result into the ACP `updates.jsonl` stream (it resolves the answer over the
-/// `_x.ai/ask_user_question` ext round-trip instead), so the connection handler
-/// emits this itself once the user submits — see `handle_grok_ask_user_question`.
+/// One selectable choice lifted from a schema property: the display `label`
+/// (`title`, falling back to the wire value) and the `value` (`const` / `enum`
+/// entry) the accept response must send back. The two differ when a generic
+/// MCP server elicits with `enum` + `enumNames` (codex-acp normalizes that to
+/// `oneOf` with `const` ≠ `title`); codex's own `request_user_input` sets them
+/// identical. The typed schema drops per-option descriptions, so they are left
+/// empty (the card renders fine without one).
+struct ElicitationChoice {
+    label: String,
+    value: String,
+}
+
+fn string_prop_choices(s: &StringPropertySchema) -> Vec<ElicitationChoice> {
+    if let Some(one_of) = &s.one_of {
+        return one_of
+            .iter()
+            .map(|o| ElicitationChoice {
+                label: if o.title.trim().is_empty() {
+                    o.value.clone()
+                } else {
+                    o.title.clone()
+                },
+                value: o.value.clone(),
+            })
+            .collect();
+    }
+    if let Some(values) = &s.enum_values {
+        return values
+            .iter()
+            .map(|v| ElicitationChoice {
+                label: v.clone(),
+                value: v.clone(),
+            })
+            .collect();
+    }
+    Vec::new()
+}
+
+fn multi_select_choices(items: &MultiSelectItems) -> Vec<ElicitationChoice> {
+    match items {
+        MultiSelectItems::Titled(t) => t
+            .options
+            .iter()
+            .map(|o| ElicitationChoice {
+                label: if o.title.trim().is_empty() {
+                    o.value.clone()
+                } else {
+                    o.title.clone()
+                },
+                value: o.value.clone(),
+            })
+            .collect(),
+        MultiSelectItems::Untitled(u) => u
+            .values
+            .iter()
+            .map(|v| ElicitationChoice {
+                label: v.clone(),
+                value: v.clone(),
+            })
+            .collect(),
+        // `MultiSelectItems` is `#[non_exhaustive]`; an unknown item kind
+        // yields no options — the question degrades to free text.
+        _ => Vec::new(),
+    }
+}
+
+/// How one form field's answer must be typed in the elicitation response.
+/// MCP servers validate the accepted content against their schema, so a
+/// boolean/number field answered with a string would be rejected — each
+/// answer is rebuilt into the schema's own primitive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElicitationFieldKind {
+    /// Single-select or free-text string → bare string.
+    Text,
+    /// Multi-select array → string array.
+    MultiSelect,
+    /// Yes/No choice → JSON boolean.
+    Boolean,
+    /// Free-text parsed as f64 → JSON number (unparseable answers are omitted).
+    Number,
+    /// Free-text parsed as i64 → JSON integer (unparseable answers are omitted).
+    Integer,
+}
+
+/// The response-side rebuild plan for one schema property, parallel (same
+/// index) to the [`QuestionSpec`] minted for it. Keeps the property id, the
+/// primitive kind, and the label→value map for choice fields — everything
+/// [`build_elicitation_response`] needs that [`QuestionSpec`] (a shared wire
+/// type the card renders) must not carry.
+pub struct ElicitationField {
+    /// Schema property name — the key the accepted content is sent under.
+    pub id: String,
+    pub kind: ElicitationFieldKind,
+    /// Display label → wire value for choice fields. A label the user typed
+    /// via "Other" (absent here) is sent verbatim.
+    pub value_by_label: std::collections::HashMap<String, String>,
+}
+
+/// A form elicitation that renders as ask-card questions.
+pub struct ElicitationQuestions {
+    pub specs: Vec<QuestionSpec>,
+    /// Parallel to `specs` (same index).
+    pub fields: Vec<ElicitationField>,
+    /// The elicitation's `toolCallId` (codex sets it to the `request_user_input`
+    /// item id). The connection handler keys the synthesized in-stream result
+    /// card to it, so the live card and the reloaded history card (parsed by
+    /// `codex.rs` from the same id) are one card. `None` when the wire carried
+    /// no session scope tool_call_id.
+    pub tool_call_id: Option<String>,
+}
+
+/// One selectable option of an approval-style elicitation, shaped for the
+/// permission card (`PermissionOptionInfo` mirrors these fields 1:1).
+pub struct ElicitationApprovalOption {
+    pub option_id: String,
+    pub label: String,
+    /// `allow_once` / `allow_always` / `reject_once` — the permission-option
+    /// kinds the frontend already styles.
+    pub kind: &'static str,
+}
+
+/// The reserved option id for rejecting an approval-style elicitation. Never
+/// collides with a persist `const` (codex only mints `once`/`session`/`always`)
+/// and is filtered out of the accept mapping defensively.
+pub const ELICITATION_DECLINE_OPTION_ID: &str = "__decline";
+
+/// A form elicitation that renders through the PERMISSION card rather than the
+/// ask card: an MCP tool-call approval (`_meta.codex_approval_kind ==
+/// "mcp_tool_call"`) or a message-only confirm (a form with no renderable
+/// fields). Routing these through the permission flow keeps MCP approvals
+/// looking exactly like they did before codeg advertised `elicitation.form`
+/// (codex-acp then used `session/request_permission` with the same options).
+pub struct ElicitationApproval {
+    /// The human prompt ("Allow tool call?" / the MCP server's message).
+    pub message: String,
+    /// The tool call this approval correlates to (codex emits the mcpToolCall
+    /// item before eliciting), when the wire carried one.
+    pub tool_call_id: Option<String>,
+    /// The selectable options in display order; always ends with the
+    /// [`ELICITATION_DECLINE_OPTION_ID`] entry.
+    pub options: Vec<ElicitationApprovalOption>,
+    /// True when the accept response must echo the chosen option back as
+    /// `content.persist` (the request carried codex's persist-choice
+    /// property; codex-acp pops it into the app-server `_meta.persist`).
+    pub persist_in_content: bool,
+}
+
+/// How a form `elicitation/create` request must be presented.
+pub enum ElicitationPlan {
+    Questions(ElicitationQuestions),
+    Approval(ElicitationApproval),
+}
+
+/// Codex's synthetic free-text "Other" companion fields are named
+/// `<questionId>__other` (`__other1`, `__other2`… on collision). The card
+/// offers its own "Other" on every question, so companions are skipped and the
+/// typed answer rides the main field (codex falls back to it).
+fn is_other_companion(id: &str) -> bool {
+    let Some(pos) = id.rfind("__other") else {
+        return false;
+    };
+    pos > 0 && id[pos + "__other".len()..].chars().all(|c| c.is_ascii_digit())
+}
+
+/// True when the request is codex's MCP tool-call approval elicitation. The
+/// marker rides the request `_meta` verbatim (codex-acp passes the app-server
+/// `_meta` through), NOT under the `codex` namespace.
+fn is_mcp_tool_call_approval(raw: &Value) -> bool {
+    raw.get("_meta")
+        .and_then(|m| m.get("codex_approval_kind"))
+        .and_then(Value::as_str)
+        == Some("mcp_tool_call")
+}
+
+/// Codex's auto-resolution timeout for a `request_user_input` elicitation
+/// (`_meta.codex.autoResolutionMs`). When set, codex-acp races the elicitation
+/// against this timer and answers `{answers: {}}` itself on expiry — the
+/// connection handler mirrors it to reap the by-then-pointless card.
+pub fn elicitation_auto_resolution_ms(raw: &Value) -> Option<u64> {
+    raw.get("_meta")?
+        .get("codex")?
+        .get("autoResolutionMs")?
+        .as_u64()
+}
+
+/// Classify a form `elicitation/create` request (the raw JSON params) into its
+/// presentation plan. Everything codex-acp can send once `elicitation.form` is
+/// advertised lands here, so every shape must resolve to SOMETHING the user
+/// can act on — an unhandled shape would stall or silently reject the agent's
+/// blocked request:
 ///
-/// Deliberately omits `header`: grok's native questions have none (the chip
-/// header we synthesize for the interactive card is an internal detail), so the
-/// frontend parses `header:""` here. The paired [`grok_result_card_output`] uses
-/// the SAME empty header, and the history parser (`grok.rs`) emits `header:""`
-/// too, so the card's answer↔question match key (`header + question`) aligns and
-/// a conversation renders identically live and after reload. Built from the
-/// already-clamped [`QuestionSpec`]s so input and output stay in lockstep.
+///   * MCP tool-call approvals (`_meta.codex_approval_kind`) → [`ElicitationApproval`]
+///     with the persist choices (`once`/`session`/`always`) + Decline — the
+///     permission card, exactly like the pre-capability `request_permission`
+///     fallback. This includes approvals for codeg-mcp's OWN tools in
+///     consent-requiring permission modes, so declining them here would break
+///     ask/delegation for codex outright.
+///   * Forms with no renderable fields (message-only MCP confirms) →
+///     [`ElicitationApproval`] with Accept/Decline.
+///   * Everything else (codex `request_user_input`, generic MCP forms) →
+///     [`ElicitationQuestions`]: string `oneOf`/`enum` render as choices
+///     (title displayed, `const` sent back), plain strings/numbers/integers as
+///     free text, booleans as Yes/No, arrays as multi-select; `<id>__other`
+///     companions are skipped (the card has its own "Other").
+///
+/// Counts are clamped to codeg's bounds because
+/// [`crate::acp::manager::ConnectionManager::register_question`] re-runs
+/// [`validate_specs`]. Errors only on non-form / undeserializable requests,
+/// which the connection handler turns into a graceful decline.
+pub fn classify_elicitation(raw: &Value) -> Result<ElicitationPlan, String> {
+    let req: CreateElicitationRequest = serde_json::from_value(raw.clone())
+        .map_err(|e| format!("unparseable elicitation request: {e}"))?;
+    let ElicitationMode::Form(form) = &req.mode else {
+        // codeg only advertises `elicitation.form` — URL mode goes down
+        // codex-acp's `request_permission` fallback and never reaches here.
+        return Err("elicitation is not form mode".to_string());
+    };
+    let message: String = req
+        .message
+        .trim()
+        .chars()
+        .take(MAX_QUESTION_TEXT_CHARS)
+        .collect();
+    let tool_call_id = match &form.scope {
+        ElicitationScope::Session(s) => s.tool_call_id.as_ref().map(|t| t.0.to_string()),
+        _ => None,
+    };
+    if is_mcp_tool_call_approval(raw) {
+        return Ok(ElicitationPlan::Approval(approval_from_form(
+            form,
+            message,
+            tool_call_id,
+        )));
+    }
+    let mut questions = parse_form_questions(form, raw);
+    if questions.specs.is_empty() {
+        // A form with nothing to fill in is a bare confirmation — mirror
+        // codex-acp's own no-capability fallback (Accept/Decline options).
+        return Ok(ElicitationPlan::Approval(ElicitationApproval {
+            message,
+            tool_call_id,
+            options: vec![
+                ElicitationApprovalOption {
+                    option_id: "accept".to_string(),
+                    label: "Accept".to_string(),
+                    kind: "allow_once",
+                },
+                decline_approval_option(),
+            ],
+            persist_in_content: false,
+        }));
+    }
+    // Carry the elicitation's tool_call_id so the connection handler can key the
+    // synthesized in-stream result card to it — codex delivers `request_user_input`
+    // ONLY as this elicitation, never as a stream tool_call.
+    questions.tool_call_id = tool_call_id;
+    Ok(ElicitationPlan::Questions(questions))
+}
+
+fn decline_approval_option() -> ElicitationApprovalOption {
+    ElicitationApprovalOption {
+        option_id: ELICITATION_DECLINE_OPTION_ID.to_string(),
+        label: "Decline".to_string(),
+        kind: "reject_once",
+    }
+}
+
+/// Build the approval plan for an MCP tool-call approval elicitation. The
+/// request's only (optional) field is codex-acp's injected `persist` choice —
+/// `oneOf` of `once` (+ `session`/`always` when codex advertises them). Its
+/// options become the allow choices (wire titles displayed, `const` as the
+/// option id) plus Decline; with no persist property the choices are plain
+/// Allow/Decline. Mirrors codex-acp's own `request_permission` fallback
+/// (`buildToolApprovalOptions`) so approvals look identical either way.
+fn approval_from_form(
+    form: &sacp::schema::ElicitationFormMode,
+    message: String,
+    tool_call_id: Option<String>,
+) -> ElicitationApproval {
+    let persist_choices = form
+        .requested_schema
+        .properties
+        .get("persist")
+        .and_then(|p| match p {
+            ElicitationPropertySchema::String(s) => Some(string_prop_choices(s)),
+            _ => None,
+        })
+        .filter(|c| !c.is_empty());
+    let persist_in_content = persist_choices.is_some();
+    let mut options = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    if let Some(choices) = persist_choices {
+        for c in choices {
+            if options.len() == MAX_OPTIONS {
+                break;
+            }
+            let value = c.value.trim();
+            if value.is_empty()
+                || value == ELICITATION_DECLINE_OPTION_ID
+                || !seen.insert(value.to_string())
+            {
+                continue;
+            }
+            options.push(ElicitationApprovalOption {
+                option_id: value.to_string(),
+                label: if c.label.trim().is_empty() {
+                    value.to_string()
+                } else {
+                    c.label.trim().chars().take(MAX_QUESTION_TEXT_CHARS).collect()
+                },
+                kind: if value == "once" {
+                    "allow_once"
+                } else {
+                    "allow_always"
+                },
+            });
+        }
+    }
+    if options.is_empty() {
+        options.push(ElicitationApprovalOption {
+            option_id: "accept".to_string(),
+            label: "Allow".to_string(),
+            kind: "allow_once",
+        });
+    }
+    options.push(decline_approval_option());
+    ElicitationApproval {
+        message,
+        tool_call_id,
+        options,
+        persist_in_content,
+    }
+}
+
+/// True when the raw schema property carries codex's secret marker
+/// (`_meta.codex.isSecret`). The typed sacp property structs drop `_meta`, so
+/// this reads the raw JSON alongside them.
+fn is_secret_property(raw: &Value, id: &str) -> bool {
+    raw.get("requestedSchema")
+        .and_then(|s| s.get("properties"))
+        .and_then(|p| p.get(id))
+        .and_then(|prop| prop.get("_meta"))
+        .and_then(|m| m.get("codex"))
+        .and_then(|c| c.get("isSecret"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Convert a form's schema properties into ask-card questions + their typed
+/// rebuild plans (see [`classify_elicitation`] for the shape taxonomy). A
+/// property with no usable choices renders as free text (the card's
+/// always-present "Other" input) — including plain strings, numbers, integers,
+/// and choice fields whose options were all empty/duplicate.
+fn parse_form_questions(
+    form: &sacp::schema::ElicitationFormMode,
+    raw: &Value,
+) -> ElicitationQuestions {
+    let mut specs = Vec::new();
+    let mut fields = Vec::new();
+    for (id, prop) in &form.requested_schema.properties {
+        if specs.len() == MAX_QUESTIONS {
+            tracing::warn!(
+                "[codex elicitation] dropping question(s) past the max of {MAX_QUESTIONS}"
+            );
+            break;
+        }
+        // Skip codex's synthetic free-text "Other" companion fields.
+        if is_other_companion(id) {
+            continue;
+        }
+        let (title, description, kind, multi_select, choices) = match prop {
+            ElicitationPropertySchema::String(s) => (
+                s.title.clone(),
+                s.description.clone(),
+                ElicitationFieldKind::Text,
+                false,
+                string_prop_choices(s),
+            ),
+            ElicitationPropertySchema::Array(a) => (
+                a.title.clone(),
+                a.description.clone(),
+                ElicitationFieldKind::MultiSelect,
+                true,
+                multi_select_choices(&a.items),
+            ),
+            ElicitationPropertySchema::Boolean(b) => (
+                b.title.clone(),
+                b.description.clone(),
+                ElicitationFieldKind::Boolean,
+                false,
+                vec![
+                    ElicitationChoice {
+                        label: "Yes".to_string(),
+                        value: "true".to_string(),
+                    },
+                    ElicitationChoice {
+                        label: "No".to_string(),
+                        value: "false".to_string(),
+                    },
+                ],
+            ),
+            ElicitationPropertySchema::Number(n) => (
+                n.title.clone(),
+                n.description.clone(),
+                ElicitationFieldKind::Number,
+                false,
+                Vec::new(),
+            ),
+            ElicitationPropertySchema::Integer(i) => (
+                i.title.clone(),
+                i.description.clone(),
+                ElicitationFieldKind::Integer,
+                false,
+                Vec::new(),
+            ),
+            // `ElicitationPropertySchema` is `#[non_exhaustive]`; a future
+            // property type has no rendering here, so skip it (the agent
+            // reads the missing key as unanswered and proceeds).
+            _ => continue,
+        };
+        let question = description
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .or_else(|| title.as_deref().map(str::trim).filter(|s| !s.is_empty()))
+            .unwrap_or(id.as_str());
+        // Dedup + clamp option labels exactly like the grok bridge, keeping
+        // the label→value map for the response rebuild.
+        let mut options = Vec::with_capacity(choices.len().min(MAX_OPTIONS));
+        let mut value_by_label = std::collections::HashMap::new();
+        let mut seen = std::collections::HashSet::new();
+        for c in &choices {
+            if options.len() == MAX_OPTIONS {
+                break;
+            }
+            let label = c.label.trim();
+            if label.is_empty() || !seen.insert(label.to_string()) {
+                continue;
+            }
+            let label: String = label.chars().take(MAX_QUESTION_TEXT_CHARS).collect();
+            value_by_label.insert(label.clone(), c.value.clone());
+            options.push(QuestionOption {
+                label,
+                description: String::new(),
+            });
+        }
+        let header = title
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|h| h.chars().take(MAX_HEADER_CHARS).collect())
+            .unwrap_or_else(|| synthesize_grok_header(question));
+        specs.push(QuestionSpec {
+            id: id.clone(),
+            question: question.chars().take(MAX_QUESTION_TEXT_CHARS).collect(),
+            header,
+            multi_select,
+            options,
+            is_secret: is_secret_property(raw, id),
+        });
+        fields.push(ElicitationField {
+            id: id.clone(),
+            kind,
+            value_by_label,
+        });
+    }
+    // `tool_call_id` is filled in by `classify_elicitation` (which reads the
+    // form scope); the parser itself only shapes the questions.
+    ElicitationQuestions {
+        specs,
+        fields,
+        tool_call_id: None,
+    }
+}
+
+/// "Yes"/"No" answers (and free-text variants) for a boolean field.
+fn parse_bool_answer(v: &str) -> Option<bool> {
+    match v.trim().to_ascii_lowercase().as_str() {
+        "true" | "yes" | "y" => Some(true),
+        "false" | "no" | "n" => Some(false),
+        _ => None,
+    }
+}
+
+/// Serialize a resolved [`QuestionOutcome`] into the elicitation response.
+/// The agent keys answers by the schema property id, which [`QuestionOutcome`]
+/// drops — so correlate each answered item back to its spec by
+/// `(question, header)` (unique per ask) and rebuild the value through the
+/// parallel [`ElicitationField`]: chosen labels map back to their wire values
+/// (free-text "Other" answers ride verbatim), typed per the field's kind — an
+/// answer that can't be coerced (e.g. non-numeric text for a number field) is
+/// omitted rather than sent mistyped. A declined card or an empty result maps
+/// to `Decline`, which the agent reads as "no answer" and proceeds — never
+/// worse than the pre-bridge behavior.
+pub fn build_elicitation_response(
+    questions: &ElicitationQuestions,
+    outcome: &QuestionOutcome,
+) -> CreateElicitationResponse {
+    if outcome.declined {
+        return elicitation_decline_response();
+    }
+    let mut content: BTreeMap<String, ElicitationContentValue> = BTreeMap::new();
+    for item in &outcome.answers {
+        let Some(idx) = questions
+            .specs
+            .iter()
+            .position(|s| s.question == item.question && s.header == item.header)
+        else {
+            continue;
+        };
+        let field = &questions.fields[idx];
+        let mapped: Vec<String> = item
+            .selected
+            .iter()
+            .map(|l| field.value_by_label.get(l).cloned().unwrap_or_else(|| l.clone()))
+            .collect();
+        let value = match field.kind {
+            ElicitationFieldKind::Text => match mapped.into_iter().next() {
+                Some(v) => ElicitationContentValue::String(v),
+                None => continue,
+            },
+            ElicitationFieldKind::MultiSelect => ElicitationContentValue::StringArray(mapped),
+            ElicitationFieldKind::Boolean => {
+                match mapped.first().and_then(|v| parse_bool_answer(v)) {
+                    Some(b) => ElicitationContentValue::Boolean(b),
+                    None => continue,
+                }
+            }
+            ElicitationFieldKind::Number => {
+                match mapped
+                    .first()
+                    .and_then(|v| v.trim().parse::<f64>().ok())
+                    .filter(|f| f.is_finite())
+                {
+                    Some(f) => ElicitationContentValue::Number(f),
+                    None => continue,
+                }
+            }
+            ElicitationFieldKind::Integer => {
+                match mapped.first().and_then(|v| v.trim().parse::<i64>().ok()) {
+                    Some(i) => ElicitationContentValue::Integer(i),
+                    None => continue,
+                }
+            }
+        };
+        content.insert(field.id.clone(), value);
+    }
+    if content.is_empty() {
+        return elicitation_decline_response();
+    }
+    CreateElicitationResponse::new(ElicitationAction::Accept(
+        ElicitationAcceptAction::new().content(content),
+    ))
+}
+
+/// Serialize the user's permission-card choice for an approval-style
+/// elicitation. The decline option (and any unknown option id, defensively)
+/// maps to `Decline`; an allow choice maps to `Accept`, echoing the chosen
+/// persist value back as `content.persist` when the request carried the
+/// persist property (codex-acp pops it into the app-server `_meta.persist`;
+/// a plain Accept sends no content, which codex-acp reads the same as
+/// `content: null`).
+pub fn build_elicitation_approval_response(
+    approval: &ElicitationApproval,
+    option_id: &str,
+) -> CreateElicitationResponse {
+    let accepted = option_id != ELICITATION_DECLINE_OPTION_ID
+        && approval.options.iter().any(|o| o.option_id == option_id);
+    if !accepted {
+        return elicitation_decline_response();
+    }
+    let mut accept = ElicitationAcceptAction::new();
+    if approval.persist_in_content {
+        let mut content: BTreeMap<String, ElicitationContentValue> = BTreeMap::new();
+        content.insert(
+            "persist".to_string(),
+            ElicitationContentValue::String(option_id.to_string()),
+        );
+        accept = accept.content(content);
+    }
+    CreateElicitationResponse::new(ElicitationAction::Accept(accept))
+}
+
+/// The elicitation reply for a declined / unrenderable / torn-down ask.
+/// `Decline` makes the agent proceed with its own judgment (it reads it as no
+/// answer), so no path through the bridge can regress the pre-bridge behavior.
+pub fn elicitation_decline_response() -> CreateElicitationResponse {
+    CreateElicitationResponse::new(ElicitationAction::Decline)
+}
+
+/// The elicitation reply when the pending card is torn down without a user
+/// choice (turn cancel, disconnect): `Cancel`, mirroring codex-acp's own
+/// "cancelled" outcome mapping.
+pub fn elicitation_cancel_response() -> CreateElicitationResponse {
+    CreateElicitationResponse::new(ElicitationAction::Cancel)
+}
+
+/// Build the `raw_input` (questions) for the in-stream `AskQuestionResultCard`
+/// codeg synthesizes for a native ask that resolves out-of-band rather than as a
+/// completed stream tool_call. Two callers: grok (answers over the
+/// `_x.ai/ask_user_question` ext round-trip — `handle_grok_ask_user_question`)
+/// and codex `request_user_input` (answers over the `elicitation/create`
+/// round-trip — `handle_elicitation_request`). Neither emits a completed tool
+/// result into the ACP stream, so the connection handler emits this once the
+/// user submits.
+///
+/// Deliberately omits `header`, so the frontend parses `header:""` and matches
+/// answers to questions by `question` text alone. The paired
+/// [`grok_result_card_output`] uses the SAME empty header. For grok this is exact
+/// live↔reload parity (its history parser emits `header:""` too); for codex the
+/// reloaded history card (`codex.rs`) does carry the question header, so a
+/// multi-question ask shows header tab labels after reload but not live — a
+/// cosmetic gap only (single-question asks, the common case, render identically
+/// and the answer always shows). Built from the already-clamped [`QuestionSpec`]s
+/// so input and output stay in lockstep.
 pub fn grok_result_card_input(specs: &[QuestionSpec]) -> Value {
     let questions: Vec<Value> = specs
         .iter()
@@ -686,6 +1310,369 @@ mod tests {
         assert!(!qs[0].id.is_empty());
     }
 
+    fn elicitation_raw(props: Value, required: Value) -> Value {
+        json!({
+            "mode": "form",
+            "sessionId": "sess-1",
+            "toolCallId": "item-1",
+            "requestedSchema": {
+                "type": "object",
+                "properties": props,
+                "required": required,
+            },
+            "message": "Input requested",
+        })
+    }
+
+    fn expect_questions(plan: ElicitationPlan) -> ElicitationQuestions {
+        match plan {
+            ElicitationPlan::Questions(q) => q,
+            ElicitationPlan::Approval(_) => panic!("expected a questions plan"),
+        }
+    }
+
+    fn expect_approval(plan: ElicitationPlan) -> ElicitationApproval {
+        match plan {
+            ElicitationPlan::Approval(a) => a,
+            ElicitationPlan::Questions(_) => panic!("expected an approval plan"),
+        }
+    }
+
+    #[test]
+    fn classify_elicitation_single_select_maps_options_and_id() {
+        let raw = elicitation_raw(
+            json!({
+                "q1": {
+                    "type": "string",
+                    "title": "Approach",
+                    "description": "Which approach?",
+                    "oneOf": [
+                        {"const": "Incremental", "title": "Incremental"},
+                        {"const": "Rewrite", "title": "Rewrite"}
+                    ]
+                }
+            }),
+            json!(["q1"]),
+        );
+        let q = expect_questions(classify_elicitation(&raw).unwrap());
+        assert_eq!(q.specs.len(), 1);
+        assert_eq!(q.specs[0].id, "q1", "property key becomes the spec id");
+        assert_eq!(q.specs[0].question, "Which approach?");
+        assert_eq!(q.specs[0].header, "Approach");
+        assert!(!q.specs[0].multi_select);
+        assert!(!q.specs[0].is_secret);
+        let labels: Vec<_> = q.specs[0].options.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(labels, ["Incremental", "Rewrite"]);
+        assert_eq!(q.fields[0].kind, ElicitationFieldKind::Text);
+        // The elicitation's toolCallId rides along so the connection handler can
+        // key the synthesized in-stream result card to it (see the fn docs).
+        assert_eq!(
+            q.tool_call_id.as_deref(),
+            Some("item-1"),
+            "carries the elicitation toolCallId for the synthesized card"
+        );
+    }
+
+    #[test]
+    fn classify_elicitation_free_text_renders_and_skips_other_companion() {
+        // A free-text question (no options) renders as a 0-option spec (the
+        // card shows its always-present "Other" input); the synthetic
+        // `__other` companion (any digit-suffixed collision variant too) is
+        // skipped.
+        let raw = elicitation_raw(
+            json!({
+                "q1": {"type": "string", "title": "Name", "description": "Your name?",
+                       "_meta": {"codex": {"isSecret": true}}},
+                "q1__other": {"type": "string", "title": "Other"},
+                "q1__other1": {"type": "string", "title": "Other"}
+            }),
+            json!([]),
+        );
+        let q = expect_questions(classify_elicitation(&raw).unwrap());
+        assert_eq!(q.specs.len(), 1);
+        assert_eq!(q.specs[0].id, "q1");
+        assert!(q.specs[0].options.is_empty(), "free text has no options");
+        assert!(q.specs[0].is_secret, "secret marker read from raw _meta");
+        assert!(validate_specs(&q.specs).is_ok(), "0-option specs register");
+
+        // The typed answer rides the main field verbatim.
+        let answer = QuestionAnswer {
+            answers: vec![QuestionAnswerItem {
+                question_id: "q1".into(),
+                labels: vec!["Ada Lovelace".into()],
+            }],
+            declined: false,
+        };
+        let outcome = build_outcome(&q.specs, &answer);
+        let v = serde_json::to_value(build_elicitation_response(&q, &outcome)).unwrap();
+        assert_eq!(v["action"], "accept");
+        assert_eq!(v["content"]["q1"], "Ada Lovelace");
+    }
+
+    #[test]
+    fn classify_elicitation_multi_select_marks_multi_and_maps_values() {
+        let raw = elicitation_raw(
+            json!({
+                "langs": {
+                    "type": "array",
+                    "title": "Langs",
+                    "description": "Pick languages",
+                    "items": { "anyOf": [
+                        {"const": "rust", "title": "Rust"},
+                        {"const": "ts", "title": "TS"}
+                    ]}
+                }
+            }),
+            json!([]),
+        );
+        let q = expect_questions(classify_elicitation(&raw).unwrap());
+        assert_eq!(q.specs.len(), 1);
+        assert!(q.specs[0].multi_select);
+        // Titles display; consts ride back on accept.
+        let labels: Vec<_> = q.specs[0].options.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(labels, ["Rust", "TS"]);
+        let answer = QuestionAnswer {
+            answers: vec![QuestionAnswerItem {
+                question_id: q.specs[0].id.clone(),
+                labels: vec!["Rust".into(), "TS".into()],
+            }],
+            declined: false,
+        };
+        let outcome = build_outcome(&q.specs, &answer);
+        let v = serde_json::to_value(build_elicitation_response(&q, &outcome)).unwrap();
+        assert_eq!(v["content"]["langs"], json!(["rust", "ts"]));
+    }
+
+    #[test]
+    fn classify_elicitation_boolean_and_numbers_type_their_answers() {
+        let raw = elicitation_raw(
+            json!({
+                "confirm": {"type": "boolean", "title": "Confirm", "description": "Proceed?"},
+                "count": {"type": "integer", "title": "Count", "description": "How many?"},
+                "ratio": {"type": "number", "title": "Ratio", "description": "What ratio?"}
+            }),
+            json!(["confirm"]),
+        );
+        let q = expect_questions(classify_elicitation(&raw).unwrap());
+        assert_eq!(q.specs.len(), 3);
+        // Booleans render as Yes/No; numbers as free text.
+        let confirm = q.specs.iter().position(|s| s.id == "confirm").unwrap();
+        let labels: Vec<_> = q.specs[confirm].options.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(labels, ["Yes", "No"]);
+
+        let answer = QuestionAnswer {
+            answers: vec![
+                QuestionAnswerItem {
+                    question_id: "confirm".into(),
+                    labels: vec!["Yes".into()],
+                },
+                QuestionAnswerItem {
+                    question_id: "count".into(),
+                    labels: vec!["42".into()],
+                },
+                QuestionAnswerItem {
+                    question_id: "ratio".into(),
+                    labels: vec!["not-a-number".into()],
+                },
+            ],
+            declined: false,
+        };
+        let outcome = build_outcome(&q.specs, &answer);
+        let v = serde_json::to_value(build_elicitation_response(&q, &outcome)).unwrap();
+        assert_eq!(v["content"]["confirm"], json!(true), "boolean typed");
+        assert_eq!(v["content"]["count"], json!(42), "integer typed");
+        assert!(
+            v["content"].get("ratio").is_none(),
+            "unparseable number omitted, not sent mistyped"
+        );
+    }
+
+    #[test]
+    fn classify_elicitation_enum_names_display_title_but_send_const() {
+        // Generic MCP `enum` + `enumNames` normalize to oneOf with
+        // const ≠ title: display the title, send the const back.
+        let raw = elicitation_raw(
+            json!({
+                "env": {
+                    "type": "string",
+                    "title": "Env",
+                    "description": "Which environment?",
+                    "oneOf": [
+                        {"const": "prod-eu-1", "title": "Production (EU)"},
+                        {"const": "stg-eu-1", "title": "Staging (EU)"}
+                    ]
+                }
+            }),
+            json!(["env"]),
+        );
+        let q = expect_questions(classify_elicitation(&raw).unwrap());
+        assert_eq!(q.specs[0].options[0].label, "Production (EU)");
+        let answer = QuestionAnswer {
+            answers: vec![QuestionAnswerItem {
+                question_id: "env".into(),
+                labels: vec!["Production (EU)".into()],
+            }],
+            declined: false,
+        };
+        let outcome = build_outcome(&q.specs, &answer);
+        let v = serde_json::to_value(build_elicitation_response(&q, &outcome)).unwrap();
+        assert_eq!(v["content"]["env"], "prod-eu-1");
+    }
+
+    #[test]
+    fn classify_elicitation_tool_approval_maps_persist_options() {
+        // The exact wire shape codex-acp sends for an MCP tool-call approval
+        // once `elicitation.form` is advertised (verified against its
+        // elicitation-events tests): message + persist choice, approval marker
+        // in top-level `_meta`.
+        let raw = json!({
+            "mode": "form",
+            "sessionId": "sess-1",
+            "toolCallId": "call-1",
+            "message": "Allow tool call?",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "persist": {
+                        "type": "string",
+                        "title": "Approval scope",
+                        "oneOf": [
+                            {"const": "once", "title": "Allow once"},
+                            {"const": "session", "title": "Allow for this session"},
+                            {"const": "always", "title": "Allow and don't ask again"}
+                        ],
+                        "default": "once"
+                    }
+                },
+                "required": ["persist"]
+            },
+            "_meta": {"codex_approval_kind": "mcp_tool_call", "persist": ["session", "always"]}
+        });
+        let approval = expect_approval(classify_elicitation(&raw).unwrap());
+        assert_eq!(approval.message, "Allow tool call?");
+        assert_eq!(approval.tool_call_id.as_deref(), Some("call-1"));
+        assert!(approval.persist_in_content);
+        let ids: Vec<_> = approval.options.iter().map(|o| o.option_id.as_str()).collect();
+        assert_eq!(ids, ["once", "session", "always", ELICITATION_DECLINE_OPTION_ID]);
+        assert_eq!(approval.options[0].label, "Allow once");
+        assert_eq!(approval.options[0].kind, "allow_once");
+        assert_eq!(approval.options[1].kind, "allow_always");
+
+        // Accepting echoes the chosen persist back in content…
+        let v =
+            serde_json::to_value(build_elicitation_approval_response(&approval, "session"))
+                .unwrap();
+        assert_eq!(v["action"], "accept");
+        assert_eq!(v["content"]["persist"], "session");
+        // …declining (or an unknown option) maps to decline.
+        let v = serde_json::to_value(build_elicitation_approval_response(
+            &approval,
+            ELICITATION_DECLINE_OPTION_ID,
+        ))
+        .unwrap();
+        assert_eq!(v["action"], "decline");
+        let v = serde_json::to_value(build_elicitation_approval_response(&approval, "bogus"))
+            .unwrap();
+        assert_eq!(v["action"], "decline");
+    }
+
+    #[test]
+    fn classify_elicitation_tool_approval_without_persist_is_allow_decline() {
+        // No persist advertised → codex-acp sends an EMPTY properties object.
+        // This must NOT auto-decline: it renders Allow/Decline and accepts
+        // with no content.
+        let raw = json!({
+            "mode": "form",
+            "sessionId": "sess-1",
+            "toolCallId": "call-1",
+            "message": "Allow tool call?",
+            "requestedSchema": {"type": "object", "properties": {}},
+            "_meta": {"codex_approval_kind": "mcp_tool_call"}
+        });
+        let approval = expect_approval(classify_elicitation(&raw).unwrap());
+        assert!(!approval.persist_in_content);
+        let ids: Vec<_> = approval.options.iter().map(|o| o.option_id.as_str()).collect();
+        assert_eq!(ids, ["accept", ELICITATION_DECLINE_OPTION_ID]);
+        let v = serde_json::to_value(build_elicitation_approval_response(&approval, "accept"))
+            .unwrap();
+        assert_eq!(v["action"], "accept");
+        assert!(
+            v.get("content").is_none() || v["content"].is_null(),
+            "plain accept sends no content"
+        );
+    }
+
+    #[test]
+    fn classify_elicitation_message_only_form_is_accept_decline_confirm() {
+        // A non-approval form with nothing to fill in (a bare MCP server
+        // confirmation) renders Accept/Decline rather than auto-declining.
+        let raw = elicitation_raw(json!({}), json!([]));
+        let approval = expect_approval(classify_elicitation(&raw).unwrap());
+        assert_eq!(approval.message, "Input requested");
+        let ids: Vec<_> = approval.options.iter().map(|o| o.option_id.as_str()).collect();
+        assert_eq!(ids, ["accept", ELICITATION_DECLINE_OPTION_ID]);
+    }
+
+    #[test]
+    fn elicitation_round_trips_answer_keyed_by_property_id() {
+        let raw = elicitation_raw(
+            json!({
+                "colour": {
+                    "type": "string",
+                    "title": "Colour",
+                    "description": "Pick a colour",
+                    "oneOf": [
+                        {"const": "Red", "title": "Red"},
+                        {"const": "Blue", "title": "Blue"}
+                    ]
+                }
+            }),
+            json!(["colour"]),
+        );
+        let q = expect_questions(classify_elicitation(&raw).unwrap());
+        // Simulate the user picking "Blue" through the normal answer path.
+        let answer = QuestionAnswer {
+            answers: vec![QuestionAnswerItem {
+                question_id: "colour".into(),
+                labels: vec!["Blue".into()],
+            }],
+            declined: false,
+        };
+        let outcome = build_outcome(&q.specs, &answer);
+        let resp = build_elicitation_response(&q, &outcome);
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["action"], "accept");
+        // Codex reads the answer back by the schema property id.
+        assert_eq!(v["content"]["colour"], "Blue");
+    }
+
+    #[test]
+    fn build_elicitation_response_declined_maps_to_decline() {
+        let outcome = QuestionOutcome {
+            answers: vec![],
+            declined: true,
+        };
+        let empty = ElicitationQuestions {
+            specs: vec![],
+            fields: vec![],
+            tool_call_id: None,
+        };
+        let v = serde_json::to_value(build_elicitation_response(&empty, &outcome)).unwrap();
+        assert_eq!(v["action"], "decline");
+        let v = serde_json::to_value(elicitation_cancel_response()).unwrap();
+        assert_eq!(v["action"], "cancel");
+    }
+
+    #[test]
+    fn elicitation_auto_resolution_ms_reads_codex_meta() {
+        let mut raw = elicitation_raw(json!({}), json!([]));
+        assert_eq!(elicitation_auto_resolution_ms(&raw), None);
+        raw["_meta"] = json!({"codex": {"autoResolutionMs": 30000}});
+        assert_eq!(elicitation_auto_resolution_ms(&raw), Some(30000));
+        raw["_meta"] = json!({"codex": {"autoResolutionMs": null}});
+        assert_eq!(elicitation_auto_resolution_ms(&raw), None);
+    }
+
     #[test]
     fn validate_specs_accepts_well_formed_and_rejects_malformed() {
         // What parse_questions mints passes the request-side re-check.
@@ -709,6 +1696,7 @@ mod tests {
                     description: String::new(),
                 })
                 .collect(),
+            is_secret: false,
         };
 
         assert!(validate_specs(&[]).is_err(), "empty set");
@@ -717,8 +1705,8 @@ mod tests {
             "oversized question text"
         );
         assert!(
-            validate_specs(&[spec("ok", MIN_OPTIONS - 1, 0)]).is_err(),
-            "too few options"
+            validate_specs(&[spec("ok", 0, 0)]).is_ok(),
+            "0 options is a legal free-text ask (elicitation / MCP forms)"
         );
         assert!(
             validate_specs(&[spec("ok", MAX_OPTIONS + 1, 0)]).is_err(),
@@ -751,6 +1739,7 @@ mod tests {
                     description: String::new(),
                 },
             ],
+            is_secret: false,
         };
         assert!(validate_specs(&[blank_id]).is_err(), "blank id");
         // Duplicate option label within one question (parse_questions rejects it).
@@ -769,6 +1758,7 @@ mod tests {
                     description: String::new(),
                 },
             ],
+            is_secret: false,
         };
         assert!(
             validate_specs(&[dup_label]).is_err(),

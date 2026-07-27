@@ -150,6 +150,9 @@ pub struct GitLogParams {
     pub branch: Option<String>,
     pub remote: Option<String>,
     pub skip: Option<u32>,
+    pub author: Option<String>,
+    pub all_branches: Option<bool>,
+    pub with_files: Option<bool>,
 }
 
 pub async fn git_log(
@@ -161,8 +164,41 @@ pub async fn git_log(
         params.branch,
         params.remote,
         params.skip,
+        params.author,
+        params.all_branches,
+        params.with_files,
     )
     .await?;
+    Ok(Json(result))
+}
+
+pub async fn git_current_user(
+    Json(params): Json<PathParams>,
+) -> Result<Json<Option<String>>, AppCommandError> {
+    let result = folder_commands::git_current_user(params.path).await?;
+    Ok(Json(result))
+}
+
+pub async fn git_commit_files(
+    Json(params): Json<GitCommitBranchesParams>,
+) -> Result<Json<Vec<folder_commands::GitLogFileChange>>, AppCommandError> {
+    let result = folder_commands::git_commit_files(params.path, params.commit).await?;
+    Ok(Json(result))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitSearchAuthorsParams {
+    pub path: String,
+    pub query: String,
+    pub limit: Option<u32>,
+}
+
+pub async fn git_search_authors(
+    Json(params): Json<GitSearchAuthorsParams>,
+) -> Result<Json<Vec<String>>, AppCommandError> {
+    let result =
+        folder_commands::git_search_authors(params.path, params.query, params.limit).await?;
     Ok(Json(result))
 }
 

@@ -3,6 +3,7 @@
 import { useEffect } from "react"
 import { create } from "zustand"
 import { acpListAgents } from "@/lib/api"
+import { setCustomAgentDisplay } from "@/lib/custom-agents"
 import { onTransportReconnect, subscribe } from "@/lib/platform"
 import type { UnsubscribeFn } from "@/lib/transport/types"
 import type { AcpAgentInfo } from "@/lib/types"
@@ -57,6 +58,18 @@ const useAcpAgentsStore = create<AcpAgentsStore>((set) => ({
       latestSuccessId = requestId
       const sorted = [...list].sort(
         (a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name)
+      )
+      // Publish custom agents' display names and icons for `getAgentLabel` /
+      // `getAgentIconUrl`. This hook is the app's single, always-mounted source
+      // of the agent registry, so hydrating here covers every label call site
+      // (sidebar, composer, status bar) without threading a context through all
+      // of them.
+      setCustomAgentDisplay(
+        sorted.map((agent) => ({
+          agentType: agent.agent_type,
+          name: agent.name,
+          iconUrl: agent.icon_url,
+        }))
       )
       set({ agents: sorted, fresh: true })
     } catch {

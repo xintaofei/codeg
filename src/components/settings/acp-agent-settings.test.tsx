@@ -2,19 +2,26 @@ import { describe, expect, it } from "vitest"
 
 import {
   applyClaudeProviderToConfigText,
+  buildCodexSandboxConfig,
+  codexSandboxBaselineOf,
+  codexSandboxSaveConfig,
   buildGrokSaveOptions,
   buildGrokStructuredConfig,
+  buildMergeConfigPayload,
   buildVersionCheck,
   configTextForClaudeSave,
   getAgentChecks,
   inferGrokMode,
+  materializeClaudeHardeningFlags,
   patchImportantConfigText,
+  setClaudeEnvFlagInConfigText,
 } from "./acp-agent-settings"
 import type { AcpAgentInfo, AgentType, PreflightResult } from "@/lib/types"
 
 function makeAgent(overrides: Partial<AcpAgentInfo>): AcpAgentInfo {
   return {
     agent_type: "hermes" as AgentType,
+    skills_capable: true,
     registry_id: "hermes",
     registry_version: "0.16.0",
     name: "Hermes Agent",
@@ -32,12 +39,14 @@ function makeAgent(overrides: Partial<AcpAgentInfo>): AcpAgentInfo {
     cline_secrets_json: null,
     codex_config_toml: null,
     codex_model_catalog: null,
+    codex_sandbox_settings: null,
     grok_config_toml: null,
     grok_settings: null,
     hermes_config_yaml: null,
     cursor_cli_config_json: null,
     cursor_settings: null,
     model_provider_id: null,
+    icon_url: null,
     ...overrides,
   }
 }
@@ -81,6 +90,225 @@ const emptyCustoms = {
   customContextWindow: null,
   autoCompactThresholdPercent: null,
 }
+
+type CodexSandboxDraft = Parameters<typeof buildCodexSandboxConfig>[0]
+
+const CODEX_GRANULAR_SEED = {
+  sandbox_approval: true,
+  rules: true,
+  skill_approval: false,
+  request_permissions: false,
+  mcp_elicitations: true,
+}
+
+/** A draft whose baseline equals its current values — i.e. "nothing touched
+ * yet", exactly what `buildAgentDraft` produces from a freshly-read config. */
+function codexSandboxDraft(
+  disk: Partial<CodexSandboxDraft> = {},
+  edits: Partial<CodexSandboxDraft> = {}
+): CodexSandboxDraft {
+  const seeded = {
+    codexApprovalPolicy: "" as CodexSandboxDraft["codexApprovalPolicy"],
+    codexGranular: CODEX_GRANULAR_SEED,
+    codexSandboxMode: "" as CodexSandboxDraft["codexSandboxMode"],
+    codexWritableRootsText: "",
+    codexNetworkAccess: false,
+    codexExcludeTmpdirEnvVar: false,
+    codexExcludeSlashTmp: false,
+    ...disk,
+  }
+  return {
+    ...seeded,
+    ...edits,
+    codexSandboxBaseline: codexSandboxBaselineOf(seeded),
+  }
+}
+
+describe("buildCodexSandboxConfig — Codex sandbox/approval save patch", () => {
+  // The core contract. The panel also sends the raw config.toml text and the
+  // backend applies this patch last, so a field the user did not move must not
+  // appear at all — otherwise a hand-edit in the raw editor gets reverted by
+  // the panel's stale value for that key.
+  it("sends nothing when no control moved", () => {
+    expect(
+      buildCodexSandboxConfig(
+        codexSandboxDraft({
+          codexApprovalPolicy: "never",
+          codexSandboxMode: "workspace-write",
+          codexWritableRootsText: "/srv/one",
+          codexNetworkAccess: true,
+        })
+      )
+    ).toEqual({})
+  })
+
+  it("sends only the field that moved", () => {
+    expect(
+      buildCodexSandboxConfig(
+        codexSandboxDraft(
+          { codexApprovalPolicy: "never", codexSandboxMode: "read-only" },
+          { codexSandboxMode: "danger-full-access" }
+        )
+      )
+    ).toEqual({ sandboxMode: "danger-full-access" })
+  })
+
+  // Clearing a control back to "not set" must reach the backend as an explicit
+  // null (remove the key), not as an absent field (leave it alone).
+  it("clears a control with an explicit null", () => {
+    expect(
+      buildCodexSandboxConfig(
+        codexSandboxDraft(
+          { codexSandboxMode: "never" as never },
+          {
+            codexSandboxMode: "",
+          }
+        )
+      )
+    ).toEqual({ sandboxMode: null })
+  })
+
+  // Approval is one externally tagged key upstream, so both representations
+  // travel together whenever either side changes.
+  it("moves the approval preset and granular table as a pair", () => {
+    const toGranular = buildCodexSandboxConfig(
+      codexSandboxDraft(
+        { codexApprovalPolicy: "never" },
+        { codexApprovalPolicy: "granular" }
+      )
+    )
+    expect(toGranular).toEqual({
+      approvalPolicy: null,
+      granular: CODEX_GRANULAR_SEED,
+    })
+
+    const toPreset = buildCodexSandboxConfig(
+      codexSandboxDraft(
+        { codexApprovalPolicy: "granular" },
+        { codexApprovalPolicy: "on-request" }
+      )
+    )
+    expect(toPreset).toEqual({ approvalPolicy: "on-request", granular: null })
+  })
+
+  it("detects a flipped granular switch while staying on granular", () => {
+    const patch = buildCodexSandboxConfig(
+      codexSandboxDraft(
+        { codexApprovalPolicy: "granular" },
+        {
+          codexApprovalPolicy: "granular",
+          codexGranular: { ...CODEX_GRANULAR_SEED, rules: false },
+        }
+      )
+    )
+    expect(patch.granular).toEqual({ ...CODEX_GRANULAR_SEED, rules: false })
+    expect(patch.approvalPolicy).toBeNull()
+  })
+
+  // codex only reads the workspace-write group under `workspace-write`, so
+  // dormant values are inert — clearing them would destroy the user's roots on
+  // a round-trip through read-only or full-access.
+  it("does not touch dormant workspace-write values when the mode changes", () => {
+    expect(
+      buildCodexSandboxConfig(
+        codexSandboxDraft(
+          {
+            codexSandboxMode: "workspace-write",
+            codexWritableRootsText: "/srv/one",
+            codexNetworkAccess: true,
+          },
+          { codexSandboxMode: "danger-full-access" }
+        )
+      )
+    ).toEqual({ sandboxMode: "danger-full-access" })
+  })
+
+  it("sends a flag toggle without disturbing its siblings", () => {
+    expect(
+      buildCodexSandboxConfig(
+        codexSandboxDraft(
+          { codexWritableRootsText: "/srv/one", codexNetworkAccess: true },
+          { codexExcludeSlashTmp: true }
+        )
+      )
+    ).toEqual({ excludeSlashTmp: true })
+  })
+
+  it("normalizes the roots box and ignores cosmetic whitespace", () => {
+    expect(
+      buildCodexSandboxConfig(
+        codexSandboxDraft(
+          { codexWritableRootsText: "/srv/one" },
+          { codexWritableRootsText: "  /srv/one  \n\n" }
+        )
+      )
+    ).toEqual({})
+    expect(
+      buildCodexSandboxConfig(
+        codexSandboxDraft(
+          {},
+          { codexWritableRootsText: " /srv/one \n\n/srv/two\n" }
+        )
+      )
+    ).toEqual({ writableRoots: ["/srv/one", "/srv/two"] })
+  })
+
+  // codex does NOT reject a relative writable_roots entry — it resolves it
+  // against CODEX_HOME, so "docs" would silently grant write access to
+  // ~/.codex/docs. The save must fail loudly instead.
+  it("refuses relative writable roots the user just typed", () => {
+    expect(() =>
+      buildCodexSandboxConfig(
+        codexSandboxDraft({}, { codexWritableRootsText: "/srv/ok\ndocs/rel" })
+      )
+    ).toThrow(/docs\/rel/)
+  })
+
+  // A relative root already on disk is not this save's problem: the field is
+  // untouched, so it is not in the patch and must not block the save.
+  it("tolerates a pre-existing relative root while it stays untouched", () => {
+    expect(
+      buildCodexSandboxConfig(
+        codexSandboxDraft(
+          { codexWritableRootsText: "rel/dir" },
+          { codexNetworkAccess: true }
+        )
+      )
+    ).toEqual({ networkAccess: true })
+  })
+
+  it("accepts POSIX and Windows absolute roots", () => {
+    expect(
+      buildCodexSandboxConfig(
+        codexSandboxDraft(
+          {},
+          {
+            codexWritableRootsText:
+              "/srv/one\nC:\\work\\repo\n\\\\server\\share",
+          }
+        )
+      ).writableRoots
+    ).toHaveLength(3)
+  })
+})
+
+describe("codexSandboxSaveConfig — omit the field when nothing moved", () => {
+  it("returns undefined for an untouched group", () => {
+    expect(
+      codexSandboxSaveConfig(
+        codexSandboxDraft({ codexApprovalPolicy: "never" })
+      )
+    ).toBeUndefined()
+  })
+
+  it("returns the patch once a control moves", () => {
+    expect(
+      codexSandboxSaveConfig(
+        codexSandboxDraft({}, { codexSandboxMode: "read-only" })
+      )
+    ).toEqual({ sandboxMode: "read-only" })
+  })
+})
 
 describe("buildGrokStructuredConfig — Grok panel save payload", () => {
   // A chosen dropdown value passes through. These become [ui].permission_mode /
@@ -572,6 +800,25 @@ describe("applyClaudeProviderToConfigText — provider-bound stale config", () =
     expect(env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME).toBe("GW Opus")
     expect(env.ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION).toBe("via gateway")
   })
+
+  // The hardening toggles are not provider-controlled, so a provider-authoritative
+  // rewrite must leave them intact while it overwrites the model keys.
+  it("preserves a hardening env flag through the provider rewrite", () => {
+    const withFlag = JSON.stringify({
+      env: {
+        CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
+        ANTHROPIC_MODEL: "old-main",
+      },
+    })
+    const next = applyClaudeProviderToConfigText(withFlag, {
+      api_url: "https://gw.example/v1",
+      api_key: "sk-x",
+      model: JSON.stringify({ main: "prov-main" }),
+    })
+    const env = envOf(next)
+    expect(env.CLAUDE_CODE_ATTRIBUTION_HEADER).toBe("0")
+    expect(env.ANTHROPIC_MODEL).toBe("prov-main")
+  })
 })
 
 describe("configTextForClaudeSave — bound-Claude save payload", () => {
@@ -621,5 +868,142 @@ describe("configTextForClaudeSave — bound-Claude save payload", () => {
     expect(
       configTextForClaudeSave(cfg, "codex" as AgentType, 7, provider)
     ).toBe(cfg)
+  })
+})
+
+describe("setClaudeEnvFlagInConfigText — Claude hardening toggles", () => {
+  const KEY = "CLAUDE_CODE_ATTRIBUTION_HEADER"
+
+  function envOf(configText: string): Record<string, string> {
+    const parsed = JSON.parse(configText) as { env?: Record<string, string> }
+    return parsed.env ?? {}
+  }
+
+  it("sets the flag value while preserving other env + root keys", () => {
+    const base = JSON.stringify({
+      model: "opus",
+      env: { ANTHROPIC_BASE_URL: "https://gw" },
+    })
+    const next = setClaudeEnvFlagInConfigText(base, KEY, "1")
+    expect(next.recoveredFromInvalid).toBe(false)
+    const parsed = JSON.parse(next.configText) as {
+      model?: string
+      env?: Record<string, string>
+    }
+    expect(parsed.model).toBe("opus")
+    expect(parsed.env?.[KEY]).toBe("1")
+    expect(parsed.env?.ANTHROPIC_BASE_URL).toBe("https://gw")
+  })
+
+  it("creates the env when the config has none", () => {
+    const next = setClaudeEnvFlagInConfigText("", KEY, "0")
+    expect(next.recoveredFromInvalid).toBe(false)
+    expect(envOf(next.configText)[KEY]).toBe("0")
+  })
+
+  it("overwrites an existing value (off → on) and keeps siblings", () => {
+    const base = JSON.stringify({
+      env: { [KEY]: "0", ANTHROPIC_MODEL: "keep" },
+    })
+    const next = setClaudeEnvFlagInConfigText(base, KEY, "1")
+    const env = envOf(next.configText)
+    expect(env[KEY]).toBe("1")
+    expect(env.ANTHROPIC_MODEL).toBe("keep")
+  })
+
+  it("recovers from invalid JSON and writes a fresh config", () => {
+    const next = setClaudeEnvFlagInConfigText("{ not json", KEY, "1")
+    expect(next.recoveredFromInvalid).toBe(true)
+    expect(envOf(next.configText)[KEY]).toBe("1")
+  })
+})
+
+describe("buildMergeConfigPayload — merge-strategy save diff", () => {
+  const KEY = "CLAUDE_CODE_ATTRIBUTION_HEADER"
+
+  // Toggling off the only flag empties configText; the diff against the original
+  // must still emit env: null so the backend merge deletes it from disk.
+  it("nulls a removed env key when the config emptied out", () => {
+    const original = JSON.stringify({ env: { [KEY]: "0" } })
+    const payload = buildMergeConfigPayload("", original)
+    expect(payload).not.toBeNull()
+    expect(JSON.parse(payload as string)).toEqual({ env: null })
+  })
+
+  it("returns null when both current and original are empty", () => {
+    expect(buildMergeConfigPayload("", null)).toBeNull()
+    expect(buildMergeConfigPayload("", "")).toBeNull()
+  })
+
+  it("nulls only the removed key when siblings remain", () => {
+    const original = JSON.stringify({ env: { [KEY]: "0", OTHER: "x" } })
+    const current = JSON.stringify({ env: { OTHER: "x" } })
+    const payload = buildMergeConfigPayload(current, original)
+    expect(JSON.parse(payload as string)).toEqual({
+      env: { OTHER: "x", [KEY]: null },
+    })
+  })
+
+  it("passes a fresh config through with no null patches", () => {
+    const current = JSON.stringify({ env: { [KEY]: "0" } })
+    const payload = buildMergeConfigPayload(current, null)
+    expect(JSON.parse(payload as string)).toEqual({ env: { [KEY]: "0" } })
+  })
+})
+
+describe("materializeClaudeHardeningFlags — save-time toggle defaults", () => {
+  const ATTR = "CLAUDE_CODE_ATTRIBUTION_HEADER"
+  const TRAFFIC = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
+
+  function envOf(configText: string): Record<string, string> {
+    const parsed = JSON.parse(configText) as { env?: Record<string, string> }
+    return parsed.env ?? {}
+  }
+
+  // Fresh config + the intended defaults: don't send the header ("0"), disable
+  // telemetry ("1") — written into BOTH the native config env and envText.
+  it("writes both flags per the defaults into config env and envText", () => {
+    const { configText, envText } = materializeClaudeHardeningFlags("", "", {
+      sendAttributionHeader: false,
+      disableNonessentialTraffic: true,
+    })
+    const env = envOf(configText)
+    expect(env[ATTR]).toBe("0")
+    expect(env[TRAFFIC]).toBe("1")
+    expect(envText).toContain(`${ATTR}=0`)
+    expect(envText).toContain(`${TRAFFIC}=1`)
+  })
+
+  it("writes both on when both toggles are enabled, preserving other keys", () => {
+    const base = JSON.stringify({ model: "opus", env: { KEEP: "y" } })
+    const { configText, envText } = materializeClaudeHardeningFlags(
+      base,
+      "KEEP=y",
+      { sendAttributionHeader: true, disableNonessentialTraffic: true }
+    )
+    const parsed = JSON.parse(configText) as {
+      model?: string
+      env?: Record<string, string>
+    }
+    expect(parsed.model).toBe("opus")
+    expect(parsed.env?.[ATTR]).toBe("1")
+    expect(parsed.env?.[TRAFFIC]).toBe("1")
+    expect(parsed.env?.KEEP).toBe("y")
+    expect(envText).toContain("KEEP=y")
+    expect(envText).toContain(`${ATTR}=1`)
+  })
+
+  // Regression: invalid JSON must be returned UNCHANGED (never recovered to a
+  // minimal {env}), so persistConfig rejects it instead of the merge diff
+  // deleting every other on-disk key.
+  it("leaves invalid config JSON untouched (no recovery, no data loss)", () => {
+    const invalid = "{ not valid json"
+    const { configText, envText } = materializeClaudeHardeningFlags(
+      invalid,
+      "EXISTING=1",
+      { sendAttributionHeader: false, disableNonessentialTraffic: true }
+    )
+    expect(configText).toBe(invalid)
+    expect(envText).toBe("EXISTING=1")
   })
 })

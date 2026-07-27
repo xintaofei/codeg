@@ -18,7 +18,11 @@ import { matchShortcutEvent } from "@/lib/keyboard-shortcuts"
 import { cn } from "@/lib/utils"
 
 import { buildComposerExtensions } from "./editor-config"
-import { textToDoc, textToInlineContent } from "./plain-text-content"
+import {
+  decidePastedContent,
+  textToDoc,
+  textToInlineContent,
+} from "./plain-text-content"
 import { serializeDocToText } from "./to-prompt-blocks"
 import { decideComposerKey } from "./submit-key"
 import type {
@@ -355,8 +359,28 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
           }
           return false
         },
-        handlePaste: (_view, event) =>
-          onPasteFilesRef.current?.(event) === true,
+        handlePaste: (_view, event) => {
+          // Images/files first: the host may consume them as attachments
+          // out-of-band, in which case the editor must not also insert text.
+          if (onPasteFilesRef.current?.(event) === true) return true
+          // Plain-text composer: prefer the clipboard's text/plain over an
+          // external text/html fragment (a URL copied from an address bar
+          // would otherwise paste as the page title), and hydrate serialized
+          // references in the pasted text back into inline badges so the
+          // composer previews them the way the sent message renders. See
+          // decidePastedContent for what still defers to ProseMirror
+          // (reference-free plain text, and our own copied badges/structure).
+          const editor = editorInstanceRef.current
+          const clipboard = event.clipboardData
+          if (!editor || !clipboard) return false
+          const inline = decidePastedContent({
+            html: clipboard.getData("text/html"),
+            text: clipboard.getData("text/plain"),
+          })
+          if (!inline) return false
+          editor.chain().insertContent(inline).run()
+          return true
+        },
         handleDrop: (_view, event) => onDropFilesRef.current?.(event) === true,
       },
       onCreate: ({ editor }) => {

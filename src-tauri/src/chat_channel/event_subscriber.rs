@@ -632,6 +632,7 @@ mod permission_push_tests {
                             description: String::new(),
                         },
                     ],
+                    is_secret: false,
                 }],
             },
         }

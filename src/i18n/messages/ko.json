@@ -186,6 +186,14 @@
     "restartingIn": "{seconds}초 후에 다시 시작합니다...",
     "waitingForServer": "서버가 복구되기를 기다리는 중...",
     "restartToUpdate": "다시 시작하여 업데이트",
+    "newVersionBadge": "새 버전 v{version}",
+    "updateAvailableTitle": "업데이트 있음",
+    "releaseNotesTitle": "새로운 기능",
+    "remindLater": "나중에",
+    "retry": "다시 시도",
+    "stepDownload": "다운로드",
+    "stepInstall": "설치",
+    "stepRestart": "다시 시작",
     "updateReadyHint": "업데이트를 다운로드했습니다. 다시 시작하여 적용하세요.",
     "restarting": "다시 시작하는 중…",
     "dockerUpgradeHint": "지금 실행 중인 컨테이너를 업그레이드합니다. 컨테이너를 다시 만들면 사라집니다. 유지하려면 새 버전 이미지를 가져오거나 빌드한 뒤 컨테이너를 다시 만드세요.",
@@ -611,7 +619,8 @@
       "saveCodeBuddyConfig": "CodeBuddy 구성 저장",
       "saveKimiCodeConfig": "Kimi Code 구성 저장",
       "customInstall": "사용자 지정 설치",
-      "saveKimiCodeRawConfig": "Save config.toml"
+      "saveKimiCodeRawConfig": "Save config.toml",
+      "diagnose": "진단"
     },
     "status": {
       "enabled": "활성화됨",
@@ -729,6 +738,34 @@
       "enableSkillsAria": "Codex용 Skills 활성화",
       "enableFast": "Fast 활성화",
       "enableFastAria": "Codex용 Fast 서비스 계층 활성화",
+      "sandboxGroupTitle": "샌드박스 및 승인",
+      "sandboxGroupHint": "전역 ~/.codex/config.toml에 기록되므로 codex CLI와 IDE 세션에도 적용됩니다. 스레드 기본값이며 codex가 스스로 시작하는 턴(/goal, /review, /compact)에만 적용됩니다. 일반 프롬프트는 입력창의 승인 프리셋을 사용합니다. 변경 사항은 세션을 다시 시작해야 반영됩니다.",
+      "sandboxShadowedWarning": "config.toml에 default_permissions가 설정되어 있어 codex가 권한 프로필로 해석하고 sandbox_mode를 완전히 무시합니다. 아래 설정을 사용하려면 default_permissions를 제거하세요.",
+      "sandboxPermissionsTableWarning": "config.toml에 [permissions] 프로필이 있지만 default_permissions가 없어 codex가 시작을 거부합니다. 아래 원본 편집기에서 설정하세요.",
+      "approvalPolicyLabel": "승인 정책",
+      "approvalPolicyUnset": "설정 안 함(codex 기본값: 요청 시)",
+      "approvalPolicy_on-request": "요청 시 — 모델이 확인 시점을 결정",
+      "approvalPolicy_untrusted": "신뢰 안 함 — 안전이 확인된 읽기 전용 명령만 자동 실행",
+      "approvalPolicy_never": "묻지 않음 — 승인 창을 전혀 띄우지 않음",
+      "approvalPolicy_granular": "세부 설정 — 프롬프트 종류별로 지정",
+      "granularHint": "끄면 해당 종류의 요청은 표시되지 않고 자동으로 거부됩니다.",
+      "granular_sandbox_approval": "셸 명령 권한 상승",
+      "granular_rules": "Execpolicy 규칙 프롬프트",
+      "granular_skill_approval": "스킬 스크립트 프롬프트",
+      "granular_request_permissions": "request_permissions 도구 프롬프트",
+      "granular_mcp_elicitations": "MCP elicitation 프롬프트",
+      "sandboxModeLabel": "샌드박스 모드",
+      "sandboxModeUnset": "설정 안 함(신뢰된 폴더는 워크스페이스 쓰기로 대체)",
+      "sandboxMode_read-only": "읽기 전용",
+      "sandboxMode_workspace-write": "워크스페이스 쓰기",
+      "sandboxMode_danger-full-access": "전체 접근(샌드박스 없음)",
+      "sandboxModeHint": "Windows에서는 codex의 실험적 Windows 샌드박스를 켜지 않으면 워크스페이스 쓰기가 읽기 전용으로 낮아집니다.",
+      "writableRootsLabel": "추가 쓰기 가능 폴더",
+      "writableRootsHint": "작업 디렉터리 외에 허용할 절대 경로를 한 줄에 하나씩.",
+      "sandboxRootsRelativeError": "절대 경로여야 합니다 — codex는 상대 경로를 ~/.codex 기준으로 해석합니다: {path}",
+      "networkAccessLabel": "네트워크 접근 허용",
+      "excludeTmpdirLabel": "쓰기 가능 루트에서 TMPDIR 제외",
+      "excludeSlashTmpLabel": "쓰기 가능 루트에서 /tmp 제외",
       "authJsonNative": "auth.json (네이티브)",
       "configTomlNative": "config.toml (네이티브)",
       "loginButton": "ChatGPT로 로그인",
@@ -949,7 +986,11 @@
       "effortLevel_low": "낮음",
       "effortLevel_medium": "중간",
       "effortLevel_high": "높음",
-      "effortLevel_xhigh": "매우 높음"
+      "effortLevel_xhigh": "매우 높음",
+      "sendAttributionHeader": "API에 속성/청구 식별자 전송",
+      "sendAttributionHeaderAria": "API에 Claude Code 속성/청구 식별자 전송",
+      "disableNonessentialTraffic": "텔레메트리 또는 불필요한 네트워크 요청 비활성화",
+      "disableNonessentialTrafficAria": "Claude Code 텔레메트리 또는 불필요한 네트워크 요청 비활성화"
     },
     "dialogs": {
       "confirmDeleteProvider": "Provider {providerId}를 삭제하시겠습니까?",
@@ -1124,7 +1165,46 @@
       "trustDescription": "codeg가 pi를 폴더에 연결할 때 해당 폴더를 신뢰됨으로 표시하여 pi가 별도 확인 없이 프로젝트의 로컬 설정과 스킬을 로드하도록 합니다.",
       "trustHint": "여기서 여는 폴더만 신뢰되며 전체 컴퓨터는 신뢰되지 않습니다. 또한 설정 로드에만 영향을 주며 pi가 실행할 수 있는 작업에는 영향을 주지 않습니다.",
       "configDirSkillsNote": "사용자 지정 구성 디렉터리를 설정하면 설정에서 관리하는 스킬, 전문가, 오피스 도구가 이 pi에 적용되지 않습니다. 해당 폴더에서 스킬을 직접 관리하세요."
-    }
+    },
+    "addCustomAgent": "사용자 지정 에이전트 추가",
+    "addCustomAgentHint": "ACP를 지원하는 모든 에이전트를 등록할 수 있습니다. 공개 ACP 레지스트리에서 선택하거나 레지스트리 정보를 붙여넣으세요.",
+    "customAgentFromRegistry": "ACP 레지스트리",
+    "customAgentManual": "직접 입력",
+    "customAgentSearchPlaceholder": "에이전트 검색…",
+    "customAgentLoadingCatalog": "ACP 레지스트리를 불러오는 중…",
+    "customAgentRetry": "다시 시도",
+    "customAgentNoResults": "일치하는 에이전트가 없습니다",
+    "customAgentAdd": "추가",
+    "customAgentAlreadyAdded": "추가됨",
+    "customAgentUnsupportedPlatform": "이 플랫폼용 빌드가 없습니다",
+    "customAgentAdded": "{name} 추가됨",
+    "customAgentIdLabel": "레지스트리 ID",
+    "customAgentNameLabel": "표시 이름",
+    "customAgentVersionLabel": "버전",
+    "customAgentSpecLabel": "배포 정보(JSON)",
+    "customAgentSpecHint": "ACP 레지스트리의 distribution 객체 또는 레지스트리 항목 전체를 붙여넣으세요.",
+    "customAgentKindLabel": "실행 방식",
+    "customAgentInvalidJson": "올바른 JSON이 아닙니다",
+    "customAgentNoDistribution": "npx, uvx, binary 배포를 찾을 수 없습니다",
+    "customAgentCancel": "취소",
+    "customAgentSave": "에이전트 추가",
+    "customAgentRemove": "에이전트 제거",
+    "customAgentRemoveHint": "에이전트 정의를 삭제합니다. 기존 대화 기록은 유지되며 에이전트를 더 이상 실행할 수 없게 될 뿐입니다.",
+    "customAgentIconLabel": "아이콘(선택)",
+    "customAgentIconUpload": "업로드",
+    "customAgentIconReplace": "변경",
+    "customAgentIconClear": "아이콘 제거",
+    "customAgentIconHint": "에이전트와 함께 저장되어 오프라인에서도 표시됩니다. 지정하지 않으면 색상 이니셜을 사용합니다.",
+    "customAgentSkillsLabel": "Skills(공유 .agents/skills)",
+    "customAgentSkillsHint": "이 에이전트가 공유 .agents/skills 디렉터리(전역 및 프로젝트)를 읽는다고 선언하고 모든 스킬 매트릭스에 추가합니다. 공유 디렉터리에 연결된 스킬은 해당 디렉터리를 읽는 다른 에이전트에게도 보입니다.",
+    "customAgentIconNotAnImage": "이미지 파일을 선택하세요.",
+    "customAgentIconTooLarge": "아이콘은 {limit} KB 미만이어야 합니다.",
+    "customAgentIconReadFailed": "해당 이미지를 읽을 수 없습니다.",
+    "customAgentRemoveConfirm": "{name}을(를) 제거할까요? 기존 대화는 유지되지만 더 이상 실행할 수 없습니다.",
+    "customAgentRemoveWithData": "기록된 대화 기록도 삭제",
+    "customAgentRemoved": "{name} 제거됨",
+    "customAgentBadge": "사용자 지정",
+    "customAgentNotLaunchable": "이 환경에서는 실행할 수 없습니다: {reason}"
   },
   "SettingsPages": {
     "agentsLoading": "에이전트 설정을 불러오는 중...",
@@ -1317,6 +1397,7 @@
       "searchPlaceholder": "대화 검색...",
       "viewOptions": "보기 옵션",
       "showCompleted": "완료된 대화 표시",
+      "showWorktrees": "워크트리 폴더 표시",
       "moreOptions": "더 많은 옵션",
       "sortBy": "정렬 기준",
       "sortByCreatedAt": "생성 시간순",
@@ -1372,6 +1453,7 @@
       "sectionFolders": "폴더",
       "sectionChats": "채팅",
       "noChats": "채팅 없음",
+      "noFolders": "열린 폴더 없음",
       "newChatAction": "새 채팅",
       "automations": "자동화",
       "loadingSubsessions": "하위 대화 로드 중…"
@@ -1548,6 +1630,16 @@
       "closeConversationTab": "대화 탭 닫기",
       "close": "닫기",
       "closeOthers": "다른 항목 닫기",
+      "splitRight": "오른쪽으로 분할",
+      "splitDown": "아래로 분할",
+      "splitAndMoveRight": "분할하고 오른쪽으로 이동",
+      "splitAndMoveDown": "분할하고 아래로 이동",
+      "moveToOppositeGroup": "반대쪽 그룹으로 이동",
+      "moveToGroup": "그룹으로 이동",
+      "groupLabel": "그룹 {index}",
+      "changeSplitterOrientation": "분할 방향 전환",
+      "unsplit": "분할 해제",
+      "unsplitAll": "모든 분할 해제",
       "closeAll": "모두 닫기",
       "tileDisplay": "타일 표시",
       "untileDisplay": "타일 해제"
@@ -1737,7 +1829,11 @@
         "confirmApply": "스태시 {ref}을(를) 작업 디렉토리에 적용하시겠습니까?",
         "cancel": "취소"
       },
-      "deleteBranch": "브랜치 삭제"
+      "deleteBranch": "브랜치 삭제",
+      "searchPlaceholder": "브랜치 및 작업 검색",
+      "searchAriaLabel": "브랜치 및 작업 검색",
+      "branchListLabel": "브랜치 및 작업",
+      "noMatches": "일치하는 항목 없음"
     },
     "commitDialog": {
       "toasts": {
@@ -1821,8 +1917,11 @@
       "hash": "해시",
       "copyHash": "해시 복사",
       "copyMessage": "메시지 복사",
+      "showMore": "더보기",
+      "showLess": "접기",
       "author": "작성자",
       "noFileChangeDetails": "파일 변경 상세 정보가 없습니다.",
+      "loadingFiles": "파일 로딩 중…",
       "branchesTitle": "브랜치",
       "loadingBranches": "브랜치 로딩 중...",
       "noContainingBranches": "포함하는 브랜치를 찾을 수 없습니다.",
@@ -1851,14 +1950,28 @@
         "resetSuccessDescription": "{branch}을(를) {mode}로 {shortHash}에 리셋했습니다",
         "resetFailed": "리셋 실패"
       },
+      "authorFilter": {
+        "label": "작성자",
+        "searchPlaceholder": "작성자 검색",
+        "noAuthors": "작성자를 찾을 수 없습니다",
+        "you": "나",
+        "filterByAuthorAria": "작성자별로 커밋 필터링",
+        "filterByQuery": "\"{query}\"(으)로 필터링",
+        "clearAuthorFilterAria": "작성자 필터 지우기",
+        "recent": "최근",
+        "matchingAuthors": "일치하는 작성자",
+        "removeFromRecent": "최근에서 {name} 제거"
+      },
       "branchSelector": {
+        "label": "브랜치",
         "searchBranch": "브랜치 검색...",
         "noBranches": "브랜치 없음",
         "selectBranchPlaceholder": "브랜치 선택...",
         "localBranches": "로컬 브랜치",
         "current": "현재",
         "remoteBranches": "원격 브랜치",
-        "refreshCommitHistory": "커밋 히스토리 새로고침"
+        "refreshCommitHistory": "커밋 히스토리 새로고침",
+        "clearBranchFilterAria": "브랜치 필터 지우기"
       },
       "dialogs": {
         "newBranchTitle": "새 브랜치",
@@ -2205,7 +2318,8 @@
           "initSessionDescription": "세션 생성 및 설정 불러오는 중"
         },
         "errors": {
-          "connectionFailed": "연결 실패"
+          "connectionFailed": "연결 실패",
+          "sendPromptFailed": "메시지 전송에 실패했습니다: {error}"
         }
       },
       "shared": {
@@ -2262,6 +2376,7 @@
         "attachUploadFailed": "{names} 업로드 실패.",
         "attachUploadNotAFile": "{names} 은(는) 일반 파일이 아니므로(디렉터리 또는 특수 파일) 건너뛰었습니다.",
         "attachUploadQuotaExceeded": "서버 업로드 저장 공간이 부족하여 {names} 을(를) 업로드하지 못했습니다.",
+        "attachUploadInProgress": "이미지가 아직 업로드 중입니다. 잠시 후 다시 시도하세요.",
         "mentionEmpty": "일치하는 항목 없음",
         "mentionLoading": "검색 중…",
         "mentionListLabel": "멘션",
@@ -2589,6 +2704,8 @@
           "remaining": "남음",
           "elapsed": "경과",
           "tokens": "tokens",
+          "pause": "일시정지",
+          "clear": "지우기",
           "status": {
             "active": "진행 중",
             "paused": "일시 중지",
@@ -2717,6 +2834,17 @@
         "submit": "제출",
         "submitError": "제출하지 못했습니다. 다시 시도해 주세요."
       },
+      "planApproval": {
+        "title": "에이전트가 계획을 제시했습니다 — 검토하세요",
+        "emptyPlan": "에이전트가 계획을 작성하지 않았습니다. 승인하여 구현을 시작하거나 변경을 요청하세요.",
+        "approve": "승인하고 시작",
+        "requestChanges": "변경 요청",
+        "abandon": "포기",
+        "feedbackPlaceholder": "무엇을 변경할까요?",
+        "sendChanges": "보내기",
+        "cancel": "취소",
+        "submitError": "제출하지 못했습니다. 다시 시도하세요."
+      },
       "feedbackCheckResult": {
         "count": "피드백 {count}개",
         "expand": "모든 피드백 표시",
@@ -2757,6 +2885,11 @@
         "opClose": "서브 에이전트 종료 중",
         "opResume": "서브 에이전트 재개 중"
       },
+      "contextCompaction": {
+        "compacting": "컨텍스트 압축 중…",
+        "compacted": "컨텍스트 압축 완료",
+        "compactedTokens": "컨텍스트 압축 완료 · {before} → {after} 토큰"
+      },
       "backgroundTasks": {
         "running": "백그라운드 작업 {count}개 실행 중",
         "settling": "백그라운드 결과 동기화 중…",
@@ -2766,6 +2899,10 @@
         "cardCompleted": "백그라운드 작업 완료",
         "cardFinishedWithStatus": "백그라운드 작업 종료 ({status})",
         "cardResultPending": "결과가 아직 반환되지 않았습니다"
+      },
+      "proposedPlan": {
+        "title": "제안된 계획",
+        "planning": "계획 중…"
       }
     },
     "diffPreview": {
@@ -3964,5 +4101,27 @@
     "groupInstructions": "설명 및 시스템 프롬프트",
     "fieldDescription": "설명",
     "baseInstructions": "시스템 프롬프트(base_instructions)"
+  },
+  "DiagnosticsSettings": {
+    "title": "환경 진단",
+    "description": "이 앱이 자체 프로세스에서 에이전트 CLI를 어떻게 확인하는지 점검합니다(터미널과 다를 수 있음).",
+    "loading": "진단 실행 중…",
+    "error": "진단 실패",
+    "rerun": "다시 실행",
+    "copyAll": "전체 복사",
+    "copied": "진단 정보를 클립보드에 복사했습니다",
+    "button": "진단",
+    "verdict": {
+      "ok": "환경이 정상입니다. 그래도 설치되지 않았다고 표시되면 앱을 완전히 재시작하여 프리픽스 캐시를 새로 고치세요.",
+      "node_missing": "앱 PATH에서 Node.js를 찾을 수 없습니다.",
+      "npm_missing": "앱 PATH에서 npm을 찾을 수 없습니다.",
+      "not_installed": "이 에이전트가 설치되지 않은 것 같습니다.",
+      "installed_but_unresolved": "설치된 것으로 기록되어 있지만 앱이 실행 파일을 찾지 못합니다.",
+      "user_prefix_not_on_path": "폴백 프리픽스(~/.codeg/npm-global)에 설치되었지만 앱 PATH에 없습니다. 앱을 완전히 재시작한 후 다시 시도하세요.",
+      "homebrew_bin_not_on_path": "Homebrew bin에 설치되었지만 앱 PATH에 없습니다(Apple Silicon keg 분리).",
+      "terminal_only_path": "이 명령은 터미널에서는 확인되지만 앱에서는 확인되지 않습니다. GUI PATH 불일치입니다. 터미널에서 앱을 실행하거나 에이전트 설정에서 다시 설치하세요.",
+      "npm_prefix_timeout": "npm prefix -g가 너무 느립니다(1.5초 초과). 폴백 감지를 건너뛰었습니다. 앱을 재시작한 후 다시 시도하세요.",
+      "node_too_old": "현재 Node.js가 이 에이전트의 요구 버전보다 낮습니다. Node.js를 업그레이드하세요."
+    }
   }
 }

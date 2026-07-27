@@ -15,12 +15,16 @@
  * so the live input shaper merges it back in under `COLLAB_OP_KEY` — see
  * `mergeCollabOp` and `resolveLiveToolInput`.
  *
- * Live ceiling: codex-acp drops `subAgentActivity` (the sub-agent's actual
- * streamed messages) and emits no `rawOutput` for collab calls, so the richest
- * live signal is `agentsStates[*].{status,message}` (on a `wait` completion the
- * `message` carries the sub-agent's full result). The full nested transcript
- * only exists on history reload, reconstructed by the Rust parser into the
- * richer "Agent" capsule from the on-disk `agent-<id>.jsonl`.
+ * Live ceiling: codex-acp 1.1.3+ (#304) additionally emits `subAgentActivity`
+ * as a SEPARATE live `tool_call` (`_meta.codex.subagent`), but codeg suppresses
+ * it (redundant with this collab capsule — see the Rust `is_codex_subagent_
+ * activity`), and it carries no transcript content anyway (only a
+ * started/interacted/interrupted lifecycle marker). #304 also adds top-level
+ * `model` / `reasoningEffort` to this collab `rawInput`, surfaced here. The
+ * richest live signal thus remains `agentsStates[*].{status,message}` (on a
+ * `wait` completion the `message` carries the sub-agent's full result); the full
+ * nested transcript only exists on history reload, reconstructed by the Rust
+ * parser into the richer "Agent" capsule from the on-disk `agent-<id>.jsonl`.
  */
 
 /** Canonical tool name the live collab path collapses to (see `inferLiveToolName`). */
@@ -50,6 +54,16 @@ export interface CollabToolInfo {
   status: string | null
   /** The collab op (`CollabAgentTool`: spawnAgent/wait/closeAgent/…), or null. */
   op: string | null
+  /**
+   * The sub-agent's model id (codex-acp #304), top-level in the collab
+   * `rawInput` (a sibling of `prompt`/`agentsStates`, NOT per-agent). May be null.
+   */
+  model: string | null
+  /**
+   * The sub-agent's reasoning effort (codex-acp #304), an unconstrained string
+   * such as "minimal" / "low" / "medium" / "high". Top-level, may be null.
+   */
+  reasoningEffort: string | null
   /** Per-sub-agent live states, in `agentsStates` insertion order. */
   agents: CollabAgentState[]
 }
@@ -242,6 +256,8 @@ export function parseCollabToolInput(
     prompt: asText(parsed.prompt),
     status: asText(parsed.status),
     op: asText(parsed[COLLAB_OP_KEY]),
+    model: asText(parsed.model),
+    reasoningEffort: asText(parsed.reasoningEffort),
     agents,
   }
 }
