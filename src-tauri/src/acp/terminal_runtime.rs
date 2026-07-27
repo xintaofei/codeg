@@ -1397,7 +1397,7 @@ mod tests {
         let runtime = TerminalRuntime::with_base_env(BTreeMap::new())
             .with_process_group_backend(backend.clone());
         let session_id = SessionId::new("natural-exit-delayed-release".to_string());
-        let request = CreateTerminalRequest::new(session_id.clone(), "/bin/true".to_string());
+        let request = CreateTerminalRequest::new(session_id.clone(), "/usr/bin/true".to_string());
         let response = runtime
             .create_terminal(request)
             .await
@@ -1433,7 +1433,7 @@ mod tests {
         let response = runtime
             .create_terminal(CreateTerminalRequest::new(
                 session_id.clone(),
-                "/bin/true".to_string(),
+                "/usr/bin/true".to_string(),
             ))
             .await
             .expect("create short terminal");
