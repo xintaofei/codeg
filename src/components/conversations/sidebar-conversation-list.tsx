@@ -107,6 +107,7 @@ import {
   type SidebarRow,
 } from "./sidebar-conversation-grouping"
 import { useSubsessionSync } from "@/hooks/use-subsession-sync"
+import { isSidebarRootConversation } from "@/lib/conversation-sidebar"
 import { SidebarSectionHeader } from "./sidebar-section-header"
 import { ConversationManageDialog } from "./conversation-manage-dialog"
 import { CloneDialog } from "@/components/layout/clone-dialog"
@@ -677,6 +678,12 @@ export interface SidebarConversationListHandle {
 
 export interface SidebarConversationListProps {
   showCompleted?: boolean
+  /**
+   * When false (default from the funnel menu), hide delegation sub-session
+   * trees: no expand chevrons, no nested rows. Parent rows can still show a
+   * child-count hint so users know work is nested under them.
+   */
+  showSubsessions?: boolean
   sortMode?: SidebarSortMode
   sectionOrder?: SidebarSectionOrder
   /** When on, each repo's worktree child folders render as indented sub-groups
@@ -687,6 +694,7 @@ export interface SidebarConversationListProps {
 export function SidebarConversationList({
   ref,
   showCompleted = true,
+  showSubsessions = false,
   sortMode = "created",
   sectionOrder = "folders-first",
   showWorktrees = false,
@@ -995,9 +1003,12 @@ export function SidebarConversationList({
   // Folder grouping source: pinned conversations are surfaced in the dedicated
   // Pinned section, and folderless chat conversations in the dedicated Chat
   // section, so exclude both here; then apply the completed filter as before.
+  // Also drop any leaked delegation children (parent_id / kind=delegate) so
+  // sub-sessions never render as peer roots under a folder.
   const folderConversations = useMemo(() => {
     const base = conversations.filter(
-      (c) => c.pinned_at == null && c.kind !== "chat"
+      (c) =>
+        c.pinned_at == null && c.kind !== "chat" && isSidebarRootConversation(c)
     )
     if (showCompleted) return base
     return base.filter((c) => c.status !== "completed")
@@ -1149,6 +1160,26 @@ export function SidebarConversationList({
 
   const darkMode = resolvedTheme === "dark"
 
+  // When sub-sessions are hidden (view option off), force an empty expansion set
+  // AND empty children cache so buildRows cannot emit nested rows even if a
+  // prior expand left children loaded. Persisted expanded ids stay intact for
+  // when the user turns the filter back on.
+  const effectiveConversationExpanded = useMemo(
+    () => (showSubsessions ? conversationExpanded : new Set<number>()),
+    [showSubsessions, conversationExpanded]
+  )
+  const effectiveChildrenByParent = useMemo(
+    () =>
+      showSubsessions
+        ? childrenByParent
+        : new Map<number, DbConversationSummary[]>(),
+    [showSubsessions, childrenByParent]
+  )
+  const effectiveChildrenLoading = useMemo(
+    () => (showSubsessions ? childrenLoading : new Set<number>()),
+    [showSubsessions, childrenLoading]
+  )
+
   // Flat row model for windowing — the pinned section, the folders section, and
   // every conversation live in this ONE array fed to the single Virtualizer (no
   // separate, un-virtualized pinned list). Deliberately excludes `now` (see
@@ -1169,9 +1200,9 @@ export function SidebarConversationList({
         chatConversations,
         chatsExpanded,
         sectionOrder,
-        conversationExpanded,
-        childrenByParent,
-        childrenLoading,
+        conversationExpanded: effectiveConversationExpanded,
+        childrenByParent: effectiveChildrenByParent,
+        childrenLoading: effectiveChildrenLoading,
         containerChildren,
         rootGroupCollapsed,
       }),
@@ -1186,9 +1217,9 @@ export function SidebarConversationList({
       chatConversations,
       chatsExpanded,
       sectionOrder,
-      conversationExpanded,
-      childrenByParent,
-      childrenLoading,
+      effectiveConversationExpanded,
+      effectiveChildrenByParent,
+      effectiveChildrenLoading,
       containerChildren,
       rootGroupCollapsed,
     ]
@@ -1492,7 +1523,7 @@ export function SidebarConversationList({
   // a render-time microtask) keeps the side effect out of render; the
   // cache/in-flight dedupe makes the repeated passes cheap and StrictMode-safe.
   useEffect(() => {
-    if (loading) return
+    if (loading || !showSubsessions) return
     for (const row of rows) {
       if (row.kind !== "conversation") continue
       const c = row.conversation
@@ -1505,7 +1536,13 @@ export function SidebarConversationList({
         void ensureChildrenLoaded(c.id)
       }
     }
-  }, [rows, conversationExpanded, loading, ensureChildrenLoaded])
+  }, [
+    rows,
+    conversationExpanded,
+    loading,
+    ensureChildrenLoaded,
+    showSubsessions,
+  ])
 
   // ── Sticky folder header overlay ──────────────────────────────────────────
   // Resolve the folder currently scrolled through and the iOS handoff offset
@@ -2291,9 +2328,16 @@ export function SidebarConversationList({
         onNewConversation={handleNewConversationForFolder}
         onTogglePin={handleTogglePin}
         depth={row.depth}
-        hasChildren={conv.child_count > 0}
-        expanded={conversationExpanded.has(conv.id)}
-        onToggleExpand={toggleConversation}
+        hasChildren={showSubsessions && conv.child_count > 0}
+        // When nested rows are hidden, still surface the child count so users
+        // know a parent owns sub-sessions (enable "Show sub-sessions" to open).
+        childCountHint={
+          !showSubsessions && conv.child_count > 0
+            ? conv.child_count
+            : undefined
+        }
+        expanded={showSubsessions ? conversationExpanded.has(conv.id) : false}
+        onToggleExpand={showSubsessions ? toggleConversation : undefined}
       />
     )
   }

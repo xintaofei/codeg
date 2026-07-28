@@ -125,6 +125,16 @@ pub enum DelegationError {
     Canceled { reason: String },
     #[error("parent session is gone")]
     ParentSessionGone,
+    /// `continue_with_session` was called while the task is still running.
+    #[error("subagent session is still running; wait or cancel first")]
+    SessionStillRunning,
+    /// `close_session` already tore the session down (or parent teardown did).
+    #[error("subagent session was closed; start a new delegation")]
+    SessionClosed,
+    /// Task exists but cannot be continued (unknown, no child row, no
+    /// resumable agent session id after process death, etc.).
+    #[error("subagent session cannot be continued: {0}")]
+    NotContinuable(String),
 }
 
 /// The single value the broker hands back to the listener / MCP companion.
@@ -204,6 +214,17 @@ pub struct DelegationTaskReport {
     pub duration_ms: Option<u64>,
 }
 
+impl DelegationTaskReport {
+    /// Attach a known `task_id` onto a setup-style error report that was built
+    /// without one (e.g. continue/close failures after the id is already known).
+    pub fn with_task_id(mut self, task_id: &str) -> Self {
+        if self.task_id.is_none() {
+            self.task_id = Some(task_id.to_string());
+        }
+        self
+    }
+}
+
 impl DelegationOutcome {
     /// Project a `DelegationError` onto the wire-stable `code` string used by
     /// the frontend and MCP companion. Keep these strings stable — they ship
@@ -222,6 +243,9 @@ impl DelegationOutcome {
             DelegationError::ChildUnknown(_) => "child_unknown",
             DelegationError::Canceled { .. } => "canceled",
             DelegationError::ParentSessionGone => "canceled",
+            DelegationError::SessionStillRunning => "session_still_running",
+            DelegationError::SessionClosed => "session_closed",
+            DelegationError::NotContinuable(_) => "not_continuable",
         };
         DelegationOutcome::Err {
             code: code.to_string(),

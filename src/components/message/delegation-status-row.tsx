@@ -24,6 +24,8 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Play,
+  XCircle,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 
@@ -40,7 +42,7 @@ import { StatusBadge } from "@/components/message/delegation-status-badge"
 
 interface DelegationStatusRowProps {
   /** Which companion tool this row represents — selects the label + icon. */
-  kind: "status" | "cancel"
+  kind: "status" | "cancel" | "continue" | "close"
   taskId: string | null
   report: StatusReport
   badge: ResolvedBadge
@@ -104,11 +106,26 @@ export function DelegationStatusRow({
       ? shortId
         ? t("cancelTask", { task: `#${shortId}` })
         : t("cancelTaskNoTask")
-      : shortId
-        ? t("waitForResult", { task: `#${shortId}` })
-        : t("waitForResultNoTask")
+      : kind === "continue"
+        ? shortId
+          ? t("continueTask", { task: `#${shortId}` })
+          : t("continueTaskNoTask")
+        : kind === "close"
+          ? shortId
+            ? t("closeTask", { task: `#${shortId}` })
+            : t("closeTaskNoTask")
+          : shortId
+            ? t("waitForResult", { task: `#${shortId}` })
+            : t("waitForResultNoTask")
 
-  const Icon = kind === "cancel" ? Ban : Activity
+  const Icon =
+    kind === "cancel"
+      ? Ban
+      : kind === "continue"
+        ? Play
+        : kind === "close"
+          ? XCircle
+          : Activity
 
   const row = (
     <>
