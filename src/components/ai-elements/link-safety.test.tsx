@@ -28,6 +28,7 @@ vi.mock("sonner", () => ({
 
 vi.mock("@/lib/platform", () => ({
   openUrl: mocks.openUrl,
+  isLocalDesktop: () => false,
 }))
 
 vi.mock("@/lib/transport", () => ({
@@ -47,6 +48,14 @@ vi.mock("@/contexts/workspace-context", () => ({
   useWorkspaceActions: () => ({
     openFilePreview: mocks.openFilePreview,
   }),
+}))
+
+// FilePathLink wraps FilePathContextMenu, which reads the active conversation
+// tab for "Add to chat". Stub a stable empty store so unit tests stay pure.
+vi.mock("@/contexts/tab-context", () => ({
+  useTabStore: (
+    selector: (s: { tabs: never[]; activeTabId: null }) => unknown
+  ) => selector({ tabs: [], activeTabId: null }),
 }))
 
 function LinkSafetyHarness({ url }: { url: string }) {

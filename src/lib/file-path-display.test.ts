@@ -6,6 +6,7 @@ import {
   isRemovedFileDiff,
   toAbsoluteFilePath,
   toFolderRelativePath,
+  toNativeAbsoluteFilePath,
 } from "./file-path-display"
 
 describe("isAddedFileDiff", () => {
@@ -102,6 +103,36 @@ describe("toAbsoluteFilePath", () => {
   it("returns null for a relative path with no folder", () => {
     expect(toAbsoluteFilePath("src/a.ts")).toBeNull()
     expect(toAbsoluteFilePath("src/a.ts", "")).toBeNull()
+  })
+})
+
+describe("toNativeAbsoluteFilePath", () => {
+  it("joins relative paths with the folder's native separator", () => {
+    expect(toNativeAbsoluteFilePath("src/a.ts", "/repo")).toBe("/repo/src/a.ts")
+    expect(toNativeAbsoluteFilePath("src/a.ts", "C:\\repo")).toBe(
+      "C:\\repo\\src\\a.ts"
+    )
+    expect(toNativeAbsoluteFilePath("./src/a.ts", "C:\\repo\\")).toBe(
+      "C:\\repo\\src\\a.ts"
+    )
+  })
+
+  it("normalizes absolute Windows paths to backslashes when appropriate", () => {
+    expect(toNativeAbsoluteFilePath("C:/repo/a.ts", "C:\\repo")).toBe(
+      "C:\\repo\\a.ts"
+    )
+    expect(toNativeAbsoluteFilePath("C:\\repo\\a.ts")).toBe("C:\\repo\\a.ts")
+  })
+
+  it("keeps POSIX absolute paths slash-normalized", () => {
+    expect(toNativeAbsoluteFilePath("/repo/src/a.ts", "/repo")).toBe(
+      "/repo/src/a.ts"
+    )
+  })
+
+  it("returns null when a relative path has no folder", () => {
+    expect(toNativeAbsoluteFilePath("src/a.ts")).toBeNull()
+    expect(toNativeAbsoluteFilePath("src/a.ts", "")).toBeNull()
   })
 })
 

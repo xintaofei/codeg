@@ -38,6 +38,11 @@ export type ToolPart = ToolUIPart | DynamicToolUIPart
 
 export type ToolHeaderProps = {
   title?: ReactNode
+  /**
+   * Native HTML tooltip for the title span (e.g. absolute file path for
+   * Read/Edit/Write tools). Falls back to string `title` when omitted.
+   */
+  titleTooltip?: string
   titleSuffix?: ReactNode
   icon?: ReactNode
   className?: string
@@ -70,6 +75,7 @@ export const getStatusBadge = (status: ToolPart["state"], label: string) => (
 export const ToolHeader = ({
   className,
   title,
+  titleTooltip,
   titleSuffix,
   icon,
   type,
@@ -94,9 +100,16 @@ export const ToolHeader = ({
               : state === "output-denied"
                 ? t("status.outputDenied")
                 : t("status.outputError")
+  const resolvedTitle = title ?? derivedName
+  const nativeTitle =
+    titleTooltip ??
+    (typeof resolvedTitle === "string" ? resolvedTitle : undefined)
 
   return (
     <CollapsibleTrigger
+      // Put the native tooltip on the full header row (not only the text
+      // span) so hovering status/icon/padding still shows the absolute path.
+      title={nativeTitle}
       className={cn(
         "flex w-full min-w-0 items-center justify-between gap-4 px-3 py-2",
         className
@@ -108,7 +121,7 @@ export const ToolHeader = ({
           {icon ?? <WrenchIcon className="size-4 text-muted-foreground" />}
         </span>
         <span className="min-w-0 flex-1 truncate whitespace-nowrap font-medium text-sm">
-          {title ?? derivedName}
+          {resolvedTitle}
         </span>
         {titleSuffix ? <span className="shrink-0">{titleSuffix}</span> : null}
         <span className="shrink-0">{getStatusBadge(state, statusLabel)}</span>

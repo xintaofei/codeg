@@ -15,6 +15,7 @@ import {
   CommitFileAdditions,
   CommitFileDeletions,
 } from "@/components/ai-elements/commit"
+import { FilePathContextMenu } from "@/components/shared/file-path-context-menu"
 import {
   Tooltip,
   TooltipContent,
@@ -171,63 +172,67 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
                           )
 
                     return (
-                      <div
+                      <FilePathContextMenu
                         key={file.id}
-                        className="flex items-stretch overflow-hidden rounded-md border border-green-600/30 bg-green-500/5 transition-colors hover:border-green-600/50 hover:bg-green-500/10 dark:border-green-400/30 dark:hover:border-green-400/50"
+                        filePath={file.path}
+                        folderPath={folderPath}
+                        onOpenInCodeg={() => openInTabs(file)}
                       >
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <button
-                              type="button"
-                              onClick={() => openInTabs(file)}
-                              title={displayPath}
-                              aria-label={t("openFile", {
-                                filePath: displayPath,
-                              })}
-                              className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-2.5 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-                            >
-                              <FileIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-                              <span className="flex min-w-0 flex-1 flex-col">
-                                <span className="truncate text-xs font-medium text-foreground">
-                                  {name}
-                                </span>
-                                {dir && (
-                                  <span className="truncate text-[10px] text-muted-foreground">
-                                    {dir}
-                                  </span>
-                                )}
-                              </span>
-                              {file.additions > 0 && (
-                                <CommitFileAdditions
-                                  count={file.additions}
-                                  className="shrink-0 font-mono text-[10px]"
-                                />
-                              )}
-                            </button>
-                          </TooltipTrigger>
-                          <TooltipContent side="top">
-                            {t("openInEditor")}
-                          </TooltipContent>
-                        </Tooltip>
-
-                        {isLocalDesktop() && (
+                        <div className="flex items-stretch overflow-hidden rounded-md border border-green-600/30 bg-green-500/5 transition-colors hover:border-green-600/50 hover:bg-green-500/10 dark:border-green-400/30 dark:hover:border-green-400/50">
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <button
                                 type="button"
-                                onClick={() => revealInFolder(file)}
-                                aria-label={t("revealInFolder")}
-                                className="flex w-9 shrink-0 items-center justify-center border-l border-green-600/30 text-muted-foreground transition-colors hover:bg-green-500/15 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring dark:border-green-400/30"
+                                onClick={() => openInTabs(file)}
+                                title={displayPath}
+                                aria-label={t("openFile", {
+                                  filePath: displayPath,
+                                })}
+                                className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-2.5 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                               >
-                                <ExternalLink className="h-3.5 w-3.5" />
+                                <FileIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                <span className="flex min-w-0 flex-1 flex-col">
+                                  <span className="truncate text-xs font-medium text-foreground">
+                                    {name}
+                                  </span>
+                                  {dir && (
+                                    <span className="truncate text-[10px] text-muted-foreground">
+                                      {dir}
+                                    </span>
+                                  )}
+                                </span>
+                                {file.additions > 0 && (
+                                  <CommitFileAdditions
+                                    count={file.additions}
+                                    className="shrink-0 font-mono text-[10px]"
+                                  />
+                                )}
                               </button>
                             </TooltipTrigger>
                             <TooltipContent side="top">
-                              {t("revealInFolder")}
+                              {t("openInEditor")}
                             </TooltipContent>
                           </Tooltip>
-                        )}
-                      </div>
+
+                          {isLocalDesktop() && (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  onClick={() => revealInFolder(file)}
+                                  aria-label={t("revealInFolder")}
+                                  className="flex w-9 shrink-0 items-center justify-center border-l border-green-600/30 text-muted-foreground transition-colors hover:bg-green-500/15 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring dark:border-green-400/30"
+                                >
+                                  <ExternalLink className="h-3.5 w-3.5" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent side="top">
+                                {t("revealInFolder")}
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
+                        </div>
+                      </FilePathContextMenu>
                     )
                   })}
                 </div>
@@ -289,112 +294,122 @@ export const ReplyArtifacts = memo(function ReplyArtifacts({
                           )
                     const isRemoved = isRemovedFileDiff(file.diff)
 
-                    // Removed files no longer exist on disk — there is nothing
-                    // to open or reveal, so render a static (non-interactive)
-                    // card that keeps the destructive accent and remove badge.
+                    // Removed files no longer exist on disk — keep copy-path
+                    // via the context menu, but disable external open and skip
+                    // the Codeg/reveal click affordances.
                     if (isRemoved) {
                       return (
-                        <div
+                        <FilePathContextMenu
                           key={file.id}
-                          title={displayPath}
-                          className="flex items-center gap-2 overflow-hidden rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-2"
+                          filePath={file.path}
+                          folderPath={folderPath}
+                          externalOpenDisabled
                         >
-                          <FileIcon className="h-4 w-4 shrink-0 text-destructive" />
-                          <span className="flex min-w-0 flex-1 flex-col">
-                            <span className="truncate text-xs font-medium text-destructive">
-                              {name}
-                            </span>
-                            {dir && (
-                              <span className="truncate text-[10px] text-muted-foreground">
-                                {dir}
+                          <div
+                            title={displayPath}
+                            className="flex items-center gap-2 overflow-hidden rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-2"
+                          >
+                            <FileIcon className="h-4 w-4 shrink-0 text-destructive" />
+                            <span className="flex min-w-0 flex-1 flex-col">
+                              <span className="truncate text-xs font-medium text-destructive">
+                                {name}
                               </span>
-                            )}
-                          </span>
-                          <span className="inline-flex shrink-0 items-center rounded-md border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 font-mono text-[10px] text-destructive">
-                            {t("remove")}
-                          </span>
-                        </div>
+                              {dir && (
+                                <span className="truncate text-[10px] text-muted-foreground">
+                                  {dir}
+                                </span>
+                              )}
+                            </span>
+                            <span className="inline-flex shrink-0 items-center rounded-md border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 font-mono text-[10px] text-destructive">
+                              {t("remove")}
+                            </span>
+                          </div>
+                        </FilePathContextMenu>
                       )
                     }
 
                     return (
-                      <div
+                      <FilePathContextMenu
                         key={file.id}
-                        className="flex items-stretch overflow-hidden rounded-md border border-border bg-muted/20 transition-colors hover:bg-accent/40"
+                        filePath={file.path}
+                        folderPath={folderPath}
+                        onOpenInCodeg={() => openInTabs(file)}
                       >
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <button
-                              type="button"
-                              onClick={() => openInTabs(file)}
-                              title={displayPath}
-                              aria-label={t("openFile", {
-                                filePath: displayPath,
-                              })}
-                              className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-2.5 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-                            >
-                              <FileIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-                              <span className="flex min-w-0 flex-1 flex-col">
-                                <span className="truncate text-xs font-medium text-foreground">
-                                  {name}
-                                </span>
-                                {dir && (
-                                  <span className="truncate text-[10px] text-muted-foreground">
-                                    {dir}
-                                  </span>
-                                )}
-                              </span>
-                              <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[10px]">
-                                <CommitFileAdditions
-                                  count={file.additions}
-                                  className="text-[10px]"
-                                />
-                                <CommitFileDeletions
-                                  count={file.deletions}
-                                  className="text-[10px]"
-                                />
-                              </span>
-                            </button>
-                          </TooltipTrigger>
-                          <TooltipContent side="top">
-                            {t("openInEditor")}
-                          </TooltipContent>
-                        </Tooltip>
-
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <button
-                              type="button"
-                              onClick={() => viewDiff(file)}
-                              aria-label={tCommon("viewDiff")}
-                              className="flex w-9 shrink-0 items-center justify-center border-l border-border text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-                            >
-                              <FileDiff className="h-3.5 w-3.5" />
-                            </button>
-                          </TooltipTrigger>
-                          <TooltipContent side="top">
-                            {tCommon("viewDiff")}
-                          </TooltipContent>
-                        </Tooltip>
-
-                        {isLocalDesktop() && (
+                        <div className="flex items-stretch overflow-hidden rounded-md border border-border bg-muted/20 transition-colors hover:bg-accent/40">
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <button
                                 type="button"
-                                onClick={() => revealInFolder(file)}
-                                aria-label={t("revealInFolder")}
-                                className="flex w-9 shrink-0 items-center justify-center border-l border-border text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                                onClick={() => openInTabs(file)}
+                                title={displayPath}
+                                aria-label={t("openFile", {
+                                  filePath: displayPath,
+                                })}
+                                className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-2.5 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                               >
-                                <ExternalLink className="h-3.5 w-3.5" />
+                                <FileIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                <span className="flex min-w-0 flex-1 flex-col">
+                                  <span className="truncate text-xs font-medium text-foreground">
+                                    {name}
+                                  </span>
+                                  {dir && (
+                                    <span className="truncate text-[10px] text-muted-foreground">
+                                      {dir}
+                                    </span>
+                                  )}
+                                </span>
+                                <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[10px]">
+                                  <CommitFileAdditions
+                                    count={file.additions}
+                                    className="text-[10px]"
+                                  />
+                                  <CommitFileDeletions
+                                    count={file.deletions}
+                                    className="text-[10px]"
+                                  />
+                                </span>
                               </button>
                             </TooltipTrigger>
                             <TooltipContent side="top">
-                              {t("revealInFolder")}
+                              {t("openInEditor")}
                             </TooltipContent>
                           </Tooltip>
-                        )}
-                      </div>
+
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                type="button"
+                                onClick={() => viewDiff(file)}
+                                aria-label={tCommon("viewDiff")}
+                                className="flex w-9 shrink-0 items-center justify-center border-l border-border text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                              >
+                                <FileDiff className="h-3.5 w-3.5" />
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent side="top">
+                              {tCommon("viewDiff")}
+                            </TooltipContent>
+                          </Tooltip>
+
+                          {isLocalDesktop() && (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  onClick={() => revealInFolder(file)}
+                                  aria-label={t("revealInFolder")}
+                                  className="flex w-9 shrink-0 items-center justify-center border-l border-border text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                                >
+                                  <ExternalLink className="h-3.5 w-3.5" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent side="top">
+                                {t("revealInFolder")}
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
+                        </div>
+                      </FilePathContextMenu>
                     )
                   })}
                 </div>

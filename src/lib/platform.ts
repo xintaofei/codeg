@@ -81,14 +81,24 @@ export async function openUrl(url: string): Promise<void> {
 }
 
 /**
- * Open a path in the system file manager (desktop only).
- * No-op in web mode.
+ * Open a path with the system default app, or a specific app when `openWith`
+ * is set (desktop local only). No-op in web / remote-desktop modes.
+ *
+ * `openWith` is platform-specific:
+ * - macOS: application name for `open -a` (e.g. `"Visual Studio Code"`)
+ * - Windows/Linux: CLI/app id on PATH (e.g. `"code"`, `"cursor"`)
+ *
+ * Paths must be allowed by `opener:allow-open-path` in capabilities
+ * (home, documents, and recursive `/**` / `**` for workspaces outside $HOME
+ * such as `E:\\dev\\…` on Windows or `/Volumes/…` on macOS).
  */
-export async function openPath(path: string): Promise<void> {
+export async function openPath(path: string, openWith?: string): Promise<void> {
   if (isDesktop() && getActiveRemoteConnectionId() === null) {
     const { openPath: tauriOpenPath } =
       await import("@tauri-apps/plugin-opener")
-    await tauriOpenPath(path)
+    // Normalize separators so scope globs match Windows drive paths too.
+    const normalized = path.replace(/\\/g, "/")
+    await tauriOpenPath(normalized, openWith)
   }
 }
 
@@ -100,7 +110,8 @@ export async function revealItemInDir(path: string): Promise<void> {
   if (isDesktop() && getActiveRemoteConnectionId() === null) {
     const { revealItemInDir: tauriReveal } =
       await import("@tauri-apps/plugin-opener")
-    await tauriReveal(path)
+    const normalized = path.replace(/\\/g, "/")
+    await tauriReveal(normalized)
   }
 }
 

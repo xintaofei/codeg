@@ -1,0 +1,322 @@
+"use client"
+
+/**
+ * VS Code-style right-click menu for a workspace / session file path.
+ *
+ * Used by the message navigator, reply artifacts, tool rows, and FilePathLink.
+ *
+ * Nested under ConversationDetailPanel's full-surface ContextMenu. Ownership
+ * is claimed by stopPropagation on contextmenu / non-mouse pointerdown, and by
+ * stamping `data-file-path-menu` so the panel skips selection-preservation on
+ * those gestures (see conversation-detail-panel).
+ *
+ * Default `asChild`: Slot merges the trigger onto a single DOM child (button
+ * or card div) so we never render an illegal span>div wrapper.
+ */
+
+import {
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+  useCallback,
+  useMemo,
+} from "react"
+import {
+  AppWindow,
+  AtSign,
+  ClipboardCopy,
+  Code2,
+  Copy,
+  ExternalLink,
+  FileCode,
+  FileType,
+  FolderOpen,
+  TextCursorInput,
+} from "lucide-react"
+import { useTranslations } from "next-intl"
+import { toast } from "sonner"
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu"
+import { useTabStore } from "@/contexts/tab-context"
+import {
+  copyPathText,
+  openFileWithDefaultApp,
+  openFileWithExternalEditor,
+  resolveFilePathTargets,
+  revealFileInManager,
+  systemExplorerLabelKey,
+  type ExternalEditorId,
+} from "@/lib/file-path-actions"
+import { isLocalDesktop } from "@/lib/platform"
+import { toErrorMessage } from "@/lib/app-error"
+import { emitAttachFileToSession } from "@/lib/session-attachment-events"
+import { cn } from "@/lib/utils"
+
+/** Attribute the conversation-panel ContextMenu looks for to yield ownership. */
+export const FILE_PATH_MENU_ATTR = "data-file-path-menu"
+
+/** Short-lived feedback for copy / add-to-chat (workspace Toaster defaults to 15s). */
+const TOAST_SUCCESS_MS = 2500
+/** Slightly longer for failures so the user can read the reason. */
+const TOAST_ERROR_MS = 5000
+
+export interface FilePathContextMenuProps {
+  /** Agent-reported path (absolute or workspace-relative). */
+  filePath: string
+  /** Active workspace folder; needed for absolute-path resolve & relative copy. */
+  folderPath?: string
+  /**
+   * When true, reveal / open-with-external actions are disabled (e.g. a deleted
+   * file has no on-disk target). Copy, open-in-Codeg, and add-to-chat stay
+   * available (chat still accepts a path mention for deleted files).
+   */
+  externalOpenDisabled?: boolean
+  /** Primary open action (Codeg tab / session diff). Omitted = hide the item. */
+  onOpenInCodeg?: () => void
+  /**
+   * Native HTML tooltip for the trigger surface (e.g. absolute path on a
+   * tool-row wrapper). Applied on the trigger / slotted child.
+   */
+  title?: string
+  /**
+   * When true (default), merge trigger props onto a single child via Slot.
+   * Child must accept a ref (native button/div). Set false only for rare
+   * non-element children that need the built-in block wrapper.
+   */
+  asChild?: boolean
+  className?: string
+  children: ReactNode
+}
+
+export function FilePathContextMenu({
+  filePath,
+  folderPath,
+  externalOpenDisabled = false,
+  onOpenInCodeg,
+  title,
+  asChild = true,
+  className,
+  children,
+}: FilePathContextMenuProps) {
+  const t = useTranslations("Folder.chat.filePathMenu")
+  const localDesktop = isLocalDesktop()
+
+  const activeSessionTabId = useTabStore((s) => {
+    const active = s.tabs.find((tab) => tab.id === s.activeTabId)
+    if (!active || active.kind !== "conversation") return null
+    return active.id
+  })
+
+  const { relativePath, absolutePath, fileName } = useMemo(
+    () => resolveFilePathTargets(filePath, folderPath),
+    [filePath, folderPath]
+  )
+
+  const explorerLabel = t(systemExplorerLabelKey())
+  const canOpenExternally =
+    localDesktop && !!absolutePath && !externalOpenDisabled
+  const attachPath = absolutePath ?? relativePath
+  const canAddToChat = Boolean(activeSessionTabId && attachPath)
+
+  const notifyCopy = useCallback(
+    async (text: string, successKey: "pathCopied" | "fileNameCopied") => {
+      const ok = await copyPathText(text)
+      if (ok) {
+        toast.success(t(successKey), { duration: TOAST_SUCCESS_MS })
+      } else {
+        toast.error(t("copyFailed"), { duration: TOAST_ERROR_MS })
+      }
+    },
+    [t]
+  )
+
+  const runExternal = useCallback(
+    async (action: () => Promise<void>) => {
+      try {
+        await action()
+      } catch (error) {
+        toast.error(t("openFailed"), {
+          description: toErrorMessage(error),
+          duration: TOAST_ERROR_MS,
+        })
+      }
+    },
+    [t]
+  )
+
+  const handleReveal = useCallback(() => {
+    if (!absolutePath) return
+    void runExternal(() => revealFileInManager(absolutePath))
+  }, [absolutePath, runExternal])
+
+  const handleOpenDefault = useCallback(() => {
+    if (!absolutePath) return
+    void runExternal(() => openFileWithDefaultApp(absolutePath))
+  }, [absolutePath, runExternal])
+
+  const handleOpenEditor = useCallback(
+    (editor: ExternalEditorId) => {
+      if (!absolutePath) return
+      void runExternal(() => openFileWithExternalEditor(absolutePath, editor))
+    },
+    [absolutePath, runExternal]
+  )
+
+  const handleAddToChat = useCallback(() => {
+    if (!activeSessionTabId || !attachPath) {
+      toast.error(t("noActiveConversation"), { duration: TOAST_ERROR_MS })
+      return
+    }
+    emitAttachFileToSession({
+      tabId: activeSessionTabId,
+      path: attachPath,
+    })
+    toast.success(t("addToChatDone", { label: fileName }), {
+      duration: TOAST_SUCCESS_MS,
+    })
+  }, [activeSessionTabId, attachPath, fileName, t])
+
+  // Claim the gesture so ConversationDetailPanel's ContextMenu does not open.
+  // stopPropagation is the primary mechanism; data-file-path-menu is only for
+  // the panel's pointerdown selection-preservation early-return.
+  const claimContextMenu = useCallback((event: ReactMouseEvent) => {
+    event.stopPropagation()
+  }, [])
+
+  // Touch / pen long-press uses button 0 + Radix's 700ms path; only stopping
+  // button === 2 left both menus open and the outer modal ate pointer events.
+  const claimRightPointer = useCallback((event: ReactPointerEvent) => {
+    if (event.button === 2 || event.pointerType !== "mouse") {
+      event.stopPropagation()
+    }
+  }, [])
+
+  // Prefer an explicit title, otherwise the resolved absolute path so hover on
+  // the wrapper (not only the inner button) still shows the full path.
+  const triggerTitle = title ?? absolutePath ?? relativePath
+
+  return (
+    <ContextMenu modal={false}>
+      <ContextMenuTrigger
+        asChild={asChild}
+        data-file-path-menu=""
+        title={triggerTitle || undefined}
+        className={asChild ? className : cn("block w-full min-w-0", className)}
+        onContextMenu={claimContextMenu}
+        onPointerDown={claimRightPointer}
+      >
+        {children}
+      </ContextMenuTrigger>
+      <ContextMenuContent className="z-[80] min-w-52">
+        {onOpenInCodeg && (
+          <ContextMenuItem onSelect={() => onOpenInCodeg()}>
+            <FileCode className="h-4 w-4" />
+            {t("openInCodeg")}
+          </ContextMenuItem>
+        )}
+
+        <ContextMenuItem
+          disabled={!canAddToChat}
+          onSelect={() => {
+            if (!canAddToChat) return
+            handleAddToChat()
+          }}
+        >
+          <AtSign className="h-4 w-4" />
+          {t("addToChat")}
+        </ContextMenuItem>
+
+        {localDesktop && (
+          <ContextMenuItem
+            disabled={!canOpenExternally}
+            onSelect={() => {
+              if (!canOpenExternally) return
+              handleReveal()
+            }}
+          >
+            <FolderOpen className="h-4 w-4" />
+            {explorerLabel}
+          </ContextMenuItem>
+        )}
+
+        {localDesktop && (
+          <ContextMenuSub>
+            <ContextMenuSubTrigger disabled={!canOpenExternally}>
+              <ExternalLink className="h-4 w-4" />
+              {t("openWith")}
+            </ContextMenuSubTrigger>
+            <ContextMenuSubContent className="min-w-44">
+              <ContextMenuItem
+                disabled={!canOpenExternally}
+                onSelect={() => {
+                  if (!canOpenExternally) return
+                  handleOpenDefault()
+                }}
+              >
+                <AppWindow className="h-4 w-4" />
+                {t("openWithDefault")}
+              </ContextMenuItem>
+              <ContextMenuItem
+                disabled={!canOpenExternally}
+                onSelect={() => {
+                  if (!canOpenExternally) return
+                  handleOpenEditor("vscode")
+                }}
+              >
+                <Code2 className="h-4 w-4" />
+                {t("openWithVsCode")}
+              </ContextMenuItem>
+              <ContextMenuItem
+                disabled={!canOpenExternally}
+                onSelect={() => {
+                  if (!canOpenExternally) return
+                  handleOpenEditor("cursor")
+                }}
+              >
+                <TextCursorInput className="h-4 w-4" />
+                {t("openWithCursor")}
+              </ContextMenuItem>
+            </ContextMenuSubContent>
+          </ContextMenuSub>
+        )}
+
+        <ContextMenuSeparator />
+
+        <ContextMenuItem
+          onSelect={() => {
+            void notifyCopy(relativePath, "pathCopied")
+          }}
+        >
+          <Copy className="h-4 w-4" />
+          {t("copyRelativePath")}
+        </ContextMenuItem>
+        <ContextMenuItem
+          disabled={!absolutePath}
+          onSelect={() => {
+            if (!absolutePath) return
+            void notifyCopy(absolutePath, "pathCopied")
+          }}
+        >
+          <ClipboardCopy className="h-4 w-4" />
+          {t("copyAbsolutePath")}
+        </ContextMenuItem>
+        <ContextMenuItem
+          onSelect={() => {
+            void notifyCopy(fileName, "fileNameCopied")
+          }}
+        >
+          <FileType className="h-4 w-4" />
+          {t("copyFileName")}
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  )
+}
