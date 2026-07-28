@@ -82,6 +82,11 @@ interface ConversationShellProps {
   showActiveFlow?: boolean
   queue?: QueuedMessage[]
   onEnqueue?: (draft: PromptDraft, modeId: string | null) => void
+  onEnqueueMany?: (
+    draft: PromptDraft,
+    modeId: string | null,
+    count: number
+  ) => void
   onQueueReorder?: (items: QueuedMessage[]) => void
   onQueueEdit?: (id: string) => void
   onQueueDelete?: (id: string) => void
@@ -137,6 +142,7 @@ export function ConversationShell({
   showActiveFlow,
   queue,
   onEnqueue,
+  onEnqueueMany,
   onQueueReorder,
   onQueueEdit,
   onQueueDelete,
@@ -272,6 +278,7 @@ export function ConversationShell({
               showActiveFlow={showActiveFlow}
               queue={queue}
               onEnqueue={onEnqueue}
+              onEnqueueMany={onEnqueueMany}
               onQueueReorder={onQueueReorder}
               onQueueEdit={onQueueEdit}
               onQueueDelete={onQueueDelete}

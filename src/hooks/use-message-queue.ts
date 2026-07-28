@@ -13,6 +13,11 @@ export interface QueuedMessage {
 export interface UseMessageQueueReturn {
   queue: QueuedMessage[]
   enqueue: (draft: PromptDraft, modeId: string | null) => void
+  enqueueMany: (
+    draft: PromptDraft,
+    modeId: string | null,
+    count: number
+  ) => void
   /**
    * Put a draft back at the FRONT of the queue. Used when an auto-flushed item
    * was dequeued, sent, and bounced (TurnBusyError): it must return to the head
@@ -59,6 +64,20 @@ export function useMessageQueue(): UseMessageQueueReturn {
   const enqueue = useCallback(
     (draft: PromptDraft, modeId: string | null) => {
       commit([...queueRef.current, { id: randomUUID(), draft, modeId }])
+    },
+    [commit]
+  )
+
+  const enqueueMany = useCallback(
+    (draft: PromptDraft, modeId: string | null, count: number) => {
+      const n = Math.trunc(count)
+      if (!Number.isFinite(n) || n <= 0) return
+      const additions = Array.from({ length: n }, () => ({
+        id: randomUUID(),
+        draft,
+        modeId,
+      }))
+      commit([...queueRef.current, ...additions])
     },
     [commit]
   )
@@ -138,6 +157,7 @@ export function useMessageQueue(): UseMessageQueueReturn {
   return {
     queue,
     enqueue,
+    enqueueMany,
     requeueFront,
     dequeue,
     remove,
