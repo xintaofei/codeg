@@ -13,6 +13,8 @@ import { AppTitleBar } from "@/components/layout/app-title-bar"
 import { AppToaster } from "@/components/ui/app-toaster"
 import { getFolder } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
+import { emitCloseCommitDialog } from "@/lib/commit-dialog-events"
+import { isDesktop } from "@/lib/transport"
 import type { FolderDetail } from "@/lib/types"
 import { GitCredentialProvider } from "@/contexts/git-credential-context"
 import { RemoteConnectionGate } from "@/contexts/remote-connection-context"
@@ -42,6 +44,11 @@ function CommitPageInner() {
   const error = state.loadedId === normalizedFolderId ? state.error : null
 
   const closeWindow = useCallback(async () => {
+    if (!isDesktop()) {
+      emitCloseCommitDialog()
+      return
+    }
+
     try {
       const win = await getCurrentWindow()
       await win.close()
