@@ -7012,6 +7012,20 @@ async fn run_conversation_loop<'a>(
                                     disconnect_requested = true;
                                     break;
                                 }
+                                Some(ConnectionCommand::Prompt { .. }) => {
+                                    // Tripwire, not a user-facing case. The
+                                    // `turn_in_flight` gate in `send_prompt_inner`
+                                    // rejects a second prompt BEFORE it is ever
+                                    // enqueued, so a `Prompt` reaching this mid-turn
+                                    // command handler means an ungated sender slipped
+                                    // past the gate (a broken invariant) — surface it
+                                    // at `warn` instead of letting the `_ => {}` below
+                                    // swallow it silently.
+                                    tracing::warn!(
+                                        connection_id = %conn_id,
+                                        "[ACP] in-turn Prompt DROPPED — the turn_in_flight gate should have rejected this"
+                                    );
+                                }
                                 _ => {}
                             }
                         }
