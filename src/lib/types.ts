@@ -2768,6 +2768,12 @@ export interface SystemRenderingSettings {
   disable_hardware_acceleration: boolean
 }
 
+export type CloseAction = "hide_to_tray" | "exit"
+
+export interface SystemCloseSettings {
+  action: CloseAction
+}
+
 // --- Logging ---
 
 export type LogLevel = "off" | "error" | "warn" | "info" | "debug" | "trace"

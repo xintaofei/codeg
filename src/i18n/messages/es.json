@@ -1408,7 +1408,12 @@
     "restartRequired": "Guardado. Reinicia la aplicación para aplicar el cambio.",
     "restartNow": "Reiniciar ahora",
     "restartFailed": "No se pudo reiniciar: {message}",
-    "loadFailed": "Error al cargar: {message}"
+    "loadFailed": "Error al cargar: {message}",
+    "closeActionTitle": "Comportamiento al cerrar",
+    "closeActionDescription": "Elija qué sucede al hacer clic en el botón de cerrar de la ventana principal.",
+    "closeActionHideToTray": "Ocultar en la bandeja (fondo)",
+    "closeActionExit": "Salir de la aplicación",
+    "closeActionSaveFailed": "Error al guardar comportamiento:{message}"
   },
   "LoginPage": {
     "documentTitle": "Iniciar sesión - codeg",

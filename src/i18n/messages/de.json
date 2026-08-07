@@ -1408,7 +1408,12 @@
     "restartRequired": "Gespeichert. Starten Sie die App neu, damit die Änderung wirksam wird.",
     "restartNow": "Jetzt neu starten",
     "restartFailed": "Neustart fehlgeschlagen: {message}",
-    "loadFailed": "Laden fehlgeschlagen: {message}"
+    "loadFailed": "Laden fehlgeschlagen: {message}",
+    "closeActionTitle": "Schließen-Verhalten",
+    "closeActionDescription": "Wählen Sie, was beim Klick auf den Schließen-Button des Hauptfensters passiert.",
+    "closeActionHideToTray": "In Tray ausblenden (Hintergrund)",
+    "closeActionExit": "Anwendung beenden",
+    "closeActionSaveFailed": "Fehler beim Speichern des Schließen-Verhaltens:{message}"
   },
   "LoginPage": {
     "documentTitle": "Anmelden - codeg",

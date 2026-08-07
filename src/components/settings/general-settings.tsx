@@ -35,7 +35,7 @@ import {
   updateSystemRenderingSettings,
   updateSystemTerminalSettings,
 } from "@/lib/api"
-import { isDesktop } from "@/lib/platform"
+import { isDesktop, isLocalDesktop } from "@/lib/platform"
 import { getActiveRemoteConnectionId } from "@/lib/transport"
 import type { AvailableTerminalShells, TerminalShellOption } from "@/lib/types"
 import { usePlatform } from "@/hooks/use-platform"
@@ -44,6 +44,7 @@ import { toErrorMessage } from "@/lib/app-error"
 import { NotificationSoundSettingsSection } from "@/components/settings/notification-sound-settings"
 import { DelegationSettingsSection } from "@/components/settings/delegation-settings"
 import { AgentToolsSettingsSection } from "@/components/settings/agent-tools-settings"
+import { CloseBehaviorSettingsSection } from "@/components/settings/close-behavior-settings"
 
 const TERMINAL_SHELL_OPTION_SYSTEM = "system"
 const TERMINAL_SHELL_OPTION_CUSTOM = "custom"
@@ -83,6 +84,12 @@ export function GeneralSettings() {
   const renderingSettingsLoadable =
     isDesktop() && getActiveRemoteConnectionId() === null
   const renderingSectionVisible = renderingSettingsLoadable && isWindows
+
+  // Same reasoning for the close-button behaviour: it configures an OS window
+  // that only exists in the local desktop shell, and its commands are
+  // `tauri-runtime`-only with no Axum route. In a browser tab there is no
+  // close button to reconfigure and no tray to hide into.
+  const closeBehaviorVisible = isLocalDesktop()
 
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -406,6 +413,11 @@ export function GeneralSettings() {
             )}
           </SettingsSection>
         )}
+
+        {/* Grouped with rendering above rather than with the agent sections
+            below: both configure the local desktop shell, so both are gated on
+            the same local-Tauri transport check. */}
+        {closeBehaviorVisible && <CloseBehaviorSettingsSection />}
 
         <NotificationSoundSettingsSection />
 

@@ -1408,7 +1408,12 @@
     "restartRequired": "تم الحفظ. أعد تشغيل التطبيق ليصبح التغيير نافذًا.",
     "restartNow": "إعادة التشغيل الآن",
     "restartFailed": "فشل إعادة التشغيل: {message}",
-    "loadFailed": "فشل التحميل: {message}"
+    "loadFailed": "فشل التحميل: {message}",
+    "closeActionTitle": "سلوك الإغلاق",
+    "closeActionDescription": "اختر ما يحدث عند النقر على زر إغلاق النافذة الرئيسية.",
+    "closeActionHideToTray": "إخفاء في شريط النظام (خلفية)",
+    "closeActionExit": "إنهاء التطبيق",
+    "closeActionSaveFailed": "فشل حفظ سلوك الإغلاق:{message}"
   },
   "LoginPage": {
     "documentTitle": "تسجيل الدخول - codeg",

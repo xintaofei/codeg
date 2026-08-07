@@ -1408,7 +1408,12 @@
     "restartRequired": "Salvo. Reinicie o aplicativo para aplicar a alteração.",
     "restartNow": "Reiniciar agora",
     "restartFailed": "Falha ao reiniciar: {message}",
-    "loadFailed": "Falha ao carregar: {message}"
+    "loadFailed": "Falha ao carregar: {message}",
+    "closeActionTitle": "Comportamento ao fechar",
+    "closeActionDescription": "Escolha o que acontece quando o botão de fechar da janela principal é clicado.",
+    "closeActionHideToTray": "Ocultar na bandeja (segundo plano)",
+    "closeActionExit": "Sair do aplicativo",
+    "closeActionSaveFailed": "Falha ao salvar comportamento:{message}"
   },
   "LoginPage": {
     "documentTitle": "Entrar - codeg",
