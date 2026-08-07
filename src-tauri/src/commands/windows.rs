@@ -1915,14 +1915,37 @@ pub const TRAY_MENU_ID_SHOW: &str = "tray:show";
 pub const TRAY_MENU_ID_QUIT: &str = "tray:quit";
 pub const TRAY_ICON_ID: &str = "codeg-tray";
 
-/// True after `install_tray_icon` returns `Ok`. The hide-on-close path
-/// in `lib.rs` consults this so we don't strand the user on systems
-/// where the tray failed to install (Windows tray refused, etc.). On
-/// Linux this is necessary-but-not-sufficient: the StatusNotifierWatcher
-/// may be missing and the icon invisible even when build() returns Ok,
-/// which is why `can_hide_to_tray()` reports false on Linux regardless.
+/// True after `install_tray_icon` finishes successfully and the tray is
+/// actually usable (on Linux, that requires a running
+/// StatusNotifierWatcher — see `linux_status_notifier_available`).
+/// The hide-on-close path in `lib.rs` consults this to avoid stranding
+/// the user when the tray is unavailable.
 #[cfg(feature = "tauri-runtime")]
 static TRAY_AVAILABLE: AtomicBool = AtomicBool::new(false);
+
+/// On Linux, Tauri's tray `build()` can succeed even when no
+/// StatusNotifierWatcher is available (notably GNOME 45+ without an
+/// AppIndicator extension). In that case the icon is silently invisible
+/// and hiding the window would strand the user, so only treat the tray
+/// as available when the desktop actually provides the D-Bus service.
+#[cfg(all(target_os = "linux", feature = "tauri-runtime"))]
+fn linux_status_notifier_available() -> bool {
+    crate::process::std_command("gdbus")
+        .args([
+            "call",
+            "--session",
+            "--dest",
+            "org.freedesktop.DBus",
+            "--object-path",
+            "/org/freedesktop/DBus",
+            "--method",
+            "org.freedesktop.DBus.NameHasOwner",
+            "org.kde.StatusNotifierWatcher",
+        ])
+        .output()
+        .map(|out| out.status.success() && String::from_utf8_lossy(&out.stdout).contains("true"))
+        .unwrap_or(false)
+}
 
 /// Whether hide-on-close is safe on this platform/session. When false,
 /// the close handler in `lib.rs` forces a real app exit instead — both
@@ -1930,14 +1953,6 @@ static TRAY_AVAILABLE: AtomicBool = AtomicBool::new(false);
 /// running without a recoverable workspace.
 #[cfg(feature = "tauri-runtime")]
 pub fn can_hide_to_tray() -> bool {
-    // Linux: even with a successfully installed tray icon, modern GNOME
-    // (45+) defaults ship without a StatusNotifierWatcher and the icon
-    // is silently invisible. Refusing here forces the close to pass
-    // through to a real exit on Linux — preferable to a phantom process
-    // with no UI surface.
-    if cfg!(target_os = "linux") {
-        return false;
-    }
     TRAY_AVAILABLE.load(AtomicOrdering::Relaxed)
 }
 
@@ -2082,6 +2097,21 @@ pub fn install_tray_icon(
         })
         .build(app)?;
 
+    // On Linux, verify the tray is actually visible before trusting it.
+    // Tauri's tray build() succeeds even when StatusNotifierWatcher is
+    // absent (GNOME 45+), leaving the icon invisible. Detect that case
+    // and leave TRAY_AVAILABLE false so the close handler exits instead
+    // of hiding the window with no way to bring it back.
+    #[cfg(target_os = "linux")]
+    if !linux_status_notifier_available() {
+        tracing::warn!(
+            "[Tray] StatusNotifierWatcher not found — hiding on close will be disabled"
+        );
+    } else {
+        TRAY_AVAILABLE.store(true, AtomicOrdering::Relaxed);
+    }
+
+    #[cfg(not(target_os = "linux"))]
     TRAY_AVAILABLE.store(true, AtomicOrdering::Relaxed);
     Ok(())
 }
