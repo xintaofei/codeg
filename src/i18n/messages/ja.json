@@ -1288,7 +1288,12 @@
     "restartRequired": "保存しました。再起動後に反映されます。",
     "restartNow": "今すぐ再起動",
     "restartFailed": "再起動に失敗しました: {message}",
-    "loadFailed": "読み込みに失敗しました: {message}"
+    "loadFailed": "読み込みに失敗しました: {message}",
+    "closeActionTitle": "閉じる動作",
+    "closeActionDescription": "メインウィンドウの閉じるボタンをクリックしたときの動作を選択します。",
+    "closeActionHideToTray": "トレイに隠す(バックグラウンド)",
+    "closeActionExit": "アプリケーションを終了",
+    "closeActionSaveFailed": "閉じる動作の保存に失敗:{message}"
   },
   "LoginPage": {
     "documentTitle": "ログイン - codeg",

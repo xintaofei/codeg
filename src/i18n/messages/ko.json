@@ -1288,7 +1288,12 @@
     "restartRequired": "저장되었습니다. 변경 사항을 적용하려면 앱을 다시 시작하세요.",
     "restartNow": "지금 다시 시작",
     "restartFailed": "다시 시작 실패: {message}",
-    "loadFailed": "불러오기 실패: {message}"
+    "loadFailed": "불러오기 실패: {message}",
+    "closeActionTitle": "닫기 동작",
+    "closeActionDescription": "메인 창 닫기 버튼을 클릭할 때의 동작을 선택합니다.",
+    "closeActionHideToTray": "트레이로 숨기기(백그라운드)",
+    "closeActionExit": "애플리케이션 종료",
+    "closeActionSaveFailed": "닫기 동작 저장 실패:{message}"
   },
   "LoginPage": {
     "documentTitle": "로그인 - codeg",

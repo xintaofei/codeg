@@ -43,6 +43,22 @@ pub struct SystemTerminalSettings {
     pub default_shell: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseAction {
+    /// Hide to tray when a tray is available; otherwise exit.
+    #[default]
+    HideToTray,
+    /// Always exit when the main window is closed.
+    Exit,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct SystemCloseSettings {
+    pub action: CloseAction,
+}
+
 /// One row in the "default shell" picker. Backend owns the option list so the
 /// frontend doesn't have to know which shells are available on which platform.
 /// Labels are not localized server-side: `label_key` points at a frontend i18n

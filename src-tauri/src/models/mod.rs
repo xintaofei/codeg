@@ -50,7 +50,7 @@ pub use work_task::{
 #[cfg(feature = "tauri-runtime")]
 pub use system::SystemRenderingSettings;
 pub use system::{
-    AvailableTerminalShells, GitCredentials, GitDetectResult, GitHubAccountsSettings,
-    GitHubTokenValidation, GitSettings, SystemLanguageSettings, SystemProxySettings,
+    AvailableTerminalShells, CloseAction, GitCredentials, GitDetectResult, GitHubAccountsSettings,
+    GitHubTokenValidation, GitSettings, SystemCloseSettings, SystemLanguageSettings, SystemProxySettings,
     SystemTerminalSettings, TerminalShellOption,
 };

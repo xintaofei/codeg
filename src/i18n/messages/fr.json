@@ -1288,7 +1288,12 @@
     "restartRequired": "Enregistré. Redémarrez l’application pour appliquer la modification.",
     "restartNow": "Redémarrer maintenant",
     "restartFailed": "Échec du redémarrage : {message}",
-    "loadFailed": "Échec du chargement : {message}"
+    "loadFailed": "Échec du chargement : {message}",
+    "closeActionTitle": "Comportement de fermeture",
+    "closeActionDescription": "Choisissez ce qui se passe lorsque vous cliquez sur le bouton de fermeture de la fenêtre principale.",
+    "closeActionHideToTray": "Masquer dans la barre d'état (arrière-plan)",
+    "closeActionExit": "Quitter l'application",
+    "closeActionSaveFailed": "Échec de l'enregistrement du comportement:{message}"
   },
   "LoginPage": {
     "documentTitle": "Connexion - codeg",
