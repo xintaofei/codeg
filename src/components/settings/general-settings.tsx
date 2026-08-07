@@ -33,6 +33,7 @@ import { DelegationSettingsSection } from "@/components/settings/delegation-sett
 import { SessionFeedbackSettingsSection } from "@/components/settings/session-feedback-settings"
 import { AskQuestionSettingsSection } from "@/components/settings/ask-question-settings"
 import { SessionInfoSettingsSection } from "@/components/settings/session-info-settings"
+import { CloseBehaviorSettings } from "@/components/settings/close-behavior-settings"
 
 const TERMINAL_SHELL_OPTION_SYSTEM = "system"
 const TERMINAL_SHELL_OPTION_CUSTOM = "custom"
@@ -387,6 +388,8 @@ export function GeneralSettings() {
             )}
           </section>
         )}
+
+        <CloseBehaviorSettings />
 
         <DelegationSettingsSection />
 

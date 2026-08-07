@@ -883,7 +883,25 @@ mod tauri_app {
                         // that should fall through to the cleanup below.
                         if !APP_QUITTING.load(Ordering::Relaxed) {
                             api.prevent_close();
-                            if windows::can_hide_to_tray() {
+                            let close_action = window.app_handle()
+                                .try_state::<db::AppDatabase>()
+                                .map(|db| {
+                                    tauri::async_runtime::block_on(
+                                        crate::commands::system_settings::load_system_close_settings(
+                                            &db.conn,
+                                        ),
+                                    )
+                                })
+                                .transpose()
+                                .ok()
+                                .flatten()
+                                .map(|settings| settings.action)
+                                .unwrap_or_default();
+
+                            let should_hide =
+                                close_action == crate::models::CloseAction::HideToTray
+                                    && windows::can_hide_to_tray();
+                            if should_hide {
                                 let _ = window.hide();
                             } else {
                                 window.app_handle().exit(0);
@@ -1098,6 +1116,8 @@ mod tauri_app {
                 system_settings::probe_terminal_shell_path,
                 system_settings::get_system_rendering_settings,
                 system_settings::update_system_rendering_settings,
+                system_settings::get_system_close_settings,
+                system_settings::update_system_close_settings,
                 logging_commands::get_log_settings,
                 logging_commands::set_log_settings,
                 logging_commands::get_recent_logs,

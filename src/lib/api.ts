@@ -107,6 +107,7 @@ import type {
   AvailableTerminalShells,
   SystemLanguageSettings,
   SystemProxySettings,
+  SystemCloseSettings,
   SystemRenderingSettings,
   SystemTerminalSettings,
   LogSettings,
@@ -1407,6 +1408,16 @@ export async function updateSystemRenderingSettings(
   settings: SystemRenderingSettings
 ): Promise<SystemRenderingSettings> {
   return getTransport().call("update_system_rendering_settings", { settings })
+}
+
+export async function getSystemCloseSettings(): Promise<SystemCloseSettings> {
+  return getTransport().call("get_system_close_settings")
+}
+
+export async function updateSystemCloseSettings(
+  settings: SystemCloseSettings
+): Promise<SystemCloseSettings> {
+  return getTransport().call("update_system_close_settings", { settings })
 }
 
 // --- Logging ---

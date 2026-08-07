@@ -8,6 +8,8 @@ use crate::db::service::app_metadata_service;
 use crate::db::AppDatabase;
 #[cfg(feature = "tauri-runtime")]
 use crate::models::SystemRenderingSettings;
+#[cfg(feature = "tauri-runtime")]
+use crate::models::SystemCloseSettings;
 use crate::models::{
     AvailableTerminalShells, SystemLanguageSettings, SystemProxySettings, SystemTerminalSettings,
     TerminalShellOption,
@@ -21,6 +23,8 @@ use crate::terminal::manager::resolve_shell;
 pub(crate) const SYSTEM_PROXY_SETTINGS_KEY: &str = "system_proxy_settings";
 pub(crate) const SYSTEM_LANGUAGE_SETTINGS_KEY: &str = "system_language_settings";
 pub(crate) const SYSTEM_TERMINAL_SETTINGS_KEY: &str = "system_terminal_settings";
+#[cfg(feature = "tauri-runtime")]
+pub(crate) const SYSTEM_CLOSE_SETTINGS_KEY: &str = "system_close_settings";
 pub(crate) const LANGUAGE_SETTINGS_UPDATED_EVENT: &str = "app://language-settings-updated";
 pub(crate) const TERMINAL_SETTINGS_UPDATED_EVENT: &str = "app://terminal-settings-updated";
 
@@ -211,6 +215,24 @@ pub(crate) async fn load_system_terminal_settings(
 }
 
 #[cfg(feature = "tauri-runtime")]
+pub(crate) async fn load_system_close_settings(
+    conn: &DatabaseConnection,
+) -> Result<SystemCloseSettings, AppCommandError> {
+    let raw = app_metadata_service::get_value(conn, SYSTEM_CLOSE_SETTINGS_KEY)
+        .await
+        .map_err(AppCommandError::from)?;
+
+    let Some(raw) = raw else {
+        return Ok(SystemCloseSettings::default());
+    };
+
+    serde_json::from_str::<SystemCloseSettings>(&raw).map_err(|e| {
+        AppCommandError::configuration_invalid("Failed to parse stored close settings")
+            .with_detail(e.to_string())
+    })
+}
+
+#[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn get_system_proxy_settings(
     db: State<'_, AppDatabase>,
@@ -252,6 +274,32 @@ pub async fn get_system_terminal_settings(
     db: State<'_, AppDatabase>,
 ) -> Result<SystemTerminalSettings, AppCommandError> {
     load_system_terminal_settings(&db.conn).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn get_system_close_settings(
+    db: State<'_, AppDatabase>,
+) -> Result<SystemCloseSettings, AppCommandError> {
+    load_system_close_settings(&db.conn).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn update_system_close_settings(
+    settings: SystemCloseSettings,
+    db: State<'_, AppDatabase>,
+) -> Result<SystemCloseSettings, AppCommandError> {
+    let serialized = serde_json::to_string(&settings).map_err(|e| {
+        AppCommandError::invalid_input("Failed to serialize close settings")
+            .with_detail(e.to_string())
+    })?;
+
+    app_metadata_service::upsert_value(&db.conn, SYSTEM_CLOSE_SETTINGS_KEY, &serialized)
+        .await
+        .map_err(AppCommandError::from)?;
+
+    Ok(settings)
 }
 
 #[cfg(feature = "tauri-runtime")]
