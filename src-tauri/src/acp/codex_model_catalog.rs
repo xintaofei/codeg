@@ -112,6 +112,39 @@ fn sanitized_override(key: &str, value: &Value, base: Option<&Map<String, Value>
     true
 }
 
+fn apply_instruction_override_compat(
+    obj: &mut Map<String, Value>,
+    overrides: &Map<String, Value>,
+) {
+    let base_instructions_changed = overrides.contains_key("base_instructions");
+    let model_messages_changed = overrides.contains_key("model_messages");
+    let instructions_changed = base_instructions_changed || model_messages_changed;
+    if instructions_changed && !overrides.contains_key("comp_hash") {
+        obj.remove("comp_hash");
+    }
+    // Codex 0.145 renders session instructions from model_messages when present.
+    if model_messages_changed || !base_instructions_changed {
+        return;
+    }
+    let Some(base_instructions) = obj
+        .get("base_instructions")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return;
+    };
+    let Some(model_messages) = obj
+        .get_mut("model_messages")
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    model_messages.insert(
+        "instructions_template".into(),
+        Value::String(base_instructions),
+    );
+}
+
 /// One user-configured **custom** codex model, stored compactly. Heavy
 /// `ModelInfo` fields are cloned from `base` at expansion time; `overrides`
 /// holds only the fields the user actually changed. Field names mirror the TS
@@ -221,6 +254,7 @@ pub fn expand_to_catalog(config: &CodexModelConfig, snapshot: &[Value]) -> Value
                 obj.insert(k.clone(), v.clone());
             }
         }
+        apply_instruction_override_compat(&mut obj, &c.overrides);
 
         obj.insert("slug".into(), Value::String(c.slug.clone()));
         obj.insert(
@@ -590,6 +624,7 @@ mod tests {
 
     #[test]
     fn expand_auto_includes_officials_and_forces_only_customs() {
+        let s = snap();
         let config = CodexModelConfig {
             customs: vec![CodexCustomEntry {
                 slug: "gw/opus".into(),
@@ -601,18 +636,93 @@ mod tests {
             excluded_officials: Vec::new(),
             default: None,
         };
-        let cat = expand_to_catalog(&config, &snap());
+        let cat = expand_to_catalog(&config, &s);
         // All 8 officials auto-included + 1 custom = 9.
         assert_eq!(slugs(&cat).len(), 9);
         // Custom is first (top of picker) and forced list + api.
         let c = find(&cat, "gw/opus").expect("custom present");
+        let base = s
+            .iter()
+            .find(|m| slug_of(m) == Some("gpt-5.6-sol"))
+            .expect("base present");
         assert_eq!(c.get("visibility").unwrap(), "list");
         assert_eq!(c.get("supported_in_api").unwrap(), &Value::Bool(true));
         assert_eq!(c.get("priority").unwrap().as_i64(), Some(0));
         assert!(c.get("base_instructions").and_then(Value::as_str).is_some());
+        assert_eq!(c.get("model_messages"), base.get("model_messages"));
+        assert_eq!(c.get("comp_hash"), base.get("comp_hash"));
         // Official preserved VERBATIM — hidden stays hidden.
         let review = find(&cat, "codex-auto-review").expect("official present");
         assert_eq!(review.get("visibility").unwrap(), "hide");
+    }
+
+    #[test]
+    fn base_instructions_override_updates_model_messages_template() {
+        let custom_prompt = "You are an IDA Pro assistant.";
+        let config = CodexModelConfig {
+            customs: vec![CodexCustomEntry {
+                slug: "gpt-5.5".into(),
+                display_name: Some("gpt-5.5-ida".into()),
+                context_window: None,
+                base: "gpt-5.5".into(),
+                overrides: Map::from_iter([(
+                    "base_instructions".into(),
+                    Value::String(custom_prompt.into()),
+                )]),
+            }],
+            excluded_officials: vec!["gpt-5.5".into()],
+            default: Some("gpt-5.5".into()),
+        };
+
+        let cat = expand_to_catalog(&config, &snap());
+        let c = find(&cat, "gpt-5.5").expect("custom present");
+        assert_eq!(
+            c.get("base_instructions").and_then(Value::as_str),
+            Some(custom_prompt)
+        );
+        assert_eq!(
+            c.get("model_messages")
+                .and_then(Value::as_object)
+                .and_then(|m| m.get("instructions_template"))
+                .and_then(Value::as_str),
+            Some(custom_prompt)
+        );
+        assert!(c.get("comp_hash").is_none());
+    }
+
+    #[test]
+    fn explicit_model_messages_override_is_preserved() {
+        let config = CodexModelConfig {
+            customs: vec![CodexCustomEntry {
+                slug: "gw/ida".into(),
+                display_name: None,
+                context_window: None,
+                base: "gpt-5.5".into(),
+                overrides: Map::from_iter([
+                    (
+                        "base_instructions".into(),
+                        Value::String("base prompt".into()),
+                    ),
+                    (
+                        "model_messages".into(),
+                        serde_json::json!({"instructions_template": "template prompt"}),
+                    ),
+                ]),
+            }],
+            excluded_officials: Vec::new(),
+            default: Some("gw/ida".into()),
+        };
+
+        let cat = expand_to_catalog(&config, &snap());
+        let c = find(&cat, "gw/ida").expect("custom present");
+        assert_eq!(
+            c.get("model_messages")
+                .and_then(Value::as_object)
+                .and_then(|m| m.get("instructions_template"))
+                .and_then(Value::as_str),
+            Some("template prompt")
+        );
+        assert!(c.get("comp_hash").is_none());
     }
 
     #[test]
