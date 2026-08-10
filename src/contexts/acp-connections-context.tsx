@@ -4660,6 +4660,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         reverseMapRef.current.delete(conn.connectionId)
         pendingUnmappedEventsRef.current.delete(conn.connectionId)
         lastActivityRef.current.delete(contextKey)
+        alertedErrorDetailsRef.current.delete(contextKey)
         dispatch({ type: "CONNECTION_REMOVED", contextKey })
         return
       }
@@ -4667,6 +4668,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       reverseMapRef.current.delete(conn.connectionId)
       teardownAttachSubscription(contextKey)
       lastActivityRef.current.delete(contextKey)
+      alertedErrorDetailsRef.current.delete(contextKey)
       pendingUnmappedEventsRef.current.delete(conn.connectionId)
       dispatch({ type: "CONNECTION_REMOVED", contextKey })
     },
