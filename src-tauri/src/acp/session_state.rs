@@ -102,9 +102,6 @@ pub struct ToolCallState {
     /// surviving page refresh without re-fetching from JSONL.
     #[serde(default)]
     pub images: Vec<ToolCallImageInfo>,
-    /// 流式拼接的 input chunks（serde 不输出，仅运行时用）
-    #[serde(skip)]
-    pub raw_input_chunks: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1290,7 +1287,6 @@ impl SessionState {
                 locations: None,
                 meta: None,
                 images: Vec::new(),
-                raw_input_chunks: Vec::new(),
             });
         if let Some(k) = kind {
             entry.kind = parse_tool_kind(k);
@@ -1305,14 +1301,11 @@ impl SessionState {
             entry.content = Some(c.to_string());
         }
         if let Some(chunk) = raw_input {
-            entry.raw_input_chunks.push(chunk.to_string());
-            // 后端目前发送的是已序列化的 JSON 文本（完整或正在累积）。
-            // 对最新片段做尽力解析；解析失败则尝试拼接历史片段。
+            // ACP `tool_call_update` 的 rawInput 是累积快照（携带当前已知的完整
+            // 输入），不是增量片段——只有最新片段有意义。尽力解析进 `input`；若仍是
+            // 未完成的前缀则保留上次成功解析的值。原先把每个快照都 push 再 join，
+            // 在会话写锁内是 O(k²)，且拼接多个前缀只会得到无效 JSON。
             if let Ok(value) = serde_json::from_str::<serde_json::Value>(chunk) {
-                entry.input = Some(value);
-            } else if let Ok(value) =
-                serde_json::from_str::<serde_json::Value>(&entry.raw_input_chunks.join(""))
-            {
                 entry.input = Some(value);
             }
         }
@@ -2987,7 +2980,6 @@ mod tests {
         });
         let entry = s.active_tool_calls.get("tc-1").unwrap();
         assert_eq!(entry.input, Some(serde_json::json!({"a": 1})));
-        assert_eq!(entry.raw_input_chunks.len(), 2);
 
         let snapshot = s.to_snapshot();
         assert_eq!(snapshot.connection_id, "conn-test");
@@ -3003,14 +2995,9 @@ mod tests {
         assert_eq!(snapshot.config_options.as_ref().map(|v| v.len()), Some(1));
         assert_eq!(snapshot.active_tool_calls.len(), 1);
 
-        // Wire shape: raw_input_chunks must NOT be serialized.
+        // Wire shape: the latest raw_input snapshot is parsed into `input`.
         let json = serde_json::to_value(&snapshot).unwrap();
         let tc_json = json["active_tool_calls"][0].clone();
-        assert!(
-            tc_json.get("raw_input_chunks").is_none(),
-            "raw_input_chunks must be #[serde(skip)] (got {})",
-            tc_json
-        );
         assert_eq!(tc_json["input"], serde_json::json!({"a": 1}));
     }
 
