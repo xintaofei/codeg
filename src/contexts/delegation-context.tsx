@@ -73,6 +73,36 @@ export function useDelegation(): DelegationContextValue {
  *  before falling through to the DB-persisted view. */
 const CHILD_DETACH_GRACE_MS = 2_000
 
+/** Bound on live delegation bindings. A delegation-heavy session adds one
+ *  entry per sub-agent and previously never removed any, so the map — and the
+ *  O(n) `new Map` clone on every event — grew for the app's lifetime.
+ *  Bindings are a *live* lookup: an evicted entry's parent card falls back to
+ *  the persisted child via the tool-call snapshot meta (see
+ *  `useDelegatedSubSession`'s `fallbackChildConversationId`), exactly as it
+ *  already does for conversations resumed from disk. Keeping only the most
+ *  recent bindings bounds memory without disturbing delegations the user is
+ *  actually watching. */
+export const MAX_DELEGATION_BINDINGS = 200
+
+/** Insert-or-update `key`, then evict the oldest entries beyond
+ *  `MAX_DELEGATION_BINDINGS`. delete+set refreshes insertion order so `key`
+ *  counts as most-recent; eviction drops the least-recently-touched bindings. */
+export function setDelegationBinding(
+  prev: ReadonlyMap<string, DelegationBinding>,
+  key: string,
+  value: DelegationBinding
+): Map<string, DelegationBinding> {
+  const next = new Map(prev)
+  next.delete(key)
+  next.set(key, value)
+  while (next.size > MAX_DELEGATION_BINDINGS) {
+    const oldest = next.keys().next().value
+    if (oldest === undefined) break
+    next.delete(oldest)
+  }
+  return next
+}
+
 export function DelegationProvider({ children }: { children: ReactNode }) {
   const { attachDelegationChild, detachDelegationChild } = useAcpActions()
   const [byToolUseId, setByToolUseId] = useState<
@@ -121,11 +151,9 @@ export function DelegationProvider({ children }: { children: ReactNode }) {
           task: envelope.task_preview ?? null,
           taskId: envelope.task_id ?? null,
         }
-        setByToolUseId((prev) => {
-          const m = new Map(prev)
-          m.set(envelope.parent_tool_use_id, next)
-          return m
-        })
+        setByToolUseId((prev) =>
+          setDelegationBinding(prev, envelope.parent_tool_use_id, next)
+        )
         // Cancel any pending detach for this parent_tool_use_id —
         // delegation_started can be replayed after a partial flow
         // (e.g. reconnect), and an in-flight detach would tear the
@@ -173,9 +201,11 @@ export function DelegationProvider({ children }: { children: ReactNode }) {
                   status: "err",
                   errorCode: envelope.result.error_code,
                 }
-          const m = new Map(prev)
-          m.set(envelope.parent_tool_use_id, updated)
-          return m
+          return setDelegationBinding(
+            prev,
+            envelope.parent_tool_use_id,
+            updated
+          )
         })
 
         // Schedule detach of the synthetic child entry. We keep it
