@@ -118,7 +118,13 @@ impl GeminiParser {
                 continue;
             }
 
-            let value: Value = serde_json::from_str(trimmed).ok()?;
+            let value: Value = match serde_json::from_str(trimmed) {
+                Ok(value) => value,
+                // A torn final line is normal for a session file the CLI is
+                // still writing; skip it instead of discarding every good
+                // line parsed so far (matches the other JSONL parsers).
+                Err(_) => continue,
+            };
             let Some(object) = value.as_object() else {
                 continue;
             };
@@ -955,6 +961,47 @@ mod tests {
             .context_window_usage_percent
             .expect("context window percent");
         assert!((percent - 0.0051).abs() < 1e-9);
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn gemini_jsonl_skips_torn_final_line_instead_of_dropping_conversation() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time ok")
+            .as_nanos();
+        let base: PathBuf = env::temp_dir().join(format!("codeg-gemini-torn-{nanos}"));
+        let chats_dir = base.join("tmp").join("codeg").join("chats");
+        fs::create_dir_all(&chats_dir).expect("create chat dir");
+        fs::write(
+            base.join("tmp").join("codeg").join(".project_root"),
+            "/Users/test/workspace/demo",
+        )
+        .expect("write project root");
+
+        // Two well-formed records followed by a truncated final line — the
+        // shape of a session file read while the CLI is mid-write.
+        let file_path = chats_dir.join("session-2026-03-02T04-30-torn.jsonl");
+        let content = "{\"sessionId\":\"jsonl-torn\",\"startTime\":\"2026-03-02T04:30:20.796Z\",\"lastUpdated\":\"2026-03-02T04:33:13.631Z\"}\n\
+            {\"id\":\"u1\",\"timestamp\":\"2026-03-02T04:30:20.796Z\",\"type\":\"user\",\"content\":[{\"text\":\"hello\"}]}\n\
+            {\"id\":\"a1\",\"timestamp\":\"2026-03-02T04:33:13.631Z\",\"type\":\"gemini\",\"content\":\"hi\"}\n\
+            {\"id\":\"a2\",\"timestamp\":\"2026-03-02T04:34:00.000Z\",\"type\":\"gemini\",\"content\":\"truncat";
+        fs::write(&file_path, content).expect("write chat file");
+
+        let parser = GeminiParser::with_base_dir(base.clone());
+        let summaries = parser.list_conversations().expect("list conversations");
+        assert_eq!(summaries.len(), 1, "torn line must not hide the session");
+        assert_eq!(summaries[0].id, "jsonl-torn".to_string());
+
+        let detail = parser
+            .get_conversation("jsonl-torn")
+            .expect("get conversation");
+        assert_eq!(
+            detail.turns.len(),
+            2,
+            "good lines before the torn one survive"
+        );
 
         let _ = fs::remove_dir_all(base);
     }
