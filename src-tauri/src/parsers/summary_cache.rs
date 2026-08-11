@@ -56,7 +56,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use super::ParseError;
 use crate::models::{AgentType, ConversationSummary};
@@ -70,6 +70,10 @@ struct CacheEntry {
     fingerprint: Fingerprint,
     /// Only positive summaries are stored — see `get_or_parse`.
     summary: ConversationSummary,
+    /// Last time this entry was served or written, for LRU eviction. The cache
+    /// is process-global and insert-only otherwise, so entries for long-deleted
+    /// session files would otherwise accumulate for the app's lifetime.
+    last_used: Instant,
 }
 
 /// Nested `AgentType → (path → entry)` so a lookup borrows `&Path` (no
@@ -87,6 +91,30 @@ fn cache() -> &'static Mutex<Cache> {
 fn fingerprint(path: &Path) -> Option<Fingerprint> {
     let meta = std::fs::metadata(path).ok()?;
     Some((meta.modified().ok(), meta.len()))
+}
+
+/// Bound on cached summaries per agent. Generous enough that eviction is rare in
+/// practice (a heavy user has hundreds of sessions of one agent, and a dormant
+/// hit costs only a `stat`), yet it stops the process-global map from growing
+/// for the app's lifetime as sessions are created and deleted. Eviction is never
+/// *incorrect*: the `(mtime, size)` fingerprint revalidates on the next access,
+/// so an evicted entry is simply re-parsed.
+const MAX_ENTRIES_PER_AGENT: usize = 1024;
+
+/// Make room for inserting `path` by evicting the least-recently-used entry when
+/// `per_agent` is already at `cap`. No-op when `path` is an existing key (a
+/// re-insert replaces in place and does not grow the map).
+fn evict_lru_for_insert(per_agent: &mut HashMap<PathBuf, CacheEntry>, cap: usize, path: &Path) {
+    if per_agent.len() < cap || per_agent.contains_key(path) {
+        return;
+    }
+    if let Some(oldest) = per_agent
+        .iter()
+        .min_by_key(|(_, entry)| entry.last_used)
+        .map(|(key, _)| key.clone())
+    {
+        per_agent.remove(&oldest);
+    }
 }
 
 /// Return the cached summary for `(agent_type, path)` if the file is unchanged
@@ -129,9 +157,10 @@ where
 
     // Fast path: a live fingerprint match returns the cached summary without
     // reading or parsing the file.
-    if let Ok(map) = cache().lock() {
-        if let Some(entry) = map.get(&agent_type).and_then(|m| m.get(path)) {
+    if let Ok(mut map) = cache().lock() {
+        if let Some(entry) = map.get_mut(&agent_type).and_then(|m| m.get_mut(path)) {
             if entry.fingerprint == fp_before {
+                entry.last_used = Instant::now();
                 return Ok(Some(entry.summary.clone()));
             }
         }
@@ -147,11 +176,14 @@ where
     if let Some(summary) = &parsed {
         if fingerprint(path) == Some(fp_before) {
             if let Ok(mut map) = cache().lock() {
-                map.entry(agent_type).or_default().insert(
+                let per_agent = map.entry(agent_type).or_default();
+                evict_lru_for_insert(per_agent, MAX_ENTRIES_PER_AGENT, path);
+                per_agent.insert(
                     path.to_path_buf(),
                     CacheEntry {
                         fingerprint: fp_before,
                         summary: summary.clone(),
+                        last_used: Instant::now(),
                     },
                 );
             }
@@ -381,5 +413,38 @@ mod tests {
         .unwrap();
         assert_eq!(cb2.id, "cb"); // served from cache, closure not run
         assert_eq!(cb_calls.get(), 0);
+    }
+
+    #[test]
+    fn evicts_the_least_recently_used_entry_at_capacity() {
+        let now = Instant::now();
+        let mut per_agent: HashMap<PathBuf, CacheEntry> = HashMap::new();
+        for (i, name) in ["a", "b", "c"].iter().enumerate() {
+            per_agent.insert(
+                PathBuf::from(name),
+                CacheEntry {
+                    fingerprint: (None, i as u64),
+                    summary: dummy(name),
+                    last_used: now + std::time::Duration::from_millis(i as u64),
+                },
+            );
+        }
+
+        // Full (cap 3), inserting a new key "d" evicts "a" (oldest last_used).
+        evict_lru_for_insert(&mut per_agent, 3, Path::new("d"));
+        assert!(!per_agent.contains_key(Path::new("a")));
+        assert!(per_agent.contains_key(Path::new("b")));
+        assert!(per_agent.contains_key(Path::new("c")));
+        assert_eq!(per_agent.len(), 2);
+
+        // Re-inserting an existing key never evicts (it replaces in place).
+        evict_lru_for_insert(&mut per_agent, 3, Path::new("b"));
+        assert_eq!(per_agent.len(), 2);
+        assert!(per_agent.contains_key(Path::new("b")));
+
+        // Below capacity, nothing is evicted.
+        evict_lru_for_insert(&mut per_agent, 3, Path::new("z"));
+        assert!(per_agent.contains_key(Path::new("b")));
+        assert!(per_agent.contains_key(Path::new("c")));
     }
 }
