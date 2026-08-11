@@ -201,6 +201,13 @@ function asText(v: unknown): string | null {
 export function isCodexCollabInput(
   rawInput: string | null | undefined
 ): boolean {
+  // Cheap gate: a collab input requires all three thread keys, so the absence of
+  // any one — checked here via `agentsStates`, the most collab-specific — means
+  // the payload can't be collab, and we skip the JSON.parse. This runs per
+  // tool_call on every 16ms streaming flush (via collapseLiveCollabBlocks), and
+  // the vast majority of tool calls (including every non-codex session) are not
+  // collab ops.
+  if (!rawInput || !rawInput.includes('"agentsStates"')) return false
   const parsed = tryParseObject(rawInput)
   if (!parsed) return false
   return (
