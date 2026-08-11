@@ -10,6 +10,24 @@ import {
 } from "@/lib/plan-parse"
 import type { PlanEntryInfo } from "@/lib/types"
 
+/**
+ * Shared empty result. Returning the same reference for the (common) no-plan
+ * case keeps the caller's `useMemo`/`React.memo` dependency stable across
+ * streaming batches instead of re-rendering on a fresh `[]` every time.
+ * Treated as read-only by all consumers.
+ */
+const EMPTY_PLAN_ENTRIES: PlanEntryInfo[] = []
+
+/**
+ * Per-message memo for plan extraction. The turn adapter returns a STABLE
+ * `AdaptedMessage` reference for any unchanged (non-streaming) turn, so keying
+ * on the message object means a streaming batch only re-parses the one message
+ * still being streamed — without it, every 16ms batch re-ran the reasoning-text
+ * regex over every message in the conversation. Entries are auto-GC'd with the
+ * message objects (WeakMap), so memory tracks the live conversation.
+ */
+const messagePlanEntriesCache = new WeakMap<AdaptedMessage, PlanEntryInfo[]>()
+
 function parseEntriesFromReasoningText(text: string): PlanEntryInfo[] {
   const lines = text
     .split("\n")
@@ -89,25 +107,40 @@ function extractPlanEntriesFromPart(part: AdaptedContentPart): PlanEntryInfo[] {
   return []
 }
 
+/** Latest plan entries within a single message (empty if none), memoized by
+ *  message identity. The expensive reasoning-text regex only re-runs when the
+ *  message object itself is new (i.e. the turn still streaming). */
+function latestPlanEntriesInMessage(message: AdaptedMessage): PlanEntryInfo[] {
+  const cached = messagePlanEntriesCache.get(message)
+  if (cached !== undefined) return cached
+
+  let result: PlanEntryInfo[] = EMPTY_PLAN_ENTRIES
+  for (let j = message.content.length - 1; j >= 0; j -= 1) {
+    const entries = extractPlanEntriesFromPart(message.content[j])
+    if (entries.length > 0) {
+      result = entries
+      break
+    }
+  }
+  messagePlanEntriesCache.set(message, result)
+  return result
+}
+
 export function extractLatestPlanEntriesFromMessages(
   messages: AdaptedMessage[]
 ): PlanEntryInfo[] {
-  let planEntries: PlanEntryInfo[] = []
+  let planEntries: PlanEntryInfo[] = EMPTY_PLAN_ENTRIES
   let planMessageIndex = -1
 
   for (let i = messages.length - 1; i >= 0 && planMessageIndex === -1; i -= 1) {
-    const message = messages[i]
-    for (let j = message.content.length - 1; j >= 0; j -= 1) {
-      const entries = extractPlanEntriesFromPart(message.content[j])
-      if (entries.length > 0) {
-        planEntries = entries
-        planMessageIndex = i
-        break
-      }
+    const entries = latestPlanEntriesInMessage(messages[i])
+    if (entries.length > 0) {
+      planEntries = entries
+      planMessageIndex = i
     }
   }
 
-  if (planMessageIndex === -1) return []
+  if (planMessageIndex === -1) return EMPTY_PLAN_ENTRIES
 
   // A fully completed plan that belongs to an earlier exchange is stale: once
   // the user has sent another message after it, a new turn has begun, so the
@@ -121,7 +154,7 @@ export function extractLatestPlanEntriesFromMessages(
     const hasUserReplyAfterPlan = messages
       .slice(planMessageIndex + 1)
       .some((message) => message.role === "user")
-    if (hasUserReplyAfterPlan) return []
+    if (hasUserReplyAfterPlan) return EMPTY_PLAN_ENTRIES
   }
 
   return planEntries
