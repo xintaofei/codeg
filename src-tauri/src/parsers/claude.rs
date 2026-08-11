@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Instant, SystemTime};
 
 use chrono::{DateTime, Utc};
 use regex::Regex;
@@ -1415,28 +1417,8 @@ impl ClaudeParser {
         path: &PathBuf,
         conversation_id: &str,
     ) -> Result<ConversationDetail, ParseError> {
-        // Read the file fully up front: `transcript_watermark` must be EXACTLY
-        // the byte length this parse consumed. Stat-ing around a streaming read
-        // could over-claim (bytes appended mid-parse get counted but not read),
-        // and an over-claiming watermark makes the frontend retire background-
-        // overlay turns whose content this detail does NOT include — silent
-        // loss. An exact length risks at most a transient duplicate.
-        let bytes = fs::read(path)?;
-        let transcript_watermark = bytes.len() as u64;
-
-        let mut acc = ClaudeRecordAccumulator::new(path.clone());
-        for chunk in bytes.split(|b| *b == b'\n') {
-            // Mirror `BufReader::lines()`: a line that isn't valid UTF-8 is
-            // skipped (the old loop's per-line `Err(_) => continue`).
-            let Ok(line) = std::str::from_utf8(chunk) else {
-                continue;
-            };
-            acc.feed_line(line);
-        }
-        acc.finalize_background_lifecycle();
-
-        let ClaudeRecordAccumulator {
-            messages,
+        let RawSessionParse {
+            transcript_watermark,
             cwd,
             git_branch,
             model,
@@ -1445,13 +1427,18 @@ impl ClaudeParser {
             custom_title,
             first_timestamp,
             last_timestamp,
-            ..
-        } = acc;
+            mut turns,
+        } = raw_session_parse(path)?;
 
         let folder_path = cwd.clone();
         let folder_name = folder_path.as_ref().map(|p| folder_name_from_path(p));
 
-        let mut turns = group_into_turns(messages);
+        // Everything below re-runs on EVERY fetch (it is deliberately NOT in the
+        // cache): these passes resolve against external files that change
+        // independently of the transcript — patched source files
+        // (`resolve_patch_line_numbers`) and sub-agent transcripts
+        // (`attribute_subagent_usage`) — so their output stays fresh even when the
+        // grouped turns come from the cache.
         super::relocate_orphaned_tool_results(&mut turns);
         super::structurize_read_tool_output(&mut turns);
         super::resolve_patch_line_numbers(&mut turns, cwd.as_deref());
@@ -1501,6 +1488,171 @@ impl ClaudeParser {
             transcript_watermark: Some(transcript_watermark),
         })
     }
+}
+
+/// The transcript-only portion of a detail parse: read the session file, run it
+/// through the record accumulator, and group into turns. This is the expensive
+/// step for a long session (a full read plus a per-line JSON parse), and — unlike
+/// the post-processing passes in `parse_conversation_detail` — it is a pure
+/// function of the transcript bytes, so its result is cached keyed by the file's
+/// `(mtime, size)` fingerprint. A detail fetch for an unchanged file (repeat
+/// viewer poll, or each "load older" page of a settled conversation) then skips
+/// the full re-read + re-parse and only re-runs the cheap/external post-processing.
+#[derive(Clone)]
+struct RawSessionParse {
+    transcript_watermark: u64,
+    cwd: Option<String>,
+    git_branch: Option<String>,
+    model: Option<String>,
+    title: Option<String>,
+    ai_title: Option<String>,
+    custom_title: Option<String>,
+    first_timestamp: Option<DateTime<Utc>>,
+    last_timestamp: Option<DateTime<Utc>>,
+    turns: Vec<MessageTurn>,
+}
+
+struct RawSessionCacheEntry {
+    fingerprint: (Option<SystemTime>, u64),
+    parse: RawSessionParse,
+    last_used: Instant,
+}
+
+/// Total memory budget across all cached raw parses. A cached entry holds a
+/// conversation's grouped turns (its full message content), so this bounds the
+/// cache's footprint; `transcript_watermark` (the transcript's byte length) is a
+/// faithful per-entry proxy. A single transcript larger than the budget is never
+/// cached (its detail is parsed fresh each fetch, exactly as before).
+const RAW_SESSION_CACHE_BYTE_BUDGET: u64 = 64 * 1024 * 1024;
+
+fn raw_session_cache() -> &'static Mutex<HashMap<PathBuf, RawSessionCacheEntry>> {
+    RAW_SESSION_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+static RAW_SESSION_CACHE: OnceLock<Mutex<HashMap<PathBuf, RawSessionCacheEntry>>> = OnceLock::new();
+
+/// `(mtime, size)` fingerprint of the transcript; `None` (⇒ bypass the cache)
+/// when the file can't be stat'd.
+fn raw_session_fingerprint(path: &Path) -> Option<(Option<SystemTime>, u64)> {
+    let meta = fs::metadata(path).ok()?;
+    Some((meta.modified().ok(), meta.len()))
+}
+
+/// Return the raw parse for `path`, serving a cached clone when the file's
+/// fingerprint is unchanged. Mirrors `summary_cache::get_or_parse`: the parse
+/// runs with the lock released, and a result is only cached when the fingerprint
+/// is unchanged across the parse (a racing/streaming write is not memoized).
+fn raw_session_parse(path: &PathBuf) -> Result<RawSessionParse, ParseError> {
+    let Some(fp) = raw_session_fingerprint(path) else {
+        return parse_raw_session(path);
+    };
+
+    if let Ok(mut map) = raw_session_cache().lock() {
+        if let Some(entry) = map.get_mut(path) {
+            if entry.fingerprint == fp {
+                entry.last_used = Instant::now();
+                return Ok(entry.parse.clone());
+            }
+        }
+    }
+
+    let parsed = parse_raw_session(path)?;
+
+    // Cache only when the file didn't change mid-parse and it fits the budget.
+    if parsed.transcript_watermark <= RAW_SESSION_CACHE_BYTE_BUDGET
+        && raw_session_fingerprint(path) == Some(fp)
+    {
+        if let Ok(mut map) = raw_session_cache().lock() {
+            // Bytes already attributed to the entry this insert would replace.
+            let replaced = map
+                .get(path)
+                .map(|e| e.parse.transcript_watermark)
+                .unwrap_or(0);
+            let mut total: u64 = map
+                .values()
+                .map(|e| e.parse.transcript_watermark)
+                .sum::<u64>()
+                - replaced;
+            // Evict least-recently-used entries (never the one being inserted)
+            // until the new parse fits.
+            while total + parsed.transcript_watermark > RAW_SESSION_CACHE_BYTE_BUDGET {
+                let oldest = map
+                    .iter()
+                    .filter(|(p, _)| p.as_path() != path.as_path())
+                    .min_by_key(|(_, e)| e.last_used)
+                    .map(|(p, _)| p.clone());
+                match oldest {
+                    Some(key) => {
+                        if let Some(e) = map.remove(&key) {
+                            total -= e.parse.transcript_watermark;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            map.insert(
+                path.clone(),
+                RawSessionCacheEntry {
+                    fingerprint: fp,
+                    parse: parsed.clone(),
+                    last_used: Instant::now(),
+                },
+            );
+        }
+    }
+    Ok(parsed)
+}
+
+/// Read + accumulate + group the transcript into turns. Pure function of the
+/// transcript bytes; the watermark/patch/sub-agent-sensitive work lives in the
+/// caller (`parse_conversation_detail`) so it stays fresh.
+fn parse_raw_session(path: &PathBuf) -> Result<RawSessionParse, ParseError> {
+    // Read the file fully up front: `transcript_watermark` must be EXACTLY the
+    // byte length this parse consumed. Stat-ing around a streaming read could
+    // over-claim (bytes appended mid-parse get counted but not read), and an
+    // over-claiming watermark makes the frontend retire background-overlay turns
+    // whose content this detail does NOT include — silent loss. An exact length
+    // risks at most a transient duplicate.
+    let bytes = fs::read(path)?;
+    let transcript_watermark = bytes.len() as u64;
+
+    let mut acc = ClaudeRecordAccumulator::new(path.clone());
+    for chunk in bytes.split(|b| *b == b'\n') {
+        // Mirror `BufReader::lines()`: a line that isn't valid UTF-8 is skipped
+        // (the old loop's per-line `Err(_) => continue`).
+        let Ok(line) = std::str::from_utf8(chunk) else {
+            continue;
+        };
+        acc.feed_line(line);
+    }
+    acc.finalize_background_lifecycle();
+
+    let ClaudeRecordAccumulator {
+        messages,
+        cwd,
+        git_branch,
+        model,
+        title,
+        ai_title,
+        custom_title,
+        first_timestamp,
+        last_timestamp,
+        ..
+    } = acc;
+
+    let turns = group_into_turns(messages);
+    Ok(RawSessionParse {
+        transcript_watermark,
+        cwd,
+        git_branch,
+        model,
+        title,
+        ai_title,
+        custom_title,
+        first_timestamp,
+        last_timestamp,
+        turns,
+    })
 }
 
 fn parse_timestamp(value: &serde_json::Value) -> Option<DateTime<Utc>> {
@@ -3023,6 +3175,64 @@ mod tests {
             .expect("parse detail");
         fs::remove_file(&path).unwrap();
         detail
+    }
+
+    #[test]
+    fn detail_parse_cache_hit_is_byte_identical_and_invalidates_on_growth() {
+        let path = std::env::temp_dir().join(format!(
+            "codeg-claude-detail-cache-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
+        let write = |path: &PathBuf, lines: &[serde_json::Value]| {
+            let mut file = fs::File::create(path).expect("create temp jsonl");
+            for line in lines {
+                writeln!(file, "{line}").unwrap();
+            }
+        };
+        let user = serde_json::json!({
+            "type": "user", "sessionId": "cache-session", "timestamp": "2026-03-01T10:00:00Z",
+            "uuid": "u1", "cwd": "/tmp/demo", "gitBranch": "main",
+            "message": {"content": [{"type": "text", "text": "hi"}]}
+        });
+        let assistant = serde_json::json!({
+            "type": "assistant", "sessionId": "cache-session", "timestamp": "2026-03-01T10:00:05Z",
+            "uuid": "a1",
+            "message": {"model": "claude-sonnet-4-6", "content": [{"type": "text", "text": "ok"}]}
+        });
+
+        let parser = ClaudeParser {
+            base_dir: PathBuf::new(),
+        };
+
+        write(&path, &[user.clone(), assistant.clone()]);
+        let first = parser
+            .parse_conversation_detail(&path, "cache-session")
+            .expect("first parse");
+        // Second parse of the unchanged file is served from the raw-parse cache;
+        // it must be byte-identical to the fresh parse.
+        let second = parser
+            .parse_conversation_detail(&path, "cache-session")
+            .expect("second parse");
+        assert_eq!(first.turns.len(), 2);
+        assert_eq!(
+            serde_json::to_value(&first).unwrap(),
+            serde_json::to_value(&second).unwrap(),
+            "cache hit must be byte-identical to a fresh parse"
+        );
+
+        // Appending a turn changes the fingerprint → cache miss → fresh parse.
+        let assistant2 = serde_json::json!({
+            "type": "assistant", "sessionId": "cache-session", "timestamp": "2026-03-01T10:00:09Z",
+            "uuid": "a2",
+            "message": {"model": "claude-sonnet-4-6", "content": [{"type": "text", "text": "more"}]}
+        });
+        write(&path, &[user, assistant, assistant2]);
+        let third = parser
+            .parse_conversation_detail(&path, "cache-session")
+            .expect("third parse");
+        assert_eq!(third.turns.len(), 3, "growth must invalidate the cache");
+
+        fs::remove_file(&path).expect("cleanup temp jsonl");
     }
 
     fn total_usage_tokens(detail: &crate::models::ConversationDetail) -> u64 {
