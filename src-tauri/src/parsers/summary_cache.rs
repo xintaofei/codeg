@@ -59,7 +59,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime};
 
 use super::ParseError;
-use crate::models::{AgentType, ConversationSummary};
+use crate::models::{AgentType, ConversationDetail, ConversationSummary};
 
 /// File-content fingerprint: `(mtime, size)`. `mtime` is `Option` because a
 /// platform may not report it; a `None`/`None` comparison then falls back to
@@ -187,6 +187,119 @@ where
                     },
                 );
             }
+        }
+    }
+    Ok(parsed)
+}
+
+/// Process-global cache of FULL conversation details, keyed by `(AgentType, path)`.
+///
+/// `get_conversation` re-parses a session transcript on every detail fetch —
+/// viewer polls, and every "load older" page of the reverse-infinite scroll.
+/// For a long session that is a full read + per-line parse each time. This cache
+/// memoizes the parsed `ConversationDetail` per `(AgentType, path)`, invalidated
+/// by the same cheap `(mtime, size)` fingerprint as the summary cache, so a
+/// repeat fetch of an unchanged file skips the re-parse entirely.
+///
+/// Memory is bounded by `DETAIL_CACHE_BYTE_BUDGET` across all entries, using the
+/// transcript's byte length as a faithful per-entry footprint proxy; a single
+/// transcript larger than the budget is never cached (parsed fresh each fetch,
+/// exactly as before). Eviction is least-recently-used.
+///
+/// Freshness contract (per parser): the fingerprint covers the transcript file.
+/// Work that reads OTHER files must either be excluded from the cached region or
+/// accepted as last-parse state — e.g. Codex's sub-agent capsule stats and
+/// patch line numbers reflect the file as of the last parse; both are cosmetic
+/// and self-correct the moment the transcript itself changes (an active collab
+/// session appends to its rollout, so the fingerprint changes and a fresh parse
+/// runs). Records lacking a timestamp fall back to `Utc::now()` during a parse;
+/// a cached entry keeps the first such fallback, which keeps the window
+/// `prefix_hash` STABLE across fetches of an unchanged file — without the cache,
+/// each re-parse would mint a fresh `now()` and the frontend would misread the
+/// unchanged prefix as rewritten.
+const DETAIL_CACHE_BYTE_BUDGET: u64 = 64 * 1024 * 1024;
+
+struct DetailCacheEntry {
+    fingerprint: Fingerprint,
+    /// Transcript byte length — proxy for the detail's in-memory footprint.
+    size: u64,
+    detail: ConversationDetail,
+    last_used: Instant,
+}
+
+/// Keyed by `(AgentType, path)` — namespaced by parser like the summary cache.
+type DetailCache = HashMap<(AgentType, PathBuf), DetailCacheEntry>;
+
+fn detail_cache() -> &'static Mutex<DetailCache> {
+    static CACHE: OnceLock<Mutex<DetailCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Return the cached detail for `(agent_type, path)` when the transcript is
+/// unchanged; otherwise run `parse` (lock released) and cache a real (non-empty)
+/// result. The caller receives a CLONE, so it may freely mutate the result
+/// (inject delegation meta, set counts) without disturbing the cached entry.
+///
+/// Only a detail with at least one turn is cached: an empty/degenerate parse
+/// derives fields like `started_at` from `Utc::now()`, which a cache would
+/// otherwise freeze.
+pub(crate) fn detail_get_or_parse<F>(
+    agent_type: AgentType,
+    path: &Path,
+    parse: F,
+) -> Result<ConversationDetail, ParseError>
+where
+    F: FnOnce() -> Result<ConversationDetail, ParseError>,
+{
+    // Can't fingerprint ⇒ bypass the cache (parse fresh, store nothing).
+    let Some(fp) = fingerprint(path) else {
+        return parse();
+    };
+    let key = (agent_type, path.to_path_buf());
+
+    if let Ok(mut map) = detail_cache().lock() {
+        if let Some(entry) = map.get_mut(&key) {
+            if entry.fingerprint == fp {
+                entry.last_used = Instant::now();
+                return Ok(entry.detail.clone());
+            }
+        }
+    }
+
+    let parsed = parse()?;
+
+    // Cache only a real conversation, only if it fits the budget, and only if
+    // the file didn't change while we read it.
+    let size = fp.1;
+    if !parsed.turns.is_empty() && size <= DETAIL_CACHE_BYTE_BUDGET && fingerprint(path) == Some(fp)
+    {
+        if let Ok(mut map) = detail_cache().lock() {
+            let replaced = map.get(&key).map(|e| e.size).unwrap_or(0);
+            let mut total: u64 = map.values().map(|e| e.size).sum::<u64>() - replaced;
+            while total + size > DETAIL_CACHE_BYTE_BUDGET {
+                let oldest = map
+                    .iter()
+                    .filter(|(k, _)| **k != key)
+                    .min_by_key(|(_, e)| e.last_used)
+                    .map(|(k, _)| k.clone());
+                match oldest {
+                    Some(k) => {
+                        if let Some(e) = map.remove(&k) {
+                            total -= e.size;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            map.insert(
+                key,
+                DetailCacheEntry {
+                    fingerprint: fp,
+                    size,
+                    detail: parsed.clone(),
+                    last_used: Instant::now(),
+                },
+            );
         }
     }
     Ok(parsed)
