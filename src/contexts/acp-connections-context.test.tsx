@@ -4,6 +4,8 @@ import { useTranslations } from "next-intl"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   AcpConnectionsProvider,
+  buildNotificationTitle,
+  notificationSummary,
   useAcpActions,
   useConnectionStore,
 } from "@/contexts/acp-connections-context"
@@ -128,6 +130,21 @@ async function mountProvider() {
 }
 
 const TAB = "conv-1-claude_code-42"
+
+describe("notificationSummary", () => {
+  it("normalizes whitespace and bounds notification-center payloads", () => {
+    expect(notificationSummary("  result\n\nready  ")).toBe("result ready")
+    const summary = notificationSummary("x".repeat(400))
+    expect(summary).toHaveLength(300)
+    expect(summary).toMatch(/\.\.\.$/)
+  })
+
+  it("formats workspace, conversation window, and result status", () => {
+    expect(
+      buildNotificationTitle("Codeg 二开", "任务状态通知", "Codex 已完成")
+    ).toBe("Codeg 二开 / 任务状态通知 - Codex 已完成")
+  })
+})
 
 beforeEach(() => {
   h.attach.mockClear()
@@ -978,8 +995,34 @@ describe("out-of-turn wire guard + background activity", () => {
     expect(h.sendSystemNotification.mock.calls.map((call) => call[1])).toEqual([
       "notificationTurnComplete",
       "notificationTurnCancelled",
-      "notificationError",
+      "backendErrors.turnFailedRefusal",
     ])
+  })
+
+  it("includes the question result when Codex waits for an answer", async () => {
+    const handlers = await mountOwnerConnection()
+    h.sendSystemNotification.mockClear()
+
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "question_request",
+      question_id: "question-1",
+      questions: [
+        {
+          id: "scope",
+          header: "Scope",
+          question: "Should the notification include the final result?",
+          multi_select: false,
+          options: [],
+        },
+      ],
+    })
+
+    expect(h.sendSystemNotification).toHaveBeenCalledWith(
+      "x - Claude Code questionDialog.title",
+      "Should the notification include the final result?"
+    )
   })
 
   it("drops streaming deltas while the connection is not prompting (Bug-A guard)", async () => {

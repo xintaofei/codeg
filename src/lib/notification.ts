@@ -5,10 +5,10 @@ export async function sendSystemNotification(
   title: string,
   body: string
 ): Promise<void> {
-  if (!document.hidden && document.hasFocus()) return
   if (isDesktop()) {
     await getTransport().call("send_notification", { title, body })
   } else {
+    if (!document.hidden && document.hasFocus()) return
     // Web fallback: Browser Notification API
     if (Notification.permission === "granted") {
       new Notification(title, { body })
