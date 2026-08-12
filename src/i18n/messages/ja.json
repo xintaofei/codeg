@@ -2507,6 +2507,7 @@
         "toolFallbackTitle": "ツール",
         "eventErrorTitle": "エージェントエラー",
         "notificationTurnComplete": "{agent} の応答が完了しました",
+        "notificationTurnCancelled": "{agent} のタスクが中断されました",
         "notificationError": "{agent} エラー：{message}",
         "claudeApiRetry": {
           "fallbackError": "authentication_failed",

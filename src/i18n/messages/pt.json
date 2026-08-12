@@ -2507,6 +2507,7 @@
         "toolFallbackTitle": "Ferramenta",
         "eventErrorTitle": "Erro do agente",
         "notificationTurnComplete": "{agent} terminou de responder",
+        "notificationTurnCancelled": "A tarefa de {agent} foi interrompida",
         "notificationError": "{agent} erro: {message}",
         "claudeApiRetry": {
           "fallbackError": "authentication_failed",

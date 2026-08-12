@@ -3494,10 +3494,18 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               const agentLabel = getAgentLabel(nc.agentType)
               const fn = folderNameRef.current
               const title = fn ? `${fn} - Codeg` : "Codeg"
-              sendSystemNotification(
-                title,
-                t("notificationTurnComplete", { agent: agentLabel })
-              ).catch(() => {})
+              const key =
+                e.stop_reason === "end_turn"
+                  ? "notificationTurnComplete"
+                  : e.stop_reason === "cancelled"
+                    ? "notificationTurnCancelled"
+                    : null
+              if (key) {
+                sendSystemNotification(
+                  title,
+                  t(key, { agent: agentLabel })
+                ).catch(() => {})
+              }
             }
           }
           break

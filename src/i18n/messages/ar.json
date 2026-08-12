@@ -2507,6 +2507,7 @@
         "toolFallbackTitle": "أداة",
         "eventErrorTitle": "خطأ الوكيل",
         "notificationTurnComplete": "{agent} أنهى الاستجابة",
+        "notificationTurnCancelled": "تمت مقاطعة مهمة {agent}",
         "notificationError": "{agent} خطأ: {message}",
         "claudeApiRetry": {
           "fallbackError": "authentication_failed",

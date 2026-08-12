@@ -944,6 +944,44 @@ describe("out-of-turn wire guard + background activity", () => {
     return latestAttachHandlers()
   }
 
+  it("distinguishes completed, interrupted, and failed turns in OS notifications", async () => {
+    const handlers = await mountOwnerConnection()
+    h.sendSystemNotification.mockClear()
+
+    for (const [index, stopReason] of ["end_turn", "cancelled"].entries()) {
+      emitAcpEvent(handlers, {
+        seq: index + 1,
+        connection_id: "spawned-conn",
+        type: "turn_complete",
+        session_id: "sess-1",
+        stop_reason: stopReason,
+        agent_type: "codex",
+      })
+    }
+    emitAcpEvent(handlers, {
+      seq: 3,
+      connection_id: "spawned-conn",
+      type: "error",
+      message: "Codex refused the prompt",
+      agent_type: "codex",
+      code: "turn_failed_refusal",
+    })
+    emitAcpEvent(handlers, {
+      seq: 4,
+      connection_id: "spawned-conn",
+      type: "turn_complete",
+      session_id: "sess-1",
+      stop_reason: "refusal",
+      agent_type: "codex",
+    })
+
+    expect(h.sendSystemNotification.mock.calls.map((call) => call[1])).toEqual([
+      "notificationTurnComplete",
+      "notificationTurnCancelled",
+      "notificationError",
+    ])
+  })
+
   it("drops streaming deltas while the connection is not prompting (Bug-A guard)", async () => {
     const handlers = await mountOwnerConnection()
 

@@ -5,7 +5,7 @@ export async function sendSystemNotification(
   title: string,
   body: string
 ): Promise<void> {
-  if (!document.hidden) return
+  if (!document.hidden && document.hasFocus()) return
   if (isDesktop()) {
     await getTransport().call("send_notification", { title, body })
   } else {

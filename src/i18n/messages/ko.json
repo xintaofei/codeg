@@ -2507,6 +2507,7 @@
         "toolFallbackTitle": "도구",
         "eventErrorTitle": "에이전트 오류",
         "notificationTurnComplete": "{agent} 응답이 완료되었습니다",
+        "notificationTurnCancelled": "{agent} 작업이 중단되었습니다",
         "notificationError": "{agent} 오류: {message}",
         "claudeApiRetry": {
           "fallbackError": "authentication_failed",

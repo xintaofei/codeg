@@ -2507,6 +2507,7 @@
         "toolFallbackTitle": "工具",
         "eventErrorTitle": "Agent 错误",
         "notificationTurnComplete": "{agent} 已完成响应",
+        "notificationTurnCancelled": "{agent} 任务已中断",
         "notificationError": "{agent} 错误：{message}",
         "claudeApiRetry": {
           "fallbackError": "authentication_failed",
