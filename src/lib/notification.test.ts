@@ -30,6 +30,19 @@ describe("sendSystemNotification", () => {
     expect(h.call).toHaveBeenCalledWith("send_notification", {
       title: "Codeg",
       body: "done",
+      target: undefined,
+    })
+  })
+
+  it("passes the conversation target to the native notification", async () => {
+    const target = { folderId: 7, conversationId: 42, agent: "codex" }
+
+    await sendSystemNotification("Codeg", "done", target)
+
+    expect(h.call).toHaveBeenCalledWith("send_notification", {
+      title: "Codeg",
+      body: "done",
+      target,
     })
   })
 

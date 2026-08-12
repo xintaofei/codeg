@@ -203,6 +203,32 @@ function lastAssistantText(liveMessage: LiveMessage | null): string | null {
   return notificationSummary(text)
 }
 
+function notificationTarget(connection: ConnectionState) {
+  const indexedConversationId = connection.sessionId
+    ? getConversationIdByExternalIdFromStore(connection.sessionId)
+    : null
+  const contextConversationId = Number(
+    /-(\d+)$/.exec(connection.contextKey)?.[1]
+  )
+  const conversationId =
+    indexedConversationId ??
+    (Number.isSafeInteger(contextConversationId) ? contextConversationId : null)
+  const tab = useTabStore
+    .getState()
+    .tabs.find(
+      (candidate) =>
+        candidate.conversationId === conversationId ||
+        candidate.runtimeConversationId === conversationId
+    )
+  return tab?.conversationId != null
+    ? {
+        folderId: tab.folderId,
+        conversationId: tab.conversationId,
+        agent: connection.agentType,
+      }
+    : null
+}
+
 // ── Per-connection state ──
 
 export interface ConnectionState {
@@ -2636,24 +2662,14 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
 
   const notificationTitle = useCallback(
     (connection: ConnectionState, status: string): string => {
-      const indexedConversationId = connection.sessionId
-        ? getConversationIdByExternalIdFromStore(connection.sessionId)
+      const target = notificationTarget(connection)
+      const tab = target
+        ? useTabStore
+            .getState()
+            .tabs.find(
+              (candidate) => candidate.conversationId === target.conversationId
+            )
         : null
-      const contextConversationId = Number(
-        /-(\d+)$/.exec(connection.contextKey)?.[1]
-      )
-      const conversationId =
-        indexedConversationId ??
-        (Number.isSafeInteger(contextConversationId)
-          ? contextConversationId
-          : null)
-      const tab = useTabStore
-        .getState()
-        .tabs.find(
-          (candidate) =>
-            candidate.conversationId === conversationId ||
-            candidate.runtimeConversationId === conversationId
-        )
       const workspace =
         (tab
           ? useAppWorkspaceStore
@@ -3225,7 +3241,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                     "questionDialog.title"
                   )}`
                 ),
-                question
+                question,
+                notificationTarget(nc)
               ).catch(() => {})
             }
           }
@@ -3265,7 +3282,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                   )}`
                 ),
                 notificationSummary(e.plan_markdown) ??
-                  tChat("planApproval.title")
+                  tChat("planApproval.title"),
+                notificationTarget(nc)
               ).catch(() => {})
             }
           }
@@ -3349,9 +3367,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                 tChat("backgroundTasks.settledFallback", {
                   status: settled.status,
                 })
-              sendSystemNotification(title, `${agentLabel}: ${body}`).catch(
-                () => {}
-              )
+              sendSystemNotification(
+                title,
+                `${agentLabel}: ${body}`,
+                nc ? notificationTarget(nc) : null
+              ).catch(() => {})
             }
             // 4. flip each async sub-agent's launch card to its terminal
             //    (completed + result) state IN-MEMORY, by rewriting the
@@ -3406,7 +3426,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                   nc,
                   `${agentLabel} ${tChat("questionDialog.title")}`
                 ),
-                tChat("permissionDialog.subtitle")
+                tChat("permissionDialog.subtitle"),
+                notificationTarget(nc)
               ).catch(() => {})
             }
           }
@@ -3612,7 +3633,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                   notificationTitle(nc, status),
                   notificationSummary(pendingQuestionText) ??
                     lastAssistantText(turnConn?.liveMessage ?? null) ??
-                    t(key, { agent: agentLabel })
+                    t(key, { agent: agentLabel }),
+                  notificationTarget(nc)
                 ).catch(() => {})
               }
             }
@@ -3727,7 +3749,8 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                 t("notificationError", {
                   agent: agentLabel,
                   message: localizedMessage,
-                })
+                }),
+              notificationTarget(nc)
             ).catch(() => {})
           }
           break

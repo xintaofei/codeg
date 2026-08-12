@@ -1021,7 +1021,8 @@ describe("out-of-turn wire guard + background activity", () => {
 
     expect(h.sendSystemNotification).toHaveBeenCalledWith(
       "x - Claude Code questionDialog.title",
-      "Should the notification include the final result?"
+      "Should the notification include the final result?",
+      null
     )
   })
 
