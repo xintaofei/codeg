@@ -4083,6 +4083,10 @@
     "loadFailed": "Failed to load: {detail}"
   },
   "NotificationSoundSettings": {
+    "systemTitle": "System notifications",
+    "systemDescription": "Show a system notification when a task finishes, stops, fails, or needs your attention. Clicking it opens Codeg at the matching conversation.",
+    "systemOnlyWhenUnfocused": "Only when the Codeg window is not focused",
+    "systemOnlyWhenUnfocusedHint": "Do not show a duplicate notification while you are viewing Codeg.",
     "title": "Notification sounds",
     "description": "Play a short sound when an agent event fires. These are the same events the chat channels push — configured here for this device only.",
     "enableHint": "Off by default. Sounds play in the workspace window of this browser or app only.",

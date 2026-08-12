@@ -1,5 +1,6 @@
 import { getTransport } from "./transport"
 import { isDesktop } from "./transport"
+import { getNotificationSoundPrefs } from "./notification-sound-prefs"
 
 export interface NotificationTarget {
   folderId: number
@@ -12,10 +13,19 @@ export async function sendSystemNotification(
   body: string,
   target?: NotificationTarget | null
 ): Promise<void> {
+  const prefs = getNotificationSoundPrefs()
+  if (!prefs.systemNotificationsEnabled) return
+  if (
+    prefs.systemNotificationsOnlyWhenUnfocused &&
+    !document.hidden &&
+    document.hasFocus()
+  ) {
+    return
+  }
+
   if (isDesktop()) {
     await getTransport().call("send_notification", { title, body, target })
   } else {
-    if (!document.hidden && document.hasFocus()) return
     // Web fallback: Browser Notification API
     if (Notification.permission === "granted") {
       new Notification(title, { body })

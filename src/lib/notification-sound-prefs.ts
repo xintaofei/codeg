@@ -48,6 +48,10 @@ export const SOUND_TONE_IDS = [
 export type SoundToneId = (typeof SOUND_TONE_IDS)[number]
 
 export interface NotificationSoundPrefs {
+  /** Master switch for visual system notifications. */
+  systemNotificationsEnabled: boolean
+  /** Only show system notifications while the workspace is unfocused. */
+  systemNotificationsOnlyWhenUnfocused: boolean
   /** Master switch. Off until the user opts in — see DEFAULTS below. */
   enabled: boolean
   /** 0..1, applied as the peak gain of every tone. */
@@ -70,6 +74,8 @@ export interface NotificationSoundPrefs {
  * is about not exporting prompt text off the machine.)
  */
 export const DEFAULT_NOTIFICATION_SOUND_PREFS: NotificationSoundPrefs = {
+  systemNotificationsEnabled: true,
+  systemNotificationsOnlyWhenUnfocused: true,
   enabled: false,
   volume: 0.6,
   onlyWhenUnfocused: false,
@@ -115,6 +121,14 @@ export function parseNotificationSoundPrefs(
   }
 
   return {
+    systemNotificationsEnabled:
+      typeof source.systemNotificationsEnabled === "boolean"
+        ? source.systemNotificationsEnabled
+        : defaults.systemNotificationsEnabled,
+    systemNotificationsOnlyWhenUnfocused:
+      typeof source.systemNotificationsOnlyWhenUnfocused === "boolean"
+        ? source.systemNotificationsOnlyWhenUnfocused
+        : defaults.systemNotificationsOnlyWhenUnfocused,
     enabled:
       typeof source.enabled === "boolean" ? source.enabled : defaults.enabled,
     // Clamp rather than reject: a slider that once wrote 1.2 should land on

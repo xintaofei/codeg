@@ -4083,6 +4083,10 @@
     "loadFailed": "加载失败：{detail}"
   },
   "NotificationSoundSettings": {
+    "systemTitle": "系统通知",
+    "systemDescription": "任务完成、中断、异常或需要你处理时显示系统弹窗。点击弹窗会打开 Codeg 并跳转到对应会话。",
+    "systemOnlyWhenUnfocused": "仅在 Codeg 窗口未聚焦时通知",
+    "systemOnlyWhenUnfocusedHint": "正在查看 Codeg 时不重复弹窗。",
     "title": "提示音",
     "description": "智能体事件触发时播放一段简短的提示音。这里的事件与消息渠道推送的完全一致，但设置只对本设备生效。",
     "enableHint": "默认关闭。提示音只在当前浏览器或应用的工作区窗口中播放。",

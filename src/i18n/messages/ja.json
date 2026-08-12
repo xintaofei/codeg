@@ -4083,6 +4083,10 @@
     "loadFailed": "読み込みに失敗しました: {detail}"
   },
   "NotificationSoundSettings": {
+    "systemTitle": "システム通知",
+    "systemDescription": "タスクの完了、中断、エラー、または対応が必要なときにシステム通知を表示します。クリックすると Codeg の該当する会話が開きます。",
+    "systemOnlyWhenUnfocused": "Codeg ウィンドウが非アクティブなときのみ通知",
+    "systemOnlyWhenUnfocusedHint": "Codeg を表示中は重複した通知を表示しません。",
     "title": "通知音",
     "description": "エージェントのイベント発生時に短い通知音を鳴らします。対象はチャットチャンネルに送られるものと同じイベントで、この設定はこの端末にのみ適用されます。",
     "enableHint": "既定ではオフです。通知音はこのブラウザまたはアプリのワークスペースウィンドウでのみ再生されます。",

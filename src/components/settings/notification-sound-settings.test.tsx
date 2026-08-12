@@ -43,9 +43,40 @@ describe("NotificationSoundSettingsSection", () => {
     ).not.toBeChecked()
     // With sounds off the section IS the master switch: the heading labels it,
     // so there is no second row (nor a card around one) saying so again.
-    expect(screen.getAllByRole("switch")).toHaveLength(1)
+    expect(screen.getAllByRole("switch")).toHaveLength(3)
     // The event catalogue is only meaningful once something can play.
     expect(screen.queryByText("Turn Complete")).not.toBeInTheDocument()
+  })
+
+  it("persists the system notification switches", () => {
+    renderSection()
+
+    expect(
+      screen.getByRole("switch", { name: /system notifications/i })
+    ).toBeChecked()
+    expect(
+      screen.getByRole("switch", {
+        name: /only when the Codeg window is not focused/i,
+      })
+    ).toBeChecked()
+    fireEvent.click(
+      screen.getByRole("switch", {
+        name: /only when the Codeg window is not focused/i,
+      })
+    )
+
+    expect(
+      loadNotificationSoundPrefs().systemNotificationsOnlyWhenUnfocused
+    ).toBe(false)
+    fireEvent.click(
+      screen.getByRole("switch", { name: /system notifications/i })
+    )
+    expect(loadNotificationSoundPrefs().systemNotificationsEnabled).toBe(false)
+    expect(
+      screen.queryByRole("switch", {
+        name: /only when the Codeg window is not focused/i,
+      })
+    ).not.toBeInTheDocument()
   })
 
   it("persists the master switch and reveals the event catalogue", () => {

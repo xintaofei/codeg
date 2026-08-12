@@ -18,6 +18,7 @@
 import { useCallback } from "react"
 import { useTranslations } from "next-intl"
 import {
+  Bell,
   BellOff,
   ListMusic,
   Play,
@@ -96,150 +97,194 @@ export function NotificationSoundSettingsSection() {
   const volumePercent = Math.round(prefs.volume * 100)
 
   return (
-    // The master switch is the section's heading row: with sounds off the whole
-    // section is that one line, and the knobs it gates appear under it rather
-    // than in a card that repeats "Enable notification sounds".
-    <SettingsSection
-      icon={Volume2}
-      title={t("title")}
-      description={
-        <>
-          {t("description")}
-          <span className="mt-1 block">{t("enableHint")}</span>
-        </>
-      }
-      htmlFor="notification-sound-enabled"
-      control={
-        <Switch
-          id="notification-sound-enabled"
-          checked={prefs.enabled}
-          onCheckedChange={(enabled) =>
-            saveNotificationSoundPrefs({ ...prefs, enabled })
-          }
-        />
-      }
-    >
-      {/* The two knobs that shape every cue — one card, because volume and
-          "only when unfocused" are meaningless without the switch above. */}
-      {prefs.enabled && (
-        <SettingCard>
-          <SettingRow
-            icon={SlidersHorizontal}
-            title={t("volume")}
-            control={
-              <span className="text-xs tabular-nums text-muted-foreground">
-                {volumePercent}%
-              </span>
-            }
-          >
-            <div className="flex items-center gap-3">
-              <Slider
-                value={[volumePercent]}
-                min={0}
-                max={100}
-                step={5}
-                aria-label={t("volume")}
-                onValueChange={([value]) =>
-                  saveNotificationSoundPrefs({
-                    ...prefs,
-                    volume: value / 100,
-                  })
-                }
-              />
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="shrink-0 bg-background"
-                onClick={() => previewTone("chime", prefs.volume)}
-              >
-                <Play className="h-3.5 w-3.5" />
-                {t("preview")}
-              </Button>
-            </div>
-          </SettingRow>
-
-          <SettingRow
-            icon={BellOff}
-            title={t("onlyWhenUnfocused")}
-            description={t("onlyWhenUnfocusedHint")}
-            htmlFor="notification-sound-unfocused"
-            control={
-              <Switch
-                id="notification-sound-unfocused"
-                checked={prefs.onlyWhenUnfocused}
-                onCheckedChange={(onlyWhenUnfocused) =>
-                  saveNotificationSoundPrefs({ ...prefs, onlyWhenUnfocused })
-                }
-              />
+    <>
+      <SettingsSection
+        icon={Bell}
+        title={t("systemTitle")}
+        description={t("systemDescription")}
+        htmlFor="system-notification-enabled"
+        control={
+          <Switch
+            id="system-notification-enabled"
+            checked={prefs.systemNotificationsEnabled}
+            onCheckedChange={(systemNotificationsEnabled) =>
+              saveNotificationSoundPrefs({
+                ...prefs,
+                systemNotificationsEnabled,
+              })
             }
           />
-        </SettingCard>
-      )}
+        }
+      >
+        {prefs.systemNotificationsEnabled && (
+          <SettingCard>
+            <SettingRow
+              icon={BellOff}
+              title={t("systemOnlyWhenUnfocused")}
+              description={t("systemOnlyWhenUnfocusedHint")}
+              htmlFor="system-notification-unfocused"
+              control={
+                <Switch
+                  id="system-notification-unfocused"
+                  checked={prefs.systemNotificationsOnlyWhenUnfocused}
+                  onCheckedChange={(systemNotificationsOnlyWhenUnfocused) =>
+                    saveNotificationSoundPrefs({
+                      ...prefs,
+                      systemNotificationsOnlyWhenUnfocused,
+                    })
+                  }
+                />
+              }
+            />
+          </SettingCard>
+        )}
+      </SettingsSection>
 
-      {prefs.enabled && (
-        <SettingCard>
-          {/* The per-event tones are one setting with many values, so they are
+      {/* The master switch is the section's heading row: with sounds off the whole
+          section is that one line, and the knobs it gates appear under it rather
+          than in a card that repeats "Enable notification sounds". */}
+      <SettingsSection
+        icon={Volume2}
+        title={t("title")}
+        description={
+          <>
+            {t("description")}
+            <span className="mt-1 block">{t("enableHint")}</span>
+          </>
+        }
+        htmlFor="notification-sound-enabled"
+        control={
+          <Switch
+            id="notification-sound-enabled"
+            checked={prefs.enabled}
+            onCheckedChange={(enabled) =>
+              saveNotificationSoundPrefs({ ...prefs, enabled })
+            }
+          />
+        }
+      >
+        {/* The two knobs that shape every cue — one card, because volume and
+          "only when unfocused" are meaningless without the switch above. */}
+        {prefs.enabled && (
+          <SettingCard>
+            <SettingRow
+              icon={SlidersHorizontal}
+              title={t("volume")}
+              control={
+                <span className="text-xs tabular-nums text-muted-foreground">
+                  {volumePercent}%
+                </span>
+              }
+            >
+              <div className="flex items-center gap-3">
+                <Slider
+                  value={[volumePercent]}
+                  min={0}
+                  max={100}
+                  step={5}
+                  aria-label={t("volume")}
+                  onValueChange={([value]) =>
+                    saveNotificationSoundPrefs({
+                      ...prefs,
+                      volume: value / 100,
+                    })
+                  }
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0 bg-background"
+                  onClick={() => previewTone("chime", prefs.volume)}
+                >
+                  <Play className="h-3.5 w-3.5" />
+                  {t("preview")}
+                </Button>
+              </div>
+            </SettingRow>
+
+            <SettingRow
+              icon={BellOff}
+              title={t("onlyWhenUnfocused")}
+              description={t("onlyWhenUnfocusedHint")}
+              htmlFor="notification-sound-unfocused"
+              control={
+                <Switch
+                  id="notification-sound-unfocused"
+                  checked={prefs.onlyWhenUnfocused}
+                  onCheckedChange={(onlyWhenUnfocused) =>
+                    saveNotificationSoundPrefs({ ...prefs, onlyWhenUnfocused })
+                  }
+                />
+              }
+            />
+          </SettingCard>
+        )}
+
+        {prefs.enabled && (
+          <SettingCard>
+            {/* The per-event tones are one setting with many values, so they are
               a single row whose control is the list — not one row per event,
               which would repeat the same explanation five times. */}
-          <SettingRow
-            icon={ListMusic}
-            title={t("eventsTitle")}
-            description={t("eventsHint")}
-          >
-            <div className="space-y-1.5">
-              {SOUND_EVENT_IDS.map((eventId) => {
-                const tone = prefs.tones[eventId]
-                const label = tEvents(EVENT_LABEL_KEYS[eventId])
-                return (
-                  <div
-                    key={eventId}
-                    className="flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background px-3 py-2"
-                  >
-                    <span className="min-w-0 truncate text-sm">{label}</span>
-                    <div className="flex shrink-0 items-center gap-1.5">
-                      <Select
-                        value={tone}
-                        onValueChange={(value) =>
-                          setTone(eventId, value as SoundToneId)
-                        }
-                      >
-                        {/* `size` rather than a bare `h-8`: the trigger's own
+            <SettingRow
+              icon={ListMusic}
+              title={t("eventsTitle")}
+              description={t("eventsHint")}
+            >
+              <div className="space-y-1.5">
+                {SOUND_EVENT_IDS.map((eventId) => {
+                  const tone = prefs.tones[eventId]
+                  const label = tEvents(EVENT_LABEL_KEYS[eventId])
+                  return (
+                    <div
+                      key={eventId}
+                      className="flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-background px-3 py-2"
+                    >
+                      <span className="min-w-0 truncate text-sm">{label}</span>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <Select
+                          value={tone}
+                          onValueChange={(value) =>
+                            setTone(eventId, value as SoundToneId)
+                          }
+                        >
+                          {/* `size` rather than a bare `h-8`: the trigger's own
                             height is gated on `data-size`, which outranks an
                             ungated utility in the class list. */}
-                        <SelectTrigger
-                          size="sm"
-                          className="w-36 bg-background text-xs"
-                          aria-label={label}
+                          <SelectTrigger
+                            size="sm"
+                            className="w-36 bg-background text-xs"
+                            aria-label={label}
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent align="end">
+                            {SOUND_TONE_IDS.map((toneId) => (
+                              <SelectItem key={toneId} value={toneId}>
+                                {t(TONE_LABEL_KEYS[toneId])}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          disabled={tone === "none"}
+                          aria-label={t("previewEvent", { event: label })}
+                          onClick={() => previewTone(tone, prefs.volume)}
                         >
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent align="end">
-                          {SOUND_TONE_IDS.map((toneId) => (
-                            <SelectItem key={toneId} value={toneId}>
-                              {t(TONE_LABEL_KEYS[toneId])}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        disabled={tone === "none"}
-                        aria-label={t("previewEvent", { event: label })}
-                        onClick={() => previewTone(tone, prefs.volume)}
-                      >
-                        <Play className="h-3.5 w-3.5" />
-                      </Button>
+                          <Play className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
                     </div>
-                  </div>
-                )
-              })}
-            </div>
-          </SettingRow>
-        </SettingCard>
-      )}
-    </SettingsSection>
+                  )
+                })}
+              </div>
+            </SettingRow>
+          </SettingCard>
+        )}
+      </SettingsSection>
+    </>
   )
 }

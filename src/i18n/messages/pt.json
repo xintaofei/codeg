@@ -4083,6 +4083,10 @@
     "loadFailed": "Falha ao carregar: {detail}"
   },
   "NotificationSoundSettings": {
+    "systemTitle": "Notificações do sistema",
+    "systemDescription": "Mostra uma notificação do sistema quando uma tarefa termina, é interrompida, falha ou precisa da sua atenção. Ao clicar, a conversa correspondente é aberta no Codeg.",
+    "systemOnlyWhenUnfocused": "Somente quando a janela do Codeg não estiver em foco",
+    "systemOnlyWhenUnfocusedHint": "Não mostrar uma notificação duplicada enquanto você estiver vendo o Codeg.",
     "title": "Sons de notificação",
     "description": "Reproduz um som curto quando ocorre um evento do agente. São os mesmos eventos enviados aos canais de chat; esta configuração vale apenas para este dispositivo.",
     "enableHint": "Desativado por padrão. Os sons tocam apenas na janela do espaço de trabalho deste navegador ou aplicativo.",

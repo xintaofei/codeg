@@ -4083,6 +4083,10 @@
     "loadFailed": "Échec du chargement : {detail}"
   },
   "NotificationSoundSettings": {
+    "systemTitle": "Notifications système",
+    "systemDescription": "Affiche une notification système lorsqu’une tâche se termine, s’interrompt, échoue ou nécessite votre attention. Un clic ouvre la conversation correspondante dans Codeg.",
+    "systemOnlyWhenUnfocused": "Uniquement lorsque la fenêtre Codeg n’est pas au premier plan",
+    "systemOnlyWhenUnfocusedHint": "Ne pas afficher de notification en double pendant que vous consultez Codeg.",
     "title": "Sons de notification",
     "description": "Joue un son bref lorsqu’un événement d’agent se produit. Ce sont les mêmes événements que ceux envoyés aux canaux de discussion ; ce réglage ne s’applique qu’à cet appareil.",
     "enableHint": "Désactivé par défaut. Les sons ne sont joués que dans la fenêtre de l’espace de travail de ce navigateur ou de cette application.",
