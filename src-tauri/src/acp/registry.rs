@@ -755,8 +755,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "DeepSeek Harness (DSH)",
             description: "DeepSeek Harness coding agent (ACP, automation-only)",
             distribution: AgentDistribution::Npx {
-                version: "0.1.0",
-                package: "@asteroida/dsh-codeg-adapter@0.1.0",
+                version: "0.1.1",
+                package: "@asteroida/dsh-codeg-adapter@0.1.1",
                 cmd: "dsh-codeg",
                 args: &[],
                 env: &[],
@@ -950,8 +950,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Dsh,
-            "0.1.0",
-            "@asteroida/dsh-codeg-adapter@0.1.0",
+            "0.1.1",
+            "@asteroida/dsh-codeg-adapter@0.1.1",
             Some("20.0.0"),
         );
     }
