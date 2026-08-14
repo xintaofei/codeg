@@ -295,6 +295,7 @@ pub async fn get_conversation(
             AgentType::Pi => Box::new(PiParser::new()),
             AgentType::Grok => Box::new(GrokParser::new()),
             AgentType::Cursor => Box::new(CursorParser::new()),
+            AgentType::Dsh => Box::new(AcpNativeParser::new(agent_type)),
             // Custom ACP agents have no native store to reverse-engineer;
             // their history is codeg's own ACP transcript.
             AgentType::Custom(_) => Box::new(AcpNativeParser::new(agent_type)),
@@ -1037,6 +1038,7 @@ pub async fn get_folder_conversation_core(
                 AgentType::Pi => Box::new(PiParser::new()),
                 AgentType::Grok => Box::new(GrokParser::new()),
                 AgentType::Cursor => Box::new(CursorParser::new()),
+                AgentType::Dsh => Box::new(AcpNativeParser::new(at)),
                 AgentType::Custom(_) => Box::new(AcpNativeParser::new(at)),
             };
             match parser.get_conversation(&eid) {

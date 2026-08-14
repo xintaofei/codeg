@@ -664,7 +664,7 @@ struct Entry {
     meta: &'static AcpAgentMeta,
     /// Display icon, kept beside the launch metadata rather than inside
     /// [`AcpAgentMeta`]: it is presentation, not launch data, and every one of
-    /// the twelve built-in metas would otherwise need a field it never uses.
+    /// the thirteen built-in metas would otherwise need a field it never uses.
     icon: Option<&'static str>,
     /// Whether the user declared the agent reads the shared `.agents/skills`
     /// store. Beside the meta for the same reason as `icon`: it drives the

@@ -1,4 +1,4 @@
-/** The twelve agents codeg ships hand-written support for. */
+/** The thirteen agents codeg ships hand-written support for. */
 export type BuiltinAgentType =
   | "claude_code"
   | "codex"
@@ -12,6 +12,7 @@ export type BuiltinAgentType =
   | "pi"
   | "grok"
   | "cursor"
+  | "dsh"
 
 /**
  * Which agent backs a conversation.
@@ -694,6 +695,7 @@ export const AGENT_DISPLAY_ORDER: BuiltinAgentType[] = [
   "pi",
   "grok",
   "cursor",
+  "dsh",
 ]
 
 const AGENT_DISPLAY_ORDER_INDEX = new Map<AgentType, number>(
@@ -725,6 +727,7 @@ export const ALL_AGENT_TYPES: BuiltinAgentType[] = [
   "pi",
   "grok",
   "cursor",
+  "dsh",
 ]
 
 export const MODEL_PROVIDER_AGENT_TYPES: BuiltinAgentType[] = [
@@ -1033,6 +1036,7 @@ export const AGENT_LABELS: Record<BuiltinAgentType, string> = {
   pi: "Pi",
   grok: "Grok",
   cursor: "Cursor",
+  dsh: "DeepSeek Harness (DSH)",
 }
 
 export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
@@ -1048,6 +1052,7 @@ export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
   pi: "bg-[#0D9488]",
   grok: "bg-neutral-900",
   cursor: "bg-zinc-800",
+  dsh: "bg-[#4D6BFE]",
 }
 
 // ACP connection status (matches Rust ConnectionStatus)

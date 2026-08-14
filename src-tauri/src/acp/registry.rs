@@ -138,7 +138,7 @@ pub fn current_platform() -> &'static str {
     }
 }
 
-/// The twelve built-in agents. Excludes user-registered custom agents — use
+/// The thirteen built-in agents. Excludes user-registered custom agents — use
 /// [`all_acp_agents`] for the live set.
 pub fn builtin_acp_agents() -> Vec<AgentType> {
     vec![
@@ -154,10 +154,11 @@ pub fn builtin_acp_agents() -> Vec<AgentType> {
         AgentType::Pi,
         AgentType::Grok,
         AgentType::Cursor,
+        AgentType::Dsh,
     ]
 }
 
-/// Every agent codeg can currently drive: the twelve built-ins followed by the
+/// Every agent codeg can currently drive: the thirteen built-ins followed by the
 /// user's registered custom ACP agents (sorted by id).
 pub fn all_acp_agents() -> Vec<AgentType> {
     let mut agents = builtin_acp_agents();
@@ -179,6 +180,7 @@ pub fn registry_id_for(agent_type: AgentType) -> &'static str {
         AgentType::Pi => "pi-acp",
         AgentType::Grok => "grok-build",
         AgentType::Cursor => "cursor",
+        AgentType::Dsh => "dsh-acp",
         // A custom agent's registry id IS its identity.
         AgentType::Custom(id) => id,
     }
@@ -198,6 +200,7 @@ pub fn from_registry_id(id: &str) -> Option<AgentType> {
         "pi-acp" => Some(AgentType::Pi),
         "grok-build" => Some(AgentType::Grok),
         "cursor" => Some(AgentType::Cursor),
+        "dsh-acp" => Some(AgentType::Dsh),
         // Only ids the user has actually registered resolve. An unregistered
         // id must stay `None` so the ACP-registry picker still offers it as
         // "addable" rather than treating it as already supported.
@@ -744,6 +747,22 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                 }),
             },
         },
+        AgentType::Dsh => AcpAgentMeta {
+            agent_type,
+            // DSH's automation-only ACP bridge rejects mcpServers, same as
+            // OpenClaw; forwarding any entry makes session/new fail.
+            supports_mcp: false,
+            name: "DeepSeek Harness (DSH)",
+            description: "DeepSeek Harness coding agent (ACP, automation-only)",
+            distribution: AgentDistribution::Npx {
+                version: "0.1.0",
+                package: "@asteroida/dsh-codeg-adapter@0.1.0",
+                cmd: "dsh-codeg",
+                args: &[],
+                env: &[],
+                node_required: Some("20.0.0"),
+            },
+        },
         // Handled by the early return above; kept so the match stays
         // exhaustive without a catch-all that could swallow a new built-in.
         AgentType::Custom(_) => unreachable!("custom agents resolve via custom_registry"),
@@ -929,6 +948,12 @@ mod tests {
             "hermes-agent@0.20.0",
             Some("20.0.0"),
         );
+        assert_npx_version(
+            AgentType::Dsh,
+            "0.1.0",
+            "@asteroida/dsh-codeg-adapter@0.1.0",
+            Some("20.0.0"),
+        );
     }
 
     // The Hermes launch command must be the wrapper's `hermes` bin with the
@@ -986,12 +1011,12 @@ mod tests {
     // (`CustomAgentDef::supports_mcp`), so a registry hydrated by another test
     // may legitimately hold an opted-out one.
     #[test]
-    fn only_builtin_openclaw_opts_out_of_mcp() {
+    fn only_openclaw_and_dsh_opt_out_of_mcp() {
         for agent_type in builtin_acp_agents() {
             let meta = get_agent_meta(agent_type);
             assert_eq!(
                 meta.supports_mcp,
-                agent_type != AgentType::OpenClaw,
+                agent_type != AgentType::OpenClaw && agent_type != AgentType::Dsh,
                 "unexpected supports_mcp for {agent_type:?}"
             );
         }

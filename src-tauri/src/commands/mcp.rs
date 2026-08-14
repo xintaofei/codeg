@@ -2459,6 +2459,9 @@ pub fn read_servers_for_agent_type(
         // pi-acp drops ACP-wire MCP and pi has no native MCP (it needs a
         // third-party extension), so codeg manages no MCP servers for pi (v1).
         AgentType::Pi => Ok(BTreeMap::new()),
+        // DSH's automation-only ACP bridge rejects mcpServers; codeg manages
+        // no MCP servers for it, and it has no native MCP config to read.
+        AgentType::Dsh => Ok(BTreeMap::new()),
         // Custom agents get MCP purely over the ACP wire (`session/new`'s
         // `mcpServers`); codeg deliberately knows nothing about their native
         // config files, so there is no per-agent store to read back here.

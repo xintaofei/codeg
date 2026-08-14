@@ -271,7 +271,7 @@ pub async fn fetch_catalog(
 /// id is `kimi-code`.
 const BUILTIN_REGISTRY_ALIASES: &[&str] = &["kimi"];
 
-/// Whether an id is one of codeg's twelve hand-written agents. Deliberately
+/// Whether an id is one of codeg's thirteen hand-written agents. Deliberately
 /// does NOT consult the custom registry (unlike `registry::from_registry_id`,
 /// which resolves registered custom ids too) — the picker needs "codeg ships
 /// this natively", not "codeg can currently launch this".

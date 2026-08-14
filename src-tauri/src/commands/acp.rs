@@ -6996,6 +6996,9 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
             ],
             project_rel_dirs: vec![".cursor/skills", ".agents/skills"],
         }),
+        // DSH loads skills through its own cordis.yml (under ~/.dsh); codeg
+        // does not detect or manage them, so it declares no skill storage.
+        AgentType::Dsh => None,
         // codeg cannot detect where an arbitrary ACP agent loads skills from,
         // so custom agents are gated on the user's own declaration: that the
         // agent reads the shared `.agents/skills` store (the cross-agent
@@ -8240,6 +8243,10 @@ fn cascade_update_agent_config(
             // runtime env var through the generic agent settings panel
             // (`acpUpdateAgentEnv`); it does not write provider creds into
             // ~/.grok/config.toml and does not participate in the cascade.
+        }
+        AgentType::Dsh => {
+            // DSH reads DEEPSEEK_API_KEY from the environment (no on-disk
+            // config file), so there is nothing to cascade into a file.
         }
         AgentType::Custom(_) => {
             // Custom agents are deliberately configuration-free: codeg writes

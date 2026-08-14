@@ -51,6 +51,7 @@ fn build_parser(agent_type: AgentType) -> Box<dyn AgentParser> {
         AgentType::Pi => Box::new(PiParser::new()),
         AgentType::Grok => Box::new(GrokParser::new()),
         AgentType::Cursor => Box::new(CursorParser::new()),
+        AgentType::Dsh => Box::new(crate::parsers::acp_native::AcpNativeParser::new(agent_type)),
         // Custom agents' history lives in codeg's own ACP transcript.
         AgentType::Custom(_) => Box::new(crate::parsers::acp_native::AcpNativeParser::new(
             agent_type,
@@ -103,7 +104,7 @@ where
     let mut seen: std::collections::HashSet<(AgentType, String)> = std::collections::HashSet::new();
     let mut done = 0u32;
 
-    // Awaiting in parser order only affects callback ordering — all twelve
+    // Awaiting in parser order only affects callback ordering — all thirteen
     // walks already run concurrently on the blocking pool.
     for (at, task) in tasks {
         let mut count = 0u32;
