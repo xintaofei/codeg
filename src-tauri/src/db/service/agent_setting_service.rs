@@ -40,6 +40,7 @@ fn default_enabled(agent_type: AgentType) -> bool {
             | AgentType::Pi
             | AgentType::Grok
             | AgentType::Cursor
+            | AgentType::Dsh
             // A user who just registered a custom agent wants to use it.
             | AgentType::Custom(_)
     )
@@ -227,4 +228,28 @@ pub async fn find_by_model_provider_id(
 fn is_sqlite_full_error(err: &DbError) -> bool {
     let message = err.to_string();
     message.contains("database or disk is full") || message.contains("(code: 13)")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every built-in must be enabled by default. A newly added built-in
+    /// without a `default_enabled` arm silently lands disabled in settings,
+    /// and the launch gate then rejects it at connect time — this test turns
+    /// that into a compile-visible failure instead of a runtime surprise.
+    #[test]
+    fn every_builtin_agent_is_enabled_by_default() {
+        for agent_type in crate::acp::registry::builtin_acp_agents() {
+            assert!(
+                default_enabled(agent_type),
+                "built-in {agent_type:?} must be enabled by default"
+            );
+        }
+    }
+
+    #[test]
+    fn custom_agents_are_enabled_by_default() {
+        assert!(default_enabled(AgentType::custom("goose").unwrap()));
+    }
 }
