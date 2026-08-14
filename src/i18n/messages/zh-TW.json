@@ -2510,6 +2510,7 @@
         "toolFallbackTitle": "工具",
         "eventErrorTitle": "Agent 錯誤",
         "notificationTurnComplete": "{agent} 已完成回應",
+        "notificationTurnCancelled": "{agent} 任務已中斷",
         "notificationError": "{agent} 錯誤：{message}",
         "claudeApiRetry": {
           "fallbackError": "authentication_failed",
@@ -4085,6 +4086,10 @@
     "loadFailed": "載入失敗：{detail}"
   },
   "NotificationSoundSettings": {
+    "systemTitle": "系統通知",
+    "systemDescription": "任務完成、中斷、異常或需要你處理時顯示系統彈窗。點擊彈窗會開啟 Codeg 並跳轉到對應會話。",
+    "systemOnlyWhenUnfocused": "僅在 Codeg 視窗未聚焦時通知",
+    "systemOnlyWhenUnfocusedHint": "正在檢視 Codeg 時不重複彈窗。",
     "title": "提示音",
     "description": "智慧體事件觸發時播放一段簡短的提示音。這裡的事件與訊息通道推送的完全一致，但設定只對本裝置生效。",
     "enableHint": "預設關閉。提示音只在目前瀏覽器或應用程式的工作區視窗中播放。",

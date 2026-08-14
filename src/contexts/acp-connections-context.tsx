@@ -40,6 +40,8 @@ import {
   getConversationIdByExternalIdFromStore,
   useConversationRuntimeStore,
 } from "@/stores/conversation-runtime-store"
+import { useTabStore } from "@/stores/tab-store"
+import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import type {
   AgentType,
   AcpAgentStatus,
@@ -165,6 +167,66 @@ export interface LiveMessage {
   role: "assistant" | "tool"
   content: LiveContentBlock[]
   startedAt: number
+}
+
+const NOTIFICATION_SUMMARY_MAX_LENGTH = 300
+
+export function notificationSummary(
+  text: string | null | undefined
+): string | null {
+  const normalized = text?.replace(/\s+/g, " ").trim()
+  if (!normalized) return null
+  if (normalized.length <= NOTIFICATION_SUMMARY_MAX_LENGTH) return normalized
+  return `${normalized.slice(0, NOTIFICATION_SUMMARY_MAX_LENGTH - 3)}...`
+}
+
+export function buildNotificationTitle(
+  workspace: string,
+  conversation: string | null | undefined,
+  status: string
+): string {
+  const name = conversation?.trim()
+  return name
+    ? `${workspace} / ${name} - ${status}`
+    : `${workspace} - ${status}`
+}
+
+function lastAssistantText(liveMessage: LiveMessage | null): string | null {
+  if (!liveMessage) return null
+  const text = liveMessage.content
+    .filter(
+      (block): block is Extract<LiveContentBlock, { type: "text" }> =>
+        block.type === "text" && !block.parentToolUseId
+    )
+    .map((block) => block.text)
+    .join("\n")
+  return notificationSummary(text)
+}
+
+function notificationTarget(connection: ConnectionState) {
+  const indexedConversationId = connection.sessionId
+    ? getConversationIdByExternalIdFromStore(connection.sessionId)
+    : null
+  const contextConversationId = Number(
+    /-(\d+)$/.exec(connection.contextKey)?.[1]
+  )
+  const conversationId =
+    indexedConversationId ??
+    (Number.isSafeInteger(contextConversationId) ? contextConversationId : null)
+  const tab = useTabStore
+    .getState()
+    .tabs.find(
+      (candidate) =>
+        candidate.conversationId === conversationId ||
+        candidate.runtimeConversationId === conversationId
+    )
+  return tab?.conversationId != null
+    ? {
+        folderId: tab.folderId,
+        conversationId: tab.conversationId,
+        agent: connection.agentType,
+      }
+    : null
 }
 
 // ── Per-connection state ──
@@ -2597,6 +2659,31 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     folderNameRef.current = folder?.name
   }, [folder?.name])
+
+  const notificationTitle = useCallback(
+    (connection: ConnectionState, status: string): string => {
+      const target = notificationTarget(connection)
+      const tab = target
+        ? useTabStore
+            .getState()
+            .tabs.find(
+              (candidate) => candidate.conversationId === target.conversationId
+            )
+        : null
+      const workspace =
+        (tab
+          ? useAppWorkspaceStore
+              .getState()
+              .allFolders.find((candidate) => candidate.id === tab.folderId)
+              ?.name
+          : null) ??
+        folderNameRef.current ??
+        "Codeg"
+      const conversation = tab?.title?.trim()
+      return buildNotificationTitle(workspace, conversation, status)
+    },
+    []
+  )
   const pushAlertRef = useRef(pushAlert)
   useEffect(() => {
     pushAlertRef.current = pushAlert
@@ -3141,6 +3228,24 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               created_at: new Date().toISOString(),
             },
           })
+          {
+            const nc = storeRef.current.connections.get(contextKey)
+            const question = notificationSummary(
+              e.questions.map((item) => item.question).join(" ")
+            )
+            if (nc && question) {
+              sendSystemNotification(
+                notificationTitle(
+                  nc,
+                  `${getAgentLabel(nc.agentType)} ${tChat(
+                    "questionDialog.title"
+                  )}`
+                ),
+                question,
+                notificationTarget(nc)
+              ).catch(() => {})
+            }
+          }
           break
         case "question_resolved":
           // The question was answered (this or another window) or canceled.
@@ -3166,6 +3271,22 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               created_at: new Date().toISOString(),
             },
           })
+          {
+            const nc = storeRef.current.connections.get(contextKey)
+            if (nc) {
+              sendSystemNotification(
+                notificationTitle(
+                  nc,
+                  `${getAgentLabel(nc.agentType)} ${tChat(
+                    "planApproval.title"
+                  )}`
+                ),
+                notificationSummary(e.plan_markdown) ??
+                  tChat("planApproval.title"),
+                notificationTarget(nc)
+              ).catch(() => {})
+            }
+          }
           break
         case "plan_approval_resolved":
           // The approval was answered (this or another window) or canceled.
@@ -3234,8 +3355,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             }
           }
           // 3. one OS notification per settled task (matches the permission
-          //    notification's shape; `document.hidden` gating lives inside
-          //    sendSystemNotification).
+          //    notification's shape and delivery policy).
           if (e.settled && e.settled.length > 0) {
             const nc = storeRef.current.connections.get(contextKey)
             const agentLabel = nc ? getAgentLabel(nc.agentType) : "Agent"
@@ -3247,9 +3367,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                 tChat("backgroundTasks.settledFallback", {
                   status: settled.status,
                 })
-              sendSystemNotification(title, `${agentLabel}: ${body}`).catch(
-                () => {}
-              )
+              sendSystemNotification(
+                title,
+                `${agentLabel}: ${body}`,
+                nc ? notificationTarget(nc) : null
+              ).catch(() => {})
             }
             // 4. flip each async sub-agent's launch card to its terminal
             //    (completed + result) state IN-MEMORY, by rewriting the
@@ -3299,11 +3421,13 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             const nc = storeRef.current.connections.get(contextKey)
             if (nc) {
               const agentLabel = getAgentLabel(nc.agentType)
-              const fn = folderNameRef.current
-              const title = fn ? `${fn} - Codeg` : "Codeg"
               sendSystemNotification(
-                title,
-                `${agentLabel}: ${tChat("permissionDialog.subtitle")}`
+                notificationTitle(
+                  nc,
+                  `${agentLabel} ${tChat("questionDialog.title")}`
+                ),
+                tChat("permissionDialog.subtitle"),
+                notificationTarget(nc)
               ).catch(() => {})
             }
           }
@@ -3460,6 +3584,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           })
           // Detect pending question from tool calls in the completed turn
           const turnConn = storeRef.current.connections.get(contextKey)
+          let pendingQuestionText: string | null = null
           if (turnConn?.liveMessage) {
             const blocks = turnConn.liveMessage.content
             for (let i = blocks.length - 1; i >= 0; i--) {
@@ -3474,6 +3599,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               if (normalized === "question") {
                 const questionText = extractQuestionText(block.info.raw_input)
                 if (questionText) {
+                  pendingQuestionText = questionText
                   dispatch({
                     type: "SET_PENDING_QUESTION",
                     contextKey,
@@ -3487,17 +3613,30 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               }
             }
           }
-          // Send OS notification when window is not focused
+          // Desktop notifications are always delivered; the web fallback
+          // suppresses them while its browser tab is focused.
           {
             const nc = storeRef.current.connections.get(contextKey)
             if (nc) {
               const agentLabel = getAgentLabel(nc.agentType)
-              const fn = folderNameRef.current
-              const title = fn ? `${fn} - Codeg` : "Codeg"
-              sendSystemNotification(
-                title,
-                t("notificationTurnComplete", { agent: agentLabel })
-              ).catch(() => {})
+              const key =
+                e.stop_reason === "end_turn"
+                  ? "notificationTurnComplete"
+                  : e.stop_reason === "cancelled"
+                    ? "notificationTurnCancelled"
+                    : null
+              if (key) {
+                const status = pendingQuestionText
+                  ? `${agentLabel} ${tChat("questionDialog.title")}`
+                  : t(key, { agent: agentLabel })
+                sendSystemNotification(
+                  notificationTitle(nc, status),
+                  notificationSummary(pendingQuestionText) ??
+                    lastAssistantText(turnConn?.liveMessage ?? null) ??
+                    t(key, { agent: agentLabel }),
+                  notificationTarget(nc)
+                ).catch(() => {})
+              }
             }
           }
           break
@@ -3604,14 +3743,14 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           // notification centers persist their payload outside the app, so
           // agent output must not be forwarded there.
           if (nc) {
-            const fn = folderNameRef.current
-            const title = fn ? `${fn} - Codeg` : "Codeg"
             sendSystemNotification(
-              title,
-              t("notificationError", {
-                agent: agentLabel,
-                message: localizedMessage,
-              })
+              notificationTitle(nc, `${agentLabel} ${t("eventErrorTitle")}`),
+              notificationSummary(localizedMessage) ??
+                t("notificationError", {
+                  agent: agentLabel,
+                  message: localizedMessage,
+                }),
+              notificationTarget(nc)
             ).catch(() => {})
           }
           break
@@ -3674,6 +3813,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       scheduleToolCallUpdateFlush,
       t,
       tChat,
+      notificationTitle,
     ]
   )
 

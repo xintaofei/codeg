@@ -2510,6 +2510,7 @@
         "toolFallbackTitle": "Werkzeug",
         "eventErrorTitle": "Agentenfehler",
         "notificationTurnComplete": "{agent} hat die Antwort abgeschlossen",
+        "notificationTurnCancelled": "Die Aufgabe von {agent} wurde unterbrochen",
         "notificationError": "{agent} Fehler: {message}",
         "claudeApiRetry": {
           "fallbackError": "authentication_failed",
@@ -4085,6 +4086,10 @@
     "loadFailed": "Laden fehlgeschlagen: {detail}"
   },
   "NotificationSoundSettings": {
+    "systemTitle": "Systembenachrichtigungen",
+    "systemDescription": "Zeigt eine Systembenachrichtigung an, wenn eine Aufgabe abgeschlossen, abgebrochen oder fehlgeschlagen ist oder deine Aufmerksamkeit benötigt. Ein Klick öffnet die passende Unterhaltung in Codeg.",
+    "systemOnlyWhenUnfocused": "Nur wenn das Codeg-Fenster nicht fokussiert ist",
+    "systemOnlyWhenUnfocusedHint": "Keine zusätzliche Benachrichtigung anzeigen, während du Codeg ansiehst.",
     "title": "Benachrichtigungstöne",
     "description": "Spielt einen kurzen Ton ab, wenn ein Agent-Ereignis eintritt. Es sind dieselben Ereignisse, die an die Chat-Kanäle gesendet werden; diese Einstellung gilt nur für dieses Gerät.",
     "enableHint": "Standardmäßig aus. Töne werden nur im Arbeitsbereich-Fenster dieses Browsers oder dieser App abgespielt.",

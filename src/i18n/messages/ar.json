@@ -2510,6 +2510,7 @@
         "toolFallbackTitle": "أداة",
         "eventErrorTitle": "خطأ الوكيل",
         "notificationTurnComplete": "{agent} أنهى الاستجابة",
+        "notificationTurnCancelled": "تمت مقاطعة مهمة {agent}",
         "notificationError": "{agent} خطأ: {message}",
         "claudeApiRetry": {
           "fallbackError": "authentication_failed",
@@ -4085,6 +4086,10 @@
     "loadFailed": "فشل التحميل: {detail}"
   },
   "NotificationSoundSettings": {
+    "systemTitle": "إشعارات النظام",
+    "systemDescription": "عرض إشعار نظام عند اكتمال المهمة أو توقفها أو فشلها أو حاجتها إلى انتباهك. يؤدي النقر عليه إلى فتح المحادثة المطابقة في Codeg.",
+    "systemOnlyWhenUnfocused": "فقط عندما لا تكون نافذة Codeg نشطة",
+    "systemOnlyWhenUnfocusedHint": "عدم عرض إشعار مكرر أثناء استخدام Codeg.",
     "title": "أصوات التنبيه",
     "description": "تشغيل صوت قصير عند وقوع حدث للوكيل. هي نفس الأحداث التي تُرسل إلى قنوات المحادثة، وهذا الإعداد يخص هذا الجهاز فقط.",
     "enableHint": "معطّل افتراضيًا. تُشغَّل الأصوات في نافذة مساحة العمل بهذا المتصفح أو التطبيق فقط.",

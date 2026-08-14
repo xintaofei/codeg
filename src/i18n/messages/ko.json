@@ -2510,6 +2510,7 @@
         "toolFallbackTitle": "도구",
         "eventErrorTitle": "에이전트 오류",
         "notificationTurnComplete": "{agent} 응답이 완료되었습니다",
+        "notificationTurnCancelled": "{agent} 작업이 중단되었습니다",
         "notificationError": "{agent} 오류: {message}",
         "claudeApiRetry": {
           "fallbackError": "authentication_failed",
@@ -4085,6 +4086,10 @@
     "loadFailed": "불러오기 실패: {detail}"
   },
   "NotificationSoundSettings": {
+    "systemTitle": "시스템 알림",
+    "systemDescription": "작업이 완료, 중단, 실패하거나 확인이 필요할 때 시스템 알림을 표시합니다. 클릭하면 Codeg의 해당 대화가 열립니다.",
+    "systemOnlyWhenUnfocused": "Codeg 창이 비활성화된 경우에만 알림",
+    "systemOnlyWhenUnfocusedHint": "Codeg를 보고 있는 동안에는 중복 알림을 표시하지 않습니다.",
     "title": "알림음",
     "description": "에이전트 이벤트가 발생하면 짧은 알림음을 재생합니다. 채팅 채널로 전송되는 것과 같은 이벤트이며, 이 설정은 이 기기에만 적용됩니다.",
     "enableHint": "기본값은 꺼짐입니다. 알림음은 이 브라우저 또는 앱의 작업 공간 창에서만 재생됩니다.",
