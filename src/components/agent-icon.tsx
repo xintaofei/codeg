@@ -389,6 +389,34 @@ const CursorMonoIcon = memo(function CursorMonoIcon({
   )
 })
 
+const DshColorIcon = memo(function DshColorIcon({ size = "1em" }: IconProps) {
+  // DeepSeek whale mark, approximated in the brand blue.
+  return (
+    <svg
+      height={size}
+      style={baseSvgStyle}
+      viewBox="0 0 24 24"
+      width={size}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <title>DeepSeek Harness</title>
+      <path
+        d="M21 14c0 3.3-2.9 5.5-6.8 5.5H9.6C5.8 19.5 3 17.3 3 14s2.8-5.5 6.6-5.5h8.1c2.3 0 3.9 1 4.6 2.4.3.7 0 1.4-.8 1.5l-2.1.3c-.4.1-.7.4-.7.8z"
+        fill="#4D6BFE"
+      />
+      <path
+        d="M3 13.2c-1.3-1.7-.7-4 1.2-5.1 1.4-.8 3.1-.7 4.3.4"
+        fill="none"
+        stroke="#4D6BFE"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="16.2" cy="12" r="1" fill="#fff" />
+    </svg>
+  )
+})
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyIcon = React.ComponentType<any>
 
@@ -399,6 +427,7 @@ const COLOR_ICONS: Partial<Record<AgentType, AnyIcon>> = {
   open_claw: OpenClawColorIcon,
   kimi_code: KimiCodeColorIcon,
   pi: PiColorIcon,
+  dsh: DshColorIcon,
 }
 
 const MONO_ICONS: Partial<Record<AgentType, AnyIcon>> = {
