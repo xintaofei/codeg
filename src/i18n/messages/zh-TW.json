@@ -1411,9 +1411,11 @@
     "loadFailed": "載入失敗：{message}",
     "closeActionTitle": "關閉行為",
     "closeActionDescription": "選擇點擊主視窗關閉按鈕時的行為。",
-    "closeActionHideToTray": "隱藏到系統托盤(背景執行)",
+    "closeActionHideToTray": "隱藏到系統托盤（背景執行）",
     "closeActionExit": "退出應用",
-    "closeActionSaveFailed": "儲存關閉行為設定失敗:{message}"
+    "closeActionTrayUnavailableHint": "目前工作階段未偵測到系統托盤，視窗隱藏後可能沒有圖示可以還原。重新啟動 Codeg 即可讓視窗回來。部分桌面環境無法偵測，托盤仍有可能正常運作。",
+    "closeActionLoadFailed": "載入關閉行為設定失敗：{message}",
+    "closeActionSaveFailed": "儲存關閉行為設定失敗：{message}"
   },
   "LoginPage": {
     "documentTitle": "登入 - codeg",

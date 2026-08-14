@@ -1915,42 +1915,165 @@ pub const TRAY_MENU_ID_SHOW: &str = "tray:show";
 pub const TRAY_MENU_ID_QUIT: &str = "tray:quit";
 pub const TRAY_ICON_ID: &str = "codeg-tray";
 
-/// True after `install_tray_icon` finishes successfully and the tray is
-/// actually usable (on Linux, that requires a running
-/// StatusNotifierWatcher — see `linux_status_notifier_available`).
-/// The hide-on-close path in `lib.rs` consults this to avoid stranding
-/// the user when the tray is unavailable.
+/// True after `install_tray_icon` returns `Ok`. A hard fact: with no tray icon
+/// installed at all there is nothing to restore the window from, so the
+/// hide-on-close path in `lib.rs` refuses to hide regardless of what the user
+/// picked. Contrast `tray_probably_visible`, which is a guess.
 #[cfg(feature = "tauri-runtime")]
 static TRAY_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
-/// On Linux, Tauri's tray `build()` can succeed even when no
-/// StatusNotifierWatcher is available (notably GNOME 45+ without an
-/// AppIndicator extension). In that case the icon is silently invisible
-/// and hiding the window would strand the user, so only treat the tray
-/// as available when the desktop actually provides the D-Bus service.
-#[cfg(all(target_os = "linux", feature = "tauri-runtime"))]
-fn linux_status_notifier_available() -> bool {
-    crate::process::std_command("gdbus")
-        .args([
-            "call",
-            "--session",
-            "--dest",
-            "org.freedesktop.DBus",
-            "--object-path",
-            "/org/freedesktop/DBus",
-            "--method",
-            "org.freedesktop.DBus.NameHasOwner",
-            "org.kde.StatusNotifierWatcher",
-        ])
-        .output()
-        .map(|out| out.status.success() && String::from_utf8_lossy(&out.stdout).contains("true"))
-        .unwrap_or(false)
+/// Best-effort guess at whether a tray icon is actually visible in this
+/// session. Only ever used to pick a default and to warn in the settings UI —
+/// never to override an explicit choice, because it is wrong in both
+/// directions:
+///
+///   * false positive — a `StatusNotifierWatcher` can be registered with no
+///     host displaying items, which is why this asks for
+///     `IsStatusNotifierHostRegistered` rather than just probing the bus name.
+///   * false negative — with no watcher at all, libayatana-appindicator falls
+///     back to a legacy `GtkStatusIcon`, which an XFCE/MATE panel shows
+///     happily. Nothing on the bus reflects that, so this reports `false`
+///     while the icon is right there.
+///
+/// Probed lazily rather than cached at startup: a user can install the GNOME
+/// AppIndicator extension or restart their panel while the app is running.
+#[cfg(feature = "tauri-runtime")]
+pub fn tray_probably_visible() -> bool {
+    // Nothing was installed, so nothing can be visible — and this skips the
+    // bus round trip in the case where the answer is already known.
+    if !TRAY_AVAILABLE.load(AtomicOrdering::Relaxed) {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux_status_notifier_host_registered()
+    }
+    // macOS and Windows both have a real tray; a successful install is the
+    // whole story there.
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
 }
 
-/// Whether hide-on-close is safe on this platform/session. When false,
-/// the close handler in `lib.rs` forces a real app exit instead — both
-/// `hide()` and `minimize()` would leave aux windows (pet, settings)
-/// running without a recoverable workspace.
+/// Read `IsStatusNotifierHostRegistered` off the session bus — the spec's own
+/// signal for "something is displaying tray items", as opposed to merely
+/// "a watcher exists".
+///
+/// Uses zbus rather than shelling out to `gdbus`: that binary lives in a
+/// separate package (`libglib2.0-bin` on Debian) that a GTK runtime does not
+/// pull in, and a missing binary would read as "no tray" on a machine where the
+/// tray works. A method timeout bounds the round trip; an outer recv_timeout
+/// covers connection establishment.
+///
+/// Single-flight: concurrent calls wait for a shared result rather than each
+/// spawning a probe thread, avoiding thread accumulation when the settings page
+/// is opened repeatedly or saves happen in quick succession.
+#[cfg(all(target_os = "linux", feature = "tauri-runtime"))]
+fn linux_status_notifier_host_registered() -> bool {
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::Duration;
+
+    /// Generous for a healthy session bus, short enough that a wedged one
+    /// doesn't hold up the settings page.
+    const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+    #[derive(Clone, Copy)]
+    enum ProbeState {
+        Idle,
+        Running,
+        Complete(bool),
+    }
+
+    static PROBE: std::sync::OnceLock<(Arc<Mutex<ProbeState>>, Arc<Condvar>)> =
+        std::sync::OnceLock::new();
+    let (state_lock, condvar) = PROBE.get_or_init(|| {
+        (
+            Arc::new(Mutex::new(ProbeState::Idle)),
+            Arc::new(Condvar::new()),
+        )
+    });
+
+    let mut state = state_lock.lock().unwrap();
+
+    match *state {
+        ProbeState::Complete(result) => return result,
+        ProbeState::Running => {
+            // Another thread is probing; wait for its result.
+            let wait_result = condvar
+                .wait_timeout(state, PROBE_TIMEOUT + Duration::from_millis(100))
+                .unwrap();
+            state = wait_result.0;
+            return match *state {
+                ProbeState::Complete(result) => result,
+                _ => {
+                    tracing::warn!(
+                        "[Tray] Probe still running after timeout; assuming no tray"
+                    );
+                    false
+                }
+            };
+        }
+        ProbeState::Idle => {
+            *state = ProbeState::Running;
+        }
+    }
+    drop(state);
+
+    // We are now responsible for running the probe.
+    let state_lock_clone = Arc::clone(state_lock);
+    let condvar_clone = Arc::clone(condvar);
+
+    std::thread::Builder::new()
+        .name("tray-probe".into())
+        .spawn(move || {
+            let registered = zbus::blocking::connection::Builder::session()
+                .and_then(|builder| builder.method_timeout(PROBE_TIMEOUT).build())
+                .and_then(|connection| {
+                    zbus::blocking::Proxy::new(
+                        &connection,
+                        "org.kde.StatusNotifierWatcher",
+                        "/StatusNotifierWatcher",
+                        "org.kde.StatusNotifierWatcher",
+                    )
+                })
+                .and_then(|proxy| proxy.get_property::<bool>("IsStatusNotifierHostRegistered"))
+                .unwrap_or(false);
+
+            let mut state = state_lock_clone.lock().unwrap();
+            *state = ProbeState::Complete(registered);
+            condvar_clone.notify_all();
+        })
+        .ok();
+
+    // Wait for the probe to complete.
+    let mut state = state_lock.lock().unwrap();
+    let wait_result = condvar
+        .wait_timeout(state, PROBE_TIMEOUT + Duration::from_millis(100))
+        .unwrap();
+    state = wait_result.0;
+
+    match *state {
+        ProbeState::Complete(result) => result,
+        _ => {
+            tracing::warn!("[Tray] Probe thread did not complete; assuming no tray");
+            false
+        }
+    }
+}
+
+/// Whether hiding on close can be honoured at all. False only when no tray
+/// icon was installed, in which case the close handler in `lib.rs` forces a
+/// real exit — both `hide()` and `minimize()` would leave aux windows (pet,
+/// settings) running without a recoverable workspace.
+///
+/// Deliberately *not* gated on `tray_probably_visible()`: that probe cannot see
+/// a legacy `GtkStatusIcon` tray, so consulting it here would refuse to hide on
+/// desktops where the icon is plainly working. An explicit hide-to-tray choice
+/// is not blocked by the advisory visibility probe; the hard tray-installation
+/// gate still applies. The settings page warns when the tray looks unavailable,
+/// and a second launch re-shows the window via the single-instance handler if
+/// the icon really was invisible.
 #[cfg(feature = "tauri-runtime")]
 pub fn can_hide_to_tray() -> bool {
     TRAY_AVAILABLE.load(AtomicOrdering::Relaxed)
@@ -2097,21 +2220,6 @@ pub fn install_tray_icon(
         })
         .build(app)?;
 
-    // On Linux, verify the tray is actually visible before trusting it.
-    // Tauri's tray build() succeeds even when StatusNotifierWatcher is
-    // absent (GNOME 45+), leaving the icon invisible. Detect that case
-    // and leave TRAY_AVAILABLE false so the close handler exits instead
-    // of hiding the window with no way to bring it back.
-    #[cfg(target_os = "linux")]
-    if !linux_status_notifier_available() {
-        tracing::warn!(
-            "[Tray] StatusNotifierWatcher not found — hiding on close will be disabled"
-        );
-    } else {
-        TRAY_AVAILABLE.store(true, AtomicOrdering::Relaxed);
-    }
-
-    #[cfg(not(target_os = "linux"))]
     TRAY_AVAILABLE.store(true, AtomicOrdering::Relaxed);
     Ok(())
 }

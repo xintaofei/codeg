@@ -1411,9 +1411,11 @@
     "loadFailed": "Échec du chargement : {message}",
     "closeActionTitle": "Comportement de fermeture",
     "closeActionDescription": "Choisissez ce qui se passe lorsque vous cliquez sur le bouton de fermeture de la fenêtre principale.",
-    "closeActionHideToTray": "Masquer dans la barre d'état (arrière-plan)",
-    "closeActionExit": "Quitter l'application",
-    "closeActionSaveFailed": "Échec de l'enregistrement du comportement:{message}"
+    "closeActionHideToTray": "Masquer dans la barre d’état (arrière-plan)",
+    "closeActionExit": "Quitter l’application",
+    "closeActionTrayUnavailableHint": "Aucune barre d’état système n’a été détectée dans cette session ; la fenêtre risque donc d’être masquée sans icône pour la restaurer. Relancer Codeg la fait revenir. Certains environnements de bureau ne sont pas détectables, la barre d’état peut donc fonctionner malgré tout.",
+    "closeActionLoadFailed": "Échec du chargement du comportement de fermeture : {message}",
+    "closeActionSaveFailed": "Échec de l’enregistrement du comportement de fermeture : {message}"
   },
   "LoginPage": {
     "documentTitle": "Connexion - codeg",

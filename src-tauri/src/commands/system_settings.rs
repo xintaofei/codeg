@@ -12,7 +12,7 @@ use crate::db::AppDatabase;
 #[cfg(feature = "tauri-runtime")]
 use crate::models::SystemRenderingSettings;
 #[cfg(feature = "tauri-runtime")]
-use crate::models::SystemCloseSettings;
+use crate::models::{CloseAction, SystemCloseSettings, SystemCloseSettingsInfo};
 use crate::models::{
     AvailableTerminalShells, SystemLanguageSettings, SystemProxySettings, SystemTerminalSettings,
     TerminalShellOption,
@@ -22,6 +22,11 @@ use crate::network::proxy;
 #[cfg(feature = "tauri-runtime")]
 use crate::preferences;
 use crate::terminal::manager::resolve_shell;
+
+#[cfg(feature = "tauri-runtime")]
+use tokio::sync::Mutex;
+#[cfg(feature = "tauri-runtime")]
+use std::sync::OnceLock;
 
 pub(crate) const SYSTEM_PROXY_SETTINGS_KEY: &str = "system_proxy_settings";
 pub(crate) const SYSTEM_LANGUAGE_SETTINGS_KEY: &str = "system_language_settings";
@@ -281,6 +286,53 @@ pub(crate) async fn load_system_close_settings(
     })
 }
 
+/// Cached copy of the persisted `CloseAction`, so the window's `CloseRequested`
+/// handler can decide synchronously. That callback runs on the GUI event-loop
+/// thread, where a `block_on` DB read would hold the whole UI for as long as
+/// SQLite takes to answer — a `busy_timeout` retry budget plus pool
+/// `connect_timeout` — for a value that only changes when the user changes it.
+///
+/// Follows the same load-once-then-cache shape as `CACHED_APPEARANCE_MODE`:
+/// primed at startup by `prime_close_settings_cache`, refreshed by
+/// `update_system_close_settings`.
+#[cfg(feature = "tauri-runtime")]
+static CACHED_CLOSE_ACTION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(
+    // Pre-startup fallback: matches `CloseAction::default()` for this platform
+    // in case a close somehow arrives before the cache is primed.
+    !cfg!(target_os = "linux"),
+);
+
+#[cfg(feature = "tauri-runtime")]
+fn store_cached_close_action(action: CloseAction) {
+    CACHED_CLOSE_ACTION.store(
+        action == CloseAction::HideToTray,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// The persisted close action, readable from a synchronous context.
+#[cfg(feature = "tauri-runtime")]
+pub fn cached_close_action() -> CloseAction {
+    if CACHED_CLOSE_ACTION.load(std::sync::atomic::Ordering::Relaxed) {
+        CloseAction::HideToTray
+    } else {
+        CloseAction::Exit
+    }
+}
+
+/// Prime the cache during setup, next to the other persisted-settings loads.
+#[cfg(feature = "tauri-runtime")]
+pub(crate) async fn prime_close_settings_cache(conn: &DatabaseConnection) {
+    match load_system_close_settings(conn).await {
+        Ok(settings) => store_cached_close_action(settings.action),
+        Err(err) => {
+            // Keep the platform default rather than failing startup; the user
+            // can re-pick in settings, which rewrites the row.
+            tracing::warn!("[Close] failed to load close settings, using default: {err}");
+        }
+    }
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn get_system_proxy_settings(
@@ -329,16 +381,31 @@ pub async fn get_system_terminal_settings(
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn get_system_close_settings(
     db: State<'_, AppDatabase>,
-) -> Result<SystemCloseSettings, AppCommandError> {
-    load_system_close_settings(&db.conn).await
+) -> Result<SystemCloseSettingsInfo, AppCommandError> {
+    let settings = load_system_close_settings(&db.conn).await?;
+    Ok(SystemCloseSettingsInfo {
+        action: settings.action,
+        // Probed per read rather than cached: the user may have installed a
+        // tray extension or restarted their panel since launch, and opening
+        // this page is exactly when a stale answer would mislead them.
+        tray_available: crate::commands::windows::tray_probably_visible(),
+    })
 }
+
+/// Serializes overlapping update_system_close_settings calls so the cache always
+/// reflects the last successfully committed value, never an intermediate state.
+#[cfg(feature = "tauri-runtime")]
+static CLOSE_SETTINGS_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn update_system_close_settings(
     settings: SystemCloseSettings,
     db: State<'_, AppDatabase>,
-) -> Result<SystemCloseSettings, AppCommandError> {
+) -> Result<SystemCloseSettingsInfo, AppCommandError> {
+    let lock = CLOSE_SETTINGS_WRITE_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock.lock().await;
+
     let serialized = serde_json::to_string(&settings).map_err(|e| {
         AppCommandError::invalid_input("Failed to serialize close settings")
             .with_detail(e.to_string())
@@ -348,7 +415,20 @@ pub async fn update_system_close_settings(
         .await
         .map_err(AppCommandError::from)?;
 
-    Ok(settings)
+    // Only after the write lands, so a failed write leaves the close handler
+    // acting on the value that is actually stored. The mutex ensures concurrent
+    // writes commit and update the cache in the same order.
+    store_cached_close_action(settings.action);
+
+    // Drop the lock before the tray probe, which can block for up to 2 seconds
+    // on Linux. This prevents subsequent writes from being delayed by an
+    // advisory check that doesn't affect correctness.
+    drop(_guard);
+
+    Ok(SystemCloseSettingsInfo {
+        action: settings.action,
+        tray_available: crate::commands::windows::tray_probably_visible(),
+    })
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -456,5 +536,104 @@ mod tests {
             restarted_config.snapshot().await.as_deref(),
             Some("pwsh.exe")
         );
+    }
+}
+
+#[cfg(all(test, feature = "tauri-runtime"))]
+mod close_settings_tests {
+    use super::*;
+    use crate::db::test_helpers::fresh_in_memory_db;
+
+    /// A fresh install has no row, and must not error into "no preference".
+    #[tokio::test]
+    async fn missing_key_falls_back_to_the_platform_default() {
+        let db = fresh_in_memory_db().await;
+
+        let settings = load_system_close_settings(&db.conn)
+            .await
+            .expect("a missing key is not an error");
+
+        assert_eq!(settings, SystemCloseSettings::default());
+        // Linux users keep the pre-setting behaviour unless they opt in.
+        if cfg!(target_os = "linux") {
+            assert_eq!(settings.action, CloseAction::Exit);
+        } else {
+            assert_eq!(settings.action, CloseAction::HideToTray);
+        }
+    }
+
+    /// Garbage in the row is surfaced rather than silently read as a default —
+    /// the close handler falls back on its own, but a caller asking for the
+    /// stored value deserves to know it could not be read.
+    #[tokio::test]
+    async fn malformed_json_is_an_error() {
+        let db = fresh_in_memory_db().await;
+        app_metadata_service::upsert_value(&db.conn, SYSTEM_CLOSE_SETTINGS_KEY, "{not json")
+            .await
+            .expect("seed the row");
+
+        let err = load_system_close_settings(&db.conn)
+            .await
+            .expect_err("malformed JSON must not read as a default");
+
+        assert!(
+            err.to_string().contains("close settings"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn both_actions_round_trip_through_the_row() {
+        let db = fresh_in_memory_db().await;
+
+        for action in [CloseAction::Exit, CloseAction::HideToTray] {
+            let serialized =
+                serde_json::to_string(&SystemCloseSettings { action }).expect("serialize");
+            app_metadata_service::upsert_value(&db.conn, SYSTEM_CLOSE_SETTINGS_KEY, &serialized)
+                .await
+                .expect("persist");
+
+            let reloaded = load_system_close_settings(&db.conn).await.expect("reload");
+            assert_eq!(reloaded.action, action);
+        }
+    }
+
+    /// The wire form is what the TypeScript mirror declares.
+    #[test]
+    fn actions_serialize_in_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&CloseAction::HideToTray).unwrap(),
+            "\"hide_to_tray\""
+        );
+        assert_eq!(
+            serde_json::to_string(&CloseAction::Exit).unwrap(),
+            "\"exit\""
+        );
+    }
+
+    /// The close handler reads this cache instead of the DB, so a stale value
+    /// here means the close button ignores what the user picked.
+    ///
+    /// One test rather than several: the cache is process-global, and separate
+    /// tests would race each other under the parallel test runner.
+    #[tokio::test]
+    async fn the_cache_tracks_writes_and_the_persisted_value() {
+        for action in [CloseAction::Exit, CloseAction::HideToTray, CloseAction::Exit] {
+            store_cached_close_action(action);
+            assert_eq!(cached_close_action(), action);
+        }
+
+        let db = fresh_in_memory_db().await;
+        let serialized = serde_json::to_string(&SystemCloseSettings {
+            action: CloseAction::HideToTray,
+        })
+        .expect("serialize");
+        app_metadata_service::upsert_value(&db.conn, SYSTEM_CLOSE_SETTINGS_KEY, &serialized)
+            .await
+            .expect("persist");
+
+        store_cached_close_action(CloseAction::Exit);
+        prime_close_settings_cache(&db.conn).await;
+        assert_eq!(cached_close_action(), CloseAction::HideToTray);
     }
 }

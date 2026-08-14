@@ -1413,7 +1413,9 @@
     "closeActionDescription": "Escolha o que acontece quando o botão de fechar da janela principal é clicado.",
     "closeActionHideToTray": "Ocultar na bandeja (segundo plano)",
     "closeActionExit": "Sair do aplicativo",
-    "closeActionSaveFailed": "Falha ao salvar comportamento:{message}"
+    "closeActionTrayUnavailableHint": "Nenhuma bandeja do sistema foi detectada nesta sessão, então a janela pode ser ocultada sem um ícone para restaurá-la. Abrir o Codeg novamente traz a janela de volta. Alguns ambientes de desktop não são detectáveis, portanto a bandeja ainda pode funcionar.",
+    "closeActionLoadFailed": "Falha ao carregar o comportamento ao fechar: {message}",
+    "closeActionSaveFailed": "Falha ao salvar o comportamento ao fechar: {message}"
   },
   "LoginPage": {
     "documentTitle": "Entrar - codeg",

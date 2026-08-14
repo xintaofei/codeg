@@ -337,6 +337,13 @@ mod tauri_app {
                 tauri::async_runtime::block_on(windows::load_saved_zoom(&db.conn));
                 tauri::async_runtime::block_on(windows::load_saved_appearance_mode(&db.conn));
 
+                // Close-button behaviour, cached here so the window event
+                // handler never has to touch the DB. See
+                // `prime_close_settings_cache`.
+                tauri::async_runtime::block_on(
+                    crate::commands::system_settings::prime_close_settings_cache(&db.conn),
+                );
+
                 // System tray: required for the WeChat-style hide-on-close
                 // flow on Windows/Linux (no built-in dock to bring the
                 // workspace back). Locale comes from the persisted language
@@ -923,14 +930,13 @@ mod tauri_app {
 
                 if label == "main" {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        // The close button does one of two things, depending
-                        // on whether the platform can keep the workspace
-                        // recoverable while it's hidden:
+                        // The close button does one of two things:
                         //
-                        //   * tray usable (macOS, Windows + tray): WeChat-style
-                        //     hide. App keeps running, tray brings it back.
-                        //   * tray not usable (Linux, tray install failed):
-                        //     force a real app exit. Letting only `main`
+                        //   * hide, WeChat-style — when the user chose
+                        //     hide-to-tray AND a tray icon was successfully
+                        //     installed. Both gates apply: without a tray there
+                        //     is no way to bring the workspace back.
+                        //   * force a real app exit. Letting only `main`
                         //     close would orphan the desktop pet and other
                         //     aux windows in a process with no workspace and
                         //     no way to bring it back — `pet` runs with
@@ -938,28 +944,18 @@ mod tauri_app {
                         //     callback's `show_main_window` is a no-op once
                         //     main is destroyed.
                         //
+                        // The choice is read from a cache primed at setup, not
+                        // the DB: this runs on the GUI event-loop thread, where
+                        // a blocking query would stall every window in the app.
+                        //
                         // ExitRequested itself reaches this branch with
                         // APP_QUITTING already set — that's the only path
                         // that should fall through to the cleanup below.
                         if !APP_QUITTING.load(Ordering::Relaxed) {
                             api.prevent_close();
-                            let close_action = window.app_handle()
-                                .try_state::<db::AppDatabase>()
-                                .map(|db| {
-                                    tauri::async_runtime::block_on(
-                                        crate::commands::system_settings::load_system_close_settings(
-                                            &db.conn,
-                                        ),
-                                    )
-                                })
-                                .transpose()
-                                .ok()
-                                .flatten()
-                                .map(|settings| settings.action)
-                                .unwrap_or_default();
-
                             let should_hide =
-                                close_action == crate::models::CloseAction::HideToTray
+                                crate::commands::system_settings::cached_close_action()
+                                    == crate::models::CloseAction::HideToTray
                                     && windows::can_hide_to_tray();
                             if should_hide {
                                 let _ = window.hide();

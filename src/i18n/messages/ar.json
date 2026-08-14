@@ -1413,7 +1413,9 @@
     "closeActionDescription": "اختر ما يحدث عند النقر على زر إغلاق النافذة الرئيسية.",
     "closeActionHideToTray": "إخفاء في شريط النظام (خلفية)",
     "closeActionExit": "إنهاء التطبيق",
-    "closeActionSaveFailed": "فشل حفظ سلوك الإغلاق:{message}"
+    "closeActionTrayUnavailableHint": "لم يتم العثور على شريط نظام في هذه الجلسة، لذا قد تُخفى النافذة دون وجود أيقونة لاستعادتها. تشغيل Codeg مرة أخرى يعيد النافذة. بعض بيئات سطح المكتب لا يمكن الكشف عنها، لذا قد يعمل شريط النظام على أي حال.",
+    "closeActionLoadFailed": "فشل تحميل سلوك الإغلاق: {message}",
+    "closeActionSaveFailed": "فشل حفظ سلوك الإغلاق: {message}"
   },
   "LoginPage": {
     "documentTitle": "تسجيل الدخول - codeg",

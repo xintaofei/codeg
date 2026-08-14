@@ -29,6 +29,8 @@ tauri-runtime = [
     "dep:tauri-plugin-notification",
     "dep:tauri-plugin-single-instance",
     "dep:keyring",
+    # Linux-only; a no-op on other targets, where the dep does not exist.
+    "dep:zbus",
 ]
 # Exposes test scaffolding (`AppState::new_for_test`, `EventEmitter::test_web_only`,
 # `ConnectionManager::insert_test_connection`, parser `with_base_dir`, the
@@ -151,6 +153,16 @@ junction = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Probing the session bus for a StatusNotifier host, to tell whether a tray
+# icon will actually be visible. Optional so the server binary — which has no
+# tray and would otherwise compile this for nothing — leaves it out; the desktop
+# feature pulls it in. Already in the desktop dependency graph via the
+# notification / opener / single-instance plugins, so this pins no new code.
+# Keep it on the default (async-io) executor: the `tokio` feature is additive
+# across the graph and would switch those plugins' executor too.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5.13", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

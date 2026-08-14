@@ -48,10 +48,14 @@ pub use work_task::{
     WorkTaskQueuedMerge, WorkTaskStatus, WorkTaskTemplateDraft, WorkTaskTemplateInfo,
     STAGE_PROMPT_ALL,
 };
+// Desktop-only: these configure the Tauri shell itself and have no meaning in
+// the server binary, which serves a browser with no window of its own.
 #[cfg(feature = "tauri-runtime")]
-pub use system::SystemRenderingSettings;
 pub use system::{
-    AvailableTerminalShells, CloseAction, GitCredentials, GitDetectResult, GitHubAccountsSettings,
-    GitHubTokenValidation, GitSettings, SystemCloseSettings, SystemLanguageSettings, SystemProxySettings,
+    CloseAction, SystemCloseSettings, SystemCloseSettingsInfo, SystemRenderingSettings,
+};
+pub use system::{
+    AvailableTerminalShells, GitCredentials, GitDetectResult, GitHubAccountsSettings,
+    GitHubTokenValidation, GitSettings, SystemLanguageSettings, SystemProxySettings,
     SystemTerminalSettings, TerminalShellOption,
 };

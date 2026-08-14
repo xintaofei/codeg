@@ -1411,9 +1411,11 @@
     "loadFailed": "加载失败：{message}",
     "closeActionTitle": "关闭行为",
     "closeActionDescription": "选择点击主窗口关闭按钮时的行为。",
-    "closeActionHideToTray": "隐藏到系统托盘(后台运行)",
+    "closeActionHideToTray": "隐藏到系统托盘（后台运行）",
     "closeActionExit": "退出应用",
-    "closeActionSaveFailed": "保存关闭行为设置失败:{message}"
+    "closeActionTrayUnavailableHint": "当前会话未检测到系统托盘，窗口隐藏后可能没有图标可以恢复。重新启动 Codeg 即可让窗口回来。部分桌面环境无法检测，托盘仍有可能正常工作。",
+    "closeActionLoadFailed": "加载关闭行为设置失败：{message}",
+    "closeActionSaveFailed": "保存关闭行为设置失败：{message}"
   },
   "LoginPage": {
     "documentTitle": "登录 - codeg",

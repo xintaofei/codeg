@@ -1413,7 +1413,9 @@
     "closeActionDescription": "Elija qué sucede al hacer clic en el botón de cerrar de la ventana principal.",
     "closeActionHideToTray": "Ocultar en la bandeja (fondo)",
     "closeActionExit": "Salir de la aplicación",
-    "closeActionSaveFailed": "Error al guardar comportamiento:{message}"
+    "closeActionTrayUnavailableHint": "No se detectó una bandeja del sistema en esta sesión, por lo que la ventana podría ocultarse sin un icono para restaurarla. Al abrir Codeg de nuevo la ventana vuelve. Algunos escritorios no se pueden detectar, así que la bandeja aún podría funcionar.",
+    "closeActionLoadFailed": "Error al cargar el comportamiento al cerrar: {message}",
+    "closeActionSaveFailed": "Error al guardar el comportamiento al cerrar: {message}"
   },
   "LoginPage": {
     "documentTitle": "Iniciar sesión - codeg",
