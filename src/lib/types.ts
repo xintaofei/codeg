@@ -1036,7 +1036,7 @@ export const AGENT_LABELS: Record<BuiltinAgentType, string> = {
   pi: "Pi",
   grok: "Grok",
   cursor: "Cursor",
-  dsh: "DeepSeek Harness (DSH)",
+  dsh: "DeepSeek Harness",
 }
 
 export const AGENT_COLORS: Record<BuiltinAgentType, string> = {

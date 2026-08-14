@@ -194,7 +194,7 @@ impl fmt::Display for AgentType {
             AgentType::Pi => write!(f, "Pi"),
             AgentType::Grok => write!(f, "Grok"),
             AgentType::Cursor => write!(f, "Cursor"),
-            AgentType::Dsh => write!(f, "DeepSeek Harness (DSH)"),
+            AgentType::Dsh => write!(f, "DeepSeek Harness"),
             // Prefer the registered display name; fall back to the raw id when
             // the registry has not been hydrated (or the agent was deleted
             // while conversations still reference it).

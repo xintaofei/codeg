@@ -752,7 +752,7 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // DSH's automation-only ACP bridge rejects mcpServers, same as
             // OpenClaw; forwarding any entry makes session/new fail.
             supports_mcp: false,
-            name: "DeepSeek Harness (DSH)",
+            name: "DeepSeek Harness",
             description: "DeepSeek Harness coding agent (ACP, automation-only)",
             distribution: AgentDistribution::Npx {
                 version: "0.1.1",
