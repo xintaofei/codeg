@@ -419,6 +419,17 @@ export interface DbConversationSummary {
 
 export type SearchMatchKind = "title" | "content" | "both"
 
+export type SearchMatchLocationKind = "title" | "content"
+
+/** Precise location of one search hit inside a conversation. */
+export interface SearchMatchLocation {
+  kind: SearchMatchLocationKind
+  turn_id: string | null
+  block_index: number | null
+  char_start: number
+  char_end: number
+}
+
 /** Conversation-level search result returned by the content-search dialog. */
 export interface DbConversationSearchResult {
   summary: DbConversationSummary
@@ -427,6 +438,8 @@ export interface DbConversationSearchResult {
   snippet_match: string | null
   snippet_suffix: string | null
   content_match_count: number
+  matches: SearchMatchLocation[]
+  total_match_count: number
 }
 
 export interface SearchIndexStatus {

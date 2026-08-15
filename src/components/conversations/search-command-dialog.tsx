@@ -41,6 +41,7 @@ import {
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import { formatConversationTitle } from "@/lib/conversation-title"
+import { useSearchFocusStore } from "@/stores/search-focus-store"
 
 type SearchTab = "conversations" | "files"
 
@@ -157,6 +158,9 @@ export function SearchCommandDialog({
 
   // Reset state when dialog closes
   useEffect(() => {
+    if (open) {
+      useSearchFocusStore.getState().clear()
+    }
     if (!open) {
       setQuery("")
       setAgentFilter(null)
@@ -206,6 +210,22 @@ export function SearchCommandDialog({
       // isn't stranded behind the route overlay — covers re-selecting the
       // already-active tab, which doesn't change activeTabId.
       openConversations()
+      const occurrenceByTurn = new Map<string, number>()
+      const contentMatches = conv.matches
+        .filter((match) => match.kind === "content")
+        .map((match) => {
+          const turnKey = match.turn_id ?? ""
+          const occurrenceIndex = occurrenceByTurn.get(turnKey) ?? 0
+          occurrenceByTurn.set(turnKey, occurrenceIndex + 1)
+          return { ...match, occurrenceIndex }
+        })
+      useSearchFocusStore.getState().setFocus({
+        conversationId: conv.summary.id,
+        query,
+        titleMatches: conv.matches.filter((match) => match.kind === "title"),
+        contentMatches,
+        activeMatchIndex: 0,
+      })
       openTab(
         conv.summary.folder_id,
         conv.summary.id,
@@ -214,7 +234,7 @@ export function SearchCommandDialog({
       )
       onOpenChange(false)
     },
-    [openTab, onOpenChange, openConversations]
+    [openTab, onOpenChange, openConversations, query]
   )
 
   const handleSelectFile = useCallback(

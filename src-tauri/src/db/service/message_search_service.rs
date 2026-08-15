@@ -11,9 +11,9 @@ use crate::db::entities::{
 };
 use crate::db::error::DbError;
 use crate::models::AgentType;
-use crate::search::normalizer::NormalizedDocument;
+use crate::search::normalizer::{NormalizedBlockOffset, NormalizedDocument};
 
-pub const SEARCH_SCHEMA_VERSION: i32 = 1;
+pub const SEARCH_SCHEMA_VERSION: i32 = 2;
 pub const MODE_SCAN: &str = "scan";
 pub const MODE_FTS: &str = "fts";
 pub const USER_MODE_AUTO: &str = "auto";
@@ -142,6 +142,7 @@ pub async fn upsert_document(
         let mut active: message_search_document::ActiveModel = existing.into();
         active.text = Set(doc.text.clone());
         active.content_hash = Set(doc.content_hash.clone());
+        active.block_offsets = Set(block_offsets_json(doc)?);
         active.source_ended_at = Set(source_ended_at);
         active.source_message_count = Set(source_message_count);
         active.updated_at = Set(Utc::now());
@@ -154,6 +155,7 @@ pub async fn upsert_document(
             conversation_id: Set(conversation_id),
             text: Set(doc.text.clone()),
             content_hash: Set(doc.content_hash.clone()),
+            block_offsets: Set(block_offsets_json(doc)?),
             source_ended_at: Set(source_ended_at),
             source_message_count: Set(source_message_count),
             updated_at: Set(now),
@@ -164,6 +166,11 @@ pub async fn upsert_document(
     sync_fts_rows(&txn, id, doc, sync).await?;
     txn.commit().await?;
     Ok(id)
+}
+
+fn block_offsets_json(doc: &NormalizedDocument) -> Result<String, DbError> {
+    serde_json::to_string(&doc.blocks)
+        .map_err(|error| DbError::Migration(format!("serialize block offsets: {error}")))
 }
 
 pub async fn delete_document(
@@ -317,7 +324,7 @@ pub async fn indexable_conversation_count(conn: &DatabaseConnection) -> Result<i
 pub async fn list_documents_by_conversation(
     conn: &DatabaseConnection,
     conversation_ids: &[i32],
-) -> Result<Vec<(i32, String, String)>, DbError> {
+) -> Result<Vec<(i32, String, Vec<NormalizedBlockOffset>)>, DbError> {
     if conversation_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -326,8 +333,20 @@ pub async fn list_documents_by_conversation(
         .all(conn)
         .await?
         .into_iter()
-        .map(|model| (model.conversation_id, model.text, model.content_hash))
+        .map(|model| {
+            (
+                model.conversation_id,
+                model.text,
+                parse_block_offsets(&model.block_offsets),
+            )
+        })
         .collect())
+}
+
+/// Decode indexed block offsets. Legacy rows fall back to an empty manifest,
+/// which keeps search working but disables precise jump/highlighting.
+pub fn parse_block_offsets(raw: &str) -> Vec<NormalizedBlockOffset> {
+    serde_json::from_str(raw).unwrap_or_default()
 }
 
 pub async fn list_indexable_conversations(
@@ -368,6 +387,7 @@ pub async fn rebuild_fts_from_documents(
             let doc = NormalizedDocument {
                 text: model.text.clone(),
                 content_hash: model.content_hash.clone(),
+                blocks: parse_block_offsets(&model.block_offsets),
             };
             if sync.trigram {
                 txn.execute(Statement::from_sql_and_values(
@@ -396,13 +416,49 @@ pub async fn rebuild_fts_from_documents(
 mod tests {
     use super::*;
     use crate::db::test_helpers::{fresh_in_memory_db, seed_conversation, seed_folder};
-    use crate::search::normalizer::NormalizedDocument;
+    use crate::search::normalizer::{NormalizedBlockOffset, NormalizedDocument};
 
     fn doc(text: &str) -> NormalizedDocument {
         NormalizedDocument {
             text: text.to_string(),
             content_hash: crate::search::normalizer::sha256_hex(text),
+            blocks: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn upsert_persists_block_offsets() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/search-offsets").await;
+        let conversation_id = seed_conversation(&db, folder_id, AgentType::Codex).await;
+        let doc = NormalizedDocument {
+            text: "hello".to_string(),
+            content_hash: crate::search::normalizer::sha256_hex("hello"),
+            blocks: vec![NormalizedBlockOffset {
+                turn_id: "turn-1".to_string(),
+                block_index: 0,
+                start: 0,
+                end: 5,
+                leading_trim: 0,
+            }],
+        };
+
+        upsert_document(
+            &db.conn,
+            conversation_id,
+            &doc,
+            None,
+            1,
+            SyncFlags::default(),
+        )
+        .await
+        .expect("insert");
+
+        let rows = list_documents_by_conversation(&db.conn, &[conversation_id])
+            .await
+            .expect("documents");
+        assert_eq!(rows[0].2[0].turn_id, "turn-1");
+        assert_eq!(rows[0].2[0].block_index, 0);
     }
 
     #[tokio::test]

@@ -2553,3 +2553,20 @@ div.monaco-diff-editor.side-by-side .editor.modified {
   --tu-seq-6: color-mix(in oklab, var(--tu-accent) 81%, var(--card));
   --tu-seq-7: var(--tu-accent);
 }
+
+/* Search-hit flash used by the Ctrl+K jump. The mark stays in the DOM but the
+   animation fills back to transparent, so selection/copy/export remain safe. */
+@keyframes codeg-search-flash {
+  0% {
+    background-color: #fde047;
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+[data-search-flash] {
+  padding: 0;
+  color: inherit;
+  animation: codeg-search-flash 1.8s ease-out forwards;
+}

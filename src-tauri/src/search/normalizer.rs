@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::models::{ContentBlock, MessageTurn, TurnRole};
@@ -10,6 +11,17 @@ pub const MAX_BLOCK_BYTES: usize = 8_192;
 pub struct NormalizedDocument {
     pub text: String,
     pub content_hash: String,
+    pub blocks: Vec<NormalizedBlockOffset>,
+}
+
+/// One indexed text block's position in the normalized document.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NormalizedBlockOffset {
+    pub turn_id: String,
+    pub block_index: usize,
+    pub start: usize,
+    pub end: usize,
+    pub leading_trim: usize,
 }
 
 /// Tokens for the optional short-query FTS table.
@@ -26,13 +38,14 @@ pub struct ShortIndexTokens {
 /// second, defensive boundary.
 pub fn normalize_turns(turns: &[MessageTurn]) -> NormalizedDocument {
     let mut text = String::new();
+    let mut blocks = Vec::new();
     let mut wrote_block = false;
 
     for turn in turns {
         if !matches!(turn.role, TurnRole::User | TurnRole::Assistant) {
             continue;
         }
-        for block in &turn.blocks {
+        for (block_index, block) in turn.blocks.iter().enumerate() {
             let ContentBlock::Text { text: block_text } = block else {
                 continue;
             };
@@ -40,10 +53,20 @@ pub fn normalize_turns(turns: &[MessageTurn]) -> NormalizedDocument {
             if trimmed.is_empty() {
                 continue;
             }
+            let leading_trim = block_text.chars().count() - block_text.trim_start().chars().count();
             if wrote_block {
                 text.push_str("\n\n");
             }
+            let start = text.chars().count();
             text.push_str(&truncate_text_block(trimmed, MAX_BLOCK_BYTES));
+            let end = text.chars().count();
+            blocks.push(NormalizedBlockOffset {
+                turn_id: turn.id.clone(),
+                block_index,
+                start,
+                end,
+                leading_trim,
+            });
             wrote_block = true;
         }
     }
@@ -51,6 +74,7 @@ pub fn normalize_turns(turns: &[MessageTurn]) -> NormalizedDocument {
     NormalizedDocument {
         content_hash: sha256_hex(&text),
         text,
+        blocks,
     }
 }
 
@@ -168,6 +192,9 @@ mod tests {
         let doc = normalize_turns(&turns);
         assert_eq!(doc.text, "你好\n\n回答");
         assert_eq!(doc.content_hash.len(), 64);
+        assert_eq!(doc.blocks.len(), 2);
+        assert_eq!(doc.blocks[0].leading_trim, 2);
+        assert_eq!(doc.blocks[1].start, "你好\n\n".chars().count());
     }
 
     #[test]

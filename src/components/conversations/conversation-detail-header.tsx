@@ -1,6 +1,6 @@
 "use client"
 
-import { memo, useCallback, useState } from "react"
+import { memo, useCallback, useMemo, useState } from "react"
 import {
   ChevronRight,
   Circle,
@@ -25,7 +25,7 @@ import { ConversationHeaderFolderPicker } from "@/components/chat/conversation-c
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions } from "@/contexts/tab-context"
 import { getRuntimeSession } from "@/stores/conversation-runtime-store"
-import type { ConversationStatus } from "@/lib/types"
+import type { ConversationStatus, SearchMatchLocation } from "@/lib/types"
 import { STATUS_ORDER } from "@/lib/types"
 import { ConversationStatusDot } from "@/components/conversations/conversation-status-dot"
 import {
@@ -75,6 +75,64 @@ interface ConversationDetailHeaderProps {
   folderPath: string | undefined
   title: string
   status: ConversationStatus | undefined
+  searchMatch?: SearchMatchLocation | null
+  searchQuery?: string | null
+}
+
+function HighlightedSearchTitle({
+  title,
+  range,
+  flashKey,
+}: {
+  title: string
+  range: { start: number; end: number } | null
+  flashKey: string
+}) {
+  if (!range) return <>{title}</>
+  const chars = Array.from(title)
+  const start = Math.min(Math.max(range.start, 0), chars.length)
+  const end = Math.min(Math.max(range.end, start), chars.length)
+  if (start >= end) return <>{title}</>
+  return (
+    <>
+      {chars.slice(0, start).join("")}
+      <mark key={flashKey} data-search-flash>
+        {chars.slice(start, end).join("")}
+      </mark>
+      {chars.slice(end).join("")}
+    </>
+  )
+}
+
+function findDisplayTitleRange(
+  title: string,
+  match: SearchMatchLocation | null,
+  query: string | null
+): { start: number; end: number } | null {
+  const trimmedQuery = query?.trim()
+  if (trimmedQuery) {
+    const titleChars = Array.from(title.toLocaleLowerCase())
+    const queryChars = Array.from(trimmedQuery.toLocaleLowerCase())
+    if (queryChars.length === 0 || queryChars.length > titleChars.length) {
+      return null
+    }
+    for (
+      let start = 0;
+      start <= titleChars.length - queryChars.length;
+      start++
+    ) {
+      if (
+        queryChars.every((char, index) => char === titleChars[start + index])
+      ) {
+        return { start, end: start + queryChars.length }
+      }
+    }
+  }
+  if (!match || match.kind !== "title") return null
+  return {
+    start: match.char_start,
+    end: match.char_end,
+  }
 }
 
 /**
@@ -99,6 +157,8 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
   folderPath,
   title,
   status,
+  searchMatch = null,
+  searchQuery = null,
 }: ConversationDetailHeaderProps) {
   const t = useTranslations("Folder.conversationCard")
   const ime = useImeGuard()
@@ -147,6 +207,10 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
   const persisted = conversationId != null
   const displayTitle =
     formatConversationTitle(title) || t("untitledConversation")
+  const titleRange = useMemo(
+    () => findDisplayTitleRange(displayTitle, searchMatch, searchQuery),
+    [displayTitle, searchMatch, searchQuery]
+  )
 
   const handleTogglePin = useCallback(() => {
     if (conversationId == null) return
@@ -256,7 +320,11 @@ export const ConversationDetailHeader = memo(function ConversationDetailHeader({
           className="min-w-0 flex-1 truncate text-sm text-foreground/90"
           title={title}
         >
-          {displayTitle}
+          <HighlightedSearchTitle
+            title={displayTitle}
+            range={titleRange}
+            flashKey={`${conversationId ?? "draft"}-${titleRange?.start ?? 0}-${titleRange?.end ?? 0}`}
+          />
         </span>
       </div>
       <div className="flex shrink-0 items-center">

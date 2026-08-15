@@ -37,7 +37,10 @@ pub use message::{
 };
 pub use quick_message::QuickMessageInfo;
 pub use remote_workspace_connection::RemoteWorkspaceConnectionInfo;
-pub use search::{DbConversationSearchResult, SearchIndexStatus, SearchMatchKind};
+pub use search::{
+    DbConversationSearchResult, SearchIndexStatus, SearchMatchKind, SearchMatchLocation,
+    SearchMatchLocationKind,
+};
 pub use token_usage::{
     TokenUsageBreakdownItem, TokenUsageBucket, TokenUsageConversationItem, TokenUsageFacets,
     TokenUsageFilter, TokenUsageFolderFacet, TokenUsageHeatCell, TokenUsagePoint,

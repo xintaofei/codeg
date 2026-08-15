@@ -2916,6 +2916,7 @@
         "attachedResources": "Attached resources",
         "loading": "Loading...",
         "loadEarlier": "Load earlier messages",
+        "nextSearchMatch": "Next match",
         "loadingEarlier": "Loading earlier messages…",
         "error": "Error: {message}",
         "errorTitle": "Session load failed",

@@ -2916,6 +2916,7 @@
         "attachedResources": "Angehängte Ressourcen",
         "loading": "Lädt...",
         "loadEarlier": "Frühere Nachrichten laden",
+        "nextSearchMatch": "Nächster Treffer",
         "loadingEarlier": "Frühere Nachrichten werden geladen…",
         "error": "Fehler: {message}",
         "errorTitle": "Sitzung konnte nicht geladen werden",

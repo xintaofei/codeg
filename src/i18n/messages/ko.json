@@ -2916,6 +2916,7 @@
         "attachedResources": "첨부된 리소스",
         "loading": "불러오는 중...",
         "loadEarlier": "이전 메시지 불러오기",
+        "nextSearchMatch": "다음 일치",
         "loadingEarlier": "이전 메시지를 불러오는 중…",
         "error": "오류: {message}",
         "errorTitle": "세션 불러오기 실패",

@@ -2916,6 +2916,7 @@
         "attachedResources": "Ressources jointes",
         "loading": "Chargement...",
         "loadEarlier": "Charger les messages précédents",
+        "nextSearchMatch": "Correspondance suivante",
         "loadingEarlier": "Chargement des messages précédents…",
         "error": "Erreur : {message}",
         "errorTitle": "Échec du chargement de la session",

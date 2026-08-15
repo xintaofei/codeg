@@ -2916,6 +2916,7 @@
         "attachedResources": "附加資源",
         "loading": "載入中...",
         "loadEarlier": "載入更早的訊息",
+        "nextSearchMatch": "下一條符合項目",
         "loadingEarlier": "正在載入更早的訊息…",
         "error": "錯誤：{message}",
         "errorTitle": "會話載入失敗",

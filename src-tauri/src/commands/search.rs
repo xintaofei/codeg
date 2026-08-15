@@ -8,11 +8,16 @@ use crate::db::service::{
     conversation_service, message_search_service,
     message_search_service::{MODE_FTS, MODE_SCAN, USER_MODE_FTS, USER_MODE_SCAN},
 };
-use crate::models::{AgentType, DbConversationSearchResult, SearchIndexStatus, SearchMatchKind};
+use crate::models::{
+    AgentType, DbConversationSearchResult, SearchIndexStatus, SearchMatchKind, SearchMatchLocation,
+    SearchMatchLocationKind,
+};
+use crate::search::normalizer::NormalizedBlockOffset;
 use crate::search::query::{self, ShortTermQuery};
 
 const DEFAULT_LIMIT: u64 = 50;
 const SNIPPET_CONTEXT_CHARS: usize = 80;
+const MAX_MATCH_LOCATIONS: usize = 200;
 
 pub async fn search_conversations_core(
     conn: &DatabaseConnection,
@@ -40,22 +45,31 @@ pub async fn search_conversations_core(
     )
     .await?;
 
+    let terms = query::split_terms(&query);
     if query.is_empty() || !state.user_enabled {
         return Ok(title_summaries
             .into_iter()
             .take(limit as usize)
-            .map(|summary| DbConversationSearchResult {
-                summary,
-                match_kind: SearchMatchKind::Title,
-                snippet_prefix: None,
-                snippet_match: None,
-                snippet_suffix: None,
-                content_match_count: 0,
+            .map(|summary| {
+                let matches = build_title_match_locations(
+                    summary.title.as_deref().unwrap_or_default(),
+                    &terms,
+                );
+                let total_match_count = matches.len() as u32;
+                DbConversationSearchResult {
+                    summary,
+                    match_kind: SearchMatchKind::Title,
+                    snippet_prefix: None,
+                    snippet_match: None,
+                    snippet_suffix: None,
+                    content_match_count: 0,
+                    matches,
+                    total_match_count,
+                }
             })
             .collect());
     }
 
-    let terms = query::split_terms(&query);
     let effective_mode = match state.user_mode.as_str() {
         USER_MODE_SCAN => MODE_SCAN,
         USER_MODE_FTS => MODE_FTS,
@@ -83,13 +97,22 @@ pub async fn search_conversations_core(
         return Ok(title_summaries
             .into_iter()
             .take(limit as usize)
-            .map(|summary| DbConversationSearchResult {
-                summary,
-                match_kind: SearchMatchKind::Title,
-                snippet_prefix: None,
-                snippet_match: None,
-                snippet_suffix: None,
-                content_match_count: 0,
+            .map(|summary| {
+                let matches = build_title_match_locations(
+                    summary.title.as_deref().unwrap_or_default(),
+                    &terms,
+                );
+                let total_match_count = matches.len() as u32;
+                DbConversationSearchResult {
+                    summary,
+                    match_kind: SearchMatchKind::Title,
+                    snippet_prefix: None,
+                    snippet_match: None,
+                    snippet_suffix: None,
+                    content_match_count: 0,
+                    matches,
+                    total_match_count,
+                }
             })
             .collect());
     }
@@ -156,6 +179,8 @@ pub async fn search_conversations_core(
             snippet_match: None,
             snippet_suffix: None,
             content_match_count: 0,
+            matches: Vec::new(),
+            total_match_count: 0,
         });
     }
 
@@ -176,20 +201,28 @@ pub async fn search_conversations_core(
     }
 
     let needed_document_list: Vec<i32> = needed_document_ids.into_iter().collect();
-    let documents: HashMap<i32, String> =
+    let documents: HashMap<i32, (String, Vec<NormalizedBlockOffset>)> =
         message_search_service::list_documents_by_conversation(conn, &needed_document_list)
             .await?
             .into_iter()
-            .map(|(conversation_id, text, _)| (conversation_id, text))
+            .map(|(conversation_id, text, blocks)| (conversation_id, (text, blocks)))
             .collect();
 
     let mut results = Vec::with_capacity(result_limit);
     for mut result in title_results {
+        let title_matches = build_title_match_locations(
+            result.summary.title.as_deref().unwrap_or_default(),
+            &terms,
+        );
+        result.matches.extend(title_matches);
         if candidate_set.contains(&result.summary.id) {
-            let text = documents
+            let (text, blocks) = documents
                 .get(&result.summary.id)
-                .map(String::as_str)
+                .map(|(text, blocks)| (text.as_str(), blocks.as_slice()))
                 .unwrap_or_default();
+            let content_matches = build_content_match_locations(text, blocks, &terms);
+            let content_match_count = content_matches.len() as u32;
+            result.matches.extend(content_matches);
             let (snippet_prefix, snippet_match, snippet_suffix) = build_snippet(text, &terms);
             result.match_kind = if snippet_match.is_some() {
                 SearchMatchKind::Both
@@ -199,28 +232,28 @@ pub async fn search_conversations_core(
             result.snippet_prefix = snippet_prefix;
             result.snippet_match = snippet_match;
             result.snippet_suffix = snippet_suffix;
-            result.content_match_count = if result.match_kind == SearchMatchKind::Both {
-                terms.len() as u32
-            } else {
-                0
-            };
+            result.content_match_count = content_match_count;
         }
+        result.total_match_count = result.matches.len() as u32;
         results.push(result);
     }
 
     for (conversation_id, summary) in content_picks {
-        let text = documents
+        let (text, blocks) = documents
             .get(&conversation_id)
-            .map(String::as_str)
+            .map(|(text, blocks)| (text.as_str(), blocks.as_slice()))
             .unwrap_or_default();
         let (snippet_prefix, snippet_match, snippet_suffix) = build_snippet(text, &terms);
+        let matches = build_content_match_locations(text, blocks, &terms);
         results.push(DbConversationSearchResult {
             summary,
             match_kind: SearchMatchKind::Content,
             snippet_prefix,
             snippet_match,
             snippet_suffix,
-            content_match_count: terms.len() as u32,
+            content_match_count: matches.len() as u32,
+            total_match_count: matches.len() as u32,
+            matches,
         });
     }
 
@@ -389,6 +422,81 @@ fn build_snippet(text: &str, terms: &[String]) -> (Option<String>, Option<String
     )
 }
 
+fn build_title_match_locations(title: &str, terms: &[String]) -> Vec<SearchMatchLocation> {
+    find_match_ranges(title, terms, MAX_MATCH_LOCATIONS)
+        .into_iter()
+        .map(|(char_start, char_end)| SearchMatchLocation {
+            kind: SearchMatchLocationKind::Title,
+            turn_id: None,
+            block_index: None,
+            char_start,
+            char_end,
+        })
+        .collect()
+}
+
+fn build_content_match_locations(
+    text: &str,
+    blocks: &[NormalizedBlockOffset],
+    terms: &[String],
+) -> Vec<SearchMatchLocation> {
+    find_match_ranges(text, terms, MAX_MATCH_LOCATIONS)
+        .into_iter()
+        .filter_map(|(char_start, char_end)| {
+            let block = blocks
+                .iter()
+                .find(|block| char_start >= block.start && char_end <= block.end)?;
+            Some(SearchMatchLocation {
+                kind: SearchMatchLocationKind::Content,
+                turn_id: Some(block.turn_id.clone()),
+                block_index: Some(block.block_index),
+                char_start: char_start - block.start + block.leading_trim,
+                char_end: char_end - block.start + block.leading_trim,
+            })
+        })
+        .collect()
+}
+
+fn find_match_ranges(text: &str, terms: &[String], max_matches: usize) -> Vec<(usize, usize)> {
+    let hay: Vec<char> = text.chars().collect();
+    let mut ranges = Vec::new();
+
+    for term in terms {
+        let needle: Vec<char> = term.chars().collect();
+        if needle.is_empty() || needle.len() > hay.len() {
+            continue;
+        }
+        let mut start = 0;
+        while start + needle.len() <= hay.len() {
+            let matched = hay[start..start + needle.len()]
+                .iter()
+                .zip(&needle)
+                .all(|(left, right)| left.to_lowercase().eq(right.to_lowercase()));
+            if matched {
+                ranges.push((start, start + needle.len()));
+                start += needle.len();
+            } else {
+                start += 1;
+            }
+        }
+    }
+
+    ranges.sort_by_key(|(start, end)| (*start, *end));
+    let mut deduped: Vec<(usize, usize)> = Vec::with_capacity(ranges.len());
+    let mut last_end = None;
+    for (start, end) in ranges {
+        if last_end.is_some_and(|last| start < last) {
+            continue;
+        }
+        deduped.push((start, end));
+        last_end = Some(end);
+        if deduped.len() >= max_matches {
+            break;
+        }
+    }
+    deduped
+}
+
 pub async fn get_search_index_status_core(
     conn: &DatabaseConnection,
 ) -> Result<SearchIndexStatus, AppCommandError> {
@@ -462,10 +570,25 @@ mod tests {
     use super::*;
     use crate::db::service::message_search_service::SyncFlags;
     use crate::db::test_helpers::{fresh_in_memory_db, seed_conversation, seed_folder};
-    use crate::search::normalizer::NormalizedDocument;
+    use crate::search::normalizer::{NormalizedBlockOffset, NormalizedDocument};
 
     fn doc(text: &str) -> NormalizedDocument {
         NormalizedDocument {
+            text: text.to_string(),
+            content_hash: crate::search::normalizer::sha256_hex(text),
+            blocks: Vec::new(),
+        }
+    }
+
+    fn doc_with_block(text: &str, turn_id: &str, block_index: usize) -> NormalizedDocument {
+        NormalizedDocument {
+            blocks: vec![NormalizedBlockOffset {
+                turn_id: turn_id.to_string(),
+                block_index,
+                start: 0,
+                end: text.chars().count(),
+                leading_trim: 0,
+            }],
             text: text.to_string(),
             content_hash: crate::search::normalizer::sha256_hex(text),
         }
@@ -479,7 +602,7 @@ mod tests {
         message_search_service::upsert_document(
             &db.conn,
             conversation_id,
-            &doc("前缀 你好世界 后缀"),
+            &doc_with_block("前缀 你好世界 后缀", "turn-1", 0),
             None,
             1,
             SyncFlags::default(),
@@ -496,10 +619,18 @@ mod tests {
         )
         .await
         .expect("search");
-        assert!(results.iter().any(|result| {
-            result.summary.id == conversation_id
-                && result.match_kind == SearchMatchKind::Content
-                && result.snippet_match.as_deref() == Some("世界")
+        let result = results
+            .iter()
+            .find(|result| result.summary.id == conversation_id)
+            .expect("content result");
+        assert_eq!(result.match_kind, SearchMatchKind::Content);
+        assert_eq!(result.snippet_match.as_deref(), Some("世界"));
+        assert!(result.matches.iter().any(|match_location| {
+            match_location.kind == SearchMatchLocationKind::Content
+                && match_location.turn_id.as_deref() == Some("turn-1")
+                && match_location.block_index == Some(0)
+                && match_location.char_start == 5
+                && match_location.char_end == 7
         }));
     }
 
@@ -514,7 +645,7 @@ mod tests {
         message_search_service::upsert_document(
             &db.conn,
             conversation_id,
-            &doc("正文 世界"),
+            &doc_with_block("正文 世界", "turn-1", 0),
             None,
             1,
             SyncFlags::default(),
@@ -533,6 +664,18 @@ mod tests {
         .expect("search");
         assert_eq!(results[0].summary.id, conversation_id);
         assert_eq!(results[0].match_kind, SearchMatchKind::Both);
+        assert!(
+            results[0]
+                .matches
+                .iter()
+                .any(|match_location| match_location.kind == SearchMatchLocationKind::Title)
+        );
+        assert!(
+            results[0]
+                .matches
+                .iter()
+                .any(|match_location| match_location.kind == SearchMatchLocationKind::Content)
+        );
     }
 
     #[tokio::test]

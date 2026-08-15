@@ -61,7 +61,12 @@ import {
   buildPlanKey,
   extractLatestPlanEntriesFromMessages,
 } from "@/lib/agent-plan"
-import type { AgentType, ConnectionStatus, MessageTurn } from "@/lib/types"
+import type {
+  AgentType,
+  ConnectionStatus,
+  MessageTurn,
+  SearchMatchLocation,
+} from "@/lib/types"
 import { copyTextToClipboard } from "@/lib/utils"
 import { VirtualizedMessageThread } from "@/components/message/virtualized-message-thread"
 import {
@@ -105,6 +110,12 @@ interface MessageListViewProps {
    * items render in arbitrary order and multiplicity. `null` = no divider.
    */
   userTurnHeader?: ((group: ResolvedMessageGroup) => string | null) | null
+  searchMatch?: (SearchMatchLocation & { occurrenceIndex?: number }) | null
+  searchQuery?: string | null
+  searchMatchOrdinal?: number | null
+  searchMatchTotal?: number | null
+  onNextMatch?: () => void
+  onSearchNavigationFailed?: () => void
 }
 
 export interface ResolvedMessageGroup {
@@ -660,6 +671,82 @@ const AutoScrollOnSend = memo(function AutoScrollOnSend({
   return null
 })
 
+function findSearchTurnElement(
+  root: HTMLElement | null,
+  turnId: string
+): HTMLElement | null {
+  if (!root) return null
+  const candidates = root.querySelectorAll<HTMLElement>(
+    "[data-search-turn-ids]"
+  )
+  for (const element of Array.from(candidates)) {
+    try {
+      const ids = JSON.parse(element.dataset.searchTurnIds ?? "[]") as string[]
+      if (ids.includes(turnId)) return element
+    } catch {
+      // Ignore malformed attributes.
+    }
+  }
+  return null
+}
+
+function clearSearchMarks(root: HTMLElement | null) {
+  root?.querySelectorAll<HTMLElement>("[data-search-flash]").forEach((mark) => {
+    const parent = mark.parentNode
+    if (!parent) return
+    while (mark.firstChild) {
+      parent.insertBefore(mark.firstChild, mark)
+    }
+    parent.removeChild(mark)
+  })
+}
+
+function highlightSearchOccurrence(
+  element: HTMLElement,
+  query: string,
+  occurrenceIndex: number
+): boolean {
+  clearSearchMarks(element)
+  const needle = query.toLocaleLowerCase()
+  if (!needle) return false
+
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+  let node = walker.nextNode()
+  let occurrence = 0
+  while (node) {
+    const parentElement = node.parentElement
+    const parentTag = parentElement?.tagName ?? ""
+    if (["SCRIPT", "STYLE", "NOSCRIPT"].includes(parentTag)) {
+      node = walker.nextNode()
+      continue
+    }
+    const text = node.nodeValue ?? ""
+    const lower = text.toLocaleLowerCase()
+    let offset = 0
+    while (offset <= lower.length - needle.length) {
+      const index = lower.indexOf(needle, offset)
+      if (index < 0) break
+      if (occurrence === occurrenceIndex) {
+        const range = document.createRange()
+        range.setStart(node, index)
+        range.setEnd(node, index + needle.length)
+        const mark = document.createElement("mark")
+        mark.setAttribute("data-search-flash", "")
+        try {
+          range.surroundContents(mark)
+          return true
+        } catch {
+          return false
+        }
+      }
+      occurrence += 1
+      offset = index + needle.length
+    }
+    node = walker.nextNode()
+  }
+  return false
+}
+
 export function MessageListView({
   conversationId,
   agentType,
@@ -674,6 +761,12 @@ export function MessageListView({
   onNewSession,
   showMessageNav = true,
   userTurnHeader = null,
+  searchMatch = null,
+  searchQuery = null,
+  searchMatchOrdinal = null,
+  searchMatchTotal = null,
+  onNextMatch,
+  onSearchNavigationFailed,
 }: MessageListViewProps) {
   const t = useTranslations("Folder.chat.messageList")
   const sharedT = useTranslations("Folder.chat.shared")
@@ -889,7 +982,12 @@ export function MessageListView({
               ? userTurnHeader(item.group)
               : null
           return (
-            <div style={pt > 0 ? { paddingTop: pt } : undefined}>
+            <div
+              data-search-turn-ids={JSON.stringify(
+                item.sourceTurns.map((turn) => turn.id)
+              )}
+              style={pt > 0 ? { paddingTop: pt } : undefined}
+            >
               {phaseLabel ? (
                 <div className="flex items-center gap-2 px-1 pb-3 pt-1">
                   <span aria-hidden="true" className="h-px flex-1 bg-border" />
@@ -980,9 +1078,105 @@ export function MessageListView({
   // Lifted scroll handle so the panel (which lives in the overlay stack, outside
   // the MessageScrollProvider subtree) can drive scrollToIndex.
   const scrollApiRef = useRef<MessageScrollContextValue | null>(null)
+  const listRootRef = useRef<HTMLDivElement | null>(null)
+  const searchAttemptsRef = useRef(0)
+  const handledSearchMatchKeyRef = useRef<string | null>(null)
   // Collapse state is owned here (not in the panel) so the expensive per-file
   // `navEntries` is computed only while the panel is open.
   const [navExpanded, setNavExpanded] = useState(false)
+
+  const searchTargetItemIndex = useMemo(() => {
+    if (!searchMatch?.turn_id || searchMatch.kind !== "content") return -1
+    const turnId = searchMatch.turn_id
+    return threadItems.findIndex(
+      (item) =>
+        item.kind === "turn" &&
+        item.sourceTurns.some((turn) => turn.id === turnId)
+    )
+  }, [searchMatch, threadItems])
+
+  useEffect(() => {
+    if (
+      !searchMatch ||
+      searchMatch.kind !== "content" ||
+      detailLoading ||
+      !searchQuery
+    ) {
+      if (!searchMatch || searchMatch.kind !== "content") {
+        handledSearchMatchKeyRef.current = null
+      }
+      return
+    }
+    if (!searchMatch.turn_id) {
+      onSearchNavigationFailed?.()
+      return
+    }
+
+    const matchKey = [
+      searchMatch.turn_id,
+      searchMatch.block_index ?? "",
+      searchMatch.char_start,
+      searchMatch.char_end,
+      searchMatch.occurrenceIndex ?? 0,
+    ].join(":")
+    if (handledSearchMatchKeyRef.current !== matchKey) {
+      searchAttemptsRef.current = 0
+    }
+    if (handledSearchMatchKeyRef.current === matchKey) return
+
+    if (searchTargetItemIndex < 0) {
+      if (!hasOlderTurns || loadingOlderTurns) {
+        if (!hasOlderTurns) {
+          handledSearchMatchKeyRef.current = matchKey
+          onSearchNavigationFailed?.()
+        }
+        return
+      }
+      searchAttemptsRef.current += 1
+      if (searchAttemptsRef.current > 6) {
+        handledSearchMatchKeyRef.current = matchKey
+        onSearchNavigationFailed?.()
+        return
+      }
+      const timer = window.setTimeout(() => {
+        loadOlderTurns(conversationId)
+      }, 50)
+      return () => window.clearTimeout(timer)
+    }
+
+    handledSearchMatchKeyRef.current = matchKey
+    const frame = requestAnimationFrame(() => {
+      scrollApiRef.current?.scrollToIndex(searchTargetItemIndex, {
+        align: "center",
+        smooth: true,
+      })
+      requestAnimationFrame(() => {
+        const element = findSearchTurnElement(
+          listRootRef.current,
+          searchMatch.turn_id as string
+        )
+        if (element) {
+          clearSearchMarks(listRootRef.current)
+          highlightSearchOccurrence(
+            element,
+            searchQuery,
+            searchMatch.occurrenceIndex ?? 0
+          )
+        }
+      })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [
+    conversationId,
+    detailLoading,
+    hasOlderTurns,
+    loadOlderTurns,
+    loadingOlderTurns,
+    onSearchNavigationFailed,
+    searchMatch,
+    searchQuery,
+    searchTargetItemIndex,
+  ])
 
   // Cheap user-message tally for the collapsed chip — counts user turns without
   // parsing any file diffs.
@@ -1115,7 +1309,7 @@ export function MessageListView({
   }
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col">
+    <div ref={listRootRef} className="relative flex h-full min-h-0 flex-col">
       <MessageThread
         className="flex-1 min-h-0"
         resize={shouldUseSmoothResize ? "smooth" : undefined}
@@ -1144,6 +1338,24 @@ export function MessageListView({
           isStreaming={connStatus === "prompting"}
         />
       )}
+      {searchMatch &&
+        searchMatch.kind === "content" &&
+        (searchMatchTotal ?? 0) > 1 &&
+        onNextMatch && (
+          <div className="pointer-events-auto absolute end-4 top-4 z-30">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={onNextMatch}
+            >
+              {t("nextSearchMatch")}
+              {searchMatchOrdinal != null && searchMatchTotal != null
+                ? ` ${searchMatchOrdinal} / ${searchMatchTotal}`
+                : ""}
+            </Button>
+          </div>
+        )}
       {/* Shared overlay stack pinned to the inline-start edge (top-left in LTR,
           top-right in RTL). A flex column keeps the order stable regardless of
           each panel's expand/collapse height: the message navigator first, then

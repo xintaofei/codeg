@@ -11,6 +11,23 @@ pub enum SearchMatchKind {
     Both,
 }
 
+/// Where one search term matches inside a conversation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchMatchLocationKind {
+    Title,
+    Content,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SearchMatchLocation {
+    pub kind: SearchMatchLocationKind,
+    pub turn_id: Option<String>,
+    pub block_index: Option<usize>,
+    pub char_start: usize,
+    pub char_end: usize,
+}
+
 /// One conversation-level search result. Snippet fields are raw text windows
 /// around the first match and are safe to render as text.
 #[derive(Clone, Debug, Serialize)]
@@ -21,6 +38,8 @@ pub struct DbConversationSearchResult {
     pub snippet_match: Option<String>,
     pub snippet_suffix: Option<String>,
     pub content_match_count: u32,
+    pub matches: Vec<SearchMatchLocation>,
+    pub total_match_count: u32,
 }
 
 /// Read-only view of the content index lifecycle for the search dialog.

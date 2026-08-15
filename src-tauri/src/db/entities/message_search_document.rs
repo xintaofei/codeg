@@ -14,6 +14,7 @@ pub struct Model {
     pub conversation_id: i32,
     pub text: String,
     pub content_hash: String,
+    pub block_offsets: String,
     pub source_ended_at: Option<DateTimeUtc>,
     pub source_message_count: i32,
     pub updated_at: DateTimeUtc,

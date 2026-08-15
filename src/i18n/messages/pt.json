@@ -2916,6 +2916,7 @@
         "attachedResources": "Recursos anexados",
         "loading": "Carregando...",
         "loadEarlier": "Carregar mensagens anteriores",
+        "nextSearchMatch": "Próxima correspondência",
         "loadingEarlier": "Carregando mensagens anteriores…",
         "error": "Erro: {message}",
         "errorTitle": "Falha ao carregar a sessão",

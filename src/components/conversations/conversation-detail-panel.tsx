@@ -97,6 +97,7 @@ import {
 } from "@/stores/conversation-runtime-store"
 import { useShallow } from "zustand/react/shallow"
 import { useConversationDetail } from "@/hooks/use-conversation-detail"
+import { useSearchFocusStore } from "@/stores/search-focus-store"
 import {
   extractUserImagesFromDraft,
   getPromptDraftDisplayText,
@@ -239,6 +240,17 @@ const ConversationTabView = memo(function ConversationTabView({
   const tDiag = useTranslations("DiagnosticsSettings")
   const sharedT = useTranslations("Folder.chat.shared")
   const tMessageList = useTranslations("Folder.chat.messageList")
+  const searchFocus = useSearchFocusStore((s) => s.focus)
+  const activeSearchMatch = useMemo(() => {
+    if (
+      !searchFocus ||
+      searchFocus.conversationId !== conversationId ||
+      searchFocus.contentMatches.length === 0
+    ) {
+      return null
+    }
+    return searchFocus.contentMatches[searchFocus.activeMatchIndex] ?? null
+  }, [conversationId, searchFocus])
   const refreshConversations = useAppWorkspaceStore(
     (s) => s.refreshConversations
   )
@@ -1628,6 +1640,15 @@ const ConversationTabView = memo(function ConversationTabView({
     }
   }, [conn.connectionId, conn.isViewer, connStatus, acpActions, tabId])
 
+  const handleNextSearchMatch = useCallback(() => {
+    useSearchFocusStore.getState().advance()
+  }, [])
+  const handleSearchNavigationFailed = useCallback(() => {
+    if (searchFocus?.conversationId === conversationId) {
+      useSearchFocusStore.getState().clear()
+    }
+  }, [conversationId, searchFocus])
+
   const messageListNode = (
     <GoalControlProvider value={goalControlValue}>
       <MessageListView
@@ -1644,6 +1665,16 @@ const ConversationTabView = memo(function ConversationTabView({
         onNewSession={
           canShowDetailErrorActions ? handleOpenNewSession : undefined
         }
+        searchMatch={activeSearchMatch}
+        searchQuery={searchFocus?.query ?? null}
+        searchMatchOrdinal={
+          searchFocus && searchFocus.contentMatches.length > 0
+            ? searchFocus.activeMatchIndex + 1
+            : null
+        }
+        searchMatchTotal={searchFocus?.contentMatches.length ?? null}
+        onNextMatch={handleNextSearchMatch}
+        onSearchNavigationFailed={handleSearchNavigationFailed}
       />
     </GoalControlProvider>
   )
@@ -1968,6 +1999,7 @@ function SplitStripCornerReserve({ side }: { side: "left" | "right" }) {
 export function ConversationDetailPanel() {
   const t = useTranslations("Folder.conversation")
   const tDetails = useTranslations("Folder.sessionDetails")
+  const searchFocus = useSearchFocusStore((s) => s.focus)
   const {
     completeTurn: runtimeCompleteTurn,
     removeConversation: runtimeRemoveConversation,
@@ -2491,6 +2523,16 @@ export function ConversationDetailPanel() {
               folderPath={selTabFolder?.path}
               title={selTab.title}
               status={selTab.status as ConversationStatus | undefined}
+              searchMatch={
+                searchFocus?.conversationId === selTab.conversationId
+                  ? (searchFocus.titleMatches[0] ?? null)
+                  : null
+              }
+              searchQuery={
+                searchFocus?.conversationId === selTab.conversationId
+                  ? searchFocus.query
+                  : null
+              }
             />
           </div>
         )}
@@ -2539,6 +2581,16 @@ export function ConversationDetailPanel() {
             folderPath={activeTabFolder?.path}
             title={activeTab.title}
             status={activeTab.status as ConversationStatus | undefined}
+            searchMatch={
+              searchFocus?.conversationId === activeTab.conversationId
+                ? (searchFocus.titleMatches[0] ?? null)
+                : null
+            }
+            searchQuery={
+              searchFocus?.conversationId === activeTab.conversationId
+                ? searchFocus.query
+                : null
+            }
           />
         )}
         <ContextMenu onOpenChange={handleContextMenuOpenChange}>

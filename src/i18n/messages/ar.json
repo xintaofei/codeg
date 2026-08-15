@@ -2916,6 +2916,7 @@
         "attachedResources": "الموارد المرفقة",
         "loading": "جارٍ التحميل...",
         "loadEarlier": "تحميل الرسائل السابقة",
+        "nextSearchMatch": "المطابقة التالية",
         "loadingEarlier": "جارٍ تحميل الرسائل السابقة…",
         "error": "خطأ: {message}",
         "errorTitle": "فشل تحميل الجلسة",

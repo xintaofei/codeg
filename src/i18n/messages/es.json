@@ -2916,6 +2916,7 @@
         "attachedResources": "Recursos adjuntos",
         "loading": "Cargando...",
         "loadEarlier": "Cargar mensajes anteriores",
+        "nextSearchMatch": "Siguiente coincidencia",
         "loadingEarlier": "Cargando mensajes anteriores…",
         "error": "Error del chat: {message}",
         "errorTitle": "Error al cargar la sesión",
