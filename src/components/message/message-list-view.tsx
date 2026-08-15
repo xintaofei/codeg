@@ -679,7 +679,7 @@ function findSearchTurnElement(
   const candidates = root.querySelectorAll<HTMLElement>(
     "[data-search-turn-ids]"
   )
-  for (const element of Array.from(candidates)) {
+  for (const element of Array.from(candidates).reverse()) {
     try {
       const ids = JSON.parse(element.dataset.searchTurnIds ?? "[]") as string[]
       if (ids.includes(turnId)) return element
@@ -688,6 +688,34 @@ function findSearchTurnElement(
     }
   }
   return null
+}
+
+function findScrollableAncestor(element: HTMLElement): HTMLElement | null {
+  let current: HTMLElement | null = element.parentElement
+  while (current) {
+    if (current.scrollHeight > current.clientHeight + 1) {
+      const overflowY = window.getComputedStyle(current).overflowY
+      if (overflowY === "auto" || overflowY === "scroll") return current
+    }
+    current = current.parentElement
+  }
+  return null
+}
+
+function scrollElementToCenter(element: HTMLElement) {
+  const container = findScrollableAncestor(element)
+  if (!container) return
+  const targetRect = element.getBoundingClientRect()
+  const containerRect = container.getBoundingClientRect()
+  const nextScrollTop =
+    container.scrollTop +
+    targetRect.top -
+    containerRect.top -
+    (container.clientHeight - element.clientHeight) / 2
+  container.scrollTo({
+    top: Math.max(0, nextScrollTop),
+    behavior: "smooth",
+  })
 }
 
 function clearSearchMarks(root: HTMLElement | null) {
@@ -1088,11 +1116,16 @@ export function MessageListView({
   const searchTargetItemIndex = useMemo(() => {
     if (!searchMatch?.turn_id || searchMatch.kind !== "content") return -1
     const turnId = searchMatch.turn_id
-    return threadItems.findIndex(
-      (item) =>
+    for (let index = threadItems.length - 1; index >= 0; index -= 1) {
+      const item = threadItems[index]
+      if (
         item.kind === "turn" &&
         item.sourceTurns.some((turn) => turn.id === turnId)
-    )
+      ) {
+        return index
+      }
+    }
+    return -1
   }, [searchMatch, threadItems])
 
   useEffect(() => {
@@ -1145,27 +1178,48 @@ export function MessageListView({
     }
 
     handledSearchMatchKeyRef.current = matchKey
-    const frame = requestAnimationFrame(() => {
+    let cancelled = false
+    let highlightTimer: number | undefined
+    const firstScrollTimer = window.setTimeout(() => {
+      if (cancelled) return
       scrollApiRef.current?.scrollToIndex(searchTargetItemIndex, {
         align: "center",
-        smooth: true,
+        smooth: false,
       })
-      requestAnimationFrame(() => {
+    }, 120)
+    const settleScrollTimer = window.setTimeout(() => {
+      if (cancelled) return
+      scrollApiRef.current?.scrollToIndex(searchTargetItemIndex, {
+        align: "center",
+        smooth: false,
+      })
+      highlightTimer = window.setTimeout(() => {
+        if (cancelled) return
         const element = findSearchTurnElement(
           listRootRef.current,
           searchMatch.turn_id as string
         )
         if (element) {
           clearSearchMarks(listRootRef.current)
-          highlightSearchOccurrence(
+          const highlighted = highlightSearchOccurrence(
             element,
             searchQuery,
             searchMatch.occurrenceIndex ?? 0
           )
+          const mark = highlighted
+            ? (element.querySelector<HTMLElement>("mark[data-search-flash]") ??
+              null)
+            : null
+          scrollElementToCenter(mark ?? element)
         }
-      })
-    })
-    return () => cancelAnimationFrame(frame)
+      }, 120)
+    }, 500)
+    return () => {
+      cancelled = true
+      window.clearTimeout(firstScrollTimer)
+      window.clearTimeout(settleScrollTimer)
+      if (highlightTimer != null) window.clearTimeout(highlightTimer)
+    }
   }, [
     conversationId,
     detailLoading,

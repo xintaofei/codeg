@@ -168,14 +168,12 @@ async fn process_turns(
     let Some(conversation) = conversation else {
         return Ok(());
     };
-    if document.text.is_empty() {
-        if existing.is_some() {
-            message_search_service::delete_document(conn, conversation_id, sync).await?;
-        }
-        return Ok(());
-    }
     let source_ended_at = Some(conversation.updated_at);
     let source_message_count = conversation.message_count;
+    // Empty turns (typically a transcript whose session file no longer
+    // exists) still record a tombstone row so the progress denominator treats
+    // the conversation as handled. `drift_resync` sees a non-dirty document
+    // and stops re-queueing the parse every ten minutes.
     if existing.as_ref().is_some_and(|doc| {
         doc.content_hash == document.content_hash
             && doc.source_ended_at == source_ended_at
@@ -339,6 +337,28 @@ mod tests {
                 .await
                 .expect("docs");
         assert_eq!(docs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn empty_turns_leave_a_tombstone_document() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/search-tombstone").await;
+        let conversation_id =
+            seed_conversation(&db, folder_id, crate::models::AgentType::ClaudeCode).await;
+        message_search_service::ensure_search_state(&db.conn)
+            .await
+            .expect("state");
+
+        process_turns(&db.conn, conversation_id, &[])
+            .await
+            .expect("tombstone");
+
+        let docs =
+            message_search_service::list_documents_by_conversation(&db.conn, &[conversation_id])
+                .await
+                .expect("docs");
+        assert_eq!(docs.len(), 1);
+        assert!(docs[0].1.is_empty());
     }
 
     #[tokio::test]
