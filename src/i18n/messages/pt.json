@@ -1389,6 +1389,11 @@
   },
   "SettingsPages": {
     "agentsLoading": "Carregando configurações de agentes...",
+    "searchEnabled": "Busca de conteúdo",
+    "searchModeAuto": "Automático",
+    "searchModeScan": "Varredura econômica",
+    "searchModeFts": "Índice de texto completo",
+    "searchSaving": "Salvando...",
     "skillPacksLoading": "Carregando pacotes de habilidades…"
   },
   "GeneralSettings": {
@@ -1757,6 +1762,10 @@
       "typeToSearch": "Digite para buscar conversas",
       "typeToSearchFiles": "Digite para buscar arquivos ou diretórios",
       "noResults": "Nenhum resultado encontrado.",
+      "indexing": "Indexando conteúdo... {progress}%",
+      "dialogTitleAllFolders": "Buscar em todas as pastas",
+      "scopeLabel": "Escopo da busca",
+      "scopeAllFolders": "Todas as pastas",
       "untitledConversation": "Conversa sem título"
     },
     "folderTitleBar": {

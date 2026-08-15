@@ -1389,6 +1389,11 @@
   },
   "SettingsPages": {
     "agentsLoading": "載入 Agent 設定中...",
+    "searchEnabled": "正文搜尋",
+    "searchModeAuto": "自動",
+    "searchModeScan": "省空間掃描",
+    "searchModeFts": "全文索引",
+    "searchSaving": "儲存中...",
     "skillPacksLoading": "正在載入技能包…"
   },
   "GeneralSettings": {
@@ -1757,6 +1762,10 @@
       "typeToSearch": "輸入關鍵字搜尋會話",
       "typeToSearchFiles": "輸入關鍵字搜尋檔案或目錄",
       "noResults": "找不到結果。",
+      "indexing": "正在建立內容索引... {progress}%",
+      "dialogTitleAllFolders": "搜尋全部資料夾",
+      "scopeLabel": "搜尋範圍",
+      "scopeAllFolders": "全部資料夾",
       "untitledConversation": "未命名會話"
     },
     "folderTitleBar": {

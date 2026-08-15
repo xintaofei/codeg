@@ -11,11 +11,12 @@ import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions } from "@/contexts/tab-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useWorkspaceActions } from "@/contexts/workspace-context"
-import { listAllConversations } from "@/lib/api"
+import { getSearchIndexStatus, searchConversations } from "@/lib/api"
 import type {
   AgentType,
   ConversationStatus,
-  DbConversationSummary,
+  DbConversationSearchResult,
+  SearchIndexStatus,
 } from "@/lib/types"
 import { useFileTree, type FlatFileEntry } from "@/hooks/use-file-tree"
 import { rankFileMatches } from "@/lib/file-search-match"
@@ -31,6 +32,13 @@ import {
   CommandGroup,
   CommandItem,
 } from "@/components/ui/command"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import { formatConversationTitle } from "@/lib/conversation-title"
 
@@ -49,15 +57,28 @@ export function SearchCommandDialog({
   const locale = useLocale()
   const dateFnsLocale =
     locale === "zh-CN" ? zhCN : locale === "zh-TW" ? zhTW : enUS
-  const { activeFolder: folder, activeFolderId } = useActiveFolder()
+  const { activeFolder } = useActiveFolder()
+  const allFolders = useAppWorkspaceStore((s) => s.allFolders)
   const allConversations = useAppWorkspaceStore((s) => s.conversations)
-  const folderId = activeFolderId ?? 0
-  const conversations = useMemo(
+  const [scopeFolderId, setScopeFolderId] = useState<number | null>(null)
+  const selectableFolders = useMemo(
+    () => allFolders.filter((folder) => folder.kind !== "chat"),
+    [allFolders]
+  )
+  const scopeFolder = useMemo(
     () =>
-      activeFolderId == null
-        ? []
-        : allConversations.filter((c) => c.folder_id === activeFolderId),
-    [allConversations, activeFolderId]
+      scopeFolderId == null
+        ? null
+        : (selectableFolders.find((folder) => folder.id === scopeFolderId) ??
+          null),
+    [selectableFolders, scopeFolderId]
+  )
+  const scopedConversations = useMemo(
+    () =>
+      scopeFolderId == null
+        ? allConversations
+        : allConversations.filter((c) => c.folder_id === scopeFolderId),
+    [allConversations, scopeFolderId]
   )
   const { openTab } = useTabActions()
   const { openConversations } = useWorkbenchRoute()
@@ -67,11 +88,13 @@ export function SearchCommandDialog({
   const [activeTab, setActiveTab] = useState<SearchTab>("conversations")
   const [query, setQuery] = useState("")
   const [agentFilter, setAgentFilter] = useState<AgentType | null>(null)
-  const [results, setResults] = useState<DbConversationSummary[]>([])
+  const [results, setResults] = useState<DbConversationSearchResult[]>([])
   const [searching, setSearching] = useState(false)
+  const [indexStatus, setIndexStatus] = useState<SearchIndexStatus | null>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const searchInputRef = useRef<HTMLInputElement>(null)
 
-  const folderPath = folder?.path ?? ""
+  const folderPath = activeFolder?.path ?? ""
 
   // File search via shared hook (lazy-loaded when files tab is active)
   const {
@@ -85,7 +108,7 @@ export function SearchCommandDialog({
 
   // Compute which agent types exist in current folder
   const availableAgents = Array.from(
-    new Set(conversations.map((c) => c.agent_type))
+    new Set(scopedConversations.map((c) => c.agent_type))
   ).sort(compareAgentType)
 
   // Rank files by relevance (name/path tiers + fuzzy subsequence), scanning the
@@ -104,10 +127,11 @@ export function SearchCommandDialog({
       }
       setSearching(true)
       try {
-        const data = await listAllConversations({
-          folder_ids: folderId > 0 ? [folderId] : null,
-          search: q.trim() || null,
+        const data = await searchConversations({
+          folder_ids: scopeFolderId == null ? null : [scopeFolderId],
+          query: q.trim() || "",
           agent_type: agent,
+          limit: 50,
         })
         setResults(data)
       } catch {
@@ -116,7 +140,7 @@ export function SearchCommandDialog({
         setSearching(false)
       }
     },
-    [folderId]
+    [scopeFolderId]
   )
 
   // Debounced search on query change (conversations tab only)
@@ -138,17 +162,56 @@ export function SearchCommandDialog({
       setAgentFilter(null)
       setResults([])
       setActiveTab("conversations")
+      setScopeFolderId(null)
       resetFileTree()
     }
   }, [open, resetFileTree])
 
+  // cmdk owns keyboard navigation, but the conversation input should own the
+  // initial focus when the dialog opens (and whenever the user returns to this
+  // tab). The next animation frame lets Radix/cmdk finish mounting first.
+  useEffect(() => {
+    if (!open || activeTab !== "conversations") return
+    const frame = requestAnimationFrame(() => {
+      searchInputRef.current?.focus()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [open, activeTab])
+
+  // Poll the background indexer while the dialog is open.
+  useEffect(() => {
+    if (!open) {
+      setIndexStatus(null)
+      return
+    }
+    let cancelled = false
+    const refresh = () => {
+      getSearchIndexStatus()
+        .then((status) => {
+          if (!cancelled) setIndexStatus(status)
+        })
+        .catch(() => {})
+    }
+    refresh()
+    const timer = window.setInterval(refresh, 5000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [open])
+
   const handleSelectConversation = useCallback(
-    (conv: DbConversationSummary) => {
+    (conv: DbConversationSearchResult) => {
       // Leave any workbench route (e.g. Automations) so the picked conversation
       // isn't stranded behind the route overlay — covers re-selecting the
       // already-active tab, which doesn't change activeTabId.
       openConversations()
-      openTab(conv.folder_id, conv.id, conv.agent_type, true)
+      openTab(
+        conv.summary.folder_id,
+        conv.summary.id,
+        conv.summary.agent_type,
+        true
+      )
       onOpenChange(false)
     },
     [openTab, onOpenChange, openConversations]
@@ -173,24 +236,28 @@ export function SearchCommandDialog({
 
   const placeholder =
     activeTab === "conversations" ? t("placeholder") : t("filePlaceholder")
+  const contextFolder =
+    activeTab === "conversations" ? scopeFolder : activeFolder
 
   return (
     <CommandDialog
       title={
-        folder
-          ? t("dialogTitleWithFolder", { name: folder.name })
-          : t("dialogTitle")
+        contextFolder
+          ? t("dialogTitleWithFolder", { name: contextFolder.name })
+          : activeTab === "conversations"
+            ? t("dialogTitleAllFolders")
+            : t("dialogTitle")
       }
       open={open}
       onOpenChange={onOpenChange}
-      shouldFilter={activeTab === "conversations"}
+      shouldFilter={false}
     >
       {/* Folder context header */}
-      {folder && (
+      {contextFolder && (
         <div className="flex items-center gap-2 border-b px-4 py-2.5">
           <Folder className="w-4 h-4 shrink-0 text-muted-foreground" />
           <span className="text-sm font-medium truncate">
-            {t("dialogTitleWithFolder", { name: folder.name })}
+            {t("dialogTitleWithFolder", { name: contextFolder.name })}
           </span>
         </div>
       )}
@@ -228,9 +295,35 @@ export function SearchCommandDialog({
       </div>
 
       <CommandInput
+        inputRef={searchInputRef}
         placeholder={placeholder}
         value={query}
         onValueChange={setQuery}
+        end={
+          activeTab === "conversations" ? (
+            <Select
+              value={scopeFolderId == null ? "all" : String(scopeFolderId)}
+              onValueChange={(value) => {
+                setScopeFolderId(value === "all" ? null : Number(value))
+              }}
+            >
+              <SelectTrigger
+                aria-label={t("scopeLabel")}
+                className="h-7 w-32 shrink-0 rounded-md border bg-transparent px-2 text-xs"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                <SelectItem value="all">{t("scopeAllFolders")}</SelectItem>
+                {selectableFolders.map((folder) => (
+                  <SelectItem key={folder.id} value={String(folder.id)}>
+                    {folder.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : undefined
+        }
       />
 
       {/* Agent filter (conversations tab only) */}
@@ -265,6 +358,16 @@ export function SearchCommandDialog({
         </div>
       )}
 
+      {activeTab === "conversations" &&
+        indexStatus &&
+        indexStatus.progress < 1 && (
+          <div className="px-3 py-1.5 text-xs text-muted-foreground">
+            {t("indexing", {
+              progress: Math.round(indexStatus.progress * 100),
+            })}
+          </div>
+        )}
+
       <CommandList className="min-h-96">
         {/* Conversations tab */}
         {activeTab === "conversations" && (
@@ -280,22 +383,35 @@ export function SearchCommandDialog({
               <CommandGroup>
                 {results.map((conv) => (
                   <CommandItem
-                    key={conv.id}
-                    value={`${conv.id}-${formatConversationTitle(conv.title)}`}
+                    key={conv.summary.id}
+                    value={`${conv.summary.id}-${formatConversationTitle(
+                      conv.summary.title
+                    )}`}
                     onSelect={() => handleSelectConversation(conv)}
                   >
                     <ConversationStatusDot
-                      status={conv.status as ConversationStatus}
+                      status={conv.summary.status as ConversationStatus}
                     />
-                    <span className="flex-1 truncate">
-                      {formatConversationTitle(conv.title) ||
-                        t("untitledConversation")}
+                    <div className="flex-1 min-w-0">
+                      <span className="block truncate">
+                        {formatConversationTitle(conv.summary.title) ||
+                          t("untitledConversation")}
+                      </span>
+                      {conv.snippet_match && (
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {conv.snippet_prefix}
+                          <span className="text-foreground">
+                            {conv.snippet_match}
+                          </span>
+                          {conv.snippet_suffix}
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-xs text-muted-foreground shrink-0">
+                      {getAgentLabel(conv.summary.agent_type)}
                     </span>
                     <span className="text-xs text-muted-foreground shrink-0">
-                      {getAgentLabel(conv.agent_type)}
-                    </span>
-                    <span className="text-xs text-muted-foreground shrink-0">
-                      {formatDistanceToNow(new Date(conv.created_at), {
+                      {formatDistanceToNow(new Date(conv.summary.created_at), {
                         addSuffix: true,
                         locale: dateFnsLocale,
                       })}

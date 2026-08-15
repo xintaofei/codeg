@@ -42,6 +42,7 @@ import { usePlatform } from "@/hooks/use-platform"
 import { relaunchApp } from "@/lib/updater"
 import { toErrorMessage } from "@/lib/app-error"
 import { NotificationSoundSettingsSection } from "@/components/settings/notification-sound-settings"
+import { SearchSettingsSection } from "@/components/settings/search-settings-section"
 import { DelegationSettingsSection } from "@/components/settings/delegation-settings"
 import { AgentToolsSettingsSection } from "@/components/settings/agent-tools-settings"
 
@@ -408,6 +409,7 @@ export function GeneralSettings() {
         )}
 
         <NotificationSoundSettingsSection />
+        <SearchSettingsSection />
 
         <DelegationSettingsSection />
 

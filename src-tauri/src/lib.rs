@@ -37,6 +37,7 @@ pub mod pets;
 #[cfg(feature = "tauri-runtime")]
 pub mod preferences;
 pub mod process;
+pub mod search;
 pub mod supervise;
 mod terminal;
 pub mod turn_timings;
@@ -73,7 +74,7 @@ mod tauri_app {
         question as question_commands, quick_messages as quick_messages_commands,
         remote_proxy as remote_proxy_commands,
         remote_workspace as remote_workspace_commands, science as science_commands,
-        session_info as session_info_commands,
+        search as search_commands, session_info as session_info_commands,
         system_settings, terminal as terminal_commands,
         token_usage as token_usage_commands,
         version_control, windows, work_task as work_task_commands,
@@ -318,6 +319,11 @@ mod tauri_app {
 
                 // Restore and apply saved system proxy settings before any network operation.
                 let db = app.state::<db::AppDatabase>();
+                let search_indexer = crate::search::indexer::MessageSearchIndexer::spawn(
+                    db.conn.clone(),
+                    web::event_bridge::EventEmitter::Tauri(app.handle().clone()),
+                );
+                app.manage(search_indexer);
                 tauri::async_runtime::block_on(network::proxy::init_proxy_from_db(&db.conn));
 
                 // Logging phase 2/3: override the default level from the
@@ -972,6 +978,9 @@ mod tauri_app {
                 conversations::get_conversation,
                 conversations::list_all_conversations,
                 conversations::list_child_conversations,
+                search_commands::search_conversations,
+                search_commands::get_search_index_status,
+                search_commands::set_search_settings,
                 conversations::list_opened_tabs,
                 conversations::save_opened_tabs,
                 conversations::import_local_conversations,

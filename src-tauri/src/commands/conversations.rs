@@ -1447,15 +1447,24 @@ pub async fn get_folder_conversation(
     from_index: Option<usize>,
 ) -> Result<DbConversationDetail, AppCommandError> {
     let window = resolve_turn_window_req(tail_turns, from_index)?;
-    get_folder_conversation_with_live_core(
+    let result = get_folder_conversation_with_live_core(
         &db.conn,
         &manager,
         &chat_channel_manager,
-        &EventEmitter::Tauri(app),
+        &EventEmitter::Tauri(app.clone()),
         conversation_id,
         window,
     )
-    .await
+    .await?;
+    {
+        use tauri::Manager;
+        if let Some(indexer) =
+            app.try_state::<std::sync::Arc<crate::search::indexer::MessageSearchIndexer>>()
+        {
+            indexer.submit_turns(conversation_id, result.turns.clone());
+        }
+    }
+    Ok(result)
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -2086,8 +2095,17 @@ pub async fn delete_conversation(
     db: tauri::State<'_, AppDatabase>,
     conversation_id: i32,
 ) -> Result<(), AppCommandError> {
-    let emitter = EventEmitter::Tauri(app);
-    delete_conversation_with_cleanup_core(&emitter, &db.conn, conversation_id).await
+    let emitter = EventEmitter::Tauri(app.clone());
+    delete_conversation_with_cleanup_core(&emitter, &db.conn, conversation_id).await?;
+    {
+        use tauri::Manager;
+        if let Some(indexer) =
+            app.try_state::<std::sync::Arc<crate::search::indexer::MessageSearchIndexer>>()
+        {
+            indexer.request_delete(conversation_id);
+        }
+    }
+    Ok(())
 }
 
 fn compute_stats(all_conversations: &[ConversationSummary]) -> AgentStats {

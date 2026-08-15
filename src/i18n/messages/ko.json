@@ -1389,6 +1389,11 @@
   },
   "SettingsPages": {
     "agentsLoading": "에이전트 설정을 불러오는 중...",
+    "searchEnabled": "본문 검색",
+    "searchModeAuto": "자동",
+    "searchModeScan": "용량 절약 스캔",
+    "searchModeFts": "전체 텍스트 색인",
+    "searchSaving": "저장 중...",
     "skillPacksLoading": "스킬 팩 로딩 중…"
   },
   "GeneralSettings": {
@@ -1757,6 +1762,10 @@
       "typeToSearch": "입력하여 대화를 검색하세요",
       "typeToSearchFiles": "입력하여 파일 또는 디렉토리를 검색하세요",
       "noResults": "검색 결과가 없습니다.",
+      "indexing": "콘텐츠 색인 생성 중... {progress}%",
+      "dialogTitleAllFolders": "모든 폴더 검색",
+      "scopeLabel": "검색 범위",
+      "scopeAllFolders": "모든 폴더",
       "untitledConversation": "제목 없는 대화"
     },
     "folderTitleBar": {

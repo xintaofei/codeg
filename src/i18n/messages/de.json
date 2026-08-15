@@ -1389,6 +1389,11 @@
   },
   "SettingsPages": {
     "agentsLoading": "Agent-Einstellungen werden geladen...",
+    "searchEnabled": "Inhaltssuche",
+    "searchModeAuto": "Automatisch",
+    "searchModeScan": "Platzsparender Scan",
+    "searchModeFts": "Volltextindex",
+    "searchSaving": "Speichern...",
     "skillPacksLoading": "Skill-Pakete werden geladen…"
   },
   "GeneralSettings": {
@@ -1757,6 +1762,10 @@
       "typeToSearch": "Tippen, um Konversationen zu suchen",
       "typeToSearchFiles": "Tippen, um Dateien oder Verzeichnisse zu suchen",
       "noResults": "Keine Ergebnisse gefunden.",
+      "indexing": "Inhaltsindex wird erstellt... {progress}%",
+      "dialogTitleAllFolders": "Alle Ordner durchsuchen",
+      "scopeLabel": "Suchbereich",
+      "scopeAllFolders": "Alle Ordner",
       "untitledConversation": "Unbenannte Konversation"
     },
     "folderTitleBar": {

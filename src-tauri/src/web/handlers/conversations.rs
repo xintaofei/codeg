@@ -170,6 +170,9 @@ pub async fn get_folder_conversation_turns(
         params.limit,
     )
     .await?;
+    if let Some(indexer) = &state.search_indexer {
+        indexer.submit_turns(params.conversation_id, result.turns.clone());
+    }
     Ok(Json(result))
 }
 
@@ -385,5 +388,8 @@ pub async fn delete_conversation(
         params.conversation_id,
     )
     .await?;
+    if let Some(indexer) = &state.search_indexer {
+        indexer.request_delete(params.conversation_id);
+    }
     Ok(Json(()))
 }

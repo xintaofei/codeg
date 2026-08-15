@@ -417,6 +417,28 @@ export interface DbConversationSummary {
   origin_cwd?: string | null
 }
 
+export type SearchMatchKind = "title" | "content" | "both"
+
+/** Conversation-level search result returned by the content-search dialog. */
+export interface DbConversationSearchResult {
+  summary: DbConversationSummary
+  match_kind: SearchMatchKind
+  snippet_prefix: string | null
+  snippet_match: string | null
+  snippet_suffix: string | null
+  content_match_count: number
+}
+
+export interface SearchIndexStatus {
+  mode: "scan" | "fts"
+  user_enabled: boolean
+  user_mode: "auto" | "scan" | "fts"
+  indexed_conversation_count: number
+  visible_conversation_count: number
+  building: boolean
+  progress: number
+}
+
 /** Payload for the global `conversation://changed` side-channel that keeps
  *  every client's sidebar list/status in sync across desktop + browsers.
  *  Mirrors the Rust `ConversationChange` enum (serde `tag = "kind"`). */

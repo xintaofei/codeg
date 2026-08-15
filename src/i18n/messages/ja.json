@@ -1389,6 +1389,11 @@
   },
   "SettingsPages": {
     "agentsLoading": "エージェント設定を読み込み中...",
+    "searchEnabled": "本文検索",
+    "searchModeAuto": "自動",
+    "searchModeScan": "省容量スキャン",
+    "searchModeFts": "全文インデックス",
+    "searchSaving": "保存中...",
     "skillPacksLoading": "スキルパックを読み込み中…"
   },
   "GeneralSettings": {
@@ -1757,6 +1762,10 @@
       "typeToSearch": "入力して会話を検索",
       "typeToSearchFiles": "入力してファイルまたはディレクトリを検索",
       "noResults": "結果が見つかりません。",
+      "indexing": "コンテンツインデックスを構築中... {progress}%",
+      "dialogTitleAllFolders": "すべてのフォルダーを検索",
+      "scopeLabel": "検索範囲",
+      "scopeAllFolders": "すべてのフォルダー",
       "untitledConversation": "無題の会話"
     },
     "folderTitleBar": {

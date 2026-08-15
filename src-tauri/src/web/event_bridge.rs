@@ -149,6 +149,10 @@ impl EventEmitter {
 /// Global side-channel for cross-client conversation list/status sync.
 pub const CONVERSATION_CHANGED_EVENT: &str = "conversation://changed";
 
+/// Global side-channel for the content-search indexer's progress snapshot.
+/// Payload: `crate::models::SearchIndexStatus`.
+pub const SEARCH_INDEX_PROGRESS_EVENT: &str = "search-index://progress";
+
 /// Global side-channel announcing a live-feedback enable/disable. The settings
 /// UI runs in a SEPARATE window (`openSettingsWindow`), so the conversation
 /// feedback bar can't learn about a save through any frontend-only cache — it
