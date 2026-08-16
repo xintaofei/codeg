@@ -139,15 +139,20 @@ pub async fn get_folder_conversation(
 ) -> Result<Json<DbConversationDetail>, AppCommandError> {
     let db = &state.db;
     let window = conv_commands::resolve_turn_window_req(params.tail_turns, params.from_index)?;
-    let result = conv_commands::get_folder_conversation_with_live_core(
+    let mut result = conv_commands::get_folder_conversation_with_live_core(
         &db.conn,
         &state.connection_manager,
         &state.chat_channel_manager,
         &state.emitter,
         params.conversation_id,
-        window,
     )
     .await?;
+    if let Some(indexer) = &state.search_indexer {
+        indexer.submit_turns(params.conversation_id, result.turns.clone());
+    }
+    if let Some(req) = window {
+        conv_commands::apply_turn_window(&mut result, req);
+    }
     Ok(Json(result))
 }
 
@@ -170,9 +175,6 @@ pub async fn get_folder_conversation_turns(
         params.limit,
     )
     .await?;
-    if let Some(indexer) = &state.search_indexer {
-        indexer.submit_turns(params.conversation_id, result.turns.clone());
-    }
     Ok(Json(result))
 }
 

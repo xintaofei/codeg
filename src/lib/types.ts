@@ -417,8 +417,6 @@ export interface DbConversationSummary {
   origin_cwd?: string | null
 }
 
-export type SearchMatchKind = "title" | "content" | "both"
-
 export type SearchMatchLocationKind = "title" | "content"
 
 /** Precise location of one search hit inside a conversation. */
@@ -433,13 +431,10 @@ export interface SearchMatchLocation {
 /** Conversation-level search result returned by the content-search dialog. */
 export interface DbConversationSearchResult {
   summary: DbConversationSummary
-  match_kind: SearchMatchKind
   snippet_prefix: string | null
   snippet_match: string | null
   snippet_suffix: string | null
-  content_match_count: number
   matches: SearchMatchLocation[]
-  total_match_count: number
 }
 
 export interface SearchIndexStatus {

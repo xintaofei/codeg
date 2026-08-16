@@ -1327,7 +1327,7 @@ pub fn resolve_turn_window_req(
 /// full turn list (delegation meta, auto-title, in-flight stamping) — slicing
 /// is strictly a serialization concern, so the windowed `turns` are identical
 /// to the corresponding region of the full response.
-fn apply_turn_window(
+pub(crate) fn apply_turn_window(
     detail: &mut DbConversationDetail,
     req: crate::commands::turn_window::TurnWindowReq,
 ) {
@@ -1350,16 +1350,17 @@ fn apply_turn_window(
 /// reply persisted after it mid-stream. A no-op (one cheap lock pass) when no turn
 /// is in flight. Shared by the Tauri command and the web handler.
 ///
-/// `window`: when set, the response's `turns` are sliced to the requested
-/// window AFTER all full-list post-processing (the summary counts, stats and
-/// watermark keep describing the full transcript).
+/// This core function intentionally returns the FULL turn list. Callers that
+/// need a window must call [`apply_turn_window`] themselves AFTER handing the
+/// full turns to the search indexer — a windowed slice must never be written
+/// into the content index, or opening a conversation would silently truncate
+/// its indexed history.
 pub async fn get_folder_conversation_with_live_core(
     conn: &sea_orm::DatabaseConnection,
     manager: &crate::acp::manager::ConnectionManager,
     chat_channel_manager: &crate::chat_channel::manager::ChatChannelManager,
     emitter: &EventEmitter,
     conversation_id: i32,
-    window: Option<crate::commands::turn_window::TurnWindowReq>,
 ) -> Result<DbConversationDetail, AppCommandError> {
     let (mut detail, parsed_title) = get_folder_conversation_core(conn, conversation_id).await?;
 
@@ -1401,9 +1402,6 @@ pub async fn get_folder_conversation_with_live_core(
     {
         detail.in_flight_user_turn_id =
             apply_in_flight_message_id(&mut detail.turns, &pending, started_at);
-    }
-    if let Some(req) = window {
-        apply_turn_window(&mut detail, req);
     }
     Ok(detail)
 }
@@ -1447,13 +1445,12 @@ pub async fn get_folder_conversation(
     from_index: Option<usize>,
 ) -> Result<DbConversationDetail, AppCommandError> {
     let window = resolve_turn_window_req(tail_turns, from_index)?;
-    let result = get_folder_conversation_with_live_core(
+    let mut result = get_folder_conversation_with_live_core(
         &db.conn,
         &manager,
         &chat_channel_manager,
         &EventEmitter::Tauri(app.clone()),
         conversation_id,
-        window,
     )
     .await?;
     {
@@ -1463,6 +1460,9 @@ pub async fn get_folder_conversation(
         {
             indexer.submit_turns(conversation_id, result.turns.clone());
         }
+    }
+    if let Some(req) = window {
+        apply_turn_window(&mut result, req);
     }
     Ok(result)
 }

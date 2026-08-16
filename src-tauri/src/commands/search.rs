@@ -9,8 +9,8 @@ use crate::db::service::{
     message_search_service::{MODE_FTS, MODE_SCAN, USER_MODE_FTS, USER_MODE_SCAN},
 };
 use crate::models::{
-    AgentType, DbConversationSearchResult, SearchIndexStatus, SearchMatchKind, SearchMatchLocation,
-    SearchMatchLocationKind,
+    AgentType, DbConversationSearchResult, DbConversationSummary, SearchIndexStatus,
+    SearchMatchLocation, SearchMatchLocationKind,
 };
 use crate::search::normalizer::NormalizedBlockOffset;
 use crate::search::query::{self, ShortTermQuery};
@@ -47,27 +47,7 @@ pub async fn search_conversations_core(
 
     let terms = query::split_terms(&query);
     if query.is_empty() || !state.user_enabled {
-        return Ok(title_summaries
-            .into_iter()
-            .take(limit as usize)
-            .map(|summary| {
-                let matches = build_title_match_locations(
-                    summary.title.as_deref().unwrap_or_default(),
-                    &terms,
-                );
-                let total_match_count = matches.len() as u32;
-                DbConversationSearchResult {
-                    summary,
-                    match_kind: SearchMatchKind::Title,
-                    snippet_prefix: None,
-                    snippet_match: None,
-                    snippet_suffix: None,
-                    content_match_count: 0,
-                    matches,
-                    total_match_count,
-                }
-            })
-            .collect());
+        return Ok(title_only_results(title_summaries, &terms, limit as usize));
     }
 
     let effective_mode = match state.user_mode.as_str() {
@@ -94,27 +74,7 @@ pub async fn search_conversations_core(
 
     let candidate_ids = intersect_candidate_ids(&per_term);
     if candidate_ids.is_empty() {
-        return Ok(title_summaries
-            .into_iter()
-            .take(limit as usize)
-            .map(|summary| {
-                let matches = build_title_match_locations(
-                    summary.title.as_deref().unwrap_or_default(),
-                    &terms,
-                );
-                let total_match_count = matches.len() as u32;
-                DbConversationSearchResult {
-                    summary,
-                    match_kind: SearchMatchKind::Title,
-                    snippet_prefix: None,
-                    snippet_match: None,
-                    snippet_suffix: None,
-                    content_match_count: 0,
-                    matches,
-                    total_match_count,
-                }
-            })
-            .collect());
+        return Ok(title_only_results(title_summaries, &terms, limit as usize));
     }
 
     let visible_summaries = conversation_service::list_all(
@@ -174,13 +134,10 @@ pub async fn search_conversations_core(
         }
         title_results.push(DbConversationSearchResult {
             summary,
-            match_kind: SearchMatchKind::Title,
             snippet_prefix: None,
             snippet_match: None,
             snippet_suffix: None,
-            content_match_count: 0,
             matches: Vec::new(),
-            total_match_count: 0,
         });
     }
 
@@ -221,20 +178,12 @@ pub async fn search_conversations_core(
                 .map(|(text, blocks)| (text.as_str(), blocks.as_slice()))
                 .unwrap_or_default();
             let content_matches = build_content_match_locations(text, blocks, &terms);
-            let content_match_count = content_matches.len() as u32;
             result.matches.extend(content_matches);
             let (snippet_prefix, snippet_match, snippet_suffix) = build_snippet(text, &terms);
-            result.match_kind = if snippet_match.is_some() {
-                SearchMatchKind::Both
-            } else {
-                SearchMatchKind::Title
-            };
             result.snippet_prefix = snippet_prefix;
             result.snippet_match = snippet_match;
             result.snippet_suffix = snippet_suffix;
-            result.content_match_count = content_match_count;
         }
-        result.total_match_count = result.matches.len() as u32;
         results.push(result);
     }
 
@@ -247,12 +196,9 @@ pub async fn search_conversations_core(
         let matches = build_content_match_locations(text, blocks, &terms);
         results.push(DbConversationSearchResult {
             summary,
-            match_kind: SearchMatchKind::Content,
             snippet_prefix,
             snippet_match,
             snippet_suffix,
-            content_match_count: matches.len() as u32,
-            total_match_count: matches.len() as u32,
             matches,
         });
     }
@@ -431,6 +377,32 @@ fn build_title_match_locations(title: &str, terms: &[String]) -> Vec<SearchMatch
             block_index: None,
             char_start,
             char_end,
+        })
+        .collect()
+}
+
+/// Title-only results for queries with no content hits (or content search
+/// disabled): the same shape as a full result, with no snippet fields.
+fn title_only_results(
+    summaries: Vec<DbConversationSummary>,
+    terms: &[String],
+    limit: usize,
+) -> Vec<DbConversationSearchResult> {
+    summaries
+        .into_iter()
+        .take(limit)
+        .map(|summary| {
+            let matches = build_title_match_locations(
+                summary.title.as_deref().unwrap_or_default(),
+                terms,
+            );
+            DbConversationSearchResult {
+                summary,
+                snippet_prefix: None,
+                snippet_match: None,
+                snippet_suffix: None,
+                matches,
+            }
         })
         .collect()
 }
@@ -623,7 +595,6 @@ mod tests {
             .iter()
             .find(|result| result.summary.id == conversation_id)
             .expect("content result");
-        assert_eq!(result.match_kind, SearchMatchKind::Content);
         assert_eq!(result.snippet_match.as_deref(), Some("世界"));
         assert!(result.matches.iter().any(|match_location| {
             match_location.kind == SearchMatchLocationKind::Content
@@ -663,7 +634,7 @@ mod tests {
         .await
         .expect("search");
         assert_eq!(results[0].summary.id, conversation_id);
-        assert_eq!(results[0].match_kind, SearchMatchKind::Both);
+        assert_eq!(results[0].snippet_match.as_deref(), Some("世界"));
         assert!(
             results[0]
                 .matches

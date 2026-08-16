@@ -154,9 +154,6 @@ async fn process_turns(
     conversation_id: i32,
     turns: &[MessageTurn],
 ) -> Result<(), crate::db::error::DbError> {
-    let document = normalize_turns(turns);
-    let state = message_search_service::get_search_state(conn).await?;
-    let sync = sync_flags_for(&state);
     let existing = message_search_document::Entity::find()
         .filter(message_search_document::Column::ConversationId.eq(conversation_id))
         .one(conn)
@@ -170,10 +167,22 @@ async fn process_turns(
     };
     let source_ended_at = Some(conversation.updated_at);
     let source_message_count = conversation.message_count;
+    // The cheap source-metadata guard mirrors `drift_resync`'s dirtiness probe:
+    // an unchanged detail load never re-normalizes the whole transcript.
+    if existing.as_ref().is_some_and(|doc| {
+        doc.source_ended_at == source_ended_at
+            && doc.source_message_count == source_message_count
+    }) {
+        return Ok(());
+    }
+
+    let document = normalize_turns(turns);
     // Empty turns (typically a transcript whose session file no longer
     // exists) still record a tombstone row so the progress denominator treats
     // the conversation as handled. `drift_resync` sees a non-dirty document
     // and stops re-queueing the parse every ten minutes.
+    let state = message_search_service::get_search_state(conn).await?;
+    let sync = sync_flags_for(&state);
     if existing.as_ref().is_some_and(|doc| {
         doc.content_hash == document.content_hash
             && doc.source_ended_at == source_ended_at
@@ -260,6 +269,7 @@ pub(crate) async fn sync_mode_and_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::entities::{conversation, message_search_document};
     use crate::db::service::message_search_service::USER_MODE_SCAN;
     use crate::db::test_helpers::{fresh_in_memory_db, seed_conversation, seed_folder};
     use crate::models::{ContentBlock, TurnRole};
@@ -359,6 +369,49 @@ mod tests {
                 .expect("docs");
         assert_eq!(docs.len(), 1);
         assert!(docs[0].1.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stale_metadata_reparses_and_refreshes_source_fields() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/search-metadata").await;
+        let conversation_id =
+            seed_conversation(&db, folder_id, crate::models::AgentType::Codex).await;
+        message_search_service::ensure_search_state(&db.conn)
+            .await
+            .expect("state");
+
+        process_turns(&db.conn, conversation_id, &[turn("same text")])
+            .await
+            .expect("first");
+        let first = message_search_document::Entity::find()
+            .filter(message_search_document::Column::ConversationId.eq(conversation_id))
+            .one(&db.conn)
+            .await
+            .expect("read")
+            .expect("document");
+
+        crate::db::service::conversation_service::update_status(
+            &db.conn,
+            conversation_id,
+            conversation::ConversationStatus::Completed,
+        )
+        .await
+        .expect("bump");
+
+        process_turns(&db.conn, conversation_id, &[turn("same text")])
+            .await
+            .expect("second");
+        let second = message_search_document::Entity::find()
+            .filter(message_search_document::Column::ConversationId.eq(conversation_id))
+            .one(&db.conn)
+            .await
+            .expect("read")
+            .expect("document");
+
+        assert_eq!(second.content_hash, first.content_hash);
+        assert_ne!(second.source_ended_at, first.source_ended_at);
+        assert_eq!(second.source_message_count, first.source_message_count);
     }
 
     #[tokio::test]

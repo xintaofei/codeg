@@ -38,8 +38,7 @@ pub use message::{
 pub use quick_message::QuickMessageInfo;
 pub use remote_workspace_connection::RemoteWorkspaceConnectionInfo;
 pub use search::{
-    DbConversationSearchResult, SearchIndexStatus, SearchMatchKind, SearchMatchLocation,
-    SearchMatchLocationKind,
+    DbConversationSearchResult, SearchIndexStatus, SearchMatchLocation, SearchMatchLocationKind,
 };
 pub use token_usage::{
     TokenUsageBreakdownItem, TokenUsageBucket, TokenUsageConversationItem, TokenUsageFacets,

@@ -18,7 +18,6 @@ export interface SearchFocus {
 interface SearchFocusState {
   focus: SearchFocus | null
   setFocus: (focus: SearchFocus) => void
-  setActiveMatchIndex: (index: number) => void
   advance: () => void
   clear: () => void
 }
@@ -26,10 +25,6 @@ interface SearchFocusState {
 export const useSearchFocusStore = create<SearchFocusState>((set) => ({
   focus: null,
   setFocus: (focus) => set({ focus }),
-  setActiveMatchIndex: (activeMatchIndex) =>
-    set((state) =>
-      state.focus ? { focus: { ...state.focus, activeMatchIndex } } : {}
-    ),
   advance: () =>
     set((state) => {
       if (!state.focus || state.focus.contentMatches.length === 0) return {}

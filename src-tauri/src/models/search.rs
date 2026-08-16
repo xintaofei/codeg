@@ -2,15 +2,6 @@ use serde::Serialize;
 
 use super::conversation::DbConversationSummary;
 
-/// Which field produced this search hit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SearchMatchKind {
-    Title,
-    Content,
-    Both,
-}
-
 /// Where one search term matches inside a conversation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -33,13 +24,10 @@ pub struct SearchMatchLocation {
 #[derive(Clone, Debug, Serialize)]
 pub struct DbConversationSearchResult {
     pub summary: DbConversationSummary,
-    pub match_kind: SearchMatchKind,
     pub snippet_prefix: Option<String>,
     pub snippet_match: Option<String>,
     pub snippet_suffix: Option<String>,
-    pub content_match_count: u32,
     pub matches: Vec<SearchMatchLocation>,
-    pub total_match_count: u32,
 }
 
 /// Read-only view of the content index lifecycle for the search dialog.
