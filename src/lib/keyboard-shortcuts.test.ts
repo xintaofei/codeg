@@ -132,9 +132,7 @@ describe("window zoom shortcuts", () => {
   })
 
   it("treats Ctrl+= and Ctrl++ as zoom in", () => {
-    expect(
-      isZoomInShortcutEvent(keyEvent("=", { ctrlKey: true }))
-    ).toBe(true)
+    expect(isZoomInShortcutEvent(keyEvent("=", { ctrlKey: true }))).toBe(true)
     expect(
       isZoomInShortcutEvent(keyEvent("+", { ctrlKey: true, shiftKey: true }))
     ).toBe(true)
@@ -143,11 +141,7 @@ describe("window zoom shortcuts", () => {
   })
 
   it("treats Ctrl+- as zoom out", () => {
-    expect(
-      isZoomOutShortcutEvent(keyEvent("-", { ctrlKey: true }))
-    ).toBe(true)
-    expect(isZoomOutShortcutEvent(keyEvent("=", { ctrlKey: true }))).toBe(
-      false
-    )
+    expect(isZoomOutShortcutEvent(keyEvent("-", { ctrlKey: true }))).toBe(true)
+    expect(isZoomOutShortcutEvent(keyEvent("=", { ctrlKey: true }))).toBe(false)
   })
 })

@@ -328,7 +328,10 @@ export function shortcutFromKeyboardEvent(
 
 /** Ctrl/Cmd + or = (with or without Shift). Matches the Settings zoom-in rung. */
 export function isZoomInShortcutEvent(event: ShortcutEventLike): boolean {
-  if (matchShortcutEvent(event, "mod+=") || matchShortcutEvent(event, "mod++")) {
+  if (
+    matchShortcutEvent(event, "mod+=") ||
+    matchShortcutEvent(event, "mod++")
+  ) {
     return true
   }
   if (!(event.metaKey || event.ctrlKey) || event.altKey) return false
