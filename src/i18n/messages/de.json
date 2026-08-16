@@ -418,6 +418,42 @@
         "title": "Vorheriger Tab",
         "description": "Zum vorherigen Konversations- oder Datei-Tab wechseln"
       },
+      "switch_tab_1": {
+        "title": "Zu Tab 1 wechseln",
+        "description": "Zum 1. Konversations- oder Datei-Tab springen"
+      },
+      "switch_tab_2": {
+        "title": "Zu Tab 2 wechseln",
+        "description": "Zum 2. Konversations- oder Datei-Tab springen"
+      },
+      "switch_tab_3": {
+        "title": "Zu Tab 3 wechseln",
+        "description": "Zum 3. Konversations- oder Datei-Tab springen"
+      },
+      "switch_tab_4": {
+        "title": "Zu Tab 4 wechseln",
+        "description": "Zum 4. Konversations- oder Datei-Tab springen"
+      },
+      "switch_tab_5": {
+        "title": "Zu Tab 5 wechseln",
+        "description": "Zum 5. Konversations- oder Datei-Tab springen"
+      },
+      "switch_tab_6": {
+        "title": "Zu Tab 6 wechseln",
+        "description": "Zum 6. Konversations- oder Datei-Tab springen"
+      },
+      "switch_tab_7": {
+        "title": "Zu Tab 7 wechseln",
+        "description": "Zum 7. Konversations- oder Datei-Tab springen"
+      },
+      "switch_tab_8": {
+        "title": "Zu Tab 8 wechseln",
+        "description": "Zum 8. Konversations- oder Datei-Tab springen"
+      },
+      "switch_tab_9": {
+        "title": "Zu Tab 9 wechseln",
+        "description": "Zum 9. Konversations- oder Datei-Tab springen"
+      },
       "send_message": {
         "title": "Nachricht senden",
         "description": "Die aktuelle Nachricht im Eingabefeld senden"

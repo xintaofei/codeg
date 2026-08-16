@@ -12,6 +12,15 @@ export type ShortcutActionId =
   | "close_all_file_tabs"
   | "next_tab"
   | "prev_tab"
+  | "switch_tab_1"
+  | "switch_tab_2"
+  | "switch_tab_3"
+  | "switch_tab_4"
+  | "switch_tab_5"
+  | "switch_tab_6"
+  | "switch_tab_7"
+  | "switch_tab_8"
+  | "switch_tab_9"
   | "send_message"
   | "newline_in_message"
   | "toggle_custom_style"
@@ -60,6 +69,15 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
   {
     id: "prev_tab",
   },
+  { id: "switch_tab_1" },
+  { id: "switch_tab_2" },
+  { id: "switch_tab_3" },
+  { id: "switch_tab_4" },
+  { id: "switch_tab_5" },
+  { id: "switch_tab_6" },
+  { id: "switch_tab_7" },
+  { id: "switch_tab_8" },
+  { id: "switch_tab_9" },
   {
     id: "send_message",
   },
@@ -93,6 +111,15 @@ export const DEFAULT_SHORTCUTS: ShortcutSettings = {
   close_all_file_tabs: "mod+shift+w",
   next_tab: "mod+tab",
   prev_tab: "mod+shift+tab",
+  switch_tab_1: "mod+1",
+  switch_tab_2: "mod+2",
+  switch_tab_3: "mod+3",
+  switch_tab_4: "mod+4",
+  switch_tab_5: "mod+5",
+  switch_tab_6: "mod+6",
+  switch_tab_7: "mod+7",
+  switch_tab_8: "mod+8",
+  switch_tab_9: "mod+9",
   send_message: "enter",
   newline_in_message: "shift+enter",
   // 自定义样式的逃生舱：用户把界面改到不可用时，这一路必须仍然按得动，所以选一个
@@ -304,6 +331,42 @@ export function shortcutFromKeyboardEvent(
   parts.push(keyToken)
 
   return parts.join("+")
+}
+
+export const NUMBERED_TAB_ACTION_IDS = [
+  "switch_tab_1",
+  "switch_tab_2",
+  "switch_tab_3",
+  "switch_tab_4",
+  "switch_tab_5",
+  "switch_tab_6",
+  "switch_tab_7",
+  "switch_tab_8",
+  "switch_tab_9",
+] as const satisfies readonly ShortcutActionId[]
+
+/** 0-based index into the visible tab strip, or null when that tab does not exist. */
+export function pickNumberedTabId(
+  tabIds: readonly string[],
+  index: number
+): string | null {
+  if (!Number.isInteger(index) || index < 0 || index >= tabIds.length) {
+    return null
+  }
+  return tabIds[index] ?? null
+}
+
+export function numberedTabIndexFromEvent(
+  event: ShortcutEventLike,
+  shortcuts: ShortcutSettings
+): number | null {
+  for (let index = 0; index < NUMBERED_TAB_ACTION_IDS.length; index += 1) {
+    const actionId = NUMBERED_TAB_ACTION_IDS[index]
+    if (matchShortcutEvent(event, shortcuts[actionId])) {
+      return index
+    }
+  }
+  return null
 }
 
 export function matchShortcutEvent(

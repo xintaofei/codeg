@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest"
 
 import {
   DEFAULT_SHORTCUTS,
+  NUMBERED_TAB_ACTION_IDS,
   SHORTCUT_DEFINITIONS,
   matchShortcutEvent,
+  numberedTabIndexFromEvent,
+  pickNumberedTabId,
   shortcutFromKeyboardEvent,
 } from "./keyboard-shortcuts"
 
@@ -59,6 +62,42 @@ describe("tab cycling shortcuts", () => {
         "mod+tab"
       )
     ).toBe(false)
+  })
+})
+
+describe("numbered tab shortcuts", () => {
+  it("registers Ctrl/Cmd+1 through 9 as switch_tab_N", () => {
+    const ids = SHORTCUT_DEFINITIONS.map((definition) => definition.id)
+    for (const [index, actionId] of NUMBERED_TAB_ACTION_IDS.entries()) {
+      expect(ids).toContain(actionId)
+      expect(DEFAULT_SHORTCUTS[actionId]).toBe(`mod+${index + 1}`)
+    }
+  })
+
+  it("maps Ctrl+1 to the first tab and ignores a missing ninth tab", () => {
+    const tabs = ["conv-a", "conv-b", "conv-c"]
+    expect(pickNumberedTabId(tabs, 0)).toBe("conv-a")
+    expect(pickNumberedTabId(tabs, 2)).toBe("conv-c")
+    expect(pickNumberedTabId(tabs, 8)).toBeNull()
+    expect(pickNumberedTabId([], 0)).toBeNull()
+  })
+
+  it("resolves Ctrl+2 against the default numbered-tab bindings", () => {
+    expect(
+      numberedTabIndexFromEvent(
+        keyEvent("2", { ctrlKey: true }),
+        DEFAULT_SHORTCUTS
+      )
+    ).toBe(1)
+    expect(
+      numberedTabIndexFromEvent(keyEvent("2"), DEFAULT_SHORTCUTS)
+    ).toBeNull()
+    expect(
+      numberedTabIndexFromEvent(
+        keyEvent("Tab", { ctrlKey: true }),
+        DEFAULT_SHORTCUTS
+      )
+    ).toBeNull()
   })
 })
 

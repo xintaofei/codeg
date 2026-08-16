@@ -418,6 +418,42 @@
         "title": "Onglet précédent",
         "description": "Passer à l'onglet de conversation ou de fichier précédent"
       },
+      "switch_tab_1": {
+        "title": "Aller à l'onglet 1",
+        "description": "Ouvrir l'onglet de conversation ou de fichier 1"
+      },
+      "switch_tab_2": {
+        "title": "Aller à l'onglet 2",
+        "description": "Ouvrir l'onglet de conversation ou de fichier 2"
+      },
+      "switch_tab_3": {
+        "title": "Aller à l'onglet 3",
+        "description": "Ouvrir l'onglet de conversation ou de fichier 3"
+      },
+      "switch_tab_4": {
+        "title": "Aller à l'onglet 4",
+        "description": "Ouvrir l'onglet de conversation ou de fichier 4"
+      },
+      "switch_tab_5": {
+        "title": "Aller à l'onglet 5",
+        "description": "Ouvrir l'onglet de conversation ou de fichier 5"
+      },
+      "switch_tab_6": {
+        "title": "Aller à l'onglet 6",
+        "description": "Ouvrir l'onglet de conversation ou de fichier 6"
+      },
+      "switch_tab_7": {
+        "title": "Aller à l'onglet 7",
+        "description": "Ouvrir l'onglet de conversation ou de fichier 7"
+      },
+      "switch_tab_8": {
+        "title": "Aller à l'onglet 8",
+        "description": "Ouvrir l'onglet de conversation ou de fichier 8"
+      },
+      "switch_tab_9": {
+        "title": "Aller à l'onglet 9",
+        "description": "Ouvrir l'onglet de conversation ou de fichier 9"
+      },
       "send_message": {
         "title": "Envoyer le message",
         "description": "Envoyer le message actuel dans la zone de saisie"

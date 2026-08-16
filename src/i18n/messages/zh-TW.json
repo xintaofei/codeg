@@ -418,6 +418,42 @@
         "title": "上一個標籤頁",
         "description": "切換到上一個會話或檔案標籤頁"
       },
+      "switch_tab_1": {
+        "title": "切換到第 1 個標籤",
+        "description": "跳到第 1 個會話或檔案標籤"
+      },
+      "switch_tab_2": {
+        "title": "切換到第 2 個標籤",
+        "description": "跳到第 2 個會話或檔案標籤"
+      },
+      "switch_tab_3": {
+        "title": "切換到第 3 個標籤",
+        "description": "跳到第 3 個會話或檔案標籤"
+      },
+      "switch_tab_4": {
+        "title": "切換到第 4 個標籤",
+        "description": "跳到第 4 個會話或檔案標籤"
+      },
+      "switch_tab_5": {
+        "title": "切換到第 5 個標籤",
+        "description": "跳到第 5 個會話或檔案標籤"
+      },
+      "switch_tab_6": {
+        "title": "切換到第 6 個標籤",
+        "description": "跳到第 6 個會話或檔案標籤"
+      },
+      "switch_tab_7": {
+        "title": "切換到第 7 個標籤",
+        "description": "跳到第 7 個會話或檔案標籤"
+      },
+      "switch_tab_8": {
+        "title": "切換到第 8 個標籤",
+        "description": "跳到第 8 個會話或檔案標籤"
+      },
+      "switch_tab_9": {
+        "title": "切換到第 9 個標籤",
+        "description": "跳到第 9 個會話或檔案標籤"
+      },
       "send_message": {
         "title": "傳送訊息",
         "description": "在輸入框中傳送目前的訊息"

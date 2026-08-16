@@ -418,6 +418,42 @@
         "title": "前のタブ",
         "description": "前の会話またはファイルタブに切り替える"
       },
+      "switch_tab_1": {
+        "title": "タブ 1 に切り替え",
+        "description": "1 番目の会話またはファイルタブに移動"
+      },
+      "switch_tab_2": {
+        "title": "タブ 2 に切り替え",
+        "description": "2 番目の会話またはファイルタブに移動"
+      },
+      "switch_tab_3": {
+        "title": "タブ 3 に切り替え",
+        "description": "3 番目の会話またはファイルタブに移動"
+      },
+      "switch_tab_4": {
+        "title": "タブ 4 に切り替え",
+        "description": "4 番目の会話またはファイルタブに移動"
+      },
+      "switch_tab_5": {
+        "title": "タブ 5 に切り替え",
+        "description": "5 番目の会話またはファイルタブに移動"
+      },
+      "switch_tab_6": {
+        "title": "タブ 6 に切り替え",
+        "description": "6 番目の会話またはファイルタブに移動"
+      },
+      "switch_tab_7": {
+        "title": "タブ 7 に切り替え",
+        "description": "7 番目の会話またはファイルタブに移動"
+      },
+      "switch_tab_8": {
+        "title": "タブ 8 に切り替え",
+        "description": "8 番目の会話またはファイルタブに移動"
+      },
+      "switch_tab_9": {
+        "title": "タブ 9 に切り替え",
+        "description": "9 番目の会話またはファイルタブに移動"
+      },
       "send_message": {
         "title": "メッセージを送信",
         "description": "入力欄のメッセージを送信する"

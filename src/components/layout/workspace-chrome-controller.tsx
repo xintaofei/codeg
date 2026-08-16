@@ -16,7 +16,11 @@ import {
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useSearchDialog } from "@/contexts/search-dialog-context"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
-import { matchShortcutEvent } from "@/lib/keyboard-shortcuts"
+import {
+  matchShortcutEvent,
+  numberedTabIndexFromEvent,
+  pickNumberedTabId,
+} from "@/lib/keyboard-shortcuts"
 import { SearchCommandDialog } from "@/components/conversations/search-command-dialog"
 import { WorkspaceFolderDialog } from "@/components/layout/workspace-folder-dialog"
 
@@ -41,8 +45,9 @@ export function WorkspaceChromeController() {
   // Mobile no longer mounts those strips, so this always-mounted controller now
   // owns them too (see the keydown handler below).
   const { mode, activePane, filesMaximized } = useWorkspaceView()
-  const { activeFileTabId } = useWorkspaceFileTabs()
-  const { closeFileTab, closeAllFileTabs } = useWorkspaceActions()
+  const { activeFileTabId, fileTabs } = useWorkspaceFileTabs()
+  const { closeFileTab, closeAllFileTabs, switchFileTab } =
+    useWorkspaceActions()
   const { openConversations } = useWorkbenchRoute()
   const { shortcuts } = useShortcutSettings()
   // Search open-state is shared (see search-dialog-context): the trigger lives
@@ -132,6 +137,31 @@ export function WorkspaceChromeController() {
         return
       }
 
+      const numberedIndex = numberedTabIndexFromEvent(e, shortcuts)
+      if (numberedIndex !== null) {
+        if (conversationPaneActive) {
+          const tabId = pickNumberedTabId(
+            tabs.map((tab) => tab.id),
+            numberedIndex
+          )
+          if (!tabId) return
+          e.preventDefault()
+          switchTab(tabId)
+          return
+        }
+        if (filesPaneActive) {
+          const tabId = pickNumberedTabId(
+            fileTabs.map((tab) => tab.id),
+            numberedIndex
+          )
+          if (!tabId) return
+          e.preventDefault()
+          switchFileTab(tabId)
+          return
+        }
+        return
+      }
+
       if (matchShortcutEvent(e, shortcuts.close_all_file_tabs)) {
         if (!filesPaneActive) return
         e.preventDefault()
@@ -172,9 +202,11 @@ export function WorkspaceChromeController() {
     mode,
     activePane,
     filesMaximized,
+    fileTabs,
     activeFileTabId,
     closeFileTab,
     closeAllFileTabs,
+    switchFileTab,
   ])
 
   return (

@@ -418,6 +418,42 @@
         "title": "이전 탭",
         "description": "이전 대화 또는 파일 탭으로 전환"
       },
+      "switch_tab_1": {
+        "title": "1번 탭으로 이동",
+        "description": "1번째 대화 또는 파일 탭으로 이동"
+      },
+      "switch_tab_2": {
+        "title": "2번 탭으로 이동",
+        "description": "2번째 대화 또는 파일 탭으로 이동"
+      },
+      "switch_tab_3": {
+        "title": "3번 탭으로 이동",
+        "description": "3번째 대화 또는 파일 탭으로 이동"
+      },
+      "switch_tab_4": {
+        "title": "4번 탭으로 이동",
+        "description": "4번째 대화 또는 파일 탭으로 이동"
+      },
+      "switch_tab_5": {
+        "title": "5번 탭으로 이동",
+        "description": "5번째 대화 또는 파일 탭으로 이동"
+      },
+      "switch_tab_6": {
+        "title": "6번 탭으로 이동",
+        "description": "6번째 대화 또는 파일 탭으로 이동"
+      },
+      "switch_tab_7": {
+        "title": "7번 탭으로 이동",
+        "description": "7번째 대화 또는 파일 탭으로 이동"
+      },
+      "switch_tab_8": {
+        "title": "8번 탭으로 이동",
+        "description": "8번째 대화 또는 파일 탭으로 이동"
+      },
+      "switch_tab_9": {
+        "title": "9번 탭으로 이동",
+        "description": "9번째 대화 또는 파일 탭으로 이동"
+      },
       "send_message": {
         "title": "메시지 보내기",
         "description": "입력창에서 현재 메시지를 전송"
