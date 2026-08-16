@@ -21,7 +21,9 @@ import type { ContentBlock, MessageTurn, PromptInputBlock } from "@/lib/types"
  */
 
 /** Milliseconds since epoch for a turn's timestamp, or null if unparseable. */
-export function turnTimestampMs(turn: Pick<MessageTurn, "timestamp">): number | null {
+export function turnTimestampMs(
+  turn: Pick<MessageTurn, "timestamp">
+): number | null {
   const ms = Date.parse(turn.timestamp)
   return Number.isFinite(ms) ? ms : null
 }

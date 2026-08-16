@@ -1825,9 +1825,7 @@ const ConversationTabView = memo(function ConversationTabView({
           canShowDetailErrorActions ? handleOpenNewSession : undefined
         }
         onQuoteSelection={composerAvailable ? handleQuoteSelection : undefined}
-        onEditUserMessage={
-          !conn.isViewer ? handleEditUserMessage : undefined
-        }
+        onEditUserMessage={!conn.isViewer ? handleEditUserMessage : undefined}
       />
     </GoalControlProvider>
   )

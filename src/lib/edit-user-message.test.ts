@@ -106,21 +106,15 @@ describe("contentBlocksToPromptInput", () => {
 
 describe("canEditUserTurn", () => {
   it("allows a persisted user turn", () => {
-    expect(
-      canEditUserTurn({ role: "user", phase: "persisted" })
-    ).toBe(true)
+    expect(canEditUserTurn({ role: "user", phase: "persisted" })).toBe(true)
   })
 
   it("rejects optimistic, streaming, assistant, and read-only turns", () => {
-    expect(
-      canEditUserTurn({ role: "user", phase: "optimistic" })
-    ).toBe(false)
-    expect(
-      canEditUserTurn({ role: "user", phase: "streaming" })
-    ).toBe(false)
-    expect(
-      canEditUserTurn({ role: "assistant", phase: "persisted" })
-    ).toBe(false)
+    expect(canEditUserTurn({ role: "user", phase: "optimistic" })).toBe(false)
+    expect(canEditUserTurn({ role: "user", phase: "streaming" })).toBe(false)
+    expect(canEditUserTurn({ role: "assistant", phase: "persisted" })).toBe(
+      false
+    )
     expect(
       canEditUserTurn({ role: "user", phase: "persisted", readOnly: true })
     ).toBe(false)

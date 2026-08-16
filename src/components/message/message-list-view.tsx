@@ -624,10 +624,7 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
         {group.role === "user" ? (
           <div className="group/user-msg flex w-fit ml-auto max-w-full items-start gap-1">
             {onEdit && sourceTurns?.[0] ? (
-              <UserMessageEditButton
-                turn={sourceTurns[0]}
-                onEdit={onEdit}
-              />
+              <UserMessageEditButton turn={sourceTurns[0]} onEdit={onEdit} />
             ) : null}
             <UserMessageTaskButton parts={group.parts} />
             <UserMessageCopyButton parts={group.parts} />
