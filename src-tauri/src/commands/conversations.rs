@@ -6,7 +6,9 @@ use tauri::Manager;
 use crate::app_error::AppCommandError;
 use crate::db::entities::conversation;
 use crate::db::entities::folder::FolderKind;
-use crate::db::service::{conversation_service, folder_service, import_service, tab_service};
+use crate::db::service::{
+    conversation_edit_service, conversation_service, folder_service, import_service, tab_service,
+};
 #[cfg(feature = "tauri-runtime")]
 use crate::db::AppDatabase;
 use crate::models::*;
@@ -1254,6 +1256,19 @@ pub async fn get_folder_conversation_core(
         .unwrap_or_default();
     inject_delegation_meta(&mut turns, &children);
 
+    // User-message edits hide the replaced tail. Applied here so every
+    // consumer (detail, older-page, live window) sees the same transcript.
+    match conversation_edit_service::get_hidden_timestamps(conn, conversation_id).await {
+        Ok(hidden) if !hidden.is_empty() => {
+            turns = conversation_edit_service::filter_hidden_turns(turns, &hidden);
+            summary.message_count = turns.len() as u32;
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(
+            "[conversations] failed to load edit-hidden timestamps for {conversation_id}: {e}"
+        ),
+    }
+
     Ok((
         DbConversationDetail {
             summary,
@@ -2237,6 +2252,42 @@ pub async fn update_conversation_pinned(
     update_conversation_pinned_core(&db.conn, conversation_id, pinned).await?;
     emit_conversation_upsert(&EventEmitter::Tauri(app), &db.conn, conversation_id).await;
     Ok(())
+}
+
+/// Persist timestamps of turns hidden by editing a previous user message.
+/// See `conversation_edit_service`. An empty list is rejected so a missed
+/// turn id cannot wipe (or no-op-hide) the transcript by accident.
+pub async fn hide_conversation_turns_core(
+    conn: &sea_orm::DatabaseConnection,
+    conversation_id: i32,
+    hidden_timestamps_ms: Vec<i64>,
+) -> Result<(), AppCommandError> {
+    if hidden_timestamps_ms.is_empty() {
+        return Err(AppCommandError::invalid_input(
+            "hidden_timestamps_ms must not be empty",
+        ));
+    }
+    conversation_service::get_by_id(conn, conversation_id)
+        .await
+        .map_err(AppCommandError::from)?;
+    conversation_edit_service::add_hidden_timestamps(
+        conn,
+        conversation_id,
+        &hidden_timestamps_ms,
+    )
+    .await
+    .map_err(AppCommandError::from)?;
+    Ok(())
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn hide_conversation_turns(
+    db: tauri::State<'_, AppDatabase>,
+    conversation_id: i32,
+    hidden_timestamps_ms: Vec<i64>,
+) -> Result<(), AppCommandError> {
+    hide_conversation_turns_core(&db.conn, conversation_id, hidden_timestamps_ms).await
 }
 
 pub async fn delete_conversation_core(

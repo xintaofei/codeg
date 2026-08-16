@@ -2970,6 +2970,8 @@
         "emptyConversation": "この会話にはメッセージがありません。",
         "systemMessage": "システムメッセージ",
         "copyMessage": "コピー",
+        "editMessage": "編集",
+        "editingMessage": "このメッセージを編集中です。送信すると置き換わり、ここから続きを送ります。",
         "copied": "コピー済み",
         "selectionActions": "選択範囲の操作",
         "selectionCopy": "テキストをコピー",

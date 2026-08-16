@@ -2970,6 +2970,8 @@
         "emptyConversation": "当前会话暂无消息。",
         "systemMessage": "系统消息",
         "copyMessage": "复制",
+        "editMessage": "编辑",
+        "editingMessage": "正在编辑这条消息。发送后会替换它并从这里继续。",
         "copied": "已复制",
         "selectionActions": "选中内容操作",
         "selectionCopy": "复制文本",

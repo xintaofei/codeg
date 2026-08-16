@@ -2970,6 +2970,8 @@
         "emptyConversation": "لا توجد رسائل في هذه المحادثة.",
         "systemMessage": "رسالة النظام",
         "copyMessage": "نسخ",
+        "editMessage": "تعديل",
+        "editingMessage": "جارٍ تعديل هذه الرسالة. الإرسال يستبدلها ويكمل من هنا.",
         "copied": "تم النسخ",
         "selectionActions": "إجراءات التحديد",
         "selectionCopy": "نسخ النص",

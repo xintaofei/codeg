@@ -2970,6 +2970,8 @@
         "emptyConversation": "No messages in this conversation.",
         "systemMessage": "System message",
         "copyMessage": "Copy",
+        "editMessage": "Edit",
+        "editingMessage": "Editing this message. Send to replace it and continue from here.",
         "copied": "Copied",
         "selectionActions": "Selection actions",
         "selectionCopy": "Copy Text",

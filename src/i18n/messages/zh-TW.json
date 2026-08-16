@@ -2970,6 +2970,8 @@
         "emptyConversation": "目前會話暫無訊息。",
         "systemMessage": "系統訊息",
         "copyMessage": "複製",
+        "editMessage": "編輯",
+        "editingMessage": "正在編輯這則訊息。送出後會取代它並從這裡繼續。",
         "copied": "已複製",
         "selectionActions": "選取內容操作",
         "selectionCopy": "複製文字",
