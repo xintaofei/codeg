@@ -257,6 +257,8 @@ export const ReasoningContent = memo(
           plugins={plugins}
           remarkPlugins={remarkPlugins}
           {...props}
+          mode="static"
+          parseIncompleteMarkdown={false}
           // Enforce the link icon + safety override after spreading props.
           components={markdownLinkComponents}
         >

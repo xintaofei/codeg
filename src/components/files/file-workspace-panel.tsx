@@ -268,6 +268,8 @@ function MarkdownDocumentPreview({
     <div className="h-full overflow-auto p-6 [&_a_img]:inline [&_ol]:list-decimal [&_ul]:list-disc [&_ol]:pl-6 [&_ul]:pl-6">
       <Streamdown
         plugins={plugins}
+        mode="static"
+        parseIncompleteMarkdown={false}
         components={{
           // eslint-disable-next-line @typescript-eslint/no-unused-vars
           img: ({ node, ...imgProps }) => (
