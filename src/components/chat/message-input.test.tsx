@@ -572,6 +572,146 @@ describe("MessageInput collapsed selectors popover", () => {
     )
   })
 
+  it("groups Cursor Auto as the CLI default and commits the raw model value", async () => {
+    const user = userEvent.setup()
+    const onConfigOptionChange = vi.fn()
+    const options = [
+      { value: "default", name: "Auto", description: null },
+      ...Array.from({ length: 2 }, (_, i) => ({
+        value: `cursor-model-id-${i}`,
+        name: `Account model ${i}`,
+        description: null,
+      })),
+    ]
+    const cursorModel: SessionConfigOptionInfo = {
+      id: "model",
+      name: "Model",
+      description: null,
+      category: "model",
+      kind: {
+        type: "select",
+        current_value: "default",
+        options,
+        groups: [],
+      },
+    }
+    const { container } = renderInput({
+      agentType: "cursor",
+      configOptions: [cursorModel],
+      onConfigOptionChange,
+    })
+    await waitFor(() =>
+      expect(container.querySelector('[role="textbox"]')).not.toBeNull()
+    )
+    const settingsLabel = enMessages.Folder.chat.messageInput.agentSettings
+    await user.click(screen.getByRole("button", { name: settingsLabel }))
+    const popover = await screen.findByRole("dialog", { name: settingsLabel })
+
+    expect(
+      within(popover).getByText(
+        enMessages.Folder.chat.messageInput.cliDefaultSettings
+      )
+    ).toBeInTheDocument()
+    expect(
+      within(popover).getAllByText(
+        enMessages.Folder.chat.messageInput.autoDefault
+      ).length
+    ).toBeGreaterThan(0)
+
+    const search = within(popover).getByRole("combobox")
+    await user.type(search, "Account model 1")
+    await user.click(
+      within(popover).getByRole("option", { name: /Account model 1/ })
+    )
+    expect(onConfigOptionChange).toHaveBeenCalledWith(
+      "model",
+      "cursor-model-id-1"
+    )
+  })
+
+  it("shows Cursor parameter combinations as searchable single-row choices", async () => {
+    const user = userEvent.setup()
+    const onConfigOptionChange = vi.fn()
+    const composite = (alias: string) => `__codeg_cursor_composite__:${alias}`
+    const cursorModel: SessionConfigOptionInfo = {
+      id: "model",
+      name: "Model",
+      description: null,
+      category: "model",
+      pending_operation_id: "cursor-operation-test",
+      kind: {
+        type: "select",
+        current_value: composite("gpt-5.3-codex-high-fast"),
+        options: [
+          { value: "default", name: "Auto", description: null },
+          {
+            value: composite("gpt-5.3-codex-high-fast"),
+            name: "Codex 5.3 High Fast",
+            description: null,
+          },
+          {
+            value: composite("gpt-5.3-codex-xhigh-fast"),
+            name: "Codex 5.3 Extra High Fast",
+            description: null,
+          },
+          {
+            value: composite("claude-opus-5-thinking"),
+            name: "Opus 5 1M Thinking",
+            description: null,
+          },
+          {
+            value: composite("fable-5-thinking"),
+            name: "Fable 5 1M Thinking (NO ZDR)",
+            description: null,
+          },
+        ],
+        groups: [],
+      },
+    }
+    const { container } = renderInput({
+      agentType: "cursor",
+      configOptions: [cursorModel],
+      onConfigOptionChange,
+    })
+    await waitFor(() =>
+      expect(container.querySelector('[role="textbox"]')).not.toBeNull()
+    )
+    expect(
+      screen.getByRole("button", { name: /Model: Codex 5\.3 High Fast/ })
+    ).toHaveAttribute("aria-busy", "true")
+    expect(
+      screen.getByLabelText(enMessages.Folder.chat.messageInput.applyingModel)
+    ).toBeInTheDocument()
+
+    const settingsLabel = enMessages.Folder.chat.messageInput.agentSettings
+    await user.click(screen.getByRole("button", { name: settingsLabel }))
+    const popover = await screen.findByRole("dialog", { name: settingsLabel })
+    const search = within(popover).getByRole("combobox")
+
+    await user.type(search, "1m thinking")
+    expect(
+      within(popover).getByRole("option", { name: /Opus 5 1M Thinking/ })
+    ).toBeInTheDocument()
+    await user.clear(search)
+    await user.type(search, "no zdr")
+    expect(
+      within(popover).getByRole("option", {
+        name: /Fable 5 1M Thinking \(NO ZDR\)/,
+      })
+    ).toBeInTheDocument()
+    await user.clear(search)
+    await user.type(search, "extra high fast")
+    await user.click(
+      within(popover).getByRole("option", {
+        name: /Codex 5.3 Extra High Fast/,
+      })
+    )
+    expect(onConfigOptionChange).toHaveBeenCalledWith(
+      "model",
+      composite("gpt-5.3-codex-xhigh-fast")
+    )
+  })
+
   it("selects a mode from the cog Popover and closes it", async () => {
     const user = userEvent.setup()
     const onModeChange = vi.fn()

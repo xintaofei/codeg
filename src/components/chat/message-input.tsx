@@ -84,6 +84,7 @@ import {
   type SessionSelectorSetting,
 } from "@/components/chat/session-selectors-panel"
 import {
+  cursorModelListGroups,
   deriveModelGroups,
   isModelConfigOption,
   modelListGroups,
@@ -250,17 +251,31 @@ function SelectorLoadingChip({ label }: { label: string }) {
 }
 
 // Groups for the searchable + virtualized model picker, or `null` when the
-// option should keep the lightweight selectors. Only the MODEL option, and only
-// when its list is long enough to jank, qualifies. Falls back to a single
-// headerless group for a long flat (un-prefixed) list.
+// option should keep the lightweight selectors. Cursor's dynamic model catalog
+// is always searchable; other agents opt in only above the jank threshold.
+// Falls back to a single headerless group for a flat (un-prefixed) list.
 function modelPickerGroups(
-  option: SessionConfigOptionInfo
+  option: SessionConfigOptionInfo,
+  agentType: AgentType | null | undefined,
+  cursorLabels: { groupName: string; optionName: string }
 ): ModelOptionGroup[] | null {
   if (!isModelConfigOption(option)) return null
   if (option.kind.type !== "select") return null
-  if (option.kind.options.length <= MODEL_LIST_VIRTUALIZE_THRESHOLD) return null
-  // Preserve derived `provider/` groups, server-provided groups, or a flat list
-  // (never silently flatten server groups — keeps wide/collapsed consistent).
+  // Cursor always gets the searchable picker: its account/subscription catalog
+  // can shrink below the generic virtualization threshold, but native model
+  // discovery must remain searchable regardless of catalog size.
+  if (
+    agentType !== "cursor" &&
+    option.kind.options.length <= MODEL_LIST_VIRTUALIZE_THRESHOLD
+  )
+    return null
+  // Cursor's dynamic catalog gives its real default sentinel a dedicated group
+  // while preserving the raw value. Other agents retain their existing groups.
+  if (agentType === "cursor") {
+    const cursorGroups = cursorModelListGroups(option, cursorLabels)
+    if (cursorGroups) return cursorGroups
+  }
+  // Preserve derived `provider/` groups, server-provided groups, or a flat list.
   return modelListGroups(option)
 }
 
@@ -1349,7 +1364,10 @@ export function MessageInput({
           // Long model lists get the searchable + virtualized popover (a Radix
           // menu of hundreds of items is the scroll jank); every other option —
           // and short model lists — keep the lightweight inline dropdown.
-          const listGroups = modelPickerGroups(option)
+          const listGroups = modelPickerGroups(option, agentType, {
+            groupName: t("cliDefaultSettings"),
+            optionName: t("autoDefault"),
+          })
           if (listGroups) {
             return (
               <ModelOptionPicker
@@ -1419,9 +1437,15 @@ export function MessageInput({
         const kind = option.kind
         // Model values that carry a `provider/` prefix group by provider; every
         // other option keeps its server groups or stays flat (`null` derived).
-        const derived = deriveModelGroups(option)
-        const groups: SessionSelectorGroup[] = derived
-          ? derived.map((group) => ({
+        const displayGroups =
+          agentType === "cursor"
+            ? (cursorModelListGroups(option, {
+                groupName: t("cliDefaultSettings"),
+                optionName: t("autoDefault"),
+              }) ?? deriveModelGroups(option))
+            : deriveModelGroups(option)
+        const groups: SessionSelectorGroup[] = displayGroups
+          ? displayGroups.map((group) => ({
               key: group.key,
               name: group.name,
               options: group.options.map((item) => ({
@@ -1461,7 +1485,8 @@ export function MessageInput({
         // list of hundreds of buttons janks); short lists keep plain buttons.
         const searchable =
           isModelConfigOption(option) &&
-          kind.options.length > MODEL_LIST_VIRTUALIZE_THRESHOLD
+          (agentType === "cursor" ||
+            kind.options.length > MODEL_LIST_VIRTUALIZE_THRESHOLD)
         result.push({
           key: `config:${option.id}`,
           title: option.name,
@@ -1469,6 +1494,7 @@ export function MessageInput({
           currentLabel: current?.name ?? kind.current_value,
           groups,
           onSelect: (value) => onConfigOptionChange?.(option.id, value),
+          pending: Boolean(option.pending_operation_id),
           ...(searchable && {
             search: {
               placeholder: t("searchModel"),
@@ -1510,6 +1536,7 @@ export function MessageInput({
     showModeSelector,
     availableModes,
     effectiveModeId,
+    agentType,
     onConfigOptionChange,
     handleModeSelect,
     t,

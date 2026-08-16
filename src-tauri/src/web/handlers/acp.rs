@@ -352,18 +352,25 @@ pub struct AcpSetConfigOptionParams {
     pub connection_id: String,
     pub config_id: String,
     pub value_id: String,
+    #[serde(default)]
+    pub operation_id: Option<String>,
 }
 
 pub async fn acp_set_config_option(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<AcpSetConfigOptionParams>,
-) -> Result<Json<()>, AppCommandError> {
+) -> Result<Json<Option<String>>, AppCommandError> {
     let manager = &state.connection_manager;
-    manager
-        .set_config_option(&params.connection_id, params.config_id, params.value_id)
+    let accepted_operation_id = manager
+        .set_config_option(
+            &params.connection_id,
+            params.config_id,
+            params.value_id,
+            params.operation_id,
+        )
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
-    Ok(Json(()))
+    Ok(Json(accepted_operation_id))
 }
 
 #[derive(Deserialize)]
@@ -699,6 +706,7 @@ pub async fn acp_update_agent_config(
 #[serde(rename_all = "camelCase", default)]
 pub struct CursorProbeParams {
     pub api_key: Option<String>,
+    pub base_url: Option<String>,
 }
 
 pub async fn acp_cursor_auth_status(
@@ -706,7 +714,7 @@ pub async fn acp_cursor_auth_status(
     Json(params): Json<CursorProbeParams>,
 ) -> Result<Json<crate::acp::types::CursorAuthStatus>, AppCommandError> {
     Ok(Json(
-        acp_commands::acp_cursor_auth_status_core(&state.db, params.api_key).await,
+        acp_commands::acp_cursor_auth_status_core(&state.db, params.api_key, params.base_url).await,
     ))
 }
 
@@ -715,7 +723,7 @@ pub async fn acp_cursor_list_models(
     Json(params): Json<CursorProbeParams>,
 ) -> Result<Json<crate::acp::types::CursorModelsResult>, AppCommandError> {
     Ok(Json(
-        acp_commands::acp_cursor_list_models_core(&state.db, params.api_key).await,
+        acp_commands::acp_cursor_list_models_core(&state.db, params.api_key, params.base_url).await,
     ))
 }
 
@@ -872,8 +880,8 @@ pub async fn acp_update_pi_config(
     Ok(Json(()))
 }
 
-pub async fn acp_load_pi_config(
-) -> Result<Json<acp_commands::PiConfigProjection>, AppCommandError> {
+pub async fn acp_load_pi_config() -> Result<Json<acp_commands::PiConfigProjection>, AppCommandError>
+{
     Ok(Json(acp_commands::load_pi_config_core()))
 }
 

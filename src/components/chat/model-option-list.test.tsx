@@ -102,6 +102,33 @@ describe("ModelOptionList", () => {
     )
   })
 
+  it("renders Cursor's unavailable-current sentinel as display-only", async () => {
+    const user = userEvent.setup()
+    const { onSelect } = renderList({
+      groups: [
+        {
+          key: "cursor",
+          name: null,
+          options: [
+            {
+              value: "__codeg_cursor_current_unavailable__",
+              name: "Current Cursor configuration (not in CLI catalog)",
+              description: null,
+            },
+            { value: "default", name: "Auto", description: null },
+          ],
+        },
+      ],
+      currentValue: "__codeg_cursor_current_unavailable__",
+    })
+    const unavailable = screen.getByRole("option", {
+      name: /Current Cursor configuration/,
+    })
+    expect(unavailable).toBeDisabled()
+    await user.click(unavailable)
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
   it("filters options as you type (matching name or value)", async () => {
     const user = userEvent.setup()
     renderList()

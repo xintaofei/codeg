@@ -1,7 +1,7 @@
 "use client"
 
 import { useMemo, useState } from "react"
-import { ChevronDown } from "lucide-react"
+import { ChevronDown, LoaderCircle } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
 import {
@@ -42,6 +42,7 @@ export function ModelOptionPicker({
     useScrollbarSafeDismiss()
   const kind = option.kind.type === "select" ? option.kind : null
   const currentValue = kind?.current_value ?? ""
+  const applying = Boolean(option.pending_operation_id)
   const currentLabel = useMemo(() => {
     for (const group of groups) {
       for (const opt of group.options) {
@@ -60,13 +61,21 @@ export function ModelOptionPicker({
           variant="ghost"
           size="xs"
           title={option.name}
+          aria-busy={applying}
           aria-label={
             currentLabel ? `${option.name}: ${currentLabel}` : option.name
           }
           className="min-w-0 gap-0.5 px-1 text-muted-foreground"
         >
           <span className="max-w-[10rem] truncate">{currentLabel}</span>
-          <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
+          {applying ? (
+            <LoaderCircle
+              className="size-3 shrink-0 animate-spin text-muted-foreground"
+              aria-label={t("applyingModel")}
+            />
+          ) : (
+            <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
+          )}
         </Button>
       </PopoverTrigger>
       <PopoverContent

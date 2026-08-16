@@ -81,6 +81,7 @@ import {
   withEventSoundsSuppressed,
 } from "@/lib/notification-sound"
 import {
+  clearConfigPreference,
   getSavedPrefsForConnect,
   saveModePreference,
   saveConfigPreference,
@@ -531,6 +532,7 @@ type Action =
       contextKey: string
       configId: string
       valueId: string
+      operationId?: string
     }
   | {
       type: "PLAN_UPDATE"
@@ -951,7 +953,8 @@ function sameConfigOptions(
       left.id !== right.id ||
       left.name !== right.name ||
       left.description !== right.description ||
-      left.category !== right.category
+      left.category !== right.category ||
+      left.pending_operation_id !== right.pending_operation_id
     ) {
       return false
     }
@@ -2218,9 +2221,12 @@ function connectionsReducer(
       const idx = options.findIndex((o) => o.id === action.configId)
       if (idx === -1) return state
       const opt = options[idx]
+      if (opt.kind.type !== "select") {
+        return state
+      }
       if (
-        opt.kind.type !== "select" ||
-        opt.kind.current_value === action.valueId
+        opt.kind.current_value === action.valueId &&
+        (!action.operationId || opt.pending_operation_id === action.operationId)
       ) {
         return state
       }
@@ -2228,6 +2234,9 @@ function connectionsReducer(
       updated[idx] = {
         ...opt,
         kind: { ...opt.kind, current_value: action.valueId },
+        ...(action.operationId
+          ? { pending_operation_id: action.operationId }
+          : {}),
       }
       const next = new Map(state)
       next.set(action.contextKey, { ...conn, configOptions: updated })
@@ -2670,6 +2679,12 @@ function isAlertedError(error: unknown): error is AlertedError {
   return (error as { alerted?: unknown }).alerted === true
 }
 
+const CURSOR_COMPOSITE_VALUE_PREFIX = "__codeg_cursor_composite__:"
+const CURSOR_LEGACY_CONFIRMATION_TIMEOUT_MS = 15_000
+const CURSOR_LEGACY_CONFIG_FAILURE_CODES = new Set([
+  "cursor_config_option_failed",
+])
+
 // ── Provider ──
 
 export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
@@ -2713,6 +2728,47 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   // every re-attach snapshot. Without this a browser refresh would re-raise
   // the alert each time.
   const alertedErrorDetailsRef = useRef(new Map<string, string>())
+
+  // Cursor composite picks are optimistic in the UI but multi-step on the ACP
+  // wire. Keep the newest desired row until the backend publishes that exact
+  // value. An older completion that races a rapid second click is deferred; if
+  // the newest request fails, the following error releases the backend's last
+  // confirmed snapshot instead of leaving a falsely-successful highlight.
+  const pendingCursorConfigRef = useRef(
+    new Map<
+      string,
+      {
+        configId: string
+        valueId: string
+        operationId: string
+        generation: number
+        legacyDeadlineAt: number
+        confirmedOptions: SessionConfigOptionInfo[] | null
+        legacyAllowed: boolean
+        unresolvedPredecessor: boolean
+        deferredOptions?: SessionConfigOptionInfo[]
+        legacyTimer?: ReturnType<typeof setTimeout>
+      }
+    >()
+  )
+  const latestCursorOperationRef = useRef(new Map<string, string>())
+  const cursorOperationSeqRef = useRef(0)
+  const clearCursorConfigTracking = useCallback((contextKey: string) => {
+    const pending = pendingCursorConfigRef.current.get(contextKey)
+    if (pending?.legacyTimer) clearTimeout(pending.legacyTimer)
+    pendingCursorConfigRef.current.delete(contextKey)
+    latestCursorOperationRef.current.delete(contextKey)
+  }, [])
+  useEffect(
+    () => () => {
+      for (const pending of pendingCursorConfigRef.current.values()) {
+        if (pending.legacyTimer) clearTimeout(pending.legacyTimer)
+      }
+      pendingCursorConfigRef.current.clear()
+      latestCursorOperationRef.current.clear()
+    },
+    []
+  )
 
   // contextKey → active EventStream subscription handle. Populated only for
   // connections established via the Subscribe-with-Snapshot attach
@@ -3230,6 +3286,19 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       switch (e.type) {
         case "status_changed":
           flushStreamingQueue()
+          if (e.status === "disconnected" || e.status === "error") {
+            const pending = pendingCursorConfigRef.current.get(contextKey)
+            const rollbackOptions =
+              pending?.deferredOptions ?? pending?.confirmedOptions
+            if (rollbackOptions) {
+              dispatch({
+                type: "SESSION_CONFIG_OPTIONS",
+                contextKey,
+                configOptions: rollbackOptions,
+              })
+            }
+            clearCursorConfigTracking(contextKey)
+          }
           dispatch({ type: "STATUS_CHANGED", contextKey, status: e.status })
           break
         case "content_delta":
@@ -3501,6 +3570,19 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           break
         case "session_started":
           flushStreamingQueue()
+          {
+            const pending = pendingCursorConfigRef.current.get(contextKey)
+            const rollbackOptions =
+              pending?.deferredOptions ?? pending?.confirmedOptions
+            if (rollbackOptions) {
+              dispatch({
+                type: "SESSION_CONFIG_OPTIONS",
+                contextKey,
+                configOptions: rollbackOptions,
+              })
+            }
+          }
+          clearCursorConfigTracking(contextKey)
           dispatch({
             type: "SESSION_STARTED",
             contextKey,
@@ -3557,12 +3639,57 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           flushStreamingQueue()
           // Same as `session_modes`: backend already merged saved prefs
           // into `current_value` before emitting.
+          const cfgConn = storeRef.current.connections.get(contextKey)
+          const pending = pendingCursorConfigRef.current.get(contextKey)
+          if (cfgConn?.agentType === "cursor") {
+            const latestOperation =
+              latestCursorOperationRef.current.get(contextKey)
+            if (
+              e.operation_id &&
+              (!pending ||
+                !latestOperation ||
+                e.operation_id !== latestOperation)
+            ) {
+              break
+            }
+            // An uncorrelated update is not proof for the modern protocol. Keep
+            // it only for the old-backend fallback, enabled after the enqueue
+            // response proves operation correlation is unsupported.
+            if (pending) {
+              if (!e.operation_id) {
+                pending.deferredOptions = e.config_options
+                if (!pending.legacyAllowed) break
+              } else if (
+                e.operation_id !== pending.operationId ||
+                !e.operation_status
+              ) {
+                break
+              }
+            }
+          }
+          if (cfgConn?.agentType === "cursor" && pending) {
+            const incoming = e.config_options.find(
+              (option) => option.id === pending.configId
+            )
+            const incomingValue =
+              incoming?.kind.type === "select"
+                ? incoming.kind.current_value
+                : undefined
+            const fullyApplied = e.operation_id
+              ? e.operation_status === "applied" &&
+                incomingValue === pending.valueId
+              : pending.legacyAllowed && incomingValue === pending.valueId
+            if (!fullyApplied && !e.operation_id) break
+            clearCursorConfigTracking(contextKey)
+            if (fullyApplied) {
+              saveConfigPreference("cursor", pending.configId, pending.valueId)
+            }
+          }
           dispatch({
             type: "SESSION_CONFIG_OPTIONS",
             contextKey,
             configOptions: e.config_options,
           })
-          const cfgConn = storeRef.current.connections.get(contextKey)
           if (cfgConn) {
             const entry = selectorsCache.get(cfgConn.agentType) ?? {
               modes: null,
@@ -3717,6 +3844,46 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         case "error": {
           flushStreamingQueue()
           const nc = storeRef.current.connections.get(contextKey)
+          if (nc?.agentType === "cursor" && e.terminal) {
+            const pending = pendingCursorConfigRef.current.get(contextKey)
+            const rollbackOptions =
+              pending?.deferredOptions ?? pending?.confirmedOptions
+            if (rollbackOptions) {
+              dispatch({
+                type: "SESSION_CONFIG_OPTIONS",
+                contextKey,
+                configOptions: rollbackOptions,
+              })
+            }
+            clearCursorConfigTracking(contextKey)
+          }
+          if (
+            nc?.agentType === "cursor" &&
+            (e.code === "cursor_model_restore_failed" ||
+              e.code === "cursor_model_variant_unavailable")
+          ) {
+            clearConfigPreference("cursor", "model")
+          }
+          if (
+            nc?.agentType === "cursor" &&
+            !e.terminal &&
+            typeof e.code === "string" &&
+            CURSOR_LEGACY_CONFIG_FAILURE_CODES.has(e.code)
+          ) {
+            const pending = pendingCursorConfigRef.current.get(contextKey)
+            if (pending?.legacyAllowed && !pending.unresolvedPredecessor) {
+              const rollbackOptions =
+                pending.deferredOptions ?? pending.confirmedOptions
+              if (rollbackOptions) {
+                dispatch({
+                  type: "SESSION_CONFIG_OPTIONS",
+                  contextKey,
+                  configOptions: rollbackOptions,
+                })
+              }
+              clearCursorConfigTracking(contextKey)
+            }
+          }
           const agentLabel = nc
             ? getAgentLabel(nc.agentType)
             : (e.agent_type as string)
@@ -3789,6 +3956,20 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                 return t("backendErrors.grokModelSwitchIncompatibleAgent", {
                   agent: agentLabel,
                 })
+              case "cursor_config_option_failed":
+                return t("backendErrors.cursorConfigOptionFailed", {
+                  agent: agentLabel,
+                })
+              case "cursor_model_restore_failed":
+                return t("backendErrors.cursorModelRestoreFailed", {
+                  agent: agentLabel,
+                })
+              case "cursor_model_catalog_unavailable":
+                return t("backendErrors.cursorModelCatalogUnavailable")
+              case "cursor_model_variant_unavailable":
+                return t("backendErrors.cursorModelVariantUnavailable")
+              case "cursor_model_variant_ambiguous":
+                return t("backendErrors.cursorModelVariantAmbiguous")
               default:
                 return e.message
             }
@@ -3892,6 +4073,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       }
     },
     [
+      clearCursorConfigTracking,
       dispatch,
       enqueueStreamingAction,
       flushPendingToolCallUpdates,
@@ -4914,9 +5096,25 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         reverseMapRef.current.delete(conn.connectionId)
         pendingUnmappedEventsRef.current.delete(conn.connectionId)
         lastActivityRef.current.delete(contextKey)
+        clearCursorConfigTracking(contextKey)
         dispatch({ type: "CONNECTION_REMOVED", contextKey })
         return true
       }
+      // A disconnect can itself take longer than the legacy confirmation
+      // deadline. Stop the timer before awaiting transport teardown so a stale
+      // operation cannot roll back or alert while this connection is closing.
+      const pending = pendingCursorConfigRef.current.get(contextKey)
+      const rollbackOptions =
+        pending?.deferredOptions ?? pending?.confirmedOptions
+      if (rollbackOptions) {
+        dispatch({
+          type: "SESSION_CONFIG_OPTIONS",
+          contextKey,
+          configOptions: rollbackOptions,
+        })
+      }
+      clearCursorConfigTracking(contextKey)
+
       // A failed backend teardown must not strand the local entry: propagating
       // would leak the attach subscription and leave an entry that makes the
       // next `connect()` take its "already connected" fast path, which is
@@ -4943,7 +5141,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       dispatch({ type: "CONNECTION_REMOVED", contextKey })
       return tornDown
     },
-    [captureIdentityBeforeRemoval, dispatch, teardownAttachSubscription]
+    [
+      captureIdentityBeforeRemoval,
+      clearCursorConfigTracking,
+      dispatch,
+      teardownAttachSubscription,
+    ]
   )
 
   // Lifecycle release for a surface that vanished on its own — currently the
@@ -5135,6 +5338,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       reverseMapRef.current.delete(conn.connectionId)
       teardownAttachSubscription(contextKey)
       pendingUnmappedEventsRef.current.delete(conn.connectionId)
+      clearCursorConfigTracking(contextKey)
     }
     lastActivityRef.current.clear()
     // Context keys are reused across backends, so a surviving entry here would
@@ -5145,7 +5349,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     lastConnectParamsRef.current.clear()
     await Promise.all(promises)
     dispatch({ type: "REMOVE_ALL" })
-  }, [dispatch, teardownAttachSubscription])
+  }, [clearCursorConfigTracking, dispatch, teardownAttachSubscription])
 
   const sendPrompt = useCallback(
     async (
@@ -5191,19 +5395,137 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     async (contextKey: string, configId: string, valueId: string) => {
       const conn = storeRef.current.connections.get(contextKey)
       if (!conn) return
+      const isCursorComposite =
+        conn.agentType === "cursor" && configId === "model"
+      if (
+        isCursorComposite &&
+        valueId.startsWith("__codeg_") &&
+        !valueId.startsWith(CURSOR_COMPOSITE_VALUE_PREFIX)
+      ) {
+        return
+      }
+      const previousPending = pendingCursorConfigRef.current.get(contextKey)
+      const generation = isCursorComposite
+        ? ++cursorOperationSeqRef.current
+        : undefined
+      const operationId = generation
+        ? `cursor-operation-${generation}`
+        : undefined
+      if (operationId && generation !== undefined) {
+        if (previousPending?.legacyTimer) {
+          clearTimeout(previousPending.legacyTimer)
+        }
+        latestCursorOperationRef.current.set(contextKey, operationId)
+        pendingCursorConfigRef.current.set(contextKey, {
+          configId,
+          valueId,
+          operationId,
+          generation,
+          legacyDeadlineAt: Date.now() + CURSOR_LEGACY_CONFIRMATION_TIMEOUT_MS,
+          confirmedOptions:
+            previousPending?.deferredOptions ??
+            previousPending?.confirmedOptions ??
+            conn.configOptions,
+          legacyAllowed: false,
+          unresolvedPredecessor: previousPending != null,
+        })
+      }
       dispatch({
         type: "CONFIG_OPTION_CHANGED",
         contextKey,
         configId,
         valueId,
+        operationId,
       })
-      // Persist user selection to localStorage so the next `acp_connect`
-      // can ship it back to the backend as a preferred config value.
-      saveConfigPreference(conn.agentType, configId, valueId)
+      if (!isCursorComposite) {
+        // Single-step options retain the established optimistic preference
+        // behavior. Cursor composites persist only after a correlated full
+        // success event confirms model plus every parameter.
+        saveConfigPreference(conn.agentType, configId, valueId)
+      }
       lastActivityRef.current.set(contextKey, Date.now())
-      await acpSetConfigOption(conn.connectionId, configId, valueId)
+      try {
+        const acceptedOperationId = await acpSetConfigOption(
+          conn.connectionId,
+          configId,
+          valueId,
+          operationId
+        )
+        const pending = pendingCursorConfigRef.current.get(contextKey)
+        if (
+          operationId &&
+          pending?.operationId === operationId &&
+          acceptedOperationId !== operationId
+        ) {
+          if (acceptedOperationId != null) {
+            throw new Error("Cursor operation acknowledgement mismatch")
+          }
+          pending.legacyAllowed = true
+          const deferred = pending.deferredOptions
+          const deferredValue = deferred?.find(
+            (option) => option.id === pending.configId
+          )?.kind
+          if (
+            deferred &&
+            deferredValue?.type === "select" &&
+            deferredValue.current_value === pending.valueId
+          ) {
+            clearCursorConfigTracking(contextKey)
+            dispatch({
+              type: "SESSION_CONFIG_OPTIONS",
+              contextKey,
+              configOptions: deferred,
+            })
+            saveConfigPreference("cursor", pending.configId, pending.valueId)
+          } else {
+            const timerOperationId = operationId
+            const timerGeneration = pending.generation
+            const remaining = Math.max(0, pending.legacyDeadlineAt - Date.now())
+            pending.legacyTimer = setTimeout(() => {
+              const current = pendingCursorConfigRef.current.get(contextKey)
+              if (
+                current?.operationId !== timerOperationId ||
+                current.generation !== timerGeneration ||
+                !current.legacyAllowed
+              ) {
+                return
+              }
+              const rollbackOptions =
+                current.deferredOptions ?? current.confirmedOptions
+              if (rollbackOptions) {
+                dispatch({
+                  type: "SESSION_CONFIG_OPTIONS",
+                  contextKey,
+                  configOptions: rollbackOptions,
+                })
+              }
+              clearCursorConfigTracking(contextKey)
+              pushAlertRef.current(
+                "error",
+                t("eventErrorTitle"),
+                t("backendErrors.cursorLegacyConfirmationTimeout")
+              )
+            }, remaining)
+          }
+        }
+      } catch (error) {
+        const pending = pendingCursorConfigRef.current.get(contextKey)
+        if (operationId && pending?.operationId === operationId) {
+          clearCursorConfigTracking(contextKey)
+          const rollbackOptions =
+            pending.deferredOptions ?? pending.confirmedOptions
+          if (rollbackOptions) {
+            dispatch({
+              type: "SESSION_CONFIG_OPTIONS",
+              contextKey,
+              configOptions: rollbackOptions,
+            })
+          }
+        }
+        throw error
+      }
     },
-    [dispatch]
+    [clearCursorConfigTracking, dispatch, t]
   )
 
   const cancel = useCallback(async (contextKey: string) => {

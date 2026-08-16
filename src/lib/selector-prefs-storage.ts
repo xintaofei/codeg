@@ -122,3 +122,16 @@ export function saveConfigPreference(
     configValues: { ...prefs.configValues, [configId]: valueId },
   }))
 }
+
+/** Drop one stale config preference after the agent rejects it. */
+export function clearConfigPreference(agentType: string, configId: string) {
+  updatePrefs(agentType, (prefs) => {
+    const configValues = { ...prefs.configValues }
+    delete configValues[configId]
+    return {
+      ...prefs,
+      configValues:
+        Object.keys(configValues).length > 0 ? configValues : undefined,
+    }
+  })
+}

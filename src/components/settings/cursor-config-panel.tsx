@@ -58,11 +58,22 @@ const CURSOR_AUTH_MODE_ENV = "CURSOR_AUTH_MODE"
 
 const UNSET = "__unset__"
 
-/** The Cursor CLI's two real authentication methods. `custom` = a Cursor
- * account API key (headless/servers); it is NOT a third-party/OpenAI endpoint —
- * cursor-agent has no custom-endpoint support. The wire token stays `"custom"`
- * for backward-compatibility with rows saved before the rename. */
+/** The Cursor CLI's two authentication modes. `custom` keeps the explicit
+ * account key and optional endpoint selected by the user. */
 export type CursorAuthMethod = "subscription" | "custom"
+
+export function normalizeCursorEndpoint(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) return ""
+  try {
+    // Validation only: Cursor receives the user's exact trimmed endpoint. URL
+    // serialization would otherwise rewrite path/query/fragment semantics.
+    new URL(trimmed)
+  } catch {
+    throw new Error("Invalid Cursor endpoint")
+  }
+  return trimmed
+}
 
 /** One entry in the model picker. `value` is the `--model` id, `label` the
  * human name from `cursor-agent models`. base-ui's Combobox uses the `{ value,
@@ -75,16 +86,16 @@ type CursorModelItem = { value: string; label: string; isDefault: boolean }
  * which credential is written:
  *  - `subscription` — browser login only; the API key is deleted so a launch
  *    (and the probes) fall back to the Cursor account.
- *  - `custom` — the Cursor API key is written from the form.
+ *  - `custom` — the Cursor API key and optional endpoint are written from the
+ *    form.
  * The default model and the Run Everything (`--force`) knob apply to both.
- * `CURSOR_API_BASE_URL` is always removed (the CLI has no custom endpoint, so
- * a stale value is dead weight). `CURSOR_AUTH_MODE` is always recorded, and
- * unrelated keys are preserved untouched.
+ * `CURSOR_AUTH_MODE` is always recorded, and unrelated keys are preserved.
  */
 export function buildCursorEnv(
   prevEnv: Record<string, string>,
   mode: CursorAuthMethod,
   apiKey: string,
+  baseUrl: string,
   model: string,
   force: boolean
 ): Record<string, string> {
@@ -98,15 +109,14 @@ export function buildCursorEnv(
     }
   }
   env[CURSOR_AUTH_MODE_ENV] = mode
-  // cursor-agent has no custom-endpoint support: the base URL is always removed,
-  // scrubbing any value a legacy row or an old build may have written.
-  delete env[CURSOR_API_BASE_URL_ENV]
   if (mode === "custom") {
     setOrDelete(CURSOR_API_KEY_ENV, apiKey)
+    setOrDelete(CURSOR_API_BASE_URL_ENV, normalizeCursorEndpoint(baseUrl))
   } else {
     // Subscription: never ship a saved key — the launch policy additionally
     // strips any inherited one so browser login is used.
     delete env[CURSOR_API_KEY_ENV]
+    delete env[CURSOR_API_BASE_URL_ENV]
   }
   setOrDelete(CURSOR_MODEL_ENV, model)
   setOrDelete(CURSOR_FORCE_ENV, force ? "1" : "")
@@ -201,14 +211,14 @@ function RuleListEditor({
 /**
  * Dedicated settings panel for Cursor (cursor-agent CLI). The user first picks
  * an **authentication method** (a Select, matching the Codex panel's idiom).
- * Both methods authenticate against Cursor's own backend — the CLI has no
- * bring-your-own-endpoint support, so there is no API-URL field:
+ * Both methods authenticate against Cursor's own backend:
  *
  * 1. **Official subscription** — sign in with a Cursor account
  *    (`"<path>" login`). No credential is stored; the launch clears any
  *    inherited CURSOR_API_KEY so browser login is used.
  * 2. **Cursor API key** — a Cursor Dashboard account key for headless/server
- *    machines (CURSOR_API_KEY), an alternative to browser login.
+ *    machines (CURSOR_API_KEY), with an optional explicit
+ *    CURSOR_API_BASE_URL for compatible deployments.
  *
  * The model picker (a searchable Combobox of `cursor-agent models`) is shared
  * and only shown once real models were fetched; the chosen id is stored as
@@ -231,6 +241,27 @@ export function CursorConfigPanel({
   onAffectedSessions: (count: number) => void
 }) {
   const t = useTranslations("AcpAgentSettings")
+  const cursorProbeError = useCallback(
+    (code?: string | null) => {
+      switch (code) {
+        case "cursor_probe_timeout":
+          return t("cursor.probeTimeout")
+        case "cursor_probe_output_too_large":
+          return t("cursor.probeOutputTooLarge")
+        case "cursor_probe_nonzero_exit":
+          return t("cursor.probeNonzeroExit")
+        case "cursor_probe_invalid_utf8":
+        case "cursor_probe_empty_output":
+        case "cursor_probe_invalid_format":
+          return t("cursor.probeInvalidOutput")
+        case "cursor_probe_invalid_endpoint":
+          return t("cursor.baseUrlInvalid")
+        default:
+          return t("cursor.probeFailed")
+      }
+    },
+    [t]
+  )
 
   // --- authentication method ---
   const [mode, setMode] = useState<CursorAuthMethod>(() =>
@@ -246,7 +277,37 @@ export function CursorConfigPanel({
   const [apiKey, setApiKey] = useState(
     () => agent.env[CURSOR_API_KEY_ENV] ?? ""
   )
+  const [baseUrl, setBaseUrl] = useState(
+    () => agent.env[CURSOR_API_BASE_URL_ENV] ?? ""
+  )
+  const authoritativeCredentialsRef = useRef({
+    mode: inferCursorMode(agent.env),
+    apiKey: agent.env[CURSOR_API_KEY_ENV] ?? "",
+    baseUrl: agent.env[CURSOR_API_BASE_URL_ENV] ?? "",
+  })
   const [showKey, setShowKey] = useState(false)
+
+  // A parent refresh may replace the authoritative env without remounting this
+  // panel. Reconcile only a clean draft; unsaved edits remain untouched. A
+  // successful save explicitly reconciles below, including credential removal.
+  useEffect(() => {
+    const previous = authoritativeCredentialsRef.current
+    const next = {
+      mode: inferCursorMode(agent.env),
+      apiKey: agent.env[CURSOR_API_KEY_ENV] ?? "",
+      baseUrl: agent.env[CURSOR_API_BASE_URL_ENV] ?? "",
+    }
+    const draftWasClean =
+      mode === previous.mode &&
+      apiKey === previous.apiKey &&
+      baseUrl === previous.baseUrl
+    authoritativeCredentialsRef.current = next
+    if (draftWasClean) {
+      setMode(next.mode)
+      setApiKey(next.apiKey)
+      setBaseUrl(next.baseUrl)
+    }
+  }, [agent.env, apiKey, baseUrl, mode])
 
   // --- model state (searchable picker over cursor-agent models) ---
   const [model, setModel] = useState(() => agent.env[CURSOR_MODEL_ENV] ?? "")
@@ -296,14 +357,19 @@ export function CursorConfigPanel({
   // browser-login credential and strips any inherited CURSOR_API_KEY). Kept in
   // a ref so the probe callbacks stay stable and don't re-fire on keystroke.
   const probeKeyRef = useRef("")
+  const probeBaseUrlRef = useRef("")
   useEffect(() => {
     probeKeyRef.current = mode === "custom" ? apiKey : ""
-  }, [mode, apiKey])
+    probeBaseUrlRef.current = mode === "custom" ? baseUrl : ""
+  }, [mode, apiKey, baseUrl])
 
   const refreshAuth = useCallback(async () => {
     setAuthLoading(true)
     try {
-      const status = await acpCursorAuthStatus(probeKeyRef.current)
+      const status = await acpCursorAuthStatus(
+        probeKeyRef.current,
+        probeBaseUrlRef.current
+      )
       if (mountedRef.current) setAuth(status)
     } catch {
       // Probe failures already surface through `auth.error`; a transport-level
@@ -323,7 +389,10 @@ export function CursorConfigPanel({
     setModelsLoading(true)
     setModelsError(null)
     try {
-      const result = await acpCursorListModels(probeKeyRef.current)
+      const result = await acpCursorListModels(
+        probeKeyRef.current,
+        probeBaseUrlRef.current
+      )
       if (!mountedRef.current) return
       setModels(
         result.models.map((m) => ({
@@ -332,17 +401,17 @@ export function CursorConfigPanel({
           isDefault: m.is_default,
         }))
       )
-      setModelsError(result.error)
+      setModelsError(result.error ? cursorProbeError(result.error_code) : null)
       setModelsLoaded(true)
-    } catch (e) {
+    } catch {
       if (mountedRef.current) {
-        setModelsError(e instanceof Error ? e.message : String(e))
+        setModelsError(cursorProbeError())
         setModelsLoaded(true)
       }
     } finally {
       if (mountedRef.current) setModelsLoading(false)
     }
-  }, [])
+  }, [cursorProbeError])
 
   const authState: "loading" | "missing" | "ok" | "unauthenticated" =
     authLoading && !auth
@@ -402,13 +471,17 @@ export function CursorConfigPanel({
       toast.error(t("cursor.customApiKeyRequired"))
       return
     }
-    setSavingAll(true)
     const prevEnv = agent.env
+    let nextEnv: Record<string, string>
     try {
-      await onSaveEnv(
-        buildCursorEnv(prevEnv, mode, apiKey, model, force),
-        agent.enabled
-      )
+      nextEnv = buildCursorEnv(prevEnv, mode, apiKey, baseUrl, model, force)
+    } catch {
+      toast.error(t("cursor.baseUrlInvalid"))
+      return
+    }
+    setSavingAll(true)
+    try {
+      await onSaveEnv(nextEnv, agent.enabled)
       try {
         const affected = await acpUpdateAgentConfig(agent.agent_type, {
           cursor_structured: {
@@ -426,14 +499,21 @@ export function CursorConfigPanel({
         await onSaveEnv(prevEnv, agent.enabled).catch(() => {})
         throw e
       }
+      const savedCredentials = {
+        mode: inferCursorMode(nextEnv),
+        apiKey: nextEnv[CURSOR_API_KEY_ENV] ?? "",
+        baseUrl: nextEnv[CURSOR_API_BASE_URL_ENV] ?? "",
+      }
+      authoritativeCredentialsRef.current = savedCredentials
+      setMode(savedCredentials.mode)
+      setApiKey(savedCredentials.apiKey)
+      setBaseUrl(savedCredentials.baseUrl)
       toast.success(t("toasts.cursorSaved"))
       onSaved()
-    } catch (e) {
-      toast.error(
-        `${t("toasts.saveCursorConfigFailed")}: ${
-          e instanceof Error ? e.message : String(e)
-        }`
-      )
+    } catch {
+      // Save transports may include request context in their diagnostic. Never
+      // reflect it into the DOM because this form contains an API key.
+      toast.error(t("toasts.saveCursorConfigFailed"))
     } finally {
       if (mountedRef.current) setSavingAll(false)
     }
@@ -443,6 +523,7 @@ export function CursorConfigPanel({
     agent.env,
     allowRules,
     apiKey,
+    baseUrl,
     denyRules,
     force,
     mode,
@@ -494,7 +575,7 @@ export function CursorConfigPanel({
           value={mode}
           onValueChange={(value) => setMode(value as CursorAuthMethod)}
         >
-          <SelectTrigger className="w-full">
+          <SelectTrigger aria-label={t("cursor.authMode")} className="w-full">
             <SelectValue />
           </SelectTrigger>
           <SelectContent align="start">
@@ -584,7 +665,7 @@ export function CursorConfigPanel({
           </div>
         ) : null}
 
-        {/* API key mode: the Cursor Dashboard account key. */}
+        {/* Custom mode: explicit Cursor account key and optional endpoint. */}
         {mode === "custom" ? (
           <div className="space-y-1">
             <label className="text-[11px] text-muted-foreground">
@@ -615,11 +696,25 @@ export function CursorConfigPanel({
             <p className="text-[10px] text-muted-foreground">
               {t("cursor.apiKeyHint")}
             </p>
+            <label className="pt-1 text-[11px] text-muted-foreground">
+              {t("cursor.baseUrlLabel")}
+            </label>
+            <Input
+              className="h-7 text-xs"
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder={t("cursor.baseUrlPlaceholder")}
+              value={baseUrl}
+            />
+            <p className="text-[10px] text-muted-foreground">
+              {t("cursor.baseUrlHint")}
+            </p>
           </div>
         ) : null}
 
         {auth?.error ? (
-          <p className="text-[11px] text-destructive">{auth.error}</p>
+          <p className="text-[11px] text-destructive">
+            {cursorProbeError(auth.error_code)}
+          </p>
         ) : null}
 
         {/* No model list yet (not signed in / empty): tell the user why the

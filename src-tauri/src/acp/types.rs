@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PromptInputBlock {
@@ -191,6 +195,10 @@ pub enum AcpEvent {
     /// Session configuration options are available/updated for this connection
     SessionConfigOptions {
         config_options: Vec<SessionConfigOptionInfo>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        operation_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        operation_status: Option<String>,
     },
     /// The agent settled a `session/set_config_option` on a value other than the
     /// one that was requested.
@@ -262,14 +270,10 @@ pub enum AcpEvent {
         /// failure, `session/load` fallback, empty-prompt rejection)
         /// leave the connection alive and the next prompt will still work.
         ///
-        /// Skipped from serialization — the wire-format payload sent to
-        /// the frontend (Tauri / WebSocket) is unchanged. This is purely
-        /// an in-process signal between `connection.rs` and the lifecycle
-        /// worker so the worker can avoid wrongly cancelling the
-        /// conversation row or polluting the broker's cancel reason with
-        /// a stale, non-terminal error detail. (Stays `false` after any
-        /// JSON round-trip; only the original emitter sees `true`.)
-        #[serde(skip, default)]
+        /// Serialized only when true so the frontend can abandon a pending
+        /// multi-step Cursor configuration even if no trailing status event
+        /// arrives. Ordinary recoverable errors retain the legacy wire shape.
+        #[serde(default, skip_serializing_if = "is_false")]
         terminal: bool,
     },
     /// A retryable turn error that keeps the turn alive (codex-acp #289,
@@ -445,10 +449,7 @@ pub enum AcpEvent {
     /// clear its "restart to apply" banner. Carried into `SessionState` so a
     /// snapshot attach (web reconnect, window refresh, new tile) recovers the
     /// staleness the one-shot event won't replay for it.
-    SessionConfigStale {
-        stale: bool,
-        kind: ConfigStaleKind,
-    },
+    SessionConfigStale { stale: bool, kind: ConfigStaleKind },
 }
 
 /// One background task settled by a `<task-notification>` transcript record,
@@ -1075,6 +1076,8 @@ pub struct CursorAuthStatus {
     pub membership: Option<String>,
     /// Probe failure detail (spawn error / timeout / non-JSON output).
     pub error: Option<String>,
+    /// Stable code for localized rendering; absent on successful/legacy data.
+    pub error_code: Option<String>,
     /// Absolute path to the cursor-agent binary codeg would launch (managed
     /// cache or system install). The settings panel builds a copy-pasteable
     /// `"<binary_path>" login` command from it — the managed binary lives in
@@ -1105,6 +1108,19 @@ pub struct CursorModelsResult {
     pub models: Vec<CursorModelInfo>,
     pub default_model: Option<String>,
     pub error: Option<String>,
+    pub error_code: Option<String>,
+}
+
+/// One Codeg-visible Cursor model row backed by Cursor's parameterized ACP
+/// protocol. `value` is a Codeg-local selector key (never an ACP model id),
+/// while `model_value` and `parameters` are the exact values Cursor advertised.
+/// Backend-internal: the frontend receives only the synthesized select option.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CursorCompositeModel {
+    pub value: String,
+    pub label: String,
+    pub model_value: String,
+    pub parameters: std::collections::BTreeMap<String, String>,
 }
 
 /// Lightweight status info for a single agent, used by connect() pre-check.
@@ -1313,6 +1329,26 @@ mod envelope_tests {
             }
             other => panic!("expected ConversationStatusChanged, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn terminal_error_exposes_only_the_true_wire_marker() {
+        let error = |terminal| AcpEvent::Error {
+            message: "controlled error".to_string(),
+            agent_type: "cursor".to_string(),
+            code: Some("process_exited".to_string()),
+            details: None,
+            terminal,
+        };
+
+        let terminal = serde_json::to_value(error(true)).expect("serialize terminal error");
+        assert_eq!(terminal.get("terminal"), Some(&serde_json::json!(true)));
+
+        let recoverable = serde_json::to_value(error(false)).expect("serialize recoverable error");
+        assert!(
+            recoverable.get("terminal").is_none(),
+            "the compatibility wire stays unchanged for ordinary errors"
+        );
     }
 
     #[test]

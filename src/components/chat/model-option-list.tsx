@@ -29,6 +29,12 @@ interface ModelOptionListProps {
 // taller) — only sizes the scroll window; virtua measures real rows itself.
 const ROW_ESTIMATE_PX = 44
 const MAX_LIST_HEIGHT_PX = 320
+export const CURSOR_CURRENT_UNAVAILABLE_VALUE =
+  "__codeg_cursor_current_unavailable__"
+
+function isSelectableModelValue(value: string): boolean {
+  return value !== CURSOR_CURRENT_UNAVAILABLE_VALUE
+}
 
 // Searchable, virtualized model list shared by both selector forms (the wide
 // popover and the collapsed cog panel). Deliberately NOT a Radix menu and NOT
@@ -77,7 +83,12 @@ export function ModelOptionList({
   // Flat row indices that are options (skipping headers) — the keyboard cursor
   // walks these, and they map an option position back to its flat row index.
   const optionRowIndices = useMemo(
-    () => rows.flatMap((row, index) => (row.kind === "option" ? [index] : [])),
+    () =>
+      rows.flatMap((row, index) =>
+        row.kind === "option" && isSelectableModelValue(row.option.value)
+          ? [index]
+          : []
+      ),
     [rows]
   )
   const optionCount = optionRowIndices.length
@@ -232,23 +243,35 @@ export function ModelOptionList({
                         </div>
                       )
                     }
-                    const optionIndex = optionIndexByRow.get(flatIndex) ?? 0
+                    const optionIndex = optionIndexByRow.get(flatIndex)
+                    const selectable = optionIndex !== undefined
                     const selected = row.option.value === currentValue
-                    const active = optionIndex === activeIndexClamped
+                    const active =
+                      selectable && optionIndex === activeIndexClamped
                     return (
                       <button
                         key={row.key}
                         type="button"
                         role="option"
-                        id={optionId(optionIndex)}
+                        id={
+                          selectable
+                            ? optionId(optionIndex)
+                            : `${baseId}-display-${flatIndex}`
+                        }
                         aria-selected={selected}
+                        disabled={!selectable}
                         title={row.option.name}
-                        onMouseMove={() => setActiveIndex(optionIndex)}
-                        onClick={() => onSelect(row.option.value)}
+                        onMouseMove={() => {
+                          if (selectable) setActiveIndex(optionIndex)
+                        }}
+                        onClick={() => {
+                          if (selectable) onSelect(row.option.value)
+                        }}
                         className={cn(
                           "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
                           active && "bg-accent text-accent-foreground",
-                          selected && !active && "bg-accent/60"
+                          selected && !active && "bg-accent/60",
+                          !selectable && "cursor-not-allowed opacity-70"
                         )}
                       >
                         <span className="flex size-4 shrink-0 items-center justify-center pt-0.5">

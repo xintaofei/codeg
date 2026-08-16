@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { Check } from "lucide-react"
+import { Check, LoaderCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { DropdownRadioItemContent } from "@/components/chat/dropdown-radio-item-content"
 import { ModelOptionList } from "@/components/chat/model-option-list"
@@ -37,6 +37,7 @@ export interface SessionSelectorSetting {
   currentLabel: string
   groups: SessionSelectorGroup[]
   onSelect: (value: string) => void
+  pending?: boolean
   /** When set, the detail pane renders a searchable + virtualized list instead
    *  of the plain button list — used for long model lists that otherwise jank. */
   search?: SessionSelectorSearch
@@ -101,13 +102,16 @@ export function SessionSelectorsPanel({
               </span>
               <span
                 className={cn(
-                  "w-full truncate text-xs",
+                  "flex w-full items-center gap-1 truncate text-xs",
                   isActive
                     ? "text-accent-foreground/80"
                     : "text-muted-foreground"
                 )}
               >
-                {setting.currentLabel}
+                {setting.pending ? (
+                  <LoaderCircle className="size-3 shrink-0 animate-spin" />
+                ) : null}
+                <span className="truncate">{setting.currentLabel}</span>
               </span>
             </button>
           )

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  cursorModelListGroups,
   deriveModelGroups,
   filterModelGroups,
   flattenModelGroups,
@@ -337,6 +338,56 @@ describe("modelListGroups", () => {
   })
 })
 
+describe("cursorModelListGroups", () => {
+  it("puts Cursor's real default value in a CLI-default group without rewriting ids", () => {
+    const option = modelOption([
+      opt("default", "Auto"),
+      opt("gpt-5.3-codex", "Codex 5.3"),
+      opt("claude-opus-5", "Opus 5"),
+    ])
+
+    const groups = cursorModelListGroups(option, {
+      groupName: "CLI defaults",
+      optionName: "Auto (default)",
+    })
+
+    expect(groups).toEqual([
+      {
+        key: "__cursor_cli_defaults__",
+        name: "CLI defaults",
+        options: [
+          { value: "default", name: "Auto (default)", description: null },
+        ],
+      },
+      {
+        key: "__cursor_models__",
+        name: null,
+        options: [
+          { value: "gpt-5.3-codex", name: "Codex 5.3", description: null },
+          { value: "claude-opus-5", name: "Opus 5", description: null },
+        ],
+      },
+    ])
+  })
+
+  it("recognizes Cursor's compatibility-mode default tuple but leaves other agents alone", () => {
+    const option = modelOption([
+      opt("default[]", "Auto"),
+      opt("gpt-5.3-codex[reasoning=high,fast=true]", "Codex 5.3 High Fast"),
+    ])
+    const labels = {
+      groupName: "CLI defaults",
+      optionName: "Auto (default)",
+    }
+
+    expect(cursorModelListGroups(option, labels)?.[0].options[0].value).toBe(
+      "default[]"
+    )
+    expect(modelListGroups(option)[0].name).toBeNull()
+    expect(modelListGroups(option)[0].options[0].name).toBe("Auto")
+  })
+})
+
 describe("filterModelGroups", () => {
   it("returns the groups unchanged for an empty query", () => {
     expect(filterModelGroups(SAMPLE_GROUPS, "   ")).toBe(SAMPLE_GROUPS)
@@ -359,6 +410,38 @@ describe("filterModelGroups", () => {
 
   it("returns an empty list when nothing matches", () => {
     expect(filterModelGroups(SAMPLE_GROUPS, "zzz")).toEqual([])
+  })
+
+  it("keeps and searches every distinct Cursor compatibility variant", () => {
+    const variants: ModelOptionGroup[] = [
+      {
+        key: "cursor",
+        name: null,
+        options: [
+          opt("base[reasoning=high,fast=true]", "Base High Fast"),
+          opt("base[context=1m,thinking=true]", "Base 1M Thinking"),
+          opt("base[reasoning=extra-high]", "Base Extra High"),
+          opt("private-base", "Private Base (NO ZDR)"),
+        ],
+      },
+    ]
+
+    expect(flattenModelGroups(variants)).toHaveLength(4)
+    expect(filterModelGroups(variants, "fast")[0].options[0].value).toBe(
+      "base[reasoning=high,fast=true]"
+    )
+    expect(filterModelGroups(variants, "thinking")[0].options[0].value).toBe(
+      "base[context=1m,thinking=true]"
+    )
+    expect(filterModelGroups(variants, "1m")[0].options[0].value).toBe(
+      "base[context=1m,thinking=true]"
+    )
+    expect(filterModelGroups(variants, "extra high")[0].options[0].value).toBe(
+      "base[reasoning=extra-high]"
+    )
+    expect(filterModelGroups(variants, "no zdr")[0].options[0].value).toBe(
+      "private-base"
+    )
   })
 })
 

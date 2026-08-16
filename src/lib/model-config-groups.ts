@@ -191,6 +191,48 @@ export function modelListGroups(
   return [{ key: "__all__", name: null, options: kind.options }]
 }
 
+export interface CursorModelDefaultLabels {
+  groupName: string
+  optionName: string
+}
+
+// Cursor's native catalog reserves `default` for "use the CLI default". Older
+// compatibility-mode responses spell the same sentinel `default[]`. Keep that
+// protocol value byte-for-byte while making its meaning explicit and placing
+// it ahead of the dynamic account-specific catalog. This is intentionally a
+// Cursor-only presentation helper; it neither invents model entries nor
+// changes grouping for any other agent.
+export function cursorModelListGroups(
+  option: SessionConfigOptionInfo,
+  labels: CursorModelDefaultLabels
+): ModelOptionGroup[] | null {
+  if (!isModelConfigOption(option) || option.kind.type !== "select") return null
+  if (option.kind.groups.length > 0) return null
+
+  const defaults: SessionConfigSelectOptionInfo[] = []
+  const models: SessionConfigSelectOptionInfo[] = []
+  for (const item of option.kind.options) {
+    if (item.value === "default" || item.value === "default[]") {
+      defaults.push({ ...item, name: labels.optionName })
+    } else {
+      models.push(item)
+    }
+  }
+  if (defaults.length === 0) return null
+
+  const groups: ModelOptionGroup[] = [
+    {
+      key: "__cursor_cli_defaults__",
+      name: labels.groupName,
+      options: defaults,
+    },
+  ]
+  if (models.length > 0) {
+    groups.push({ key: "__cursor_models__", name: null, options: models })
+  }
+  return groups
+}
+
 // Filter a group list by a search query, matching each option's display name OR
 // its value id (case-insensitive substring). Groups left with no matching option
 // are dropped. An empty/whitespace query returns the groups unchanged.

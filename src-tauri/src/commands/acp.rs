@@ -1,11 +1,19 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::pin::Pin;
+use std::process::Stdio;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant, SystemTime};
 
+use futures::FutureExt;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 #[cfg(feature = "tauri-runtime")]
 use tauri::{Manager, State};
+use tokio::io::AsyncReadExt;
 
 use crate::acp::binary_cache;
 use crate::acp::custom_registry;
@@ -31,6 +39,12 @@ use crate::web::event_bridge::EventEmitter;
 
 const ACP_AGENTS_UPDATED_EVENT: &str = "app://acp-agents-updated";
 const NPM_PREFIX_TIMEOUT: Duration = Duration::from_millis(1500);
+const CURSOR_PROBE_STDOUT_LIMIT: usize = 1024 * 1024;
+const CURSOR_PROBE_STDERR_LIMIT: usize = 256 * 1024;
+const CURSOR_PROBE_CACHE_MAX_ENTRIES: usize = 16;
+const CURSOR_PROBE_SUCCESS_TTL: Duration = Duration::from_secs(300);
+const CURSOR_PROBE_FAILURE_BACKOFF: Duration = Duration::from_secs(3);
+const CURSOR_PROBE_TOKIO_KILL_ON_DROP: bool = false;
 
 static NPM_GLOBAL_PREFIX_CACHE: tokio::sync::OnceCell<PathBuf> = tokio::sync::OnceCell::const_new();
 
@@ -262,7 +276,10 @@ pub(crate) fn resolve_uvx_command() -> Option<PathBuf> {
     }
     let exe = if cfg!(windows) { "uvx.exe" } else { "uvx" };
     let home = home_dir_or_default();
-    for dir in [home.join(".local").join("bin"), home.join(".cargo").join("bin")] {
+    for dir in [
+        home.join(".local").join("bin"),
+        home.join(".cargo").join("bin"),
+    ] {
         let cand = dir.join(exe);
         if cand.is_file() {
             return Some(cand);
@@ -709,9 +726,17 @@ const DIAG_SAFE_ENV_KEYS: &[&str] = &[
 /// `models::model_provider::mask_api_key`) so it never panics on a UTF-8 value.
 fn redact_secret(key: &str, value: &str) -> String {
     let lower = key.to_ascii_lowercase();
-    let secretish = ["key", "token", "secret", "password", "passwd", "auth", "credential"]
-        .iter()
-        .any(|needle| lower.contains(needle));
+    let secretish = [
+        "key",
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "auth",
+        "credential",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
     if !secretish {
         return value.to_string();
     }
@@ -859,7 +884,12 @@ async fn diag_cmd_probe(cmd: &str, version_args: &[&str]) -> CmdProbe {
 
 /// Major version from `v20.11.1` / `20.11.1`.
 fn parse_node_major(v: &str) -> Option<u64> {
-    v.trim().trim_start_matches('v').split('.').next()?.parse().ok()
+    v.trim()
+        .trim_start_matches('v')
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
 }
 
 /// Compare the user's login-shell PATH against the app PATH. Unix-only; on
@@ -898,7 +928,8 @@ async fn diag_terminal_probe(cmd: &str, app_path: &[String]) -> TerminalProbe {
         }
     }
     if let Some(tp) = term_path {
-        let app_set: std::collections::HashSet<&str> = app_path.iter().map(String::as_str).collect();
+        let app_set: std::collections::HashSet<&str> =
+            app_path.iter().map(String::as_str).collect();
         let mut seen = std::collections::HashSet::new();
         probe.extra_dirs = tp
             .split(':')
@@ -967,10 +998,12 @@ async fn collect_agent_diag(
                 cand.is_file().then(|| cand.to_string_lossy().to_string())
             });
             diag.homebrew_bin = if cfg!(target_os = "macos") {
-                ["/opt/homebrew/bin", "/usr/local/bin"].iter().find_map(|d| {
-                    let cand = Path::new(d).join(diag_exe_name(cmd));
-                    cand.is_file().then(|| cand.to_string_lossy().to_string())
-                })
+                ["/opt/homebrew/bin", "/usr/local/bin"]
+                    .iter()
+                    .find_map(|d| {
+                        let cand = Path::new(d).join(diag_exe_name(cmd));
+                        cand.is_file().then(|| cand.to_string_lossy().to_string())
+                    })
             } else {
                 None
             };
@@ -989,7 +1022,8 @@ async fn collect_agent_diag(
             // open) this report is on demand, so it can afford `--version` —
             // naming the exact build is what makes "we DID see your CLI" land.
             if let Some(relation) = registry::acp_adapter_relation(agent_type) {
-                let native_path = resolve_vendor_cli(relation.native_cmd, relation.extra_dirs).await;
+                let native_path =
+                    resolve_vendor_cli(relation.native_cmd, relation.extra_dirs).await;
                 let native_version = match &native_path {
                     Some(p) => diag_run(p, &["--version"]).await,
                     None => None,
@@ -1095,7 +1129,8 @@ async fn collect_diag_inputs(db: &AppDatabase, agent_type: Option<AgentType>) ->
     for &key in DIAG_SAFE_ENV_KEYS {
         if let Ok(val) = std::env::var(key) {
             if !val.trim().is_empty() {
-                inp.safe_env.push((key.to_string(), redact_secret(key, &val)));
+                inp.safe_env
+                    .push((key.to_string(), redact_secret(key, &val)));
             }
         }
     }
@@ -1290,14 +1325,30 @@ fn build_report(
 
     // 1. Runtime
     let mut runtime = vec![
-        diag_check("os / arch", &format!("{} / {}", inp.os, inp.arch), DiagLevel::Info, None),
+        diag_check(
+            "os / arch",
+            &format!("{} / {}", inp.os, inp.arch),
+            DiagLevel::Info,
+            None,
+        ),
         diag_check("app version", &inp.app_version, DiagLevel::Info, None),
     ];
-    let fix_failed = inp.path_logs.iter().any(|l| l.contains("fix_path_env failed"));
+    let fix_failed = inp
+        .path_logs
+        .iter()
+        .any(|l| l.contains("fix_path_env failed"));
     runtime.push(diag_check(
         "fix_path_env",
-        if fix_failed { "failed at startup" } else { "no failure logged" },
-        if fix_failed { DiagLevel::Warn } else { DiagLevel::Info },
+        if fix_failed {
+            "failed at startup"
+        } else {
+            "no failure logged"
+        },
+        if fix_failed {
+            DiagLevel::Warn
+        } else {
+            DiagLevel::Info
+        },
         Some("app imports the login-shell PATH at startup; a failure leaves a narrow GUI PATH"),
     ));
     for (k, v) in &inp.safe_env {
@@ -1309,10 +1360,19 @@ fn build_report(
         DiagLevel::Info,
         None,
     ));
-    sections.push(DiagSection { title: "Runtime".to_string(), checks: runtime });
+    sections.push(DiagSection {
+        title: "Runtime".to_string(),
+        checks: runtime,
+    });
 
     // 2. Node / npm / npx
-    let node_status = |p: &CmdProbe| if p.path.is_some() { DiagLevel::Ok } else { DiagLevel::Fail };
+    let node_status = |p: &CmdProbe| {
+        if p.path.is_some() {
+            DiagLevel::Ok
+        } else {
+            DiagLevel::Fail
+        }
+    };
     let cmd_value = |p: &CmdProbe| match (&p.path, &p.version) {
         (Some(path), Some(ver)) => format!("{ver}  ({path})"),
         (Some(path), None) => path.clone(),
@@ -1339,17 +1399,31 @@ fn build_report(
                     inp.npm_prefix_g.as_deref().unwrap_or("N/A"),
                     inp.npm_prefix_g_ms
                 ),
-                if prefix_slow { DiagLevel::Warn } else { DiagLevel::Info },
+                if prefix_slow {
+                    DiagLevel::Warn
+                } else {
+                    DiagLevel::Info
+                },
                 prefix_slow.then_some("exceeds the 1.5s gate used at detection time"),
             ),
-            diag_check("npm root -g", inp.npm_root_g.as_deref().unwrap_or("N/A"), DiagLevel::Info, None),
+            diag_check(
+                "npm root -g",
+                inp.npm_root_g.as_deref().unwrap_or("N/A"),
+                DiagLevel::Info,
+                None,
+            ),
             diag_check(
                 "npm config get prefix",
                 inp.npm_config_prefix.as_deref().unwrap_or("N/A"),
                 DiagLevel::Info,
                 None,
             ),
-            diag_check("cached prefix", inp.cached_prefix.as_deref().unwrap_or("N/A"), DiagLevel::Info, None),
+            diag_check(
+                "cached prefix",
+                inp.cached_prefix.as_deref().unwrap_or("N/A"),
+                DiagLevel::Info,
+                None,
+            ),
         ],
     });
 
@@ -1363,7 +1437,11 @@ fn build_report(
         let mut checks = vec![diag_check(
             &launch_label,
             a.launchable.as_deref().unwrap_or("NOT RESOLVED"),
-            if a.launchable.is_some() { DiagLevel::Ok } else { DiagLevel::Fail },
+            if a.launchable.is_some() {
+                DiagLevel::Ok
+            } else {
+                DiagLevel::Fail
+            },
             (a.distribution == "npx").then_some("this is exactly what the new-session page checks"),
         )];
         if let Some(p) = &a.package {
@@ -1374,20 +1452,34 @@ fn build_report(
             checks.push(diag_check(
                 "<npm prefix -g>/bin/<cmd>",
                 a.system_prefix_bin.as_deref().unwrap_or("absent"),
-                if a.system_prefix_bin.is_some() { DiagLevel::Ok } else { DiagLevel::Info },
+                if a.system_prefix_bin.is_some() {
+                    DiagLevel::Ok
+                } else {
+                    DiagLevel::Info
+                },
                 None,
             ));
             checks.push(diag_check(
                 "~/.codeg/npm-global/bin/<cmd>",
                 a.user_prefix_bin.as_deref().unwrap_or("absent"),
-                if a.user_prefix_bin.is_some() { DiagLevel::Warn } else { DiagLevel::Info },
-                a.user_prefix_bin.as_ref().map(|_| "EACCES fallback dir — reached by the connect gate only if it's on PATH"),
+                if a.user_prefix_bin.is_some() {
+                    DiagLevel::Warn
+                } else {
+                    DiagLevel::Info
+                },
+                a.user_prefix_bin.as_ref().map(|_| {
+                    "EACCES fallback dir — reached by the connect gate only if it's on PATH"
+                }),
             ));
             if cfg!(target_os = "macos") {
                 checks.push(diag_check(
                     "homebrew bin/<cmd>",
                     a.homebrew_bin.as_deref().unwrap_or("absent"),
-                    if a.homebrew_bin.is_some() { DiagLevel::Warn } else { DiagLevel::Info },
+                    if a.homebrew_bin.is_some() {
+                        DiagLevel::Warn
+                    } else {
+                        DiagLevel::Info
+                    },
                     None,
                 ));
             }
@@ -1487,7 +1579,11 @@ fn build_report(
                 } else {
                     format!("{} (see copied text)", inp.terminal.extra_dirs.len())
                 },
-                if inp.terminal.extra_dirs.is_empty() { DiagLevel::Ok } else { DiagLevel::Warn },
+                if inp.terminal.extra_dirs.is_empty() {
+                    DiagLevel::Ok
+                } else {
+                    DiagLevel::Warn
+                },
                 (!inp.terminal.extra_dirs.is_empty())
                     .then_some("the app can't see these dirs — the likely GUI PATH gap"),
             ),
@@ -1500,7 +1596,10 @@ fn build_report(
             None,
         )]
     };
-    sections.push(DiagSection { title: "Terminal comparison".to_string(), checks: term_checks });
+    sections.push(DiagSection {
+        title: "Terminal comparison".to_string(),
+        checks: term_checks,
+    });
 
     let plain_text = render_plain_text(inp, &verdict, &sections, &generated_at, agent_type);
 
@@ -1534,11 +1633,19 @@ fn render_plain_text(
     if let Some(at) = agent_type {
         out.push_str(&format!("agent: {at:?}\n"));
     }
-    out.push_str(&format!("verdict [{}]: {}\n", verdict.code, verdict.summary));
+    out.push_str(&format!(
+        "verdict [{}]: {}\n",
+        verdict.code, verdict.summary
+    ));
     for sec in sections {
         out.push_str(&format!("\n## {}\n", sec.title));
         for c in &sec.checks {
-            out.push_str(&format!("  [{}] {}: {}\n", glyph(c.status), c.label, c.value));
+            out.push_str(&format!(
+                "  [{}] {}: {}\n",
+                glyph(c.status),
+                c.label,
+                c.value
+            ));
             if let Some(h) = &c.hint {
                 out.push_str(&format!("        ↳ {h}\n"));
             }
@@ -1572,7 +1679,9 @@ pub(crate) async fn acp_env_diagnostics_core(
     agent_type: Option<AgentType>,
 ) -> Result<AgentDiagnosticsReport, AcpError> {
     let inputs = collect_diag_inputs(db, agent_type).await;
-    let generated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %z").to_string();
+    let generated_at = chrono::Local::now()
+        .format("%Y-%m-%d %H:%M:%S %z")
+        .to_string();
     Ok(build_report(&inputs, generated_at, agent_type))
 }
 
@@ -1661,7 +1770,8 @@ mod diagnostics_tests {
         let mut a = agent_installed_unresolved();
         a.detected_version = Some("1.1.2".to_string());
         inp.agent = Some(a);
-        inp.terminal.cmd_resolved = Some("/Users/u/.nvm/versions/node/v20/bin/codex-acp".to_string());
+        inp.terminal.cmd_resolved =
+            Some("/Users/u/.nvm/versions/node/v20/bin/codex-acp".to_string());
         assert_eq!(compute_verdict(&inp).code, "terminal_only_path");
     }
 
@@ -1774,7 +1884,9 @@ mod diagnostics_tests {
     #[test]
     fn verdict_adapter_missing_while_vendor_cli_present() {
         let mut inp = base_inputs();
-        inp.agent = Some(adapter_agent_never_installed(Some("/opt/homebrew/bin/codex")));
+        inp.agent = Some(adapter_agent_never_installed(Some(
+            "/opt/homebrew/bin/codex",
+        )));
         let v = compute_verdict(&inp);
         assert_eq!(v.code, "adapter_missing_native_present");
         assert_eq!(v.level, DiagLevel::Info);
@@ -1826,12 +1938,16 @@ mod diagnostics_tests {
     #[test]
     fn report_names_the_vendor_cli_and_shared_config_dir() {
         let mut inp = base_inputs();
-        inp.agent = Some(adapter_agent_never_installed(Some("/opt/homebrew/bin/codex")));
+        inp.agent = Some(adapter_agent_never_installed(Some(
+            "/opt/homebrew/bin/codex",
+        )));
         let r = build_report(&inp, "FIXED-TS".to_string(), Some(AgentType::Codex));
         assert!(r.plain_text.contains("codex (your own CLI)"));
         assert!(r.plain_text.contains("/opt/homebrew/bin/codex"));
         assert!(r.plain_text.contains("~/.codex"));
-        assert!(r.plain_text.contains("verdict [adapter_missing_native_present]"));
+        assert!(r
+            .plain_text
+            .contains("verdict [adapter_missing_native_present]"));
     }
 
     // Non-adapter agents keep the old shape exactly — no stray rows.
@@ -1943,10 +2059,7 @@ fn extract_version_token(text: &str) -> Option<String> {
             .strip_prefix('v')
             .or_else(|| piece.strip_prefix('V'))
             .unwrap_or(piece);
-        let starts_digit = candidate
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_digit());
+        let starts_digit = candidate.chars().next().is_some_and(|c| c.is_ascii_digit());
         (starts_digit
             && candidate.contains('.')
             && candidate
@@ -2243,7 +2356,12 @@ async fn install_npm_global_package_streaming(
         format!("$ npm install -g {NPM_INCLUDE_OPTIONAL} {package}"),
     );
 
-    let mut args = vec!["install", "-g", NPM_INCLUDE_OPTIONAL, NPM_FOREGROUND_SCRIPTS];
+    let mut args = vec![
+        "install",
+        "-g",
+        NPM_INCLUDE_OPTIONAL,
+        NPM_FOREGROUND_SCRIPTS,
+    ];
     if run_scripts {
         args.push(NPM_RUN_SCRIPTS_OVERRIDE);
     }
@@ -2362,7 +2480,12 @@ async fn install_npm_to_user_prefix_streaming(
         ),
     );
 
-    let mut args = vec!["install", "-g", NPM_INCLUDE_OPTIONAL, NPM_FOREGROUND_SCRIPTS];
+    let mut args = vec![
+        "install",
+        "-g",
+        NPM_INCLUDE_OPTIONAL,
+        NPM_FOREGROUND_SCRIPTS,
+    ];
     if run_scripts {
         args.push(NPM_RUN_SCRIPTS_OVERRIDE);
     }
@@ -4014,8 +4137,16 @@ fn apply_grok_custom_model(
                 let tbl = grok_model_table_mut(doc, id)?;
                 // `model` is the id sent to the API; always kept in sync with <id>.
                 grok_tbl_set_str(tbl, "model", Some(id));
-                grok_tbl_set_str(tbl, "base_url", trimmed_opt(settings.custom_base_url.as_deref()));
-                grok_tbl_set_str(tbl, "api_key", trimmed_opt(settings.custom_api_key.as_deref()));
+                grok_tbl_set_str(
+                    tbl,
+                    "base_url",
+                    trimmed_opt(settings.custom_base_url.as_deref()),
+                );
+                grok_tbl_set_str(
+                    tbl,
+                    "api_key",
+                    trimmed_opt(settings.custom_api_key.as_deref()),
+                );
                 grok_tbl_set_str(
                     tbl,
                     "api_backend",
@@ -4158,7 +4289,9 @@ fn set_or_remove_grok_key(
             }
         }
         None => {
-            if let Some(table) = doc.get_mut(section).and_then(|item| item.as_table_like_mut())
+            if let Some(table) = doc
+                .get_mut(section)
+                .and_then(|item| item.as_table_like_mut())
             {
                 table.remove(key);
             }
@@ -4192,7 +4325,9 @@ fn set_or_remove_grok_number(
             }
         }
         None => {
-            if let Some(table) = doc.get_mut(section).and_then(|item| item.as_table_like_mut())
+            if let Some(table) = doc
+                .get_mut(section)
+                .and_then(|item| item.as_table_like_mut())
             {
                 table.remove(key);
             }
@@ -4364,10 +4499,20 @@ fn apply_kimi_managed_block(
                 "type".to_string(),
                 toml::Value::String(spec.interface_type.clone()),
             );
-            if let Some(url) = spec.base_url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            if let Some(url) = spec
+                .base_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
                 provider_table.insert("base_url".to_string(), toml::Value::String(url.to_string()));
             }
-            if let Some(key) = spec.api_key.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            if let Some(key) = spec
+                .api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
                 provider_table.insert("api_key".to_string(), toml::Value::String(key.to_string()));
             }
             if !spec.env.is_empty() {
@@ -4452,8 +4597,9 @@ fn apply_kimi_managed_block(
             );
         }
         None => {
-            let providers_empty = if let Some(providers) =
-                table.get_mut("providers").and_then(toml::Value::as_table_mut)
+            let providers_empty = if let Some(providers) = table
+                .get_mut("providers")
+                .and_then(toml::Value::as_table_mut)
             {
                 providers.remove(KIMI_MANAGED_PROVIDER);
                 providers.is_empty()
@@ -4463,18 +4609,18 @@ fn apply_kimi_managed_block(
             if providers_empty {
                 table.remove("providers");
             }
-            let models_empty = if let Some(models) =
-                table.get_mut("models").and_then(toml::Value::as_table_mut)
-            {
-                models.remove(KIMI_MANAGED_MODEL_ALIAS);
-                models.is_empty()
-            } else {
-                false
-            };
+            let models_empty =
+                if let Some(models) = table.get_mut("models").and_then(toml::Value::as_table_mut) {
+                    models.remove(KIMI_MANAGED_MODEL_ALIAS);
+                    models.is_empty()
+                } else {
+                    false
+                };
             if models_empty {
                 table.remove("models");
             }
-            if table.get("default_model").and_then(toml::Value::as_str) == Some(KIMI_MANAGED_MODEL_ALIAS)
+            if table.get("default_model").and_then(toml::Value::as_str)
+                == Some(KIMI_MANAGED_MODEL_ALIAS)
             {
                 table.remove("default_model");
             }
@@ -4532,7 +4678,9 @@ fn kimi_token_is_synthetic(token: &serde_json::Value) -> bool {
         .get("_codeg_synthetic")
         .and_then(serde_json::Value::as_bool)
         == Some(true)
-        || token.get("access_token").and_then(serde_json::Value::as_str)
+        || token
+            .get("access_token")
+            .and_then(serde_json::Value::as_str)
             == Some(KIMI_SYNTHETIC_TOKEN_ACCESS)
 }
 
@@ -4548,7 +4696,9 @@ fn kimi_token_has_access(token: &serde_json::Value) -> bool {
 
 /// Whether any usable credential (real or synthetic) is present.
 fn kimi_credential_present() -> bool {
-    read_kimi_token().map(|t| kimi_token_has_access(&t)).unwrap_or(false)
+    read_kimi_token()
+        .map(|t| kimi_token_has_access(&t))
+        .unwrap_or(false)
 }
 
 /// Whether the present credential is codeg's synthetic gate token.
@@ -4646,33 +4796,48 @@ fn project_kimi_managed_config(value: &toml::Value) -> serde_json::Map<String, s
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            merged.insert("key".to_string(), serde_json::Value::String(key.to_string()));
+            merged.insert(
+                "key".to_string(),
+                serde_json::Value::String(key.to_string()),
+            );
             merged.insert(
                 "authType".to_string(),
                 serde_json::Value::String("api_key".to_string()),
             );
         }
         if let Some(env) = provider.get("env").and_then(toml::Value::as_table) {
-            if let Some(project) = env.get("GOOGLE_CLOUD_PROJECT").and_then(toml::Value::as_str) {
+            if let Some(project) = env
+                .get("GOOGLE_CLOUD_PROJECT")
+                .and_then(toml::Value::as_str)
+            {
                 merged.insert(
                     "vertexProject".to_string(),
                     serde_json::Value::String(project.to_string()),
                 );
             }
-            if let Some(location) = env.get("GOOGLE_CLOUD_LOCATION").and_then(toml::Value::as_str) {
+            if let Some(location) = env
+                .get("GOOGLE_CLOUD_LOCATION")
+                .and_then(toml::Value::as_str)
+            {
                 merged.insert(
                     "vertexLocation".to_string(),
                     serde_json::Value::String(location.to_string()),
                 );
             }
-            if let Some(var) = interface_type.as_deref().and_then(kimi_provider_key_env_var) {
+            if let Some(var) = interface_type
+                .as_deref()
+                .and_then(kimi_provider_key_env_var)
+            {
                 if let Some(key) = env
                     .get(var)
                     .and_then(toml::Value::as_str)
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                 {
-                    merged.insert("key".to_string(), serde_json::Value::String(key.to_string()));
+                    merged.insert(
+                        "key".to_string(),
+                        serde_json::Value::String(key.to_string()),
+                    );
                     merged.insert(
                         "authType".to_string(),
                         serde_json::Value::String("env".to_string()),
@@ -4697,7 +4862,10 @@ fn project_kimi_managed_config(value: &toml::Value) -> serde_json::Map<String, s
                 serde_json::Value::String(model_id.to_string()),
             );
         }
-        if let Some(ctx) = model.get("max_context_size").and_then(toml::Value::as_integer) {
+        if let Some(ctx) = model
+            .get("max_context_size")
+            .and_then(toml::Value::as_integer)
+        {
             merged.insert(
                 "maxContextSize".to_string(),
                 serde_json::Value::Number(ctx.into()),
@@ -4742,17 +4910,26 @@ fn project_kimi_managed_config(value: &toml::Value) -> serde_json::Map<String, s
     }
 
     let has_managed = merged.contains_key("interfaceType");
-    merged.insert("hasManagedBlock".to_string(), serde_json::Value::Bool(has_managed));
+    merged.insert(
+        "hasManagedBlock".to_string(),
+        serde_json::Value::Bool(has_managed),
+    );
     merged
 }
 
 fn load_kimi_code_config_json() -> Option<String> {
     let raw = fs::read_to_string(kimi_code_config_toml_path()).ok();
-    let mut merged = match raw.as_deref().and_then(|text| text.parse::<toml::Value>().ok()) {
+    let mut merged = match raw
+        .as_deref()
+        .and_then(|text| text.parse::<toml::Value>().ok())
+    {
         Some(value) => project_kimi_managed_config(&value),
         None => {
             let mut m = serde_json::Map::new();
-            m.insert("hasManagedBlock".to_string(), serde_json::Value::Bool(false));
+            m.insert(
+                "hasManagedBlock".to_string(),
+                serde_json::Value::Bool(false),
+            );
             m
         }
     };
@@ -4807,7 +4984,11 @@ pub(crate) struct KimiCodeConfigUpdate {
 
 /// Validate + resolve a `native`-mode update into the managed block to write.
 fn build_kimi_managed_spec(update: &KimiCodeConfigUpdate) -> Result<KimiManagedSpec, AcpError> {
-    let interface_type = update.interface_type.as_deref().map(str::trim).unwrap_or("");
+    let interface_type = update
+        .interface_type
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("");
     if !KIMI_INTERFACE_TYPES.contains(&interface_type) {
         return Err(AcpError::protocol(format!(
             "unknown kimi interface type: '{interface_type}'"
@@ -4828,7 +5009,9 @@ fn build_kimi_managed_spec(update: &KimiCodeConfigUpdate) -> Result<KimiManagedS
         .map(str::to_string);
     if let Some(url) = &base_url {
         if url.contains(['\n', '\r']) {
-            return Err(AcpError::protocol("kimi base url must not contain newlines"));
+            return Err(AcpError::protocol(
+                "kimi base url must not contain newlines",
+            ));
         }
     }
 
@@ -5019,7 +5202,9 @@ pub(crate) async fn acp_update_kimi_code_config_core(
             (FileAction::Raw(raw.to_string()), CredentialAction::Seed)
         }
         other => {
-            return Err(AcpError::protocol(format!("unknown kimi config mode: '{other}'")));
+            return Err(AcpError::protocol(format!(
+                "unknown kimi config mode: '{other}'"
+            )));
         }
     };
 
@@ -5476,7 +5661,9 @@ pub(crate) async fn acp_pi_project_trust_state_core(
 /// Record that the user has seen and kept an existing trust grant, so the launch
 /// gate stops blocking this folder. Writes only codeg's own record — pi's
 /// `trust.json` is untouched, because the grant itself is not changing.
-pub(crate) async fn acp_pi_acknowledge_project_trust_core(workspace: String) -> Result<(), AcpError> {
+pub(crate) async fn acp_pi_acknowledge_project_trust_core(
+    workspace: String,
+) -> Result<(), AcpError> {
     tokio::task::spawn_blocking(move || {
         pi_set_trust_acknowledged_at(&pi_trust_ack_path(), Path::new(&workspace), true)
     })
@@ -6752,8 +6939,10 @@ fn shell_quote_arg_for(arg: &str, windows: bool) -> String {
     } else {
         "[](){}'\"$&;|<>*?`\\!#~"
     };
-    let needs_quoting =
-        arg.is_empty() || arg.chars().any(|c| c.is_whitespace() || special.contains(c));
+    let needs_quoting = arg.is_empty()
+        || arg
+            .chars()
+            .any(|c| c.is_whitespace() || special.contains(c));
     if !needs_quoting {
         return arg.to_string();
     }
@@ -7612,7 +7801,7 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
         AgentType::KimiCode => Some(SkillStorageSpec {
             kind: SkillStorageKind::SkillDirectoryOnly,
             global_dirs: vec![
-                crate::parsers::kimi_code::resolve_kimi_code_home_dir().join("skills"),
+                crate::parsers::kimi_code::resolve_kimi_code_home_dir().join("skills")
             ],
             project_rel_dirs: vec![".kimi-code/skills"],
         }),
@@ -8254,12 +8443,37 @@ fn persist_cursor_cli_config(text: &str) -> Result<(), AcpError> {
 /// The cursor-agent binary codeg would launch: managed cache first, then the
 /// user's own install (PATH / ~/.local/bin) — the same order as `build_agent`.
 fn resolve_cursor_binary() -> Option<PathBuf> {
-    if let Ok(Some((path, _))) =
+    resolve_cursor_binary_identity().map(|(path, _)| path)
+}
+
+fn resolve_cursor_binary_identity() -> Option<(PathBuf, Option<String>)> {
+    if let Ok(Some((path, version))) =
         binary_cache::find_best_cached_binary_for_agent(AgentType::Cursor, "cursor-agent")
     {
-        return Some(path);
+        return Some((path, Some(version)));
     }
-    resolve_system_agent_binary("cursor-agent")
+    resolve_system_agent_binary("cursor-agent").map(|path| (path, None))
+}
+
+/// Resolve the Cursor credential environment once for both the long-lived ACP
+/// process and transient catalog/status probes. Empty values are an internal
+/// `env_remove` sentinel. Subscription mode is authoritative and always clears
+/// both custom credential variables; custom/API-key mode preserves explicit
+/// values byte-for-byte.
+pub(crate) fn cursor_effective_runtime_env(
+    runtime_env: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut effective = runtime_env.clone();
+    // `merge_agent_env` applies Codeg's live proxy overrides after saved env;
+    // probes must observe the same network route and precedence.
+    for (key, value) in crate::network::proxy::current_proxy_env_vars() {
+        effective.insert(key, value);
+    }
+    if runtime_env.get("CURSOR_AUTH_MODE").map(String::as_str) == Some("subscription") {
+        effective.insert("CURSOR_API_KEY".to_string(), String::new());
+        effective.insert("CURSOR_API_BASE_URL".to_string(), String::new());
+    }
+    effective
 }
 
 /// The Cursor agent's effective probe env: the saved env (env_json) with the
@@ -8271,9 +8485,11 @@ fn resolve_cursor_binary() -> Option<PathBuf> {
 /// `CURSOR_API_KEY` is always materialized (empty when unset) so
 /// `run_cursor_probe` makes an explicit set-or-remove decision and a stale
 /// inherited key can never leak in and produce a bogus "invalid API key".
-/// `CURSOR_API_BASE_URL` is always cleared — the CLI has no custom-endpoint
-/// support, so a base URL is never a valid probe input.
-async fn cursor_probe_env(db: &AppDatabase, api_key: Option<&str>) -> BTreeMap<String, String> {
+async fn cursor_probe_env(
+    db: &AppDatabase,
+    api_key: Option<&str>,
+    base_url: Option<&str>,
+) -> Result<BTreeMap<String, String>, CursorProbeError> {
     let mut env: BTreeMap<String, String> =
         agent_setting_service::get_by_agent_type(&db.conn, AgentType::Cursor)
             .await
@@ -8283,26 +8499,483 @@ async fn cursor_probe_env(db: &AppDatabase, api_key: Option<&str>) -> BTreeMap<S
             .and_then(|raw| serde_json::from_str::<BTreeMap<String, String>>(&raw).ok())
             .unwrap_or_default();
     if let Some(key) = api_key {
-        env.insert("CURSOR_API_KEY".to_string(), key.trim().to_string());
+        let key = key.trim();
+        env.insert("CURSOR_API_KEY".to_string(), key.to_string());
+        env.insert(
+            "CURSOR_AUTH_MODE".to_string(),
+            if key.is_empty() {
+                "subscription"
+            } else {
+                "custom"
+            }
+            .to_string(),
+        );
     }
-    // Materialize the key so an unset one becomes an explicit empty ⇒ removed.
-    env.entry("CURSOR_API_KEY".to_string()).or_default();
-    // Scrub any stale base URL (legacy env_json row or inherited dev-shell
-    // export): empty ⇒ removed by run_cursor_probe.
-    env.insert("CURSOR_API_BASE_URL".to_string(), String::new());
-    env
+    if let Some(base_url) = base_url {
+        let endpoint = base_url.trim();
+        if endpoint.is_empty() {
+            env.remove("CURSOR_API_BASE_URL");
+        } else {
+            // Validate structurally, but preserve the exact trimmed spelling:
+            // serializing the parsed URL could rewrite path/query/fragment data.
+            reqwest::Url::parse(endpoint).map_err(|_| CursorProbeError::InvalidEndpoint)?;
+            env.insert("CURSOR_API_BASE_URL".to_string(), endpoint.to_string());
+        }
+    }
+    Ok(cursor_effective_runtime_env(&env))
 }
 
-/// Run a cursor-agent subcommand with a timeout, capturing stdout.
-async fn run_cursor_probe(
-    args: &[&str],
-    timeout_secs: u64,
-    extra_env: &BTreeMap<String, String>,
-) -> Result<String, String> {
-    let bin = resolve_cursor_binary().ok_or_else(|| "cursor-agent is not installed".to_string())?;
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CursorProbeError {
+    NotInstalled,
+    Spawn,
+    Timeout,
+    OutputTooLarge,
+    NonZeroExit,
+    InvalidUtf8,
+    EmptyOutput,
+    InvalidFormat,
+    InvalidEndpoint,
+    IdentityLost,
+    Cancelled,
+    Busy,
+}
+
+impl CursorProbeError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::NotInstalled => "cursor_probe_not_installed",
+            Self::Spawn => "cursor_probe_spawn_failed",
+            Self::Timeout => "cursor_probe_timeout",
+            Self::OutputTooLarge => "cursor_probe_output_too_large",
+            Self::NonZeroExit => "cursor_probe_nonzero_exit",
+            Self::InvalidUtf8 => "cursor_probe_invalid_utf8",
+            Self::EmptyOutput => "cursor_probe_empty_output",
+            Self::InvalidFormat => "cursor_probe_invalid_format",
+            Self::InvalidEndpoint => "cursor_probe_invalid_endpoint",
+            Self::IdentityLost => "cursor_probe_identity_lost",
+            Self::Cancelled => "cursor_probe_cancelled",
+            Self::Busy => "cursor_probe_busy",
+        }
+    }
+}
+
+impl std::fmt::Display for CursorProbeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::NotInstalled => "Cursor CLI is not installed.",
+            Self::Spawn => "Cursor CLI probe could not be started.",
+            Self::Timeout => "Cursor CLI probe timed out.",
+            Self::OutputTooLarge => "Cursor CLI probe output exceeded the safety limit.",
+            Self::NonZeroExit => "Cursor CLI probe exited unsuccessfully.",
+            Self::InvalidUtf8 => "Cursor CLI probe returned invalid UTF-8.",
+            Self::EmptyOutput => "Cursor CLI probe returned no output.",
+            Self::InvalidFormat => "Cursor CLI probe returned an unsupported format.",
+            Self::InvalidEndpoint => "The Cursor endpoint URL is invalid.",
+            Self::IdentityLost => "Cursor CLI probe process identity was lost.",
+            Self::Cancelled => "Cursor CLI probe was cancelled.",
+            Self::Busy => "Too many Cursor CLI probes are already running.",
+        };
+        formatter.write_str(message)
+    }
+}
+
+#[derive(Clone)]
+enum CursorProbeFlightState {
+    Running,
+    Finished(Result<String, CursorProbeError>),
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CursorProbeExitObservation {
+    Running,
+    Exited,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CursorProbeLifecycleEvent {
+    #[cfg(unix)]
+    ObserveExitWnoWait,
+    #[cfg(unix)]
+    SignalGroup(i32),
+    #[cfg(unix)]
+    RetireLease,
+    FinalReap,
+    DirectPidKill,
+    #[cfg(all(test, unix))]
+    SimulatedIdentityReuse,
+}
+
+#[async_trait::async_trait]
+trait CursorProbeLifecycleBackend: Send + Sync {
+    #[cfg(unix)]
+    fn observe_exit(&self, pid: u32) -> Result<CursorProbeExitObservation, CursorProbeError>;
+
+    #[cfg(unix)]
+    fn signal_group(&self, pgid: i32, signal: i32);
+
+    fn record(&self, _event: CursorProbeLifecycleEvent) {}
+
+    async fn pause_after(&self, _event: CursorProbeLifecycleEvent) {}
+
+    #[cfg(all(test, unix))]
+    fn repeat_cleanup_after_identity_release(&self) -> bool {
+        false
+    }
+}
+
+struct SystemCursorProbeLifecycleBackend;
+
+#[async_trait::async_trait]
+impl CursorProbeLifecycleBackend for SystemCursorProbeLifecycleBackend {
+    #[cfg(unix)]
+    fn observe_exit(&self, pid: u32) -> Result<CursorProbeExitObservation, CursorProbeError> {
+        cursor_probe_child_exit_observed_system(pid)
+    }
+
+    #[cfg(unix)]
+    fn signal_group(&self, pgid: i32, signal: i32) {
+        unsafe {
+            libc::kill(-pgid, signal);
+        }
+    }
+}
+
+#[cfg(unix)]
+struct CursorProbeProcessGroup {
+    pid: i32,
+    anchored: bool,
+    backend: Arc<dyn CursorProbeLifecycleBackend>,
+}
+
+#[cfg(unix)]
+impl CursorProbeProcessGroup {
+    fn new(pid: Option<u32>, backend: Arc<dyn CursorProbeLifecycleBackend>) -> Self {
+        let pid = pid.and_then(|value| i32::try_from(value).ok());
+        Self {
+            pid: pid.unwrap_or_default(),
+            anchored: pid.is_some(),
+            backend,
+        }
+    }
+    fn terminate(&mut self, signal: i32) {
+        if self.anchored && self.pid > 0 {
+            // The group leader is still live or waitid-observed-but-unreaped,
+            // so its numeric PID/PGID cannot have been reused.
+            self.backend
+                .record(CursorProbeLifecycleEvent::SignalGroup(signal));
+            self.backend.signal_group(self.pid, signal);
+        }
+    }
+    /// Retire immediately before the one final `child.wait()`. After this
+    /// transition no code path, including Drop, may signal the numeric PGID.
+    fn retire_before_reap(&mut self) {
+        if self.anchored {
+            self.backend.record(CursorProbeLifecycleEvent::RetireLease);
+        }
+        self.anchored = false;
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn cursor_probe_group_has_live_descendants(
+    group: &CursorProbeProcessGroup,
+) -> Result<bool, CursorProbeError> {
+    if !group.anchored || group.pid <= 0 {
+        return Ok(false);
+    }
+    let entries = fs::read_dir("/proc").map_err(|_| CursorProbeError::Spawn)?;
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|value| value.parse::<i32>().ok())
+        else {
+            continue;
+        };
+        if pid == group.pid {
+            continue;
+        }
+        let Ok(stat) = fs::read_to_string(entry.path().join("stat")) else {
+            // The process may have exited between read_dir and read_to_string.
+            continue;
+        };
+        let Some(after_comm) = stat.rsplit_once(") ").map(|(_, tail)| tail) else {
+            continue;
+        };
+        let mut fields = after_comm.split_whitespace();
+        let state = fields.next();
+        let _parent_pid = fields.next();
+        let process_group = fields.next().and_then(|value| value.parse::<i32>().ok());
+        if process_group == Some(group.pid) && state != Some("Z") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(target_os = "linux")]
+fn cursor_probe_group_is_quiescent(
+    group: &CursorProbeProcessGroup,
+) -> Result<bool, CursorProbeError> {
+    cursor_probe_group_has_live_descendants(group).map(|has_live| !has_live)
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn cursor_probe_group_is_quiescent(
+    _group: &CursorProbeProcessGroup,
+) -> Result<bool, CursorProbeError> {
+    // macOS and the other Unix targets retain the identity-safe ordering (all
+    // group signals happen while the leader is unreaped), but do not expose a
+    // procfs process-group membership view. SIGKILL itself is the portable
+    // completion boundary there; critically, no retry is allowed after reap.
+    Ok(true)
+}
+
+#[cfg(unix)]
+async fn wait_cursor_probe_group_quiescent(
+    group: &CursorProbeProcessGroup,
+) -> Result<(), CursorProbeError> {
+    for _ in 0..200 {
+        if cursor_probe_group_is_quiescent(group)? {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    Err(CursorProbeError::Timeout)
+}
+
+#[cfg(target_os = "linux")]
+fn wait_cursor_probe_group_quiescent_blocking(group: &CursorProbeProcessGroup) {
+    for _ in 0..200 {
+        if cursor_probe_group_is_quiescent(group).unwrap_or(true) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn wait_cursor_probe_group_quiescent_blocking(_group: &CursorProbeProcessGroup) {}
+
+#[cfg(unix)]
+impl Drop for CursorProbeProcessGroup {
+    fn drop(&mut self) {
+        if self.anchored && self.pid > 0 {
+            self.backend
+                .record(CursorProbeLifecycleEvent::SignalGroup(libc::SIGKILL));
+            self.backend.signal_group(self.pid, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+struct CursorProbeProcessGroup;
+#[cfg(not(unix))]
+impl CursorProbeProcessGroup {
+    fn new(_pid: Option<u32>, _backend: Arc<dyn CursorProbeLifecycleBackend>) -> Self {
+        Self
+    }
+    fn retire_before_reap(&mut self) {}
+}
+
+struct CursorProbeLifecycle {
+    child: tokio::process::Child,
+    pid: Option<u32>,
+    process_group: CursorProbeProcessGroup,
+    backend: Arc<dyn CursorProbeLifecycleBackend>,
+    completed: bool,
+}
+
+impl CursorProbeLifecycle {
+    fn new(child: tokio::process::Child, backend: Arc<dyn CursorProbeLifecycleBackend>) -> Self {
+        let pid = child.id();
+        Self {
+            child,
+            pid,
+            process_group: CursorProbeProcessGroup::new(pid, backend.clone()),
+            backend,
+            completed: false,
+        }
+    }
+
+    fn retire_before_reap(&mut self) {
+        self.process_group.retire_before_reap();
+    }
+
+    fn start_kill(&mut self) {
+        self.backend
+            .record(CursorProbeLifecycleEvent::DirectPidKill);
+        let _ = self.child.start_kill();
+    }
+
+    async fn final_reap(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.backend.record(CursorProbeLifecycleEvent::FinalReap);
+        self.backend
+            .pause_after(CursorProbeLifecycleEvent::FinalReap)
+            .await;
+        self.child.wait().await
+    }
+
+    fn mark_completed(&mut self) {
+        self.completed = true;
+    }
+
+    fn cleanup_blocking_if_owned(&mut self) {
+        if self.completed {
+            return;
+        }
+        #[cfg(unix)]
+        {
+            self.process_group.terminate(libc::SIGKILL);
+            // On Linux, confirm no live member remains while the unreaped
+            // leader still anchors the PGID. Drop cannot assume a Tokio runtime.
+            wait_cursor_probe_group_quiescent_blocking(&self.process_group);
+        }
+        self.start_kill();
+        self.retire_before_reap();
+        // Drop may run while a Tokio runtime is unwinding, or without one.
+        // Bounded synchronous try_wait keeps the direct child from becoming a
+        // zombie without calling runtime APIs or signalling after final reap.
+        self.backend.record(CursorProbeLifecycleEvent::FinalReap);
+        for _ in 0..200 {
+            match self.child.try_wait() {
+                Ok(Some(_)) | Err(_) => break,
+                Ok(None) => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+    }
+
+    #[cfg(all(test, unix))]
+    fn repeat_cleanup_after_identity_release_if_requested(&mut self) {
+        if self.backend.repeat_cleanup_after_identity_release() {
+            self.backend
+                .record(CursorProbeLifecycleEvent::SimulatedIdentityReuse);
+            self.cleanup_blocking_if_owned();
+        }
+    }
+}
+
+impl Drop for CursorProbeLifecycle {
+    fn drop(&mut self) {
+        self.cleanup_blocking_if_owned();
+    }
+}
+
+async fn terminate_cursor_probe(lifecycle: &mut CursorProbeLifecycle) -> bool {
+    #[cfg(unix)]
+    if lifecycle.pid.is_some() {
+        // Every probe is born as the leader of a fresh process group. Keep
+        // that leader live/unreaped as the identity anchor and signal only
+        // the anchored group; a delayed list of raw descendant PIDs could
+        // otherwise be reused before a second kill-tree pass.
+        lifecycle.process_group.terminate(libc::SIGTERM);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        lifecycle.process_group.terminate(libc::SIGKILL);
+        let _ = wait_cursor_probe_group_quiescent(&lifecycle.process_group).await;
+    }
+    #[cfg(not(unix))]
+    if let Some(pid) = lifecycle.pid {
+        let mut signalled = Vec::new();
+        let config = kill_tree::Config {
+            signal: "SIGTERM".to_string(),
+            include_target: true,
+        };
+        if let Ok(outputs) = kill_tree::tokio::kill_tree_with_config(pid, &config).await {
+            signalled.extend(outputs.into_iter().filter_map(|output| match output {
+                kill_tree::Output::Killed { process_id, .. } => Some(process_id),
+                kill_tree::Output::MaybeAlreadyTerminated { .. } => None,
+            }));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        for process_id in signalled {
+            let config = kill_tree::Config {
+                signal: "SIGKILL".to_string(),
+                include_target: true,
+            };
+            let _ = kill_tree::tokio::kill_tree_with_config(process_id, &config).await;
+        }
+    }
+    // All process-tree and group signals are complete while the leader still
+    // anchors the PID/PGID. Retire permanently before the final reap.
+    lifecycle.start_kill();
+    lifecycle.retire_before_reap();
+    matches!(
+        tokio::time::timeout(Duration::from_secs(2), lifecycle.final_reap()).await,
+        Ok(Ok(_))
+    )
+}
+
+type CursorProbeCancellation<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+#[cfg(unix)]
+fn cursor_probe_child_exit_observed_system(
+    pid: u32,
+) -> Result<CursorProbeExitObservation, CursorProbeError> {
+    let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as _,
+            info.as_mut_ptr(),
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if result != 0 {
+        return match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::ECHILD) | Some(libc::ESRCH) => Err(CursorProbeError::IdentityLost),
+            Some(libc::EINTR) => Ok(CursorProbeExitObservation::Interrupted),
+            _ => Err(CursorProbeError::Spawn),
+        };
+    }
+    let info = unsafe { info.assume_init() };
+    Ok(if unsafe { info.si_pid() } == 0 {
+        CursorProbeExitObservation::Running
+    } else {
+        CursorProbeExitObservation::Exited
+    })
+}
+
+async fn run_cursor_probe_binary_worker(
+    bin: PathBuf,
+    args: Vec<String>,
+    timeout_duration: Duration,
+    extra_env: BTreeMap<String, String>,
+    cancelled: CursorProbeCancellation<'_>,
+) -> Result<String, CursorProbeError> {
+    run_cursor_probe_binary_worker_with_backend(
+        bin,
+        args,
+        timeout_duration,
+        extra_env,
+        cancelled,
+        Arc::new(SystemCursorProbeLifecycleBackend),
+    )
+    .await
+}
+
+async fn run_cursor_probe_binary_worker_with_backend(
+    bin: PathBuf,
+    args: Vec<String>,
+    timeout_duration: Duration,
+    extra_env: BTreeMap<String, String>,
+    mut cancelled: CursorProbeCancellation<'_>,
+    backend: Arc<dyn CursorProbeLifecycleBackend>,
+) -> Result<String, CursorProbeError> {
     let mut cmd = crate::process::tokio_command(&bin);
-    cmd.args(args);
-    for (key, value) in extra_env {
+    cmd.args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(CURSOR_PROBE_TOKIO_KILL_ON_DROP);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.as_std_mut().process_group(0);
+    }
+    for (key, value) in &extra_env {
         if value.trim().is_empty() {
             // This process's env is inherited by the child; an empty value means
             // "ensure absent" so a stale inherited CURSOR_API_KEY can't leak in.
@@ -8311,28 +8984,462 @@ async fn run_cursor_probe(
             cmd.env(key, value);
         }
     }
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs),
-        cmd.output(),
-    )
+    let child = crate::process::spawn_retrying_exec_busy(|| cmd.spawn())
+        .await
+        .map_err(|_| CursorProbeError::Spawn)?;
+    // Establish identity-aware ownership immediately after spawn. From this
+    // point every early return and unwind passes through CursorProbeLifecycle;
+    // Tokio's generic kill-on-drop is deliberately disabled above.
+    let mut lifecycle = CursorProbeLifecycle::new(child, backend.clone());
+    let mut stdout = lifecycle
+        .child
+        .stdout
+        .take()
+        .ok_or(CursorProbeError::Spawn)?;
+    let mut stderr = lifecycle
+        .child
+        .stderr
+        .take()
+        .ok_or(CursorProbeError::Spawn)?;
+    #[cfg(unix)]
+    let pid = lifecycle.pid;
+
+    // This is the supervisor unwind boundary around the internal monitor
+    // future. Child ownership remains outside it, so an inner panic still runs
+    // the explicit group-terminate + final-reap sequence below.
+    let outcome = AssertUnwindSafe(async {
+        #[cfg(test)]
+        if let Some(marker) = extra_env.get("CODEG_TEST_CURSOR_PROBE_PANIC_AFTER_FILE") {
+            let mut marker_seen = false;
+            for _ in 0..200 {
+                if fs::metadata(marker).is_ok() {
+                    marker_seen = true;
+                    let should_panic = extra_env
+                        .get("CODEG_TEST_CURSOR_PROBE_PANIC_ONCE_GUARD")
+                        .is_none_or(|guard| fs::metadata(guard).is_ok());
+                    if should_panic {
+                        if let Some(guard) =
+                            extra_env.get("CODEG_TEST_CURSOR_PROBE_PANIC_ONCE_GUARD")
+                        {
+                            let _ = fs::remove_file(guard);
+                        }
+                        panic!("injected Cursor probe monitor panic");
+                    }
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            assert!(marker_seen, "Cursor probe panic marker was not created");
+        }
+
+        let mut stdout_value = Vec::new();
+        let mut stderr_value = Vec::new();
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+        #[cfg(unix)]
+        let exit_wait = async {
+            let pid = pid.ok_or(CursorProbeError::Spawn)?;
+            loop {
+                match backend.observe_exit(pid)? {
+                    CursorProbeExitObservation::Exited => {
+                        backend.record(CursorProbeLifecycleEvent::ObserveExitWnoWait);
+                        backend
+                            .pause_after(CursorProbeLifecycleEvent::ObserveExitWnoWait)
+                            .await;
+                        return Ok::<Option<std::process::ExitStatus>, CursorProbeError>(None);
+                    }
+                    CursorProbeExitObservation::Interrupted => {
+                        // Re-enter the same bounded observation cadence rather
+                        // than spin if signals repeatedly interrupt waitid. The
+                        // enclosing absolute deadline and cancellation future
+                        // remain authoritative and are never recreated here.
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                    CursorProbeExitObservation::Running => {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                }
+            }
+        };
+        #[cfg(not(unix))]
+        let exit_wait = async {
+            lifecycle
+                .child
+                .wait()
+                .await
+                .map(Some)
+                .map_err(|_| CursorProbeError::Spawn)
+        };
+        tokio::pin!(exit_wait);
+        let mut exit_result = None;
+        let mut stdout_chunk = [0_u8; 8 * 1024];
+        let mut stderr_chunk = [0_u8; 8 * 1024];
+        let deadline = tokio::time::sleep(timeout_duration);
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                result = stdout.read(&mut stdout_chunk), if !stdout_done => {
+                    match result {
+                        Ok(0) => stdout_done = true,
+                        Ok(read) if stdout_value.len().saturating_add(read) <= CURSOR_PROBE_STDOUT_LIMIT => stdout_value.extend_from_slice(&stdout_chunk[..read]),
+                        Ok(_) => break Err(CursorProbeError::OutputTooLarge),
+                        Err(_) => break Err(CursorProbeError::Spawn),
+                    }
+                }
+                result = stderr.read(&mut stderr_chunk), if !stderr_done => {
+                    match result {
+                        Ok(0) => stderr_done = true,
+                        Ok(read) if stderr_value.len().saturating_add(read) <= CURSOR_PROBE_STDERR_LIMIT => stderr_value.extend_from_slice(&stderr_chunk[..read]),
+                        Ok(_) => break Err(CursorProbeError::OutputTooLarge),
+                        Err(_) => break Err(CursorProbeError::Spawn),
+                    }
+                }
+                result = &mut exit_wait, if exit_result.is_none() => {
+                    match result {
+                        Ok(status) => exit_result = Some(status),
+                        Err(error) => break Err(error),
+                    }
+                }
+                _ = &mut deadline => break Err(CursorProbeError::Timeout),
+                _ = &mut cancelled => break Err(CursorProbeError::Cancelled),
+            }
+            if exit_result.is_some() && stdout_done && stderr_done {
+                break Ok((exit_result.flatten(), stdout_value, stderr_value));
+            }
+        }
+    })
+    .catch_unwind()
     .await
-    .map_err(|_| format!("cursor-agent {} timed out", args.join(" ")))?
-    .map_err(|e| format!("failed to run cursor-agent: {e}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    if !output.status.success() && stdout.trim().is_empty() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "cursor-agent {} failed: {}",
-            args.join(" "),
-            stderr.trim()
-        ));
+    .unwrap_or(Err(CursorProbeError::Spawn));
+
+    #[cfg(test)]
+    if let Some(marker) = extra_env.get("CODEG_TEST_CURSOR_PROBE_OUTER_PANIC_AFTER_FILE") {
+        if fs::metadata(marker).is_ok()
+            && extra_env
+                .get("CODEG_TEST_CURSOR_PROBE_PANIC_ONCE_GUARD")
+                .is_none_or(|guard| fs::metadata(guard).is_ok())
+        {
+            if let Some(guard) = extra_env.get("CODEG_TEST_CURSOR_PROBE_PANIC_ONCE_GUARD") {
+                let _ = fs::remove_file(guard);
+            }
+            panic!("injected Cursor probe outer supervisor panic");
+        }
+    }
+
+    let (observed_status, stdout, stderr) = match outcome {
+        Ok(output) => output,
+        Err(error) => {
+            if error == CursorProbeError::IdentityLost {
+                // No identity anchor remains, so even a negative-PGID probe or
+                // direct Child::kill could target a reused numeric id.
+                lifecycle.process_group.retire_before_reap();
+                lifecycle.mark_completed();
+                #[cfg(all(test, unix))]
+                lifecycle.repeat_cleanup_after_identity_release_if_requested();
+            } else {
+                let terminated = terminate_cursor_probe(&mut lifecycle).await;
+                if terminated {
+                    lifecycle.mark_completed();
+                    #[cfg(all(test, unix))]
+                    lifecycle.repeat_cleanup_after_identity_release_if_requested();
+                }
+            }
+            return Err(error);
+        }
+    };
+    #[cfg(unix)]
+    // waitid(WNOWAIT) observed the leader exit without reaping it. The zombie
+    // leader still anchors this PGID while detached descendants are killed and
+    // (on Linux) /proc confirms that no live group member remains.
+    {
+        lifecycle.process_group.terminate(libc::SIGKILL);
+        wait_cursor_probe_group_quiescent(&lifecycle.process_group).await?;
+    }
+    lifecycle.retire_before_reap();
+    let status = match observed_status {
+        Some(status) => status,
+        None => tokio::time::timeout(Duration::from_secs(2), lifecycle.final_reap())
+            .await
+            .map_err(|_| CursorProbeError::Timeout)?
+            .map_err(|_| CursorProbeError::Spawn)?,
+    };
+    lifecycle.mark_completed();
+    #[cfg(all(test, unix))]
+    lifecycle.repeat_cleanup_after_identity_release_if_requested();
+    if !status.success() {
+        return Err(CursorProbeError::NonZeroExit);
+    }
+    let stdout = String::from_utf8(stdout).map_err(|_| CursorProbeError::InvalidUtf8)?;
+    String::from_utf8(stderr).map_err(|_| CursorProbeError::InvalidUtf8)?;
+    if stdout.trim().is_empty() {
+        return Err(CursorProbeError::EmptyOutput);
     }
     Ok(stdout)
+}
+
+async fn wait_cursor_probe_flight(
+    receiver: &mut tokio::sync::watch::Receiver<CursorProbeFlightState>,
+) -> Result<String, CursorProbeError> {
+    loop {
+        if let CursorProbeFlightState::Finished(result) = receiver.borrow().clone() {
+            return result;
+        }
+        receiver
+            .changed()
+            .await
+            .map_err(|_| CursorProbeError::Spawn)?;
+    }
+}
+
+/// Spawn a supervised worker: caller cancellation closes the result receiver,
+/// which makes the worker terminate and reap the complete process tree.
+async fn run_cursor_probe_binary(
+    bin: &Path,
+    args: &[&str],
+    timeout_duration: Duration,
+    extra_env: &BTreeMap<String, String>,
+) -> Result<String, CursorProbeError> {
+    let (sender, mut receiver) = tokio::sync::watch::channel(CursorProbeFlightState::Running);
+    let bin = bin.to_path_buf();
+    let args = args.iter().map(|arg| (*arg).to_string()).collect();
+    let extra_env = extra_env.clone();
+    tokio::spawn(async move {
+        let cancelled = Box::pin(sender.closed());
+        let result = AssertUnwindSafe(run_cursor_probe_binary_worker(
+            bin,
+            args,
+            timeout_duration,
+            extra_env,
+            cancelled,
+        ))
+        .catch_unwind()
+        .await
+        .unwrap_or(Err(CursorProbeError::Spawn));
+        let _ = sender.send(CursorProbeFlightState::Finished(result));
+    });
+    wait_cursor_probe_flight(&mut receiver).await
+}
+
+async fn run_cursor_probe(
+    args: &[&str],
+    timeout_secs: u64,
+    extra_env: &BTreeMap<String, String>,
+) -> Result<String, CursorProbeError> {
+    let bin = resolve_cursor_binary().ok_or(CursorProbeError::NotInstalled)?;
+    run_cursor_probe_binary(&bin, args, Duration::from_secs(timeout_secs), extra_env).await
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CursorProbeCacheKey {
+    binary_path: PathBuf,
+    binary_version: Option<String>,
+    binary_len: u64,
+    binary_modified: Option<SystemTime>,
+    command: String,
+    environment_fingerprint: String,
+}
+
+#[derive(Clone)]
+struct CursorProbeCacheEntry {
+    result: Result<String, CursorProbeError>,
+    expires_at: Instant,
+}
+
+struct CursorProbeFlight {
+    sender: tokio::sync::watch::Sender<CursorProbeFlightState>,
+}
+
+#[derive(Default)]
+struct CursorProbeCache {
+    entries: HashMap<CursorProbeCacheKey, CursorProbeCacheEntry>,
+    flights: HashMap<CursorProbeCacheKey, Arc<CursorProbeFlight>>,
+}
+
+static CURSOR_PROBE_CACHE: OnceLock<tokio::sync::Mutex<CursorProbeCache>> = OnceLock::new();
+
+fn cursor_probe_cache() -> &'static tokio::sync::Mutex<CursorProbeCache> {
+    CURSOR_PROBE_CACHE.get_or_init(|| tokio::sync::Mutex::new(CursorProbeCache::default()))
+}
+
+fn prune_cursor_probe_cache(cache: &mut CursorProbeCache) {
+    let now = Instant::now();
+    cache.entries.retain(|_, entry| entry.expires_at > now);
+    while cache.entries.len() >= CURSOR_PROBE_CACHE_MAX_ENTRIES {
+        let Some(oldest) = cache
+            .entries
+            .iter()
+            .min_by_key(|(_, entry)| entry.expires_at)
+            .map(|(key, _)| key.clone())
+        else {
+            break;
+        };
+        cache.entries.remove(&oldest);
+    }
+}
+
+fn cursor_probe_environment_fingerprint(env: &BTreeMap<String, String>) -> String {
+    let effective = cursor_effective_runtime_env(env);
+    let home = effective
+        .get("HOME")
+        .cloned()
+        .or_else(|| std::env::var("HOME").ok())
+        .unwrap_or_default();
+    let config_dir = effective
+        .get("CURSOR_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("CURSOR_CONFIG_DIR").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from(&home).join(".cursor"));
+
+    let mut digest = Sha256::new();
+    for key in [
+        "CURSOR_AUTH_MODE",
+        "CURSOR_API_KEY",
+        "CURSOR_API_BASE_URL",
+        "HOME",
+        "CURSOR_CONFIG_DIR",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+    ] {
+        digest.update(key.as_bytes());
+        digest.update([0]);
+        digest.update(effective.get(key).map(String::as_bytes).unwrap_or_default());
+        digest.update([0xff]);
+    }
+    digest.update(config_dir.to_string_lossy().as_bytes());
+    for name in ["cli-config.json", "auth.json"] {
+        let path = config_dir.join(name);
+        digest.update(name.as_bytes());
+        if let Ok(metadata) = fs::metadata(&path) {
+            digest.update(metadata.len().to_le_bytes());
+            if let Ok(modified) = metadata.modified() {
+                if let Ok(duration) = modified.duration_since(SystemTime::UNIX_EPOCH) {
+                    digest.update(duration.as_nanos().to_le_bytes());
+                }
+            }
+            if metadata.len() <= 1024 * 1024 {
+                if let Ok(bytes) = fs::read(path) {
+                    digest.update(bytes);
+                }
+            }
+        }
+    }
+    format!("{:x}", digest.finalize())
+}
+
+fn cursor_probe_cache_key(
+    bin: &Path,
+    binary_version: Option<&str>,
+    args: &[&str],
+    env: &BTreeMap<String, String>,
+) -> CursorProbeCacheKey {
+    let binary_path = fs::canonicalize(bin).unwrap_or_else(|_| bin.to_path_buf());
+    let metadata = fs::metadata(&binary_path).ok();
+    CursorProbeCacheKey {
+        binary_len: metadata.as_ref().map_or(0, fs::Metadata::len),
+        binary_modified: metadata.and_then(|item| item.modified().ok()),
+        binary_path,
+        binary_version: binary_version.map(str::to_string),
+        command: args.join("\0"),
+        environment_fingerprint: cursor_probe_environment_fingerprint(env),
+    }
+}
+
+async fn run_cursor_probe_cached(
+    args: &[&str],
+    timeout_secs: u64,
+    extra_env: &BTreeMap<String, String>,
+) -> Result<String, CursorProbeError> {
+    let (bin, version) = resolve_cursor_binary_identity().ok_or(CursorProbeError::NotInstalled)?;
+    run_cursor_probe_cached_for_binary(&bin, version.as_deref(), args, timeout_secs, extra_env)
+        .await
+}
+
+async fn run_cursor_probe_cached_for_binary(
+    bin: &Path,
+    binary_version: Option<&str>,
+    args: &[&str],
+    timeout_secs: u64,
+    extra_env: &BTreeMap<String, String>,
+) -> Result<String, CursorProbeError> {
+    let key = cursor_probe_cache_key(bin, binary_version, args, extra_env);
+    let mut receiver = {
+        let mut cache = cursor_probe_cache().lock().await;
+        prune_cursor_probe_cache(&mut cache);
+        if let Some(entry) = cache.entries.get(&key) {
+            if entry.expires_at > Instant::now() {
+                return entry.result.clone();
+            }
+        }
+        if let Some(flight) = cache.flights.get(&key) {
+            flight.sender.subscribe()
+        } else {
+            if cache.flights.len() >= CURSOR_PROBE_CACHE_MAX_ENTRIES {
+                return Err(CursorProbeError::Busy);
+            }
+            let (sender, receiver) = tokio::sync::watch::channel(CursorProbeFlightState::Running);
+            let flight = Arc::new(CursorProbeFlight { sender });
+            cache.flights.insert(key.clone(), flight.clone());
+            let worker_key = key.clone();
+            let worker_flight = flight.clone();
+            let worker_bin = bin.to_path_buf();
+            let worker_args = args.iter().map(|arg| (*arg).to_string()).collect();
+            let worker_env = extra_env.clone();
+            tokio::spawn(async move {
+                let cancelled = Box::pin(worker_flight.sender.closed());
+                let result = AssertUnwindSafe(run_cursor_probe_binary_worker(
+                    worker_bin,
+                    worker_args,
+                    Duration::from_secs(timeout_secs),
+                    worker_env,
+                    cancelled,
+                ))
+                .catch_unwind()
+                .await
+                .unwrap_or(Err(CursorProbeError::Spawn));
+                let mut cache = cursor_probe_cache().lock().await;
+                if result != Err(CursorProbeError::Cancelled) {
+                    let ttl = if result.is_ok() {
+                        CURSOR_PROBE_SUCCESS_TTL
+                    } else {
+                        CURSOR_PROBE_FAILURE_BACKOFF
+                    };
+                    prune_cursor_probe_cache(&mut cache);
+                    cache.entries.insert(
+                        worker_key.clone(),
+                        CursorProbeCacheEntry {
+                            result: result.clone(),
+                            expires_at: Instant::now() + ttl,
+                        },
+                    );
+                }
+                if cache
+                    .flights
+                    .get(&worker_key)
+                    .is_some_and(|current| Arc::ptr_eq(current, &worker_flight))
+                {
+                    cache.flights.remove(&worker_key);
+                }
+                drop(cache);
+                let _ = worker_flight
+                    .sender
+                    .send(CursorProbeFlightState::Finished(result));
+            });
+            receiver
+        }
+    };
+    wait_cursor_probe_flight(&mut receiver).await
 }
 
 pub(crate) async fn acp_cursor_auth_status_core(
     db: &AppDatabase,
     api_key: Option<String>,
+    base_url: Option<String>,
 ) -> crate::acp::types::CursorAuthStatus {
     let binary_path = resolve_cursor_binary().map(|p| p.to_string_lossy().to_string());
     if binary_path.is_none() {
@@ -8343,10 +9450,25 @@ pub(crate) async fn acp_cursor_auth_status_core(
             email: None,
             membership: None,
             error: None,
+            error_code: None,
             binary_path: None,
         };
     }
-    let extra_env = cursor_probe_env(db, api_key.as_deref()).await;
+    let extra_env = match cursor_probe_env(db, api_key.as_deref(), base_url.as_deref()).await {
+        Ok(env) => env,
+        Err(err) => {
+            return crate::acp::types::CursorAuthStatus {
+                installed: true,
+                is_authenticated: false,
+                raw_status: None,
+                email: None,
+                membership: None,
+                error: Some(err.to_string()),
+                error_code: Some(err.code().to_string()),
+                binary_path,
+            };
+        }
+    };
     match run_cursor_probe(&["status", "--format", "json"], 20, &extra_env).await {
         Ok(stdout) => {
             // The CLI prints one JSON object; scan to the first `{` so a
@@ -8381,16 +9503,18 @@ pub(crate) async fn acp_cursor_auth_status_core(
                         email,
                         membership: get_str(&["membershipType", "membership", "plan"]),
                         error: None,
+                        error_code: None,
                         binary_path: binary_path.clone(),
                     }
                 }
-                Err(e) => crate::acp::types::CursorAuthStatus {
+                Err(_) => crate::acp::types::CursorAuthStatus {
                     installed: true,
                     is_authenticated: false,
-                    raw_status: Some(truncate_probe_output(&stdout)),
+                    raw_status: None,
                     email: None,
                     membership: None,
-                    error: Some(format!("unexpected status output: {e}")),
+                    error: Some(CursorProbeError::InvalidFormat.to_string()),
+                    error_code: Some(CursorProbeError::InvalidFormat.code().to_string()),
                     binary_path: binary_path.clone(),
                 },
             }
@@ -8401,7 +9525,8 @@ pub(crate) async fn acp_cursor_auth_status_core(
             raw_status: None,
             email: None,
             membership: None,
-            error: Some(err),
+            error: Some(err.to_string()),
+            error_code: Some(err.code().to_string()),
             binary_path,
         },
     }
@@ -8410,21 +9535,42 @@ pub(crate) async fn acp_cursor_auth_status_core(
 pub(crate) async fn acp_cursor_list_models_core(
     db: &AppDatabase,
     api_key: Option<String>,
+    base_url: Option<String>,
 ) -> crate::acp::types::CursorModelsResult {
-    let extra_env = cursor_probe_env(db, api_key.as_deref()).await;
-    match run_cursor_probe(&["models"], 30, &extra_env).await {
+    let extra_env = match cursor_probe_env(db, api_key.as_deref(), base_url.as_deref()).await {
+        Ok(env) => env,
+        Err(err) => {
+            return crate::acp::types::CursorModelsResult {
+                models: Vec::new(),
+                default_model: None,
+                error: Some(err.to_string()),
+                error_code: Some(err.code().to_string()),
+            };
+        }
+    };
+    match run_cursor_probe_cached(&["models"], 30, &extra_env).await {
         Ok(stdout) => {
             let (models, default_model) = parse_cursor_models(&stdout);
+            if models.is_empty() {
+                return crate::acp::types::CursorModelsResult {
+                    models,
+                    default_model,
+                    error: Some(CursorProbeError::InvalidFormat.to_string()),
+                    error_code: Some(CursorProbeError::InvalidFormat.code().to_string()),
+                };
+            }
             crate::acp::types::CursorModelsResult {
                 models,
                 default_model,
                 error: None,
+                error_code: None,
             }
         }
         Err(err) => crate::acp::types::CursorModelsResult {
             models: Vec::new(),
             default_model: None,
-            error: Some(err),
+            error: Some(err.to_string()),
+            error_code: Some(err.code().to_string()),
         },
     }
 }
@@ -8433,7 +9579,9 @@ pub(crate) async fn acp_cursor_list_models_core(
 /// `<id> - <label> [(default)]` (e.g. `claude-opus-4-8-high - Opus 4.8 1M`,
 /// `auto - Auto (default)`); a leading `Available models` header and blank
 /// lines are skipped. Returns the entries in CLI order plus the default id.
-fn parse_cursor_models(stdout: &str) -> (Vec<crate::acp::types::CursorModelInfo>, Option<String>) {
+pub(crate) fn parse_cursor_models(
+    stdout: &str,
+) -> (Vec<crate::acp::types::CursorModelInfo>, Option<String>) {
     let mut models: Vec<crate::acp::types::CursorModelInfo> = Vec::new();
     let mut default_model = None;
     for line in stdout.lines() {
@@ -8473,6 +9621,24 @@ fn parse_cursor_models(stdout: &str) -> (Vec<crate::acp::types::CursorModelInfo>
     (models, default_model)
 }
 
+/// Read the same dynamic Cursor model directory used by the native CLI picker,
+/// but with the already-resolved per-connection environment. This is consumed
+/// by the ACP connection to build display-only composite rows; none of the CLI
+/// aliases returned here are sent to parameterized ACP sessions.
+pub(crate) async fn cursor_models_for_runtime(
+    runtime_env: &BTreeMap<String, String>,
+) -> Result<Vec<crate::acp::types::CursorModelInfo>, String> {
+    let probe_env = cursor_effective_runtime_env(runtime_env);
+    let stdout = run_cursor_probe_cached(&["models"], 30, &probe_env)
+        .await
+        .map_err(|error| error.to_string())?;
+    let models = parse_cursor_models(&stdout).0;
+    if models.is_empty() {
+        return Err(CursorProbeError::InvalidFormat.to_string());
+    }
+    Ok(models)
+}
+
 /// Strip ANSI SGR escape sequences from CLI output.
 fn strip_ansi(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
@@ -8494,22 +9660,14 @@ fn strip_ansi(input: &str) -> String {
     out
 }
 
-fn truncate_probe_output(s: &str) -> String {
-    let t = s.trim();
-    if t.len() > 400 {
-        format!("{}…", &t[..t.char_indices().take_while(|(i, _)| *i < 400).last().map(|(i, c)| i + c.len_utf8()).unwrap_or(400)])
-    } else {
-        t.to_string()
-    }
-}
-
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn acp_cursor_auth_status(
     db: State<'_, AppDatabase>,
     api_key: Option<String>,
+    base_url: Option<String>,
 ) -> Result<crate::acp::types::CursorAuthStatus, AcpError> {
-    Ok(acp_cursor_auth_status_core(&db, api_key).await)
+    Ok(acp_cursor_auth_status_core(&db, api_key, base_url).await)
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -8517,8 +9675,9 @@ pub async fn acp_cursor_auth_status(
 pub async fn acp_cursor_list_models(
     db: State<'_, AppDatabase>,
     api_key: Option<String>,
+    base_url: Option<String>,
 ) -> Result<crate::acp::types::CursorModelsResult, AcpError> {
-    Ok(acp_cursor_list_models_core(&db, api_key).await)
+    Ok(acp_cursor_list_models_core(&db, api_key, base_url).await)
 }
 
 /// Primary env var keys for each agent type: (api_base_url, api_key, model).
@@ -8534,7 +9693,11 @@ fn agent_env_keys(agent_type: AgentType) -> (&'static str, &'static str, &'stati
         // Kimi Code does NOT read shell KIMI_API_KEY/OPENAI_API_KEY; the only
         // non-interactive credential path is the `KIMI_MODEL_*` family, which
         // also takes priority over `~/.kimi-code/config.toml`.
-        AgentType::KimiCode => ("KIMI_MODEL_BASE_URL", "KIMI_MODEL_API_KEY", "KIMI_MODEL_NAME"),
+        AgentType::KimiCode => (
+            "KIMI_MODEL_BASE_URL",
+            "KIMI_MODEL_API_KEY",
+            "KIMI_MODEL_NAME",
+        ),
         // Grok's non-interactive credential is `XAI_API_KEY`. Model + endpoint
         // also have working env overrides (verified against the 0.2.94 binary):
         // `GROK_DEFAULT_MODEL` selects the default model and `GROK_XAI_API_BASE_URL`
@@ -9270,7 +10433,14 @@ pub(crate) async fn acp_update_agent_env_and_refresh(
     emitter: &EventEmitter,
 ) -> Result<usize, AcpError> {
     acp_update_agent_env_core(agent_type, enabled, env, model_provider_id, db, emitter).await?;
-    Ok(refresh_config_staleness(manager, db, data_dir, &[agent_type], ConfigStaleKind::AgentConfig).await)
+    Ok(refresh_config_staleness(
+        manager,
+        db,
+        data_dir,
+        &[agent_type],
+        ConfigStaleKind::AgentConfig,
+    )
+    .await)
 }
 
 /// `acp_update_agent_preferences_core` followed by a staleness refresh. Shared
@@ -9302,7 +10472,14 @@ pub(crate) async fn acp_update_agent_preferences_and_refresh(
         emitter,
     )
     .await?;
-    Ok(refresh_config_staleness(manager, db, data_dir, &[agent_type], ConfigStaleKind::AgentConfig).await)
+    Ok(refresh_config_staleness(
+        manager,
+        db,
+        data_dir,
+        &[agent_type],
+        ConfigStaleKind::AgentConfig,
+    )
+    .await)
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -9393,10 +10570,11 @@ pub async fn acp_set_config_option(
     connection_id: String,
     config_id: String,
     value_id: String,
+    operation_id: Option<String>,
     manager: State<'_, ConnectionManager>,
-) -> Result<(), AcpError> {
+) -> Result<Option<String>, AcpError> {
     manager
-        .set_config_option(&connection_id, config_id, value_id)
+        .set_config_option(&connection_id, config_id, value_id, operation_id)
         .await
 }
 
@@ -10079,10 +11257,7 @@ pub(crate) async fn acp_update_agent_preferences_core(
     }
 
     if agent_type == AgentType::OpenCode {
-        persist_opencode_native_config(
-            opencode_auth_json.as_deref(),
-            config_json.as_deref(),
-        )?;
+        persist_opencode_native_config(opencode_auth_json.as_deref(), config_json.as_deref())?;
         emit_acp_agents_updated(emitter, "preferences_updated", Some(agent_type));
         return Ok(());
     }
@@ -10232,7 +11407,11 @@ pub(crate) async fn acp_update_agent_env_core(
             codex_bound_model = Some(provider.model.clone());
         }
         if agent_type == AgentType::ClaudeCode {
-            claude_local_cascade = Some((provider.api_url.clone(), provider.api_key.clone(), model_env));
+            claude_local_cascade = Some((
+                provider.api_url.clone(),
+                provider.api_key.clone(),
+                model_env,
+            ));
         }
     }
 
@@ -10257,7 +11436,9 @@ pub(crate) async fn acp_update_agent_env_core(
             &CodexModelAction::NoOp,
             None,
         ) {
-            eprintln!("[acp_update_agent_env] cascade_update_agent_config({agent_type}) failed: {e}");
+            eprintln!(
+                "[acp_update_agent_env] cascade_update_agent_config({agent_type}) failed: {e}"
+            );
         }
     }
 
@@ -10548,10 +11729,7 @@ pub(crate) async fn acp_update_agent_config_core(
     }
 
     if agent_type == AgentType::OpenCode {
-        persist_opencode_native_config(
-            opencode_auth_json.as_deref(),
-            config_json.as_deref(),
-        )?;
+        persist_opencode_native_config(opencode_auth_json.as_deref(), config_json.as_deref())?;
         emit_acp_agents_updated(emitter, "config_updated", Some(agent_type));
         return Ok(());
     }
@@ -10613,7 +11791,14 @@ pub(crate) async fn acp_update_agent_config_and_refresh(
         emitter,
     )
     .await?;
-    Ok(refresh_config_staleness(manager, db, data_dir, &[agent_type], ConfigStaleKind::AgentConfig).await)
+    Ok(refresh_config_staleness(
+        manager,
+        db,
+        data_dir,
+        &[agent_type],
+        ConfigStaleKind::AgentConfig,
+    )
+    .await)
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -10892,9 +12077,8 @@ fn open_external_terminal_impl(command: &str, cwd: Option<&str>) -> Result<(), A
         // literal (backslashes first, then double-quotes).
         let shell_cmd = format!("cd {} && {}", shell_single_quote(&dir), command);
         let escaped = shell_cmd.replace('\\', "\\\\").replace('"', "\\\"");
-        let osa = format!(
-            "tell application \"Terminal\"\nactivate\ndo script \"{escaped}\"\nend tell"
-        );
+        let osa =
+            format!("tell application \"Terminal\"\nactivate\ndo script \"{escaped}\"\nend tell");
         Command::new("osascript")
             .arg("-e")
             .arg(osa)
@@ -10943,7 +12127,9 @@ fn open_external_terminal_impl(command: &str, cwd: Option<&str>) -> Result<(), A
     }
 
     #[allow(unreachable_code)]
-    Err(AcpError::protocol("unsupported platform for terminal launch"))
+    Err(AcpError::protocol(
+        "unsupported platform for terminal launch",
+    ))
 }
 
 /// Quote a string for a single-quoted POSIX shell argument.
@@ -11135,10 +12321,7 @@ pub(crate) async fn acp_install_uv_tool_core(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn acp_install_uv_tool(
-    task_id: String,
-    app: tauri::AppHandle,
-) -> Result<(), AcpError> {
+pub async fn acp_install_uv_tool(task_id: String, app: tauri::AppHandle) -> Result<(), AcpError> {
     let emitter = EventEmitter::Tauri(app);
     acp_install_uv_tool_core(task_id, &emitter).await
 }
@@ -11550,10 +12733,7 @@ pub(crate) async fn acp_install_pi_binary_core(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn acp_install_pi_binary(
-    task_id: String,
-    app: tauri::AppHandle,
-) -> Result<(), AcpError> {
+pub async fn acp_install_pi_binary(task_id: String, app: tauri::AppHandle) -> Result<(), AcpError> {
     let emitter = EventEmitter::Tauri(app);
     acp_install_pi_binary_core(task_id, &emitter).await
 }
@@ -12229,8 +13409,7 @@ mod tests {
         // Unregistered custom id → no declared probe → the auto `--version`
         // path, exactly what a hand-added agent without a probe gets. The
         // same path serves built-ins, which can never declare a probe.
-        let version =
-            system_probed_version(AgentType::Custom("probe-e2e-test"), &bin, None).await;
+        let version = system_probed_version(AgentType::Custom("probe-e2e-test"), &bin, None).await;
         assert_eq!(version.as_deref(), Some("1.2.3"));
     }
 
@@ -12243,12 +13422,9 @@ mod tests {
 
         // The declared probe's program doesn't exist, so the probe yields
         // nothing; the convention path must still read the real install.
-        let version = system_probed_version_with(
-            Some("codeg-missing-probe-cmd-e2e --version"),
-            &bin,
-            None,
-        )
-        .await;
+        let version =
+            system_probed_version_with(Some("codeg-missing-probe-cmd-e2e --version"), &bin, None)
+                .await;
         assert_eq!(version.as_deref(), Some("3.2.1"));
     }
 
@@ -12266,7 +13442,10 @@ mod tests {
         // codeg's old codeg-invented markers map onto grok's real enum so the
         // dropdown, launch flag, and grok's TUI agree.
         let approve = parse_grok_settings("[ui]\npermission_mode = \"always-approve\"\n");
-        assert_eq!(approve.permission_mode.as_deref(), Some("bypassPermissions"));
+        assert_eq!(
+            approve.permission_mode.as_deref(),
+            Some("bypassPermissions")
+        );
         let ask = parse_grok_settings("[ui]\npermission_mode = \"ask\"\n");
         assert_eq!(ask.permission_mode.as_deref(), Some("default"));
         // A real grok mode is preserved untouched.
@@ -12340,10 +13519,15 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(merged.contains("session_summary"), "inline sibling preserved");
+        assert!(
+            merged.contains("session_summary"),
+            "inline sibling preserved"
+        );
         assert!(merged.contains("grok-4.5"), "inline default preserved");
         assert_eq!(
-            parse_grok_settings(&merged).default_reasoning_effort.as_deref(),
+            parse_grok_settings(&merged)
+                .default_reasoning_effort
+                .as_deref(),
             Some("high")
         );
     }
@@ -12352,8 +13536,7 @@ mod tests {
     fn apply_grok_structured_config_removes_on_none() {
         let base = "[ui]\npermission_mode = \"ask\"\n\n\
                     [models]\ndefault_reasoning_effort = \"high\"\n";
-        let merged =
-            apply_grok_structured_config(base, &GrokStructuredConfig::default()).unwrap();
+        let merged = apply_grok_structured_config(base, &GrokStructuredConfig::default()).unwrap();
         let back = parse_grok_settings(&merged);
         assert!(back.permission_mode.is_none(), "unset removes the key");
         assert!(back.default_reasoning_effort.is_none());
@@ -12937,7 +14120,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(!merged.contains("base_url"), "empty base_url must omit the key");
+        assert!(
+            !merged.contains("base_url"),
+            "empty base_url must omit the key"
+        );
         let back = parse_grok_settings(&merged);
         assert_eq!(back.custom_model_id.as_deref(), Some("foo"));
         assert!(back.custom_base_url.is_none());
@@ -12971,7 +14157,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(!merged.contains("old"), "the stale block + default must be gone");
+        assert!(
+            !merged.contains("old"),
+            "the stale block + default must be gone"
+        );
         let back = parse_grok_settings(&merged);
         assert_eq!(back.custom_model_id.as_deref(), Some("new"));
         assert_eq!(back.custom_base_url.as_deref(), Some("https://new/v1"));
@@ -12980,7 +14169,8 @@ mod tests {
     #[test]
     fn apply_grok_custom_model_update_preserves_unmanaged_block_keys() {
         // Editing a managed block keeps keys codeg doesn't own (e.g. temperature).
-        let base = "[model.foo]\nmodel = \"foo\"\ntemperature = 0.7\nbase_url = \"https://old/v1\"\n\n\
+        let base =
+            "[model.foo]\nmodel = \"foo\"\ntemperature = 0.7\nbase_url = \"https://old/v1\"\n\n\
                     [models]\ndefault = \"foo\"\n";
         let merged = apply_grok_structured_config(
             base,
@@ -13000,8 +14190,7 @@ mod tests {
     fn apply_grok_custom_model_clear_removes_managed_block_and_default() {
         let base = "[model.foo]\nmodel = \"foo\"\nbase_url = \"https://x/v1\"\n\n\
                     [models]\ndefault = \"foo\"\n";
-        let merged =
-            apply_grok_structured_config(base, &GrokStructuredConfig::default()).unwrap();
+        let merged = apply_grok_structured_config(base, &GrokStructuredConfig::default()).unwrap();
         assert!(!merged.contains("[model."), "managed block removed");
         let back = parse_grok_settings(&merged);
         assert!(back.custom_model_id.is_none());
@@ -13012,8 +14201,7 @@ mod tests {
         // Clearing the (empty) custom form must NOT delete a hand-set stock
         // `[models].default` that was never codeg-managed.
         let base = "[models]\ndefault = \"grok-4.5\"\n";
-        let merged =
-            apply_grok_structured_config(base, &GrokStructuredConfig::default()).unwrap();
+        let merged = apply_grok_structured_config(base, &GrokStructuredConfig::default()).unwrap();
         assert!(merged.contains("default = \"grok-4.5\""));
     }
 
@@ -13034,8 +14222,7 @@ mod tests {
         );
         // `None` removes an existing key.
         let base = "[session]\nauto_compact_threshold_percent = 70\n";
-        let cleared =
-            apply_grok_structured_config(base, &GrokStructuredConfig::default()).unwrap();
+        let cleared = apply_grok_structured_config(base, &GrokStructuredConfig::default()).unwrap();
         assert!(parse_grok_settings(&cleared)
             .auto_compact_threshold_percent
             .is_none());
@@ -13302,7 +14489,10 @@ mod tests {
 
         let after = read_json_object_or_empty(&trust);
         assert_eq!(after.get(&canonical_key(&ws)), None);
-        assert_eq!(after.get("/some/other"), Some(&serde_json::Value::Bool(true)));
+        assert_eq!(
+            after.get("/some/other"),
+            Some(&serde_json::Value::Bool(true))
+        );
         assert_eq!(after.get("/denied"), Some(&serde_json::Value::Bool(false)));
     }
 
@@ -13616,10 +14806,7 @@ mod tests {
     // composer sends is clamped straight back and the picker looks broken. These
     // pin the shape pi actually reads.
 
-    fn pi_reasoning_spec(
-        reasoning: bool,
-        map: &[(&str, Option<&str>)],
-    ) -> PiModelReasoningSpec {
+    fn pi_reasoning_spec(reasoning: bool, map: &[(&str, Option<&str>)]) -> PiModelReasoningSpec {
         PiModelReasoningSpec {
             reasoning,
             thinking_level_map: map
@@ -13646,7 +14833,11 @@ mod tests {
             "gpt-5.6-sol",
             Some(&pi_reasoning_spec(
                 true,
-                &[("off", Some("none")), ("minimal", None), ("xhigh", Some("xhigh"))],
+                &[
+                    ("off", Some("none")),
+                    ("minimal", None),
+                    ("xhigh", Some("xhigh")),
+                ],
             )),
         );
 
@@ -13790,7 +14981,11 @@ mod tests {
             "gpt-5.6-sol",
             Some(&pi_reasoning_spec(
                 true,
-                &[("off", Some("none")), ("minimal", None), ("low", Some("LOW"))],
+                &[
+                    ("off", Some("none")),
+                    ("minimal", None),
+                    ("low", Some("LOW")),
+                ],
             )),
         );
 
@@ -13799,7 +14994,10 @@ mod tests {
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "gpt-5.6-sol");
         assert_eq!(models[0].reasoning, Some(true));
-        assert_eq!(models[0].thinking_level_map["off"], Some("none".to_string()));
+        assert_eq!(
+            models[0].thinking_level_map["off"],
+            Some("none".to_string())
+        );
         assert_eq!(models[0].thinking_level_map["minimal"], None);
         assert_eq!(models[0].thinking_level_map["low"], Some("LOW".to_string()));
     }
@@ -14000,10 +15198,7 @@ wire_api = "responses"
 base_url = "https://gateway.example/v1"
 wire_api = "chat"
 "#;
-        let other = codeg.replace(
-            "model_provider = \"codeg\"",
-            "model_provider = \"other\"",
-        );
+        let other = codeg.replace("model_provider = \"codeg\"", "model_provider = \"other\"");
 
         let p_codeg = codex_config_projection_from_toml(codeg);
         let p_other = codex_config_projection_from_toml(&other);
@@ -14039,7 +15234,10 @@ wire_api = "chat"
         // behavior; the bare `model` still projects.
         let bare = codex_config_projection_from_toml("model = \"gpt-5-codex\"\n");
         assert!(!bare.contains_key("modelProvider"));
-        assert_eq!(bare.get("model").and_then(|v| v.as_str()), Some("gpt-5-codex"));
+        assert_eq!(
+            bare.get("model").and_then(|v| v.as_str()),
+            Some("gpt-5-codex")
+        );
 
         // Malformed TOML must not panic — yields an empty projection.
         assert!(codex_config_projection_from_toml("model_provider = ").is_empty());
@@ -14247,7 +15445,10 @@ wire_api = "chat"
             out.get("ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"),
             Some(&Some("via gateway".to_string()))
         );
-        assert_eq!(out.get("ANTHROPIC_MODEL"), Some(&Some("gw/opus".to_string())));
+        assert_eq!(
+            out.get("ANTHROPIC_MODEL"),
+            Some(&Some("gw/opus".to_string()))
+        );
 
         // Omitted custom keys are authoritative clears (None => remove from env),
         // matching the five model fields' overwrite semantics.
@@ -14270,7 +15471,10 @@ wire_api = "chat"
 
         // A legacy plain slug passes through as the model.
         let legacy = parse_provider_model(AgentType::Codex, Some("gpt-5.5"));
-        assert_eq!(legacy.get("OPENAI_MODEL"), Some(&Some("gpt-5.5".to_string())));
+        assert_eq!(
+            legacy.get("OPENAI_MODEL"),
+            Some(&Some("gpt-5.5".to_string()))
+        );
 
         // No models → OPENAI_MODEL cleared (None).
         let empty = parse_provider_model(AgentType::Codex, Some(r#"{"models":[]}"#));
@@ -14390,7 +15594,9 @@ wire_api = "chat"
     }
 
     fn auth_flag_of(table: &toml::map::Map<String, toml::Value>) -> Option<bool> {
-        table.get("requires_openai_auth").and_then(toml::Value::as_bool)
+        table
+            .get("requires_openai_auth")
+            .and_then(toml::Value::as_bool)
     }
 
     #[test]
@@ -14410,9 +15616,8 @@ wire_api = "chat"
         assert_eq!(auth_flag_of(&explicit_false), Some(false));
 
         // An explicit true is left alone rather than rewritten.
-        let mut explicit_true = provider_table_of(
-            "[model_providers.codeg]\nrequires_openai_auth = true\n",
-        );
+        let mut explicit_true =
+            provider_table_of("[model_providers.codeg]\nrequires_openai_auth = true\n");
         ensure_codex_provider_auth_default(&mut explicit_true);
         assert_eq!(auth_flag_of(&explicit_true), Some(true));
     }
@@ -14649,7 +15854,10 @@ wire_api = "chat"
             "the legacy approvalMode key is dropped: the CLI never reads it \
              from cli-config.json"
         );
-        assert_eq!(v.pointer("/sandbox/mode"), Some(&serde_json::json!("enabled")));
+        assert_eq!(
+            v.pointer("/sandbox/mode"),
+            Some(&serde_json::json!("enabled"))
+        );
         assert_eq!(
             v.pointer("/permissions/allow"),
             Some(&serde_json::json!(["Shell(npm run build)"]))
@@ -14658,34 +15866,1016 @@ wire_api = "chat"
     }
 
     #[tokio::test]
-    async fn cursor_probe_env_materializes_key_and_scrubs_base_url() {
+    async fn cursor_probe_env_matches_saved_and_live_cursor_environment() {
         let db = crate::db::test_helpers::fresh_in_memory_db().await;
 
-        // API-key mode: the form value wins over saved env and is trimmed; the
-        // base URL is always scrubbed to empty (⇒ removed by run_cursor_probe).
-        let env = cursor_probe_env(&db, Some("  my-key  ")).await;
-        assert_eq!(env.get("CURSOR_API_KEY").map(String::as_str), Some("my-key"));
+        // API-key mode: the form value wins over saved env and is trimmed;
+        // an explicit custom base URL would be preserved by the shared policy.
+        let env = cursor_probe_env(
+            &db,
+            Some("  my-key  "),
+            Some(" https://cursor.example.test/proxy?route=%2F#section/ "),
+        )
+        .await
+        .expect("valid endpoint");
+        assert_eq!(
+            env.get("CURSOR_API_KEY").map(String::as_str),
+            Some("my-key")
+        );
         assert_eq!(
             env.get("CURSOR_API_BASE_URL").map(String::as_str),
-            Some("")
+            Some("https://cursor.example.test/proxy?route=%2F#section/")
+        );
+        assert_eq!(
+            env.get("CURSOR_AUTH_MODE").map(String::as_str),
+            Some("custom")
         );
 
         // Subscription passes an empty key → present but empty, so the probe
         // strips any inherited value instead of leaking it.
-        let cleared = cursor_probe_env(&db, Some("")).await;
+        let cleared = cursor_probe_env(&db, Some(""), Some("https://ignored.test"))
+            .await
+            .expect("valid endpoint");
         assert_eq!(cleared.get("CURSOR_API_KEY").map(String::as_str), Some(""));
         assert_eq!(
             cleared.get("CURSOR_API_BASE_URL").map(String::as_str),
             Some("")
         );
 
-        // No override + empty DB → key still materialized empty.
-        let none = cursor_probe_env(&db, None).await;
-        assert_eq!(none.get("CURSOR_API_KEY").map(String::as_str), Some(""));
+        // No override + empty legacy DB remains legacy; no credential policy is
+        // invented until the auth mode is explicitly known.
+        let none = cursor_probe_env(&db, None, None)
+            .await
+            .expect("empty endpoint override");
+        assert!(!none.contains_key("CURSOR_API_KEY"));
+        assert!(!none.contains_key("CURSOR_API_BASE_URL"));
+
+        for endpoint in [
+            "https://private.example/proxy?route=/",
+            "https://private.example/proxy#section/",
+            "https://private.example/private/path/",
+            "https://private.example/",
+            "https://private.example/proxy%2Fchild",
+            "https://private.example/proxy?route=%2F#section/",
+            "cursor+https://private.example/proxy/",
+        ] {
+            let env = cursor_probe_env(&db, Some("key"), Some(endpoint))
+                .await
+                .expect("structurally valid endpoint");
+            assert_eq!(
+                env.get("CURSOR_API_BASE_URL").map(String::as_str),
+                Some(endpoint)
+            );
+        }
         assert_eq!(
-            none.get("CURSOR_API_BASE_URL").map(String::as_str),
+            cursor_probe_env(&db, Some("key"), Some("not an absolute URL")).await,
+            Err(CursorProbeError::InvalidEndpoint)
+        );
+    }
+
+    #[cfg(unix)]
+    fn cursor_probe_script(body: &str) -> (tempfile::TempDir, PathBuf) {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("probe tempdir");
+        let path = dir.path().join("fake-cursor-agent");
+        let mut file = std::fs::File::create(&path).expect("create fake CLI");
+        file.write_all(format!("#!/bin/sh\n{body}\n").as_bytes())
+            .expect("write fake CLI");
+        file.sync_all().expect("sync fake CLI");
+        drop(file);
+        let mut permissions = std::fs::metadata(&path).expect("metadata").permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&path, permissions).expect("make executable");
+        (dir, path)
+    }
+
+    #[cfg(unix)]
+    enum CursorProbeTestObservation {
+        System,
+        EintrThenSystem(std::sync::atomic::AtomicUsize),
+        AlwaysEintr(std::sync::atomic::AtomicUsize),
+        ReapThenIdentityLost(std::sync::atomic::AtomicBool),
+    }
+
+    #[cfg(unix)]
+    struct CursorProbeTestPause {
+        reached: tokio::sync::Semaphore,
+        release: tokio::sync::Semaphore,
+    }
+
+    #[cfg(unix)]
+    impl CursorProbeTestPause {
+        fn new() -> Self {
+            Self {
+                reached: tokio::sync::Semaphore::new(0),
+                release: tokio::sync::Semaphore::new(0),
+            }
+        }
+
+        async fn wait_until_reached(&self) {
+            tokio::time::timeout(Duration::from_secs(3), self.reached.acquire())
+                .await
+                .expect("probe lifecycle barrier was reached")
+                .expect("probe lifecycle barrier stays open")
+                .forget();
+        }
+
+        fn release(&self) {
+            self.release.add_permits(1);
+        }
+    }
+
+    #[cfg(unix)]
+    struct CursorProbeTestBackend {
+        observation: CursorProbeTestObservation,
+        events: std::sync::Mutex<Vec<CursorProbeLifecycleEvent>>,
+        forward_group_signals: bool,
+        pause_after_observe: Option<Arc<CursorProbeTestPause>>,
+        pause_before_final_reap: Option<Arc<CursorProbeTestPause>>,
+        repeat_cleanup: bool,
+    }
+
+    #[cfg(unix)]
+    impl CursorProbeTestBackend {
+        fn system(forward_group_signals: bool) -> Self {
+            Self {
+                observation: CursorProbeTestObservation::System,
+                events: std::sync::Mutex::new(Vec::new()),
+                forward_group_signals,
+                pause_after_observe: None,
+                pause_before_final_reap: None,
+                repeat_cleanup: false,
+            }
+        }
+
+        fn events(&self) -> Vec<CursorProbeLifecycleEvent> {
+            self.events.lock().expect("probe events").clone()
+        }
+    }
+
+    #[cfg(unix)]
+    #[async_trait::async_trait]
+    impl CursorProbeLifecycleBackend for CursorProbeTestBackend {
+        fn observe_exit(&self, pid: u32) -> Result<CursorProbeExitObservation, CursorProbeError> {
+            use std::sync::atomic::Ordering;
+
+            match &self.observation {
+                CursorProbeTestObservation::System => cursor_probe_child_exit_observed_system(pid),
+                CursorProbeTestObservation::EintrThenSystem(remaining) => {
+                    if remaining
+                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
+                            value.checked_sub(1)
+                        })
+                        .is_ok()
+                    {
+                        Ok(CursorProbeExitObservation::Interrupted)
+                    } else {
+                        cursor_probe_child_exit_observed_system(pid)
+                    }
+                }
+                CursorProbeTestObservation::AlwaysEintr(count) => {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    Ok(CursorProbeExitObservation::Interrupted)
+                }
+                CursorProbeTestObservation::ReapThenIdentityLost(reaped) => {
+                    if !reaped.swap(true, Ordering::SeqCst) {
+                        let mut status = 0;
+                        loop {
+                            let result = unsafe { libc::waitpid(pid as i32, &mut status, 0) };
+                            if result == pid as i32 {
+                                break;
+                            }
+                            assert_eq!(
+                                std::io::Error::last_os_error().raw_os_error(),
+                                Some(libc::EINTR),
+                                "test reaper must own the direct child"
+                            );
+                        }
+                    }
+                    Err(CursorProbeError::IdentityLost)
+                }
+            }
+        }
+
+        fn signal_group(&self, pgid: i32, signal: i32) {
+            if self.forward_group_signals {
+                unsafe {
+                    libc::kill(-pgid, signal);
+                }
+            }
+        }
+
+        fn record(&self, event: CursorProbeLifecycleEvent) {
+            self.events.lock().expect("probe events").push(event);
+        }
+
+        async fn pause_after(&self, event: CursorProbeLifecycleEvent) {
+            let pause = match event {
+                CursorProbeLifecycleEvent::ObserveExitWnoWait => self.pause_after_observe.as_ref(),
+                CursorProbeLifecycleEvent::FinalReap => self.pause_before_final_reap.as_ref(),
+                _ => None,
+            };
+            if let Some(pause) = pause {
+                pause.reached.add_permits(1);
+                pause
+                    .release
+                    .acquire()
+                    .await
+                    .expect("probe release barrier stays open")
+                    .forget();
+            }
+        }
+
+        fn repeat_cleanup_after_identity_release(&self) -> bool {
+            self.repeat_cleanup
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cursor_probe_runner_enforces_exit_utf8_empty_and_pipe_bounds() {
+        let env = BTreeMap::new();
+        let cases = [
+            (
+                "printf 'usable output\\n'; exit 7",
+                CursorProbeError::NonZeroExit,
+            ),
+            ("printf '\\377'", CursorProbeError::InvalidUtf8),
+            ("exit 0", CursorProbeError::EmptyOutput),
+            (
+                "head -c 1048577 /dev/zero",
+                CursorProbeError::OutputTooLarge,
+            ),
+            (
+                "head -c 262145 /dev/zero >&2; printf ok",
+                CursorProbeError::OutputTooLarge,
+            ),
+        ];
+        for (body, expected) in cases {
+            let (_dir, path) = cursor_probe_script(body);
+            let error = run_cursor_probe_binary(&path, &["models"], Duration::from_secs(3), &env)
+                .await
+                .expect_err("unsafe output must fail closed");
+            assert_eq!(error, expected);
+            assert!(
+                !error.to_string().contains("usable output"),
+                "stdout/stderr and credentials must not enter probe errors"
+            );
+        }
+
+        let (_dir, path) = cursor_probe_script("if read value; then exit 9; fi; printf 'ok\\n'");
+        assert_eq!(
+            run_cursor_probe_binary(&path, &["models"], Duration::from_secs(3), &env)
+                .await
+                .expect("stdin is null"),
+            "ok\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cursor_probe_timeout_kills_and_reaps_descendants() {
+        let (dir, path) = cursor_probe_script(
+            "trap '' TERM; (trap '' TERM; while :; do sleep 1; done) & child=$!; \
+             printf '%s:%s' \"$$\" \"$child\" > \"$PID_FILE\"; wait",
+        );
+        let pid_file = dir.path().join("child.pid");
+        let env: BTreeMap<String, String> = [(
+            "PID_FILE".to_string(),
+            pid_file.to_string_lossy().into_owned(),
+        )]
+        .into();
+        assert_eq!(
+            run_cursor_probe_binary(&path, &["models"], Duration::from_millis(150), &env)
+                .await
+                .expect_err("probe must time out"),
+            CursorProbeError::Timeout
+        );
+        let recorded = std::fs::read_to_string(&pid_file).expect("probe and child pids");
+        let pids: Vec<i32> = recorded
+            .split(':')
+            .map(|pid| pid.parse().expect("numeric pid"))
+            .collect();
+        for pid in pids {
+            let mut reaped = false;
+            for _ in 0..20 {
+                if unsafe { libc::kill(pid, 0) } != 0 {
+                    reaped = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            assert!(reaped, "probe process {pid} survived timeout cleanup");
+        }
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_probe_pid_file(path: &Path) -> Vec<i32> {
+        for _ in 0..200 {
+            if let Ok(recorded) = std::fs::read_to_string(path) {
+                if !recorded.trim().is_empty() {
+                    return recorded
+                        .trim()
+                        .split(':')
+                        .map(|pid| pid.parse().expect("numeric pid"))
+                        .collect();
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("probe pid file was not populated");
+    }
+
+    #[cfg(unix)]
+    async fn assert_probe_pids_gone(pids: &[i32]) {
+        for pid in pids {
+            let mut gone = false;
+            for _ in 0..100 {
+                if unsafe { libc::kill(*pid, 0) } != 0 {
+                    gone = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert!(gone, "probe descendant {pid} survived cleanup");
+        }
+    }
+
+    #[cfg(unix)]
+    fn cursor_probe_tree_script() -> (tempfile::TempDir, PathBuf) {
+        cursor_probe_script("printf x >> \"$COUNT_FILE\"; sh -c 'trap \"\" TERM; sh -c '\"'\"'trap \"\" TERM; while [ ! -e \"$RELEASE_FILE\" ]; do sleep 1; done'\"'\"' & grand=$!; printf \"%s:%s\" \"$$\" \"$grand\" > \"$CHILD_PID_FILE\"; wait \"$grand\"' & child=$!; while [ ! -s \"$CHILD_PID_FILE\" ]; do sleep 0.01; done; printf \"%s:%s:%s\" \"$$\" \"$child\" \"$(cat \"$CHILD_PID_FILE\")\" > \"$PID_FILE\"; wait \"$child\"; printf 'auto - Auto (default)\\n'")
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cursor_probe_singleflight_survives_leader_cancellation_and_cleans_last_waiter() {
+        let (dir, path) = cursor_probe_tree_script();
+        let count_file = dir.path().join("count");
+        let pid_file = dir.path().join("pids");
+        let release_file = dir.path().join("release");
+        let env: BTreeMap<String, String> = [
+            ("COUNT_FILE", count_file.clone()),
+            ("PID_FILE", pid_file.clone()),
+            ("CHILD_PID_FILE", dir.path().join("child-pids")),
+            ("RELEASE_FILE", release_file.clone()),
+            ("CURSOR_CONFIG_DIR", dir.path().to_path_buf()),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value.to_string_lossy().into_owned()))
+        .collect();
+        let key = cursor_probe_cache_key(&path, None, &["models"], &env);
+        let leader_path = path.clone();
+        let leader_env = env.clone();
+        let leader = tokio::spawn(async move {
+            run_cursor_probe_cached_for_binary(&leader_path, None, &["models"], 30, &leader_env)
+                .await
+        });
+        let pids = wait_for_probe_pid_file(&pid_file).await;
+        let follower_path = path.clone();
+        let follower_env = env.clone();
+        let follower = tokio::spawn(async move {
+            run_cursor_probe_cached_for_binary(&follower_path, None, &["models"], 30, &follower_env)
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        leader.abort();
+        let _ = leader.await;
+        std::fs::write(&release_file, "release").expect("release probe");
+        assert!(follower
+            .await
+            .expect("follower task")
+            .expect("shared worker")
+            .contains("Auto"));
+        assert_eq!(std::fs::read_to_string(&count_file).unwrap(), "x");
+        assert_probe_pids_gone(&pids).await;
+        assert!(!cursor_probe_cache().lock().await.flights.contains_key(&key));
+
+        let (cancel_dir, cancel_path) = cursor_probe_tree_script();
+        let cancel_pid_file = cancel_dir.path().join("pids");
+        let cancel_env: BTreeMap<String, String> = [
+            ("COUNT_FILE", cancel_dir.path().join("count")),
+            ("PID_FILE", cancel_pid_file.clone()),
+            ("CHILD_PID_FILE", cancel_dir.path().join("child-pids")),
+            ("RELEASE_FILE", cancel_dir.path().join("never-release")),
+            ("CURSOR_CONFIG_DIR", cancel_dir.path().to_path_buf()),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value.to_string_lossy().into_owned()))
+        .collect();
+        let cancel_key = cursor_probe_cache_key(&cancel_path, None, &["models"], &cancel_env);
+        let mut waiters = Vec::new();
+        for _ in 0..2 {
+            let worker_path = cancel_path.clone();
+            let worker_env = cancel_env.clone();
+            waiters.push(tokio::spawn(async move {
+                run_cursor_probe_cached_for_binary(&worker_path, None, &["models"], 30, &worker_env)
+                    .await
+            }));
+        }
+        let cancel_pids = wait_for_probe_pid_file(&cancel_pid_file).await;
+        for waiter in waiters {
+            waiter.abort();
+            let _ = waiter.await;
+        }
+        assert_probe_pids_gone(&cancel_pids).await;
+        assert_eq!(
+            std::fs::read_to_string(cancel_dir.path().join("count")).unwrap(),
+            "x"
+        );
+        assert!(!cursor_probe_cache()
+            .lock()
+            .await
+            .flights
+            .contains_key(&cancel_key));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cursor_probe_group_signals_stop_permanently_before_final_reap() {
+        let backend = Arc::new(CursorProbeTestBackend::system(false));
+        let mut group = CursorProbeProcessGroup::new(Some(42_424), backend.clone());
+        group.terminate(libc::SIGTERM);
+        group.terminate(libc::SIGKILL);
+        assert_eq!(
+            backend.events(),
+            [
+                CursorProbeLifecycleEvent::SignalGroup(libc::SIGTERM),
+                CursorProbeLifecycleEvent::SignalGroup(libc::SIGKILL),
+            ]
+        );
+
+        // This transition is immediately before final child.wait/reap in the
+        // production path. A reused numeric PGID can never be signalled after.
+        group.retire_before_reap();
+        group.terminate(libc::SIGKILL);
+        drop(group);
+        assert_eq!(
+            backend.events(),
+            [
+                CursorProbeLifecycleEvent::SignalGroup(libc::SIGTERM),
+                CursorProbeLifecycleEvent::SignalGroup(libc::SIGKILL),
+                CursorProbeLifecycleEvent::RetireLease,
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cursor_probe_waitid_observes_exit_before_cleanup_and_final_reap() {
+        let (dir, path) = cursor_probe_script("exit 0");
+        let mut command = crate::process::tokio_command(&path);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(false);
+        use std::os::unix::process::CommandExt;
+        command.as_std_mut().process_group(0);
+        let mut child = command.spawn().expect("anchored child");
+        let pid = child.id().expect("child pid");
+        let mut observed = false;
+        for _ in 0..200 {
+            match cursor_probe_child_exit_observed_system(pid).expect("waitid WNOWAIT") {
+                CursorProbeExitObservation::Exited => {
+                    observed = true;
+                    break;
+                }
+                CursorProbeExitObservation::Interrupted => continue,
+                CursorProbeExitObservation::Running => {}
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(observed, "leader exit was not observed");
+        assert_eq!(
+            cursor_probe_child_exit_observed_system(pid)
+                .expect("a second waitid WNOWAIT must retain the unreaped leader"),
+            CursorProbeExitObservation::Exited,
+            "WNOWAIT must leave the leader available for identity-safe cleanup"
+        );
+
+        let backend = Arc::new(CursorProbeTestBackend::system(false));
+        let mut group = CursorProbeProcessGroup::new(Some(pid), backend.clone());
+        group.terminate(libc::SIGKILL);
+        group.retire_before_reap();
+        child.wait().await.expect("final reap after group cleanup");
+        group.terminate(libc::SIGKILL);
+        assert_eq!(
+            backend.events(),
+            [
+                CursorProbeLifecycleEvent::SignalGroup(libc::SIGKILL),
+                CursorProbeLifecycleEvent::RetireLease,
+            ]
+        );
+        drop(dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cursor_probe_identity_lost_retires_without_any_numeric_kill() {
+        let (_dir, path) = cursor_probe_script("printf 'auto - Auto (default)\\n'");
+        let backend = Arc::new(CursorProbeTestBackend {
+            observation: CursorProbeTestObservation::ReapThenIdentityLost(
+                std::sync::atomic::AtomicBool::new(false),
+            ),
+            events: std::sync::Mutex::new(Vec::new()),
+            forward_group_signals: false,
+            pause_after_observe: None,
+            pause_before_final_reap: None,
+            repeat_cleanup: true,
+        });
+        let error = run_cursor_probe_binary_worker_with_backend(
+            path,
+            vec!["models".to_string()],
+            Duration::from_secs(3),
+            BTreeMap::new(),
+            Box::pin(std::future::pending()),
+            backend.clone(),
+        )
+        .await
+        .expect_err("an externally reaped leader loses its identity anchor");
+        assert_eq!(error, CursorProbeError::IdentityLost);
+        let events = backend.events();
+        assert_eq!(
+            events,
+            [
+                CursorProbeLifecycleEvent::RetireLease,
+                CursorProbeLifecycleEvent::SimulatedIdentityReuse,
+            ]
+        );
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            CursorProbeLifecycleEvent::SignalGroup(_)
+                | CursorProbeLifecycleEvent::DirectPidKill
+                | CursorProbeLifecycleEvent::FinalReap
+        )));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cursor_probe_waitid_eintr_retries_without_resetting_deadline() {
+        let (_dir, path) = cursor_probe_script("printf 'auto - Auto (default)\\n'");
+        let backend = Arc::new(CursorProbeTestBackend {
+            observation: CursorProbeTestObservation::EintrThenSystem(
+                std::sync::atomic::AtomicUsize::new(1),
+            ),
+            events: std::sync::Mutex::new(Vec::new()),
+            forward_group_signals: true,
+            pause_after_observe: None,
+            pause_before_final_reap: None,
+            repeat_cleanup: false,
+        });
+        let output = run_cursor_probe_binary_worker_with_backend(
+            path,
+            vec!["models".to_string()],
+            Duration::from_secs(3),
+            BTreeMap::new(),
+            Box::pin(std::future::pending()),
+            backend.clone(),
+        )
+        .await
+        .expect("one EINTR must retry the same identity lease");
+        assert!(output.contains("Auto"));
+        assert_eq!(
+            backend
+                .events()
+                .iter()
+                .filter(|event| **event == CursorProbeLifecycleEvent::RetireLease)
+                .count(),
+            1
+        );
+
+        let (_timeout_dir, timeout_path) =
+            cursor_probe_script("trap '' TERM; while :; do sleep 1; done");
+        let interrupts = Arc::new(CursorProbeTestBackend {
+            observation: CursorProbeTestObservation::AlwaysEintr(
+                std::sync::atomic::AtomicUsize::new(0),
+            ),
+            events: std::sync::Mutex::new(Vec::new()),
+            forward_group_signals: true,
+            pause_after_observe: None,
+            pause_before_final_reap: None,
+            repeat_cleanup: false,
+        });
+        let started = std::time::Instant::now();
+        let error = run_cursor_probe_binary_worker_with_backend(
+            timeout_path,
+            vec!["models".to_string()],
+            Duration::from_millis(80),
+            BTreeMap::new(),
+            Box::pin(std::future::pending()),
+            interrupts,
+        )
+        .await
+        .expect_err("continuous EINTR must remain bounded by the original deadline");
+        assert_eq!(error, CursorProbeError::Timeout);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "EINTR must not reset the probe deadline"
+        );
+
+        let (cancel_dir, cancel_path) = cursor_probe_script(
+            "trap '' TERM; printf '%s' \"$$\" > \"$PID_FILE\"; while :; do sleep 1; done",
+        );
+        let cancel_pid_file = cancel_dir.path().join("pid");
+        let cancel_env: BTreeMap<String, String> = [(
+            "PID_FILE".to_string(),
+            cancel_pid_file.to_string_lossy().into_owned(),
+        )]
+        .into();
+        let cancel_backend = Arc::new(CursorProbeTestBackend {
+            observation: CursorProbeTestObservation::AlwaysEintr(
+                std::sync::atomic::AtomicUsize::new(0),
+            ),
+            events: std::sync::Mutex::new(Vec::new()),
+            forward_group_signals: true,
+            pause_after_observe: None,
+            pause_before_final_reap: None,
+            repeat_cleanup: false,
+        });
+        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+        let cancel_worker = tokio::spawn(run_cursor_probe_binary_worker_with_backend(
+            cancel_path,
+            vec!["models".to_string()],
+            Duration::from_secs(3),
+            cancel_env,
+            Box::pin(async move {
+                let _ = cancel_rx.await;
+            }),
+            cancel_backend,
+        ));
+        let cancel_pid = wait_for_probe_pid_file(&cancel_pid_file).await;
+        cancel_tx.send(()).expect("release cancellation");
+        assert_eq!(
+            cancel_worker.await.expect("cancel worker join"),
+            Err(CursorProbeError::Cancelled)
+        );
+        assert_probe_pids_gone(&cancel_pid).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cursor_probe_success_terminates_pipe_detached_descendants() {
+        let (dir, path) = cursor_probe_script(
+            "sh -c 'exec >/dev/null 2>&1; trap \"\" TERM; sh -c '\"'\"'exec >/dev/null 2>&1; trap \"\" TERM; while :; do sleep 1; done'\"'\"' & grand=$!; printf \"%s:%s\" \"$$\" \"$grand\" > \"$CHILD_PID_FILE\"; wait \"$grand\"' & child=$!; while [ ! -s \"$CHILD_PID_FILE\" ]; do sleep 0.01; done; printf \"%s:%s:%s\" \"$$\" \"$child\" \"$(cat \"$CHILD_PID_FILE\")\" > \"$PID_FILE\"; printf 'auto - Auto (default)\\n'",
+        );
+        let pid_file = dir.path().join("pids");
+        let env: BTreeMap<String, String> = [
+            ("PID_FILE", pid_file.clone()),
+            ("CHILD_PID_FILE", dir.path().join("child-pids")),
+            ("CURSOR_CONFIG_DIR", dir.path().to_path_buf()),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value.to_string_lossy().into_owned()))
+        .collect();
+
+        let mut unrelated_command = crate::process::tokio_command("/bin/sh");
+        unrelated_command
+            .args(["-c", "while :; do sleep 1; done"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        use std::os::unix::process::CommandExt;
+        unrelated_command.as_std_mut().process_group(0);
+        let mut unrelated = unrelated_command.spawn().expect("unrelated group");
+        let unrelated_pid = unrelated.id().expect("unrelated pid") as i32;
+        assert_eq!(unsafe { libc::getpgid(unrelated_pid) }, unrelated_pid);
+
+        let observe_pause = Arc::new(CursorProbeTestPause::new());
+        let reap_pause = Arc::new(CursorProbeTestPause::new());
+        let backend = Arc::new(CursorProbeTestBackend {
+            observation: CursorProbeTestObservation::System,
+            events: std::sync::Mutex::new(Vec::new()),
+            forward_group_signals: true,
+            pause_after_observe: Some(observe_pause.clone()),
+            pause_before_final_reap: Some(reap_pause.clone()),
+            repeat_cleanup: true,
+        });
+        let worker_path = path.clone();
+        let worker_env = env.clone();
+        let worker_backend = backend.clone();
+        let worker = tokio::spawn(async move {
+            run_cursor_probe_binary_worker_with_backend(
+                worker_path,
+                vec!["models".to_string()],
+                Duration::from_secs(3),
+                worker_env,
+                Box::pin(std::future::pending()),
+                worker_backend,
+            )
+            .await
+        });
+        let pids = wait_for_probe_pid_file(&pid_file).await;
+
+        observe_pause.wait_until_reached().await;
+        assert_eq!(
+            backend.events(),
+            [CursorProbeLifecycleEvent::ObserveExitWnoWait],
+            "the production worker must pause after WNOWAIT observation"
+        );
+        observe_pause.release();
+
+        reap_pause.wait_until_reached().await;
+        let before_reap = backend.events();
+        assert_eq!(
+            before_reap,
+            [
+                CursorProbeLifecycleEvent::ObserveExitWnoWait,
+                CursorProbeLifecycleEvent::SignalGroup(libc::SIGKILL),
+                CursorProbeLifecycleEvent::RetireLease,
+                CursorProbeLifecycleEvent::FinalReap,
+            ],
+            "group cleanup and lease retirement must precede the final reap"
+        );
+        assert!(
+            unrelated.try_wait().expect("unrelated status").is_none(),
+            "target group cleanup must not signal an unrelated group"
+        );
+        reap_pause.release();
+        let output = worker
+            .await
+            .expect("probe worker join")
+            .expect("probe output");
+        assert!(output.contains("Auto"));
+        let events = backend.events();
+        assert_eq!(
+            events,
+            [
+                CursorProbeLifecycleEvent::ObserveExitWnoWait,
+                CursorProbeLifecycleEvent::SignalGroup(libc::SIGKILL),
+                CursorProbeLifecycleEvent::RetireLease,
+                CursorProbeLifecycleEvent::FinalReap,
+                CursorProbeLifecycleEvent::SimulatedIdentityReuse,
+            ],
+            "post-reap cleanup must be a no-op even after numeric PGID reuse"
+        );
+        assert_probe_pids_gone(&pids).await;
+        assert!(!events.contains(&CursorProbeLifecycleEvent::DirectPidKill));
+        let unrelated_survived = unrelated.try_wait().expect("unrelated status").is_none();
+        unsafe {
+            libc::kill(-unrelated_pid, libc::SIGKILL);
+        }
+        let _ = unrelated.wait().await;
+        assert!(
+            unrelated_survived,
+            "probe cleanup signalled an unrelated group"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cursor_probe_singleflight_propagates_worker_error_and_panic_without_hanging() {
+        let (error_dir, error_path) = cursor_probe_script(
+            "printf x >> \"$COUNT_FILE\"; sleep 0.1; printf private >&2; exit 9",
+        );
+        let error_count = error_dir.path().join("count");
+        let error_env: BTreeMap<String, String> = [
+            (
+                "COUNT_FILE".to_string(),
+                error_count.to_string_lossy().into_owned(),
+            ),
+            (
+                "CURSOR_CONFIG_DIR".to_string(),
+                error_dir.path().to_string_lossy().into_owned(),
+            ),
+        ]
+        .into();
+        let error_key = cursor_probe_cache_key(&error_path, None, &["models"], &error_env);
+        let (left, right) = tokio::join!(
+            run_cursor_probe_cached_for_binary(&error_path, None, &["models"], 3, &error_env),
+            run_cursor_probe_cached_for_binary(&error_path, None, &["models"], 3, &error_env)
+        );
+        assert_eq!(left, Err(CursorProbeError::NonZeroExit));
+        assert_eq!(right, Err(CursorProbeError::NonZeroExit));
+        assert_eq!(std::fs::read_to_string(error_count).unwrap(), "x");
+        assert!(!cursor_probe_cache()
+            .lock()
+            .await
+            .flights
+            .contains_key(&error_key));
+
+        let (panic_dir, panic_path) = cursor_probe_script(
+            "printf x >> \"$COUNT_FILE\"; sh -c 'exec >/dev/null 2>&1; trap \"\" TERM; sh -c '\"'\"'exec >/dev/null 2>&1; trap \"\" TERM; while :; do sleep 1; done'\"'\"' & grand=$!; printf \"%s:%s\" \"$$\" \"$grand\" > \"$CHILD_PID_FILE\"; wait \"$grand\"' & child=$!; while [ ! -s \"$CHILD_PID_FILE\" ]; do sleep 0.01; done; printf \"%s:%s:%s\" \"$$\" \"$child\" \"$(cat \"$CHILD_PID_FILE\")\" > \"$PID_FILE\"; printf 'auto - Auto (default)\\n'",
+        );
+        let panic_pid_file = panic_dir.path().join("pids");
+        let panic_count = panic_dir.path().join("count");
+        let panic_guard = panic_dir.path().join("panic-once");
+        std::fs::write(&panic_guard, "panic once").expect("panic guard");
+        let panic_env: BTreeMap<String, String> = [
+            ("COUNT_FILE", panic_count.clone()),
+            ("PID_FILE", panic_pid_file.clone()),
+            ("CHILD_PID_FILE", panic_dir.path().join("child-pids")),
+            ("CURSOR_CONFIG_DIR", panic_dir.path().to_path_buf()),
+            (
+                "CODEG_TEST_CURSOR_PROBE_OUTER_PANIC_AFTER_FILE",
+                panic_pid_file.clone(),
+            ),
+            (
+                "CODEG_TEST_CURSOR_PROBE_PANIC_ONCE_GUARD",
+                panic_guard.clone(),
+            ),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value.to_string_lossy().into_owned()))
+        .collect();
+        let panic_key = cursor_probe_cache_key(&panic_path, None, &["models"], &panic_env);
+        let (left, right) = tokio::join!(
+            run_cursor_probe_cached_for_binary(&panic_path, None, &["models"], 3, &panic_env),
+            run_cursor_probe_cached_for_binary(&panic_path, None, &["models"], 3, &panic_env)
+        );
+        assert_eq!(left, Err(CursorProbeError::Spawn));
+        assert_eq!(right, Err(CursorProbeError::Spawn));
+        let panic_pids = wait_for_probe_pid_file(&panic_pid_file).await;
+        assert_probe_pids_gone(&panic_pids).await;
+        assert_eq!(std::fs::read_to_string(&panic_count).unwrap(), "x");
+        assert!(!cursor_probe_cache()
+            .lock()
+            .await
+            .flights
+            .contains_key(&panic_key));
+
+        // After the bounded failure backoff, the exact same key starts a fresh
+        // worker. The one-shot monitor panic is gone and the worker completes.
+        tokio::time::sleep(CURSOR_PROBE_FAILURE_BACKOFF + Duration::from_millis(50)).await;
+        let retry =
+            run_cursor_probe_cached_for_binary(&panic_path, None, &["models"], 3, &panic_env)
+                .await
+                .expect("same key retries after supervisor panic");
+        assert!(retry.contains("Auto"));
+        assert_eq!(std::fs::read_to_string(&panic_count).unwrap(), "xx");
+        let retry_pids = wait_for_probe_pid_file(&panic_pid_file).await;
+        assert_probe_pids_gone(&retry_pids).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cursor_probe_cache_singleflights_and_keys_environment_and_binary_identity() {
+        let (dir, path) = cursor_probe_script(
+            "printf x >> \"$COUNT_FILE\"; sleep 0.1; printf 'auto - Auto (default)\\n'",
+        );
+        let count_file = dir.path().join("count");
+        let base_env: BTreeMap<String, String> = [
+            (
+                "COUNT_FILE".to_string(),
+                count_file.to_string_lossy().into_owned(),
+            ),
+            ("CURSOR_AUTH_MODE".to_string(), "custom".to_string()),
+            ("CURSOR_API_KEY".to_string(), "secret-a".to_string()),
+            (
+                "CURSOR_CONFIG_DIR".to_string(),
+                dir.path().to_string_lossy().into_owned(),
+            ),
+        ]
+        .into();
+        let (left, right) = tokio::join!(
+            run_cursor_probe_cached_for_binary(&path, None, &["models"], 3, &base_env),
+            run_cursor_probe_cached_for_binary(&path, None, &["models"], 3, &base_env)
+        );
+        left.expect("first probe");
+        right.expect("singleflight follower");
+        assert_eq!(std::fs::read_to_string(&count_file).unwrap(), "x");
+
+        run_cursor_probe_cached_for_binary(&path, None, &["models"], 3, &base_env)
+            .await
+            .expect("success stays cached during its TTL");
+        assert_eq!(std::fs::read_to_string(&count_file).unwrap(), "x");
+
+        let mut other_account = base_env.clone();
+        other_account.insert("CURSOR_API_KEY".into(), "secret-b".into());
+        run_cursor_probe_cached_for_binary(&path, None, &["models"], 3, &other_account)
+            .await
+            .expect("different account is a cache miss");
+        assert_eq!(std::fs::read_to_string(&count_file).unwrap(), "xx");
+
+        let mut other_mode = base_env.clone();
+        other_mode.insert("CURSOR_AUTH_MODE".into(), "subscription".into());
+        other_mode.insert("CURSOR_API_KEY".into(), String::new());
+        run_cursor_probe_cached_for_binary(&path, None, &["models"], 3, &other_mode)
+            .await
+            .expect("different auth mode is a cache miss");
+        assert_eq!(std::fs::read_to_string(&count_file).unwrap(), "xxx");
+
+        let mut other_endpoint = other_account.clone();
+        other_endpoint.insert(
+            "CURSOR_API_BASE_URL".into(),
+            "https://cursor.example.test".into(),
+        );
+        run_cursor_probe_cached_for_binary(&path, None, &["models"], 3, &other_endpoint)
+            .await
+            .expect("different endpoint is a cache miss");
+        assert_eq!(std::fs::read_to_string(&count_file).unwrap(), "xxxx");
+
+        let other_config_dir = dir.path().join("other-config");
+        std::fs::create_dir(&other_config_dir).expect("other config dir");
+        let mut other_config = other_account.clone();
+        other_config.insert(
+            "CURSOR_CONFIG_DIR".into(),
+            other_config_dir.to_string_lossy().into_owned(),
+        );
+        run_cursor_probe_cached_for_binary(&path, None, &["models"], 3, &other_config)
+            .await
+            .expect("different config directory is a cache miss");
+        assert_eq!(std::fs::read_to_string(&count_file).unwrap(), "xxxxx");
+
+        std::fs::write(dir.path().join("cli-config.json"), "{\"changed\":true}")
+            .expect("config mutation");
+        run_cursor_probe_cached_for_binary(&path, None, &["models"], 3, &other_account)
+            .await
+            .expect("config identity invalidates cache");
+        assert_eq!(std::fs::read_to_string(&count_file).unwrap(), "xxxxxx");
+
+        run_cursor_probe_cached_for_binary(
+            &path,
+            Some("different-version"),
+            &["models"],
+            3,
+            &other_account,
+        )
+        .await
+        .expect("different managed binary version is a cache miss");
+        assert_eq!(std::fs::read_to_string(&count_file).unwrap(), "xxxxxxx");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cursor_probe_cache_uses_short_failure_backoff_then_recovers() {
+        let (dir, path) = cursor_probe_script(
+            "if [ ! -e \"$MARKER\" ]; then : > \"$MARKER\"; exit 9; fi; \
+             printf 'auto - Auto (default)\\n'",
+        );
+        let marker = dir.path().join("marker");
+        let env: BTreeMap<String, String> = [
+            ("MARKER".to_string(), marker.to_string_lossy().into_owned()),
+            (
+                "CURSOR_CONFIG_DIR".to_string(),
+                dir.path().to_string_lossy().into_owned(),
+            ),
+        ]
+        .into();
+        let key = cursor_probe_cache_key(&path, None, &["models"], &env);
+        assert_eq!(
+            run_cursor_probe_cached_for_binary(&path, None, &["models"], 3, &env)
+                .await
+                .expect_err("first probe fails"),
+            CursorProbeError::NonZeroExit
+        );
+        assert_eq!(
+            cursor_probe_cache_key(&path, None, &["models"], &env),
+            key,
+            "probe execution must not mutate its cache identity"
+        );
+        assert!(cursor_probe_cache().lock().await.entries.contains_key(&key));
+        assert_eq!(
+            run_cursor_probe_cached_for_binary(&path, None, &["models"], 3, &env)
+                .await
+                .expect_err("failure is briefly backed off"),
+            CursorProbeError::NonZeroExit
+        );
+
+        if let Some(entry) = cursor_probe_cache().lock().await.entries.get_mut(&key) {
+            entry.expires_at = Instant::now();
+        }
+        assert!(
+            run_cursor_probe_cached_for_binary(&path, None, &["models"], 3, &env)
+                .await
+                .expect("failure is not cached forever")
+                .contains("Auto")
+        );
+    }
+
+    #[test]
+    fn cursor_effective_environment_scrubs_subscription_but_preserves_custom_values() {
+        let subscription: BTreeMap<String, String> = [
+            ("CURSOR_AUTH_MODE".into(), "subscription".into()),
+            ("CURSOR_API_KEY".into(), "stale-secret".into()),
+            ("CURSOR_API_BASE_URL".into(), "https://stale.example".into()),
+        ]
+        .into();
+        let effective = cursor_effective_runtime_env(&subscription);
+        assert_eq!(
+            effective.get("CURSOR_API_KEY").map(String::as_str),
             Some("")
         );
+        assert_eq!(
+            effective.get("CURSOR_API_BASE_URL").map(String::as_str),
+            Some("")
+        );
+
+        let custom: BTreeMap<String, String> = [
+            ("CURSOR_AUTH_MODE".into(), "custom".into()),
+            ("CURSOR_API_KEY".into(), "explicit-secret".into()),
+            (
+                "CURSOR_API_BASE_URL".into(),
+                "https://custom.example/private/?route=%2F#section/".into(),
+            ),
+        ]
+        .into();
+        let effective_custom = cursor_effective_runtime_env(&custom);
+        for key in ["CURSOR_AUTH_MODE", "CURSOR_API_KEY", "CURSOR_API_BASE_URL"] {
+            assert_eq!(effective_custom.get(key), custom.get(key));
+        }
     }
 
     #[test]
@@ -14717,8 +16907,7 @@ wire_api = "chat"
     #[test]
     fn parse_cursor_models_tolerates_ansi_markers_and_bare_ids() {
         // ANSI SGR + a leading list marker + a bare-id line with no label.
-        let stdout =
-            "\u{1b}[1mAvailable models\u{1b}[0m\n- gpt-5.2 - GPT-5.2\ncomposer-2.5\n";
+        let stdout = "\u{1b}[1mAvailable models\u{1b}[0m\n- gpt-5.2 - GPT-5.2\ncomposer-2.5\n";
         let (models, default_model) = parse_cursor_models(stdout);
         assert_eq!(default_model, None);
         assert_eq!(models.len(), 2);
@@ -15152,8 +17341,14 @@ wire_api = "chat"
     fn parse_env_file_ignores_comments_and_strips_quotes() {
         let raw = "# comment\n\nexport OPENROUTER_API_KEY=\"sk-or-123\"\nOPENAI_BASE_URL='https://x.test/v1'\nBARE=plain\n=novalue\n";
         let map = parse_env_file(raw);
-        assert_eq!(map.get("OPENROUTER_API_KEY").map(String::as_str), Some("sk-or-123"));
-        assert_eq!(map.get("OPENAI_BASE_URL").map(String::as_str), Some("https://x.test/v1"));
+        assert_eq!(
+            map.get("OPENROUTER_API_KEY").map(String::as_str),
+            Some("sk-or-123")
+        );
+        assert_eq!(
+            map.get("OPENAI_BASE_URL").map(String::as_str),
+            Some("https://x.test/v1")
+        );
         assert_eq!(map.get("BARE").map(String::as_str), Some("plain"));
         assert!(!map.contains_key(""));
     }
@@ -15163,9 +17358,18 @@ wire_api = "chat"
         let existing = "# secrets\nOPENROUTER_API_KEY=old\n\nOTHER_TOKEN=keep\n";
         let out = patch_env_text(existing, &[("OPENROUTER_API_KEY", "new")]);
         assert!(out.contains("# secrets"), "comment preserved: {out}");
-        assert!(out.contains("OPENROUTER_API_KEY=new"), "key replaced: {out}");
-        assert!(!out.contains("OPENROUTER_API_KEY=old"), "old value gone: {out}");
-        assert!(out.contains("OTHER_TOKEN=keep"), "unrelated key preserved: {out}");
+        assert!(
+            out.contains("OPENROUTER_API_KEY=new"),
+            "key replaced: {out}"
+        );
+        assert!(
+            !out.contains("OPENROUTER_API_KEY=old"),
+            "old value gone: {out}"
+        );
+        assert!(
+            out.contains("OTHER_TOKEN=keep"),
+            "unrelated key preserved: {out}"
+        );
         // Replacement happens in place, not appended at the end.
         assert_eq!(out.matches("OPENROUTER_API_KEY=").count(), 1);
         assert!(out.ends_with('\n'));
@@ -15177,13 +17381,22 @@ wire_api = "chat"
         // last-occurrence-wins, so a stale second line would shadow the update.
         let existing = "OPENAI_API_KEY=old1\nKEEP=1\nOPENAI_API_KEY=old2\n";
         let out = patch_env_text(existing, &[("OPENAI_API_KEY", "new")]);
-        assert_eq!(out.matches("OPENAI_API_KEY=").count(), 1, "single key: {out}");
+        assert_eq!(
+            out.matches("OPENAI_API_KEY=").count(),
+            1,
+            "single key: {out}"
+        );
         assert!(out.contains("OPENAI_API_KEY=new"));
-        assert!(!out.contains("old1") && !out.contains("old2"), "stale gone: {out}");
+        assert!(
+            !out.contains("old1") && !out.contains("old2"),
+            "stale gone: {out}"
+        );
         assert!(out.contains("KEEP=1"));
         // And a reader of the result sees the new value, not a stale shadow.
         assert_eq!(
-            parse_env_file(&out).get("OPENAI_API_KEY").map(String::as_str),
+            parse_env_file(&out)
+                .get("OPENAI_API_KEY")
+                .map(String::as_str),
             Some("new")
         );
     }
@@ -15214,7 +17427,8 @@ wire_api = "chat"
 
     #[test]
     fn merge_hermes_model_config_sets_model_and_keeps_other_keys() {
-        let existing = "terminal:\n  backend: local\nmodel:\n  default: old-model\n  provider: openai\n";
+        let existing =
+            "terminal:\n  backend: local\nmodel:\n  default: old-model\n  provider: openai\n";
         let merged = merge_hermes_model_config(
             Some(existing),
             "openrouter",
@@ -15225,14 +17439,20 @@ wire_api = "chat"
         .expect("merge");
         let value: serde_yaml::Value = serde_yaml::from_str(&merged).expect("parse merged");
         let model = value.get("model").expect("model section");
-        assert_eq!(model.get("provider").and_then(|v| v.as_str()), Some("openrouter"));
+        assert_eq!(
+            model.get("provider").and_then(|v| v.as_str()),
+            Some("openrouter")
+        );
         assert_eq!(
             model.get("default").and_then(|v| v.as_str()),
             Some("moonshotai/kimi-k2")
         );
         // Unrelated top-level keys survive the targeted merge.
         assert_eq!(
-            value.get("terminal").and_then(|t| t.get("backend")).and_then(|v| v.as_str()),
+            value
+                .get("terminal")
+                .and_then(|t| t.get("backend"))
+                .and_then(|v| v.as_str()),
             Some("local")
         );
         // No base_url was requested, so none is written.
@@ -15251,7 +17471,10 @@ wire_api = "chat"
         .expect("merge with base");
         let value: serde_yaml::Value = serde_yaml::from_str(&with_base).expect("parse");
         assert_eq!(
-            value.get("model").and_then(|m| m.get("base_url")).and_then(|v| v.as_str()),
+            value
+                .get("model")
+                .and_then(|m| m.get("base_url"))
+                .and_then(|v| v.as_str()),
             Some("https://api.test/v1")
         );
         // Set("") clears the field (user emptied the API URL input).
@@ -15277,7 +17500,10 @@ wire_api = "chat"
         .expect("merge preserve");
         let value: serde_yaml::Value = serde_yaml::from_str(&kept).expect("parse");
         assert_eq!(
-            value.get("model").and_then(|m| m.get("base_url")).and_then(|v| v.as_str()),
+            value
+                .get("model")
+                .and_then(|m| m.get("base_url"))
+                .and_then(|v| v.as_str()),
             Some("https://api.test/v1")
         );
     }
@@ -15298,8 +17524,14 @@ wire_api = "chat"
         .expect("merge custom");
         let value: serde_yaml::Value = serde_yaml::from_str(&with_key).expect("parse");
         let model = value.get("model").expect("model section");
-        assert_eq!(model.get("provider").and_then(|v| v.as_str()), Some("custom"));
-        assert_eq!(model.get("api_key").and_then(|v| v.as_str()), Some("sk-abc"));
+        assert_eq!(
+            model.get("provider").and_then(|v| v.as_str()),
+            Some("custom")
+        );
+        assert_eq!(
+            model.get("api_key").and_then(|v| v.as_str()),
+            Some("sk-abc")
+        );
         assert_eq!(
             model.get("base_url").and_then(|v| v.as_str()),
             Some("https://endpoint.test/v1")
@@ -15322,7 +17554,8 @@ wire_api = "chat"
 
         // custom→custom re-save with scrub_mode=false preserves a raw-editor
         // `api_mode`; switching in with scrub_mode=true drops it.
-        let with_mode = "model:\n  provider: custom\n  default: m\n  api_mode: anthropic_messages\n";
+        let with_mode =
+            "model:\n  provider: custom\n  default: m\n  api_mode: anthropic_messages\n";
         let resaved = merge_hermes_model_config(
             Some(with_mode),
             "custom",
@@ -15372,15 +17605,22 @@ wire_api = "chat"
         .expect("merge switch");
         let value: serde_yaml::Value = serde_yaml::from_str(&switched).expect("parse");
         let model = value.get("model").expect("model section");
-        assert!(model.get("api_key").is_none(), "stale inline key must be scrubbed");
-        assert!(model.get("api_mode").is_none(), "stale api_mode must be scrubbed");
+        assert!(
+            model.get("api_key").is_none(),
+            "stale inline key must be scrubbed"
+        );
+        assert!(
+            model.get("api_mode").is_none(),
+            "stale api_mode must be scrubbed"
+        );
     }
 
     #[test]
     fn plan_hermes_write_preserves_base_url_for_fixed_endpoint_provider() {
         // Anthropic (needsBaseUrl: false) behind a proxy: a structured save that
         // doesn't touch the hidden API URL field must keep the existing endpoint.
-        let existing = "model:\n  provider: anthropic\n  default: old\n  base_url: https://my-proxy/v1\n";
+        let existing =
+            "model:\n  provider: anthropic\n  default: old\n  base_url: https://my-proxy/v1\n";
         let (yaml, env) = plan_hermes_write(
             "anthropic",
             Some("sk-ant"),
@@ -15392,7 +17632,10 @@ wire_api = "chat"
         .expect("plan");
         let value: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml");
         assert_eq!(
-            value.get("model").and_then(|m| m.get("base_url")).and_then(|v| v.as_str()),
+            value
+                .get("model")
+                .and_then(|m| m.get("base_url"))
+                .and_then(|v| v.as_str()),
             Some("https://my-proxy/v1"),
             "out-of-band base_url must survive a structured save"
         );
@@ -15418,7 +17661,10 @@ wire_api = "chat"
         .expect("plan");
         let value: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml");
         assert_eq!(
-            value.get("model").and_then(|m| m.get("provider")).and_then(|v| v.as_str()),
+            value
+                .get("model")
+                .and_then(|m| m.get("provider"))
+                .and_then(|v| v.as_str()),
             Some("anthropic")
         );
         assert!(
@@ -15446,8 +17692,8 @@ wire_api = "chat"
             assert!(!env.iter().any(|(k, _)| *k == "OPENROUTER_API_KEY"));
         }
         // A provided key is written alongside the neutralization.
-        let (_, env) = plan_hermes_write("openrouter", Some("sk-or"), "m", None, None, None)
-            .expect("keyed");
+        let (_, env) =
+            plan_hermes_write("openrouter", Some("sk-or"), "m", None, None, None).expect("keyed");
         assert!(env.contains(&("OPENROUTER_API_KEY", "sk-or".to_string())));
         assert!(env.contains(&("OPENAI_API_KEY", String::new())));
     }
@@ -15494,7 +17740,11 @@ wire_api = "chat"
         let inode_before = fs::metadata(&env_path).unwrap().ino();
         write_hermes_secret_file(&env_path, "OPENROUTER_API_KEY=sk-2\n", ".env")
             .expect("rewrite env");
-        assert_eq!(mode_of(&env_path), 0o640, "existing managed mode must be preserved");
+        assert_eq!(
+            mode_of(&env_path),
+            0o640,
+            "existing managed mode must be preserved"
+        );
         assert_eq!(
             fs::metadata(&env_path).unwrap().ino(),
             inode_before,
@@ -15521,7 +17771,10 @@ wire_api = "chat"
         write_hermes_secret_file(&link, "model:\n  provider: anthropic\n", "config.yaml")
             .expect("write through symlink");
         assert!(
-            fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
             "the symlink must be preserved, not replaced by a regular file"
         );
         assert_eq!(
@@ -15541,7 +17794,10 @@ wire_api = "chat"
         let real = dir.join("vault-hermes.env");
         let link = dir.join(".env");
         std::os::unix::fs::symlink(&real, &link).unwrap();
-        assert!(fs::metadata(&link).is_err(), "precondition: dangling symlink");
+        assert!(
+            fs::metadata(&link).is_err(),
+            "precondition: dangling symlink"
+        );
 
         write_hermes_secret_file(&link, "OPENROUTER_API_KEY=sk\n", ".env").expect("write");
         // The target is created THROUGH the symlink and is owner-only (0600), not
@@ -15551,9 +17807,15 @@ wire_api = "chat"
             0o600,
             "a freshly created symlink target must be 0600"
         );
-        assert_eq!(fs::read_to_string(&real).unwrap(), "OPENROUTER_API_KEY=sk\n");
+        assert_eq!(
+            fs::read_to_string(&real).unwrap(),
+            "OPENROUTER_API_KEY=sk\n"
+        );
         assert!(
-            fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
             "the symlink itself must be preserved"
         );
     }
@@ -15578,7 +17840,11 @@ wire_api = "chat"
         fs::write(&env_path, "OPENROUTER_API_KEY=old\n").unwrap();
         fs::set_permissions(&env_path, fs::Permissions::from_mode(0o644)).unwrap();
         write_hermes_secret_file(&env_path, "OPENROUTER_API_KEY=new\n", ".env").unwrap();
-        assert_eq!(mode_of(&env_path), 0o600, "a world-readable 0644 secret → 0600");
+        assert_eq!(
+            mode_of(&env_path),
+            0o600,
+            "a world-readable 0644 secret → 0600"
+        );
         assert_eq!(
             fs::read_to_string(&env_path).unwrap(),
             "OPENROUTER_API_KEY=new\n"
@@ -15589,7 +17855,11 @@ wire_api = "chat"
         fs::write(&managed, "K=1\n").unwrap();
         fs::set_permissions(&managed, fs::Permissions::from_mode(0o640)).unwrap();
         write_hermes_secret_file(&managed, "K=2\n", ".env").unwrap();
-        assert_eq!(mode_of(&managed), 0o640, "managed group-shared mode preserved");
+        assert_eq!(
+            mode_of(&managed),
+            0o640,
+            "managed group-shared mode preserved"
+        );
     }
 
     #[cfg(unix)]
@@ -15626,7 +17896,11 @@ wire_api = "chat"
         fs::create_dir_all(&managed).unwrap();
         fs::set_permissions(&managed, fs::Permissions::from_mode(0o755)).unwrap();
         ensure_hermes_home_secure(&managed).expect("ensure managed");
-        assert_eq!(mode_of(&managed), 0o755, "existing hermes home mode preserved");
+        assert_eq!(
+            mode_of(&managed),
+            0o755,
+            "existing hermes home mode preserved"
+        );
     }
 
     // ── Hermes base-URL reconcile (auxiliary/main endpoint parity) ──────────
@@ -15657,11 +17931,19 @@ wire_api = "chat"
     fn plan_hermes_base_url_reconcile_ignores_trailing_slash() {
         // Trailing-slash-only differences must not churn .env (both directions).
         assert_eq!(
-            plan_hermes_base_url_reconcile("openai-api", Some("https://x/v1/"), Some("https://x/v1")),
+            plan_hermes_base_url_reconcile(
+                "openai-api",
+                Some("https://x/v1/"),
+                Some("https://x/v1")
+            ),
             None
         );
         assert_eq!(
-            plan_hermes_base_url_reconcile("openai-api", Some("https://x/v1"), Some("https://x/v1/")),
+            plan_hermes_base_url_reconcile(
+                "openai-api",
+                Some("https://x/v1"),
+                Some("https://x/v1/")
+            ),
             None
         );
     }
@@ -15679,9 +17961,18 @@ wire_api = "chat"
     #[test]
     fn plan_hermes_base_url_reconcile_no_op_when_both_empty() {
         // Absent var and explicitly-empty var both → no-op (no redundant `KEY=`).
-        assert_eq!(plan_hermes_base_url_reconcile("openai-api", None, None), None);
-        assert_eq!(plan_hermes_base_url_reconcile("openai-api", None, Some("")), None);
-        assert_eq!(plan_hermes_base_url_reconcile("openai-api", Some("  "), Some("")), None);
+        assert_eq!(
+            plan_hermes_base_url_reconcile("openai-api", None, None),
+            None
+        );
+        assert_eq!(
+            plan_hermes_base_url_reconcile("openai-api", None, Some("")),
+            None
+        );
+        assert_eq!(
+            plan_hermes_base_url_reconcile("openai-api", Some("  "), Some("")),
+            None
+        );
     }
 
     #[test]
@@ -15712,7 +18003,10 @@ wire_api = "chat"
     fn plan_hermes_base_url_reconcile_openrouter_only_touches_its_own_var() {
         // openrouter never returns an OPENAI_BASE_URL write (that would re-pollute
         // the panel's neutralization); it only reconciles OPENROUTER_BASE_URL.
-        assert_eq!(plan_hermes_base_url_reconcile("openrouter", None, None), None);
+        assert_eq!(
+            plan_hermes_base_url_reconcile("openrouter", None, None),
+            None
+        );
         assert_eq!(
             plan_hermes_base_url_reconcile("openrouter", Some("https://or/api/v1"), None),
             Some(("OPENROUTER_BASE_URL", "https://or/api/v1".to_string()))
@@ -15854,7 +18148,10 @@ wire_api = "chat"
         .unwrap();
         reconcile_hermes_runtime_env_in(home).expect("reconcile");
         let env = fs::read_to_string(home.join(".env")).unwrap();
-        assert!(env.contains("OPENAI_BASE_URL=\n"), "stale base url cleared: {env:?}");
+        assert!(
+            env.contains("OPENAI_BASE_URL=\n"),
+            "stale base url cleared: {env:?}"
+        );
         assert!(env.contains("OPENAI_API_KEY=sk"), "key preserved: {env:?}");
     }
 
@@ -15890,11 +18187,17 @@ wire_api = "chat"
         // either (both an absolute path and a literal `~/…` path are passed as-is).
         let mut abs = BTreeMap::new();
         abs.insert("HERMES_HOME".to_string(), "/tmp/hermes-alt".to_string());
-        assert_eq!(hermes_home_for_launch(&abs), PathBuf::from("/tmp/hermes-alt"));
+        assert_eq!(
+            hermes_home_for_launch(&abs),
+            PathBuf::from("/tmp/hermes-alt")
+        );
 
         let mut tilde = BTreeMap::new();
         tilde.insert("HERMES_HOME".to_string(), "~/alt-hermes".to_string());
-        assert_eq!(hermes_home_for_launch(&tilde), PathBuf::from("~/alt-hermes"));
+        assert_eq!(
+            hermes_home_for_launch(&tilde),
+            PathBuf::from("~/alt-hermes")
+        );
 
         // A blank override REPLACES the parent value in the child, and Hermes then
         // falls back to the default `~/.hermes` — not the parent's HERMES_HOME.
@@ -15969,10 +18272,7 @@ wire_api = "chat"
     fn hermes_skip_chmod_requires_a_non_empty_opt_out() {
         // A non-empty opt-out enables skip.
         temp_env::with_vars(
-            [
-                ("HERMES_SKIP_CHMOD", Some("1")),
-                ("HERMES_CONTAINER", None),
-            ],
+            [("HERMES_SKIP_CHMOD", Some("1")), ("HERMES_CONTAINER", None)],
             || assert!(hermes_skip_chmod(), "non-empty HERMES_SKIP_CHMOD skips"),
         );
         // An EMPTY opt-out must NOT skip (Hermes' Python truthiness treats `` as
@@ -16017,9 +18317,14 @@ wire_api = "chat"
         assert_eq!(openai_api.key_env_var, "OPENAI_API_KEY");
         assert!(openai_api.needs_base_url);
         // Hermes' first-priority key var per provider (auth.py PROVIDER_REGISTRY).
-        assert_eq!(hermes_provider("zai").expect("zai").key_env_var, "GLM_API_KEY");
         assert_eq!(
-            hermes_provider("kimi-coding").expect("kimi-coding").key_env_var,
+            hermes_provider("zai").expect("zai").key_env_var,
+            "GLM_API_KEY"
+        );
+        assert_eq!(
+            hermes_provider("kimi-coding")
+                .expect("kimi-coding")
+                .key_env_var,
             "KIMI_API_KEY"
         );
         // OAuth + AWS providers carry no API-key env var (set via terminal --setup
@@ -16132,7 +18437,10 @@ wire_api = "chat"
         assert_eq!(env, vec![("ANTHROPIC_API_KEY", "sk-ant-1".to_string())]);
         let value: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml");
         assert_eq!(
-            value.get("model").and_then(|m| m.get("provider")).and_then(|v| v.as_str()),
+            value
+                .get("model")
+                .and_then(|m| m.get("provider"))
+                .and_then(|v| v.as_str()),
             Some("anthropic")
         );
     }
@@ -16152,9 +18460,18 @@ wire_api = "chat"
         assert!(env.is_empty(), "custom must not write any .env var");
         let value: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml");
         let model = value.get("model").expect("model section");
-        assert_eq!(model.get("provider").and_then(|v| v.as_str()), Some("custom"));
-        assert_eq!(model.get("default").and_then(|v| v.as_str()), Some("gpt-5.5"));
-        assert_eq!(model.get("api_key").and_then(|v| v.as_str()), Some("sk-custom-1"));
+        assert_eq!(
+            model.get("provider").and_then(|v| v.as_str()),
+            Some("custom")
+        );
+        assert_eq!(
+            model.get("default").and_then(|v| v.as_str()),
+            Some("gpt-5.5")
+        );
+        assert_eq!(
+            model.get("api_key").and_then(|v| v.as_str()),
+            Some("sk-custom-1")
+        );
         assert_eq!(
             model.get("base_url").and_then(|v| v.as_str()),
             Some("https://endpoint.test/v1")
@@ -16172,7 +18489,8 @@ wire_api = "chat"
 
         // Switching TO custom from another provider that carried an `api_mode`
         // scrubs the stale mode (it must not bleed into the custom endpoint).
-        let prior = "model:\n  provider: openai-api\n  default: gpt\n  api_mode: chat_completions\n";
+        let prior =
+            "model:\n  provider: openai-api\n  default: gpt\n  api_mode: chat_completions\n";
         let (yaml, _env) = plan_hermes_write(
             "custom",
             Some("sk-2"),
@@ -16203,21 +18521,23 @@ wire_api = "chat"
         )
         .expect("plan");
         assert!(env.is_empty(), "raw mode must not write .env");
-        assert!(yaml.contains("anthropic"), "raw yaml written verbatim: {yaml}");
+        assert!(
+            yaml.contains("anthropic"),
+            "raw yaml written verbatim: {yaml}"
+        );
     }
 
     #[test]
     fn plan_hermes_write_oauth_and_blank_key_produce_no_env() {
         // OAuth provider (empty key var) → no .env update.
-        let (_, env) = plan_hermes_write("nous", Some("ignored"), "m", None, None, None)
-            .expect("oauth");
+        let (_, env) =
+            plan_hermes_write("nous", Some("ignored"), "m", None, None, None).expect("oauth");
         assert!(env.is_empty());
         // Blank key on a keyed provider with no base-URL var → nothing touched.
-        let (_, env) = plan_hermes_write("anthropic", Some("   "), "m", None, None, None)
-            .expect("blank");
-        assert!(env.is_empty());
         let (_, env) =
-            plan_hermes_write("anthropic", None, "m", None, None, None).expect("none");
+            plan_hermes_write("anthropic", Some("   "), "m", None, None, None).expect("blank");
+        assert!(env.is_empty());
+        let (_, env) = plan_hermes_write("anthropic", None, "m", None, None, None).expect("none");
         assert!(env.is_empty());
     }
 
@@ -16228,8 +18548,15 @@ wire_api = "chat"
             "newline in key must be rejected"
         );
         assert!(
-            plan_hermes_write("openai-api", None, "m", None, Some("model: [unterminated"), None)
-                .is_err(),
+            plan_hermes_write(
+                "openai-api",
+                None,
+                "m",
+                None,
+                Some("model: [unterminated"),
+                None
+            )
+            .is_err(),
             "invalid raw yaml must be rejected"
         );
     }
@@ -16256,13 +18583,16 @@ wire_api = "chat"
         );
         let value: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml");
         assert_eq!(
-            value.get("model").and_then(|m| m.get("base_url")).and_then(|v| v.as_str()),
+            value
+                .get("model")
+                .and_then(|m| m.get("base_url"))
+                .and_then(|v| v.as_str()),
             Some("https://api.test/v1")
         );
         // Clearing the base URL writes an empty override so a stale `.env` value
         // can't shadow the default endpoint.
-        let (_, env) = plan_hermes_write("openai-api", None, "m", None, None, None)
-            .expect("clear base");
+        let (_, env) =
+            plan_hermes_write("openai-api", None, "m", None, None, None).expect("clear base");
         assert_eq!(env, vec![("OPENAI_BASE_URL", String::new())]);
     }
 
@@ -16291,7 +18621,10 @@ wire_api = "chat"
     fn project_hermes_key_and_base_falls_back_to_env_base_url() {
         let mut env = BTreeMap::new();
         env.insert("OPENAI_API_KEY".to_string(), "sk-1".to_string());
-        env.insert("OPENAI_BASE_URL".to_string(), "https://proxy/v1".to_string());
+        env.insert(
+            "OPENAI_BASE_URL".to_string(),
+            "https://proxy/v1".to_string(),
+        );
         // No YAML base_url → the panel still sees the endpoint from `.env`, so a
         // later save won't clear it (regression guard for the dual-write change).
         let (key, base) = project_hermes_key_and_base("openai-api", &env, None, None);
@@ -16395,8 +18728,9 @@ wire_api = "chat"
                         || std::path::Path::new(first)
                             .file_name()
                             .and_then(|n| n.to_str())
-                            .is_some_and(|n| n.trim_end_matches(".cmd").trim_end_matches(".exe")
-                                == "hermes"),
+                            .is_some_and(
+                                |n| n.trim_end_matches(".cmd").trim_end_matches(".exe") == "hermes"
+                            ),
                     "unexpected launcher: {argv:?}"
                 );
             }
@@ -16436,7 +18770,10 @@ wire_api = "chat"
         let serialized = toml::to_string_pretty(&doc).expect("serialize");
         let reparsed: toml::Value = serialized.parse().expect("valid toml");
         let t = reparsed.as_table().unwrap();
-        assert_eq!(t.get("telemetry").and_then(toml::Value::as_bool), Some(true));
+        assert_eq!(
+            t.get("telemetry").and_then(toml::Value::as_bool),
+            Some(true)
+        );
         assert_eq!(
             t.get("default_model").and_then(toml::Value::as_str),
             Some(KIMI_MANAGED_MODEL_ALIAS)
@@ -16468,7 +18805,9 @@ wire_api = "chat"
             Some("claude-opus-4-7")
         );
         assert_eq!(
-            model.get("max_context_size").and_then(toml::Value::as_integer),
+            model
+                .get("max_context_size")
+                .and_then(toml::Value::as_integer),
             Some(200_000)
         );
     }
@@ -16838,7 +19177,10 @@ default_effort = "high"
             .filter_map(|v| v.as_str())
             .collect();
         assert_eq!(efforts, vec!["low", "medium", "high"]);
-        assert_eq!(proj.get("defaultEffort").and_then(|v| v.as_str()), Some("high"));
+        assert_eq!(
+            proj.get("defaultEffort").and_then(|v| v.as_str()),
+            Some("high")
+        );
     }
 
     #[test]
@@ -16890,7 +19232,10 @@ max_context_size = 200000
             Some("https://api.anthropic.com")
         );
         assert_eq!(proj.get("key").and_then(|v| v.as_str()), Some("sk-ant"));
-        assert_eq!(proj.get("authType").and_then(|v| v.as_str()), Some("api_key"));
+        assert_eq!(
+            proj.get("authType").and_then(|v| v.as_str()),
+            Some("api_key")
+        );
         assert_eq!(
             proj.get("modelId").and_then(|v| v.as_str()),
             Some("claude-opus-4-7")
@@ -16899,7 +19244,10 @@ max_context_size = 200000
             proj.get("maxContextSize").and_then(|v| v.as_i64()),
             Some(200000)
         );
-        assert_eq!(proj.get("hasManagedBlock"), Some(&serde_json::Value::Bool(true)));
+        assert_eq!(
+            proj.get("hasManagedBlock"),
+            Some(&serde_json::Value::Bool(true))
+        );
         for forbidden in [
             "apiKey",
             "apiBaseUrl",

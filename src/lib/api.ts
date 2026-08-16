@@ -279,12 +279,14 @@ export async function acpSetMode(
 export async function acpSetConfigOption(
   connectionId: string,
   configId: string,
-  valueId: string
-): Promise<void> {
+  valueId: string,
+  operationId?: string
+): Promise<string | null | void> {
   return getTransport().call("acp_set_config_option", {
     connectionId,
     configId,
     valueId,
+    operationId,
   })
 }
 
@@ -586,16 +588,18 @@ export async function acpUpdateAgentConfig(
  * credential.
  */
 export async function acpCursorAuthStatus(
-  apiKey?: string
+  apiKey?: string,
+  baseUrl?: string
 ): Promise<CursorAuthStatus> {
-  return getTransport().call("acp_cursor_auth_status", { apiKey })
+  return getTransport().call("acp_cursor_auth_status", { apiKey, baseUrl })
 }
 
 /** List models via `cursor-agent models` for the Cursor model picker. */
 export async function acpCursorListModels(
-  apiKey?: string
+  apiKey?: string,
+  baseUrl?: string
 ): Promise<CursorModelsResult> {
-  return getTransport().call("acp_cursor_list_models", { apiKey })
+  return getTransport().call("acp_cursor_list_models", { apiKey, baseUrl })
 }
 
 /**
