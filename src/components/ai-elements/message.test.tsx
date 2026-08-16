@@ -56,7 +56,9 @@ describe("MessageResponse", () => {
   })
 
   it("keeps finished replies in static mode so remend cannot append leftover * / _", () => {
-    render(<MessageResponse>{"see `tools/dsv4-0731-c1/*` please."}</MessageResponse>)
+    render(
+      <MessageResponse>{"see `tools/dsv4-0731-c1/*` please."}</MessageResponse>
+    )
 
     const root = screen.getByTestId("streamdown-root")
     expect(root).toHaveAttribute("data-mode", "static")
