@@ -406,6 +406,10 @@
         "title": "Fechar aba atual",
         "description": "Fecha a conversa atual ou aba de arquivo"
       },
+      "reopen_last_closed_tab": {
+        "title": "Reabrir aba fechada",
+        "description": "Reabrir a última aba de conversa ou arquivo fechada"
+      },
       "close_all_file_tabs": {
         "title": "Fechar todas as abas de arquivo",
         "description": "Fecha todas as abas de arquivo abertas quando o painel de arquivos está ativo"

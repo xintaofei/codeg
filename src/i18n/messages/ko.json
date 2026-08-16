@@ -406,6 +406,10 @@
         "title": "현재 탭 닫기",
         "description": "현재 대화 또는 파일 탭을 닫습니다"
       },
+      "reopen_last_closed_tab": {
+        "title": "닫은 탭 다시 열기",
+        "description": "가장 최근에 닫은 대화 또는 파일 탭을 다시 엽니다"
+      },
       "close_all_file_tabs": {
         "title": "모든 파일 탭 닫기",
         "description": "파일 패널이 활성 상태일 때 열린 모든 파일 탭을 닫습니다"

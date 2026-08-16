@@ -406,6 +406,10 @@
         "title": "Close Current Tab",
         "description": "Close current conversation or file tab"
       },
+      "reopen_last_closed_tab": {
+        "title": "Reopen Closed Tab",
+        "description": "Reopen the most recently closed conversation or file tab"
+      },
       "close_all_file_tabs": {
         "title": "Close All File Tabs",
         "description": "Close all open file tabs when the file pane is active"

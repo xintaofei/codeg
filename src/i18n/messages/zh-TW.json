@@ -406,6 +406,10 @@
         "title": "關閉目前分頁",
         "description": "關閉目前會話或檔案分頁"
       },
+      "reopen_last_closed_tab": {
+        "title": "重新開啟關閉的標籤",
+        "description": "重新開啟最近關閉的會話或檔案標籤"
+      },
       "close_all_file_tabs": {
         "title": "關閉全部檔案分頁",
         "description": "當檔案面板處於作用中狀態時關閉所有開啟的檔案分頁"

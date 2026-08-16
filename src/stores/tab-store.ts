@@ -35,6 +35,7 @@ import {
   moveMessageInputDraft,
   sweepOrphanDraftKeys,
 } from "@/lib/message-input-draft"
+import { pushClosedTab, snapshotConversationTab } from "@/lib/closed-tab-stack"
 import type {
   AgentType,
   ConversationChange,
@@ -1133,6 +1134,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const index = prevState.rawTabs.findIndex((t) => t.id === tabId)
     if (index >= 0) {
       const closingTab = prevState.rawTabs[index]
+      pushClosedTab(snapshotConversationTab(closingTab))
       const next = prevState.rawTabs.filter((t) => t.id !== tabId)
       // A closing draft's composer text is scoped to that tab's key. Drop it —
       // unless this close spawns the replacement draft, which continues the same
@@ -1231,6 +1233,12 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       focusTab(tabId)
       return
     }
+    const keepIds = new Set(keep.map((tab) => tab.id))
+    for (const tab of prevState.rawTabs) {
+      if (!keepIds.has(tab.id)) {
+        pushClosedTab(snapshotConversationTab(tab))
+      }
+    }
     set({ rawTabs: keep, activeTabId: tabId })
     recomputeTabs()
   },
@@ -1240,6 +1248,9 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       const prevState = get()
       if (prevState.rawTabs.length === 0 && prevState.activeTabId == null) {
         return
+      }
+      for (const tab of prevState.rawTabs) {
+        pushClosedTab(snapshotConversationTab(tab))
       }
       set({ rawTabs: [], activeTabId: null })
       recomputeTabs()
@@ -1252,6 +1263,9 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       prevState.rawTabs.find((t) => t.id === prevState.activeTabId) ??
       prevState.rawTabs[0]
     const replacementTab = makeReplacementDraftTab(seedTab)
+    for (const tab of prevState.rawTabs) {
+      pushClosedTab(snapshotConversationTab(tab))
+    }
     set({ rawTabs: [replacementTab], activeTabId: replacementTab.id })
     recomputeTabs()
     runtime.activateConversationPane()
@@ -1261,6 +1275,11 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const prevState = get()
     const remaining = prevState.rawTabs.filter((t) => t.folderId !== folderId)
     if (remaining.length === prevState.rawTabs.length) return
+    for (const tab of prevState.rawTabs) {
+      if (tab.folderId === folderId) {
+        pushClosedTab(snapshotConversationTab(tab))
+      }
+    }
 
     const currentActive = prevState.activeTabId
     const stillActive =

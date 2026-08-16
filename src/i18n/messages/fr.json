@@ -406,6 +406,10 @@
         "title": "Fermer l’onglet actuel",
         "description": "Fermer la conversation actuelle ou l’onglet de fichier"
       },
+      "reopen_last_closed_tab": {
+        "title": "Rouvrir l'onglet fermé",
+        "description": "Rouvrir le dernier onglet de conversation ou de fichier fermé"
+      },
       "close_all_file_tabs": {
         "title": "Fermer tous les onglets de fichiers",
         "description": "Fermer tous les onglets de fichiers ouverts lorsque le panneau de fichiers est actif"

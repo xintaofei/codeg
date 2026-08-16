@@ -16,6 +16,8 @@ import {
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useSearchDialog } from "@/contexts/search-dialog-context"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
+import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import { popClosedTab } from "@/lib/closed-tab-stack"
 import {
   matchShortcutEvent,
   numberedTabIndexFromEvent,
@@ -38,7 +40,8 @@ export function WorkspaceChromeController() {
   const { toggle } = useSidebarContext()
   const { toggle: toggleAuxPanel } = useAuxPanelContext()
   const { toggle: toggleTerminal } = useTerminalContext()
-  const { openNewConversationTab, switchTab, closeTab } = useTabActions()
+  const { openNewConversationTab, openTab, switchTab, closeTab } =
+    useTabActions()
   const tabs = useTabStore((s) => s.tabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
   // Tab-close/navigation shortcuts used to live in the visible tab strips.
@@ -46,7 +49,7 @@ export function WorkspaceChromeController() {
   // owns them too (see the keydown handler below).
   const { mode, activePane, filesMaximized } = useWorkspaceView()
   const { activeFileTabId, fileTabs } = useWorkspaceFileTabs()
-  const { closeFileTab, closeAllFileTabs, switchFileTab } =
+  const { closeFileTab, closeAllFileTabs, switchFileTab, openFilePreview } =
     useWorkspaceActions()
   const { openConversations } = useWorkbenchRoute()
   const { shortcuts } = useShortcutSettings()
@@ -179,6 +182,40 @@ export function WorkspaceChromeController() {
           e.preventDefault()
           closeFileTab(activeFileTabId)
         }
+        return
+      }
+
+      if (matchShortcutEvent(e, shortcuts.reopen_last_closed_tab)) {
+        e.preventDefault()
+        while (true) {
+          const closed = popClosedTab()
+          if (!closed) return
+          if (closed.kind === "file") {
+            void openFilePreview(closed.path, {
+              folderId: closed.folderId ?? undefined,
+            })
+            return
+          }
+          if (closed.conversationId != null) {
+            openConversations()
+            openTab(
+              closed.folderId,
+              closed.conversationId,
+              closed.agentType,
+              closed.isPinned,
+              closed.title
+            )
+            return
+          }
+          const folder = useAppWorkspaceStore
+            .getState()
+            .getFolder(closed.folderId)
+          const workingDir = closed.workingDir ?? folder?.path
+          if (!workingDir) continue
+          openConversations()
+          openNewConversationTab(closed.folderId, workingDir)
+          return
+        }
       }
     }
     document.addEventListener("keydown", handleKeyDown)
@@ -189,6 +226,8 @@ export function WorkspaceChromeController() {
     handleOpenSettings,
     openConversations,
     openNewConversationTab,
+    openTab,
+    openFilePreview,
     setSearchOpen,
     shortcuts,
     toggle,

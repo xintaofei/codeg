@@ -406,6 +406,10 @@
         "title": "現在のタブを閉じる",
         "description": "現在の会話またはファイルタブを閉じます"
       },
+      "reopen_last_closed_tab": {
+        "title": "閉じたタブを再開",
+        "description": "直前に閉じた会話またはファイルタブを開く"
+      },
       "close_all_file_tabs": {
         "title": "すべてのファイルタブを閉じる",
         "description": "ファイルペインがアクティブなときに開いているすべてのファイルタブを閉じます"

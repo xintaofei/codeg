@@ -36,6 +36,7 @@ import {
   splitAbsPath,
 } from "@/lib/file-open-target"
 import { isAbsoluteFilePath } from "@/lib/file-path-display"
+import { pushClosedTab, snapshotFileTab } from "@/lib/closed-tab-stack"
 import {
   isHiddenPath,
   isHtmlPreviewable,
@@ -2153,6 +2154,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           if (!confirmed) return prev
         }
 
+        const closed = snapshotFileTab(tab)
+        if (closed) pushClosedTab(closed)
+
         const next = prev.filter((candidate) => candidate.id !== tabId)
 
         setActiveFileTabId((current) => {
@@ -2216,6 +2220,11 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       if (prev.some(isDirtyFileTab)) {
         const confirmed = window.confirm(t("confirmCloseAllDirtyTabs"))
         if (!confirmed) return prev
+      }
+
+      for (const tab of prev) {
+        const closed = snapshotFileTab(tab)
+        if (closed) pushClosedTab(closed)
       }
 
       inFlightLoadsRef.current.clear()

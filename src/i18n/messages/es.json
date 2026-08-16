@@ -406,6 +406,10 @@
         "title": "Cerrar pestaña actual",
         "description": "Cierra la conversación o pestaña de archivo actual"
       },
+      "reopen_last_closed_tab": {
+        "title": "Reabrir pestaña cerrada",
+        "description": "Reabrir la última pestaña de conversación o archivo cerrada"
+      },
       "close_all_file_tabs": {
         "title": "Cerrar todas las pestañas de archivos",
         "description": "Cierra todas las pestañas de archivos abiertas cuando el panel de archivos está activo"

@@ -9,6 +9,7 @@ export type ShortcutActionId =
   | "open_folder"
   | "open_settings"
   | "close_current_tab"
+  | "reopen_last_closed_tab"
   | "close_all_file_tabs"
   | "next_tab"
   | "prev_tab"
@@ -61,6 +62,9 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     id: "close_current_tab",
   },
   {
+    id: "reopen_last_closed_tab",
+  },
+  {
     id: "close_all_file_tabs",
   },
   {
@@ -108,6 +112,7 @@ export const DEFAULT_SHORTCUTS: ShortcutSettings = {
   open_folder: "mod+o",
   open_settings: "mod+,",
   close_current_tab: "mod+w",
+  reopen_last_closed_tab: "mod+shift+t",
   close_all_file_tabs: "mod+shift+w",
   next_tab: "mod+tab",
   prev_tab: "mod+shift+tab",

@@ -101,6 +101,26 @@ describe("numbered tab shortcuts", () => {
   })
 })
 
+describe("reopen last closed tab", () => {
+  it("defaults to Ctrl/Cmd+Shift+T", () => {
+    const ids = SHORTCUT_DEFINITIONS.map((definition) => definition.id)
+    expect(ids).toContain("reopen_last_closed_tab")
+    expect(DEFAULT_SHORTCUTS.reopen_last_closed_tab).toBe("mod+shift+t")
+    expect(
+      matchShortcutEvent(
+        keyEvent("t", { ctrlKey: true, shiftKey: true }),
+        DEFAULT_SHORTCUTS.reopen_last_closed_tab
+      )
+    ).toBe(true)
+    expect(
+      matchShortcutEvent(
+        keyEvent("t", { ctrlKey: true }),
+        DEFAULT_SHORTCUTS.reopen_last_closed_tab
+      )
+    ).toBe(false)
+  })
+})
+
 describe("alt combinations use event.code", () => {
   // macOS 上 ⌥S 报的 event.key 是 "ß"，不是 "s"。不看 event.code 的话，任何
   // 含 alt 的组合在 macOS 上都按不出来 —— 自定义样式的逃生舱正是这样一条。

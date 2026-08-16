@@ -406,6 +406,10 @@
         "title": "Aktuellen Tab schließen",
         "description": "Schließt den aktuellen Konversations- oder Dateitab"
       },
+      "reopen_last_closed_tab": {
+        "title": "Geschlossenen Tab wiederöffnen",
+        "description": "Den zuletzt geschlossenen Konversations- oder Datei-Tab wieder öffnen"
+      },
       "close_all_file_tabs": {
         "title": "Alle Dateitabs schließen",
         "description": "Schließt alle geöffneten Dateitabs, wenn der Dateibereich aktiv ist"
