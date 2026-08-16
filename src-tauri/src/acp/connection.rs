@@ -2925,20 +2925,47 @@ async fn apply_and_emit_session_config_options(
     emit_session_config_options_values(state, emitter, agent_type, updated).await;
 }
 
+/// Grok's initialize still advertises `image: false` — the coding model
+/// cannot see pixels. Native ACP `image` blocks nevertheless run its
+/// image-describe sidecar. An image-mime `resource` blob does not: grok dumps
+/// it as `<file_contents type="binary">` and the model only gets a path.
+/// Advertise `image: true` so the composer sends Image blocks.
+///
+/// Measured live against 0.2.112, 1.0.0 and 1.0.3: every one of them still
+/// advertises `image: false`, accepts a native `image` block anyway, and answers
+/// correctly about the pixels — while the same bytes as a resource blob make the
+/// model invent an answer. The advertisement has simply been wrong for as long
+/// as codeg has supported grok, across every version tested, so this is
+/// deliberately NOT version-gated (and stays correct if grok ever starts
+/// advertising the truth: `image` is already true then). Deliberately no pinned
+/// version named here either — `registry.rs` moves on its own schedule, and a
+/// claim about "the pinned version" rots at the next bump.
+///
+/// This bit says only that grok takes image blocks AT ALL — it decodes just some
+/// formats, which is a per-mime question a single capability cannot answer, so
+/// [`normalize_grok_image_blocks`] settles that separately at dispatch.
+fn effective_prompt_capabilities(
+    agent_type: AgentType,
+    capabilities: &sacp::schema::PromptCapabilities,
+) -> PromptCapabilitiesInfo {
+    PromptCapabilitiesInfo {
+        image: capabilities.image || agent_type == AgentType::Grok,
+        audio: capabilities.audio,
+        embedded_context: capabilities.embedded_context,
+    }
+}
+
 async fn emit_prompt_capabilities(
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
     capabilities: &sacp::schema::PromptCapabilities,
+    agent_type: AgentType,
 ) {
     emit_with_state(
         state,
         emitter,
         AcpEvent::PromptCapabilities {
-            prompt_capabilities: PromptCapabilitiesInfo {
-                image: capabilities.image,
-                audio: capabilities.audio,
-                embedded_context: capabilities.embedded_context,
-            },
+            prompt_capabilities: effective_prompt_capabilities(agent_type, capabilities),
         },
     )
     .await;
@@ -4096,6 +4123,7 @@ async fn run_connection(
                 &state,
                 &emitter_clone,
                 &init_resp.agent_capabilities.prompt_capabilities,
+                agent_type,
             )
             .await;
 
@@ -4510,9 +4538,19 @@ async fn run_connection(
                                     .otherwise(async |dispatch| {
                                         // Historical replay: throwaway state,
                                         // mirroring the sibling closure above.
+                                        // An ext notification that raises an
+                                        // ALERT is skipped, though — a
+                                        // compaction failure or a dropped image
+                                        // recorded in a past session is not
+                                        // happening now, and that path also
+                                        // fires an OS notification. The typed
+                                        // closure above draws the same line by
+                                        // forwarding only AvailableCommands.
                                         let mut replay_cb_state =
                                             CodeBuddyLiveState::default();
-                                        maybe_emit_ext_notification(&st, &h, agent_type, dispatch, &mut replay_cb_state).await;
+                                        if !grok_ext_notification_is_alert(&dispatch, agent_type) {
+                                            maybe_emit_ext_notification(&st, &h, agent_type, dispatch, &mut replay_cb_state).await;
+                                        }
                                         Ok(())
                                     })
                                     .await;
@@ -6274,6 +6312,85 @@ async fn journal_turn_span(
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), ack).await;
 }
 
+/// The image mime types grok's normalizer actually decodes — verbatim the set
+/// its own clipboard reader accepts (`xai-grok-shared/src/clipboard.rs`), and
+/// the boundary between the two carriages in [`normalize_grok_image_blocks`].
+///
+/// Measured against grok 1.0.0: png / webp / bmp / tiff round-trip through the
+/// describe sidecar (jpeg is one of the two formats grok itself re-encodes to,
+/// gif rides the same table). `image/svg+xml` does NOT — its validator answers
+/// `unsupported or unrecognised image format` and the image never reaches the
+/// model. Deliberately an allow-list, not a `image/*` prefix test: a mime we
+/// have no evidence for keeps the resource carriage, which is where it already
+/// was, so a wrong guess here can never be a regression.
+fn grok_decodes_image_mime(mime: &str) -> bool {
+    matches!(
+        mime.trim().to_ascii_lowercase().as_str(),
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp" | "image/tiff"
+    )
+}
+
+/// Whether a mime names an image at all — the outer guard on the demotion, so a
+/// malformed `Image` block carrying something else entirely is left untouched.
+/// Normalized exactly like [`grok_decodes_image_mime`]: if the two guards
+/// disagreed about the same string (`IMAGE/SVG+XML` reads as "not an image" to a
+/// case-sensitive test), an undecodable format would slip through as native.
+fn is_image_mime(mime: &str) -> bool {
+    mime.trim().to_ascii_lowercase().starts_with("image/")
+}
+
+/// Put every attached image on the carriage grok can actually read.
+///
+/// Two encodings carry the same bytes and grok treats them very differently:
+///
+/// * A native `Image` block runs its describe sidecar — the ONLY path where the
+///   model sees pixels (see [`effective_prompt_capabilities`]). But grok
+///   validates the format first and DROPS anything it cannot decode.
+/// * A `Resource` blob is saved into the session's `assets/` and announced to
+///   the model as a file path. No pixels, but for a text-shaped image (svg) the
+///   model can just read the source — measurably better than a drop.
+///
+/// So decodable images are promoted (queued drafts and work-task prompts
+/// composed before codeg advertised `image:true` still carry the old shape),
+/// and undecodable ones are demoted back — the composer only sees the single
+/// `image` capability bit and cannot make this call per mime.
+fn normalize_grok_image_blocks(blocks: Vec<PromptInputBlock>) -> Vec<PromptInputBlock> {
+    blocks
+        .into_iter()
+        .enumerate()
+        .map(|(index, block)| match block {
+            PromptInputBlock::Resource {
+                uri,
+                mime_type: Some(mime),
+                text: None,
+                blob: Some(blob),
+            } if grok_decodes_image_mime(&mime) && !blob.is_empty() => PromptInputBlock::Image {
+                data: blob,
+                mime_type: mime,
+                uri: Some(uri),
+            },
+            PromptInputBlock::Image {
+                data,
+                mime_type,
+                uri,
+            } if is_image_mime(&mime_type)
+                && !grok_decodes_image_mime(&mime_type)
+                && !data.is_empty() =>
+            {
+                PromptInputBlock::Resource {
+                    // A pasted image has no path; its position in this prompt is
+                    // the stable identifier, same as the work-task engine's.
+                    uri: uri.unwrap_or_else(|| format!("clipboard://grok-image-{index}")),
+                    mime_type: Some(mime_type),
+                    text: None,
+                    blob: Some(data),
+                }
+            }
+            other => other,
+        })
+        .collect()
+}
+
 fn map_prompt_blocks(blocks: Vec<PromptInputBlock>) -> Vec<ContentBlock> {
     blocks
         .into_iter()
@@ -7066,6 +7183,16 @@ async fn run_conversation_loop<'a>(
                         .collect();
                     (crate::turn_timings::prompt_hash(&text), cursor_turn_ord)
                 });
+                // Grok: settle each image onto the carriage grok can read —
+                // decodable ones as native Image blocks (so its describe
+                // sidecar runs), the rest back as resource blobs. The last
+                // point that sees the blocks, so every producer (composer,
+                // queued draft, work task, delegation) is covered at once.
+                let blocks = if agent_type == AgentType::Grok {
+                    normalize_grok_image_blocks(blocks)
+                } else {
+                    blocks
+                };
                 let prompt_blocks = map_prompt_blocks(blocks);
                 if prompt_blocks.is_empty() {
                     // Defensive: the manager rejects empty prompts before the
@@ -9084,9 +9211,11 @@ fn grok_ext_event_id(params: &serde_json::Value) -> String {
         .unwrap_or_else(|| format!("grok-ext-{}", uuid::Uuid::new_v4().simple()))
 }
 
-/// Map grok's private context-compaction ext notifications into `AcpEvent`s.
+/// Map grok's private ext notifications — context compaction and dropped
+/// prompt images — into `AcpEvent`s.
 ///
-/// grok reports `/compact` (and auto-compaction) results on
+/// grok reports `/compact` (and auto-compaction) results, and the fate of an
+/// image it refused to send, on
 /// `_x.ai/session_notification` / `_x.ai/session/update` rather than as normal
 /// `agent_message_chunk`s. Those methods never match the typed `session/update`
 /// pipeline, so without this the whole turn is blank and `/compact` looks like
@@ -9133,6 +9262,49 @@ fn map_grok_ext_notification(
                 locations: None,
                 meta: Some(serde_json::Value::Object(meta)),
                 images: None,
+            })
+        }
+        // A prompt image was accepted on the wire but dropped before the
+        // describe sidecar (too small, oversize, decode failure). Surface it
+        // so the user isn't left wondering why Grok "can't see" the shot.
+        "image_dropped" => {
+            // `notes` is grok's own user-facing sentence, one per dropped image
+            // ("Image 1 was dropped before send: too small (1×1); images must be
+            // at least 8×8 pixels."). It already names the subject, so it is
+            // shown verbatim — prefixing it would read "Image dropped: Image 1
+            // was dropped before send: …". Only the shapeless fallbacks get a
+            // prefix, because on their own they say nothing about images.
+            let message = update
+                .get("notes")
+                .and_then(|v| v.as_array())
+                .map(|notes| {
+                    notes
+                        .iter()
+                        .filter_map(|n| n.as_str())
+                        .map(str::trim)
+                        .filter(|n| !n.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    update
+                        .get("reason")
+                        .or_else(|| update.get("message"))
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        // A blank reason would render as a bare "Image dropped: "
+                        // — worse than the generic sentence below.
+                        .filter(|d| !d.is_empty())
+                        .map(|d| format!("Image dropped: {d}"))
+                })
+                .unwrap_or_else(|| "An image was dropped before send.".to_string());
+            Some(AcpEvent::Error {
+                message,
+                agent_type: agent_type.to_string(),
+                code: None,
+                details: None,
+                terminal: false,
             })
         }
         // Compaction itself blew up (e.g. the summarizer model call failed) while
@@ -9439,18 +9611,40 @@ fn grok_subagent_meta(
 }
 
 /// Whether a dispatch is a grok ext notification that
-/// `map_grok_ext_notification` renders as visible turn output (a compaction card
-/// or a compaction error). The active-turn loop consults this BEFORE the typed
+/// `map_grok_ext_notification` renders as visible turn output (a compaction
+/// card, a compaction error, or a dropped-image error). The active-turn loop
+/// consults this BEFORE the typed
 /// pipeline to mark the turn as non-empty: a `/compact` turn emits only these
 /// ext notifications and no standard `agent_message_chunk`, so without this its
 /// `end_turn` is reclassified as `"empty"` and re-surfaced as a spurious error —
 /// the exact symptom this change removes. Reuses `map_grok_ext_notification` so
-/// the handled-variant set can never drift from what actually emits.
+/// the handled-variant set can never drift from what actually emits. A turn
+/// whose only output was a dropped image therefore reports THAT, rather than
+/// the generic empty-turn failure it used to.
 fn grok_ext_notification_is_turn_output(dispatch: &Dispatch, agent_type: AgentType) -> bool {
     match dispatch {
         Dispatch::Notification(notification) => {
             map_grok_ext_notification(notification, agent_type).is_some()
         }
+        _ => false,
+    }
+}
+
+/// Whether a grok ext notification would raise a user-facing ALERT (status-bar
+/// entry + OS notification), as opposed to rendering a card in the turn.
+///
+/// Only the historical `session/load` replay asks: those notifications describe
+/// a PAST session, so re-raising their alerts would report a compaction failure
+/// or a dropped image as if it were happening now, for a session the user is
+/// merely opening. Reuses the mapper for the same reason
+/// [`grok_ext_notification_is_turn_output`] does — the alerting set cannot drift
+/// away from what actually emits.
+fn grok_ext_notification_is_alert(dispatch: &Dispatch, agent_type: AgentType) -> bool {
+    match dispatch {
+        Dispatch::Notification(notification) => matches!(
+            map_grok_ext_notification(notification, agent_type),
+            Some(AcpEvent::Error { .. })
+        ),
         _ => false,
     }
 }
@@ -11444,6 +11638,221 @@ mod tests {
     }
 
     #[test]
+    fn map_grok_ext_notification_image_dropped_surfaces_error() {
+        let raw = UntypedMessage::new(
+            "_x.ai/session_notification",
+            serde_json::json!({
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "image_dropped",
+                    "notes": [
+                        "Image 1 was dropped before send: too small (1×1); images must be at least 8×8 pixels."
+                    ]
+                }
+            }),
+        )
+        .unwrap();
+        match map_grok_ext_notification(&raw, AgentType::Grok) {
+            Some(AcpEvent::Error {
+                message, terminal, ..
+            }) => {
+                assert!(
+                    message.contains("too small"),
+                    "error should carry grok's drop reason; got: {message}"
+                );
+                // grok's note already opens with "Image 1 was dropped before
+                // send"; a prefix here would stutter it back at the user.
+                assert!(
+                    message.starts_with("Image 1 was dropped"),
+                    "grok's own sentence must be shown verbatim; got: {message}"
+                );
+                assert!(!terminal, "a dropped image must not kill the connection");
+            }
+            other => panic!("expected non-terminal Error, got {other:?}"),
+        }
+    }
+
+    /// Without `notes` there is no sentence to show, so the fallback has to
+    /// supply the subject itself.
+    #[test]
+    fn map_grok_ext_notification_image_dropped_without_notes_still_names_the_subject() {
+        let raw = UntypedMessage::new(
+            "_x.ai/session_notification",
+            serde_json::json!({
+                "sessionId": "s",
+                "update": { "sessionUpdate": "image_dropped", "reason": "decode failed" }
+            }),
+        )
+        .unwrap();
+        match map_grok_ext_notification(&raw, AgentType::Grok) {
+            Some(AcpEvent::Error { message, .. }) => {
+                assert_eq!(message, "Image dropped: decode failed");
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+
+        let bare = UntypedMessage::new(
+            "_x.ai/session_notification",
+            serde_json::json!({
+                "sessionId": "s",
+                "update": { "sessionUpdate": "image_dropped", "notes": [] }
+            }),
+        )
+        .unwrap();
+        match map_grok_ext_notification(&bare, AgentType::Grok) {
+            Some(AcpEvent::Error { message, .. }) => {
+                assert!(
+                    message.to_lowercase().contains("image"),
+                    "a note-less drop must still say what happened; got: {message}"
+                );
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn normalize_grok_image_blocks_lifts_decodable_image_blobs_only() {
+        let blocks = vec![
+            PromptInputBlock::Text {
+                text: "see this".into(),
+            },
+            PromptInputBlock::Resource {
+                uri: "clipboard://shot.png-abc".into(),
+                mime_type: Some("image/png".into()),
+                text: None,
+                blob: Some("aGk=".into()),
+            },
+            PromptInputBlock::Resource {
+                uri: "clipboard://notes.md".into(),
+                mime_type: Some("text/markdown".into()),
+                text: Some("hi".into()),
+                blob: None,
+            },
+            PromptInputBlock::Image {
+                data: "already".into(),
+                mime_type: "image/jpeg".into(),
+                uri: None,
+            },
+        ];
+        let out = normalize_grok_image_blocks(blocks);
+        assert!(matches!(&out[0], PromptInputBlock::Text { text } if text == "see this"));
+        assert!(
+            matches!(
+                &out[1],
+                PromptInputBlock::Image { data, mime_type, uri: Some(u) }
+                    if data == "aGk="
+                        && mime_type == "image/png"
+                        && u == "clipboard://shot.png-abc"
+            ),
+            "{:?}",
+            out[1]
+        );
+        assert!(matches!(
+            &out[2],
+            PromptInputBlock::Resource {
+                mime_type: Some(m),
+                ..
+            } if m == "text/markdown"
+        ));
+        assert!(matches!(
+            &out[3],
+            PromptInputBlock::Image { data, .. } if data == "already"
+        ));
+    }
+
+    /// grok's validator rejects `image/svg+xml` outright ("unsupported or
+    /// unrecognised image format") and the model then sees nothing at all. As a
+    /// resource blob the same file lands in the session's assets, where the
+    /// model can read the source — so an undecodable mime must NOT ride the
+    /// native carriage, whichever producer built the block.
+    #[test]
+    fn normalize_grok_image_blocks_demotes_mimes_grok_cannot_decode() {
+        let blocks = vec![
+            PromptInputBlock::Image {
+                data: "PHN2Zy8+".into(),
+                mime_type: "image/svg+xml".into(),
+                uri: Some("file:///tmp/diagram.svg".into()),
+            },
+            // Path-less (pasted): the demotion has to invent a stable uri.
+            // Upper-cased on purpose — the "is it an image at all" guard and the
+            // allow-list must read the same string the same way, or an
+            // undecodable format sails through as native.
+            PromptInputBlock::Image {
+                data: "PHN2Zy8+".into(),
+                mime_type: "IMAGE/SVG+XML".into(),
+                uri: None,
+            },
+            // Already on the resource carriage and undecodable — left alone,
+            // never promoted.
+            PromptInputBlock::Resource {
+                uri: "clipboard://icon.svg".into(),
+                mime_type: Some("image/svg+xml".into()),
+                text: None,
+                blob: Some("PHN2Zy8+".into()),
+            },
+        ];
+        let out = normalize_grok_image_blocks(blocks);
+        assert!(
+            matches!(
+                &out[0],
+                PromptInputBlock::Resource { uri, mime_type: Some(m), text: None, blob: Some(b) }
+                    if uri == "file:///tmp/diagram.svg"
+                        && m == "image/svg+xml"
+                        && b == "PHN2Zy8+"
+            ),
+            "{:?}",
+            out[0]
+        );
+        assert!(
+            matches!(
+                &out[1],
+                PromptInputBlock::Resource { uri, blob: Some(b), .. }
+                    if uri == "clipboard://grok-image-1" && b == "PHN2Zy8+"
+            ),
+            "{:?}",
+            out[1]
+        );
+        assert!(
+            matches!(
+                &out[2],
+                PromptInputBlock::Resource { mime_type: Some(m), .. } if m == "image/svg+xml"
+            ),
+            "{:?}",
+            out[2]
+        );
+    }
+
+    /// The allow-list is the boundary between the two carriages, so pin it:
+    /// grok's own raster set in, everything else out.
+    #[test]
+    fn grok_decodes_image_mime_covers_groks_raster_set_only() {
+        for mime in [
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp",
+            "image/bmp",
+            "image/tiff",
+            "IMAGE/PNG",
+        ] {
+            assert!(grok_decodes_image_mime(mime), "{mime} should be decodable");
+        }
+        for mime in [
+            "image/svg+xml",
+            "image/avif",
+            "image/heic",
+            "image/x-icon",
+            "text/markdown",
+            "",
+        ] {
+            assert!(
+                !grok_decodes_image_mime(mime),
+                "{mime} must keep the resource carriage"
+            );
+        }
+    }
+
+    #[test]
     fn map_grok_ext_notification_auto_compact_failed_surfaces_error() {
         let raw = UntypedMessage::new(
             "_x.ai/session_notification",
@@ -11836,6 +12245,54 @@ mod tests {
         // Never fires for a non-grok agent.
         assert!(!grok_ext_notification_is_turn_output(
             &notif("auto_compact_completed"),
+            AgentType::Codex
+        ));
+    }
+
+    /// The `session/load` replay drains a PAST session, so anything that would
+    /// raise an alert (status-bar entry + OS notification) has to be recognised
+    /// and skipped there — otherwise opening an old conversation reports its
+    /// historical failures as if they were happening now.
+    #[test]
+    fn grok_ext_notification_is_alert_matches_only_the_error_outcomes() {
+        let notif = |variant: &str| {
+            Dispatch::Notification(
+                UntypedMessage::new(
+                    "_x.ai/session_notification",
+                    serde_json::json!({
+                        "sessionId": "s",
+                        "update": {
+                            "sessionUpdate": variant,
+                            "tokens_before": 9, "tokens_after": 8, "reason": "x",
+                            "notes": ["Image 1 was dropped before send: too small."]
+                        }
+                    }),
+                )
+                .unwrap(),
+            )
+        };
+        // Both map to a non-terminal Error, so both alert.
+        assert!(grok_ext_notification_is_alert(
+            &notif("image_dropped"),
+            AgentType::Grok
+        ));
+        assert!(grok_ext_notification_is_alert(
+            &notif("auto_compact_failed"),
+            AgentType::Grok
+        ));
+        // A successful compaction renders a CARD, not an alert — it stays
+        // replayable, so the loaded transcript still shows what happened.
+        assert!(!grok_ext_notification_is_alert(
+            &notif("auto_compact_completed"),
+            AgentType::Grok
+        ));
+        // Unmapped variants and non-grok agents never alert.
+        assert!(!grok_ext_notification_is_alert(
+            &notif("turn_completed"),
+            AgentType::Grok
+        ));
+        assert!(!grok_ext_notification_is_alert(
+            &notif("image_dropped"),
             AgentType::Codex
         ));
     }

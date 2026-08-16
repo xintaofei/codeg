@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import {
   Bot,
+  FolderTree,
   Gauge,
   GitMerge,
   Info,
@@ -49,6 +50,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
+import { DirectoryPathInput } from "@/components/shared/directory-path-input"
 import { FolderSelect } from "@/components/shared/folder-select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
@@ -215,6 +217,7 @@ function TaskSettingsBody({
   )
   const [autoMerge, setAutoMerge] = useState(false)
   const [deleteWorktreeDefault, setDeleteWorktreeDefault] = useState(true)
+  const [worktreeRoot, setWorktreeRoot] = useState("")
   const [initCommand, setInitCommand] = useState("")
   const [preflightCommand, setPreflightCommand] = useState("")
   const [stagePrompts, setStagePrompts] = useState<Record<string, string>>({})
@@ -255,6 +258,7 @@ function TaskSettingsBody({
         setMergeStrategy(s.merge_strategy === "merge" ? "merge" : "squash")
         setAutoMerge(s.auto_merge)
         setDeleteWorktreeDefault(s.delete_worktree_default)
+        setWorktreeRoot(s.worktree_root ?? "")
         setInitCommand(s.init_command ?? "")
         setStagePrompts(s.stage_prompts ?? {})
         const legacy =
@@ -312,6 +316,10 @@ function TaskSettingsBody({
         merge_strategy: mergeStrategy,
         auto_merge: autoMerge,
         delete_worktree_default: deleteWorktreeDefault,
+        // Blank = the default layout (next to the project folder), which is
+        // also what an absent field means to the engine — so an emptied box
+        // is stored as null rather than as an empty directory name.
+        worktree_root: worktreeRoot.trim() || null,
         // Free text is the only surface now; a legacy id was migrated into
         // the text field on load, so the id is always cleared on save.
         preflight_command_id: null,
@@ -588,8 +596,29 @@ function TaskSettingsBody({
                 />
               </SettingCard>
 
-              {/* The two shell hooks around a task's life, in run order. */}
+              {/* A worktree's life, in order: where it is created, what runs
+                  in it once it exists, and what has to pass before it lands. */}
               <SettingCard>
+                <SettingRow
+                  icon={FolderTree}
+                  title={t("settingsWorktreeRoot")}
+                  description={t("settingsWorktreeRootHint")}
+                  htmlFor="task-worktree-root"
+                >
+                  <DirectoryPathInput
+                    id="task-worktree-root"
+                    value={worktreeRoot}
+                    onValueChange={setWorktreeRoot}
+                    placeholder={t("settingsWorktreeRootPlaceholder")}
+                    browseLabel={t("settingsWorktreeRootBrowse")}
+                    browserTitle={t("settingsWorktreeRoot")}
+                    // The in-app browser (web / remote workspace) opens where
+                    // the worktrees would go today, so "one level up" is a
+                    // click away instead of a walk from the home directory.
+                    initialPath={folder?.path ?? undefined}
+                    className="h-8 bg-background font-mono text-xs"
+                  />
+                </SettingRow>
                 <SettingRow
                   icon={PackagePlus}
                   title={t("settingsInitCommand")}

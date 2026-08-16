@@ -1077,8 +1077,8 @@ export function MessageInput({
     // `attachments` holds only images now — files live inline as badges above.
     // The wire encoding is capability-driven inside the hook (native `image`
     // block vs embedded `resource` blob), so an agent that advertises
-    // `image: false` but `embedded_context: true` (e.g. Grok) still receives
-    // the bytes it accepts.
+    // `image: false` but `embedded_context: true` still receives the bytes it
+    // accepts.
     blocks.push(...imagePromptBlocks())
 
     const displayText =

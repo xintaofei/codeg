@@ -1510,6 +1510,11 @@ export interface WorkTaskFolderSettings {
    *  (agent-written commit message, worktree per `delete_worktree_default`). */
   auto_merge: boolean
   delete_worktree_default: boolean
+  /** Directory new task worktrees are created IN — each task still gets its
+   *  own `<repo>-task-<id>` directory under it. Null/blank keeps them next to
+   *  the project folder; `~` expands and a relative path resolves against the
+   *  project folder. */
+  worktree_root?: string | null
   /** folder_command id run in the worktree when a task settles into review
    *  (the acceptance red/green light); null = no preflight. */
   preflight_command_id?: number | null

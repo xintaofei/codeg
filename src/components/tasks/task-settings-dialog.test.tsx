@@ -214,6 +214,47 @@ describe("TaskSettingsDialog workflow", () => {
     expect(saved.delete_worktree_default).toBe(true)
   })
 
+  it("saves a chosen worktree directory, and blanks it back to the default", async () => {
+    const user = userEvent.setup()
+    renderDialog(1)
+    const save = await saveButton()
+
+    await user.click(screen.getByRole("tab", { name: "Workflow" }))
+    const box = screen.getByRole("textbox", { name: "Worktree location" })
+    expect(box).toHaveValue("")
+    await user.type(box, "  ~/codeg-worktrees  ")
+    await user.click(save)
+
+    await waitFor(() => expect(setMock).toHaveBeenCalled())
+    const [, saved] = setMock.mock.calls[0] as [number, WorkTaskFolderSettings]
+    // Trimmed: a stray space would become part of the directory name.
+    expect(saved.worktree_root).toBe("~/codeg-worktrees")
+
+    // Clearing the box is how you go back to "next to the project folder",
+    // which the engine reads off an absent value — not an empty one.
+    setMock.mockClear()
+    await user.clear(box)
+    await user.click(save)
+    await waitFor(() => expect(setMock).toHaveBeenCalled())
+    const [, cleared] = setMock.mock.calls[0] as [
+      number,
+      WorkTaskFolderSettings,
+    ]
+    expect(cleared.worktree_root).toBeNull()
+  })
+
+  it("seeds the worktree directory from the stored row", async () => {
+    getOwnMock.mockResolvedValue(settings({ worktree_root: "/var/trees" }))
+    const user = userEvent.setup()
+    renderDialog(1)
+    await saveButton()
+
+    await user.click(screen.getByRole("tab", { name: "Workflow" }))
+    expect(
+      screen.getByRole("textbox", { name: "Worktree location" })
+    ).toHaveValue("/var/trees")
+  })
+
   it("seeds the auto-merge switch from the stored row", async () => {
     getOwnMock.mockResolvedValue(settings({ auto_merge: true }))
     const user = userEvent.setup()

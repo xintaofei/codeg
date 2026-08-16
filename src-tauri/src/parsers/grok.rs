@@ -1010,15 +1010,14 @@ fn update_text(update: &Value) -> String {
 
 /// Classify a `user_message_chunk`'s `content` into a display block.
 ///
-/// Grok sends prose as `{type:"text"}` and a pasted image as an embedded
-/// `{type:"resource", resource:{blob, mimeType, uri}}` — it advertises
-/// `image:false`, so images ride as embedded resources. An image-mime resource
-/// is promoted to [`ContentBlock::Image`] (bytes: `blob → data`) so it renders
-/// as a thumbnail, matching the live path and every other agent's images; a
-/// non-image embedded resource folds to a `[uri](uri)` link (same as the live
-/// [`crate::acp::user_blocks_from_prompt`]) so the attachment is still visible
-/// instead of a blank turn. Anything else falls back to a (possibly empty) text
-/// block, preserving prior behavior for plain prompts.
+/// Grok sends prose as `{type:"text"}`. Current codeg prompts send a native
+/// `{type:"image"}` chunk (so grok's describe sidecar runs). Older transcripts
+/// still carry the embedded `{type:"resource", resource:{blob, mimeType, uri}}`
+/// shape from when we followed grok's `image:false` advertisement. Both
+/// image-mime forms become [`ContentBlock::Image`] so they render as a
+/// thumbnail; a non-image embedded resource folds to a `[uri](uri)` link
+/// (same as the live [`crate::acp::user_blocks_from_prompt`]). Anything else
+/// falls back to a (possibly empty) text block.
 fn user_chunk_to_block(update: &Value) -> Option<ContentBlock> {
     let content = update.get("content")?;
     match content.get("type").and_then(Value::as_str).unwrap_or("") {
@@ -1045,8 +1044,8 @@ fn user_chunk_to_block(update: &Value) -> Option<ContentBlock> {
                 }
             }
         }
-        // Defensive: native ACP image content. Grok uses the `resource` shape
-        // above, but stay robust to a future/native image chunk.
+        // Native ACP image content — the live send path for every grok that
+        // decodes the format (see `normalize_grok_image_blocks`).
         "image" => {
             let data = content.get("data").and_then(Value::as_str)?;
             Some(ContentBlock::Image {
@@ -2074,12 +2073,43 @@ mod tests {
     }
 
     #[test]
+    fn merges_prompt_text_and_native_image_into_one_user_turn() {
+        // Grok echoes a native ACP image as its own `user_message_chunk` (same
+        // `promptIndex` as the prose) — the shape captured from a live 1.0.0 and
+        // re-checked on 1.0.3. Same merge rule as the legacy resource-blob shape
+        // below.
+        let updates = concat!(
+            r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"这是什么"},"_meta":{"modelId":"grok-4.6","promptIndex":0}}},"timestamp":1783584019}"#, "\n",
+            r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"image","data":"QUJD","mimeType":"image/png"},"_meta":{"promptIndex":0}}},"timestamp":1783584019}"#, "\n",
+            r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"一张截图"}}},"timestamp":1783584024}"#, "\n",
+            r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"turn_completed","stop_reason":"end_turn"}},"timestamp":1783584024}"#, "\n",
+        );
+        let (_tmp, sessions) = fixture(SUMMARY, updates);
+        let parser = GrokParser::with_base_dir(sessions);
+        let detail = parser
+            .get_conversation("019f45e3-e1ef-7690-a29f-fe2554382b49")
+            .unwrap();
+        let turns = &detail.turns;
+        assert_eq!(turns.len(), 2);
+        assert!(matches!(turns[0].role, TurnRole::User));
+        assert_eq!(turns[0].blocks.len(), 2);
+        assert!(
+            matches!(&turns[0].blocks[0], ContentBlock::Text { text } if text == "这是什么")
+        );
+        assert!(matches!(
+            &turns[0].blocks[1],
+            ContentBlock::Image { data, mime_type, .. }
+                if data == "QUJD" && mime_type == "image/png"
+        ));
+        assert!(matches!(turns[1].role, TurnRole::Assistant));
+    }
+
+    #[test]
     fn merges_prompt_text_and_image_resource_into_one_user_turn() {
-        // Grok (`image:false` + `embedded_context:true`) sends a pasted image as
-        // a separate `user_message_chunk` carrying an embedded resource blob,
-        // right after the prose chunk of the SAME prompt (same `promptIndex`).
-        // Both must land in ONE user turn as [Text, Image] — not a text turn
-        // plus a trailing empty/image-only turn (the bug this fixes).
+        // Older transcripts: Grok echoed a pasted image as an embedded
+        // resource blob (`user_message_chunk` after the prose, same
+        // `promptIndex`). Both must still land in ONE user turn as
+        // [Text, Image] — not a text turn plus a trailing image-only turn.
         let updates = concat!(
             r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"这是什么"},"_meta":{"modelId":"grok-4.5","promptIndex":0}}},"timestamp":1783584019}"#, "\n",
             r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"resource","resource":{"blob":"QUJD","mimeType":"image/png","uri":"clipboard://image.png-abc"}},"_meta":{"promptIndex":0}}},"timestamp":1783584019}"#, "\n",

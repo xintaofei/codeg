@@ -515,9 +515,9 @@ pub enum ConfigStaleKind {
 /// [`PromptInputBlock`]: only what a viewer needs to render the user turn.
 /// Non-image `Resource` / `ResourceLink` prompt blocks are folded into `Text`
 /// markdown links by [`user_blocks_from_prompt`]; an image-mime embedded
-/// `Resource` (how an `image:false` / `embedded_context:true` agent like Grok
-/// carries a pasted image) is promoted to `Image` so the viewer renders a
-/// thumbnail, not a link.
+/// `Resource` (how an `image:false` / `embedded_context:true` agent carries a
+/// pasted image — and still how a format the agent cannot decode travels) is
+/// promoted to `Image` so the viewer renders a thumbnail, not a link.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UserMessageBlock {
@@ -527,10 +527,12 @@ pub enum UserMessageBlock {
 
 /// Project the wire `PromptInputBlock`s the sender submitted into the lean
 /// [`UserMessageBlock`]s broadcast to viewers: text and images pass through; an
-/// image-mime embedded resource (Grok's pasted-image encoding) is promoted to an
-/// `Image`; other resources/resource-links collapse to a `[label](uri)` markdown
-/// line so a viewer still sees what was attached without shipping blob bytes
-/// twice.
+/// image-mime embedded resource is promoted to an `Image`; other
+/// resources/resource-links collapse to a `[label](uri)` markdown line so a
+/// viewer still sees what was attached without shipping blob bytes twice.
+///
+/// Both image carriages therefore render identically, which is what keeps the
+/// user turn stable no matter which one the prompt ends up taking.
 pub fn user_blocks_from_prompt(blocks: &[PromptInputBlock]) -> Vec<UserMessageBlock> {
     blocks
         .iter()
@@ -543,9 +545,10 @@ pub fn user_blocks_from_prompt(blocks: &[PromptInputBlock]) -> Vec<UserMessageBl
                 mime_type: mime_type.clone(),
             },
             // An image-mime embedded resource carries a pasted image for agents
-            // that reject native image blocks (Grok: `image:false` +
-            // `embedded_context:true`). Promote it to `Image` so viewers render
-            // the thumbnail; non-image resources still collapse to a link.
+            // that reject native image blocks (an `image:false` +
+            // `embedded_context:true` agent), and for a format the agent cannot
+            // decode. Promote it to `Image` so viewers render the thumbnail;
+            // non-image resources still collapse to a link.
             PromptInputBlock::Resource {
                 uri,
                 mime_type,
