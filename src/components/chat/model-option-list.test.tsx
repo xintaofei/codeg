@@ -112,6 +112,19 @@ describe("ModelOptionList", () => {
     expect(screen.queryByText("anthropic")).toBeNull()
   })
 
+  it("keeps providers visible and expands their models on click", async () => {
+    const user = userEvent.setup()
+    renderList({ collapsibleGroups: true })
+    const provider = screen.getByRole("button", { name: "openai" })
+    expect(provider).toHaveAttribute("aria-expanded", "false")
+    expect(screen.queryByRole("option", { name: /gpt-4o/ })).toBeNull()
+
+    await user.click(provider)
+
+    expect(provider).toHaveAttribute("aria-expanded", "true")
+    expect(screen.getByRole("option", { name: /gpt-4o/ })).toBeInTheDocument()
+  })
+
   it("shows the empty label when nothing matches", async () => {
     const user = userEvent.setup()
     renderList()

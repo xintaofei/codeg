@@ -932,13 +932,19 @@
         "action": "連接",
         "editTitle": "編輯 Provider",
         "editDescription": "更新該 Provider 的 API Key 或 Base URL。",
-        "saveAction": "儲存"
+        "saveAction": "儲存",
+        "agentTitle": "連接 {agent} Provider",
+        "agentDescription": "從 models.dev 目錄選擇一個 Provider。憑證儲存到 {agent} 的 auth.json 檔案。",
+        "agentEditTitle": "編輯 {agent} Provider",
+        "agentEditDescription": "更新此 Provider 在 {agent} 原生 JSON 檔案中的憑證。"
       },
       "customProvider": {
         "title": "新增自訂 Provider",
         "description": "定義一個 OpenAI 相容端點。API key 儲存到 auth.json；provider 設定區塊寫入 opencode.json。",
         "action": "新增 Provider",
-        "idInCatalog": "{providerId} 是已知 Provider，請改用「連接 Provider」連接。"
+        "idInCatalog": "{providerId} 是已知 Provider，請改用「連接 Provider」連接。",
+        "agentTitle": "新增自訂 {agent} Provider",
+        "agentDescription": "在 {agent} 原生 JSON 檔案中設定 OpenAI 相容 Provider。"
       },
       "refreshCatalog": "重新整理目錄",
       "reasoningBadge": "推理",
@@ -992,7 +998,24 @@
           "question": "向你提問",
           "doom_loop": "同一呼叫以相同輸入重複 3 次時觸發"
         }
-      }
+      },
+      "kiloConfiguration": "Kilo Code 設定",
+      "kiloConfigurationDescription": "管理 Kilo Code Provider 和模型。變更會儲存到 Kilo 的原生 JSON 檔案。",
+      "fetchProviderModels": "取得 Provider 模型",
+      "fetchModelsCredentialsRequired": "取得前請填寫此 Provider 的 Base URL 和 API Key。",
+      "fetchModelsAlreadyConfigured": "所有可用模型都已設定。",
+      "fetchModelsFailed": "無法從此 Provider 取得模型。",
+      "modelsAdded": "已新增 {count} 個模型。",
+      "chooseModelsTitle": "選擇要新增的模型",
+      "chooseModelsDescription": "選擇要為 {providerId} 新增的模型。預設啟用推理。",
+      "searchModels": "搜尋模型…",
+      "selectedModels": "已選取 {selected} / {total}",
+      "selectAllModels": "全選",
+      "clearSelectedModels": "清除",
+      "addSelectedModels": "新增選取的模型",
+      "newModelIdPlaceholder": "new-model-id",
+      "kiloNativeJsonConfig": "Kilo Code 原生 JSON 設定",
+      "dragProvider": "拖曳以重新排序 {providerId}"
     },
     "openClaw": {
       "gatewayConfig": "Gateway 配置",
@@ -2703,7 +2726,8 @@
         "mentionGroupAgent": "智能體",
         "mentionGroupSession": "工作階段",
         "mentionGroupCommit": "提交",
-        "mentionGroupSkill": "技能"
+        "mentionGroupSkill": "技能",
+        "manageKiloModels": "管理 Kilo Code 模型"
       },
       "messageQueue": {
         "addToQueue": "加入佇列",
@@ -3344,6 +3368,21 @@
       "proposedPlan": {
         "title": "計劃提案",
         "planning": "規劃中…"
+      },
+      "kiloModelManager": {
+        "title": "管理 Kilo Code 模型",
+        "description": "新增模型，並選擇每個模型是否使用推理。",
+        "loadFailed": "無法載入 Kilo Code 模型。",
+        "saveFailed": "無法儲存 Kilo Code 模型。",
+        "providerPlaceholder": "provider-id",
+        "modelPlaceholder": "model-id",
+        "add": "新增",
+        "reasoning": "推理",
+        "empty": "尚未設定模型。",
+        "manageReasoningLevels": "管理推理層級",
+        "reasoningLevelsTitle": "推理層級",
+        "reasoningLevelsDescription": "新增或停用 {model} 顯示的層級。",
+        "customLevel": "自訂層級"
       }
     },
     "diffPreview": {

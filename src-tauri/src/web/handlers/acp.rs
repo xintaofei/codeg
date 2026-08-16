@@ -818,17 +818,29 @@ pub async fn acp_update_kimi_code_config(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AcpFetchKimiModelsParams {
+pub struct AcpFetchProviderModelsParams {
     pub base_url: String,
     pub api_key: String,
 }
 
 pub async fn acp_fetch_kimi_models(
-    Json(params): Json<AcpFetchKimiModelsParams>,
+    Json(params): Json<AcpFetchProviderModelsParams>,
 ) -> Result<Json<Vec<String>>, AppCommandError> {
     let models = acp_commands::acp_fetch_kimi_models_core(&params.base_url, &params.api_key)
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(models))
+}
+
+pub async fn acp_fetch_kilo_provider_models(
+    Json(params): Json<AcpFetchProviderModelsParams>,
+) -> Result<Json<Vec<String>>, AppCommandError> {
+    let models = acp_commands::acp_fetch_kilo_provider_models_core(
+        &params.base_url,
+        &params.api_key,
+    )
+    .await
+    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(models))
 }
 

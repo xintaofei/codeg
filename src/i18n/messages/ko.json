@@ -932,13 +932,19 @@
         "action": "연결",
         "editTitle": "공급자 편집",
         "editDescription": "이 공급자의 API 키 또는 Base URL을 업데이트합니다.",
-        "saveAction": "저장"
+        "saveAction": "저장",
+        "agentTitle": "{agent} 공급자 연결",
+        "agentDescription": "models.dev 카탈로그에서 공급자를 선택하세요. 자격 증명은 {agent}의 auth.json 파일에 저장됩니다.",
+        "agentEditTitle": "{agent} 공급자 편집",
+        "agentEditDescription": "{agent}의 네이티브 JSON 파일에서 이 공급자의 자격 증명을 업데이트합니다."
       },
       "customProvider": {
         "title": "사용자 지정 공급자 추가",
         "description": "OpenAI 호환 엔드포인트를 정의합니다. API 키는 auth.json에, provider 블록은 opencode.json에 저장됩니다.",
         "action": "공급자 추가",
-        "idInCatalog": "{providerId}은(는) 알려진 공급자입니다. 대신 '공급자 연결'로 연결하세요."
+        "idInCatalog": "{providerId}은(는) 알려진 공급자입니다. 대신 '공급자 연결'로 연결하세요.",
+        "agentTitle": "사용자 지정 {agent} 공급자 추가",
+        "agentDescription": "{agent}의 네이티브 JSON 파일에 OpenAI 호환 공급자를 구성합니다."
       },
       "refreshCatalog": "카탈로그 새로고침",
       "reasoningBadge": "추론",
@@ -992,7 +998,24 @@
           "question": "사용자에게 질문",
           "doom_loop": "같은 호출이 같은 입력으로 3 번 반복되면 작동"
         }
-      }
+      },
+      "kiloConfiguration": "Kilo Code 구성",
+      "kiloConfigurationDescription": "Kilo Code 공급자와 모델을 관리합니다. 변경 사항은 Kilo의 네이티브 JSON 파일에 저장됩니다.",
+      "fetchProviderModels": "공급자 모델 가져오기",
+      "fetchModelsCredentialsRequired": "가져오기 전에 이 공급자의 Base URL과 API 키를 입력하세요.",
+      "fetchModelsAlreadyConfigured": "사용 가능한 모델이 모두 구성되어 있습니다.",
+      "fetchModelsFailed": "이 공급자에서 모델을 가져올 수 없습니다.",
+      "modelsAdded": "모델 {count}개를 추가했습니다.",
+      "chooseModelsTitle": "추가할 모델 선택",
+      "chooseModelsDescription": "{providerId}에 추가할 모델을 선택하세요. 추론은 기본적으로 활성화됩니다.",
+      "searchModels": "모델 검색…",
+      "selectedModels": "{selected} / {total}개 선택됨",
+      "selectAllModels": "모두 선택",
+      "clearSelectedModels": "지우기",
+      "addSelectedModels": "선택한 모델 추가",
+      "newModelIdPlaceholder": "new-model-id",
+      "kiloNativeJsonConfig": "Kilo Code 네이티브 JSON 구성",
+      "dragProvider": "드래그하여 {providerId} 순서 변경"
     },
     "openClaw": {
       "gatewayConfig": "Gateway 구성",
@@ -2703,7 +2726,8 @@
         "mentionGroupAgent": "에이전트",
         "mentionGroupSession": "세션",
         "mentionGroupCommit": "커밋",
-        "mentionGroupSkill": "스킬"
+        "mentionGroupSkill": "스킬",
+        "manageKiloModels": "Kilo Code 모델 관리"
       },
       "messageQueue": {
         "addToQueue": "대기열에 추가",
@@ -3344,6 +3368,21 @@
       "proposedPlan": {
         "title": "제안된 계획",
         "planning": "계획 중…"
+      },
+      "kiloModelManager": {
+        "title": "Kilo Code 모델 관리",
+        "description": "모델을 추가하고 각 모델에서 추론을 사용할지 선택하세요.",
+        "loadFailed": "Kilo Code 모델을 불러올 수 없습니다.",
+        "saveFailed": "Kilo Code 모델을 저장할 수 없습니다.",
+        "providerPlaceholder": "provider-id",
+        "modelPlaceholder": "model-id",
+        "add": "추가",
+        "reasoning": "추론",
+        "empty": "구성된 모델이 없습니다.",
+        "manageReasoningLevels": "추론 수준 관리",
+        "reasoningLevelsTitle": "추론 수준",
+        "reasoningLevelsDescription": "{model}에 표시되는 수준을 추가하거나 비활성화합니다.",
+        "customLevel": "사용자 지정 수준"
       }
     },
     "diffPreview": {

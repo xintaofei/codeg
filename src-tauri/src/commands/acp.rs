@@ -2669,8 +2669,55 @@ fn opencode_auth_json_path() -> PathBuf {
     crate::parsers::opencode::resolve_opencode_base_dir().join("auth.json")
 }
 
-fn load_opencode_auth_json_raw() -> Option<String> {
-    fs::read_to_string(opencode_auth_json_path()).ok()
+fn is_kilo_agent(agent_type: AgentType) -> bool {
+    agent_type.custom_id() == Some("kilo")
+}
+
+fn is_opencode_family_agent(agent_type: AgentType) -> bool {
+    agent_type == AgentType::OpenCode || is_kilo_agent(agent_type)
+}
+
+fn kilo_config_dir() -> PathBuf {
+    crate::acp::opencode_plugins::xdg_config_home()
+        .unwrap_or_else(|| home_dir_or_default().join(".config"))
+        .join("kilo")
+}
+
+/// Prefer the file Kilo is already using: kilo.jsonc > kilo.json >
+/// leftover opencode.json[c] from a migration. New installs write kilo.json.
+fn resolve_kilo_config_path() -> PathBuf {
+    let dir = kilo_config_dir();
+    for name in ["kilo.jsonc", "kilo.json", "opencode.jsonc", "opencode.json"] {
+        let candidate = dir.join(name);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    dir.join("kilo.json")
+}
+
+fn kilo_auth_json_path() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".local").join("share")))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("kilo")
+        .join("auth.json")
+}
+
+fn opencode_family_auth_json_path(agent_type: AgentType) -> Option<PathBuf> {
+    if agent_type == AgentType::OpenCode {
+        Some(opencode_auth_json_path())
+    } else if is_kilo_agent(agent_type) {
+        Some(kilo_auth_json_path())
+    } else {
+        None
+    }
+}
+
+fn load_opencode_family_auth_json_raw(agent_type: AgentType) -> Option<String> {
+    fs::read_to_string(opencode_family_auth_json_path(agent_type)?).ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -4201,21 +4248,23 @@ fn set_or_remove_grok_number(
     Ok(())
 }
 
-fn persist_opencode_auth_json(raw_auth: &str) -> Result<(), AcpError> {
+fn persist_opencode_family_auth_json(agent_type: AgentType, raw_auth: &str) -> Result<(), AcpError> {
     let parsed = serde_json::from_str::<serde_json::Value>(raw_auth)
-        .map_err(|e| AcpError::protocol(format!("invalid opencode auth.json: {e}")))?;
+        .map_err(|e| AcpError::protocol(format!("invalid {agent_type} auth.json: {e}")))?;
     if !parsed.is_object() {
-        return Err(AcpError::protocol(
-            "invalid opencode auth.json: root must be a JSON object",
-        ));
+        return Err(AcpError::protocol(format!(
+            "invalid {agent_type} auth.json: root must be a JSON object"
+        )));
     }
-    let path = opencode_auth_json_path();
+    let path = opencode_family_auth_json_path(agent_type).ok_or_else(|| {
+        AcpError::protocol(format!("{agent_type} has no auth.json path"))
+    })?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
-            .map_err(|e| AcpError::protocol(format!("create opencode directory failed: {e}")))?;
+            .map_err(|e| AcpError::protocol(format!("create {agent_type} directory failed: {e}")))?;
     }
     fs::write(&path, format!("{raw_auth}\n"))
-        .map_err(|e| AcpError::protocol(format!("write opencode auth.json failed: {e}")))?;
+        .map_err(|e| AcpError::protocol(format!("write {agent_type} auth.json failed: {e}")))?;
     Ok(())
 }
 
@@ -5067,13 +5116,10 @@ pub(crate) async fn acp_update_kimi_code_config_and_refresh(
     .await)
 }
 
-/// Validate an API key + endpoint by listing the account's models. GETs
-/// `<base_url>/models` with the key as a Bearer token and returns the model ids
-/// (OpenAI-compatible `{ "data": [{ "id": ... }] }`). Surfaces the provider's
-/// own error message on failure. Lets the settings panel populate a model picker
-/// and doubles as a one-click connection test — directly preventing the
-/// "Not found the model ..." trap of typing a model the account can't access.
-pub(crate) async fn acp_fetch_kimi_models_core(
+/// Validate an API key + OpenAI-compatible endpoint by listing its models.
+/// Surfaces the provider's own error message on failure and returns sorted,
+/// unique model ids for the settings model picker.
+async fn fetch_openai_compatible_models_core(
     base_url: &str,
     api_key: &str,
 ) -> Result<Vec<String>, AcpError> {
@@ -5122,6 +5168,20 @@ pub(crate) async fn acp_fetch_kimi_models_core(
     ids.sort();
     ids.dedup();
     Ok(ids)
+}
+
+pub(crate) async fn acp_fetch_kimi_models_core(
+    base_url: &str,
+    api_key: &str,
+) -> Result<Vec<String>, AcpError> {
+    fetch_openai_compatible_models_core(base_url, api_key).await
+}
+
+pub(crate) async fn acp_fetch_kilo_provider_models_core(
+    base_url: &str,
+    api_key: &str,
+) -> Result<Vec<String>, AcpError> {
+    fetch_openai_compatible_models_core(base_url, api_key).await
 }
 
 // ---------------------------------------------------------------------------
@@ -7401,6 +7461,9 @@ fn reconcile_hermes_runtime_env_in(home: &Path) -> Result<(), AcpError> {
 }
 
 fn agent_local_config_path(agent_type: AgentType) -> Option<PathBuf> {
+    if is_kilo_agent(agent_type) {
+        return Some(resolve_kilo_config_path());
+    }
     match agent_type {
         AgentType::ClaudeCode => Some(home_dir_or_default().join(".claude").join("settings.json")),
         AgentType::Gemini => Some(home_dir_or_default().join(".gemini").join("settings.json")),
@@ -7492,7 +7555,7 @@ fn persist_agent_local_config_json(
         ));
     }
 
-    if agent_type == AgentType::OpenCode {
+    if is_opencode_family_agent(agent_type) {
         let serialized = serde_json::to_string_pretty(&patch)
             .map_err(|e| AcpError::protocol(format!("serialize config_json failed: {e}")))?;
         if let Some(parent) = path.parent() {
@@ -8932,7 +8995,9 @@ fn cascade_update_agent_config(
             persist_codex_native_config_files(Some(&auth_str), Some(&toml_str))?;
         }
         AgentType::OpenCode => {
-            let auth_path = opencode_auth_json_path();
+            let auth_path = opencode_family_auth_json_path(agent_type).ok_or_else(|| {
+                AcpError::protocol(format!("{agent_type} has no auth.json path"))
+            })?;
             let mut auth_obj = if auth_path.exists() {
                 fs::read_to_string(&auth_path)
                     .ok()
@@ -8947,7 +9012,7 @@ fn cascade_update_agent_config(
             }
             let auth_str = serde_json::to_string_pretty(&auth_obj)
                 .map_err(|e| AcpError::protocol(e.to_string()))?;
-            persist_opencode_auth_json(&auth_str)?;
+            persist_opencode_family_auth_json(agent_type, &auth_str)?;
 
             let patch = serde_json::json!({ "apiBaseUrl": api_url });
             let patch_str =
@@ -9879,8 +9944,8 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
         } else {
             None
         };
-        let opencode_auth_json = if agent_type == AgentType::OpenCode {
-            load_opencode_auth_json_raw()
+        let opencode_auth_json = if is_opencode_family_agent(agent_type) {
+            load_opencode_family_auth_json_raw(agent_type)
         } else {
             None
         };
@@ -10083,8 +10148,9 @@ pub(crate) async fn acp_update_agent_preferences_core(
         return Ok(());
     }
 
-    if agent_type == AgentType::OpenCode {
+    if is_opencode_family_agent(agent_type) {
         persist_opencode_native_config(
+            agent_type,
             opencode_auth_json.as_deref(),
             config_json.as_deref(),
         )?;
@@ -10423,14 +10489,15 @@ fn opencode_auth_payload_to_write(raw: Option<&str>) -> Option<String> {
 /// explicitly empty auth payload truncates `auth.json` to `{}`; `None` leaves
 /// each file untouched.
 fn persist_opencode_native_config(
+    agent_type: AgentType,
     opencode_auth_json: Option<&str>,
     config_json: Option<&str>,
 ) -> Result<(), AcpError> {
     if let Some(auth) = opencode_auth_payload_to_write(opencode_auth_json) {
-        persist_opencode_auth_json(&auth)?;
+        persist_opencode_family_auth_json(agent_type, &auth)?;
     }
     if let Some(raw) = config_json {
-        persist_agent_local_config_json(AgentType::OpenCode, Some(raw))?;
+        persist_agent_local_config_json(agent_type, Some(raw))?;
     }
     Ok(())
 }
@@ -10552,8 +10619,9 @@ pub(crate) async fn acp_update_agent_config_core(
         return Ok(());
     }
 
-    if agent_type == AgentType::OpenCode {
+    if is_opencode_family_agent(agent_type) {
         persist_opencode_native_config(
+            agent_type,
             opencode_auth_json.as_deref(),
             config_json.as_deref(),
         )?;
@@ -10752,6 +10820,16 @@ pub async fn acp_fetch_kimi_models(
     api_key: String,
 ) -> Result<Vec<String>, AcpError> {
     acp_fetch_kimi_models_core(&base_url, &api_key).await
+}
+
+/// List the models available to a Kilo custom provider.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_fetch_kilo_provider_models(
+    base_url: String,
+    api_key: String,
+) -> Result<Vec<String>, AcpError> {
+    acp_fetch_kilo_provider_models_core(&base_url, &api_key).await
 }
 
 /// Apply a structured Pi config update, writing pi's native `settings.json`
@@ -13915,7 +13993,8 @@ mod tests {
 
                 // Disconnecting the last provider sends an empty auth payload: it
                 // must truncate auth.json to {}, not strand the stale credential.
-                persist_opencode_native_config(Some(""), None).expect("persist");
+                persist_opencode_native_config(AgentType::OpenCode, Some(""), None)
+                    .expect("persist");
 
                 assert_eq!(fs::read_to_string(&auth_path).unwrap().trim(), "{}");
             },
@@ -13937,9 +14016,49 @@ mod tests {
                 fs::write(&auth_path, original).expect("seed");
 
                 // No auth payload supplied → file untouched.
-                persist_opencode_native_config(None, None).expect("persist");
+                persist_opencode_native_config(AgentType::OpenCode, None, None).expect("persist");
 
                 assert_eq!(fs::read_to_string(&auth_path).unwrap(), original);
+            },
+        );
+    }
+
+    #[test]
+    fn custom_kilo_uses_its_native_config_and_auth_files() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_home = tmp.path().join("config");
+        let data_home = tmp.path().join("data");
+        temp_env::with_vars(
+            [
+                ("HOME", Some(tmp.path())),
+                ("XDG_CONFIG_HOME", Some(config_home.as_path())),
+                ("XDG_DATA_HOME", Some(data_home.as_path())),
+            ],
+            || {
+                let kilo = AgentType::custom("kilo").expect("valid custom agent");
+                persist_opencode_native_config(
+                    kilo,
+                    Some(r#"{"openai":{"type":"api","key":"secret"}}"#),
+                    Some(r#"{"provider":{"openai":{"models":{}}}}"#),
+                )
+                .expect("persist Kilo config");
+
+                let config_path = config_home.join("kilo").join("kilo.json");
+                let auth_path = data_home.join("kilo").join("auth.json");
+                assert_eq!(agent_local_config_path(kilo), Some(config_path.clone()));
+                assert_eq!(opencode_family_auth_json_path(kilo), Some(auth_path.clone()));
+                assert!(config_path.exists());
+                assert!(auth_path.exists());
+                assert!(load_agent_local_config_json(kilo)
+                    .expect("load Kilo config")
+                    .contains("provider"));
+                assert!(load_opencode_family_auth_json_raw(kilo)
+                    .expect("load Kilo auth")
+                    .contains("secret"));
+
+                let other = AgentType::custom("other").expect("valid custom agent");
+                assert_eq!(agent_local_config_path(other), None);
+                assert_eq!(opencode_family_auth_json_path(other), None);
             },
         );
     }

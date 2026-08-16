@@ -932,13 +932,19 @@
         "action": "ربط",
         "editTitle": "تعديل المزود",
         "editDescription": "حدّث مفتاح API أو عنوان URL الأساسي لهذا المزود.",
-        "saveAction": "حفظ"
+        "saveAction": "حفظ",
+        "agentTitle": "ربط مزود {agent}",
+        "agentDescription": "اختر مزودًا من كتالوج models.dev. تُحفظ بيانات الاعتماد في ملف auth.json الخاص بـ {agent}.",
+        "agentEditTitle": "تعديل مزود {agent}",
+        "agentEditDescription": "حدّث بيانات اعتماد هذا المزود في ملفات JSON الأصلية الخاصة بـ {agent}."
       },
       "customProvider": {
         "title": "إضافة مزود مخصص",
         "description": "حدّد نقطة نهاية متوافقة مع OpenAI. يُحفظ مفتاح API في auth.json، وتُكتب كتلة provider في opencode.json.",
         "action": "إضافة المزود",
-        "idInCatalog": "{providerId} مزود معروف — قم بربطه عبر «ربط مزود» بدلاً من ذلك."
+        "idInCatalog": "{providerId} مزود معروف — قم بربطه عبر «ربط مزود» بدلاً من ذلك.",
+        "agentTitle": "إضافة مزود {agent} مخصص",
+        "agentDescription": "كوّن مزودًا متوافقًا مع OpenAI في ملفات JSON الأصلية الخاصة بـ {agent}."
       },
       "refreshCatalog": "تحديث الكتالوج",
       "reasoningBadge": "استدلال",
@@ -992,7 +998,24 @@
           "question": "طرح سؤال عليك",
           "doom_loop": "يُفعَّل عند تكرار الاستدعاء نفسه ثلاث مرات بالمدخلات نفسها"
         }
-      }
+      },
+      "kiloConfiguration": "إعداد Kilo Code",
+      "kiloConfigurationDescription": "إدارة مزودي ونماذج Kilo Code. تُحفظ التغييرات في ملفات JSON الأصلية الخاصة بـ Kilo.",
+      "fetchProviderModels": "جلب نماذج المزود",
+      "fetchModelsCredentialsRequired": "أضف عنوان URL الأساسي ومفتاح API لهذا المزود قبل جلب النماذج.",
+      "fetchModelsAlreadyConfigured": "جميع النماذج المتاحة مهيأة بالفعل.",
+      "fetchModelsFailed": "تعذر جلب النماذج من هذا المزود.",
+      "modelsAdded": "تمت إضافة {count} من النماذج.",
+      "chooseModelsTitle": "اختر النماذج المراد إضافتها",
+      "chooseModelsDescription": "حدد النماذج التي تريد إضافتها إلى {providerId}. يتم تفعيل الاستدلال افتراضيًا.",
+      "searchModels": "البحث عن النماذج…",
+      "selectedModels": "تم تحديد {selected} من أصل {total}",
+      "selectAllModels": "تحديد الكل",
+      "clearSelectedModels": "مسح التحديد",
+      "addSelectedModels": "إضافة النماذج المحددة",
+      "newModelIdPlaceholder": "معرّف-نموذج-جديد",
+      "kiloNativeJsonConfig": "إعداد JSON الأصلي لـ Kilo Code",
+      "dragProvider": "اسحب لإعادة ترتيب {providerId}"
     },
     "openClaw": {
       "gatewayConfig": "إعداد Gateway",
@@ -2703,7 +2726,8 @@
         "mentionGroupAgent": "الوكلاء",
         "mentionGroupSession": "الجلسات",
         "mentionGroupCommit": "عمليات الإيداع",
-        "mentionGroupSkill": "المهارات"
+        "mentionGroupSkill": "المهارات",
+        "manageKiloModels": "إدارة نماذج Kilo Code"
       },
       "messageQueue": {
         "addToQueue": "إضافة للقائمة",
@@ -3344,6 +3368,21 @@
       "proposedPlan": {
         "title": "الخطة المقترحة",
         "planning": "جارٍ التخطيط…"
+      },
+      "kiloModelManager": {
+        "title": "إدارة نماذج Kilo Code",
+        "description": "أضف النماذج واختر ما إذا كان كل نموذج يستخدم الاستدلال.",
+        "loadFailed": "تعذر تحميل نماذج Kilo Code.",
+        "saveFailed": "تعذر حفظ نماذج Kilo Code.",
+        "providerPlaceholder": "معرّف-المزود",
+        "modelPlaceholder": "معرّف-النموذج",
+        "add": "إضافة",
+        "reasoning": "الاستدلال",
+        "empty": "لا توجد نماذج مهيأة بعد.",
+        "manageReasoningLevels": "إدارة مستويات الاستدلال",
+        "reasoningLevelsTitle": "مستويات الاستدلال",
+        "reasoningLevelsDescription": "أضف أو عطّل المستويات المعروضة للنموذج {model}.",
+        "customLevel": "مستوى مخصص"
       }
     },
     "diffPreview": {

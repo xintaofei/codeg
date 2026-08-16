@@ -84,7 +84,6 @@ import {
   ComboboxGroup,
   ComboboxInput,
   ComboboxItem,
-  ComboboxLabel,
   ComboboxList,
 } from "@/components/ui/combobox"
 import { cn, copyTextToClipboard, randomUUID } from "@/lib/utils"
@@ -92,6 +91,7 @@ import {
   acpClearBinaryCache,
   acpDetectAgentLocalVersion,
   acpDownloadAgentBinary,
+  acpFetchKiloProviderModels,
   acpInstallUvTool,
   acpGetAgentStatus,
   acpListAgents,
@@ -124,6 +124,7 @@ import type {
   OpenCodeCatalogProvider,
   PreflightResult,
 } from "@/lib/types"
+import { isKiloAgentType, isOpenCodeFamily } from "@/lib/types"
 import {
   HERMES_PROVIDERS,
   parseClaudeProviderModel,
@@ -136,6 +137,7 @@ import {
   OpenCodeConnectDialog,
   OpenCodeCustomProviderDialog,
 } from "@/components/settings/opencode-connect-dialog"
+import { KiloProviderModelDialog } from "@/components/settings/kilo-provider-model-dialog"
 import { OpenCodePermissionsSection } from "@/components/settings/opencode-permissions-section"
 import { AgentDiagnosticsDialog } from "@/components/settings/agent-diagnostics-dialog"
 import {
@@ -150,6 +152,7 @@ import {
 } from "@/lib/opencode-connect"
 import { toErrorMessage } from "@/lib/app-error"
 import { getInstallErrorHintKey } from "@/lib/agent-install-error"
+import { addKiloModels } from "@/lib/kilo-model-config"
 import { useAgentInstallStream } from "@/hooks/use-agent-install-stream"
 import { OpencodePluginsModal } from "./opencode-plugins-modal"
 import { CodeBuddyConfigPanel } from "./codebuddy-config-panel"
@@ -1525,6 +1528,14 @@ function OpenCodeModelCombobox({
   placeholder: string
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
+  const [query, setQuery] = useState("")
+  const [expandedProviderIds, setExpandedProviderIds] = useState<Set<string>>(
+    () => {
+      const providerId = value.split("/", 1)[0]
+      return providerId ? new Set([providerId]) : new Set()
+    }
+  )
+  const searching = query.trim().length > 0
 
   const handleSelect = useCallback(
     (next: string | null) => {
@@ -1543,7 +1554,12 @@ function OpenCodeModelCombobox({
   }, [onValueChange, value])
 
   return (
-    <Combobox key={value} value={value} onValueChange={handleSelect}>
+    <Combobox
+      key={value}
+      value={value}
+      onValueChange={handleSelect}
+      onInputValueChange={setQuery}
+    >
       <ComboboxInput
         ref={inputRef}
         placeholder={placeholder}
@@ -1552,45 +1568,76 @@ function OpenCodeModelCombobox({
       />
       <ComboboxContent>
         <ComboboxList>
-          {groups.map((group) => (
-            <ComboboxGroup key={group.providerId}>
-              <ComboboxLabel>{group.label}</ComboboxLabel>
-              {group.models.map((model) => {
-                const contextLabel =
-                  typeof model.context === "number"
-                    ? formatContextWindow(model.context)
-                    : ""
-                return (
-                  <ComboboxItem key={model.value} value={model.value}>
-                    <span className="truncate">{model.value}</span>
-                    {(model.reasoning || contextLabel) && (
-                      <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-2">
-                        {model.reasoning && (
-                          <Badge
-                            variant="outline"
-                            className="px-1 text-[9px] font-normal"
-                          >
-                            {acpText("openCode.reasoningBadge", "reasoning")}
-                          </Badge>
-                        )}
-                        {contextLabel && (
-                          <span
-                            className="text-[10px] text-muted-foreground"
-                            title={acpText(
-                              "openCode.contextWindow",
-                              "Context window"
-                            )}
-                          >
-                            {contextLabel}
-                          </span>
-                        )}
-                      </span>
-                    )}
-                  </ComboboxItem>
-                )
-              })}
-            </ComboboxGroup>
-          ))}
+          {groups.map((group) => {
+            const expanded =
+              searching || expandedProviderIds.has(group.providerId)
+            return (
+              <ComboboxGroup key={group.providerId}>
+                <button
+                  type="button"
+                  aria-expanded={expanded}
+                  onClick={() => {
+                    setExpandedProviderIds((providerIds) => {
+                      const next = new Set(providerIds)
+                      if (next.has(group.providerId)) {
+                        next.delete(group.providerId)
+                      } else {
+                        next.add(group.providerId)
+                      }
+                      return next
+                    })
+                  }}
+                  className="flex w-full items-center gap-1 rounded-xl px-3 py-2 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                >
+                  {expanded ? (
+                    <ChevronDown className="size-3 shrink-0" />
+                  ) : (
+                    <ChevronRight className="size-3 shrink-0" />
+                  )}
+                  <span className="truncate">{group.label}</span>
+                </button>
+                {expanded
+                  ? group.models.map((model) => {
+                      const contextLabel =
+                        typeof model.context === "number"
+                          ? formatContextWindow(model.context)
+                          : ""
+                      return (
+                        <ComboboxItem key={model.value} value={model.value}>
+                          <span className="truncate">{model.value}</span>
+                          {(model.reasoning || contextLabel) && (
+                            <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-2">
+                              {model.reasoning && (
+                                <Badge
+                                  variant="outline"
+                                  className="px-1 text-[9px] font-normal"
+                                >
+                                  {acpText(
+                                    "openCode.reasoningBadge",
+                                    "reasoning"
+                                  )}
+                                </Badge>
+                              )}
+                              {contextLabel && (
+                                <span
+                                  className="text-[10px] text-muted-foreground"
+                                  title={acpText(
+                                    "openCode.contextWindow",
+                                    "Context window"
+                                  )}
+                                >
+                                  {contextLabel}
+                                </span>
+                              )}
+                            </span>
+                          )}
+                        </ComboboxItem>
+                      )
+                    })
+                  : null}
+              </ComboboxGroup>
+            )
+          })}
           <ComboboxEmpty>
             {acpText("openCode.noMatchingModels", "No matching models")}
           </ComboboxEmpty>
@@ -3479,7 +3526,7 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
           ? codexImportant.model
           : agent.agent_type === "gemini"
             ? geminiImportant.model
-            : agent.agent_type === "open_code"
+            : isOpenCodeFamily(agent.agent_type)
               ? openCodeImportant.model
               : important.model,
     claudeAuthMode:
@@ -4013,6 +4060,40 @@ function AgentReorderItem({
   )
 }
 
+function CustomProviderReorderItem({
+  providerId,
+  children,
+}: {
+  providerId: string
+  children: (
+    startDrag: (event: PointerEvent<HTMLButtonElement>) => void
+  ) => ReactNode
+}) {
+  const dragControls = useDragControls()
+  const startDrag = useCallback(
+    (event: PointerEvent<HTMLButtonElement>) => {
+      event.preventDefault()
+      event.stopPropagation()
+      dragControls.start(event)
+    },
+    [dragControls]
+  )
+
+  return (
+    <Reorder.Item
+      as="div"
+      value={providerId}
+      drag="y"
+      dragListener={false}
+      dragControls={dragControls}
+      dragMomentum={false}
+      layout="position"
+    >
+      {children(startDrag)}
+    </Reorder.Item>
+  )
+}
+
 export function AcpAgentSettings() {
   const ime = useImeGuard()
   const locale = useLocale()
@@ -4094,6 +4175,13 @@ export function AcpAgentSettings() {
   >({})
   const [openCodeModelConfigExpanded, setOpenCodeModelConfigExpanded] =
     useState<Record<string, boolean>>({})
+  const [openCodeModelsFetching, setOpenCodeModelsFetching] = useState<
+    Record<string, boolean>
+  >({})
+  const [openCodeFetchedModelPicker, setOpenCodeFetchedModelPicker] = useState<{
+    providerId: string
+    modelIds: string[]
+  } | null>(null)
   const [openCodeDeleteProviderId, setOpenCodeDeleteProviderId] = useState<
     string | null
   >(null)
@@ -4503,13 +4591,15 @@ export function AcpAgentSettings() {
         }
       }
       let normalizedConfig = normalizeConfigText(configText)
-      if (agentType === "open_code" && normalizedConfig) {
+      if (isOpenCodeFamily(agentType) && normalizedConfig) {
         normalizedConfig = ensureOpenCodeProviderNpm(normalizedConfig)
       }
       // For agents using merge strategy, mark removed keys as null
       // so the backend merge_json_values can delete them from disk.
       let configForPersist =
-        agentType === "open_code" && !normalizedConfig ? "{}" : normalizedConfig
+        isOpenCodeFamily(agentType) && !normalizedConfig
+          ? "{}"
+          : normalizedConfig
       const usesMerge =
         agentType === "claude_code" ||
         agentType === "gemini" ||
@@ -5266,7 +5356,8 @@ export function AcpAgentSettings() {
   const hermesCanUseNativeSetup =
     isDesktop() && getActiveRemoteConnectionId() === null
   const selectedOpenCodeConfig = useMemo(() => {
-    if (selectedAgentKind !== "open_code" || !locale) return null
+    if (!selectedAgentKind || !isOpenCodeFamily(selectedAgentKind) || !locale)
+      return null
     return extractOpenCodeConfigValues(
       selectedConfigText,
       selectedOpenCodeAuthJsonText
@@ -5278,7 +5369,7 @@ export function AcpAgentSettings() {
     selectedOpenCodeAuthJsonText,
   ])
   const openCodeConnected = useMemo(() => {
-    if (selectedAgentKind !== "open_code") return []
+    if (!selectedAgentKind || !isOpenCodeFamily(selectedAgentKind)) return []
     return buildConnectedProviders({
       configText: selectedConfigText,
       authJsonText: selectedOpenCodeAuthJsonText,
@@ -5329,7 +5420,7 @@ export function AcpAgentSettings() {
   // only on `selectedAgentKind` — depending on the loading flag we set here
   // would re-run the effect and cancel its own in-flight request.
   useEffect(() => {
-    if (selectedAgentKind !== "open_code") return
+    if (!selectedAgentKind || !isOpenCodeFamily(selectedAgentKind)) return
     if (openCodeCatalogRequestedRef.current) return
     openCodeCatalogRequestedRef.current = true
     setOpenCodeCatalogLoading(true)
@@ -5422,7 +5513,7 @@ export function AcpAgentSettings() {
         return
       }
 
-      if (selectedAgent.agent_type === "open_code") {
+      if (isOpenCodeFamily(selectedAgent.agent_type)) {
         const openCode = extractOpenCodeConfigValues(
           nextText,
           selectedDraft.openCodeAuthJsonText
@@ -6288,7 +6379,7 @@ export function AcpAgentSettings() {
       if (
         !selectedAgent ||
         !selectedDraft ||
-        selectedAgent.agent_type !== "open_code"
+        !isOpenCodeFamily(selectedAgent.agent_type)
       )
         return
       const nextConfig = patchOpenCodeConfigText(
@@ -6335,7 +6426,7 @@ export function AcpAgentSettings() {
       next: { configText: string; authJsonText: string },
       providerId: string
     ) => {
-      if (!selectedAgent || selectedAgent.agent_type !== "open_code") return
+      if (!selectedAgent || !isOpenCodeFamily(selectedAgent.agent_type)) return
       const parsed = extractOpenCodeConfigValues(
         next.configText,
         next.authJsonText
@@ -6346,9 +6437,12 @@ export function AcpAgentSettings() {
         openCodeAuthJsonText: next.authJsonText,
         model: parsed.model,
       }))
-      setConfigErrors((prev) => ({ ...prev, open_code: null }))
+      setConfigErrors((prev) => ({
+        ...prev,
+        [selectedAgent.agent_type]: null,
+      }))
       try {
-        await persistConfig("open_code", next.configText, {
+        await persistConfig(selectedAgent.agent_type, next.configText, {
           openCodeAuthJsonText: next.authJsonText,
         })
         toast.success(t("toasts.providerConnected", { providerId }), {
@@ -6370,7 +6464,7 @@ export function AcpAgentSettings() {
       if (
         !selectedAgent ||
         !selectedDraft ||
-        selectedAgent.agent_type !== "open_code"
+        !isOpenCodeFamily(selectedAgent.agent_type)
       )
         return
       const next = disconnectProvider({
@@ -6390,7 +6484,7 @@ export function AcpAgentSettings() {
         model: parsed.model,
       }))
       try {
-        await persistConfig("open_code", next.configText, {
+        await persistConfig(selectedAgent.agent_type, next.configText, {
           openCodeAuthJsonText: next.authJsonText,
         })
         toast.success(t("toasts.providerDisconnected", { providerId }))
@@ -6409,7 +6503,7 @@ export function AcpAgentSettings() {
       if (
         !selectedAgent ||
         !selectedDraft ||
-        selectedAgent.agent_type !== "open_code"
+        !isOpenCodeFamily(selectedAgent.agent_type)
       )
         return
       const nextConfig = setProviderEnabled({
@@ -6422,7 +6516,7 @@ export function AcpAgentSettings() {
         configText: nextConfig,
       }))
       try {
-        await persistConfig("open_code", nextConfig, {
+        await persistConfig(selectedAgent.agent_type, nextConfig, {
           openCodeAuthJsonText: selectedDraft.openCodeAuthJsonText,
         })
       } catch (err) {
@@ -6456,7 +6550,7 @@ export function AcpAgentSettings() {
       if (
         !selectedAgent ||
         !selectedDraft ||
-        selectedAgent.agent_type !== "open_code"
+        !isOpenCodeFamily(selectedAgent.agent_type)
       ) {
         return null
       }
@@ -6574,6 +6668,36 @@ export function AcpAgentSettings() {
     [selectedAgent, selectedDraft, t]
   )
 
+  const handleOpenCodeReorderCustomProviders = useCallback(
+    (nextCustomIds: string[]) => {
+      if (!selectedOpenCodeConfig) return
+      const customIds = selectedOpenCodeConfig.providerIds.filter(
+        (id) => !openCodeCatalogIds.has(id)
+      )
+      if (
+        nextCustomIds.length !== customIds.length ||
+        nextCustomIds.some((id) => !customIds.includes(id))
+      ) {
+        return
+      }
+      handleOpenCodeConfigPatch((config) => {
+        const providers = asObjectRecord(config.provider) ?? {}
+        const catalogEntries = Object.entries(providers).filter(([id]) =>
+          openCodeCatalogIds.has(id)
+        )
+        const customEntries = nextCustomIds.flatMap((id) => {
+          const value = providers[id]
+          return typeof value === "undefined" ? [] : [[id, value] as const]
+        })
+        config.provider = Object.fromEntries([
+          ...catalogEntries,
+          ...customEntries,
+        ])
+      })
+    },
+    [handleOpenCodeConfigPatch, openCodeCatalogIds, selectedOpenCodeConfig]
+  )
+
   const confirmOpenCodeProviderDelete = useCallback(() => {
     const providerId = openCodeDeleteProviderId?.trim()
     if (!providerId) return
@@ -6582,7 +6706,7 @@ export function AcpAgentSettings() {
     if (
       !removed ||
       !selectedAgent ||
-      selectedAgent.agent_type !== "open_code"
+      !isOpenCodeFamily(selectedAgent.agent_type)
     ) {
       return
     }
@@ -6674,7 +6798,8 @@ export function AcpAgentSettings() {
       // The API key is a secret: it goes ONLY into auth.json, never into
       // opencode.json. setProviderApiKey also scrubs any stale options.apiKey.
       if (key === "apiKey") {
-        if (!selectedDraft) return
+        const selectedAgentType = selectedAgent?.agent_type
+        if (!selectedDraft || !selectedAgentType) return
         const next = setProviderApiKey({
           configText: selectedDraft.configText,
           authJsonText: selectedDraft.openCodeAuthJsonText,
@@ -6685,7 +6810,10 @@ export function AcpAgentSettings() {
           next.configText,
           next.authJsonText
         )
-        setConfigErrors((prev) => ({ ...prev, open_code: null }))
+        setConfigErrors((prev) => ({
+          ...prev,
+          [selectedAgentType]: null,
+        }))
         updateSelectedDraft((current) => ({
           ...current,
           configText: next.configText,
@@ -6728,7 +6856,12 @@ export function AcpAgentSettings() {
         }
       })
     },
-    [handleOpenCodeConfigPatch, selectedDraft, updateSelectedDraft]
+    [
+      handleOpenCodeConfigPatch,
+      selectedAgent?.agent_type,
+      selectedDraft,
+      updateSelectedDraft,
+    ]
   )
 
   const handleOpenCodeModelDraftChange = useCallback(
@@ -6773,6 +6906,7 @@ export function AcpAgentSettings() {
         }
         modelsRoot[nextModelId] = {
           name: nextModelId,
+          reasoning: true,
         }
       })
       setOpenCodeNewModelIds((prev) => ({
@@ -6781,6 +6915,81 @@ export function AcpAgentSettings() {
       }))
     },
     [handleOpenCodeConfigPatch, openCodeNewModelIds, selectedOpenCodeConfig, t]
+  )
+
+  const handleOpenCodeFetchModels = useCallback(
+    async (providerId: string) => {
+      const targetProviderId = providerId.trim()
+      const provider = selectedOpenCodeConfig?.providers[targetProviderId]
+      if (!provider) return
+      if (!provider.baseUrl.trim() || !provider.apiKey.trim()) {
+        toast.error(t("openCode.fetchModelsCredentialsRequired"))
+        return
+      }
+      setOpenCodeModelsFetching((prev) => ({
+        ...prev,
+        [targetProviderId]: true,
+      }))
+      try {
+        const modelIds = await acpFetchKiloProviderModels({
+          baseUrl: provider.baseUrl,
+          apiKey: provider.apiKey,
+        })
+        const newIds = modelIds.filter(
+          (modelId) => !provider.modelIds.includes(modelId)
+        )
+        if (newIds.length === 0) {
+          toast.success(t("openCode.fetchModelsAlreadyConfigured"))
+          return
+        }
+        setOpenCodeFetchedModelPicker({
+          providerId: targetProviderId,
+          modelIds: newIds,
+        })
+      } catch (error) {
+        toast.error(t("openCode.fetchModelsFailed"), {
+          description: error instanceof Error ? error.message : String(error),
+        })
+      } finally {
+        setOpenCodeModelsFetching((prev) => ({
+          ...prev,
+          [targetProviderId]: false,
+        }))
+      }
+    },
+    [selectedOpenCodeConfig, t]
+  )
+
+  const handleOpenCodeAddFetchedModels = useCallback(
+    (modelIds: string[]) => {
+      const picker = openCodeFetchedModelPicker
+      if (!picker || !selectedOpenCodeConfig) return
+      const provider = selectedOpenCodeConfig.providers[picker.providerId]
+      if (!provider) return
+      const selectedIds = modelIds.filter(
+        (modelId) =>
+          picker.modelIds.includes(modelId) &&
+          !provider.modelIds.includes(modelId)
+      )
+      if (selectedIds.length === 0) {
+        setOpenCodeFetchedModelPicker(null)
+        return
+      }
+      handleOpenCodeConfigPatch((config) => {
+        Object.assign(
+          config,
+          addKiloModels(config, picker.providerId, selectedIds)
+        )
+      })
+      toast.success(t("openCode.modelsAdded", { count: selectedIds.length }))
+      setOpenCodeFetchedModelPicker(null)
+    },
+    [
+      handleOpenCodeConfigPatch,
+      openCodeFetchedModelPicker,
+      selectedOpenCodeConfig,
+      t,
+    ]
   )
 
   const handleOpenCodeRemoveModel = useCallback(
@@ -8827,14 +9036,18 @@ supports_websockets = true`}
                       </Button>
                     </div>
                   </div>
-                ) : selectedAgent.agent_type === "open_code" ? (
+                ) : isOpenCodeFamily(selectedAgent.agent_type) ? (
                   <div className="space-y-3 rounded-md border bg-muted/10 p-3">
                     <div>
                       <label className="text-xs font-medium">
-                        {t("openCode.configManagement")}
+                        {isKiloAgentType(selectedAgent.agent_type)
+                          ? t("openCode.kiloConfiguration")
+                          : t("openCode.configManagement")}
                       </label>
                       <p className="mt-1 text-[11px] text-muted-foreground">
-                        {t("openCode.configDescription")}
+                        {isKiloAgentType(selectedAgent.agent_type)
+                          ? t("openCode.kiloConfigurationDescription")
+                          : t("openCode.configDescription")}
                       </p>
                     </div>
 
@@ -9020,6 +9233,11 @@ supports_websockets = true`}
                         configText={selectedDraft.configText}
                         authJsonText={selectedDraft.openCodeAuthJsonText}
                         editProviderId={openCodeEditProviderId}
+                        agentName={
+                          isKiloAgentType(selectedAgent.agent_type)
+                            ? "Kilo Code"
+                            : undefined
+                        }
                         onConnect={applyOpenCodeConnect}
                       />
 
@@ -9032,6 +9250,11 @@ supports_websockets = true`}
                         catalogIds={openCodeCatalog.map((p) => p.id)}
                         configText={selectedDraft.configText}
                         authJsonText={selectedDraft.openCodeAuthJsonText}
+                        agentName={
+                          isKiloAgentType(selectedAgent.agent_type)
+                            ? "Kilo Code"
+                            : undefined
+                        }
                         onConnect={applyOpenCodeConnect}
                       />
 
@@ -9068,7 +9291,13 @@ supports_websockets = true`}
                           {t("openCode.emptyProvider")}
                         </div>
                       ) : (
-                        <div className="space-y-2">
+                        <Reorder.Group
+                          as="div"
+                          axis="y"
+                          values={openCodeCustomProviderIds}
+                          onReorder={handleOpenCodeReorderCustomProviders}
+                          className="space-y-2"
+                        >
                           {openCodeCustomProviderIds.map((providerId) => {
                             if (!selectedOpenCodeConfig) return null
                             const provider =
@@ -9085,507 +9314,607 @@ supports_websockets = true`}
                                   providerId
                                 ))
                             return (
-                              <Collapsible
+                              <CustomProviderReorderItem
                                 key={providerId}
-                                open={expanded}
-                                onOpenChange={(open) => {
-                                  setOpenCodeProviderId(open ? providerId : "")
-                                }}
+                                providerId={providerId}
                               >
-                                <div className="rounded-md border bg-muted/20">
-                                  <div className="flex items-center justify-between gap-2 px-2.5 py-2">
-                                    <button
-                                      type="button"
-                                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                                      onClick={() => {
-                                        setOpenCodeProviderId((current) =>
-                                          current === providerId
-                                            ? ""
-                                            : providerId
-                                        )
-                                      }}
-                                    >
-                                      <ChevronDown
-                                        className={cn(
-                                          "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
-                                          expanded && "rotate-180"
-                                        )}
-                                      />
-                                      <span className="truncate text-xs font-medium">
-                                        {providerId}
-                                      </span>
-                                      <span className="text-[11px] text-muted-foreground">
-                                        models: {provider.modelCount}
-                                      </span>
-                                    </button>
-                                    <div className="flex items-center gap-3">
-                                      <span className="text-[11px] text-muted-foreground">
-                                        {isDisabled
-                                          ? t("status.disabled")
-                                          : t("status.enabled")}
-                                      </span>
-                                      <Switch
-                                        checked={!isDisabled}
-                                        onCheckedChange={(checked) => {
-                                          handleOpenCodeProviderStatusChange(
-                                            providerId,
-                                            checked
-                                          )
-                                        }}
-                                        aria-label={t(
-                                          "openCode.providerEnabledState",
-                                          { providerId }
-                                        )}
-                                        title={
-                                          isDisabled
-                                            ? t("actions.clickEnable", {
-                                                name: providerId,
-                                              })
-                                            : t("actions.clickDisable", {
-                                                name: providerId,
-                                              })
-                                        }
-                                      />
-                                      <Button
-                                        type="button"
-                                        size="xs"
-                                        variant="outline"
-                                        onClick={() => {
-                                          setOpenCodeDeleteProviderId(
-                                            providerId
-                                          )
-                                        }}
-                                      >
-                                        {t("actions.delete")}
-                                      </Button>
-                                    </div>
-                                  </div>
-
-                                  <CollapsibleContent className="px-2.5 pb-2.5">
-                                    <div className="grid gap-3 border-t pt-2.5 md:grid-cols-2">
-                                      <div className="space-y-1.5">
-                                        <label className="text-[11px] text-muted-foreground">
-                                          provider.name
-                                        </label>
-                                        <Input
-                                          value={provider.name}
-                                          onChange={(event) => {
-                                            handleOpenCodeProviderFieldChange(
-                                              providerId,
-                                              "name",
-                                              event.target.value
-                                            )
-                                          }}
-                                          placeholder="My Provider"
-                                        />
-                                      </div>
-                                      <div className="space-y-1.5">
-                                        <label className="text-[11px] text-muted-foreground">
-                                          provider.npm
-                                        </label>
-                                        <Select
-                                          value={
-                                            provider.npm.trim()
-                                              ? provider.npm
-                                              : OPENCODE_PROVIDER_NPM_OPTIONS[0]
-                                                  .value
-                                          }
-                                          onValueChange={(value) => {
-                                            handleOpenCodeProviderFieldChange(
-                                              providerId,
-                                              "npm",
-                                              value
-                                            )
-                                          }}
-                                        >
-                                          <SelectTrigger className="w-full">
-                                            <SelectValue
-                                              placeholder={t(
-                                                "openCode.selectProviderNpm"
-                                              )}
-                                            />
-                                          </SelectTrigger>
-                                          <SelectContent align="start">
-                                            {buildOpenCodeNpmOptions(
-                                              provider.npm
-                                            ).map((npmOption) => (
-                                              <SelectItem
-                                                key={npmOption}
-                                                value={npmOption}
-                                              >
-                                                {npmOption}
-                                              </SelectItem>
-                                            ))}
-                                          </SelectContent>
-                                        </Select>
-                                      </div>
-                                      <div className="space-y-1.5">
-                                        <label className="text-[11px] text-muted-foreground">
-                                          provider.api
-                                        </label>
-                                        <Input
-                                          value={provider.api}
-                                          onChange={(event) => {
-                                            handleOpenCodeProviderFieldChange(
-                                              providerId,
-                                              "api",
-                                              event.target.value
-                                            )
-                                          }}
-                                          placeholder="openai.responses"
-                                        />
-                                      </div>
-                                      <div className="space-y-1.5">
-                                        <label className="text-[11px] text-muted-foreground">
-                                          provider.options.baseURL
-                                        </label>
-                                        <Input
-                                          value={provider.baseUrl}
-                                          onChange={(event) => {
-                                            handleOpenCodeProviderFieldChange(
-                                              providerId,
-                                              "baseURL",
-                                              event.target.value
-                                            )
-                                          }}
-                                          placeholder="https://api.example.com/v1"
-                                        />
-                                      </div>
-                                      <div className="space-y-1.5 md:col-span-2">
-                                        <label className="text-[11px] text-muted-foreground">
-                                          provider.options.apiKey
-                                        </label>
-                                        <div className="flex items-center gap-2">
-                                          <Input
-                                            type={
-                                              showApiKeys[
-                                                selectedAgent.agent_type
-                                              ]
-                                                ? "text"
-                                                : "password"
-                                            }
-                                            value={provider.apiKey}
-                                            onChange={(event) => {
-                                              handleOpenCodeProviderFieldChange(
-                                                providerId,
-                                                "apiKey",
-                                                event.target.value
-                                              )
-                                            }}
-                                            placeholder="sk-..."
-                                          />
-                                          <Button
-                                            type="button"
-                                            variant="outline"
-                                            size="sm"
-                                            onClick={() => {
-                                              setShowApiKeys((prev) => ({
-                                                ...prev,
-                                                [selectedAgent.agent_type]:
-                                                  !prev[
-                                                    selectedAgent.agent_type
-                                                  ],
-                                              }))
-                                            }}
-                                            title={
-                                              showApiKeys[
-                                                selectedAgent.agent_type
-                                              ]
-                                                ? t("actions.hideKey")
-                                                : t("actions.showKey")
-                                            }
-                                          >
-                                            {showApiKeys[
-                                              selectedAgent.agent_type
-                                            ] ? (
-                                              <EyeOff className="h-3.5 w-3.5" />
-                                            ) : (
-                                              <Eye className="h-3.5 w-3.5" />
-                                            )}
-                                          </Button>
-                                        </div>
-                                      </div>
-                                    </div>
-                                    <Collapsible
-                                      open={Boolean(
-                                        openCodeModelConfigExpanded[providerId]
-                                      )}
-                                      onOpenChange={(open) => {
-                                        setOpenCodeModelConfigExpanded(
-                                          (prev) => ({
-                                            ...prev,
-                                            [providerId]: open,
-                                          })
-                                        )
-                                      }}
-                                    >
-                                      <div className="mt-3 rounded-md border bg-background/50 p-2.5">
+                                {(startDrag) => (
+                                  <Collapsible
+                                    open={expanded}
+                                    onOpenChange={(open) => {
+                                      setOpenCodeProviderId(
+                                        open ? providerId : ""
+                                      )
+                                    }}
+                                  >
+                                    <div className="rounded-md border bg-muted/20">
+                                      <div className="flex items-center justify-between gap-2 px-2.5 py-2">
                                         <button
                                           type="button"
-                                          className="flex w-full items-center justify-between gap-2 text-left"
+                                          className="flex min-w-0 flex-1 items-center gap-2 text-left"
                                           onClick={() => {
-                                            setOpenCodeModelConfigExpanded(
-                                              (prev) => ({
-                                                ...prev,
-                                                [providerId]: !prev[providerId],
-                                              })
+                                            setOpenCodeProviderId((current) =>
+                                              current === providerId
+                                                ? ""
+                                                : providerId
                                             )
                                           }}
                                         >
-                                          <div className="flex items-center gap-2">
-                                            <ChevronDown
-                                              className={cn(
-                                                "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
-                                                openCodeModelConfigExpanded[
-                                                  providerId
-                                                ] && "rotate-180"
-                                              )}
-                                            />
-                                            <span className="text-[11px] font-medium">
-                                              {t("openCode.modelManagement")}
-                                            </span>
-                                          </div>
+                                          <ChevronDown
+                                            className={cn(
+                                              "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
+                                              expanded && "rotate-180"
+                                            )}
+                                          />
+                                          <span className="truncate text-xs font-medium">
+                                            {providerId}
+                                          </span>
                                           <span className="text-[11px] text-muted-foreground">
                                             {t("openCode.modelCount", {
                                               count: provider.modelCount,
                                             })}
                                           </span>
                                         </button>
-                                        <CollapsibleContent className="pt-2">
-                                          <p className="text-[11px] text-muted-foreground">
-                                            {t("openCode.modelDescription")}
-                                          </p>
+                                        <div className="flex items-center gap-3">
+                                          <button
+                                            type="button"
+                                            className="cursor-grab rounded p-0.5 text-muted-foreground hover:bg-muted active:cursor-grabbing"
+                                            title={t("openCode.dragProvider", {
+                                              providerId,
+                                            })}
+                                            aria-label={t(
+                                              "openCode.dragProvider",
+                                              { providerId }
+                                            )}
+                                            onPointerDown={startDrag}
+                                            onClick={(event) => {
+                                              event.stopPropagation()
+                                            }}
+                                          >
+                                            <GripVertical className="h-3.5 w-3.5" />
+                                          </button>
+                                          <span className="text-[11px] text-muted-foreground">
+                                            {isDisabled
+                                              ? t("status.disabled")
+                                              : t("status.enabled")}
+                                          </span>
+                                          <Switch
+                                            checked={!isDisabled}
+                                            onCheckedChange={(checked) => {
+                                              handleOpenCodeProviderStatusChange(
+                                                providerId,
+                                                checked
+                                              )
+                                            }}
+                                            aria-label={t(
+                                              "openCode.providerEnabledState",
+                                              { providerId }
+                                            )}
+                                            title={
+                                              isDisabled
+                                                ? t("actions.clickEnable", {
+                                                    name: providerId,
+                                                  })
+                                                : t("actions.clickDisable", {
+                                                    name: providerId,
+                                                  })
+                                            }
+                                          />
+                                          <Button
+                                            type="button"
+                                            size="xs"
+                                            variant="outline"
+                                            onClick={() => {
+                                              setOpenCodeDeleteProviderId(
+                                                providerId
+                                              )
+                                            }}
+                                          >
+                                            {t("actions.delete")}
+                                          </Button>
+                                        </div>
+                                      </div>
 
-                                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                                      <CollapsibleContent className="px-2.5 pb-2.5">
+                                        <div className="grid gap-3 border-t pt-2.5 md:grid-cols-2">
+                                          <div className="space-y-1.5">
+                                            <label className="text-[11px] text-muted-foreground">
+                                              provider.name
+                                            </label>
                                             <Input
-                                              value={
-                                                openCodeNewModelIds[
-                                                  providerId
-                                                ] ?? ""
-                                              }
+                                              value={provider.name}
                                               onChange={(event) => {
-                                                handleOpenCodeModelDraftChange(
+                                                handleOpenCodeProviderFieldChange(
                                                   providerId,
+                                                  "name",
                                                   event.target.value
                                                 )
                                               }}
-                                              className="w-[240px]"
-                                              placeholder="new-model-id"
+                                              placeholder="My Provider"
                                             />
-                                            <Button
-                                              type="button"
-                                              size="sm"
-                                              variant="outline"
-                                              onClick={() => {
-                                                handleOpenCodeAddModel(
-                                                  providerId
+                                          </div>
+                                          <div className="space-y-1.5">
+                                            <label className="text-[11px] text-muted-foreground">
+                                              provider.npm
+                                            </label>
+                                            <Select
+                                              value={
+                                                provider.npm.trim()
+                                                  ? provider.npm
+                                                  : OPENCODE_PROVIDER_NPM_OPTIONS[0]
+                                                      .value
+                                              }
+                                              onValueChange={(value) => {
+                                                handleOpenCodeProviderFieldChange(
+                                                  providerId,
+                                                  "npm",
+                                                  value
                                                 )
                                               }}
                                             >
-                                              {t("openCode.addModel")}
-                                            </Button>
+                                              <SelectTrigger className="w-full">
+                                                <SelectValue
+                                                  placeholder={t(
+                                                    "openCode.selectProviderNpm"
+                                                  )}
+                                                />
+                                              </SelectTrigger>
+                                              <SelectContent align="start">
+                                                {buildOpenCodeNpmOptions(
+                                                  provider.npm
+                                                ).map((npmOption) => (
+                                                  <SelectItem
+                                                    key={npmOption}
+                                                    value={npmOption}
+                                                  >
+                                                    {npmOption}
+                                                  </SelectItem>
+                                                ))}
+                                              </SelectContent>
+                                            </Select>
                                           </div>
-
-                                          {provider.modelIds.length === 0 ? (
-                                            <div className="mt-2 text-[11px] text-muted-foreground">
-                                              {t("openCode.emptyModel")}
-                                            </div>
-                                          ) : (
-                                            <div className="mt-2 space-y-1">
-                                              <div className="flex items-center gap-2 px-1 text-[10px] text-muted-foreground">
-                                                <div className="min-w-0 flex-1">
-                                                  {t("openCode.modelId")}
-                                                </div>
-                                                <div className="min-w-0 flex-1">
-                                                  {t("openCode.modelName")}
-                                                </div>
-                                                <div className="size-8 shrink-0" />
-                                              </div>
-                                              {provider.modelIds.map(
-                                                (modelId) => {
-                                                  const model =
-                                                    provider.models[modelId]
-                                                  if (!model) return null
-                                                  const modelDraftKey = `${providerId}:${modelId}`
-                                                  return (
-                                                    <div
-                                                      key={`${providerId}:${modelId}`}
-                                                      className="flex items-center gap-2"
-                                                    >
-                                                      <Input
-                                                        value={
-                                                          openCodeModelIdDrafts[
-                                                            modelDraftKey
-                                                          ] ?? model.id
-                                                        }
-                                                        onChange={(event) => {
-                                                          handleOpenCodeModelIdDraftChange(
-                                                            providerId,
-                                                            modelId,
-                                                            event.target.value
-                                                          )
-                                                        }}
-                                                        onBlur={() => {
-                                                          handleOpenCodeModelIdCommit(
-                                                            providerId,
-                                                            modelId
-                                                          )
-                                                        }}
-                                                        {...ime.props}
-                                                        onKeyDown={(event) => {
-                                                          if (
-                                                            ime.isComposing(
-                                                              event
-                                                            )
-                                                          )
-                                                            return
-                                                          if (
-                                                            event.key ===
-                                                            "Enter"
-                                                          ) {
-                                                            event.preventDefault()
-                                                            handleOpenCodeModelIdCommit(
-                                                              providerId,
-                                                              modelId
-                                                            )
-                                                            event.currentTarget.blur()
-                                                            return
-                                                          }
-                                                          if (
-                                                            event.key ===
-                                                            "Escape"
-                                                          ) {
-                                                            setOpenCodeModelIdDrafts(
-                                                              (prev) => {
-                                                                if (
-                                                                  typeof prev[
-                                                                    modelDraftKey
-                                                                  ] ===
-                                                                  "undefined"
-                                                                ) {
-                                                                  return prev
-                                                                }
-                                                                const next = {
-                                                                  ...prev,
-                                                                }
-                                                                delete next[
-                                                                  modelDraftKey
-                                                                ]
-                                                                return next
-                                                              }
-                                                            )
-                                                            event.currentTarget.blur()
-                                                          }
-                                                        }}
-                                                        className="h-8 min-w-0 flex-1"
-                                                        placeholder="model.id"
-                                                      />
-                                                      <Input
-                                                        value={model.name}
-                                                        onChange={(event) => {
-                                                          handleOpenCodeModelFieldChange(
-                                                            providerId,
-                                                            modelId,
-                                                            event.target.value
-                                                          )
-                                                        }}
-                                                        className="h-8 min-w-0 flex-1"
-                                                        placeholder="model.name"
-                                                      />
-                                                      <Button
-                                                        type="button"
-                                                        size="icon-sm"
-                                                        variant="ghost"
-                                                        className="shrink-0 text-muted-foreground hover:text-destructive"
-                                                        aria-label={t(
-                                                          "openCode.deleteModel",
-                                                          { modelId }
-                                                        )}
-                                                        title={t(
-                                                          "openCode.deleteModel",
-                                                          { modelId }
-                                                        )}
-                                                        onClick={() => {
-                                                          handleOpenCodeRemoveModel(
-                                                            providerId,
-                                                            modelId
-                                                          )
-                                                        }}
-                                                      >
-                                                        <Minus className="h-3.5 w-3.5" />
-                                                      </Button>
-                                                    </div>
+                                          <div className="space-y-1.5">
+                                            <label className="text-[11px] text-muted-foreground">
+                                              provider.api
+                                            </label>
+                                            <Input
+                                              value={provider.api}
+                                              onChange={(event) => {
+                                                handleOpenCodeProviderFieldChange(
+                                                  providerId,
+                                                  "api",
+                                                  event.target.value
+                                                )
+                                              }}
+                                              placeholder="openai.responses"
+                                            />
+                                          </div>
+                                          <div className="space-y-1.5">
+                                            <label className="text-[11px] text-muted-foreground">
+                                              provider.options.baseURL
+                                            </label>
+                                            <Input
+                                              value={provider.baseUrl}
+                                              onChange={(event) => {
+                                                handleOpenCodeProviderFieldChange(
+                                                  providerId,
+                                                  "baseURL",
+                                                  event.target.value
+                                                )
+                                              }}
+                                              placeholder="https://api.example.com/v1"
+                                            />
+                                          </div>
+                                          <div className="space-y-1.5 md:col-span-2">
+                                            <label className="text-[11px] text-muted-foreground">
+                                              provider.options.apiKey
+                                            </label>
+                                            <div className="flex items-center gap-2">
+                                              <Input
+                                                type={
+                                                  showApiKeys[
+                                                    selectedAgent.agent_type
+                                                  ]
+                                                    ? "text"
+                                                    : "password"
+                                                }
+                                                value={provider.apiKey}
+                                                onChange={(event) => {
+                                                  handleOpenCodeProviderFieldChange(
+                                                    providerId,
+                                                    "apiKey",
+                                                    event.target.value
                                                   )
+                                                }}
+                                                placeholder="sk-..."
+                                              />
+                                              <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="sm"
+                                                onClick={() => {
+                                                  setShowApiKeys((prev) => ({
+                                                    ...prev,
+                                                    [selectedAgent.agent_type]:
+                                                      !prev[
+                                                        selectedAgent.agent_type
+                                                      ],
+                                                  }))
+                                                }}
+                                                title={
+                                                  showApiKeys[
+                                                    selectedAgent.agent_type
+                                                  ]
+                                                    ? t("actions.hideKey")
+                                                    : t("actions.showKey")
                                                 }
-                                              )}
+                                              >
+                                                {showApiKeys[
+                                                  selectedAgent.agent_type
+                                                ] ? (
+                                                  <EyeOff className="h-3.5 w-3.5" />
+                                                ) : (
+                                                  <Eye className="h-3.5 w-3.5" />
+                                                )}
+                                              </Button>
                                             </div>
+                                          </div>
+                                        </div>
+                                        <Collapsible
+                                          open={Boolean(
+                                            openCodeModelConfigExpanded[
+                                              providerId
+                                            ]
                                           )}
-                                        </CollapsibleContent>
-                                      </div>
-                                    </Collapsible>
-                                    <div className="mt-3 flex justify-end">
-                                      <Button
-                                        type="button"
-                                        size="sm"
-                                        onClick={() => {
-                                          persistConfig(
-                                            selectedAgent.agent_type,
-                                            selectedDraft.configText,
-                                            {
-                                              openCodeAuthJsonText:
-                                                selectedDraft.openCodeAuthJsonText,
-                                            }
-                                          )
-                                            .then(() => {
-                                              toast.success(
-                                                t("toasts.providerSaved", {
-                                                  providerId,
-                                                }),
+                                          onOpenChange={(open) => {
+                                            setOpenCodeModelConfigExpanded(
+                                              (prev) => ({
+                                                ...prev,
+                                                [providerId]: open,
+                                              })
+                                            )
+                                          }}
+                                        >
+                                          <div className="mt-3 rounded-md border bg-background/50 p-2.5">
+                                            <button
+                                              type="button"
+                                              className="flex w-full items-center justify-between gap-2 text-left"
+                                              onClick={() => {
+                                                setOpenCodeModelConfigExpanded(
+                                                  (prev) => ({
+                                                    ...prev,
+                                                    [providerId]:
+                                                      !prev[providerId],
+                                                  })
+                                                )
+                                              }}
+                                            >
+                                              <div className="flex items-center gap-2">
+                                                <ChevronDown
+                                                  className={cn(
+                                                    "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
+                                                    openCodeModelConfigExpanded[
+                                                      providerId
+                                                    ] && "rotate-180"
+                                                  )}
+                                                />
+                                                <span className="text-[11px] font-medium">
+                                                  {t(
+                                                    "openCode.modelManagement"
+                                                  )}
+                                                </span>
+                                              </div>
+                                              <span className="text-[11px] text-muted-foreground">
+                                                {t("openCode.modelCount", {
+                                                  count: provider.modelCount,
+                                                })}
+                                              </span>
+                                            </button>
+                                            <CollapsibleContent className="pt-2">
+                                              <p className="text-[11px] text-muted-foreground">
+                                                {t("openCode.modelDescription")}
+                                              </p>
+
+                                              <div className="mt-2 flex flex-wrap items-center gap-2">
+                                                {isKiloAgentType(
+                                                  selectedAgent.agent_type
+                                                ) && (
+                                                  <Button
+                                                    type="button"
+                                                    size="sm"
+                                                    variant="outline"
+                                                    onClick={() => {
+                                                      void handleOpenCodeFetchModels(
+                                                        providerId
+                                                      )
+                                                    }}
+                                                    disabled={
+                                                      openCodeModelsFetching[
+                                                        providerId
+                                                      ]
+                                                    }
+                                                  >
+                                                    {openCodeModelsFetching[
+                                                      providerId
+                                                    ] ? (
+                                                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                    ) : (
+                                                      <Download className="h-3.5 w-3.5" />
+                                                    )}
+                                                    {t(
+                                                      "openCode.fetchProviderModels"
+                                                    )}
+                                                  </Button>
+                                                )}
+                                                <Input
+                                                  value={
+                                                    openCodeNewModelIds[
+                                                      providerId
+                                                    ] ?? ""
+                                                  }
+                                                  onChange={(event) => {
+                                                    handleOpenCodeModelDraftChange(
+                                                      providerId,
+                                                      event.target.value
+                                                    )
+                                                  }}
+                                                  className="w-[240px]"
+                                                  placeholder={t(
+                                                    "openCode.newModelIdPlaceholder"
+                                                  )}
+                                                />
+                                                <Button
+                                                  type="button"
+                                                  size="sm"
+                                                  variant="outline"
+                                                  onClick={() => {
+                                                    handleOpenCodeAddModel(
+                                                      providerId
+                                                    )
+                                                  }}
+                                                >
+                                                  {t("openCode.addModel")}
+                                                </Button>
+                                              </div>
+
+                                              {openCodeFetchedModelPicker?.providerId ===
+                                                providerId && (
+                                                <KiloProviderModelDialog
+                                                  open
+                                                  providerId={providerId}
+                                                  modelIds={
+                                                    openCodeFetchedModelPicker.modelIds
+                                                  }
+                                                  onOpenChange={(open) => {
+                                                    if (!open) {
+                                                      setOpenCodeFetchedModelPicker(
+                                                        null
+                                                      )
+                                                    }
+                                                  }}
+                                                  onAdd={
+                                                    handleOpenCodeAddFetchedModels
+                                                  }
+                                                />
+                                              )}
+
+                                              {provider.modelIds.length ===
+                                              0 ? (
+                                                <div className="mt-2 text-[11px] text-muted-foreground">
+                                                  {t("openCode.emptyModel")}
+                                                </div>
+                                              ) : (
+                                                <div className="mt-2 space-y-1">
+                                                  <div className="flex items-center gap-2 px-1 text-[10px] text-muted-foreground">
+                                                    <div className="min-w-0 flex-1">
+                                                      {t("openCode.modelId")}
+                                                    </div>
+                                                    <div className="min-w-0 flex-1">
+                                                      {t("openCode.modelName")}
+                                                    </div>
+                                                    <div className="size-8 shrink-0" />
+                                                  </div>
+                                                  {provider.modelIds.map(
+                                                    (modelId) => {
+                                                      const model =
+                                                        provider.models[modelId]
+                                                      if (!model) return null
+                                                      const modelDraftKey = `${providerId}:${modelId}`
+                                                      return (
+                                                        <div
+                                                          key={`${providerId}:${modelId}`}
+                                                          className="flex items-center gap-2"
+                                                        >
+                                                          <Input
+                                                            value={
+                                                              openCodeModelIdDrafts[
+                                                                modelDraftKey
+                                                              ] ?? model.id
+                                                            }
+                                                            onChange={(
+                                                              event
+                                                            ) => {
+                                                              handleOpenCodeModelIdDraftChange(
+                                                                providerId,
+                                                                modelId,
+                                                                event.target
+                                                                  .value
+                                                              )
+                                                            }}
+                                                            onBlur={() => {
+                                                              handleOpenCodeModelIdCommit(
+                                                                providerId,
+                                                                modelId
+                                                              )
+                                                            }}
+                                                            {...ime.props}
+                                                            onKeyDown={(
+                                                              event
+                                                            ) => {
+                                                              if (
+                                                                ime.isComposing(
+                                                                  event
+                                                                )
+                                                              )
+                                                                return
+                                                              if (
+                                                                event.key ===
+                                                                "Enter"
+                                                              ) {
+                                                                event.preventDefault()
+                                                                handleOpenCodeModelIdCommit(
+                                                                  providerId,
+                                                                  modelId
+                                                                )
+                                                                event.currentTarget.blur()
+                                                                return
+                                                              }
+                                                              if (
+                                                                event.key ===
+                                                                "Escape"
+                                                              ) {
+                                                                setOpenCodeModelIdDrafts(
+                                                                  (prev) => {
+                                                                    if (
+                                                                      typeof prev[
+                                                                        modelDraftKey
+                                                                      ] ===
+                                                                      "undefined"
+                                                                    ) {
+                                                                      return prev
+                                                                    }
+                                                                    const next =
+                                                                      {
+                                                                        ...prev,
+                                                                      }
+                                                                    delete next[
+                                                                      modelDraftKey
+                                                                    ]
+                                                                    return next
+                                                                  }
+                                                                )
+                                                                event.currentTarget.blur()
+                                                              }
+                                                            }}
+                                                            className="h-8 min-w-0 flex-1"
+                                                            placeholder="model.id"
+                                                          />
+                                                          <Input
+                                                            value={model.name}
+                                                            onChange={(
+                                                              event
+                                                            ) => {
+                                                              handleOpenCodeModelFieldChange(
+                                                                providerId,
+                                                                modelId,
+                                                                event.target
+                                                                  .value
+                                                              )
+                                                            }}
+                                                            className="h-8 min-w-0 flex-1"
+                                                            placeholder="model.name"
+                                                          />
+                                                          <Button
+                                                            type="button"
+                                                            size="icon-sm"
+                                                            variant="ghost"
+                                                            className="shrink-0 text-muted-foreground hover:text-destructive"
+                                                            aria-label={t(
+                                                              "openCode.deleteModel",
+                                                              { modelId }
+                                                            )}
+                                                            title={t(
+                                                              "openCode.deleteModel",
+                                                              { modelId }
+                                                            )}
+                                                            onClick={() => {
+                                                              handleOpenCodeRemoveModel(
+                                                                providerId,
+                                                                modelId
+                                                              )
+                                                            }}
+                                                          >
+                                                            <Minus className="h-3.5 w-3.5" />
+                                                          </Button>
+                                                        </div>
+                                                      )
+                                                    }
+                                                  )}
+                                                </div>
+                                              )}
+                                            </CollapsibleContent>
+                                          </div>
+                                        </Collapsible>
+                                        <div className="mt-3 flex justify-end">
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            onClick={() => {
+                                              persistConfig(
+                                                selectedAgent.agent_type,
+                                                selectedDraft.configText,
                                                 {
-                                                  description: `${t("toasts.openCodeConfigSynced")} ${t("toasts.configSavedHint")}`,
+                                                  openCodeAuthJsonText:
+                                                    selectedDraft.openCodeAuthJsonText,
                                                 }
                                               )
-                                            })
-                                            .catch((err) => {
-                                              console.error(
-                                                "[Settings] save opencode provider failed:",
-                                                err
-                                              )
-                                              const message =
-                                                err instanceof Error
-                                                  ? err.message
-                                                  : String(err)
-                                              toast.error(
-                                                t("toasts.saveProviderFailed", {
-                                                  providerId,
-                                                }),
-                                                {
-                                                  description: message,
-                                                }
-                                              )
-                                            })
-                                        }}
-                                        disabled={selectedIsSavingConfig}
-                                      >
-                                        {selectedIsSavingConfig ? (
-                                          <>
-                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                            {t("actions.saving")}
-                                          </>
-                                        ) : (
-                                          <>
-                                            <Save className="h-3.5 w-3.5" />
-                                            {t("actions.saveCurrentProvider")}
-                                          </>
-                                        )}
-                                      </Button>
+                                                .then(() => {
+                                                  toast.success(
+                                                    t("toasts.providerSaved", {
+                                                      providerId,
+                                                    }),
+                                                    {
+                                                      description: `${t("toasts.openCodeConfigSynced")} ${t("toasts.configSavedHint")}`,
+                                                    }
+                                                  )
+                                                })
+                                                .catch((err) => {
+                                                  console.error(
+                                                    "[Settings] save opencode provider failed:",
+                                                    err
+                                                  )
+                                                  const message =
+                                                    err instanceof Error
+                                                      ? err.message
+                                                      : String(err)
+                                                  toast.error(
+                                                    t(
+                                                      "toasts.saveProviderFailed",
+                                                      {
+                                                        providerId,
+                                                      }
+                                                    ),
+                                                    {
+                                                      description: message,
+                                                    }
+                                                  )
+                                                })
+                                            }}
+                                            disabled={selectedIsSavingConfig}
+                                          >
+                                            {selectedIsSavingConfig ? (
+                                              <>
+                                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                {t("actions.saving")}
+                                              </>
+                                            ) : (
+                                              <>
+                                                <Save className="h-3.5 w-3.5" />
+                                                {t(
+                                                  "actions.saveCurrentProvider"
+                                                )}
+                                              </>
+                                            )}
+                                          </Button>
+                                        </div>
+                                      </CollapsibleContent>
                                     </div>
-                                  </CollapsibleContent>
-                                </div>
-                              </Collapsible>
+                                  </Collapsible>
+                                )}
+                              </CustomProviderReorderItem>
                             )
                           })}
-                        </div>
+                        </Reorder.Group>
                       )}
                     </div>
 
@@ -9604,7 +9933,9 @@ supports_websockets = true`}
 
                     <div className="space-y-1.5">
                       <label className="text-[11px] text-muted-foreground">
-                        {t("openCode.nativeJsonConfig")}
+                        {isKiloAgentType(selectedAgent.agent_type)
+                          ? t("openCode.kiloNativeJsonConfig")
+                          : t("openCode.nativeJsonConfig")}
                       </label>
                       <Textarea
                         value={selectedDraft.configText}

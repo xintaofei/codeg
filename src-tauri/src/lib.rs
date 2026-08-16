@@ -1221,6 +1221,7 @@ mod tauri_app {
                 acp_commands::acp_update_hermes_config,
                 acp_commands::acp_update_kimi_code_config,
                 acp_commands::acp_fetch_kimi_models,
+                acp_commands::acp_fetch_kilo_provider_models,
                 acp_commands::acp_update_pi_config,
                 acp_commands::acp_load_pi_config,
                 acp_commands::acp_validate_pi_command,

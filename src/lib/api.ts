@@ -682,6 +682,17 @@ export async function acpFetchKimiModels(params: {
   })
 }
 
+/** List the models available to a Kilo custom provider via its `/models` API. */
+export async function acpFetchKiloProviderModels(params: {
+  baseUrl: string
+  apiKey: string
+}): Promise<string[]> {
+  return getTransport().call("acp_fetch_kilo_provider_models", {
+    baseUrl: params.baseUrl,
+    apiKey: params.apiKey,
+  })
+}
+
 /**
  * Apply a structured Pi config update. Merge-writes pi's native
  * `~/.pi/agent/settings.json` (`defaultProvider` / `defaultModel` /

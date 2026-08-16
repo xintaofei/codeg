@@ -932,13 +932,19 @@
         "action": "Verbinden",
         "editTitle": "Provider bearbeiten",
         "editDescription": "Aktualisiere den API-Schlüssel oder die Basis-URL dieses Providers.",
-        "saveAction": "Speichern"
+        "saveAction": "Speichern",
+        "agentTitle": "{agent}-Provider verbinden",
+        "agentDescription": "Wähle einen Provider aus dem models.dev-Katalog. Anmeldedaten werden in der auth.json-Datei von {agent} gespeichert.",
+        "agentEditTitle": "{agent}-Provider bearbeiten",
+        "agentEditDescription": "Aktualisiere die Anmeldedaten dieses Providers in den nativen JSON-Dateien von {agent}."
       },
       "customProvider": {
         "title": "Benutzerdefinierten Provider hinzufügen",
         "description": "Definiere einen OpenAI-kompatiblen Endpunkt. Der API-Key wird in auth.json gespeichert, der Provider-Block in opencode.json.",
         "action": "Provider hinzufügen",
-        "idInCatalog": "{providerId} ist ein bekannter Provider – verbinde ihn stattdessen über Provider verbinden."
+        "idInCatalog": "{providerId} ist ein bekannter Provider – verbinde ihn stattdessen über Provider verbinden.",
+        "agentTitle": "Benutzerdefinierten {agent}-Provider hinzufügen",
+        "agentDescription": "Konfiguriere einen OpenAI-kompatiblen Provider in den nativen JSON-Dateien von {agent}."
       },
       "refreshCatalog": "Katalog aktualisieren",
       "reasoningBadge": "Reasoning",
@@ -992,7 +998,24 @@
           "question": "Dir eine Frage stellen",
           "doom_loop": "Löst aus, wenn sich derselbe Aufruf dreimal mit gleicher Eingabe wiederholt"
         }
-      }
+      },
+      "kiloConfiguration": "Kilo-Code-Konfiguration",
+      "kiloConfigurationDescription": "Verwalte Kilo-Code-Provider und -Modelle. Änderungen werden in Kilos nativen JSON-Dateien gespeichert.",
+      "fetchProviderModels": "Provider-Modelle abrufen",
+      "fetchModelsCredentialsRequired": "Füge die Basis-URL und den API-Schlüssel dieses Providers hinzu, bevor du Modelle abrufst.",
+      "fetchModelsAlreadyConfigured": "Alle verfügbaren Modelle sind bereits konfiguriert.",
+      "fetchModelsFailed": "Modelle konnten nicht von diesem Provider abgerufen werden.",
+      "modelsAdded": "{count} Modelle hinzugefügt.",
+      "chooseModelsTitle": "Modelle zum Hinzufügen auswählen",
+      "chooseModelsDescription": "Wähle die Modelle aus, die für {providerId} hinzugefügt werden sollen. Reasoning ist standardmäßig aktiviert.",
+      "searchModels": "Modelle suchen…",
+      "selectedModels": "{selected} von {total} ausgewählt",
+      "selectAllModels": "Alle auswählen",
+      "clearSelectedModels": "Auswahl löschen",
+      "addSelectedModels": "Ausgewählte Modelle hinzufügen",
+      "newModelIdPlaceholder": "neue-modell-id",
+      "kiloNativeJsonConfig": "Native JSON-Konfiguration von Kilo Code",
+      "dragProvider": "{providerId} zum Neuanordnen ziehen"
     },
     "openClaw": {
       "gatewayConfig": "Gateway-Konfiguration",
@@ -2703,7 +2726,8 @@
         "mentionGroupAgent": "Agenten",
         "mentionGroupSession": "Sitzungen",
         "mentionGroupCommit": "Commits",
-        "mentionGroupSkill": "Fähigkeiten"
+        "mentionGroupSkill": "Fähigkeiten",
+        "manageKiloModels": "Kilo-Code-Modelle verwalten"
       },
       "messageQueue": {
         "addToQueue": "Zur Warteschlange",
@@ -3344,6 +3368,21 @@
       "proposedPlan": {
         "title": "Vorgeschlagener Plan",
         "planning": "Wird geplant…"
+      },
+      "kiloModelManager": {
+        "title": "Kilo-Code-Modelle verwalten",
+        "description": "Füge Modelle hinzu und lege fest, ob jedes Modell Reasoning verwendet.",
+        "loadFailed": "Kilo-Code-Modelle konnten nicht geladen werden.",
+        "saveFailed": "Kilo-Code-Modelle konnten nicht gespeichert werden.",
+        "providerPlaceholder": "provider-id",
+        "modelPlaceholder": "modell-id",
+        "add": "Hinzufügen",
+        "reasoning": "Reasoning",
+        "empty": "Noch keine Modelle konfiguriert.",
+        "manageReasoningLevels": "Reasoning-Stufen verwalten",
+        "reasoningLevelsTitle": "Reasoning-Stufen",
+        "reasoningLevelsDescription": "Füge die für {model} angezeigten Stufen hinzu oder deaktiviere sie.",
+        "customLevel": "Benutzerdefinierte Stufe"
       }
     },
     "diffPreview": {
