@@ -429,6 +429,18 @@
       "toggle_custom_style": {
         "title": "Suspender/reanudar estilo personalizado",
         "description": "Vía de escape: desactiva todos los colores y el CSS personalizados, y los vuelve a activar"
+      },
+      "zoom_in": {
+        "title": "Zoom in",
+        "description": "Step the window zoom up one Settings rung"
+      },
+      "zoom_out": {
+        "title": "Zoom out",
+        "description": "Step the window zoom down one Settings rung"
+      },
+      "zoom_reset": {
+        "title": "Reset zoom",
+        "description": "Set the window zoom back to 100%"
       }
     }
   },

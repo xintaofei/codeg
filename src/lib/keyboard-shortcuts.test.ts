@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest"
 import {
   DEFAULT_SHORTCUTS,
   SHORTCUT_DEFINITIONS,
+  isZoomInShortcutEvent,
+  isZoomOutShortcutEvent,
   matchShortcutEvent,
   shortcutFromKeyboardEvent,
 } from "./keyboard-shortcuts"
@@ -115,5 +117,37 @@ describe("alt combinations use event.code", () => {
         "mod+alt+shift+s"
       )
     ).toBe(true)
+  })
+})
+
+describe("window zoom shortcuts", () => {
+  it("registers zoom_in / zoom_out / zoom_reset defaults", () => {
+    const ids = SHORTCUT_DEFINITIONS.map((definition) => definition.id)
+    expect(ids).toContain("zoom_in")
+    expect(ids).toContain("zoom_out")
+    expect(ids).toContain("zoom_reset")
+    expect(DEFAULT_SHORTCUTS.zoom_in).toBe("mod+=")
+    expect(DEFAULT_SHORTCUTS.zoom_out).toBe("mod+-")
+    expect(DEFAULT_SHORTCUTS.zoom_reset).toBe("mod+0")
+  })
+
+  it("treats Ctrl+= and Ctrl++ as zoom in", () => {
+    expect(
+      isZoomInShortcutEvent(keyEvent("=", { ctrlKey: true }))
+    ).toBe(true)
+    expect(
+      isZoomInShortcutEvent(keyEvent("+", { ctrlKey: true, shiftKey: true }))
+    ).toBe(true)
+    expect(isZoomInShortcutEvent(keyEvent("=", { ctrlKey: true }))).toBe(true)
+    expect(isZoomInShortcutEvent(keyEvent("k", { ctrlKey: true }))).toBe(false)
+  })
+
+  it("treats Ctrl+- as zoom out", () => {
+    expect(
+      isZoomOutShortcutEvent(keyEvent("-", { ctrlKey: true }))
+    ).toBe(true)
+    expect(isZoomOutShortcutEvent(keyEvent("=", { ctrlKey: true }))).toBe(
+      false
+    )
   })
 })

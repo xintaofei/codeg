@@ -97,3 +97,11 @@ export const ZOOM_LEVELS = [80, 90, 100, 110, 125, 150] as const
 export type ZoomLevel = (typeof ZOOM_LEVELS)[number]
 
 export const DEFAULT_ZOOM_LEVEL: ZoomLevel = 100
+
+/** Next discrete Settings zoom step. Stops at the first / last rung. */
+export function stepZoom(current: ZoomLevel, direction: 1 | -1): ZoomLevel {
+  const index = ZOOM_LEVELS.indexOf(current)
+  const from = index >= 0 ? index : ZOOM_LEVELS.indexOf(DEFAULT_ZOOM_LEVEL)
+  const next = Math.min(ZOOM_LEVELS.length - 1, Math.max(0, from + direction))
+  return ZOOM_LEVELS[next]
+}

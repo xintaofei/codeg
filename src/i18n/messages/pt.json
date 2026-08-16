@@ -429,6 +429,18 @@
       "toggle_custom_style": {
         "title": "Suspender/retomar estilo personalizado",
         "description": "Saída de emergência: desliga todas as cores e o CSS personalizados e volta a ligá-los"
+      },
+      "zoom_in": {
+        "title": "Zoom in",
+        "description": "Step the window zoom up one Settings rung"
+      },
+      "zoom_out": {
+        "title": "Zoom out",
+        "description": "Step the window zoom down one Settings rung"
+      },
+      "zoom_reset": {
+        "title": "Reset zoom",
+        "description": "Set the window zoom back to 100%"
       }
     }
   },

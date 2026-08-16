@@ -15,6 +15,9 @@ export type ShortcutActionId =
   | "send_message"
   | "newline_in_message"
   | "toggle_custom_style"
+  | "zoom_in"
+  | "zoom_out"
+  | "zoom_reset"
 
 export interface ShortcutDefinition {
   id: ShortcutActionId
@@ -69,6 +72,15 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
   {
     id: "toggle_custom_style",
   },
+  {
+    id: "zoom_in",
+  },
+  {
+    id: "zoom_out",
+  },
+  {
+    id: "zoom_reset",
+  },
 ]
 
 /** Actions that allow shortcuts without modifier keys (e.g. plain Enter). */
@@ -98,6 +110,11 @@ export const DEFAULT_SHORTCUTS: ShortcutSettings = {
   // 自定义样式的逃生舱：用户把界面改到不可用时，这一路必须仍然按得动，所以选一个
   // 三修饰键组合（不会与任何常用操作撞车），并在捕获阶段监听。
   toggle_custom_style: "mod+alt+shift+s",
+  // Same rungs as Settings → Window zoom. `=` is what US keyboards fire for
+  // Ctrl/+ without Shift; `+` is Shift+= and the numpad.
+  zoom_in: "mod+=",
+  zoom_out: "mod+-",
+  zoom_reset: "mod+0",
 }
 
 export const SHORTCUTS_STORAGE_KEY = "settings:shortcuts:v1"
@@ -115,6 +132,9 @@ const SPECIAL_KEY_ALIASES: Record<string, string> = {
   down: "arrowdown",
   left: "arrowleft",
   right: "arrowright",
+  add: "+",
+  subtract: "-",
+  equal: "=",
 }
 
 const KEY_LABELS: Record<string, string> = {
@@ -304,6 +324,26 @@ export function shortcutFromKeyboardEvent(
   parts.push(keyToken)
 
   return parts.join("+")
+}
+
+/** Ctrl/Cmd + or = (with or without Shift). Matches the Settings zoom-in rung. */
+export function isZoomInShortcutEvent(event: ShortcutEventLike): boolean {
+  if (matchShortcutEvent(event, "mod+=") || matchShortcutEvent(event, "mod++")) {
+    return true
+  }
+  if (!(event.metaKey || event.ctrlKey) || event.altKey) return false
+  const key = eventKeyToken(event)
+  if (key === "+" || key === "=") return true
+  return event.code === "Equal" || event.code === "NumpadAdd"
+}
+
+/** Ctrl/Cmd - (with or without Shift). Matches the Settings zoom-out rung. */
+export function isZoomOutShortcutEvent(event: ShortcutEventLike): boolean {
+  if (matchShortcutEvent(event, "mod+-")) return true
+  if (!(event.metaKey || event.ctrlKey) || event.altKey) return false
+  const key = eventKeyToken(event)
+  if (key === "-" || key === "_") return true
+  return event.code === "Minus" || event.code === "NumpadSubtract"
 }
 
 export function matchShortcutEvent(

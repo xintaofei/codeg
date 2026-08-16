@@ -429,6 +429,18 @@
       "toggle_custom_style": {
         "title": "停用/恢复自定义样式",
         "description": "逃生舱：一键关闭全部自定义配色与 CSS，再按一次恢复"
+      },
+      "zoom_in": {
+        "title": "Zoom in",
+        "description": "Step the window zoom up one Settings rung"
+      },
+      "zoom_out": {
+        "title": "Zoom out",
+        "description": "Step the window zoom down one Settings rung"
+      },
+      "zoom_reset": {
+        "title": "Reset zoom",
+        "description": "Set the window zoom back to 100%"
       }
     }
   },

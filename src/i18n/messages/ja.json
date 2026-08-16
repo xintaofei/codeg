@@ -429,6 +429,18 @@
       "toggle_custom_style": {
         "title": "カスタムスタイルの停止/再開",
         "description": "緊急脱出用: カスタム配色と CSS をすべてオフにし、再度押すと元に戻します"
+      },
+      "zoom_in": {
+        "title": "Zoom in",
+        "description": "Step the window zoom up one Settings rung"
+      },
+      "zoom_out": {
+        "title": "Zoom out",
+        "description": "Step the window zoom down one Settings rung"
+      },
+      "zoom_reset": {
+        "title": "Reset zoom",
+        "description": "Set the window zoom back to 100%"
       }
     }
   },
