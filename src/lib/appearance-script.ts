@@ -83,7 +83,7 @@ const SCRIPT = `
 (function() {
   try {
     var VALID_COLORS = ["neutral","zinc","slate","stone","gray","red","rose","orange","green","blue","yellow","violet"];
-    var VALID_ZOOMS = [80, 90, 100, 110, 125, 150];
+    var VALID_ZOOMS = [80, 90, 100, 110, 125, 150, 175, 200, 250, 300];
 
     var storedColor = localStorage.getItem("${STORAGE_KEY_THEME_COLOR}");
     var color = VALID_COLORS.indexOf(storedColor) >= 0 ? storedColor : "neutral";
