@@ -1394,6 +1394,7 @@
     "searchModeScan": "Space-saving scan",
     "searchModeFts": "Full-text index",
     "searchSaving": "Saving...",
+    "searchSaveFailed": "Failed to save search settings",
     "skillPacksLoading": "Loading skill packs…"
   },
   "GeneralSettings": {

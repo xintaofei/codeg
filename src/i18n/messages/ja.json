@@ -1394,6 +1394,7 @@
     "searchModeScan": "省容量スキャン",
     "searchModeFts": "全文インデックス",
     "searchSaving": "保存中...",
+    "searchSaveFailed": "検索設定の保存に失敗しました",
     "skillPacksLoading": "スキルパックを読み込み中…"
   },
   "GeneralSettings": {

@@ -1394,6 +1394,7 @@
     "searchModeScan": "Platzsparender Scan",
     "searchModeFts": "Volltextindex",
     "searchSaving": "Speichern...",
+    "searchSaveFailed": "Sucheinstellungen konnten nicht gespeichert werden",
     "skillPacksLoading": "Skill-Pakete werden geladen…"
   },
   "GeneralSettings": {

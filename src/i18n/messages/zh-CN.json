@@ -1394,6 +1394,7 @@
     "searchModeScan": "省空间扫描",
     "searchModeFts": "全文索引",
     "searchSaving": "保存中...",
+    "searchSaveFailed": "搜索设置保存失败",
     "skillPacksLoading": "正在加载技能包…"
   },
   "GeneralSettings": {

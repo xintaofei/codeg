@@ -1394,6 +1394,7 @@
     "searchModeScan": "مسح موفر للمساحة",
     "searchModeFts": "فهرس نص كامل",
     "searchSaving": "جارٍ الحفظ...",
+    "searchSaveFailed": "تعذر حفظ إعدادات البحث",
     "skillPacksLoading": "جارٍ تحميل حزم المهارات…"
   },
   "GeneralSettings": {

@@ -1394,6 +1394,7 @@
     "searchModeScan": "Varredura econômica",
     "searchModeFts": "Índice de texto completo",
     "searchSaving": "Salvando...",
+    "searchSaveFailed": "Falha ao salvar as configurações de pesquisa",
     "skillPacksLoading": "Carregando pacotes de habilidades…"
   },
   "GeneralSettings": {

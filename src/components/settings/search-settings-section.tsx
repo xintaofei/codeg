@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { getSearchIndexStatus, setSearchSettings } from "@/lib/api"
+import { toast } from "sonner"
 import type { SearchIndexStatus } from "@/lib/types"
 
 export function SearchSettingsSection() {
@@ -29,7 +30,7 @@ export function SearchSettingsSection() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [t])
 
   const save = useCallback(
     async (enabled: boolean, mode: "auto" | "scan" | "fts") => {
@@ -38,11 +39,13 @@ export function SearchSettingsSection() {
         await setSearchSettings(enabled, mode)
         const next = await getSearchIndexStatus()
         setStatus(next)
+      } catch {
+        toast.error(t("searchSaveFailed"))
       } finally {
         setSaving(false)
       }
     },
-    []
+    [t]
   )
 
   return (

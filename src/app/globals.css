@@ -2554,11 +2554,20 @@ div.monaco-diff-editor.side-by-side .editor.modified {
   --tu-seq-7: var(--tu-accent);
 }
 
-/* Search-hit flash used by the Ctrl+K jump. The mark stays in the DOM but the
-   animation fills back to transparent, so selection/copy/export remain safe. */
+/* Search-hit flash used by the Ctrl+K jump. The title mark is rendered by
+   React; the message body uses CSS.highlights so the DOM is never mutated.
+   A dedicated token keeps the yellow legible in both themes. */
+:root {
+  --search-hit-bg: #fde047;
+}
+
+.dark {
+  --search-hit-bg: rgb(250 204 21 / 0.55);
+}
+
 @keyframes codeg-search-flash {
   0% {
-    background-color: #fde047;
+    background-color: var(--search-hit-bg);
   }
   100% {
     background-color: transparent;

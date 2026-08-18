@@ -1394,6 +1394,7 @@
     "searchModeScan": "Escaneo de bajo espacio",
     "searchModeFts": "Índice de texto completo",
     "searchSaving": "Guardando...",
+    "searchSaveFailed": "No se pudieron guardar los ajustes de búsqueda",
     "skillPacksLoading": "Cargando paquetes de habilidades…"
   },
   "GeneralSettings": {

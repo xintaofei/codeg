@@ -671,6 +671,8 @@ const AutoScrollOnSend = memo(function AutoScrollOnSend({
   return null
 })
 
+const SEARCH_HIGHLIGHT_KEY = "codeg-search-hit"
+
 function findSearchTurnElement(
   root: HTMLElement | null,
   turnId: string
@@ -690,8 +692,10 @@ function findSearchTurnElement(
   return null
 }
 
-function findScrollableAncestor(element: HTMLElement): HTMLElement | null {
-  let current: HTMLElement | null = element.parentElement
+function findScrollableAncestor(
+  element: HTMLElement | null
+): HTMLElement | null {
+  let current: HTMLElement | null = element
   while (current) {
     if (current.scrollHeight > current.clientHeight + 1) {
       const overflowY = window.getComputedStyle(current).overflowY
@@ -718,63 +722,189 @@ function scrollElementToCenter(element: HTMLElement) {
   })
 }
 
-function clearSearchMarks(root: HTMLElement | null) {
-  root?.querySelectorAll<HTMLElement>("[data-search-flash]").forEach((mark) => {
-    const parent = mark.parentNode
-    if (!parent) return
-    while (mark.firstChild) {
-      parent.insertBefore(mark.firstChild, mark)
-    }
-    parent.removeChild(mark)
+function scrollRangeToCenter(range: Range) {
+  const node = range.startContainer
+  const element =
+    node instanceof HTMLElement ? node : (node.parentElement ?? null)
+  const container = findScrollableAncestor(element)
+  if (!container) return
+  const targetRect = range.getBoundingClientRect()
+  const containerRect = container.getBoundingClientRect()
+  const nextScrollTop =
+    container.scrollTop +
+    targetRect.top -
+    containerRect.top -
+    (container.clientHeight - targetRect.height) / 2
+  container.scrollTo({
+    top: Math.max(0, nextScrollTop),
+    behavior: "smooth",
   })
 }
 
-function highlightSearchOccurrence(
-  element: HTMLElement,
-  query: string,
-  occurrenceIndex: number
-): boolean {
-  clearSearchMarks(element)
-  const needle = query.toLocaleLowerCase()
-  if (!needle) return false
+/** The exact matched substring from the source block, taken from the backend
+ *  char offsets. Using this per-match text (rather than the whole query)
+ *  keeps multi-term highlights and their counts aligned with the backend. */
+function searchMatchNeedle(
+  match: SearchMatchLocation,
+  turn: MessageTurn | undefined
+): string | null {
+  if (!turn || match.block_index == null) return null
+  const block = turn.blocks[match.block_index]
+  if (block?.type !== "text") return null
+  const chars = Array.from(block.text)
+  const start = Math.max(0, Math.min(match.char_start, chars.length))
+  const end = Math.max(start, Math.min(match.char_end, chars.length))
+  if (start >= end) return null
+  return chars.slice(start, end).join("")
+}
 
-  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
-  let node = walker.nextNode()
-  let occurrence = 0
-  while (node) {
-    const parentElement = node.parentElement
-    const parentTag = parentElement?.tagName ?? ""
-    if (["SCRIPT", "STYLE", "NOSCRIPT"].includes(parentTag)) {
-      node = walker.nextNode()
+function countOccurrences(text: string, needleLower: string): number {
+  if (!needleLower) return 0
+  const lower = text.toLocaleLowerCase()
+  let count = 0
+  let from = 0
+  while (from <= lower.length - needleLower.length) {
+    const index = lower.indexOf(needleLower, from)
+    if (index < 0) break
+    count += 1
+    from = index + needleLower.length
+  }
+  return count
+}
+
+/** How many occurrences of `needle` appear in the rendered DOM before this
+ *  match. Merged assistant turns share one DOM element, so the raw per-turn
+ *  occurrence index alone would land on the wrong turn; summing the source
+ *  turns that render before the target block fixes that offset. */
+function searchOccurrenceOffset(
+  threadItems: ThreadRenderItem[],
+  targetIndex: number,
+  turnId: string,
+  blockIndex: number,
+  charStart: number,
+  needleLower: string
+): number {
+  let offset = 0
+  for (let index = 0; index < targetIndex; index += 1) {
+    const item = threadItems[index]
+    if (item.kind !== "turn") continue
+    for (const turn of item.sourceTurns) {
+      for (const block of turn.blocks) {
+        if (block.type === "text")
+          offset += countOccurrences(block.text, needleLower)
+      }
+    }
+  }
+  const target = threadItems[targetIndex]
+  if (!target || target.kind !== "turn") return offset
+  for (const turn of target.sourceTurns) {
+    if (turn.id !== turnId) {
+      for (const block of turn.blocks) {
+        if (block.type === "text")
+          offset += countOccurrences(block.text, needleLower)
+      }
       continue
     }
-    const text = node.nodeValue ?? ""
-    const lower = text.toLocaleLowerCase()
-    let offset = 0
-    while (offset <= lower.length - needle.length) {
-      const index = lower.indexOf(needle, offset)
-      if (index < 0) break
-      if (occurrence === occurrenceIndex) {
-        const range = document.createRange()
-        range.setStart(node, index)
-        range.setEnd(node, index + needle.length)
-        const mark = document.createElement("mark")
-        mark.setAttribute("data-search-flash", "")
-        try {
-          range.surroundContents(mark)
-          return true
-        } catch {
-          return false
+    for (
+      let index = 0;
+      index < Math.min(blockIndex, turn.blocks.length);
+      index += 1
+    ) {
+      const block = turn.blocks[index]
+      if (block.type === "text")
+        offset += countOccurrences(block.text, needleLower)
+    }
+    const block = turn.blocks[blockIndex]
+    if (block?.type === "text") {
+      const chars = Array.from(block.text)
+      const prefix = chars.slice(0, Math.min(charStart, chars.length)).join("")
+      offset += countOccurrences(prefix, needleLower)
+    }
+    break
+  }
+  return offset
+}
+
+function createHighlightRange(
+  element: HTMLElement,
+  needle: string,
+  occurrence: number
+): Range | null {
+  const needleLower = needle.toLocaleLowerCase()
+  if (!needleLower) return null
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+  let node = walker.nextNode()
+  let count = 0
+  while (node) {
+    const parentTag = node.parentElement?.tagName ?? ""
+    if (!["SCRIPT", "STYLE", "NOSCRIPT"].includes(parentTag)) {
+      const text = node.nodeValue ?? ""
+      const lower = text.toLocaleLowerCase()
+      let offset = 0
+      while (offset <= lower.length - needleLower.length) {
+        const index = lower.indexOf(needleLower, offset)
+        if (index < 0) break
+        if (count === occurrence) {
+          const range = document.createRange()
+          range.setStart(node, index)
+          range.setEnd(node, index + needleLower.length)
+          return range
         }
+        count += 1
+        offset = index + needleLower.length
       }
-      occurrence += 1
-      offset = index + needle.length
     }
     node = walker.nextNode()
   }
-  return false
+  return null
 }
 
+interface SearchHighlightRegistry {
+  set(name: string, highlight: unknown): void
+  delete(name: string): void
+}
+
+let searchHighlightStyleInjected = false
+
+/** The static CSS pipeline does not accept `::highlight()` yet, so inject the
+ *  one rule at runtime and reuse the theme's yellow token. */
+function ensureSearchHighlightStyle() {
+  if (searchHighlightStyleInjected) return
+  searchHighlightStyleInjected = true
+  const style = document.createElement("style")
+  style.id = "codeg-search-highlight-style"
+  const background =
+    getComputedStyle(document.documentElement)
+      .getPropertyValue("--search-hit-bg")
+      .trim() || "#fde047"
+  style.textContent = `::highlight(codeg-search-hit){background-color:${background};color:inherit}`
+  document.head.appendChild(style)
+}
+
+/** Apply a highlight without mutating React-owned DOM. Falls back to nothing
+ *  (scroll only) on engines that predate the CSS Custom Highlight API. */
+function applySearchHighlight(range: Range): (() => void) | null {
+  if (typeof CSS === "undefined") return null
+  const registry = (CSS as unknown as { highlights?: SearchHighlightRegistry })
+    .highlights
+  const HighlightCtor = (
+    window as unknown as {
+      Highlight?: new (...ranges: Range[]) => { add: (range: Range) => void }
+    }
+  ).Highlight
+  if (!registry || !HighlightCtor) return null
+  ensureSearchHighlightStyle()
+  const highlight = new HighlightCtor()
+  highlight.add(range)
+  registry.set(SEARCH_HIGHLIGHT_KEY, highlight)
+  const timer = window.setTimeout(() => {
+    registry.delete(SEARCH_HIGHLIGHT_KEY)
+  }, 1800)
+  return () => {
+    window.clearTimeout(timer)
+    registry.delete(SEARCH_HIGHLIGHT_KEY)
+  }
+}
 export function MessageListView({
   conversationId,
   agentType,
@@ -1180,6 +1310,7 @@ export function MessageListView({
     handledSearchMatchKeyRef.current = matchKey
     let cancelled = false
     let highlightTimer: number | undefined
+    let removeHighlight: (() => void) | null = null
     const firstScrollTimer = window.setTimeout(() => {
       if (cancelled) return
       scrollApiRef.current?.scrollToIndex(searchTargetItemIndex, {
@@ -1199,19 +1330,31 @@ export function MessageListView({
           listRootRef.current,
           searchMatch.turn_id as string
         )
-        if (element) {
-          clearSearchMarks(listRootRef.current)
-          const highlighted = highlightSearchOccurrence(
-            element,
-            searchQuery,
-            searchMatch.occurrenceIndex ?? 0
-          )
-          const mark = highlighted
-            ? (element.querySelector<HTMLElement>("mark[data-search-flash]") ??
-              null)
-            : null
-          scrollElementToCenter(mark ?? element)
+        if (!element) return
+        const turn = timelineTurns.find(
+          (candidate) => candidate.turn.id === searchMatch.turn_id
+        )?.turn
+        const needle =
+          searchMatchNeedle(searchMatch, turn) ?? (searchQuery?.trim() || null)
+        if (!needle) {
+          scrollElementToCenter(element)
+          return
         }
+        const occurrence = searchOccurrenceOffset(
+          threadItems,
+          searchTargetItemIndex,
+          searchMatch.turn_id as string,
+          searchMatch.block_index ?? 0,
+          searchMatch.char_start,
+          needle.toLocaleLowerCase()
+        )
+        const range = createHighlightRange(element, needle, occurrence)
+        if (!range) {
+          scrollElementToCenter(element)
+          return
+        }
+        removeHighlight = applySearchHighlight(range)
+        scrollRangeToCenter(range)
       }, 120)
     }, 500)
     return () => {
@@ -1219,6 +1362,7 @@ export function MessageListView({
       window.clearTimeout(firstScrollTimer)
       window.clearTimeout(settleScrollTimer)
       if (highlightTimer != null) window.clearTimeout(highlightTimer)
+      removeHighlight?.()
     }
   }, [
     conversationId,
@@ -1230,6 +1374,8 @@ export function MessageListView({
     searchMatch,
     searchQuery,
     searchTargetItemIndex,
+    threadItems,
+    timelineTurns,
   ])
 
   // Cheap user-message tally for the collapsed chip — counts user turns without

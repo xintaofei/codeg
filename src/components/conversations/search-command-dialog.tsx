@@ -93,6 +93,8 @@ export function SearchCommandDialog({
   const [searching, setSearching] = useState(false)
   const [indexStatus, setIndexStatus] = useState<SearchIndexStatus | null>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const searchGenerationRef = useRef(0)
+  const resultsQueryRef = useRef("")
   const searchInputRef = useRef<HTMLInputElement>(null)
 
   const folderPath = activeFolder?.path ?? ""
@@ -121,8 +123,11 @@ export function SearchCommandDialog({
 
   const doSearch = useCallback(
     async (q: string, agent: AgentType | null) => {
+      const generation = searchGenerationRef.current + 1
+      searchGenerationRef.current = generation
       if (!q.trim() && !agent) {
         setResults([])
+        resultsQueryRef.current = ""
         setSearching(false)
         return
       }
@@ -134,11 +139,19 @@ export function SearchCommandDialog({
           agent_type: agent,
           limit: 50,
         })
+        // A slower older request must never overwrite the newest result set.
+        if (searchGenerationRef.current !== generation) return
         setResults(data)
+        resultsQueryRef.current = q.trim()
       } catch {
-        setResults([])
+        if (searchGenerationRef.current === generation) {
+          setResults([])
+          resultsQueryRef.current = ""
+        }
       } finally {
-        setSearching(false)
+        if (searchGenerationRef.current === generation) {
+          setSearching(false)
+        }
       }
     },
     [scopeFolderId]
@@ -219,9 +232,11 @@ export function SearchCommandDialog({
           occurrenceByTurn.set(turnKey, occurrenceIndex + 1)
           return { ...match, occurrenceIndex }
         })
+      // The jump must use the same query that produced these matches, not the
+      // (possibly newer) text currently in the input.
       useSearchFocusStore.getState().setFocus({
         conversationId: conv.summary.id,
-        query,
+        query: resultsQueryRef.current || query,
         titleMatches: conv.matches.filter((match) => match.kind === "title"),
         contentMatches,
         activeMatchIndex: 0,

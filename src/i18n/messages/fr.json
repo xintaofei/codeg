@@ -1394,6 +1394,7 @@
     "searchModeScan": "Analyse économe en espace",
     "searchModeFts": "Index plein texte",
     "searchSaving": "Enregistrement...",
+    "searchSaveFailed": "Échec de l'enregistrement des paramètres de recherche",
     "skillPacksLoading": "Chargement des packs de compétences…"
   },
   "GeneralSettings": {

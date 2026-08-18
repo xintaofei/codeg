@@ -223,3 +223,16 @@ CREATE VIRTUAL TABLE message_search_short USING fts5(
 - [ ] 添加恢复校验：文档数与可见会话数不一致时标记全量待建。
 - [ ] 运行 `pnpm test`、`cargo test --features test-utils`、`cargo clippy --all-targets --features test-utils -- -D warnings`、`cargo check --no-default-features --bin codeg-server`。
 - [ ] 提交：`test(search): add perf benchmarks and recovery checks`。
+
+
+## 实现差异记录（评审后修订）
+
+- 短词表改为 `detail=column`，列限定 MATCH（`words :` / `bigrams :`）可用；升级由 schema v3 在后台重建。
+- 放弃 contentless 布局下的 bm25 排序，改为 `updated_at DESC, id DESC` 的确定性排序，多词查询仍取交集。
+- 内容查询的文件夹 / agent 过滤写进候选 SQL，`LIMIT` 在可见性过滤之后生效。
+- 模式切换与 FTS 重建合并在同一事务，失败回滚并可在下个 tick 重试；设置保存只落库，重建交给后台 worker。
+- `scan_ms_per_mb` / `last_calibration_at` / `short_threshold_mb` 三个从未读写的列已删除，对应校准 / 看门狗设计不再保留。
+- 关闭“内容搜索”时清空已存储的正文文档，避免开关语义变成“仍在保存我的正文”。
+- 备份不包含会话内容时，从 `VACUUM INTO` 快照中剥离搜索文档与 FTS 表。
+- 命中定位改用后端字符偏移 + CSS Custom Highlight API，不再改写 React 托管的 DOM；多词查询和合并 turn 的计数与高亮对齐。
+- 单次查询长度上限 256 字符；漂移核对改为单条 LEFT JOIN；索引器待处理集合修复为批处理结算。
