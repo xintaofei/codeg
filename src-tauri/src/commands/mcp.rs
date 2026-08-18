@@ -59,6 +59,13 @@ pub enum McpAppType {
     KimiCode,
     Grok,
     Cursor,
+    /// `rename_all = "snake_case"` would spell this `deep_seek`, which is NOT
+    /// what the rest of the product calls this agent: `AgentType::as_wire`
+    /// returns `deepseek`, and that single spelling is what the settings page
+    /// sends for every other DeepSeek-shaped request. Two spellings for one
+    /// agent means the MCP page rejects an app the agents page accepts.
+    #[serde(rename = "deepseek")]
+    DeepSeek,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -412,6 +419,7 @@ pub async fn mcp_upsert_local_server(
         McpAppType::KimiCode,
         McpAppType::Grok,
         McpAppType::Cursor,
+        McpAppType::DeepSeek,
     ];
 
     for app in all_apps {
@@ -487,6 +495,7 @@ pub async fn mcp_remove_server(
             McpAppType::KimiCode,
             McpAppType::Grok,
             McpAppType::Cursor,
+            McpAppType::DeepSeek,
         ],
     };
 
@@ -517,7 +526,7 @@ fn normalize_apps(apps: Vec<McpAppType>) -> Vec<McpAppType> {
 /// misrepresented entry or aborting the whole multi-agent operation. See issue #325.
 fn app_can_host_spec(app: McpAppType, canonical_spec: &Value) -> bool {
     let is_sse = canonical_spec.get("type").and_then(Value::as_str) == Some("sse");
-    !(app == McpAppType::Codex && is_sse)
+    !(matches!(app, McpAppType::Codex | McpAppType::DeepSeek) && is_sse)
 }
 
 #[derive(Debug, Clone)]
@@ -2329,6 +2338,189 @@ fn remove_cline_server(id: &str) -> Result<bool, AppCommandError> {
     Ok(removed)
 }
 
+// ---------------------------------------------------------------------------
+// DeepSeek Harness  ($DSH_HOME/mcp.json  →  top-level `mcpServers`)
+//
+// Unlike every other agent above, this file is NOT read by the agent: the
+// deepseek-acp bridge takes MCP servers exclusively as `session/new`'s
+// `mcpServers` parameter and mounts them per session (that isolation is the
+// whole point of its design). The store below is therefore codeg's own record
+// of "which servers should DeepSeek get", and `load_mcp_servers_for_agent`
+// forwards it over the ACP wire at every session birth — which is also why
+// `DeepSeek` is deliberately NOT on the forward skip list in `connection.rs`.
+//
+// It lives under the harness home (relocatable via `DSH_HOME`) rather than in
+// codeg's own data dir so it travels with the rest of the DeepSeek state a
+// user backs up or moves, and it holds codeg's canonical spec shape verbatim
+// (`type` + `command`/`args`/`env` | `url`/`headers`) — there is no foreign
+// schema to translate to.
+//
+// Transport: the bridge mounts stdio and streamable HTTP only, and it
+// EXPLICITLY rejects `sse` (upstream `dsh-mcp-client` has no such transport) —
+// a rejected server fails `session/new` rather than being skipped, so an SSE
+// entry here would break every DeepSeek session. `app_can_host_spec` excludes
+// the pair, exactly as it does for Codex.
+// ---------------------------------------------------------------------------
+
+fn deepseek_mcp_json_path() -> PathBuf {
+    crate::parsers::deepseek::resolve_dsh_home_dir().join("mcp.json")
+}
+
+/// Write the DeepSeek MCP store with owner-only permissions.
+///
+/// Every other agent's store is created by the agent itself, with whatever
+/// mode that agent chose; this one is created by CODEG, so its mode is codeg's
+/// responsibility — and a stdio entry's `env` map routinely carries the token
+/// the server authenticates with. Under the usual `022` umask a plain
+/// `fs::write` would leave a fresh file `0644`, readable by every local user.
+///
+/// Same policy as [`crate::commands::acp::write_hermes_secret_file`]: create
+/// fresh files `0600`, write EXISTING files through in place (preserving
+/// inode, owner, ACLs and any symlink into a secret manager), and repair only
+/// a WORLD-accessible mode — a deliberately group-shared `0640` is left alone.
+/// The parent is created `0700` when it does not exist yet, matching what the
+/// harness itself does with `$DSH_HOME`.
+fn write_deepseek_json_file(path: &Path, value: &Value) -> Result<(), AppCommandError> {
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt as _;
+                fs::DirBuilder::new()
+                    .recursive(true)
+                    .mode(0o700)
+                    .create(parent)
+                    .map_err(AppCommandError::io)?;
+            }
+            #[cfg(not(unix))]
+            fs::create_dir_all(parent).map_err(AppCommandError::io)?;
+        }
+    }
+
+    let serialized = serde_json::to_string_pretty(value).map_err(|e| {
+        mcp_configuration_invalid(format!(
+            "failed to serialize JSON for {}: {e}",
+            path.display()
+        ))
+    })?;
+    let body = format!("{serialized}\n");
+
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        // `metadata` follows symlinks, so this is "the resolved target does not
+        // exist yet" — a fresh path, or a link whose target is missing.
+        if fs::metadata(path).is_err() {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(path)
+                .map_err(AppCommandError::io)?;
+            return file.write_all(body.as_bytes()).map_err(AppCommandError::io);
+        }
+    }
+
+    fs::write(path, &body).map_err(AppCommandError::io)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = fs::metadata(path)
+            .map_err(AppCommandError::io)?
+            .permissions()
+            .mode();
+        if mode & 0o007 != 0 {
+            fs::set_permissions(path, fs::Permissions::from_mode(mode & 0o770))
+                .map_err(AppCommandError::io)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn read_deepseek_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
+    read_deepseek_servers_at(&deepseek_mcp_json_path())
+}
+
+fn read_deepseek_servers_at(path: &Path) -> Result<BTreeMap<String, Value>, AppCommandError> {
+    let root = read_json_file(path)?;
+    let mut out = BTreeMap::new();
+
+    let Some(servers) = root.get("mcpServers").and_then(Value::as_object) else {
+        return Ok(out);
+    };
+
+    for (id, spec) in servers {
+        match canonicalize_spec(spec, "DeepSeek config") {
+            Ok(normalized) => {
+                out.insert(id.to_string(), normalized);
+            }
+            Err(err) => {
+                eprintln!("[MCP] skip invalid DeepSeek MCP entry id={id}: {err}");
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+fn upsert_deepseek_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
+    upsert_deepseek_server_at(&deepseek_mcp_json_path(), id, spec)
+}
+
+fn upsert_deepseek_server_at(path: &Path, id: &str, spec: &Value) -> Result<(), AppCommandError> {
+    let mut root = read_json_file(path)?;
+    if !root.is_object() {
+        root = json!({});
+    }
+
+    let canonical = canonicalize_spec(spec, "DeepSeek write")?;
+
+    let obj = root.as_object_mut().ok_or_else(|| {
+        mcp_configuration_invalid(format!("invalid JSON root in {}", path.display()))
+    })?;
+    if !obj.get("mcpServers").map(Value::is_object).unwrap_or(false) {
+        obj.insert("mcpServers".to_string(), Value::Object(Map::new()));
+    }
+
+    let map = obj
+        .get_mut("mcpServers")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| {
+            mcp_configuration_invalid(format!("invalid mcpServers in {}", path.display()))
+        })?;
+    map.insert(id.to_string(), canonical);
+
+    write_deepseek_json_file(path, &root)
+}
+
+fn remove_deepseek_server(id: &str) -> Result<bool, AppCommandError> {
+    remove_deepseek_server_at(&deepseek_mcp_json_path(), id)
+}
+
+fn remove_deepseek_server_at(path: &Path, id: &str) -> Result<bool, AppCommandError> {
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    let mut root = read_json_file(path)?;
+    let Some(obj) = root.as_object_mut() else {
+        return Ok(false);
+    };
+    let Some(servers) = obj.get_mut("mcpServers").and_then(Value::as_object_mut) else {
+        return Ok(false);
+    };
+
+    let removed = servers.remove(id).is_some();
+    if removed {
+        write_deepseek_json_file(path, &root)?;
+    }
+    Ok(removed)
+}
+
 fn scan_local_servers() -> Result<Vec<LocalMcpServer>, AppCommandError> {
     let mut merged: BTreeMap<String, (Value, BTreeSet<McpAppType>)> = BTreeMap::new();
 
@@ -2409,6 +2601,13 @@ fn scan_local_servers() -> Result<Vec<LocalMcpServer>, AppCommandError> {
         entry.1.insert(McpAppType::Cursor);
     }
 
+    for (id, spec) in read_deepseek_servers()? {
+        let entry = merged
+            .entry(id)
+            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
+        entry.1.insert(McpAppType::DeepSeek);
+    }
+
     Ok(merged
         .into_iter()
         .map(|(id, (spec, apps))| LocalMcpServer {
@@ -2437,6 +2636,7 @@ fn upsert_server_for_app(app: McpAppType, id: &str, spec: &Value) -> Result<(), 
         McpAppType::KimiCode => upsert_kimi_code_server(id, spec),
         McpAppType::Grok => upsert_grok_server(id, spec),
         McpAppType::Cursor => upsert_cursor_server(id, spec),
+        McpAppType::DeepSeek => upsert_deepseek_server(id, spec),
     }
 }
 
@@ -2459,6 +2659,12 @@ pub fn read_servers_for_agent_type(
         // pi-acp drops ACP-wire MCP and pi has no native MCP (it needs a
         // third-party extension), so codeg manages no MCP servers for pi (v1).
         AgentType::Pi => Ok(BTreeMap::new()),
+        // deepseek-acp has no native MCP config file: it takes servers only
+        // as `session/new`'s `mcpServers`. `$DSH_HOME/mcp.json` is codeg's own
+        // record of what to send, and the ACP wire is the delivery path — so
+        // unlike Kimi/Grok/Cursor, DeepSeek must stay OFF the forward skip
+        // list in `connection.rs` or these servers never arrive.
+        AgentType::DeepSeek => read_deepseek_servers(),
         // Custom agents get MCP purely over the ACP wire (`session/new`'s
         // `mcpServers`); codeg deliberately knows nothing about their native
         // config files, so there is no per-agent store to read back here.
@@ -3379,6 +3585,7 @@ fn remove_server_for_app(app: McpAppType, id: &str) -> Result<bool, AppCommandEr
         McpAppType::KimiCode => remove_kimi_code_server(id),
         McpAppType::Grok => remove_grok_server(id),
         McpAppType::Cursor => remove_cursor_server(id),
+        McpAppType::DeepSeek => remove_deepseek_server(id),
     }
 }
 
@@ -5267,6 +5474,176 @@ mod tests {
         assert!(remove_cursor_server_at(&path, "ctx7").expect("remove"));
         assert!(remove_cursor_server_at(&path, "remote").expect("remove remote"));
         assert!(read_cursor_servers_at(&path).expect("read after remove").is_empty());
+    }
+
+    #[test]
+    fn deepseek_mcp_json_round_trips_the_canonical_spec() {
+        // `$DSH_HOME/mcp.json` is codeg's OWN store (deepseek-acp reads no MCP
+        // file; the wire is the delivery path), so unlike every other agent it
+        // keeps the canonical spec verbatim — `type` included. Round-tripping
+        // it unchanged is what lets `load_mcp_servers_for_agent` map the entry
+        // to the ACP schema without a second guess at the transport.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+
+        assert!(read_deepseek_servers_at(&path)
+            .expect("read missing")
+            .is_empty());
+        assert!(!remove_deepseek_server_at(&path, "ctx7").expect("remove missing"));
+
+        upsert_deepseek_server_at(
+            &path,
+            "ctx7",
+            &json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "ctx7-mcp"],
+                "env": { "TOKEN": "t" },
+            }),
+        )
+        .expect("upsert");
+        // A url-only entry canonicalizes to streamable HTTP — the one remote
+        // transport the bridge mounts.
+        upsert_deepseek_server_at(
+            &path,
+            "remote",
+            &json!({ "url": "https://mcp.example.com/mcp" }),
+        )
+        .expect("upsert remote");
+
+        let servers = read_deepseek_servers_at(&path).expect("read back");
+        assert_eq!(
+            servers
+                .get("ctx7")
+                .and_then(|s| s.get("type"))
+                .and_then(Value::as_str),
+            Some("stdio")
+        );
+        assert_eq!(
+            servers
+                .get("ctx7")
+                .and_then(|s| s.get("command"))
+                .and_then(Value::as_str),
+            Some("npx")
+        );
+        assert_eq!(
+            servers
+                .get("remote")
+                .and_then(|s| s.get("type"))
+                .and_then(Value::as_str),
+            Some("http")
+        );
+        // The type IS persisted here (no foreign schema to strip it for).
+        let root: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read file"))
+                .expect("parse json");
+        assert_eq!(
+            root.pointer("/mcpServers/ctx7/type").and_then(Value::as_str),
+            Some("stdio")
+        );
+
+        // SSE is rejected for DeepSeek the same way it is for Codex: the
+        // bridge fails `session/new` on an unsupported transport rather than
+        // skipping the entry, so it must never be assigned in the first place.
+        let sse = json!({ "type": "sse", "url": "https://mcp.example.com/sse" });
+        assert!(!app_can_host_spec(McpAppType::DeepSeek, &sse));
+        assert!(app_can_host_spec(
+            McpAppType::DeepSeek,
+            &json!({ "type": "http", "url": "https://mcp.example.com/mcp" })
+        ));
+
+        assert!(remove_deepseek_server_at(&path, "ctx7").expect("remove"));
+        assert!(remove_deepseek_server_at(&path, "remote").expect("remove remote"));
+        assert!(read_deepseek_servers_at(&path)
+            .expect("read after remove")
+            .is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deepseek_mcp_store_is_not_world_readable() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // codeg CREATES this file (no other agent's store works that way), and
+        // a stdio entry's `env` carries the server's token — so a fresh file
+        // must not inherit the umask's `0644`.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nested").join("mcp.json");
+        upsert_deepseek_server_at(
+            &path,
+            "ctx7",
+            &json!({ "command": "npx", "env": { "TOKEN": "super-secret" } }),
+        )
+        .expect("upsert");
+
+        let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
+        assert_eq!(mode & 0o077, 0, "fresh store must be owner-only, got {mode:o}");
+        let parent_mode = std::fs::metadata(path.parent().expect("parent"))
+            .expect("stat parent")
+            .permissions()
+            .mode();
+        assert_eq!(
+            parent_mode & 0o077,
+            0,
+            "created parent must be owner-only, got {parent_mode:o}"
+        );
+
+        // An existing world-readable file (older build, hand-edited) is
+        // repaired on the next write; a group-shared `0640` is left alone.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        upsert_deepseek_server_at(&path, "ctx7", &json!({ "command": "npx" })).expect("re-upsert");
+        assert_eq!(
+            std::fs::metadata(&path).expect("stat").permissions().mode() & 0o007,
+            0,
+            "world bits must be cleared"
+        );
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).expect("chmod 640");
+        upsert_deepseek_server_at(&path, "ctx7", &json!({ "command": "npx" })).expect("re-upsert 2");
+        assert_eq!(
+            std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777,
+            0o640,
+            "a deliberate group-shared mode is preserved"
+        );
+    }
+
+    #[test]
+    fn mcp_app_type_wire_names_match_the_agent_type_they_name() {
+        use crate::models::agent::AgentType;
+
+        // The settings page sends ONE spelling per agent. `McpAppType` derives
+        // its own from `rename_all = "snake_case"`, so a variant whose CamelCase
+        // splits differently than `AgentType::as_wire` spells it (`DeepSeek` →
+        // `deep_seek` vs `deepseek`) makes `mcp_upsert_local_server` reject the
+        // app with `unknown variant` while every other page accepts it. Pin the
+        // pairing rather than the string: the next agent added to both enums
+        // fails here instead of at the user's save button.
+        for (app, agent) in [
+            (McpAppType::ClaudeCode, AgentType::ClaudeCode),
+            (McpAppType::Codex, AgentType::Codex),
+            (McpAppType::Gemini, AgentType::Gemini),
+            (McpAppType::OpenClaw, AgentType::OpenClaw),
+            (McpAppType::OpenCode, AgentType::OpenCode),
+            (McpAppType::Cline, AgentType::Cline),
+            (McpAppType::Hermes, AgentType::Hermes),
+            (McpAppType::CodeBuddy, AgentType::CodeBuddy),
+            (McpAppType::KimiCode, AgentType::KimiCode),
+            (McpAppType::Grok, AgentType::Grok),
+            (McpAppType::Cursor, AgentType::Cursor),
+            (McpAppType::DeepSeek, AgentType::DeepSeek),
+        ] {
+            let wire = serde_json::to_value(app).expect("serialize app type");
+            assert_eq!(
+                wire.as_str(),
+                Some(agent.as_wire().as_ref()),
+                "{app:?} must serialize as the agent's wire name"
+            );
+            // And it must parse back: the app list arrives as these strings.
+            assert_eq!(
+                serde_json::from_value::<McpAppType>(wire).expect("round-trip"),
+                app
+            );
+        }
     }
 
     #[test]

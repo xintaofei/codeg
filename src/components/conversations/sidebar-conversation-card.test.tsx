@@ -1,10 +1,15 @@
 import { type ReactElement } from "react"
 import { fireEvent, render } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
-import { describe, expect, it, vi, beforeEach } from "vitest"
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest"
 
 import { SidebarConversationCard } from "./sidebar-conversation-card"
 import { formatRelative } from "./sidebar-conversation-grouping"
+import { useTabStore, type TabItem } from "@/stores/tab-store"
+import {
+  ATTACH_SESSION_TO_SESSION_EVENT,
+  type AttachSessionToSessionDetail,
+} from "@/lib/session-attachment-events"
 import type { DbConversationSummary } from "@/lib/types"
 import enMessages from "@/i18n/messages/en.json"
 
@@ -277,6 +282,130 @@ describe("SidebarConversationCard hover quick actions", () => {
     expect(queryByLabelText("Unpin")).toBeNull()
     expect(queryByLabelText("Mark as completed")).toBeNull()
     expect(queryByLabelText("Reopen")).toBeNull()
+  })
+})
+
+// "Add to session" mirrors the file tree's action: it drops an `@`-style mention
+// of the right-clicked conversation into the ACTIVE conversation tab's composer,
+// addressed by a window event the composer listens for. The target tab is read
+// from the tab store when the menu opens (not subscribed), so each test seeds the
+// store before firing the context menu.
+describe("SidebarConversationCard add to session", () => {
+  function tab(id: string, conversationId: number | null): TabItem {
+    return {
+      id,
+      kind: "conversation",
+      folderId: 1,
+      conversationId,
+      agentType: "claude_code",
+      title: "tab",
+      isPinned: false,
+    }
+  }
+
+  function seedTabs(tabs: TabItem[], activeTabId: string | null) {
+    useTabStore.setState({ tabs, activeTabId })
+  }
+
+  let events: AttachSessionToSessionDetail[]
+  let listener: (event: Event) => void
+
+  beforeEach(() => {
+    events = []
+    listener = (event: Event) => {
+      events.push((event as CustomEvent<AttachSessionToSessionDetail>).detail)
+    }
+    window.addEventListener(ATTACH_SESSION_TO_SESSION_EVENT, listener)
+    seedTabs([], null)
+  })
+
+  afterEach(() => {
+    window.removeEventListener(ATTACH_SESSION_TO_SESSION_EVENT, listener)
+    seedTabs([], null)
+  })
+
+  function renderCard(c: DbConversationSummary) {
+    return renderWithIntl(
+      <SidebarConversationCard
+        conversation={c}
+        isSelected={false}
+        timeLabel="5m"
+        onSelect={onSelect}
+        onDoubleClick={onDoubleClick}
+        onRename={onRename}
+        onDelete={onDelete}
+        onStatusChange={onStatusChange}
+      />
+    )
+  }
+
+  it("emits the mention for the active conversation tab", () => {
+    seedTabs([tab("tab-1", 7), tab("tab-2", 9)], "tab-2")
+    const target = conv(3)
+    const { getByText } = renderCard(target)
+    fireEvent.contextMenu(getByText("conv-3"))
+    fireEvent.click(getByText("Add to session"))
+    expect(events).toHaveLength(1)
+    expect(events[0].tabId).toBe("tab-2")
+    // The whole summary rides along so the composer can build the badge through
+    // the same adapter the `@` panel uses.
+    expect(events[0].conversation).toBe(target)
+  })
+
+  it("disables the item when no conversation tab is open", () => {
+    seedTabs([], null)
+    const { getByText } = renderCard(conv(4))
+    fireEvent.contextMenu(getByText("conv-4"))
+    const item = getByText("Add to session")
+    expect(item.getAttribute("aria-disabled")).toBe("true")
+    fireEvent.click(item)
+    expect(events).toHaveLength(0)
+  })
+
+  it("allows mentioning the conversation the active tab already holds", () => {
+    // Self-mention is permitted, matching the composer's own `@` panel — it
+    // lists every session including the one being typed in.
+    seedTabs([tab("tab-1", 5)], "tab-1")
+    const { getByText } = renderCard(conv(5))
+    fireEvent.contextMenu(getByText("conv-5"))
+    const item = getByText("Add to session")
+    expect(item.getAttribute("aria-disabled")).not.toBe("true")
+    fireEvent.click(item)
+    expect(events).toHaveLength(1)
+    expect(events[0].tabId).toBe("tab-1")
+  })
+
+  // The open-time snapshot only drives the disabled state. `mod+tab` / `mod+w`
+  // live on a document keydown handler that Radix lets modifier combos through
+  // to, so the active tab CAN move under an open menu — the click must therefore
+  // re-read the store rather than post to a stale (possibly closed) tab.
+  it("re-resolves the target at click time when the active tab moved", () => {
+    seedTabs([tab("tab-1", 7), tab("tab-2", 9)], "tab-1")
+    const { getByText } = renderCard(conv(3))
+    fireEvent.contextMenu(getByText("conv-3"))
+    // Menu is open, snapshot says tab-1 — now the active tab moves under it.
+    seedTabs([tab("tab-1", 7), tab("tab-2", 9)], "tab-2")
+    fireEvent.click(getByText("Add to session"))
+    expect(events).toHaveLength(1)
+    expect(events[0].tabId).toBe("tab-2")
+  })
+
+  it("emits nothing when the target tab was closed under the open menu", () => {
+    seedTabs([tab("tab-1", 7)], "tab-1")
+    const { getByText } = renderCard(conv(3))
+    fireEvent.contextMenu(getByText("conv-3"))
+    seedTabs([], null)
+    fireEvent.click(getByText("Add to session"))
+    expect(events).toHaveLength(0)
+  })
+
+  it("stays enabled for an unsaved draft tab (no bound conversation yet)", () => {
+    seedTabs([tab("tab-draft", null)], "tab-draft")
+    const { getByText } = renderCard(conv(6))
+    fireEvent.contextMenu(getByText("conv-6"))
+    fireEvent.click(getByText("Add to session"))
+    expect(events).toHaveLength(1)
+    expect(events[0].tabId).toBe("tab-draft")
   })
 })
 

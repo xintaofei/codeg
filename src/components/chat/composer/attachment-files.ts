@@ -189,15 +189,18 @@ export function buildDataUri(
   return `data:${safeMime};base64,${base64Data}`
 }
 
-/** Whether the document already holds a file reference badge for `uri` (used to
- *  dedupe repeated drops/picks of the same path, mirroring the old seen-set). */
-export function editorHasFileReference(editor: Editor, uri: string): boolean {
+/** Whether the document already holds a `refType` reference badge for `uri`. */
+export function editorHasReference(
+  editor: Editor,
+  refType: string,
+  uri: string
+): boolean {
   let found = false
   editor.state.doc.descendants((node) => {
     if (found) return false
     if (
       node.type.name === "reference" &&
-      node.attrs?.refType === "file" &&
+      node.attrs?.refType === refType &&
       node.attrs?.uri === uri
     ) {
       found = true
@@ -206,4 +209,10 @@ export function editorHasFileReference(editor: Editor, uri: string): boolean {
     return true
   })
   return found
+}
+
+/** Whether the document already holds a file reference badge for `uri` (used to
+ *  dedupe repeated drops/picks of the same path, mirroring the old seen-set). */
+export function editorHasFileReference(editor: Editor, uri: string): boolean {
+  return editorHasReference(editor, "file", uri)
 }

@@ -47,7 +47,8 @@ use crate::acp::types::{
     PermissionOptionInfo, PlanEntryInfo, PromptCapabilitiesInfo, PromptInputBlock,
     SessionConfigBooleanInfo, SessionConfigKindInfo, SessionConfigOptionInfo,
     SessionConfigSelectGroupInfo, SessionConfigSelectInfo, SessionConfigSelectOptionInfo,
-    SessionModeInfo, SessionModeStateInfo, ToolCallImageInfo, UserMessageBlock,
+    SessionFailureRecord, SessionModeInfo, SessionModeStateInfo, ToolCallImageInfo,
+    UserMessageBlock,
 };
 use crate::logging::throttle::LeadingEdgeThrottle;
 use crate::models::agent::AgentType;
@@ -303,6 +304,12 @@ pub enum ConnectionCommand {
     },
     GoalControl {
         action: GoalControlAction,
+        /// Did the goal-control request LAND? Attached only by a caller that
+        /// intends to follow a successful control with an interrupt
+        /// (`ConnectionManager::goal_control`), because aborting the turn is
+        /// destructive and must not happen on the strength of a request the
+        /// agent rejected. `None` = fire-and-forget, nobody is listening.
+        reply: Option<tokio::sync::oneshot::Sender<bool>>,
     },
     Cancel,
     RespondPermission {
@@ -531,7 +538,7 @@ fn transcript_dir_for(agent_type: AgentType) -> Option<&'static str> {
 /// built-ins, and idempotent per session (a reconnect keeps the original
 /// header, so the session's original cwd/start time survive).
 fn record_transcript_header(agent_type: AgentType, session_id: &str, cwd: &str) {
-    record_transcript_header_continuing(agent_type, session_id, cwd, None);
+    drop(queue_transcript_header(agent_type, session_id, cwd, None));
 }
 
 /// [`record_transcript_header`] for a session that carries an existing
@@ -541,15 +548,46 @@ fn record_transcript_header(agent_type: AgentType, session_id: &str, cwd: &str) 
 /// agent session for the same conversation: the earlier turns stay where they
 /// are and this header links back to them, so the reader still sees one
 /// history. See [`crate::acp_transcript::TranscriptHeader::continues_from`].
-fn record_transcript_header_continuing(
+async fn record_transcript_header_continuing(
     agent_type: AgentType,
     session_id: &str,
     cwd: &str,
     continues_from: Option<&str>,
 ) {
-    let Some(dir) = transcript_dir_for(agent_type) else {
+    let Some(ack) = queue_transcript_header(agent_type, session_id, cwd, continues_from) else {
         return;
     };
+    // Wait for the link to be DURABLE before returning, so it is on disk before
+    // the caller emits `SessionStarted`. Same shape and same reason as
+    // `record_prompt` below: the writer is a background thread, and readers go
+    // to the file.
+    //
+    // The specific reader here is `acp::continued_session_ids`, which the
+    // session-binding guard consults to tell "this conversation continues under
+    // a new agent session" from "an unrelated session landed on this row". Emit
+    // first and a subscriber can read an empty chain, conclude the sessions are
+    // unrelated, and split the conversation in two — and nothing removes that
+    // row once the header lands, so the duplicate is permanent.
+    //
+    // Costs one disk write per continuation, i.e. per restart of a conversation
+    // whose agent forgot it. `record_prompt` accepts the same cost per TURN.
+    // A stalled writer falls back to the old racy behaviour after the timeout
+    // rather than blocking the session: the failure mode there is a duplicate
+    // row, never lost history.
+    if continues_from.is_some() {
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(2000), ack).await;
+    }
+}
+
+/// Build and enqueue the header write. `None` for agents with their own store
+/// (nothing is recorded); otherwise the writer's completion ack.
+fn queue_transcript_header(
+    agent_type: AgentType,
+    session_id: &str,
+    cwd: &str,
+    continues_from: Option<&str>,
+) -> Option<tokio::sync::oneshot::Receiver<()>> {
+    let dir = transcript_dir_for(agent_type)?;
     let mut header = crate::acp_transcript::TranscriptHeader::new(
         &agent_type.as_wire(),
         session_id,
@@ -559,7 +597,7 @@ fn record_transcript_header_continuing(
     if let Some(previous) = continues_from.filter(|p| !p.is_empty() && *p != session_id) {
         header = header.continuing(previous);
     }
-    drop(crate::acp_transcript::record_header(dir, &header));
+    Some(crate::acp_transcript::record_header(dir, &header))
 }
 
 /// Record an outgoing prompt for a custom agent, and wait (briefly) for it to
@@ -3049,13 +3087,61 @@ fn build_client_capabilities(
                 .write_text_file(true),
         );
     }
-    if agent_type == AgentType::Codex {
+    // Form elicitation is advertised only to agents that are KNOWN to send
+    // spec-conformant `elicitation/create` forms `classify_elicitation` can
+    // bridge: codex-acp (Plan-mode `request_user_input`, MCP forms/approvals)
+    // and deepseek-acp (its `ask_user_question` + plan-review both build
+    // standard oneOf/anyOf forms, and decode a free-text answer that is not in
+    // the option set as a custom answer — the card's "Other" input round-trips
+    // cleanly). Agents without the bit fall back to their own
+    // `request_permission` button path.
+    if matches!(agent_type, AgentType::Codex | AgentType::DeepSeek) {
         client_capabilities = client_capabilities
             .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()));
     }
+    // Client `_meta` extensions, per agent. `jetbrains.air` opts codeg into
+    // JetBrains AIR typed session-failure records (claude-agent-acp 0.67+,
+    // codex-acp 1.2+) — both adapters gate publication on EXACTLY this
+    // advertisement (integer version >= 1 and "sessionFailure" in the
+    // capabilities array). Advertising REPLACES codex's legacy failure
+    // surfaces for the connection (`_meta.codex.error` → TurnRetrying,
+    // warning/config-warning text chunks), so this ships together with the
+    // `SessionFailure` consumer (`air_session_failure` + the frontend
+    // banner). Only the two known AIR speakers get it: the capability-gate
+    // convention is to advertise nothing an agent hasn't implemented.
+    let mut meta = serde_json::Map::new();
     if agent_type == AgentType::ClaudeCode {
-        let mut meta = serde_json::Map::new();
         meta.insert("subagent-transcript".to_string(), serde_json::Value::Bool(true));
+    }
+    // The capabilities array is deliberately "sessionFailure" ONLY.
+    // claude-agent-acp 0.69.0 and codex-acp 1.4.0 added a second AIR
+    // capability, "agentFileChangeReport": advertise it and every prompt may
+    // carry `_meta.jetbrains.air.agentFileChangeReportRequest = {version: 1,
+    // requestId}`, after which the agent runs an EXTRA model round-trip at the
+    // end of the turn (claude: a Stop hook plus a hidden continuation calling
+    // `mcp__claude_agent_acp__report_changed_files`; codex: an ephemeral
+    // read-only `thread/fork`) and answers on
+    // `session_info_update._meta.jetbrains.air.agentFileChangeReport`.
+    //
+    // codeg does not ask for it, and the reason is not cost alone: both
+    // adapters CLAMP the reported paths to `cwd` + `additionalDirectories`
+    // (anything outside a root is dropped as truncated), which is exactly the
+    // tree `workspace_state` already watches recursively via `notify`. So the
+    // report can only ever name a SUBSET of what the watcher sees, less
+    // reliably — it is a model self-report that declares `complete: false`
+    // when unsure and truncates at 1024 paths / 256KB. It exists for clients
+    // with no filesystem watcher; codeg is not one. Nothing else in either
+    // release depends on it, and both adapters no-op without the
+    // advertisement, so staying out costs us nothing.
+    if matches!(agent_type, AgentType::ClaudeCode | AgentType::Codex) {
+        meta.insert(
+            "jetbrains".to_string(),
+            serde_json::json!({
+                "air": { "version": 1, "capabilities": ["sessionFailure"] }
+            }),
+        );
+    }
+    if !meta.is_empty() {
         client_capabilities = client_capabilities.meta(meta);
     }
     client_capabilities
@@ -3224,6 +3310,10 @@ fn load_mcp_servers_for_agent(agent_type: AgentType) -> Vec<McpServer> {
     // wire here would double-register them — skip it. (The built-in
     // `codeg-mcp` companion is injected separately by `inject_codeg_mcp`, so
     // it still reaches them.)
+    //
+    // DeepSeek is deliberately NOT in this set: deepseek-acp reads no MCP file
+    // at all, so `$DSH_HOME/mcp.json` (codeg's own store) reaches it ONLY
+    // through the wire — skipping it would silently drop every user server.
     if matches!(
         agent_type,
         AgentType::Hermes | AgentType::KimiCode | AgentType::Grok | AgentType::Cursor
@@ -3517,8 +3607,20 @@ async fn inject_codeg_mcp(
     // withholds this group too. The other groups stay: they surface codeg's own
     // state (feedback, ask, session info, task reporting), not arbitrary file
     // or command execution on the user's machine.
-    let delegation_enabled =
-        injection.broker.config_snapshot().await.enabled && host_tools.hosts_channels();
+    let delegation_configured = injection.broker.config_snapshot().await.enabled;
+    let delegation_enabled = delegation_configured && host_tools.hosts_channels();
+    if delegation_configured && !delegation_enabled {
+        // The one combination that looks like a bug from the settings UI: the
+        // multi-agent switch reads "on" and the tools are still absent. Say so
+        // once per launch, naming the knob, so the log answers the question the
+        // user actually asks ("why did delegate_to_agent disappear?").
+        tracing::info!(
+            "[delegation] multi-agent delegation is enabled in settings but withheld from \
+             connection {parent_connection_id}: {HOST_TOOLS_ENV}=agent hands fs/terminal back \
+             to this agent, and delegate_to_agent would route the same work through codeg \
+             anyway. Turn that per-agent switch off to restore the delegation tools."
+        );
+    }
     let flags = CompanionFeatureFlags {
         delegation: delegation_enabled,
         feedback: feedback_enabled,
@@ -4168,6 +4270,22 @@ async fn run_connection(
                 native_steering_available
             );
 
+            // Goal channel selection, pinned for the whole connection: an
+            // adapter advertising the provider-neutral goal extension
+            // (`_meta.goal`, claude-agent-acp 0.66+/codex-acp 1.2+) publishes
+            // goal snapshots ONLY there — and codex dropped the legacy
+            // `_meta.codex.goal` key in the same release, so honoring the
+            // advertisement is what keeps GoalCard alive across the bump (see
+            // `session_info_goal_value`).
+            let neutral_goal_channel = init_advertises_goal(init_resp.meta.as_ref());
+            if neutral_goal_channel {
+                tracing::info!("[ACP][{}] goal channel: provider-neutral (_meta.goal)", agent_type);
+            }
+            // Advertised goal-control surface (method + action vocabulary);
+            // None keeps the legacy codex method and resolves the vocabulary to
+            // the legacy pair — see the SessionState field docs.
+            let goal_control = goal_advertised_control(init_resp.meta.as_ref());
+
             // Whether this agent accepts MCP server entries over the ACP wire
             // (`session/new`'s `mcpServers`). Almost all do; OpenClaw rejects
             // any server entry and fails session creation, so it must receive
@@ -4259,6 +4377,17 @@ async fn run_connection(
                 // that needs no tool; OpenClaw-style `supports_mcp: false`
                 // agents could ship it someday).
                 s.native_steering_available = native_steering_available;
+                s.neutral_goal_channel = neutral_goal_channel;
+                // The vocabulary is decided HERE for every adapter, advertising
+                // or not — this assignment is what flips it from "unknown" to
+                // known, and a client reading the snapshot before it lands must
+                // see `None` rather than a legacy pair it would latch (a claude
+                // session offering a Pause the adapter rejects).
+                let (goal_method, goal_actions) = resolve_goal_control(goal_control);
+                if let Some(method) = goal_method {
+                    s.goal_control_method = method;
+                }
+                s.goal_actions = Some(goal_actions);
                 if let Some(ref injected) = delegate_injection {
                     s.delegation_token = Some(injected.token.clone());
                     // The agent's actual feedback capability for this session
@@ -4734,12 +4863,17 @@ async fn run_connection(
                         // Same conversation, new agent session: link the fresh
                         // transcript to the one the failed load was for, so the
                         // turns codeg already recorded keep rendering.
+                        // Awaited: the link must be on disk before
+                        // `SessionStarted` goes out, or the session-binding
+                        // guard can read an empty chain and split this
+                        // conversation into a permanent duplicate.
                         record_transcript_header_continuing(
                             agent_type,
                             &fallback_sid,
                             &cwd.to_string_lossy(),
                             Some(sid.as_str()),
-                        );
+                        )
+                        .await;
                         emit_with_state(
                             &state,
                             &emitter_clone,
@@ -5630,14 +5764,21 @@ async fn set_session_config_option_inner(
     Ok(response.config_options)
 }
 
-/// Send codex's bespoke `_codex/session/goal_control` extension request to pause
-/// or clear the session's active goal (codex-acp #293, v1.1.4). Start / resume /
-/// re-objective are NOT this method — they go through the `/goal` prompt.
+/// Send the connection's goal-control extension request to pause or clear the
+/// session's active goal — the advertised `_session/goal` (claude 0.66+ / codex
+/// 1.2+) or codex's bespoke `_codex/session/goal_control` (#293, v1.1.4) it
+/// still accepts as an alias. Start / resume / re-objective are NOT this method
+/// — they go through the `/goal` prompt.
 ///
-/// codex replies with an empty object and then pushes the resulting goal
-/// snapshot as a normal `session_info_update` (`_meta.codex.goal`, or `null` for
-/// a clear), which the existing goal-card path renders — so the response value
-/// carries nothing to parse and is intentionally discarded.
+/// The agent replies with an empty object and then pushes the resulting goal
+/// snapshot as a normal `session_info_update` (`_meta.goal`, the legacy
+/// `_meta.codex.goal`, or `null` for a clear), which the existing goal-card
+/// path renders — so the response value carries nothing to parse and is
+/// intentionally discarded.
+///
+/// This request does NOT stop a running turn on either adapter; that is the
+/// manager's call (see `ConnectionManager::goal_control`), because whether an
+/// interrupt is safe depends on how the adapter delivers the control.
 ///
 /// Sent via `UntypedMessage` because `_codex/…` is a codex-private extension
 /// method with no sacp typed variant — the same escape hatch used for
@@ -5646,12 +5787,17 @@ async fn send_goal_control(
     cx: &ConnectionTo<Agent>,
     session_id: &SessionId,
     action: GoalControlAction,
+    method: &str,
 ) -> Result<(), sacp::Error> {
+    // `method` is the connection's stored `goal_control_method`: the
+    // advertised provider-neutral `_session/goal` (claude 0.66+/codex 1.2+)
+    // or the legacy `_codex/session/goal_control` default. Both take the
+    // same `{sessionId, action}` request shape.
     let params = serde_json::json!({
         "sessionId": session_id,
         "action": action,
     });
-    let untyped_req = UntypedMessage::new("_codex/session/goal_control", params).map_err(|e| {
+    let untyped_req = UntypedMessage::new(method, params).map_err(|e| {
         sacp::util::internal_error(format!("Failed to build goal_control request: {e}"))
     })?;
     cx.send_request_to(Agent, untyped_req).block_task().await?;
@@ -7526,7 +7672,26 @@ async fn run_conversation_loop<'a>(
                             }
                         }
                         prompt_result = &mut prompt_response => {
-                            let reason = prompt_result?.stop_reason;
+                            let response = prompt_result?;
+                            // A turn's terminal AIR failure rides on the
+                            // response `_meta` (see `response_session_failure`
+                            // — the update channel only carries the retry
+                            // warnings). Emit it BEFORE `TurnComplete`: the
+                            // same-id higher-revision severity-"error" upsert
+                            // must land before `apply_event`'s turn-boundary
+                            // settle, or the retry warnings it escalates would
+                            // be marked recovered while the failure is live.
+                            let terminal_failure =
+                                response_session_failure(response.meta.as_ref());
+                            if let Some(record) = &terminal_failure {
+                                emit_with_state(
+                                    state,
+                                    emitter,
+                                    AcpEvent::SessionFailure { record: record.clone() },
+                                )
+                                .await;
+                            }
+                            let reason = response.stop_reason;
                             if !tracked_terminal_tool_calls.is_empty() {
                                 poll_tracked_terminal_tool_calls(
                                     terminal_runtime.as_ref(),
@@ -7541,8 +7706,21 @@ async fn run_conversation_loop<'a>(
                             // Same pure helper as the StopReason-message exit,
                             // so the two can't drift. This exit keeps its own
                             // extra side effect (`record_turn_end` below).
-                            let (reason_str, empty_report) =
-                                finish_turn_reason(&probe, raw_reason_str, stderr_tail);
+                            //
+                            // Exception: a response carrying a typed terminal
+                            // ERROR is a failed turn wearing the adapters'
+                            // disguised `end_turn` — its blank output is
+                            // explained by the AIR banner, so synthesizing an
+                            // "empty" toast on top would misdiagnose a dead
+                            // connection as "the agent produced nothing".
+                            let (reason_str, empty_report) = if terminal_failure
+                                .as_ref()
+                                .is_some_and(|record| record.severity == "error")
+                            {
+                                (raw_reason_str, None)
+                            } else {
+                                finish_turn_reason(&probe, raw_reason_str, stderr_tail)
+                            };
                             if let Some(err_event) =
                                 turn_failure_error_event(reason_str, agent_type, empty_report.as_ref())
                             {
@@ -7678,21 +7856,38 @@ async fn run_conversation_loop<'a>(
                                         .await;
                                     }
                                 }
-                                Some(ConnectionCommand::GoalControl { action }) => {
-                                    if let Err(e) = send_goal_control(&cx, &sid, action).await {
-                                        emit_with_state(
-                                            state,
-                                            emitter,
-                                            AcpEvent::Error {
-                                                message: format!("Failed to control goal: {e}"),
-                                                agent_type: agent_type.to_string(),
-                                                code: None,
-                                                details: None,
-                                                // Recoverable: a failed pause/clear leaves the turn alive.
-                                                terminal: false,
-                                            },
-                                        )
-                                        .await;
+                                Some(ConnectionCommand::GoalControl { action, reply }) => {
+                                    let method = state.read().await.goal_control_method.clone();
+                                    let landed =
+                                        match send_goal_control(&cx, &sid, action, &method).await {
+                                            Ok(()) => true,
+                                            Err(e) => {
+                                                emit_with_state(
+                                                    state,
+                                                    emitter,
+                                                    AcpEvent::Error {
+                                                        message: format!(
+                                                            "Failed to control goal: {e}"
+                                                        ),
+                                                        agent_type: agent_type.to_string(),
+                                                        code: None,
+                                                        details: None,
+                                                        // Recoverable: the goal
+                                                        // is unchanged and the
+                                                        // session is untouched.
+                                                        terminal: false,
+                                                    },
+                                                )
+                                                .await;
+                                                false
+                                            }
+                                        };
+                                    if let Some(reply) = reply {
+                                        // A dead receiver is fine — the caller
+                                        // that wanted to follow up with an
+                                        // interrupt went away, and the control
+                                        // itself already happened.
+                                        let _ = reply.send(landed);
                                     }
                                 }
                                 Some(ConnectionCommand::Steer { text, reply }) => {
@@ -7938,24 +8133,37 @@ async fn run_conversation_loop<'a>(
                     .await;
                 }
             }
-            Some(ConnectionCommand::GoalControl { action }) => {
+            Some(ConnectionCommand::GoalControl { action, reply }) => {
                 let cx = session.connection();
                 let sid = session.session_id().clone();
-                if let Err(e) = send_goal_control(&cx, &sid, action).await {
-                    emit_with_state(
-                        state,
-                        emitter,
-                        AcpEvent::Error {
-                            message: format!("Failed to control goal: {e}"),
-                            agent_type: agent_type.to_string(),
-                            code: None,
-                            details: None,
-                            // Recoverable: an idle pause/clear failure leaves the
-                            // connection alive.
-                            terminal: false,
-                        },
-                    )
-                    .await;
+                let method = state.read().await.goal_control_method.clone();
+                let landed = match send_goal_control(&cx, &sid, action, &method).await {
+                    Ok(()) => true,
+                    Err(e) => {
+                        emit_with_state(
+                            state,
+                            emitter,
+                            AcpEvent::Error {
+                                message: format!("Failed to control goal: {e}"),
+                                agent_type: agent_type.to_string(),
+                                code: None,
+                                details: None,
+                                // Recoverable: an idle pause/clear failure leaves the
+                                // connection alive.
+                                terminal: false,
+                            },
+                        )
+                        .await;
+                        false
+                    }
+                };
+                if let Some(reply) = reply {
+                    // Reply — never drop — for the same reason the Steer arm
+                    // below does: the manager awaits this oneshot to decide
+                    // whether to follow up, and a dropped sender would hang it.
+                    // (Its follow-up is an interrupt, which this idle arm's
+                    // caller won't get anyway: there is no turn to stop.)
+                    let _ = reply.send(landed);
                 }
             }
             Some(ConnectionCommand::Steer { text: _, reply }) => {
@@ -8567,27 +8775,94 @@ fn codebuddy_meta_marks_subagent(
         .is_some_and(|s| !s.is_empty())
 }
 
-/// True when a Codex live `tool_call` is a `subAgentActivity` mapping
-/// (codex-acp #304, v1.1.3+). codex-acp maps codex `subAgentActivity`
-/// notifications onto ACP `tool_call(kind:other)` carrying
-/// `_meta.codex.subagent = {threadId, path, activity}`. codeg already renders
-/// codex collaboration from the `collabAgentToolCall` path (spawnAgent/wait/
-/// closeAgent — see `collab-tool.ts`) and reconstructs the full nested
-/// transcript on history reload from `agent-<id>.jsonl` (see
-/// `parsers/codex.rs`), so this new live signal is redundant with what codeg
-/// already shows. Suppressed at the emit point (keeping live and DB-reload
-/// consistent — a suppressed event is never persisted) to preserve the current
-/// live behavior. Gated on Codex.
-fn is_codex_subagent_activity(
+/// Name used when a codex sub-agent's `path` carries no usable segment. Matches
+/// the fallback codex-acp itself uses when building the activity title.
+const CODEX_SUBAGENT_FALLBACK_NAME: &str = "subagent";
+
+/// How a Codex live `subAgentActivity` (codex-acp #304) should be handled.
+///
+/// codex 0.147's native team-of-agents runs sub-agents entirely inside the codex
+/// process. Its orchestration calls (`spawn_agent` / `wait_agent`, the
+/// `collaboration` namespace) never reach the ACP wire, and the inter-agent
+/// message is an opaque encrypted envelope even in the on-disk rollout. The one
+/// thing codex-acp forwards is `subAgentActivity`, as a `tool_call(kind:other)`
+/// carrying `_meta.codex.subagent = {threadId, path, activity}`.
+///
+/// codeg used to DROP every one of these, on the premise that the
+/// `collabAgentToolCall` capsule already showed the same thing. That premise
+/// died with the team-of-agents rewrite: codex raises no `collabAgentToolCall`
+/// for a spawn any more, so dropping this left a codex sub-agent completely
+/// invisible while it ran — nothing appeared in the timeline until the session
+/// was reopened and the rollout re-parsed.
+enum CodexSubagentActivity {
+    /// Not a codex sub-agent activity — handle the call normally.
+    None,
+    /// A sub-agent was launched. Carries the Agent-card input to render it with.
+    Started(String),
+    /// A later lifecycle marker (`interacted` / `interrupted`). Still dropped:
+    /// they carry no content of their own and would each open a SECOND capsule
+    /// with the same name and no way to tell it apart from the launch.
+    Other,
+}
+
+/// Classify a live tool call's `_meta`, building the Agent-card input for a
+/// launch. The three fields are the ones `parsers/codex.rs` writes on reload, so
+/// live and history render the same capsule: the sub-agent's name is the last
+/// segment of its `path` (`/root/pnpm_build` → `pnpm_build`) and `agent_id` is
+/// its codex thread id, which the card renders as a short badge. No `prompt` —
+/// the task text is encrypted on this wire.
+///
+/// The capsule settles as soon as codex acknowledges the launch, NOT when the
+/// child finishes: the activity item's own lifecycle is the spawn's, and codex
+/// forwards nothing else about the child over ACP. A child's eventual result
+/// reaches the timeline as the parent's next message.
+fn classify_codex_subagent_activity(
     agent_type: AgentType,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
-) -> bool {
+) -> CodexSubagentActivity {
     if agent_type != AgentType::Codex {
-        return false;
+        return CodexSubagentActivity::None;
     }
-    meta.and_then(|m| m.get("codex"))
+    let Some(subagent) = meta
+        .and_then(|m| m.get("codex"))
         .and_then(|codex| codex.get("subagent"))
-        .is_some()
+    else {
+        return CodexSubagentActivity::None;
+    };
+    // A status-only follow-up carries the same meta with the same `activity`,
+    // so this classification is stable across the call's whole lifetime.
+    if subagent.get("activity").and_then(|v| v.as_str()) != Some("started") {
+        return CodexSubagentActivity::Other;
+    }
+    let name = subagent
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .rsplit('/')
+        .find(|segment| !segment.is_empty())
+        .unwrap_or(CODEX_SUBAGENT_FALLBACK_NAME);
+    let mut input = serde_json::Map::new();
+    input.insert(
+        "subagent_type".to_string(),
+        serde_json::Value::String(name.to_string()),
+    );
+    if let Some(thread_id) = subagent
+        .get("threadId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        input.insert(
+            "agent_id".to_string(),
+            serde_json::Value::String(thread_id.to_string()),
+        );
+    }
+    // Say that this card stands for the LAUNCH, so its "completed" is not read
+    // as "the sub-agent finished" (see the constant's doc).
+    input.insert(
+        crate::parsers::codex::CODEX_SUBAGENT_LAUNCH_KEY.to_string(),
+        serde_json::Value::Bool(true),
+    );
+    CodexSubagentActivity::Started(serde_json::Value::Object(input).to_string())
 }
 
 /// True when a `session/request_permission` is codex's Plan-mode review gate
@@ -8601,7 +8876,7 @@ fn is_codex_subagent_activity(
 /// `tool_call_update` carrying just a status and `rawOutput`. Without seeding a
 /// tool call from this request that update lands on an unknown id and renders as
 /// an untitled generic tool card, so `handle_permission_request` emits one.
-/// Gated on Codex, mirroring [`is_codex_subagent_activity`].
+/// Gated on Codex, mirroring [`classify_codex_subagent_activity`].
 fn is_codex_plan_review(
     agent_type: AgentType,
     meta: Option<&serde_json::Map<String, serde_json::Value>>,
@@ -8628,6 +8903,207 @@ fn init_advertises_steering(meta: Option<&serde_json::Map<String, serde_json::Va
         .and_then(|s| s.get("supported"))
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
+}
+
+/// Whether the `initialize` response advertises the provider-neutral goal
+/// extension: top-level `_meta.goal = {version: <integer >= 1>, controlMethod,
+/// actions}`. Advertised ⇒ goal state arrives as
+/// `session_info_update._meta.goal` snapshots and the legacy
+/// `_meta.codex.goal` key is ignored for the WHOLE connection — codex-acp
+/// switched to the neutral key silently in 1.2.0 (legacy key gone), and
+/// claude-agent-acp speaks only the neutral form (0.66.0+). Pinning the
+/// channel here, at initialize, makes the selection independent of update
+/// arrival order, so a transitional adapter double-publishing one goal
+/// transition through both namespaces can never produce two goal cards.
+/// Non-integer or sub-1 versions fail closed onto the legacy channel.
+fn init_advertises_goal(meta: Option<&serde_json::Map<String, serde_json::Value>>) -> bool {
+    meta.and_then(|m| m.get("goal"))
+        .and_then(|g| g.get("version"))
+        .and_then(serde_json::Value::as_i64)
+        .is_some_and(|version| version >= 1)
+}
+
+/// The goal-control surface an `initialize` response advertises:
+/// `(_meta.goal.controlMethod, _meta.goal.actions)` — claude 0.66+ offers
+/// `("_session/goal", ["set","clear"])`, codex 1.2+ the same method with all
+/// four actions. `None` when the neutral goal extension isn't advertised
+/// (see [`init_advertises_goal`]) or carries no usable method string — the
+/// session then keeps the legacy codex method + actions
+/// (`codex_goal::LEGACY_GOAL_CONTROL_METHOD` / `LEGACY_GOAL_ACTIONS`). An
+/// advertised-but-empty actions array is honored as "no controls": the goal
+/// card gates its buttons on this list, so only affordances the adapter
+/// actually implements are offered.
+fn goal_advertised_control(
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<(String, Vec<String>)> {
+    if !init_advertises_goal(meta) {
+        return None;
+    }
+    let goal = meta?.get("goal")?;
+    let method = goal
+        .get("controlMethod")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|m| !m.is_empty())?
+        .to_string();
+    let actions = goal
+        .get("actions")
+        .and_then(serde_json::Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    Some((method, actions))
+}
+
+/// Resolve [`goal_advertised_control`]'s answer into what the session state
+/// stores: an OPTIONAL method override (absent ⇒ keep the legacy codex method
+/// the state was built with) and the CONCRETE action vocabulary.
+///
+/// The legacy pair belongs here, at initialize, and not in `SessionState::new`.
+/// A client can read the snapshot during the handshake — `spawn_agent` returns
+/// with `initialize` still in flight — and it latches whatever it finds, so a
+/// construction-time legacy default hands a claude session a Pause its adapter
+/// answers with `Invalid params: goal action must be "set" or "clear"`. Keeping
+/// the field `None` until this runs is what makes "unknown" tellable from
+/// "legacy" on the wire.
+fn resolve_goal_control(
+    advertised: Option<(String, Vec<String>)>,
+) -> (Option<String>, Vec<String>) {
+    match advertised {
+        Some((method, actions)) => (Some(method), actions),
+        None => (
+            None,
+            crate::acp::codex_goal::LEGACY_GOAL_ACTIONS
+                .iter()
+                .map(|a| (*a).to_string())
+                .collect(),
+        ),
+    }
+}
+
+/// Pick the goal payload out of a `session_info_update`'s `_meta` according to
+/// the channel pinned at initialize (see [`init_advertises_goal`]): the
+/// neutral `_meta.goal` for advertising connections, the legacy
+/// `_meta.codex.goal` otherwise — never both. Pure so the either/or contract
+/// is unit-tested without the connection machinery.
+fn session_info_goal_value(
+    neutral_goal_channel: bool,
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<&serde_json::Value> {
+    let meta = meta?;
+    if neutral_goal_channel {
+        meta.get("goal")
+    } else {
+        meta.get("codex").and_then(|codex| codex.get("goal"))
+    }
+}
+
+/// The raw `sessionFailure` value out of a `_meta.jetbrains.air` envelope —
+/// present only when the envelope itself is well-formed (integer
+/// `version >= 1`, mirroring the advertisement check the adapters run on
+/// codeg's `clientCapabilities._meta.jetbrains.air`). A malformed or
+/// future-incompatible envelope yields `None` and the carrier is treated as
+/// holding no failure. Records ride TWO carriers with this same envelope: the
+/// per-attempt upserts on `session_info_update._meta`, and a turn's terminal
+/// failure on the prompt RESPONSE `_meta` (see [`response_session_failure`]).
+fn air_session_failure(
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<&serde_json::Value> {
+    let air = meta?.get("jetbrains")?.get("air")?;
+    let version = air.get("version").and_then(serde_json::Value::as_i64)?;
+    if version < 1 {
+        return None;
+    }
+    air.get("sessionFailure")
+}
+
+/// Validate one AIR failure upsert into a [`SessionFailureRecord`].
+///
+/// `id` (non-blank string) and `revision` (integer >= 1) are HARD
+/// requirements — without identity there is nothing to merge
+/// deterministically, so a record missing either is dropped (the caller logs
+/// it at debug). Everything else is lenient: `category`/`severity` default to
+/// `"unknown"`/`"error"` and pass through unrecognized values as plain
+/// strings (the frontend falls back per field), `title` may be blank,
+/// non-string `actions` entries are skipped. `resolved` starts `false`; the
+/// stores flip it (see the type docs).
+fn parse_session_failure_record(value: &serde_json::Value) -> Option<SessionFailureRecord> {
+    let id = value.get("id")?.as_str()?.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let revision = value.get("revision")?.as_u64()?;
+    if revision < 1 {
+        return None;
+    }
+    let text = |key: &str, default: &str| -> String {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(default)
+            .to_string()
+    };
+    Some(SessionFailureRecord {
+        id: id.to_string(),
+        revision,
+        category: text("category", "unknown"),
+        severity: text("severity", "error"),
+        title: text("title", ""),
+        details: value
+            .get("details")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        actions: value
+            .get("actions")
+            .and_then(serde_json::Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        resolved: false,
+    })
+}
+
+/// The terminal AIR failure riding on a prompt RESPONSE's `_meta`, if any.
+///
+/// With `jetbrains.air` negotiated, BOTH adapters deliver a turn's terminal
+/// failure ON the prompt response rather than as another
+/// `session_info_update`: claude-agent-acp's `failActiveWithSessionFailure`
+/// settles the turn with a disguised `end_turn` stop reason and attaches the
+/// record here (its own comment calls the response "the canonical AIR
+/// carrier" — the update channel only ever carries the per-attempt retry
+/// warnings), and codex-acp's `terminalFailurePromptResponse` mirrors the
+/// same shape as the catch-up for a record whose update was missed (the
+/// strict revision merge de-duplicates when both arrive). Field report
+/// 2026-08-15: a mid-turn network drop on claude 0.68.0 published
+/// "Reconnecting to Claude, attempt N of 5" warnings via updates, then the
+/// `transport_lost` error escalation ONLY here — ignoring this carrier lost
+/// the terminal record entirely, so the turn-boundary settle painted the
+/// still-dead connection as a recovered warning.
+fn response_session_failure(
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<SessionFailureRecord> {
+    let raw = air_session_failure(meta)?;
+    let record = parse_session_failure_record(raw);
+    if record.is_none() {
+        tracing::debug!(
+            "[ACP] dropped prompt-response AIR sessionFailure without usable id/revision: {raw:?}"
+        );
+    }
+    record
 }
 
 /// Strict SemVer floor check: true when `version >= min` by SemVer
@@ -9836,13 +10312,17 @@ async fn emit_conversation_update(
             // Non-text thought chunks are currently ignored.
         }
         SessionUpdate::ToolCall(tc) => {
-            // codex-acp #304 (v1.1.3+) surfaces codex `subAgentActivity` as a
-            // live `tool_call`; suppress it — it is redundant with the collab
-            // capsule and the history reconstruction (see
-            // `is_codex_subagent_activity`).
-            if is_codex_subagent_activity(agent_type, tc.meta.as_ref()) {
-                return;
-            }
+            // codex-acp #304 surfaces codex `subAgentActivity` as a live
+            // `tool_call`. A launch becomes an Agent capsule (its own rawInput
+            // is orchestration bookkeeping, so it is replaced wholesale); the
+            // other lifecycle markers stay dropped. See
+            // `classify_codex_subagent_activity`.
+            let codex_subagent = match classify_codex_subagent_activity(agent_type, tc.meta.as_ref())
+            {
+                CodexSubagentActivity::None => None,
+                CodexSubagentActivity::Started(input) => Some(input),
+                CodexSubagentActivity::Other => return,
+            };
             let tool_call_id = tc.tool_call_id.to_string();
             // Grok emits a redundant `tool_call` for its native ask_user_question
             // alongside the blocking `_x.ai/ask_user_question` ext request codeg
@@ -9886,7 +10366,9 @@ async fn emit_conversation_update(
                 serialize_tool_call_content(&tc.content, synthesized_edit.is_none())
                     .map(|c| unwrap_codebuddy_deferred_output(agent_type, &c).unwrap_or(c));
             let images = extract_tool_call_images(&tc.content);
-            let raw_input = synthesized_edit
+            let codex_subagent_launch = codex_subagent.is_some();
+            let raw_input = codex_subagent
+                .or(synthesized_edit)
                 .or(own_raw_input)
                 .map(|text| resolve_live_tool_input(&text, cwd));
             // Initial tool_call notification — the frontend reducer
@@ -9913,7 +10395,13 @@ async fn emit_conversation_update(
             // reliable signal (frame 1) that keeps the Agent pill from flickering;
             // `meta_marks_background` keeps a concurrent sub-agent out of the
             // suppression window (see fn docs).
-            let meta_marks_subagent = codebuddy_meta_marks_subagent(agent_type, tc.meta.as_ref());
+            // `codex_subagent_launch` joins the CodeBuddy meta signal here for
+            // the same reason it exists: it is what records the authoritative
+            // "agent" title, so the status-only follow-up (which carries no
+            // rawInput at all) re-asserts it instead of downgrading the capsule
+            // to a generic tool card.
+            let meta_marks_subagent = codebuddy_meta_marks_subagent(agent_type, tc.meta.as_ref())
+                || codex_subagent_launch;
             let meta_marks_background = codebuddy_meta_marks_background(agent_type, tc.meta.as_ref());
             let grok_spawn = grok_meta_marks_spawn_subagent(agent_type, tc.meta.as_ref());
             let meta = tc.meta.map(serde_json::Value::Object);
@@ -9993,12 +10481,16 @@ async fn emit_conversation_update(
             .await;
         }
         SessionUpdate::ToolCallUpdate(tcu) => {
-            // Symmetric with the `ToolCall` arm: a follow-up update for a codex
-            // `subAgentActivity` still carries `_meta.codex.subagent`, so drop
-            // it too (see `is_codex_subagent_activity`).
-            if is_codex_subagent_activity(agent_type, tcu.meta.as_ref()) {
-                return;
-            }
+            // Symmetric with the `ToolCall` arm: the follow-up carries the same
+            // `_meta.codex.subagent`, so it classifies identically — a launch's
+            // completion is forwarded (settling its capsule), any other
+            // lifecycle marker's is dropped like its opening frame was.
+            let codex_subagent =
+                match classify_codex_subagent_activity(agent_type, tcu.meta.as_ref()) {
+                    CodexSubagentActivity::None => None,
+                    CodexSubagentActivity::Started(input) => Some(input),
+                    CodexSubagentActivity::Other => return,
+                };
             let tool_call_id = tcu.tool_call_id.to_string();
             // Suppress the redundant update stream for grok's ask_user_question
             // (see the ToolCall arm): match the tracked id, or the meta on a late
@@ -10050,7 +10542,9 @@ async fn emit_conversation_update(
                 .content
                 .as_deref()
                 .and_then(extract_tool_call_images);
-            let raw_input = synthesized_edit
+            let codex_subagent_launch = codex_subagent.is_some();
+            let raw_input = codex_subagent
+                .or(synthesized_edit)
                 .or(own_raw_input)
                 .map(|text| resolve_live_tool_input(&text, cwd));
             // Diff the incoming raw_output against the last snapshot we
@@ -10081,7 +10575,8 @@ async fn emit_conversation_update(
                 .as_ref()
                 .filter(|l| !l.is_empty())
                 .and_then(|l| serde_json::to_value(l).ok());
-            let meta_marks_subagent = codebuddy_meta_marks_subagent(agent_type, tcu.meta.as_ref());
+            let meta_marks_subagent = codebuddy_meta_marks_subagent(agent_type, tcu.meta.as_ref())
+                || codex_subagent_launch;
             let meta_marks_background = codebuddy_meta_marks_background(agent_type, tcu.meta.as_ref());
             let grok_spawn = grok_meta_marks_spawn_subagent(agent_type, tcu.meta.as_ref());
             let meta = tcu.meta.clone().map(serde_json::Value::Object);
@@ -10263,20 +10758,28 @@ async fn emit_conversation_update(
         }
         SessionUpdate::SessionInfoUpdate(info) => {
             // codex-acp v1.1.0 (#263) reports `/goal` transitions as structured
-            // session metadata instead of live "Goal updated (…)" agent text:
-            // the goal object rides under `_meta.codex.goal`. Map it onto codeg's
-            // canonical create_goal/update_goal synthetic tool call so the
-            // existing goal-card pipeline (groupGoalRuns/GoalCard) renders it —
-            // byte-identical to the history path (parsers/codex.rs). Non-Codex
-            // agents don't populate the `codex` key, so this is a no-op for them.
+            // session metadata instead of live "Goal updated (…)" agent text.
+            // The goal object rides under ONE of two meta keys, selected per
+            // connection at initialize (`SessionState.neutral_goal_channel`,
+            // see `session_info_goal_value`): the provider-neutral
+            // `_meta.goal` for adapters advertising the goal extension
+            // (claude-agent-acp 0.66+, codex-acp 1.2+ — which dropped the
+            // legacy key), else the legacy `_meta.codex.goal`. Either way it
+            // maps onto codeg's canonical create_goal/update_goal synthetic
+            // tool call so the existing goal-card pipeline
+            // (groupGoalRuns/GoalCard) renders it — byte-identical to the
+            // history path (parsers/codex.rs). Agents publishing no goal meta
+            // no-op here. The neutral snapshot's status vocabulary
+            // (active|paused|blocked|limited|complete) passes through
+            // `normalize_goal_status` unchanged; its extra fields
+            // (createdAt/updatedAt/iterations/lastReason/controlMethod)
+            // survive inside the marker's raw goal object for the card.
             // (`info.title` is Codex's native thread name; it is adopted via the
             // parser auto-title path on the next conversation fetch, not here, to
             // keep this DB-agnostic emit path unchanged — see parsers/codex.rs.)
-            if let Some(goal) = info
-                .meta
-                .as_ref()
-                .and_then(|m| m.get("codex"))
-                .and_then(|codex| codex.get("goal"))
+            let neutral_goal_channel = state.read().await.neutral_goal_channel;
+            if let Some(goal) =
+                session_info_goal_value(neutral_goal_channel, info.meta.as_ref())
             {
                 if let Some(marker) =
                     crate::acp::codex_goal::next_goal_marker(&mut cb_state.codex_open_goal, goal)
@@ -10302,11 +10805,40 @@ async fn emit_conversation_update(
                     )
                     .await;
                 }
+                // Mirror "a goal run is open" (⟺ the last snapshot was active,
+                // see `next_goal_marker`) onto the session state, where
+                // `ConnectionManager::goal_control` can read it: only an ACTIVE
+                // goal justifies following a pause/clear with an interrupt. A
+                // paused goal is not driving anything, so clearing it must
+                // leave whatever the user started themselves alone.
+                state.write().await.goal_active = cb_state.codex_open_goal.is_some();
+            }
+            // JetBrains AIR typed session failure (claude-agent-acp 0.67+/
+            // codex-acp 1.2+): published only because codeg advertises
+            // `clientCapabilities._meta.jetbrains.air` (see
+            // `build_client_capabilities`). Valid upserts are forwarded
+            // verbatim — the monotonic id+revision merge runs identically in
+            // `SessionState::apply_event` and the frontend reducer, so a
+            // stale or replayed record is rejected the same way everywhere.
+            // A record without usable identity cannot merge and is dropped.
+            if let Some(raw) = air_session_failure(info.meta.as_ref()) {
+                match parse_session_failure_record(raw) {
+                    Some(record) => {
+                        emit_with_state(state, emitter, AcpEvent::SessionFailure { record })
+                            .await;
+                    }
+                    None => tracing::debug!(
+                        "[ACP] dropped AIR sessionFailure without usable id/revision: {raw:?}"
+                    ),
+                }
             }
             // codex-acp #289 (v1.1.3+): a retryable turn error rides under
             // `_meta.codex.error` (only when `willRetry == true`) and the turn
             // stays alive. Surface a transient retry indicator (the frontend
             // reuses the Claude API-retry banner); it is NOT a turn failure.
+            // With AIR advertised (above), codex 1.2+ REPLACES this channel
+            // with severity-"warning" failure records, so this indicator now
+            // serves only non-advertised/legacy paths.
             if let Some((message, error_status)) = codex_retry_indicator(info.meta.as_ref()) {
                 emit_with_state(
                     state,
@@ -10651,24 +11183,96 @@ mod tests {
         v.as_object().expect("object").clone()
     }
 
+    fn subagent_launch_input(
+        agent_type: AgentType,
+        meta: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> Option<serde_json::Value> {
+        match classify_codex_subagent_activity(agent_type, meta) {
+            CodexSubagentActivity::Started(input) => {
+                Some(serde_json::from_str(&input).expect("valid JSON"))
+            }
+            _ => None,
+        }
+    }
+
     #[test]
-    fn codex_subagent_activity_detected_only_for_codex_subagent_meta() {
-        // codex-acp #304: `_meta.codex.subagent` marks the suppressed activity.
+    fn codex_subagent_launch_becomes_an_agent_capsule_input() {
+        // codex 0.147 forwards nothing but this for a native sub-agent, so it is
+        // the whole live signal: name from the path's last segment, thread id as
+        // the card's badge, and no prompt (the task text is encrypted).
         let sub = meta_map(serde_json::json!({
+            "codex": {
+                "subagent": {
+                    "threadId": "01a0098a-7e8a",
+                    "path": "/root/pnpm_build",
+                    "activity": "started",
+                }
+            }
+        }));
+        assert_eq!(
+            subagent_launch_input(AgentType::Codex, Some(&sub)),
+            Some(serde_json::json!({
+                "subagent_type": "pnpm_build",
+                "agent_id": "01a0098a-7e8a",
+                // Says the card stands for the LAUNCH, so its "completed" is
+                // not read as "the sub-agent finished" — the parser writes the
+                // same key on reload.
+                crate::parsers::codex::CODEX_SUBAGENT_LAUNCH_KEY: true,
+            }))
+        );
+        // A trailing slash / empty path must not produce a nameless capsule, and
+        // a missing thread id just drops the badge rather than the whole card.
+        let odd = meta_map(serde_json::json!({
+            "codex": { "subagent": { "path": "/", "activity": "started" } }
+        }));
+        assert_eq!(
+            subagent_launch_input(AgentType::Codex, Some(&odd)),
+            Some(serde_json::json!({
+                "subagent_type": "subagent",
+                crate::parsers::codex::CODEX_SUBAGENT_LAUNCH_KEY: true,
+            }))
+        );
+    }
+
+    #[test]
+    fn codex_subagent_activity_classified_only_for_codex_subagent_meta() {
+        let started = meta_map(serde_json::json!({
             "codex": { "subagent": { "threadId": "t1", "path": "/root/x", "activity": "started" } }
         }));
-        assert!(is_codex_subagent_activity(AgentType::Codex, Some(&sub)));
-        // Only Codex is gated — the same meta never suppresses another agent.
-        assert!(!is_codex_subagent_activity(AgentType::ClaudeCode, Some(&sub)));
+        // Only Codex is gated — the same meta never reshapes another agent's call.
+        assert!(matches!(
+            classify_codex_subagent_activity(AgentType::ClaudeCode, Some(&started)),
+            CodexSubagentActivity::None
+        ));
+        // Later lifecycle markers stay dropped: they carry no content and would
+        // open a second, indistinguishable capsule for the same sub-agent.
+        for kind in ["interacted", "interrupted"] {
+            let other = meta_map(serde_json::json!({
+                "codex": { "subagent": { "threadId": "t1", "path": "/root/x", "activity": kind } }
+            }));
+            assert!(matches!(
+                classify_codex_subagent_activity(AgentType::Codex, Some(&other)),
+                CodexSubagentActivity::Other
+            ));
+        }
         // Absent meta and sibling codex meta keys (goal / collaboration) are not
         // subagent activity and must render normally.
-        assert!(!is_codex_subagent_activity(AgentType::Codex, None));
+        assert!(matches!(
+            classify_codex_subagent_activity(AgentType::Codex, None),
+            CodexSubagentActivity::None
+        ));
         let goal = meta_map(serde_json::json!({ "codex": { "goal": { "objective": "x" } } }));
-        assert!(!is_codex_subagent_activity(AgentType::Codex, Some(&goal)));
+        assert!(matches!(
+            classify_codex_subagent_activity(AgentType::Codex, Some(&goal)),
+            CodexSubagentActivity::None
+        ));
         let collab = meta_map(serde_json::json!({
             "codex": { "collaboration": { "tool": "spawnAgent" } }
         }));
-        assert!(!is_codex_subagent_activity(AgentType::Codex, Some(&collab)));
+        assert!(matches!(
+            classify_codex_subagent_activity(AgentType::Codex, Some(&collab)),
+            CodexSubagentActivity::None
+        ));
     }
 
     #[test]
@@ -10772,6 +11376,318 @@ mod tests {
         let stringly = meta_map(serde_json::json!({"steering": {"supported": "true"}}));
         assert!(!init_advertises_steering(Some(&stringly)));
         assert!(!init_advertises_steering(None));
+    }
+
+    #[test]
+    fn init_advertises_goal_requires_integer_version_at_least_1() {
+        // The real advertisements: codex-acp 1.2.0+ / claude-agent-acp 0.66.0+.
+        let codex = meta_map(serde_json::json!({"goal": {
+            "version": 1,
+            "controlMethod": "_session/goal",
+            "actions": ["set", "pause", "resume", "clear"],
+        }}));
+        assert!(init_advertises_goal(Some(&codex)));
+        // Future versions must keep selecting the neutral channel.
+        let v2 = meta_map(serde_json::json!({"goal": {"version": 2}}));
+        assert!(init_advertises_goal(Some(&v2)));
+
+        // Fail closed onto the legacy channel: sub-1, non-integer, stringly,
+        // absent, or wrongly-shaped advertisements.
+        for bad in [
+            serde_json::json!({"goal": {"version": 0}}),
+            serde_json::json!({"goal": {"version": 1.5}}),
+            serde_json::json!({"goal": {"version": "1"}}),
+            serde_json::json!({"goal": {}}),
+            serde_json::json!({"goal": true}),
+            serde_json::json!({"steering": {"supported": true}}),
+        ] {
+            let meta = meta_map(bad);
+            assert!(!init_advertises_goal(Some(&meta)));
+        }
+        assert!(!init_advertises_goal(None));
+    }
+
+    #[test]
+    fn session_info_goal_value_reads_exactly_one_channel() {
+        // A transitional adapter double-publishing the same transition through
+        // both namespaces (even across separate updates) must yield the goal
+        // from exactly ONE channel — the one pinned at initialize.
+        let both = meta_map(serde_json::json!({
+            "goal": {"objective": "neutral", "status": "active"},
+            "codex": {"goal": {"objective": "legacy", "status": "active"}},
+        }));
+        let neutral = session_info_goal_value(true, Some(&both)).expect("neutral value");
+        assert_eq!(neutral.get("objective").and_then(|v| v.as_str()), Some("neutral"));
+        let legacy = session_info_goal_value(false, Some(&both)).expect("legacy value");
+        assert_eq!(legacy.get("objective").and_then(|v| v.as_str()), Some("legacy"));
+
+        // Neutral-pinned connections ignore a legacy-only update (and vice
+        // versa) — the two updates of a double-publish collapse to one marker.
+        let legacy_only = meta_map(
+            serde_json::json!({"codex": {"goal": {"objective": "legacy", "status": "active"}}}),
+        );
+        assert!(session_info_goal_value(true, Some(&legacy_only)).is_none());
+        let neutral_only = meta_map(
+            serde_json::json!({"goal": {"objective": "neutral", "status": "active"}}),
+        );
+        assert!(session_info_goal_value(false, Some(&neutral_only)).is_none());
+
+        // `goal: null` IS a value (the clear signal), not an absent key.
+        let cleared = meta_map(serde_json::json!({"goal": null}));
+        assert!(matches!(
+            session_info_goal_value(true, Some(&cleared)),
+            Some(v) if v.is_null()
+        ));
+        assert!(session_info_goal_value(false, Some(&cleared)).is_none());
+        assert!(session_info_goal_value(true, None).is_none());
+    }
+
+    #[test]
+    fn goal_advertised_control_reads_method_and_actions_or_falls_back() {
+        // claude 0.66+ / codex 1.2+ advertisements.
+        let claude = meta_map(serde_json::json!({"goal": {
+            "version": 1,
+            "controlMethod": "_session/goal",
+            "actions": ["set", "clear"],
+        }}));
+        assert_eq!(
+            goal_advertised_control(Some(&claude)),
+            Some(("_session/goal".to_string(), vec!["set".to_string(), "clear".to_string()]))
+        );
+        // Advertised-but-empty actions are honored as "no controls" — the
+        // card must not offer affordances the adapter never implemented.
+        let none_offered = meta_map(serde_json::json!({"goal": {
+            "version": 1,
+            "controlMethod": "_session/goal",
+            "actions": [],
+        }}));
+        assert_eq!(
+            goal_advertised_control(Some(&none_offered)),
+            Some(("_session/goal".to_string(), Vec::new()))
+        );
+        // No neutral advertisement / no usable method ⇒ None (legacy
+        // defaults stay in force).
+        let no_goal = meta_map(serde_json::json!({"steering": {"supported": true}}));
+        assert_eq!(goal_advertised_control(Some(&no_goal)), None);
+        let blank_method = meta_map(serde_json::json!({"goal": {
+            "version": 1,
+            "controlMethod": "   ",
+            "actions": ["clear"],
+        }}));
+        assert_eq!(goal_advertised_control(Some(&blank_method)), None);
+        assert_eq!(goal_advertised_control(None), None);
+    }
+
+    #[test]
+    fn the_legacy_vocabulary_is_resolved_at_initialize_not_at_construction() {
+        // A fresh session knows NOTHING: a snapshot read during the handshake
+        // (which happens — `spawn_agent` returns before `initialize` lands)
+        // must not hand the card a legacy pair it latches forever.
+        let fresh = SessionState::new(
+            "c-goal".to_string(),
+            AgentType::ClaudeCode,
+            None,
+            "w".to_string(),
+            None,
+        );
+        assert_eq!(fresh.goal_actions, None);
+        assert_eq!(fresh.to_snapshot().goal_actions, None);
+        // ... and `None` reaches the client as an explicit null, not as an
+        // absent field — absent is reserved for a server too old to have it,
+        // which the client still maps to the legacy pair.
+        let wire = serde_json::to_value(fresh.to_snapshot()).unwrap();
+        assert_eq!(wire.get("goal_actions"), Some(&serde_json::Value::Null));
+
+        // Initialize is where both cases are decided. Advertised wins…
+        assert_eq!(
+            resolve_goal_control(Some((
+                "_session/goal".to_string(),
+                vec!["set".to_string(), "clear".to_string()],
+            ))),
+            (
+                Some("_session/goal".to_string()),
+                vec!["set".to_string(), "clear".to_string()]
+            )
+        );
+        // …and a non-advertising adapter resolves to the legacy pair, keeping
+        // the method the state was built with.
+        assert_eq!(
+            resolve_goal_control(None),
+            (None, vec!["pause".to_string(), "clear".to_string()])
+        );
+    }
+
+    #[test]
+    fn air_session_failure_requires_wellformed_versioned_envelope() {
+        let ok = meta_map(serde_json::json!({"jetbrains": {"air": {
+            "version": 1,
+            "sessionFailure": {"id": "t1:error", "revision": 1},
+        }}}));
+        assert!(air_session_failure(Some(&ok)).is_some());
+
+        // Missing/zero/stringly version, or a failure outside the air
+        // envelope, must yield nothing.
+        for bad in [
+            serde_json::json!({"jetbrains": {"air": {"sessionFailure": {"id": "x", "revision": 1}}}}),
+            serde_json::json!({"jetbrains": {"air": {"version": 0, "sessionFailure": {}}}}),
+            serde_json::json!({"jetbrains": {"air": {"version": "1", "sessionFailure": {}}}}),
+            serde_json::json!({"jetbrains": {"sessionFailure": {"id": "x", "revision": 1}}}),
+            serde_json::json!({"air": {"version": 1, "sessionFailure": {}}}),
+        ] {
+            let meta = meta_map(bad);
+            assert!(air_session_failure(Some(&meta)).is_none());
+        }
+        assert!(air_session_failure(None).is_none());
+    }
+
+    #[test]
+    fn response_session_failure_reads_the_prompt_response_carrier() {
+        // claude `failActiveWithSessionFailure` / codex
+        // `terminalFailurePromptResponse` both attach a turn's terminal record
+        // to the prompt response `_meta` under the SAME jetbrains.air envelope
+        // the update channel uses, with a disguised `end_turn` stop reason —
+        // this carrier is the only wire delivery of claude terminal failures.
+        let meta = meta_map(serde_json::json!({"jetbrains": {"air": {
+            "version": 1,
+            "sessionFailure": {
+                "id": "prompt-1:error",
+                "revision": 6,
+                "category": "connection",
+                "severity": "error",
+                "title": "The connection to Claude was lost.",
+                "actions": ["new_session"],
+            },
+        }}}));
+        let record = response_session_failure(Some(&meta)).expect("record");
+        assert_eq!(record.id, "prompt-1:error");
+        assert_eq!(record.revision, 6);
+        assert_eq!(record.severity, "error");
+        assert_eq!(record.actions, vec!["new_session".to_string()]);
+
+        // Same gates as the update channel: malformed envelope or missing
+        // identity ⇒ no record (and no synthetic-empty suppression).
+        let unversioned = meta_map(serde_json::json!({"jetbrains": {"air": {
+            "sessionFailure": {"id": "x", "revision": 1},
+        }}}));
+        assert!(response_session_failure(Some(&unversioned)).is_none());
+        let no_identity = meta_map(serde_json::json!({"jetbrains": {"air": {
+            "version": 1,
+            "sessionFailure": {"title": "no id"},
+        }}}));
+        assert!(response_session_failure(Some(&no_identity)).is_none());
+        assert!(response_session_failure(None).is_none());
+    }
+
+    #[test]
+    fn parse_session_failure_record_requires_identity_and_stays_lenient() {
+        // The real codex shape (SESSION_FAILURE_POLICY: auth_required →
+        // access/[login]).
+        let full = serde_json::json!({
+            "id": "turn-9:error",
+            "revision": 2,
+            "category": "access",
+            "severity": "error",
+            "title": "Authentication required.",
+            "details": "Token expired",
+            "actions": ["login"],
+        });
+        let record = parse_session_failure_record(&full).expect("record");
+        assert_eq!(record.id, "turn-9:error");
+        assert_eq!(record.revision, 2);
+        assert_eq!(record.category, "access");
+        assert_eq!(record.severity, "error");
+        assert_eq!(record.title, "Authentication required.");
+        assert_eq!(record.details.as_deref(), Some("Token expired"));
+        assert_eq!(record.actions, vec!["login".to_string()]);
+        assert!(!record.resolved);
+
+        // id + revision are HARD requirements — no identity, no merge.
+        for bad in [
+            serde_json::json!({"revision": 1, "title": "x"}),
+            serde_json::json!({"id": "", "revision": 1}),
+            serde_json::json!({"id": "   ", "revision": 1}),
+            serde_json::json!({"id": "x", "title": "no revision"}),
+            serde_json::json!({"id": "x", "revision": 0}),
+            serde_json::json!({"id": "x", "revision": -1}),
+            serde_json::json!({"id": "x", "revision": "1"}),
+        ] {
+            assert!(parse_session_failure_record(&bad).is_none(), "{bad:?}");
+        }
+
+        // Everything else is lenient: unknown vocabulary passes through as
+        // strings, blanks default, non-string action entries are skipped.
+        let sparse = serde_json::json!({
+            "id": "notice-1",
+            "revision": 1,
+            "category": "quantum",
+            "actions": ["retry", 42, "sing"],
+        });
+        let record = parse_session_failure_record(&sparse).expect("record");
+        assert_eq!(record.category, "quantum");
+        assert_eq!(record.severity, "error");
+        assert_eq!(record.title, "");
+        assert_eq!(record.details, None);
+        assert_eq!(record.actions, vec!["retry".to_string(), "sing".to_string()]);
+    }
+
+    #[test]
+    fn client_capabilities_advertise_air_for_claude_and_codex_only() {
+        // Both AIR speakers must send EXACTLY the shape the adapters gate on:
+        // integer version >= 1 plus "sessionFailure" in the capabilities
+        // array (`clientSupportsTypedSessionFailures` in codex,
+        // `supportsAirSessionFailures` in claude).
+        for agent in [AgentType::ClaudeCode, AgentType::Codex] {
+            let caps =
+                serde_json::to_value(build_client_capabilities(agent, HostToolsPolicy::Default))
+                    .unwrap();
+            let air = caps
+                .get("_meta")
+                .and_then(|m| m.get("jetbrains"))
+                .and_then(|j| j.get("air"))
+                .unwrap_or_else(|| panic!("{agent:?} must advertise jetbrains.air"));
+            assert_eq!(air.get("version").and_then(|v| v.as_i64()), Some(1));
+            let capabilities = air
+                .get("capabilities")
+                .and_then(|c| c.as_array())
+                .unwrap_or_else(|| panic!("{agent:?} must advertise an AIR capabilities array"));
+            assert!(capabilities
+                .iter()
+                .any(|v| v.as_str() == Some("sessionFailure")));
+            // And nothing else. Adding a capability here is not free: it is
+            // what turns a per-prompt request on, and "agentFileChangeReport"
+            // (claude-agent-acp 0.69.0 / codex-acp 1.4.0) buys an extra model
+            // round-trip per turn for a clamped, self-reported subset of what
+            // the `workspace_state` watcher already sees. See the reasoning at
+            // the advertisement site before relaxing this.
+            assert_eq!(
+                capabilities,
+                &vec![serde_json::Value::String("sessionFailure".to_string())],
+                "{agent:?} must advertise ONLY sessionFailure"
+            );
+        }
+        // Claude keeps its subagent-transcript flag alongside.
+        let claude = serde_json::to_value(build_client_capabilities(
+            AgentType::ClaudeCode,
+            HostToolsPolicy::Default,
+        ))
+        .unwrap();
+        assert_eq!(
+            claude
+                .get("_meta")
+                .and_then(|m| m.get("subagent-transcript"))
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        // Non-AIR agents advertise nothing under jetbrains.
+        for agent in [AgentType::Gemini, AgentType::Grok, AgentType::OpenCode] {
+            let caps =
+                serde_json::to_value(build_client_capabilities(agent, HostToolsPolicy::Default))
+                    .unwrap();
+            assert!(caps
+                .get("_meta")
+                .and_then(|m| m.get("jetbrains"))
+                .is_none());
+        }
     }
 
     #[test]
@@ -11382,10 +12298,19 @@ mod tests {
         );
         assert!(claude.get("elicitation").is_none());
 
-        // Codex: form elicitation, no subagent-transcript meta.
+        // Codex: form elicitation; its `_meta` carries ONLY the AIR
+        // advertisement (no subagent-transcript, which is claude's opt-in).
         let codex = caps_of(AgentType::Codex);
         assert!(codex.get("elicitation").is_some());
-        assert!(codex.get("_meta").is_none());
+        assert!(codex["_meta"].get("subagent-transcript").is_none());
+        assert!(codex["_meta"].get("jetbrains").is_some());
+
+        // DeepSeek: form elicitation too — deepseek-acp routes its
+        // ask_user_question + plan review through `elicitation/create` forms
+        // when the bit is advertised (button fallback otherwise).
+        let deepseek = caps_of(AgentType::DeepSeek);
+        assert!(deepseek.get("elicitation").is_some());
+        assert!(deepseek.get("_meta").is_none());
 
         // Everyone else: neither gate; fs + terminal always advertised.
         let other = caps_of(AgentType::Gemini);

@@ -8,7 +8,7 @@ pub const CUSTOM_AGENT_WIRE_PREFIX: &str = "custom:";
 
 /// Which agent backs a conversation.
 ///
-/// The twelve named variants are compile-time built-ins with hand-written
+/// The thirteen named variants are compile-time built-ins with hand-written
 /// launch metadata (`acp::registry`) and a dedicated transcript parser
 /// (`parsers::*`). [`AgentType::Custom`] is the open end: a user-registered
 /// ACP agent whose launch metadata lives in the database
@@ -33,12 +33,13 @@ pub enum AgentType {
     Pi,
     Grok,
     Cursor,
+    DeepSeek,
     /// A user-registered ACP agent, identified by its ACP-registry id
     /// (interned). Ordered last so built-ins keep their relative order.
     Custom(&'static str),
 }
 
-/// The twelve compile-time agents, in declaration order. Does NOT include
+/// The thirteen compile-time agents, in declaration order. Does NOT include
 /// custom agents — use [`crate::acp::registry::all_acp_agents`] for the live
 /// set that includes them.
 pub const BUILTIN_AGENT_TYPES: &[AgentType] = &[
@@ -54,6 +55,7 @@ pub const BUILTIN_AGENT_TYPES: &[AgentType] = &[
     AgentType::Pi,
     AgentType::Grok,
     AgentType::Cursor,
+    AgentType::DeepSeek,
 ];
 
 impl AgentType {
@@ -98,6 +100,7 @@ impl AgentType {
             AgentType::Pi => Cow::Borrowed("pi"),
             AgentType::Grok => Cow::Borrowed("grok"),
             AgentType::Cursor => Cow::Borrowed("cursor"),
+            AgentType::DeepSeek => Cow::Borrowed("deepseek"),
             AgentType::Custom(id) => Cow::Owned(format!("{CUSTOM_AGENT_WIRE_PREFIX}{id}")),
         }
     }
@@ -118,6 +121,7 @@ impl AgentType {
             "pi" => Some(AgentType::Pi),
             "grok" => Some(AgentType::Grok),
             "cursor" => Some(AgentType::Cursor),
+            "deepseek" => Some(AgentType::DeepSeek),
             other => other
                 .strip_prefix(CUSTOM_AGENT_WIRE_PREFIX)
                 .and_then(AgentType::custom),
@@ -157,6 +161,7 @@ pub fn is_valid_custom_agent_id(id: &str) -> bool {
                 | "pi"
                 | "grok"
                 | "cursor"
+                | "deepseek"
         )
 }
 
@@ -189,6 +194,7 @@ impl fmt::Display for AgentType {
             AgentType::Pi => write!(f, "Pi"),
             AgentType::Grok => write!(f, "Grok"),
             AgentType::Cursor => write!(f, "Cursor"),
+            AgentType::DeepSeek => write!(f, "DeepSeek Harness"),
             // Prefer the registered display name; fall back to the raw id when
             // the registry has not been hydrated (or the agent was deleted
             // while conversations still reference it).
@@ -221,6 +227,7 @@ mod tests {
             (AgentType::Pi, "pi"),
             (AgentType::Grok, "grok"),
             (AgentType::Cursor, "cursor"),
+            (AgentType::DeepSeek, "deepseek"),
         ];
         for (agent, wire) in expected {
             assert_eq!(agent.as_wire(), wire);
@@ -288,6 +295,7 @@ mod tests {
             // Shadowing a built-in would make `from_wire` ambiguous.
             "codex",
             "claude_code",
+            "deepseek",
         ] {
             assert!(
                 !is_valid_custom_agent_id(bad),
@@ -306,8 +314,9 @@ mod tests {
 
     #[test]
     fn ordering_places_custom_after_builtins() {
-        assert!(AgentType::Cursor < AgentType::custom("goose").unwrap());
+        assert!(AgentType::DeepSeek < AgentType::custom("goose").unwrap());
         assert!(AgentType::ClaudeCode < AgentType::Cursor);
+        assert!(AgentType::Cursor < AgentType::DeepSeek);
         // Custom agents order lexicographically among themselves.
         assert!(AgentType::custom("aaa").unwrap() < AgentType::custom("bbb").unwrap());
     }

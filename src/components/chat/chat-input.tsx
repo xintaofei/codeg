@@ -130,6 +130,18 @@ export const ChatInput = memo(function ChatInput({
   const isConnected = status === "connected"
   const isPrompting = status === "prompting"
   const isConnecting = status === "connecting"
+  // The agent names its slash commands as part of coming up, so until it has
+  // the composer's `/` panel shows a loading row rather than refusing to open.
+  //
+  // `connecting` alone is not the whole wait: the backend emits `connected`
+  // EARLY — before session resume/load/new — and only forwards the agent's
+  // buffered command list once `selectors_ready` has fired and the conversation
+  // loop is running (see `emit_selectors_ready` in acp/connection.rs). Ending
+  // the loading state at `connected` would blank the panel again for the whole
+  // (often slow) session-init leg. `selectorsLoading` closes exactly that gap
+  // and is bounded: `selectors_ready` fires on every establishment path whether
+  // or not the agent has any commands, so this can never hang on a spinner.
+  const commandsLoading = isConnecting || selectorsLoading
 
   // Active/historical conversations dock the composer at the very bottom of the
   // message list. The attached folder/branch selector row now sits at the
@@ -187,6 +199,7 @@ export const ChatInput = memo(function ChatInput({
         onConfigOptionChange={onConfigOptionChange}
         agentType={agentType}
         availableCommands={availableCommands}
+        commandsLoading={commandsLoading}
         attachmentTabId={attachmentTabId}
         draftStorageKey={draftStorageKey}
         isActive={isActive}

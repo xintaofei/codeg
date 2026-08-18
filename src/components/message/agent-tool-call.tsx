@@ -286,6 +286,14 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
     [parsed, part.input]
   )
 
+  // codex 0.147's native team-of-agents marks its capsules as LAUNCH-only
+  // (`CODEX_SUBAGENT_LAUNCH_KEY`, written by both the live path and the rollout
+  // parser). The card settles when codex acknowledges the spawn, which is not
+  // when the child finishes — codex forwards no further progress, and an
+  // asynchronous child can still be working long after. Say so, rather than let
+  // a green "completed" claim the sub-agent is done.
+  const isLaunchOnly = parsed?.__codegCodexSubagentLaunch === true
+
   // codex spawn capsules carry the sub-agent's UUID (`agent_id`); show it in the
   // pill so the execution capsule reads uniformly with the live/wait collab
   // capsules. Other agents (e.g. Claude Task) have no `agent_id` → no badge.
@@ -486,6 +494,15 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
               ? tBg("cardRunning")
               : t("agentRunning")}
           </Shimmer>
+        </div>
+      )}
+
+      {/* codex native sub-agent: the card is the LAUNCH, not the run. Shown
+          once it settles, where "completed" would otherwise read as "the
+          sub-agent finished". */}
+      {isLaunchOnly && !isRunning && (
+        <div className="text-xs text-muted-foreground">
+          {t("agentCodexLaunchOnly")}
         </div>
       )}
 

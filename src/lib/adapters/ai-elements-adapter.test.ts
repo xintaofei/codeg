@@ -179,6 +179,19 @@ describe("groupConsecutiveToolCalls", () => {
         (p) => p.type
       )
     ).toEqual(["tool-group", "tool-call", "tool-group"])
+    // codex-acp 1.3.0 (#396) replaced the boolean marker with the versioned
+    // `{version: 1}` object — the recognition (and therefore the standalone
+    // treatment) must hold for that shape too.
+    const versioned: AdaptedToolCallPart = {
+      ...compaction,
+      toolCallId: "compact-2",
+      meta: { contextCompaction: { version: 1 } },
+    }
+    expect(
+      groupConsecutiveToolCalls([poll("read"), versioned, poll("read")]).map(
+        (p) => p.type
+      )
+    ).toEqual(["tool-group", "tool-call", "tool-group"])
   })
 })
 

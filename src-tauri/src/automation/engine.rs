@@ -32,7 +32,7 @@ use crate::commands::folders::{
     git_worktree_add, open_worktree_folder_core, resolve_worktree_folder_core,
 };
 use crate::db::entities::conversation::{self, ConversationStatus};
-use crate::db::service::automation_service;
+use crate::db::service::{automation_service, conversation_service};
 use crate::db::AppDatabase;
 use crate::logging::throttle::{LagLogThrottle, LAG_LOG_WINDOW};
 use crate::models::{
@@ -494,7 +494,14 @@ impl AutomationEngine {
             .map_err(|e| e.to_string())?;
 
         // Create the conversation row, then adopt it in send_prompt (Branch A).
-        let title = first_chars(&cfg.display_text, 80);
+        // Named after the AUTOMATION, not its prompt — the same name the
+        // enqueue-a-task branch already gives the card it files, and the only
+        // label that says which automation this run belongs to. Locked right
+        // after, so the per-turn auto-title backfill can't swap it for whatever
+        // the agent's session file parses to (issue #495). A prompt-derived
+        // title was no more distinguishing anyway: the prompt is fixed, so
+        // every run of an automation carried the identical one.
+        let title = first_chars(&auto.name, 80);
         let conversation_id =
             match create_conversation_core(&self.db.conn, cwd.folder_id, agent_type, Some(title)).await
             {
@@ -504,6 +511,15 @@ impl AutomationEngine {
                     return Err(e.to_string());
                 }
             };
+        // Strictly before the upsert below: that broadcast is how any client
+        // first learns this id, so locking first makes a backfill on this row
+        // impossible rather than merely unlikely. Failing to lock only costs
+        // the nice title — never the run.
+        if let Err(e) = conversation_service::lock_title(&self.db.conn, conversation_id).await {
+            tracing::warn!(
+                "[automation] run {run_id}: could not lock conversation {conversation_id} title: {e}"
+            );
+        }
 
         // Surface the produced conversation in every client's sidebar the instant
         // it exists (InProgress) — independent of the implicit upsert inside

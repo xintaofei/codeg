@@ -626,6 +626,7 @@
       "description": "Permet aux agents actifs de déléguer des sous-tâches à d’autres agents.",
       "enable": "Activer la délégation",
       "enableHint": "Lorsque cette option est désactivée, l’outil delegate_to_agent est masqué du catalogue d’outils MCP de l’agent.",
+      "withheldByHostTools": "{agents} ne recevront pas les outils de délégation : leur interrupteur par agent « Laisser l’agent gérer les fichiers et les commandes » est activé.",
       "depthLimit": "Profondeur maximale de délégation",
       "depthHint": "Plage autorisée : {min}–{max}. Limite la profondeur de récursion d’une chaîne de délégation (racine → enfant → petit-enfant …).",
       "completedCacheLabel": "Cache des résultats terminés (MB)",
@@ -683,6 +684,7 @@
       "saveKimiCodeConfig": "Enregistrer la configuration de Kimi Code",
       "customInstall": "Installation personnalisée",
       "saveKimiCodeRawConfig": "Enregistrer config.toml",
+      "saveDeepSeekConfig": "Enregistrer la configuration DeepSeek",
       "diagnose": "Diagnostiquer"
     },
     "status": {
@@ -785,6 +787,15 @@
       "modelNoMatch": "Aucun modèle correspondant",
       "modelsNeedAuth": "Connectez-vous pour charger la liste des modèles.",
       "modelDefaultBadge": "par défaut"
+    },
+    "deepseek": {
+      "configManagement": "Configuration de DeepSeek Harness",
+      "configDescription": "Le point de terminaison et la clé sont des variables d'environnement que deepseek-acp lit au démarrage. Le modèle et le niveau de raisonnement sont des sélecteurs par session : ils se choisissent dans le champ de saisie.",
+      "baseUrlLabel": "Point de terminaison de l'API",
+      "baseUrlHint": "Laissez vide pour le point de terminaison officiel. S'applique aux sessions démarrées après l'enregistrement ; reconnectez une session en cours pour qu'elle le prenne en compte.",
+      "baseUrlInvalid": "Saisissez une URL http(s) complète et sans chaîne de requête, par exemple https://api.deepseek.com",
+      "apiKeyLabel": "Clé d'API",
+      "apiKeyHint": "Transmise à l'agent via DEEPSEEK_API_KEY. Une variable d'environnement l'emporte sur le fichier d'identifiants : laissez ce champ vide si vous vous connectez depuis le terminal."
     },
     "codex": {
       "configDescription": "Prend en charge la configuration rapide de l’URL API, de la clé API, du nom du modèle et du reasoning effort, avec synchronisation vers `auth.json` / `config.toml`.",
@@ -1206,6 +1217,8 @@
       "saveCodeBuddyFailed": "Échec de l'enregistrement de la configuration CodeBuddy",
       "kimiCodeSaved": "Configuration de Kimi Code enregistrée",
       "saveKimiCodeFailed": "Échec de l'enregistrement de la configuration de Kimi Code",
+      "deepseekSaved": "Configuration DeepSeek enregistrée",
+      "saveDeepSeekFailed": "Échec de l'enregistrement de la configuration DeepSeek",
       "modelProviderRequired": "Veuillez sélectionner un fournisseur de modèle avant d'enregistrer.",
       "affectedRunningSessions": "{count, plural, one {# session active doit se reconnecter pour appliquer la modification} other {# sessions actives doivent se reconnecter pour appliquer la modification}}",
       "providerConnected": "{providerId} connecté",
@@ -1416,7 +1429,6 @@
     "terminalShellNotInstalled": "non installé",
     "terminalShellNotFoundWarning": "Ce chemin n’existe pas sur cet hôte.",
     "terminalCurrentShell": "Actuellement utilisé : {path}",
-    "terminalAgentShellHint": "Avec « Valeur système par défaut », les lignes de commande des agents passent par le shell de la plateforme (/bin/sh, ou cmd sous Windows). Choisir un shell précis s'applique aussi aux agents : ils émettent de la syntaxe POSIX, que fish, nushell et Windows PowerShell 5.1 (sans opérateur &&) peuvent rejeter.",
     "renderingDescription": "Désactivez l’accélération matérielle si l’application affiche un écran noir ou des défauts de rendu (fréquent sur certaines GPU AMD ou GPU Intel intégrées). N’a d’effet que sur la version Windows de bureau.",
     "disableHardwareAcceleration": "Désactiver l’accélération matérielle",
     "renderingSaveFailed": "Échec de l’enregistrement des paramètres de rendu : {message}",
@@ -1734,6 +1746,7 @@
     "conversationCard": {
       "untitledConversation": "Conversation sans titre",
       "newConversation": "Nouvelle conversation",
+      "attachToCurrentSession": "Ajouter à la session",
       "rename": "Renommer",
       "status": "Statut",
       "delete": "Supprimer",
@@ -1820,6 +1833,16 @@
         "cacheRead": "Lecture cache",
         "cacheWrite": "Écriture cache",
         "total": "Total des tokens"
+      },
+      "quickActions": {
+        "title": "Actions rapides",
+        "groups": {
+          "workspace": "Espace de travail",
+          "sessions": "Sessions",
+          "automation": "Automatisation et tâches",
+          "more": "Plus"
+        },
+        "showPet": "Afficher la mascotte"
       }
     },
     "auxPanel": {
@@ -2682,6 +2705,7 @@
         "slashCommands": "Commandes slash",
         "slashSearchPlaceholder": "Rechercher des commandes...",
         "slashSearchEmpty": "Aucune commande correspondante",
+        "slashLoading": "Chargement des commandes…",
         "experts": "Experts",
         "office": "Bureautique",
         "research": "Recherche",
@@ -2834,7 +2858,8 @@
       "agentSelector": {
         "noEnabledAgents": "Aucun agent activé",
         "openAgentsSettings": "Ouvrir les paramètres des agents",
-        "notInstalled": "Non installé"
+        "notInstalled": "Non installé",
+        "moreAgents": "Plus d'agents ({count})"
       },
       "subAgentOverlay": {
         "title": "Sous-agents",
@@ -3057,6 +3082,7 @@
         "agentSessionLoading": "Chargement de la transcription du sous-agent…",
         "agentSessionEmpty": "Le sous-agent n'a encore rien écrit.",
         "agentFallbackTitle": "Démarrage du sous-agent…",
+        "agentCodexLaunchOnly": "Lancé. Codex ne signale plus la progression de ce sous-agent : son résultat arrivera sous forme de message dans cette conversation.",
         "agentStatsBash": "Commandes",
         "agentStatsRead": "Fichiers lus",
         "agentStatsSearch": "Recherches",
@@ -3080,7 +3106,8 @@
             "blocked": "bloqué",
             "usageLimited": "utilisation limitée",
             "budgetLimited": "budget limité",
-            "complete": "terminé"
+            "complete": "terminé",
+            "limited": "limite atteinte"
           }
         },
         "field": {
@@ -3306,7 +3333,28 @@
       "contextCompaction": {
         "compacting": "Compactage du contexte…",
         "compacted": "Contexte compacté",
-        "compactedTokens": "Contexte compacté · {before} → {after} tokens"
+        "compactedTokens": "Contexte compacté · {before} → {after} tokens",
+        "failed": "Échec de la compaction du contexte"
+      },
+      "sessionFailure": {
+        "category": {
+          "connection": "Problème de connexion",
+          "access": "Problème d'accès",
+          "limit": "Limite atteinte",
+          "request": "Requête rejetée",
+          "service": "Problème de service",
+          "unknown": "Problème de session"
+        },
+        "action": {
+          "retry": "Réessayer",
+          "login": "Se connecter",
+          "newSession": "Nouvelle session"
+        },
+        "recovered": "Rétabli",
+        "retryUnavailable": "Aucun message précédent à renvoyer.",
+        "toggleDetails": "Afficher/masquer les détails",
+        "dismiss": "Ignorer",
+        "moreIncidents": "+{count} autre(s)"
       },
       "backgroundTasks": {
         "running": "{count, plural, one {# tâche en arrière-plan en cours} other {# tâches en arrière-plan en cours}}",
@@ -4597,7 +4645,8 @@
     "settingsInitCommandHint": "Exécutée dans un worktree fraîchement créé avant le démarrage de l'agent.",
     "settingsInitCommandPlaceholder": "pnpm install",
     "settingsTabGeneral": "Général",
-    "settingsTabWorkflow": "Flux",
+    "settingsTabMerge": "Fusion",
+    "settingsTabWorktree": "Worktree",
     "settingsTabPrompts": "Instructions",
     "settingsPromptsIntro": "Chaque étape envoie déjà son propre prompt intégré : la tâche, les règles du worktree et, pour la fusion, les étapes git exactes. Ce que vous ajoutez ici est apposé à la fin comme instructions supplémentaires : cela affine ces textes intégrés, sans jamais les remplacer.",
     "settingsPromptStageAll": "Toutes les phases",

@@ -626,6 +626,7 @@
       "description": "アクティブなエージェントがサブタスクを他のエージェントに委任できるようにします。",
       "enable": "委任を有効化",
       "enableHint": "オフにすると、delegate_to_agent ツールはエージェントの MCP ツール一覧から非表示になります。",
+      "withheldByHostTools": "{agents} には委任ツールが渡りません。エージェントごとの「ファイルとコマンドをエージェント自身に任せる」スイッチがオンになっています。",
       "depthLimit": "最大委任深度",
       "depthHint": "許可範囲: {min}–{max}。委任チェーン（ルート → 子 → 孫 …）の再帰深度を制限します。",
       "completedCacheLabel": "完了結果のキャッシュ（MB）",
@@ -683,6 +684,7 @@
       "saveKimiCodeConfig": "Kimi Code の設定を保存",
       "customInstall": "カスタムインストール",
       "saveKimiCodeRawConfig": "Save config.toml",
+      "saveDeepSeekConfig": "DeepSeek 設定を保存",
       "diagnose": "診断"
     },
     "status": {
@@ -785,6 +787,15 @@
       "modelNoMatch": "一致するモデルがありません",
       "modelsNeedAuth": "サインインするとモデル一覧を読み込みます。",
       "modelDefaultBadge": "既定"
+    },
+    "deepseek": {
+      "configManagement": "DeepSeek Harness の設定",
+      "configDescription": "エンドポイントと API キーは deepseek-acp が起動時に読み込む環境変数です。モデルと推論レベルはセッションごとのセレクターなので、入力欄で切り替えます。",
+      "baseUrlLabel": "API エンドポイント",
+      "baseUrlHint": "空欄なら公式エンドポイントを使います。保存後に開始したセッションから有効になります。実行中のセッションは再接続してください。",
+      "baseUrlInvalid": "クエリ文字列を含まない完全な http(s) URL を入力してください（例：https://api.deepseek.com）",
+      "apiKeyLabel": "API キー",
+      "apiKeyHint": "DEEPSEEK_API_KEY としてエージェントに渡されます。環境変数は認証情報ファイルより優先されるため、ターミナルでログインする場合は空のままにしてください。"
     },
     "codex": {
       "configDescription": "API URL、API Key、モデル名、reasoning effort を素早く設定でき、`auth.json` / `config.toml` と同期します。",
@@ -1206,6 +1217,8 @@
       "saveCodeBuddyFailed": "CodeBuddy の設定の保存に失敗しました",
       "kimiCodeSaved": "Kimi Code の設定を保存しました",
       "saveKimiCodeFailed": "Kimi Code の設定の保存に失敗しました",
+      "deepseekSaved": "DeepSeek の設定を保存しました",
+      "saveDeepSeekFailed": "DeepSeek の設定の保存に失敗しました",
       "modelProviderRequired": "保存する前にモデルプロバイダーを選択してください。",
       "affectedRunningSessions": "{count} 件の実行中セッションは再接続すると変更が適用されます",
       "providerConnected": "{providerId} を接続しました",
@@ -1416,7 +1429,6 @@
     "terminalShellNotInstalled": "未インストール",
     "terminalShellNotFoundWarning": "このパスはホスト上に存在しません。",
     "terminalCurrentShell": "現在使用中: {path}",
-    "terminalAgentShellHint": "「システムデフォルト」のままなら、エージェントのコマンドラインはプラットフォームシェル（/bin/sh、Windows では cmd）で実行されます。特定のシェルを選ぶとエージェントにも適用されます。エージェントは POSIX 構文を送るため、fish、nushell、Windows PowerShell 5.1（&& 演算子なし）では実行できないことがあります。",
     "renderingDescription": "アプリで黒画面や描画不具合が発生する場合（一部の AMD GPU や Intel 内蔵 GPU で報告あり）、ハードウェアアクセラレーションを無効化してください。Windows デスクトップ版のみ有効です。",
     "disableHardwareAcceleration": "ハードウェアアクセラレーションを無効化",
     "renderingSaveFailed": "レンダリング設定の保存に失敗しました: {message}",
@@ -1734,6 +1746,7 @@
     "conversationCard": {
       "untitledConversation": "無題の会話",
       "newConversation": "新しい会話",
+      "attachToCurrentSession": "セッションに追加",
       "rename": "名前を変更",
       "status": "ステータス",
       "delete": "削除",
@@ -1820,6 +1833,16 @@
         "cacheRead": "キャッシュ読み取り",
         "cacheWrite": "キャッシュ書き込み",
         "total": "合計"
+      },
+      "quickActions": {
+        "title": "クイック操作",
+        "groups": {
+          "workspace": "ワークスペース",
+          "sessions": "セッション",
+          "automation": "オートメーションと ToDo",
+          "more": "その他"
+        },
+        "showPet": "ペットを表示"
       }
     },
     "auxPanel": {
@@ -2682,6 +2705,7 @@
         "slashCommands": "スラッシュコマンド",
         "slashSearchPlaceholder": "コマンドを検索...",
         "slashSearchEmpty": "一致するコマンドがありません",
+        "slashLoading": "コマンドを読み込み中…",
         "experts": "エキスパート",
         "office": "日常業務",
         "research": "科学研究",
@@ -2834,7 +2858,8 @@
       "agentSelector": {
         "noEnabledAgents": "有効なエージェントがありません",
         "openAgentsSettings": "エージェント設定を開く",
-        "notInstalled": "未インストール"
+        "notInstalled": "未インストール",
+        "moreAgents": "他のエージェント（{count}）"
       },
       "subAgentOverlay": {
         "title": "サブエージェント",
@@ -3057,6 +3082,7 @@
         "agentSessionLoading": "サブエージェントの記録を読み込んでいます…",
         "agentSessionEmpty": "サブエージェントはまだ何も書き込んでいません。",
         "agentFallbackTitle": "サブエージェント起動中…",
+        "agentCodexLaunchOnly": "起動しました。Codex はこのサブエージェントの進捗をこれ以上通知しません。結果はこの会話のメッセージとして届きます。",
         "agentStatsBash": "コマンド",
         "agentStatsRead": "ファイル読取",
         "agentStatsSearch": "検索",
@@ -3080,7 +3106,8 @@
             "blocked": "ブロック中",
             "usageLimited": "使用量制限",
             "budgetLimited": "予算制限",
-            "complete": "完了"
+            "complete": "完了",
+            "limited": "上限到達"
           }
         },
         "field": {
@@ -3306,7 +3333,28 @@
       "contextCompaction": {
         "compacting": "コンテキストを圧縮しています…",
         "compacted": "コンテキストを圧縮しました",
-        "compactedTokens": "コンテキストを圧縮 · {before} → {after} トークン"
+        "compactedTokens": "コンテキストを圧縮 · {before} → {after} トークン",
+        "failed": "コンテキストの圧縮に失敗しました"
+      },
+      "sessionFailure": {
+        "category": {
+          "connection": "接続の問題",
+          "access": "アクセスの問題",
+          "limit": "上限に到達",
+          "request": "リクエスト拒否",
+          "service": "サービスの問題",
+          "unknown": "セッションの問題"
+        },
+        "action": {
+          "retry": "再試行",
+          "login": "サインイン",
+          "newSession": "新しいセッション"
+        },
+        "recovered": "回復済み",
+        "retryUnavailable": "再送信できるメッセージがありません。",
+        "toggleDetails": "詳細の切り替え",
+        "dismiss": "閉じる",
+        "moreIncidents": "他 {count} 件"
       },
       "backgroundTasks": {
         "running": "{count} 件のバックグラウンドタスクを実行中",
@@ -4597,7 +4645,8 @@
     "settingsInitCommandHint": "worktree の新規作成後、エージェント開始前に実行されます。",
     "settingsInitCommandPlaceholder": "pnpm install",
     "settingsTabGeneral": "一般",
-    "settingsTabWorkflow": "ワークフロー",
+    "settingsTabMerge": "マージ",
+    "settingsTabWorktree": "Worktree",
     "settingsTabPrompts": "プロンプト",
     "settingsPromptsIntro": "各ステージには既定のプロンプトが組み込まれています（タスク本体、ワークツリーのルール、マージ時は具体的な git 手順）。ここに書いた内容は補足指示として末尾に追加され、既定の内容を補うだけで置き換えることはありません。",
     "settingsPromptStageAll": "全段階",

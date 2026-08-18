@@ -540,6 +540,25 @@ fn agent_root_slots(agent_type: AgentType) -> &'static [RootSlot] {
             trims: false,
             default_rel: &[".openclaw"],
         }],
+        // DeepSeek Harness mirrors pi's two-root shape: the harness home
+        // (`DSH_HOME`, default `~/.dsh`) and the session-log root, which
+        // relocates independently via `DEEPSEEK_ACP_SESSIONS_ROOT` (else
+        // `$DSH_HOME/sessions`) — see `resolve_deepseek_sessions_root_from`.
+        AgentType::DeepSeek => &[
+            RootSlot {
+                candidates: &[("DSH_HOME", "")],
+                trims: false,
+                default_rel: &[".dsh"],
+            },
+            RootSlot {
+                candidates: &[
+                    ("DEEPSEEK_ACP_SESSIONS_ROOT", ""),
+                    ("DSH_HOME", "sessions"),
+                ],
+                trims: false,
+                default_rel: &[".dsh", "sessions"],
+            },
+        ],
         // pi's agent home and its session store relocate INDEPENDENTLY, so both
         // are genuine roots rather than alternatives. The sessions slot mirrors
         // `resolve_pi_sessions_dir_from`: the session override wins, else
@@ -1856,7 +1875,7 @@ mod tests {
     fn root_slots_match_parser_resolvers() {
         use crate::parsers;
 
-        let expected: [(AgentType, PathBuf); 11] = [
+        let expected: [(AgentType, PathBuf); 12] = [
             (AgentType::Grok, parsers::grok::resolve_grok_home_dir()),
             (
                 AgentType::ClaudeCode,
@@ -1889,6 +1908,10 @@ mod tests {
             ),
             (AgentType::Cline, parsers::cline::cline_data_dir()),
             (AgentType::Pi, parsers::pi::resolve_pi_sessions_dir()),
+            (
+                AgentType::DeepSeek,
+                parsers::deepseek::resolve_deepseek_sessions_root(),
+            ),
         ];
 
         for (agent_type, resolver_root) in expected {
@@ -1974,7 +1997,7 @@ mod tests {
         }
     }
 
-    const ALL_AGENT_TYPES: [AgentType; 12] = [
+    const ALL_AGENT_TYPES: [AgentType; 13] = [
         AgentType::ClaudeCode,
         AgentType::Codex,
         AgentType::OpenCode,
@@ -1987,6 +2010,7 @@ mod tests {
         AgentType::Pi,
         AgentType::Grok,
         AgentType::Cursor,
+        AgentType::DeepSeek,
     ];
 
     #[test]

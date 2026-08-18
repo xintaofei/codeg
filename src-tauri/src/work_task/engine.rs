@@ -1074,16 +1074,37 @@ impl TaskEngine {
         let conversation_id = if resumed {
             task.conversation_id.expect("resumed implies conversation")
         } else {
-            let title = first_chars(task.title.trim(), 80);
-            match create_conversation_core(&self.db.conn, wt.folder_id, agent_type, Some(title))
-                .await
+            let title = conversation_title_for_task(&task.title);
+            let id = match create_conversation_core(
+                &self.db.conn,
+                wt.folder_id,
+                agent_type,
+                Some(title),
+            )
+            .await
             {
                 Ok(id) => id,
                 Err(e) => {
                     let _ = self.manager.disconnect(&conn_id).await;
                     return Err(e.to_string());
                 }
+            };
+            // The card's name IS this session's identity — freeze it the way a
+            // manual rename would, or the per-turn auto-title backfill replaces
+            // it with whatever the agent's session file parses to (for agents
+            // with no title of their own: the first line of the composed
+            // prompt, e.g. "项目：/Users/…"). Issue #495.
+            //
+            // Strictly before the upsert below: that broadcast is how any
+            // client first learns this id, so locking first makes a backfill on
+            // this row impossible rather than merely unlikely. A failure here
+            // only costs the nice title — never the launch.
+            if let Err(e) = conversation_service::lock_title(&self.db.conn, id).await {
+                tracing::warn!(
+                    "[work_task] task {task_id}: could not lock conversation {id} title: {e}"
+                );
             }
+            id
         };
         emit_conversation_upsert(&self.emitter, &self.db.conn, conversation_id).await;
 
@@ -4146,6 +4167,22 @@ fn parse_agent_type(s: &str) -> Result<AgentType, String> {
 
 fn first_chars(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
+}
+
+/// Cap on a task-derived conversation title. Long enough for a real card name,
+/// short enough that the sidebar row is not one giant ellipsis.
+const CONVERSATION_TITLE_MAX_CHARS: usize = 80;
+
+/// The title the session a task produces carries: the task's own name, capped.
+/// It is LOCKED on the conversation row at launch (`conversation_service::
+/// lock_title`), so a board card and the session it spawned always read the
+/// same in the sidebar (issue #495).
+///
+/// One definition, because two callers must agree byte-for-byte: the launch-time
+/// seed here, and the rename propagation in `commands::work_task`, which
+/// recognises "still the task's name" by comparing against this exact value.
+pub(crate) fn conversation_title_for_task(task_title: &str) -> String {
+    first_chars(task_title.trim(), CONVERSATION_TITLE_MAX_CHARS)
 }
 
 /// The project folder's own name — what a task worktree directory is named

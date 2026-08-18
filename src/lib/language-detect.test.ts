@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { languageFromPath } from "./language-detect"
+import { isHiddenPath, languageFromPath } from "./language-detect"
 
 describe("languageFromPath", () => {
   // The original implementation was a 13-case switch. These cases lock that
@@ -175,5 +175,55 @@ describe("languageFromPath", () => {
     ])("%s -> plaintext", (path) => {
       expect(languageFromPath(path)).toBe("plaintext")
     })
+  })
+})
+
+describe("isHiddenPath", () => {
+  describe("dot-prefixed names are hidden", () => {
+    it.each([
+      // Hidden file name, at the root of the workspace or nested
+      [".report.docx"],
+      ["docs/.report.docx"],
+      // The byproducts this exists for: macOS AppleDouble sidecars sitting
+      // next to a real document, and LibreOffice lock files (which the
+      // office-extension filter also rejects — belt and braces).
+      ["._report.docx"],
+      [".~lock.report.docx#"],
+      // Hidden directory anywhere on the way down — the doc inside it is
+      // just as hidden as a hidden doc.
+      [".git/report.docx"],
+      ["build/.tmp/draft.xlsx"],
+      // Backslashes: the workspace watcher slash-normalizes before emitting,
+      // so this is headroom for callers whose paths are not pre-normalized.
+      ["docs\\.report.docx"],
+      [".tmp\\draft.xlsx"],
+    ])("%s -> hidden", (path) => {
+      expect(isHiddenPath(path)).toBe(true)
+    })
+  })
+
+  describe("ordinary paths are not hidden", () => {
+    it.each([
+      ["report.docx"],
+      ["docs/report.docx"],
+      ["docs\\report.docx"],
+      // A dot mid-name is just a version/extension, not a hidden marker.
+      ["docs/report.v2.final.docx"],
+      // "." / ".." are path syntax; a leading "./" must not disqualify a doc.
+      ["./report.docx"],
+      ["../sibling/report.docx"],
+      ["./docs/../report.docx"],
+      // Absolute forms split to an empty leading segment, not a dot one.
+      ["/repo/report.docx"],
+      ["C:/repo/report.docx"],
+    ])("%s -> visible", (path) => {
+      expect(isHiddenPath(path)).toBe(false)
+    })
+  })
+
+  it("treats empty and nullish input as not hidden", () => {
+    expect(isHiddenPath("")).toBe(false)
+    expect(isHiddenPath(null)).toBe(false)
+    expect(isHiddenPath(undefined)).toBe(false)
   })
 })

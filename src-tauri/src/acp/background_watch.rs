@@ -399,6 +399,33 @@ pub(crate) struct WatchState {
     /// `Prompting` state observed at the previous tick — the edge detector for
     /// `current_turn_launched_ids` above.
     was_prompting: bool,
+    /// A codeg-sent prompt has been matched in the transcript and the model has
+    /// not answered it yet. Within that window the CLI writes the rest of the
+    /// SUBMISSION — a slash command's `<local-command-stdout>`, the `isMeta`
+    /// instruction `/goal` injects for the model, image metadata — and
+    /// `turn_initiator_text` reads those as fresh initiators (they are user
+    /// records with text, and the ledger has nothing left to match them
+    /// against). Flipping to `Background` there re-renders the wire's own reply
+    /// as an overlay: the observed `/goal` bug, where the whole answer appeared
+    /// twice.
+    ///
+    /// Four things bound it, because a swallowed initiator is worse than a
+    /// duplicate (a duplicate self-heals on the next detail refetch; a turn that
+    /// never reaches the overlay is missing from the LIVE view until then):
+    /// only records carrying the matched prompt's own `promptId` are affected
+    /// (`foreground_submission_id` — a submission id is per-submission, so an
+    /// autonomous prompt always has a different one, or none); the model's first
+    /// record closes the window; any non-prompting tick closes it (so a turn
+    /// that ends without ever answering cannot strand it); and a
+    /// `<task-notification>` is exempt outright — it settles on its own schedule
+    /// and its follow-up has no other live place to render.
+    foreground_awaiting_reply: bool,
+    /// `promptId` of the ledger-matched record that opened the window above.
+    /// `None` when that record carried none, which disables the window entirely
+    /// — without an id there is no way to tell a submission's own records from
+    /// an unrelated initiator, and the safe failure is the pre-fix duplicate,
+    /// never a hidden turn.
+    foreground_submission_id: Option<String>,
     /// `Prompting` state for the tick currently being processed. Set once at
     /// `tick()` entry from the caller-supplied snapshot so `account()` (called
     /// per transcript line within the same tick) can read it without an extra
@@ -440,6 +467,8 @@ impl WatchState {
             settled_ids: HashSet::new(),
             current_turn_launched_ids: HashSet::new(),
             was_prompting: false,
+            foreground_awaiting_reply: false,
+            foreground_submission_id: None,
             currently_prompting: false,
             turn_origin_task_ids: HashMap::new(),
             last_disk_activity: None,
@@ -527,6 +556,21 @@ impl WatchState {
         }
         if !is_prompting && self.was_prompting && turn_ended_abnormally {
             self.current_turn_launched_ids.clear();
+        }
+        // Not prompting ⇒ no submission is in flight, so the window is closed.
+        // Deliberately a LEVEL check, not the falling edge the launched-ids use:
+        // an edge can be missed entirely (a whole turn can start and finish
+        // between two polls, and this tick's own lines can re-open the window
+        // AFTER the edge was handled), which would strand the flag set with no
+        // later edge to clear it — and a stranded flag swallows the next
+        // genuinely autonomous initiator. The level check cannot strand.
+        // Re-arming within the same tick is still correct: the flag is set by
+        // the LEDGER MATCH in the line loop below, not by this snapshot, so a
+        // turn read entirely after it ended still classifies exactly as it did
+        // live. And since the first `!is_prompting` observation is the falling
+        // edge, this adds no new exposure to the snapshot's race with the wire.
+        if !is_prompting {
+            self.foreground_awaiting_reply = false;
         }
         self.was_prompting = is_prompting;
         self.currently_prompting = is_prompting;
@@ -957,6 +1001,12 @@ impl WatchState {
         cwd: &str,
         changed_turns: &mut Vec<MessageTurn>,
     ) {
+        // The model has started answering the matched prompt: the rest of the
+        // transcript is fair game for out-of-turn classification again.
+        if value.get("type").and_then(|t| t.as_str()) == Some("assistant") {
+            self.foreground_awaiting_reply = false;
+        }
+
         if let Some(initiator_text) = turn_initiator_text(value) {
             if ledger.consume_matching(&initiator_text) {
                 // A codeg-sent prompt: the wire renders this turn. Close any
@@ -965,6 +1015,28 @@ impl WatchState {
                 self.collect_changed_turns(cwd, changed_turns);
                 self.episode = None;
                 self.mode = Mode::Foreground;
+                self.foreground_awaiting_reply = true;
+                self.foreground_submission_id = record_submission_id(value);
+                return;
+            }
+            // A `<task-notification>` is never part of a submission: it is
+            // background work settling on its own schedule, and the episode it
+            // opens is the only place its follow-up can render (the wire never
+            // carries it). It must classify out-of-turn even inside the window
+            // — the one initiator the window may not swallow.
+            if self.foreground_awaiting_reply
+                && self.foreground_submission_id.is_some()
+                && record_submission_id(value) == self.foreground_submission_id
+                && task_notification_origin_id(&initiator_text).is_none()
+            {
+                // Still inside the matched prompt's own submission — command
+                // output, the instruction `/goal` injects, image metadata. None
+                // of it starts a turn; the wire is rendering the one it belongs
+                // to. See `foreground_awaiting_reply`.
+                tracing::debug!(
+                    "[bg-watch] submission record before the reply, staying foreground: {:?}",
+                    initiator_text.chars().take(60).collect::<String>()
+                );
                 return;
             }
             tracing::debug!(
@@ -1143,6 +1215,20 @@ fn turn_initiator_text(value: &serde_json::Value) -> Option<String> {
         return None;
     }
     Some(text)
+}
+
+/// The submission a record belongs to. Claude Code stamps every user record it
+/// writes while composing and running ONE prompt with that prompt's `promptId`
+/// (verified across real transcripts: 13 prompts in a session carried 10
+/// distinct ids, repeating only across a prompt's own interrupt/retry), so it is
+/// the only reliable way to tell a submission's side records — command output,
+/// the instruction `/goal` injects — from an unrelated initiator.
+fn record_submission_id(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("promptId")
+        .and_then(|p| p.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
 }
 
 /// If `text` (an out-of-turn initiator from `turn_initiator_text`) is a
@@ -1666,6 +1752,177 @@ mod tests {
         assert!(
             !turns.is_empty(),
             "same-text refire must surface — the steer's entry was consumed, not left standing"
+        );
+    }
+
+    /// A slash command sent from codeg writes MORE than its own record: the
+    /// command, then `<local-command-stdout>`, then (for `/goal`) the `isMeta`
+    /// STRING instruction Claude Code injects for the model — and only then the
+    /// reply. Those side records are user records carrying text, so
+    /// `turn_initiator_text` reads them as initiators and the ledger, already
+    /// emptied by the command itself, has nothing to match them against. That
+    /// flipped the watcher to Background mid-turn and the wire-rendered reply
+    /// came back as an overlay copy — the reported `/goal` bug, where the whole
+    /// answer rendered twice while streaming.
+    #[test]
+    fn a_commands_own_side_records_do_not_reopen_the_turn_as_background() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        let ledger = PromptLedger::shared();
+        ledger.record_text("/goal build a test page");
+
+        let mut ws = WatchState::new();
+        ws.session_id = Some("s1".into());
+        ws.epoch = Some(epoch("2020-01-01T00:00:00Z"));
+        ws.adopt_file(path.clone());
+
+        let command = r#"{"type":"user","timestamp":"2026-07-07T03:50:00.000Z","uuid":"u-cmd","promptId":"p1","message":{"role":"user","content":"<command-name>/goal</command-name>\n<command-message>goal</command-message>\n<command-args>build a test page</command-args>"}}"#;
+        let stdout = r#"{"type":"user","timestamp":"2026-07-07T03:50:00.100Z","uuid":"u-out","promptId":"p1","message":{"role":"user","content":"<local-command-stdout>Goal set: build a test page</local-command-stdout>"}}"#;
+        let hook = r#"{"type":"user","timestamp":"2026-07-07T03:50:00.200Z","uuid":"u-hook","promptId":"p1","isMeta":true,"userType":"external","message":{"role":"user","content":"A session-scoped Stop hook is now active with condition: build a test page."}}"#;
+        write_lines(
+            &path,
+            &[command, stdout, hook, &assistant_text("a1", "On it.")],
+        );
+        let event = tick_prompting(&mut ws, &ledger);
+        assert!(
+            event.is_none() || unpack(event.unwrap()).0.is_empty(),
+            "the wire renders this turn — its own submission records must not \
+             surface an overlay copy of the reply"
+        );
+
+        // The window closes at the model's first record, not at the turn's end:
+        // a genuinely autonomous initiator arriving after it still surfaces,
+        // even though the connection is STILL prompting.
+        write_lines(
+            &path,
+            &[
+                &cron_prompt("keep going"),
+                &assistant_text("a2", "resuming"),
+            ],
+        );
+        let (turns, ..) =
+            unpack(tick_prompting(&mut ws, &ledger).expect("turns event"));
+        assert!(
+            !turns.is_empty(),
+            "an autonomous initiator after the reply is out-of-turn as before"
+        );
+    }
+
+    /// The window is scoped by SUBMISSION, not by time: an autonomous prompt
+    /// that lands in the same interval — after the ledger match, before the
+    /// model's first record — carries a different `promptId` and must still
+    /// open its episode. Without this the fix would trade a recoverable
+    /// duplicate for a turn missing from the live view.
+    #[test]
+    fn a_foreign_submission_inside_the_window_still_surfaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        let ledger = PromptLedger::shared();
+        ledger.record_text("/goal build a test page");
+
+        let mut ws = WatchState::new();
+        ws.session_id = Some("s1".into());
+        ws.epoch = Some(epoch("2020-01-01T00:00:00Z"));
+        ws.adopt_file(path.clone());
+
+        let command = r#"{"type":"user","timestamp":"2026-07-07T03:50:00.000Z","uuid":"u-cmd","promptId":"p1","message":{"role":"user","content":"<command-name>/goal</command-name>\n<command-args>build a test page</command-args>"}}"#;
+        // Same shape as the hook injection above, foreign submission id.
+        let cron = r#"{"type":"user","timestamp":"2026-07-07T03:50:00.200Z","uuid":"u-cron2","promptId":"p2","isMeta":true,"userType":"external","message":{"role":"user","content":"iterate forever"}}"#;
+        write_lines(
+            &path,
+            &[command, cron, &assistant_text("a1", "Working on it.")],
+        );
+        let (turns, ..) =
+            unpack(tick_prompting(&mut ws, &ledger).expect("turns event"));
+        assert!(
+            !turns.is_empty(),
+            "a different submission is not this one's side record"
+        );
+    }
+
+    /// The other initiator the window may not swallow: an async sub-agent's
+    /// `<task-notification>`. It settles on its own schedule and IS stamped with
+    /// the in-flight submission's `promptId`, so only the explicit exemption
+    /// keeps it out-of-turn. Its follow-up has no other live rendering path —
+    /// the wire never carries it — so suppressing it would lose the turn until
+    /// the next detail refetch.
+    #[test]
+    fn a_task_notification_inside_the_window_still_opens_an_episode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        write_lines(&path, &[&agent_ack("agentA")]);
+        let ledger = PromptLedger::shared();
+        ledger.record_text("/goal build a test page");
+
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+        // The launch is observed while NOT prompting, so agentA is not eligible
+        // for the held-turn suppression that would hide it for other reasons.
+        let _ = tick_now(&mut ws, &ledger);
+
+        let command = r#"{"type":"user","timestamp":"2026-07-07T03:50:00.000Z","uuid":"u-cmd","promptId":"p1","message":{"role":"user","content":"<command-name>/goal</command-name>\n<command-args>build a test page</command-args>"}}"#;
+        let stdout = r#"{"type":"user","timestamp":"2026-07-07T03:50:00.100Z","uuid":"u-out","promptId":"p1","message":{"role":"user","content":"<local-command-stdout>Goal set: build a test page</local-command-stdout>"}}"#;
+        let note = r#"{"type":"user","timestamp":"2026-07-07T03:50:00.300Z","uuid":"u-note-agentA","promptId":"p1","isSidechain":false,"message":{"role":"user","content":"<task-notification>\n<task-id>agentA</task-id>\n<tool-use-id>toolu_01</tool-use-id>\n<status>completed</status>\n<summary>Agent finished</summary>\n<result>Build OK</result>\n</task-notification>"}}"#;
+        write_lines(
+            &path,
+            &[
+                command,
+                stdout,
+                // Settles BEFORE the foreground turn has written anything.
+                note,
+                &assistant_text("a1", "Build finished cleanly."),
+            ],
+        );
+        let (turns, ..) =
+            unpack(tick_prompting(&mut ws, &ledger).expect("settle event"));
+        // Not just "an episode opened": the settlement's own follow-up is what
+        // has nowhere else to render, so it must be IN the emitted turn.
+        assert!(
+            turns.iter().any(|t| t.blocks.iter().any(|b| matches!(
+                b,
+                crate::models::message::ContentBlock::Text { text } if text.contains("Build finished cleanly")
+            ))),
+            "the notification's follow-up must render in the overlay"
+        );
+    }
+
+    /// The window must never outlive the turn that opened it. Both resets are
+    /// asserted directly, because the `promptId` scoping makes their effect
+    /// invisible from the outside in all but contrived transcripts: the model's
+    /// first record closes it, and — for a turn that ends without ever writing
+    /// one — any non-prompting tick does. The reset is level-triggered on
+    /// purpose: an EDGE can be missed entirely (a whole turn can start and
+    /// finish between two polls, and a tick's own lines re-arm the window AFTER
+    /// the edge was handled), which would strand it set forever.
+    #[test]
+    fn submission_window_is_closed_by_the_reply_and_by_any_idle_tick() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = temp_session(&dir);
+        let ledger = PromptLedger::shared();
+        ledger.record_text("/goal build a test page");
+        ledger.record_text("/goal try again");
+
+        let mut ws = WatchState::with_file_for_test("s1", path.clone());
+        ws.epoch = Some(epoch("2020-01-01T00:00:00Z"));
+
+        let command = r#"{"type":"user","timestamp":"2026-07-07T03:50:00.000Z","uuid":"u-cmd","promptId":"p1","message":{"role":"user","content":"<command-name>/goal</command-name>\n<command-args>build a test page</command-args>"}}"#;
+        write_lines(&path, &[command, &assistant_text("a1", "On it.")]);
+        let _ = tick_prompting(&mut ws, &ledger);
+        assert!(
+            !ws.foreground_awaiting_reply,
+            "the model's first record closes the window"
+        );
+
+        // A second submission that never answers: armed while prompting…
+        let retry = r#"{"type":"user","timestamp":"2026-07-07T03:51:00.000Z","uuid":"u-cmd2","promptId":"p2","message":{"role":"user","content":"<command-name>/goal</command-name>\n<command-args>try again</command-args>"}}"#;
+        write_lines(&path, &[retry]);
+        let _ = tick_prompting(&mut ws, &ledger);
+        assert!(ws.foreground_awaiting_reply, "armed by the ledger match");
+        // …and closed by the first tick that observes the connection idle,
+        // whether or not that tick is the falling edge.
+        let _ = tick_now(&mut ws, &ledger);
+        assert!(
+            !ws.foreground_awaiting_reply,
+            "an idle tick closes a window no reply will ever close"
         );
     }
 

@@ -379,7 +379,7 @@ pub async fn acp_goal_control(
 ) -> Result<Json<()>, AppCommandError> {
     let manager = &state.connection_manager;
     manager
-        .goal_control(&params.connection_id, params.action)
+        .goal_control(&state.db.conn, &params.connection_id, params.action)
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(()))

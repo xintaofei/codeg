@@ -8,6 +8,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type RefObject,
 } from "react"
 import { createPortal } from "react-dom"
 
@@ -89,6 +90,13 @@ export interface SuggestionPopupProps {
   /** Localized per-kind tab labels (English fallbacks apply when omitted). */
   tabLabels?: Record<ReferenceKind, string>
   /**
+   * The composer box the panel lines up with. When given, the panel adopts that
+   * box's width and left edge and opens above it — the same geometry as the
+   * host's own `/` command menu, so both panels read as one affordance. Without
+   * it the panel keeps its fixed width and hugs the caret.
+   */
+  anchorRef?: RefObject<HTMLElement | null>
+  /**
    * Reports the active option's element id (or null when nothing is
    * selectable), so the host can mirror it onto the editor's
    * `aria-activedescendant`. Must be referentially stable.
@@ -97,12 +105,13 @@ export interface SuggestionPopupProps {
 }
 
 /**
- * The unified `@` panel: tabbed, keyboard-navigable suggestions positioned at
- * the caret. One tab per reference kind (agent first); only the active tab's
- * group is shown. Keys are forwarded from the suggestion plugin via the
- * imperative handle (the editor keeps DOM focus), so selection and the active
- * tab are tracked manually rather than relying on focus-based libraries — the
- * tab strip never takes focus (`tabIndex={-1}` + mousedown `preventDefault`).
+ * The unified `@` panel: tabbed, keyboard-navigable suggestions anchored to the
+ * composer box (or, without one, to the caret). One tab per reference kind
+ * (agent first); only the active tab's group is shown. Keys are forwarded from
+ * the suggestion plugin via the imperative handle (the editor keeps DOM focus),
+ * so selection and the active tab are tracked manually rather than relying on
+ * focus-based libraries — the tab strip never takes focus (`tabIndex={-1}` +
+ * mousedown `preventDefault`).
  */
 export const SuggestionPopup = forwardRef<
   SuggestionPopupHandle,
@@ -119,6 +128,7 @@ export const SuggestionPopup = forwardRef<
     countLabel = (count) => `${count} results`,
     moreLabel = "More results — keep typing to filter",
     tabLabels = DEFAULT_TAB_LABELS,
+    anchorRef,
     onActiveOptionChange,
   },
   ref
@@ -143,6 +153,9 @@ export const SuggestionPopup = forwardRef<
     top: number
     placement: "above" | "below"
   } | null>(null)
+  // Width adopted from the anchor box (0 = no anchor / not measured yet, where
+  // the panel keeps its own `w-80`).
+  const [boxWidth, setBoxWidth] = useState(0)
   const listRef = useRef<HTMLDivElement>(null)
   const stale = result.query !== state.query
 
@@ -214,27 +227,44 @@ export const SuggestionPopup = forwardRef<
     )
   }, [activeTab, selectedIndex, flat.length, stale, onActiveOptionChange])
 
-  // Position the caret-anchored panel within the viewport. Measure the rendered
-  // panel (a `visibility:hidden` box still has layout), read the *live* caret
-  // rect, then clamp/flip via the pure helper. A layout effect runs before
-  // paint, so the panel never flashes at a wrong spot. `state` is a fresh object
-  // each keystroke and the height tracks `stale`/`flat.length`/`activeTab`, so
-  // this re-anchors as the caret moves, results load, and tabs switch; resize +
-  // capture-phase scroll listeners re-anchor on window resize, editor scroll, or
-  // page scroll while the panel is open.
+  // Position the panel within the viewport. Measure the rendered panel (a
+  // `visibility:hidden` box still has layout), read the *live* anchor — the
+  // composer box when the host named one, else the caret rect — then clamp/flip
+  // via the pure helper. A layout effect runs before paint, so the panel never
+  // flashes at a wrong spot. `state` is a fresh object each keystroke and the
+  // height tracks `stale`/`flat.length`/`activeTab`, so this re-anchors as the
+  // caret moves, results load, and tabs switch; resize + capture-phase scroll
+  // listeners re-anchor on window resize, editor scroll, or page scroll while
+  // the panel is open.
+  //
+  // With an anchor box the width is adopted BEFORE the height is measured, in
+  // two passes: a fixed panel with no width shrinks to its content, and a row
+  // that fits on one line there can wrap once the (different) composer width
+  // lands — measuring first would place the panel using a height it is about to
+  // outgrow. The panel stays hidden through both passes.
   useIsomorphicLayoutEffect(() => {
     if (typeof window === "undefined") return
     const reposition = () => {
       const panel = listRef.current
       if (!panel) return
+      const box = anchorRef?.current?.getBoundingClientRect() ?? null
+      if (box && Math.abs(box.width - boxWidth) > 0.5) {
+        // Pass one. `boxWidth` is a dep, so this effect re-runs against the
+        // re-laid-out panel and falls through below.
+        setBoxWidth(box.width)
+        return
+      }
       const rect = panel.getBoundingClientRect()
       const caret = state.getClientRect?.() ?? null
+      const anchor = box
+        ? { left: box.left, top: box.top, bottom: box.bottom }
+        : caret
+          ? { left: caret.left, top: caret.top, bottom: caret.bottom }
+          : null
       setPos(
         placeAnchoredPopup(
-          caret
-            ? { left: caret.left, top: caret.top, bottom: caret.bottom }
-            : null,
-          { width: rect.width, height: rect.height },
+          anchor,
+          { width: box ? box.width : rect.width, height: rect.height },
           { width: window.innerWidth, height: window.innerHeight }
         )
       )
@@ -246,7 +276,7 @@ export const SuggestionPopup = forwardRef<
       window.removeEventListener("resize", reposition)
       window.removeEventListener("scroll", reposition, true)
     }
-  }, [state, stale, flat.length, activeTab])
+  }, [state, stale, flat.length, activeTab, anchorRef, boxWidth])
 
   useImperativeHandle(
     ref,
@@ -331,6 +361,12 @@ export const SuggestionPopup = forwardRef<
       <div
         ref={listRef}
         data-testid="mention-popup"
+        style={{
+          // Match the composer box when one was named; `w-80` below is the
+          // no-anchor fallback (and covers the pre-measure frame, which is
+          // hidden anyway).
+          width: boxWidth || undefined,
+        }}
         // Cap to the viewport (minus the 8px×2 edge margin = 1rem) so the panel
         // always fits on small windows; the tab strip stays pinned and only the
         // option list scrolls. The positioner clamps placement, this bounds size.

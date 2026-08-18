@@ -300,6 +300,47 @@ describe("SuggestionPopup", () => {
     expect(container.dataset.placement).toBe("above")
   })
 
+  it("adopts the anchor box's width and left edge, opening above it", async () => {
+    // The panel measures itself through the prototype; the anchor shadows that
+    // with its own rect (an own property wins over the spied prototype).
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+      width: 320,
+      height: 288,
+    } as DOMRect)
+    const box = document.createElement("div")
+    document.body.appendChild(box)
+    box.getBoundingClientRect = () =>
+      ({ left: 40, top: 500, bottom: 620, width: 600 }) as DOMRect
+    render(
+      <SuggestionPopup
+        ref={createRef<SuggestionPopupHandle>()}
+        state={{
+          query: "a",
+          range: { from: 1, to: 3 },
+          // Caret far from the box: the anchor wins, so this never shows up.
+          getClientRect: () =>
+            ({ left: 400, top: 610, bottom: 630 }) as DOMRect,
+        }}
+        search={search}
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        anchorRef={{ current: box }}
+      />
+    )
+    await screen.findByText("Codex Helper")
+    const panel = screen.getByTestId("mention-popup")
+    const container = panel.parentElement as HTMLElement
+    // Same width as the composer, not the default w-80.
+    expect(panel.style.width).toBe("600px")
+    // Left edge follows the box (not the caret's 400)…
+    expect(container.style.left).toBe("40px")
+    // …and it sits above the box's TOP (500 - 4 - 288), clear of the composer,
+    // rather than hugging the caret line inside it.
+    expect(container.style.top).toBe("208px")
+    expect(container.dataset.placement).toBe("above")
+    box.remove()
+  })
+
   it("re-anchors to the live caret rect on resize (not a stale snapshot)", async () => {
     vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
       width: 320,

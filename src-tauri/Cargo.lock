@@ -1015,7 +1015,7 @@ checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
 
 [[package]]
 name = "codeg"
-version = "0.25.0"
+version = "0.26.1"
 dependencies = [
  "aes-gcm",
  "agent-client-protocol-schema",
@@ -1094,6 +1094,7 @@ dependencies = [
  "which 7.0.3",
  "windows-sys 0.59.0",
  "zip 2.4.2",
+ "zstd",
 ]
 
 [[package]]

@@ -5,6 +5,7 @@ import {
   claudeCodeMarksSubagent,
   codexMarksPlanReview,
   extractClaudeCodeMetaTitle,
+  extractClaudeCodeSkillName,
   inferLiveToolName,
   normalizeToolName,
 } from "./tool-call-normalization"
@@ -233,6 +234,28 @@ describe("inferLiveToolName meta.claudeCode.toolName override", () => {
     expect(extractClaudeCodeMetaTitle({ claudeCode: { title: 42 } })).toBe(null)
     expect(extractClaudeCodeMetaTitle({ claudeCode: {} })).toBe(null)
     expect(extractClaudeCodeMetaTitle(undefined)).toBe(null)
+  })
+
+  it("extractClaudeCodeSkillName reads the #986 skill meta and guards its shape", () => {
+    // claude-agent-acp ≥0.67 stamps Skill tool calls with
+    // `_meta.claudeCode.skill` (+ optional `skillPath`); the name is the
+    // authoritative title source, present before `rawInput` streams.
+    expect(
+      extractClaudeCodeSkillName({
+        claudeCode: {
+          toolName: "Skill",
+          skill: "commit-helper",
+          skillPath: "/repo/.claude/skills/commit-helper/SKILL.md",
+        },
+      })
+    ).toBe("commit-helper")
+    expect(extractClaudeCodeSkillName({ claudeCode: { skill: "  " } })).toBe(
+      null
+    )
+    expect(extractClaudeCodeSkillName({ claudeCode: { skill: 7 } })).toBe(null)
+    expect(extractClaudeCodeSkillName({ claudeCode: {} })).toBe(null)
+    expect(extractClaudeCodeSkillName({ skill: "top-level" })).toBe(null)
+    expect(extractClaudeCodeSkillName(null)).toBe(null)
   })
 
   it("resolves delegation companion tools from meta over the input-shape heuristic", () => {

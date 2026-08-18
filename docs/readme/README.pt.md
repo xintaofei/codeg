@@ -19,7 +19,7 @@
 
 O Codeg (Code Generation) é um espaço de trabalho de programação multiagente: rode todos os seus agentes de IA em um só lugar — e deixe que trabalhem juntos.
 
-Ele agrega as sessões de todas as CLIs de agentes suportadas em um único espaço de trabalho pesquisável, permite que um agente principal delegue a subagentes de outros tipos dentro de uma mesma tarefa e roda como aplicativo de desktop, servidor independente ou contêiner Docker — além de clientes nativos de iOS e Android para quando você está longe da mesa. Doze agentes já vêm integrados e, desde a 0.22, você pode registrar por conta própria qualquer outro agente compatível com ACP.
+Ele agrega as sessões de todas as CLIs de agentes suportadas em um único espaço de trabalho pesquisável e permite que um agente principal delegue a subagentes de outros tipos dentro de uma mesma tarefa. O trabalho que você prefere não acompanhar vai para o quadro de tarefas a fazer: cada tarefa no próprio branch, rodando sem supervisão, esperando a sua revisão antes de entrar. O Codeg roda como aplicativo de desktop, servidor independente ou contêiner Docker, com clientes nativos de iOS e Android para quando você está longe da mesa; treze agentes já vêm integrados e você pode registrar por conta própria qualquer outro agente compatível com ACP.
 
 ![Espaço de trabalho](../images/workspace-light.png#gh-light-mode-only)
 ![Espaço de trabalho](../images/workspace-dark.png#gh-dark-mode-only)
@@ -65,7 +65,7 @@ Ele agrega as sessões de todas as CLIs de agentes suportadas em um único espa�
 
 ## 🤖 Agentes suportados
 
-Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · CodeBuddy · Kimi Code · Pi · Grok · Cursor
+Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · CodeBuddy · Kimi Code · Pi · Grok · Cursor · DeepSeek Harness
 
 O Codeg instala, fixa a versão e atualiza a maioria deles por você. Veja [Agentes suportados](https://docs.codeg.app/guide/supported-agents) para a lista completa, os requisitos de execução de cada um e onde ele guarda as sessões em disco.
 
@@ -75,10 +75,19 @@ Não está na lista? Adicione você mesmo. Escolha qualquer agente no registro p
 
 Colaboração multiagente reduzida a uma única tecla: digite `@`, escolha um agente e envie. O Codeg cuida da orquestração — inicia cada agente mencionado como sua própria sessão, entrega a tarefa e devolve o trabalho para a conversa em que você já está. Mencione dois e eles seguem lado a lado: o Claude Code redigindo enquanto o Codex revisa. Sem troca de contexto, sem copiar e colar entre terminais.
 
-E quando um agente dispara subagentes próprios — os do Claude Code, por exemplo — a saída deles vai aparecendo no cartão enquanto trabalham, em vez de chegar toda de uma vez no fim.
+E quando um agente dispara subagentes próprios — Claude Code, Codex, Grok e OpenCode fazem isso — cada filho ganha um cartão que vai se preenchendo enquanto trabalha, em vez de chegar todo de uma vez no fim. Abra um e leia a sessão do próprio filho.
 
 ![Delegando uma tarefa a subagentes a partir de uma única conversa do Codeg](../images/collaboration-light.gif#gh-light-mode-only)
 ![Delegando uma tarefa a subagentes a partir de uma única conversa do Codeg](../images/collaboration-dark.gif#gh-dark-mode-only)
+
+## ✅ Tarefas a fazer
+
+Nem todo trabalho precisa de você olhando. Anote — um título, uma descrição, o agente que vai executá-lo — e o Codeg entrega a ele **uma cópia própria do código**: uma worktree do git ao lado do seu projeto, no próprio branch. Várias rodam ao mesmo tempo sem se tocarem, nem tocarem a árvore em que você está trabalhando. Agende uma para hoje à noite, ou deixe uma pasta esvaziar a fila sozinha, até o limite de execuções simultâneas que você definir.
+
+Uma tarefa concluída não faz merge sozinha. Ela vai para a coluna de revisão e espera: leia o diff, devolva para mais uma rodada ou aceite — e quem faz o merge é o agente, trazendo antes o seu branch base para a worktree dele e resolvendo os conflitos ali. Depois o Codeg não acredita na palavra do agente: confere o git por conta própria, e um merge que não consegue confirmar volta para revisão em vez de ser dado como certo.
+
+![O quadro de tarefas a fazer, com tarefas passando de A fazer para Em andamento e Concluído](../images/task-light.png#gh-light-mode-only)
+![O quadro de tarefas a fazer, com tarefas passando de A fazer para Em andamento e Concluído](../images/task-dark.png#gh-dark-mode-only)
 
 ## 🪟 Visualização dividida
 
@@ -98,17 +107,19 @@ Peça um deck, um relatório ou uma planilha e o agente constrói um `.pptx` / `
 
 ## 💻 Espaço de trabalho
 
-Um espaço de trabalho, todos os agentes. Seja qual for o que estiver trabalhando — Claude Code, Codex, Cursor —, ele trabalha no mesmo editor, com os mesmos diffs ao vivo e o mesmo cliente git; e o que produz são arquivos reais do seu repositório, mudando diante de você.
+Um espaço de trabalho, todos os agentes. Seja qual for o que estiver trabalhando — Claude Code, Codex, Cursor —, ele trabalha no mesmo editor, com os mesmos diffs ao vivo e o mesmo cliente git; e o que produz são arquivos reais do seu repositório, mudando diante de você. Vincule outros diretórios — uma biblioteca compartilhada, um serviço vizinho, o repositório da documentação — e a árvore de arquivos, a busca e o próprio agente tratam todos como um só espaço de trabalho.
 
-**Sessões.** Traga o histórico que você já tem: sessões passadas de todos os agentes instalados, importadas com um clique e retomáveis de onde você parou. Uma vez dentro, elas deixam de ser silos separados — mencione uma sessão antiga com `@` e o agente com quem você está falando consegue lê-la, mesmo que outro agente a tenha escrito, de modo que a execução do Codex de hoje continua de onde a sessão do Claude Code da semana passada terminou.
+**Sessões.** Traga o histórico que você já tem: sessões passadas de todos os agentes instalados, importadas com um clique e retomáveis de onde você parou. Uma vez dentro, elas deixam de ser silos separados — mencione uma sessão antiga com `@` e o agente com quem você está falando consegue lê-la, mesmo que outro agente a tenha escrito, de modo que a execução do Codex de hoje continua de onde a sessão do Claude Code da semana passada terminou. Por mais longa que fique uma conversa, ela abre nas rodadas recentes e carrega o resto conforme você rola para cima.
 
 **Arquivos.** As edições do agente aparecem como diffs ao lado da conversa conforme acontecem. Abra qualquer arquivo em um editor de verdade com realce de sintaxe, envie um arquivo — ou apenas uma seleção — direto para o agente com `⌘L`, e visualize Markdown, HTML, imagens e documentos do Office no mesmo painel.
 
-**Git.** Um cliente completo, não um indicador de status: faça commit e push, percorra o histórico com o estado de envio de cada commit, e crie branches, faça merge, rebase, stash, reset ou compare com outro branch. Conflitos abrem um editor de merge de três painéis onde você aceita hunk a hunk ou digita a correção você mesmo. E as worktrees transformam o trabalho paralelo em uma única ação — um branch novo, seu próprio diretório e uma conversa nova enraizada nele, para que uma frota de agentes construa funcionalidades diferentes ao mesmo tempo sem esbarrar nos arquivos uns dos outros.
+**Git.** Um cliente completo, não um indicador de status: faça commit direto da aba Alterações — escreva a mensagem, aperte Enter — com pull, fetch, push e stash ao lado, e um histórico que mostra quais commits já foram enviados. Crie branches, faça merge, rebase, reset ou compare com outro branch, e atualize ou envie qualquer branch sem mudar para ele. Conflitos abrem um editor de merge de três painéis onde você aceita hunk a hunk ou digita a correção você mesmo. E as worktrees transformam o trabalho paralelo em uma única ação — um branch novo, seu próprio diretório e uma conversa nova enraizada nele, para que uma frota de agentes construa funcionalidades diferentes ao mesmo tempo sem esbarrar nos arquivos uns dos outros.
+
+**Quando dá errado.** Um turno que falha não diz apenas que algo deu errado: no Claude Code e no Codex ele nomeia o tipo — problema de conexão, problema de acesso, limite atingido, requisição recusada, problema de serviço — e encaixa abaixo do compositor uma faixa com o que realmente ajudaria: Tentar de novo, Entrar ou uma nova sessão. As tentativas que o agente faz por conta própria aparecem em âmbar e terminam em uma única linha de “Recuperado”. E o indicador de conexão abaixo do compositor é um botão: clique para ver o estado real da sessão, com um Reconectar que retoma em vez de começar do zero.
 
 ## 📱 iPhone, iPad e Android
 
-Saia da mesa, não do trabalho. Os clientes nativos de iOS e Android se conectam ao Codeg que você já mantém rodando — o **Serviço web** do seu aplicativo de desktop ou o seu próprio `codeg-server` — e é de lá que você inicia sessões, acompanha respostas e chamadas de ferramentas em tempo real, responde a pedidos de permissão e navega por projetos e branches. Nada é movido para o celular: seus arquivos, as CLIs dos agentes e as conversas continuam na máquina que executa o Codeg, e o token de acesso fica no Chaveiro do iOS ou protegido pelo Android Keystore. Os dois clientes são de código aberto ([iOS](https://github.com/xintaofei/codeg-ios), [Android](https://github.com/xintaofei/codeg-android)) e estão em fase de testes; o pareamento leva três passos, descritos em [Aplicativos móveis](https://docs.codeg.app/getting-started/installation#mobile-apps).
+Saia da mesa, não do trabalho. Os clientes nativos de iOS e Android se conectam ao Codeg que você já mantém rodando — o **Serviço web** do seu aplicativo de desktop ou o seu próprio `codeg-server` — e é de lá que você inicia sessões, acompanha respostas e chamadas de ferramentas em tempo real, responde a pedidos de permissão e navega por projetos e branches. Nada é movido para o celular: seus arquivos, as CLIs dos agentes e as conversas continuam na máquina que executa o Codeg, e o token de acesso fica no Chaveiro do iOS ou protegido pelo Android Keystore. Os dois clientes são de código aberto ([iOS](https://github.com/xintaofei/codeg-ios), [Android](https://github.com/xintaofei/codeg-android)); o pareamento leva três passos, descritos em [Aplicativos móveis](https://docs.codeg.app/getting-started/installation#mobile-apps).
 
 | iPhone e iPad | Android |
 | :---: | :---: |
@@ -118,16 +129,19 @@ Saia da mesa, não do trabalho. Os clientes nativos de iOS e Android se conectam
 
 - **[Agregação de conversas](https://docs.codeg.app/guide/aggregation)** — importe as sessões de todos os agentes suportados para um espaço de trabalho unificado e pesquisável, e retome de onde parou
 - **[Colaboração multiagente](https://docs.codeg.app/guide/multi-agent)** — mencione qualquer agente com `@` para delegar: subagentes de tipos diferentes rodam como sessões próprias, em paralelo, dentro de uma mesma tarefa
+- **[Tarefas a fazer](https://docs.codeg.app/guide/tasks)** — anote o que precisa ser feito e os agentes vão esvaziando a fila, cada tarefa na própria worktree, entrando no seu branch só depois que você revisar
 - **[Agentes personalizados](https://docs.codeg.app/guide/custom-agents)** — registre qualquer outro agente compatível com ACP a partir do registro público ou do JSON de distribuição; o Codeg instala, grava o histórico e o trata como um agente nativo
-- **[O espaço de trabalho](https://docs.codeg.app/guide/workspace)** — todo o ciclo de engenharia ao lado do agente: árvore de arquivos, editor e diff, alterações do git, commit e um terminal integrado
+- **[O espaço de trabalho](https://docs.codeg.app/guide/workspace)** — todo o ciclo de engenharia ao lado do agente: árvore de arquivos, editor e diff, alterações do git, commit, um terminal integrado e [várias pastas vinculadas em um só espaço de trabalho](https://docs.codeg.app/guide/workspace#work-across-several-folders)
 - **[Visualização dividida](https://docs.codeg.app/guide/workspace#split-the-conversation-view-into-groups)** — divida a área de conversa em quantos grupos de abas quiser, arraste abas e divisores entre eles e recupere o layout — com rascunhos — ao reiniciar
 - **[Git e worktrees](https://docs.codeg.app/guide/git)** — revise e faça commit das alterações, gerencie contas remotas do Git e trabalhe em paralelo com os fluxos `git worktree` integrados
-- **[Canais de chat](https://docs.codeg.app/guide/chat-channels)** — comande seus agentes pelo Telegram, Lark (Feishu) e iLink (Weixin): crie tarefas, aprove permissões e receba atualizações ao vivo
-- **[Automações](https://docs.codeg.app/guide/automations)** — salve um compositor totalmente configurado como uma automação reutilizável que roda sem interface, por agendamento cron ou sob demanda
+- **[Uso de tokens](https://docs.codeg.app/guide/token-usage)** — um relatório completo por trás do contador na barra de status: tendências e taxa de acerto de cache, um mapa de calor de atividade e recortes por pasta, agente, modelo e sessão
+- **[Canais de chat](https://docs.codeg.app/guide/chat-channels)** — comande seus agentes pelo Telegram, Lark (Feishu) e WeChat: crie tarefas, aprove permissões e receba atualizações ao vivo
+- **[Automações](https://docs.codeg.app/guide/automations)** — salve um compositor totalmente configurado como uma automação reutilizável que roda sem interface, por agendamento cron ou sob demanda — iniciando uma sessão ou deixando uma tarefa a fazer para você revisar depois
 - **[Documentos do Office](https://docs.codeg.app/guide/office)** — crie, analise, revise e edite `.docx` / `.xlsx` / `.pptx` com o `officecli` embutido, com pré-visualização ao vivo na própria aba
 - **[Pesquisa científica](https://docs.codeg.app/guide/research)** — habilidades de pesquisa embutidas (geração de hipóteses, desenho experimental, estatística, visualização, avaliação crítica, busca bibliográfica) que qualquer agente pode invocar
 - **[Project Boot](https://docs.codeg.app/guide/project-boot)** — crie novos projetos visualmente, com pré-visualização ao vivo, e abra-os direto no espaço de trabalho
 - **[MCP](https://docs.codeg.app/guide/mcp) & [Skills](https://docs.codeg.app/guide/skills)** — varredura de servidores locais mais busca/instalação pelo registro, e habilidades gerenciadas em escopo global ou de projeto
+- **[Do seu jeito](https://docs.codeg.app/reference/settings/appearance)** — recolora qualquer um dos doze temas token a token, defina o arredondamento dos cantos para o app inteiro, importe e exporte temas como JSON do shadcn, ou escreva seu próprio CSS
 - **[Desktop, servidor e Docker](https://docs.codeg.app/getting-started/deployment)** — um app de desktop nativo, um `codeg-server` independente acessível de qualquer navegador, ou `docker compose up`
 - **[iPhone, iPad e Android](https://docs.codeg.app/getting-started/installation#mobile-apps)** — clientes móveis nativos que se conectam ao seu desktop ou servidor: inicie sessões, receba respostas em streaming, aprove permissões e navegue pelos projetos de onde estiver
 

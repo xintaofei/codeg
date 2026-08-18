@@ -19,7 +19,7 @@
 
 Codeg（Code Generation）是一个多智能体编码工作台：把所有 AI 编码智能体收进同一个地方 —— 并让它们协同工作。
 
-它将所有受支持智能体 CLI 的会话聚合进一个可搜索的工作区，让主智能体在同一个任务内委派给其它类型的子智能体，并可作为桌面应用、独立服务器或 Docker 容器运行；此外还有原生 iOS 与 Android 客户端，让你离开电脑后也能接手正在跑的任务。内置十二个智能体；从 0.22 起，你还可以自行注册任何其它兼容 ACP 的智能体。
+它将所有受支持智能体 CLI 的会话聚合进一个可搜索的工作区，让主智能体在同一个任务内委派给其它类型的子智能体。不想守着做完的活，可以写进待办任务：每个任务待在自己的分支上无人值守地跑，做完了等你验收才落地。Codeg 可作为桌面应用、独立服务器或 Docker 容器运行，还有原生 iOS 与 Android 客户端，让你离开电脑后也能接手正在跑的任务；内置十三个智能体，你也可以自行注册任何其它兼容 ACP 的智能体。
 
 ![工作区](../images/workspace-light.png#gh-light-mode-only)
 ![工作区](../images/workspace-dark.png#gh-dark-mode-only)
@@ -65,7 +65,7 @@ Codeg（Code Generation）是一个多智能体编码工作台：把所有 AI �
 
 ## 🤖 支持的 Agent
 
-Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · CodeBuddy · Kimi Code · Pi · Grok · Cursor
+Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · CodeBuddy · Kimi Code · Pi · Grok · Cursor · DeepSeek Harness
 
 其中大部分 Codeg 都能替你安装、锁定版本并更新。完整名单、各自的运行环境要求以及会话在磁盘上的存放位置，见 [支持的智能体](https://docs.codeg.app/zh/guide/supported-agents)。
 
@@ -75,10 +75,19 @@ Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · Cod
 
 多智能体协作，从此只需一个按键：输入 `@`，选中智能体，发送。剩下的调度全交给 Codeg —— 它把每个被提及的智能体拉起为独立会话，交付任务，再把工作实时汇流回你正在进行的对话。提及两个，它们就并肩开工：Claude Code 起草，Codex 同步评审。不用来回切换上下文，也不必在多个终端之间复制粘贴。
 
-如果智能体自己派出了子智能体——比如 Claude Code 的——它们的输出会边跑边显示在各自的卡片里，而不是等结束后一次性出现。
+如果智能体自己派出了子智能体——Claude Code、Codex、Grok 与 OpenCode 都会——每个子智能体都有一张边跑边填的卡片，而不是等结束后一次性出现。点开就能读它自己的那个会话。
 
 ![在单个 Codeg 会话中将任务委派给子智能体](../images/collaboration-light.gif#gh-light-mode-only)
 ![在单个 Codeg 会话中将任务委派给子智能体](../images/collaboration-dark.gif#gh-dark-mode-only)
+
+## ✅ 待办任务
+
+不是每件事都得你盯着做完。写下来就行——标题、说明、用哪个智能体跑——Codeg 会给它**一份独立的代码副本**：项目旁边的一个 git 工作树，跑在自己的分支上。几个任务同时开工也互不干扰，更不会碰你手头那份代码。可以约在今晚开始，也可以让某个文件夹自己按并发上限一件件处理下去。
+
+做完的任务不会自己合并。它会移到待验收那一栏等着你：看 diff、打回去再做一轮，或者点通过——然后由智能体来落地，先把基础分支并进它的工作树、在那里解完冲突。之后 Codeg 不听智能体一面之词，而是自己去核对 git：确认不了的合并会退回待验收，而不是报一句成功。
+
+![待办任务看板：任务从「待办」经「进行中」走到「完成」](../images/task-light.png#gh-light-mode-only)
+![待办任务看板：任务从「待办」经「进行中」走到「完成」](../images/task-dark.png#gh-dark-mode-only)
 
 ## 🪟 分屏
 
@@ -98,17 +107,19 @@ Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · Cod
 
 ## 💻 工作区
 
-一个工作区，容纳所有智能体。无论正在干活的是 Claude Code、Codex 还是 Cursor，它们都在同一个编辑器、同一套实时 diff、同一个 Git 客户端里工作，而产出的是你仓库里真实的文件，就在你眼前变化。
+一个工作区，容纳所有智能体。无论正在干活的是 Claude Code、Codex 还是 Cursor，它们都在同一个编辑器、同一套实时 diff、同一个 Git 客户端里工作，而产出的是你仓库里真实的文件，就在你眼前变化。还可以把别的目录挂进来——共用的库、隔壁的服务、文档仓库——文件树、搜索与智能体本身都把它们当作同一个工作区。
 
-**会话**：把你已有的历史一并接管 —— 所有已安装智能体的过往会话，一键导入，并可从中断处继续。进来之后它们不再是彼此隔绝的孤岛 —— `@` 提及一个旧会话，你正在对话的智能体就能读到它，哪怕那是另一个智能体留下的，于是今天的 Codex 能接着上周 Claude Code 停下的地方往下做。
+**会话**：把你已有的历史一并接管 —— 所有已安装智能体的过往会话，一键导入，并可从中断处继续。进来之后它们不再是彼此隔绝的孤岛 —— `@` 提及一个旧会话，你正在对话的智能体就能读到它，哪怕那是另一个智能体留下的，于是今天的 Codex 能接着上周 Claude Code 停下的地方往下做。无论一个会话攒得多长，打开时都先呈现最近几轮，剩下的随你往上翻再逐段补齐。
 
 **文件**：智能体的改动会以 diff 的形式，随着落盘即时呈现在对话旁边。任意文件都能在带语法高亮的真实编辑器里打开，用 `⌘L` 把整个文件（或仅一段选区）直接交给智能体，Markdown、HTML、图片与 Office 文档也都在同一面板内预览。
 
-**Git**：一个完整的客户端，而不只是状态展示 —— 提交与推送、带每条提交推送状态的历史、新建分支、合并、变基、贮藏、重置，以及与另一个分支比较。遇到冲突会打开三栏合并编辑器，逐块采纳或自己动手写。而工作树把并行开发压缩成一个动作 —— 新分支、独立目录，外加一个扎根其中的新会话，于是一队智能体可以同时开发不同功能，谁也不碰谁的文件。
+**Git**：一个完整的客户端，而不只是状态展示 —— 在「更改」标签页里直接提交（写一句话，回车即可），旁边就是拉取、抓取、推送与贮藏，历史里还标着每条提交推没推出去。新建分支、合并、变基、重置、与另一个分支比较，也能不切过去就更新或推送任意分支。遇到冲突会打开三栏合并编辑器，逐块采纳或自己动手写。而工作树把并行开发压缩成一个动作 —— 新分支、独立目录，外加一个扎根其中的新会话，于是一队智能体可以同时开发不同功能，谁也不碰谁的文件。
+
+**出问题的时候**：回合失败了不会只说一句「出错了」—— Claude Code 与 Codex 会说清是哪一类：连接问题、登录问题、额度用尽、请求被拒、服务异常 —— 并在输入框下方留一条提示，只放真正帮得上忙的按钮：重试、去登录，或者新建会话。智能体自己在重试时显示为琥珀色，回合正常结束后收敛成一行「已恢复」。输入框下面那个连接状态图标也是个按钮：点开就能看到这个会话的真实状态，还有一个会恢复而不是重开的「重新连接」。
 
 ## 📱 iPhone、iPad 与 Android
 
-离开电脑，任务也不必停下。原生 iOS 与 Android 客户端连接的就是你自己在跑的那个 Codeg —— 桌面应用的 **Web 服务**，或者你自己的 `codeg-server` —— 在手机上发起会话、看着回复与工具调用实时流回、处理权限审批、浏览项目与分支。手机上不会多出任何东西：文件、智能体 CLI 与会话仍留在运行 Codeg 的那台机器上，访问令牌则交由 iOS Keychain 或 Android Keystore 保管。两个客户端均已开源（[iOS](https://github.com/xintaofei/codeg-ios)、[Android](https://github.com/xintaofei/codeg-android)），目前处于测试阶段；三步即可完成配对，见 [移动应用](https://docs.codeg.app/zh/getting-started/installation#mobile-apps)。
+离开电脑，任务也不必停下。原生 iOS 与 Android 客户端连接的就是你自己在跑的那个 Codeg —— 桌面应用的 **Web 服务**，或者你自己的 `codeg-server` —— 在手机上发起会话、看着回复与工具调用实时流回、处理权限审批、浏览项目与分支。手机上不会多出任何东西：文件、智能体 CLI 与会话仍留在运行 Codeg 的那台机器上，访问令牌则交由 iOS Keychain 或 Android Keystore 保管。两个客户端均已开源（[iOS](https://github.com/xintaofei/codeg-ios)、[Android](https://github.com/xintaofei/codeg-android)）；三步即可完成配对，见 [移动应用](https://docs.codeg.app/zh/getting-started/installation#mobile-apps)。
 
 | iPhone 与 iPad | Android |
 | :---: | :---: |
@@ -118,16 +129,19 @@ Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · Cod
 
 - **[会话聚合](https://docs.codeg.app/zh/guide/aggregation)** — 把所有受支持智能体的会话导入统一、可搜索的工作区，并从上次中断处继续
 - **[多智能体协作](https://docs.codeg.app/zh/guide/multi-agent)** — `@` 提及任意智能体即可委派：不同类型的子智能体各自作为独立会话，在同一个任务内并行运行
+- **[待办任务](https://docs.codeg.app/zh/guide/tasks)** — 把要做的事写下来，智能体一件件做完；每个任务在自己的工作树里跑，只有你验收之后才会合进你的分支
 - **[自定义智能体](https://docs.codeg.app/zh/guide/custom-agents)** — 从公开注册表或 distribution JSON 注册任何其它兼容 ACP 的智能体；Codeg 负责安装、记录历史，并像内置智能体一样对待它
-- **[工作区](https://docs.codeg.app/zh/guide/workspace)** — 智能体旁边就是完整的工程闭环：文件树、编辑器与 diff、Git 变更、提交，以及内置终端
+- **[工作区](https://docs.codeg.app/zh/guide/workspace)** — 智能体旁边就是完整的工程闭环：文件树、编辑器与 diff、Git 变更、提交、内置终端，以及[挂进同一个工作区的多个文件夹](https://docs.codeg.app/zh/guide/workspace#work-across-several-folders)
 - **[分屏](https://docs.codeg.app/zh/guide/workspace#split-the-conversation-view-into-groups)** — 把会话区拆成任意多个标签分组，在分组之间拖动标签与分隔条，重启后布局（含草稿）原样回来
 - **[Git 与 Worktree](https://docs.codeg.app/zh/guide/git)** — 查看并提交变更、管理 Git 远程账号，用内置 `git worktree` 流程并行开发
-- **[消息渠道](https://docs.codeg.app/zh/guide/chat-channels)** — 在 Telegram、飞书、iLink（微信）里直接驱动智能体：创建任务、批准权限、实时接收进展
-- **[自动化](https://docs.codeg.app/zh/guide/automations)** — 把配置好的输入框存成可复用的自动化任务，按 cron 计划或手动触发、无界面运行
+- **[Token 用量](https://docs.codeg.app/zh/guide/token-usage)** — 状态栏计数器背后是一整份报告：趋势与缓存命中率、活跃热力图，以及按文件夹、智能体、模型与会话的分项
+- **[消息渠道](https://docs.codeg.app/zh/guide/chat-channels)** — 在 Telegram、飞书、微信里直接驱动智能体：创建任务、批准权限、实时接收进展
+- **[自动化](https://docs.codeg.app/zh/guide/automations)** — 把配置好的输入框存成可复用的自动化任务，按 cron 计划或手动触发、无界面运行——可以开一个会话，也可以留一条待办任务等你验收
 - **[Office 文档](https://docs.codeg.app/zh/guide/office)** — 通过内置 `officecli` 创建、分析、校对和编辑 `.docx` / `.xlsx` / `.pptx`，并在标签页内实时预览
 - **[科学研究](https://docs.codeg.app/zh/guide/research)** — 内置科研技能（假设生成、实验设计、统计、可视化、批判性评估、文献检索），任意智能体均可调用
 - **[项目启动器](https://docs.codeg.app/zh/guide/project-boot)** — 可视化创建新项目并实时预览，创建完直接在工作区打开
 - **[MCP](https://docs.codeg.app/zh/guide/mcp) & [技能](https://docs.codeg.app/zh/guide/skills)** — 本地服务器扫描 + 市场搜索/安装，技能支持全局与项目级管理
+- **[外观自定义](https://docs.codeg.app/zh/reference/settings/appearance)** — 十二套主题都能逐个色彩 token 重新调色、全局设定圆角大小、以 shadcn JSON 导入导出主题，或者干脆自己写 CSS
 - **[桌面端、服务器与 Docker](https://docs.codeg.app/zh/getting-started/deployment)** — 原生桌面应用、可用浏览器访问的独立 `codeg-server`，或者 `docker compose up`
 - **[iPhone、iPad 与 Android](https://docs.codeg.app/zh/getting-started/installation#mobile-apps)** — 原生移动客户端连接你的桌面端或服务器：随时随地发起会话、接收流式回复、批准权限、浏览项目
 

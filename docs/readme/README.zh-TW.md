@@ -19,7 +19,7 @@
 
 Codeg（Code Generation）是一個多智慧體編碼工作台：把所有 AI 編碼智慧體收進同一個地方 —— 並讓它們協同工作。
 
-它將所有支援的智慧體 CLI 的工作階段聚合進一個可搜尋的工作區，讓主智慧體在同一個任務內委派給其它類型的子智慧體，並可作為桌面應用、獨立伺服器或 Docker 容器執行；此外還有原生 iOS 與 Android 用戶端，讓你離開電腦後也能接手正在跑的任務。內建十二個智慧體；從 0.22 起，你還可以自行註冊任何其它相容 ACP 的智慧體。
+它將所有支援的智慧體 CLI 的工作階段聚合進一個可搜尋的工作區，讓主智慧體在同一個任務內委派給其它類型的子智慧體。不想守著做完的活，可以寫進待辦任務：每個任務待在自己的分支上無人看管地跑，做完了等你驗收才落地。Codeg 可作為桌面應用、獨立伺服器或 Docker 容器執行，還有原生 iOS 與 Android 用戶端，讓你離開電腦後也能接手正在跑的任務；內建十三個智慧體，你也可以自行註冊任何其它相容 ACP 的智慧體。
 
 ![工作區](../images/workspace-light.png#gh-light-mode-only)
 ![工作區](../images/workspace-dark.png#gh-dark-mode-only)
@@ -65,7 +65,7 @@ Codeg（Code Generation）是一個多智慧體編碼工作台：把所有 AI �
 
 ## 🤖 支援的 Agent
 
-Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · CodeBuddy · Kimi Code · Pi · Grok · Cursor
+Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · CodeBuddy · Kimi Code · Pi · Grok · Cursor · DeepSeek Harness
 
 其中大部分 Codeg 都能替你安裝、鎖定版本並更新。完整名單、各自的執行環境需求以及工作階段在磁碟上的存放位置，見 [支援的智慧體](https://docs.codeg.app/zh/guide/supported-agents)。
 
@@ -75,10 +75,19 @@ Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · Cod
 
 多智慧體協作，從此只需一個按鍵：輸入 `@`，選取智慧體，送出。剩下的排程全交給 Codeg —— 它把每個被提及的智慧體拉起為獨立工作階段，交付任務，再把工作即時匯流回你正在進行的對話。提及兩個，它們就並肩開工：Claude Code 起草，Codex 同步審查。不必來回切換脈絡，也不用在多個終端機之間複製貼上。
 
-如果智慧體自己派出了子智慧體——比如 Claude Code 的——它們的輸出會邊跑邊顯示在各自的卡片裡，而不是等結束後一次性出現。
+如果智慧體自己派出了子智慧體——Claude Code、Codex、Grok 與 OpenCode 都會——每個子智慧體都有一張邊跑邊填的卡片，而不是等結束後一次性出現。點開就能讀它自己的那個工作階段。
 
 ![在單一 Codeg 對話中將任務委派給子智慧體](../images/collaboration-light.gif#gh-light-mode-only)
 ![在單一 Codeg 對話中將任務委派給子智慧體](../images/collaboration-dark.gif#gh-dark-mode-only)
+
+## ✅ 待辦任務
+
+不是每件事都得你盯著做完。寫下來就行——標題、說明、用哪個智慧體跑——Codeg 會給它**一份獨立的程式碼副本**：專案旁邊的一個 git 工作樹，跑在自己的分支上。幾個任務同時開工也互不干擾，更不會碰你手頭那份程式碼。可以約在今晚開始，也可以讓某個資料夾自己按平行上限一件件處理下去。
+
+做完的任務不會自己合併。它會移到待驗收那一欄等著你：看 diff、退回去再做一輪，或者按通過——然後由智慧體來落地，先把基礎分支併進它的工作樹、在那裡解完衝突。之後 Codeg 不聽智慧體一面之詞，而是自己去核對 git：確認不了的合併會退回待驗收，而不是報一句成功。
+
+![待辦任務看板：任務從「待辦」經「進行中」走到「完成」](../images/task-light.png#gh-light-mode-only)
+![待辦任務看板：任務從「待辦」經「進行中」走到「完成」](../images/task-dark.png#gh-dark-mode-only)
 
 ## 🪟 分割檢視
 
@@ -98,17 +107,19 @@ Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · Cod
 
 ## 💻 工作區
 
-一個工作區，容納所有智慧體。無論正在幹活的是 Claude Code、Codex 還是 Cursor，它們都在同一個編輯器、同一套即時 diff、同一個 Git 用戶端裡工作，而產出的是你儲存庫裡真實的檔案，就在你眼前變化。
+一個工作區，容納所有智慧體。無論正在幹活的是 Claude Code、Codex 還是 Cursor，它們都在同一個編輯器、同一套即時 diff、同一個 Git 用戶端裡工作，而產出的是你儲存庫裡真實的檔案，就在你眼前變化。還可以把別的目錄掛進來——共用的函式庫、隔壁的服務、文件儲存庫——檔案樹、搜尋與智慧體本身都把它們當作同一個工作區。
 
-**工作階段**：把你已有的歷史一併接管 —— 所有已安裝智慧體的過往工作階段，一鍵匯入，並可從中斷處繼續。進來之後它們不再是彼此隔絕的孤島 —— `@` 提及一個舊工作階段，你正在對話的智慧體就能讀到它，哪怕那是另一個智慧體留下的，於是今天的 Codex 能接著上週 Claude Code 停下的地方往下做。
+**工作階段**：把你已有的歷史一併接管 —— 所有已安裝智慧體的過往工作階段，一鍵匯入，並可從中斷處繼續。進來之後它們不再是彼此隔絕的孤島 —— `@` 提及一個舊工作階段，你正在對話的智慧體就能讀到它，哪怕那是另一個智慧體留下的，於是今天的 Codex 能接著上週 Claude Code 停下的地方往下做。無論一個工作階段累積得多長，開啟時都先呈現最近幾輪，其餘的隨你往上捲再逐段補齊。
 
 **檔案**：智慧體的改動會以 diff 的形式，隨著落檔即時呈現在對話旁邊。任意檔案都能在帶語法高亮的真實編輯器裡開啟，用 `⌘L` 把整個檔案（或僅一段選取範圍）直接交給智慧體，Markdown、HTML、圖片與 Office 文件也都在同一面板內預覽。
 
-**Git**：一個完整的用戶端，而不只是狀態顯示 —— 提交與推送、帶每筆提交推送狀態的歷史、新增分支、合併、變基、貯藏、重設，以及與另一個分支比較。遇到衝突會開啟三欄合併編輯器，逐塊採納或自己動手寫。而工作樹把平行開發壓縮成一個動作 —— 新分支、獨立目錄，外加一個紮根其中的新工作階段，於是一隊智慧體可以同時開發不同功能，誰也不碰誰的檔案。
+**Git**：一個完整的用戶端，而不只是狀態顯示 —— 在「變更」分頁裡直接提交（寫一句話，按 Enter 即可），旁邊就是拉取、抓取、推送與貯藏，歷史裡還標著每筆提交推出去了沒。新增分支、合併、變基、重設、與另一個分支比較，也能不切過去就更新或推送任一分支。遇到衝突會開啟三欄合併編輯器，逐塊採納或自己動手寫。而工作樹把平行開發壓縮成一個動作 —— 新分支、獨立目錄，外加一個紮根其中的新工作階段，於是一隊智慧體可以同時開發不同功能，誰也不碰誰的檔案。
+
+**出問題的時候**：回合失敗了不會只說一句「出錯了」—— Claude Code 與 Codex 會說清是哪一類：連線問題、登入問題、額度用盡、請求被拒、服務異常 —— 並在輸入框下方留一條提示，只放真正幫得上忙的按鈕：重試、去登入，或者新建工作階段。智慧體自己在重試時顯示為琥珀色，回合正常結束後收斂成一行「已恢復」。輸入框下面那個連線狀態圖示也是個按鈕：點開就能看到這個工作階段的真實狀態，還有一個會恢復而不是重開的「重新連線」。
 
 ## 📱 iPhone、iPad 與 Android
 
-離開電腦，工作也不必停下。原生 iOS 與 Android 用戶端連接的就是你自己在跑的那個 Codeg —— 桌面應用的 **Web 服務**，或者你自己的 `codeg-server` —— 在手機上發起工作階段、看著回覆與工具呼叫即時流回、處理權限審核、瀏覽專案與分支。手機上不會多出任何東西：檔案、智慧體 CLI 與工作階段仍留在執行 Codeg 的那台機器上，存取權杖則交由 iOS Keychain 或 Android Keystore 保管。兩個用戶端皆已開源（[iOS](https://github.com/xintaofei/codeg-ios)、[Android](https://github.com/xintaofei/codeg-android)），目前處於測試階段；三個步驟即可完成配對，見 [行動應用](https://docs.codeg.app/zh/getting-started/installation#mobile-apps)。
+離開電腦，工作也不必停下。原生 iOS 與 Android 用戶端連接的就是你自己在跑的那個 Codeg —— 桌面應用的 **Web 服務**，或者你自己的 `codeg-server` —— 在手機上發起工作階段、看著回覆與工具呼叫即時流回、處理權限審核、瀏覽專案與分支。手機上不會多出任何東西：檔案、智慧體 CLI 與工作階段仍留在執行 Codeg 的那台機器上，存取權杖則交由 iOS Keychain 或 Android Keystore 保管。兩個用戶端皆已開源（[iOS](https://github.com/xintaofei/codeg-ios)、[Android](https://github.com/xintaofei/codeg-android)）；三個步驟即可完成配對，見 [行動應用](https://docs.codeg.app/zh/getting-started/installation#mobile-apps)。
 
 | iPhone 與 iPad | Android |
 | :---: | :---: |
@@ -118,16 +129,19 @@ Claude Code · Codex · Gemini · OpenClaw · OpenCode · Cline · Hermes · Cod
 
 - **[對話聚合](https://docs.codeg.app/zh/guide/aggregation)** — 把所有支援的智慧體的工作階段匯入統一、可搜尋的工作區，並從上次中斷處繼續
 - **[多智慧體協作](https://docs.codeg.app/zh/guide/multi-agent)** — `@` 提及任一智慧體即可委派：不同類型的子智慧體各自作為獨立工作階段，在同一個任務內平行執行
+- **[待辦任務](https://docs.codeg.app/zh/guide/tasks)** — 把要做的事寫下來，智慧體一件件做完；每個任務在自己的工作樹裡跑，只有你驗收之後才會併進你的分支
 - **[自訂智慧體](https://docs.codeg.app/zh/guide/custom-agents)** — 從公開註冊表或 distribution JSON 註冊任何其它相容 ACP 的智慧體；Codeg 負責安裝、記錄歷史，並像內建智慧體一樣對待它
-- **[工作區](https://docs.codeg.app/zh/guide/workspace)** — 智慧體旁邊就是完整的工程閉環：檔案樹、編輯器與 diff、Git 變更、提交，以及內建終端機
+- **[工作區](https://docs.codeg.app/zh/guide/workspace)** — 智慧體旁邊就是完整的工程閉環：檔案樹、編輯器與 diff、Git 變更、提交、內建終端機，以及[掛進同一個工作區的多個資料夾](https://docs.codeg.app/zh/guide/workspace#work-across-several-folders)
 - **[分割檢視](https://docs.codeg.app/zh/guide/workspace#split-the-conversation-view-into-groups)** — 把對話區拆成任意多個標籤分組，在分組之間拖動標籤與分隔條，重啟後版面配置（含草稿）原樣回來
 - **[Git 與 Worktree](https://docs.codeg.app/zh/guide/git)** — 檢視並提交變更、管理 Git 遠端帳號，用內建 `git worktree` 流程平行開發
-- **[訊息渠道](https://docs.codeg.app/zh/guide/chat-channels)** — 在 Telegram、飛書、iLink（微信）裡直接驅動智慧體：建立任務、核准權限、即時接收進展
-- **[自動化](https://docs.codeg.app/zh/guide/automations)** — 把設定好的輸入框存成可重複使用的自動化任務，依 cron 排程或手動觸發、無介面執行
+- **[Token 用量](https://docs.codeg.app/zh/guide/token-usage)** — 狀態列計數器背後是一整份報告：趨勢與快取命中率、活躍熱力圖，以及依資料夾、智慧體、模型與工作階段的分項
+- **[訊息渠道](https://docs.codeg.app/zh/guide/chat-channels)** — 在 Telegram、飛書、微信裡直接驅動智慧體：建立任務、核准權限、即時接收進展
+- **[自動化](https://docs.codeg.app/zh/guide/automations)** — 把設定好的輸入框存成可重複使用的自動化任務，依 cron 排程或手動觸發、無介面執行——可以開一個工作階段，也可以留一條待辦任務等你驗收
 - **[Office 文件](https://docs.codeg.app/zh/guide/office)** — 透過內建 `officecli` 建立、分析、校對與編輯 `.docx` / `.xlsx` / `.pptx`，並在分頁內即時預覽
 - **[科學研究](https://docs.codeg.app/zh/guide/research)** — 內建科研技能（假設生成、實驗設計、統計、視覺化、批判性評估、文獻檢索），任一智慧體皆可呼叫
 - **[專案啟動器](https://docs.codeg.app/zh/guide/project-boot)** — 視覺化建立新專案並即時預覽，建立完直接在工作區開啟
 - **[MCP](https://docs.codeg.app/zh/guide/mcp) & [技能](https://docs.codeg.app/zh/guide/skills)** — 本機伺服器掃描 + 市集搜尋/安裝，技能支援全域與專案層級管理
+- **[外觀自訂](https://docs.codeg.app/zh/reference/settings/appearance)** — 十二套主題都能逐個色彩 token 重新調色、全域設定圓角大小、以 shadcn JSON 匯入匯出主題，或者乾脆自己寫 CSS
 - **[桌面端、伺服器與 Docker](https://docs.codeg.app/zh/getting-started/deployment)** — 原生桌面應用、可用瀏覽器存取的獨立 `codeg-server`，或者 `docker compose up`
 - **[iPhone、iPad 與 Android](https://docs.codeg.app/zh/getting-started/installation#mobile-apps)** — 原生行動用戶端連接你的桌面端或伺服器：隨時隨地發起工作階段、接收串流回覆、核准權限、瀏覽專案
 

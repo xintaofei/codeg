@@ -626,6 +626,7 @@
       "description": "Allow active agents to delegate sub-tasks to other agents.",
       "enable": "Enable delegation",
       "enableHint": "When off, the delegate_to_agent tool is hidden from the agent's MCP catalog.",
+      "withheldByHostTools": "{agents} will not get the delegation tools: their per-agent “Let the agent handle files and commands” switch is on.",
       "depthLimit": "Maximum delegation depth",
       "depthHint": "Allowed range: {min}–{max}. Caps how deep a chain (root → child → grandchild …) can recurse.",
       "completedCacheLabel": "Completed-result cache (MB)",
@@ -683,6 +684,7 @@
       "saveKimiCodeConfig": "Save Kimi Code Config",
       "customInstall": "Custom install",
       "saveKimiCodeRawConfig": "Save config.toml",
+      "saveDeepSeekConfig": "Save DeepSeek Config",
       "diagnose": "Diagnose"
     },
     "status": {
@@ -785,6 +787,15 @@
       "modelNoMatch": "No matching model",
       "modelsNeedAuth": "Sign in to load the model list.",
       "modelDefaultBadge": "default"
+    },
+    "deepseek": {
+      "configManagement": "DeepSeek Harness Configuration",
+      "configDescription": "The endpoint and key are environment variables deepseek-acp reads at launch. Model and reasoning effort are per-session selectors — pick them in the composer.",
+      "baseUrlLabel": "API endpoint",
+      "baseUrlHint": "Leave empty for the official endpoint. Applies to sessions started after the save — reconnect a running session to pick it up.",
+      "baseUrlInvalid": "Enter a full http(s) URL with no query string, for example https://api.deepseek.com",
+      "apiKeyLabel": "API key",
+      "apiKeyHint": "Passed to the agent as DEEPSEEK_API_KEY. An environment variable outranks the credentials file, so leave this empty if you sign in through the terminal."
     },
     "codex": {
       "configDescription": "Supports quick configuration for API URL, API Key, model name and reasoning effort, and syncs with `auth.json` / `config.toml`.",
@@ -1206,6 +1217,8 @@
       "saveCodeBuddyFailed": "Failed to save CodeBuddy config",
       "kimiCodeSaved": "Kimi Code config saved",
       "saveKimiCodeFailed": "Failed to save Kimi Code config",
+      "deepseekSaved": "DeepSeek config saved",
+      "saveDeepSeekFailed": "Failed to save DeepSeek config",
       "modelProviderRequired": "Please select a model provider before saving.",
       "affectedRunningSessions": "{count, plural, one {# running session needs to reconnect to apply the change} other {# running sessions need to reconnect to apply the change}}",
       "providerConnected": "Connected {providerId}",
@@ -1416,7 +1429,6 @@
     "terminalShellNotInstalled": "not installed",
     "terminalShellNotFoundWarning": "This path doesn't exist on this host.",
     "terminalCurrentShell": "Currently using: {path}",
-    "terminalAgentShellHint": "On System default, agent command lines run through the platform shell (/bin/sh, or cmd on Windows). Picking a specific shell applies it to agents too — they emit POSIX syntax, which fish, nushell, and Windows PowerShell 5.1 (no && operator) may reject.",
     "renderingDescription": "Disable hardware acceleration if the app shows a black screen or rendering glitches (common on certain AMD GPUs or Intel integrated GPUs). Only takes effect on the Windows desktop build.",
     "disableHardwareAcceleration": "Disable hardware acceleration",
     "renderingSaveFailed": "Failed to save rendering settings: {message}",
@@ -1734,6 +1746,7 @@
     "conversationCard": {
       "untitledConversation": "Untitled conversation",
       "newConversation": "New Conversation",
+      "attachToCurrentSession": "Add to session",
       "rename": "Rename",
       "status": "Status",
       "delete": "Delete",
@@ -1820,6 +1833,16 @@
         "cacheRead": "Cache Read",
         "cacheWrite": "Cache Write",
         "total": "Total"
+      },
+      "quickActions": {
+        "title": "Quick actions",
+        "groups": {
+          "workspace": "Workspace",
+          "sessions": "Sessions",
+          "automation": "Automation & to-dos",
+          "more": "More"
+        },
+        "showPet": "Show pet"
       }
     },
     "auxPanel": {
@@ -2684,6 +2707,7 @@
         "slashCommands": "Slash commands",
         "slashSearchPlaceholder": "Search commands...",
         "slashSearchEmpty": "No matching commands",
+        "slashLoading": "Loading commands…",
         "experts": "Experts",
         "office": "Office Work",
         "research": "Scientific Research",
@@ -2834,7 +2858,8 @@
       "agentSelector": {
         "noEnabledAgents": "No enabled agents",
         "openAgentsSettings": "Open Agents settings",
-        "notInstalled": "Not installed"
+        "notInstalled": "Not installed",
+        "moreAgents": "More agents ({count})"
       },
       "subAgentOverlay": {
         "title": "Sub-agents",
@@ -3057,6 +3082,7 @@
         "agentSessionLoading": "Loading the sub-agent's transcript…",
         "agentSessionEmpty": "The sub-agent hasn't written anything yet.",
         "agentFallbackTitle": "Sub-agent starting…",
+        "agentCodexLaunchOnly": "Launched. Codex reports no further progress for this sub-agent — its result arrives as a message in this conversation.",
         "agentStatsBash": "Commands",
         "agentStatsRead": "Files read",
         "agentStatsSearch": "Searches",
@@ -3080,7 +3106,8 @@
             "blocked": "blocked",
             "usageLimited": "usage limited",
             "budgetLimited": "budget limited",
-            "complete": "complete"
+            "complete": "complete",
+            "limited": "limit reached"
           }
         },
         "field": {
@@ -3306,7 +3333,28 @@
       "contextCompaction": {
         "compacting": "Compacting context…",
         "compacted": "Context compacted",
-        "compactedTokens": "Context compacted · {before} → {after} tokens"
+        "compactedTokens": "Context compacted · {before} → {after} tokens",
+        "failed": "Context compaction failed"
+      },
+      "sessionFailure": {
+        "category": {
+          "connection": "Connection issue",
+          "access": "Access issue",
+          "limit": "Limit reached",
+          "request": "Request rejected",
+          "service": "Service issue",
+          "unknown": "Session issue"
+        },
+        "action": {
+          "retry": "Retry",
+          "login": "Sign in",
+          "newSession": "New session"
+        },
+        "recovered": "Recovered",
+        "retryUnavailable": "No previous message to resend.",
+        "toggleDetails": "Toggle details",
+        "dismiss": "Dismiss",
+        "moreIncidents": "+{count} more"
       },
       "backgroundTasks": {
         "running": "{count, plural, one {# background task running} other {# background tasks running}}",
@@ -4597,7 +4645,8 @@
     "settingsInitCommandHint": "Runs inside a freshly created worktree before the agent starts.",
     "settingsInitCommandPlaceholder": "pnpm install",
     "settingsTabGeneral": "General",
-    "settingsTabWorkflow": "Workflow",
+    "settingsTabMerge": "Merge",
+    "settingsTabWorktree": "Worktree",
     "settingsTabPrompts": "Prompts",
     "settingsPromptsIntro": "Each stage already sends a built-in prompt — the task itself, the worktree rules, and for merging the exact git steps. Text you add here is appended at the end as extra instructions: it refines those built-ins, it never replaces them.",
     "settingsPromptStageAll": "All stages",

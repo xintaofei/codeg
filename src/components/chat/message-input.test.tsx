@@ -15,7 +15,11 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { RichComposerHandle } from "./composer/rich-composer"
 import { serializeDocToText } from "./composer/to-prompt-blocks"
-import { emitAttachFileToSession } from "@/lib/session-attachment-events"
+import {
+  emitAttachFileToSession,
+  emitAttachSessionToSession,
+} from "@/lib/session-attachment-events"
+import type { DbConversationSummary } from "@/lib/types"
 
 // MessageInput holds its RichComposer handle internally and does not forward a
 // ref, so capture that handle through a partial mock that still renders the real
@@ -53,7 +57,10 @@ vi.mock("@/hooks/use-shortcut-settings", () => ({
     shortcuts: { send_message: "enter", newline_in_message: "shift+enter" },
   }),
 }))
-vi.mock("@/hooks/use-agent-skills", () => ({ useAgentSkills: () => [] }))
+// A vi.fn (not a bare arrow) so the `$` autocomplete tests can land the disk
+// scan mid-test; defaults to "no skills" for every other test in this file.
+const agentSkills = vi.hoisted(() => vi.fn(() => [] as unknown[]))
+vi.mock("@/hooks/use-agent-skills", () => ({ useAgentSkills: agentSkills }))
 vi.mock("@/hooks/use-built-in-experts", () => ({ useBuiltInExperts: () => [] }))
 vi.mock("@/hooks/use-built-in-science", () => ({ useBuiltInScience: () => [] }))
 vi.mock("@/hooks/use-enabled-skill-ids", () => ({
@@ -257,6 +264,113 @@ describe("MessageInput attach-to-chat insertion position", () => {
       expect(serializeDocToText(editor.state.doc)).toContain(link)
     )
     assertBetweenHelloAndWorld(serializeDocToText(editor.state.doc), link)
+  })
+})
+
+// The sidebar's "add to session" drops a session mention — the same reference the
+// `@` panel's Sessions group builds — into the active tab's composer.
+describe("MessageInput session-mention attach", () => {
+  afterEach(() => {
+    cleanup()
+    composerHandle.current = null
+  })
+
+  function summary(id: number, title: string | null): DbConversationSummary {
+    return {
+      id,
+      folder_id: 1,
+      title,
+      title_locked: false,
+      agent_type: "claude_code",
+      status: "pending",
+      kind: "regular",
+      model: null,
+      git_branch: null,
+      external_id: null,
+      message_count: 0,
+      child_count: 0,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      pinned_at: null,
+    }
+  }
+
+  async function mountWithEditor() {
+    renderInput({ attachmentTabId: "tab-1" })
+    await waitFor(
+      () => expect(composerHandle.current?.getEditor()).toBeTruthy(),
+      { timeout: 5000 }
+    )
+    const editor = composerHandle.current?.getEditor()
+    if (!editor) throw new Error("composer editor not mounted")
+    return editor
+  }
+
+  it("drops a session badge at the caret, not the end", async () => {
+    const editor = await mountWithEditor()
+    act(() => {
+      editor.commands.setContent("hello world")
+      editor.commands.setTextSelection(6)
+    })
+    act(() => {
+      emitAttachSessionToSession({
+        tabId: "tab-1",
+        conversation: summary(42, "Fix auth"),
+      })
+    })
+    const link = "[Fix auth](codeg://session/42)"
+    await waitFor(() =>
+      expect(serializeDocToText(editor.state.doc)).toContain(link)
+    )
+    const text = serializeDocToText(editor.state.doc)
+    const at = text.indexOf(link)
+    expect(text.slice(0, at)).toContain("hello")
+    expect(text.slice(at + link.length)).toContain("world")
+  })
+
+  it("falls back to #id for an untitled conversation", async () => {
+    const editor = await mountWithEditor()
+    act(() => {
+      emitAttachSessionToSession({
+        tabId: "tab-1",
+        conversation: summary(7, "   "),
+      })
+    })
+    await waitFor(() =>
+      expect(serializeDocToText(editor.state.doc)).toContain(
+        "[#7](codeg://session/7)"
+      )
+    )
+  })
+
+  it("ignores an event addressed to another tab", async () => {
+    const editor = await mountWithEditor()
+    act(() => {
+      emitAttachSessionToSession({
+        tabId: "other-tab",
+        conversation: summary(42, "Fix auth"),
+      })
+    })
+    expect(serializeDocToText(editor.state.doc)).not.toContain(
+      "codeg://session/42"
+    )
+  })
+
+  it("does not stack a second badge for the same session", async () => {
+    const editor = await mountWithEditor()
+    const conversation = summary(42, "Fix auth")
+    act(() => {
+      emitAttachSessionToSession({ tabId: "tab-1", conversation })
+    })
+    const link = "[Fix auth](codeg://session/42)"
+    await waitFor(() =>
+      expect(serializeDocToText(editor.state.doc)).toContain(link)
+    )
+    act(() => {
+      emitAttachSessionToSession({ tabId: "tab-1", conversation })
+    })
+    const text = serializeDocToText(editor.state.doc)
+    expect(text.indexOf(link)).toBe(text.lastIndexOf(link))
   })
 })
 
@@ -597,6 +711,176 @@ describe("MessageInput collapsed selectors popover", () => {
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: settingsLabel })).toBeNull()
     )
+  })
+})
+
+// The `/` list is the agent's own `availableCommands`, which only arrive with
+// the connection. The editor is typable throughout that wait, so a `/` typed
+// mid-connect opens the panel on a loading row instead of doing nothing.
+describe("MessageInput slash menu while the agent connects", () => {
+  afterEach(() => {
+    cleanup()
+    composerHandle.current = null
+  })
+
+  const LOADING = enMessages.Folder.chat.messageInput.slashLoading
+  const COMMANDS = [{ name: "compact", description: "Compact the thread" }]
+
+  async function mountAndType(
+    props: Partial<React.ComponentProps<typeof MessageInput>>,
+    text = "/"
+  ) {
+    const view = renderInput(props)
+    await waitFor(
+      () => expect(composerHandle.current?.getEditor()).toBeTruthy(),
+      { timeout: 5000 }
+    )
+    const editor = composerHandle.current?.getEditor()
+    if (!editor) throw new Error("composer editor not mounted")
+    act(() => {
+      editor.commands.insertContent(text)
+    })
+    return { editor, view }
+  }
+
+  function rerenderInput(
+    view: ReturnType<typeof renderInput>,
+    props: Partial<React.ComponentProps<typeof MessageInput>>
+  ) {
+    view.rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <MessageInput onSend={vi.fn()} promptCapabilities={CAPS} {...props} />
+      </NextIntlClientProvider>
+    )
+  }
+
+  it("opens the panel on a loading row while commands are still on their way", async () => {
+    await mountAndType({ commandsLoading: true, availableCommands: [] })
+    const menu = await screen.findByTestId("slash-menu")
+    expect(within(menu).getByText(LOADING)).toBeInTheDocument()
+  })
+
+  it("replaces the loading row with the commands once they land", async () => {
+    const { view } = await mountAndType({
+      commandsLoading: true,
+      availableCommands: [],
+    })
+    await screen.findByTestId("slash-menu")
+
+    // Connection completes: the same open panel fills in, no retyping.
+    rerenderInput(view, { commandsLoading: false, availableCommands: COMMANDS })
+    const menu = await screen.findByTestId("slash-menu")
+    await waitFor(() =>
+      expect(within(menu).getByText("/compact")).toBeInTheDocument()
+    )
+    expect(within(menu).queryByText(LOADING)).toBeNull()
+  })
+
+  // The wait has two legs — the transport connecting, then the session
+  // initializing behind an already-`connected` status. The panel must not blink
+  // out at the seam between them (ChatInput spans both; see its own test).
+  it("stays open across the whole wait, then fills in", async () => {
+    const { view } = await mountAndType({
+      commandsLoading: true,
+      availableCommands: [],
+    })
+    expect(
+      within(await screen.findByTestId("slash-menu")).getByText(LOADING)
+    ).toBeInTheDocument()
+
+    // Leg two: still loading, still nothing to show — panel stays put.
+    rerenderInput(view, { commandsLoading: true, availableCommands: [] })
+    expect(
+      within(await screen.findByTestId("slash-menu")).getByText(LOADING)
+    ).toBeInTheDocument()
+
+    // Commands land.
+    rerenderInput(view, { commandsLoading: false, availableCommands: COMMANDS })
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId("slash-menu")).getByText("/compact")
+      ).toBeInTheDocument()
+    )
+  })
+
+  it("closes the loading row when the session comes up with no commands", async () => {
+    const { view } = await mountAndType({
+      commandsLoading: true,
+      availableCommands: [],
+    })
+    await screen.findByTestId("slash-menu")
+
+    // A commandless agent: the wait ends, so the panel must not spin forever.
+    rerenderInput(view, { commandsLoading: false, availableCommands: [] })
+    await waitFor(() => expect(screen.queryByTestId("slash-menu")).toBeNull())
+  })
+
+  // `useAgentSkills` reports an in-flight disk scan as an empty list, so `$`
+  // must not be gated on it: a `$` typed before the scan lands has to fill in on
+  // its own rather than wait for another keystroke.
+  it("fills in a `$` panel when the Codex skill scan lands late", async () => {
+    const { view } = await mountAndType(
+      { agentType: "codex", availableCommands: COMMANDS },
+      "$"
+    )
+    // Scan still running (an in-flight scan reads as an empty list): the panel
+    // has nothing to show yet, but the trigger must stay armed.
+    expect(screen.queryByTestId("slash-menu")).toBeNull()
+
+    // Scan lands. No new keystroke — only a re-render.
+    agentSkills.mockReturnValue([
+      {
+        id: "brainstorm",
+        name: "Brainstorm",
+        description: "Ideas",
+        scope: "global",
+      },
+    ])
+    try {
+      rerenderInput(view, { agentType: "codex", availableCommands: COMMANDS })
+      const menu = await screen.findByTestId("slash-menu")
+      expect(within(menu).getByText("Brainstorm")).toBeInTheDocument()
+    } finally {
+      agentSkills.mockReturnValue([])
+    }
+  })
+
+  it("stays closed when nothing is loading and the agent has no commands", async () => {
+    await mountAndType({ commandsLoading: false, availableCommands: [] })
+    // Give the trigger detection a turn to run before asserting the absence.
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(screen.queryByTestId("slash-menu")).toBeNull()
+  })
+
+  it("does not send on Enter while the loading panel owns the keys", async () => {
+    const onSend = vi.fn()
+    const { editor } = await mountAndType({
+      onSend,
+      commandsLoading: true,
+      availableCommands: [],
+    })
+    await screen.findByTestId("slash-menu")
+    act(() => {
+      ;(editor.view.dom as HTMLElement).dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        })
+      )
+    })
+    expect(onSend).not.toHaveBeenCalled()
+    // Escape dismisses it, restoring normal editing.
+    act(() => {
+      ;(editor.view.dom as HTMLElement).dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        })
+      )
+    })
+    await waitFor(() => expect(screen.queryByTestId("slash-menu")).toBeNull())
   })
 })
 

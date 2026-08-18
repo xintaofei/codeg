@@ -202,9 +202,23 @@ pub(crate) async fn handle_event(
             else {
                 return Ok(());
             };
-            let conversation_id = state_arc.read().await.conversation_id;
+            let (conversation_id, agent_type) = {
+                let snap = state_arc.read().await;
+                (snap.conversation_id, snap.agent_type)
+            };
             if let Some(cid) = conversation_id {
-                conversation_service::update_external_id(db_conn, cid, session_id.clone()).await?;
+                // Guarded bind: the row may already be bound to a DIFFERENT
+                // session. That is legitimate for a fork (which has already
+                // inserted the sibling holding the outgoing id, so this is a
+                // plain re-point) and for a custom agent continuing its
+                // conversation under a new session (`continues`), and
+                // destructive otherwise — a session re-minted under a live
+                // binding would otherwise overwrite the id the row's whole
+                // history hangs off. See codeg#500.
+                let continues = crate::acp::continued_session_ids(agent_type, session_id);
+                let preserved =
+                    conversation_service::bind_external_id(db_conn, cid, session_id, &continues)
+                        .await?;
                 // The external_id just landed on the row. The create-time
                 // sidebar upsert carried `external_id: null` (no session yet),
                 // so re-broadcast the full summary on `conversation://changed`
@@ -212,6 +226,10 @@ pub(crate) async fn handle_event(
                 // delegation children). Best-effort, after the DB write.
                 crate::commands::conversations::emit_conversation_upsert(&emitter, db_conn, cid)
                     .await;
+                crate::commands::conversations::emit_preserved_conversation(
+                    &emitter, db_conn, preserved,
+                )
+                .await;
             }
             Ok(())
         }
@@ -1777,7 +1795,7 @@ mod tests {
         // A fork emits `SessionStarted{S2}`. If the bound conversation was
         // soft-deleted while its ACP connection stayed live (delete only
         // soft-marks the row; it never disconnects the agent), this late write
-        // must be a total no-op: `update_external_id` is guarded on
+        // must be a total no-op: `bind_external_id` is guarded on
         // `deleted_at IS NULL`, so the deleted row keeps its S1 session id and
         // its `updated_at`, and `emit_conversation_upsert` (which re-fetches via
         // `get_by_id`, itself deleted-filtered) broadcasts nothing. This locks
@@ -1792,7 +1810,7 @@ mod tests {
             conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
                 .await
                 .unwrap();
-        conversation_service::update_external_id(&db.conn, conv.id, "session-S1".into())
+        conversation_service::bind_external_id(&db.conn, conv.id, "session-S1", &[])
             .await
             .unwrap();
         conversation_service::soft_delete(&db.conn, conv.id)
@@ -2672,11 +2690,21 @@ mod tests {
         // Wait for the worker to fully drain. The TurnComplete is at the
         // tail of the queue, so observing PendingReview proves nothing
         // before it was dropped.
+        //
+        // The budget was 2s when each SessionStarted was a single UPDATE. Every
+        // id in the burst above is distinct, so under the session-binding guard
+        // each one is a re-point away from a live session and costs a
+        // transaction plus a preserving INSERT — ~200 of them here. That is
+        // pathological by construction: a real connection emits SessionStarted
+        // once (plus once per fork, which the guard short-circuits), so this
+        // cost never appears in production. The budget is widened rather than
+        // the burst weakened, because what this test exists to prove is
+        // DELIVERY of the tail event, not the speed of the arms ahead of it.
         let observed = poll_status(
             &db,
             conv.id,
             ConversationStatus::PendingReview,
-            Duration::from_secs(2),
+            Duration::from_secs(30),
         )
         .await;
 

@@ -310,6 +310,14 @@ pub enum CustomAgentError {
     UnsafeVersion(String),
     /// A platform's in-archive launch path escapes the extracted tree.
     UnsafeArchiveEntry(String),
+    /// The registry id is one of the BUILT-IN agents' registry ids, so the
+    /// definition would be permanently shadowed: `from_registry_id` resolves
+    /// built-ins first, and `all_acp_agents` would list the agent twice. This
+    /// also fails hydration of a definition that predates the id becoming a
+    /// built-in (e.g. `deepseek-acp` registered as a custom agent before the
+    /// deep integration) — the stored row stays in the database for the user
+    /// to delete, but it is never published.
+    CollidesWithBuiltin(String),
 }
 
 impl std::fmt::Display for CustomAgentError {
@@ -339,6 +347,10 @@ impl std::fmt::Display for CustomAgentError {
             CustomAgentError::UnsafeArchiveEntry(p) => write!(
                 f,
                 "binary release for {p} has a launch path that escapes the archive: it must be relative, with no '..' segment"
+            ),
+            CustomAgentError::CollidesWithBuiltin(id) => write!(
+                f,
+                "{id:?} is a built-in agent's registry id: the built-in integration already covers it, so delete this custom entry"
             ),
         }
     }
@@ -405,6 +417,21 @@ fn effective_version(def: &CustomAgentDef) -> &str {
 /// instead. `build_meta` runs the same checks by calling it first, so the two
 /// can never disagree about what is valid.
 pub fn validate(def: &CustomAgentDef) -> Result<(), CustomAgentError> {
+    // Checked BEFORE the slug validation: the registry ids ("claude-acp",
+    // "deepseek-acp", …) are a separate namespace from the built-in WIRE names
+    // `is_valid_custom_agent_id` blocks, but a few ids ("cursor") live in
+    // both — and the collision diagnosis ("the built-in covers this, delete
+    // the entry") is the actionable one wherever the two overlap. A custom
+    // definition under any built-in registry id could never be launched or
+    // listed distinctly (`from_registry_id` resolves built-ins first).
+    if crate::acp::registry::builtin_acp_agents()
+        .iter()
+        .any(|agent| crate::acp::registry::registry_id_for(*agent) == def.registry_id)
+    {
+        return Err(CustomAgentError::CollidesWithBuiltin(
+            def.registry_id.clone(),
+        ));
+    }
     if !is_valid_custom_agent_id(&def.registry_id) {
         return Err(CustomAgentError::InvalidId(def.registry_id.clone()));
     }
@@ -937,6 +964,31 @@ mod tests {
         );
         // A bare scoped package with no version must keep its name.
         assert_eq!(derive_command_name("@scope/thing"), "thing");
+    }
+
+    // A custom definition must not claim a BUILT-IN registry id: it would be
+    // shadowed by `from_registry_id`'s built-in arms and double-listed by
+    // `all_acp_agents`. This is also the hydration path that retires a
+    // pre-integration `deepseek-acp` custom entry (kept in the DB, never
+    // published) once the id became a built-in.
+    #[test]
+    fn rejects_builtin_registry_id_collisions() {
+        for id in ["deepseek-acp", "claude-acp", "cursor"] {
+            assert_eq!(
+                validate(&npx_def(id)),
+                Err(CustomAgentError::CollidesWithBuiltin(id.to_string())),
+                "{id:?} must be rejected"
+            );
+        }
+        let _guard = hydrate_guard();
+        let errors = hydrate(&[npx_def("deepseek-acp")]);
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            errors[0].1,
+            CustomAgentError::CollidesWithBuiltin(_)
+        ));
+        assert!(!is_registered("deepseek-acp"));
+        hydrate(&[]);
     }
 
     #[test]

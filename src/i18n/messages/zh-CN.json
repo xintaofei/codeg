@@ -626,6 +626,7 @@
       "description": "允许活跃的智能体把子任务委托给其他智能体。",
       "enable": "启用委托",
       "enableHint": "关闭后，delegate_to_agent 工具会从智能体的 MCP 工具清单中隐藏。",
+      "withheldByHostTools": "{agents} 不会拿到委派工具：它们单独开启了「由 Agent 自行处理文件与命令」。",
       "depthLimit": "最大委托深度",
       "depthHint": "允许范围：{min}–{max}。限制委托链（根 → 子 → 孙 …）的最大递归深度。",
       "completedCacheLabel": "已完成结果缓存（MB）",
@@ -683,6 +684,7 @@
       "saveKimiCodeConfig": "保存 Kimi Code 配置",
       "customInstall": "自定义安装",
       "saveKimiCodeRawConfig": "保存 config.toml",
+      "saveDeepSeekConfig": "保存 DeepSeek 配置",
       "diagnose": "诊断"
     },
     "status": {
@@ -785,6 +787,15 @@
       "modelNoMatch": "没有匹配的模型",
       "modelsNeedAuth": "登录后加载模型列表。",
       "modelDefaultBadge": "默认"
+    },
+    "deepseek": {
+      "configManagement": "DeepSeek Harness 配置",
+      "configDescription": "端点与密钥是 deepseek-acp 启动时读取的环境变量。模型和推理档位是会话级选择器，在输入框里切换。",
+      "baseUrlLabel": "API 端点",
+      "baseUrlHint": "留空则使用官方端点。保存后对新建的会话生效——正在进行的会话需要重新连接才会切换。",
+      "baseUrlInvalid": "请填写完整的 http(s) 地址且不带查询参数，例如 https://api.deepseek.com",
+      "apiKeyLabel": "API 密钥",
+      "apiKeyHint": "以 DEEPSEEK_API_KEY 传给智能体。环境变量的优先级高于凭据文件，因此若用终端登录，这里留空即可。"
     },
     "codex": {
       "configDescription": "支持 API URL、API Key、模型名称、Reasoning Effort 快捷配置，并与 `auth.json` / `config.toml` 双向联动。",
@@ -1206,6 +1217,8 @@
       "saveCodeBuddyFailed": "保存 CodeBuddy 配置失败",
       "kimiCodeSaved": "Kimi Code 配置已保存",
       "saveKimiCodeFailed": "保存 Kimi Code 配置失败",
+      "deepseekSaved": "DeepSeek 配置已保存",
+      "saveDeepSeekFailed": "保存 DeepSeek 配置失败",
       "modelProviderRequired": "请先选择一个模型供应商再保存。",
       "affectedRunningSessions": "{count} 个进行中的会话需重连以应用更改",
       "providerConnected": "已连接 {providerId}",
@@ -1416,7 +1429,6 @@
     "terminalShellNotInstalled": "未安装",
     "terminalShellNotFoundWarning": "当前主机上不存在此路径。",
     "terminalCurrentShell": "当前使用：{path}",
-    "terminalAgentShellHint": "保持「系统默认」时，智能体的命令行走平台 Shell（/bin/sh，Windows 上为 cmd）。指定具体 Shell 会同时作用于智能体——它们发出的是 POSIX 语法，fish、nushell 和 Windows PowerShell 5.1（不支持 && 运算符）可能无法执行。",
     "renderingDescription": "如果应用出现黑屏或渲染异常（常见于 AMD 显卡或部分 Intel 集成显卡），可关闭硬件加速。仅 Windows 桌面端生效。",
     "disableHardwareAcceleration": "禁用硬件加速",
     "renderingSaveFailed": "渲染设置保存失败：{message}",
@@ -1734,6 +1746,7 @@
     "conversationCard": {
       "untitledConversation": "未命名会话",
       "newConversation": "新建会话",
+      "attachToCurrentSession": "添加到会话",
       "rename": "重命名",
       "status": "状态",
       "delete": "删除",
@@ -1820,6 +1833,16 @@
         "cacheRead": "缓存读取",
         "cacheWrite": "缓存写入",
         "total": "总计"
+      },
+      "quickActions": {
+        "title": "快捷操作",
+        "groups": {
+          "workspace": "工作区",
+          "sessions": "会话",
+          "automation": "自动化与待办",
+          "more": "更多"
+        },
+        "showPet": "显示宠物"
       }
     },
     "auxPanel": {
@@ -2684,6 +2707,7 @@
         "slashCommands": "斜杠命令",
         "slashSearchPlaceholder": "搜索命令...",
         "slashSearchEmpty": "没有匹配的命令",
+        "slashLoading": "正在加载命令…",
         "experts": "专家",
         "office": "日常办公",
         "research": "科学研究",
@@ -2834,7 +2858,8 @@
       "agentSelector": {
         "noEnabledAgents": "暂无已启用的 Agent",
         "openAgentsSettings": "打开 Agents 设置",
-        "notInstalled": "未安装"
+        "notInstalled": "未安装",
+        "moreAgents": "更多 Agent（{count}）"
       },
       "subAgentOverlay": {
         "title": "子智能体",
@@ -3057,6 +3082,7 @@
         "agentSessionLoading": "正在加载子智能体的会话记录…",
         "agentSessionEmpty": "子智能体还没有写入任何内容。",
         "agentFallbackTitle": "子智能体启动中…",
+        "agentCodexLaunchOnly": "已启动。Codex 不会再报告这个子智能体的进展——它的结果会作为一条消息出现在本会话中。",
         "agentStatsBash": "命令",
         "agentStatsRead": "读取文件",
         "agentStatsSearch": "搜索",
@@ -3080,7 +3106,8 @@
             "blocked": "受阻",
             "usageLimited": "用量受限",
             "budgetLimited": "预算受限",
-            "complete": "已完成"
+            "complete": "已完成",
+            "limited": "已达上限"
           }
         },
         "field": {
@@ -3306,7 +3333,28 @@
       "contextCompaction": {
         "compacting": "正在压缩上下文…",
         "compacted": "上下文已压缩",
-        "compactedTokens": "上下文已压缩 · {before} → {after} tokens"
+        "compactedTokens": "上下文已压缩 · {before} → {after} tokens",
+        "failed": "上下文压缩失败"
+      },
+      "sessionFailure": {
+        "category": {
+          "connection": "连接异常",
+          "access": "访问受限",
+          "limit": "已达限制",
+          "request": "请求被拒绝",
+          "service": "服务异常",
+          "unknown": "会话异常"
+        },
+        "action": {
+          "retry": "重试",
+          "login": "去登录",
+          "newSession": "新建会话"
+        },
+        "recovered": "已恢复",
+        "retryUnavailable": "没有可重发的消息。",
+        "toggleDetails": "展开/收起详情",
+        "dismiss": "忽略",
+        "moreIncidents": "另 {count} 条"
       },
       "backgroundTasks": {
         "running": "{count} 个后台任务运行中",
@@ -4597,7 +4645,8 @@
     "settingsInitCommandHint": "新建 worktree 后、会话开始前执行。",
     "settingsInitCommandPlaceholder": "pnpm install",
     "settingsTabGeneral": "常规",
-    "settingsTabWorkflow": "流程",
+    "settingsTabMerge": "合并",
+    "settingsTabWorktree": "Worktree",
     "settingsTabPrompts": "提示词",
     "settingsPromptsIntro": "每个阶段都已内置固定的提示词——任务本身、worktree 规则，合并阶段还包含具体的 git 步骤。这里填的内容会作为补充说明追加到末尾：只是对内置提示词的细化，不会替换它们。",
     "settingsPromptStageAll": "全部阶段",

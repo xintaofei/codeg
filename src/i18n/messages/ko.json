@@ -626,6 +626,7 @@
       "description": "활성 에이전트가 하위 작업을 다른 에이전트에게 위임할 수 있도록 합니다.",
       "enable": "위임 사용",
       "enableHint": "끄면 delegate_to_agent 도구가 에이전트의 MCP 도구 목록에서 숨겨집니다.",
+      "withheldByHostTools": "{agents}에는 위임 도구가 제공되지 않습니다. 해당 에이전트의 “파일과 명령을 에이전트가 직접 처리” 스위치가 켜져 있습니다.",
       "depthLimit": "최대 위임 깊이",
       "depthHint": "허용 범위: {min}–{max}. 위임 체인(루트 → 하위 → 손자 …)의 재귀 깊이를 제한합니다.",
       "completedCacheLabel": "완료 결과 캐시(MB)",
@@ -683,6 +684,7 @@
       "saveKimiCodeConfig": "Kimi Code 구성 저장",
       "customInstall": "사용자 지정 설치",
       "saveKimiCodeRawConfig": "Save config.toml",
+      "saveDeepSeekConfig": "DeepSeek 구성 저장",
       "diagnose": "진단"
     },
     "status": {
@@ -785,6 +787,15 @@
       "modelNoMatch": "일치하는 모델 없음",
       "modelsNeedAuth": "로그인하면 모델 목록을 불러옵니다.",
       "modelDefaultBadge": "기본값"
+    },
+    "deepseek": {
+      "configManagement": "DeepSeek Harness 구성",
+      "configDescription": "엔드포인트와 API 키는 deepseek-acp가 시작할 때 읽는 환경 변수입니다. 모델과 추론 강도는 세션별 선택기이므로 입력창에서 바꿉니다.",
+      "baseUrlLabel": "API 엔드포인트",
+      "baseUrlHint": "비워 두면 공식 엔드포인트를 사용합니다. 저장 후 시작하는 세션부터 적용되며, 실행 중인 세션은 다시 연결해야 반영됩니다.",
+      "baseUrlInvalid": "쿼리 문자열이 없는 완전한 http(s) URL을 입력하세요. 예: https://api.deepseek.com",
+      "apiKeyLabel": "API 키",
+      "apiKeyHint": "DEEPSEEK_API_KEY로 에이전트에 전달됩니다. 환경 변수가 자격 증명 파일보다 우선하므로 터미널로 로그인한다면 비워 두세요."
     },
     "codex": {
       "configDescription": "API URL, API Key, 모델 이름, reasoning effort를 빠르게 설정하고 `auth.json` / `config.toml`과 동기화합니다.",
@@ -1206,6 +1217,8 @@
       "saveCodeBuddyFailed": "CodeBuddy 구성 저장에 실패했습니다",
       "kimiCodeSaved": "Kimi Code 구성이 저장되었습니다",
       "saveKimiCodeFailed": "Kimi Code 구성 저장 실패",
+      "deepseekSaved": "DeepSeek 구성을 저장했습니다",
+      "saveDeepSeekFailed": "DeepSeek 구성 저장 실패",
       "modelProviderRequired": "저장하기 전에 모델 공급자를 선택하세요.",
       "affectedRunningSessions": "{count}개의 실행 중인 세션은 다시 연결하면 변경 사항이 적용됩니다",
       "providerConnected": "{providerId} 연결됨",
@@ -1416,7 +1429,6 @@
     "terminalShellNotInstalled": "설치되지 않음",
     "terminalShellNotFoundWarning": "이 경로는 현재 호스트에 존재하지 않습니다.",
     "terminalCurrentShell": "현재 사용 중: {path}",
-    "terminalAgentShellHint": "'시스템 기본값'으로 두면 에이전트의 명령줄은 플랫폼 셸(/bin/sh, Windows에서는 cmd)에서 실행됩니다. 특정 셸을 선택하면 에이전트에도 적용됩니다. 에이전트는 POSIX 구문을 보내므로 fish, nushell, Windows PowerShell 5.1(&& 연산자 없음)에서는 거부될 수 있습니다.",
     "renderingDescription": "앱이 검은 화면이 되거나 렌더링 문제가 발생하면(일부 AMD GPU 또는 Intel 내장 GPU에서 보고됨) 하드웨어 가속을 끄세요. Windows 데스크톱에서만 적용됩니다.",
     "disableHardwareAcceleration": "하드웨어 가속 비활성화",
     "renderingSaveFailed": "렌더링 설정 저장 실패: {message}",
@@ -1734,6 +1746,7 @@
     "conversationCard": {
       "untitledConversation": "제목 없는 대화",
       "newConversation": "새 대화",
+      "attachToCurrentSession": "세션에 추가",
       "rename": "이름 변경",
       "status": "상태",
       "delete": "삭제",
@@ -1820,6 +1833,16 @@
         "cacheRead": "캐시 읽기",
         "cacheWrite": "캐시 쓰기",
         "total": "합계"
+      },
+      "quickActions": {
+        "title": "빠른 작업",
+        "groups": {
+          "workspace": "워크스페이스",
+          "sessions": "세션",
+          "automation": "자동화 및 할 일",
+          "more": "기타"
+        },
+        "showPet": "펫 표시"
       }
     },
     "auxPanel": {
@@ -2682,6 +2705,7 @@
         "slashCommands": "슬래시 명령",
         "slashSearchPlaceholder": "명령 검색...",
         "slashSearchEmpty": "일치하는 명령이 없습니다",
+        "slashLoading": "명령을 불러오는 중…",
         "experts": "전문가",
         "office": "일상 업무",
         "research": "과학 연구",
@@ -2834,7 +2858,8 @@
       "agentSelector": {
         "noEnabledAgents": "활성화된 에이전트가 없습니다",
         "openAgentsSettings": "에이전트 설정 열기",
-        "notInstalled": "설치되지 않음"
+        "notInstalled": "설치되지 않음",
+        "moreAgents": "에이전트 더 보기 ({count})"
       },
       "subAgentOverlay": {
         "title": "서브 에이전트",
@@ -3057,6 +3082,7 @@
         "agentSessionLoading": "하위 에이전트의 기록을 불러오는 중…",
         "agentSessionEmpty": "하위 에이전트가 아직 아무것도 기록하지 않았습니다.",
         "agentFallbackTitle": "서브 에이전트 시작 중…",
+        "agentCodexLaunchOnly": "시작되었습니다. Codex는 이 하위 에이전트의 진행 상황을 더 이상 알리지 않으며, 결과는 이 대화의 메시지로 도착합니다.",
         "agentStatsBash": "명령",
         "agentStatsRead": "파일 읽기",
         "agentStatsSearch": "검색",
@@ -3080,7 +3106,8 @@
             "blocked": "차단됨",
             "usageLimited": "사용량 제한",
             "budgetLimited": "예산 제한",
-            "complete": "완료"
+            "complete": "완료",
+            "limited": "한도 도달"
           }
         },
         "field": {
@@ -3306,7 +3333,28 @@
       "contextCompaction": {
         "compacting": "컨텍스트 압축 중…",
         "compacted": "컨텍스트 압축 완료",
-        "compactedTokens": "컨텍스트 압축 완료 · {before} → {after} 토큰"
+        "compactedTokens": "컨텍스트 압축 완료 · {before} → {after} 토큰",
+        "failed": "컨텍스트 압축 실패"
+      },
+      "sessionFailure": {
+        "category": {
+          "connection": "연결 문제",
+          "access": "액세스 문제",
+          "limit": "한도 도달",
+          "request": "요청 거부됨",
+          "service": "서비스 문제",
+          "unknown": "세션 문제"
+        },
+        "action": {
+          "retry": "다시 시도",
+          "login": "로그인",
+          "newSession": "새 세션"
+        },
+        "recovered": "복구됨",
+        "retryUnavailable": "다시 보낼 메시지가 없습니다.",
+        "toggleDetails": "세부 정보 전환",
+        "dismiss": "닫기",
+        "moreIncidents": "외 {count}건"
       },
       "backgroundTasks": {
         "running": "백그라운드 작업 {count}개 실행 중",
@@ -4597,7 +4645,8 @@
     "settingsInitCommandHint": "워크트리를 새로 만든 뒤 에이전트 시작 전에 실행됩니다.",
     "settingsInitCommandPlaceholder": "pnpm install",
     "settingsTabGeneral": "일반",
-    "settingsTabWorkflow": "워크플로",
+    "settingsTabMerge": "병합",
+    "settingsTabWorktree": "워크트리",
     "settingsTabPrompts": "프롬프트",
     "settingsPromptsIntro": "각 단계에는 이미 기본 프롬프트가 들어 있습니다 — 작업 내용, 워크트리 규칙, 머지 단계의 구체적인 git 절차. 여기에 적은 내용은 추가 지시로 맨 뒤에 덧붙으며, 기본 프롬프트를 보완할 뿐 대체하지 않습니다.",
     "settingsPromptStageAll": "전체 단계",

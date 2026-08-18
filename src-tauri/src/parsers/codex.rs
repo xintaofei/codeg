@@ -42,6 +42,43 @@ impl CodexParser {
         Self { base_dir }
     }
 
+    /// Load Codex's append-only session title index. The transcript remains the
+    /// fallback source, so a missing/unreadable index or a malformed line is
+    /// deliberately ignored. Later non-empty records for the same session win.
+    pub(crate) fn load_thread_name_index(&self) -> HashMap<String, String> {
+        let mut titles = HashMap::new();
+        let Some(home_dir) = self.base_dir.parent() else {
+            return titles;
+        };
+        let Ok(file) = fs::File::open(home_dir.join("session_index.jsonl")) else {
+            return titles;
+        };
+
+        for line in BufReader::new(file).lines() {
+            let line = match line {
+                Ok(line) => line,
+                Err(_) => break,
+            };
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            let session_id = value.get("id").and_then(serde_json::Value::as_str);
+            let thread_name = value
+                .get("thread_name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty());
+            if let (Some(id), Some(name)) = (session_id, thread_name) {
+                titles.insert(id.to_string(), truncate_str(name, 100));
+            }
+        }
+
+        titles
+    }
+
     fn parse_jsonl_summary(
         &self,
         path: &PathBuf,
@@ -292,6 +329,10 @@ impl AgentParser for CodexParser {
             return Ok(conversations);
         }
 
+        // Apply this outside `summary_cache`: changing only session_index.jsonl
+        // must refresh a title even when the rollout itself is unchanged.
+        let indexed_titles = self.load_thread_name_index();
+
         for entry in WalkDir::new(&self.base_dir)
             .into_iter()
             .filter_map(|e| e.ok())
@@ -308,7 +349,12 @@ impl AgentParser for CodexParser {
             match super::summary_cache::get_or_parse(AgentType::Codex, &path, || {
                 self.parse_jsonl_summary(&path)
             }) {
-                Ok(Some(summary)) => conversations.push(summary),
+                Ok(Some(mut summary)) => {
+                    if let Some(title) = indexed_titles.get(&summary.id) {
+                        summary.title = Some(title.clone());
+                    }
+                    conversations.push(summary);
+                }
                 _ => continue,
             }
         }
@@ -335,7 +381,11 @@ impl AgentParser for CodexParser {
             }
             let fname = path.file_name().unwrap_or_default().to_string_lossy();
             if fname.contains(conversation_id) {
-                return self.parse_conversation_detail(&path, conversation_id);
+                let mut detail = self.parse_conversation_detail(&path, conversation_id)?;
+                if let Some(title) = self.load_thread_name_index().get(conversation_id) {
+                    detail.summary.title = Some(title.clone());
+                }
+                return Ok(detail);
             }
         }
 
@@ -1533,6 +1583,100 @@ fn is_error_collab_status(status: &str) -> bool {
     matches!(status, "errored" | "failed" | "notFound")
 }
 
+/// Prefix of codex's encrypted payload envelope — a Fernet token, whose version
+/// byte `0x80` always base64s to `gA`. codex uses it for `reasoning`'s
+/// `encrypted_content` and, since 0.147, for the inter-agent `message` a
+/// `spawn_agent` / `send_message` carries.
+const CODEX_ENCRYPTED_PREFIX: &str = "gAAAAA";
+
+/// Shortest blob worth treating as an envelope: the token's own header (version
+/// byte + 8-byte timestamp + 16-byte IV + HMAC) is already well past this, so
+/// the bound only rules out a short string that merely starts the same way.
+const CODEX_ENCRYPTED_MIN_LEN: usize = 64;
+
+/// Whether a payload is one of codex's opaque encrypted envelopes rather than
+/// text a human wrote.
+///
+/// codex 0.147 encrypts every inter-agent message: what reaches the rollout for
+/// a `spawn_agent` is `"gAAAAABqgWsi0g7g…"`, ~500 characters of base64 that only
+/// codex can open. Rendering it verbatim is what put a wall of base64 in the
+/// sub-agent capsule's title and prompt. There is no plaintext to recover — the
+/// capsule simply shows no prompt.
+///
+/// Deliberately narrow: the exact prefix AND no whitespace AND long enough. A
+/// prompt that merely *contains* base64, or discusses one, still renders.
+fn is_encrypted_envelope(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.starts_with(CODEX_ENCRYPTED_PREFIX)
+        && trimmed.len() >= CODEX_ENCRYPTED_MIN_LEN
+        && !trimmed.chars().any(char::is_whitespace)
+}
+
+/// What an encrypted envelope renders as inside a tool card's argument preview.
+const CODEX_ENCRYPTED_PLACEHOLDER: &str = "[encrypted]";
+
+/// Synthetic input key marking a sub-agent capsule as ONLY a launch — the card
+/// settles when codex acknowledges the spawn, not when the child finishes (see
+/// the frontend `agent-tool-call.tsx`, which turns it into a translated note).
+///
+/// Only codex 0.147's native team-of-agents needs it. In the older collab flow
+/// the spawn capsule really did stand for the sub-agent's run, because a
+/// `wait_agent` / `close_agent` capsule carried its result; 0.147 emits neither,
+/// so an unmarked "completed" would claim a still-running child had finished.
+///
+/// Public because the LIVE path writes the same key
+/// (`acp/connection.rs::classify_codex_subagent_activity`) — streaming and
+/// reload must not disagree about what the card means.
+pub const CODEX_SUBAGENT_LAUNCH_KEY: &str = "__codegCodexSubagentLaunch";
+
+/// Whether a `spawn_agent`'s arguments are codex 0.147's native team-of-agents
+/// shape: `task_name` and no `agent_type` (which that release removed).
+fn is_native_team_spawn(args: Option<&serde_json::Value>) -> bool {
+    args.is_some_and(|a| a.get("agent_type").is_none() && a.get("task_name").is_some())
+}
+
+/// Replace every encrypted envelope inside a parsed argument tree with
+/// [`CODEX_ENCRYPTED_PLACEHOLDER`], returning whether anything was replaced.
+///
+/// `spawn_agent` is not the only carrier: `send_message` (the collaboration call
+/// a parent uses to talk to a running sub-agent, and a sub-agent to answer)
+/// takes the same sealed `message`, and it has no capsule of its own — it lands
+/// on the generic tool card, whose preview is the whole argument JSON. Without
+/// this, that card shows ~500 characters of base64. Nothing is lost by
+/// replacing it: only codex can open the envelope.
+///
+/// Recurses so a nested payload is caught too, and reports whether it changed
+/// anything so the caller can leave every other tool's preview byte-identical.
+fn redact_encrypted_args(value: &mut serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(s) => {
+            if is_encrypted_envelope(s) {
+                *s = CODEX_ENCRYPTED_PLACEHOLDER.to_string();
+                return true;
+            }
+            false
+        }
+        serde_json::Value::Array(items) => redact_encrypted_children(items.iter_mut()),
+        serde_json::Value::Object(map) => redact_encrypted_children(map.values_mut()),
+        _ => false,
+    }
+}
+
+/// Redact every child of a container and report whether any of them changed.
+///
+/// Deliberately a loop and not `Iterator::any`: the return value is a
+/// by-product, the traversal is the point, and `any` short-circuits — it would
+/// leave every envelope after the first one unredacted.
+fn redact_encrypted_children<'a>(
+    children: impl Iterator<Item = &'a mut serde_json::Value>,
+) -> bool {
+    let mut changed = false;
+    for child in children {
+        changed |= redact_encrypted_args(child);
+    }
+    changed
+}
+
 /// Add `agent_id` to a spawn execution capsule's input JSON (the
 /// `{subagent_type,prompt,description}` object), so the card can show the
 /// sub-agent UUID. Tolerates a missing/!object input by starting fresh.
@@ -1574,6 +1718,35 @@ fn extract_wait_agent_status(value: &serde_json::Value) -> (String, Option<Strin
 /// routes through the same `CollabAgentCard` as the live `wait` capsule (matches
 /// the shape `collab-tool.ts` `parseCollabToolInput` expects). Caller guarantees
 /// `status` is non-empty.
+/// Build the history capsule for codex 0.147's `wait_agent`, whose output is
+/// `{"message":"Wait completed.","timed_out":false}` — no per-agent map at all.
+///
+/// It stays worth showing even though it carries nothing: with the native
+/// team-of-agents the spawn capsule settles the instant codex acknowledges the
+/// launch, so this wait is the ONLY thing in the timeline that spans the child's
+/// actual run. Live already renders it (codex-acp forwards the wait as a
+/// `collabAgentToolCall`, unlike the spawn), and the reload must agree — a
+/// contentless capsule live and nothing at all on reload is the disagreement
+/// this exists to remove. Both sides come out as a bare pill: no agents, no
+/// prompt, so `AgentCapsule` renders no body.
+///
+/// The legacy shape is NOT routed here — it carries per-agent results, and a
+/// content-free one there means "timed out with nothing to report", which is
+/// noise the caller still drops. `timed_out` (a real bool) is the shape gate:
+/// only the native-team output has it, and a timeout is a real outcome, so it
+/// flags the capsule as failed.
+fn native_team_wait_input(output: &serde_json::Value) -> Option<(String, bool)> {
+    let timed_out = output.get("timed_out")?.as_bool()?;
+    let input = serde_json::json!({
+        "senderThreadId": "",
+        "receiverThreadIds": [],
+        "agentsStates": {},
+        "status": if timed_out { "failed" } else { "completed" },
+        COLLAB_OP_KEY: "wait",
+    });
+    Some((input.to_string(), timed_out))
+}
+
 fn build_collab_wait_input(status: &serde_json::Map<String, serde_json::Value>) -> (String, bool) {
     let mut receiver_ids: Vec<serde_json::Value> = Vec::new();
     let mut agents_states = serde_json::Map::new();
@@ -1600,6 +1773,29 @@ fn build_collab_wait_input(status: &serde_json::Map<String, serde_json::Value>) 
         COLLAB_OP_KEY: "wait",
     });
     (input.to_string(), any_error)
+}
+
+/// Whether a transcript's opening record declares it a forked thread
+/// (`session_meta.parent_thread_id`) — codex 0.147's sub-agent shape, where the
+/// child is a rollout of its own and `fork_turns` copies the parent's history
+/// into its head.
+///
+/// That copy is the problem: the parent's own tool calls sit at the top of the
+/// child's file, indistinguishable at the record level from the child's, so
+/// counting the whole file would credit the child with work the PARENT did. The
+/// hand-off that separates them (the addressed inter-agent `agent_message`) is
+/// not a reliable boundary either — a parent that already collected an earlier
+/// sibling's reply carries one inside the forked prefix too.
+///
+/// So a forked thread yields no stats at all rather than wrong ones. The capsule
+/// still names the sub-agent and badges its thread id (both come from the
+/// PARENT's rollout); only the nested tool-call list is absent. The legacy
+/// `agent-<id>.jsonl` shape has no such prefix and is unaffected.
+fn is_forked_thread_header(value: &serde_json::Value) -> bool {
+    value.get("type").and_then(|t| t.as_str()) == Some("session_meta")
+        && value
+            .pointer("/payload/parent_thread_id")
+            .is_some_and(|v| v.as_str().is_some_and(|s| !s.is_empty()))
 }
 
 fn parse_codex_subagent_stats(
@@ -1651,6 +1847,7 @@ fn parse_codex_subagent_stats(
     let mut pending_calls: HashMap<String, Vec<AgentToolCall>> = HashMap::new();
     let mut first_ts: Option<DateTime<Utc>> = None;
     let mut last_ts: Option<DateTime<Utc>> = None;
+    let mut checked_header = false;
 
     for line in reader.lines().map_while(Result::ok) {
         if line.trim().is_empty() {
@@ -1660,6 +1857,16 @@ fn parse_codex_subagent_stats(
             Ok(v) => v,
             Err(_) => continue,
         };
+
+        // The header decides whether this file can be counted at all — see
+        // `is_forked_thread_header`. Checked on the first record that parses,
+        // and never again.
+        if !checked_header {
+            checked_header = true;
+            if is_forked_thread_header(&value) {
+                return None;
+            }
+        }
 
         if let Some(ts) = parse_codex_timestamp(&value) {
             if first_ts.is_none() {
@@ -2060,6 +2267,27 @@ impl CodexParser {
                         }
 
                         match payload_type {
+                            // codex 0.147 stopped returning the sub-agent's id
+                            // from `spawn_agent` (its output is just
+                            // `{"task_name":"/root/pnpm_build"}`). This event is
+                            // now the only place the parent's rollout names the
+                            // child thread, and it correlates back by carrying
+                            // the spawn's own `call_id` as `event_id`.
+                            "sub_agent_activity" => {
+                                let call_id = payload
+                                    .get("event_id")
+                                    .and_then(|v| v.as_str())
+                                    .filter(|id| spawn_agent_call_ids.contains(*id));
+                                let thread_id = payload
+                                    .get("agent_thread_id")
+                                    .and_then(|v| v.as_str())
+                                    .filter(|id| !id.is_empty());
+                                if let (Some(call_id), Some(thread_id)) = (call_id, thread_id) {
+                                    agent_id_to_spawn_call_id
+                                        .entry(thread_id.to_string())
+                                        .or_insert_with(|| call_id.to_string());
+                                }
+                            }
                             "task_started" => {
                                 if context_window_max_tokens.is_none() {
                                     context_window_max_tokens = payload
@@ -2564,15 +2792,28 @@ impl CodexParser {
                                     }
                                     "spawn_agent" => {
                                         let args = parse_codex_json_arg(payload);
+                                        // codex 0.147's team-of-agents renamed the
+                                        // label: the old `agent_type` became
+                                        // `task_name` (`pnpm_build`). Reading only
+                                        // the old key left every capsule titled
+                                        // "agent".
                                         let agent_type = args
                                             .as_ref()
-                                            .and_then(|a| a.get("agent_type"))
+                                            .and_then(|a| {
+                                                a.get("agent_type").or_else(|| a.get("task_name"))
+                                            })
                                             .and_then(|v| v.as_str())
+                                            .filter(|s| !s.trim().is_empty())
                                             .unwrap_or("agent");
+                                        // Same release made the hand-off message an
+                                        // encrypted envelope; rendering it verbatim
+                                        // filled the capsule's title and prompt with
+                                        // a wall of base64 (see `is_encrypted_envelope`).
                                         let message = args
                                             .as_ref()
                                             .and_then(|a| a.get("message"))
                                             .and_then(|v| v.as_str())
+                                            .filter(|m| !is_encrypted_envelope(m))
                                             .unwrap_or("");
                                         let description =
                                             truncate_str(message.lines().next().unwrap_or(""), 60);
@@ -2582,11 +2823,26 @@ impl CodexParser {
                                         }
                                         active_agent_count += 1;
 
-                                        let agent_input = serde_json::json!({
+                                        let mut agent_input = serde_json::json!({
                                             "subagent_type": agent_type,
                                             "prompt": message,
                                             "description": description,
                                         });
+                                        // The 0.147 shape (`task_name`, no
+                                        // `agent_type`) is the one where this
+                                        // capsule is ONLY a launch: there is no
+                                        // wait/close capsule to carry the result,
+                                        // so the card must not read as "the
+                                        // sub-agent finished". Legacy spawns keep
+                                        // their old meaning and no marker.
+                                        if is_native_team_spawn(args.as_ref()) {
+                                            if let Some(obj) = agent_input.as_object_mut() {
+                                                obj.insert(
+                                                    CODEX_SUBAGENT_LAUNCH_KEY.to_string(),
+                                                    serde_json::Value::Bool(true),
+                                                );
+                                            }
+                                        }
 
                                         messages.push(UnifiedMessage {
                                             id: format!("tool-{}", messages.len()),
@@ -2673,6 +2929,17 @@ impl CodexParser {
                                                 .insert(id.clone(), raw_tool_name.to_string());
                                         }
                                         let raw_args = || {
+                                            // `send_message` and friends carry a
+                                            // sealed inter-agent `message`; show a
+                                            // marker instead of half a kilobyte of
+                                            // base64 (see `redact_encrypted_args`).
+                                            // Every other tool takes the original
+                                            // path and renders byte-identically.
+                                            if let Some(mut args) = parse_codex_json_arg(payload) {
+                                                if redact_encrypted_args(&mut args) {
+                                                    return value_to_preview(Some(&args));
+                                                }
+                                            }
                                             value_to_preview(
                                                 payload
                                                     .get("arguments")
@@ -2865,65 +3132,66 @@ impl CodexParser {
                                     });
                                 } else if is_wait {
                                     // Emit one `collab_agent` capsule per wait,
-                                    // built from THIS wait's own returned agents
-                                    // (`output.status`). Routes through the same
-                                    // CollabAgentCard as the live wait capsule.
-                                    if let Some(output_obj) = parse_codex_json_output(payload) {
-                                        if let Some(status) =
-                                            output_obj.get("status").and_then(|s| s.as_object())
+                                    // routed through the same CollabAgentCard as
+                                    // the live wait capsule. Two output shapes —
+                                    // see `native_team_wait_input`.
+                                    let capsule = parse_codex_json_output(payload).and_then(
+                                        |output_obj| match output_obj
+                                            .get("status")
+                                            .and_then(|s| s.as_object())
                                         {
-                                            // Mark returned agents so the spawn
-                                            // capsule won't also show their result,
-                                            // and record per-agent error state so
-                                            // the execution capsule can render
-                                            // failed (live parity).
-                                            for (agent_id, value) in status {
-                                                agent_waited.insert(agent_id.clone());
-                                                let (st, _) = extract_wait_agent_status(value);
-                                                if is_error_collab_status(&st) {
-                                                    agent_errored.insert(agent_id.clone());
+                                            Some(status) => {
+                                                // Mark returned agents so the spawn
+                                                // capsule won't also show their
+                                                // result, and record per-agent error
+                                                // state so the execution capsule can
+                                                // render failed (live parity).
+                                                for (agent_id, value) in status {
+                                                    agent_waited.insert(agent_id.clone());
+                                                    let (st, _) = extract_wait_agent_status(value);
+                                                    if is_error_collab_status(&st) {
+                                                        agent_errored.insert(agent_id.clone());
+                                                    }
                                                 }
+                                                (!status.is_empty())
+                                                    .then(|| build_collab_wait_input(status))
                                             }
-                                            if !status.is_empty() {
-                                                let (collab_input, is_error) =
-                                                    build_collab_wait_input(status);
-                                                messages.push(UnifiedMessage {
-                                                    id: format!("tool-{}", messages.len()),
-                                                    role: MessageRole::Assistant,
-                                                    content: vec![ContentBlock::ToolUse {
-                                                        tool_use_id: tool_use_id.clone(),
-                                                        tool_name: "collab_agent".to_string(),
-                                                        input_preview: Some(collab_input),
-                                                        status: None,
-                                                        meta: None,
-                                                    }],
-                                                    timestamp,
-                                                    usage: None,
-                                                    duration_ms: None,
-                                                    model: None,
-                                                    completed_at: Some(timestamp),
-                                                });
-                                                messages.push(UnifiedMessage {
-                                                    id: format!(
-                                                        "tool-result-{}",
-                                                        messages.len()
-                                                    ),
-                                                    role: MessageRole::Tool,
-                                                    content: vec![ContentBlock::ToolResult {
-                                                        tool_use_id,
-                                                        output_preview: None,
-                                                        is_error,
-                                                        agent_stats: None,
-                                                        images: Vec::new(),
-                                                    }],
-                                                    timestamp,
-                                                    usage: None,
-                                                    duration_ms: None,
-                                                    model: None,
-                                                    completed_at: Some(timestamp),
-                                                });
-                                            }
-                                        }
+                                            None => native_team_wait_input(&output_obj),
+                                        },
+                                    );
+                                    if let Some((collab_input, is_error)) = capsule {
+                                        messages.push(UnifiedMessage {
+                                            id: format!("tool-{}", messages.len()),
+                                            role: MessageRole::Assistant,
+                                            content: vec![ContentBlock::ToolUse {
+                                                tool_use_id: tool_use_id.clone(),
+                                                tool_name: "collab_agent".to_string(),
+                                                input_preview: Some(collab_input),
+                                                status: None,
+                                                meta: None,
+                                            }],
+                                            timestamp,
+                                            usage: None,
+                                            duration_ms: None,
+                                            model: None,
+                                            completed_at: Some(timestamp),
+                                        });
+                                        messages.push(UnifiedMessage {
+                                            id: format!("tool-result-{}", messages.len()),
+                                            role: MessageRole::Tool,
+                                            content: vec![ContentBlock::ToolResult {
+                                                tool_use_id,
+                                                output_preview: None,
+                                                is_error,
+                                                agent_stats: None,
+                                                images: Vec::new(),
+                                            }],
+                                            timestamp,
+                                            usage: None,
+                                            duration_ms: None,
+                                            model: None,
+                                            completed_at: Some(timestamp),
+                                        });
                                     }
                                 } else if is_close {
                                     active_agent_count = active_agent_count.saturating_sub(1);
@@ -3942,11 +4210,18 @@ mod tests {
     use super::extract_context_window_used_tokens_from_token_count_info;
     use super::extract_response_item_user_image_blocks;
     use super::extract_turn_usage_from_codex_usage;
+    use super::is_encrypted_envelope;
     use super::merge_codex_context_window_stats;
+    use super::native_team_wait_input;
     use super::merge_codex_total_usage_stats;
+    use super::parse_codex_subagent_stats;
+    use super::redact_encrypted_args;
     use super::resolve_codex_home_dir_from;
+    use super::CODEX_SUBAGENT_LAUNCH_KEY;
+    use super::COLLAB_OP_KEY;
     use super::should_skip_duplicate_user_message;
     use super::strip_blocked_resource_mentions;
+    use super::AgentParser;
     use super::CodexParser;
     use super::CODEX_SCRIPT_TOOL_NAME;
     use crate::models::{
@@ -3957,6 +4232,188 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn write_index_title_fixture(
+        conversation_id: &str,
+    ) -> (tempfile::TempDir, CodexParser, PathBuf) {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let codex_home = temp_dir.path().join(".codex");
+        let sessions_dir = codex_home.join("sessions");
+        let rollout_dir = sessions_dir.join("2026").join("08").join("15");
+        fs::create_dir_all(&rollout_dir).expect("create rollout dir");
+
+        let rollout_path = rollout_dir.join(format!(
+            "rollout-2026-08-15T16-00-00-{conversation_id}.jsonl"
+        ));
+        let lines = [
+            serde_json::json!({
+                "timestamp": "2026-08-15T08:00:00Z",
+                "type": "session_meta",
+                "payload": {"id": conversation_id, "cwd": "/tmp/Temp"}
+            })
+            .to_string(),
+            serde_json::json!({
+                "timestamp": "2026-08-15T08:00:01Z",
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": "Makefile 文件的作用"}
+            })
+            .to_string(),
+        ];
+        fs::write(&rollout_path, format!("{}\n", lines.join("\n"))).expect("write rollout");
+
+        let index_path = codex_home.join("session_index.jsonl");
+        let parser = CodexParser::with_base_dir(sessions_dir);
+        (temp_dir, parser, index_path)
+    }
+
+    #[test]
+    fn session_index_title_wins_for_list_and_detail() {
+        let conversation_id = "01a00496-1418-7273-a06f-dc4fae5cfa64";
+        let (_temp_dir, parser, index_path) = write_index_title_fixture(conversation_id);
+        let index_lines = [
+            serde_json::json!({
+                "id": conversation_id,
+                "thread_name": "旧标题",
+                "updated_at": "2026-08-15T08:01:00Z"
+            })
+            .to_string(),
+            "{malformed json".to_string(),
+            serde_json::json!({
+                "id": conversation_id,
+                "thread_name": "  解释 Makefile 文件作用  ",
+                "updated_at": "2026-08-15T08:02:00Z"
+            })
+            .to_string(),
+            serde_json::json!({
+                "id": conversation_id,
+                "thread_name": "   ",
+                "updated_at": "2026-08-15T08:03:00Z"
+            })
+            .to_string(),
+        ];
+        fs::write(&index_path, format!("{}\n", index_lines.join("\n"))).expect("write index");
+
+        let summaries = parser.list_conversations().expect("list conversations");
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(
+            summaries[0].title.as_deref(),
+            Some("解释 Makefile 文件作用")
+        );
+
+        let detail = parser
+            .get_conversation(conversation_id)
+            .expect("get conversation");
+        assert_eq!(
+            detail.summary.title.as_deref(),
+            Some("解释 Makefile 文件作用")
+        );
+    }
+
+    #[test]
+    fn session_index_title_wins_over_rollout_thread_name_update() {
+        let conversation_id = "index-vs-rollout-title";
+        let (_temp_dir, parser, index_path) = write_index_title_fixture(conversation_id);
+        let rollout_path = parser
+            .base_dir
+            .join("2026")
+            .join("08")
+            .join("15")
+            .join(format!(
+                "rollout-2026-08-15T16-00-00-{conversation_id}.jsonl"
+            ));
+        let mut rollout = fs::read_to_string(&rollout_path).expect("read rollout");
+        rollout.push_str(
+            &serde_json::json!({
+                "timestamp": "2026-08-15T08:00:02Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "thread_name_updated",
+                    "thread_name": "rollout thread title"
+                }
+            })
+            .to_string(),
+        );
+        rollout.push('\n');
+        fs::write(&rollout_path, rollout).expect("append rollout title");
+        fs::write(
+            &index_path,
+            format!(
+                "{}\n",
+                serde_json::json!({
+                    "id": conversation_id,
+                    "thread_name": "session index title",
+                    "updated_at": "2026-08-15T08:01:00Z"
+                })
+            ),
+        )
+        .expect("write index title");
+
+        let summaries = parser.list_conversations().expect("list conversations");
+        assert_eq!(summaries[0].title.as_deref(), Some("session index title"));
+        let detail = parser
+            .get_conversation(conversation_id)
+            .expect("get conversation");
+        assert_eq!(detail.summary.title.as_deref(), Some("session index title"));
+    }
+
+    #[test]
+    fn session_index_title_refreshes_after_summary_cache_hit() {
+        let conversation_id = "cache-title-session";
+        let (_temp_dir, parser, index_path) = write_index_title_fixture(conversation_id);
+        fs::write(
+            &index_path,
+            format!(
+                "{}\n",
+                serde_json::json!({"id": conversation_id, "thread_name": "索引标题甲"})
+            ),
+        )
+        .expect("write first index title");
+
+        let first = parser.list_conversations().expect("first list");
+        assert_eq!(first[0].title.as_deref(), Some("索引标题甲"));
+
+        // The rollout file is unchanged, so its summary is served from cache.
+        // The independently-read index must still replace the cached title.
+        fs::write(
+            &index_path,
+            format!(
+                "{}\n",
+                serde_json::json!({"id": conversation_id, "thread_name": "索引标题乙"})
+            ),
+        )
+        .expect("update index title");
+        let second = parser.list_conversations().expect("second list");
+        assert_eq!(second[0].title.as_deref(), Some("索引标题乙"));
+    }
+
+    #[test]
+    fn unavailable_session_index_preserves_rollout_title_fallback() {
+        let conversation_id = "index-fallback-session";
+        let (_temp_dir, parser, index_path) = write_index_title_fixture(conversation_id);
+
+        let missing = parser.list_conversations().expect("list without index");
+        assert_eq!(missing[0].title.as_deref(), Some("Makefile 文件的作用"));
+
+        fs::write(
+            &index_path,
+            format!(
+                "not json\n{}\n",
+                serde_json::json!({"id": conversation_id, "thread_name": "  "})
+            ),
+        )
+        .expect("write unusable index records");
+        let malformed = parser.list_conversations().expect("list malformed index");
+        assert_eq!(malformed[0].title.as_deref(), Some("Makefile 文件的作用"));
+
+        fs::remove_file(&index_path).expect("remove index file");
+        fs::create_dir(&index_path).expect("make index path unreadable as a file");
+        let unreadable = parser.list_conversations().expect("list unreadable index");
+        assert_eq!(unreadable[0].title.as_deref(), Some("Makefile 文件的作用"));
+        let detail = parser
+            .get_conversation(conversation_id)
+            .expect("detail unreadable index");
+        assert_eq!(detail.summary.title.as_deref(), Some("Makefile 文件的作用"));
+    }
 
     #[test]
     fn skips_agents_instructions_title_candidate() {
@@ -5534,6 +5991,19 @@ mod tests {
         serde_json::json!({ "timestamp": ts, "type": msg_type, "payload": payload }).to_string()
     }
 
+    /// A directory of its own, for the tests that exercise the sibling-file
+    /// lookup: `parse_codex_subagent_stats` scans the whole session directory,
+    /// so it must not see other tests' rollouts (or the rest of `/tmp`).
+    fn temp_session_dir(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time ok")
+            .as_nanos();
+        let dir = env::temp_dir().join(format!("codeg-codex-{tag}-{nanos}"));
+        fs::create_dir_all(&dir).expect("create temp session dir");
+        dir
+    }
+
     fn thinking_texts(detail: &crate::models::ConversationDetail) -> Vec<String> {
         detail
             .turns
@@ -6245,6 +6715,394 @@ mod tests {
         );
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn native_team_spawn_names_the_task_and_hides_the_encrypted_message() {
+        // codex 0.147's team-of-agents: `agent_type` became `task_name`, the
+        // hand-off `message` became an encrypted envelope, and the spawn output
+        // no longer returns an id — the `sub_agent_activity` event carries it,
+        // correlated by the spawn's own call_id.
+        let sealed = format!("gAAAAAB{}", "qgWsi0g7gOInVU3UTzqL".repeat(30));
+        let lines = vec![
+            rollout_line(
+                "2026-08-16T07:47:37Z",
+                "session_meta",
+                serde_json::json!({"id":"parent","cwd":"/tmp/demo"}),
+            ),
+            rollout_line(
+                "2026-08-16T07:47:41Z",
+                "response_item",
+                serde_json::json!({"type":"message","role":"user","content":[{"type":"input_text","text":"跑一下构建"}]}),
+            ),
+            rollout_line(
+                "2026-08-16T07:47:45Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call","call_id":"call_y7sk","name":"spawn_agent",
+                    "namespace":"collaboration",
+                    "arguments": serde_json::json!({
+                        "task_name":"pnpm_build","fork_turns":"all","message": sealed,
+                    }).to_string(),
+                }),
+            ),
+            rollout_line(
+                "2026-08-16T07:47:46Z",
+                "event_msg",
+                serde_json::json!({
+                    "type":"sub_agent_activity","event_id":"call_y7sk",
+                    "agent_thread_id":"01a0098a-7e8a-72d3-b7c0-2df130c84063",
+                    "agent_path":"/root/pnpm_build","kind":"started",
+                }),
+            ),
+            rollout_line(
+                "2026-08-16T07:47:47Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call_output","call_id":"call_y7sk",
+                    "output": serde_json::json!({"task_name":"/root/pnpm_build"}).to_string(),
+                }),
+            ),
+        ];
+
+        let path = write_temp_rollout("nativeteam", &lines);
+        let detail = CodexParser::new()
+            .parse_conversation_detail(&path, "parent")
+            .expect("parse ok");
+        let input = detail
+            .turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .find_map(|b| match b {
+                ContentBlock::ToolUse {
+                    tool_use_id: Some(id),
+                    tool_name,
+                    input_preview,
+                    ..
+                } if id == "call_y7sk" && tool_name == "Agent" => input_preview.as_deref(),
+                _ => None,
+            })
+            .expect("spawn Agent capsule present");
+        let parsed: serde_json::Value = serde_json::from_str(input).expect("spawn input is JSON");
+        assert_eq!(
+            parsed.get("subagent_type").and_then(|v| v.as_str()),
+            Some("pnpm_build"),
+            "the capsule must be named after the task, not the removed agent_type"
+        );
+        // The envelope is unreadable, so the capsule shows no prompt at all
+        // rather than a wall of base64 in its title and prompt panel.
+        assert_eq!(parsed.get("prompt").and_then(|v| v.as_str()), Some(""));
+        assert_eq!(parsed.get("description").and_then(|v| v.as_str()), Some(""));
+        assert_eq!(
+            parsed.get("agent_id").and_then(|v| v.as_str()),
+            Some("01a0098a-7e8a-72d3-b7c0-2df130c84063"),
+            "the sub_agent_activity event is the only source of the thread id"
+        );
+        // 0.147 emits no wait/close capsule, so this card stands for the LAUNCH
+        // only and must say so rather than read as "the sub-agent finished".
+        assert_eq!(
+            parsed.get(CODEX_SUBAGENT_LAUNCH_KEY).and_then(|v| v.as_bool()),
+            Some(true)
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn legacy_collab_spawn_keeps_its_run_semantics() {
+        // The pre-0.147 shape DOES get a wait/close capsule carrying the
+        // result, so its capsule really does stand for the run — it must not
+        // pick up the launch-only caveat.
+        let lines = vec![
+            rollout_line(
+                "2026-06-27T14:00:00Z",
+                "session_meta",
+                serde_json::json!({"id":"ai","cwd":"/tmp/demo"}),
+            ),
+            rollout_line(
+                "2026-06-27T14:00:02Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call","call_id":"spawn_x","name":"spawn_agent",
+                    "arguments": serde_json::json!({"agent_type":"worker","message":"do it"}).to_string(),
+                }),
+            ),
+        ];
+        let path = write_temp_rollout("legacyspawn", &lines);
+        let detail = CodexParser::new()
+            .parse_conversation_detail(&path, "ai")
+            .expect("parse ok");
+        let input = detail
+            .turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .find_map(|b| match b {
+                ContentBlock::ToolUse {
+                    tool_name,
+                    input_preview,
+                    ..
+                } if tool_name == "Agent" => input_preview.as_deref(),
+                _ => None,
+            })
+            .expect("spawn Agent capsule present");
+        let parsed: serde_json::Value = serde_json::from_str(input).expect("JSON");
+        assert_eq!(parsed.get("subagent_type").and_then(|v| v.as_str()), Some("worker"));
+        assert_eq!(parsed.get("prompt").and_then(|v| v.as_str()), Some("do it"));
+        assert!(parsed.get(CODEX_SUBAGENT_LAUNCH_KEY).is_none());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn send_message_shows_a_marker_instead_of_the_sealed_payload() {
+        // `send_message` has no capsule of its own — it renders on the generic
+        // tool card, whose preview is the whole argument JSON. Its `message` is
+        // the same sealed envelope `spawn_agent` carries.
+        let sealed = format!("gAAAAAB{}", "0g7gOInVU3UTzqL".repeat(30));
+        let lines = vec![
+            rollout_line(
+                "2026-08-16T07:47:37Z",
+                "session_meta",
+                serde_json::json!({"id":"parent","cwd":"/tmp/demo"}),
+            ),
+            rollout_line(
+                "2026-08-16T07:47:50Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call","call_id":"call_send","name":"send_message",
+                    "namespace":"collaboration",
+                    "arguments": serde_json::json!({
+                        "target":"/root/pnpm_build","message": sealed,
+                    }).to_string(),
+                }),
+            ),
+        ];
+        let path = write_temp_rollout("sendmessage", &lines);
+        let detail = CodexParser::new()
+            .parse_conversation_detail(&path, "parent")
+            .expect("parse ok");
+        let input = detail
+            .turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .find_map(|b| match b {
+                ContentBlock::ToolUse {
+                    tool_name,
+                    input_preview,
+                    ..
+                } if tool_name == "send_message" => input_preview.as_deref(),
+                _ => None,
+            })
+            .expect("send_message card present");
+        assert!(
+            !input.contains("gAAAAAB"),
+            "the sealed payload must not reach the card: {input}"
+        );
+        assert!(input.contains("[encrypted]"), "{input}");
+        // The readable arguments survive.
+        assert!(input.contains("/root/pnpm_build"), "{input}");
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn redaction_leaves_ordinary_arguments_untouched() {
+        let mut args = serde_json::json!({"cmd":"pnpm build","timeout_ms":3600000});
+        assert!(!redact_encrypted_args(&mut args));
+        assert_eq!(args, serde_json::json!({"cmd":"pnpm build","timeout_ms":3600000}));
+        // Nested and array positions are reached.
+        let sealed = format!("gAAAAAB{}", "0g7gOInVU3UTzqL".repeat(10));
+        let mut nested = serde_json::json!({"outer":{"list":[sealed.clone(),"keep me"]}});
+        assert!(redact_encrypted_args(&mut nested));
+        assert_eq!(
+            nested,
+            serde_json::json!({"outer":{"list":["[encrypted]","keep me"]}})
+        );
+    }
+
+    #[test]
+    fn redaction_visits_every_sibling_not_just_the_first() {
+        // Guards the reason `redact_encrypted_children` is a loop: the obvious
+        // `Iterator::any` (which clippy's `unnecessary_fold` even suggests)
+        // stops at the first hit, so a second sealed sibling would reach the
+        // card as half a kilobyte of base64.
+        let sealed = format!("gAAAAAB{}", "0g7gOInVU3UTzqL".repeat(10));
+        let mut args = serde_json::json!({
+            "list": [sealed.clone(), sealed.clone()],
+            "first": sealed.clone(),
+            "second": sealed.clone(),
+        });
+        assert!(redact_encrypted_args(&mut args));
+        assert_eq!(
+            args,
+            serde_json::json!({
+                "list": ["[encrypted]", "[encrypted]"],
+                "first": "[encrypted]",
+                "second": "[encrypted]",
+            })
+        );
+    }
+
+    #[test]
+    fn native_team_wait_renders_the_same_bare_capsule_history_and_live() {
+        // codex-acp forwards `wait_agent` (unlike the spawn), so live shows a
+        // 「fetch the sub-agent's result」 pill. Reload must show it too — it is
+        // the only span in the timeline covering the child's actual run.
+        let lines = vec![
+            rollout_line(
+                "2026-08-16T09:40:59Z",
+                "session_meta",
+                serde_json::json!({"id":"parent","cwd":"/tmp/demo"}),
+            ),
+            rollout_line(
+                "2026-08-16T09:41:00Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call","call_id":"call_wait","name":"wait_agent",
+                    "namespace":"collaboration",
+                    "arguments": serde_json::json!({"timeout_ms":3600000}).to_string(),
+                }),
+            ),
+            rollout_line(
+                "2026-08-16T09:41:20Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"function_call_output","call_id":"call_wait",
+                    "output": serde_json::json!({
+                        "message":"Wait completed.","timed_out":false,
+                    }).to_string(),
+                }),
+            ),
+        ];
+        let path = write_temp_rollout("nativewait", &lines);
+        let detail = CodexParser::new()
+            .parse_conversation_detail(&path, "parent")
+            .expect("parse ok");
+        let input = detail
+            .turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .find_map(|b| match b {
+                ContentBlock::ToolUse {
+                    tool_name,
+                    input_preview,
+                    ..
+                } if tool_name == "collab_agent" => input_preview.as_deref(),
+                _ => None,
+            })
+            .expect("wait capsule present");
+        let parsed: serde_json::Value = serde_json::from_str(input).expect("JSON");
+        assert_eq!(parsed.get(COLLAB_OP_KEY).and_then(|v| v.as_str()), Some("wait"));
+        assert_eq!(parsed.get("status").and_then(|v| v.as_str()), Some("completed"));
+        // No agents and no prompt — the card renders as a bare pill, exactly
+        // what the live `collabAgentToolCall` produces for this output.
+        assert_eq!(
+            parsed.get("agentsStates"),
+            Some(&serde_json::json!({}))
+        );
+        let errored = detail
+            .turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .any(|b| matches!(b, ContentBlock::ToolResult { is_error: true, .. }));
+        assert!(!errored, "a completed wait is not an error");
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn native_team_wait_shape_gate_and_timeout() {
+        // `timed_out` is the shape gate: only the native-team output has it.
+        assert!(native_team_wait_input(&serde_json::json!({"message":"Wait completed."})).is_none());
+        assert!(native_team_wait_input(&serde_json::json!({})).is_none());
+        // A timeout is a real outcome — flag the capsule failed.
+        let (input, is_error) =
+            native_team_wait_input(&serde_json::json!({"message":"x","timed_out":true}))
+                .expect("native shape");
+        assert!(is_error);
+        let parsed: serde_json::Value = serde_json::from_str(&input).expect("JSON");
+        assert_eq!(parsed.get("status").and_then(|v| v.as_str()), Some("failed"));
+    }
+
+    #[test]
+    fn encrypted_envelope_detection_is_narrow() {
+        let sealed = format!("gAAAAAB{}", "0g7gOInVU3UTzqL".repeat(10));
+        assert!(is_encrypted_envelope(&sealed));
+        assert!(is_encrypted_envelope(&format!("  {sealed}  ")));
+        // A prompt that merely mentions or embeds base64 still renders: the
+        // prefix must lead, the blob must be long, and it must be one token.
+        assert!(!is_encrypted_envelope(&format!("decode this: {sealed}")));
+        assert!(!is_encrypted_envelope(&format!("{sealed} and report back")));
+        assert!(!is_encrypted_envelope("gAAAAAB"));
+        assert!(!is_encrypted_envelope("run pnpm build"));
+        assert!(!is_encrypted_envelope(""));
+    }
+
+    #[test]
+    fn forked_child_transcript_yields_no_stats() {
+        // A codex 0.147 sub-agent thread opens with its own `session_meta`
+        // (carrying `parent_thread_id`) and then replays the PARENT's history,
+        // tool calls included. Counting those would credit the child with the
+        // parent's work, so the whole file is refused.
+        let child = "01a0098a-7e8a-72d3-b7c0-2df130c84063";
+        let dir = temp_session_dir("forked-child");
+        // The lookup matches a rollout whose stem ends with the thread id,
+        // which is exactly how codex names a sub-agent's file.
+        fs::write(
+            dir.join(format!("rollout-2026-08-16T07-47-46-{child}.jsonl")),
+            [
+                rollout_line(
+                    "2026-08-16T07:47:46Z",
+                    "session_meta",
+                    serde_json::json!({"id":child,"parent_thread_id":"parent","cwd":"/tmp/demo"}),
+                ),
+                rollout_line(
+                    "2026-08-16T07:47:46Z",
+                    "session_meta",
+                    serde_json::json!({"id":"parent","cwd":"/tmp/demo"}),
+                ),
+                rollout_line(
+                    "2026-08-16T07:47:47Z",
+                    "response_item",
+                    serde_json::json!({
+                        "type":"function_call","call_id":"parents_own","name":"exec_command",
+                        "arguments": serde_json::json!({"cmd":"git status"}).to_string(),
+                    }),
+                ),
+            ]
+            .join("\n"),
+        )
+        .expect("write forked child");
+        assert!(
+            parse_codex_subagent_stats(&dir, child).is_none(),
+            "a forked child transcript must contribute no stats"
+        );
+
+        // The legacy shape has no replayed prefix and still resolves.
+        fs::write(
+            dir.join("agent-solo.jsonl"),
+            [
+                rollout_line(
+                    "2026-08-16T07:47:46Z",
+                    "session_meta",
+                    serde_json::json!({"id":"solo","cwd":"/tmp/demo"}),
+                ),
+                rollout_line(
+                    "2026-08-16T07:47:47Z",
+                    "response_item",
+                    serde_json::json!({
+                        "type":"function_call","call_id":"c1","name":"exec_command",
+                        "arguments": serde_json::json!({"cmd":"pnpm build"}).to_string(),
+                    }),
+                ),
+            ]
+            .join("\n"),
+        )
+        .expect("write own thread");
+        let stats = parse_codex_subagent_stats(&dir, "solo").expect("stats for an own thread");
+        assert_eq!(stats.tool_calls.len(), 1);
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     // ── codex code mode ──────────────────────────────────────────────────

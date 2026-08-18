@@ -13,9 +13,9 @@ use crate::models::{
 use crate::parsers::claude::BACKGROUND_TASK_MARKER;
 use crate::parsers::{
     backfill_turn_durations, compute_session_stats, folder_name_from_path,
-    infer_context_window_max_tokens, is_safe_subagent_id, latest_turn_total_usage_tokens,
-    merge_context_window_stats, relocate_orphaned_tool_results, structurize_read_tool_output,
-    title_from_user_text, truncate_str, AgentParser, ParseError,
+    infer_context_window_max_tokens, is_safe_subagent_id, merge_context_window_stats,
+    relocate_orphaned_tool_results, structurize_read_tool_output, title_from_user_text,
+    truncate_str, AgentParser, ParseError,
 };
 
 /// Cap for a single tool result / tool input preview stored on a turn. Grok's
@@ -309,11 +309,13 @@ impl GrokParser {
         backfill_turn_durations(&mut parsed.turns, &[]);
 
         // Grok sends no ACP `usage_update`, so the live meter stays empty; derive
-        // the context ring here instead. Grok reports a cumulative per-turn token
-        // count (mapped to `usage.input_tokens`), which is exactly the context
-        // "used"; pair it with the model's window so the status bar shows the ring
-        // (mirrors gemini/kimi/opencode — the bare `compute_session_stats` leaves
-        // the context fields `None`).
+        // the context ring here instead. The "used" figure is Grok's own
+        // `params._meta.totalTokens` (`ParsedUpdates::context_tokens`) — NOT the
+        // turn usage totals, which are the token SPEND and run to many multiples
+        // of the resident context once a turn makes several model calls. Pair it
+        // with the model's window so the status bar shows the ring (mirrors
+        // gemini/kimi/opencode — the bare `compute_session_stats` leaves the
+        // context fields `None`).
         let session_model = meta.model.as_deref().or(parsed.model.as_deref());
         // Grok publishes each model's real window in its own on-disk catalog, so
         // read that first and keep the id-shaped guess only as the fallback for
@@ -324,7 +326,7 @@ impl GrokParser {
         });
         let session_stats = merge_context_window_stats(
             compute_session_stats(&parsed.turns),
-            latest_turn_total_usage_tokens(&parsed.turns),
+            parsed.context_tokens,
             context_window,
         );
         let summary = self.summary_from(session_id, &meta, &parsed);
@@ -612,6 +614,11 @@ struct ParsedUpdates {
     /// (`subagent_spawned` opens one, `subagent_finished` completes it), in
     /// spawn order.
     subagents: Vec<GrokSubagentLifecycle>,
+    /// Context-window occupancy: `params._meta.totalTokens` as of the last turn
+    /// to state one. Feeds the context ring, and is kept apart from turn `usage`
+    /// because the two measure different things — occupancy is what currently
+    /// sits in the window, `usage` is what the turn spent getting there.
+    context_tokens: Option<u64>,
 }
 
 /// One subagent's lifecycle, folded from the parent-stream extension
@@ -720,7 +727,7 @@ fn parse_updates(path: &Path) -> ParsedUpdates {
                 .is_none_or(|(a, b)| a == b);
         if kind == "user_message_chunk" && !user_chunk_continues {
             if let Some(prev) = assistant.as_mut() {
-                turn_meta.apply(prev);
+                turn_meta.apply(prev, &mut out.context_tokens);
             }
             flush_assistant(&mut assistant, &mut out.turns, &mut tool_result_idx);
             turn_meta = GrokTurnMeta::default();
@@ -849,7 +856,10 @@ fn parse_updates(path: &Path) -> ParsedUpdates {
             }
             "turn_completed" => {
                 if let Some(mut turn) = assistant.take() {
-                    turn_meta.apply(&mut turn);
+                    // The one place Grok states real token spend, scoped to the
+                    // prompt this update closes (see `prompt_usage`).
+                    turn_meta.usage = update.get("usage").and_then(prompt_usage);
+                    turn_meta.apply(&mut turn, &mut out.context_tokens);
                     turn.completed_at = Some(now);
                     out.turns.push(turn);
                 }
@@ -986,9 +996,10 @@ fn parse_updates(path: &Path) -> ParsedUpdates {
     }
 
     // A session that ends mid-turn (no trailing `turn_completed`) still gets its
-    // accumulated stats.
+    // accumulated stats. Its `usage` stays `None` — Grok has not stated the
+    // spend yet — but the context occupancy it did state still reaches the ring.
     if let Some(prev) = assistant.as_mut() {
-        turn_meta.apply(prev);
+        turn_meta.apply(prev, &mut out.context_tokens);
     }
     flush_assistant(&mut assistant, &mut out.turns, &mut tool_result_idx);
 
@@ -1357,7 +1368,9 @@ fn grok_mcp_input_preview(input: &Value) -> Option<String> {
 /// bloat vector (many strings, long arrays, JSON/UTF-8 escaping that expands
 /// bytes) — a single per-field cap could not. Converges in O(log budget) passes;
 /// an already-small value returns on the first pass unchanged.
-fn cap_json_to_budget(value: &Value, budget: usize) -> Option<String> {
+/// `pub(crate)`: the DeepSeek parser bounds its oversized tool arguments with
+/// the same valid-JSON guarantee (`deepseek_tool_input_preview`).
+pub(crate) fn cap_json_to_budget(value: &Value, budget: usize) -> Option<String> {
     let mut per_string = budget;
     loop {
         let serialized = serde_json::to_string(&cap_json_string_values(value, per_string)).ok()?;
@@ -1490,26 +1503,32 @@ fn apply_tool_result(
 
 /// Per-turn stats accumulated from Grok's metadata and applied to the assistant
 /// turn at its boundary. Grok exposes the numbers the message footer needs, but
-/// in two sibling places the update loop otherwise ignores: token count + timing
-/// in the OUTER `params._meta` (`totalTokens`, `turnStartMs`, `agentTimestampMs`)
-/// and the model in `params.update._meta.modelId`. Grok reports a single
-/// cumulative `totalTokens` (context/prompt tokens) rather than an input/output
-/// split, so it maps to `input_tokens` — consistent with how other agents report
-/// history-inclusive input. Duration is `end - start` in ms.
+/// in three sibling places the update loop otherwise ignores: context occupancy
+/// and timing in the OUTER `params._meta` (`totalTokens`, `turnStartMs`,
+/// `agentTimestampMs`), the model in `params.update._meta.modelId`, and the real
+/// token split in `turn_completed`'s `update.usage` (see [`prompt_usage`]).
+/// Duration is `end - start` in ms.
 #[derive(Default)]
 struct GrokTurnMeta {
+    /// `params._meta.totalTokens` — the context-window OCCUPANCY, not a spend.
+    /// It rides nearly every update and feeds the context ring; it is
+    /// deliberately never folded into `usage`, which would bill a prompt's
+    /// resident context as if it were freshly consumed input.
     total_tokens: Option<u64>,
     start_ms: Option<i64>,
     end_ms: Option<i64>,
     model: Option<String>,
+    /// The prompt's real token spend, stated once by `turn_completed`. `None`
+    /// for a turn that never completed.
+    usage: Option<TurnUsage>,
 }
 
 impl GrokTurnMeta {
     /// Fold one update's metadata in. `params_meta` is `params._meta` (token
     /// total + timing); `update_meta` is `params.update._meta` (carries
-    /// `modelId`). `totalTokens` is cumulative, so keep the max; `turnStartMs`
-    /// is constant per turn (keep the min defensively); `agentTimestampMs`
-    /// advances (keep the max as the turn end).
+    /// `modelId`). `totalTokens` climbs as the turn fills the window, so keep
+    /// the max; `turnStartMs` is constant per turn (keep the min defensively);
+    /// `agentTimestampMs` advances (keep the max as the turn end).
     fn observe(&mut self, params_meta: Option<&Value>, update_meta: Option<&Value>) {
         if let Some(pm) = params_meta {
             if let Some(tt) = pm.get("totalTokens").and_then(Value::as_u64) {
@@ -1531,22 +1550,22 @@ impl GrokTurnMeta {
         }
     }
 
-    /// Apply the accumulated stats to a finalized assistant turn. Never
-    /// overwrites a field already set.
-    fn apply(&self, turn: &mut MessageTurn) {
+    /// Apply the accumulated stats to a finalized assistant turn, publishing the
+    /// turn's context occupancy into the session-level `context_tokens` (the last
+    /// turn to state one wins — that is the session's occupancy now). Never
+    /// overwrites a turn field already set.
+    fn apply(&self, turn: &mut MessageTurn, context_tokens: &mut Option<u64>) {
         if turn.model.is_none() {
             if let Some(model) = &self.model {
                 turn.model = Some(model.clone());
             }
         }
+        if let Some(tt) = self.total_tokens.filter(|t| *t > 0) {
+            *context_tokens = Some(tt);
+        }
         if turn.usage.is_none() {
-            if let Some(tt) = self.total_tokens.filter(|t| *t > 0) {
-                turn.usage = Some(TurnUsage {
-                    input_tokens: tt,
-                    output_tokens: 0,
-                    cache_creation_input_tokens: 0,
-                    cache_read_input_tokens: 0,
-                });
+            if let Some(usage) = &self.usage {
+                turn.usage = Some(usage.clone());
             }
         }
         if turn.duration_ms.is_none() {
@@ -1557,6 +1576,61 @@ impl GrokTurnMeta {
             }
         }
     }
+}
+
+/// Read the `usage` object Grok attaches to `turn_completed` into disjoint
+/// `TurnUsage` buckets. `None` when it states nothing at all (every counter
+/// absent or zero).
+///
+/// The figures are PER PROMPT, not running session totals — each
+/// `turn_completed` carries its own `prompt_id` and, per Grok's docs, "`usage`
+/// sums tokens for the prompt, including subagents that finished before turn
+/// end" (`~/.grok/docs/user-guide/14-headless-mode.md`). So the snapshot is
+/// attached to its own turn as-is and `compute_session_stats` sums the prompts.
+/// The counters do climb from one `turn_completed` to the next in a captured
+/// session, which reads as cumulative at a glance; it isn't. In `019f96d5` the
+/// second prompt states 198457 input over 7 `modelCalls` — a shade under 28.4K
+/// per call against that session's 31628-token peak occupancy — whereas reading
+/// the pair as cumulative would charge its 2 additional calls 112283 tokens
+/// (56K per call), which no call could have sent through a window that size.
+///
+/// Bucket semantics: this is the ACP `PromptUsage` flavour, whose `inputTokens`
+/// is the WHOLE prompt side, with `cachedReadTokens` / `cacheCreationTokens`
+/// naming cached SLICES OF IT rather than separate addends —
+/// `inputTokens + outputTokens == totalTokens` holds in every capture, which it
+/// could not if the cache counters sat outside `inputTokens`. `TurnUsage`
+/// follows Anthropic's DISJOINT convention, where `input_tokens` excludes both
+/// cache buckets (see `parsers::claude`), so the cached slices are subtracted
+/// back out; the four buckets then re-sum to Grok's own `totalTokens`, which is
+/// what the composer's breakdown adds up for its "total" row.
+/// `reasoningTokens` is a subset of `outputTokens` and so is deliberately
+/// dropped, mirroring `parsers::deepseek`.
+///
+/// Only the ACP spellings are read. Grok's headless projector publishes the same
+/// quantities under `cacheReadInputTokens` / `input_tokens`, but with the cache
+/// ALREADY subtracted out ("`usage.input_tokens` … are **uncached only**" —
+/// same doc). Aliasing those names in here would silently double-subtract the
+/// cached prefix the day a build emits them.
+fn prompt_usage(usage: &Value) -> Option<TurnUsage> {
+    let field = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let input = field("inputTokens");
+    let output = field("outputTokens");
+    // `cacheCreationTokens` reaches only newer Grok builds; older ones report
+    // reads alone, and an absent counter reads as 0 either way.
+    let cache_read = field("cachedReadTokens");
+    let cache_create = field("cacheCreationTokens");
+    if input == 0 && output == 0 && cache_read == 0 && cache_create == 0 {
+        return None;
+    }
+    Some(TurnUsage {
+        // Saturating rather than wrapping: a build that ever reports cache
+        // counters exceeding `inputTokens` keeps its cache buckets and drops the
+        // uncached remainder to zero, instead of inventing a colossal input.
+        input_tokens: input.saturating_sub(cache_read).saturating_sub(cache_create),
+        output_tokens: output,
+        cache_creation_input_tokens: cache_create,
+        cache_read_input_tokens: cache_read,
+    })
 }
 
 fn ensure_assistant(
@@ -2140,7 +2214,7 @@ mod tests {
     }
 
     /// One turn whose stats live where Grok really puts them: model in
-    /// `update._meta.modelId`, cumulative `totalTokens` + timing in the OUTER
+    /// `update._meta.modelId`, occupancy `totalTokens` and timing in the OUTER
     /// `params._meta`. Shared by the context-ring tests below.
     const RING_UPDATES: &str = concat!(
         r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hi"},"_meta":{"modelId":"grok-4.5-fast","promptIndex":0}},"_meta":{"turnStartMs":1000,"totalTokens":100}},"timestamp":1783584019}"#, "\n",
@@ -2151,8 +2225,8 @@ mod tests {
     #[test]
     fn assistant_turn_carries_model_tokens_and_duration() {
         // Grok reports the footer's stats in two sibling metadata places the
-        // loop must fold in: model in `update._meta.modelId`, and token total +
-        // timing in the OUTER `params._meta` (`totalTokens` cumulative,
+        // loop must fold in: model in `update._meta.modelId`, and context
+        // occupancy + timing in the OUTER `params._meta` (`totalTokens`,
         // `turnStartMs` → `agentTimestampMs`).
         let updates = RING_UPDATES;
         let (_tmp, sessions) = fixture(SUMMARY, updates);
@@ -2164,19 +2238,20 @@ mod tests {
         assert!(matches!(assistant.role, TurnRole::Assistant));
         // In-stream modelId wins over the summary's current_model_id.
         assert_eq!(assistant.model.as_deref(), Some("grok-4.5-fast"));
-        // Single cumulative totalTokens (max = 500) maps to input_tokens.
-        let usage = assistant.usage.as_ref().expect("usage");
-        assert_eq!(usage.input_tokens, 500);
-        assert_eq!(usage.output_tokens, 0);
+        // `totalTokens` is occupancy, not spend: it feeds the ring below and
+        // must NOT be dressed up as `input_tokens`. This fixture's
+        // `turn_completed` states no `usage`, so the turn honestly has none.
+        assert!(assistant.usage.is_none());
         // Duration = last agentTimestampMs (5000) − turnStartMs (1000).
         assert_eq!(assistant.duration_ms, Some(4000));
 
-        // Session stats aggregate the turn usage/duration.
+        // Session stats aggregate the turn duration; with no turn stating usage
+        // there is no token breakdown to report.
         let stats = detail.session_stats.expect("session stats");
-        assert_eq!(stats.total_usage.as_ref().unwrap().input_tokens, 500);
+        assert!(stats.total_usage.is_none());
         assert_eq!(stats.total_duration_ms, 4000);
-        // Context ring: cumulative tokens (500) as "used", paired with the
-        // session model's window (summary current_model_id = grok-4.5 → 500K).
+        // Context ring: occupancy (500) as "used", paired with the session
+        // model's window (summary current_model_id = grok-4.5 → 500K).
         // Without this the status bar shows no context ring for Grok.
         assert_eq!(stats.context_window_used_tokens, Some(500));
         assert_eq!(stats.context_window_max_tokens, Some(500_000));
@@ -2184,6 +2259,141 @@ mod tests {
             .context_window_usage_percent
             .expect("context window percent");
         assert!((pct - 0.1).abs() < 1e-6, "pct = {pct}");
+    }
+
+    /// Two prompts, each closed by a `turn_completed` stating that PROMPT's own
+    /// `usage`. Numbers (and the distinct `prompt_id`s) lifted verbatim from a
+    /// real capture (`~/.grok/sessions/…/019f96d5…/updates.jsonl`), which is what
+    /// makes the arithmetic below meaningful rather than self-referential.
+    const USAGE_UPDATES: &str = concat!(
+        r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"one"},"_meta":{"promptIndex":0}},"_meta":{"turnStartMs":1000,"totalTokens":9000}},"timestamp":1783584019}"#, "\n",
+        r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"first"}},"_meta":{"totalTokens":18000,"agentTimestampMs":3000}},"timestamp":1783584024}"#, "\n",
+        r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"turn_completed","prompt_id":"e526ba42","stop_reason":"rate_limit","usage":{"inputTokens":86174,"outputTokens":1652,"totalTokens":87826,"cachedReadTokens":56960,"reasoningTokens":574,"modelCalls":5,"numTurns":5}}},"timestamp":1783584025}"#, "\n",
+        r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"two"},"_meta":{"promptIndex":1}},"_meta":{"turnStartMs":6000,"totalTokens":22000}},"timestamp":1783584030}"#, "\n",
+        r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"second"}},"_meta":{"totalTokens":31628,"agentTimestampMs":9000}},"timestamp":1783584035}"#, "\n",
+        r#"{"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"turn_completed","prompt_id":"56468252","stop_reason":"end_turn","usage":{"inputTokens":198457,"outputTokens":6224,"totalTokens":204681,"cachedReadTokens":167680,"reasoningTokens":931,"modelCalls":7,"numTurns":7}}},"timestamp":1783584036}"#, "\n",
+    );
+
+    #[test]
+    fn turn_completed_usage_fills_the_token_breakdown() {
+        // The bug this covers: Grok's real token split rides `turn_completed`'s
+        // `usage`, and the parser used to ignore it wholesale — synthesizing
+        // usage from `_meta.totalTokens` with output and both cache buckets
+        // hardcoded to 0, so the composer's breakdown read "output 0, cache 0"
+        // for every Grok session no matter how much it had actually spent.
+        let (_tmp, sessions) = fixture(SUMMARY, USAGE_UPDATES);
+        let parser = GrokParser::with_base_dir(sessions);
+        let detail = parser
+            .get_conversation("019f45e3-e1ef-7690-a29f-fe2554382b49")
+            .unwrap();
+        let assistants: Vec<_> = detail
+            .turns
+            .iter()
+            .filter(|t| matches!(t.role, TurnRole::Assistant))
+            .collect();
+        assert_eq!(assistants.len(), 2);
+
+        // Each prompt's own spend, split into DISJOINT buckets: the cached read
+        // is carved OUT of `inputTokens` (86174 − 56960), not added to it.
+        let first = assistants[0].usage.as_ref().expect("first usage");
+        assert_eq!(first.input_tokens, 29_214);
+        assert_eq!(first.output_tokens, 1_652);
+        assert_eq!(first.cache_read_input_tokens, 56_960);
+        assert_eq!(first.cache_creation_input_tokens, 0);
+        // The four buckets re-sum to Grok's own `totalTokens` for that prompt,
+        // which is what keeps the composer's "total" row honest.
+        assert_eq!(total_of(first), 87_826);
+
+        // The second prompt is taken at face value, NOT deltaed against the
+        // first: `usage` is per-prompt, so the climb from 86174 to 198457 is the
+        // second prompt being bigger, not a running total being restated.
+        let second = assistants[1].usage.as_ref().expect("second usage");
+        assert_eq!(second.input_tokens, 30_777);
+        assert_eq!(second.output_tokens, 6_224);
+        assert_eq!(second.cache_read_input_tokens, 167_680);
+        assert_eq!(total_of(second), 204_681);
+
+        // So the session total is the SUM of the two prompts. Deltaing would
+        // report 204681 here and silently drop the first prompt's 87826.
+        let stats = detail.session_stats.expect("session stats");
+        let total = stats.total_usage.as_ref().expect("total usage");
+        assert_eq!(total_of(total), 87_826 + 204_681);
+        assert_eq!(stats.total_tokens, Some(292_507));
+        assert_eq!(total.output_tokens, 1_652 + 6_224);
+        assert_eq!(total.cache_read_input_tokens, 56_960 + 167_680);
+
+        // And the context ring still reads the OCCUPANCY (`_meta.totalTokens`,
+        // last value 31628) — not the 204681 the session spent getting there.
+        assert_eq!(stats.context_window_used_tokens, Some(31_628));
+        assert_eq!(stats.context_window_max_tokens, Some(500_000));
+    }
+
+    /// The sum the composer's "total" row shows for a usage record.
+    fn total_of(usage: &TurnUsage) -> u64 {
+        usage.input_tokens
+            + usage.output_tokens
+            + usage.cache_creation_input_tokens
+            + usage.cache_read_input_tokens
+    }
+
+    #[test]
+    fn repeated_prompt_usage_is_not_mistaken_for_a_running_total() {
+        // Two prompts that spend exactly the same amount state the same numbers
+        // — they are per-prompt, not a counter. A delta-based reading would see
+        // "no movement" and report the second prompt as free.
+        let usage = serde_json::json!({
+            "inputTokens": 15_000, "outputTokens": 500,
+            "totalTokens": 15_500, "cachedReadTokens": 6_000,
+        });
+        let first = prompt_usage(&usage).expect("first");
+        let second = prompt_usage(&usage).expect("second");
+        assert_eq!(total_of(&first), 15_500);
+        assert_eq!(total_of(&second), 15_500);
+
+        // An absent or all-zero `usage` still states nothing.
+        assert!(prompt_usage(&serde_json::json!({})).is_none());
+        assert!(prompt_usage(&serde_json::json!({
+            "inputTokens": 0, "outputTokens": 0, "cachedReadTokens": 0,
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn headless_only_usage_spellings_are_not_aliased() {
+        // Grok's headless projector publishes `cacheReadInputTokens` with the
+        // cache ALREADY subtracted from its `inputTokens`. Reading those names
+        // here would double-subtract, so they are deliberately not accepted —
+        // this record states nothing rather than something wrong.
+        assert!(prompt_usage(&serde_json::json!({
+            "cacheReadInputTokens": 41_000, "cache_creation_input_tokens": 2_000,
+        }))
+        .is_none());
+    }
+
+    #[test]
+    fn cache_creation_tokens_are_carved_out_of_input_too() {
+        // Newer Grok builds add `cacheCreationTokens` alongside the reads. It is
+        // a slice of `inputTokens` on the same footing, so it is subtracted out
+        // as well — leaving the four buckets summing to `totalTokens`.
+        let usage = serde_json::json!({
+            "inputTokens": 10_000, "outputTokens": 400, "totalTokens": 10_400,
+            "cachedReadTokens": 6_000, "cacheCreationTokens": 1_500,
+        });
+        let parsed = prompt_usage(&usage).expect("usage");
+        assert_eq!(parsed.input_tokens, 2_500);
+        assert_eq!(parsed.cache_read_input_tokens, 6_000);
+        assert_eq!(parsed.cache_creation_input_tokens, 1_500);
+        assert_eq!(parsed.output_tokens, 400);
+        assert_eq!(total_of(&parsed), 10_400);
+
+        // Cache counters that overshoot `inputTokens` saturate to a zero
+        // remainder rather than wrapping to a colossal input.
+        let overshoot = serde_json::json!({
+            "inputTokens": 100, "outputTokens": 10, "cachedReadTokens": 900,
+        });
+        let parsed = prompt_usage(&overshoot).expect("usage");
+        assert_eq!(parsed.input_tokens, 0);
+        assert_eq!(parsed.cache_read_input_tokens, 900);
     }
 
     /// Grok's own catalog outranks the id-shaped guess. The fixture's session

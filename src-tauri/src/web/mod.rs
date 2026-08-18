@@ -785,7 +785,16 @@ pub(crate) async fn do_start_web_server_tauri(
             &app.path().app_data_dir().unwrap_or_default(),
         ),
         web_server_state: WebServerState::new(), // placeholder; not used by handlers
-        chat_channel_manager: crate::app_state::default_chat_channel_manager(),
+        // Reuse the manager Tauri registered and started, NOT a fresh one: a
+        // fresh `ChatChannelManager` has an empty channel registry, so every
+        // handler that renames a bound chat thread (`update_conversation_title`,
+        // the import/scan/list title refreshes) would fail with `NotFound` and
+        // silently never retry — the DB has already converged by then. Falls
+        // back to a standalone manager only if the state is somehow absent.
+        chat_channel_manager: app
+            .try_state::<crate::chat_channel::manager::ChatChannelManager>()
+            .map(|state| state.inner().clone_ref())
+            .unwrap_or_else(crate::app_state::default_chat_channel_manager),
         workspace_transfer: app
             .try_state::<Arc<crate::workspace_transfer::WorkspaceTransferManager>>()
             .map(|state| state.inner().clone())

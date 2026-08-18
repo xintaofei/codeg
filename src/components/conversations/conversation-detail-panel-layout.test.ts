@@ -423,4 +423,36 @@ describe("ConversationDetailPanel session-load failure surface", () => {
     const dock = conversationShellSource.slice(dockIdx, dockIdx + 200)
     expect(dock).toContain("mx-auto w-full max-w-3xl")
   })
+
+  it("never clears a resolved session id when the persisted detail is absent", () => {
+    // `externalId` is what gets handed to acp_connect, and it resolves from the
+    // persisted detail OR the runtime store value the connSessionId effect
+    // wrote. `detail` is null while any (re)fetch is in flight, so writing null
+    // to the store in that window discards a session id we already know — and a
+    // reconnect with no session id takes session/new, which is precisely how a
+    // conversation's history gets stranded (codeg#500). The backend now refuses
+    // to destroy the history either way; this keeps the frontend from steering
+    // into it in the first place.
+    const effectStart = source.indexOf(
+      "if (effectiveConversationId <= 0) return"
+    )
+    expect(effectStart).toBeGreaterThan(-1)
+    const effectEnd = source.indexOf(
+      "}, [effectiveConversationId,",
+      effectStart
+    )
+    expect(effectEnd).toBeGreaterThan(effectStart)
+    const effect = source.slice(effectStart, effectEnd)
+
+    expect(effect).toContain("const persisted = detail?.summary.external_id")
+    expect(effect).toContain("if (!persisted) return")
+    expect(effect).toContain(
+      "setExternalId(effectiveConversationId, persisted)"
+    )
+    // The regression this guards: the old body passed `?? null` straight
+    // through, so an in-flight refetch wiped the id.
+    expect(effect).not.toContain(
+      "setExternalId(effectiveConversationId, detail?.summary.external_id ?? null)"
+    )
+  })
 })

@@ -36,6 +36,7 @@ vi.mock("@/lib/api", () => ({
     agent_defaults: {},
   })),
   setDelegationSettings: vi.fn(async (v: unknown) => v),
+  acpListAgents: vi.fn(async () => []),
   getFeedbackSettings: vi.fn(async () => ({ enabled: false })),
   setFeedbackSettings: vi.fn(async (v: unknown) => v),
   getQuestionSettings: vi.fn(async () => ({ enabled: true })),

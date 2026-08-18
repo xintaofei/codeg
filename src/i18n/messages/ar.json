@@ -626,6 +626,7 @@
       "description": "اسمح للوكلاء النشطين بتفويض المهام الفرعية إلى وكلاء آخرين.",
       "enable": "تفعيل التفويض",
       "enableHint": "عند الإيقاف، يتم إخفاء أداة delegate_to_agent من قائمة أدوات MCP الخاصة بالوكيل.",
+      "withheldByHostTools": "لن تحصل {agents} على أدوات التفويض: مفتاح «دع الوكيل يتولى الملفات والأوامر» الخاص بها مُفعّل.",
       "depthLimit": "أقصى عمق للتفويض",
       "depthHint": "النطاق المسموح: {min}–{max}. يحدّ من عمق سلسلة التفويض (جذر ← فرعي ← حفيد …).",
       "completedCacheLabel": "ذاكرة التخزين المؤقت للنتائج المكتملة (MB)",
@@ -683,6 +684,7 @@
       "saveKimiCodeConfig": "حفظ إعدادات Kimi Code",
       "customInstall": "تثبيت مخصص",
       "saveKimiCodeRawConfig": "Save config.toml",
+      "saveDeepSeekConfig": "حفظ إعدادات DeepSeek",
       "diagnose": "تشخيص"
     },
     "status": {
@@ -785,6 +787,15 @@
       "modelNoMatch": "لا يوجد نموذج مطابق",
       "modelsNeedAuth": "سجّل الدخول لتحميل قائمة النماذج.",
       "modelDefaultBadge": "افتراضي"
+    },
+    "deepseek": {
+      "configManagement": "إعدادات DeepSeek Harness",
+      "configDescription": "نقطة النهاية والمفتاح متغيّرا بيئة يقرأهما deepseek-acp عند الإقلاع. أما النموذج ومستوى الاستدلال فمحدِّدان على مستوى الجلسة، ويُختاران من حقل الإدخال.",
+      "baseUrlLabel": "نقطة نهاية API",
+      "baseUrlHint": "اتركه فارغًا لاستخدام نقطة النهاية الرسمية. يسري على الجلسات التي تبدأ بعد الحفظ؛ أعد الاتصال بالجلسة الجارية كي تأخذ القيمة الجديدة.",
+      "baseUrlInvalid": "أدخل عنوان http(s) كاملًا وبدون سلسلة استعلام، مثل https://api.deepseek.com",
+      "apiKeyLabel": "مفتاح API",
+      "apiKeyHint": "يُمرَّر إلى الوكيل باسم DEEPSEEK_API_KEY. متغيّر البيئة له أسبقية على ملف بيانات الاعتماد، لذا اترك الحقل فارغًا إن كنت تسجّل الدخول من الطرفية."
     },
     "codex": {
       "configDescription": "يدعم الإعداد السريع لعنوان API ومفتاح API واسم النموذج وجهد الاستدلال، مع المزامنة مع `auth.json` / `config.toml`.",
@@ -1206,6 +1217,8 @@
       "saveCodeBuddyFailed": "فشل حفظ إعدادات CodeBuddy",
       "kimiCodeSaved": "تم حفظ إعدادات Kimi Code",
       "saveKimiCodeFailed": "فشل حفظ إعدادات Kimi Code",
+      "deepseekSaved": "تم حفظ إعدادات DeepSeek",
+      "saveDeepSeekFailed": "تعذّر حفظ إعدادات DeepSeek",
       "modelProviderRequired": "يرجى اختيار مزود نموذج قبل الحفظ.",
       "affectedRunningSessions": "{count} جلسة نشطة تحتاج إلى إعادة الاتصال لتطبيق التغيير",
       "providerConnected": "تم ربط {providerId}",
@@ -1416,7 +1429,6 @@
     "terminalShellNotInstalled": "غير مثبّت",
     "terminalShellNotFoundWarning": "هذا المسار غير موجود على هذا المضيف.",
     "terminalCurrentShell": "قيد الاستخدام: {path}",
-    "terminalAgentShellHint": "عند ترك الخيار على «افتراضي النظام»، تُنفَّذ أسطر أوامر الوكلاء عبر صدفة النظام الأساسي (/bin/sh، أو cmd على ويندوز). اختيار صدفة محددة ينطبق على الوكلاء أيضًا: فهي ترسل صياغة POSIX التي قد ترفضها fish و nushell و Windows PowerShell 5.1 (بدون المعامل &&).",
     "renderingDescription": "أوقف تشغيل تسريع الأجهزة إذا ظهرت شاشة سوداء أو أخطاء في العرض (شائع على بعض كروت AMD أو كروت Intel المدمجة). يسري على إصدار سطح المكتب لويندوز فقط.",
     "disableHardwareAcceleration": "تعطيل تسريع الأجهزة",
     "renderingSaveFailed": "فشل حفظ إعدادات العرض: {message}",
@@ -1734,6 +1746,7 @@
     "conversationCard": {
       "untitledConversation": "محادثة بدون عنوان",
       "newConversation": "محادثة جديدة",
+      "attachToCurrentSession": "إضافة إلى الجلسة",
       "rename": "إعادة تسمية",
       "status": "الحالة",
       "delete": "حذف",
@@ -1820,6 +1833,16 @@
         "cacheRead": "قراءة الكاش",
         "cacheWrite": "كتابة الكاش",
         "total": "الإجمالي"
+      },
+      "quickActions": {
+        "title": "إجراءات سريعة",
+        "groups": {
+          "workspace": "مساحة العمل",
+          "sessions": "الجلسات",
+          "automation": "الأتمتة والمهام",
+          "more": "المزيد"
+        },
+        "showPet": "إظهار الحيوان الأليف"
       }
     },
     "auxPanel": {
@@ -2682,6 +2705,7 @@
         "slashCommands": "أوامر الشرطة المائلة",
         "slashSearchPlaceholder": "البحث عن الأوامر...",
         "slashSearchEmpty": "لا توجد أوامر مطابقة",
+        "slashLoading": "جارٍ تحميل الأوامر…",
         "experts": "الخبراء",
         "office": "الأعمال المكتبية",
         "research": "البحث العلمي",
@@ -2834,7 +2858,8 @@
       "agentSelector": {
         "noEnabledAgents": "لا يوجد وكلاء مفعّلون",
         "openAgentsSettings": "فتح إعدادات الوكلاء",
-        "notInstalled": "غير مثبّت"
+        "notInstalled": "غير مثبّت",
+        "moreAgents": "وكلاء إضافيون ({count})"
       },
       "subAgentOverlay": {
         "title": "الوكلاء الفرعيون",
@@ -3057,6 +3082,7 @@
         "agentSessionLoading": "جارٍ تحميل سجل الوكيل الفرعي…",
         "agentSessionEmpty": "لم يكتب الوكيل الفرعي أي شيء بعد.",
         "agentFallbackTitle": "جارٍ تشغيل الوكيل الفرعي…",
+        "agentCodexLaunchOnly": "تم التشغيل. لا يبلّغ Codex عن أي تقدّم إضافي لهذا الوكيل الفرعي — وستصل نتيجته كرسالة في هذه المحادثة.",
         "agentStatsBash": "الأوامر",
         "agentStatsRead": "الملفات المقروءة",
         "agentStatsSearch": "عمليات البحث",
@@ -3080,7 +3106,8 @@
             "blocked": "محظور",
             "usageLimited": "الاستخدام محدود",
             "budgetLimited": "الميزانية محدودة",
-            "complete": "مكتمل"
+            "complete": "مكتمل",
+            "limited": "تم بلوغ الحد"
           }
         },
         "field": {
@@ -3306,7 +3333,28 @@
       "contextCompaction": {
         "compacting": "جارٍ ضغط السياق…",
         "compacted": "تم ضغط السياق",
-        "compactedTokens": "تم ضغط السياق · {before} → {after} رمز"
+        "compactedTokens": "تم ضغط السياق · {before} → {after} رمز",
+        "failed": "فشل ضغط السياق"
+      },
+      "sessionFailure": {
+        "category": {
+          "connection": "مشكلة في الاتصال",
+          "access": "مشكلة في الوصول",
+          "limit": "تم بلوغ الحد",
+          "request": "تم رفض الطلب",
+          "service": "مشكلة في الخدمة",
+          "unknown": "مشكلة في الجلسة"
+        },
+        "action": {
+          "retry": "إعادة المحاولة",
+          "login": "تسجيل الدخول",
+          "newSession": "جلسة جديدة"
+        },
+        "recovered": "تم التعافي",
+        "retryUnavailable": "لا توجد رسالة سابقة لإعادة إرسالها.",
+        "toggleDetails": "تبديل التفاصيل",
+        "dismiss": "تجاهل",
+        "moreIncidents": "+{count} أخرى"
       },
       "backgroundTasks": {
         "running": "{count, plural, one {مهمة خلفية واحدة قيد التشغيل} two {مهمتا خلفية قيد التشغيل} few {# مهام خلفية قيد التشغيل} other {# مهمة خلفية قيد التشغيل}}",
@@ -4597,7 +4645,8 @@
     "settingsInitCommandHint": "يعمل داخل worktree جديد قبل بدء الوكيل.",
     "settingsInitCommandPlaceholder": "pnpm install",
     "settingsTabGeneral": "عام",
-    "settingsTabWorkflow": "سير العمل",
+    "settingsTabMerge": "الدمج",
+    "settingsTabWorktree": "Worktree",
     "settingsTabPrompts": "التوجيهات",
     "settingsPromptsIntro": "لكل مرحلة موجّه مدمج بالفعل — المهمة نفسها، وقواعد شجرة العمل، وخطوات git الدقيقة عند الدمج. وما تضيفه هنا يُلحَق في النهاية كتعليمات إضافية: فهو يُهذّب النص المدمج ولا يستبدله أبدًا.",
     "settingsPromptStageAll": "كل المراحل",

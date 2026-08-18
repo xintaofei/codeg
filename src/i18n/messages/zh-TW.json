@@ -626,6 +626,7 @@
       "description": "允許活躍的智慧體將子任務委派給其他智慧體。",
       "enable": "啟用委派",
       "enableHint": "關閉後，delegate_to_agent 工具會從智慧體的 MCP 工具清單中隱藏。",
+      "withheldByHostTools": "{agents} 不會拿到委派工具：它們單獨開啟了「由 Agent 自行處理檔案與命令」。",
       "depthLimit": "最大委派深度",
       "depthHint": "允許範圍：{min}–{max}。限制委派鏈（根 → 子 → 孫 …）的最大遞迴深度。",
       "completedCacheLabel": "已完成結果快取（MB）",
@@ -683,6 +684,7 @@
       "saveKimiCodeConfig": "儲存 Kimi Code 設定",
       "customInstall": "自訂安裝",
       "saveKimiCodeRawConfig": "儲存 config.toml",
+      "saveDeepSeekConfig": "儲存 DeepSeek 設定",
       "diagnose": "診斷"
     },
     "status": {
@@ -785,6 +787,15 @@
       "modelNoMatch": "沒有相符的模型",
       "modelsNeedAuth": "登入後載入模型清單。",
       "modelDefaultBadge": "預設"
+    },
+    "deepseek": {
+      "configManagement": "DeepSeek Harness 設定",
+      "configDescription": "端點與金鑰是 deepseek-acp 啟動時讀取的環境變數。模型與推理等級是工作階段層級的選擇器，在輸入框裡切換。",
+      "baseUrlLabel": "API 端點",
+      "baseUrlHint": "留空則使用官方端點。儲存後對新建的工作階段生效——正在進行的工作階段需要重新連線才會切換。",
+      "baseUrlInvalid": "請填寫完整的 http(s) 網址且不帶查詢參數，例如 https://api.deepseek.com",
+      "apiKeyLabel": "API 金鑰",
+      "apiKeyHint": "以 DEEPSEEK_API_KEY 傳給智慧體。環境變數的優先權高於憑證檔，因此若用終端機登入，這裡留空即可。"
     },
     "codex": {
       "configDescription": "支援 API URL、API Key、模型名稱、Reasoning Effort 快捷配置，並與 `auth.json` / `config.toml` 雙向聯動。",
@@ -1206,6 +1217,8 @@
       "saveCodeBuddyFailed": "儲存 CodeBuddy 設定失敗",
       "kimiCodeSaved": "Kimi Code 設定已儲存",
       "saveKimiCodeFailed": "儲存 Kimi Code 設定失敗",
+      "deepseekSaved": "DeepSeek 設定已儲存",
+      "saveDeepSeekFailed": "儲存 DeepSeek 設定失敗",
       "modelProviderRequired": "請先選擇一個模型供應商再儲存。",
       "affectedRunningSessions": "{count} 個進行中的工作階段需重新連線以套用變更",
       "providerConnected": "已連接 {providerId}",
@@ -1416,7 +1429,6 @@
     "terminalShellNotInstalled": "未安裝",
     "terminalShellNotFoundWarning": "目前主機上不存在此路徑。",
     "terminalCurrentShell": "目前使用：{path}",
-    "terminalAgentShellHint": "保持「系統預設」時，代理的命令列會走平台 Shell（/bin/sh，Windows 上為 cmd）。指定特定 Shell 會同時作用於代理——它們送出的是 POSIX 語法，fish、nushell 與 Windows PowerShell 5.1（不支援 && 運算子）可能無法執行。",
     "renderingDescription": "若應用出現黑屏或渲染異常（常見於 AMD 顯示卡或部分 Intel 內顯），可關閉硬體加速。僅 Windows 桌面端生效。",
     "disableHardwareAcceleration": "停用硬體加速",
     "renderingSaveFailed": "渲染設定儲存失敗：{message}",
@@ -1734,6 +1746,7 @@
     "conversationCard": {
       "untitledConversation": "未命名會話",
       "newConversation": "新增會話",
+      "attachToCurrentSession": "添加到會話",
       "rename": "重新命名",
       "status": "狀態",
       "delete": "刪除",
@@ -1820,6 +1833,16 @@
         "cacheRead": "快取讀取",
         "cacheWrite": "快取寫入",
         "total": "總計"
+      },
+      "quickActions": {
+        "title": "快捷操作",
+        "groups": {
+          "workspace": "工作區",
+          "sessions": "會話",
+          "automation": "自動化與待辦",
+          "more": "更多"
+        },
+        "showPet": "顯示寵物"
       }
     },
     "auxPanel": {
@@ -2682,6 +2705,7 @@
         "slashCommands": "斜線命令",
         "slashSearchPlaceholder": "搜尋命令...",
         "slashSearchEmpty": "沒有符合的指令",
+        "slashLoading": "正在載入指令…",
         "experts": "專家",
         "office": "日常辦公",
         "research": "科學研究",
@@ -2834,7 +2858,8 @@
       "agentSelector": {
         "noEnabledAgents": "暫無已啟用的 Agent",
         "openAgentsSettings": "開啟 Agents 設定",
-        "notInstalled": "未安裝"
+        "notInstalled": "未安裝",
+        "moreAgents": "更多 Agent（{count}）"
       },
       "subAgentOverlay": {
         "title": "子智能體",
@@ -3057,6 +3082,7 @@
         "agentSessionLoading": "正在載入子智慧體的對話記錄…",
         "agentSessionEmpty": "子智慧體尚未寫入任何內容。",
         "agentFallbackTitle": "子智能體啟動中…",
+        "agentCodexLaunchOnly": "已啟動。Codex 不會再回報這個子智能體的進度——它的結果會以一則訊息出現在本工作階段中。",
         "agentStatsBash": "命令",
         "agentStatsRead": "讀取檔案",
         "agentStatsSearch": "搜尋",
@@ -3080,7 +3106,8 @@
             "blocked": "受阻",
             "usageLimited": "用量受限",
             "budgetLimited": "預算受限",
-            "complete": "已完成"
+            "complete": "已完成",
+            "limited": "已達上限"
           }
         },
         "field": {
@@ -3306,7 +3333,28 @@
       "contextCompaction": {
         "compacting": "正在壓縮上下文…",
         "compacted": "上下文已壓縮",
-        "compactedTokens": "上下文已壓縮 · {before} → {after} tokens"
+        "compactedTokens": "上下文已壓縮 · {before} → {after} tokens",
+        "failed": "上下文壓縮失敗"
+      },
+      "sessionFailure": {
+        "category": {
+          "connection": "連線異常",
+          "access": "存取受限",
+          "limit": "已達限制",
+          "request": "請求被拒絕",
+          "service": "服務異常",
+          "unknown": "會話異常"
+        },
+        "action": {
+          "retry": "重試",
+          "login": "去登入",
+          "newSession": "新增會話"
+        },
+        "recovered": "已恢復",
+        "retryUnavailable": "沒有可重發的訊息。",
+        "toggleDetails": "展開/收合詳情",
+        "dismiss": "忽略",
+        "moreIncidents": "另 {count} 條"
       },
       "backgroundTasks": {
         "running": "{count} 個背景任務執行中",
@@ -4597,7 +4645,8 @@
     "settingsInitCommandHint": "建立 worktree 後、工作階段開始前執行。",
     "settingsInitCommandPlaceholder": "pnpm install",
     "settingsTabGeneral": "一般",
-    "settingsTabWorkflow": "流程",
+    "settingsTabMerge": "合併",
+    "settingsTabWorktree": "Worktree",
     "settingsTabPrompts": "提示詞",
     "settingsPromptsIntro": "每個階段都已內建固定的提示詞——任務本身、worktree 規則，合併階段還包含具體的 git 步驟。這裡填的內容會作為補充說明追加到最後：只是對內建提示詞的細化，不會取代它們。",
     "settingsPromptStageAll": "全部階段",

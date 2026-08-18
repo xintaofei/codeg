@@ -1,6 +1,6 @@
 [package]
 name = "codeg"
-version = "0.25.0"
+version = "0.26.1"
 description = "Agent Code Generation App"
 authors = ["feitao"]
 edition = "2021"
@@ -84,6 +84,10 @@ futures-lite = "2"
 reqwest = { version = "0.12", features = ["stream", "json", "multipart", "gzip", "brotli"] }
 flate2 = "1"
 bzip2 = "0.5"
+# DeepSeek Harness session logs (`~/.dsh/sessions/**/session.jsonl.zstd`) are a
+# sequence of complete Zstandard frames appended per write batch; the parser
+# only decodes (`zstd::stream::decode_all` walks concatenated frames to EOF).
+zstd = "0.13"
 tar = "0.4"
 zip = "2"
 regex = "1"

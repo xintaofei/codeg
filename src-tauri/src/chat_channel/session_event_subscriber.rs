@@ -20,6 +20,7 @@ use crate::db::service::{
     app_metadata_service, conversation_service, sender_context_service, thread_binding_service,
 };
 use crate::logging::throttle::{LagLogThrottle, LAG_LOG_WINDOW};
+use crate::web::event_bridge::EventEmitter;
 
 use super::manager::ChatChannelManager;
 
@@ -30,12 +31,21 @@ const MESSAGE_LANGUAGE_KEY: &str = "chat_message_language";
 const COMMAND_PREFIX_KEY: &str = "chat_command_prefix";
 const DEFAULT_COMMAND_PREFIX: &str = "/";
 
+/// `emitter` must be the process-wide, long-lived emitter — NOT one looked up
+/// per connection. This subscriber consumes `SessionStarted` asynchronously off
+/// the broadcast bus, and connection cleanup removes the manager entry right
+/// after queuing its terminal events, so a per-`connection_id` lookup can
+/// legitimately come back empty by the time an event is handled. That would
+/// leave a preserved conversation row created but never broadcast — invisible
+/// to the user, which is the very failure being fixed (see
+/// `emit_preserved_conversation`).
 pub fn spawn_session_event_subscriber(
     bus: Arc<InternalEventBus>,
     bridge: Arc<Mutex<SessionBridge>>,
     manager: ChatChannelManager,
     conn_mgr: ConnectionManager,
     db_conn: DatabaseConnection,
+    emitter: EventEmitter,
 ) -> JoinHandle<()> {
     let mut rx = bus.subscribe();
     let metrics = Arc::clone(bus.metrics());
@@ -71,6 +81,7 @@ pub fn spawn_session_event_subscriber(
                         &manager,
                         &conn_mgr,
                         &db_conn,
+                        &emitter,
                     )
                     .await;
                 }
@@ -112,6 +123,7 @@ async fn handle_acp_envelope(
     manager: &ChatChannelManager,
     conn_mgr: &ConnectionManager,
     db: &DatabaseConnection,
+    emitter: &EventEmitter,
 ) {
     let connection_id = envelope.connection_id.as_str();
 
@@ -119,12 +131,34 @@ async fn handle_acp_envelope(
         AcpEvent::SessionStarted { session_id } => {
             let mut guard = bridge.lock().await;
             if let Some(session) = guard.get_mut(connection_id) {
-                let _ = conversation_service::update_external_id(
+                // Guarded bind — the bridge registers `conversation_id` up
+                // front, so this writes onto an ALREADY-bound row and would
+                // otherwise overwrite the id its history hangs off if the
+                // session was re-minted (codeg#500). Whichever of this
+                // subscriber and the lifecycle one wins the race, the loser
+                // gets `None` and the row is preserved exactly once.
+                let continues =
+                    crate::acp::continued_session_ids(session.agent_type, session_id);
+                match conversation_service::bind_external_id(
                     db,
                     session.conversation_id,
-                    session_id.clone(),
+                    session_id,
+                    &continues,
                 )
-                .await;
+                .await
+                {
+                    Ok(preserved) => {
+                        crate::commands::conversations::emit_preserved_conversation(
+                            emitter, db, preserved,
+                        )
+                        .await;
+                    }
+                    Err(e) => tracing::warn!(
+                        conversation_id = session.conversation_id,
+                        error = %e,
+                        "[SessionEventSub] failed to bind the session id"
+                    ),
+                }
 
                 if let Some(prompt_text) = session.pending_prompt.take() {
                     // Clone so the prompt can be RESTORED (not dropped) if a turn
@@ -1267,6 +1301,7 @@ mod async_relay_dedup_tests {
             &chat,
             &conn,
             &db.conn,
+            &EventEmitter::Noop,
         )
         .await;
         let msgs = sent(&rec).await;
@@ -1282,7 +1317,7 @@ mod async_relay_dedup_tests {
         let (bridge, chat, rec) = harness().await;
         let conn = ConnectionManager::new();
         let db = test_helpers::fresh_in_memory_db().await;
-        handle_acp_envelope(&delegation_completed_ok(), &bridge, &chat, &conn, &db.conn).await;
+        handle_acp_envelope(&delegation_completed_ok(), &bridge, &chat, &conn, &db.conn, &EventEmitter::Noop).await;
         // The later terminal update carries raw_input (re-creating the old
         // input-map token) AND terminal output.
         handle_acp_envelope(
@@ -1291,6 +1326,7 @@ mod async_relay_dedup_tests {
             &chat,
             &conn,
             &db.conn,
+            &EventEmitter::Noop,
         )
         .await;
         let msgs = sent(&rec).await;
@@ -1315,9 +1351,10 @@ mod async_relay_dedup_tests {
             &chat,
             &conn,
             &db.conn,
+            &EventEmitter::Noop,
         )
         .await;
-        handle_acp_envelope(&delegation_completed_ok(), &bridge, &chat, &conn, &db.conn).await;
+        handle_acp_envelope(&delegation_completed_ok(), &bridge, &chat, &conn, &db.conn, &EventEmitter::Noop).await;
         let msgs = sent(&rec).await;
         assert_eq!(msgs.len(), 2, "ack + result, got {msgs:?}");
         assert!(msgs[0].contains("running in background"));
@@ -1331,7 +1368,7 @@ mod async_relay_dedup_tests {
         let (bridge, chat, rec) = harness().await;
         let conn = ConnectionManager::new();
         let db = test_helpers::fresh_in_memory_db().await;
-        handle_acp_envelope(&delegation_completed_ok(), &bridge, &chat, &conn, &db.conn).await;
+        handle_acp_envelope(&delegation_completed_ok(), &bridge, &chat, &conn, &db.conn, &EventEmitter::Noop).await;
         // Host re-emits the running ack after completion, with raw_input.
         handle_acp_envelope(
             &completed_update(ACK, true),
@@ -1339,6 +1376,7 @@ mod async_relay_dedup_tests {
             &chat,
             &conn,
             &db.conn,
+            &EventEmitter::Noop,
         )
         .await;
         let msgs = sent(&rec).await;
@@ -1360,6 +1398,7 @@ mod async_relay_dedup_tests {
             &chat,
             &conn,
             &db.conn,
+            &EventEmitter::Noop,
         )
         .await;
         let msgs = sent(&rec).await;
@@ -1402,7 +1441,7 @@ mod async_relay_dedup_tests {
                 session_id: "S1".into(),
             },
         };
-        handle_acp_envelope(&started, &bridge, &chat, &conn, &db.conn).await;
+        handle_acp_envelope(&started, &bridge, &chat, &conn, &db.conn, &EventEmitter::Noop).await;
 
         assert_eq!(
             bridge
@@ -1443,7 +1482,7 @@ mod async_relay_dedup_tests {
                 agent_type: "claude".into(),
             },
         };
-        handle_acp_envelope(&complete, &bridge, &chat, &conn, &db.conn).await;
+        handle_acp_envelope(&complete, &bridge, &chat, &conn, &db.conn, &EventEmitter::Noop).await;
 
         assert!(
             bridge
@@ -1531,6 +1570,95 @@ mod error_terminal_gate_tests {
     }
 
     #[tokio::test]
+    async fn session_started_preserves_history_and_broadcasts_it_without_a_manager_entry() {
+        // Two things at once, because they are the same bug seen from two
+        // angles (codeg#500).
+        //
+        // 1. This subscriber writes onto an ALREADY-bound `conversation_id`
+        //    (the bridge registers it up front), so a re-minted session would
+        //    silently overwrite the id the row's history hangs off. The guarded
+        //    bind must split that history onto its own row instead.
+        //
+        // 2. Creating that row is only half the fix: the sidebar inserts a
+        //    conversation it has never seen ONLY on a `conversation://changed`
+        //    upsert. A preserved row that is never broadcast still looks, to
+        //    the user, exactly like the conversation vanishing.
+        //
+        // The manager entry is deliberately ABSENT here. That is a REACHABLE
+        // state, not a contrivance: this subscriber consumes `SessionStarted`
+        // asynchronously off the broadcast bus, while connection cleanup
+        // removes the entry right after queuing its terminal events. So an
+        // emitter resolved per-`connection_id` would come back empty exactly
+        // here and drop the broadcast — which is why the emitter is injected
+        // for the subscriber's whole lifetime instead. Reverting to a lookup
+        // must fail this test.
+        use crate::acp::internal_bus::InternalEventBus;
+        use crate::db::entities::conversation;
+        use crate::web::event_bridge::{WebEventBroadcaster, CONVERSATION_CHANGED_EVENT};
+        use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let (bridge, conv_id) = seed_session(&db, "c-reminted").await;
+        conversation_service::bind_external_id(&db.conn, conv_id, "S1", &[])
+            .await
+            .expect("seed the original session");
+
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let emitter = EventEmitter::web_only(
+            broadcaster,
+            Arc::new(InternalEventBus::new(Default::default())),
+        );
+
+        let chat_mgr = ChatChannelManager::new();
+        // Empty on purpose — see above.
+        let conn_mgr = ConnectionManager::new();
+        let envelope = EventEnvelope {
+            seq: 1,
+            connection_id: "c-reminted".to_string(),
+            payload: AcpEvent::SessionStarted {
+                session_id: "S2".to_string(),
+            },
+        };
+        handle_acp_envelope(&envelope, &bridge, &chat_mgr, &conn_mgr, &db.conn, &emitter).await;
+
+        // The bound row advanced; the old session kept a row of its own.
+        let rows = conversation::Entity::find()
+            .filter(conversation::Column::DeletedAt.is_null())
+            .all(&db.conn)
+            .await
+            .expect("list rows");
+        assert_eq!(rows.len(), 2, "the old session must keep a row, got {rows:?}");
+        let preserved = rows
+            .iter()
+            .find(|r| r.external_id.as_deref() == Some("S1"))
+            .expect("S1 must still be indexed");
+        assert_ne!(preserved.id, conv_id);
+        assert_eq!(
+            rows.iter()
+                .find(|r| r.id == conv_id)
+                .and_then(|r| r.external_id.as_deref()),
+            Some("S2")
+        );
+
+        // ...and the sidebar was actually told about it.
+        let mut saw_preserved = false;
+        while let Ok(event) = rx.try_recv() {
+            let payload = serde_json::to_string(&event).unwrap_or_default();
+            if payload.contains(CONVERSATION_CHANGED_EVENT)
+                && payload.contains(&format!("\"id\":{}", preserved.id))
+            {
+                saw_preserved = true;
+            }
+        }
+        assert!(
+            saw_preserved,
+            "the preserved conversation must be broadcast — a row the sidebar \
+             never hears about is indistinguishable from the bug being fixed"
+        );
+    }
+
+    #[tokio::test]
     async fn non_terminal_error_keeps_session_and_conversation_intact() {
         let db = test_helpers::fresh_in_memory_db().await;
         let (bridge, conv_id) = seed_session(&db, "c-nonterm").await;
@@ -1548,7 +1676,7 @@ mod error_terminal_gate_tests {
                 terminal: false,
             },
         };
-        handle_acp_envelope(&envelope, &bridge, &chat_mgr, &conn_mgr, &db.conn).await;
+        handle_acp_envelope(&envelope, &bridge, &chat_mgr, &conn_mgr, &db.conn, &EventEmitter::Noop).await;
 
         // Session bridge entry is preserved — the next user message on the
         // same connection can still flow through it.
@@ -1581,7 +1709,7 @@ mod error_terminal_gate_tests {
                 terminal: true,
             },
         };
-        handle_acp_envelope(&envelope, &bridge, &chat_mgr, &conn_mgr, &db.conn).await;
+        handle_acp_envelope(&envelope, &bridge, &chat_mgr, &conn_mgr, &db.conn, &EventEmitter::Noop).await;
 
         assert!(
             bridge.lock().await.get("c-term").is_none(),

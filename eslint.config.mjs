@@ -17,6 +17,11 @@ const eslintConfig = defineConfig([
     "src-tauri/target/**",
     "src-tauri/experts/**",
     "public/vs/**",
+    // Gitignored scratch space for planning/review docs and one-off probe
+    // scripts. Prettier already skips it — its `--ignore-path` defaults to
+    // `.gitignore` — but flat config has no such default, so without this
+    // `pnpm eslint .` fails the repo on files that are not in the repo.
+    ".docs/**",
   ]),
   eslintConfigPrettier,
   eslintPluginPrettierRecommended,
