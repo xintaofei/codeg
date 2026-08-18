@@ -161,6 +161,32 @@ describe("remark-math with singleDollarTextMath: false", () => {
       expect(parseMath(normalizeMathDelimiters(text))).toEqual([])
     }
   })
+
+  it("does not rewrite \\(...\\) inside a fence nested in a longer fence", () => {
+    // ````md wraps a ```js block; the inner ``` must not close the outer
+    // ```` fence, so the code stays verbatim.
+    const text = "````md\n```js\nconst x = 1 // \\(x\\)\n```\n````"
+    expect(normalizeMathDelimiters(text)).toBe(text)
+    expect(parseMath(normalizeMathDelimiters(text))).toEqual([])
+  })
+
+  it("does not rewrite \\(...\\) inside a still-open fence (streaming mid-state)", () => {
+    // A code block whose closing fence has not streamed in yet runs to EOF;
+    // its contents must not be touched while it is transiently unclosed.
+    const text = "Here is the file:\n```tex\n\\(a+b\\)\n"
+    expect(normalizeMathDelimiters(text)).toBe(text)
+  })
+
+  it("still rewrites \\(...\\) in prose between two fenced blocks", () => {
+    const text =
+      "```\ncode1 \\(keep\\)\n```\nprose \\(x\\) here\n```\ncode2\n```"
+    const out = normalizeMathDelimiters(text)
+    expect(out).toContain("$$x$$")
+    expect(out).toContain("\\(keep\\)")
+    expect(parseMath(out)).toEqual([
+      { type: "inlineMath", value: "x", meta: null },
+    ])
+  })
 })
 
 describe("block structure around a normalized formula", () => {

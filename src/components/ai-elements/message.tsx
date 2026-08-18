@@ -381,8 +381,16 @@ export function normalizeMathDelimiters(text: string): string {
     saved.push(m)
     return `\0CBLK${saved.length - 1}\0`
   }
+  // A fenced block closes only on a fence of the SAME char run at least as
+  // long as its opener (CommonMark 4.5), and an unclosed fence runs to EOF.
+  // Pairing any 3+ run with the next one (the old `` `{3,}[\s\S]*?`{3,} ``)
+  // mis-split a ```` ````md ```` block at its inner ``` ``` ```` fence and left
+  // the code inside unmasked, so `\(...\)` there got rewritten — and every
+  // streaming code block hit the same rewrite while its closing fence was
+  // still pending. Capture the opener and require the closer to be `\1`+ (or
+  // end of string).
   const masked = text.replace(
-    /`{3,}[\s\S]*?`{3,}|~{3,}[\s\S]*?~{3,}|`[^`\n]+`/g,
+    /(`{3,})[\s\S]*?(?:\1`*|$)|(~{3,})[\s\S]*?(?:\2~*|$)|`[^`\n]+`/g,
     placeholder
   )
   // Fold line endings only after masking, so the offsets and line scans below
