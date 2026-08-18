@@ -1206,26 +1206,25 @@
   background-color: transparent;
 }
 
-/* 终端画布：让 xterm 视口透出所属 ws-surface 面板的磨砂表面（而非黑块）。xterm 6 的视口
-   分两层——外层 .xterm-viewport（xterm.css 硬编码 background-color:#000，且不随主题变化）
-   套着内层 SmoothScrollableElement 节点（终端主题背景色应用在这层）。terminal-view.tsx 已把
-   内层主题背景改成 alpha 0（透明），但外层那层黑底会透出来，终端仍是黑块。
+/* 终端画布：xterm 6 在运行时会给内层 .xterm-scrollable-element 设置内联样式
+   style="background-color: rgb(0, 0, 0)"（黑色），这会覆盖 CSS 规则。需要用 !important
+   来强制覆盖这个内联样式，使终端背景色跟随主题。
    
    两种情形的处理方式：
-   1. 不启用背景图时：用主题背景色覆盖外层黑色，使终端在亮色主题下显示白色背景，暗色主题下
-      显示深灰背景。选择器特异性(0,3,0)高于 xterm.css(0,2,0)，无需 !important。
-   2. 启用背景图时：外层改透明，两层皆透，终端画布透出下方磨砂面板。
+   1. 不启用背景图时：用主题背景色覆盖 .xterm-scrollable-element 的内联黑色，使终端在
+      亮色主题下显示白色背景，暗色主题下显示深灰背景。需要 !important 压过内联样式。
+   2. 启用背景图时：改为透明背景，两层皆透，让终端画布透出下方磨砂面板。
    
    零回归：关图或未设背景属性时无此规则或不匹配。 */
 
-/* 不启用背景图：用主题背景色覆盖 xterm-viewport 的硬编码黑色 */
-:not([data-workspace-bg="on"]) .xterm .xterm-viewport {
-  background-color: var(--background);
+/* 不启用背景图：用主题背景色覆盖 xterm-scrollable-element 的运行时内联黑色 */
+:not([data-workspace-bg="on"]) .xterm .xterm-scrollable-element {
+  background-color: var(--background) !important;
 }
 
-/* 启用背景图：外层改透明让画布透出磨砂面板 */
-[data-workspace-bg="on"] .xterm .xterm-viewport {
-  background-color: transparent;
+/* 启用背景图：改为透明让画布透出磨砂面板 */
+[data-workspace-bg="on"] .xterm .xterm-scrollable-element {
+  background-color: transparent !important;
 }
 
 /* Monaco sticky scroll（钉住的父级作用域行）：开背景图时编辑器画布透明（WSBG_CANVAS_ALPHA=0），
