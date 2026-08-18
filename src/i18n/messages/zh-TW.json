@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "視窗縮放",
-      "sectionDescription": "整體放大或縮小介面，立即生效，依裝置分別儲存。",
+      "sectionDescription": "整體放大或縮小介面，立即生效，依裝置分別儲存。⌘/Ctrl + 和 - 依與此選單相同的檔位調節（⌘/Ctrl 0 恢復為 100%）。",
       "placeholder": "請選擇縮放檔位",
       "default": "預設",
       "current": "目前縮放：{zoom}%"
@@ -431,16 +431,16 @@
         "description": "逃生艙：一鍵關閉全部自訂配色與 CSS，再按一次恢復"
       },
       "zoom_in": {
-        "title": "Zoom in",
-        "description": "Step the window zoom up one Settings rung"
+        "title": "放大",
+        "description": "把視窗縮放提高一檔"
       },
       "zoom_out": {
-        "title": "Zoom out",
-        "description": "Step the window zoom down one Settings rung"
+        "title": "縮小",
+        "description": "把視窗縮放降低一檔"
       },
       "zoom_reset": {
-        "title": "Reset zoom",
-        "description": "Set the window zoom back to 100%"
+        "title": "重設縮放",
+        "description": "把視窗縮放恢復為 100%"
       }
     }
   },

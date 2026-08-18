@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "창 확대/축소",
-      "sectionDescription": "전체 인터페이스를 확대하거나 축소합니다. 즉시 적용되며 장치별로 저장됩니다.",
+      "sectionDescription": "전체 인터페이스를 확대하거나 축소합니다. 즉시 적용되며 장치별로 저장됩니다. ⌘/Ctrl +와 -는 이 메뉴와 같은 단계로 확대/축소합니다(⌘/Ctrl 0은 100%로 되돌립니다).",
       "placeholder": "확대/축소 단계 선택",
       "default": "기본값",
       "current": "현재 확대/축소: {zoom}%"
@@ -431,16 +431,16 @@
         "description": "비상 탈출구: 모든 사용자 지정 색상과 CSS를 끄고, 다시 누르면 되돌립니다"
       },
       "zoom_in": {
-        "title": "Zoom in",
-        "description": "Step the window zoom up one Settings rung"
+        "title": "확대",
+        "description": "창을 한 단계 더 크게 만듭니다"
       },
       "zoom_out": {
-        "title": "Zoom out",
-        "description": "Step the window zoom down one Settings rung"
+        "title": "축소",
+        "description": "창을 한 단계 더 작게 만듭니다"
       },
       "zoom_reset": {
-        "title": "Reset zoom",
-        "description": "Set the window zoom back to 100%"
+        "title": "확대/축소 초기화",
+        "description": "창 확대/축소를 100%로 되돌립니다"
       }
     }
   },

@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "Window zoom",
-      "sectionDescription": "Scale the entire interface. Applies immediately and persists per device. Ctrl + and Ctrl - step the same rungs as this menu (Ctrl 0 resets to 100%).",
+      "sectionDescription": "Scale the entire interface. Applies immediately and persists per device. ⌘/Ctrl + and - move through the same zoom levels as this menu (⌘/Ctrl 0 resets to 100%).",
       "placeholder": "Select zoom level",
       "default": "Default",
       "current": "Current zoom: {zoom}%"
@@ -432,11 +432,11 @@
       },
       "zoom_in": {
         "title": "Zoom in",
-        "description": "Step the window zoom up one Settings rung"
+        "description": "Make the window one step larger"
       },
       "zoom_out": {
         "title": "Zoom out",
-        "description": "Step the window zoom down one Settings rung"
+        "description": "Make the window one step smaller"
       },
       "zoom_reset": {
         "title": "Reset zoom",

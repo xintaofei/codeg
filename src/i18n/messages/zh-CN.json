@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "窗口缩放",
-      "sectionDescription": "整体放大或缩小界面，立即生效，按设备分别保存。",
+      "sectionDescription": "整体放大或缩小界面，立即生效，按设备分别保存。⌘/Ctrl + 和 - 按与此菜单相同的档位调节（⌘/Ctrl 0 恢复为 100%）。",
       "placeholder": "请选择缩放档位",
       "default": "默认",
       "current": "当前缩放：{zoom}%"
@@ -431,16 +431,16 @@
         "description": "逃生舱：一键关闭全部自定义配色与 CSS，再按一次恢复"
       },
       "zoom_in": {
-        "title": "Zoom in",
-        "description": "Step the window zoom up one Settings rung"
+        "title": "放大",
+        "description": "把窗口缩放提高一档"
       },
       "zoom_out": {
-        "title": "Zoom out",
-        "description": "Step the window zoom down one Settings rung"
+        "title": "缩小",
+        "description": "把窗口缩放降低一档"
       },
       "zoom_reset": {
-        "title": "Reset zoom",
-        "description": "Set the window zoom back to 100%"
+        "title": "重置缩放",
+        "description": "把窗口缩放恢复为 100%"
       }
     }
   },

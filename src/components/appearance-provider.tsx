@@ -67,9 +67,9 @@ import {
 } from "@/lib/custom-style"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import {
-  isZoomInShortcutEvent,
-  isZoomOutShortcutEvent,
+  isShortcutRecorderArmed,
   matchShortcutEvent,
+  resolveWindowZoomAction,
 } from "@/lib/keyboard-shortcuts"
 import {
   DEFAULT_WORKSPACE_BG_ENABLED,
@@ -478,7 +478,9 @@ export function AppearanceProvider({
     persist(STORAGE_KEY_ZOOM_LEVEL, String(zoom))
   }, [])
   const zoomLevelRef = useRef(zoomLevel)
-  zoomLevelRef.current = zoomLevel
+  useEffect(() => {
+    zoomLevelRef.current = zoomLevel
+  }, [zoomLevel])
 
   const setShowWelcomeQuickActions = useCallback((on: boolean) => {
     setShowWelcomeQuickActionsState(on)
@@ -751,6 +753,8 @@ export function AppearanceProvider({
   // 或某个组件吞掉了冒泡，这一路依然能把自定义样式整体停用。
   const { shortcuts } = useShortcutSettings()
   const toggleCustomStyleShortcut = shortcuts.toggle_custom_style
+  const zoomInShortcut = shortcuts.zoom_in
+  const zoomOutShortcut = shortcuts.zoom_out
   const zoomResetShortcut = shortcuts.zoom_reset
   useEffect(() => {
     if (!toggleCustomStyleShortcut) return
@@ -764,29 +768,43 @@ export function AppearanceProvider({
     return () => window.removeEventListener("keydown", onKeyDown, true)
   }, [toggleCustomStyleShortcut, customStyleSuspended, setCustomStyleSuspended])
 
-  // Same rungs as Settings → Window zoom. Capture-phase so the webview
+  // Same levels as Settings → Window zoom. Capture-phase so the webview
   // does not eat Ctrl/Cmd +/- as its own page zoom.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.repeat) return
-      if (isZoomInShortcutEvent(event)) {
-        event.preventDefault()
+      if (event.isComposing) return
+      if (isShortcutRecorderArmed()) return
+      if (
+        event.target instanceof Element &&
+        event.target.closest('[data-terminal-panel-region="true"]')
+      ) {
+        return
+      }
+
+      const action = resolveWindowZoomAction(event, {
+        zoom_in: zoomInShortcut,
+        zoom_out: zoomOutShortcut,
+        zoom_reset: zoomResetShortcut,
+      })
+      if (!action) return
+
+      // Match first, then preventDefault, including on repeats. A held
+      // key should walk the zoom levels, and in the browser the un-
+      // prevented repeat would also trigger the page's own zoom.
+      event.preventDefault()
+      if (action === "in") {
         setZoomLevel(stepZoom(zoomLevelRef.current, 1))
         return
       }
-      if (isZoomOutShortcutEvent(event)) {
-        event.preventDefault()
+      if (action === "out") {
         setZoomLevel(stepZoom(zoomLevelRef.current, -1))
         return
       }
-      if (zoomResetShortcut && matchShortcutEvent(event, zoomResetShortcut)) {
-        event.preventDefault()
-        setZoomLevel(DEFAULT_ZOOM_LEVEL)
-      }
+      setZoomLevel(DEFAULT_ZOOM_LEVEL)
     }
     window.addEventListener("keydown", onKeyDown, true)
     return () => window.removeEventListener("keydown", onKeyDown, true)
-  }, [setZoomLevel, zoomResetShortcut])
+  }, [setZoomLevel, zoomInShortcut, zoomOutShortcut, zoomResetShortcut])
 
   // 跨标签页同步：用户在另一个窗口改了设置时，本窗口实时跟进
   useEffect(() => {
