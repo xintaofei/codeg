@@ -3758,7 +3758,7 @@ mod tests {
         );
         summary.1.title = Some("Codex index title".into());
 
-        let result = scan_importable_sessions_from_summaries(
+        let (result, _refreshed_ids) = scan_importable_sessions_from_summaries(
             &db.conn,
             &emitter,
             &chat_channel_manager,
