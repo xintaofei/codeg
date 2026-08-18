@@ -1,7 +1,7 @@
 use chrono::Utc;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, ConnectionTrait, DatabaseConnection,
-    DbBackend, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder, Set, Statement,
+    DbBackend, EntityTrait, PaginatorTrait, QueryFilter, Set, Statement,
     TransactionTrait,
 };
 
@@ -13,7 +13,7 @@ use crate::db::error::DbError;
 use crate::models::AgentType;
 use crate::search::normalizer::{NormalizedBlockOffset, NormalizedDocument};
 
-pub const SEARCH_SCHEMA_VERSION: i32 = 2;
+pub const SEARCH_SCHEMA_VERSION: i32 = 3;
 pub const MODE_SCAN: &str = "scan";
 pub const MODE_FTS: &str = "fts";
 pub const USER_MODE_AUTO: &str = "auto";
@@ -39,10 +39,7 @@ pub async fn ensure_search_state(
         mode: Set(MODE_SCAN.to_string()),
         threshold_mb: Set(40.0),
         short_fts_enabled: Set(false),
-        short_threshold_mb: Set(40.0),
-        scan_ms_per_mb: NotSet,
         indexed_conversation_count: Set(0),
-        last_calibration_at: NotSet,
         last_backfill_at: NotSet,
         user_enabled: Set(true),
         user_mode: Set(USER_MODE_AUTO.to_string()),
@@ -50,9 +47,12 @@ pub async fn ensure_search_state(
     Ok(state.insert(conn).await?)
 }
 
-pub async fn get_search_state(
-    conn: &DatabaseConnection,
-) -> Result<search_index_state::Model, DbError> {
+pub async fn get_search_state<C>(
+    conn: &C,
+) -> Result<search_index_state::Model, DbError>
+where
+    C: ConnectionTrait,
+{
     search_index_state::Entity::find_by_id(1)
         .one(conn)
         .await?
@@ -77,6 +77,133 @@ pub async fn set_search_mode(
     active.short_fts_enabled = Set(short_fts_enabled);
     active.update(conn).await?;
     Ok(())
+}
+
+/// Atomically rebuild the optional FTS postings and switch modes in one
+/// transaction. If the rebuild fails, the rollback keeps the previous mode and
+/// tables intact so the indexer can retry on its next tick instead of being
+/// stranded in `fts` with empty postings.
+pub async fn rebuild_fts_and_set_mode(
+    conn: &DatabaseConnection,
+    mode: &str,
+    short_fts_enabled: bool,
+) -> Result<(), DbError> {
+    if !matches!(mode, MODE_SCAN | MODE_FTS) {
+        return Err(DbError::Validation(format!("invalid search mode: {mode}")));
+    }
+    let txn = conn.begin().await?;
+    txn.execute(Statement::from_string(
+        DbBackend::Sqlite,
+        "DELETE FROM message_search_trigram".to_string(),
+    ))
+    .await?;
+    txn.execute(Statement::from_string(
+        DbBackend::Sqlite,
+        "DELETE FROM message_search_short".to_string(),
+    ))
+    .await?;
+    let sync = SyncFlags {
+        trigram: mode == MODE_FTS,
+        short: mode == MODE_FTS && short_fts_enabled,
+    };
+    let documents = message_search_document::Entity::find().all(&txn).await?;
+    for model in &documents {
+        let doc = NormalizedDocument {
+            text: model.text.clone(),
+            content_hash: model.content_hash.clone(),
+            blocks: parse_block_offsets(&model.block_offsets),
+        };
+        sync_fts_rows(&txn, model.id, &doc, sync).await?;
+    }
+    let state = get_search_state(&txn).await?;
+    let mut active: search_index_state::ActiveModel = state.into();
+    active.mode = Set(mode.to_string());
+    active.short_fts_enabled = Set(short_fts_enabled);
+    active.update(&txn).await?;
+    txn.commit().await?;
+    Ok(())
+}
+
+/// Bring a pre-v3 schema (or an otherwise stale singleton row) up to date and
+/// repopulate the FTS postings that the migration had to drop.
+pub async fn upgrade_schema_if_needed(conn: &DatabaseConnection) -> Result<bool, DbError> {
+    let state = ensure_search_state(conn).await?;
+    if state.schema_version >= SEARCH_SCHEMA_VERSION {
+        return Ok(false);
+    }
+    let sync = SyncFlags {
+        trigram: state.mode == MODE_FTS,
+        short: state.mode == MODE_FTS && state.short_fts_enabled,
+    };
+    rebuild_fts_from_documents(conn, sync).await?;
+    let mut active: search_index_state::ActiveModel = state.into();
+    active.schema_version = Set(SEARCH_SCHEMA_VERSION);
+    active.update(conn).await?;
+    Ok(true)
+}
+
+/// Drop every stored content document and its FTS rows. Used when content
+/// search is disabled so plaintext transcripts are not retained in the DB.
+pub async fn clear_all_documents(conn: &DatabaseConnection) -> Result<(), DbError> {
+    let txn = conn.begin().await?;
+    txn.execute(Statement::from_string(
+        DbBackend::Sqlite,
+        "DELETE FROM message_search_trigram".to_string(),
+    ))
+    .await?;
+    txn.execute(Statement::from_string(
+        DbBackend::Sqlite,
+        "DELETE FROM message_search_short".to_string(),
+    ))
+    .await?;
+    txn.execute(Statement::from_string(
+        DbBackend::Sqlite,
+        "DELETE FROM message_search_document".to_string(),
+    ))
+    .await?;
+    let state = get_search_state(&txn).await?;
+    let mut active: search_index_state::ActiveModel = state.into();
+    active.indexed_conversation_count = Set(0);
+    active.update(&txn).await?;
+    txn.commit().await?;
+    Ok(())
+}
+
+/// Reclaim documents whose conversation no longer satisfies the visibility
+/// filters (soft-deleted, loop, delegation child, or missing row). Deletions
+/// performed while the app was not running have no event to consume, so this
+/// sweep is the backstop.
+pub async fn delete_orphan_documents(conn: &DatabaseConnection) -> Result<u64, DbError> {
+    let state = ensure_search_state(conn).await?;
+    let sync = SyncFlags {
+        trigram: state.mode == MODE_FTS,
+        short: state.mode == MODE_FTS && state.short_fts_enabled,
+    };
+    let orphans: Vec<i32> = conn
+        .query_all(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT d.id FROM message_search_document d \
+             LEFT JOIN conversation c ON c.id = d.conversation_id \
+             WHERE c.id IS NULL OR c.deleted_at IS NOT NULL \
+                OR c.parent_id IS NOT NULL OR c.kind = 'loop'"
+                .to_string(),
+        ))
+        .await?
+        .into_iter()
+        .map(|row| row.try_get_by_index::<i32>(0))
+        .collect::<Result<Vec<_>, _>>()?;
+    if orphans.is_empty() {
+        return Ok(0);
+    }
+    let txn = conn.begin().await?;
+    for id in &orphans {
+        delete_fts_rows(&txn, *id, sync).await?;
+        message_search_document::Entity::delete_by_id(*id)
+            .exec(&txn)
+            .await?;
+    }
+    txn.commit().await?;
+    Ok(orphans.len() as u64)
 }
 
 pub async fn set_search_user_settings(
@@ -349,19 +476,6 @@ pub fn parse_block_offsets(raw: &str) -> Vec<NormalizedBlockOffset> {
     serde_json::from_str(raw).unwrap_or_default()
 }
 
-pub async fn list_indexable_conversations(
-    conn: &DatabaseConnection,
-) -> Result<Vec<conversation::Model>, DbError> {
-    Ok(conversation::Entity::find()
-        .filter(conversation::Column::DeletedAt.is_null())
-        .filter(conversation::Column::Kind.ne(ConversationKind::Loop))
-        .filter(conversation::Column::ParentId.is_null())
-        .filter(conversation::Column::ExternalId.is_not_null())
-        .order_by_desc(conversation::Column::UpdatedAt)
-        .all(conn)
-        .await?)
-}
-
 /// Rebuild the optional FTS postings from the authoritative document table.
 ///
 /// Used when switching into FTS mode; rows for disabled tables are cleared.
@@ -584,5 +698,41 @@ mod tests {
             .await
             .expect("count");
         assert_eq!(count, 2);
+    }
+    #[tokio::test]
+    async fn upgrade_schema_marks_current_version() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/search-upgrade").await;
+        let conversation_id = seed_conversation(&db, folder_id, AgentType::Codex).await;
+        let state = ensure_search_state(&db.conn).await.expect("state");
+        let mut active: search_index_state::ActiveModel = state.into();
+        active.schema_version = Set(2);
+        active.update(&db.conn).await.expect("downgrade version");
+
+        let upgraded = upgrade_schema_if_needed(&db.conn).await.expect("upgrade");
+        assert!(upgraded);
+        let state = get_search_state(&db.conn).await.expect("state");
+        assert_eq!(state.schema_version, SEARCH_SCHEMA_VERSION);
+        assert!(upgrade_schema_if_needed(&db.conn).await.expect("again") == false);
+        drop(conversation_id);
+    }
+
+    #[tokio::test]
+    async fn orphan_documents_are_reclaimed() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/search-orphan").await;
+        let conversation_id = seed_conversation(&db, folder_id, AgentType::Codex).await;
+        ensure_search_state(&db.conn).await.expect("state");
+        upsert_document(&db.conn, conversation_id, &doc("orphan text"), None, 1, SyncFlags::default())
+            .await
+            .expect("doc");
+        crate::db::service::conversation_service::soft_delete(&db.conn, conversation_id)
+            .await
+            .expect("delete");
+
+        let removed = delete_orphan_documents(&db.conn).await.expect("sweep");
+        assert_eq!(removed, 1);
+        let count = message_search_document::Entity::find().count(&db.conn).await.expect("count");
+        assert_eq!(count, 0);
     }
 }

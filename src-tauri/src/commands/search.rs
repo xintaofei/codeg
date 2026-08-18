@@ -18,6 +18,7 @@ use crate::search::query::{self, ShortTermQuery};
 const DEFAULT_LIMIT: u64 = 50;
 const SNIPPET_CONTEXT_CHARS: usize = 80;
 const MAX_MATCH_LOCATIONS: usize = 200;
+const MAX_QUERY_CHARS: usize = 256;
 
 pub async fn search_conversations_core(
     conn: &DatabaseConnection,
@@ -28,7 +29,13 @@ pub async fn search_conversations_core(
 ) -> Result<Vec<DbConversationSearchResult>, AppCommandError> {
     let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, 200);
     let state = message_search_service::ensure_search_state(conn).await?;
-    let query = query.trim().to_string();
+    let mut query = query.trim().to_string();
+    // A pasted error message is a common content-search query; cap it so the
+    // cost stays bounded instead of building one LIKE pattern and gram per
+    // character.
+    if query.chars().count() > MAX_QUERY_CHARS {
+        query = query.chars().take(MAX_QUERY_CHARS).collect();
+    }
 
     let title_summaries = conversation_service::list_all(
         conn,
@@ -55,78 +62,37 @@ pub async fn search_conversations_core(
         USER_MODE_FTS => MODE_FTS,
         _ => state.mode.as_str(),
     };
+    let scope = Scope::build(folder_ids.clone(), agent_type)?;
+    let cap = scope.count(conn).await?;
 
-    let per_term: Vec<HashMap<i32, Option<f64>>> = if effective_mode == MODE_FTS {
-        let mut ranked = Vec::with_capacity(terms.len());
-        for term in &terms {
-            ranked.push(
-                index_term_candidates(conn, term, &state, folder_ids.clone(), agent_type).await?,
-            );
+    let mut candidate_ids: Option<HashSet<i32>> = None;
+    let mut updated_at: HashMap<i32, chrono::DateTime<chrono::Utc>> = HashMap::new();
+    for term in &terms {
+        let rows = term_candidates(conn, term, effective_mode, state.short_fts_enabled, &scope, cap)
+            .await?;
+        let ids: HashSet<i32> = rows.iter().map(|(id, _)| *id).collect();
+        for (id, at) in rows {
+            updated_at.entry(id).or_insert(at);
         }
-        ranked
-    } else {
-        let mut scanned = Vec::with_capacity(terms.len());
-        for term in &terms {
-            scanned.push(scan_term_candidates(conn, term).await?);
-        }
-        scanned
-    };
+        candidate_ids = Some(match candidate_ids {
+            None => ids,
+            Some(mut existing) => {
+                existing.retain(|id| ids.contains(id));
+                existing
+            }
+        });
+    }
 
-    let candidate_ids = intersect_candidate_ids(&per_term);
-    if candidate_ids.is_empty() {
+    let candidate_set = candidate_ids.unwrap_or_default();
+    if candidate_set.is_empty() {
         return Ok(title_only_results(title_summaries, &terms, limit as usize));
     }
 
-    let visible_summaries = conversation_service::list_all(
-        conn,
-        folder_ids.clone(),
-        agent_type,
-        None,
-        None,
-        None,
-        false,
-    )
-    .await?;
-    let visible: HashMap<i32, _> = visible_summaries
-        .into_iter()
-        .map(|summary| (summary.id, summary))
-        .collect();
-    let candidate_set: HashSet<i32> = candidate_ids.iter().copied().collect();
-    let candidate_list: Vec<i32> = candidate_ids.into_iter().collect();
-
-    let mut content_results: Vec<(f64, i32)> = Vec::new();
-    for conversation_id in &candidate_list {
-        if !visible.contains_key(conversation_id) {
-            continue;
-        }
-        let mut worst: f64 = f64::MIN;
-        let mut missing = false;
-        for term_scores in &per_term {
-            let score = if let Some(Some(rank)) = term_scores.get(conversation_id) {
-                *rank
-            } else {
-                missing = true;
-                f64::MAX
-            };
-            worst = worst.max(score);
-        }
-        if missing || worst == f64::MAX {
-            continue;
-        }
-        content_results.push((worst, *conversation_id));
-    }
-    content_results.sort_by(|(score_a, _), (score_b, _)| {
-        score_a
-            .partial_cmp(score_b)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    let result_limit = limit as usize;
     let mut title_results: Vec<DbConversationSearchResult> =
-        Vec::with_capacity(result_limit.min(title_summaries.len()));
-    let mut title_ids = HashSet::with_capacity(result_limit.min(title_summaries.len()));
+        Vec::with_capacity(limit as usize);
+    let mut title_ids = HashSet::new();
     let mut needed_document_ids = HashSet::new();
-    for summary in title_summaries.into_iter().take(result_limit) {
+    for summary in title_summaries.into_iter().take(limit as usize) {
         let summary_id = summary.id;
         title_ids.insert(summary_id);
         if candidate_set.contains(&summary_id) {
@@ -141,31 +107,37 @@ pub async fn search_conversations_core(
         });
     }
 
-    let remaining = result_limit.saturating_sub(title_results.len());
-    let mut content_picks = Vec::with_capacity(remaining);
-    for (_, conversation_id) in content_results {
-        if content_picks.len() >= remaining {
+    let remaining = limit as usize - title_results.len();
+    let mut content_pick_ids = Vec::with_capacity(remaining);
+    let mut candidates_sorted: Vec<i32> = candidate_set.iter().copied().collect();
+    candidates_sorted.sort_by(|a, b| {
+        updated_at
+            .get(b)
+            .cmp(&updated_at.get(a))
+            .then_with(|| b.cmp(a))
+    });
+    for id in candidates_sorted {
+        if title_ids.contains(&id) {
+            continue;
+        }
+        if content_pick_ids.len() >= remaining {
             break;
         }
-        if title_ids.contains(&conversation_id) {
-            continue;
-        }
-        let Some(summary) = visible.get(&conversation_id) else {
-            continue;
-        };
-        needed_document_ids.insert(conversation_id);
-        content_picks.push((conversation_id, summary.clone()));
+        needed_document_ids.insert(id);
+        content_pick_ids.push(id);
     }
 
-    let needed_document_list: Vec<i32> = needed_document_ids.into_iter().collect();
     let documents: HashMap<i32, (String, Vec<NormalizedBlockOffset>)> =
-        message_search_service::list_documents_by_conversation(conn, &needed_document_list)
-            .await?
-            .into_iter()
-            .map(|(conversation_id, text, blocks)| (conversation_id, (text, blocks)))
-            .collect();
+        message_search_service::list_documents_by_conversation(
+            conn,
+            &needed_document_ids.iter().copied().collect::<Vec<_>>(),
+        )
+        .await?
+        .into_iter()
+        .map(|(conversation_id, text, blocks)| (conversation_id, (text, blocks)))
+        .collect();
 
-    let mut results = Vec::with_capacity(result_limit);
+    let mut results = Vec::with_capacity(limit as usize);
     for mut result in title_results {
         let title_matches = build_title_match_locations(
             result.summary.title.as_deref().unwrap_or_default(),
@@ -177,8 +149,8 @@ pub async fn search_conversations_core(
                 .get(&result.summary.id)
                 .map(|(text, blocks)| (text.as_str(), blocks.as_slice()))
                 .unwrap_or_default();
-            let content_matches = build_content_match_locations(text, blocks, &terms);
-            result.matches.extend(content_matches);
+            result.matches
+                .extend(build_content_match_locations(text, blocks, &terms));
             let (snippet_prefix, snippet_match, snippet_suffix) = build_snippet(text, &terms);
             result.snippet_prefix = snippet_prefix;
             result.snippet_match = snippet_match;
@@ -187,145 +159,246 @@ pub async fn search_conversations_core(
         results.push(result);
     }
 
-    for (conversation_id, summary) in content_picks {
-        let (text, blocks) = documents
-            .get(&conversation_id)
-            .map(|(text, blocks)| (text.as_str(), blocks.as_slice()))
-            .unwrap_or_default();
-        let (snippet_prefix, snippet_match, snippet_suffix) = build_snippet(text, &terms);
-        let matches = build_content_match_locations(text, blocks, &terms);
-        results.push(DbConversationSearchResult {
-            summary,
-            snippet_prefix,
-            snippet_match,
-            snippet_suffix,
-            matches,
-        });
+    if !content_pick_ids.is_empty() {
+        let summaries = conversation_service::list_summaries_by_ids(conn, &content_pick_ids).await?;
+        let summary_by_id: HashMap<i32, DbConversationSummary> = summaries
+            .into_iter()
+            .map(|summary| (summary.id, summary))
+            .collect();
+        for conversation_id in content_pick_ids {
+            let Some(summary) = summary_by_id.get(&conversation_id) else {
+                continue;
+            };
+            let (text, blocks) = documents
+                .get(&conversation_id)
+                .map(|(text, blocks)| (text.as_str(), blocks.as_slice()))
+                .unwrap_or_default();
+            let (snippet_prefix, snippet_match, snippet_suffix) = build_snippet(text, &terms);
+            let matches = build_content_match_locations(text, blocks, &terms);
+            results.push(DbConversationSearchResult {
+                summary: summary.clone(),
+                snippet_prefix,
+                snippet_match,
+                snippet_suffix,
+                matches,
+            });
+        }
     }
 
     Ok(results)
 }
 
-async fn scan_term_candidates(
-    conn: &DatabaseConnection,
-    term: &str,
-) -> Result<HashMap<i32, Option<f64>>, AppCommandError> {
-    let rows = conn
-        .query_all(Statement::from_sql_and_values(
-            DbBackend::Sqlite,
-            "SELECT conversation_id, instr(lower(text), lower(?)) AS position \
-             FROM message_search_document \
-             WHERE text LIKE ? ESCAPE '\\'",
-            [term.into(), query::like_pattern(term).into()],
-        ))
-        .await
-        .map_err(|err| AppCommandError::from(DbError::Database(err)))?;
-    let mut out = HashMap::new();
-    for row in rows {
-        let conversation_id = row
-            .try_get_by_index::<i32>(0)
-            .map_err(|err| AppCommandError::from(DbError::Database(err)))?;
-        let position = row
-            .try_get_by_index::<i64>(1)
-            .map_err(|err| AppCommandError::from(DbError::Database(err)))?;
-        out.insert(conversation_id, (position > 0).then_some(position as f64));
-    }
-    Ok(out)
+/// A visibility scope shared by every term query, so LIMIT is applied after
+/// folder / agent / lifecycle filtering instead of over the whole corpus.
+struct Scope {
+    clause: String,
+    params: Vec<sea_orm::Value>,
 }
 
-async fn index_term_candidates(
+impl Scope {
+    fn build(
+        folder_ids: Option<Vec<i32>>,
+        agent_type: Option<AgentType>,
+    ) -> Result<Self, AppCommandError> {
+        let mut clause = String::from(
+            "c.deleted_at IS NULL AND c.kind != 'loop' AND c.parent_id IS NULL",
+        );
+        let mut params: Vec<sea_orm::Value> = Vec::new();
+        match folder_ids {
+            Some(ids) if !ids.is_empty() => {
+                let placeholders = vec!["?"; ids.len()].join(", ");
+                clause.push_str(&format!(" AND c.folder_id IN ({placeholders})"));
+                for id in ids {
+                    params.push(id.into());
+                }
+            }
+            _ => {
+                clause.push_str(
+                    " AND c.folder_id IN (SELECT id FROM folder WHERE deleted_at IS NULL)",
+                );
+            }
+        }
+        if let Some(agent_type) = agent_type {
+            let agent_str = serde_json::to_value(agent_type)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_default();
+            clause.push_str(" AND c.agent_type = ?");
+            params.push(agent_str.into());
+        }
+        Ok(Self { clause, params })
+    }
+
+    async fn count(&self, conn: &DatabaseConnection) -> Result<i64, AppCommandError> {
+        let sql = format!("SELECT COUNT(*) FROM conversation c WHERE {}", self.clause);
+        let row = conn
+            .query_one(Statement::from_sql_and_values(
+                DbBackend::Sqlite,
+                sql,
+                self.params.clone(),
+            ))
+            .await
+            .map_err(|err| AppCommandError::from(DbError::Database(err)))?;
+        let Some(row) = row else {
+            return Ok(0);
+        };
+        row.try_get_by_index::<i64>(0)
+            .map_err(|err| AppCommandError::from(DbError::Database(err)))
+    }
+}
+
+async fn term_candidates(
     conn: &DatabaseConnection,
     term: &str,
-    state: &crate::db::entities::search_index_state::Model,
-    folder_ids: Option<Vec<i32>>,
-    agent_type: Option<AgentType>,
-) -> Result<HashMap<i32, Option<f64>>, AppCommandError> {
+    mode: &str,
+    short_fts_enabled: bool,
+    scope: &Scope,
+    cap: i64,
+) -> Result<Vec<(i32, chrono::DateTime<chrono::Utc>)>, AppCommandError> {
+    if cap <= 0 {
+        return Ok(Vec::new());
+    }
     let char_len = term.chars().count();
-    if char_len >= 3 {
+    if mode == MODE_FTS && char_len >= 3 {
         let Some(expression) = query::trigram_expression(term) else {
-            return scan_term_candidates(conn, term).await;
+            return scan_term_candidates(conn, term, scope, cap).await;
         };
-        let limit =
-            message_search_service::visible_conversation_count(conn, folder_ids, agent_type)
-                .await?;
-        return query_indexed_term(
+        return query_fts_candidates(
             conn,
             "message_search_trigram",
             &expression,
-            &query::like_pattern(term),
-            limit,
+            term,
+            scope,
+            cap,
         )
         .await;
     }
 
-    if !state.short_fts_enabled {
-        return scan_term_candidates(conn, term).await;
+    if mode == MODE_FTS && short_fts_enabled {
+        let expression = match query::short_query(term) {
+            ShortTermQuery::CjkUnigram { token } => format!("words : \"{token}\""),
+            ShortTermQuery::CjkBigram { phrase } => format!("bigrams : \"{phrase}\""),
+            ShortTermQuery::LatinPrefix { token } => format!("words : \"{token}\"*"),
+        };
+        return query_fts_candidates(conn, "message_search_short", &expression, term, scope, cap)
+            .await;
     }
-    let expression = match query::short_query(term) {
-        ShortTermQuery::CjkUnigram { token } => format!("words : \"{token}\""),
-        ShortTermQuery::CjkBigram { phrase } => format!("bigrams : \"{phrase}\""),
-        ShortTermQuery::LatinPrefix { token } => format!("words : \"{token}\"*"),
-    };
-    let exact = if matches!(query::short_query(term), ShortTermQuery::LatinPrefix { .. }) {
-        format!("{}%", query::escape_like(term))
-    } else {
-        query::like_pattern(term)
-    };
-    let limit =
-        message_search_service::visible_conversation_count(conn, folder_ids, agent_type).await?;
-    query_indexed_term(conn, "message_search_short", &expression, &exact, limit).await
+
+    scan_term_candidates(conn, term, scope, cap).await
 }
 
-async fn query_indexed_term(
+async fn scan_term_candidates(
+    conn: &DatabaseConnection,
+    term: &str,
+    scope: &Scope,
+    cap: i64,
+) -> Result<Vec<(i32, chrono::DateTime<chrono::Utc>)>, AppCommandError> {
+    let sql = format!(
+        "SELECT d.conversation_id, c.updated_at \
+         FROM message_search_document d \
+         JOIN conversation c ON c.id = d.conversation_id \
+         WHERE instr(lower(d.text), lower(?)) > 0 \
+           AND d.text LIKE ? ESCAPE '\\' \
+           AND {} \
+         ORDER BY c.updated_at DESC, d.conversation_id DESC \
+         LIMIT ?",
+        scope.clause
+    );
+    let mut params = vec![term.to_string().into(), query::like_pattern(term).into()];
+    params.extend(scope.params.clone());
+    params.push(cap.into());
+    query_candidate_rows(conn, sql, params).await
+}
+
+async fn query_fts_candidates(
     conn: &DatabaseConnection,
     table: &str,
     expression: &str,
-    exact_pattern: &str,
-    limit: i64,
-) -> Result<HashMap<i32, Option<f64>>, AppCommandError> {
+    term: &str,
+    scope: &Scope,
+    cap: i64,
+) -> Result<Vec<(i32, chrono::DateTime<chrono::Utc>)>, AppCommandError> {
+    // SQLite's LIKE only folds ASCII case, but the trigram tokenizer folds
+    // Unicode. Keep the cheap SQL exact filter for ASCII terms and verify
+    // non-ASCII terms in Rust so `ÉCOLE` stays a valid hit for `éco`.
+    let ascii = term.is_ascii();
+    let select = if ascii {
+        "d.conversation_id, c.updated_at".to_string()
+    } else {
+        "d.conversation_id, c.updated_at, d.text".to_string()
+    };
+    let exact = if ascii {
+        " AND d.text LIKE ? ESCAPE '\\'"
+    } else {
+        ""
+    };
     let sql = format!(
-        "SELECT d.conversation_id, bm25({table}) AS rank \
+        "SELECT {select} \
          FROM {table} \
          JOIN message_search_document d ON d.id = {table}.rowid \
-         WHERE {table} MATCH ? AND d.text LIKE ? ESCAPE '\\' \
-         ORDER BY rank LIMIT ?"
+         JOIN conversation c ON c.id = d.conversation_id \
+         WHERE {table} MATCH ?{exact} AND {scope} \
+         ORDER BY c.updated_at DESC, d.conversation_id DESC \
+         LIMIT ?",
+        scope = scope.clause
     );
-    let rows = conn
-        .query_all(Statement::from_sql_and_values(
-            DbBackend::Sqlite,
-            sql,
-            [
-                expression.to_string().into(),
-                exact_pattern.to_string().into(),
-                limit.into(),
-            ],
-        ))
-        .await
-        .map_err(|err| AppCommandError::from(DbError::Database(err)))?;
-    let mut out = HashMap::new();
-    for row in rows {
-        let conversation_id = row
-            .try_get_by_index::<i32>(0)
-            .map_err(|err| AppCommandError::from(DbError::Database(err)))?;
-        let rank = row
-            .try_get_by_index::<f64>(1)
-            .map_err(|err| AppCommandError::from(DbError::Database(err)))
-            .unwrap_or(f64::MAX);
-        out.insert(conversation_id, Some(rank));
+    let mut params = vec![expression.to_string().into()];
+    if ascii {
+        params.push(query::like_pattern(term).into());
     }
-    Ok(out)
+    params.extend(scope.params.clone());
+    params.push(cap.into());
+    if ascii {
+        return query_candidate_rows(conn, sql, params).await;
+    }
+    let rows = query_candidate_rows_with_text(conn, sql, params).await?;
+    let lower = term.to_lowercase();
+    Ok(rows
+        .into_iter()
+        .filter(|(_, _, text)| text.to_lowercase().contains(&lower))
+        .map(|(id, updated_at, _)| (id, updated_at))
+        .collect())
 }
 
-fn intersect_candidate_ids(per_term: &[HashMap<i32, Option<f64>>]) -> HashSet<i32> {
-    let mut iter = per_term.iter();
-    let Some(first) = iter.next() else {
-        return HashSet::new();
-    };
-    let mut ids: HashSet<i32> = first.keys().copied().collect();
-    for term in iter {
-        ids.retain(|id| term.contains_key(id));
-    }
-    ids
+async fn query_candidate_rows(
+    conn: &DatabaseConnection,
+    sql: String,
+    params: Vec<sea_orm::Value>,
+) -> Result<Vec<(i32, chrono::DateTime<chrono::Utc>)>, AppCommandError> {
+    let rows = conn
+        .query_all(Statement::from_sql_and_values(DbBackend::Sqlite, sql, params))
+        .await
+        .map_err(|err| AppCommandError::from(DbError::Database(err)))?;
+    rows.into_iter()
+        .map(|row| {
+            Ok((
+                row.try_get_by_index::<i32>(0)?,
+                row.try_get_by_index::<chrono::DateTime<chrono::Utc>>(1)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, sea_orm::DbErr>>()
+        .map_err(|err| AppCommandError::from(DbError::Database(err)))
+}
+
+async fn query_candidate_rows_with_text(
+    conn: &DatabaseConnection,
+    sql: String,
+    params: Vec<sea_orm::Value>,
+) -> Result<Vec<(i32, chrono::DateTime<chrono::Utc>, String)>, AppCommandError> {
+    let rows = conn
+        .query_all(Statement::from_sql_and_values(DbBackend::Sqlite, sql, params))
+        .await
+        .map_err(|err| AppCommandError::from(DbError::Database(err)))?;
+    rows.into_iter()
+        .map(|row| {
+            Ok((
+                row.try_get_by_index::<i32>(0)?,
+                row.try_get_by_index::<chrono::DateTime<chrono::Utc>>(1)?,
+                row.try_get_by_index::<String>(2)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, sea_orm::DbErr>>()
+        .map_err(|err| AppCommandError::from(DbError::Database(err)))
 }
 
 fn find_case_insensitive_char(haystack: &str, needle: &str) -> Option<usize> {
@@ -477,15 +550,15 @@ pub async fn get_search_index_status_core(
     let indexed_count = message_search_service::get_search_state(conn)
         .await?
         .indexed_conversation_count;
-    let progress = if visible > 0 {
-        (indexed_count as f64 / visible as f64).clamp(0.0, 1.0)
-    } else {
+    let progress = if !state.user_enabled || visible <= 0 {
         1.0
+    } else {
+        (indexed_count as f64 / visible as f64).clamp(0.0, 1.0)
     };
     Ok(SearchIndexStatus {
-        mode: state.mode.clone(),
+        mode: state.mode,
         user_enabled: state.user_enabled,
-        user_mode: state.user_mode.clone(),
+        user_mode: state.user_mode,
         indexed_conversation_count: indexed_count,
         visible_conversation_count: visible,
         building: false,
@@ -498,12 +571,9 @@ pub async fn set_search_settings_core(
     enabled: bool,
     user_mode: String,
 ) -> Result<(), AppCommandError> {
+    // Persist only: rebuilding / clearing the index is deferred to the
+    // background worker so the settings request never blocks on a full rebuild.
     message_search_service::set_search_user_settings(conn, enabled, &user_mode).await?;
-    crate::search::indexer::sync_mode_and_progress(
-        conn,
-        &crate::web::event_bridge::EventEmitter::Noop,
-    )
-    .await?;
     Ok(())
 }
 
@@ -530,13 +600,22 @@ pub async fn get_search_index_status(
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn set_search_settings(
+    app: tauri::AppHandle,
     db: tauri::State<'_, crate::db::AppDatabase>,
     enabled: bool,
     user_mode: String,
 ) -> Result<(), AppCommandError> {
-    set_search_settings_core(&db.conn, enabled, user_mode).await
+    set_search_settings_core(&db.conn, enabled, user_mode).await?;
+    {
+        use tauri::Manager;
+        if let Some(indexer) =
+            app.try_state::<std::sync::Arc<crate::search::indexer::MessageSearchIndexer>>()
+        {
+            indexer.request_mode_sync();
+        }
+    }
+    Ok(())
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -715,5 +794,118 @@ mod tests {
         .await
         .expect("search");
         assert_eq!(results.len(), 2);
+    }
+    #[tokio::test]
+    async fn fts_trigram_path_finds_three_char_hits() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/search-trigram").await;
+        let conversation_id = seed_conversation(&db, folder_id, AgentType::Codex).await;
+        message_search_service::ensure_search_state(&db.conn).await.expect("state");
+        message_search_service::set_search_mode(&db.conn, MODE_FTS, false).await.expect("mode");
+        message_search_service::upsert_document(
+            &db.conn, conversation_id, &doc("会话记录全文"), None, 1,
+            SyncFlags { trigram: true, short: false },
+        )
+        .await
+        .expect("doc");
+        let results = search_conversations_core(
+            &db.conn, Some(vec![folder_id]), None, "会话记录".to_string(), Some(10),
+        )
+        .await
+        .expect("search");
+        assert!(results.iter().any(|r| r.summary.id == conversation_id));
+    }
+
+    #[tokio::test]
+    async fn fts_short_table_supports_cjk_bigram_queries() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/search-short").await;
+        let conversation_id = seed_conversation(&db, folder_id, AgentType::Codex).await;
+        message_search_service::ensure_search_state(&db.conn).await.expect("state");
+        message_search_service::set_search_mode(&db.conn, MODE_FTS, true).await.expect("mode");
+        message_search_service::upsert_document(
+            &db.conn, conversation_id, &doc("搜索聊天记录"), None, 1,
+            SyncFlags { trigram: true, short: true },
+        )
+        .await
+        .expect("doc");
+        let results = search_conversations_core(
+            &db.conn, Some(vec![folder_id]), None, "聊天".to_string(), Some(10),
+        )
+        .await
+        .expect("search");
+        assert!(results.iter().any(|r| r.summary.id == conversation_id));
+    }
+
+    #[tokio::test]
+    async fn folder_scope_filters_content_candidates() {
+        let db = fresh_in_memory_db().await;
+        let first = seed_folder(&db, "/tmp/search-folder-a").await;
+        let second = seed_folder(&db, "/tmp/search-folder-b").await;
+        let in_scope = seed_conversation(&db, first, AgentType::Codex).await;
+        let out_of_scope = seed_conversation(&db, second, AgentType::Codex).await;
+        for (conversation_id, text) in [(in_scope, "needle alpha"), (out_of_scope, "needle beta")] {
+            message_search_service::upsert_document(
+                &db.conn, conversation_id, &doc(text), None, 1, SyncFlags::default(),
+            )
+            .await
+            .expect("doc");
+        }
+        let results = search_conversations_core(
+            &db.conn, Some(vec![first]), None, "needle".to_string(), Some(10),
+        )
+        .await
+        .expect("search");
+        assert!(results.iter().any(|r| r.summary.id == in_scope));
+        assert!(!results.iter().any(|r| r.summary.id == out_of_scope));
+    }
+
+    #[tokio::test]
+    async fn content_results_are_ordered_by_recent_activity() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/search-order").await;
+        let older = seed_conversation(&db, folder_id, AgentType::Codex).await;
+        let newer = seed_conversation(&db, folder_id, AgentType::Codex).await;
+        for (conversation_id, at) in [
+            (older, chrono::Utc::now() - chrono::Duration::hours(2)),
+            (newer, chrono::Utc::now()),
+        ] {
+            conversation_service::refresh_external_activity(&db.conn, conversation_id, at, 1)
+                .await
+                .expect("activity");
+            message_search_service::upsert_document(
+                &db.conn, conversation_id, &doc("common term"), None, 1, SyncFlags::default(),
+            )
+            .await
+            .expect("doc");
+        }
+        let results = search_conversations_core(
+            &db.conn, Some(vec![folder_id]), None, "common".to_string(), Some(10),
+        )
+        .await
+        .expect("search");
+        assert_eq!(results[0].summary.id, newer);
+        assert_eq!(results[1].summary.id, older);
+    }
+
+    #[tokio::test]
+    async fn fts_folds_non_ascii_case_for_trigram_terms() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/search-accent").await;
+        let conversation_id = seed_conversation(&db, folder_id, AgentType::Codex).await;
+        message_search_service::ensure_search_state(&db.conn).await.expect("state");
+        message_search_service::set_search_mode(&db.conn, MODE_FTS, true).await.expect("mode");
+        message_search_service::upsert_document(
+            &db.conn, conversation_id, &doc("ÉCOLE 资料"), None, 1,
+            SyncFlags { trigram: true, short: true },
+        )
+        .await
+        .expect("doc");
+        let results = search_conversations_core(
+            &db.conn, Some(vec![folder_id]), None, "éco".to_string(), Some(10),
+        )
+        .await
+        .expect("search");
+        assert!(results.iter().any(|r| r.summary.id == conversation_id));
     }
 }
