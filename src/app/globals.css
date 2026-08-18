@@ -1209,10 +1209,21 @@
 /* 终端画布：让 xterm 视口透出所属 ws-surface 面板的磨砂表面（而非黑块）。xterm 6 的视口
    分两层——外层 .xterm-viewport（xterm.css 硬编码 background-color:#000，且不随主题变化）
    套着内层 SmoothScrollableElement 节点（终端主题背景色应用在这层）。terminal-view.tsx 已把
-   内层主题背景改成 alpha 0（透明），但外层那层黑底会透出来，终端仍是黑块。这里把外层也改
-   透明——两层皆透，终端画布才透出下方磨砂面板。选择器 .xterm .xterm-viewport 特异性(0,3,0)
-   高于 xterm.css 同名规则(0,2,0)，无需 !important；纯透明不依赖 color-mix，关图无此规则，
-   零回归。 */
+   内层主题背景改成 alpha 0（透明），但外层那层黑底会透出来，终端仍是黑块。
+   
+   两种情形的处理方式：
+   1. 不启用背景图时：用主题背景色覆盖外层黑色，使终端在亮色主题下显示白色背景，暗色主题下
+      显示深灰背景。选择器特异性(0,3,0)高于 xterm.css(0,2,0)，无需 !important。
+   2. 启用背景图时：外层改透明，两层皆透，终端画布透出下方磨砂面板。
+   
+   零回归：关图或未设背景属性时无此规则或不匹配。 */
+
+/* 不启用背景图：用主题背景色覆盖 xterm-viewport 的硬编码黑色 */
+:not([data-workspace-bg="on"]) .xterm .xterm-viewport {
+  background-color: var(--background);
+}
+
+/* 启用背景图：外层改透明让画布透出磨砂面板 */
 [data-workspace-bg="on"] .xterm .xterm-viewport {
   background-color: transparent;
 }
