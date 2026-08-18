@@ -388,7 +388,7 @@ pub async fn import_local_conversations_core(
     conn: &sea_orm::DatabaseConnection,
     emitter: &EventEmitter,
     folder_id: i32,
-) -> Result<ImportResult, AppCommandError> {
+) -> Result<(ImportResult, Vec<i32>), AppCommandError> {
     // Share IMPORT_GUARD with the batch importer: `(external_id, agent_type)`
     // has no DB unique index, so this legacy path racing a batch import (or a
     // second legacy call) could double-insert. try_lock rejects the overlap
@@ -414,11 +414,11 @@ pub async fn import_local_conversations_core(
     // Broadcast a sidebar upsert for every title refreshed in place, so other
     // windows and web clients converge live. The importing client refetches the
     // list itself, which also covers the newly imported rows.
-    for id in updated_ids {
-        emit_conversation_upsert(emitter, conn, id).await;
+    for id in &updated_ids {
+        emit_conversation_upsert(emitter, conn, *id).await;
     }
 
-    Ok(result)
+    Ok((result, updated_ids))
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -428,7 +428,20 @@ pub async fn import_local_conversations(
     db: tauri::State<'_, AppDatabase>,
     folder_id: i32,
 ) -> Result<ImportResult, AppCommandError> {
-    import_local_conversations_core(&db.conn, &EventEmitter::Tauri(app), folder_id).await
+    let (result, updated_ids) =
+        import_local_conversations_core(&db.conn, &EventEmitter::Tauri(app.clone()), folder_id)
+            .await?;
+    {
+        use tauri::Manager;
+        if let Some(indexer) =
+            app.try_state::<std::sync::Arc<crate::search::indexer::MessageSearchIndexer>>()
+        {
+            for id in updated_ids {
+                indexer.request_parse(id);
+            }
+        }
+    }
+    Ok(result)
 }
 
 /// Serializes concurrent batch imports: `(external_id, agent_type)` has no DB
@@ -614,7 +627,7 @@ fn build_scan_result(
 pub async fn scan_importable_sessions_core(
     conn: &sea_orm::DatabaseConnection,
     emitter: &EventEmitter,
-) -> Result<ScanResult, AppCommandError> {
+) -> Result<(ScanResult, Vec<i32>), AppCommandError> {
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
     let progress_emitter = emitter.clone();
@@ -653,12 +666,16 @@ pub async fn scan_importable_sessions_core(
 
     // Refresh the already-imported rows in place before answering, then
     // broadcast each one so open sidebars re-sort without a refetch.
-    for id in import_service::sync_imported_sessions(conn, &conv_rows, &summaries).await {
-        emit_conversation_upsert(emitter, conn, id).await;
+    let refreshed_ids = import_service::sync_imported_sessions(conn, &conv_rows, &summaries).await;
+    for id in &refreshed_ids {
+        emit_conversation_upsert(emitter, conn, *id).await;
     }
 
     let folder_rows = load_folder_rows(conn).await?;
-    Ok(build_scan_result(summaries, &imported_index, &folder_rows))
+    Ok((
+        build_scan_result(summaries, &imported_index, &folder_rows),
+        refreshed_ids,
+    ))
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -667,7 +684,19 @@ pub async fn scan_importable_sessions(
     app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
 ) -> Result<ScanResult, AppCommandError> {
-    scan_importable_sessions_core(&db.conn, &EventEmitter::Tauri(app)).await
+    let (result, refreshed_ids) =
+        scan_importable_sessions_core(&db.conn, &EventEmitter::Tauri(app.clone())).await?;
+    {
+        use tauri::Manager;
+        if let Some(indexer) =
+            app.try_state::<std::sync::Arc<crate::search::indexer::MessageSearchIndexer>>()
+        {
+            for id in refreshed_ids {
+                indexer.request_parse(id);
+            }
+        }
+    }
+    Ok(result)
 }
 
 /// Batch-import the selected sessions, creating (or reopening) each target
@@ -1458,7 +1487,7 @@ pub async fn get_folder_conversation(
         if let Some(indexer) =
             app.try_state::<std::sync::Arc<crate::search::indexer::MessageSearchIndexer>>()
         {
-            indexer.submit_turns(conversation_id, result.turns.clone());
+            indexer.submit_turns(conversation_id, std::sync::Arc::new(result.turns.clone()));
         }
     }
     if let Some(req) = window {

@@ -54,5 +54,8 @@ pub async fn set_search_settings(
 ) -> Result<Json<()>, AppCommandError> {
     search_commands::set_search_settings_core(&state.db.conn, params.enabled, params.user_mode)
         .await?;
+    if let Some(indexer) = &state.search_indexer {
+        indexer.request_mode_sync();
+    }
     Ok(Json(()))
 }
