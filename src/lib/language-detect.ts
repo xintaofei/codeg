@@ -212,6 +212,33 @@ export function isOfficePreviewable(path: string | null | undefined): boolean {
   return ext === "docx" || ext === "xlsx" || ext === "pptx"
 }
 
+/**
+ * True when any segment of `path` is dot-prefixed — the conventional marker
+ * for a hidden or machine-owned file: LibreOffice's `.~lock.report.docx#`,
+ * macOS AppleDouble sidecars (`._report.docx`), and anything parked under
+ * `.git/`, `.tmp/`, `.venv/` and friends. Those are byproducts, not documents
+ * a user asked for, so automatic surfacing (watch + preview) skips them.
+ *
+ * Every segment is tested, not just the file name: a doc inside a hidden
+ * directory is every bit as hidden as a hidden doc. `.` and `..` are path
+ * syntax rather than names and never count as hidden.
+ *
+ * Both separators are accepted and dot segments are tolerated so the predicate
+ * holds for any path shape. The workspace watcher happens to hand us neither
+ * (`classify_watch_path` strips the root and slash-normalizes before emitting
+ * `changed_paths`), so that part is headroom for other callers, not a
+ * requirement of today's one.
+ */
+export function isHiddenPath(path: string | null | undefined): boolean {
+  if (!path) return false
+  return path
+    .split(/[\\/]/)
+    .some(
+      (segment) =>
+        segment.startsWith(".") && segment !== "." && segment !== ".."
+    )
+}
+
 export function languageFromPath(path: string): string {
   const lower = path.toLowerCase()
   const basename = lower.split(/[\\/]/).pop() ?? lower

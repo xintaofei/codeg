@@ -223,9 +223,15 @@ pub async fn work_task_update(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<UpdateParams>,
 ) -> Result<Json<WorkTaskInfo>, AppCommandError> {
-    let result = core::work_task_update_core(&state.emitter, &state.db, params.id, params.draft)
-        .await
-        .map_err(AppCommandError::from)?;
+    let result = core::work_task_update_core(
+        &state.emitter,
+        &state.db,
+        &state.chat_channel_manager,
+        params.id,
+        params.draft,
+    )
+    .await
+    .map_err(AppCommandError::from)?;
     Ok(Json(result))
 }
 

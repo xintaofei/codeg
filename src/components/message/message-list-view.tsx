@@ -307,7 +307,8 @@ function isEmptyTurnItem(item: ThreadRenderItem): boolean {
  * standalone `"compaction"` divider item); otherwise `null`. Empty text parts are
  * ignored so a bare compaction turn still qualifies. Scoped to assistant groups
  * with no user resources/images. A compaction part always carries a truthy
- * `_meta` (`contextCompaction === true`), so a non-null return is unambiguous.
+ * `_meta` (`contextCompaction` as the boolean marker or the 1.3.0+ versioned
+ * object), so a non-null return is unambiguous.
  */
 function compactionOnlyMeta(
   group: ResolvedMessageGroup

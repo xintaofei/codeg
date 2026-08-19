@@ -441,6 +441,7 @@ function makeAgent(
     enabled: true,
     sort_order: 0,
     installed_version: null,
+    host_tools_agent_mode: false,
     env,
     config_json: configJson,
     config_file_path: "/home/u/.kimi-code/config.toml",

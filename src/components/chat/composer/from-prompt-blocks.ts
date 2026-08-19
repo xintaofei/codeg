@@ -74,9 +74,10 @@ export function blocksToRestoredDraft(
       }
       case "resource": {
         // An embedded image blob (how an `image: false` / `embedded_context:
-        // true` agent like Grok carries a pasted image) restores as a thumbnail
-        // image attachment, matching how it was displayed when composed — not as
-        // an inline resource badge. Non-image / text embedded resources keep the
+        // true` agent carries a pasted image, and how any image the agent
+        // cannot decode natively travels) restores as a thumbnail image
+        // attachment, matching how it was displayed when composed — not as an
+        // inline resource badge. Non-image / text embedded resources keep the
         // badge form.
         if (block.mime_type?.startsWith("image/") && block.blob) {
           // A synthetic `clipboard://` uri (path-less pasted image) is not a

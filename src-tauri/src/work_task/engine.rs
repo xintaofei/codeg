@@ -952,7 +952,7 @@ impl TaskEngine {
         let wt = if matches!(mode, LaunchMode::Merge { .. }) {
             self.existing_worktree(&task).await?
         } else {
-            let wt = self.ensure_worktree(&task, &root).await?;
+            let wt = self.ensure_worktree(&task, &root, &settings).await?;
             // Run the folder's init command (deps install etc.) before the
             // agent ever sees the tree. Gated on the setup marker, NOT on "the
             // tree was just created": an init that was killed (cancel) or cut
@@ -1074,16 +1074,37 @@ impl TaskEngine {
         let conversation_id = if resumed {
             task.conversation_id.expect("resumed implies conversation")
         } else {
-            let title = first_chars(task.title.trim(), 80);
-            match create_conversation_core(&self.db.conn, wt.folder_id, agent_type, Some(title))
-                .await
+            let title = conversation_title_for_task(&task.title);
+            let id = match create_conversation_core(
+                &self.db.conn,
+                wt.folder_id,
+                agent_type,
+                Some(title),
+            )
+            .await
             {
                 Ok(id) => id,
                 Err(e) => {
                     let _ = self.manager.disconnect(&conn_id).await;
                     return Err(e.to_string());
                 }
+            };
+            // The card's name IS this session's identity — freeze it the way a
+            // manual rename would, or the per-turn auto-title backfill replaces
+            // it with whatever the agent's session file parses to (for agents
+            // with no title of their own: the first line of the composed
+            // prompt, e.g. "项目：/Users/…"). Issue #495.
+            //
+            // Strictly before the upsert below: that broadcast is how any
+            // client first learns this id, so locking first makes a backfill on
+            // this row impossible rather than merely unlikely. A failure here
+            // only costs the nice title — never the launch.
+            if let Err(e) = conversation_service::lock_title(&self.db.conn, id).await {
+                tracing::warn!(
+                    "[work_task] task {task_id}: could not lock conversation {id} title: {e}"
+                );
             }
+            id
         };
         emit_conversation_upsert(&self.emitter, &self.db.conn, conversation_id).await;
 
@@ -1199,11 +1220,13 @@ impl TaskEngine {
 
     /// Resolve (and if needed create) the task's worktree. On creation the base
     /// branch + sha are recorded BEFORE `git worktree add` runs against that
-    /// exact sha.
+    /// exact sha, and the directory goes wherever the folder's settings put it
+    /// (next to the project folder by default).
     async fn ensure_worktree(
         &self,
         task: &crate::db::entities::work_task::Model,
         root: &crate::models::FolderDetail,
+        settings: &WorkTaskFolderSettings,
     ) -> Result<WorktreeRef, String> {
         if let Some(wt_id) = task.worktree_folder_id {
             if let Ok(detail) = get_folder_core(&self.db, wt_id).await {
@@ -1222,7 +1245,7 @@ impl TaskEngine {
         // commits sit stranded on a branch nothing points to. Only when the
         // branch cannot be re-checked-out does the fresh mint below take over
         // (re-recording base + branch).
-        if let Some(wt) = self.recreate_worktree_from_branch(task, root).await {
+        if let Some(wt) = self.recreate_worktree_from_branch(task, root, settings).await {
             return Ok(wt);
         }
 
@@ -1236,7 +1259,10 @@ impl TaskEngine {
 
         let branch = format!("task/{}", task.id);
         let dir = format!("{}-task-{}", basename(&root.path), task.id);
-        let mut wt_path = sibling_path(&root.path, &dir);
+        // A configured root that does not exist yet (the folder's first task)
+        // needs no `mkdir`: `git worktree add` creates the leading directories
+        // along with the checkout.
+        let mut wt_path = worktree_path_in(&root.path, settings.worktree_root.as_deref(), &dir);
         let mut branch_used = branch.clone();
 
         if let Err(e) = git_worktree_add(
@@ -1251,7 +1277,11 @@ impl TaskEngine {
             // generation-scoped suffix.
             let suffix = format!("r{}b", task.run_seq);
             branch_used = format!("{branch}-{suffix}");
-            wt_path = sibling_path(&root.path, &format!("{dir}-{suffix}"));
+            wt_path = worktree_path_in(
+                &root.path,
+                settings.worktree_root.as_deref(),
+                &format!("{dir}-{suffix}"),
+            );
             git_worktree_add(
                 root.path.clone(),
                 branch_used.clone(),
@@ -1291,6 +1321,7 @@ impl TaskEngine {
         &self,
         task: &crate::db::entities::work_task::Model,
         root: &crate::models::FolderDetail,
+        settings: &WorkTaskFolderSettings,
     ) -> Option<WorktreeRef> {
         let branch = task.work_branch.as_deref()?;
         // The recorded base stays authoritative for the branch's history; the
@@ -1312,8 +1343,9 @@ impl TaskEngine {
             None => None,
         };
         let path = recorded.unwrap_or_else(|| {
-            sibling_path(
+            worktree_path_in(
                 &root.path,
+                settings.worktree_root.as_deref(),
                 &format!("{}-task-{}", basename(&root.path), task.id),
             )
         });
@@ -3812,10 +3844,14 @@ fn carries_image(block: &PromptInputBlock) -> bool {
 /// Swap every attached image into the shape the connected agent advertised.
 ///
 /// Two wire encodings carry the same bytes: a native `Image` block, and a
-/// `Resource` whose `blob` holds them under an image mime type (what agents
-/// that reject image content but accept embedded context — e.g. Grok — take).
-/// The composer picks one at compose time from a probe; this picks again at
-/// dispatch, when the session has actually said what it accepts.
+/// `Resource` whose `blob` holds them under an image mime type (what an agent
+/// that rejects image content but accepts embedded context takes). The composer
+/// picks one at compose time from a probe; this picks again at dispatch, when
+/// the session has actually said what it accepts.
+///
+/// Grok needs neither swap — it advertises both bits — but its images still get
+/// sorted per mime further downstream, in `acp::connection`, which is the last
+/// point that sees the blocks.
 ///
 /// Only image-carrying blocks are touched, and only to move between those two
 /// encodings — never to invent or drop content. An agent that advertises
@@ -4133,18 +4169,97 @@ fn first_chars(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
-fn basename(path: &str) -> &str {
-    path.trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or(path)
+/// Cap on a task-derived conversation title. Long enough for a real card name,
+/// short enough that the sidebar row is not one giant ellipsis.
+const CONVERSATION_TITLE_MAX_CHARS: usize = 80;
+
+/// The title the session a task produces carries: the task's own name, capped.
+/// It is LOCKED on the conversation row at launch (`conversation_service::
+/// lock_title`), so a board card and the session it spawned always read the
+/// same in the sidebar (issue #495).
+///
+/// One definition, because two callers must agree byte-for-byte: the launch-time
+/// seed here, and the rename propagation in `commands::work_task`, which
+/// recognises "still the task's name" by comparing against this exact value.
+pub(crate) fn conversation_title_for_task(task_title: &str) -> String {
+    first_chars(task_title.trim(), CONVERSATION_TITLE_MAX_CHARS)
 }
 
+/// The project folder's own name — what a task worktree directory is named
+/// after. `Path` semantics rather than a `/` split, so `C:\src\repo` yields
+/// `repo` too.
+///
+/// The answer is always RELATIVE, empty included: a path with no final
+/// component (a filesystem root, or one ending in `..`) must not fall back to
+/// the path itself, because the name is JOINED onto the configured worktree
+/// root — and an absolute one replaces that root instead of landing under it.
+fn basename(path: &str) -> &str {
+    Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+}
+
+/// `name` placed next to the project folder — where task worktrees live when
+/// the folder configures no root of its own. A project folder with no parent
+/// (a drive or filesystem root) falls back to the bare name, which git then
+/// resolves against the repository itself.
 fn sibling_path(root_path: &str, name: &str) -> String {
-    let trimmed = root_path.trim_end_matches('/');
-    match trimmed.rfind('/') {
-        Some(idx) => format!("{}/{}", &trimmed[..idx], name),
-        None => name.to_string(),
+    match Path::new(root_path).parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => {
+            parent.join(name).to_string_lossy().into_owned()
+        }
+        _ => name.to_string(),
+    }
+}
+
+/// Where the task worktree directory `name` goes for a project at
+/// `root_path`. `worktree_root` is the folder setting: blank (or absent) keeps
+/// the historical layout — right next to the project folder — and any other
+/// value becomes the directory every new worktree of that folder is created
+/// in. A typed path is taken at face value in the two ways a user expects: `~`
+/// is the home directory, and something relative hangs off the project folder.
+fn worktree_path_in(root_path: &str, worktree_root: Option<&str>, name: &str) -> String {
+    worktree_path_in_home(root_path, worktree_root, name, dirs::home_dir().as_deref())
+}
+
+/// [`worktree_path_in`] with the home directory injected — `dirs::home_dir()`
+/// reads the real user's home even under a pinned `HOME`, so tests must hand
+/// one in rather than set the environment.
+fn worktree_path_in_home(
+    root_path: &str,
+    worktree_root: Option<&str>,
+    name: &str,
+    home: Option<&Path>,
+) -> String {
+    let Some(configured) = worktree_root.map(str::trim).filter(|r| !r.is_empty()) else {
+        return sibling_path(root_path, name);
+    };
+    let base = expand_home(configured, home);
+    let base = if base.is_absolute() {
+        base
+    } else {
+        Path::new(root_path).join(base)
+    };
+    base.join(name).to_string_lossy().into_owned()
+}
+
+/// Expand a leading `~` against `home`. Left as-is when the home directory is
+/// unknown, so the path still resolves as literally written instead of
+/// silently becoming a different directory.
+fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
+    let Some(home) = home else {
+        return PathBuf::from(path);
+    };
+    if path == "~" {
+        return home.to_path_buf();
+    }
+    match path
+        .strip_prefix("~/")
+        .or_else(|| path.strip_prefix("~\\"))
+    {
+        Some(rest) => home.join(rest),
+        None => PathBuf::from(path),
     }
 }
 
@@ -4182,12 +4297,178 @@ impl WorkTaskToolAccess for EngineWorkTaskTools {
 mod tests {
     use super::*;
 
+    /// Windows has no absolute path without a drive, and the resolver branches
+    /// on `is_absolute` — so the fixtures need a prefix that makes them count
+    /// as absolute on both platforms.
+    #[cfg(windows)]
+    const ABS_PREFIX: &str = "C:";
+    #[cfg(not(windows))]
+    const ABS_PREFIX: &str = "";
+
     #[test]
     fn worktree_names_carry_ids() {
         assert_eq!(basename("/home/me/repo"), "repo");
+        assert_eq!(basename("/home/me/repo/"), "repo");
         assert_eq!(
             sibling_path("/home/me/repo", "repo-task-7"),
-            "/home/me/repo-task-7"
+            Path::new("/home/me")
+                .join("repo-task-7")
+                .to_string_lossy()
+                .into_owned()
+        );
+        // No parent to be a sibling of: the bare name, which git resolves
+        // against the repository it runs in.
+        assert_eq!(sibling_path("repo", "repo-task-7"), "repo-task-7");
+    }
+
+    /// The derived directory name is joined ONTO the configured root, so it
+    /// has to stay relative even for the paths that have no final component
+    /// to borrow: a filesystem root, and anything ending in `..`. An absolute
+    /// name would replace the configured root instead of landing under it —
+    /// silently putting the worktree somewhere the user never chose.
+    #[test]
+    fn a_project_without_a_name_still_lands_under_the_configured_root() {
+        let trees = format!("{ABS_PREFIX}/var/worktrees");
+        for root in [format!("{ABS_PREFIX}/"), format!("{ABS_PREFIX}/home/me/..")] {
+            let dir = format!("{}-task-7", basename(&root));
+            assert!(
+                !Path::new(&dir).is_absolute(),
+                "the derived name must be relative, got {dir:?} for root {root:?}"
+            );
+            assert_eq!(
+                worktree_path_in_home(&root, Some(&trees), &dir, None),
+                Path::new(&trees).join(&dir).to_string_lossy().into_owned(),
+                "root {root:?} must not escape the configured worktree directory"
+            );
+        }
+    }
+
+    /// Where a fresh task worktree lands. The default layout is load-bearing:
+    /// every worktree already on disk was minted next to its project folder,
+    /// so an unset (or blanked) setting has to keep producing exactly that
+    /// path — the recreate-from-branch fallback looks for it by name.
+    #[test]
+    fn a_blank_worktree_root_keeps_worktrees_next_to_the_project() {
+        let root = format!("{ABS_PREFIX}/home/me/repo");
+        let expected = Path::new(&format!("{ABS_PREFIX}/home/me"))
+            .join("repo-task-7")
+            .to_string_lossy()
+            .into_owned();
+        for setting in [None, Some(""), Some("   ")] {
+            assert_eq!(
+                worktree_path_in_home(&root, setting, "repo-task-7", None),
+                expected,
+                "setting {setting:?} must not move the worktree"
+            );
+        }
+    }
+
+    /// A configured directory holds the worktree DIRECTORY, not the checkout
+    /// itself — two tasks of the same folder have to be able to share it.
+    #[test]
+    fn a_configured_root_holds_one_directory_per_task() {
+        let root = format!("{ABS_PREFIX}/home/me/repo");
+        let trees = format!("{ABS_PREFIX}/var/worktrees");
+        // Compared as paths, not strings: a separator the setting carried in
+        // survives into the result — `Path::join` reuses a trailing one rather
+        // than adding its own — and on Windows `/` and `\` are the same
+        // separator. Only the directory the worktree lands in is pinned here,
+        // never the spelling of the separators.
+        let at = |name: &str| Path::new(&trees).join(name);
+        let landed = |setting: &str, name: &str| {
+            PathBuf::from(worktree_path_in_home(&root, Some(setting), name, None))
+        };
+        assert_eq!(landed(&trees, "repo-task-7"), at("repo-task-7"));
+        assert_eq!(landed(&trees, "repo-task-8"), at("repo-task-8"));
+        // Typed paths arrive with stray whitespace and trailing separators.
+        assert_eq!(
+            landed(&format!("  {trees}/  "), "repo-task-7"),
+            at("repo-task-7")
+        );
+    }
+
+    /// The two shorthands a typed path is expected to honour: `~` is the home
+    /// directory, and a relative path hangs off the project folder. An unknown
+    /// home leaves `~` alone rather than guessing a different directory.
+    #[test]
+    fn a_typed_root_expands_home_and_resolves_relatives() {
+        let root = format!("{ABS_PREFIX}/home/me/repo");
+        let home = PathBuf::from(format!("{ABS_PREFIX}/home/me"));
+        assert_eq!(
+            worktree_path_in_home(&root, Some("~/trees"), "repo-task-7", Some(&home)),
+            home.join("trees")
+                .join("repo-task-7")
+                .to_string_lossy()
+                .into_owned()
+        );
+        assert_eq!(
+            worktree_path_in_home(&root, Some("~"), "repo-task-7", Some(&home)),
+            home.join("repo-task-7").to_string_lossy().into_owned()
+        );
+        assert_eq!(
+            worktree_path_in_home(&root, Some(".worktrees"), "repo-task-7", Some(&home)),
+            Path::new(&root)
+                .join(".worktrees")
+                .join("repo-task-7")
+                .to_string_lossy()
+                .into_owned()
+        );
+        assert_eq!(
+            worktree_path_in_home(&root, Some("~/trees"), "repo-task-7", None),
+            Path::new(&root)
+                .join("~/trees")
+                .join("repo-task-7")
+                .to_string_lossy()
+                .into_owned(),
+            "an unknown home must not silently relocate the worktree"
+        );
+    }
+
+    /// Native Windows paths, where the naming and the join have to agree: a
+    /// project folder whose "name" came back as the whole path (`C:\src\repo`)
+    /// makes `<root>/<name>` an absolute join that REPLACES the configured
+    /// root, so every setting would silently resolve back to the sibling
+    /// layout. Nothing here is exotic — it is what the OS folder picker hands
+    /// back on Windows.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_project_path_still_honours_the_configured_root() {
+        // Expectations are built with `Path::join` so they pin the DIRECTORY
+        // the worktree lands in without also asserting separator spelling.
+        let at = |dir: &str| {
+            Path::new(dir)
+                .join("repo-task-7")
+                .to_string_lossy()
+                .into_owned()
+        };
+        assert_eq!(basename("C:\\src\\repo"), "repo");
+        assert_eq!(
+            worktree_path_in_home("C:\\src\\repo", Some("D:\\worktrees"), "repo-task-7", None),
+            at("D:\\worktrees"),
+            "a configured root on another drive must not collapse to the sibling layout"
+        );
+        assert_eq!(
+            worktree_path_in_home("C:\\src\\repo", Some(".worktrees"), "repo-task-7", None),
+            at("C:\\src\\repo\\.worktrees")
+        );
+        assert_eq!(
+            worktree_path_in_home("C:\\src\\repo", None, "repo-task-7", None),
+            at("C:\\src"),
+            "the default layout is unchanged on Windows"
+        );
+        assert_eq!(
+            worktree_path_in_home(
+                "C:\\src\\repo",
+                Some("~\\trees"),
+                "repo-task-7",
+                Some(Path::new("C:\\Users\\me"))
+            ),
+            at("C:\\Users\\me\\trees")
+        );
+        // A UNC project folder keeps its share prefix.
+        assert_eq!(
+            sibling_path("\\\\server\\share\\repo", "repo-task-7"),
+            at("\\\\server\\share")
         );
     }
 

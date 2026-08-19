@@ -49,6 +49,7 @@ function makeAgent(agentType: AgentType, sortOrder: number): AcpAgentInfo {
     enabled: true,
     sort_order: sortOrder,
     installed_version: null,
+    host_tools_agent_mode: false,
     env: {},
     config_json: null,
     config_file_path: null,

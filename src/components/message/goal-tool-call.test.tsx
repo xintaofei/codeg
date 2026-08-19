@@ -145,11 +145,15 @@ describe("GoalToolCallPart", () => {
 describe("GoalCard goal control (codex-acp #293)", () => {
   function renderGoal(
     ui: ReactElement,
-    onGoalControl: ((action: "pause" | "clear") => void) | null
+    onGoalControl: ((action: "pause" | "clear") => void) | null,
+    // Defaults to the legacy vocabulary so pre-extension expectations hold;
+    // pass the advertised list to exercise per-adapter gating (claude
+    // advertises ["set","clear"] — no pause).
+    actions: readonly string[] = ["pause", "clear"]
   ) {
     return render(
       <NextIntlClientProvider locale="en" messages={enMessages}>
-        <GoalControlProvider value={{ onGoalControl }}>
+        <GoalControlProvider value={{ onGoalControl, actions }}>
           {ui}
         </GoalControlProvider>
       </NextIntlClientProvider>
@@ -202,6 +206,24 @@ describe("GoalCard goal control (codex-acp #293)", () => {
     // Reload / viewer / sub-agent dialog → onGoalControl null → no buttons even
     // for an active goal.
     renderGoal(goalWith("active"), null)
+    fireEvent.click(screen.getByRole("button"))
+    expect(screen.queryByText("Pause")).not.toBeInTheDocument()
+    expect(screen.queryByText("Clear")).not.toBeInTheDocument()
+  })
+
+  it("gates each button on the adapter's advertised action vocabulary", () => {
+    // claude's neutral goal extension advertises ["set","clear"] — offering
+    // Pause there would fire a request the adapter rejects.
+    const calls: string[] = []
+    renderGoal(goalWith("active"), (a) => calls.push(a), ["set", "clear"])
+    fireEvent.click(screen.getByRole("button"))
+    expect(screen.queryByText("Pause")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText("Clear"))
+    expect(calls).toEqual(["clear"])
+  })
+
+  it("shows no controls when the adapter advertises an empty action set", () => {
+    renderGoal(goalWith("active"), () => {}, [])
     fireEvent.click(screen.getByRole("button"))
     expect(screen.queryByText("Pause")).not.toBeInTheDocument()
     expect(screen.queryByText("Clear")).not.toBeInTheDocument()

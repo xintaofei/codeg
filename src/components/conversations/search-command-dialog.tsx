@@ -233,13 +233,18 @@ export function SearchCommandDialog({
         onValueChange={setQuery}
       />
 
-      {/* Agent filter (conversations tab only) */}
+      {/* Agent filter (conversations tab only). Wraps: one chip per agent type
+          present in the folder, each carrying a full name, so a workspace with
+          a dozen enabled agents runs past the dialog — which is
+          `overflow-hidden`, so the tail chips were clipped away and simply
+          could not be clicked. Wrapping keeps every filter reachable and lets
+          the block grow by a row instead of hiding options. */}
       {activeTab === "conversations" && availableAgents.length > 1 && (
-        <div className="flex items-center gap-1 px-3 py-2 border-b">
+        <div className="flex flex-wrap items-center gap-1 px-3 py-2 border-b">
           <button
             onClick={() => setAgentFilter(null)}
             className={cn(
-              "h-6 text-xs px-2 rounded-md transition-colors",
+              "h-6 shrink-0 text-xs px-2 rounded-md transition-colors",
               agentFilter === null
                 ? "bg-secondary text-secondary-foreground"
                 : "text-muted-foreground hover:text-foreground"
@@ -252,7 +257,7 @@ export function SearchCommandDialog({
               key={at}
               onClick={() => setAgentFilter(at)}
               className={cn(
-                "flex items-center gap-1.5 h-6 text-xs px-2 rounded-md transition-colors",
+                "flex shrink-0 items-center gap-1.5 h-6 text-xs px-2 rounded-md transition-colors",
                 agentFilter === at
                   ? "bg-secondary text-secondary-foreground"
                   : "text-muted-foreground hover:text-foreground"

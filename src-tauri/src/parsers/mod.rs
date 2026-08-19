@@ -5,6 +5,7 @@ pub mod codebuddy;
 pub mod codex;
 pub mod codex_code_mode;
 pub mod cursor;
+pub mod deepseek;
 pub mod gemini;
 pub mod grok;
 pub mod hermes;
@@ -12,6 +13,7 @@ pub mod kimi_code;
 pub mod openclaw;
 pub mod opencode;
 pub mod pi;
+pub mod qoder;
 mod summary_cache;
 
 use std::collections::{HashMap, HashSet};
@@ -151,6 +153,28 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             // `models.json`) under `~/.pi/agent` are never archived.
             agent: "pi",
             root: pi::resolve_pi_sessions_dir(),
+            is_file: false,
+            include_top: None,
+        },
+        ExternalSource {
+            // DeepSeek Harness (deepseek-acp) keeps a directory-per-session
+            // log store under `~/.dsh/sessions/<munged-cwd>/<uuid>/`
+            // (relocatable via `DEEPSEEK_ACP_SESSIONS_ROOT` / `DSH_HOME`).
+            // The resolver already points at the `sessions/` subtree, so the
+            // sibling `.credentials.yaml` under `~/.dsh` is never archived.
+            agent: "deepseek",
+            root: deepseek::resolve_deepseek_sessions_root(),
+            is_file: false,
+            include_top: None,
+        },
+        ExternalSource {
+            // Qoder keeps one JSONL per session under
+            // `~/.qoder/projects/<encoded-cwd>/<sessionId>.jsonl` (relocatable
+            // via `QODER_CONFIG_DIR`). The resolver already points at the
+            // `projects/` subtree, so the sibling `settings.json` /
+            // `security/` / `cache/` under `~/.qoder` are never archived.
+            agent: "qoder",
+            root: qoder::resolve_qoder_config_dir().join("projects"),
             is_file: false,
             include_top: None,
         },
@@ -466,13 +490,20 @@ fn advance_duration_cursor(cursor: &mut Option<DateTime<Utc>>, candidate: DateTi
 }
 
 /// Aggregate turn-level usage and duration into a single `SessionStats`.
+///
+/// The two halves stand on their own: an agent that times its turns but reports
+/// no token split still gets its duration (mirrors `acp_native::session_stats`,
+/// which already had to hand-roll this). Token totals stay `None` in that case
+/// rather than becoming a row of zeros — the footer reads `None` as "this agent
+/// doesn't say" and omits the breakdown, where zeros would read as "it says the
+/// reply was free".
 pub fn compute_session_stats(turns: &[MessageTurn]) -> Option<SessionStats> {
     let mut total_in = 0u64;
     let mut total_out = 0u64;
     let mut total_cache_create = 0u64;
     let mut total_cache_read = 0u64;
     let mut total_duration = 0u64;
-    let mut has_data = false;
+    let mut has_usage = false;
 
     for turn in turns {
         if let Some(ref u) = turn.usage {
@@ -480,25 +511,26 @@ pub fn compute_session_stats(turns: &[MessageTurn]) -> Option<SessionStats> {
             total_out += u.output_tokens;
             total_cache_create += u.cache_creation_input_tokens;
             total_cache_read += u.cache_read_input_tokens;
-            has_data = true;
+            has_usage = true;
         }
         if let Some(d) = turn.duration_ms {
             total_duration += d;
         }
     }
 
-    if !has_data {
+    if !has_usage && total_duration == 0 {
         return None;
     }
 
     Some(SessionStats {
-        total_usage: Some(TurnUsage {
+        total_usage: has_usage.then_some(TurnUsage {
             input_tokens: total_in,
             output_tokens: total_out,
             cache_creation_input_tokens: total_cache_create,
             cache_read_input_tokens: total_cache_read,
         }),
-        total_tokens: Some(total_in + total_out + total_cache_create + total_cache_read),
+        total_tokens: has_usage
+            .then_some(total_in + total_out + total_cache_create + total_cache_read),
         total_duration_ms: total_duration,
         context_window_used_tokens: None,
         context_window_max_tokens: None,
@@ -656,6 +688,26 @@ pub fn latest_turn_total_usage_tokens(turns: &[MessageTurn]) -> Option<u64> {
                 .saturating_add(usage.output_tokens)
                 .saturating_add(usage.cache_creation_input_tokens)
                 .saturating_add(usage.cache_read_input_tokens)
+        })
+    })
+}
+
+/// Context-window occupancy for agents whose transcripts carry ANTHROPIC-SHAPED
+/// usage counters (`input_tokens` + `cache_creation_input_tokens` +
+/// `cache_read_input_tokens` are the whole prompt; `output_tokens` is the reply).
+///
+/// Deliberately NOT [`latest_turn_total_usage_tokens`], which adds
+/// `output_tokens` too: for this counter shape the reply is not resident in the
+/// prompt window that produced it, so including it over-reports the gauge by
+/// the last turn's output. Claude Code and Qoder both write this shape.
+pub fn latest_turn_prompt_usage_tokens(turns: &[MessageTurn]) -> Option<u64> {
+    turns.iter().rev().find_map(|turn| {
+        turn.usage.as_ref().and_then(|usage| {
+            let used = usage
+                .input_tokens
+                .saturating_add(usage.cache_creation_input_tokens)
+                .saturating_add(usage.cache_read_input_tokens);
+            (used > 0).then_some(used)
         })
     })
 }

@@ -37,6 +37,7 @@ import {
 } from "@/lib/file-open-target"
 import { isAbsoluteFilePath } from "@/lib/file-path-display"
 import {
+  isHiddenPath,
   isHtmlPreviewable,
   isImageFile,
   isOfficePreviewable,
@@ -1293,6 +1294,12 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       )
       for (const changed of changed_paths) {
         if (!isOfficePreviewable(changed)) continue
+        // Dot-prefixed paths are hidden/machine-owned (editor lock files,
+        // AppleDouble sidecars, anything under `.git`/`.tmp`) — never a
+        // document the agent meant to show. Skipping here means we neither
+        // open a tab for one nor spawn its `officecli watch` process; a user
+        // who wants one can still open it by hand from the file tree.
+        if (isHiddenPath(changed)) continue
         const abs = joinRootRel(streamRoot, changed)
         if (autoOpened.has(abs) || openPaths.has(abs)) continue
         autoOpened.add(abs)

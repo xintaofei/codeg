@@ -29,10 +29,12 @@ import {
   defaultRemarkPlugins,
 } from "streamdown"
 import { markdownLinkComponents } from "./markdown-link"
+import { maskLiteralSpans } from "./markdown-mask"
 import { rehypePluginsAllowingCodeg } from "./rehype-allow-codeg"
 import { remarkTrimCjkAutolinkTail } from "./remark-cjk-autolink-tail"
 import { remarkRewriteFileUriLinks } from "./remark-file-uri-links"
-import { useStreamdownPlugins } from "./streamdown-plugins"
+import { remarkRestoreWindowsPaths } from "./remark-windows-paths"
+import { MATH_FENCE_PAD, useStreamdownPlugins } from "./streamdown-plugins"
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"]
@@ -344,30 +346,126 @@ export const MessageBranchPage = ({
 // / `/slash`-badging hooks were removed.
 export type MessageResponseProps = ComponentProps<typeof Streamdown>
 
-// remark-math only supports `$` delimiters. Convert LaTeX-style
-// `\[...\]` / `\(...\)` to `$$...$$` / `$...$` so they are recognized.
-// Code blocks and inline code are preserved to avoid false positives.
+// remark-math uses dollar delimiters. `\[...\]` / `\(...\)` are rewritten
+// to `$$...$$`. Single-dollar `$...$` is disabled (`singleDollarTextMath:
+// false`) so currency (`$9.99`) and shell vars (`$HOME`, `$1`) stay prose.
+//
+// A single-line `$$x$$` inside a paragraph stays *inline* math (mdast tags
+// every math-text node `math-inline` regardless of dollar count). The one
+// hazard is math FLOW: a `$$` that starts a line's block content opens a
+// display fence and swallows the rest of that line as fence metadata. Both
+// delimiters of a multi-line `\(...\)` can land there, and both are kept off
+// it by putting a zero-width space in front:
+//
+//   opener — padded only when the `$$` would land exactly at block content
+//            start, since the pad sits in the surrounding Markdown, where it
+//            is a real character to later constructs. (An emphasis run or a
+//            link-reference label padded on one side stops matching.)
+//   closer — padded unconditionally. This pad lands INSIDE the formula,
+//            where KaTeX ignores it, so it costs nothing to always emit and
+//            saves having to decide whether the closing line is container
+//            prefix or TeX. That question is not answerable from the line
+//            alone: `\(a\n2. \)` and a list continuation look identical, as
+//            do a tab-indented `>` and a blockquote marker, and a lazily
+//            continued quote carries no marker at all.
+//
+// Code and inline code are masked BEFORE line endings are folded: the inline
+// mask excludes LF but tolerates a bare CR, so folding first would un-mask
+// multi-line inline code and rewrite its contents.
+//
+// Known limit, pre-existing: an INDENTED code block is not masked, so
+// `\(...\)` inside one is rewritten (it already is on main). Padding cannot
+// avoid it — 4 spaces means "indented code" at top level but "content column"
+// inside a nested list, and a prefix scan cannot tell those apart.
 export function normalizeMathDelimiters(text: string): string {
-  const saved: string[] = []
-  const placeholder = (m: string) => {
-    saved.push(m)
-    return `\0CBLK${saved.length - 1}\0`
-  }
-  const masked = text.replace(
-    /`{3,}[\s\S]*?`{3,}|~{3,}[\s\S]*?~{3,}|`[^`\n]+`/g,
-    placeholder
-  )
-  const normalized = masked
+  const { masked, restore } = maskLiteralSpans(text)
+  // Fold line endings only after masking, so the offsets and line scans below
+  // match what remark-parse sees while masked code keeps its own bytes.
+  const source = masked.replace(/\r\n|\r/g, "\n")
+  const normalized = source
     .replace(/\\\[([\s\S]*?)\\\]/g, (_m, inner: string) => `$$${inner}$$`)
-    .replace(/\\\(([\s\S]*?)\\\)/g, (_m, inner: string) => `$${inner}$`)
-  return normalized.replace(
-    /\0CBLK(\d+)\0/g,
-    (_m, i: string) => saved[Number(i)]
-  )
+    .replace(/\\\(([\s\S]*?)\\\)/g, (_m, inner: string, offset: number) => {
+      if (!inner.includes("\n")) return `$$${inner}$$`
+      const lineStart = source.lastIndexOf("\n", offset - 1) + 1
+      const atContentStart =
+        containerPrefixEnd(source, lineStart, offset) === offset
+      const open = atContentStart ? MATH_FENCE_PAD : ""
+      return `${open}$$${inner}${MATH_FENCE_PAD}$$`
+    })
+  return restore(normalized)
+}
+
+function isSpaceOrTab(code: number): boolean {
+  return code === 32 || code === 9
+}
+
+/**
+ * Index just past the CommonMark container prefix (blockquote markers, list
+ * markers, indentation) opening the line `[start, end)` — i.e. where that
+ * line's block content begins. Returns `start` when content starts
+ * immediately. Single pass, no backtracking: every iteration consumes at
+ * least one character or returns.
+ *
+ * Indentation is deliberately not capped at 3. A deeper run only happens
+ * inside a nested list (where it IS the content column, so the guard is
+ * needed) or in an indented code block (where the guard is inert).
+ */
+function containerPrefixEnd(
+  source: string,
+  start: number,
+  end: number
+): number {
+  let i = start
+  for (;;) {
+    while (i < end && isSpaceOrTab(source.charCodeAt(i))) i += 1
+    if (i >= end) return i
+
+    const ch = source.charCodeAt(i)
+    if (ch === 62 /* > */) {
+      i += 1
+      continue
+    }
+
+    if (ch === 42 /* * */ || ch === 45 /* - */ || ch === 43 /* + */) {
+      if (i + 1 < end && isSpaceOrTab(source.charCodeAt(i + 1))) {
+        i += 2
+        continue
+      }
+      return i
+    }
+
+    if (ch >= 48 && ch <= 57) {
+      let j = i
+      let digits = 0
+      while (
+        j < end &&
+        digits < 9 &&
+        source.charCodeAt(j) >= 48 &&
+        source.charCodeAt(j) <= 57
+      ) {
+        digits += 1
+        j += 1
+      }
+      const marker = j < end ? source.charCodeAt(j) : 0
+      if (
+        (marker === 46 /* . */ || marker === 41) /* ) */ &&
+        j + 1 < end &&
+        isSpaceOrTab(source.charCodeAt(j + 1))
+      ) {
+        i = j + 2
+        continue
+      }
+      return i
+    }
+
+    return i
+  }
 }
 
 const remarkPlugins = [
   ...Object.values(defaultRemarkPlugins),
+  // Before remarkRewriteFileUriLinks, which reshapes a drive path's url.
+  remarkRestoreWindowsPaths,
   remarkRewriteFileUriLinks,
   remarkTrimCjkAutolinkTail,
 ]

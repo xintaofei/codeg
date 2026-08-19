@@ -169,6 +169,13 @@ pub struct WorkTaskFolderSettings {
     /// Merge dialog's "delete worktree after merge" default.
     #[serde(default = "default_true")]
     pub delete_worktree_default: bool,
+    /// Directory new task worktrees are created IN — each one still gets its
+    /// own `<repo>-task-<id>` directory under it. `None`/blank keeps the
+    /// historical layout: right next to the project folder. `~` expands to the
+    /// home directory and a relative path resolves against the project folder,
+    /// so a typed value behaves like it reads.
+    #[serde(default)]
+    pub worktree_root: Option<String>,
     /// P2: `folder_command` id run in the worktree when a task settles into
     /// review — the acceptance red/green light. `None` = no preflight.
     #[serde(default)]
@@ -203,6 +210,7 @@ impl Default for WorkTaskFolderSettings {
             merge_strategy: default_merge_strategy(),
             auto_merge: false,
             delete_worktree_default: true,
+            worktree_root: None,
             preflight_command_id: None,
             preflight_command: None,
             init_command: None,

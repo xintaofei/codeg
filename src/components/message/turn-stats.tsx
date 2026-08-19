@@ -209,9 +209,9 @@ export function TurnStats({
                     {formatTokenCount(usage.input_tokens)}
                   </span>
                 </div>
-                {/* Some agents (e.g. Grok) report only a single cumulative token
-                    total, mapped to input; suppress a misleading "Output: 0"
-                    row. Symmetric with the cache rows' `> 0` gating below. */}
+                {/* An agent that reports no output split at all would otherwise
+                    show a misleading "Output: 0" row. Symmetric with the cache
+                    rows' `> 0` gating below. */}
                 {usage.output_tokens > 0 && (
                   <div className="flex justify-between gap-3">
                     <span>{t("tokenOutput")}</span>

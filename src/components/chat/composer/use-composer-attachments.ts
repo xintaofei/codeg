@@ -200,8 +200,8 @@ export function useComposerAttachments({
 
   // Route pasted / dropped / picked images to the thumbnail strip whenever the
   // agent can receive them in ANY form — either as a native ACP image block
-  // (`image`) or as an embedded resource blob (`embedded_context`, e.g. Grok,
-  // which advertises `image: false` but `embeddedContext: true`).
+  // (`image`) or as an embedded resource blob (`embedded_context`, what an
+  // agent that advertises `image: false` but `embeddedContext: true` takes).
   const canAttachImages =
     promptCapabilities.image || promptCapabilities.embedded_context
 
@@ -1331,7 +1331,7 @@ export function useComposerAttachments({
   // `attachments` holds only images — files live inline as editor badges. The
   // wire encoding is capability-driven (native `image` block vs embedded
   // `resource` blob) so an agent that advertises `image: false` but
-  // `embedded_context: true` (e.g. Grok) still receives the bytes it accepts.
+  // `embedded_context: true` still receives the bytes it accepts.
   const imagePromptBlocks = useCallback(
     (): PromptInputBlock[] =>
       imageAttachments.map((attachment) =>

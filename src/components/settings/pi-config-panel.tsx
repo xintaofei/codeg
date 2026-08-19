@@ -30,6 +30,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import {
   acpInstallPiBinary,
   acpPiListTrustEntries,
@@ -42,6 +43,15 @@ import {
 } from "@/lib/api"
 import { useAgentInstallStream } from "@/hooks/use-agent-install-stream"
 import { PI_CONFIG_DIR_ENV } from "@/lib/pi-config"
+import {
+  PI_THINKING_LEVELS,
+  implicitWireValue,
+  reasoningFromModel,
+  reasoningToMap,
+  toggleLevel,
+  type PiModelReasoning,
+  type PiThinkingLevel,
+} from "@/lib/pi-thinking"
 import type { AcpAgentInfo } from "@/lib/types"
 import { cn, randomUUID } from "@/lib/utils"
 
@@ -75,14 +85,17 @@ export const PI_RESERVED_ENV_KEYS = [
 
 type PiRuntimeMode = "default" | "custom"
 
-const PI_THINKING_LEVELS = [
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-] as const
+/** A custom provider as `loadPiConfig` projects it out of `models.json`. */
+type PiCustomProvider = Awaited<
+  ReturnType<typeof loadPiConfig>
+>["customProviders"][number]
+
+/** A model that has never declared reasoning — pi treats it as `["off"]` only. */
+const NO_REASONING: PiModelReasoning = {
+  enabled: false,
+  levels: [],
+  wireValues: {},
+}
 
 /**
  * Curated built-in providers for the enum, as `{ id, label }`: the Select stores
@@ -202,9 +215,7 @@ export function PiConfigPanel({
   const [customId, setCustomId] = useState("")
   const [customBaseUrl, setCustomBaseUrl] = useState("")
   const [customApi, setCustomApi] = useState(PI_CUSTOM_API_PROTOCOLS[0])
-  const [customProviders, setCustomProviders] = useState<
-    { id: string; baseUrl: string; api: string }[]
-  >([])
+  const [customProviders, setCustomProviders] = useState<PiCustomProvider[]>([])
   const [model, setModel] = useState("")
   const [thinkingLevel, setThinkingLevel] = useState("")
   const [apiKey, setApiKey] = useState("")
@@ -212,9 +223,32 @@ export function PiConfigPanel({
   const [authProviders, setAuthProviders] = useState<string[]>([])
   const [savingCreds, setSavingCreds] = useState(false)
   const [loadingCreds, setLoadingCreds] = useState(true)
+  const [reasoning, setReasoning] = useState<PiModelReasoning>(NO_REASONING)
+  const [showWireValues, setShowWireValues] = useState(false)
 
   const isCustom = selectedProvider === PI_CUSTOM_SENTINEL
   const effectiveProvider = (isCustom ? customId : selectedProvider).trim()
+
+  // Rehydrate the reasoning controls whenever the edited model's identity changes
+  // (provider switch, or a different model id typed in). Reading the stored entry
+  // rather than defaulting the form to "off" is what stops a save from wiping a
+  // declaration the user hand-wrote into models.json. Adjusting during render is
+  // React's documented pattern for "reset state when the thing it describes
+  // changes" — an effect would render one frame of the previous model's chips.
+  // Newline separator: neither a provider key nor a model id can contain one,
+  // so the halves cannot run together into a colliding key.
+  const reasoningKey =
+    loadingCreds || !isCustom ? null : `${effectiveProvider}\n${model.trim()}`
+  const [lastReasoningKey, setLastReasoningKey] = useState<string | null>(null)
+  if (reasoningKey !== null && reasoningKey !== lastReasoningKey) {
+    setLastReasoningKey(reasoningKey)
+    const stored = customProviders
+      .find((provider) => provider.id === effectiveProvider)
+      ?.models?.find((entry) => entry.id === model.trim())
+    setReasoning(
+      reasoningFromModel(stored?.reasoning, stored?.thinkingLevelMap)
+    )
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -250,6 +284,20 @@ export function PiConfigPanel({
     }
   }, [])
 
+  // Levels the picker may offer. A built-in provider keeps pi's full vocabulary —
+  // pi carries its own, more accurate declaration for those models.
+  const availableLevels: readonly PiThinkingLevel[] =
+    isCustom && reasoning.enabled ? reasoning.levels : PI_THINKING_LEVELS
+  // pi's `defaultThinkingLevel` is global, not per-model, so a level that suits one
+  // model can be unreachable on another. Say so instead of letting pi clamp it.
+  const defaultLevelUnlisted =
+    isCustom &&
+    reasoning.enabled &&
+    thinkingLevel !== "" &&
+    !reasoning.levels.includes(thinkingLevel as PiThinkingLevel)
+  const effectiveThinkingLevel =
+    isCustom && !reasoning.enabled ? "off" : thinkingLevel
+
   const handleSaveCreds = useCallback(async () => {
     const trimmedModel = model.trim()
     if (!effectiveProvider || !trimmedModel) {
@@ -261,15 +309,36 @@ export function PiConfigPanel({
       toast.error(t("pi.baseUrlRequired"))
       return
     }
+    // An enabled declaration with nothing checked leaves pi with an empty
+    // vocabulary, which clamps to `off` — the exact failure the card exists to
+    // prevent, so refuse it rather than write it.
+    if (isCustom && reasoning.enabled && reasoning.levels.length === 0) {
+      toast.error(t("pi.levelsEmptyError"))
+      return
+    }
+    if (defaultLevelUnlisted) {
+      toast.error(t("pi.defaultLevelUnlisted"))
+      return
+    }
+    const thinkingLevelMap = reasoningToMap(reasoning)
     setSavingCreds(true)
     try {
       await acpUpdatePiConfig({
         provider: effectiveProvider,
         model: trimmedModel,
-        thinkingLevel: thinkingLevel || undefined,
+        thinkingLevel: effectiveThinkingLevel || undefined,
         apiKey: apiKey.trim() || undefined,
         customBaseUrl: isCustom ? trimmedBaseUrl : undefined,
         customApi: isCustom ? customApi : undefined,
+        modelReasoning: isCustom
+          ? {
+              reasoning: reasoning.enabled,
+              thinkingLevelMap: thinkingLevelMap as Record<
+                string,
+                string | null
+              >,
+            }
+          : undefined,
       })
       if (apiKey.trim()) {
         setApiKey("")
@@ -280,13 +349,26 @@ export function PiConfigPanel({
         )
       }
       if (isCustom) {
-        // Reflect the just-saved custom provider so a reopen rehydrates it.
+        // Reflect the just-saved custom provider so a reopen rehydrates it —
+        // including the model's declaration, so switching away and back shows
+        // the chips that are now on disk rather than a stale read.
         setCustomProviders((prev) => {
+          const previous = prev.find((c) => c.id === effectiveProvider)
+          const models = (previous?.models ?? []).filter(
+            (entry) => entry.id !== trimmedModel
+          )
+          models.push({
+            id: trimmedModel,
+            reasoning: reasoning.enabled,
+            thinkingLevelMap: thinkingLevelMap as Record<string, string | null>,
+          })
+          models.sort((a, b) => a.id.localeCompare(b.id))
           const next = prev.filter((c) => c.id !== effectiveProvider)
           next.push({
             id: effectiveProvider,
             baseUrl: trimmedBaseUrl,
             api: customApi,
+            models,
           })
           next.sort((a, b) => a.id.localeCompare(b.id))
           return next
@@ -306,7 +388,9 @@ export function PiConfigPanel({
     customBaseUrl,
     customApi,
     model,
-    thinkingLevel,
+    effectiveThinkingLevel,
+    defaultLevelUnlisted,
+    reasoning,
     apiKey,
     onSaved,
     t,
@@ -925,26 +1009,162 @@ export function PiConfigPanel({
           />
         </div>
 
+        {/* ---- Reasoning card ----
+            pi reads `reasoning: modelDef.reasoning ?? false`, and an undeclared
+            model gets `["off"]` as its whole thinking vocabulary — so every level
+            the composer sends is clamped back and the picker snaps to Off. Only
+            custom providers need this: a built-in model carries pi's own, more
+            accurate declaration. */}
+        {isCustom && (
+          <div className="space-y-2 rounded-md border bg-background/60 p-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-medium">
+                {t("pi.reasoningTitle")}
+              </span>
+              <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground">
+                <Switch
+                  checked={reasoning.enabled}
+                  onCheckedChange={(checked) =>
+                    setReasoning((prev) => ({
+                      ...prev,
+                      enabled: checked,
+                      // First enable with nothing remembered → offer pi's whole
+                      // vocabulary bar xhigh, which most backends reject.
+                      levels:
+                        checked && prev.levels.length === 0
+                          ? PI_THINKING_LEVELS.filter(
+                              (level) => level !== "xhigh"
+                            )
+                          : prev.levels,
+                    }))
+                  }
+                  disabled={savingCreds || loadingCreds}
+                  aria-label={t("pi.reasoningEnableLabel")}
+                />
+                {t("pi.reasoningEnableLabel")}
+              </label>
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              {t("pi.reasoningDescription")}
+            </p>
+
+            {reasoning.enabled && (
+              <>
+                <div className="space-y-1">
+                  <label className="text-[11px] text-muted-foreground">
+                    {t("pi.levelsLabel")}
+                  </label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {PI_THINKING_LEVELS.map((level) => {
+                      const active = reasoning.levels.includes(level)
+                      return (
+                        <button
+                          key={level}
+                          type="button"
+                          disabled={savingCreds || loadingCreds}
+                          onClick={() =>
+                            setReasoning((prev) => ({
+                              ...prev,
+                              levels: toggleLevel(prev.levels, level),
+                            }))
+                          }
+                          aria-pressed={active}
+                          className={cn(
+                            "rounded-full border px-2 py-0.5 font-mono text-[11px] transition-colors",
+                            active
+                              ? "border-primary/40 bg-primary/10 text-foreground"
+                              : "border-border text-muted-foreground hover:bg-muted"
+                          )}
+                        >
+                          {level}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">
+                    {reasoning.levels.length === 0
+                      ? t("pi.levelsEmptyError")
+                      : t("pi.levelsHint")}
+                  </p>
+                </div>
+
+                {reasoning.levels.length > 0 && (
+                  <div className="space-y-1">
+                    <button
+                      type="button"
+                      onClick={() => setShowWireValues((prev) => !prev)}
+                      className="text-[11px] text-muted-foreground hover:text-foreground"
+                    >
+                      {showWireValues ? "▾ " : "▸ "}
+                      {t("pi.wireValuesTitle")}
+                    </button>
+                    {showWireValues && (
+                      <div className="space-y-1.5 rounded-md border border-dashed p-2">
+                        {reasoning.levels.map((level) => (
+                          <div key={level} className="flex items-center gap-2">
+                            <span className="w-16 shrink-0 font-mono text-[11px] text-muted-foreground">
+                              {level}
+                            </span>
+                            <Input
+                              value={reasoning.wireValues[level] ?? ""}
+                              onChange={(event) =>
+                                setReasoning((prev) => ({
+                                  ...prev,
+                                  wireValues: {
+                                    ...prev.wireValues,
+                                    [level]: event.target.value,
+                                  },
+                                }))
+                              }
+                              placeholder={implicitWireValue(level)}
+                              spellCheck={false}
+                              className="h-7 font-mono text-xs"
+                              aria-label={`${t("pi.wireValuesTitle")}: ${level}`}
+                              disabled={savingCreds || loadingCreds}
+                            />
+                          </div>
+                        ))}
+                        <p className="text-[10px] text-muted-foreground">
+                          {t("pi.wireValuesHint")}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
         <div className="space-y-1.5">
           <label className="text-[11px] text-muted-foreground">
             {t("pi.thinkingLabel")}
           </label>
           <Select
-            value={thinkingLevel || "off"}
+            value={effectiveThinkingLevel || "off"}
             onValueChange={(value) => setThinkingLevel(value)}
-            disabled={savingCreds || loadingCreds}
+            // A model with no reasoning has exactly one reachable level, so the
+            // control would be a lie.
+            disabled={
+              savingCreds || loadingCreds || (isCustom && !reasoning.enabled)
+            }
           >
             <SelectTrigger className="w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent align="start">
-              {PI_THINKING_LEVELS.map((level) => (
+              {availableLevels.map((level) => (
                 <SelectItem key={level} value={level}>
                   {t(`pi.thinking.${level}`)}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
+          {defaultLevelUnlisted && (
+            <p className="text-[11px] text-destructive">
+              {t("pi.defaultLevelUnlisted")}
+            </p>
+          )}
         </div>
 
         <div className="space-y-1.5">

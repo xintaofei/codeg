@@ -56,11 +56,11 @@ describe("ChannelEventsTab event filter (opt-in user_prompt_sent)", () => {
   it("defaults user_prompt_sent OFF under a null filter while other events stay ON", async () => {
     mockGetFilter.mockResolvedValue(null)
     renderTab()
-    await waitFor(() => expect(mockGetFilter).toHaveBeenCalled())
+    const userMessageSwitch = await screen.findByRole("switch", {
+      name: "User Message",
+    })
 
-    expect(
-      screen.getByRole("switch", { name: "User Message" })
-    ).not.toBeChecked()
+    expect(userMessageSwitch).not.toBeChecked()
     expect(screen.getByRole("switch", { name: "Turn Complete" })).toBeChecked()
     expect(
       screen.getByRole("switch", { name: "Permission Request" })
@@ -70,9 +70,11 @@ describe("ChannelEventsTab event filter (opt-in user_prompt_sent)", () => {
   it("enabling user_prompt_sent persists an explicit list including it (never null)", async () => {
     mockGetFilter.mockResolvedValue(null)
     renderTab()
-    await waitFor(() => expect(mockGetFilter).toHaveBeenCalled())
+    const userMessageSwitch = await screen.findByRole("switch", {
+      name: "User Message",
+    })
 
-    fireEvent.click(screen.getByRole("switch", { name: "User Message" }))
+    fireEvent.click(userMessageSwitch)
 
     await waitFor(() => expect(mockSetFilter).toHaveBeenCalled())
     const calls = mockSetFilter.mock.calls
@@ -174,9 +176,11 @@ describe("ChannelEventsTab webhooks", () => {
 
   it("adds a webhook through the dialog and persists it as enabled", async () => {
     renderTab()
-    await waitFor(() => expect(mockGetWebhooks).toHaveBeenCalled())
+    const addWebhook = await screen.findByRole("button", {
+      name: "Add Webhook",
+    })
 
-    fireEvent.click(screen.getByRole("button", { name: "Add Webhook" }))
+    fireEvent.click(addWebhook)
     fireEvent.change(
       screen.getByPlaceholderText("https://example.com/webhook"),
       { target: { value: "https://hook.test/in" } }
@@ -266,9 +270,11 @@ describe("ChannelEventsTab webhooks", () => {
 
   it("rejects an invalid url in the dialog without persisting", async () => {
     renderTab()
-    await waitFor(() => expect(mockGetWebhooks).toHaveBeenCalled())
+    const addWebhook = await screen.findByRole("button", {
+      name: "Add Webhook",
+    })
 
-    fireEvent.click(screen.getByRole("button", { name: "Add Webhook" }))
+    fireEvent.click(addWebhook)
     fireEvent.change(
       screen.getByPlaceholderText("https://example.com/webhook"),
       { target: { value: "not-a-url" } }
@@ -321,9 +327,11 @@ describe("ChannelEventsTab webhooks", () => {
         })
     )
     renderTab()
-    await waitFor(() => expect(mockGetWebhooks).toHaveBeenCalled())
+    const addWebhook = await screen.findByRole("button", {
+      name: "Add Webhook",
+    })
 
-    fireEvent.click(screen.getByRole("button", { name: "Add Webhook" }))
+    fireEvent.click(addWebhook)
     const input = screen.getByPlaceholderText("https://example.com/webhook")
     fireEvent.change(input, { target: { value: "https://b.test/h" } })
     fireEvent.click(screen.getByRole("button", { name: "Save" }))

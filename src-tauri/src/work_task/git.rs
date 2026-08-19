@@ -582,6 +582,42 @@ mod tests {
         assert!(branch_holds_unlanded_work(not_a_repo, "task/1", Some("main"), None).await);
     }
 
+    /// Task worktrees can be pointed at a directory of the user's choosing
+    /// (the folder's `worktree_root` setting), and the folder's FIRST task
+    /// meets that directory before it exists. Nothing in the engine creates
+    /// it: `git worktree add` is expected to make the leading directories
+    /// along with the checkout, so this pins that expectation on the exact
+    /// call the fresh mint makes.
+    #[tokio::test]
+    async fn a_worktree_root_that_does_not_exist_yet_is_created_by_the_add() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).expect("mkdir");
+        let repo_path = repo.to_str().expect("utf-8 path");
+        git_run(&repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "one\n").expect("write");
+        git_run(&repo, &["add", "-A"]);
+        git_run(&repo, &["commit", "-q", "-m", "base"]);
+        let base = rev_parse(repo_path, "HEAD").await.expect("base sha");
+
+        let wt = dir.path().join("trees").join("nested").join("repo-task-7");
+        crate::commands::folders::git_worktree_add(
+            repo_path.to_string(),
+            "task/7".to_string(),
+            wt.to_string_lossy().into_owned(),
+            Some(base.clone()),
+        )
+        .await
+        .expect("add into a root that does not exist yet");
+
+        assert_eq!(
+            rev_parse(wt.to_str().expect("utf-8 path"), "HEAD")
+                .await
+                .expect("head"),
+            base
+        );
+    }
+
     /// A retry after the checkout was removed must get the SAME branch back,
     /// prior commits included — not a fresh tree on a fresh base.
     #[tokio::test]

@@ -1,5 +1,12 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react"
-import { createRef } from "react"
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react"
+import { createRef, type RefObject } from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { SuggestionPopup } from "./suggestion-popup"
@@ -81,9 +88,158 @@ function key(name: string, shiftKey = false): KeyboardEvent {
   return { key: name, shiftKey } as KeyboardEvent
 }
 
+const spawnedHosts: HTMLElement[] = []
+
+/**
+ * An anchor nested one level down, so a test can hide the *ancestor* — which is
+ * how the app hides a kept-mounted conversation — rather than the anchor itself.
+ * Returns the wrapper (to hide) and a ref to hand the panel.
+ */
+function mountAnchor() {
+  const host = document.createElement("div")
+  const anchor = document.createElement("div")
+  host.appendChild(anchor)
+  document.body.appendChild(host)
+  spawnedHosts.push(host)
+  const anchorRef: RefObject<HTMLElement | null> = { current: anchor }
+  return { host, anchor, anchorRef }
+}
+
+/** The portal's positioning layer (the panel's parent). */
+function popupLayer() {
+  const panel = screen.getByTestId("mention-popup")
+  const layer = panel.parentElement
+  if (!layer) throw new Error("popup layer missing")
+  return layer
+}
+
 describe("SuggestionPopup", () => {
   afterEach(() => {
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    // Only the anchors this file appended — Testing Library owns (and removes)
+    // its own container, and racing it there throws on cleanup.
+    for (const host of spawnedHosts.splice(0)) host.remove()
+  })
+
+  it("goes invisible with a host that was hidden but not unmounted", async () => {
+    const { host, anchorRef } = mountAnchor()
+    mountPopup({ anchorRef })
+    await screen.findByText("Codex Helper")
+    expect(popupLayer().style.visibility).toBe("visible")
+
+    // What the workbench does when a route (Automations, Tasks, …) covers the
+    // still-mounted conversation, and when the inactive conversation tab steps
+    // aside: flip a class on an ancestor. `visibility` inherits down to the
+    // anchor — but the panel portals to `body`, outside that subtree, so it
+    // used to keep painting over whatever replaced its host.
+    act(() => {
+      host.style.visibility = "hidden"
+    })
+    await waitFor(() => expect(popupLayer().style.visibility).toBe("hidden"))
+    expect(popupLayer().style.pointerEvents).toBe("none")
+
+    // Hidden, not closed: coming back restores it, exactly like the in-tree `/`
+    // menu, which never had to do anything to get this.
+    act(() => {
+      host.style.visibility = ""
+    })
+    await waitFor(() => expect(popupLayer().style.visibility).toBe("visible"))
+    expect(popupLayer().style.pointerEvents).toBe("auto")
+  })
+
+  it("re-adopts the anchor's width when the composer box is resized", async () => {
+    // Sidebar collapse, a resizable panel drag, the composer growing a line:
+    // the box changes with no `resize` and no `scroll` event anywhere, so a
+    // ResizeObserver on the anchor is the only thing that notices.
+    const callbacks: ResizeObserverCallback[] = []
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          callbacks.push(callback)
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    )
+    // Pin the per-frame move watcher shut, so only the ResizeObserver path can
+    // move the panel here — otherwise this test would still pass with that
+    // wiring deleted.
+    vi.stubGlobal("requestAnimationFrame", () => 0)
+    vi.stubGlobal("cancelAnimationFrame", () => {})
+    const { anchor, anchorRef } = mountAnchor()
+    let width = 600
+    vi.spyOn(anchor, "getBoundingClientRect").mockImplementation(
+      () =>
+        ({
+          left: 0,
+          top: 0,
+          right: width,
+          bottom: 40,
+          width,
+          height: 40,
+        }) as DOMRect
+    )
+    mountPopup({ anchorRef })
+    await screen.findByText("Codex Helper")
+    await waitFor(() =>
+      expect(screen.getByTestId("mention-popup").style.width).toBe("600px")
+    )
+
+    width = 900
+    act(() => {
+      for (const callback of callbacks) {
+        callback([], {} as ResizeObserver)
+      }
+    })
+    await waitFor(() =>
+      expect(screen.getByTestId("mention-popup").style.width).toBe("900px")
+    )
+  })
+
+  it("follows an anchor that moves without resizing", async () => {
+    // The sidebar animating open slides the centred (max-w-3xl) composer
+    // sideways at a constant width: no `resize`, no `scroll`, nothing for a
+    // ResizeObserver to see, and no event marking the end of the animation.
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frames.push(callback)
+      return frames.length
+    })
+    vi.stubGlobal("cancelAnimationFrame", () => {})
+    // Deaf observer: only the per-frame watcher can drive this one.
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    )
+    const { anchor, anchorRef } = mountAnchor()
+    let left = 100
+    vi.spyOn(anchor, "getBoundingClientRect").mockImplementation(
+      () =>
+        ({
+          left,
+          top: 500,
+          right: left + 600,
+          bottom: 540,
+          width: 600,
+          height: 40,
+        }) as DOMRect
+    )
+    mountPopup({ anchorRef })
+    await screen.findByText("Codex Helper")
+    await waitFor(() => expect(popupLayer().style.left).toBe("100px"))
+
+    left = 300
+    act(() => {
+      for (const frame of frames.splice(0)) frame(0)
+    })
+    await waitFor(() => expect(popupLayer().style.left).toBe("300px"))
   })
 
   it("renders the active (agent-first) tab's options plus a four-tab strip", async () => {
@@ -98,6 +254,33 @@ describe("SuggestionPopup", () => {
     expect(screen.getByRole("tab", { selected: true })).toHaveAccessibleName(
       /Agents/
     )
+  })
+
+  it("packs the detail beside the label so it can use the row's spare width", async () => {
+    // The panel is as wide as the composer box, so a label that stretches shoves
+    // the detail against the far edge — and a hard width cap on the detail then
+    // truncates it there with hundreds of spare pixels beside it (the layout
+    // this replaced). The label keeps its content width; the detail takes the
+    // slack and truncates only when the row really is too narrow.
+    const detailedSearch: ReferenceSearch = () => [
+      {
+        kind: "agent",
+        label: "Agents",
+        items: [{ reference: agentRef, detail: "ACP adapter for Codex" }],
+      },
+    ]
+    mountPopup({ search: detailedSearch })
+    const detail = await screen.findByText("ACP adapter for Codex")
+    expect(detail).toHaveClass("min-w-0", "grow", "basis-24", "truncate")
+    expect(detail.className).not.toMatch(/\bmax-w-/)
+    const label = screen.getByText("Codex Helper")
+    expect(label).toHaveClass("min-w-0", "truncate")
+    expect(label.className).not.toMatch(/\b(flex-1|grow|basis-)/)
+    // Logical alignment: under Arabic (`dir="rtl"`) a physical `text-left` would
+    // pin the grown detail's text to the far edge and mirror the void back in.
+    const row = screen.getByRole("option", { name: /Codex Helper/ })
+    expect(row).toHaveClass("text-start")
+    expect(row).not.toHaveClass("text-left")
   })
 
   it("shows an empty state (but keeps the tabs) when there are no matches", async () => {
@@ -298,6 +481,47 @@ describe("SuggestionPopup", () => {
     // Room above (600px) fits → placed above: 600 - 4 - 288 = 308.
     expect(container.style.top).toBe("308px")
     expect(container.dataset.placement).toBe("above")
+  })
+
+  it("adopts the anchor box's width and left edge, opening above it", async () => {
+    // The panel measures itself through the prototype; the anchor shadows that
+    // with its own rect (an own property wins over the spied prototype).
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+      width: 320,
+      height: 288,
+    } as DOMRect)
+    const box = document.createElement("div")
+    document.body.appendChild(box)
+    box.getBoundingClientRect = () =>
+      ({ left: 40, top: 500, bottom: 620, width: 600 }) as DOMRect
+    render(
+      <SuggestionPopup
+        ref={createRef<SuggestionPopupHandle>()}
+        state={{
+          query: "a",
+          range: { from: 1, to: 3 },
+          // Caret far from the box: the anchor wins, so this never shows up.
+          getClientRect: () =>
+            ({ left: 400, top: 610, bottom: 630 }) as DOMRect,
+        }}
+        search={search}
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        anchorRef={{ current: box }}
+      />
+    )
+    await screen.findByText("Codex Helper")
+    const panel = screen.getByTestId("mention-popup")
+    const container = panel.parentElement as HTMLElement
+    // Same width as the composer, not the default w-80.
+    expect(panel.style.width).toBe("600px")
+    // Left edge follows the box (not the caret's 400)…
+    expect(container.style.left).toBe("40px")
+    // …and it sits above the box's TOP (500 - 4 - 288), clear of the composer,
+    // rather than hugging the caret line inside it.
+    expect(container.style.top).toBe("208px")
+    expect(container.dataset.placement).toBe("above")
+    box.remove()
   })
 
   it("re-anchors to the live caret rect on resize (not a stale snapshot)", async () => {

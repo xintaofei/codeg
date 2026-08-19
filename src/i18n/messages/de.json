@@ -626,6 +626,7 @@
       "description": "Erlaubt aktiven Agenten, Teilaufgaben an andere Agenten zu delegieren.",
       "enable": "Delegation aktivieren",
       "enableHint": "Wenn deaktiviert, wird das Tool delegate_to_agent im MCP-Toolkatalog des Agenten ausgeblendet.",
+      "withheldByHostTools": "{agents} erhalten die Delegationswerkzeuge nicht: Ihr agentenspezifischer Schalter „Dateien und Befehle vom Agenten selbst ausführen lassen“ ist aktiv.",
       "depthLimit": "Maximale Delegationstiefe",
       "depthHint": "Zulässiger Bereich: {min}–{max}. Begrenzt, wie tief eine Delegationskette (Root → Kind → Enkel …) rekursieren kann.",
       "completedCacheLabel": "Cache abgeschlossener Ergebnisse (MB)",
@@ -683,6 +684,7 @@
       "saveKimiCodeConfig": "Kimi-Code-Konfiguration speichern",
       "customInstall": "Benutzerdefinierte Installation",
       "saveKimiCodeRawConfig": "Save config.toml",
+      "saveDeepSeekConfig": "DeepSeek-Konfiguration speichern",
       "diagnose": "Diagnose"
     },
     "status": {
@@ -785,6 +787,15 @@
       "modelNoMatch": "Kein passendes Modell",
       "modelsNeedAuth": "Melde dich an, um die Modellliste zu laden.",
       "modelDefaultBadge": "Standard"
+    },
+    "deepseek": {
+      "configManagement": "DeepSeek-Harness-Konfiguration",
+      "configDescription": "Endpunkt und Schlüssel sind Umgebungsvariablen, die deepseek-acp beim Start liest. Modell und Denkstufe sind Auswahlfelder pro Sitzung — sie werden im Eingabefeld gewählt.",
+      "baseUrlLabel": "API-Endpunkt",
+      "baseUrlHint": "Leer lassen für den offiziellen Endpunkt. Gilt für Sitzungen, die nach dem Speichern starten – eine laufende Sitzung muss neu verbinden.",
+      "baseUrlInvalid": "Vollständige http(s)-URL ohne Query-String eingeben, zum Beispiel https://api.deepseek.com",
+      "apiKeyLabel": "API-Schlüssel",
+      "apiKeyHint": "Wird dem Agenten als DEEPSEEK_API_KEY übergeben. Eine Umgebungsvariable hat Vorrang vor der Zugangsdatendatei – lass das Feld leer, wenn du dich im Terminal anmeldest."
     },
     "codex": {
       "configDescription": "Unterstützt schnelle Konfiguration von API-URL, API-Key, Modellname und reasoning effort und synchronisiert mit `auth.json` / `config.toml`.",
@@ -1206,6 +1217,8 @@
       "saveCodeBuddyFailed": "CodeBuddy-Konfiguration konnte nicht gespeichert werden",
       "kimiCodeSaved": "Kimi-Code-Konfiguration gespeichert",
       "saveKimiCodeFailed": "Speichern der Kimi-Code-Konfiguration fehlgeschlagen",
+      "deepseekSaved": "DeepSeek-Konfiguration gespeichert",
+      "saveDeepSeekFailed": "DeepSeek-Konfiguration konnte nicht gespeichert werden",
       "modelProviderRequired": "Bitte wählen Sie vor dem Speichern einen Modellanbieter aus.",
       "affectedRunningSessions": "{count, plural, one {# laufende Sitzung muss zum Anwenden neu verbunden werden} other {# laufende Sitzungen müssen zum Anwenden neu verbunden werden}}",
       "providerConnected": "{providerId} verbunden",
@@ -1324,7 +1337,16 @@
       "projectTrustEmpty": "Noch keine Ordner entschieden.",
       "projectTrustTrusted": "Vertraut",
       "projectTrustDenied": "Nicht vertraut",
-      "projectTrustRevoke": "Widerrufen"
+      "projectTrustRevoke": "Widerrufen",
+      "reasoningTitle": "Reasoning",
+      "reasoningEnableLabel": "Aktivieren",
+      "reasoningDescription": "pi sendet einen Reasoning-Aufwand nur für ein Modell, das ihn deklariert — bei einem nicht deklarierten Modell werden alle Stufen auf Off begrenzt, sodass die Auswahl im Eingabefeld sofort zurückspringt. Wird in den Eintrag dieses Modells in models.json geschrieben.",
+      "levelsLabel": "Verfügbare Stufen",
+      "levelsHint": "Diese werden zu den Einträgen der Reasoning-Auswahl im Eingabefeld. Wähle die, die dein Endpunkt akzeptiert; jede hier nicht gelistete Stufe lehnt pi ab.",
+      "levelsEmptyError": "Wähle mindestens eine Stufe — ohne eine fällt pi auf Off zurück.",
+      "wireValuesTitle": "Erweitert: an den Anbieter gesendete Werte",
+      "wireValuesHint": "Leer lassen, um den Stufennamen unverändert zu senden. Setze einen Wert, wenn dein Endpunkt etwas anderes erwartet — Google-artige Backends erwarten LOW / HIGH.",
+      "defaultLevelUnlisted": "Diese Stufe steht nicht in der Liste oben — pi würde sie begrenzen."
     },
     "addCustomAgent": "Eigenen Agenten hinzufügen",
     "addCustomAgentHint": "Registriere jeden ACP-kompatiblen Agenten. Wähle einen aus der öffentlichen ACP-Registry oder füge seine Registry-Informationen ein.",
@@ -1401,7 +1423,6 @@
     "terminalShellNotInstalled": "nicht installiert",
     "terminalShellNotFoundWarning": "Dieser Pfad existiert auf diesem Host nicht.",
     "terminalCurrentShell": "Aktuell verwendet: {path}",
-    "terminalAgentShellHint": "Bei „Systemstandard“ laufen Befehlszeilen von Agenten über die Plattform-Shell (/bin/sh bzw. cmd unter Windows). Eine bestimmte Shell gilt auch für Agenten – diese senden POSIX-Syntax, die fish, nushell und Windows PowerShell 5.1 (ohne &&-Operator) ablehnen können.",
     "renderingDescription": "Deaktivieren Sie die Hardwarebeschleunigung, wenn die App einen schwarzen Bildschirm oder Render-Fehler zeigt (häufig bei bestimmten AMD-GPUs oder integrierten Intel-GPUs). Wirkt sich nur auf die Windows-Desktop-Version aus.",
     "disableHardwareAcceleration": "Hardwarebeschleunigung deaktivieren",
     "renderingSaveFailed": "Render-Einstellungen konnten nicht gespeichert werden: {message}",
@@ -1726,6 +1747,7 @@
     "conversationCard": {
       "untitledConversation": "Unbenannte Konversation",
       "newConversation": "Neue Konversation",
+      "attachToCurrentSession": "Zur Sitzung hinzufügen",
       "rename": "Umbenennen",
       "status": "Zustand",
       "delete": "Löschen",
@@ -1808,6 +1830,16 @@
         "cacheRead": "Cache lesen",
         "cacheWrite": "Cache schreiben",
         "total": "Gesamt"
+      },
+      "quickActions": {
+        "title": "Schnellaktionen",
+        "groups": {
+          "workspace": "Arbeitsbereich",
+          "sessions": "Sitzungen",
+          "automation": "Automatisierung & To-dos",
+          "more": "Mehr"
+        },
+        "showPet": "Pet anzeigen"
       }
     },
     "auxPanel": {
@@ -2601,7 +2633,8 @@
           "line": "{error}{status} · {retry}",
           "lineWithDelay": "{error}{status} · {retry}, {delay}",
           "httpStatus": " (HTTP {status})"
-        }
+        },
+        "configOptionAdjusted": "{agent} hat {option} auf {actual} statt {requested} gesetzt"
       },
       "connectionLifecycle": {
         "tasks": {
@@ -2669,6 +2702,7 @@
         "slashCommands": "Slash-Befehle",
         "slashSearchPlaceholder": "Befehle suchen...",
         "slashSearchEmpty": "Keine passenden Befehle",
+        "slashLoading": "Befehle werden geladen…",
         "experts": "Experten",
         "office": "Büroarbeit",
         "research": "Forschung",
@@ -2821,7 +2855,8 @@
       "agentSelector": {
         "noEnabledAgents": "Keine aktivierten Agenten",
         "openAgentsSettings": "Agenten-Einstellungen öffnen",
-        "notInstalled": "Nicht installiert"
+        "notInstalled": "Nicht installiert",
+        "moreAgents": "Weitere Agenten ({count})"
       },
       "subAgentOverlay": {
         "title": "Subagenten",
@@ -3043,6 +3078,7 @@
         "agentSessionLoading": "Protokoll des Subagenten wird geladen…",
         "agentSessionEmpty": "Der Subagent hat noch nichts geschrieben.",
         "agentFallbackTitle": "Sub-Agent wird gestartet…",
+        "agentCodexLaunchOnly": "Gestartet. Codex meldet keinen weiteren Fortschritt dieses Sub-Agenten – sein Ergebnis trifft als Nachricht in dieser Unterhaltung ein.",
         "agentStatsBash": "Befehle",
         "agentStatsRead": "Dateien gelesen",
         "agentStatsSearch": "Suchen",
@@ -3066,7 +3102,8 @@
             "blocked": "blockiert",
             "usageLimited": "Nutzung begrenzt",
             "budgetLimited": "Budget begrenzt",
-            "complete": "abgeschlossen"
+            "complete": "abgeschlossen",
+            "limited": "Limit erreicht"
           }
         },
         "field": {
@@ -3292,7 +3329,28 @@
       "contextCompaction": {
         "compacting": "Kontext wird komprimiert…",
         "compacted": "Kontext komprimiert",
-        "compactedTokens": "Kontext komprimiert · {before} → {after} Tokens"
+        "compactedTokens": "Kontext komprimiert · {before} → {after} Tokens",
+        "failed": "Kontextkomprimierung fehlgeschlagen"
+      },
+      "sessionFailure": {
+        "category": {
+          "connection": "Verbindungsproblem",
+          "access": "Zugriffsproblem",
+          "limit": "Limit erreicht",
+          "request": "Anfrage abgelehnt",
+          "service": "Dienstproblem",
+          "unknown": "Sitzungsproblem"
+        },
+        "action": {
+          "retry": "Erneut versuchen",
+          "login": "Anmelden",
+          "newSession": "Neue Sitzung"
+        },
+        "recovered": "Wiederhergestellt",
+        "retryUnavailable": "Keine vorherige Nachricht zum erneuten Senden.",
+        "toggleDetails": "Details umschalten",
+        "dismiss": "Schließen",
+        "moreIncidents": "+{count} weitere"
       },
       "backgroundTasks": {
         "running": "{count, plural, one {# Hintergrundaufgabe läuft} other {# Hintergrundaufgaben laufen}}",
@@ -4572,6 +4630,10 @@
     "settingsAutoMergeHint": "Eine Aufgabe, die mit landbaren Änderungen das Review erreicht, wird gemergt, als hättest du auf Mergen geklickt: Der Agent schreibt die Commit-Nachricht, der Worktree folgt der Voreinstellung unten. Bei rotem Preflight oder einem fehlgeschlagenen Merge wartet die Aufgabe auf dich.",
     "settingsDeleteWorktree": "Worktree nach dem Mergen löschen",
     "settingsDeleteWorktreeHint": "Aktiviert die Option im Merge-Dialog vor; dort lässt sie sich weiterhin ändern.",
+    "settingsWorktreeRoot": "Worktree-Verzeichnis",
+    "settingsWorktreeRootHint": "Verzeichnis, in dem neue Aufgaben-Worktrees angelegt werden – eines pro Aufgabe. Leer lassen, um sie neben dem Projektordner anzulegen; „~“ ist dein Home-Verzeichnis, ein relativer Pfad gilt relativ zum Projektordner.",
+    "settingsWorktreeRootPlaceholder": "~/codeg-worktrees",
+    "settingsWorktreeRootBrowse": "Worktree-Verzeichnis auswählen",
     "settingsPreflight": "Preflight-Befehl",
     "settingsPreflightHint": "Läuft im Worktree, sobald eine Aufgabe das Review erreicht.",
     "settingsPreflightCustomPlaceholder": "pnpm test",
@@ -4579,7 +4641,8 @@
     "settingsInitCommandHint": "Läuft in einem frisch erstellten Worktree, bevor der Agent startet.",
     "settingsInitCommandPlaceholder": "pnpm install",
     "settingsTabGeneral": "Allgemein",
-    "settingsTabWorkflow": "Ablauf",
+    "settingsTabMerge": "Merge",
+    "settingsTabWorktree": "Worktree",
     "settingsTabPrompts": "Prompts",
     "settingsPromptsIntro": "Jede Phase sendet bereits einen eingebauten Prompt — die Aufgabe selbst, die Worktree-Regeln und beim Mergen die genauen Git-Schritte. Was du hier ergänzt, wird als zusätzliche Anweisung ans Ende gehängt: Es verfeinert den eingebauten Text, ersetzt ihn aber nie.",
     "settingsPromptStageAll": "Alle Phasen",

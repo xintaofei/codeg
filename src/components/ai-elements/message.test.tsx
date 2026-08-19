@@ -34,7 +34,7 @@ vi.mock("@/components/ai-elements/link-safety", () => ({
   useStreamdownLinkSafety: () => ({ enabled: false }),
 }))
 
-import { MessageResponse } from "./message"
+import { MessageResponse, normalizeMathDelimiters } from "./message"
 
 describe("MessageResponse", () => {
   it("applies marker styles so ordered Markdown lists render as lists", () => {
@@ -44,5 +44,130 @@ describe("MessageResponse", () => {
       "[&_ol]:list-decimal",
       "[&_ol]:pl-3"
     )
+  })
+})
+
+describe("normalizeMathDelimiters", () => {
+  const Z = "\u200b"
+
+  it("normalizes \\[...\\] to $$...$$", () => {
+    expect(normalizeMathDelimiters("\\[ x^2 \\]")).toBe("$$ x^2 $$")
+  })
+
+  it("normalizes \\(...\\) to $$...$$", () => {
+    expect(normalizeMathDelimiters("\\( y \\)")).toBe("$$ y $$")
+  })
+
+  it("does not rewrite currency or shell $ tokens", () => {
+    // This helper only rewrites `\(`/`\[`. The real `$` fix is
+    // `singleDollarTextMath: false` — covered in math-delimiters.parse.test.ts.
+    const text = "Costs $25. Set $HOME and $1."
+    expect(normalizeMathDelimiters(text)).toBe(text)
+  })
+
+  it("leaves a single-line formula unpadded", () => {
+    expect(normalizeMathDelimiters("Also \\(x\\).")).toBe("Also $$x$$.")
+  })
+
+  it("pads a multi-line closer so it cannot open a flow fence", () => {
+    // The closing pad sits INSIDE the formula, where KaTeX ignores it, so it
+    // is emitted unconditionally rather than trying to decide whether the
+    // last line is container prefix or TeX.
+    expect(normalizeMathDelimiters("\\(a\nb\\)")).toBe(`${Z}$$a\nb${Z}$$`)
+    expect(normalizeMathDelimiters("\\(a\nb\n\\)")).toBe(`${Z}$$a\nb\n${Z}$$`)
+    expect(normalizeMathDelimiters("> \\(a\n> b\n> \\)")).toBe(
+      `> ${Z}$$a\n> b\n> ${Z}$$`
+    )
+  })
+
+  it("pads a multi-line opener only at block content start", () => {
+    expect(normalizeMathDelimiters("text \\(a\nb\\) tail")).toBe(
+      `text $$a\nb${Z}$$ tail`
+    )
+    expect(normalizeMathDelimiters("+ \\(a\n  b\\)")).toBe(
+      `+ ${Z}$$a\n  b${Z}$$`
+    )
+    expect(normalizeMathDelimiters(" \\(a\nb\\)")).toBe(` ${Z}$$a\nb${Z}$$`)
+    expect(normalizeMathDelimiters("   \\(a\nb\\)")).toBe(`   ${Z}$$a\nb${Z}$$`)
+    expect(normalizeMathDelimiters("-  \\(a\n   b\\)")).toBe(
+      `-  ${Z}$$a\n   b${Z}$$`
+    )
+    expect(normalizeMathDelimiters(">  \\(a\n>  b\\)")).toBe(
+      `>  ${Z}$$a\n>  b${Z}$$`
+    )
+  })
+
+  it("pads a container prefix wider than three columns", () => {
+    expect(normalizeMathDelimiters("10. Note\n    \\(a\n    b\\)")).toBe(
+      `10. Note\n    ${Z}$$a\n    b${Z}$$`
+    )
+    expect(
+      normalizeMathDelimiters("- outer\n  - inner\n    \\(a\n    b\\)")
+    ).toBe(`- outer\n  - inner\n    ${Z}$$a\n    b${Z}$$`)
+  })
+
+  it("never removes formula text, whatever the closing line looks like", () => {
+    // Each of these closing lines is ambiguous from the line alone — a list
+    // marker, a tab-indented `>`, a `>` outside any blockquote. Padding
+    // instead of classifying keeps them all.
+    expect(normalizeMathDelimiters("Before \\(a\n2. \\) after")).toBe(
+      `Before $$a\n2. ${Z}$$ after`
+    )
+    expect(normalizeMathDelimiters("> \\(a\n\t> \\) after")).toBe(
+      `> ${Z}$$a\n\t> ${Z}$$ after`
+    )
+    expect(normalizeMathDelimiters("\\(a\n> \\)")).toBe(`${Z}$$a\n> ${Z}$$`)
+  })
+
+  it("does not collapse newlines inside \\(...\\) (TeX % comments)", () => {
+    expect(normalizeMathDelimiters("\\(a % comment\nb + c\\)")).toBe(
+      `${Z}$$a % comment\nb + c${Z}$$`
+    )
+  })
+
+  it("canonicalizes CR / CRLF outside code", () => {
+    expect(normalizeMathDelimiters("\\(a\r\n\\)")).toBe(`${Z}$$a\n${Z}$$`)
+    expect(normalizeMathDelimiters("\\(a\rb\\)")).toBe(`${Z}$$a\nb${Z}$$`)
+    expect(normalizeMathDelimiters("\\(a\r\nb\\)")).toBe(`${Z}$$a\nb${Z}$$`)
+  })
+
+  it("masks inline code before folding line endings", () => {
+    // The inline-code pattern tolerates a bare CR. Folding first would
+    // un-mask this span and rewrite the delimiters inside it.
+    const text = "`\\(a\rb\\)`"
+    expect(normalizeMathDelimiters(text)).toBe(text)
+  })
+
+  it("scans container prefixes in one pass, without backtracking", () => {
+    // The predecessor regex was exponential here: ~910ms at 26 markers.
+    // Compare scaling rather than wall-clock, so a loaded machine cannot
+    // flake this — a quadratic scan blows the ratio long before any budget.
+    const run = (n: number) => {
+      const text = `${"> ".repeat(n)}x \\(a\nb\\)`
+      const start = performance.now()
+      const out = normalizeMathDelimiters(text)
+      expect(out).toContain("$$a\nb")
+      expect(out.startsWith(Z)).toBe(false)
+      return performance.now() - start
+    }
+    run(200) // warm up, so the ratio below is not measuring first-call JIT
+    const small = Math.max(run(200), 0.05)
+    const large = run(4000)
+    expect(large / small).toBeLessThan(20 * 5)
+  })
+
+  it("preserves inline and fenced code blocks", () => {
+    expect(normalizeMathDelimiters("Use `$x` in `\\(y\\)`")).toBe(
+      "Use `$x` in `\\(y\\)`"
+    )
+    expect(normalizeMathDelimiters("```\n\\(a\\)\n```")).toBe(
+      "```\n\\(a\\)\n```"
+    )
+  })
+
+  it("normalizes mixed LaTeX and currency correctly", () => {
+    const input = "Costs $25 and the equation \\(x^2 + y^2\\)."
+    const expected = "Costs $25 and the equation $$x^2 + y^2$$."
+    expect(normalizeMathDelimiters(input)).toBe(expected)
   })
 })

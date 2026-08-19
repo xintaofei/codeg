@@ -2023,6 +2023,39 @@ describe("WorkspaceProvider office auto-preview", () => {
     expect(screen.getByTestId("active-pane")).toHaveTextContent("conversation")
   })
 
+  it("ignores hidden office files and office files inside hidden directories", async () => {
+    renderWorkspace()
+
+    // Dot-prefixed names are machine-owned byproducts (LibreOffice lock file,
+    // AppleDouble sidecar, a doc parked under a scratch dir) — auto-preview
+    // must neither open a tab for them nor start their watch.
+    await act(async () => {
+      workspaceStoreMock.emitEnvelope([
+        ".~lock.report.docx#",
+        "._report.docx",
+        "docs/.draft.xlsx",
+        ".git/report.docx",
+        "build/.tmp/deck.pptx",
+      ])
+    })
+
+    expect(screen.getByTestId("file-tab-count")).toHaveTextContent("0")
+    expect(screen.getByTestId("active-pane")).toHaveTextContent("conversation")
+  })
+
+  it("still auto-opens a visible office file reported alongside hidden ones", async () => {
+    renderWorkspace()
+
+    await act(async () => {
+      workspaceStoreMock.emitEnvelope(["._report.docx", "report.docx"])
+    })
+
+    expect(screen.getByTestId("file-tab-count")).toHaveTextContent("1")
+    expect(screen.getByTestId("active-file-tab")).toHaveTextContent(
+      fileTabId("/repo/report.docx")
+    )
+  })
+
   it("opens each office file once, even when later envelopes re-report it", async () => {
     renderWorkspace()
 

@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type RefObject,
 } from "react"
 import { type Editor, type JSONContent } from "@tiptap/core"
 import { EditorContent, useEditor } from "@tiptap/react"
@@ -146,6 +147,13 @@ export interface RichComposerProps {
    */
   tabLabels?: Record<ReferenceKind, string>
   /**
+   * Box the `@` panel lines up with: it adopts this element's width and left
+   * edge and opens above it. Point it at the composer's outer chrome so the
+   * panel matches the host's own `/` command menu; defaults to the editor's own
+   * root, which is the same box for a host that wraps nothing else around it.
+   */
+  mentionAnchorRef?: RefObject<HTMLElement | null>
+  /**
    * Key binding (matchShortcutEvent form) that sends the message. Default
    * `"enter"`. When set to a non-Enter binding, a plain Enter inserts a newline.
    */
@@ -215,6 +223,7 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
       referenceSearch,
       mentionUiLabels,
       tabLabels,
+      mentionAnchorRef,
       submitShortcut,
       newlineShortcut,
       isExternalMenuOpen,
@@ -246,6 +255,8 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
     // The live editor, captured for command access inside editorProps handlers
     // (which are created before `editor` is assigned in this closure).
     const editorInstanceRef = useRef<Editor | null>(null)
+    // Fallback anchor for the `@` panel when the host names no outer box.
+    const rootRef = useRef<HTMLDivElement>(null)
     useEffect(() => {
       onChangeRef.current = onChange
       onSubmitRef.current = onSubmit
@@ -575,6 +586,7 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
 
     return (
       <div
+        ref={rootRef}
         className={cn("codeg-composer flex min-h-0 flex-col", className)}
         style={style}
         data-disabled={disabled || undefined}
@@ -594,6 +606,7 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(
             search={referenceSearch}
             onSelect={handleReferenceSelect}
             onClose={closeMention}
+            anchorRef={mentionAnchorRef ?? rootRef}
             onActiveOptionChange={handleActiveOptionChange}
             emptyLabel={mentionUiLabels?.empty}
             loadingLabel={mentionUiLabels?.loading}

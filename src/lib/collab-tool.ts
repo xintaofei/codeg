@@ -15,16 +15,18 @@
  * so the live input shaper merges it back in under `COLLAB_OP_KEY` — see
  * `mergeCollabOp` and `resolveLiveToolInput`.
  *
- * Live ceiling: codex-acp 1.1.3+ (#304) additionally emits `subAgentActivity`
- * as a SEPARATE live `tool_call` (`_meta.codex.subagent`), but codeg suppresses
- * it (redundant with this collab capsule — see the Rust `is_codex_subagent_
- * activity`), and it carries no transcript content anyway (only a
- * started/interacted/interrupted lifecycle marker). #304 also adds top-level
- * `model` / `reasoningEffort` to this collab `rawInput`, surfaced here. The
- * richest live signal thus remains `agentsStates[*].{status,message}` (on a
- * `wait` completion the `message` carries the sub-agent's full result); the full
- * nested transcript only exists on history reload, reconstructed by the Rust
- * parser into the richer "Agent" capsule from the on-disk `agent-<id>.jsonl`.
+ * #304 also adds top-level `model` / `reasoningEffort` to this collab
+ * `rawInput`, surfaced here. The richest live signal on this path is
+ * `agentsStates[*].{status,message}` (on a `wait` completion the `message`
+ * carries the sub-agent's full result); the full nested transcript only exists
+ * on history reload, reconstructed by the Rust parser into the richer "Agent"
+ * capsule.
+ *
+ * NOT this path: codex 0.147's native team-of-agents. It raises no
+ * `collabAgentToolCall` for a spawn — its only ACP-visible signal is
+ * `subAgentActivity` (`_meta.codex.subagent`), which the Rust side reshapes into
+ * an Agent capsule (see `classify_codex_subagent_activity`). This module stays
+ * for the collab surface codex still emits.
  */
 
 /** Canonical tool name the live collab path collapses to (see `inferLiveToolName`). */

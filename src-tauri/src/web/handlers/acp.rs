@@ -379,7 +379,7 @@ pub async fn acp_goal_control(
 ) -> Result<Json<()>, AppCommandError> {
     let manager = &state.connection_manager;
     manager
-        .goal_control(&params.connection_id, params.action)
+        .goal_control(&state.db.conn, &params.connection_id, params.action)
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(()))
@@ -845,6 +845,8 @@ pub struct AcpUpdatePiConfigParams {
     pub custom_base_url: Option<String>,
     #[serde(default)]
     pub custom_api: Option<String>,
+    #[serde(default)]
+    pub model_reasoning: Option<acp_commands::PiModelReasoningSpec>,
 }
 
 pub async fn acp_update_pi_config(
@@ -860,6 +862,7 @@ pub async fn acp_update_pi_config(
             api_key: params.api_key,
             custom_base_url: params.custom_base_url,
             custom_api: params.custom_api,
+            model_reasoning: params.model_reasoning,
         },
         &state.db,
         &emitter,

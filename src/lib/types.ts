@@ -1,4 +1,4 @@
-/** The twelve agents codeg ships hand-written support for. */
+/** The fourteen agents codeg ships hand-written support for. */
 export type BuiltinAgentType =
   | "claude_code"
   | "codex"
@@ -12,6 +12,8 @@ export type BuiltinAgentType =
   | "pi"
   | "grok"
   | "cursor"
+  | "deepseek"
+  | "qoder"
 
 /**
  * Which agent backs a conversation.
@@ -694,6 +696,8 @@ export const AGENT_DISPLAY_ORDER: BuiltinAgentType[] = [
   "pi",
   "grok",
   "cursor",
+  "deepseek",
+  "qoder",
 ]
 
 const AGENT_DISPLAY_ORDER_INDEX = new Map<AgentType, number>(
@@ -725,6 +729,8 @@ export const ALL_AGENT_TYPES: BuiltinAgentType[] = [
   "pi",
   "grok",
   "cursor",
+  "deepseek",
+  "qoder",
 ]
 
 export const MODEL_PROVIDER_AGENT_TYPES: BuiltinAgentType[] = [
@@ -1033,6 +1039,8 @@ export const AGENT_LABELS: Record<BuiltinAgentType, string> = {
   pi: "Pi",
   grok: "Grok",
   cursor: "Cursor",
+  deepseek: "DeepSeek Harness",
+  qoder: "Qoder",
 }
 
 export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
@@ -1048,6 +1056,8 @@ export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
   pi: "bg-[#0D9488]",
   grok: "bg-neutral-900",
   cursor: "bg-zinc-800",
+  deepseek: "bg-[#4D6BFE]",
+  qoder: "bg-[#6C4CF1]",
 }
 
 // ACP connection status (matches Rust ConnectionStatus)
@@ -1480,6 +1490,11 @@ export interface WorkTaskFolderSettings {
    *  (agent-written commit message, worktree per `delete_worktree_default`). */
   auto_merge: boolean
   delete_worktree_default: boolean
+  /** Directory new task worktrees are created IN — each task still gets its
+   *  own `<repo>-task-<id>` directory under it. Null/blank keeps them next to
+   *  the project folder; `~` expands and a relative path resolves against the
+   *  project folder. */
+  worktree_root?: string | null
   /** folder_command id run in the worktree when a task settles into review
    *  (the acceptance red/green light); null = no preflight. */
   preflight_command_id?: number | null
@@ -1828,6 +1843,18 @@ export type AcpEvent =
       config_options: SessionConfigOptionInfo[]
     }
   | {
+      // The agent settled a `session/set_config_option` somewhere other than
+      // where the pick asked. Correlated backend-side (see the Rust
+      // `ConfigOptionRejected`) because only that side can tell a request's
+      // answer from an unsolicited option update. `requested` / `actual` are
+      // display labels, already resolved against the option's value list.
+      type: "config_option_rejected"
+      config_id: string
+      option_name: string
+      requested: string
+      actual: string
+    }
+  | {
       type: "selectors_ready"
     }
   | {
@@ -1873,10 +1900,22 @@ export type AcpEvent =
       // auto-retries). NOT a turn failure — rendered as a transient retry
       // indicator that reuses the Claude API-retry banner and clears at the
       // next turn boundary. `error_status` is the HTTP status when codex's
-      // `codexErrorInfo` carried one.
+      // `codexErrorInfo` carried one. With AIR advertised, codex 1.2+ replaces
+      // this channel with severity-"warning" `session_failure` records, so it
+      // now serves only legacy paths.
       type: "turn_retrying"
       message: string
       error_status?: number
+    }
+  | {
+      // JetBrains AIR typed session failure upsert
+      // (`_meta.jetbrains.air.sessionFailure`, claude-agent-acp 0.67+/
+      // codex-acp 1.2+; published because codeg advertises the client
+      // capability). Wire carries UPSERTS ONLY — the reducer applies the same
+      // monotonic id+revision merge as the backend snapshot store, and infers
+      // resolution (warnings settle at turn boundaries; errors stay active).
+      type: "session_failure"
+      record: SessionFailureRecord
     }
   | {
       type: "session_load_failed"
@@ -2190,6 +2229,49 @@ export interface SessionLastError {
   details?: string | null
 }
 
+/**
+ * One JetBrains AIR typed session failure record (mirror of Rust
+ * `SessionFailureRecord`; claude-agent-acp 0.67+/codex-acp 1.2+, published
+ * only because codeg advertises `clientCapabilities._meta.jetbrains.air`).
+ *
+ * The wire carries UPSERTS ONLY: a record is revised in place through
+ * `id`+`revision` (per-id, from 1), and adapters never publish resolution —
+ * consumers reject `revision <=` the stored one and infer lifecycle
+ * themselves (see `lib/session-failures.ts`): severity-"warning" records
+ * settle at CLEAN (`end_turn`) turn ends only — a cancelled/failed exit did
+ * not recover, and a failed turn's terminal record arrives just before its
+ * `turn_complete` (riding the prompt response) as a same-id higher-revision
+ * error escalation — while severity-"error" records stay active until the
+ * user acts (a new prompt settles everything; a recurrence re-arms via a
+ * higher revision on the same id). Entries are retained resolved so each
+ * doubles as its id's revision watermark — dropping one would let a delayed
+ * stale upsert resurrect it.
+ */
+export interface SessionFailureRecord {
+  id: string
+  /** Per-id upsert revision, from 1. */
+  revision: number
+  /** AIR category — `connection|access|limit|request|service|unknown` today;
+   *  unrecognized values fall back to the `unknown` rendering. */
+  category: string
+  /** `"warning"` (transient, auto-recovering) or `"error"` (terminal). */
+  severity: string
+  /** Adapter-authored user-facing text; may be empty (the banner then falls
+   *  back to the localized category label). */
+  title: string
+  details?: string | null
+  /** Suggested recovery actions — subset of `retry|login|new_session` today;
+   *  unrecognized entries are not rendered. */
+  actions?: string[]
+  /** Client-inferred lifecycle (never on the wire). */
+  resolved?: boolean
+  /** Set when the USER closed the strip (client-local, never on the wire).
+   *  Implies `resolved`, but must NOT render as "recovered": the incident was
+   *  silenced, not fixed — saying otherwise would be a lie whenever the
+   *  connection is still down. */
+  dismissed?: boolean
+}
+
 export interface LiveSessionSnapshot {
   connection_id: string
   conversation_id: number | null
@@ -2246,6 +2328,16 @@ export interface LiveSessionSnapshot {
   config_stale_kind?: ConfigStaleKind | null
   /** Latest agent/runtime error recoverable after reconnect. */
   last_error?: SessionLastError | null
+  /** AIR typed session failure table — resolved entries and their revision
+   *  watermarks included, so an attaching client seeds the same monotonic
+   *  merge the live path applies. Absent while empty (the common case). */
+  session_failures?: SessionFailureRecord[]
+  /** Goal-control action vocabulary the goal card gates its buttons on: the
+   *  advertised `_meta.goal.actions` for neutral-goal adapters (claude has no
+   *  "pause"), else the legacy ["pause","clear"] pair. `null` while the
+   *  connection is still initializing (nothing known yet — stay fail-closed
+   *  and re-read); absent only on a server too old to carry the field. */
+  goal_actions?: string[] | null
   event_seq: number
 }
 
@@ -2299,6 +2391,14 @@ export interface AcpAgentInfo {
   sort_order: number
   installed_version: string | null
   env: Record<string, string>
+  /**
+   * The RESOLVED `CODEG_ACP_HOST_TOOLS` verdict: whether the next launch hands
+   * the `fs/*` + `terminal/*` channels — and, with them, codeg-mcp's delegation
+   * tools — back to the agent. Resolved by the same Rust function the launch
+   * uses, so it covers BOTH the per-agent `env` above and codeg's own process
+   * env; reading `env` here would miss the second.
+   */
+  host_tools_agent_mode: boolean
   config_json: string | null
   config_file_path: string | null
   opencode_auth_json: string | null
@@ -2901,6 +3001,8 @@ export type McpAppType =
   | "kimi_code"
   | "grok"
   | "cursor"
+  | "deepseek"
+  | "qoder"
 
 export interface LocalMcpServer {
   id: string
@@ -3358,7 +3460,7 @@ export interface CheckItem {
  * owns the version card's copy.
  */
 export interface AdapterInfo {
-  /** npm spec codeg installs, e.g. "@agentclientprotocol/codex-acp@1.1.9". */
+  /** npm spec codeg installs, e.g. "@agentclientprotocol/codex-acp@1.3.0". */
   adapter_package: string
   /** Command the launch gate resolves, e.g. "codex-acp". */
   adapter_cmd: string

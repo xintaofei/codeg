@@ -700,6 +700,13 @@ export async function acpUpdatePiConfig(params: {
    * `models.json` (with `customApi` as the wire protocol). Omit for built-ins. */
   customBaseUrl?: string
   customApi?: string
+  /** Reasoning declaration for `model` inside the custom provider — pi refuses every
+   * thinking level for a model that doesn't declare one. Omit to leave whatever the
+   * entry already says untouched (built-in providers carry pi's own declaration). */
+  modelReasoning?: {
+    reasoning: boolean
+    thinkingLevelMap: Record<string, string | null>
+  }
 }): Promise<void> {
   return getTransport().call("acp_update_pi_config", {
     provider: params.provider,
@@ -708,6 +715,7 @@ export async function acpUpdatePiConfig(params: {
     apiKey: params.apiKey ?? null,
     customBaseUrl: params.customBaseUrl ?? null,
     customApi: params.customApi ?? null,
+    modelReasoning: params.modelReasoning ?? null,
   })
 }
 
@@ -723,7 +731,18 @@ export async function loadPiConfig(): Promise<{
   authProviders: string[]
   /** Custom/self-hosted providers defined in `models.json`, sorted by id. Used
    * to rehydrate the custom-provider form and detect a custom `defaultProvider`. */
-  customProviders: { id: string; baseUrl: string; api: string }[]
+  customProviders: {
+    id: string
+    baseUrl: string
+    api: string
+    /** Models the provider defines, sorted by id. `reasoning: null` means the
+     * entry never declared one — distinct from an explicit `false`. */
+    models: {
+      id: string
+      reasoning: boolean | null
+      thinkingLevelMap: Record<string, string | null>
+    }[]
+  }[]
 }> {
   return getTransport().call("acp_load_pi_config", {})
 }

@@ -729,6 +729,26 @@ export function extractClaudeCodeMetaTitle(
 }
 
 /**
+ * claude-agent-acp ≥0.67 (#986) stamps Skill tool calls with
+ * `_meta.claudeCode.skill` (the invoked skill's name; a sibling `skillPath`
+ * carries the resolved SKILL.md when one was located). The AUTHORITATIVE name
+ * source for the skill title: available from frame 1 — before `rawInput`
+ * streams — and immune to a truncated/unparsable input, which is all the
+ * derived-title path otherwise has to work with.
+ */
+export function extractClaudeCodeSkillName(
+  meta: Record<string, unknown> | null | undefined
+): string | null {
+  if (!meta || typeof meta !== "object") return null
+  const cc = (meta as Record<string, unknown>).claudeCode
+  if (!cc || typeof cc !== "object") return null
+  const skill = (cc as Record<string, unknown>).skill
+  if (typeof skill !== "string") return null
+  const trimmed = skill.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+/**
  * Grok stamps the authoritative tool identity in `_meta["x.ai/tool"]`
  * (`{ name, kind, namespace, label }`). For its plan-mode tools this returns the
  * canonical `enter_plan_mode` / `exit_plan_mode` name (which `normalizeToolName`

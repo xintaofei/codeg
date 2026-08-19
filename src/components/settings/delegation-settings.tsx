@@ -22,7 +22,7 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
-import { Bubbles, Gauge, HardDrive, Power } from "lucide-react"
+import { AlertTriangle, Bubbles, Gauge, HardDrive, Power } from "lucide-react"
 import { toast } from "sonner"
 
 import { SettingCard, SettingRow } from "@/components/shared/setting-card"
@@ -35,6 +35,7 @@ import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
+  acpListAgents,
   type DelegationSettings,
   getDelegationSettings,
   setDelegationSettings,
@@ -71,6 +72,10 @@ export function DelegationSettingsSection() {
     Partial<Record<AgentType, AgentDelegationDefaults>>
   >({})
   const [loadError, setLoadError] = useState<string | null>(null)
+  // Enabled agents whose per-agent sandbox switch withholds the delegation
+  // tools (see `withheldByHostTools`). Empty until the agent list loads, and
+  // left empty if it fails — this is an explanatory note, never a gate.
+  const [withheldAgents, setWithheldAgents] = useState<string[]>([])
 
   useEffect(() => {
     let cancelled = false
@@ -90,6 +95,38 @@ export function DelegationSettingsSection() {
       .finally(() => {
         if (cancelled) return
         setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // The switch above is not the only thing that decides whether an agent gets
+  // `delegate_to_agent`: the per-agent "the agent handles files and commands
+  // itself" switch withholds the delegation tool group too, because delegation
+  // routes the same work back through codeg's process. That override is
+  // invisible from here, which reads as "I turned multi-agent on and the tools
+  // are gone" — so name the agents it applies to.
+  //
+  // `host_tools_agent_mode` is the backend's RESOLVED verdict, not a re-read of
+  // `env`: the knob also resolves from codeg's own process env, and an operator
+  // who exported it there would otherwise see no warning while every agent
+  // silently lost delegation.
+  useEffect(() => {
+    let cancelled = false
+    void acpListAgents()
+      .then((agents) => {
+        if (cancelled) return
+        setWithheldAgents(
+          agents
+            .filter((a) => a.enabled && a.host_tools_agent_mode)
+            .map((a) => a.name)
+        )
+      })
+      .catch(() => {
+        // Nothing to say if we can't tell — leave the note off rather than
+        // warning about agents that may well be able to delegate.
+        if (!cancelled) setWithheldAgents([])
       })
     return () => {
       cancelled = true
@@ -159,6 +196,19 @@ export function DelegationSettingsSection() {
                 />
               }
             />
+            {enabled && withheldAgents.length > 0 && (
+              // Padded like a `SettingRow` (`px-3`) so the glyph and text line
+              // up with the rows it sits between, rather than hanging a notch
+              // to their left inside the shared card.
+              <p className="flex items-start gap-1.5 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-400">
+                <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+                <span>
+                  {t("withheldByHostTools", {
+                    agents: withheldAgents.join(", "),
+                  })}
+                </span>
+              </p>
+            )}
             <SettingRow
               icon={Gauge}
               title={t("depthLimit")}

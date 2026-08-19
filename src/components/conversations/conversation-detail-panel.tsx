@@ -45,6 +45,7 @@ import {
   GoalControlProvider,
   type GoalControlValue,
 } from "@/components/message/goal-control-context"
+import { useAdvertisedGoalActions } from "@/hooks/use-goal-actions"
 import { ConversationShell } from "@/components/chat/conversation-shell"
 import { SessionConfigStaleBanner } from "@/components/chat/session-config-stale-banner"
 import { PiProjectTrustBanner } from "@/components/chat/pi-project-trust-banner"
@@ -92,6 +93,7 @@ import { TurnBusyError } from "@/lib/turn-busy"
 import {
   getConversationIdByExternalIdFromStore,
   getRuntimeSession,
+  getTimelineTurns,
   useConversationRuntimeActions,
   useConversationRuntimeStore,
 } from "@/stores/conversation-runtime-store"
@@ -112,6 +114,11 @@ import {
   type QuestionAnswer,
   type UserMessageBlock,
 } from "@/lib/types"
+import { useRouter } from "next/navigation"
+import {
+  lastUserPromptText,
+  type SessionFailureAction,
+} from "@/lib/session-failures"
 import { getAgentLabel } from "@/lib/custom-agents"
 import {
   getSavedModeId,
@@ -854,7 +861,17 @@ const ConversationTabView = memo(function ConversationTabView({
 
   useEffect(() => {
     if (effectiveConversationId <= 0) return
-    setExternalId(effectiveConversationId, detail?.summary.external_id ?? null)
+    // Only ever WRITE a real id — never clear one. `detail` is null while a
+    // (re)fetch is in flight, and writing null then would wipe a session id the
+    // connSessionId effect below had already resolved. That store value is one
+    // of the two sources `externalId` (and therefore the sessionId passed to
+    // acp_connect) resolves from, so clearing it can turn a reconnect into
+    // session/new and strand the conversation's history. Nothing ever nulls a
+    // row's external_id, and switching conversations changes the store key
+    // rather than clearing this one, so there is no case that needs the clear.
+    const persisted = detail?.summary.external_id
+    if (!persisted) return
+    setExternalId(effectiveConversationId, persisted)
   }, [effectiveConversationId, detail?.summary.external_id, setExternalId])
 
   useEffect(() => {
@@ -1614,6 +1631,14 @@ const ConversationTabView = memo(function ConversationTabView({
   // its buttons. Codex is the only agent that produces goal cards, so no
   // agent-type gate is needed. Provided only around the main panel's list; the
   // read-only sub-agent dialog renders its own MessageListView with no provider.
+  // The adapter's ADVERTISED goal-control vocabulary (fail-closed: no
+  // controls until the snapshot for this exact connectionId reports a known
+  // one — see `useAdvertisedGoalActions`). `connStatus` is what brings the
+  // hook back for a second read: a brand-new conversation hands us its
+  // connection id while `initialize` is still in flight, and the vocabulary
+  // isn't decided until that response lands.
+  const goalActions = useAdvertisedGoalActions(conn.connectionId, connStatus)
+
   const goalControlValue = useMemo<GoalControlValue>(() => {
     const live =
       conn.connectionId !== null &&
@@ -1625,8 +1650,81 @@ const ConversationTabView = memo(function ConversationTabView({
             void acpActions.goalControl(tabId, action)
           }
         : null,
+      actions: goalActions,
     }
-  }, [conn.connectionId, conn.isViewer, connStatus, acpActions, tabId])
+  }, [
+    conn.connectionId,
+    conn.isViewer,
+    connStatus,
+    acpActions,
+    tabId,
+    goalActions,
+  ])
+
+  // AIR session-failure strip actions. `retry` re-submits the LAST user
+  // prompt through the message queue — same mechanism as the live-feedback
+  // resend fallback: enqueue survives the turn-end status race and flushes as
+  // soon as the connection can take a prompt, so the retry is never silently
+  // dropped. `login` lands on the agents settings page (auth lives there);
+  // `new_session` reuses the load-error banner's fresh-draft path.
+  const router = useRouter()
+  const tSessionFailure = useTranslations("Folder.chat.sessionFailure")
+  const detailTurns = detail?.turns
+  const handleSessionFailureAction = useCallback(
+    (action: SessionFailureAction) => {
+      switch (action) {
+        case "retry": {
+          // Prompt text source: the runtime TIMELINE first — it is what the
+          // user sees, and a failed turn's prompt lives there as an
+          // optimistic/promoted turn even when the persisted detail is stale
+          // (field report 2026-08-16: after a network-drop terminal failure
+          // the detail had no user turn yet, so retry read null and silently
+          // did nothing). Persisted detail is the fallback for a conversation
+          // whose runtime session was evicted.
+          const text =
+            lastUserPromptText(
+              getTimelineTurns(effectiveConversationId).map((e) => e.turn)
+            ) ?? lastUserPromptText(detailTurns)
+          if (!text) {
+            // Nothing resendable is a dead end for this action — say so
+            // instead of swallowing the click.
+            toast.warning(tSessionFailure("retryUnavailable"))
+            return
+          }
+          mqEnqueue(
+            { blocks: [{ type: "text", text }], displayText: text },
+            selectedModeId
+          )
+          break
+        }
+        case "login":
+          router.push("/settings/agents")
+          break
+        case "new_session":
+          handleOpenNewSession()
+          break
+      }
+    },
+    [
+      effectiveConversationId,
+      detailTurns,
+      mqEnqueue,
+      selectedModeId,
+      router,
+      handleOpenNewSession,
+      tSessionFailure,
+    ]
+  )
+
+  // Closing a strip is client-local (it only resolves the record in this
+  // client's projection), so unlike the recovery actions it is offered to
+  // viewers too — see `AcpActionsValue.dismissSessionFailure`.
+  const handleSessionFailureDismiss = useCallback(
+    (ids: string[]) => {
+      acpActions.dismissSessionFailures(tabId, ids)
+    },
+    [acpActions, tabId]
+  )
 
   const messageListNode = (
     <GoalControlProvider value={goalControlValue}>
@@ -1701,6 +1799,15 @@ const ConversationTabView = memo(function ConversationTabView({
       agentName={getAgentLabel(selectedAgent)}
       error={conn.error}
       claudeApiRetry={conn.claudeApiRetry}
+      sessionFailures={conn.sessionFailures}
+      onSessionFailureAction={
+        // Owners of a live connection only — mirrors the goal-control gate:
+        // viewers must see the strips but not drive recovery.
+        conn.connectionId !== null && !conn.isViewer
+          ? handleSessionFailureAction
+          : undefined
+      }
+      onSessionFailureDismiss={handleSessionFailureDismiss}
       pendingPermission={conn.pendingPermission}
       pendingQuestion={conn.pendingQuestion}
       pendingAskQuestion={conn.pendingAskQuestion}
@@ -1783,6 +1890,10 @@ const ConversationTabView = memo(function ConversationTabView({
               />
               <div className="flex justify-center">
                 <AgentSelector
+                  // The selector spans the row it is given (it has to measure
+                  // how much room it has), so the centring lives inside it now
+                  // — the `justify-center` above only centres a full-width box.
+                  align="center"
                   defaultAgentType={selectedAgent}
                   onSelect={handleAgentSelect}
                   onFallback={handleAgentFallback}

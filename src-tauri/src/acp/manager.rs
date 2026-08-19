@@ -941,67 +941,193 @@ impl ConnectionManager {
         )
         .await?;
 
-        if !already_linked {
-            match (conversation_id, folder_id) {
-                // Branch A: caller already owns a row — adopt it. No DB write.
-                (Some(caller_conv_id), Some(caller_folder_id)) => {
-                    emit_with_state(
-                        &state_arc,
-                        &emitter,
-                        AcpEvent::ConversationLinked {
-                            conversation_id: caller_conv_id,
-                            folder_id: caller_folder_id,
-                            parent_conversation_id: None,
-                            parent_tool_use_id: None,
-                        },
-                    )
-                    .await;
-                }
-                // Function-entry guard rejects this combination.
-                (Some(_), None) => unreachable!(
-                    "conversation_id without folder_id should have been rejected at function entry"
-                ),
-                // Branch B: backend creates the row from caller-supplied
-                // folder_id. Phase 3c-1 made folder_id required here — every
-                // production caller that reaches this branch passes one, and
-                // silent fallback to working_dir-based find-or-create masked
-                // contract violations.
-                (None, Some(folder_id)) => {
-                    // Snapshot the delegation link before move-into-create: we
-                    // still need the parent ids for the ConversationLinked
-                    // event payload.
-                    let parent_conversation_id_for_event =
-                        delegation.as_ref().map(|d| d.parent_conversation_id);
-                    let parent_tool_use_id_for_event =
-                        delegation.as_ref().map(|d| d.parent_tool_use_id.clone());
-                    // Seed a delegation child's title from the task prompt so the
-                    // sidebar shows a meaningful label immediately. `list_children`
-                    // returns the raw DB title, so a child born with NULL reads
-                    // "Untitled" until the first detail load backfills it. Roots
-                    // (no delegation) keep `None` and follow the existing backfill.
-                    let seed_title = if delegation.is_some() {
-                        delegation_child_title_seed(&blocks)
+        // CANCELLATION SHIELD around the first link, same shape and for the same
+        // reason as `fork_session` below.
+        //
+        // Everything above this point is side-effect-free: drop this future and
+        // `_prompt_guard` drops with it, having changed nothing. What follows is
+        // not. `bind_external_id` COMMITS ownership of the agent session to a
+        // row, and only the publication after it makes that row reachable —
+        // `ConversationLinked` latches `state.conversation_id` (which is exactly
+        // what `already_linked` reads), and the upsert puts the row in every
+        // client's sidebar. Leaving that pair tied to this future means a
+        // dropped caller (server mode: an HTTP client disconnecting
+        // mid-request) can commit the bind and never publish, stranding a row
+        // that owns the session but that nothing was told about — after which
+        // Branch B fails EVERY retry with a `Conflict` naming that invisible
+        // row, until the connection is re-established.
+        //
+        // Reordering does not solve it, it only moves the damage: publishing
+        // first means a drop during the bind leaves the link latched onto a row
+        // that does NOT hold the session, so the next prompt takes the
+        // `already_linked` fast path and silently misfiles into the holder's
+        // transcript. Both orderings are unsafe under cancellation, so the
+        // phase must not be cancellable at all. It runs in a DETACHED task that
+        // OWNS the guard and hands it back: dropping this future no longer
+        // aborts the phase, it runs to completion and releases the lock when its
+        // result is dropped. The handle is awaited only to hand the outcome to a
+        // caller that is still there.
+        let _prompt_guard = if already_linked {
+            _prompt_guard
+        } else {
+            // Seed a delegation child's title from the task prompt so the
+            // sidebar shows a meaningful label immediately. `list_children`
+            // returns the raw DB title, so a child born with NULL reads
+            // "Untitled" until the first detail load backfills it. Roots (no
+            // delegation) keep `None` and follow the existing backfill. Computed
+            // out here so `blocks` stays with the caller for the actual prompt.
+            let seed_title = if delegation.is_some() {
+                delegation_child_title_seed(&blocks)
+            } else {
+                None
+            };
+            let db_conn = db.conn.clone();
+            let task_state = state_arc.clone();
+            let task_emitter = emitter.clone();
+            let task_conn_id = conn_id.to_string();
+            let task_delegation = delegation.clone();
+            let handle = tokio::spawn(async move {
+                // Holding the owned guard for the whole task is what shields the
+                // bind + publication from caller cancellation.
+                let guard = _prompt_guard;
+                let outcome: Result<(), AcpError> = async {
+                    // Resolve which row this prompt belongs to WITHOUT
+                    // announcing it yet — the announce is held back until the
+                    // session id has actually been bound to that row below.
+                    let (
+                        linked_conversation_id,
+                        linked_folder_id,
+                        parent_conv_for_event,
+                        parent_tool_for_event,
+                    ) = match (conversation_id, folder_id) {
+                        // Branch A: caller already owns a row — adopt it. No DB write.
+                        (Some(caller_conv_id), Some(caller_folder_id)) => {
+                            (caller_conv_id, caller_folder_id, None, None)
+                        }
+                        // Function-entry guard rejects this combination.
+                        (Some(_), None) => unreachable!(
+                            "conversation_id without folder_id should have been rejected at function entry"
+                        ),
+                        // Branch B: backend creates the row from caller-supplied
+                        // folder_id. Phase 3c-1 made folder_id required here —
+                        // every production caller that reaches this branch passes
+                        // one, and silent fallback to working_dir-based
+                        // find-or-create masked contract violations.
+                        (None, Some(folder_id)) => {
+                            // Snapshot the delegation link before
+                            // move-into-create: we still need the parent ids for
+                            // the ConversationLinked event payload.
+                            let parent_conversation_id_for_event =
+                                task_delegation.as_ref().map(|d| d.parent_conversation_id);
+                            let parent_tool_use_id_for_event = task_delegation
+                                .as_ref()
+                                .map(|d| d.parent_tool_use_id.clone());
+                            let row = conversation_service::create_with_delegation(
+                                &db_conn,
+                                folder_id,
+                                agent_type,
+                                seed_title,
+                                None,
+                                task_delegation,
+                            )
+                            .await
+                            .map_err(|e| AcpError::protocol(e.to_string()))?;
+                            (
+                                row.id,
+                                folder_id,
+                                parent_conversation_id_for_event,
+                                parent_tool_use_id_for_event,
+                            )
+                        }
+                        (None, None) => {
+                            return Err(AcpError::protocol(
+                                "folder_id required for new conversation row".to_string(),
+                            ));
+                        }
+                    };
+
+                    // UI new-conversation path: SessionStarted applied
+                    // state.external_id back during acp_connect, but
+                    // conversation_id was None then so the lifecycle
+                    // subscriber's SessionStarted handler skipped the DB write.
+                    // Now that we have resolved the row in the same prompt_lock
+                    // critical section, snapshot external_id and persist it
+                    // synchronously — no dependence on broadcaster eventual
+                    // consistency. The chat_channel reverse-order path (link
+                    // before SessionStarted) is unaffected and continues to be
+                    // handled by the lifecycle subscriber.
+                    let eid_opt = task_state.read().await.external_id.clone();
+                    let preserved = if let Some(eid) = eid_opt {
+                        // THE codeg#500 write. Branch A above adopts a row the
+                        // caller supplied, which may still be bound to an older
+                        // session — a connection spawned with `session_id = None`
+                        // (a reconnect that lost the id, or an unclassified
+                        // `session/load` failure that fell through to
+                        // `session/new`) arrives here holding a session that has
+                        // nothing to do with the row's history.
+                        // `bind_external_id` splits that history onto its own row
+                        // instead of overwriting it.
+                        let continues = crate::acp::continued_session_ids(agent_type, &eid);
+                        match conversation_service::bind_external_id(
+                            &db_conn,
+                            linked_conversation_id,
+                            &eid,
+                            &continues,
+                        )
+                        .await
+                        {
+                            Ok(preserved) => preserved,
+                            Err(e) => {
+                                // Refused, or a genuine DB failure. Either way
+                                // this row does not hold the session, so the
+                                // prompt must not go out and the link must not
+                                // stick.
+                                //
+                                // Branch B minted a row moments ago that no
+                                // client has been told about — it was never
+                                // announced, because the announce is below this
+                                // bind. Drop it, or every refused attempt would
+                                // leave another empty conversation behind for the
+                                // sidebar's next full refetch to surface. Branch
+                                // A creates nothing and has nothing to undo.
+                                if conversation_id.is_none() {
+                                    if let Err(cleanup) = conversation_service::soft_delete(
+                                        &db_conn,
+                                        linked_conversation_id,
+                                    )
+                                    .await
+                                    {
+                                        tracing::warn!(
+                                            conversation_id = linked_conversation_id,
+                                            error = %cleanup,
+                                            "[manager] failed to drop the unannounced row left \
+                                             by a refused bind"
+                                        );
+                                    }
+                                }
+                                return Err(AcpError::protocol(e.to_string()));
+                            }
+                        }
                     } else {
+                        tracing::info!(
+                            "[manager] send_prompt_linked: conversation resolved but \
+                             external_id not yet on state (conn={task_conn_id}); lifecycle \
+                             subscriber will catch up when SessionStarted arrives"
+                        );
                         None
                     };
-                    let row = conversation_service::create_with_delegation(
-                        &db.conn,
-                        folder_id,
-                        agent_type,
-                        seed_title,
-                        None,
-                        delegation.clone(),
-                    )
-                    .await
-                    .map_err(|e| AcpError::protocol(e.to_string()))?;
+
+                    // Bound (or nothing to bind). NOW the link is real, so
+                    // announce it: this is the write that makes `already_linked`
+                    // true for every subsequent prompt on this connection.
                     emit_with_state(
-                        &state_arc,
-                        &emitter,
+                        &task_state,
+                        &task_emitter,
                         AcpEvent::ConversationLinked {
-                            conversation_id: row.id,
-                            folder_id,
-                            parent_conversation_id: parent_conversation_id_for_event,
-                            parent_tool_use_id: parent_tool_use_id_for_event,
+                            conversation_id: linked_conversation_id,
+                            folder_id: linked_folder_id,
+                            parent_conversation_id: parent_conv_for_event,
+                            parent_tool_use_id: parent_tool_for_event,
                         },
                     )
                     .await;
@@ -1009,12 +1135,16 @@ impl ConnectionManager {
                     // prompt sent without a pre-created row, not the create
                     // button) must reach every client immediately via the global
                     // `conversation://changed` channel. Roots land in the sidebar
-                    // list; delegation children (parent set) are routed into their
-                    // parent's expanded sub-session subtree and bump its chevron.
-                    // Both carry `external_id: null` here (no session yet) — the
-                    // external_id write below re-broadcasts the full summary.
+                    // list; delegation children (parent set) are routed into
+                    // their parent's expanded sub-session subtree and bump its
+                    // chevron. Emitted after the bind, so — unlike before, when
+                    // Branch B broadcast an `external_id: null` summary and a
+                    // second upsert corrected it — this carries the complete
+                    // summary first time.
                     crate::commands::conversations::emit_conversation_upsert(
-                        &emitter, &db.conn, row.id,
+                        &task_emitter,
+                        &db_conn,
+                        linked_conversation_id,
                     )
                     .await;
                     // A new delegation child changes its parent's child_count
@@ -1022,54 +1152,45 @@ impl ConnectionManager {
                     // the parent so every client converges its count from the
                     // authoritative DB aggregate rather than a drift-prone
                     // per-client increment. The parent may itself be a root or a
-                    // nested child — the upsert routes correctly either way by its
-                    // own parent_id.
-                    if let Some(parent_id) = parent_conversation_id_for_event {
+                    // nested child — the upsert routes correctly either way by
+                    // its own parent_id.
+                    if let Some(parent_id) = parent_conv_for_event {
                         crate::commands::conversations::emit_conversation_upsert(
-                            &emitter, &db.conn, parent_id,
+                            &task_emitter,
+                            &db_conn,
+                            parent_id,
                         )
                         .await;
                     }
-                }
-                (None, None) => {
-                    return Err(AcpError::protocol(
-                        "folder_id required for new conversation row".to_string(),
-                    ));
-                }
-            }
-
-            // UI new-conversation path: SessionStarted applied state.external_id
-            // back during acp_connect, but conversation_id was None then so the
-            // lifecycle subscriber's SessionStarted handler skipped the DB write.
-            // Now that we just linked the row in the same prompt_lock critical
-            // section, snapshot external_id and persist it synchronously — no
-            // dependence on broadcaster eventual consistency. The chat_channel
-            // reverse-order path (link before SessionStarted) is unaffected and
-            // continues to be handled by the lifecycle subscriber.
-            let (cid_opt, eid_opt) = {
-                let s = state_arc.read().await;
-                (s.conversation_id, s.external_id.clone())
-            };
-            if let (Some(cid), Some(eid)) = (cid_opt, eid_opt) {
-                conversation_service::update_external_id(&db.conn, cid, eid)
-                    .await
-                    .map_err(|e| AcpError::protocol(e.to_string()))?;
-                // SessionStarted arrived BEFORE this link, so the lifecycle
-                // subscriber skipped its broadcast (no conversation_id then).
-                // Now that external_id is persisted, converge every client's
-                // sidebar with the complete summary — this also corrects a
-                // Branch B upsert above that necessarily carried
-                // `external_id: null`. Root-only via the helper.
-                crate::commands::conversations::emit_conversation_upsert(&emitter, &db.conn, cid)
+                    crate::commands::conversations::emit_preserved_conversation(
+                        &task_emitter,
+                        &db_conn,
+                        preserved,
+                    )
                     .await;
-            } else if cid_opt.is_some() {
-                tracing::info!(
-                    "[manager] send_prompt_linked: conversation linked but \
-                     external_id not yet on state (conn={conn_id}); lifecycle \
-                     subscriber will catch up when SessionStarted arrives"
-                );
-            }
-        }
+                    Ok(())
+                }
+                .await;
+                // Logged HERE, not just returned. Once the phase is detached the
+                // caller may be gone by now, and `handle.await`'s result is then
+                // dropped unread — a `Conflict` (or any failure) would leave no
+                // trace at all in exactly the disconnect case this shield exists
+                // to handle.
+                if let Err(e) = &outcome {
+                    tracing::warn!(
+                        connection_id = %task_conn_id,
+                        error = %e,
+                        "[manager] conversation link phase failed"
+                    );
+                }
+                (outcome, guard)
+            });
+            let (outcome, guard) = handle.await.map_err(|e| {
+                AcpError::protocol(format!("conversation link phase failed to join: {e}"))
+            })?;
+            outcome?;
+            guard
+        };
 
         // Centralized status transition: every prompt send flips the
         // conversation row to InProgress. This MUST happen on every call
@@ -1238,25 +1359,95 @@ impl ConnectionManager {
             .map_err(|_| AcpError::ProcessExited)
     }
 
-    /// Pause or clear the session's active Codex goal via the connection loop
-    /// (codex-acp #293). Looked up by connectionId; the loop sources the
-    /// sessionId from the live session, so callers only supply the action.
+    /// Pause or clear the session's active goal via the connection loop
+    /// (codex-acp #293; the provider-neutral `_session/goal` since codex 1.2 /
+    /// claude 0.66). Looked up by connectionId; the loop sources the sessionId
+    /// from the live session, so callers only supply the action.
+    ///
+    /// STOPS THE RUNNING TURN TOO, for adapters whose control request travels
+    /// out of band (see `registry::goal_control_is_out_of_band`). Without that,
+    /// the button is a lie: codex's pause/clear are pure app-server metadata
+    /// that only take hold at the next idle point, so the user clicks 暂停 and
+    /// watches the agent keep working — the whole reason the goal card's
+    /// controls were once ripped out.
+    ///
+    /// Two conditions guard it, and neither is "is a turn running?":
+    /// * the goal must have been ACTIVE when the user clicked
+    ///   (`SessionState.goal_active`, read before the request goes out). An
+    ///   active goal is the thing driving the work, so stopping the work is
+    ///   what the click means. A PAUSED goal drives nothing — clearing one is
+    ///   housekeeping, and must never abort a turn the user started themselves
+    ///   in the meantime.
+    /// * the control must have LANDED. The loop reports that back over a
+    ///   oneshot; a rejected request (or a closed channel) leaves the turn
+    ///   alone, so a goal that is still `active` never gets its work killed
+    ///   only to have codex resume it at the next idle point. The round-trip
+    ///   also makes the interrupt strictly second: the goal is already
+    ///   non-active when the abort lands, so nothing auto-continues on the way
+    ///   out.
+    ///
+    /// Liveness deliberately does NOT gate it. `ConnectionStatus::Prompting`
+    /// (and `turn_in_flight` with it) tracks turns CODEG started, and a goal
+    /// loop's continuations are started by codex itself — detached turns no host
+    /// request owns — so gating on them would skip the interrupt in exactly the
+    /// case that motivated this. Any post-hoc read is unsound anyway: by the
+    /// time the manager acts on it the turn it described may have ended. With
+    /// the goal known active, the interrupt means precisely "press Stop on the
+    /// user's behalf": `cancel()`'s row write is CAS'd from `InProgress`, a
+    /// `session/cancel` with nothing running is a no-op, and its permission
+    /// drain / delegation cascade are the semantics the Stop button already has
+    /// (including its own turn-boundary race, which is not made worse here).
+    ///
+    /// Awaiting the round-trip is deliberate and cheap — an out-of-band control
+    /// is a plain RPC that returns without waiting for the turn. It is NOT
+    /// cancellation-shielded (unlike `submit_feedback_native`): a caller that
+    /// disappears mid-await simply doesn't get the follow-up interrupt, which is
+    /// the pre-existing behavior, never worse. The control itself is owned by
+    /// the loop from the moment it is enqueued.
     pub async fn goal_control(
         &self,
+        db: &DatabaseConnection,
         conn_id: &str,
         action: GoalControlAction,
     ) -> Result<(), AcpError> {
-        let cmd_tx = {
+        let (cmd_tx, agent_type, state_arc) = {
             let connections = self.connections.lock().await;
             let conn = connections
                 .get(conn_id)
                 .ok_or_else(|| AcpError::ConnectionNotFound(conn_id.into()))?;
-            conn.cmd_tx.clone()
+            (conn.cmd_tx.clone(), conn.agent_type, conn.state.clone())
+        };
+        // Read the goal state as it was when the user clicked — reading it after
+        // the round-trip would see the transition we just asked for.
+        let interrupts = crate::acp::registry::goal_control_is_out_of_band(agent_type)
+            && state_arc.read().await.goal_active;
+        // Only ask for an answer when it would change what we do next.
+        let (reply_tx, reply_rx) = if interrupts {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
         };
         cmd_tx
-            .send(ConnectionCommand::GoalControl { action })
+            .send(ConnectionCommand::GoalControl {
+                action,
+                reply: reply_tx,
+            })
             .await
-            .map_err(|_| AcpError::ProcessExited)
+            .map_err(|_| AcpError::ProcessExited)?;
+
+        let Some(reply_rx) = reply_rx else {
+            return Ok(());
+        };
+        if !matches!(reply_rx.await, Ok(true)) {
+            return Ok(());
+        }
+        tracing::info!(
+            "[ACP] goal {:?} landed; interrupting so the work stops now connection={}",
+            action,
+            conn_id
+        );
+        self.cancel(db, conn_id).await
     }
 
     pub async fn cancel(&self, db: &DatabaseConnection, conn_id: &str) -> Result<(), AcpError> {
@@ -1674,6 +1865,33 @@ impl ConnectionManager {
                     active.external_id = Set(Some(forked_session_id));
                     active.updated_at = Set(now);
                     active.update(txn).await?;
+
+                    // The lifecycle subscriber may have got here first. Its
+                    // `SessionStarted{S2}` handler now runs the guarded
+                    // `bind_external_id`, which preserves S1 on its own row
+                    // when nothing else holds it — and that race is real, not
+                    // theoretical: the fork reply is sent to us BEFORE
+                    // `handle_fork_or_exit` emits `SessionStarted{S2}` (see
+                    // `connection.rs`), so this detached persistence task and
+                    // the lifecycle worker run concurrently from that point.
+                    //
+                    // Inserting a second S1 row would not merely duplicate it:
+                    // `idx_conversation_external_agent` is UNIQUE over
+                    // `(external_id, agent_type)`, so the INSERT would fail and
+                    // roll back the whole fork. Adopt whatever already holds S1
+                    // instead and return ITS id — the caller feeds that straight
+                    // into `ForkResultInfo.sibling_conversation_id` and the
+                    // sidebar upsert, both of which must name a real row.
+                    if let Some(existing) = conversation::Entity::find()
+                        .filter(conversation::Column::ExternalId.eq(original_session_id.clone()))
+                        .filter(conversation::Column::AgentType.eq(agent_type_str.clone()))
+                        .filter(conversation::Column::Id.ne(conversation_id))
+                        .filter(conversation::Column::DeletedAt.is_null())
+                        .one(txn)
+                        .await?
+                    {
+                        return Ok(existing.id);
+                    }
 
                     // INSERT sibling row preserving pre-fork (S1) history.
                     // PendingReview because no live agent is attached to S1.
@@ -3514,6 +3732,174 @@ mod tests {
         rx
     }
 
+    /// Put a turn in flight on a connection inserted by
+    /// [`insert_live_connection`] (which starts them `Connected`).
+    async fn mark_prompting(mgr: &ConnectionManager, conn_id: &str) {
+        let state = mgr.get_state(conn_id).await.expect("connection");
+        state.write().await.status = ConnectionStatus::Prompting;
+    }
+
+    /// Mirror what a live `active` goal snapshot leaves on the state.
+    async fn mark_goal_active(mgr: &ConnectionManager, conn_id: &str) {
+        let state = mgr.get_state(conn_id).await.expect("connection");
+        state.write().await.goal_active = true;
+    }
+
+    /// Stand in for the connection loop's `GoalControl` arm: take the command,
+    /// assert the action, answer `landed`, and hand the receiver back so the
+    /// test can see what (if anything) the manager enqueues next. Returns a
+    /// JoinHandle because `goal_control` blocks on that answer.
+    fn answer_goal_control(
+        mut rx: tokio::sync::mpsc::Receiver<crate::acp::connection::ConnectionCommand>,
+        expected: GoalControlAction,
+        landed: bool,
+    ) -> tokio::task::JoinHandle<tokio::sync::mpsc::Receiver<crate::acp::connection::ConnectionCommand>>
+    {
+        tokio::spawn(async move {
+            match rx.recv().await.expect("goal control enqueued") {
+                ConnectionCommand::GoalControl { action, reply } => {
+                    assert_eq!(action, expected);
+                    reply
+                        .expect("an interrupting caller attaches a reply")
+                        .send(landed)
+                        .expect("manager is listening");
+                }
+                _ => panic!("expected a GoalControl command"),
+            }
+            rx
+        })
+    }
+
+    #[tokio::test]
+    async fn a_codex_goal_pause_mid_turn_interrupts_the_turn_after_the_goal_rpc() {
+        // codex's pause is app-server metadata: it stops the goal from starting
+        // ANOTHER turn but never touches the one that is running, so without
+        // the interrupt the user clicks Pause and watches the agent keep
+        // working. Order matters — the goal RPC has to LAND first, so the goal
+        // is already non-active when the turn aborts and nothing auto-continues
+        // on the way out.
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let mgr = ConnectionManager::new();
+        let rx = insert_live_connection(&mgr, "c-goal-codex", AgentType::Codex, None).await;
+        mark_prompting(&mgr, "c-goal-codex").await;
+        mark_goal_active(&mgr, "c-goal-codex").await;
+        let loop_stub = answer_goal_control(rx, GoalControlAction::Pause, true);
+
+        mgr.goal_control(&db.conn, "c-goal-codex", GoalControlAction::Pause)
+            .await
+            .unwrap();
+
+        let mut rx = loop_stub.await.unwrap();
+        assert!(matches!(rx.try_recv(), Ok(ConnectionCommand::Cancel)));
+        assert!(rx.try_recv().is_err(), "nothing else is enqueued");
+    }
+
+    #[tokio::test]
+    async fn a_rejected_goal_control_leaves_the_turn_alone() {
+        // The agent refused the pause (bad params, unknown session, dead
+        // process). The goal is still active, so killing the turn would destroy
+        // in-flight work AND let codex resume the goal at the next idle point —
+        // strictly worse than the error banner the loop already emitted.
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let mgr = ConnectionManager::new();
+        let rx = insert_live_connection(&mgr, "c-goal-refused", AgentType::Codex, None).await;
+        mark_prompting(&mgr, "c-goal-refused").await;
+        mark_goal_active(&mgr, "c-goal-refused").await;
+        let loop_stub = answer_goal_control(rx, GoalControlAction::Pause, false);
+
+        mgr.goal_control(&db.conn, "c-goal-refused", GoalControlAction::Pause)
+            .await
+            .unwrap();
+
+        let mut rx = loop_stub.await.unwrap();
+        assert!(rx.try_recv().is_err(), "a failed control cancels nothing");
+    }
+
+    #[tokio::test]
+    async fn a_codex_goal_clear_interrupts_even_when_codeg_thinks_it_is_idle() {
+        // Codeg's `Prompting` only covers turns IT started. A goal loop's
+        // continuations are started by codex — detached turns no host request
+        // owns — so the session reads "connected" while the agent is very much
+        // working, which is precisely when the user hits Clear. Gating on our
+        // own turn bookkeeping would skip the interrupt exactly there, so the
+        // interrupt is not gated on liveness: with an ACTIVE goal, whatever is
+        // running is the goal's work, and with nothing running the interrupt is
+        // the same harmless no-op the Stop button is.
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let mgr = ConnectionManager::new();
+        let rx = insert_live_connection(&mgr, "c-goal-idle", AgentType::Codex, None).await;
+        mark_goal_active(&mgr, "c-goal-idle").await;
+        let loop_stub = answer_goal_control(rx, GoalControlAction::Clear, true);
+
+        mgr.goal_control(&db.conn, "c-goal-idle", GoalControlAction::Clear)
+            .await
+            .unwrap();
+
+        let mut rx = loop_stub.await.unwrap();
+        assert!(matches!(rx.try_recv(), Ok(ConnectionCommand::Cancel)));
+        assert!(rx.try_recv().is_err(), "nothing else is enqueued");
+    }
+
+    #[tokio::test]
+    async fn clearing_a_paused_goal_never_touches_the_users_own_turn() {
+        // A paused goal drives nothing, so a turn running alongside it is
+        // something the user started themselves. Dismissing the stale card is
+        // housekeeping — killing that prompt (and draining its permissions, and
+        // cascading to its delegations) would be destroying unrelated work.
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let mgr = ConnectionManager::new();
+        let mut rx = insert_live_connection(&mgr, "c-goal-paused", AgentType::Codex, None).await;
+        mark_prompting(&mgr, "c-goal-paused").await; // the user's own prompt
+        // `goal_active` stays false: the last snapshot was `paused`.
+
+        mgr.goal_control(&db.conn, "c-goal-paused", GoalControlAction::Clear)
+            .await
+            .unwrap();
+
+        match rx.try_recv() {
+            Ok(ConnectionCommand::GoalControl { action, reply }) => {
+                assert_eq!(action, GoalControlAction::Clear);
+                assert!(reply.is_none(), "no interrupt is intended, so none waits");
+            }
+            _ => panic!("expected a GoalControl command"),
+        }
+        assert!(rx.try_recv().is_err(), "the user's turn survives");
+    }
+
+    #[tokio::test]
+    async fn a_claude_goal_clear_never_interrupts_the_turn_carrying_it() {
+        // claude-agent-acp implements `_session/goal` by STEERING the text
+        // "/goal clear" into the running turn (or prompting when idle).
+        // Cancelling would kill the message that carries the clear and leave
+        // the goal armed — worse than doing nothing. Same for every adapter
+        // whose control channel we haven't verified. No interrupt is intended,
+        // so no reply is even asked for and the call doesn't wait.
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let mgr = ConnectionManager::new();
+        let mut rx =
+            insert_live_connection(&mgr, "c-goal-claude", AgentType::ClaudeCode, None).await;
+        mark_prompting(&mgr, "c-goal-claude").await;
+        mark_goal_active(&mgr, "c-goal-claude").await;
+
+        mgr.goal_control(&db.conn, "c-goal-claude", GoalControlAction::Clear)
+            .await
+            .unwrap();
+
+        match rx.try_recv() {
+            Ok(ConnectionCommand::GoalControl { action, reply }) => {
+                assert_eq!(action, GoalControlAction::Clear);
+                assert!(reply.is_none(), "nobody waits on an in-band control");
+            }
+            _ => panic!("expected a GoalControl command"),
+        }
+        assert!(rx.try_recv().is_err(), "the carrying turn survives");
+    }
+
     #[tokio::test]
     async fn send_prompt_linked_attaches_user_message_to_prompt_for_root() {
         // A root send attaches the projected user-message payload to the
@@ -3564,6 +3950,276 @@ mod tests {
             um.1.iter().any(|t| t == "hello viewers"),
             "user_message must carry the prompt text, got {um:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn send_prompt_linked_preserves_history_when_the_session_was_re_minted() {
+        // codeg#500, end to end, in the exact shape the reporter described:
+        // an existing completed conversation, then a new session started in the
+        // same folder and pane.
+        //
+        // The connection was spawned with `session_id = None` (a reconnect that
+        // lost the id, or an unclassified `session/load` failure that fell
+        // through to `session/new`), so it holds S2 while the row the UI still
+        // points at holds S1. Branch A adopts that row and persists the session
+        // id onto it. Before the guard, S1 was left with no row at all — and
+        // since the conversation list is built purely from DB rows, the user's
+        // 49-minute conversation simply vanished from the sidebar.
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/reminted").await;
+        let existing = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Codex,
+            Some("nouveauté de cette version".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        conversation_service::bind_external_id(&db.conn, existing.id, "S1", &[])
+            .await
+            .unwrap();
+        conversation_service::update_status(
+            &db.conn,
+            existing.id,
+            ConversationStatus::PendingReview,
+        )
+        .await
+        .unwrap();
+
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-reminted";
+        let _cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::Codex,
+            Some(PathBuf::from("/tmp/reminted")),
+        )
+        .await;
+        // The connection came up on a session of its own — nobody told it about
+        // S1, which is the whole problem.
+        mgr.get_state(conn_id)
+            .await
+            .unwrap()
+            .write()
+            .await
+            .external_id = Some("S2".into());
+
+        mgr.send_prompt_linked(
+            &db,
+            conn_id,
+            vec![PromptInputBlock::Text {
+                text: "tu peux faire 2 couleur".into(),
+            }],
+            Some(folder_id),
+            Some(existing.id),
+            None,
+        )
+        .await
+        .expect("the prompt itself must still go through");
+
+        // The row the user has open follows the live session...
+        let current = conversation_service::get_by_id(&db.conn, existing.id)
+            .await
+            .expect("current row");
+        assert_eq!(current.external_id.as_deref(), Some("S2"));
+
+        // ...and S1 is still indexed, under the title the user recognises, so
+        // it remains visible and reopenable from the sidebar.
+        let listed = crate::commands::conversations::list_all_conversations_core(
+            &db.conn,
+            &EventEmitter::Noop,
+            &crate::chat_channel::manager::ChatChannelManager::new(),
+            crate::commands::conversations::ListAllConversationsOptions::default(),
+        )
+        .await
+        .expect("list");
+        let preserved = listed
+            .iter()
+            .find(|c| c.external_id.as_deref() == Some("S1"))
+            .expect("the previous session must remain in the conversation index");
+        assert_eq!(
+            preserved.title.as_deref(),
+            Some("nouveauté de cette version")
+        );
+        assert_ne!(
+            preserved.id, existing.id,
+            "the preserved history lives on its own row"
+        );
+        assert_eq!(listed.len(), 2, "exactly two conversations, got {listed:?}");
+    }
+
+    #[tokio::test]
+    async fn send_prompt_linked_refuses_a_session_owned_by_another_conversation() {
+        // The connection holds a session that ALREADY belongs to a different
+        // row, so no bind can make this row own it.
+        //
+        // The retry is the whole point of the test. `ConversationLinked` is
+        // applied to `SessionState`, and `already_linked` is read from exactly
+        // that field — so announcing the link before the bind meant the first
+        // call failed with the link latched, and the SECOND call skipped the
+        // entire link/bind block and dispatched the turn into a session this
+        // row does not own. Both calls must fail identically, and neither may
+        // enqueue a prompt.
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/conflict").await;
+
+        let holder = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Codex,
+            Some("owns the session".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        conversation_service::bind_external_id(&db.conn, holder.id, "S_SHARED", &[])
+            .await
+            .unwrap();
+        let target = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Codex,
+            Some("the row the user is looking at".into()),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-conflict";
+        let mut cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::Codex,
+            Some(PathBuf::from("/tmp/conflict")),
+        )
+        .await;
+        mgr.get_state(conn_id)
+            .await
+            .unwrap()
+            .write()
+            .await
+            .external_id = Some("S_SHARED".into());
+
+        for attempt in 1..=2 {
+            let err = mgr
+                .send_prompt_linked(
+                    &db,
+                    conn_id,
+                    vec![PromptInputBlock::Text {
+                        text: "should never reach the agent".into(),
+                    }],
+                    Some(folder_id),
+                    Some(target.id),
+                    None,
+                )
+                .await
+                .expect_err("a session owned by another row must be refused");
+            assert!(
+                err.to_string().contains("already bound"),
+                "attempt {attempt} must name the conflict, got {err}"
+            );
+            assert!(
+                mgr.get_state(conn_id)
+                    .await
+                    .unwrap()
+                    .read()
+                    .await
+                    .conversation_id
+                    .is_none(),
+                "attempt {attempt} must leave the connection UNLINKED, or the next \
+                 prompt takes the already_linked fast path and skips the bind"
+            );
+            assert!(
+                drain_prompt_user_messages(&mut cmd_rx).is_empty(),
+                "attempt {attempt} must not enqueue a prompt"
+            );
+        }
+
+        // Neither row moved, and no split row was manufactured.
+        assert_eq!(
+            conversation_service::get_by_id(&db.conn, target.id)
+                .await
+                .expect("target")
+                .external_id,
+            None
+        );
+        assert_eq!(
+            conversation_service::get_by_id(&db.conn, holder.id)
+                .await
+                .expect("holder")
+                .external_id
+                .as_deref(),
+            Some("S_SHARED")
+        );
+    }
+
+    #[tokio::test]
+    async fn send_prompt_linked_drops_the_row_it_minted_when_the_bind_is_refused() {
+        // Branch B mints the row before the bind can be attempted. Since the
+        // announce now happens AFTER the bind, a refused one leaves a row no
+        // client was ever told about — invisible until the sidebar's next full
+        // refetch surfaces it as an empty untitled conversation. Every retry
+        // would add another.
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/conflict-b").await;
+
+        let holder =
+            conversation_service::create(&db.conn, folder_id, AgentType::Codex, None, None)
+                .await
+                .unwrap();
+        conversation_service::bind_external_id(&db.conn, holder.id, "S_SHARED", &[])
+            .await
+            .unwrap();
+
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-conflict-b";
+        let _cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::Codex,
+            Some(PathBuf::from("/tmp/conflict-b")),
+        )
+        .await;
+        mgr.get_state(conn_id)
+            .await
+            .unwrap()
+            .write()
+            .await
+            .external_id = Some("S_SHARED".into());
+
+        for _ in 0..2 {
+            mgr.send_prompt_linked(
+                &db,
+                conn_id,
+                vec![PromptInputBlock::Text { text: "hi".into() }],
+                Some(folder_id),
+                // No conversation_id — Branch B.
+                None,
+                None,
+            )
+            .await
+            .expect_err("must be refused");
+        }
+
+        let listed = crate::commands::conversations::list_all_conversations_core(
+            &db.conn,
+            &EventEmitter::Noop,
+            &crate::chat_channel::manager::ChatChannelManager::new(),
+            crate::commands::conversations::ListAllConversationsOptions::default(),
+        )
+        .await
+        .expect("list");
+        assert_eq!(
+            listed.len(),
+            1,
+            "only the pre-existing holder may remain, got {listed:?}"
+        );
+        assert_eq!(listed[0].id, holder.id);
     }
 
     #[tokio::test]
@@ -3812,7 +4468,7 @@ mod tests {
         )
         .await
         .unwrap();
-        conversation_service::update_external_id(&db.conn, pre.id, "session-S1".into())
+        conversation_service::bind_external_id(&db.conn, pre.id, "session-S1", &[])
             .await
             .unwrap();
 
@@ -5455,7 +6111,7 @@ mod tests {
         .await
         .unwrap();
         // External_id starts as S1 — manager.fork_session will swap to S2.
-        conversation_service::update_external_id(&db.conn, pre.id, "session-S1".into())
+        conversation_service::bind_external_id(&db.conn, pre.id, "session-S1", &[])
             .await
             .unwrap();
 
@@ -5523,6 +6179,75 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(sibling.title.as_deref(), Some("Topic"));
+    }
+
+    #[tokio::test]
+    async fn fork_session_adopts_a_sibling_the_lifecycle_subscriber_already_made() {
+        // Fork's reply reaches us BEFORE `handle_fork_or_exit` emits
+        // `SessionStarted{S2}`, so this persistence and the lifecycle worker
+        // (which retries with backoff) run concurrently. If the lifecycle side
+        // lands first, its guarded `bind_external_id` has already preserved S1
+        // on a row of its own.
+        //
+        // Inserting a second S1 row then is not a cosmetic duplicate:
+        // `(external_id, agent_type)` is UNIQUE, so the INSERT fails and rolls
+        // back the entire fork — the user's fork just breaks. Adopt the
+        // existing row instead, and return ITS id, because the caller puts that
+        // id straight into the fork result and the sidebar upsert.
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/fork-raced").await;
+
+        let pre = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::ClaudeCode,
+            Some("Topic".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        conversation_service::bind_external_id(&db.conn, pre.id, "session-S1", &[])
+            .await
+            .unwrap();
+        // Lifecycle got there first: S2 landed on the row and S1 was preserved.
+        let preserved_id = conversation_service::bind_external_id(&db.conn, pre.id, "session-S2", &[])
+            .await
+            .unwrap()
+            .expect("the lifecycle bind preserves S1");
+
+        let (mgr, join) =
+            manager_with_fake_fork("c-raced", pre.id, "session-S2", "session-S1").await;
+        let result = mgr
+            .fork_session(&db, "c-raced", None, None)
+            .await
+            .expect("fork must survive the lifecycle subscriber winning the race");
+        let _ = join.await;
+
+        assert_eq!(
+            result.sibling_conversation_id, preserved_id,
+            "fork must report the row that actually holds S1"
+        );
+        let listed = crate::commands::conversations::list_all_conversations_core(
+            &db.conn,
+            &EventEmitter::Noop,
+            &crate::chat_channel::manager::ChatChannelManager::new(),
+            crate::commands::conversations::ListAllConversationsOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            listed.len(),
+            2,
+            "exactly two rows regardless of who won the race, got {listed:?}"
+        );
+        assert_eq!(
+            listed
+                .iter()
+                .filter(|c| c.external_id.as_deref() == Some("session-S1"))
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -5902,7 +6627,7 @@ mod tests {
         )
         .await
         .unwrap();
-        conversation_service::update_external_id(&db.conn, pre.id, "session-S1".into())
+        conversation_service::bind_external_id(&db.conn, pre.id, "session-S1", &[])
             .await
             .unwrap();
         conversation_service::soft_delete(&db.conn, pre.id)
@@ -5988,7 +6713,7 @@ mod tests {
         )
         .await
         .unwrap();
-        conversation_service::update_external_id(&db.conn, pre.id, "session-S1".into())
+        conversation_service::bind_external_id(&db.conn, pre.id, "session-S1", &[])
             .await
             .unwrap();
 

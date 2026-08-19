@@ -68,6 +68,8 @@ const BUILTIN_AGENT_TYPES: AgentType[] = [
   "pi",
   "grok",
   "cursor",
+  "deepseek",
+  "qoder",
 ]
 
 interface CachedSnapshot {
