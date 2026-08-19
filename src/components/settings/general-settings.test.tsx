@@ -48,10 +48,21 @@ vi.mock("@/lib/api", () => ({
     work_tasks_enabled: false,
   })),
   setChatAuthoringSettings: vi.fn(async (v: unknown) => v),
+  getSystemCloseSettings: vi.fn(async () => ({
+    action: "exit",
+    tray_available: true,
+  })),
+  updateSystemCloseSettings: vi.fn(async (v: { action: string }) => ({
+    ...v,
+    tray_available: true,
+  })),
 }))
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
-vi.mock("@/lib/platform", () => ({ isDesktop: () => true }))
+vi.mock("@/lib/platform", () => ({
+  isDesktop: () => true,
+  isLocalDesktop: () => true,
+}))
 vi.mock("@/lib/transport", () => ({ getActiveRemoteConnectionId: () => null }))
 // Windows, so the rendering section (desktop + Windows only) is on screen.
 vi.mock("@/hooks/use-platform", () => ({
@@ -104,6 +115,7 @@ describe("GeneralSettings", () => {
     for (const heading of [
       "Default Terminal",
       "Disable hardware acceleration",
+      "Close Behavior",
       "Notification sounds",
       "Multi-Agent Collaboration",
       "In-conversation tools",

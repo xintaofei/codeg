@@ -109,6 +109,8 @@ import type {
   AvailableTerminalShells,
   SystemLanguageSettings,
   SystemProxySettings,
+  SystemCloseSettings,
+  SystemCloseSettingsInfo,
   SystemRenderingSettings,
   SystemTerminalSettings,
   LogSettings,
@@ -1566,6 +1568,21 @@ export async function updateSystemRenderingSettings(
   settings: SystemRenderingSettings
 ): Promise<SystemRenderingSettings> {
   return getTransport().call("update_system_rendering_settings", { settings })
+}
+
+/**
+ * Close-button behaviour. Like the rendering settings above, this configures the
+ * local Tauri shell and is exposed on the Tauri channel only — call it behind
+ * `isLocalDesktop()`.
+ */
+export async function getSystemCloseSettings(): Promise<SystemCloseSettingsInfo> {
+  return getTransport().call("get_system_close_settings")
+}
+
+export async function updateSystemCloseSettings(
+  settings: SystemCloseSettings
+): Promise<SystemCloseSettingsInfo> {
+  return getTransport().call("update_system_close_settings", { settings })
 }
 
 // --- Logging ---

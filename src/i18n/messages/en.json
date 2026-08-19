@@ -1429,7 +1429,14 @@
     "restartRequired": "Saved. Restart the app for the change to take effect.",
     "restartNow": "Restart now",
     "restartFailed": "Failed to restart: {message}",
-    "loadFailed": "Load failed: {message}"
+    "loadFailed": "Load failed: {message}",
+    "closeActionTitle": "Close Behavior",
+    "closeActionDescription": "Choose what happens when the main window's close button is clicked.",
+    "closeActionHideToTray": "Hide to tray (background)",
+    "closeActionExit": "Exit application",
+    "closeActionTrayUnavailableHint": "No system tray was detected in this session, so the window may hide with no icon to restore it. Launching Codeg again brings the window back. Some desktops are not detectable, so the tray may still work.",
+    "closeActionLoadFailed": "Failed to load close behavior: {message}",
+    "closeActionSaveFailed": "Failed to save close behavior: {message}"
   },
   "LoginPage": {
     "documentTitle": "Login - codeg",

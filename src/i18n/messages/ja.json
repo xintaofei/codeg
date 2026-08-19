@@ -1429,7 +1429,14 @@
     "restartRequired": "保存しました。再起動後に反映されます。",
     "restartNow": "今すぐ再起動",
     "restartFailed": "再起動に失敗しました: {message}",
-    "loadFailed": "読み込みに失敗しました: {message}"
+    "loadFailed": "読み込みに失敗しました: {message}",
+    "closeActionTitle": "閉じる動作",
+    "closeActionDescription": "メインウィンドウの閉じるボタンをクリックしたときの動作を選択します。",
+    "closeActionHideToTray": "トレイに隠す（バックグラウンド）",
+    "closeActionExit": "アプリケーションを終了",
+    "closeActionTrayUnavailableHint": "このセッションではシステムトレイが検出されませんでした。ウィンドウを隠しても復元するアイコンが表示されない可能性があります。Codeg を再起動すればウィンドウは戻ります。検出できないデスクトップ環境もあるため、トレイが正常に動作する場合もあります。",
+    "closeActionLoadFailed": "閉じる動作の読み込みに失敗しました: {message}",
+    "closeActionSaveFailed": "閉じる動作の保存に失敗しました: {message}"
   },
   "LoginPage": {
     "documentTitle": "ログイン - codeg",

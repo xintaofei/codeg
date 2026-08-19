@@ -43,6 +43,59 @@ pub struct SystemTerminalSettings {
     pub default_shell: Option<String>,
 }
 
+/// What the main window's close button does.
+#[cfg(feature = "tauri-runtime")]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseAction {
+    /// Hide the window and keep the app running behind the tray icon.
+    HideToTray,
+    /// Quit the app.
+    Exit,
+}
+
+#[cfg(feature = "tauri-runtime")]
+impl Default for CloseAction {
+    /// Platform-dependent, because this is the behaviour a user who never opens
+    /// the setting gets. macOS and Windows have hidden on close since before
+    /// the setting existed. Linux has always exited, and its tray support is
+    /// the least predictable of the three — defaulting it to hide-to-tray would
+    /// silently turn "I closed the app" into "the app won't quit" on upgrade,
+    /// so Linux users opt in instead.
+    fn default() -> Self {
+        if cfg!(target_os = "linux") {
+            Self::Exit
+        } else {
+            Self::HideToTray
+        }
+    }
+}
+
+/// Persisted shape. Kept free of runtime state so it round-trips through the
+/// `app_metadata` row unchanged — see `SystemCloseSettingsInfo` for what the
+/// frontend reads.
+#[cfg(feature = "tauri-runtime")]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct SystemCloseSettings {
+    pub action: CloseAction,
+}
+
+/// The stored setting plus what this session can actually do about it, so the
+/// settings page can warn that hide-to-tray may not work here without a second
+/// round trip. Mirrors how `TerminalShellOption::exists` marks an option as
+/// unavailable without removing it.
+#[cfg(feature = "tauri-runtime")]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SystemCloseSettingsInfo {
+    pub action: CloseAction,
+    /// Best-effort: whether a tray icon is expected to be visible in this
+    /// session. The advisory visibility probe never overrides an explicit
+    /// `hide_to_tray`; the action is still subject to the hard requirement that
+    /// a tray icon was successfully installed.
+    pub tray_available: bool,
+}
+
 /// One row in the "default shell" picker. Backend owns the option list so the
 /// frontend doesn't have to know which shells are available on which platform.
 /// Labels are not localized server-side: `label_key` points at a frontend i18n

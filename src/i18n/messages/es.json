@@ -1429,7 +1429,14 @@
     "restartRequired": "Guardado. Reinicia la aplicación para aplicar el cambio.",
     "restartNow": "Reiniciar ahora",
     "restartFailed": "No se pudo reiniciar: {message}",
-    "loadFailed": "Error al cargar: {message}"
+    "loadFailed": "Error al cargar: {message}",
+    "closeActionTitle": "Comportamiento al cerrar",
+    "closeActionDescription": "Elija qué sucede al hacer clic en el botón de cerrar de la ventana principal.",
+    "closeActionHideToTray": "Ocultar en la bandeja (fondo)",
+    "closeActionExit": "Salir de la aplicación",
+    "closeActionTrayUnavailableHint": "No se detectó una bandeja del sistema en esta sesión, por lo que la ventana podría ocultarse sin un icono para restaurarla. Al abrir Codeg de nuevo la ventana vuelve. Algunos escritorios no se pueden detectar, así que la bandeja aún podría funcionar.",
+    "closeActionLoadFailed": "Error al cargar el comportamiento al cerrar: {message}",
+    "closeActionSaveFailed": "Error al guardar el comportamiento al cerrar: {message}"
   },
   "LoginPage": {
     "documentTitle": "Iniciar sesión - codeg",

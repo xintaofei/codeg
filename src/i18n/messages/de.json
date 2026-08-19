@@ -1429,7 +1429,14 @@
     "restartRequired": "Gespeichert. Starten Sie die App neu, damit die Änderung wirksam wird.",
     "restartNow": "Jetzt neu starten",
     "restartFailed": "Neustart fehlgeschlagen: {message}",
-    "loadFailed": "Laden fehlgeschlagen: {message}"
+    "loadFailed": "Laden fehlgeschlagen: {message}",
+    "closeActionTitle": "Schließen-Verhalten",
+    "closeActionDescription": "Wählen Sie, was beim Klick auf den Schließen-Button des Hauptfensters passiert.",
+    "closeActionHideToTray": "In Tray ausblenden (Hintergrund)",
+    "closeActionExit": "Anwendung beenden",
+    "closeActionTrayUnavailableHint": "In dieser Sitzung wurde kein System-Tray erkannt, daher wird das Fenster möglicherweise ohne Symbol zum Wiederherstellen ausgeblendet. Ein erneuter Start von Codeg holt das Fenster zurück. Manche Desktops sind nicht erkennbar, der Tray kann also trotzdem funktionieren.",
+    "closeActionLoadFailed": "Schließen-Verhalten konnte nicht geladen werden: {message}",
+    "closeActionSaveFailed": "Fehler beim Speichern des Schließen-Verhaltens: {message}"
   },
   "LoginPage": {
     "documentTitle": "Anmelden - codeg",

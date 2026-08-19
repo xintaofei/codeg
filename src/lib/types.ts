@@ -2868,6 +2868,23 @@ export interface SystemRenderingSettings {
   disable_hardware_acceleration: boolean
 }
 
+/** What the main window's close button does. */
+export type CloseAction = "hide_to_tray" | "exit"
+
+export interface SystemCloseSettings {
+  action: CloseAction
+}
+
+export interface SystemCloseSettingsInfo extends SystemCloseSettings {
+  /**
+   * Whether a tray icon is expected to be visible in this session. The advisory
+   * visibility probe never overrides an explicit `hide_to_tray`; the action is
+   * still subject to the hard requirement that a tray icon was successfully
+   * installed. False negatives are possible on desktops with a legacy tray.
+   */
+  tray_available: boolean
+}
+
 // --- Logging ---
 
 export type LogLevel = "off" | "error" | "warn" | "info" | "debug" | "trace"
