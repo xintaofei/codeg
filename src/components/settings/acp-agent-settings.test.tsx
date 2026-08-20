@@ -1217,6 +1217,106 @@ describe("materializeClaudeHardeningFlags — save-time toggle defaults", () => 
   })
 })
 
+describe("patchCodexConfigTomlText — issue #520 provider creation", () => {
+  function importantProviderShape(configTomlText: string) {
+    return parseTomlDocument(configTomlText) as {
+      model_provider?: string
+      model_providers?: Record<string, Record<string, unknown>>
+      features?: { responses_websockets_v2?: boolean }
+    }
+  }
+
+  it("does not create a provider for an empty API base URL", () => {
+    const parsed = importantProviderShape(
+      patchCodexConfigTomlText("", { apiBaseUrl: "" })
+    )
+    expect(parsed.model_provider).toBeUndefined()
+    expect(parsed.model_providers).toBeUndefined()
+  })
+
+  it("updates only the global WebSocket feature without a provider", () => {
+    const parsed = importantProviderShape(
+      patchCodexConfigTomlText("", {
+        modelProvider: "codeg",
+        supportsWebsockets: true,
+      })
+    )
+    expect(parsed.model_provider).toBeUndefined()
+    expect(parsed.model_providers).toBeUndefined()
+    expect(parsed.features?.responses_websockets_v2).toBe(true)
+  })
+
+  it("does not materialize the synthetic codeg provider", () => {
+    const parsed = importantProviderShape(
+      patchCodexConfigTomlText("", { modelProvider: "codeg" })
+    )
+    expect(parsed.model_provider).toBeUndefined()
+    expect(parsed.model_providers).toBeUndefined()
+  })
+
+  it("creates the managed provider for a non-empty API base URL", () => {
+    const parsed = importantProviderShape(
+      patchCodexConfigTomlText("", {
+        modelProvider: "codeg",
+        apiBaseUrl: "https://new.example/v1",
+      })
+    )
+    expect(parsed.model_provider).toBe("codeg")
+    expect(parsed.model_providers?.codeg).toMatchObject({
+      base_url: "https://new.example/v1",
+      name: "codeg",
+      wire_api: "responses",
+      requires_openai_auth: true,
+    })
+  })
+
+  it("updates the already selected provider without replacing it", () => {
+    const result = patchCodexConfigTomlText(
+      [
+        'model_provider = "custom"',
+        "",
+        "[model_providers.custom]",
+        'base_url = "https://old.example/v1"',
+        'keep = "user-value"',
+      ].join("\n"),
+      { apiBaseUrl: "https://new.example/v1" }
+    )
+    const parsed = importantProviderShape(result)
+    expect(parsed.model_provider).toBe("custom")
+    expect(parsed.model_providers?.custom).toMatchObject({
+      base_url: "https://new.example/v1",
+      keep: "user-value",
+    })
+    expect(parsed.model_providers?.codeg).toBeUndefined()
+  })
+
+  it("switches to an explicitly requested provider with a non-empty URL", () => {
+    const result = patchCodexConfigTomlText(
+      [
+        'model_provider = "custom"',
+        "",
+        "[model_providers.custom]",
+        'base_url = "https://old.example/v1"',
+        'keep = "user-value"',
+      ].join("\n"),
+      {
+        modelProvider: "codeg",
+        apiBaseUrl: "https://new.example/v1",
+      }
+    )
+    const parsed = importantProviderShape(result)
+    expect(parsed.model_provider).toBe("codeg")
+    expect(parsed.model_providers?.codeg).toMatchObject({
+      base_url: "https://new.example/v1",
+      name: "codeg",
+      wire_api: "responses",
+    })
+    expect(parsed.model_providers?.custom).toMatchObject({
+      keep: "user-value",
+    })
+  })
+})
+
 describe("patchCodexConfigTomlText — codeg's requires_openai_auth default", () => {
   /** Read `model_providers.codeg.requires_openai_auth` back out of a result. */
   function authFlagOf(configTomlText: string): boolean | undefined {
@@ -1265,10 +1365,6 @@ describe("patchCodexConfigTomlText — codeg's requires_openai_auth default", ()
         ).toBe(true)
       })
 
-      it("seeds a brand-new provider from an empty config", () => {
-        expect(authFlagOf(patchCodexConfigTomlText("", patch))).toBe(true)
-      })
-
       it("stands down for a provider using actor authorization", () => {
         const toml = [
           BOUND_PROVIDER,
@@ -1284,6 +1380,12 @@ describe("patchCodexConfigTomlText — codeg's requires_openai_auth default", ()
   }
 
   const ENTRY = ENTRY_POINTS[0].patch
+
+  it("seeds a brand-new provider from a non-empty API base URL", () => {
+    expect(
+      authFlagOf(patchCodexConfigTomlText("", ENTRY_POINTS[0].patch))
+    ).toBe(true)
+  })
 
   it("preserves user comments around the managed provider", () => {
     const toml = [

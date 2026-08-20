@@ -2890,29 +2890,53 @@ function patchCodexAuthJsonText(
   }
 }
 
+interface CodexConfigTomlPatch {
+  apiBaseUrl?: string
+  model?: string
+  modelProvider?: string
+  modelReasoningEffort?: string
+  supportsWebsockets?: boolean
+  skills?: boolean
+  serviceTierFast?: boolean
+}
+
+/**
+ * Resolve which provider a patch should write to, distinguishing a real
+ * selection from the `codeg` display fallback (issue #520). Returns "" when
+ * no provider should be created or touched at all.
+ */
+function resolveCodexProviderForPatch(
+  configTomlText: string,
+  patch: CodexConfigTomlPatch
+): string {
+  const configuredProvider =
+    extractCodexTomlImportantValues(configTomlText).modelProvider.trim()
+  const requestedProvider = patch.modelProvider?.trim() ?? ""
+  const hasApiBaseUrl =
+    typeof patch.apiBaseUrl === "string" && patch.apiBaseUrl.trim() !== ""
+  if (hasApiBaseUrl && requestedProvider) return requestedProvider
+  if (configuredProvider) return configuredProvider
+  if (hasApiBaseUrl) return CODEX_DEFAULT_MODEL_PROVIDER
+  return ""
+}
+
 export function patchCodexConfigTomlText(
   configTomlText: string,
-  patch: {
-    apiBaseUrl?: string
-    model?: string
-    modelProvider?: string
-    modelReasoningEffort?: string
-    supportsWebsockets?: boolean
-    skills?: boolean
-    serviceTierFast?: boolean
-  }
+  patch: CodexConfigTomlPatch
 ): string {
   let nextTomlText = configTomlText
-  if (typeof patch.modelProvider === "string") {
-    const modelProvider = patch.modelProvider.trim()
-    if (modelProvider) {
-      nextTomlText = updateTomlRootStringKey(
-        nextTomlText,
-        "model_provider",
-        modelProvider
-      )
-      nextTomlText = ensureCodexProviderDefaults(nextTomlText, modelProvider)
-    }
+  const initialProvider =
+    extractCodexTomlImportantValues(configTomlText).modelProvider.trim()
+  const provider = resolveCodexProviderForPatch(configTomlText, patch)
+  if (provider && provider !== initialProvider) {
+    nextTomlText = updateTomlRootStringKey(
+      nextTomlText,
+      "model_provider",
+      provider
+    )
+  }
+  if (typeof patch.modelProvider === "string" && provider) {
+    nextTomlText = ensureCodexProviderDefaults(nextTomlText, provider)
   }
   if (typeof patch.model === "string") {
     nextTomlText = updateTomlRootStringKey(nextTomlText, "model", patch.model)
@@ -2927,46 +2951,22 @@ export function patchCodexConfigTomlText(
       reasoningEffort
     )
   }
-  if (typeof patch.apiBaseUrl === "string") {
-    const tomlValues = extractCodexTomlImportantValues(nextTomlText)
-    const modelProvider =
-      patch.modelProvider?.trim() ||
-      tomlValues.modelProvider.trim() ||
-      CODEX_DEFAULT_MODEL_PROVIDER
-    if (!tomlValues.modelProvider.trim() && patch.apiBaseUrl.trim()) {
-      nextTomlText = updateTomlRootStringKey(
-        nextTomlText,
-        "model_provider",
-        modelProvider
-      )
-    }
+  if (typeof patch.apiBaseUrl === "string" && provider) {
     nextTomlText = patchCodexProviderBaseUrl(
       nextTomlText,
-      modelProvider,
+      provider,
       patch.apiBaseUrl
     )
-    nextTomlText = ensureCodexProviderDefaults(nextTomlText, modelProvider)
+    nextTomlText = ensureCodexProviderDefaults(nextTomlText, provider)
   }
-  if (typeof patch.supportsWebsockets === "boolean") {
-    const tomlValues = extractCodexTomlImportantValues(nextTomlText)
-    const modelProvider =
-      patch.modelProvider?.trim() ||
-      tomlValues.modelProvider.trim() ||
-      CODEX_DEFAULT_MODEL_PROVIDER
-    if (!tomlValues.modelProvider.trim()) {
-      nextTomlText = updateTomlRootStringKey(
-        nextTomlText,
-        "model_provider",
-        modelProvider
-      )
-    }
+  if (typeof patch.supportsWebsockets === "boolean" && provider) {
     nextTomlText = patchCodexProviderField(
       nextTomlText,
-      modelProvider,
+      provider,
       "supports_websockets",
       `supports_websockets = ${patch.supportsWebsockets ? "true" : "false"}`
     )
-    nextTomlText = ensureCodexProviderDefaults(nextTomlText, modelProvider)
+    nextTomlText = ensureCodexProviderDefaults(nextTomlText, provider)
   }
   const normalizedTomlValues = extractCodexTomlImportantValues(nextTomlText)
   if (normalizedTomlValues.model.trim()) {
@@ -2981,17 +2981,25 @@ export function patchCodexConfigTomlText(
     "model_reasoning_effort",
     normalizedTomlValues.modelReasoningEffort
   )
-  const activeProvider =
-    normalizedTomlValues.modelProvider.trim() || CODEX_DEFAULT_MODEL_PROVIDER
-  const shouldEnableFeature = Boolean(
-    normalizedTomlValues.providerSupportsWebsockets[activeProvider]
-  )
-  nextTomlText = upsertTomlSectionBooleanKey(
-    nextTomlText,
-    "features",
-    "responses_websockets_v2",
-    shouldEnableFeature ? true : null
-  )
+  const activeProvider = normalizedTomlValues.modelProvider.trim()
+  if (activeProvider) {
+    const shouldEnableFeature = Boolean(
+      normalizedTomlValues.providerSupportsWebsockets[activeProvider]
+    )
+    nextTomlText = upsertTomlSectionBooleanKey(
+      nextTomlText,
+      "features",
+      "responses_websockets_v2",
+      shouldEnableFeature ? true : null
+    )
+  } else if (typeof patch.supportsWebsockets === "boolean") {
+    nextTomlText = upsertTomlSectionBooleanKey(
+      nextTomlText,
+      "features",
+      "responses_websockets_v2",
+      patch.supportsWebsockets ? true : null
+    )
+  }
   if (typeof patch.skills === "boolean") {
     nextTomlText = upsertTomlSectionBooleanKey(
       nextTomlText,
@@ -5918,7 +5926,7 @@ export function AcpAgentSettings() {
           codexModelList: codexList,
           codexAuthJsonText: nextAuthJsonText,
           codexConfigTomlText: nextConfigTomlText,
-          codexModelProvider: CODEX_DEFAULT_MODEL_PROVIDER,
+          codexModelProvider: synced.modelProvider,
           codexProviderOptions: synced.providerOptions,
           envText: patchEnvText(current.envText, {
             OPENAI_API_KEY: apiKey,
@@ -7056,7 +7064,8 @@ export function AcpAgentSettings() {
         return
       }
 
-      // "api_key" or "model_provider": ensure model_provider = "codeg" in toml
+      // "api_key" or "model_provider": keep any already-selected provider;
+      // the "codeg" fallback is a display value, not a request to create one.
       const nextConfigTomlText = patchCodexConfigTomlText(
         selectedDraft.codexConfigTomlText,
         { modelProvider: CODEX_DEFAULT_MODEL_PROVIDER }
@@ -7080,7 +7089,7 @@ export function AcpAgentSettings() {
         apiBaseUrl: synced.apiBaseUrl,
         apiKey: synced.apiKey ?? current.apiKey,
         model: synced.model,
-        codexModelProvider: CODEX_DEFAULT_MODEL_PROVIDER,
+        codexModelProvider: synced.modelProvider,
         codexProviderOptions: synced.providerOptions,
         codexReasoningEffort: synced.reasoningEffort,
         codexSupportsWebsockets: synced.supportsWebsockets,
