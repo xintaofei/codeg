@@ -14875,6 +14875,89 @@ wire_api = "chat"
     }
 
     #[test]
+    fn codex_persist_keeps_a_providerless_config_providerless() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        temp_env::with_var("CODEX_HOME", Some(dir.path()), || {
+            let patch = serde_json::json!({
+                "apiBaseUrl": "",
+                "apiKey": "",
+                "model": "gpt-5-codex",
+                "env": { "KEEP": "1" }
+            })
+            .to_string();
+            persist_codex_local_config(Some(&patch)).expect("persist must succeed");
+
+            let written = std::fs::read_to_string(dir.path().join("config.toml"))
+                .expect("read back");
+            let parsed = written.parse::<toml::Value>().expect("must parse");
+            let root = parsed.as_table().expect("root table");
+            assert_eq!(root.get("model").and_then(toml::Value::as_str), Some("gpt-5-codex"));
+            assert!(!root.contains_key("model_provider"));
+            assert!(!root.contains_key("model_providers"));
+        });
+    }
+
+    #[test]
+    fn codex_persist_does_not_activate_a_dormant_codeg_table() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        temp_env::with_var("CODEX_HOME", Some(dir.path()), || {
+            let config_path = dir.path().join("config.toml");
+            std::fs::write(
+                &config_path,
+                "[model_providers.codeg]\nbase_url = \"\"\nkeep = \"user-value\"\n",
+            )
+            .expect("seed config.toml");
+            let patch = serde_json::json!({
+                "apiBaseUrl": "",
+                "apiKey": "",
+                "model": "gpt-5-codex",
+                "env": {}
+            })
+            .to_string();
+
+            persist_codex_local_config(Some(&patch)).expect("persist must succeed");
+
+            let written = std::fs::read_to_string(&config_path).expect("read back");
+            let parsed = written.parse::<toml::Value>().expect("must parse");
+            let root = parsed.as_table().expect("root table");
+            assert!(!root.contains_key("model_provider"));
+            let codeg = root
+                .get("model_providers")
+                .and_then(toml::Value::as_table)
+                .and_then(|providers| providers.get("codeg"))
+                .and_then(toml::Value::as_table)
+                .expect("dormant codeg table must survive");
+            assert_eq!(codeg.get("keep").and_then(toml::Value::as_str), Some("user-value"));
+            assert!(!codeg.contains_key("requires_openai_auth"));
+            assert!(!codeg.contains_key("wire_api"));
+        });
+    }
+
+    #[test]
+    fn codex_cascade_keeps_a_providerless_config_providerless() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        temp_env::with_var("CODEX_HOME", Some(dir.path()), || {
+            cascade_update_agent_config(
+                AgentType::Codex,
+                "",
+                "",
+                &BTreeMap::new(),
+                &CodexModelAction::Set("gpt-5-codex".to_string()),
+                None,
+            )
+            .expect("cascade must succeed");
+
+            let written = std::fs::read_to_string(dir.path().join("config.toml"))
+                .expect("read back");
+            let parsed = written.parse::<toml::Value>().expect("must parse");
+            let root = parsed.as_table().expect("root table");
+            assert_eq!(root.get("model").and_then(toml::Value::as_str), Some("gpt-5-codex"));
+            assert!(!root.contains_key("model_provider"));
+            assert!(!root.contains_key("model_providers"));
+        });
+    }
+
+    #[test]
     fn cursor_fingerprint_tracks_cli_config_changes() {
         // Cursor's ~/.cursor/cli-config.json (permission rules / sandbox) is
         // edited via the Cursor settings panel but is NOT in
