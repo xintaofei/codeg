@@ -1923,8 +1923,9 @@ pub const TRAY_ICON_ID: &str = "codeg-tray";
 static TRAY_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
 /// Best-effort guess at whether a tray icon is actually visible in this
-/// session. Only ever used to pick a default and to warn in the settings UI —
-/// never to override an explicit choice, because it is wrong in both
+/// session. Only ever used to warn in the settings UI — never to override an
+/// explicit choice, and never to pick the default (`CloseAction::default()`
+/// decides that from the target OS alone), because it is wrong in both
 /// directions:
 ///
 ///   * false positive — a `StatusNotifierWatcher` can be registered with no
@@ -1935,8 +1936,11 @@ static TRAY_AVAILABLE: AtomicBool = AtomicBool::new(false);
 ///     happily. Nothing on the bus reflects that, so this reports `false`
 ///     while the icon is right there.
 ///
-/// Probed lazily rather than cached at startup: a user can install the GNOME
-/// AppIndicator extension or restart their panel while the app is running.
+/// Probed lazily rather than cached for the process lifetime: a user can
+/// install the GNOME AppIndicator extension or restart their panel while the
+/// app is running, and the answer has to be able to change without a relaunch.
+/// A short TTL keeps a burst of calls (a settings load plus an immediate save)
+/// down to one bus round trip — see `PROBE_TTL`.
 #[cfg(feature = "tauri-runtime")]
 pub fn tray_probably_visible() -> bool {
     // Nothing was installed, so nothing can be visible — and this skips the
@@ -1963,101 +1967,298 @@ pub fn tray_probably_visible() -> bool {
 /// Uses zbus rather than shelling out to `gdbus`: that binary lives in a
 /// separate package (`libglib2.0-bin` on Debian) that a GTK runtime does not
 /// pull in, and a missing binary would read as "no tray" on a machine where the
-/// tray works. A method timeout bounds the round trip; an outer recv_timeout
-/// covers connection establishment.
-///
-/// Single-flight: concurrent calls wait for a shared result rather than each
-/// spawning a probe thread, avoiding thread accumulation when the settings page
-/// is opened repeatedly or saves happen in quick succession.
+/// tray works. `method_timeout` bounds the property read; `SingleFlightProbe`'s
+/// deadline bounds the whole probe, including connection establishment, which
+/// nothing inside zbus caps.
 #[cfg(all(target_os = "linux", feature = "tauri-runtime"))]
 fn linux_status_notifier_host_registered() -> bool {
-    use std::sync::{Arc, Condvar, Mutex};
-    use std::time::Duration;
+    static PROBE: SingleFlightProbe =
+        SingleFlightProbe::new(TRAY_PROBE_TTL, TRAY_PROBE_DEADLINE, "[Tray]");
+    PROBE.get(query_status_notifier_host)
+}
 
-    /// Generous for a healthy session bus, short enough that a wedged one
-    /// doesn't hold up the settings page.
-    const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
-
-    #[derive(Clone, Copy)]
-    enum ProbeState {
-        Idle,
-        Running,
-        Complete(bool),
-    }
-
-    static PROBE: std::sync::OnceLock<(Arc<Mutex<ProbeState>>, Arc<Condvar>)> =
-        std::sync::OnceLock::new();
-    let (state_lock, condvar) = PROBE.get_or_init(|| {
-        (
-            Arc::new(Mutex::new(ProbeState::Idle)),
-            Arc::new(Condvar::new()),
-        )
-    });
-
-    let mut state = state_lock.lock().unwrap();
-
-    match *state {
-        ProbeState::Complete(result) => return result,
-        ProbeState::Running => {
-            // Another thread is probing; wait for its result.
-            let wait_result = condvar
-                .wait_timeout(state, PROBE_TIMEOUT + Duration::from_millis(100))
-                .unwrap();
-            state = wait_result.0;
-            return match *state {
-                ProbeState::Complete(result) => result,
-                _ => {
-                    tracing::warn!(
-                        "[Tray] Probe still running after timeout; assuming no tray"
-                    );
-                    false
-                }
-            };
-        }
-        ProbeState::Idle => {
-            *state = ProbeState::Running;
-        }
-    }
-    drop(state);
-
-    // We are now responsible for running the probe.
-    let state_lock_clone = Arc::clone(state_lock);
-    let condvar_clone = Arc::clone(condvar);
-
-    std::thread::Builder::new()
-        .name("tray-probe".into())
-        .spawn(move || {
-            let registered = zbus::blocking::connection::Builder::session()
-                .and_then(|builder| builder.method_timeout(PROBE_TIMEOUT).build())
-                .and_then(|connection| {
-                    zbus::blocking::Proxy::new(
-                        &connection,
-                        "org.kde.StatusNotifierWatcher",
-                        "/StatusNotifierWatcher",
-                        "org.kde.StatusNotifierWatcher",
-                    )
-                })
-                .and_then(|proxy| proxy.get_property::<bool>("IsStatusNotifierHostRegistered"))
-                .unwrap_or(false);
-
-            let mut state = state_lock_clone.lock().unwrap();
-            *state = ProbeState::Complete(registered);
-            condvar_clone.notify_all();
+/// The bus round trip itself. Any failure — no session bus, no watcher, a
+/// refused property read — means we cannot claim a tray is visible.
+#[cfg(all(target_os = "linux", feature = "tauri-runtime"))]
+fn query_status_notifier_host() -> bool {
+    zbus::blocking::connection::Builder::session()
+        .and_then(|builder| builder.method_timeout(TRAY_PROBE_DEADLINE).build())
+        .and_then(|connection| {
+            zbus::blocking::Proxy::new(
+                &connection,
+                "org.kde.StatusNotifierWatcher",
+                "/StatusNotifierWatcher",
+                "org.kde.StatusNotifierWatcher",
+            )
         })
-        .ok();
+        .and_then(|proxy| proxy.get_property::<bool>("IsStatusNotifierHostRegistered"))
+        .unwrap_or(false)
+}
 
-    // Wait for the probe to complete.
-    let mut state = state_lock.lock().unwrap();
-    let wait_result = condvar
-        .wait_timeout(state, PROBE_TIMEOUT + Duration::from_millis(100))
-        .unwrap();
-    state = wait_result.0;
+/// How long an answer is reused before the next caller re-probes. Long enough
+/// that a settings load plus an immediate save share one round trip, short
+/// enough that "install the extension, come back to this page" reflects reality.
+#[cfg(all(target_os = "linux", feature = "tauri-runtime"))]
+const TRAY_PROBE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+/// Upper bound on how long any caller waits. Generous for a healthy session
+/// bus, short enough that a wedged one doesn't hold up the settings page.
+#[cfg(all(target_os = "linux", feature = "tauri-runtime"))]
+const TRAY_PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 
-    match *state {
-        ProbeState::Complete(result) => result,
-        _ => {
-            tracing::warn!("[Tray] Probe thread did not complete; assuming no tray");
-            false
+/// A single-flight, TTL-cached boolean probe for answers that are expensive to
+/// obtain, may hang, and are only advisory.
+///
+/// Compiled on Linux, where it is used, and in test builds on every target, so
+/// the state machine is exercised by the unit tests on all CI cells rather than
+/// only the one platform that compiles the D-Bus call.
+///
+/// Guarantees, each pinned by a test below:
+///
+///   * **Single flight** — concurrent callers share one worker.
+///   * **Bounded** — a caller waiting on someone else's worker returns within
+///     `deadline`. A caller that waits and *then* claims a probe of its own
+///     waits out that worker's deadline too, so the worst case is two
+///     deadlines; reaching it requires a worker to hang first.
+///   * **Recoverable** — a worker that hangs, panics, or fails to spawn is
+///     abandoned, and the *next* caller starts a fresh probe. There is no state
+///     that permanently pins the answer to `false`.
+///   * **Monotonic** — an abandoned worker's late answer is dropped rather than
+///     overwriting a newer one, tracked by `generation`.
+#[cfg(all(feature = "tauri-runtime", any(target_os = "linux", test)))]
+struct SingleFlightProbe {
+    slot: Mutex<ProbeSlot>,
+    ready: std::sync::Condvar,
+    ttl: std::time::Duration,
+    deadline: std::time::Duration,
+    /// Log prefix, so the shared machinery still reports in the caller's voice.
+    tag: &'static str,
+}
+
+#[cfg(all(feature = "tauri-runtime", any(target_os = "linux", test)))]
+struct ProbeSlot {
+    state: ProbeState,
+    /// Bumped whenever the slot is claimed or abandoned. A worker publishes its
+    /// answer only if this still matches the value it was spawned with.
+    generation: u64,
+}
+
+#[cfg(all(feature = "tauri-runtime", any(target_os = "linux", test)))]
+#[derive(Clone, Copy)]
+enum ProbeState {
+    /// No worker in flight; carries the last answer and when it landed.
+    Idle(Option<(std::time::Instant, bool)>),
+    /// A worker is running, started at this instant.
+    Running(std::time::Instant),
+}
+
+#[cfg(all(feature = "tauri-runtime", any(target_os = "linux", test)))]
+impl ProbeSlot {
+    /// Take ownership of the next probe. Returns the generation to publish
+    /// under and when the worker started, which is what its own deadline is
+    /// measured from — distinct from any individual caller's budget.
+    fn claim(&mut self) -> (u64, std::time::Instant) {
+        let started = std::time::Instant::now();
+        self.generation += 1;
+        self.state = ProbeState::Running(started);
+        (self.generation, started)
+    }
+
+    /// Hand the slot back and invalidate whichever worker held it.
+    fn abandon(&mut self) {
+        self.generation += 1;
+        self.state = ProbeState::Idle(None);
+    }
+
+    /// Abandon only if `generation` still owns the slot. A caller whose own
+    /// worker was already replaced must not evict the replacement: it would
+    /// invalidate a perfectly healthy probe and force yet another one, which
+    /// under concurrent callers degenerates into churn and a run of `false`s.
+    fn abandon_if_current(&mut self, generation: u64) -> bool {
+        if self.generation != generation {
+            return false;
+        }
+        self.abandon();
+        true
+    }
+}
+
+#[cfg(all(feature = "tauri-runtime", any(target_os = "linux", test)))]
+impl SingleFlightProbe {
+    const fn new(
+        ttl: std::time::Duration,
+        deadline: std::time::Duration,
+        tag: &'static str,
+    ) -> Self {
+        Self {
+            slot: Mutex::new(ProbeSlot {
+                state: ProbeState::Idle(None),
+                generation: 0,
+            }),
+            ready: std::sync::Condvar::new(),
+            ttl,
+            deadline,
+            tag,
+        }
+    }
+
+    /// Hand the slot back — but only when the worker blew its *own* deadline.
+    ///
+    /// A caller that merely exhausted its own budget must leave a healthy
+    /// worker alone for whoever waits next. The two clocks differ: a caller
+    /// that waited on one worker and then looped onto its replacement can run
+    /// out of budget while the replacement is still comfortably inside its
+    /// deadline, and evicting it there would invalidate a good probe and force
+    /// another one.
+    fn release_if_worker_overdue(
+        &self,
+        slot: &mut ProbeSlot,
+        generation: u64,
+        worker_started: std::time::Instant,
+    ) -> bool {
+        if worker_started.elapsed() < self.deadline {
+            return false;
+        }
+        let released = slot.abandon_if_current(generation);
+        if released {
+            self.ready.notify_all();
+        }
+        released
+    }
+
+    /// Fresh cached answer if there is one, otherwise run `probe` on a worker
+    /// thread (or join whichever worker is already running) and return its
+    /// answer. Returns `false` if no answer arrives within `deadline`.
+    fn get(&'static self, probe: fn() -> bool) -> bool {
+        // This caller's own budget, bounding the *waiting* loop below so a
+        // caller cannot be dragged along indefinitely by successive workers
+        // replacing each other while it waits. Once it claims a probe of its
+        // own it switches to that worker's deadline — see below.
+        let give_up_at = std::time::Instant::now() + self.deadline;
+
+        // Poisoning only means some caller panicked; `ProbeSlot` is two plain
+        // values with no cross-field invariant, so recover rather than turning
+        // one panic into a permanently panicking settings page.
+        let mut slot = self.slot.lock().unwrap_or_else(|err| err.into_inner());
+
+        let (generation, worker_started) = loop {
+            match slot.state {
+                ProbeState::Idle(Some((at, result))) if at.elapsed() < self.ttl => return result,
+                // No answer, or a stale one: this call owns the next probe.
+                ProbeState::Idle(_) => break slot.claim(),
+                ProbeState::Running(started) => {
+                    // Which generation we are waiting on. Baking it into the
+                    // predicate means a replacement wakes us immediately, and —
+                    // because the predicate is re-checked before the timeout is
+                    // reported — `timed_out()` can only be true while this
+                    // generation still owns the slot. Without that, a waiter
+                    // whose own worker was already replaced could wake late and
+                    // evict its healthy replacement.
+                    let observed = slot.generation;
+                    let worker_deadline = started + self.deadline;
+                    let until = worker_deadline.min(give_up_at);
+
+                    let Some(remaining) = until.checked_duration_since(std::time::Instant::now())
+                    else {
+                        if std::time::Instant::now() >= give_up_at {
+                            // Out of budget, and the worker still has time —
+                            // leave it alone for whoever waits next.
+                            return false;
+                        }
+                        // The worker is past its own deadline. Take the slot
+                        // from it and probe afresh rather than answering
+                        // `false` for the rest of the session. The generation
+                        // bump invalidates its late answer.
+                        tracing::warn!("{} probe overdue; starting a new one", self.tag);
+                        slot.abandon();
+                        let claimed = slot.claim();
+                        self.ready.notify_all();
+                        break claimed;
+                    };
+
+                    // `wait_timeout_while` re-checks the predicate before
+                    // waiting, so an answer published between our unlock and
+                    // this wait is not missed, and it loops on spurious wakeups
+                    // instead of reading them as a timeout.
+                    let (guard, wait) = self
+                        .ready
+                        .wait_timeout_while(slot, remaining, |s| {
+                            matches!(s.state, ProbeState::Running(_)) && s.generation == observed
+                        })
+                        .unwrap_or_else(|err| err.into_inner());
+                    slot = guard;
+                    if wait.timed_out() {
+                        tracing::warn!("{} probe timed out; assuming no", self.tag);
+                        // Hand the slot back so the next call retries instead of
+                        // inheriting a worker that is never going to answer —
+                        // but only if that worker is itself overdue. If we just
+                        // ran out of our own budget it is still healthy, and
+                        // whoever waits next should get its answer.
+                        self.release_if_worker_overdue(&mut slot, observed, started);
+                        return false;
+                    }
+                    // Either the worker published, or it was replaced. Go round
+                    // again and re-read the slot.
+                }
+            }
+        };
+        drop(slot);
+
+        if std::thread::Builder::new()
+            .name("single-flight-probe".into())
+            .spawn(move || {
+                let result = probe();
+                let mut slot = self.slot.lock().unwrap_or_else(|err| err.into_inner());
+                // Dropped if we were abandoned: a newer probe owns the slot now
+                // and a stale answer must not overwrite a fresher one.
+                if slot.generation == generation {
+                    slot.state = ProbeState::Idle(Some((std::time::Instant::now(), result)));
+                    self.ready.notify_all();
+                }
+            })
+            .is_err()
+        {
+            // Nothing will ever publish, so release the slot rather than
+            // leaving `Running` behind for every later call to wait out.
+            let mut slot = self.slot.lock().unwrap_or_else(|err| err.into_inner());
+            slot.abandon_if_current(generation);
+            self.ready.notify_all();
+            tracing::warn!("{} could not spawn probe thread; assuming no", self.tag);
+            return false;
+        }
+
+        // We own this worker, so wait on *its* deadline rather than our own
+        // budget. The two differ by the time it took to claim the slot, and
+        // giving up a hair early would leave a worker we know to be dead in the
+        // slot for the next caller to discover — costing that caller a wasted
+        // `false` before recovery. A caller that looped through an earlier
+        // worker before claiming this one can therefore take up to two
+        // deadlines in total; that path requires a hang first, and this probe
+        // is advisory, so the extra bound is acceptable.
+        let slot = self.slot.lock().unwrap_or_else(|err| err.into_inner());
+        let remaining = (worker_started + self.deadline)
+            .checked_duration_since(std::time::Instant::now())
+            .unwrap_or_default();
+        let (mut slot, wait) = self
+            .ready
+            .wait_timeout_while(slot, remaining, |s| {
+                matches!(s.state, ProbeState::Running(_)) && s.generation == generation
+            })
+            .unwrap_or_else(|err| err.into_inner());
+
+        if wait.timed_out() {
+            // Covers a worker that hangs and one that panicked before
+            // publishing: either way the slot goes back so the next call can
+            // start over, and this worker's late answer is invalidated. If we
+            // only ran out of our own budget the worker is left running, so a
+            // later caller can still collect its answer.
+            tracing::warn!("{} probe did not finish in time; assuming no", self.tag);
+            self.release_if_worker_overdue(&mut slot, generation, worker_started);
+            return false;
+        }
+
+        match slot.state {
+            ProbeState::Idle(Some((_, result))) => result,
+            _ => false,
         }
     }
 }
@@ -2354,5 +2555,356 @@ mod pet_panel_geometry_tests {
             380.0,
         );
         assert_eq!(y, short_mon.1, "clamped to the monitor top, not above it");
+    }
+}
+
+/// Exercises `SingleFlightProbe` — the tray probe's state machine — without a
+/// D-Bus session, so the guarantees hold on every CI target rather than only on
+/// the one cell that compiles the Linux-gated call.
+///
+/// Assertions are on invocation counts and returned values, never on elapsed
+/// time, so a loaded runner slows these down instead of failing them.
+#[cfg(all(test, feature = "tauri-runtime"))]
+mod single_flight_probe_tests {
+    use super::{ProbeState, SingleFlightProbe};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Condvar, Mutex};
+    use std::time::Duration;
+
+    /// Long enough that a slow runner still answers inside it.
+    const DEADLINE: Duration = Duration::from_millis(500);
+
+    /// Lets a test hold a worker "hung" and release it later.
+    struct Latch {
+        open: Mutex<bool>,
+        changed: Condvar,
+    }
+
+    impl Latch {
+        const fn new() -> Self {
+            Self {
+                open: Mutex::new(false),
+                changed: Condvar::new(),
+            }
+        }
+
+        fn wait(&self) {
+            let mut open = self.open.lock().unwrap_or_else(|err| err.into_inner());
+            while !*open {
+                open = self
+                    .changed
+                    .wait(open)
+                    .unwrap_or_else(|err| err.into_inner());
+            }
+        }
+
+        fn open(&self) {
+            *self.open.lock().unwrap_or_else(|err| err.into_inner()) = true;
+            self.changed.notify_all();
+        }
+    }
+
+    #[test]
+    fn a_fresh_answer_is_reused_within_the_ttl() {
+        static PROBE: SingleFlightProbe =
+            SingleFlightProbe::new(Duration::from_secs(30), DEADLINE, "[test]");
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        fn probe() -> bool {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+
+        assert!(PROBE.get(probe));
+        assert!(PROBE.get(probe));
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1, "second call must be cached");
+    }
+
+    #[test]
+    fn the_answer_is_re_probed_once_the_ttl_expires() {
+        static PROBE: SingleFlightProbe =
+            SingleFlightProbe::new(Duration::from_millis(20), DEADLINE, "[test]");
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        fn probe() -> bool {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+
+        assert!(PROBE.get(probe));
+        // Sleeps only ever overshoot, so this cannot expire early.
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(PROBE.get(probe));
+        assert_eq!(
+            CALLS.load(Ordering::SeqCst),
+            2,
+            "a stale answer must be re-probed, not served"
+        );
+    }
+
+    #[test]
+    fn concurrent_callers_share_one_worker() {
+        static PROBE: SingleFlightProbe =
+            SingleFlightProbe::new(Duration::from_secs(30), DEADLINE, "[test]");
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        fn probe() -> bool {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(50));
+            true
+        }
+
+        let callers: Vec<_> = (0..8)
+            .map(|_| std::thread::spawn(|| PROBE.get(probe)))
+            .collect();
+        for caller in callers {
+            assert!(caller.join().expect("no caller may panic"));
+        }
+        assert_eq!(
+            CALLS.load(Ordering::SeqCst),
+            1,
+            "eight callers must not start eight probes"
+        );
+    }
+
+    /// The regression this whole state machine exists for: a worker that never
+    /// answers must not pin the result to `false` for the rest of the process.
+    #[test]
+    fn a_hung_worker_does_not_wedge_later_calls() {
+        static PROBE: SingleFlightProbe =
+            SingleFlightProbe::new(Duration::from_secs(30), DEADLINE, "[test]");
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        static LATCH: Latch = Latch::new();
+
+        fn probe() -> bool {
+            if CALLS.fetch_add(1, Ordering::SeqCst) == 0 {
+                LATCH.wait();
+                return false;
+            }
+            true
+        }
+
+        assert!(!PROBE.get(probe), "a hung worker must time out as `false`");
+        assert!(
+            PROBE.get(probe),
+            "the slot must be handed back so the next call probes afresh"
+        );
+        assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+
+        LATCH.open();
+    }
+
+    /// A worker that panics is indistinguishable from one that hangs, and must
+    /// recover the same way. It panics before taking the lock, so the mutex is
+    /// not poisoned — but the recovery must not depend on that.
+    #[test]
+    fn a_panicking_worker_does_not_wedge_later_calls() {
+        static PROBE: SingleFlightProbe =
+            SingleFlightProbe::new(Duration::from_secs(30), DEADLINE, "[test]");
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        fn probe() -> bool {
+            if CALLS.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("probe blew up");
+            }
+            true
+        }
+
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let first = PROBE.get(probe);
+        std::panic::set_hook(previous);
+
+        assert!(!first, "a panicking worker must time out as `false`");
+        assert!(PROBE.get(probe), "a later call must start a new probe");
+        assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+    }
+
+    /// An abandoned worker eventually finishes. Its answer is stale by then and
+    /// must not clobber the newer one that replaced it.
+    #[test]
+    fn a_late_answer_from_an_abandoned_worker_is_dropped() {
+        static PROBE: SingleFlightProbe =
+            SingleFlightProbe::new(Duration::from_secs(30), DEADLINE, "[test]");
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        static LATCH: Latch = Latch::new();
+
+        fn probe() -> bool {
+            // The abandoned first worker answers `false`; its replacement `true`.
+            CALLS.fetch_add(1, Ordering::SeqCst) != 0 || {
+                LATCH.wait();
+                false
+            }
+        }
+
+        assert!(!PROBE.get(probe), "first worker hangs and times out");
+        assert!(PROBE.get(probe), "its replacement answers `true`");
+
+        LATCH.open();
+        // Give the abandoned worker time to try to publish its stale `false`.
+        std::thread::sleep(Duration::from_millis(150));
+
+        assert!(
+            PROBE.get(probe),
+            "a stale answer must not overwrite a newer one"
+        );
+        assert_eq!(
+            CALLS.load(Ordering::SeqCst),
+            2,
+            "the third call must be served from cache, not a third probe"
+        );
+    }
+
+    /// The cross-generation hazard: a waiter whose own worker was replaced
+    /// while it slept must not evict the replacement when it finally wakes.
+    /// Deterministic — it drives `ProbeSlot` directly rather than racing
+    /// threads, so it pins the invariant the wait predicate relies on.
+    #[test]
+    fn a_stale_generation_cannot_abandon_its_replacement() {
+        static PROBE: SingleFlightProbe =
+            SingleFlightProbe::new(Duration::from_secs(30), DEADLINE, "[test]");
+
+        let mut slot = PROBE.slot.lock().expect("uncontended");
+
+        let (stale, _) = slot.claim(); // generation 1 — the worker that hangs
+        slot.abandon(); // its owner gives up
+        let (live, _) = slot.claim(); // generation 3 — the healthy replacement
+        assert_ne!(stale, live);
+
+        assert!(
+            !slot.abandon_if_current(stale),
+            "a waiter from a replaced generation must not take the slot"
+        );
+        assert!(
+            matches!(slot.state, ProbeState::Running(_)),
+            "the replacement must still own the slot"
+        );
+        assert_eq!(
+            slot.generation, live,
+            "and must still be able to publish its answer"
+        );
+
+        assert!(
+            slot.abandon_if_current(live),
+            "the generation that owns the slot may still hand it back"
+        );
+    }
+
+    /// The worker's deadline and a caller's budget are different clocks. A
+    /// caller that waited on one worker and then looped onto its replacement
+    /// can run out of budget while the replacement is still well inside its own
+    /// deadline; evicting it there would throw away a healthy probe.
+    #[test]
+    fn a_caller_out_of_budget_leaves_a_healthy_worker_alone() {
+        static PROBE: SingleFlightProbe =
+            SingleFlightProbe::new(Duration::from_secs(30), Duration::from_secs(30), "[test]");
+
+        let mut slot = PROBE.slot.lock().expect("uncontended");
+        let (generation, started) = slot.claim();
+
+        assert!(
+            !PROBE.release_if_worker_overdue(&mut slot, generation, started),
+            "a worker inside its deadline must not be released"
+        );
+        assert!(
+            matches!(slot.state, ProbeState::Running(_)),
+            "the healthy worker must keep the slot"
+        );
+        assert_eq!(
+            slot.generation, generation,
+            "and must still be able to publish its answer"
+        );
+    }
+
+    /// The other side of the same rule: once the worker itself is overdue, the
+    /// slot goes back so the next call can start a fresh probe.
+    #[test]
+    fn an_overdue_worker_is_released() {
+        static PROBE: SingleFlightProbe =
+            SingleFlightProbe::new(Duration::from_secs(30), Duration::from_millis(20), "[test]");
+
+        let mut slot = PROBE.slot.lock().expect("uncontended");
+        let (generation, started) = slot.claim();
+        // Sleeps only overshoot, so this cannot be short of the 20ms deadline.
+        std::thread::sleep(Duration::from_millis(120));
+
+        assert!(PROBE.release_if_worker_overdue(&mut slot, generation, started));
+        assert!(matches!(slot.state, ProbeState::Idle(None)));
+        assert_ne!(
+            slot.generation, generation,
+            "the overdue worker's late answer must be invalidated"
+        );
+    }
+
+    /// Several callers piling onto one hung worker must settle on the healthy
+    /// replacement's answer rather than churning through probes.
+    ///
+    /// Individual callers' return values are deliberately not asserted: whether
+    /// a given caller gets the replacement's answer or runs out of budget first
+    /// depends on scheduling. What must hold is the settled state — exactly two
+    /// probes, and the healthy answer cached.
+    #[test]
+    fn concurrent_callers_settle_on_the_replacement_answer() {
+        static PROBE: SingleFlightProbe =
+            SingleFlightProbe::new(Duration::from_secs(30), DEADLINE, "[test]");
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        static LATCH: Latch = Latch::new();
+
+        fn probe() -> bool {
+            // Only the first worker hangs; every replacement answers `true`.
+            if CALLS.fetch_add(1, Ordering::SeqCst) == 0 {
+                LATCH.wait();
+                return false;
+            }
+            true
+        }
+
+        let callers: Vec<_> = (0..4)
+            .map(|_| std::thread::spawn(|| PROBE.get(probe)))
+            .collect();
+        for caller in callers {
+            caller.join().expect("no caller may panic");
+        }
+
+        assert!(PROBE.get(probe), "the healthy answer must win");
+        let settled = CALLS.load(Ordering::SeqCst);
+        assert_eq!(
+            settled, 2,
+            "one hung worker plus one replacement — callers running out of \
+             budget must not each start another probe"
+        );
+
+        // Let the abandoned first worker finally answer `false`.
+        LATCH.open();
+        std::thread::sleep(Duration::from_millis(150));
+
+        assert!(
+            PROBE.get(probe),
+            "the abandoned worker must not overwrite the healthy answer"
+        );
+        assert_eq!(
+            CALLS.load(Ordering::SeqCst),
+            settled,
+            "the settled answer must be served from cache, not re-probed"
+        );
+    }
+
+    /// `abandon` has to invalidate the in-flight worker, not just reset the
+    /// state — otherwise the late-answer guard above has nothing to test on.
+    #[test]
+    fn abandoning_a_slot_invalidates_its_generation() {
+        static PROBE: SingleFlightProbe =
+            SingleFlightProbe::new(Duration::from_secs(30), DEADLINE, "[test]");
+
+        let mut slot = PROBE.slot.lock().expect("uncontended");
+        let (claimed, _) = slot.claim();
+        assert!(matches!(slot.state, ProbeState::Running(_)));
+
+        slot.abandon();
+        assert!(matches!(slot.state, ProbeState::Idle(None)));
+        assert_ne!(
+            slot.generation, claimed,
+            "an abandoned worker must no longer match the live generation"
+        );
     }
 }

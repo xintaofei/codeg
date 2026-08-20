@@ -76,8 +76,9 @@ export function CloseBehaviorSettingsSection() {
       setAction(next)
       try {
         const result = await updateSystemCloseSettings({ action: next })
-        // Mirror what was actually persisted, and refresh the hint: the probe
-        // runs per call, so the session may have gained a tray since the load.
+        // Mirror what was actually persisted, and refresh the hint: the backend
+        // re-probes (subject to a short TTL), so the session may have gained a
+        // tray since the load.
         setAction(result.action)
         setTrayAvailable(result.tray_available)
         // Clear any stale load error: the save succeeded, so the broken row that
