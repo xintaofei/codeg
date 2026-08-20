@@ -1226,6 +1226,8 @@ describe("Claude permission mode — official settings.json defaultMode", () => 
     expect(normalizeClaudePermissionMode("bypassPermissions")).toBe(
       "bypassPermissions"
     )
+    expect(normalizeClaudePermissionMode("plan")).toBe("plan")
+    expect(normalizeClaudePermissionMode("dontAsk")).toBe("dontAsk")
     expect(normalizeClaudePermissionMode("nope")).toBe("")
   })
 
@@ -1255,7 +1257,19 @@ describe("Claude permission mode — official settings.json defaultMode", () => 
     expect(parsed.permissions?.defaultMode).toBe("bypassPermissions")
     expect(parsed.permissions?.allow).toEqual(["Bash"])
     expect(parsed.permissions?.deny).toEqual(["Read(./.env)"])
-    expect(parsed.skipDangerousModePermissionPrompt).toBe(true)
+    expect(parsed.skipDangerousModePermissionPrompt).toBeUndefined()
+  })
+
+  it("round-trips plan without turning it into unset", () => {
+    const { configText } = applyClaudePermissionModeToConfigText(
+      JSON.stringify({ permissions: { defaultMode: "plan", allow: ["Bash"] } }),
+      "plan"
+    )
+    const parsed = JSON.parse(configText) as {
+      permissions?: { defaultMode?: string; allow?: string[] }
+    }
+    expect(parsed.permissions?.defaultMode).toBe("plan")
+    expect(parsed.permissions?.allow).toEqual(["Bash"])
   })
 
   it("clears defaultMode but keeps other permission rules", () => {

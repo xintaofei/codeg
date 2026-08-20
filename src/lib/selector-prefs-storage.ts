@@ -106,9 +106,20 @@ export function saveModePreference(
   agentType: string,
   modes: SessionModeStateInfo
 ) {
+  saveModeIdPreference(agentType, modes.current_mode_id)
+}
+
+/**
+ * Write a mode id as the agent's sticky new-chat default without needing a
+ * live `SessionModeStateInfo`. Empty / whitespace is ignored: callers that
+ * mean "leave the composer last-used alone" simply skip this.
+ */
+export function saveModeIdPreference(agentType: string, modeId: string) {
+  const id = modeId.trim()
+  if (!id) return
   updatePrefs(agentType, (prefs) => ({
     ...prefs,
-    modeId: modes.current_mode_id,
+    modeId: id,
   }))
 }
 

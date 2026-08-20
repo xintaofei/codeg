@@ -37,6 +37,7 @@ import {
 } from "lucide-react"
 import { parse as parseTomlDocument } from "smol-toml"
 import { isDesktop, openUrl } from "@/lib/platform"
+import { saveModeIdPreference } from "@/lib/selector-prefs-storage"
 import { getActiveRemoteConnectionId } from "@/lib/transport"
 import { toast } from "sonner"
 import {
@@ -226,8 +227,9 @@ interface AgentDraft {
   claudeCustomModelOptionDescription: string
   claudeEffortLevel: ClaudeEffortLevel
   // Claude Code `permissions.defaultMode` in ~/.claude/settings.json. Empty
-  // string = unset (Claude's own default). Distinct from the per-chat
-  // composer dropdown: this is the session start default.
+  // string = unset (leave the CLI default and CodeG's composer last-used).
+  // A chosen value is also written to `codeg:selector-prefs` on save so a
+  // stickier composer pick cannot silently win on connect.
   claudePermissionMode: ClaudePermissionMode
   // Claude Code hardening toggles (native config `env`). `claudeSendAttributionHeader`
   // → CLAUDE_CODE_ATTRIBUTION_HEADER (on="1"/off="0"), default off (don't send).
@@ -610,19 +612,29 @@ function normalizeClaudeEffortLevel(value: unknown): ClaudeEffortLevel {
 // Official Claude Code permission modes written to
 // `permissions.defaultMode` in ~/.claude/settings.json. Empty string means
 // the key is unset (Claude picks its own start mode). `manual` is the
-// documented alias of `default` (Ask every time).
+// documented alias of `default`. `plan` and `dontAsk` are valid disk values
+// we do not offer as options; they must round-trip so the control cannot
+// silently replace them with unset.
 type ClaudePermissionMode =
   | ""
   | "default"
   | "acceptEdits"
   | "auto"
   | "bypassPermissions"
+  | "plan"
+  | "dontAsk"
 
 const CLAUDE_PERMISSION_UNSET = "__codeg_claude_perm_unset__"
 
 const CLAUDE_PERMISSION_MODE_VALUES: ReadonlyArray<
-  Exclude<ClaudePermissionMode, "">
+  "default" | "acceptEdits" | "auto" | "bypassPermissions"
 > = ["default", "acceptEdits", "auto", "bypassPermissions"]
+
+function isOfferedClaudePermissionMode(
+  mode: ClaudePermissionMode
+): mode is (typeof CLAUDE_PERMISSION_MODE_VALUES)[number] {
+  return (CLAUDE_PERMISSION_MODE_VALUES as readonly string[]).includes(mode)
+}
 
 export function normalizeClaudePermissionMode(
   value: unknown
@@ -634,7 +646,9 @@ export function normalizeClaudePermissionMode(
     normalized === "default" ||
     normalized === "acceptEdits" ||
     normalized === "auto" ||
-    normalized === "bypassPermissions"
+    normalized === "bypassPermissions" ||
+    normalized === "plan" ||
+    normalized === "dontAsk"
   ) {
     return normalized
   }
@@ -653,10 +667,12 @@ export function readClaudePermissionMode(
 
 /**
  * Write or clear `permissions.defaultMode` in Claude's native settings.json
- * text, preserving other permission rules (allow/deny/ask). Setting
- * `bypassPermissions` also stamps `skipDangerousModePermissionPrompt` so
- * Claude does not pop the extra "are you sure" dialog. Clearing the mode
- * leaves that skip flag alone. Pure — shared by the settings handler and tests.
+ * text, preserving other permission rules (allow/deny/ask). Never writes
+ * `skipDangerousModePermissionPrompt`: that flag is a record of the user
+ * accepting Claude Code's own bypass dialog, not a behavior switch, and
+ * forging it from this dropdown would suppress a safety interlock outside
+ * codeg. Clearing the mode also leaves any existing skip flag alone.
+ * Pure, shared by the settings handler and tests.
  */
 export function applyClaudePermissionModeToConfigText(
   configText: string,
@@ -675,9 +691,6 @@ export function applyClaudePermissionModeToConfigText(
   if (mode) {
     existingPerms.defaultMode = mode
     config.permissions = existingPerms
-    if (mode === "bypassPermissions") {
-      config.skipDangerousModePermissionPrompt = true
-    }
   } else {
     delete existingPerms.defaultMode
     if (Object.keys(existingPerms).length === 0) {
@@ -11595,6 +11608,16 @@ supports_websockets = true`}
                                   {t(`claude.permission_${value}`)}
                                 </SelectItem>
                               ))}
+                              {selectedDraft.claudePermissionMode &&
+                              !isOfferedClaudePermissionMode(
+                                selectedDraft.claudePermissionMode
+                              ) ? (
+                                <SelectItem
+                                  value={selectedDraft.claudePermissionMode}
+                                >
+                                  {selectedDraft.claudePermissionMode}
+                                </SelectItem>
+                              ) : null}
                             </SelectContent>
                           </Select>
                           <p className="text-[11px] text-muted-foreground">
@@ -11783,6 +11806,21 @@ supports_websockets = true`}
                               )
                             )
                             .then(() => {
+                              // A chosen Claude default must also become CodeG's
+                              // new-chat composer default. Connect applies
+                              // selector-prefs after the adapter reads
+                              // settings.json, so without this write-through a
+                              // stickier last-used mode silently wins. Unset
+                              // leaves the composer last-used alone.
+                              if (
+                                selectedAgent.agent_type === "claude_code" &&
+                                selectedDraft.claudePermissionMode
+                              ) {
+                                saveModeIdPreference(
+                                  "claude_code",
+                                  selectedDraft.claudePermissionMode
+                                )
+                              }
                               // Reflect the provider-authoritative rewrite AND the
                               // materialized hardening flags in the editors so the
                               // textareas don't show stale values until reload —
