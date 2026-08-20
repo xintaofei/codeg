@@ -377,6 +377,17 @@ pub async fn get_system_terminal_settings(
     load_system_terminal_settings(&db.conn).await
 }
 
+/// `tray_probably_visible` is synchronous and, on Linux, can sit on the session
+/// bus for a couple of seconds. Tauri drives `async` commands on the Tokio
+/// runtime, so run it on the blocking pool rather than parking a worker. A
+/// probe that panics is reported as "no tray", same as one that fails.
+#[cfg(feature = "tauri-runtime")]
+async fn probe_tray_available() -> bool {
+    tokio::task::spawn_blocking(crate::commands::windows::tray_probably_visible)
+        .await
+        .unwrap_or(false)
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn get_system_close_settings(
@@ -385,10 +396,11 @@ pub async fn get_system_close_settings(
     let settings = load_system_close_settings(&db.conn).await?;
     Ok(SystemCloseSettingsInfo {
         action: settings.action,
-        // Probed per read rather than cached: the user may have installed a
-        // tray extension or restarted their panel since launch, and opening
-        // this page is exactly when a stale answer would mislead them.
-        tray_available: crate::commands::windows::tray_probably_visible(),
+        // Re-probed here rather than reused from launch: the user may have
+        // installed a tray extension or restarted their panel since, and
+        // opening this page is exactly when a stale answer would mislead them.
+        // Repeat calls inside the probe's short TTL share one bus round trip.
+        tray_available: probe_tray_available().await,
     })
 }
 
@@ -420,14 +432,14 @@ pub async fn update_system_close_settings(
     // writes commit and update the cache in the same order.
     store_cached_close_action(settings.action);
 
-    // Drop the lock before the tray probe, which can block for up to 2 seconds
-    // on Linux. This prevents subsequent writes from being delayed by an
-    // advisory check that doesn't affect correctness.
+    // Drop the lock before the tray probe, which can take up to 2 seconds on
+    // Linux. This prevents subsequent writes from being delayed by an advisory
+    // check that doesn't affect correctness.
     drop(_guard);
 
     Ok(SystemCloseSettingsInfo {
         action: settings.action,
-        tray_available: crate::commands::windows::tray_probably_visible(),
+        tray_available: probe_tray_available().await,
     })
 }
 
