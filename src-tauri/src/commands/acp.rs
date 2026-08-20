@@ -2630,6 +2630,31 @@ fn ensure_codex_provider_auth_default(provider_table: &mut toml::map::Map<String
     );
 }
 
+/// Resolve which Codex provider a write should target, without treating
+/// codeg's `codeg` display fallback as a real selection (issue #520).
+///
+/// Uses the root `model_provider` already selected in `config.toml` when
+/// present; otherwise only claims `codeg` when a non-empty API base URL
+/// requires codeg's managed provider. Returns `None` when no provider
+/// should be created or touched at all.
+fn codex_provider_name_for_write(
+    table: &toml::map::Map<String, toml::Value>,
+    api_base_url: Option<&str>,
+) -> Option<String> {
+    table
+        .get("model_provider")
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            api_base_url
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|_| "codeg".to_string())
+        })
+}
+
 /// OpenCode reads config from `$XDG_CONFIG_HOME/opencode` (falling back to
 /// `~/.config/opencode`) and credentials from `$XDG_DATA_HOME/opencode`
 /// (falling back to `~/.local/share/opencode`) on every platform. codeg must
@@ -3232,51 +3257,52 @@ fn persist_codex_local_config(config_patch_json: Option<&str>) -> Result<(), Acp
         }
     }
 
-    let provider_name = table
-        .get("model_provider")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| "codeg".to_string());
-    table.insert(
-        "model_provider".to_string(),
-        toml::Value::String(provider_name.clone()),
-    );
+    let api_base_url = trim_non_empty(api_base_url);
+    let provider_name = codex_provider_name_for_write(table, api_base_url.as_deref());
 
-    let providers_item = table
-        .entry("model_providers".to_string())
-        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-    if !providers_item.is_table() {
-        *providers_item = toml::Value::Table(toml::map::Map::new());
-    }
-    let providers = providers_item
-        .as_table_mut()
-        .ok_or_else(|| AcpError::protocol("invalid model_providers table"))?;
-    let provider_item = providers
-        .entry(provider_name.clone())
-        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-    if !provider_item.is_table() {
-        *provider_item = toml::Value::Table(toml::map::Map::new());
-    }
-    let provider_table = provider_item
-        .as_table_mut()
-        .ok_or_else(|| AcpError::protocol("invalid model provider table"))?;
-    match trim_non_empty(api_base_url) {
-        Some(base_url) => {
-            provider_table.insert("base_url".to_string(), toml::Value::String(base_url));
-        }
-        None => {
-            provider_table.remove("base_url");
-        }
-    }
-    if provider_name == "codeg" {
-        provider_table.insert("name".to_string(), toml::Value::String("codeg".to_string()));
-        provider_table.insert(
-            "wire_api".to_string(),
-            toml::Value::String("responses".to_string()),
+    if let Some(provider_name) = provider_name {
+        table.insert(
+            "model_provider".to_string(),
+            toml::Value::String(provider_name.clone()),
         );
-        ensure_codex_provider_auth_default(provider_table);
+
+        let providers_item = table
+            .entry("model_providers".to_string())
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+        if !providers_item.is_table() {
+            *providers_item = toml::Value::Table(toml::map::Map::new());
+        }
+        let providers = providers_item
+            .as_table_mut()
+            .ok_or_else(|| AcpError::protocol("invalid model_providers table"))?;
+        let provider_item = providers
+            .entry(provider_name.clone())
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+        if !provider_item.is_table() {
+            *provider_item = toml::Value::Table(toml::map::Map::new());
+        }
+        let provider_table = provider_item
+            .as_table_mut()
+            .ok_or_else(|| AcpError::protocol("invalid model provider table"))?;
+        match api_base_url.as_deref() {
+            Some(base_url) => {
+                provider_table.insert(
+                    "base_url".to_string(),
+                    toml::Value::String(base_url.to_string()),
+                );
+            }
+            None => {
+                provider_table.remove("base_url");
+            }
+        }
+        if provider_name == "codeg" {
+            provider_table.insert("name".to_string(), toml::Value::String("codeg".to_string()));
+            provider_table.insert(
+                "wire_api".to_string(),
+                toml::Value::String("responses".to_string()),
+            );
+            ensure_codex_provider_auth_default(provider_table);
+        }
     }
 
     if env.is_empty() {
@@ -9110,51 +9136,49 @@ fn cascade_update_agent_config(
                 .ok_or_else(|| AcpError::protocol("codex config root must be a TOML table"))?;
             table.remove("api_base_url");
 
-            let provider_name = table
-                .get("model_provider")
-                .and_then(|value| value.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-                .unwrap_or_else(|| "codeg".to_string());
-            table.insert(
-                "model_provider".to_string(),
-                toml::Value::String(provider_name.clone()),
-            );
+            let provider_name = codex_provider_name_for_write(table, Some(api_url));
 
-            let providers_item = table
-                .entry("model_providers".to_string())
-                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-            if !providers_item.is_table() {
-                *providers_item = toml::Value::Table(toml::map::Map::new());
-            }
-            let providers = providers_item
-                .as_table_mut()
-                .ok_or_else(|| AcpError::protocol("invalid model_providers table"))?;
-            let provider_item = providers
-                .entry(provider_name.clone())
-                .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-            if !provider_item.is_table() {
-                *provider_item = toml::Value::Table(toml::map::Map::new());
-            }
-            let provider_table = provider_item
-                .as_table_mut()
-                .ok_or_else(|| AcpError::protocol("invalid model provider table"))?;
-            if api_url.trim().is_empty() {
-                provider_table.remove("base_url");
-            } else {
-                provider_table.insert(
-                    "base_url".to_string(),
-                    toml::Value::String(api_url.to_string()),
+            if let Some(provider_name) = provider_name {
+                table.insert(
+                    "model_provider".to_string(),
+                    toml::Value::String(provider_name.clone()),
                 );
-            }
-            if provider_name == "codeg" {
-                provider_table.insert("name".to_string(), toml::Value::String("codeg".to_string()));
-                provider_table.insert(
-                    "wire_api".to_string(),
-                    toml::Value::String("responses".to_string()),
-                );
-                ensure_codex_provider_auth_default(provider_table);
+
+                let providers_item = table
+                    .entry("model_providers".to_string())
+                    .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+                if !providers_item.is_table() {
+                    *providers_item = toml::Value::Table(toml::map::Map::new());
+                }
+                let providers = providers_item
+                    .as_table_mut()
+                    .ok_or_else(|| AcpError::protocol("invalid model_providers table"))?;
+                let provider_item = providers
+                    .entry(provider_name.clone())
+                    .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+                if !provider_item.is_table() {
+                    *provider_item = toml::Value::Table(toml::map::Map::new());
+                }
+                let provider_table = provider_item
+                    .as_table_mut()
+                    .ok_or_else(|| AcpError::protocol("invalid model provider table"))?;
+                if api_url.trim().is_empty() {
+                    provider_table.remove("base_url");
+                } else {
+                    provider_table.insert(
+                        "base_url".to_string(),
+                        toml::Value::String(api_url.to_string()),
+                    );
+                }
+                if provider_name == "codeg" {
+                    provider_table
+                        .insert("name".to_string(), toml::Value::String("codeg".to_string()));
+                    provider_table.insert(
+                        "wire_api".to_string(),
+                        toml::Value::String("responses".to_string()),
+                    );
+                    ensure_codex_provider_auth_default(provider_table);
+                }
             }
             match codex_model {
                 CodexModelAction::Set(model) => {
