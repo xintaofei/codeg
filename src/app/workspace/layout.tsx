@@ -273,7 +273,7 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
   const hasConvTabs = useTabStore((s) => s.tabs.length > 0)
   const isConvSplit = useTabStore(selectIsSplit)
   const winLinuxControls = isDesktop() && (isWindows || isLinux)
-  // The window chrome (toggle/remote left, terminal/aux/settings right) now
+  // The window chrome (toggle/search left, terminal/aux/settings right) now
   // lives in fixed corner overlays (see FolderLayoutShell) that never move on
   // panel toggles. Each edge column just reserves the overlay's width so its
   // tabs never render underneath. The reserve scales with the app zoom so it
@@ -1169,7 +1169,7 @@ function FolderLayoutShell({ children }: { children: React.ReactNode }) {
       {/* Desktop window chrome, pinned to the window corners so it never moves —
           or re-mounts — when the side panels open/close (that re-parenting is
           what made the old in-header clusters flicker). Left = sidebar toggle +
-          remote; right = terminal/aux/settings, sitting to the LEFT of the
+          search; right = terminal/aux/settings, sitting to the LEFT of the
           Windows/Linux caption buttons; then the caption buttons themselves
           (self-null on macOS/web). Each edge column reserves the matching width
           beneath these (see leftChromeReserve / rightChromeReserve). */}

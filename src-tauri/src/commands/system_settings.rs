@@ -10,7 +10,7 @@ use crate::db::service::app_metadata_service;
 #[cfg(feature = "tauri-runtime")]
 use crate::db::AppDatabase;
 #[cfg(feature = "tauri-runtime")]
-use crate::models::SystemRenderingSettings;
+use crate::models::{SystemAutostartSettings, SystemRenderingSettings};
 use crate::models::{
     AvailableTerminalShells, SystemLanguageSettings, SystemProxySettings, SystemTerminalSettings,
     TerminalShellOption,
@@ -375,6 +375,244 @@ pub async fn update_system_rendering_settings(
             .with_detail(err.to_string())
     })?;
     Ok(settings)
+}
+
+/// Reach for the manager through `try_state` rather than the plugin's
+/// `autolaunch()` extension trait, which is `state::<AutoLaunchManager>()` and
+/// panics when the state is absent.
+///
+/// In a running app the state is always there, so this `Err` arm is unreachable
+/// rather than a degraded mode the UI should expect: the plugin registers the
+/// manager from its setup hook, `initialize_plugins` propagates a failing hook
+/// out of `Builder::build`, and `run()` unwraps that — a `current_exe()` failure
+/// kills the process at startup instead of leaving it running without autostart.
+/// Keeping the `Result` costs nothing and holds if that contract ever changes.
+/// The error paths users *can* reach are the `is_enabled` / `enable` / `disable`
+/// calls below (e.g. a locked-down registry).
+#[cfg(feature = "tauri-runtime")]
+fn autolaunch_manager(
+    app: &tauri::AppHandle,
+) -> Result<tauri::State<'_, tauri_plugin_autostart::AutoLaunchManager>, AppCommandError> {
+    use tauri::Manager;
+
+    app.try_state::<tauri_plugin_autostart::AutoLaunchManager>()
+        .ok_or_else(|| {
+            AppCommandError::configuration_missing("Launch at login is unavailable on this system")
+        })
+}
+
+/// The slice of the autostart plugin's manager the sequencing below needs.
+///
+/// It exists to make that sequencing testable. The ordering rules encode
+/// platform behaviour — above all that Windows' `disable` errors on a Run value
+/// that isn't there — which a macOS or Linux CI box can never exercise against
+/// the real backend, and which the commands themselves can't be called into
+/// without a live `tauri::AppHandle`.
+///
+/// Named `register`/`unregister` rather than mirroring the manager's
+/// `enable`/`disable`/`is_enabled` on purpose: same-named trait and inherent
+/// methods would let a later edit inside the impl below resolve to the trait
+/// method and recurse forever.
+#[cfg(feature = "tauri-runtime")]
+trait AutostartBackend {
+    fn is_registered(&self) -> Result<bool, String>;
+    fn register(&self) -> Result<(), String>;
+    fn unregister(&self) -> Result<(), String>;
+}
+
+#[cfg(feature = "tauri-runtime")]
+impl AutostartBackend for tauri_plugin_autostart::AutoLaunchManager {
+    fn is_registered(&self) -> Result<bool, String> {
+        self.is_enabled().map_err(|err| err.to_string())
+    }
+
+    fn register(&self) -> Result<(), String> {
+        self.enable().map_err(|err| err.to_string())
+    }
+
+    fn unregister(&self) -> Result<(), String> {
+        self.disable().map_err(|err| err.to_string())
+    }
+}
+
+#[cfg(feature = "tauri-runtime")]
+fn read_autostart_setting(
+    backend: &impl AutostartBackend,
+) -> Result<SystemAutostartSettings, AppCommandError> {
+    let enabled = backend.is_registered().map_err(|err| {
+        AppCommandError::io_error("Failed to read the launch-at-login state").with_detail(err)
+    })?;
+    Ok(SystemAutostartSettings { enabled })
+}
+
+#[cfg(feature = "tauri-runtime")]
+fn apply_autostart_setting(
+    backend: &impl AutostartBackend,
+    desired: bool,
+) -> Result<SystemAutostartSettings, AppCommandError> {
+    if desired {
+        // Unconditional: `register` overwrites the entry on every platform, so
+        // re-running it also repairs a registration left pointing at a stale
+        // executable path (app moved or reinstalled elsewhere).
+        backend.register().map_err(|err| {
+            AppCommandError::io_error("Failed to enable launch at login").with_detail(err)
+        })?;
+    } else if read_autostart_setting(backend)?.enabled {
+        // Guarded: on Windows `unregister` deletes the registry value and
+        // errors when it isn't there, so turning off an already-off entry
+        // would fail.
+        backend.unregister().map_err(|err| {
+            AppCommandError::io_error("Failed to disable launch at login").with_detail(err)
+        })?;
+    }
+
+    // Report what the OS ends up holding rather than what was asked for: on
+    // Windows the Task Manager Startup tab can veto the registry entry.
+    read_autostart_setting(backend)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn get_system_autostart_settings(
+    app: tauri::AppHandle,
+) -> Result<SystemAutostartSettings, AppCommandError> {
+    read_autostart_setting(&*autolaunch_manager(&app)?)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn update_system_autostart_settings(
+    settings: SystemAutostartSettings,
+    app: tauri::AppHandle,
+) -> Result<SystemAutostartSettings, AppCommandError> {
+    apply_autostart_setting(&*autolaunch_manager(&app)?, settings.enabled)
+}
+
+#[cfg(all(test, feature = "tauri-runtime"))]
+mod autostart_tests {
+    use std::cell::RefCell;
+
+    use super::{apply_autostart_setting, AutostartBackend};
+
+    /// Records the calls the sequencing makes, and lets a test pretend the OS
+    /// disagreed with the request — which is what Windows does when the Task
+    /// Manager Startup tab has vetoed the Run entry.
+    #[derive(Default)]
+    struct FakeBackend {
+        registered: RefCell<bool>,
+        calls: RefCell<Vec<&'static str>>,
+        /// `register` succeeds but leaves the entry off, as a veto would.
+        veto_register: bool,
+        fail: Option<&'static str>,
+    }
+
+    impl FakeBackend {
+        fn new(registered: bool) -> Self {
+            Self {
+                registered: RefCell::new(registered),
+                ..Default::default()
+            }
+        }
+
+        fn calls(&self) -> Vec<&'static str> {
+            self.calls.borrow().clone()
+        }
+    }
+
+    impl AutostartBackend for FakeBackend {
+        fn is_registered(&self) -> Result<bool, String> {
+            self.calls.borrow_mut().push("is_registered");
+            if self.fail == Some("is_registered") {
+                return Err("registry unreadable".into());
+            }
+            Ok(*self.registered.borrow())
+        }
+
+        fn register(&self) -> Result<(), String> {
+            self.calls.borrow_mut().push("register");
+            if self.fail == Some("register") {
+                return Err("access denied".into());
+            }
+            if !self.veto_register {
+                *self.registered.borrow_mut() = true;
+            }
+            Ok(())
+        }
+
+        fn unregister(&self) -> Result<(), String> {
+            self.calls.borrow_mut().push("unregister");
+            if self.fail == Some("unregister") {
+                return Err("value not found".into());
+            }
+            *self.registered.borrow_mut() = false;
+            Ok(())
+        }
+    }
+
+    /// Turning it on always rewrites the entry. That is what repairs a
+    /// registration still pointing at an executable the user has since moved,
+    /// so "already on" must not short-circuit into doing nothing.
+    #[test]
+    fn enabling_rewrites_the_entry_even_when_already_enabled() {
+        let backend = FakeBackend::new(true);
+
+        let result = apply_autostart_setting(&backend, true).expect("enable");
+
+        assert!(result.enabled);
+        assert!(backend.calls().contains(&"register"));
+    }
+
+    /// The Windows guard: `disable` there deletes the Run value and errors when
+    /// it is absent, so turning off an already-off entry must not call it. This
+    /// is the assertion no macOS or Linux CI box can make against the real
+    /// backend, which is the whole reason the trait exists.
+    #[test]
+    fn disabling_an_already_disabled_entry_never_calls_unregister() {
+        let backend = FakeBackend::new(false);
+
+        let result = apply_autostart_setting(&backend, false).expect("disable");
+
+        assert!(!result.enabled);
+        assert!(!backend.calls().contains(&"unregister"));
+    }
+
+    #[test]
+    fn disabling_an_enabled_entry_unregisters_it() {
+        let backend = FakeBackend::new(true);
+
+        let result = apply_autostart_setting(&backend, false).expect("disable");
+
+        assert!(!result.enabled);
+        assert!(backend.calls().contains(&"unregister"));
+    }
+
+    /// The reply is the OS's answer, not an echo of the request: a vetoed
+    /// registration has to come back as `false` so the switch shows what will
+    /// actually happen at login.
+    #[test]
+    fn reports_the_state_the_os_settled_on_not_the_request() {
+        let backend = FakeBackend {
+            veto_register: true,
+            ..FakeBackend::new(false)
+        };
+
+        let result = apply_autostart_setting(&backend, true).expect("enable");
+
+        assert!(backend.calls().contains(&"register"));
+        assert!(!result.enabled, "a vetoed entry must not report as enabled");
+    }
+
+    #[test]
+    fn a_failing_backend_surfaces_an_error_with_the_os_detail() {
+        let backend = FakeBackend {
+            fail: Some("register"),
+            ..FakeBackend::new(false)
+        };
+
+        let err = apply_autostart_setting(&backend, true).expect_err("should fail");
+
+        assert_eq!(err.detail.as_deref(), Some("access denied"));
+    }
 }
 
 #[cfg(test)]

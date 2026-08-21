@@ -267,6 +267,79 @@ describe("MessageInput attach-to-chat insertion position", () => {
   })
 })
 
+// `injectContent` is the composer's inbox for content pushed in from outside:
+// welcome quick actions (replace) and quoted transcript selections (append).
+describe("MessageInput injectContent", () => {
+  afterEach(() => {
+    cleanup()
+    composerHandle.current = null
+  })
+
+  function tree(props: Partial<React.ComponentProps<typeof MessageInput>>) {
+    return (
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <MessageInput onSend={vi.fn()} promptCapabilities={CAPS} {...props} />
+      </NextIntlClientProvider>
+    )
+  }
+
+  async function mount(
+    props: Partial<React.ComponentProps<typeof MessageInput>>
+  ) {
+    const view = render(tree(props))
+    await waitFor(
+      () => expect(composerHandle.current?.getEditor()).toBeTruthy(),
+      { timeout: 5000 }
+    )
+    const editor = composerHandle.current?.getEditor()
+    if (!editor) throw new Error("composer editor not mounted")
+    return { view, editor }
+  }
+
+  it("appends a quote after an existing draft, separated by a blank line", async () => {
+    const onInjectConsumed = vi.fn()
+    const { view, editor } = await mount({ onInjectConsumed })
+    act(() => {
+      editor.commands.setContent("what does this mean?")
+    })
+
+    view.rerender(
+      tree({
+        onInjectConsumed,
+        injectContent: { text: "> quoted bit", mode: "append" },
+      })
+    )
+
+    await waitFor(() =>
+      expect(serializeDocToText(editor.state.doc)).toBe(
+        "what does this mean?\n\n> quoted bit\n\n"
+      )
+    )
+    expect(onInjectConsumed).toHaveBeenCalled()
+  })
+
+  it("appends a quote into an empty composer with no leading gap", async () => {
+    const { view, editor } = await mount({})
+    view.rerender(
+      tree({ injectContent: { text: "> quoted bit", mode: "append" } })
+    )
+    await waitFor(() =>
+      expect(serializeDocToText(editor.state.doc)).toBe("> quoted bit\n\n")
+    )
+  })
+
+  it("still replaces the whole document in the default mode", async () => {
+    const { view, editor } = await mount({})
+    act(() => {
+      editor.commands.setContent("draft to be replaced")
+    })
+    view.rerender(tree({ injectContent: { text: "quick action prompt" } }))
+    await waitFor(() =>
+      expect(serializeDocToText(editor.state.doc)).toBe("quick action prompt")
+    )
+  })
+})
+
 // The sidebar's "add to session" drops a session mention — the same reference the
 // `@` panel's Sessions group builds — into the active tab's composer.
 describe("MessageInput session-mention attach", () => {

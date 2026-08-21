@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest"
 import type { WorkTask } from "@/lib/types"
 import {
+  canDeliverToPr,
+  deliveredPrUrl,
   hasNothingToMerge,
   isFolderMerging,
   isMergeQueued,
   isWorktreeGone,
   mergeQueueRanks,
+  mustDeliverToPr,
+  usesMergeRequests,
   worktreeWasRemoved,
 } from "./task-acceptance"
 
@@ -176,5 +180,86 @@ describe("worktreeWasRemoved", () => {
         })
       )
     ).toBe(false)
+  })
+})
+
+describe("canDeliverToPr", () => {
+  const issue = { source_kind: "forge_issue", files_changed: 3 } as const
+
+  it("offers delivery for a reviewed task that came from the forge", () => {
+    expect(canDeliverToPr(task({ ...issue }))).toBe(true)
+    // A pull-request task delivers too — back onto its own branch.
+    expect(canDeliverToPr(task({ ...issue, source_kind: "forge_pr" }))).toBe(
+      true
+    )
+    // A local task has no repository to push to.
+    expect(canDeliverToPr(task({ files_changed: 3 }))).toBe(false)
+    // Only from review: nothing to push before, nothing left after.
+    expect(canDeliverToPr(task({ ...issue, status: "running" }))).toBe(false)
+    expect(canDeliverToPr(task({ ...issue, status: "done" }))).toBe(false)
+  })
+
+  it("withholds it when there is nothing to put in a pull request", () => {
+    // GitHub answers an empty pull request with a 422 …
+    expect(canDeliverToPr(task({ ...issue, files_changed: 0 }))).toBe(false)
+    // … and a gone worktree has no branch left to push.
+    expect(canDeliverToPr(task({ ...issue, worktree_folder_id: null }))).toBe(
+      false
+    )
+    // Unknown stats are NOT "empty" — same fallback the merge button takes.
+    expect(canDeliverToPr(task({ ...issue, files_changed: null }))).toBe(true)
+  })
+})
+
+describe("mustDeliverToPr", () => {
+  it("marks the tasks whose local merge the backend refuses", () => {
+    // A pull request's work belongs on the pull request's branch: landing it
+    // locally would take those changes in behind the author's back.
+    expect(mustDeliverToPr(task({ source_kind: "forge_pr" }))).toBe(true)
+    // An issue's task may legitimately be landed here instead.
+    expect(mustDeliverToPr(task({ source_kind: "forge_issue" }))).toBe(false)
+    expect(mustDeliverToPr(task())).toBe(false)
+  })
+})
+
+describe("usesMergeRequests", () => {
+  it("follows the task's own provenance, not a guess", () => {
+    const gitlab = { provider: "gitlab" } as WorkTask["source_meta"]
+    const github = { provider: "github" } as WorkTask["source_meta"]
+    expect(
+      usesMergeRequests(task({ source_kind: "forge_pr", source_meta: gitlab }))
+    ).toBe(true)
+    expect(
+      usesMergeRequests(task({ source_kind: "forge_pr", source_meta: github }))
+    ).toBe(false)
+    // No provenance at all (a local task, or a row from before the column
+    // existed) keeps GitHub's wording, which is what it has always shown.
+    expect(usesMergeRequests(task())).toBe(false)
+    expect(usesMergeRequests(null)).toBe(false)
+  })
+})
+
+describe("deliveredPrUrl", () => {
+  it("links only a task that actually finished by delivering", () => {
+    const url = "https://github.com/acme/app/pull/42"
+    const meta = { result_pr: url } as WorkTask["source_meta"]
+    expect(
+      deliveredPrUrl(
+        task({
+          status: "done",
+          completion_kind: "delivered_pr",
+          source_meta: meta,
+        })
+      )
+    ).toBe(url)
+    // A merged task's source snapshot has no pull request to show.
+    expect(
+      deliveredPrUrl(task({ status: "done", completion_kind: "merged" }))
+    ).toBeNull()
+    // Rows that finished before the column existed stay silent rather than
+    // guessing from a stale snapshot.
+    expect(
+      deliveredPrUrl(task({ status: "done", source_meta: meta }))
+    ).toBeNull()
   })
 })

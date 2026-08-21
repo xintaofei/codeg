@@ -485,13 +485,93 @@ describe("groupGoalRuns", () => {
   it("settles an unfinished goal run when not streaming", () => {
     // codex leaves a `/goal` active without a closing update_goal, so a stopped
     // turn or a reloaded conversation must NOT shimmer the capsule forever.
+    // Trailing prose is lifted out so the collapsed chip does not hide it.
     const out = groupGoalRuns([poll("create_goal"), text], false)
 
-    expect(out).toHaveLength(1)
+    expect(out.map((p) => p.type)).toEqual(["goal-run", "text"])
     const goalRun = goalRunOf(out[0])
     expect(goalRun.end).toBeNull()
-    expect(goalRun.items).toEqual([text])
+    expect(goalRun.items).toEqual([])
     expect(goalRun.isRunning).toBe(false)
+    expect(out[1]).toEqual(text)
+  })
+
+  it("lifts trailing prose out of a settled unfinished goal after tools", () => {
+    const out = groupGoalRuns(
+      [poll("create_goal"), poll("exec_command"), text],
+      false
+    )
+
+    expect(out.map((p) => p.type)).toEqual(["goal-run", "text"])
+    expect(goalRunOf(out[0]).items.map((p) => p.type)).toEqual(["tool-call"])
+    expect(out[1]).toEqual(text)
+  })
+
+  it("lifts a trailing proposed plan and generated image too", () => {
+    // A Plan-mode document and a generated image ARE the turn's answer; a
+    // collapsed capsule must not hide them either. Reasoning is process and
+    // stays inside.
+    const proposedPlan: AdaptedContentPart = {
+      type: "proposed-plan",
+      markdown: "## Plan\n1. do the thing",
+      isStreaming: false,
+    }
+    const generatedImage: AdaptedContentPart = {
+      type: "generated-image",
+      revisedPrompt: null,
+      image: null,
+      status: "completed",
+    }
+    const reasoning: AdaptedContentPart = {
+      type: "reasoning",
+      content: "thinking about it",
+      isStreaming: false,
+    }
+
+    const out = groupGoalRuns(
+      [poll("create_goal"), reasoning, text, proposedPlan, generatedImage],
+      false
+    )
+
+    expect(out.map((p) => p.type)).toEqual([
+      "goal-run",
+      "text",
+      "proposed-plan",
+      "generated-image",
+    ])
+    expect(goalRunOf(out[0]).items).toEqual([reasoning])
+    expect(out.slice(1)).toEqual([text, proposedPlan, generatedImage])
+  })
+
+  it("keeps mid-run prose inside a settled unfinished goal", () => {
+    // Prose followed by more work is a mid-run note, not a wrap-up: lifting it
+    // would reorder the reply, so the scan stops at the last process part.
+    const midRunNote: AdaptedContentPart = { type: "text", text: "checking" }
+    const out = groupGoalRuns(
+      [poll("create_goal"), midRunNote, poll("exec_command")],
+      false
+    )
+
+    expect(out.map((p) => p.type)).toEqual(["goal-run"])
+    expect(goalRunOf(out[0]).items.map((p) => p.type)).toEqual([
+      "text",
+      "tool-call",
+    ])
+  })
+
+  it("keeps the answer inside a live unfinished goal", () => {
+    // While streaming, the card holds the answer and opens itself; lifting
+    // mid-stream would make the prose jump out and back as tools interleave.
+    const proposedPlan: AdaptedContentPart = {
+      type: "proposed-plan",
+      markdown: "## Plan",
+      isStreaming: false,
+    }
+    const out = groupGoalRuns([poll("create_goal"), text, proposedPlan], true)
+
+    expect(out.map((p) => p.type)).toEqual(["goal-run"])
+    expect(goalRunOf(out[0]).items).toEqual([text, proposedPlan])
+    expect(goalRunOf(out[0]).isRunning).toBe(true)
   })
 
   it("does not mutate a reopened unfinished goal run when closing across turns", () => {
@@ -553,8 +633,10 @@ describe("groupGoalRuns", () => {
 
     const out = groupGoalRuns([firstRun, repeatedRun, nextText])
 
-    expect(out).toHaveLength(1)
-    expect(goalRunOf(out[0]).items).toEqual([firstText, nextText])
+    expect(out.map((p) => p.type)).toEqual(["goal-run", "text", "text"])
+    expect(goalRunOf(out[0]).items).toEqual([])
+    expect(out[1]).toEqual(firstText)
+    expect(out[2]).toEqual(nextText)
   })
 
   it("closes an active cross-turn goal when the next turn already has a completed goal run", () => {

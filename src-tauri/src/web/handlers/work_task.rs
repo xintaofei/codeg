@@ -95,6 +95,10 @@ pub struct RestartParams {
     /// Out-of-band attachments (images, pasted bytes) as raw prompt blocks.
     #[serde(default)]
     pub blocks: Vec<serde_json::Value>,
+    /// Waive the forge resurrection guard (the user confirmed re-opening a
+    /// work item that already has another active task).
+    #[serde(default)]
+    pub allow_duplicate_source: bool,
 }
 
 /// Plan a to-do task's start. `scheduledAt` is RFC 3339; absent or null clears
@@ -132,6 +136,17 @@ pub struct MergeParams {
 pub struct CompleteParams {
     pub id: i32,
     pub delete_worktree: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeliverPrParams {
+    pub id: i32,
+    /// `None` → the task title becomes the pull request title.
+    #[serde(default)]
+    pub pr_title: Option<String>,
+    #[serde(default)]
+    pub draft: bool,
 }
 
 #[derive(Deserialize)]
@@ -281,7 +296,7 @@ pub async fn work_task_start_all(
 pub async fn work_task_retry(
     Json(params): Json<RestartParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    core::work_task_retry_core(params.id, params.note, params.blocks)
+    core::work_task_retry_core(params.id, params.note, params.blocks, params.allow_duplicate_source)
         .await
         .map_err(AppCommandError::from)?;
     Ok(Json(()))
@@ -297,6 +312,7 @@ pub async fn work_task_requeue(
         params.id,
         params.note,
         params.blocks,
+        params.allow_duplicate_source,
     )
     .await
         .map_err(AppCommandError::from)?;
@@ -350,6 +366,17 @@ pub async fn work_task_merge_unqueue(
         .await
         .map_err(AppCommandError::from)?;
     Ok(Json(()))
+}
+
+/// Returns the pull request URL. Awaits the whole delivery, so an error here
+/// is the real reason it failed — the task is already back in review by then.
+pub async fn work_task_deliver_pr(
+    Json(params): Json<DeliverPrParams>,
+) -> Result<Json<String>, AppCommandError> {
+    let url = core::work_task_deliver_pr_core(params.id, params.pr_title, params.draft)
+        .await
+        .map_err(AppCommandError::from)?;
+    Ok(Json(url))
 }
 
 pub async fn work_task_complete(

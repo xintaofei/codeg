@@ -102,6 +102,16 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   mcp__codeg__delegate_to_agent: "delegate_to_agent",
   get_delegation_status: "get_delegation_status",
   cancel_delegation: "cancel_delegation",
+  // codeg-mcp workbench companions (session lookup, work-task reporting, chat
+  // authoring). Listed explicitly because the freeform `^task(\b|[_\s:-])` rule
+  // below would otherwise collapse `task_progress` / `task_complete` into the
+  // generic "task" tool and strand them on the generic tool shell. The suffix
+  // rules in `normalizeToolName` cover the `mcp__<server>__…` forms.
+  get_session_info: "get_session_info",
+  task_progress: "task_progress",
+  task_complete: "task_complete",
+  create_automation: "create_automation",
+  create_work_task: "create_work_task",
   // codeg-mcp live-feedback poll (server prefix varies by host; the suffix rule
   // in `normalizeToolName` covers the other separators). Codex persists it under
   // the bare `check_user_feedback` name, dropping the `mcp__codeg_mcp` namespace.
@@ -482,6 +492,14 @@ export function normalizeToolName(toolName: string): string {
   if (/[^a-z0-9]create_goal$/.test(canonical)) return "create_goal"
   if (/[^a-z0-9]update_goal$/.test(canonical)) return "update_goal"
 
+  // codeg-mcp workbench companions — same host-prefix story as the delegation
+  // tools above (`mcp__<server>__get_session_info`, `<server>/task_progress`, …).
+  if (/[^a-z0-9]get_session_info$/.test(canonical)) return "get_session_info"
+  if (/[^a-z0-9]task_progress$/.test(canonical)) return "task_progress"
+  if (/[^a-z0-9]task_complete$/.test(canonical)) return "task_complete"
+  if (/[^a-z0-9]create_automation$/.test(canonical)) return "create_automation"
+  if (/[^a-z0-9]create_work_task$/.test(canonical)) return "create_work_task"
+
   // codeg-mcp ask-user-question companion tool. Same host-prefix story as the
   // delegation tools above (`mcp__<server>__ask_user_question`,
   // `<server>/ask_user_question`, …) — the bare `ask_user_question` alias only
@@ -558,19 +576,22 @@ export function inferLiveToolName(params: {
 
   // The codeg-mcp delegation companion tools carry their authoritative identity
   // in `meta.claudeCode.toolName` — claude-agent-acp sets it to the raw
-  // `mcp__<server>__<tool>` name for every MCP call. Resolve them FIRST, ahead
-  // of `inferFromInput`, so the live stream routes into the same delegation
-  // cards the historical path resolves from the raw tool name. Without this,
-  // `cancel_delegation` (input `{task_id}`) gets misclassified by
-  // `inferFromInput` as the generic "task" tool (shown as "任务" with no detail),
-  // and `get_delegation_status` (input `{task_ids}`) falls through unclassified —
-  // both need meta to resolve to the canonical companion tool name.
+  // `mcp__<server>__<tool>` name for every MCP call — and, on Qoder, in
+  // `meta.qoder.toolName`. Resolve them FIRST, ahead of `inferFromInput`, so the
+  // live stream routes into the same delegation cards the historical path
+  // resolves from the raw tool name. Without this, `cancel_delegation` (input
+  // `{task_id}`) gets misclassified by `inferFromInput` as the generic "task"
+  // tool (shown as "任务" with no detail), and `get_delegation_status` (input
+  // `{task_ids}`) falls through unclassified — both need meta to resolve to the
+  // canonical companion tool name.
   // Scoped to these three so the documented input-shape-first ordering below
   // (notably Claude Code's `Task` → "agent" via `subagent_type`, whose meta
   // name is "Task" — not a delegation tool) is preserved for everything else.
   const metaToolName = extractClaudeCodeToolName(params.meta)
-  if (metaToolName) {
-    const normalizedMeta = normalizeToolName(metaToolName)
+  const qoderToolName = extractQoderToolName(params.meta)
+  for (const candidate of [metaToolName, qoderToolName]) {
+    if (!candidate) continue
+    const normalizedMeta = normalizeToolName(candidate)
     if (DELEGATION_COMPANION_TOOLS.has(normalizedMeta)) return normalizedMeta
   }
 
@@ -650,6 +671,28 @@ export function inferLiveToolName(params: {
   const grokToolName = extractGrokToolName(params.meta)
   if (grokToolName) return normalizeToolName(grokToolName)
 
+  // Qoder stamps the authoritative tool name in `_meta.qoder.toolName` on EVERY
+  // `tool_call` (`AOn` in its ACP bridge), while the `title` it ships for an MCP
+  // call is a human sentence — `"<tool> (<server> MCP Server)"` — that no
+  // suffix/alias rule can collapse. Without this, every codeg-mcp companion but
+  // `delegate_to_agent` (rescued by the broker's `codeg.delegation` marker
+  // above) fell through to the generic tool shell: `get_session_info` /
+  // `task_progress` / `check_user_feedback` kept the sentence as their "name",
+  // so their cards never matched — while the historical path, which reads the
+  // raw `mcp__codeg-mcp__<tool>` name straight out of the transcript, rendered
+  // them correctly. Same placement as the Grok override: AFTER `inferFromInput`,
+  // so every input-shape classification Qoder's own tools rely on is preserved
+  // (`Agent` → "agent" via `subagent_type`, `TodoWrite` → "todowrite" via
+  // `todos`, …) and this only decides the cases where the input shape is silent.
+  //
+  // Lower-cased for the same reason the claude-agent-acp branch above is: Qoder
+  // names its native tools in CamelCase (`ExitPlanMode`, `Workflow`), and
+  // `normalizeToolName` passes an unmatched name through with its case intact —
+  // but every other return here is lower-case, and some consumers compare
+  // case-sensitively. Display is unaffected: the header prefers the ACP `title`,
+  // which Qoder always sends.
+  if (qoderToolName) return normalizeToolName(qoderToolName).toLowerCase()
+
   // codex-acp ≥1.1.8 Plan-mode review gate. The backend seeds this tool call
   // from the `session/request_permission` (see `is_codex_plan_review`), so it
   // carries no `rawInput` and its human title is a question ("Implement this
@@ -676,6 +719,29 @@ function extractClaudeCodeToolName(
   const tn = (cc as Record<string, unknown>).toolName
   if (typeof tn !== "string") return null
   const trimmed = tn.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+/**
+ * Qoder's authoritative tool name from `_meta.qoder.toolName` — the raw SDK name
+ * (`Bash`, `TodoWrite`, `mcp__codeg-mcp__get_delegation_status`, …) its ACP
+ * bridge attaches to every `tool_call` it emits, and the same name its history
+ * parser reads back out of the transcript. Unlike `title`, it neither mutates
+ * across the call's lifecycle nor gets rewritten into a human sentence.
+ *
+ * Only the OPENING `tool_call` carries it — Qoder's `tool_call_update` frames
+ * ship status/output only — which is fine: the reducer preserves a block's meta
+ * when an update omits it.
+ */
+function extractQoderToolName(
+  meta: Record<string, unknown> | null | undefined
+): string | null {
+  if (!meta || typeof meta !== "object") return null
+  const qoder = (meta as Record<string, unknown>).qoder
+  if (!qoder || typeof qoder !== "object") return null
+  const name = (qoder as Record<string, unknown>).toolName
+  if (typeof name !== "string") return null
+  const trimmed = name.trim()
   return trimmed.length > 0 ? trimmed : null
 }
 

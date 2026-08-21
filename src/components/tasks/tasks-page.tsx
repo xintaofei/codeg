@@ -69,6 +69,7 @@ import { TaskCancelDialog } from "./task-cancel-dialog"
 import { StatusChip, TaskCard } from "./task-card"
 import type { TaskActionHandlers } from "./task-actions"
 import { TaskCompleteDialog } from "./task-complete-dialog"
+import { TaskDeliverPrDialog } from "./task-deliver-pr-dialog"
 import { TaskDetailSheet } from "./task-detail-sheet"
 import { TaskEditorDialog } from "./task-editor-dialog"
 import { TaskList } from "./task-list"
@@ -235,6 +236,10 @@ export function TasksPage() {
   // The merge dialog's counterpart for a task that changed nothing.
   const [completeTask, setCompleteTask] = useState<WorkTask | null>(null)
   const [completeOpen, setCompleteOpen] = useState(false)
+  // The third way to accept: push the branch and open a pull request on the
+  // repository the task's issue came from.
+  const [deliverTask, setDeliverTask] = useState<WorkTask | null>(null)
+  const [deliverOpen, setDeliverOpen] = useState(false)
   // Stopping a task asks why (optional) — from the card and from the drawer.
   const [cancelTask, setCancelTask] = useState<WorkTask | null>(null)
   const [cancelOpen, setCancelOpen] = useState(false)
@@ -375,6 +380,11 @@ export function TasksPage() {
     setCompleteOpen(true)
   }, [])
 
+  const openDeliver = useCallback((task: WorkTask) => {
+    setDeliverTask(task)
+    setDeliverOpen(true)
+  }, [])
+
   const openCancel = useCallback((task: WorkTask) => {
     setCancelTask(task)
     setCancelOpen(true)
@@ -405,6 +415,7 @@ export function TasksPage() {
       onRequeue: () => openRestart(task, "requeue"),
       onViewSession: () => openSession(task),
       onMerge: () => openMerge(task),
+      onDeliverPr: () => openDeliver(task),
       onUnqueueMerge: () => void act(() => workTaskMergeUnqueue(task.id)),
       onComplete: () => openComplete(task),
       onArchive: () =>
@@ -419,6 +430,7 @@ export function TasksPage() {
       act,
       openCancel,
       openComplete,
+      openDeliver,
       openMerge,
       openRestart,
       openSchedule,
@@ -958,6 +970,7 @@ export function TasksPage() {
         onViewSession={openSession}
         onMerge={openMerge}
         onComplete={openComplete}
+        onDeliverPr={openDeliver}
         onCancel={openCancel}
         onEdit={(task) => {
           setEditorTask(task)
@@ -981,6 +994,11 @@ export function TasksPage() {
         open={completeOpen}
         onOpenChange={setCompleteOpen}
         task={completeTask}
+      />
+      <TaskDeliverPrDialog
+        open={deliverOpen}
+        onOpenChange={setDeliverOpen}
+        task={deliverTask}
       />
       {/* Rendered after the sheet, like the transcript viewer: both portal to
           body and the later mount stacks above, so a cancel / restart asked

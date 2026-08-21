@@ -30,9 +30,11 @@ import {
   Link2,
   ListChecks,
   Loader2,
+  MonitorCloud,
   MoreHorizontal,
   Palette,
   Rocket,
+  Settings,
   SquarePen,
   Tag,
   XCircle,
@@ -113,10 +115,12 @@ import {
   worktreeHeaderAlias,
   type SidebarRow,
 } from "./sidebar-conversation-grouping"
+import { useRemoteWorkspaceConnections } from "@/hooks/use-remote-workspace-connections"
 import { useSubsessionSync } from "@/hooks/use-subsession-sync"
 import { SidebarSectionHeader } from "./sidebar-section-header"
 import { ConversationManageDialog } from "./conversation-manage-dialog"
 import { CloneDialog } from "@/components/layout/clone-dialog"
+import { RemoteWorkspaceManageDialog } from "@/components/layout/remote-workspace-manage-dialog"
 import { WorkspaceFolderDialog } from "@/components/layout/workspace-folder-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -750,6 +754,7 @@ export function SidebarConversationList({
   const tCommon = useTranslations("Folder.common")
   const tFolderDropdown = useTranslations("Folder.folderNameDropdown")
   const tFileTree = useTranslations("Folder.fileTreeTab")
+  const tRemote = useTranslations("RemoteWorkspace")
   const { resolvedTheme } = useTheme()
   const { themeColor: appThemeColor } = useThemeColor()
   const { createTerminalInDirectory } = useTerminalContext()
@@ -908,6 +913,16 @@ export function SidebarConversationList({
   const [manageFolderId, setManageFolderId] = useState<number | null>(null)
   const [cloneOpen, setCloneOpen] = useState(false)
   const [browserOpen, setBrowserOpen] = useState(false)
+  const [remoteManageOpen, setRemoteManageOpen] = useState(false)
+  // Backs the list context menu's "Open remote workspace" submenu. Shared with
+  // the status bar's quick-actions menu, which renders the same list from the
+  // same loader; connections are fetched when that submenu opens, not on mount.
+  const {
+    desktop: remoteAvailable,
+    connections: remoteConnections,
+    refresh: refreshRemote,
+    open: openRemote,
+  } = useRemoteWorkspaceConnections()
   // Folder whose links are being managed (context menu -> Linked folders).
   const [linksFolder, setLinksFolder] = useState<FolderDetail | null>(null)
   const [dragging, setDragging] = useState<number | null>(null)
@@ -2649,6 +2664,59 @@ export function SidebarConversationList({
               <Download className="h-4 w-4" />
               {t("importLocalSessions")}
             </ContextMenuItem>
+            {/* Trailing entry, desktop-only: opening a remote workspace spawns
+                another window bound to a different server, which a web client
+                can't do. This is where the picker moved to when the fixed
+                top-left chrome handed its slot to Search — the status bar's
+                quick-actions menu carries the same submenu. Its own group: the
+                rows above all act on THIS machine's workspace, while this one
+                leaves for another host. The rule lives inside the guard so web
+                builds don't render a divider with nothing under it. */}
+            {remoteAvailable && (
+              <>
+                <ContextMenuSeparator />
+                <ContextMenuSub
+                  onOpenChange={(open) => open && void refreshRemote()}
+                >
+                  <ContextMenuSubTrigger>
+                    <MonitorCloud className="h-4 w-4" />
+                    {tRemote("openRemoteWorkspace")}
+                  </ContextMenuSubTrigger>
+                  {/* The shared sub-content is `overflow-hidden` with no height
+                      cap, so a long connection list would strand its tail — the
+                      manage row included — offscreen. Bound and scroll it. */}
+                  <ContextMenuSubContent className="max-h-(--radix-context-menu-content-available-height) w-72 overflow-x-hidden overflow-y-auto">
+                    {remoteConnections.length === 0 ? (
+                      <div className="px-3 py-2 text-sm text-muted-foreground">
+                        {tRemote("empty")}
+                      </div>
+                    ) : (
+                      remoteConnections.map((connection) => (
+                        <ContextMenuItem
+                          key={connection.id}
+                          onSelect={() => openRemote(connection.id)}
+                        >
+                          <MonitorCloud className="h-4 w-4" />
+                          <span className="min-w-0">
+                            <span className="block truncate">
+                              {connection.name}
+                            </span>
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {connection.base_url}
+                            </span>
+                          </span>
+                        </ContextMenuItem>
+                      ))
+                    )}
+                    <ContextMenuSeparator />
+                    <ContextMenuItem onSelect={() => setRemoteManageOpen(true)}>
+                      <Settings className="h-4 w-4" />
+                      {tRemote("manage")}
+                    </ContextMenuItem>
+                  </ContextMenuSubContent>
+                </ContextMenuSub>
+              </>
+            )}
           </ContextMenuContent>
         </ContextMenu>
       )}
@@ -2685,6 +2753,17 @@ export function SidebarConversationList({
 
       <CloneDialog open={cloneOpen} onOpenChange={setCloneOpen} />
       <WorkspaceFolderDialog open={browserOpen} onOpenChange={setBrowserOpen} />
+      {/* Sibling of the context menu, never a child of it: the menu unmounts
+          its content on close, which would take a nested dialog with it. Mounted
+          only where its submenu exists, so web builds don't carry a dialog
+          nothing can open. */}
+      {remoteAvailable && (
+        <RemoteWorkspaceManageDialog
+          open={remoteManageOpen}
+          onOpenChange={setRemoteManageOpen}
+          onChanged={refreshRemote}
+        />
+      )}
       {linksFolder && (
         <WorkspaceFolderDialog
           open

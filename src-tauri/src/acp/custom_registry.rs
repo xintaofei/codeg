@@ -969,11 +969,11 @@ mod tests {
     // A custom definition must not claim a BUILT-IN registry id: it would be
     // shadowed by `from_registry_id`'s built-in arms and double-listed by
     // `all_acp_agents`. This is also the hydration path that retires a
-    // pre-integration `deepseek-acp` custom entry (kept in the DB, never
-    // published) once the id became a built-in.
+    // pre-integration `deepseek-acp` / `qoder-cli` custom entry (kept in the
+    // DB, never published) once the id became a built-in.
     #[test]
     fn rejects_builtin_registry_id_collisions() {
-        for id in ["deepseek-acp", "claude-acp", "cursor"] {
+        for id in ["deepseek-acp", "qoder-cli", "claude-acp", "cursor"] {
             assert_eq!(
                 validate(&npx_def(id)),
                 Err(CustomAgentError::CollidesWithBuiltin(id.to_string())),

@@ -225,7 +225,18 @@ function GoalCard({
     Boolean(startPart.errorText) ||
     endPart?.state === "output-error" ||
     Boolean(endPart?.errorText)
-  const [bodyOpen, setBodyOpen] = useState(isError)
+  // Derived, not mount-initialised: a `useState` seed is evaluated once, and
+  // the card always mounts BEFORE its body exists (create_goal is adapted on
+  // its own, so the run starts with `items: []`). Seeding would leave the
+  // default hostage to whether the row happens to remount later — it does on
+  // the sub-turn merge and on virtualizer recycling, but not on a plain
+  // same-key update. Deriving keeps the DEFAULT a function of the data:
+  // a live run opens as soon as it holds anything, settling collapses it
+  // again (its answer has been lifted out by then), and an error opens even
+  // when it lands late. `userOpen` is the manual override and wins once set,
+  // so any of those defaults yields to a deliberate toggle.
+  const [userOpen, setUserOpen] = useState<boolean | null>(null)
+  const bodyOpen = userOpen ?? (isError || (isRunning && items.length > 0))
   const goal = useMemo(
     () => parseGoal(startPart, endPart),
     [startPart, endPart]
@@ -261,7 +272,7 @@ function GoalCard({
     (normalizedStatus === "active" || normalizedStatus === "paused")
 
   return (
-    <Collapsible open={bodyOpen} onOpenChange={setBodyOpen} className="w-full">
+    <Collapsible open={bodyOpen} onOpenChange={setUserOpen} className="w-full">
       <CollapsibleTrigger
         className={cn(
           "group inline-flex max-w-full items-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-medium transition-colors",

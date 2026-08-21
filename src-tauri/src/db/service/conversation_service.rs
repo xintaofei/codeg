@@ -497,6 +497,13 @@ pub async fn update_pin(
 /// onto a freshly inserted row to keep it reachable, `None` when the write was
 /// an ordinary (re)binding that created nothing.
 ///
+/// Either `Ok` is a promise the caller builds on: **the row is now bound to
+/// `external_id`**. `send_prompt_linked` flips the row to `InProgress` and
+/// dispatches the prompt on exactly that basis. When the id cannot be taken
+/// because another row holds it, this returns [`DbError::Conflict`] rather than
+/// a quiet `Ok(None)` — see the conflict guard in the body for why reporting a
+/// refusal as success would misfile the user's turn.
+///
 /// # The invariant
 ///
 /// **After this commits, the previous session's history is still reachable.**
@@ -558,8 +565,11 @@ pub async fn bind_external_id(
 
     let external_id = external_id.to_string();
     let continues: Vec<String> = continues.to_vec();
-    let preserved = conn
-        .transaction::<_, Option<i32>, sea_orm::DbErr>(|txn| {
+    // The closure below MOVES `external_id`; keep a copy for the conflict
+    // message, which is built after the transaction has returned.
+    let requested_id = external_id.clone();
+    let outcome = conn
+        .transaction::<_, BindTxOutcome, sea_orm::DbErr>(|txn| {
             Box::pin(async move {
                 let now = Utc::now();
 
@@ -577,7 +587,7 @@ pub async fn bind_external_id(
                     // Gone or soft-deleted. Every caller treats "no live row" as
                     // nothing to do, so this stays Ok — same contract the old
                     // `update_external_id` had.
-                    return Ok(None);
+                    return Ok(BindTxOutcome::Bound(None));
                 }
 
                 // Read under the write lock: pristine values, and no other
@@ -595,6 +605,76 @@ pub async fn bind_external_id(
                     Some(prev) if prev != external_id && !continues.iter().any(|c| c == prev)
                 );
 
+                // Conflict guard, covering BOTH write branches below.
+                //
+                // `idx_conversation_external_agent` is UNIQUE over
+                // `(external_id, agent_type)` and — unlike every read in this
+                // module — carries no `deleted_at` predicate, so a soft-deleted
+                // row still occupies its id. Claiming an id another row holds
+                // therefore fails the constraint outright, rolls the whole
+                // transaction back, and surfaces a raw "UNIQUE constraint
+                // failed" out of `send_prompt_linked`: the user's prompt just
+                // errors. Both branches are exposed — the plain bind (a fresh
+                // row whose connection resumed a session codeg already has a
+                // row for) as much as the split's release.
+                //
+                // Refuse instead, and change nothing. The invariant still
+                // holds, from both ends: this row keeps the session it had, and
+                // the incoming session is already reachable through the row
+                // that holds it. Taking the id would orphan THAT row's history
+                // — the very failure this function exists to prevent — so there
+                // is no better move available here, only a louder one.
+                //
+                // A soft-deleted holder is refused on the same terms rather
+                // than having its id taken, matching how the rest of this
+                // module treats rows the sidebar never shows (`import_one` and
+                // `refresh_existing` return `Skipped` for one instead of
+                // rewriting it). Conversations have no restore path, so such a
+                // row is inert — but it is inert with the id, and the index
+                // counts it.
+                //
+                // Skipped when this row already holds the id: it is then the
+                // holder, so by the same index no other row can be.
+                //
+                // Surfaced as `DbError::Conflict`, NOT as a quiet `Ok(None)`.
+                // The distinction is load-bearing: `Ok` here means "this row is
+                // bound to `external_id`", and `send_prompt_linked` goes on to
+                // flip the row to `InProgress` and dispatch the prompt on that
+                // basis. A refusal reported as success would send the turn into
+                // a session the row does not own — it would land in the HOLDER
+                // row's transcript while every event named the refused row, so
+                // the user's message would move conversations on reload. An
+                // `Err` returns before either step, exactly as the raw unique
+                // violation used to, and the retry in
+                // `lifecycle::handle_event_with_retry` gives up after three
+                // attempts.
+                if previous.as_deref() != Some(external_id.as_str()) {
+                    let holder = conversation::Entity::find()
+                        .filter(conversation::Column::ExternalId.eq(external_id.clone()))
+                        .filter(conversation::Column::AgentType.eq(current.agent_type.clone()))
+                        .filter(conversation::Column::Id.ne(conversation_id))
+                        .one(txn)
+                        .await?;
+                    if let Some(holder) = holder {
+                        // Logged here rather than left to the caller: these
+                        // fields are what post-hoc diagnosis needs, and the
+                        // error string that reaches the user must stay short.
+                        tracing::warn!(
+                            conversation_id,
+                            holder_row_id = holder.id,
+                            holder_deleted = holder.deleted_at.is_some(),
+                            from_session = previous.as_deref().unwrap_or("<none>"),
+                            to_session = %external_id,
+                            agent_type = %current.agent_type,
+                            "[conversation] refused to bind a session another row \
+                             already holds; both histories left where they are"
+                        );
+                        return Ok(BindTxOutcome::Refused {
+                            holder_row_id: holder.id,
+                        });
+                    }
+                }
+
                 // A row that already holds this id, or holds none yet, is an
                 // ordinary bind: first bind, resume, or a duplicate
                 // SessionStarted. A row whose id the INCOMING session carries
@@ -608,16 +688,29 @@ pub async fn bind_external_id(
                     active.external_id = Set(Some(external_id));
                     active.updated_at = Set(now);
                     active.update(txn).await?;
-                    return Ok(None);
+                    return Ok(BindTxOutcome::Bound(None));
                 }
 
                 let previous = previous.expect("repoints_away implies a previous id");
 
-                // Does another live row already carry the outgoing session? A
-                // fork establishes exactly this (it inserts a sibling holding
-                // S1), and so does a replayed event we already handled — in
-                // both cases the invariant already holds and re-preserving
-                // would duplicate the row (and, with the unique index, fail).
+                // Does another live row already carry the outgoing session?
+                //
+                // Under today's schema it cannot: this row holds `previous`,
+                // and the unique index admits exactly one holder per
+                // `(external_id, agent_type)`. The cases that look like they
+                // produce it do not. Fork writes its sibling INSERT and its
+                // re-point in ONE transaction, so `previous` is observable only
+                // on this row (before) or on the sibling with this row already
+                // advanced (after — and then `repoints_away` is false and we
+                // never reach here). A replayed `SessionStarted` is likewise
+                // the idempotent branch above.
+                //
+                // Kept as a guard rather than an assert because the cost is one
+                // indexed lookup and the failure it covers is silent data loss:
+                // if the index is ever narrowed (a partial `WHERE deleted_at IS
+                // NULL` would do it), two rows COULD hold `previous`, and
+                // preserving it a second time would then insert a duplicate
+                // conversation for history that already has a home.
                 let already_preserved = conversation::Entity::find()
                     .filter(conversation::Column::ExternalId.eq(previous.clone()))
                     .filter(conversation::Column::AgentType.eq(current.agent_type.clone()))
@@ -645,7 +738,7 @@ pub async fn bind_external_id(
                         "[conversation] re-pointed a conversation to a new session; the \
                          previous session is already held by another row"
                     );
-                    return Ok(None);
+                    return Ok(BindTxOutcome::Bound(None));
                 }
 
                 let agent_type = carried.agent_type.clone();
@@ -666,7 +759,7 @@ pub async fn bind_external_id(
                     "[conversation] session changed under a bound conversation; \
                      preserved the previous session's history on a new row"
                 );
-                Ok(Some(preserved.id))
+                Ok(BindTxOutcome::Bound(Some(preserved.id)))
             })
         })
         .await
@@ -674,7 +767,41 @@ pub async fn bind_external_id(
             sea_orm::TransactionError::Connection(e)
             | sea_orm::TransactionError::Transaction(e) => DbError::Database(e),
         })?;
-    Ok(preserved)
+    match outcome {
+        BindTxOutcome::Bound(preserved) => Ok(preserved),
+        // Raised AFTER the transaction commits rather than by rolling it back:
+        // the only statement it ran is the self-assigning claim, which changes
+        // no value, so commit and rollback are indistinguishable on disk and
+        // committing keeps the writer lock held for the shortest time.
+        //
+        // The message is what reaches the user through
+        // `AcpError::protocol(e.to_string())`, so it names the conflict in
+        // terms the sidebar can be read against; the WARN inside the
+        // transaction carries the full diagnostic tuple.
+        BindTxOutcome::Refused { holder_row_id } => Err(DbError::Conflict(format!(
+            "agent session {requested_id} is already bound to conversation \
+             {holder_row_id}; refusing to move it onto conversation \
+             {conversation_id}"
+        ))),
+    }
+}
+
+/// What [`bind_external_id`]'s transaction concluded.
+///
+/// A refusal has to leave the closure as a distinct VALUE rather than an early
+/// `Ok(None)`, because the two mean opposite things to a caller: `Bound` means
+/// the row now holds the requested session and it is safe to build on that,
+/// while `Refused` means nothing was written and the operation must be
+/// abandoned. It is translated to [`DbError::Conflict`] outside the
+/// transaction (a `sea_orm::DbErr` raised inside would be flattened into
+/// `DbError::Database` by the `TransactionError` mapping and become
+/// indistinguishable from transient contention).
+enum BindTxOutcome {
+    /// The row holds `external_id`. `Some(id)` when the outgoing session had to
+    /// be split onto a new row to stay reachable.
+    Bound(Option<i32>),
+    /// Another row already holds `(external_id, agent_type)`. Nothing written.
+    Refused { holder_row_id: i32 },
 }
 
 /// The fields a preserving row inherits from the row it is splitting off from.
@@ -1632,6 +1759,106 @@ mod tests {
             rows_holding(&db.conn, "S2").await.len(),
             1,
             "exactly one row holds the new session"
+        );
+    }
+
+    #[tokio::test]
+    async fn bind_external_id_refuses_a_session_another_row_already_holds() {
+        // The incoming id is exposed to the unique index in BOTH branches, and
+        // neither used to check for a holder, so each of these used to raise a
+        // raw `UNIQUE constraint failed`.
+        //
+        // Two things are asserted together because they only make sense
+        // together: the DB is left completely untouched, AND the caller is told
+        // so. `Conflict` rather than `Ok(None)` is the load-bearing half —
+        // `send_prompt_linked` reads any `Ok` as "the row is bound now" and
+        // goes on to dispatch the prompt, which would then land in the HOLDER
+        // row's transcript while every event named this row.
+        for repointing in [false, true] {
+            let db = fresh_in_memory_db().await;
+            let folder = seed_folder(&db, "/tmp/codeg-bind-conflict").await;
+            let holder = create(&db.conn, folder, AgentType::Codex, None, None)
+                .await
+                .expect("holder");
+            bind_external_id(&db.conn, holder.id, "S_SHARED", &[])
+                .await
+                .expect("seed holder");
+
+            let row = create(&db.conn, folder, AgentType::Codex, None, None)
+                .await
+                .expect("create");
+            // `false` exercises the plain-bind branch (a fresh row whose
+            // connection resumed a session codeg already indexed); `true` the
+            // split branch, which would otherwise fail on the release write
+            // before ever reaching its INSERT.
+            if repointing {
+                bind_external_id(&db.conn, row.id, "S_OWN", &[])
+                    .await
+                    .expect("seed own session");
+            }
+
+            let err = bind_external_id(&db.conn, row.id, "S_SHARED", &[])
+                .await
+                .expect_err("a taken session id must be refused, not reported bound");
+
+            assert!(
+                matches!(err, DbError::Conflict(_)),
+                "must be distinguishable from transient contention, got {err:?}"
+            );
+            assert!(
+                err.to_string().contains(&holder.id.to_string()),
+                "the message must name the row that actually holds the session, got {err}"
+            );
+            assert_eq!(
+                raw_row(&db.conn, row.id).await.external_id.as_deref(),
+                repointing.then_some("S_OWN"),
+                "the refused row keeps exactly the session it had"
+            );
+            let holders = rows_holding(&db.conn, "S_SHARED").await;
+            assert_eq!(holders.len(), 1, "the original holder is untouched");
+            assert_eq!(holders[0].id, holder.id);
+        }
+    }
+
+    #[tokio::test]
+    async fn bind_external_id_refuses_a_session_a_soft_deleted_row_holds() {
+        // The unique index carries no `deleted_at` predicate, so a soft-deleted
+        // row still occupies its id — a lookup that filtered on `deleted_at IS
+        // NULL` would miss it and walk straight into the constraint. Refused on
+        // the same terms as a live holder rather than having its id taken,
+        // matching `import_one` / `refresh_existing`, which skip such a row
+        // instead of rewriting it.
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-bind-conflict-deleted").await;
+        let holder = create(&db.conn, folder, AgentType::Codex, None, None)
+            .await
+            .expect("holder");
+        bind_external_id(&db.conn, holder.id, "S_SHARED", &[])
+            .await
+            .expect("seed holder");
+        soft_delete(&db.conn, holder.id).await.expect("soft delete");
+
+        let row = create(&db.conn, folder, AgentType::Codex, None, None)
+            .await
+            .expect("create");
+        bind_external_id(&db.conn, row.id, "S_OWN", &[])
+            .await
+            .expect("seed own session");
+
+        let err = bind_external_id(&db.conn, row.id, "S_SHARED", &[])
+            .await
+            .expect_err("a deleted row's id is still taken; refuse it");
+
+        assert!(matches!(err, DbError::Conflict(_)), "got {err:?}");
+        assert_eq!(
+            raw_row(&db.conn, row.id).await.external_id.as_deref(),
+            Some("S_OWN")
+        );
+        let holder_after = raw_row(&db.conn, holder.id).await;
+        assert_eq!(holder_after.external_id.as_deref(), Some("S_SHARED"));
+        assert!(
+            holder_after.deleted_at.is_some(),
+            "a refused bind must not resurrect the deleted holder"
         );
     }
 

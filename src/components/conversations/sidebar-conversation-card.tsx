@@ -562,17 +562,6 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
               <ContextMenuSeparator />
             </>
           )}
-          {/* Mirrors the file tree's "add to session": inserts an `@`-style
-              mention of THIS conversation into the active session's composer.
-              Disabled only when no conversation tab is open — there is no
-              composer to write into then. */}
-          <ContextMenuItem
-            onSelect={handleAttachToSession}
-            disabled={!attachTabId}
-          >
-            <AtSign className="h-4 w-4" />
-            {t("attachToCurrentSession")}
-          </ContextMenuItem>
           <ContextMenuItem onSelect={handleRenameOpen}>
             <Pencil className="h-4 w-4" />
             {t("rename")}
@@ -592,6 +581,17 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
           <ContextMenuItem onSelect={() => setDetailsOpen(true)}>
             <Info className="h-4 w-4" />
             {tDetails("menuLabel")}
+          </ContextMenuItem>
+          {/* Mirrors the file tree's "add to session": inserts an `@`-style
+              mention of THIS conversation into the active session's composer.
+              Disabled only when no conversation tab is open — there is no
+              composer to write into then. */}
+          <ContextMenuItem
+            onSelect={handleAttachToSession}
+            disabled={!attachTabId}
+          >
+            <AtSign className="h-4 w-4" />
+            {t("attachToCurrentSession")}
           </ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuSub>

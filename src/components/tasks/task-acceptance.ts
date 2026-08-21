@@ -88,3 +88,50 @@ export function mergeQueueRanks(tasks: WorkTask[]): Map<number, number> {
   }
   return ranks
 }
+
+/**
+ * Whether a reviewed task can be DELIVERED to the forge — as a new pull
+ * request for an issue-sourced task, or back onto its own branch for a
+ * pull-request-sourced one. Three conditions, and the backend re-checks every
+ * one of them; this predicate only decides whether to offer the button.
+ * - it came from a forge issue or pull request (a plain local task has no
+ *   repository to push to);
+ * - it has something to land — GitHub answers an empty pull request with a
+ *   422, and `hasNothingToMerge` is the same test the merge button uses;
+ * - its worktree is still there (folded into `hasNothingToMerge`).
+ */
+export function canDeliverToPr(task: WorkTask): boolean {
+  return (
+    task.status === "review" &&
+    (task.source_kind === "forge_issue" || task.source_kind === "forge_pr") &&
+    !hasNothingToMerge(task)
+  )
+}
+
+/**
+ * Whether this task's work belongs on the pull request it came from rather
+ * than on the local base branch. The backend REFUSES a local merge for these
+ * (landing it here would take the pull request's changes in behind its author's
+ * back, leaving the review open and apparently unmerged), so the board must
+ * not offer one — delivering back is the acceptance.
+ */
+export function mustDeliverToPr(task: WorkTask): boolean {
+  return task.source_kind === "forge_pr"
+}
+
+/**
+ * Whether this task's forge calls a proposed change a MERGE request. Only the
+ * wording of the acceptance depends on it — a button that promises a pull
+ * request and then opens a merge request reads like the wrong tool answered.
+ * Tasks with no forge provenance (and rows stored before GitLab support) are
+ * GitHub's, which is what they have always been.
+ */
+export function usesMergeRequests(task: WorkTask | null | undefined): boolean {
+  return task?.source_meta?.provider === "gitlab"
+}
+
+/** The pull request a delivered task ended up in, if that is how it finished. */
+export function deliveredPrUrl(task: WorkTask): string | null {
+  if (task.completion_kind !== "delivered_pr") return null
+  return task.source_meta?.result_pr ?? null
+}

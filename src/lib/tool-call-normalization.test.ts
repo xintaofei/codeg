@@ -914,3 +914,174 @@ describe("inferLiveToolName codex plan_review marker", () => {
     ).toBe("bash")
   })
 })
+
+// Qoder ships a human sentence as the ACP `title` for every MCP call
+// (`"<tool> (<server> MCP Server)"`, built by `GN`'s default branch) and hangs
+// the authoritative SDK name off `_meta.qoder.toolName` (`AOn`). Before that
+// meta was read, only `delegate_to_agent` reached its card live — rescued by
+// the broker's own `codeg.delegation` marker — while every other codeg-mcp
+// companion kept the sentence as its "name" and fell through to the generic
+// tool shell. Shapes below are verbatim from a real qodercli 1.1.25 session.
+describe("inferLiveToolName resolves Qoder's authoritative _meta.qoder.toolName", () => {
+  const qoderMcpCall = (tool: string, input: unknown) => ({
+    title: `${tool} (codeg-mcp MCP Server)`,
+    kind: "other",
+    rawInput: JSON.stringify(input),
+    meta: { qoder: { toolName: `mcp__codeg-mcp__${tool}` } },
+  })
+
+  it.each([
+    ["delegate_to_agent", { agent_type: "codex", task: "run pnpm build" }],
+    ["get_delegation_status", { task_ids: ["081139e7"], wait_ms: 60000 }],
+    ["cancel_delegation", { task_id: "081139e7" }],
+    ["check_user_feedback", {}],
+    ["ask_user_question", { questions: [{ question: "which?" }] }],
+    ["get_session_info", { session_id: 2122, max_messages: 20 }],
+    ["task_progress", { message: "tests passing" }],
+    ["task_complete", { verdict: "success", summary: "done" }],
+    ["create_automation", { name: "nightly", prompt: "…", cron: "7 * * * *" }],
+    ["create_work_task", { title: "fix", prompt: "…" }],
+  ])("resolves %s to its canonical card name", (tool, input) => {
+    const expected = tool === "ask_user_question" ? "question" : tool
+    expect(inferLiveToolName(qoderMcpCall(tool, input))).toBe(expected)
+  })
+
+  it("resolves the frame captured verbatim from qodercli 1.1.25", () => {
+    // Recorded off a live `qoder --acp` turn against a stdio MCP server named
+    // `codeg-mcp` — copied byte-for-byte from the session/update payload:
+    //   {"title":"get_delegation_status (codeg-mcp MCP Server)","kind":"other",
+    //    "_meta":{"qoder":{"toolName":"mcp__codeg-mcp__get_delegation_status"}},
+    //    "rawInput":{"task_ids":["081139e7"]}}
+    expect(
+      inferLiveToolName({
+        title: "get_delegation_status (codeg-mcp MCP Server)",
+        kind: "other",
+        rawInput: JSON.stringify({ task_ids: ["081139e7"] }),
+        meta: {
+          qoder: { toolName: "mcp__codeg-mcp__get_delegation_status" },
+        },
+      })
+    ).toBe("get_delegation_status")
+  })
+
+  it("proves the title alone could never have resolved these", () => {
+    // Guard the ordering: the MCP sentence is not collapsible by any alias or
+    // suffix rule, so the assertions above prove the meta did the work.
+    expect(
+      normalizeToolName("get_delegation_status (codeg-mcp MCP Server)")
+    ).not.toBe("get_delegation_status")
+    expect(
+      inferLiveToolName({ ...qoderMcpCall("task_progress", {}), meta: null })
+    ).not.toBe("task_progress")
+  })
+
+  it("rescues cancel_delegation from the generic 'task' input shape", () => {
+    // `{task_id}` is `inferFromInput`'s "task" shape, so the companion-set
+    // resolution MUST sit ahead of it — same guarantee claude-agent-acp gets.
+    expect(
+      inferLiveToolName({
+        title: "cancel_delegation (codeg-mcp MCP Server)",
+        kind: "other",
+        rawInput: JSON.stringify({ task_id: "t1" }),
+        meta: null,
+      })
+    ).toBe("task")
+  })
+
+  it("keeps input-shape classification ahead of the meta name", () => {
+    // The general Qoder override sits BELOW `inferFromInput` (like Grok's), so
+    // a native tool whose payload carries a real shape keeps its own answer.
+    expect(
+      inferLiveToolName({
+        title: "pnpm build",
+        kind: "execute",
+        rawInput: JSON.stringify({ command: "pnpm build" }),
+        meta: { qoder: { toolName: "Bash" } },
+      })
+    ).toBe("bash")
+    expect(
+      inferLiveToolName({
+        title: "Agent",
+        kind: "think",
+        rawInput: JSON.stringify({ subagent_type: "explore", prompt: "…" }),
+        meta: { qoder: { toolName: "Agent" } },
+      })
+    ).toBe("agent")
+  })
+
+  it("resolves Qoder's native tools when the input shape is silent", () => {
+    expect(
+      inferLiveToolName({
+        title: "Exit plan mode",
+        kind: "switch_mode",
+        rawInput: JSON.stringify({ plan: "do the thing" }),
+        meta: { qoder: { toolName: "ExitPlanMode" } },
+      })
+    ).toBe("exitplanmode")
+    expect(
+      inferLiveToolName({
+        title: "Skill",
+        kind: "other",
+        rawInput: JSON.stringify({ skill: "commit" }),
+        meta: { qoder: { toolName: "Skill" } },
+      })
+    ).toBe("skill")
+  })
+
+  it("ignores a malformed or absent qoder meta", () => {
+    for (const meta of [
+      null,
+      {},
+      { qoder: null },
+      { qoder: {} },
+      { qoder: { toolName: "" } },
+      { qoder: { toolName: 42 } },
+    ] as Array<Record<string, unknown> | null>) {
+      expect(
+        inferLiveToolName({
+          title: "whatever",
+          kind: "other",
+          rawInput: null,
+          meta,
+        })
+      ).toBe("whatever")
+    }
+  })
+})
+
+// The historical path reads the raw `mcp__codeg-mcp__<tool>` name straight out
+// of the transcript, so every host prefix/separator must collapse to the same
+// canonical name the live path now produces — otherwise a reload swaps a card
+// back to the generic tool shell.
+describe("normalizeToolName collapses the codeg-mcp workbench companions", () => {
+  const TOOLS = [
+    "get_session_info",
+    "task_progress",
+    "task_complete",
+    "create_automation",
+    "create_work_task",
+  ] as const
+
+  it.each(TOOLS)("collapses every host spelling of %s", (tool) => {
+    for (const spelling of [
+      tool,
+      `mcp__codeg-mcp__${tool}`,
+      `mcp__codeg__${tool}`,
+      `codeg-mcp/${tool}`,
+      `codeg-mcp.${tool}`,
+      `codeg-mcp:${tool}`,
+    ]) {
+      expect(normalizeToolName(spelling)).toBe(tool)
+    }
+  })
+
+  it("keeps task_progress/task_complete out of the generic 'task' tool", () => {
+    // Regression: the freeform `^task(\b|[_\s:-])` rule used to swallow both,
+    // which is why they rendered as an empty "任务" card with no detail.
+    expect(normalizeToolName("task_progress")).not.toBe("task")
+    expect(normalizeToolName("task_complete")).not.toBe("task")
+    // …without disturbing the generic task tools that rule exists for.
+    expect(normalizeToolName("task")).toBe("task")
+    expect(normalizeToolName("task_update")).toBe("taskupdate")
+  })
+})

@@ -222,7 +222,6 @@ function makeConnState(overrides: Partial<ConnectionState>): ConnectionState {
     configStaleKind: null,
     configStaleDismissed: false,
     backgroundOutstanding: 0,
-    backgroundSettleSyncingSince: null,
     outOfTurnToolCalls: null,
     ...overrides,
   }

@@ -108,6 +108,7 @@ import {
   composerLeafText,
   docToPromptBlocks,
   serializeDocToDisplayText,
+  serializeDocToText,
 } from "@/components/chat/composer/to-prompt-blocks"
 import { isEmbeddedReferenceUri } from "@/components/chat/composer/reference-uri"
 import {
@@ -135,13 +136,23 @@ import { useComposerShortcuts } from "@/components/chat/composer/use-composer-sh
 
 /**
  * Payload pushed into the composer from outside (e.g. a welcome-page quick
- * action). `text` replaces the document; `skill`, when present, is prepended as
- * the leading invocation badge (serializes to `${prefix}${id}` as the first
+ * action, or a quoted transcript selection). `skill`, when present, is prepended
+ * as the leading invocation badge (serializes to `${prefix}${id}` as the first
  * token).
  */
 export interface ComposerInjectContent {
   text: string
   skill?: { id: string; label: string }
+  /**
+   * How `text` lands in the composer.
+   *
+   * - `"replace"` (default) swaps the whole document — the welcome quick-action
+   *   behaviour, where the card's prompt IS the message.
+   * - `"append"` keeps whatever the user has already drafted and adds `text` as
+   *   a trailing block, caret after it. Used for quoting a message selection,
+   *   which is only ever the *start* of what the user is about to write.
+   */
+  mode?: "replace" | "append"
 }
 
 interface MessageInputProps {
@@ -588,23 +599,42 @@ export function MessageInput({
     const raf = requestAnimationFrame(() => {
       const handle = editorRef.current
       if (handle) {
-        handle.setText(payload.text)
-        // Prepend the skill as the leading invocation badge, so the sent
-        // message opens with `${prefix}${id}`.
-        if (payload.skill) {
+        if (payload.mode === "append") {
+          // Land at the end of whatever is already drafted, separated by a blank
+          // line so a Markdown block (the quote) is never glued onto the tail of
+          // the user's own sentence. `focus()` places the caret at end-of-doc
+          // first: the user was interacting with the transcript, so the editor's
+          // remembered selection is stale and could be anywhere.
           const editor = handle.getEditor()
-          if (editor) {
-            applyExpertReference(editor, {
-              refType: "skill",
-              id: payload.skill.id,
-              label: payload.skill.label,
-              uri: null,
-              meta: { invocationPrefix: skillPrefix, scope: "expert" },
-            })
+          const existing = editor ? serializeDocToText(editor.state.doc) : ""
+          const gap = !existing.trim()
+            ? ""
+            : existing.endsWith("\n\n")
+              ? ""
+              : existing.endsWith("\n")
+                ? "\n"
+                : "\n\n"
+          handle.focus()
+          handle.insertTextAtCursor(`${gap}${payload.text}\n\n`)
+        } else {
+          handle.setText(payload.text)
+          // Prepend the skill as the leading invocation badge, so the sent
+          // message opens with `${prefix}${id}`.
+          if (payload.skill) {
+            const editor = handle.getEditor()
+            if (editor) {
+              applyExpertReference(editor, {
+                refType: "skill",
+                id: payload.skill.id,
+                label: payload.skill.label,
+                uri: null,
+                meta: { invocationPrefix: skillPrefix, scope: "expert" },
+              })
+            }
           }
+          handle.focus()
         }
         setComposerEmpty(false)
-        handle.focus()
       }
       onInjectConsumed?.()
     })

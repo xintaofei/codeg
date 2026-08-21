@@ -535,18 +535,6 @@ pub struct BackgroundSettledInfo {
     /// parse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
-    /// Whether this task's reply is/was rendered on the ACP wire as the tail of
-    /// a turn `#870` (claude-agent-acp v0.59.0) held open for it — i.e. the
-    /// settling task's id was still in `current_turn_launched_ids` when the
-    /// watcher read the notification. The frontend uses this to decide whether
-    /// to arm the "syncing results" hint: for a wire-visible settle the reply
-    /// is already on screen (no gap to bridge), whereas a genuinely out-of-turn
-    /// settle's reply arrives later as a separate overlay turn. Derived from the
-    /// backend set (which persists until the next turn's rising edge), NOT from
-    /// the connection's current status — so it's correct even when the watcher
-    /// reads the settlement AFTER the turn already fell back to `Connected`.
-    #[serde(default)]
-    pub wire_visible: bool,
 }
 
 /// Which settings surface drifted, so the frontend can word the
@@ -1166,6 +1154,33 @@ pub struct CursorModelsResult {
     pub models: Vec<CursorModelInfo>,
     pub default_model: Option<String>,
     pub error: Option<String>,
+}
+
+/// Result of probing `qoder status -o json` for the Qoder settings panel's
+/// auth card. The CLI prints a flat object:
+/// `{logged_in, version, allow_byok, username, email, avatar_url, user_type}`.
+/// Parsed defensively — a shape change degrades to `error` rather than making
+/// the card claim the account is signed out.
+#[derive(Debug, Clone, Serialize)]
+pub struct QoderAuthStatus {
+    /// A launchable `qoder` binary was found (managed cache or system install).
+    pub installed: bool,
+    pub logged_in: bool,
+    pub username: Option<String>,
+    pub email: Option<String>,
+    /// Account tier, e.g. `personal_standard`.
+    pub user_type: Option<String>,
+    /// CLI version the probe reported — the one that would actually launch,
+    /// which is not necessarily the version codeg's registry pins.
+    pub version: Option<String>,
+    /// Whether the account may bring its own model provider key.
+    pub allow_byok: Option<bool>,
+    /// Probe failure detail (spawn error / timeout / non-JSON output).
+    pub error: Option<String>,
+    /// Absolute path to the `qoder` binary codeg would launch. The panel builds
+    /// a copy-pasteable `"<binary_path>" login` command from it, because a
+    /// managed binary lives in codeg's cache and is NOT on the user's PATH.
+    pub binary_path: Option<String>,
 }
 
 /// Lightweight status info for a single agent, used by connect() pre-check.

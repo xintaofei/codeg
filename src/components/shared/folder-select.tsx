@@ -87,13 +87,19 @@ export const FolderOptionItem = memo(function FolderOptionItem({
 
 /** Trigger looks. `"pill"` is the borderless muted filter pill the workbench
  *  toolbars use; `"field"` is the bordered form control the editor dialogs put
- *  in their Target section (metrics copied from `SelectTrigger size="sm"`). */
-type FolderSelectVariant = "pill" | "field"
+ *  in their Target section (metrics copied from `SelectTrigger size="sm"`);
+ *  `"ghost"` is the pill with no surface of its own, for a picker sitting
+ *  INSIDE another chip — a second fill there reads as a nested control, and
+ *  `ws-msg-chip` would draw one whatever the caller sets, since it paints from
+ *  an unlayered rule that outranks a utility class. */
+type FolderSelectVariant = "pill" | "field" | "ghost"
 
 const TRIGGER_CLASS: Record<FolderSelectVariant, string> = {
   pill: "h-8 w-auto min-w-0 max-w-[14rem] gap-1.5 rounded-full border-transparent bg-muted/70 px-3 text-[0.8125rem] font-medium shadow-none ws-msg-chip hover:bg-muted",
   field:
     "h-7 w-auto min-w-0 max-w-[16rem] gap-1.5 rounded-4xl border-input bg-input/30 px-3 text-xs font-normal hover:bg-input/50 dark:hover:bg-input/50",
+  ghost:
+    "h-7 w-auto min-w-0 max-w-[14rem] gap-1.5 rounded-full border-transparent px-2.5 text-[0.8125rem] font-medium shadow-none hover:bg-muted dark:hover:bg-muted",
 }
 
 interface FolderSelectProps {
@@ -179,7 +185,7 @@ export function FolderSelect({
       <PopoverTrigger asChild>
         <Button
           type="button"
-          variant={variant === "pill" ? "ghost" : "outline"}
+          variant={variant === "field" ? "outline" : "ghost"}
           size="sm"
           disabled={disabled}
           title={tooltip}

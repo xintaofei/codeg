@@ -27,6 +27,7 @@ import {
   GitBranch,
   GitCommitHorizontal,
   GitMerge,
+  GitPullRequestArrow,
   ListX,
   Loader2,
   MessageSquareText,
@@ -68,12 +69,24 @@ import { AgentIcon } from "@/components/agent-icon"
 import { getAgentLabel } from "@/lib/custom-agents"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { hasNothingToMerge, isMergeQueued } from "./task-acceptance"
+import {
+  canDeliverToPr,
+  deliveredPrUrl,
+  hasNothingToMerge,
+  isMergeQueued,
+  mustDeliverToPr,
+  usesMergeRequests,
+} from "./task-acceptance"
 import { StatusChip, statusLabelKey } from "./task-card"
 import {
   TaskMessageComposer,
   type TaskMessageComposerHandle,
 } from "./task-message-composer"
+import {
+  duplicateActiveSource,
+  duplicateActiveSourceLabel,
+  type DuplicateActiveSource,
+} from "./task-restart-guard"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -148,6 +161,9 @@ interface TaskDetailSheetProps {
   onMerge: (task: WorkTask) => void
   /** Replaces merge when the task changed nothing (see `hasNothingToMerge`). */
   onComplete: (task: WorkTask) => void
+  /** Push the task to the forge: a new pull request for an issue-sourced
+   *  task, back onto its own branch for a pull-request-sourced one. */
+  onDeliverPr: (task: WorkTask) => void
   /** Opens the page-owned cancel dialog, which records the user's reason.
    *  Both "cancel" and a reviewed task's "abandon" go through it — same
    *  backend transition, same thing worth writing down. */
@@ -186,6 +202,7 @@ export function TaskDetailSheet({
   onViewSession,
   onMerge,
   onComplete,
+  onDeliverPr,
   onCancel,
   onEdit,
   onSchedule,
@@ -210,6 +227,9 @@ export function TaskDetailSheet({
   // Mirrors the composer's attached-file count so an image-only follow-up (or
   // restart note) still enables the send — the text alone would read as empty.
   const [composerAttachments, setComposerAttachments] = useState(0)
+  /** Set when the resurrection guard refused a restart — see `submitRestart`. */
+  const [restartDuplicate, setRestartDuplicate] =
+    useState<DuplicateActiveSource | null>(null)
   const [intent, setIntent] = useState<FollowUpIntent>(DEFAULT_FOLLOW_UP_INTENT)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleteWorktree, setDeleteWorktree] = useState(false)
@@ -291,6 +311,7 @@ export function TaskDetailSheet({
     setComposerOpen(false)
     setComposerText("")
     setComposerAttachments(0)
+    setRestartDuplicate(null)
     setIntent(DEFAULT_FOLLOW_UP_INTENT)
     void reload()
     let unsub: (() => void) | undefined
@@ -322,12 +343,24 @@ export function TaskDetailSheet({
     }
   }, [])
 
+  // The guard's refusal belongs to the box it was raised in, and to the status
+  // it was raised for. Closing the box or the task leaving `failed`/`canceled`
+  // retires it — otherwise a later restart could open on a stale "restart
+  // anyway" and waive a guard the user never saw refuse anything. (The label
+  // and the waiver read the same state, so the two can never disagree; this is
+  // about not carrying a decision across the moment it was made.)
+  useEffect(() => {
+    setRestartDuplicate(null)
+  }, [composerOpen, task?.status])
+
   /// A restart that consumed the note closes the box with it, so the text
   /// cannot be silently attached to a second restart the user did not mean.
+  /// A refusal the box answers on the spot (the resurrection guard) reports
+  /// `false` instead, and everything stays exactly where the user left it.
   const runRestart = useCallback(
-    (fn: () => Promise<unknown>) =>
+    (fn: () => Promise<boolean>) =>
       run(async () => {
-        await fn()
+        if (!(await fn())) return
         setComposerOpen(false)
         setComposerText("")
         setComposerAttachments(0)
@@ -368,6 +401,8 @@ export function TaskDetailSheet({
   // The user-authored brief, as typed (the agent receives the block form).
   const promptText = task.config?.display_text?.trim() || null
   const archived = task.archived_at != null
+  /** Set only when this task finished BY delivering — the link to show. */
+  const deliveredPr = deliveredPrUrl(task)
 
   const canEdit = task.status === "todo" || task.status === "failed"
 
@@ -417,22 +452,47 @@ export function TaskDetailSheet({
       })
     } else {
       // A task that changed nothing has no merge to offer — accepting it IS
-      // the primary action (same swap the board card makes).
-      zoneActions.push(
-        hasNothingToMerge(task)
-          ? {
-              icon: CircleCheck,
-              label: t("actionComplete"),
-              filled: true,
-              onClick: () => onComplete(task),
-            }
-          : {
-              icon: GitMerge,
-              label: t("actionMerge"),
-              filled: true,
-              onClick: () => onMerge(task),
-            }
-      )
+      // the primary action (same swap the board card makes). A task that came
+      // from a pull request has no local merge at all: its work belongs on
+      // that pull request's branch, and the backend refuses anything else.
+      if (hasNothingToMerge(task)) {
+        zoneActions.push({
+          icon: CircleCheck,
+          label: t("actionComplete"),
+          filled: true,
+          onClick: () => onComplete(task),
+        })
+      } else if (mustDeliverToPr(task)) {
+        zoneActions.push({
+          icon: GitPullRequestArrow,
+          label: t(
+            usesMergeRequests(task)
+              ? "actionDeliverPrBackMr"
+              : "actionDeliverPrBack"
+          ),
+          filled: true,
+          onClick: () => onDeliverPr(task),
+        })
+      } else {
+        zoneActions.push({
+          icon: GitMerge,
+          label: t("actionMerge"),
+          filled: true,
+          onClick: () => onMerge(task),
+        })
+        // A second way to accept, not a replacement: a task that came from an
+        // issue can still legitimately be landed locally, so both stay on
+        // offer and the merge above keeps the filled slot.
+        if (canDeliverToPr(task)) {
+          zoneActions.push({
+            icon: GitPullRequestArrow,
+            label: t(
+              usesMergeRequests(task) ? "actionDeliverPrMr" : "actionDeliverPr"
+            ),
+            onClick: () => onDeliverPr(task),
+          })
+        }
+      }
     }
     zoneActions.push({
       icon: Undo2,
@@ -556,7 +616,7 @@ export function TaskDetailSheet({
   /// task exactly the way the button used to on its own. Gated on the status
   /// still being restartable: the row is live while the box is open, so a task
   /// the engine picked back up must not be re-queued by a late click.
-  const submitRestart = () => {
+  const submitRestart = (allowDuplicateSource = false) => {
     if (!isRestart) return
     // The same ref latch the follow-up send takes, and for the same reason: the
     // box now sends, so the send key reaches this out of the editor's own
@@ -574,10 +634,21 @@ export function TaskDetailSheet({
     return runRestart(async () => {
       try {
         if (task.status === "failed") {
-          await workTaskRetry(task.id, note, blocks)
+          await workTaskRetry(task.id, note, blocks, allowDuplicateSource)
         } else {
-          await workTaskRequeue(task.id, note, blocks)
+          await workTaskRequeue(task.id, note, blocks, allowDuplicateSource)
         }
+        setRestartDuplicate(null)
+        return true
+      } catch (e) {
+        // The resurrection guard is the one refusal with a way through, and it
+        // refuses EVERY restart of this card while the other task lives — a
+        // toast would leave the user with no next move. Everything else keeps
+        // `run`'s toast: there is nothing there to decide.
+        const dup = duplicateActiveSource(e)
+        if (!dup) throw e
+        setRestartDuplicate(dup)
+        return false
       } finally {
         submittingRef.current = false
       }
@@ -869,9 +940,30 @@ export function TaskDetailSheet({
                         onChange={setComposerText}
                         onAttachmentsChange={setComposerAttachments}
                         onSubmit={() => {
-                          void (isReview ? submitFollowUp() : submitRestart())
+                          // Mirrors the send button exactly — including the
+                          // waiver once the guard's warning is on screen and
+                          // the button reads "restart anyway". Sending without
+                          // it there would re-run into the same refusal and
+                          // read as a dead key.
+                          void (isReview
+                            ? submitFollowUp()
+                            : submitRestart(restartDuplicate != null))
                         }}
                       />
+                      {!isReview && restartDuplicate ? (
+                        // Announced, not just drawn: the refusal arrives while
+                        // focus is in the editor, so a screen-reader user
+                        // would otherwise get silence — the same dead key this
+                        // affordance exists to remove.
+                        <p role="alert" className="text-xs text-destructive">
+                          {t("restartDuplicateSource", {
+                            task: duplicateActiveSourceLabel(
+                              restartDuplicate,
+                              t("restartDuplicateSourceAnon")
+                            ),
+                          })}
+                        </p>
+                      ) : null}
                       {/* One footer for every case: the scenario picker on the
                           left (reviewed tasks only — a restart's purpose is
                           already fixed by the button that opened this box) and
@@ -928,9 +1020,19 @@ export function TaskDetailSheet({
                                 composerAttachments > 0
                               ))
                           }
-                          onClick={isReview ? submitFollowUp : submitRestart}
+                          // Arrow-wrapped, never a bare `submitRestart`: the
+                          // handler would receive the click event as
+                          // `allowDuplicateSource`, and a MouseEvent is truthy
+                          // — every restart would waive the guard.
+                          onClick={() =>
+                            void (isReview
+                              ? submitFollowUp()
+                              : submitRestart(restartDuplicate != null))
+                          }
                         >
-                          {t("followUpSubmit")}
+                          {!isReview && restartDuplicate
+                            ? t("actionRestartAnyway")
+                            : t("followUpSubmit")}
                         </Button>
                       </div>
                     </div>
@@ -972,6 +1074,29 @@ export function TaskDetailSheet({
                         />
                         {task.merge_commit.slice(0, 8)}
                       </span>
+                    </InfoRow>
+                  ) : null}
+                  {deliveredPr ? (
+                    <InfoRow
+                      label={t(
+                        usesMergeRequests(task)
+                          ? "detailMergeRequest"
+                          : "detailPullRequest"
+                      )}
+                    >
+                      <a
+                        href={deliveredPr}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex min-w-0 items-center gap-1 truncate underline-offset-2 hover:underline"
+                        title={deliveredPr}
+                      >
+                        <GitPullRequestArrow
+                          className="size-3 shrink-0 text-muted-foreground"
+                          aria-hidden="true"
+                        />
+                        <span className="truncate">{deliveredPr}</span>
+                      </a>
                     </InfoRow>
                   ) : null}
                   {task.files_changed != null && task.files_changed > 0 ? (
@@ -1425,6 +1550,8 @@ const EVENT_KIND_KEYS = {
   resume_fallback: "eventResumeFallback",
   user_action: "eventUserAction",
   diff_stat: "eventDiffStat",
+  forge_writeback: "eventForgeWriteback",
+  forge_writeback_failed: "eventForgeWritebackFailed",
 } as const
 
 const STATUS_KEYS = new Set([
@@ -1599,6 +1726,10 @@ function timelineDetail(event: WorkTaskEvent): string | null {
       if (typeof fc === "number") return `${fc} files · +${a ?? 0} -${d ?? 0}`
       return null
     }
+    case "forge_writeback":
+      return str("url")
+    case "forge_writeback_failed":
+      return str("error")
     default:
       return null
   }

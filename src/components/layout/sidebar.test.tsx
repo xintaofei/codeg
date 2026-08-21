@@ -11,7 +11,6 @@ import enMessages from "@/i18n/messages/en.json"
 const spies = vi.hoisted(() => ({
   openNewConversationTab: vi.fn(),
   openChatModeTab: vi.fn(),
-  setSearchOpen: vi.fn(),
   setRoute: vi.fn(),
   openConversations: vi.fn(),
   // Latest props the (stubbed) conversation list was rendered with, so tests can
@@ -28,7 +27,7 @@ const mockState = vi.hoisted(() => ({
 }))
 
 // The conversation list is irrelevant here — stub it so the test exercises only
-// the sidebar's header + fixed New chat / Search region.
+// the sidebar's header + fixed nav region.
 vi.mock("@/components/conversations/sidebar-conversation-list", () => ({
   SidebarConversationList: (props: {
     showWorktrees?: boolean
@@ -51,9 +50,6 @@ vi.mock("@/contexts/tab-context", () => ({
     openNewConversationTab: spies.openNewConversationTab,
     openChatModeTab: spies.openChatModeTab,
   }),
-}))
-vi.mock("@/contexts/search-dialog-context", () => ({
-  useSearchDialog: () => ({ open: false, setOpen: spies.setSearchOpen }),
 }))
 vi.mock("@/contexts/automations-view-context", () => ({
   useAutomationsView: () => ({
@@ -96,11 +92,10 @@ function renderSidebar() {
   )
 }
 
-describe("Sidebar — fixed New chat / Search region", () => {
+describe("Sidebar — fixed nav region", () => {
   beforeEach(() => {
     spies.openNewConversationTab.mockClear()
     spies.openChatModeTab.mockClear()
-    spies.setSearchOpen.mockClear()
     spies.setRoute.mockClear()
     spies.openConversations.mockClear()
     mockState.activeFolder = { id: 7, path: "/x" }
@@ -124,18 +119,19 @@ describe("Sidebar — fixed New chat / Search region", () => {
     expect(spies.openNewConversationTab).toHaveBeenCalledWith(7, "/x")
   })
 
-  it("Search opens the shared search dialog", () => {
+  it("renders the New chat shortcut hint", () => {
     const { getByText } = renderSidebar()
-    fireEvent.click(getByText("Search"))
-    expect(spies.setSearchOpen).toHaveBeenCalledWith(true)
+    // isMac=false → "mod" formats as "Ctrl". The badge is opacity-0 until the
+    // row is hovered/focused but stays in the DOM, so getByText resolves it.
+    expect(getByText("Ctrl+T")).toBeTruthy()
   })
 
-  it("renders New chat and Search shortcut hints", () => {
-    const { getByText } = renderSidebar()
-    // isMac=false → "mod" formats as "Ctrl". The badges are opacity-0 until the
-    // row is hovered/focused but stay in the DOM, so getByText resolves them.
-    expect(getByText("Ctrl+T")).toBeTruthy()
-    expect(getByText("Ctrl+K")).toBeTruthy()
+  it("no longer carries a Search row — it moved to the window chrome", () => {
+    const { queryByText } = renderSidebar()
+    // The sidebar unmounts when collapsed, which left ⌘K as the only path to
+    // search; the button now lives in LeftEdgeChrome / FolderTitleBar instead.
+    expect(queryByText("Search")).toBeNull()
+    expect(queryByText("Ctrl+K")).toBeNull()
   })
 
   it("falls back to chat mode (never disabled) when no folder is active", () => {

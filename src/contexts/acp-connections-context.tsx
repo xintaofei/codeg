@@ -292,22 +292,13 @@ export interface ConnectionState {
    * Launched-but-unresolved background tasks (async sub-agents / background
    * shells) on this connection, mirrored from `background_activity` events
    * (authoritative accounting lives in the backend transcript watcher).
-   * Non-zero exempts the connection from the frontend idle sweep — killing
-   * the connection kills the agent CLI and the background work with it —
-   * and drives the "background tasks running" chip.
+   * The count itself is never rendered — it is a busy signal. Non-zero exempts
+   * the connection from the frontend idle sweep and the unmount/preview
+   * teardowns (killing the connection kills the agent CLI and the background
+   * work with it), and marks a manual reconnect destructive so the status
+   * popover warns before interrupting that work.
    */
   backgroundOutstanding: number
-  /**
-   * Epoch ms of the most recent `background_activity` event that settled a
-   * task, cleared when the follow-up overlay turns start arriving. Bridges
-   * the otherwise-blank gap between "N tasks running" disappearing and the
-   * agent's reaction to the results surfacing (model time-to-first-block +
-   * the transcript's record granularity — typically 3–15s): the chip shows a
-   * "syncing results" state while this is set. Client-local UI state (not in
-   * the snapshot); the chip additionally expires it from display after a
-   * fixed window so a killed CLI can't strand the indicator.
-   */
-  backgroundSettleSyncingSince: number | null
   /**
    * Tool-call context observed OUT-OF-TURN (status !== "prompting"), kept
    * ONLY so a background permission request can still render its command/
@@ -401,19 +392,13 @@ type Action =
       ids: string[]
     }
   | {
-      // Mirror of a `background_activity` event onto the connection: the
-      // `outstanding` count (the backend transcript watcher's authoritative
-      // accounting) plus whether this event settled tasks / carried overlay
-      // turns, which drive the settle-syncing bridge state. No-op when
-      // nothing it mirrors changed, so repeat events don't re-render
-      // connection consumers. `outOfTurnSettleCount` counts only settles whose
-      // reply arrives OUT OF TURN (a separate overlay turn) — i.e. NOT
-      // wire-visible; those are the ones the "syncing results" hint bridges.
+      // Mirror of a `background_activity` event's `outstanding` count (the
+      // backend transcript watcher's authoritative accounting) onto the
+      // connection, where it gates the teardowns. No-op when the count didn't
+      // change, so repeat events don't re-render connection consumers.
       type: "SET_BACKGROUND_OUTSTANDING"
       contextKey: string
       outstanding: number
-      outOfTurnSettleCount: number
-      turnsCount: number
     }
   | StreamingAction
   | { type: "STREAM_BATCH"; actions: StreamingAction[] }
@@ -1312,7 +1297,6 @@ function connectionsReducer(
         configStaleKind: null,
         configStaleDismissed: false,
         backgroundOutstanding: 0,
-        backgroundSettleSyncingSince: null,
         outOfTurnToolCalls: null,
       })
       return next
@@ -1370,7 +1354,6 @@ function connectionsReducer(
         configStaleKind: null,
         configStaleDismissed: false,
         backgroundOutstanding: 0,
-        backgroundSettleSyncingSince: null,
         outOfTurnToolCalls: null,
       })
       return next
@@ -1491,7 +1474,7 @@ function connectionsReducer(
         configStaleKind: action.patch.configStaleKind,
         // Current-state field like `status`: a client attaching mid-episode
         // recovers the pending-background count the one-shot events won't
-        // replay for it (sweep exemption + chip).
+        // replay for it, so its teardown gates hold.
         backgroundOutstanding: action.patch.backgroundOutstanding,
         sessionFailures: mergedSessionFailures,
         error: action.patch.lastError,
@@ -1582,36 +1565,11 @@ function connectionsReducer(
     case "SET_BACKGROUND_OUTSTANDING": {
       const conn = state.get(action.contextKey)
       if (!conn) return state
-      // Settle-syncing bridge: a settlement whose reply arrives OUT OF TURN
-      // (as a separate overlay turn) means that reply is being generated — arm
-      // the "syncing results" hint to fill the gap until it surfaces. The
-      // backend classifies this per settle via `wire_visible` (folded into
-      // `outOfTurnSettleCount` by the handler): under claude-agent-acp #870 the
-      // launching turn is held OPEN and the reply streams LIVE as its tail —
-      // already on screen, no gap to bridge — so those are excluded. Arming for
-      // a held settle would STRAND the hint: its reply never arrives as an
-      // overlay `turns` event, so nothing disarms it and it sits until the 30s
-      // cap (the "结果都出来了还显示 Syncing" bug). Using the backend flag rather
-      // than the connection's current status is deliberate — it's correct even
-      // when the watcher reads the settlement after the turn already fell back
-      // to `connected`. The first genuinely out-of-turn `turns` event disarms.
-      const syncingSince =
-        action.outOfTurnSettleCount > 0
-          ? Date.now()
-          : action.turnsCount > 0
-            ? null
-            : conn.backgroundSettleSyncingSince
-      if (
-        conn.backgroundOutstanding === action.outstanding &&
-        conn.backgroundSettleSyncingSince === syncingSince
-      ) {
-        return state
-      }
+      if (conn.backgroundOutstanding === action.outstanding) return state
       const next = new Map(state)
       next.set(action.contextKey, {
         ...conn,
         backgroundOutstanding: action.outstanding,
-        backgroundSettleSyncingSince: syncingSince,
       })
       return next
     }
@@ -3571,18 +3529,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           // Out-of-turn transcript activity from the backend watcher: async
           // task completions, the agent's continued work after them, cron//
           // loop turns. Three consumers:
-          // 1. the outstanding mirror (idle-sweep exemption + chip) plus the
-          //    settle-syncing bridge inputs;
+          // 1. the outstanding mirror, which gates the teardowns (nothing
+          //    renders the count);
           dispatch({
             type: "SET_BACKGROUND_OUTSTANDING",
             contextKey,
             outstanding: e.outstanding,
-            // Only settles whose reply arrives out of turn (NOT wire-visible)
-            // warrant the syncing hint; a #870-held settle's reply is already
-            // live on screen (see the reducer + BackgroundSettledInfo).
-            outOfTurnSettleCount:
-              e.settled?.filter((s) => !s.wire_visible).length ?? 0,
-            turnsCount: e.turns?.length ?? 0,
           })
           // 2. overlay turns → the conversation runtime store (resolved via
           //    the external-id index; unresolved = this conversation was never

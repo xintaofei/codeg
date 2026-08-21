@@ -486,6 +486,14 @@ fn agent_root_slots(agent_type: AgentType) -> &'static [RootSlot] {
             trims: false,
             default_rel: &[".grok"],
         }],
+        // Qoder relocates its whole home via `QODER_CONFIG_DIR` (the env form
+        // of the CLI's `--config-dir`); the sessions tree lives under
+        // `projects/` inside it.
+        AgentType::Qoder => &[RootSlot {
+            candidates: &[("QODER_CONFIG_DIR", "")],
+            trims: false,
+            default_rel: &[".qoder"],
+        }],
         AgentType::ClaudeCode => &[RootSlot {
             candidates: &[("CLAUDE_CONFIG_DIR", "")],
             trims: false,

@@ -693,6 +693,23 @@ pub async fn acp_update_agent_config(
     Ok(Json(affected))
 }
 
+/// Optional live personal access token from the Qoder settings form, forwarded
+/// so the `status` probe reports on what's on screen.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct QoderProbeParams {
+    pub personal_access_token: Option<String>,
+}
+
+pub async fn acp_qoder_auth_status(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<QoderProbeParams>,
+) -> Result<Json<crate::acp::types::QoderAuthStatus>, AppCommandError> {
+    Ok(Json(
+        acp_commands::acp_qoder_auth_status_core(&state.db, params.personal_access_token).await,
+    ))
+}
+
 /// Optional live API key from the Cursor settings form, forwarded so the
 /// `status` / `models` probes test what's on screen (empty ⇒ browser-login).
 #[derive(Deserialize, Default)]

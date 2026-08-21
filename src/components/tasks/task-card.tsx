@@ -418,6 +418,19 @@ export function TaskCard({
             {task.work_branch}
           </span>
         ) : null}
+        {task.source_meta?.url ? (
+          // Forge provenance chip: `#123 · owner/repo`, straight to the issue.
+          <a
+            href={task.source_meta.url}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="truncate font-mono text-[0.625rem] text-primary/80 hover:underline"
+            title={task.source_meta.url}
+          >
+            #{task.source_meta.number} · {task.source_meta.owner_repo}
+          </a>
+        ) : null}
         {(folderName || task.work_branch) && (stat || when) ? (
           <span className="text-muted-foreground/40">·</span>
         ) : null}

@@ -57,6 +57,7 @@ import type {
   SystemLanguageSettings,
   SystemProxySettings,
   SystemRenderingSettings,
+  SystemAutostartSettings,
   SystemTerminalSettings,
   GitCredentials,
   GitDetectResult,
@@ -374,6 +375,16 @@ export async function updateSystemRenderingSettings(
   settings: SystemRenderingSettings
 ): Promise<SystemRenderingSettings> {
   return invoke("update_system_rendering_settings", { settings })
+}
+
+export async function getSystemAutostartSettings(): Promise<SystemAutostartSettings> {
+  return invoke("get_system_autostart_settings")
+}
+
+export async function updateSystemAutostartSettings(
+  settings: SystemAutostartSettings
+): Promise<SystemAutostartSettings> {
+  return invoke("update_system_autostart_settings", { settings })
 }
 
 // --- Version Control ---

@@ -6803,7 +6803,7 @@ async fn hermes_setup_argvs() -> (Vec<String>, Vec<String>) {
         // Unreachable: Hermes is always an Npx distribution. Fall through to
         // the npx guidance with the same pinned spec so a future match-arm
         // change can't resurrect a stale recipe.
-        _ => "hermes-agent@0.20.1",
+        _ => "hermes-agent@0.20.4",
     };
     let build = |tail: &[&str]| -> Vec<String> {
         let mut argv = vec![
@@ -7410,8 +7410,26 @@ fn agent_local_config_path(agent_type: AgentType) -> Option<PathBuf> {
         // path lights up "open config file" + staleness tracking; the actual
         // load/persist are special-cased below (TOML, not the generic JSON path).
         AgentType::KimiCode => Some(kimi_code_config_toml_path()),
+        // Qoder's native config is `<QODER_CONFIG_DIR>/settings.json` (default
+        // `~/.qoder`), plain JSON — so the generic loader above reads it as-is
+        // and the Qoder panel's advanced editor round-trips it through
+        // `config_json`. The WRITE side is special-cased in
+        // `acp_update_agent_config_core` (written verbatim) and never reaches
+        // this module's generic merge-persist, which could not delete a key.
+        //
+        // Note this file has other writers: codeg's own MCP settings page owns
+        // its top-level `mcpServers` (see `commands::mcp::qoder_settings_path`,
+        // which resolves the same path through the same helper).
+        AgentType::Qoder => Some(qoder_settings_json_path()),
         _ => None,
     }
+}
+
+/// `<QODER_CONFIG_DIR>/settings.json` (default `~/.qoder/settings.json`).
+/// Delegates to the parser's resolver, which already honours both
+/// `QODER_CONFIG_DIR` (absolute path) and `QODER_CONFIG_DIR_NAME` (dir rename).
+fn qoder_settings_json_path() -> PathBuf {
+    crate::parsers::qoder::resolve_qoder_config_dir().join("settings.json")
 }
 
 pub(crate) fn load_agent_local_config_json(agent_type: AgentType) -> Option<String> {
@@ -7654,7 +7672,7 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
             ],
             project_rel_dirs: vec![".cursor/skills", ".agents/skills"],
         }),
-        // deepseek-acp 0.3.0 mounts the upstream skills chain
+        // deepseek-acp mounts the upstream skills chain
         // (`dsh-skill-filesystem`), which discovers BOTH directory bundles
         // (`<id>/SKILL.md`) and flat `<id>.md` files — hence Codex's spec
         // shape. Its roots, highest rank first: `<project>/.dsh/skills`,
@@ -7670,6 +7688,43 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
                 crate::parsers::deepseek::resolve_dsh_agents_home_dir().join("skills"),
             ],
             project_rel_dirs: vec![".dsh/skills", ".agents/skills"],
+        }),
+        // Qoder discovers directory bundles only — `<id>/SKILL.md`, never flat
+        // `<id>.md` files — hence Claude's spec shape rather than Codex's.
+        //
+        // Roots read verbatim off `SkillCommandHandler.enumerate` in the
+        // qodercli 1.1.23 bundle, which resolves them through
+        // `{projectDir: <workDir>/<projectConfigDirName>, userDir: <globalDir>}`
+        // (both config dir names default to `.qoder`):
+        //
+        //   home       `<globalDir>/skills`            ← relocated by QODER_CONFIG_DIR
+        //   home       `~/.agents/skills`              ← only if loadFromAgentsDirectory
+        //   workspace  `<cwd>/.qoder/skills`
+        //   workspace  `<cwd>/.agents/skills`          ← only if loadFromAgentsDirectory
+        //
+        // Qoder's OWN dirs lead in both scopes because they are the ones it
+        // always scans: the `.agents` pair is gated behind
+        // `loadSkillsFromAgentsDirectory`, which defaults to FALSE. Writing
+        // installs to `.agents` alone (and to a bare `<cwd>/skills`, which
+        // nothing scans) is why this used to install skills the agent never
+        // loaded — while leaving whatever the user already had in
+        // `~/.qoder/skills` invisible to codeg. Both `.agents` roots stay in
+        // the list so a user who did turn the setting on still sees them.
+        AgentType::Qoder => Some(SkillStorageSpec {
+            kind: SkillStorageKind::SkillDirectoryOnly,
+            global_dirs: vec![
+                crate::parsers::qoder::resolve_qoder_config_dir().join("skills"),
+                // `getGlobalAgentsDir()` joins `.agents` onto Qoder's CLI HOME,
+                // not the OS home — the shared store moves with
+                // `QODER_CLI_HOME` even though it lives outside the config dir.
+                crate::parsers::qoder::resolve_qoder_home()
+                    .join(".agents")
+                    .join("skills"),
+            ],
+            project_rel_dirs: vec![
+                crate::parsers::qoder::qoder_project_skills_rel_dir(),
+                ".agents/skills",
+            ],
         }),
         // codeg cannot detect where an arbitrary ACP agent loads skills from,
         // so custom agents are gated on the user's own declaration: that the
@@ -8251,6 +8306,188 @@ fn persist_cursor_cli_config(text: &str) -> Result<(), AcpError> {
         .map_err(|e| AcpError::protocol(format!("write cursor cli-config failed: {e}")))
 }
 
+// ---------------------------------------------------------------------------
+// Qoder settings.json helpers
+// ---------------------------------------------------------------------------
+
+/// Validate + write settings.json, whole-document.
+///
+/// The text is whatever the panel's advanced editor holds, which is the file as
+/// codeg last read it plus the user's edits — writing it verbatim is what lets
+/// a key be DELETED, which the generic merge-persist path cannot do.
+///
+/// Note this file has other writers (the Qoder CLI itself, and codeg's MCP
+/// settings page, which owns the top-level `mcpServers`). A verbatim write
+/// therefore reverts anything they wrote since the editor last loaded — the
+/// same last-writer-wins contract every raw editor in this module has.
+fn persist_qoder_settings(text: &str) -> Result<(), AcpError> {
+    let parsed = serde_json::from_str::<serde_json::Value>(text)
+        .map_err(|e| AcpError::protocol(format!("invalid qoder settings.json: {e}")))?;
+    if !parsed.is_object() {
+        return Err(AcpError::protocol(
+            "invalid qoder settings.json: root must be a JSON object",
+        ));
+    }
+    let path = qoder_settings_json_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| AcpError::protocol(format!("create qoder config dir failed: {e}")))?;
+    }
+    fs::write(&path, format!("{text}\n"))
+        .map_err(|e| AcpError::protocol(format!("write qoder settings failed: {e}")))
+}
+
+/// The `qoder` binary codeg would launch: managed cache first, then the user's
+/// own install (PATH / ~/.local/bin) — the same order as `build_agent`.
+fn resolve_qoder_binary() -> Option<PathBuf> {
+    if let Ok(Some((path, _))) =
+        binary_cache::find_best_cached_binary_for_agent(AgentType::Qoder, "qoder")
+    {
+        return Some(path);
+    }
+    resolve_system_agent_binary("qoder")
+}
+
+/// The Qoder agent's effective probe env: the saved env with the settings
+/// form's live personal access token applied on top, so `status` reports on the
+/// credential that is on screen rather than a stale saved one.
+///
+/// `PAT` is always materialized (empty when unset) so `run_qoder_probe` makes
+/// an explicit set-or-remove decision — an inherited token from the user's dev
+/// shell must not make the card claim an account that a launch would not use.
+async fn qoder_probe_env(db: &AppDatabase, personal_access_token: Option<&str>) -> BTreeMap<String, String> {
+    let mut env: BTreeMap<String, String> =
+        agent_setting_service::get_by_agent_type(&db.conn, AgentType::Qoder)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|m| m.env_json)
+            .and_then(|raw| serde_json::from_str::<BTreeMap<String, String>>(&raw).ok())
+            .unwrap_or_default();
+    if let Some(token) = personal_access_token {
+        env.insert(
+            "QODER_PERSONAL_ACCESS_TOKEN".to_string(),
+            token.trim().to_string(),
+        );
+    }
+    env.entry("QODER_PERSONAL_ACCESS_TOKEN".to_string())
+        .or_default();
+    env
+}
+
+/// Run a `qoder` subcommand with a timeout, capturing stdout.
+async fn run_qoder_probe(
+    args: &[&str],
+    timeout_secs: u64,
+    extra_env: &BTreeMap<String, String>,
+) -> Result<String, String> {
+    let bin = resolve_qoder_binary().ok_or_else(|| "qoder is not installed".to_string())?;
+    let mut cmd = crate::process::tokio_command(&bin);
+    cmd.args(args);
+    for (key, value) in extra_env {
+        if value.trim().is_empty() {
+            // This process's env is inherited by the child; an empty value means
+            // "ensure absent" so a stale inherited token can't leak in.
+            cmd.env_remove(key);
+        } else {
+            cmd.env(key, value);
+        }
+    }
+    let output = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output())
+        .await
+        .map_err(|_| format!("qoder {} timed out", args.join(" ")))?
+        .map_err(|e| format!("failed to run qoder: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    if !output.status.success() && stdout.trim().is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("qoder {} failed: {}", args.join(" "), stderr.trim()));
+    }
+    Ok(stdout)
+}
+
+/// Probe `qoder status -o json` for the Qoder settings panel's auth card.
+///
+/// The CLI prints one flat object — `{logged_in, version, allow_byok, username,
+/// email, avatar_url, user_type}` — so unlike the Cursor probe there is no
+/// nested `userInfo` to unwrap. A parse failure is reported as `error` with
+/// `logged_in: false`; the panel renders that as "could not check", not as
+/// "signed out", so a CLI output change never reads as a lost session.
+pub(crate) async fn acp_qoder_auth_status_core(
+    db: &AppDatabase,
+    personal_access_token: Option<String>,
+) -> crate::acp::types::QoderAuthStatus {
+    let binary_path = resolve_qoder_binary().map(|p| p.to_string_lossy().to_string());
+    if binary_path.is_none() {
+        return crate::acp::types::QoderAuthStatus {
+            installed: false,
+            logged_in: false,
+            username: None,
+            email: None,
+            user_type: None,
+            version: None,
+            allow_byok: None,
+            error: None,
+            binary_path: None,
+        };
+    }
+    let extra_env = qoder_probe_env(db, personal_access_token.as_deref()).await;
+    let failed = |error: Option<String>| crate::acp::types::QoderAuthStatus {
+        installed: true,
+        logged_in: false,
+        username: None,
+        email: None,
+        user_type: None,
+        version: None,
+        allow_byok: None,
+        error,
+        binary_path: binary_path.clone(),
+    };
+    match run_qoder_probe(&["status", "-o", "json"], 30, &extra_env).await {
+        Ok(stdout) => {
+            // Scan to the first `{` so a leading log/update-notice line can't
+            // break parsing.
+            let json_start = stdout.find('{').unwrap_or(0);
+            match serde_json::from_str::<serde_json::Value>(stdout[json_start..].trim()) {
+                Ok(v) => {
+                    let get_str = |key: &str| {
+                        v.get(key)
+                            .and_then(serde_json::Value::as_str)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string)
+                    };
+                    crate::acp::types::QoderAuthStatus {
+                        installed: true,
+                        logged_in: v
+                            .get("logged_in")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false),
+                        username: get_str("username"),
+                        email: get_str("email"),
+                        user_type: get_str("user_type"),
+                        version: get_str("version"),
+                        // The CLI emits 0/1 here rather than a JSON boolean.
+                        allow_byok: v
+                            .get("allow_byok")
+                            .and_then(|b| {
+                                b.as_bool().or_else(|| b.as_i64().map(|n| n != 0))
+                            }),
+                        error: None,
+                        binary_path: binary_path.clone(),
+                    }
+                }
+                Err(e) => crate::acp::types::QoderAuthStatus {
+                    error: Some(format!(
+                        "unexpected status output: {e}: {}",
+                        truncate_probe_output(&stdout)
+                    )),
+                    ..failed(None)
+                },
+            }
+        }
+        Err(err) => failed(Some(err)),
+    }
+}
+
 /// The cursor-agent binary codeg would launch: managed cache first, then the
 /// user's own install (PATH / ~/.local/bin) — the same order as `build_agent`.
 fn resolve_cursor_binary() -> Option<PathBuf> {
@@ -8514,6 +8751,15 @@ pub async fn acp_cursor_auth_status(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_qoder_auth_status(
+    db: State<'_, AppDatabase>,
+    personal_access_token: Option<String>,
+) -> Result<crate::acp::types::QoderAuthStatus, AcpError> {
+    Ok(acp_qoder_auth_status_core(&db, personal_access_token).await)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn acp_cursor_list_models(
     db: State<'_, AppDatabase>,
     api_key: Option<String>,
@@ -8563,6 +8809,21 @@ fn agent_env_keys(agent_type: AgentType) -> (&'static str, &'static str, &'stati
             "DEEPSEEK_BASE_URL",
             "DEEPSEEK_API_KEY",
             "DEEPSEEK_ACP_MODEL",
+        ),
+        // Qoder's non-interactive credential is `QODER_PERSONAL_ACCESS_TOKEN`
+        // — "设置后自动使用 PAT 认证" in the 1.1.23 package's own README, and the
+        // only way to authenticate a headless/server/Docker install, where the
+        // `qoder login` browser flow cannot run. (An interactive login still
+        // outranks it; the credential itself lives in the machine key store.)
+        // `QODER_MODEL` is real too — the README lists it as the env twin of
+        // `-m/--model`. There is NO endpoint override, so the base-url slot
+        // stays an inert `QODER_BASE_URL` placeholder for the same reason
+        // `CURSOR_MODEL` above is one: it keeps the generic cascade off the
+        // OPENAI_* keys. `QODER_API_KEY` was never a thing Qoder reads.
+        AgentType::Qoder => (
+            "QODER_BASE_URL",
+            "QODER_PERSONAL_ACCESS_TOKEN",
+            "QODER_MODEL",
         ),
         _ => ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"),
     }
@@ -8986,6 +9247,15 @@ fn cascade_update_agent_config(
             // as a runtime env var through the generic agent settings panel;
             // it has no codeg-managed config file and does not participate in
             // the model-provider credential cascade.
+        }
+        AgentType::Qoder => {
+            // Qoder talks only to Qoder's own service — no endpoint override
+            // and no BYO-provider key — so it stays off the model-provider
+            // credential cascade even though its env slots are real. The PAT
+            // (`QODER_PERSONAL_ACCESS_TOKEN`) is set directly in the agent's
+            // env, and while codeg DOES manage a Qoder config file
+            // (`settings.json`, via the Qoder settings panel), that file holds
+            // no credentials for the cascade to reconcile.
         }
         AgentType::Custom(_) => {
             // Custom agents are deliberately configuration-free: codeg writes
@@ -9947,7 +10217,6 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
         } else {
             None
         };
-
         agents.push(AcpAgentInfo {
             agent_type,
             registry_id: registry::registry_id_for(agent_type).to_string(),
@@ -10547,6 +10816,20 @@ pub(crate) async fn acp_update_agent_config_core(
             if !merged.trim().is_empty() {
                 persist_cursor_cli_config(&merged)?;
             }
+        }
+        emit_acp_agents_updated(emitter, "config_updated", Some(agent_type));
+        return Ok(());
+    }
+
+    if agent_type == AgentType::Qoder {
+        // The Qoder panel edits `<QODER_CONFIG_DIR>/settings.json` as a whole
+        // document, and that file IS Qoder's `agent_local_config_path` — so it
+        // arrives through the generic `config_json` channel but must NOT fall
+        // through to the merge-persist at the end of this function, which cannot
+        // delete a key. Hence the early return: the user authored the whole
+        // document, so it is written verbatim.
+        if let Some(text) = config_json.as_deref() {
+            persist_qoder_settings(text)?;
         }
         emit_acp_agents_updated(emitter, "config_updated", Some(agent_type));
         return Ok(());
@@ -14663,6 +14946,31 @@ wire_api = "chat"
     }
 
     #[tokio::test]
+    async fn qoder_probe_env_materializes_the_token() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+
+        // The form value wins over saved env and is trimmed.
+        let env = qoder_probe_env(&db, Some("  pat-123  ")).await;
+        assert_eq!(
+            env.get("QODER_PERSONAL_ACCESS_TOKEN").map(String::as_str),
+            Some("pat-123")
+        );
+
+        // No token on screen → present but empty, so `run_qoder_probe` strips
+        // any inherited one instead of probing a credential a launch wouldn't use.
+        let cleared = qoder_probe_env(&db, Some("")).await;
+        assert_eq!(
+            cleared.get("QODER_PERSONAL_ACCESS_TOKEN").map(String::as_str),
+            Some("")
+        );
+        let unset = qoder_probe_env(&db, None).await;
+        assert_eq!(
+            unset.get("QODER_PERSONAL_ACCESS_TOKEN").map(String::as_str),
+            Some("")
+        );
+    }
+
+    #[tokio::test]
     async fn cursor_probe_env_materializes_key_and_scrubs_base_url() {
         let db = crate::db::test_helpers::fresh_in_memory_db().await;
 
@@ -16388,7 +16696,7 @@ wire_api = "chat"
                     .expect("npx recipe must pin via --package");
                 assert_eq!(
                     argv.get(pkg_idx + 1).map(String::as_str),
-                    Some("hermes-agent@0.20.1")
+                    Some("hermes-agent@0.20.4")
                 );
                 assert_eq!(argv.get(pkg_idx + 2).map(String::as_str), Some("hermes"));
             } else {
@@ -17000,7 +17308,7 @@ model = "gpt"
             )
         };
 
-        let annotated = annotate_npm_bootstrap_failure("hermes-agent@0.20.1", download());
+        let annotated = annotate_npm_bootstrap_failure("hermes-agent@0.20.4", download());
         let text = annotated.to_string();
         assert!(text.contains("fetch failed"), "keeps the original error");
         assert!(text.contains("HTTP(S)_PROXY"), "adds the proxy hint");
@@ -17012,7 +17320,7 @@ model = "gpt"
 
         // A hermes failure that isn't a download stays untouched.
         let permissions = annotate_npm_bootstrap_failure(
-            "hermes-agent@0.20.1",
+            "hermes-agent@0.20.4",
             AcpError::Protocol("failed to install npm package globally: EACCES".to_string()),
         );
         assert!(!permissions.to_string().contains("HTTP(S)_PROXY"));

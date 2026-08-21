@@ -47,6 +47,22 @@ const UPDATE_GOAL_SUFFIX_RE = /[^a-z0-9]update_goal$/
 const ASK_USER_QUESTION_SUFFIX_RE = /[^a-z0-9]ask_user_question$/
 const CHECK_USER_FEEDBACK_SUFFIX_RE = /[^a-z0-9]check_user_feedback$/
 
+/**
+ * The codeg-mcp workbench companions, which own `CodegMcpToolCard`. Same
+ * bare-name-plus-suffix treatment as the delegation tools above: the bare form
+ * is what the live path produces post-`inferLiveToolName`, the suffix form is
+ * the raw `mcp__<server>__<tool>` name the history parsers keep.
+ */
+const CODEG_MCP_WORKBENCH_NAMES: ReadonlySet<string> = new Set([
+  "get_session_info",
+  "task_progress",
+  "task_complete",
+  "create_automation",
+  "create_work_task",
+])
+const CODEG_MCP_WORKBENCH_SUFFIX_RE =
+  /[^a-z0-9](?:get_session_info|task_progress|task_complete|create_automation|create_work_task)$/
+
 export function isAgentLikeToolName(toolName: string): boolean {
   const name = toolName.toLowerCase().trim()
   if (name === "agent") return true
@@ -90,6 +106,8 @@ export function isAgentLikeToolName(toolName: string): boolean {
   if (UPDATE_GOAL_SUFFIX_RE.test(name)) return true
   if (ASK_USER_QUESTION_SUFFIX_RE.test(name)) return true
   if (CHECK_USER_FEEDBACK_SUFFIX_RE.test(name)) return true
+  if (CODEG_MCP_WORKBENCH_NAMES.has(name)) return true
+  if (CODEG_MCP_WORKBENCH_SUFFIX_RE.test(name)) return true
   return false
 }
 

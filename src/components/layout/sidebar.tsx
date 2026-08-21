@@ -6,7 +6,7 @@ import {
   Funnel,
   ListChevronsDownUp,
   ListChevronsUpDown,
-  Search,
+  LayoutTemplate,
   ListTodo,
   SquarePen,
   Zap,
@@ -16,7 +16,6 @@ import { useTranslations } from "next-intl"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useSidebarContext } from "@/contexts/sidebar-context"
 import { useTabActions } from "@/contexts/tab-context"
-import { useSearchDialog } from "@/contexts/search-dialog-context"
 import { useAutomationsView } from "@/contexts/automations-view-context"
 import { useTasksView } from "@/contexts/tasks-view-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
@@ -64,7 +63,7 @@ import {
 import { SidebarSectionOrderControl } from "./sidebar-section-order-control"
 import { cn } from "@/lib/utils"
 
-// Keyboard-shortcut hint at the trailing edge of the New chat / Search rows.
+// Keyboard-shortcut hint at the trailing edge of the New chat row.
 // Mirrors the folder count badge exactly — same chip (0.9375rem height,
 // 0.3125rem radius, bg-primary/10, text-primary, 0.625rem text) per the request
 // to match it. That pairing is also solidly legible (text-primary on
@@ -132,7 +131,6 @@ export function Sidebar() {
   const { isOpen, toggle } = useSidebarContext()
   const { activeFolder } = useActiveFolder()
   const { openNewConversationTab, openChatModeTab } = useTabActions()
-  const { setOpen: setSearchOpen } = useSearchDialog()
   const { unseenFailures } = useAutomationsView()
   const { attentionCount } = useTasksView()
   const { routeId, setRoute, openConversations } = useWorkbenchRoute()
@@ -160,10 +158,6 @@ export function Sidebar() {
     DEFAULT_SECTION_ORDER
   )
   const [allExpanded, setAllExpanded] = useState(true)
-  const searchShortcutLabel = formatShortcutLabel(
-    shortcuts.toggle_search,
-    isMac
-  )
   const newConversationShortcutLabel = formatShortcutLabel(
     shortcuts.new_conversation,
     isMac
@@ -445,21 +439,13 @@ export function Sidebar() {
             ) : null
           }
         />
-        <SidebarNavButton
-          icon={Search}
-          label={t("search")}
-          onClick={() => setSearchOpen(true)}
-          trailing={
-            searchShortcutLabel ? (
-              <kbd className={SHORTCUT_BADGE_CLASS}>{searchShortcutLabel}</kbd>
-            ) : null
-          }
-        />
+        {/* Search is deliberately NOT a row here: it moved to the fixed top-left
+            window chrome (`LeftEdgeChrome`, plus the mobile `FolderTitleBar`),
+            which — unlike this sidebar — never unmounts, so the button survives
+            a collapse. ⌘K still works from anywhere. */}
         {/* Both route rows close the mobile Sheet on the way out, like tapping a
             conversation card (handled by the list wrapper below) — otherwise the
-            page they just opened stays hidden behind the sidebar. "Search" above
-            is deliberately left alone: it opens a dialog that sits on top of the
-            sidebar, and closing it would only cost the user their place. */}
+            page they just opened stays hidden behind the sidebar. */}
         <SidebarNavButton
           icon={Zap}
           label={t("automations")}
@@ -493,6 +479,15 @@ export function Sidebar() {
               </span>
             ) : null
           }
+        />
+        <SidebarNavButton
+          icon={LayoutTemplate}
+          label={t("forge")}
+          active={routeId === "forge"}
+          onClick={() => {
+            if (isMobile) toggle()
+            setRoute("forge")
+          }}
         />
       </div>
 

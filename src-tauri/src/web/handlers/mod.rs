@@ -16,6 +16,7 @@ pub mod files;
 pub mod folder_commands;
 pub mod folder_links;
 pub mod folders;
+pub mod forge;
 pub mod git;
 pub mod logging;
 pub mod mcp;

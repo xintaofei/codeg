@@ -56,6 +56,7 @@ function renderCard(
     onRequeue: noop,
     onViewSession: noop,
     onMerge: noop,
+    onDeliverPr: noop,
     onUnqueueMerge: noop,
     onComplete: noop,
     onArchive: noop,

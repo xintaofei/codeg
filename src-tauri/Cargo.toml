@@ -1,6 +1,6 @@
 [package]
 name = "codeg"
-version = "0.26.1"
+version = "0.26.2"
 description = "Agent Code Generation App"
 authors = ["feitao"]
 edition = "2021"
@@ -28,6 +28,7 @@ tauri-runtime = [
     "dep:tauri-plugin-process",
     "dep:tauri-plugin-notification",
     "dep:tauri-plugin-single-instance",
+    "dep:tauri-plugin-autostart",
     "dep:keyring",
 ]
 # Exposes test scaffolding (`AppState::new_for_test`, `EventEmitter::test_web_only`,
@@ -145,6 +146,9 @@ tauri-plugin-updater = { version = "2", optional = true }
 tauri-plugin-process = { version = "2", optional = true }
 tauri-plugin-notification = { version = "2", optional = true }
 tauri-plugin-single-instance = { version = "2", optional = true }
+# "Launch at login" toggle. Desktop-only: registry Run key on Windows, a
+# LaunchAgent plist on macOS, an XDG autostart .desktop entry on Linux.
+tauri-plugin-autostart = { version = "2", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mac-notification-sys = "0.6"

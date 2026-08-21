@@ -47,6 +47,7 @@ import {
 } from "@/components/ai-elements/reasoning"
 import { AgentToolCallPart } from "./agent-tool-call"
 import { AskQuestionResultCard } from "./ask-question-result-card"
+import { CodegMcpToolCard } from "./codeg-mcp-tool-card"
 import { CollabAgentCard } from "./collab-agent-card"
 import {
   ContextCompactionCard,
@@ -69,6 +70,7 @@ import {
   WAIT_TOOL_NAME,
 } from "@/lib/shell-session-tool"
 import { COLLAB_AGENT_TOOL_NAME } from "@/lib/collab-tool"
+import { isCodegMcpWorkbenchTool } from "@/lib/codeg-mcp-tool"
 import { DelegatedSubThread } from "./delegated-sub-thread"
 import { DelegationStatusCard } from "./delegation-status-card"
 import { DelegationStatusGroupCard } from "./delegation-status-group-card"
@@ -2682,6 +2684,22 @@ const ToolCallPart = memo(function ToolCallPart({
   if (toolNameLower === "check_user_feedback") {
     return (
       <FeedbackCheckResultCard
+        output={part.output ?? null}
+        errorText={part.errorText ?? null}
+        state={part.state}
+      />
+    )
+  }
+
+  // The remaining codeg-mcp workbench companions (session lookup, work-task
+  // reporting, chat authoring). One compact line stating what the call was
+  // about, in the same visual language as the delegation cards, instead of the
+  // generic tool shell's raw argument dump.
+  if (isCodegMcpWorkbenchTool(toolNameLower)) {
+    return (
+      <CodegMcpToolCard
+        tool={toolNameLower}
+        input={part.input ?? null}
         output={part.output ?? null}
         errorText={part.errorText ?? null}
         state={part.state}

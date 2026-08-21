@@ -9,6 +9,7 @@ import {
 import { getCodegToken } from "./transport/web-auth"
 import { notifyWebUnauthorized } from "./transport/web-connection-store"
 import { getCurrentEffectiveAppLocale } from "./i18n"
+import { DEFAULT_FORGE_PAGE_SIZE } from "./forge-list-prefs"
 import { TurnBusyError, isTurnInProgressRejection } from "./turn-busy"
 import type { FolderThemeColor } from "./theme-presets"
 import type { FollowUpIntent } from "./task-follow-up"
@@ -19,6 +20,14 @@ import type {
   Automation,
   AutomationRun,
   AutomationDraft,
+  ForgeCreateResult,
+  ForgeIssueList,
+  ForgeLabelList,
+  ForgeRemote,
+  ForgeSort,
+  ForgeTab,
+  ForgeTaskDraftInput,
+  ForgeTaskLink,
   WorkTask,
   WorkTaskChangedFile,
   WorkTaskConfig,
@@ -47,6 +56,7 @@ import type {
   CursorStructuredConfig,
   CursorAuthStatus,
   CursorModelsResult,
+  QoderAuthStatus,
   CodexModelInfo,
   AgentSkillScope,
   AgentSkillLayout,
@@ -112,6 +122,7 @@ import type {
   SystemLanguageSettings,
   SystemProxySettings,
   SystemRenderingSettings,
+  SystemAutostartSettings,
   SystemTerminalSettings,
   LogSettings,
   LogSettingsView,
@@ -579,6 +590,17 @@ export async function acpUpdateAgentConfig(
     cursorCliConfigJson: params.cursor_cli_config_json ?? null,
     cursorStructured: params.cursor_structured ?? null,
   })
+}
+
+/**
+ * Probe `qoder status -o json` for the Qoder auth card. The optional live
+ * personal access token lets the probe report on the credential that is on
+ * screen rather than a stale saved one.
+ */
+export async function acpQoderAuthStatus(
+  personalAccessToken?: string
+): Promise<QoderAuthStatus> {
+  return getTransport().call("acp_qoder_auth_status", { personalAccessToken })
 }
 
 /**
@@ -1570,6 +1592,16 @@ export async function updateSystemRenderingSettings(
   return getTransport().call("update_system_rendering_settings", { settings })
 }
 
+export async function getSystemAutostartSettings(): Promise<SystemAutostartSettings> {
+  return getTransport().call("get_system_autostart_settings")
+}
+
+export async function updateSystemAutostartSettings(
+  settings: SystemAutostartSettings
+): Promise<SystemAutostartSettings> {
+  return getTransport().call("update_system_autostart_settings", { settings })
+}
+
 // --- Logging ---
 
 /** Live-tail channel: one event per appended log record. */
@@ -1661,6 +1693,15 @@ export async function validateGitHubToken(
   token: string
 ): Promise<GitHubTokenValidation> {
   return getTransport().call("validate_github_token", { serverUrl, token })
+}
+
+/** Same answer shape as GitHub's, from `GET /api/v4/user` (+ the token's own
+ *  scopes, which GitLab reports on a separate endpoint). */
+export async function validateGitLabToken(
+  serverUrl: string,
+  token: string
+): Promise<GitHubTokenValidation> {
+  return getTransport().call("validate_gitlab_token", { serverUrl, token })
 }
 
 export async function updateGitHubAccounts(
@@ -2639,6 +2680,7 @@ export type SettingsSection =
   | "experts"
   | "science"
   | "office-tools"
+  | "version-control"
   | "shortcuts"
   | "system"
 
@@ -3138,12 +3180,14 @@ export async function workTaskStart(id: number): Promise<void> {
 export async function workTaskRetry(
   id: number,
   note?: string | null,
-  blocks?: PromptInputBlock[] | null
+  blocks?: PromptInputBlock[] | null,
+  allowDuplicateSource?: boolean
 ): Promise<void> {
   return getTransport().call("work_task_retry", {
     id,
     note: note ?? null,
     blocks: stripUploadedTaskBlocks(blocks),
+    allowDuplicateSource: allowDuplicateSource ?? false,
   })
 }
 
@@ -3154,12 +3198,14 @@ export async function workTaskRetry(
 export async function workTaskRequeue(
   id: number,
   note?: string | null,
-  blocks?: PromptInputBlock[] | null
+  blocks?: PromptInputBlock[] | null,
+  allowDuplicateSource?: boolean
 ): Promise<void> {
   return getTransport().call("work_task_requeue", {
     id,
     note: note ?? null,
     blocks: stripUploadedTaskBlocks(blocks),
+    allowDuplicateSource: allowDuplicateSource ?? false,
   })
 }
 
@@ -3220,6 +3266,22 @@ export async function workTaskMerge(
     message,
     deleteWorktree,
   })
+}
+
+/** Accept a reviewed forge-sourced task by pushing it back: an issue's task
+ *  publishes its branch and opens (or adopts) a pull request, a pull request's
+ *  task pushes onto that pull request's own branch (where `title`/`draft` are
+ *  ignored — nothing is created). Resolves with the pull request URL.
+ *
+ *  Unlike the merge dispatch this awaits the WHOLE operation — no agent runs,
+ *  just a push and two REST calls — so a rejection is the real reason and the
+ *  task is already back in review by the time it surfaces. */
+export async function workTaskDeliverPr(
+  id: number,
+  prTitle: string | null,
+  draft: boolean
+): Promise<string> {
+  return getTransport().call("work_task_deliver_pr", { id, prTitle, draft })
 }
 
 /** Withdraw a merge waiting in the project's queue; the task stays in review. */
@@ -4824,4 +4886,116 @@ export async function scanExternalConflictsWeb(
     { uploadId, passphrase: passphrase ?? null },
     { timeoutMs: BACKUP_LONG_CALL_TIMEOUT_MS }
   )
+}
+
+// ── Forge workbench (Issues/PR) ────────────────────────────────────────────
+
+/** The folder's `origin` remote parsed into forge coordinates, if any. */
+export async function folderForgeRemote(
+  folderId: number
+): Promise<ForgeRemote | null> {
+  return getTransport().call("folder_forge_remote", { folderId })
+}
+
+/** Everything the client gets to decide about a list request. The REPOSITORY
+ *  is deliberately absent: the backend derives it from the folder's own remote,
+ *  so there is nothing here to claim (see `commands/forge.rs`). */
+export interface ForgeListQuery {
+  tab: ForgeTab
+  state?: "open" | "closed" | "all"
+  assignedMe?: boolean
+  /** Label names, ANDed by both forges. */
+  labels?: string[]
+  /** Free text over title and description. Treated as TEXT, not query syntax. */
+  search?: string | null
+  sort?: ForgeSort
+  /** 1-based. Both forges paginate by offset; the backend clamps. */
+  page?: number
+  perPage?: number
+  accountId?: string | null
+}
+
+export async function forgeListIssues(
+  folderId: number,
+  query: ForgeListQuery
+): Promise<ForgeIssueList> {
+  return getTransport().call("forge_list_issues", {
+    folderId,
+    query: {
+      tab: query.tab,
+      state: query.state ?? "open",
+      assignedMe: query.assignedMe ?? false,
+      labels: query.labels ?? [],
+      search: query.search ?? null,
+      sort: query.sort ?? "newest",
+      page: query.page ?? 1,
+      perPage: query.perPage ?? DEFAULT_FORGE_PAGE_SIZE,
+      accountId: query.accountId ?? null,
+    },
+  })
+}
+
+/** Everything a COUNT may be narrowed by. No page and no order: neither can
+ *  change the number, which is what lets the switcher survive a page turn
+ *  without spending a request. */
+export interface ForgeCountFilters {
+  state?: "open" | "closed" | "all"
+  assignedMe?: boolean
+  labels?: string[]
+  search?: string | null
+  accountId?: string | null
+}
+
+/** One tab's count — a badge on the workbench's switcher — or null when the
+ *  forge declines to count, the probe fails, or GitHub calls the search
+ *  incomplete.
+ *
+ *  Ask only for the tab you are NOT showing. The visible tab's count already
+ *  came back inside its own list response, and re-asking would make every
+ *  filter change cost three search calls against a quota of thirty a MINUTE. */
+export async function forgeTabCount(
+  folderId: number,
+  tab: ForgeTab,
+  filters: ForgeCountFilters = {}
+): Promise<number | null> {
+  return getTransport().call("forge_tab_count", {
+    folderId,
+    tab,
+    filters: {
+      state: filters.state ?? "open",
+      assignedMe: filters.assignedMe ?? false,
+      labels: filters.labels ?? [],
+      search: filters.search ?? null,
+      accountId: filters.accountId ?? null,
+    },
+  })
+}
+
+/** The repository's labels, for the workbench's label filter. Its own call
+ *  (and its own cache in the page): labels change far more slowly than the
+ *  list, and on GitHub this runs on the core quota rather than search's
+ *  30-per-minute one. */
+export async function forgeListLabels(
+  folderId: number,
+  accountId?: string | null
+): Promise<ForgeLabelList> {
+  return getTransport().call("forge_list_labels", {
+    folderId,
+    accountId: accountId ?? null,
+  })
+}
+
+/** Trigger a work task from an issue. Duplicate / folder-mismatch come back
+ *  as discriminated outcomes for the dialog to act on, not as errors. */
+export async function workTaskCreateFromForge(
+  draft: ForgeTaskDraftInput
+): Promise<ForgeCreateResult> {
+  return getTransport().call("work_task_create_from_forge", { draft })
+}
+
+/** Latest task per source key (any state) — drives the row chips. */
+export async function workTaskLookupBySource(
+  sourceKeys: string[]
+): Promise<ForgeTaskLink[]> {
+  return getTransport().call("work_task_lookup_by_source", { sourceKeys })
 }

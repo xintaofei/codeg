@@ -41,6 +41,8 @@ mod m20260814_000001_message_search;
 mod m20260815_000001_search_match_locations;
 mod m20260817_000001_work_task_conversation_title;
 mod m20260818_000001_short_fts_detail_column;
+mod m20260818_000001_work_task_source;
+mod m20260819_000001_work_task_completion_kind;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -88,6 +90,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20260815_000001_search_match_locations::Migration),
             Box::new(m20260817_000001_work_task_conversation_title::Migration),
             Box::new(m20260818_000001_short_fts_detail_column::Migration),
+            Box::new(m20260818_000001_work_task_source::Migration),
+            Box::new(m20260819_000001_work_task_completion_kind::Migration),
         ]
     }
 }

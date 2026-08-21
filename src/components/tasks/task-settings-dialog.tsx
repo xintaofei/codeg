@@ -10,6 +10,7 @@ import {
   GitMerge,
   Info,
   Merge,
+  MessageSquare,
   MessageSquarePlus,
   PackagePlus,
   ShieldCheck,
@@ -218,6 +219,7 @@ function TaskSettingsBody({
     "squash"
   )
   const [autoMerge, setAutoMerge] = useState(false)
+  const [forgeWriteback, setForgeWriteback] = useState(false)
   const [deleteWorktreeDefault, setDeleteWorktreeDefault] = useState(true)
   const [worktreeRoot, setWorktreeRoot] = useState("")
   const [initCommand, setInitCommand] = useState("")
@@ -259,6 +261,7 @@ function TaskSettingsBody({
         setMaxConcurrent(String(s.max_concurrent))
         setMergeStrategy(s.merge_strategy === "merge" ? "merge" : "squash")
         setAutoMerge(s.auto_merge)
+        setForgeWriteback(s.forge_writeback ?? false)
         setDeleteWorktreeDefault(s.delete_worktree_default)
         setWorktreeRoot(s.worktree_root ?? "")
         setInitCommand(s.init_command ?? "")
@@ -317,6 +320,7 @@ function TaskSettingsBody({
         max_concurrent: Number.isFinite(parsed) && parsed >= 0 ? parsed : 2,
         merge_strategy: mergeStrategy,
         auto_merge: autoMerge,
+        forge_writeback: forgeWriteback,
         delete_worktree_default: deleteWorktreeDefault,
         // Blank = the default layout (next to the project folder), which is
         // also what an absent field means to the engine — so an emptied box
@@ -600,6 +604,22 @@ function TaskSettingsBody({
                       id="task-delete-worktree"
                       checked={deleteWorktreeDefault}
                       onCheckedChange={setDeleteWorktreeDefault}
+                    />
+                  }
+                />
+                {/* Last row of the card because it is the last thing that
+                    happens — and the only one that writes somewhere other
+                    people are watching, which is why it ships off. */}
+                <SettingRow
+                  icon={MessageSquare}
+                  title={t("settingsForgeWriteback")}
+                  description={t("settingsForgeWritebackHint")}
+                  htmlFor="task-forge-writeback"
+                  control={
+                    <Switch
+                      id="task-forge-writeback"
+                      checked={forgeWriteback}
+                      onCheckedChange={setForgeWriteback}
                     />
                   }
                 />

@@ -8,6 +8,7 @@ import {
   Globe,
   Loader2,
   Trash2,
+  Gitlab,
   XCircle,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -34,6 +35,7 @@ import {
   getGitHubAccounts,
   updateGitHubAccounts,
   validateGitHubToken,
+  validateGitLabToken,
   getAccountToken,
   deleteAccountToken,
 } from "@/lib/api"
@@ -43,16 +45,27 @@ import type {
   GitHubAccountsSettings,
 } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
-import { AddGitHubAccountDialog } from "./add-github-account-dialog"
+import { AddForgeAccountDialog } from "./add-forge-account-dialog"
 import { AddGitAccountDialog } from "./add-git-account-dialog"
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Which section an account belongs in. A DECLARED provider decides it outright
+ * — that is the whole point of the field, and the only thing that can tell a
+ * self-hosted GitLab from a GitHub Enterprise by looking at it. Accounts stored
+ * before the field existed keep the rule they were filed under: github.com in
+ * the GitHub section, everything else among the plain git credentials.
+ */
 function isGitHubAccount(account: GitHubAccount): boolean {
-  const url = account.server_url.toLowerCase()
-  return url.includes("github.com")
+  if (account.provider) return account.provider === "github"
+  return account.server_url.toLowerCase().includes("github.com")
+}
+
+function isGitLabAccount(account: GitHubAccount): boolean {
+  return account.provider === "gitlab"
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +76,7 @@ function AccountRow({
   account,
   testingId,
   onTest,
+  onRotate,
   onSetDefault,
   onRemove,
   t,
@@ -70,6 +84,9 @@ function AccountRow({
   account: GitHubAccount
   testingId: string | null
   onTest: (account: GitHubAccount) => void
+  /** Replace this account's token in place. Offered only for forge accounts,
+   *  because they are the ones tasks pin by id — see the dialog's comment. */
+  onRotate?: (account: GitHubAccount) => void
   onSetDefault: (id: string) => void
   onRemove: (account: GitHubAccount) => void
   t: ReturnType<typeof useTranslations<"VersionControlSettings">>
@@ -124,6 +141,11 @@ function AccountRow({
             t("testConnection")
           )}
         </Button>
+        {onRotate && (
+          <Button size="xs" variant="ghost" onClick={() => onRotate(account)}>
+            {t("updateToken")}
+          </Button>
+        )}
         {!account.is_default && (
           <Button
             size="xs"
@@ -163,6 +185,8 @@ export function VersionControlSettings() {
     accounts: [],
   })
   const [addGitHubOpen, setAddGitHubOpen] = useState(false)
+  const [addGitLabOpen, setAddGitLabOpen] = useState(false)
+  const [rotateTarget, setRotateTarget] = useState<GitHubAccount | null>(null)
   const [addGitOpen, setAddGitOpen] = useState(false)
   const [testingAccountId, setTestingAccountId] = useState<string | null>(null)
   const [removeTarget, setRemoveTarget] = useState<GitHubAccount | null>(null)
@@ -172,8 +196,15 @@ export function VersionControlSettings() {
     () => accounts.accounts.filter(isGitHubAccount),
     [accounts]
   )
+  const gitlabAccounts = useMemo(
+    () => accounts.accounts.filter(isGitLabAccount),
+    [accounts]
+  )
   const gitAccounts = useMemo(
-    () => accounts.accounts.filter((a) => !isGitHubAccount(a)),
+    () =>
+      accounts.accounts.filter(
+        (a) => !isGitHubAccount(a) && !isGitLabAccount(a)
+      ),
     [accounts]
   )
 
@@ -241,13 +272,18 @@ export function VersionControlSettings() {
 
   const handleAccountAdded = useCallback(
     async (account: GitHubAccount) => {
+      // Replace in place when the id is already known: that is a token
+      // rotation, and appending would leave two rows claiming one identity.
+      const known = accounts.accounts.some((a) => a.id === account.id)
+      const others = accounts.accounts.map((a) =>
+        account.is_default && a.id !== account.id
+          ? { ...a, is_default: false }
+          : a
+      )
       const updated: GitHubAccountsSettings = {
-        accounts: [
-          ...accounts.accounts.map((a) =>
-            account.is_default ? { ...a, is_default: false } : a
-          ),
-          account,
-        ],
+        accounts: known
+          ? others.map((a) => (a.id === account.id ? account : a))
+          : [...others, account],
       }
       try {
         const saved = await updateGitHubAccounts(updated)
@@ -270,8 +306,11 @@ export function VersionControlSettings() {
           toast.error(t("connectionFailed", { message: "Token not found" }))
           return
         }
-        if (isGitHubAccount(account)) {
-          const result = await validateGitHubToken(account.server_url, token)
+        if (isGitHubAccount(account) || isGitLabAccount(account)) {
+          const validate = isGitLabAccount(account)
+            ? validateGitLabToken
+            : validateGitHubToken
+          const result = await validate(account.server_url, token)
           if (result.success) {
             toast.success(t("connectionSuccess"))
           } else {
@@ -462,6 +501,7 @@ export function VersionControlSettings() {
                   account={account}
                   testingId={testingAccountId}
                   onTest={handleTestConnection}
+                  onRotate={setRotateTarget}
                   onSetDefault={handleSetDefault}
                   onRemove={setRemoveTarget}
                   t={t}
@@ -472,6 +512,44 @@ export function VersionControlSettings() {
 
           <div className="flex justify-end">
             <Button size="sm" onClick={() => setAddGitHubOpen(true)}>
+              {t("addAccount")}
+            </Button>
+          </div>
+        </section>
+
+        {/* ---- GitLab Accounts ---- */}
+        <section className="rounded-xl border bg-card p-4 space-y-4">
+          <div className="flex items-center gap-2">
+            <Gitlab className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold">{t("gitlabTitle")}</h2>
+          </div>
+          <p className="text-xs text-muted-foreground leading-5">
+            {t("gitlabDescription")}
+          </p>
+
+          {gitlabAccounts.length === 0 ? (
+            <div className="rounded-md border border-dashed bg-muted/10 px-4 py-6 text-center text-xs text-muted-foreground">
+              {t("gitlabNoAccounts")}
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {gitlabAccounts.map((account) => (
+                <AccountRow
+                  key={account.id}
+                  account={account}
+                  testingId={testingAccountId}
+                  onTest={handleTestConnection}
+                  onRotate={setRotateTarget}
+                  onSetDefault={handleSetDefault}
+                  onRemove={setRemoveTarget}
+                  t={t}
+                />
+              ))}
+            </div>
+          )}
+
+          <div className="flex justify-end">
+            <Button size="sm" onClick={() => setAddGitLabOpen(true)}>
               {t("addAccount")}
             </Button>
           </div>
@@ -518,12 +596,31 @@ export function VersionControlSettings() {
       </div>
 
       {/* Dialogs */}
-      <AddGitHubAccountDialog
+      <AddForgeAccountDialog
+        provider="github"
         open={addGitHubOpen}
         onOpenChange={setAddGitHubOpen}
         onAccountAdded={handleAccountAdded}
         isFirstAccount={accounts.accounts.length === 0}
       />
+      <AddForgeAccountDialog
+        provider="gitlab"
+        open={addGitLabOpen}
+        onOpenChange={setAddGitLabOpen}
+        onAccountAdded={handleAccountAdded}
+        isFirstAccount={accounts.accounts.length === 0}
+      />
+      {rotateTarget && (
+        <AddForgeAccountDialog
+          key={rotateTarget.id}
+          provider={isGitLabAccount(rotateTarget) ? "gitlab" : "github"}
+          existing={rotateTarget}
+          open
+          onOpenChange={(open) => !open && setRotateTarget(null)}
+          onAccountAdded={handleAccountAdded}
+          isFirstAccount={false}
+        />
+      )}
       <AddGitAccountDialog
         open={addGitOpen}
         onOpenChange={setAddGitOpen}

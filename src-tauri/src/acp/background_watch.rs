@@ -232,7 +232,7 @@ async fn run_watch(
     // to account, classify, and ledger-consume. A RESUMED session's history
     // predates this instant and is skipped. Baselining blindly at EOF on
     // first discovery used to drop that pre-discovery window: the ack never
-    // registered (no keep-alive/chip) and the first prompt's ledger entry
+    // registered (no keep-alive) and the first prompt's ledger entry
     // lingered, able to swallow a later same-text cron refire.
     let spawn_epoch = std::time::SystemTime::now();
     let mut first_arm_done = false;
@@ -700,23 +700,11 @@ impl WatchState {
         // existing card in-memory from this payload (`resolveBackgroundTask`)
         // rather than issuing the `refetchDetail` it used to — see §3.2.
         // `outstanding`/`watermark` are computed independently and untouched by
-        // this filter, so the sweep-exemption/chip accounting stays accurate.
-        //
-        // Instead of dropping a held-turn settle we TAG it: `wire_visible` marks
-        // a settle whose task belongs to a turn #870 is holding open (its id is
-        // still in `current_turn_launched_ids`), so its reply is already on the
-        // wire. The frontend reads this to skip arming the "syncing results"
-        // hint for such a settle (there's no gap to bridge) — a backend-derived
-        // classification, correct even when this tick reads the settlement after
-        // the turn already fell back to `Connected` (the set isn't cleared until
-        // the next rising edge).
+        // this filter, so the sweep-exemption accounting stays accurate.
         changed_turns.retain(|t| {
             let origin = self.turn_origin_task_ids.remove(&t.id).flatten();
             !matches!(origin, Some(task_id) if self.current_turn_launched_ids.contains(&task_id))
         });
-        for s in settled.iter_mut() {
-            s.wire_visible = self.current_turn_launched_ids.contains(&s.task_id);
-        }
 
         let outstanding = self.tasks.len() as u32;
         let accounting_changed =
@@ -913,9 +901,6 @@ impl WatchState {
                                 summary,
                                 tool_use_id,
                                 result,
-                                // Set in `tick()` from `current_turn_launched_ids`
-                                // once the whole batch has been read.
-                                wire_visible: false,
                             });
                         }
                     }
@@ -2127,10 +2112,6 @@ mod tests {
             "settle must carry the launching tool_use_id for the in-memory flip"
         );
         assert_eq!(settled[0].result.as_deref(), Some("Build OK"));
-        assert!(
-            settled[0].wire_visible,
-            "a held-turn task's settle is wire-visible → frontend must not arm the syncing hint"
-        );
     }
 
     /// The exact real-world race that broke a naive "is_prompting right now"
@@ -2176,12 +2157,11 @@ mod tests {
             "must still suppress the overlay for an arbitrarily-delayed read, got {turns:?}"
         );
         assert_eq!(outstanding, 0);
-        // Settle still flows (un-suppressed) so the card can flip; wire_visible
-        // holds even though this tick read it after the falling edge (the set
-        // isn't cleared until the next rising edge).
+        // Settle still flows (un-suppressed) so the card can flip, even though
+        // this tick read it after the falling edge (the set isn't cleared until
+        // the next rising edge).
         assert_eq!(settled.len(), 1);
         assert_eq!(settled[0].tool_use_id.as_deref(), Some("toolu_01"));
-        assert!(settled[0].wire_visible);
     }
 
     /// A turn that ends ABNORMALLY (cancelled, refused, etc — the same
@@ -2228,10 +2208,6 @@ mod tests {
             1,
             "the notification must fire — nothing else will tell the user"
         );
-        assert!(
-            !settled[0].wire_visible,
-            "an abnormally-ended turn released the id → reply not wire-visible, overlay shows it"
-        );
     }
 
     /// A background shell launched while `Prompting` must NOT enter
@@ -2272,10 +2248,6 @@ mod tests {
             settled.len(),
             1,
             "a shell's notification must never be suppressed"
-        );
-        assert!(
-            !settled[0].wire_visible,
-            "a shell is never in the launched set → not wire-visible"
         );
     }
 
@@ -2329,10 +2301,6 @@ mod tests {
         // The settle still flows to re-flip the card for the resumed run.
         assert_eq!(settled.len(), 1);
         assert_eq!(settled[0].tool_use_id.as_deref(), Some("toolu_01"));
-        assert!(
-            settled[0].wire_visible,
-            "the resuming turn holds it open → wire-visible"
-        );
     }
 
     /// A cron//loop autonomous turn has no originating task id at all (its

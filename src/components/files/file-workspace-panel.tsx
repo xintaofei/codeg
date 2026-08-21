@@ -2085,6 +2085,10 @@ export function FileWorkspacePanel() {
     // rehype-harden mangles them: relative ones against the document's own
     // directory, root-relative ones ("/assets/x.png") against the preview
     // root (owning folder when inside the workspace, else the directory).
+    // Deliberately NOT `escapeWindowsPathSeparators` (see
+    // ai-elements/windows-path-escape.ts): this renders a real Markdown
+    // DOCUMENT, where `\.` → `.` is correct CommonMark and the author's escapes
+    // are theirs to keep. That transform is for agent-authored chat text only.
     const preprocessedContent = normalizeMathDelimiters(
       localRefsEnabled
         ? preprocessMarkdownPaths(renderedContent, fileDir ?? "", previewRoot)

@@ -1884,13 +1884,9 @@ describe("out-of-turn wire guard + background activity", () => {
       watermark: 4096,
     })
 
-    // 1. outstanding mirrored onto the connection (sweep exemption + chip);
-    //    the settlement arms the "syncing results" bridge state (the agent's
-    //    reaction turn is being generated).
+    // 1. outstanding mirrored onto the connection (teardown gates only —
+    //    nothing renders the count).
     expect(h.store!.getConnection(TAB)?.backgroundOutstanding).toBe(2)
-    expect(h.store!.getConnection(TAB)?.backgroundSettleSyncingSince).toEqual(
-      expect.any(Number)
-    )
 
     // 2. overlay turn upserted into the runtime session — under the RUNTIME
     //    key (that's the session the panel renders).
@@ -1937,66 +1933,6 @@ describe("out-of-turn wire guard + background activity", () => {
         ?.backgroundTurns
     ).toHaveLength(1)
     expect(notify).toHaveBeenCalledTimes(1)
-    // Accounting-only events keep the syncing bridge armed — the reaction
-    // turn hasn't surfaced yet.
-    expect(h.store!.getConnection(TAB)?.backgroundSettleSyncingSince).toEqual(
-      expect.any(Number)
-    )
-
-    // The reaction turn arriving (turns-only event) disarms the bridge.
-    emitAcpEvent(handlers, {
-      seq: 3,
-      connection_id: "spawned-conn",
-      type: "background_activity",
-      session_id: "sess-1",
-      turns: [
-        {
-          id: "bg-100-1",
-          role: "assistant",
-          blocks: [{ type: "text", text: "here is what the build produced" }],
-          timestamp: "2026-07-07T03:47:12.000Z",
-        },
-      ],
-      outstanding: 0,
-      watermark: 4400,
-    })
-    expect(h.store!.getConnection(TAB)?.backgroundSettleSyncingSince).toBeNull()
-
-    resetConversationRuntimeStore()
-  })
-
-  it("does NOT arm the syncing-results hint for a wire-visible (#870-held) settle", async () => {
-    const { resetConversationRuntimeStore } =
-      await import("@/stores/conversation-runtime-store")
-    resetConversationRuntimeStore()
-    const handlers = await mountOwnerConnection()
-
-    // #870: the launching turn is held OPEN and the sub-agent's reply streams
-    // live as the tail of that held turn — the backend marks the settle
-    // `wire_visible: true`. There is no "results not yet visible" gap, so the
-    // hint must stay hidden (not strand on "Syncing background results…" until
-    // the 30s cap). Gated on the backend flag, NOT the connection status, so it
-    // holds even if this event is delivered after the turn returns to connected.
-    emitAcpEvent(handlers, {
-      seq: 1,
-      connection_id: "spawned-conn",
-      type: "background_activity",
-      session_id: "sess-1",
-      outstanding: 0,
-      settled: [
-        {
-          task_id: "agent1",
-          status: "completed",
-          tool_use_id: "toolu_01",
-          result: "done",
-          wire_visible: true,
-        },
-      ],
-      watermark: 100,
-    })
-
-    expect(h.store!.getConnection(TAB)?.backgroundOutstanding).toBe(0)
-    expect(h.store!.getConnection(TAB)?.backgroundSettleSyncingSince).toBeNull()
 
     resetConversationRuntimeStore()
   })

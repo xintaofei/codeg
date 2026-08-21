@@ -14,6 +14,7 @@ import { BookOpenText } from "lucide-react"
 import type { RichComposerHandle } from "@/components/chat/composer/rich-composer"
 import {
   placeAnchoredPopup,
+  readViewport,
   type PopupPosition,
 } from "@/components/chat/composer/suggestion/popup-position"
 import {
@@ -295,7 +296,7 @@ export function ComposerInvocationsPopup({
         placeAnchoredPopup(
           { left: anchor.left, top: anchor.top, bottom: anchor.bottom },
           { width: anchor.width, height: rect.height },
-          { width: window.innerWidth, height: window.innerHeight },
+          readViewport(),
           { prefer: "below" }
         )
       )
@@ -303,9 +304,18 @@ export function ComposerInvocationsPopup({
     reposition()
     window.addEventListener("resize", reposition)
     window.addEventListener("scroll", reposition, true)
+    // The on-screen keyboard opening is a visual-viewport event and nothing
+    // else — it need not resize the layout viewport — so without these the
+    // panel keeps the geometry it was measured with while the band it has to
+    // fit inside shrinks underneath it.
+    const visual = window.visualViewport ?? null
+    visual?.addEventListener("resize", reposition)
+    visual?.addEventListener("scroll", reposition)
     return () => {
       window.removeEventListener("resize", reposition)
       window.removeEventListener("scroll", reposition, true)
+      visual?.removeEventListener("resize", reposition)
+      visual?.removeEventListener("scroll", reposition)
     }
   }, [inv.isOpen, itemCount, anchorWidth])
 

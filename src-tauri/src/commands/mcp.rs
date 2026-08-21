@@ -66,6 +66,9 @@ pub enum McpAppType {
     /// agent means the MCP page rejects an app the agents page accepts.
     #[serde(rename = "deepseek")]
     DeepSeek,
+    /// Serializes as `qoder` — the same spelling `AgentType::as_wire` returns
+    /// (snake_case would agree here; pinned by the wire-name test regardless).
+    Qoder,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -420,6 +423,7 @@ pub async fn mcp_upsert_local_server(
         McpAppType::Grok,
         McpAppType::Cursor,
         McpAppType::DeepSeek,
+        McpAppType::Qoder,
     ];
 
     for app in all_apps {
@@ -496,6 +500,7 @@ pub async fn mcp_remove_server(
             McpAppType::Grok,
             McpAppType::Cursor,
             McpAppType::DeepSeek,
+            McpAppType::Qoder,
         ],
     };
 
@@ -2521,6 +2526,109 @@ fn remove_deepseek_server_at(path: &Path, id: &str) -> Result<bool, AppCommandEr
     Ok(removed)
 }
 
+// ---------------------------------------------------------------------------
+// Qoder  (~/.qoder/settings.json  →  top-level `mcpServers`)
+//
+// Qoder inherits gemini-cli's settings schema: user-global MCP servers live in
+// the top-level `mcpServers` object of `<QODER_CONFIG_DIR>/settings.json`
+// (default `~/.qoder/settings.json`), alongside unrelated keys the CLI owns
+// (`securityScan`, `permissions.trustDirectories`, `security.auth`,
+// `model.name`, …) and a per-project `projects` map. Writes therefore MUST be
+// read-modify-write merges that leave every other key — including formatting
+// order — untouched, exactly like the Gemini writer for the same schema.
+//
+// The CLI reads this file itself at startup, so Qoder sits ON the ACP forward
+// skip list in `connection.rs` (with Hermes/Kimi/Grok/Cursor): forwarding the
+// same servers again through `session/new.mcpServers` would double-mount
+// them. Transports: the verified handshake advertises `mcpCapabilities`
+// http+sse, and stdio entries are the gemini-shaped `command`/`args`/`env` —
+// so unlike Codex/DeepSeek there is no SSE refusal here.
+// ---------------------------------------------------------------------------
+
+fn qoder_settings_path() -> PathBuf {
+    crate::parsers::qoder::resolve_qoder_config_dir().join("settings.json")
+}
+
+fn read_qoder_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
+    read_qoder_servers_at(&qoder_settings_path())
+}
+
+fn read_qoder_servers_at(path: &Path) -> Result<BTreeMap<String, Value>, AppCommandError> {
+    let root = read_json_file(path)?;
+    let mut out = BTreeMap::new();
+
+    let Some(servers) = root.get("mcpServers").and_then(Value::as_object) else {
+        return Ok(out);
+    };
+
+    for (id, spec) in servers {
+        match canonicalize_spec(spec, "Qoder config") {
+            Ok(normalized) => {
+                out.insert(id.to_string(), normalized);
+            }
+            Err(err) => {
+                tracing::warn!("[MCP] skip invalid Qoder MCP entry id={id}: {err}");
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+fn upsert_qoder_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
+    upsert_qoder_server_at(&qoder_settings_path(), id, spec)
+}
+
+fn upsert_qoder_server_at(path: &Path, id: &str, spec: &Value) -> Result<(), AppCommandError> {
+    let mut root = read_json_file(path)?;
+    if !root.is_object() {
+        root = json!({});
+    }
+
+    let canonical = canonicalize_spec(spec, "Qoder write")?;
+
+    let obj = root.as_object_mut().ok_or_else(|| {
+        mcp_configuration_invalid(format!("invalid JSON root in {}", path.display()))
+    })?;
+    if !obj.get("mcpServers").map(Value::is_object).unwrap_or(false) {
+        obj.insert("mcpServers".to_string(), Value::Object(Map::new()));
+    }
+
+    let map = obj
+        .get_mut("mcpServers")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| {
+            mcp_configuration_invalid(format!("invalid mcpServers in {}", path.display()))
+        })?;
+    map.insert(id.to_string(), canonical);
+
+    write_json_file(path, &root)
+}
+
+fn remove_qoder_server(id: &str) -> Result<bool, AppCommandError> {
+    remove_qoder_server_at(&qoder_settings_path(), id)
+}
+
+fn remove_qoder_server_at(path: &Path, id: &str) -> Result<bool, AppCommandError> {
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    let mut root = read_json_file(path)?;
+    let Some(obj) = root.as_object_mut() else {
+        return Ok(false);
+    };
+    let Some(servers) = obj.get_mut("mcpServers").and_then(Value::as_object_mut) else {
+        return Ok(false);
+    };
+
+    let removed = servers.remove(id).is_some();
+    if removed {
+        write_json_file(path, &root)?;
+    }
+    Ok(removed)
+}
+
 fn scan_local_servers() -> Result<Vec<LocalMcpServer>, AppCommandError> {
     let mut merged: BTreeMap<String, (Value, BTreeSet<McpAppType>)> = BTreeMap::new();
 
@@ -2608,6 +2716,13 @@ fn scan_local_servers() -> Result<Vec<LocalMcpServer>, AppCommandError> {
         entry.1.insert(McpAppType::DeepSeek);
     }
 
+    for (id, spec) in read_qoder_servers()? {
+        let entry = merged
+            .entry(id)
+            .or_insert_with(|| (spec.clone(), BTreeSet::new()));
+        entry.1.insert(McpAppType::Qoder);
+    }
+
     Ok(merged
         .into_iter()
         .map(|(id, (spec, apps))| LocalMcpServer {
@@ -2637,6 +2752,7 @@ fn upsert_server_for_app(app: McpAppType, id: &str, spec: &Value) -> Result<(), 
         McpAppType::Grok => upsert_grok_server(id, spec),
         McpAppType::Cursor => upsert_cursor_server(id, spec),
         McpAppType::DeepSeek => upsert_deepseek_server(id, spec),
+        McpAppType::Qoder => upsert_qoder_server(id, spec),
     }
 }
 
@@ -2665,6 +2781,10 @@ pub fn read_servers_for_agent_type(
         // unlike Kimi/Grok/Cursor, DeepSeek must stay OFF the forward skip
         // list in `connection.rs` or these servers never arrive.
         AgentType::DeepSeek => read_deepseek_servers(),
+        // Qoder reads MCP servers from its own settings.json `mcpServers`
+        // (gemini-schema settings file) at startup — see the Qoder section
+        // above for why it rides the forward skip list instead of the wire.
+        AgentType::Qoder => read_qoder_servers(),
         // Custom agents get MCP purely over the ACP wire (`session/new`'s
         // `mcpServers`); codeg deliberately knows nothing about their native
         // config files, so there is no per-agent store to read back here.
@@ -3586,6 +3706,7 @@ fn remove_server_for_app(app: McpAppType, id: &str) -> Result<bool, AppCommandEr
         McpAppType::Grok => remove_grok_server(id),
         McpAppType::Cursor => remove_cursor_server(id),
         McpAppType::DeepSeek => remove_deepseek_server(id),
+        McpAppType::Qoder => remove_qoder_server(id),
     }
 }
 
@@ -5608,6 +5729,125 @@ mod tests {
     }
 
     #[test]
+    fn qoder_settings_json_round_trips_and_preserves_foreign_keys() {
+        // `~/.qoder/settings.json` is QODER'S file, not codeg's: the CLI owns
+        // unrelated keys beside `mcpServers` (`securityScan`, `security.auth`,
+        // `model.name`, the `projects` map, …). Every write must be a
+        // read-modify-write merge that leaves those keys intact — the property
+        // that separates this writer from DeepSeek's own-store writer above.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+
+        assert!(read_qoder_servers_at(&path)
+            .expect("read missing")
+            .is_empty());
+        assert!(!remove_qoder_server_at(&path, "ctx7").expect("remove missing"));
+
+        // A realistic settings.json: foreign keys plus one valid server and
+        // one entry too malformed to canonicalize (exercises the skip path
+        // on read — codeg must skip it, never rewrite the file to "fix" it).
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&json!({
+                "securityScan": true,
+                "security": { "auth": { "provider": "qoder-account" } },
+                "model": { "name": "qmodel_38max" },
+                "permissions": { "trustDirectories": true },
+                "mcpServers": {
+                    "existing": { "command": "uvx", "args": ["mcp-existing"] },
+                    "broken": {}
+                }
+            }))
+            .expect("seed json"),
+        )
+        .expect("seed settings.json");
+
+        upsert_qoder_server_at(
+            &path,
+            "ctx7",
+            &json!({
+                "command": "npx",
+                "args": ["-y", "ctx7-mcp"],
+                "env": { "TOKEN": "t" },
+            }),
+        )
+        .expect("upsert");
+        // Qoder's verified handshake advertises http+sse — a url-only entry
+        // canonicalizes to http, and neither remote transport is refused
+        // (unlike Codex/DeepSeek in `app_can_host_spec`).
+        upsert_qoder_server_at(
+            &path,
+            "remote",
+            &json!({ "url": "https://mcp.example.com/mcp" }),
+        )
+        .expect("upsert remote");
+        assert!(app_can_host_spec(
+            McpAppType::Qoder,
+            &json!({ "type": "sse", "url": "https://mcp.example.com/sse" })
+        ));
+
+        let servers = read_qoder_servers_at(&path).expect("read back");
+        assert_eq!(servers.len(), 3, "valid entries only — broken is skipped");
+        assert_eq!(
+            servers
+                .get("ctx7")
+                .and_then(|s| s.get("command"))
+                .and_then(Value::as_str),
+            Some("npx")
+        );
+        assert_eq!(
+            servers
+                .get("remote")
+                .and_then(|s| s.get("type"))
+                .and_then(Value::as_str),
+            Some("http")
+        );
+        assert_eq!(
+            servers
+                .get("existing")
+                .and_then(|s| s.get("command"))
+                .and_then(Value::as_str),
+            Some("uvx")
+        );
+
+        // The merge promise: after both writes, every foreign key and the
+        // skipped malformed entry are still on disk.
+        let root: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read file"))
+                .expect("parse json");
+        assert_eq!(root.pointer("/securityScan"), Some(&json!(true)));
+        assert_eq!(
+            root.pointer("/model/name"),
+            Some(&json!("qmodel_38max"))
+        );
+        assert_eq!(
+            root.pointer("/permissions/trustDirectories"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            root.pointer("/mcpServers/existing/command"),
+            Some(&json!("uvx"))
+        );
+        assert!(
+            root.pointer("/mcpServers/broken").is_some(),
+            "the malformed entry stays on disk — skipping it must not rewrite it away"
+        );
+
+        // Remove takes only the targeted server; a missing id returns false
+        // without rewriting, and the foreign keys survive the final write too.
+        assert!(remove_qoder_server_at(&path, "ctx7").expect("remove"));
+        assert!(!remove_qoder_server_at(&path, "nope").expect("remove missing id"));
+        let after = read_qoder_servers_at(&path).expect("read after remove");
+        assert_eq!(after.len(), 2);
+        assert!(after.contains_key("remote"));
+        assert!(after.contains_key("existing"));
+        let root: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("re-read"))
+                .expect("re-parse");
+        assert_eq!(root.pointer("/model/name"), Some(&json!("qmodel_38max")));
+    }
+
+    #[test]
     fn mcp_app_type_wire_names_match_the_agent_type_they_name() {
         use crate::models::agent::AgentType;
 
@@ -5631,6 +5871,7 @@ mod tests {
             (McpAppType::Grok, AgentType::Grok),
             (McpAppType::Cursor, AgentType::Cursor),
             (McpAppType::DeepSeek, AgentType::DeepSeek),
+            (McpAppType::Qoder, AgentType::Qoder),
         ] {
             let wire = serde_json::to_value(app).expect("serialize app type");
             assert_eq!(

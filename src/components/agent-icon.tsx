@@ -395,6 +395,26 @@ const GrokMonoIcon = memo(function GrokMonoIcon({ size = "1em" }: IconProps) {
   )
 })
 
+const QoderMonoIcon = memo(function QoderMonoIcon({ size = "1em" }: IconProps) {
+  // Qoder's Q mark — the official glyph from the ACP registry
+  // (cdn.agentclientprotocol.com/registry/v1/latest/qoder.svg), already
+  // authored in currentColor so it renders frameless like the other mono
+  // marks (Cursor's icon comes from the same registry CDN).
+  return (
+    <svg
+      fill="currentColor"
+      height={size}
+      style={baseSvgStyle}
+      viewBox="0 0 16 16"
+      width={size}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <title>Qoder</title>
+      <path d="M8 1C4.134 1 1 4.134 1 8s3.134 7 7 7c1.5 0 2.9-.47 4.05-1.28l1.12 1.12a.75.75 0 1 0 1.06-1.06l-1.12-1.12A6.97 6.97 0 0 0 15 8c0-3.866-3.134-7-7-7Zm0 2c2.761 0 5 2.239 5 5s-2.239 5-5 5-5-2.239-5-5 2.239-5 5-5Z" />
+    </svg>
+  )
+})
+
 const CursorMonoIcon = memo(function CursorMonoIcon({
   size = "1em",
 }: IconProps) {
@@ -436,6 +456,7 @@ const MONO_ICONS: Partial<Record<AgentType, AnyIcon>> = {
   code_buddy: CodeBuddyMonoIcon,
   grok: GrokMonoIcon,
   cursor: CursorMonoIcon,
+  qoder: QoderMonoIcon,
 }
 
 // Per-agent color override for mono marks, layered on top of the default

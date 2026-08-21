@@ -10,6 +10,19 @@
 //! purely "does a link exist in the agent's skill dir" — there is no
 //! database state, and updates propagate automatically when codeg upgrades
 //! and re-extracts the bundled files.
+//!
+//! `experts/skills/` is vendored from upstream `skills/` verbatim, so a
+//! version bump is an `rsync --delete` plus a `diff -rq` check. The one
+//! deliberate exception is `writing-skills/package.json`: upstream declares
+//! `"type": "module"` once at its repo root, which covers `render-graphs.js`
+//! (ESM since v6.3.0). We extract skill directories standalone, so that
+//! declaration never comes along and Node falls back to CommonJS — the
+//! script then dies on `import` for anyone below Node 22.7, where ESM
+//! auto-detection is off. The marker has to live in the bundle rather than
+//! be written at extraction time: `install_or_refresh_expert` compares the
+//! on-disk hash against the bundled one, so any file extraction invents
+//! reads as user modification and gets backed up on every launch. Re-add it
+//! after each sync.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -791,6 +804,7 @@ fn supported_agents() -> Vec<AgentType> {
         AgentType::Grok,
         AgentType::Cursor,
         AgentType::DeepSeek,
+        AgentType::Qoder,
     ];
     // Custom agents that declared the shared skills store join the built-in
     // set — the same `skill_storage_spec` gate every skills surface uses, so

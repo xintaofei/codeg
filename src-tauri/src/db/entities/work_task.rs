@@ -4,8 +4,11 @@ use serde::{Deserialize, Serialize};
 /// Lifecycle of a work task. The pipeline is
 /// `todo → queued → preparing → running ⇄ awaiting_input → review → merging →
 /// done`, with `failed` / `canceled` as side paths. Two hard invariants:
-/// - `done` ⟺ merged: only the merge landing (or its crash recovery) writes
-///   `done`, and `done` never rolls back.
+/// - `done` ⟺ an ACCEPTED final success, and it never rolls back. Three ways
+///   in — the merge landing (or its crash recovery), a delivery to a pull
+///   request, and an explicit acceptance with nothing to land — each recording
+///   which one it was in `completion_kind`. All three pass through `review`
+///   first: nothing reaches `done` unseen.
 /// - Every transition is a conditional UPDATE (CAS) guarded by the expected
 ///   status (and, for engine-driven transitions, the current `run_seq`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
@@ -96,6 +99,11 @@ pub struct Model {
     pub additions: Option<i32>,
     pub deletions: Option<i32>,
     pub merge_commit: Option<String>,
+    /// How this task reached `done`: 'merged' | 'delivered_pr' |
+    /// 'accepted_without_merge'. NULL on every non-done row, and on done rows
+    /// that predate the column. Written in the same transaction as the status,
+    /// so a `done` row never carries an unexplained ending.
+    pub completion_kind: Option<String>,
     /// JSON `WorkTaskPreflight` — result of the folder's preflight command run
     /// when this generation settled into review (P2 acceptance light).
     #[sea_orm(column_type = "Text")]
@@ -108,6 +116,18 @@ pub struct Model {
     /// exactly once — and every explicit claim clears it too, because a task
     /// that already started has no start left to plan.
     pub scheduled_at: Option<DateTimeUtc>,
+    /// Forge provenance: 'forge_issue' | 'forge_pr'; NULL = not forge-sourced.
+    /// Set once at creation by the forge trigger command, never by the public
+    /// create/update DTO paths, and never mutated afterwards.
+    pub source_kind: Option<String>,
+    /// Canonical lookup/dedup key (`forge::source_key` output). Queried — the
+    /// one exception to `config`'s "never queried" rule, which is exactly why
+    /// it is a column and not part of `config`.
+    pub source_key: Option<String>,
+    /// JSON snapshot of the source (URL, title, account id, PR head/base …).
+    /// Same discipline as `config`: replayed/displayed, never queried.
+    #[sea_orm(column_type = "Text")]
+    pub source_meta: Option<String>,
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
     pub started_at: Option<DateTimeUtc>,

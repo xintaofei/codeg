@@ -153,6 +153,115 @@ async fn handle_acp_envelope(
                         )
                         .await;
                     }
+                    // A CONFLICT is permanent and disqualifying: the session
+                    // belongs to a different conversation row, so this route
+                    // will never be able to hold it. Dispatching the kickoff
+                    // would file the task's opening turn into the HOLDER row's
+                    // transcript while every event named this one.
+                    //
+                    // The ROUTE is torn down, not just this one prompt.
+                    // Withholding the kickoff alone would be illusory in two
+                    // ways: `pending_prompt` is picked up again by the
+                    // `TurnComplete` arm below, which re-sends a deferred
+                    // kickoff WITHOUT re-checking ownership; and the bridge
+                    // entry would survive, so the remote user's NEXT message
+                    // finds it and dispatches through `send_prompt` just the
+                    // same. Either way the turn lands in the holder row's
+                    // transcript.
+                    //
+                    // So this takes the file's established terminal path,
+                    // identical to a terminal `AcpEvent::Error`: drop the
+                    // bridge entry, tell the requester, mark the conversation
+                    // `Cancelled`, and clear the persisted channel→session
+                    // route. The connection itself is deliberately NOT
+                    // cancelled — the terminal-error path does not either, and
+                    // another surface may legitimately own it.
+                    //
+                    // Every OTHER error keeps the previous behaviour and falls
+                    // through to the send. Those are dominated by transient
+                    // SQLite contention, and `pending_prompt` is consumed by
+                    // `.take()` below — tearing the route down for one would
+                    // kill a session that was about to work.
+                    //
+                    // GATED ON THE EVENT STILL BEING CURRENT. A `Conflict`
+                    // proves the session in THIS envelope belongs elsewhere; it
+                    // does NOT prove the route is bad, because the envelope may
+                    // be stale. This subscriber and the lifecycle one drain the
+                    // bus independently, so after a fork advances the row from
+                    // S1 to S2 (leaving a sibling holding S1) a backed-up
+                    // `SessionStarted{S1}` still arrives here and conflicts
+                    // against that sibling — while the route itself is happily
+                    // on S2. Tearing down on that would destroy a healthy
+                    // session, which is strictly worse than the misfiling this
+                    // arm exists to prevent. Only act when the connection's
+                    // live session is still the one that just failed to bind;
+                    // anything else (including a connection that has already
+                    // gone away, where we cannot tell) falls back to the old
+                    // log-and-continue.
+                    Err(crate::db::error::DbError::Conflict(detail)) => {
+                        let channel_id = session.channel_id;
+                        let sender_id = session.sender_id.clone();
+                        let target = session.target.clone();
+                        let conv_id = session.conversation_id;
+
+                        let is_current = match conn_mgr.get_state(connection_id).await {
+                            Some(state) => {
+                                state.read().await.external_id.as_deref() == Some(session_id.as_str())
+                            }
+                            None => false,
+                        };
+                        if !is_current {
+                            tracing::warn!(
+                                conversation_id = conv_id,
+                                detail,
+                                stale_session = %session_id,
+                                "[SessionEventSub] stale SessionStarted conflicts; leaving the \
+                                 route alone because the connection has moved on"
+                            );
+                            return;
+                        }
+
+                        tracing::warn!(
+                            conversation_id = conv_id,
+                            detail,
+                            "[SessionEventSub] session belongs to another conversation; \
+                             tearing down the chat route rather than misfiling into it"
+                        );
+                        guard.remove(connection_id);
+                        drop(guard);
+
+                        // Persisted route cleared BEFORE the notification await.
+                        // `clear_session_route` deletes by (channel, sender,
+                        // target) with no compare-and-swap, so any await ahead
+                        // of it widens a window in which a REPLACEMENT route for
+                        // the same chat thread gets created and then wiped by
+                        // this handler. Nothing here needs the send to have
+                        // happened first.
+                        let _ = conversation_service::update_status(
+                            db,
+                            conv_id,
+                            crate::db::entities::conversation::ConversationStatus::Cancelled,
+                        )
+                        .await;
+                        clear_session_route(db, channel_id, &sender_id, &target).await;
+
+                        let lang = get_lang(db).await;
+                        let _ = manager
+                            .send_to_target(
+                                &target,
+                                &RichMessage::error(match lang {
+                                    Lang::ZhCn | Lang::ZhTw => {
+                                        "无法启动任务：该智能体会话已归属于另一个对话。"
+                                            .to_string()
+                                    }
+                                    _ => "Could not start the task: this agent session \
+                                          already belongs to another conversation."
+                                        .to_string(),
+                                }),
+                            )
+                            .await;
+                        return;
+                    }
                     Err(e) => tracing::warn!(
                         conversation_id = session.conversation_id,
                         error = %e,
@@ -1655,6 +1764,240 @@ mod error_terminal_gate_tests {
             saw_preserved,
             "the preserved conversation must be broadcast — a row the sidebar \
              never hears about is indistinguishable from the bug being fixed"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_started_tears_down_the_route_when_the_session_belongs_elsewhere() {
+        // A `Conflict` means the session is owned by a DIFFERENT conversation
+        // row, permanently — no retry changes that. Anything dispatched through
+        // this route lands in the HOLDER row's transcript while every event
+        // names this session's row.
+        //
+        // The teardown is asserted as hard as the not-sending, because two
+        // weaker remedies both fail. Leaving `pending_prompt` in place: the
+        // `TurnComplete` arm re-sends a deferred kickoff with no ownership
+        // re-check. Clearing the prompt but keeping the bridge entry: the
+        // remote user's next message finds the route and dispatches through it
+        // anyway. The second half of this test drives the first of those.
+        //
+        // The bail-out is narrowed to `Conflict` on purpose — every other bind
+        // error is dominated by transient SQLite contention, where tearing the
+        // route down would kill a session that was about to work.
+        use crate::acp::connection::ConnectionCommand;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let (bridge, conv_id) = seed_session(&db, "conn-owned-elsewhere").await;
+
+        // Another row already owns the session this connection is about to
+        // announce. Same agent_type as the seeded session — that is what the
+        // unique index, and the guard, key on.
+        let other_folder = test_helpers::seed_folder(&db, "/tmp/chat-conflict-holder").await;
+        let holder = conversation_service::create(
+            &db.conn,
+            other_folder,
+            AgentType::ClaudeCode,
+            Some("owns S_SHARED".into()),
+            None,
+        )
+        .await
+        .expect("holder");
+        conversation_service::bind_external_id(&db.conn, holder.id, "S_SHARED", &[])
+            .await
+            .expect("seed holder");
+
+        let conn_mgr = ConnectionManager::new();
+        // LIVE (receiver kept) so a send would actually reach the gate — a
+        // dropped receiver would fail earlier for the wrong reason and the test
+        // would pass without proving anything.
+        let mut cmd_rx = conn_mgr
+            .insert_test_connection_live(
+                "conn-owned-elsewhere",
+                AgentType::ClaudeCode,
+                None,
+                EventEmitter::Noop,
+            )
+            .await;
+        // The connection's LIVE session is the one that is about to fail to
+        // bind — i.e. this envelope is current, not a straggler. The teardown is
+        // gated on exactly this.
+        conn_mgr
+            .get_state("conn-owned-elsewhere")
+            .await
+            .unwrap()
+            .write()
+            .await
+            .external_id = Some("S_SHARED".into());
+        bridge
+            .lock()
+            .await
+            .get_mut("conn-owned-elsewhere")
+            .unwrap()
+            .pending_prompt = Some("do the task".into());
+
+        let envelope = EventEnvelope {
+            seq: 1,
+            connection_id: "conn-owned-elsewhere".to_string(),
+            payload: AcpEvent::SessionStarted {
+                session_id: "S_SHARED".to_string(),
+            },
+        };
+        handle_acp_envelope(
+            &envelope,
+            &bridge,
+            &ChatChannelManager::new(),
+            &conn_mgr,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
+
+        assert!(
+            !matches!(cmd_rx.try_recv(), Ok(ConnectionCommand::Prompt { .. })),
+            "a kickoff must not be dispatched into a session this row does not own"
+        );
+        assert!(
+            bridge.lock().await.get("conn-owned-elsewhere").is_none(),
+            "the bridge route must be GONE — a surviving entry is what the \
+             remote user's next message would dispatch through"
+        );
+        assert_eq!(
+            read_row_status(&db, conv_id).await,
+            ConversationStatus::Cancelled,
+            "the conversation the route pointed at must settle, not sit InProgress"
+        );
+
+        // The follow-up that makes the teardown load-bearing: a TurnComplete
+        // for another client's turn on the same connection picks up any
+        // deferred kickoff and sends it blind, and flips the row to Completed.
+        // With the route gone it must find nothing at all.
+        handle_acp_envelope(
+            &EventEnvelope {
+                seq: 2,
+                connection_id: "conn-owned-elsewhere".to_string(),
+                payload: AcpEvent::TurnComplete {
+                    session_id: "S_SHARED".to_string(),
+                    stop_reason: "end_turn".to_string(),
+                    agent_type: "claude_code".to_string(),
+                },
+            },
+            &bridge,
+            &ChatChannelManager::new(),
+            &conn_mgr,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
+        assert!(
+            !matches!(cmd_rx.try_recv(), Ok(ConnectionCommand::Prompt { .. })),
+            "TurnComplete must have no abandoned kickoff left to dispatch"
+        );
+        assert_eq!(
+            read_row_status(&db, conv_id).await,
+            ConversationStatus::Cancelled,
+            "a foreign TurnComplete must not mutate a row whose route is gone"
+        );
+
+        // Neither row moved.
+        assert_eq!(
+            conversation_service::get_by_id(&db.conn, conv_id)
+                .await
+                .expect("session row")
+                .external_id,
+            None
+        );
+        assert_eq!(
+            conversation_service::get_by_id(&db.conn, holder.id)
+                .await
+                .expect("holder")
+                .external_id
+                .as_deref(),
+            Some("S_SHARED")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stale_conflicting_session_started_leaves_a_healthy_route_alone() {
+        // The counterweight to the teardown above, and the reason it is gated.
+        //
+        // A `Conflict` proves the session in THIS envelope belongs to another
+        // row. It does NOT prove the route is bad. This subscriber and the
+        // lifecycle one drain the bus independently, so a fork that advanced
+        // the connection S1 → S2 (leaving a sibling row holding S1) can be
+        // followed by a backed-up `SessionStarted{S1}` landing here. That binds
+        // S1 onto a row that has moved on, hits the sibling, and returns
+        // Conflict — while the route is perfectly healthy on S2.
+        //
+        // Tearing down there would kill a working session to prevent a
+        // misfiling that cannot happen, which is a worse outcome than the bug.
+        let db = test_helpers::fresh_in_memory_db().await;
+        let (bridge, conv_id) = seed_session(&db, "conn-moved-on").await;
+
+        // The sibling left behind by the fork, holding the OLD session.
+        let sibling_folder = test_helpers::seed_folder(&db, "/tmp/chat-stale-sibling").await;
+        let sibling = conversation_service::create(
+            &db.conn,
+            sibling_folder,
+            AgentType::ClaudeCode,
+            Some("preserved S1".into()),
+            None,
+        )
+        .await
+        .expect("sibling");
+        conversation_service::bind_external_id(&db.conn, sibling.id, "S1", &[])
+            .await
+            .expect("seed sibling");
+        // The route's own row already advanced to S2.
+        conversation_service::bind_external_id(&db.conn, conv_id, "S2", &[])
+            .await
+            .expect("advance to S2");
+
+        let conn_mgr = ConnectionManager::new();
+        let _cmd_rx = conn_mgr
+            .insert_test_connection_live("conn-moved-on", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        // The LIVE session is S2 — S1 is a straggler.
+        conn_mgr
+            .get_state("conn-moved-on")
+            .await
+            .unwrap()
+            .write()
+            .await
+            .external_id = Some("S2".into());
+
+        handle_acp_envelope(
+            &EventEnvelope {
+                seq: 1,
+                connection_id: "conn-moved-on".to_string(),
+                payload: AcpEvent::SessionStarted {
+                    session_id: "S1".to_string(),
+                },
+            },
+            &bridge,
+            &ChatChannelManager::new(),
+            &conn_mgr,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
+
+        assert!(
+            bridge.lock().await.get("conn-moved-on").is_some(),
+            "a stale conflicting event must NOT tear down a healthy route"
+        );
+        assert_ne!(
+            read_row_status(&db, conv_id).await,
+            ConversationStatus::Cancelled,
+            "a stale conflicting event must not cancel a live conversation"
+        );
+        assert_eq!(
+            conversation_service::get_by_id(&db.conn, conv_id)
+                .await
+                .expect("route row")
+                .external_id
+                .as_deref(),
+            Some("S2"),
+            "the route's row keeps the session it actually moved to"
         );
     }
 
