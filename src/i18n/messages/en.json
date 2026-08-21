@@ -1759,6 +1759,8 @@
       "cacheRead": "Cache Read",
       "contextWindow": "Context Window",
       "duration": "Duration",
+      "outputSpeed": "Avg. output speed",
+      "outputSpeedTooltip": "Average while the model is writing. Time spent waiting on tools is not counted.",
       "loadingStats": "Loading token usage…",
       "loadFailed": "Failed to load token usage",
       "noStats": "No usage recorded",
@@ -1854,7 +1856,9 @@
         "output": "Output",
         "cacheRead": "Cache Read",
         "cacheWrite": "Cache Write",
-        "total": "Total"
+        "total": "Total",
+        "outputSpeed": "Output speed",
+        "outputSpeedTooltip": "Average while the model is writing. Time spent waiting on tools is not counted."
       },
       "quickActions": {
         "title": "Quick actions",
@@ -3007,8 +3011,8 @@
         "elapsedHours": "{value}h",
         "elapsedMinutes": "{value}m",
         "elapsedSeconds": "{value}s",
-        "outputSpeedAria": "Estimated output speed",
-        "outputSpeedTooltip": "Estimated output speed (text + thinking)"
+        "outputSpeedAria": "Output speed",
+        "outputSpeedTooltip": "While the model is writing. Time spent waiting on tools is not counted."
       },
       "jsonTree": {
         "viewRaw": "Show raw JSON",

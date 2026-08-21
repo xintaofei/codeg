@@ -1759,6 +1759,8 @@
       "cacheRead": "Cache lu",
       "contextWindow": "Fenêtre de contexte",
       "duration": "Durée",
+      "outputSpeed": "Vitesse de sortie moy.",
+      "outputSpeedTooltip": "Moyenne pendant que le modèle écrit. L'attente des outils n'est pas comptée.",
       "loadingStats": "Chargement de l'utilisation des tokens…",
       "loadFailed": "Échec du chargement de l'utilisation des tokens",
       "noStats": "Aucune utilisation enregistrée",
@@ -1854,7 +1856,9 @@
         "output": "Sortie",
         "cacheRead": "Lecture cache",
         "cacheWrite": "Écriture cache",
-        "total": "Total des tokens"
+        "total": "Total des tokens",
+        "outputSpeed": "Vitesse de sortie",
+        "outputSpeedTooltip": "Moyenne pendant que le modèle écrit. L'attente des outils n'est pas comptée."
       },
       "quickActions": {
         "title": "Actions rapides",
@@ -3007,8 +3011,8 @@
         "elapsedHours": "{value} h",
         "elapsedMinutes": "{value} min",
         "elapsedSeconds": "{value} s",
-        "outputSpeedAria": "Vitesse de sortie estimée",
-        "outputSpeedTooltip": "Vitesse de sortie estimée (texte + raisonnement)"
+        "outputSpeedAria": "Vitesse de sortie",
+        "outputSpeedTooltip": "Pendant que le modèle écrit. L'attente des outils n'est pas comptée."
       },
       "jsonTree": {
         "viewRaw": "Afficher le JSON brut",
