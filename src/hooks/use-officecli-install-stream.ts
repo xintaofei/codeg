@@ -1,5 +1,6 @@
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { subscribe } from "@/lib/platform"
+import { appendInstallLogLine } from "@/lib/install-stream"
 import type {
   OfficecliInstallEvent,
   OfficecliInstallEventKind,
@@ -45,14 +46,14 @@ export function useOfficecliInstallStream() {
           case "log":
             setState((prev) => ({
               ...prev,
-              logs: [...prev.logs, event.payload],
+              logs: appendInstallLogLine(prev.logs, event.payload),
             }))
             break
           case "completed":
             setState((prev) => ({
               ...prev,
               status: "success",
-              logs: [...prev.logs, event.payload],
+              logs: appendInstallLogLine(prev.logs, event.payload),
             }))
             unsubRef.current?.()
             break
@@ -61,7 +62,7 @@ export function useOfficecliInstallStream() {
               ...prev,
               status: "failed",
               error: event.payload,
-              logs: [...prev.logs, `ERROR: ${event.payload}`],
+              logs: appendInstallLogLine(prev.logs, `ERROR: ${event.payload}`),
             }))
             unsubRef.current?.()
             break
@@ -82,6 +83,16 @@ export function useOfficecliInstallStream() {
     unsubRef.current?.()
     unsubRef.current = null
     setState({ status: "idle", logs: [], error: null })
+  }, [])
+
+  // Unsubscribe on unmount: a panel closed mid-install must not leak the
+  // global event subscription (or setState after unmount).
+  useEffect(() => {
+    return () => {
+      cancelledRef.current = true
+      unsubRef.current?.()
+      unsubRef.current = null
+    }
   }, [])
 
   return { ...state, start, reset }

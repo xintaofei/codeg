@@ -2049,6 +2049,20 @@ impl CodexParser {
         path: &PathBuf,
         conversation_id: &str,
     ) -> Result<ConversationDetail, ParseError> {
+        // Serve repeat fetches of an unchanged rollout (viewer polls, "load
+        // older" pages) from the process-global detail cache instead of
+        // re-reading + re-parsing the whole file. See
+        // `summary_cache::detail_get_or_parse` for the freshness contract.
+        super::summary_cache::detail_get_or_parse(AgentType::Codex, path, || {
+            self.parse_conversation_detail_uncached(path, conversation_id)
+        })
+    }
+
+    fn parse_conversation_detail_uncached(
+        &self,
+        path: &PathBuf,
+        conversation_id: &str,
+    ) -> Result<ConversationDetail, ParseError> {
         let file = fs::File::open(path)?;
         let reader = BufReader::new(file);
 
@@ -4719,6 +4733,57 @@ mod tests {
             .expect("parse detail ok");
         let _ = fs::remove_file(path);
         detail
+    }
+
+    #[test]
+    fn detail_parse_cache_hit_is_byte_identical_and_invalidates_on_growth() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time ok")
+            .as_nanos();
+        let path: PathBuf =
+            env::temp_dir().join(format!("codeg-codex-detail-cache-{nanos}.jsonl"));
+        let base = concat!(
+            "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"cache-1\",\"cwd\":\"/tmp/demo\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5-codex\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:02Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"hi\"}}\n",
+            "{\"timestamp\":\"2026-03-01T10:00:03Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"hello\"}}\n",
+        );
+        fs::write(&path, base).expect("write rollout");
+
+        let parser = CodexParser::new();
+        let first = parser
+            .parse_conversation_detail(&path, "cache-1")
+            .expect("first parse");
+        // Second parse of the unchanged file is served from the detail cache —
+        // it must be byte-identical to the fresh parse.
+        let second = parser
+            .parse_conversation_detail(&path, "cache-1")
+            .expect("second parse");
+        assert!(!first.turns.is_empty());
+        assert_eq!(
+            serde_json::to_value(&first).unwrap(),
+            serde_json::to_value(&second).unwrap(),
+            "cache hit must be byte-identical to a fresh parse"
+        );
+
+        // Appending a turn changes the fingerprint → cache miss → fresh parse.
+        let mut grown = base.to_string();
+        grown.push_str(
+            "{\"timestamp\":\"2026-03-01T10:00:09Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"again\"}}\n",
+        );
+        fs::write(&path, grown).expect("grow rollout");
+        let third = parser
+            .parse_conversation_detail(&path, "cache-1")
+            .expect("third parse");
+        assert!(
+            third.turns.len() > first.turns.len(),
+            "growth must invalidate the cache ({} → {})",
+            first.turns.len(),
+            third.turns.len()
+        );
+
+        let _ = fs::remove_file(&path);
     }
 
     #[test]

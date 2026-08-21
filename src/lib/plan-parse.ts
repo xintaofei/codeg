@@ -205,6 +205,12 @@ export function kimiTodoWriteEntries(
   input: string | null | undefined
 ): PlanEntryInfo[] | null {
   if (!input) return null
+  // Cheap gate: a non-null result requires a top-level `todos` array, whose key
+  // always appears verbatim in the serialized input. This runs per tool_call on
+  // every 16ms streaming flush, and the overwhelming majority of tool calls
+  // (Read/Write/Bash/Edit — some with multi-KB `raw_input`) never carry one, so
+  // the substring scan lets us skip their JSON.parse entirely.
+  if (!input.includes('"todos"')) return null
   let parsed: unknown
   try {
     parsed = JSON.parse(input)

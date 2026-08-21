@@ -488,7 +488,12 @@ fn read_loop(
     terminals: &Arc<Mutex<HashMap<String, TerminalInstance>>>,
 ) {
     let output_event = format!("terminal://output/{}", terminal_id);
-    let mut buf = [0u8; 8192];
+    // 64KB read buffer instead of 8KB. A blocking `read` returns as soon as any
+    // bytes are available — it does not wait to fill the buffer — so interactive
+    // latency is unchanged, while bulk output (build logs, `cat` of a large
+    // file) is batched into ~8x fewer broadcast events. Heap-allocated to keep
+    // the thread stack small.
+    let mut buf = vec![0u8; 64 * 1024];
 
     loop {
         match reader.read(&mut buf) {
@@ -499,7 +504,7 @@ fn read_loop(
                     terminal_id: terminal_id.clone(),
                     data,
                 };
-                crate::web::event_bridge::emit_event(emitter, &output_event, event.clone());
+                crate::web::event_bridge::emit_event(emitter, &output_event, event);
             }
             Err(_) => break,
         }

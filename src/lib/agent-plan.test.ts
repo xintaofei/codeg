@@ -134,4 +134,40 @@ describe("extractLatestPlanEntriesFromMessages", () => {
       { content: "Step two", status: "in_progress", priority: "medium" },
     ])
   })
+
+  const reasoningMsg = (id: string, text: string): AdaptedMessage => ({
+    id,
+    role: "assistant",
+    timestamp: "2026-06-02T00:00:00.000Z",
+    content: [{ type: "reasoning", content: text, isStreaming: false }],
+  })
+
+  it("returns a stable shared empty reference for the no-plan case", () => {
+    const messages: AdaptedMessage[] = [
+      reasoningMsg("a1", "just thinking\nnothing actionable"),
+      reasoningMsg("a2", "more reasoning, still no plan"),
+    ]
+    const first = extractLatestPlanEntriesFromMessages(messages)
+    const second = extractLatestPlanEntriesFromMessages(messages)
+    expect(first).toEqual([])
+    // Same shared reference across calls — keeps the overlay memo stable
+    // across streaming batches instead of re-rendering on a fresh [].
+    expect(first).toBe(second)
+  })
+
+  it("extracts plan entries from reasoning text and memoizes per message", () => {
+    const messages: AdaptedMessage[] = [
+      reasoningMsg(
+        "a1",
+        "- [pending] Write tests\n- [completed] Read code (high)"
+      ),
+    ]
+    const expected = [
+      { content: "Write tests", status: "pending", priority: "medium" },
+      { content: "Read code", status: "completed", priority: "high" },
+    ]
+    expect(extractLatestPlanEntriesFromMessages(messages)).toEqual(expected)
+    // A second pass over the same message objects is served from the cache.
+    expect(extractLatestPlanEntriesFromMessages(messages)).toEqual(expected)
+  })
 })
