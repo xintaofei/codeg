@@ -4,6 +4,7 @@ import type { ComponentProps, ReactNode } from "react"
 
 import { useControllableState } from "@radix-ui/react-use-controllable-state"
 import { useTranslations } from "next-intl"
+import { AUTO_CLOSE_DELAY_MS } from "@/lib/auto-collapse-timing"
 import {
   Collapsible,
   CollapsibleContent,
@@ -58,7 +59,6 @@ export type ReasoningProps = ComponentProps<typeof Collapsible> & {
   expandable?: boolean
 }
 
-const AUTO_CLOSE_DELAY = 1000
 const MS_IN_S = 1000
 
 export const Reasoning = memo(
@@ -124,7 +124,7 @@ export const Reasoning = memo(
         const timer = setTimeout(() => {
           setIsOpen(false)
           setHasAutoClosed(true)
-        }, AUTO_CLOSE_DELAY)
+        }, AUTO_CLOSE_DELAY_MS)
 
         return () => clearTimeout(timer)
       }
