@@ -631,6 +631,17 @@ impl DelegationListener {
             .clone()
             .or_else(|| Some(entry.working_dir.to_string_lossy().to_string()));
 
+        // Optional per-call session mode. Blank/whitespace is treated as
+        // omitted so a model emitting `""` cannot clear the configured
+        // default by accident.
+        let permission_mode = req
+            .input
+            .get("permission_mode")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
         let delegation_req = DelegationRequest {
             parent_connection_id: req.parent_connection_id,
             parent_conversation_id,
@@ -639,6 +650,7 @@ impl DelegationListener {
             task,
             working_dir,
             requested_working_dir,
+            permission_mode,
             external_handle: req.external_handle,
         };
         self.broker.start_delegation(delegation_req).await
@@ -1337,6 +1349,7 @@ mod tests {
                 task: "do x".into(),
                 working_dir: None,
                 requested_working_dir: None,
+                permission_mode: None,
                 external_handle: None,
             })
             .await;
@@ -1490,6 +1503,7 @@ mod tests {
                         task: "do x".into(),
                         working_dir: None,
                         requested_working_dir: None,
+                        permission_mode: None,
                         external_handle: None,
                     })
                     .await
@@ -1592,6 +1606,7 @@ mod tests {
                 task: "do x".into(),
                 working_dir: None,
                 requested_working_dir: None,
+                permission_mode: None,
                 external_handle: None,
             })
             .await;
@@ -1643,6 +1658,7 @@ mod tests {
                     task: "do x".into(),
                     working_dir: None,
                     requested_working_dir: None,
+                    permission_mode: None,
                     external_handle: Some("h-1".into()),
                 };
                 broker.handle_request(req).await

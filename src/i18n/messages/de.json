@@ -3039,6 +3039,7 @@
         "subAgentRunning": "Unteragent läuft…",
         "noDetail": "No detail available yet.",
         "unknownAgent": "Sub-Agent",
+        "delegationPinnedMode": "Started in {mode} mode, pinned by the parent for this delegation",
         "openDetail": "Konversation anzeigen",
         "detailTitle": "Unteragent-Konversation",
         "detailDescription": "Schreibgeschützte Ansicht der delegierten Unteragent-Konversation.",
