@@ -24,6 +24,8 @@ const spies = vi.hoisted(() => ({
 }))
 const mockState = vi.hoisted(() => ({
   activeFolder: { id: 7, path: "/x" } as { id: number; path: string } | null,
+  // Settings → Appearance visibility of the fixed nav rows (default: all on).
+  navVisibility: { automations: true, tasks: true, forge: true },
 }))
 
 // The conversation list is irrelevant here — stub it so the test exercises only
@@ -82,6 +84,10 @@ vi.mock("@/hooks/use-shortcut-settings", () => ({
 vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => false }))
 vi.mock("@/hooks/use-appearance", () => ({
   useZoomLevel: () => ({ zoomLevel: 100, setZoomLevel: () => {} }),
+  useSidebarNavVisibility: () => ({
+    sidebarNavVisibility: mockState.navVisibility,
+    setSidebarNavItemVisible: vi.fn(),
+  }),
 }))
 
 function renderSidebar() {
@@ -144,6 +150,48 @@ describe("Sidebar — fixed nav region", () => {
     fireEvent.click(btn)
     expect(spies.openChatModeTab).toHaveBeenCalled()
     expect(spies.openNewConversationTab).not.toHaveBeenCalled()
+  })
+})
+
+describe("Sidebar — fixed nav visibility (Settings → Appearance)", () => {
+  beforeEach(() => {
+    mockState.navVisibility = { automations: true, tasks: true, forge: true }
+    mockState.activeFolder = { id: 7, path: "/x" }
+  })
+
+  it("shows every route row by default", () => {
+    const { getByText } = renderSidebar()
+    expect(getByText("Automations")).toBeTruthy()
+    expect(getByText("To-dos")).toBeTruthy()
+    expect(getByText("Repository panel")).toBeTruthy()
+  })
+
+  it("unmounts a hidden row entirely, leaving its neighbours alone", () => {
+    mockState.navVisibility = { automations: false, tasks: true, forge: true }
+    const { getByText, queryByText } = renderSidebar()
+    // Fully absent from the DOM — not CSS-hidden, so nothing focusable or
+    // announceable is left behind.
+    expect(queryByText("Automations")).toBeNull()
+    expect(getByText("To-dos")).toBeTruthy()
+    expect(getByText("Repository panel")).toBeTruthy()
+  })
+
+  it("hides the Repository panel row together with its Beta badge", () => {
+    mockState.navVisibility = { automations: true, tasks: true, forge: false }
+    const { queryByText } = renderSidebar()
+    expect(queryByText("Repository panel")).toBeNull()
+    expect(queryByText("Beta")).toBeNull()
+  })
+
+  it("keeps New chat even with every hideable row hidden", () => {
+    mockState.navVisibility = { automations: false, tasks: false, forge: false }
+    const { getByText, queryByText } = renderSidebar()
+    // New chat is deliberately not hideable — the primary entry point into the
+    // workspace survives any combination of the toggles.
+    expect(getByText("New chat")).toBeTruthy()
+    expect(queryByText("Automations")).toBeNull()
+    expect(queryByText("To-dos")).toBeNull()
+    expect(queryByText("Repository panel")).toBeNull()
   })
 })
 

@@ -173,6 +173,13 @@
       "sectionDescription": "The Code Development / Office Work shortcut cards shown above the composer on the new conversation page.",
       "showQuickActions": "Show on the new conversation page"
     },
+    "sidebarNav": {
+      "sectionTitle": "Sidebar navigation",
+      "sectionDescription": "Choose which fixed entries the sidebar shows above the conversation list. Hidden pages stay reachable from the quick actions menu in the status bar.",
+      "showAutomations": "Show Automations",
+      "showTasks": "Show To-dos",
+      "showForge": "Show Repository panel"
+    },
     "workspaceBackground": {
       "sectionTitle": "Workspace background",
       "sectionDescription": "Show a picture behind the whole workspace. Sidebar and panels turn translucent and frosted so the image shows through, and a mask keeps text readable.",

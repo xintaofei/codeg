@@ -173,6 +173,13 @@
       "sectionDescription": "Os cartões de atalho «Desenvolvimento / Escritório» exibidos acima do campo de entrada na página de nova conversa.",
       "showQuickActions": "Mostrar na página de nova conversa"
     },
+    "sidebarNav": {
+      "sectionTitle": "Navegação da barra lateral",
+      "sectionDescription": "Escolha quais entradas fixas a barra lateral mostra acima da lista de conversas. As páginas ocultas continuam acessíveis pelo menu de ações rápidas na barra de status.",
+      "showAutomations": "Mostrar Automações",
+      "showTasks": "Mostrar Tarefas a fazer",
+      "showForge": "Mostrar Painel do repositório"
+    },
     "workspaceBackground": {
       "sectionTitle": "Plano de fundo da área de trabalho",
       "sectionDescription": "Mostra uma imagem atrás de toda a área de trabalho. A barra lateral e os painéis ficam translúcidos e foscos para deixar a imagem transparecer, e uma máscara mantém o texto legível.",

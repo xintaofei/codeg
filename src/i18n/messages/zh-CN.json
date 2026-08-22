@@ -173,6 +173,13 @@
       "sectionDescription": "新会话页面输入框上方显示的「代码开发 / 日常办公」快捷卡片区域。",
       "showQuickActions": "在新会话页面显示"
     },
+    "sidebarNav": {
+      "sectionTitle": "侧边栏导航",
+      "sectionDescription": "选择侧边栏在会话列表上方显示哪些固定入口。隐藏的页面仍可通过状态栏的「快捷操作」菜单打开。",
+      "showAutomations": "显示自动化",
+      "showTasks": "显示待办任务",
+      "showForge": "显示仓库面板"
+    },
     "workspaceBackground": {
       "sectionTitle": "工作区背景",
       "sectionDescription": "在整个工作区背后显示一张图片。侧栏与面板会变半透明并磨砂让图片透出，遮罩保证文字可读。",

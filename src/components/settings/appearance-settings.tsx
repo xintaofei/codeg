@@ -1,6 +1,6 @@
 "use client"
 
-import { LayoutGrid, Monitor, Moon, Sun, Type } from "lucide-react"
+import { LayoutGrid, Monitor, Moon, PanelLeft, Sun, Type } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useTheme } from "next-themes"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import {
+  useSidebarNavVisibility,
   useThemeColor,
   useZoomLevel,
   useWelcomeQuickActions,
@@ -40,6 +41,8 @@ export function AppearanceSettings() {
   const { zoomLevel, setZoomLevel } = useZoomLevel()
   const { showWelcomeQuickActions, setShowWelcomeQuickActions } =
     useWelcomeQuickActions()
+  const { sidebarNavVisibility, setSidebarNavItemVisible } =
+    useSidebarNavVisibility()
 
   const resolvedThemeLabel =
     resolvedTheme === "dark"
@@ -236,6 +239,52 @@ export function AppearanceSettings() {
               {t("welcomePanel.showQuickActions")}
             </span>
           </label>
+        </section>
+
+        {/* ===== Sidebar — fixed navigation entries ===== */}
+        <section className="rounded-xl border bg-card p-4 space-y-4">
+          <div className="flex items-center gap-2">
+            <PanelLeft className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold">
+              {t("sidebarNav.sectionTitle")}
+            </h2>
+          </div>
+
+          <p className="text-xs text-muted-foreground leading-5">
+            {t("sidebarNav.sectionDescription")}
+          </p>
+
+          <div className="space-y-3">
+            <label className="flex items-center gap-2">
+              <Switch
+                checked={sidebarNavVisibility.automations}
+                onCheckedChange={(on) =>
+                  setSidebarNavItemVisible("automations", on)
+                }
+              />
+              <span className="text-xs text-muted-foreground">
+                {t("sidebarNav.showAutomations")}
+              </span>
+            </label>
+            <label className="flex items-center gap-2">
+              <Switch
+                checked={sidebarNavVisibility.tasks}
+                onCheckedChange={(on) => setSidebarNavItemVisible("tasks", on)}
+              />
+              <span className="text-xs text-muted-foreground">
+                {t("sidebarNav.showTasks")}
+              </span>
+            </label>
+            <label className="flex items-center gap-2">
+              <Switch
+                checked={sidebarNavVisibility.forge}
+                onCheckedChange={(on) => setSidebarNavItemVisible("forge", on)}
+              />
+              <span className="text-xs text-muted-foreground">
+                {t("sidebarNav.showForge")}
+              </span>
+            </label>
+          </div>
         </section>
 
         {/* ===== Desktop Pet ===== */}

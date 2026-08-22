@@ -173,6 +173,13 @@
       "sectionDescription": "Las tarjetas de acceso rápido «Desarrollo de código / Ofimática» que se muestran sobre el editor en la página de nueva conversación.",
       "showQuickActions": "Mostrar en la página de nueva conversación"
     },
+    "sidebarNav": {
+      "sectionTitle": "Navegación de la barra lateral",
+      "sectionDescription": "Elige qué entradas fijas muestra la barra lateral encima de la lista de conversaciones. Las páginas ocultas siguen disponibles en el menú de acciones rápidas de la barra de estado.",
+      "showAutomations": "Mostrar Automatizaciones",
+      "showTasks": "Mostrar Tareas pendientes",
+      "showForge": "Mostrar Panel del repositorio"
+    },
     "workspaceBackground": {
       "sectionTitle": "Fondo del espacio de trabajo",
       "sectionDescription": "Muestra una imagen detrás de todo el espacio de trabajo. La barra lateral y los paneles se vuelven translúcidos y esmerilados para dejar ver la imagen, y una máscara mantiene el texto legible.",

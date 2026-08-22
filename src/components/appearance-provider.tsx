@@ -31,6 +31,7 @@ import {
   STORAGE_KEY_THEME_COLOR,
   STORAGE_KEY_ZOOM_LEVEL,
   STORAGE_KEY_WELCOME_QUICK_ACTIONS,
+  STORAGE_KEY_SIDEBAR_NAV_VISIBILITY,
   STORAGE_KEY_UI_FONT,
   STORAGE_KEY_UI_FONT_CUSTOM,
   STORAGE_KEY_UI_FONT_STACK,
@@ -66,6 +67,12 @@ import {
 } from "@/lib/custom-style"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { matchShortcutEvent } from "@/lib/keyboard-shortcuts"
+import {
+  DEFAULT_SIDEBAR_NAV_VISIBILITY,
+  parseSidebarNavVisibility,
+  type HideableSidebarNavId,
+  type SidebarNavVisibility,
+} from "@/lib/sidebar-nav-visibility"
 import {
   DEFAULT_WORKSPACE_BG_ENABLED,
   DEFAULT_WORKSPACE_BG_MASK_OPACITY,
@@ -110,6 +117,10 @@ type AppearanceContextValue = {
   /** 新会话欢迎页是否显示「模式选择区域」（QuickActions 快捷卡片），默认开启 */
   showWelcomeQuickActions: boolean
   setShowWelcomeQuickActions: (on: boolean) => void
+  /** Which of the sidebar's fixed nav rows (Automations / To-dos / Repository
+   *  panel) are shown. Every row defaults to visible. */
+  sidebarNavVisibility: SidebarNavVisibility
+  setSidebarNavItemVisible: (id: HideableSidebarNavId, visible: boolean) => void
   /** 界面字体（普通组件，驱动 --font-sans） */
   uiFont: FontSelection
   setUiFont: (id: string, custom?: string) => void
@@ -356,6 +367,20 @@ export function AppearanceProvider({
   const [showWelcomeQuickActions, setShowWelcomeQuickActionsState] =
     useState<boolean>(() => readBool(STORAGE_KEY_WELCOME_QUICK_ACTIONS, true))
 
+  // Sidebar fixed-nav visibility starts at the all-visible default and picks
+  // up the stored record in a mount effect below. Unlike the welcome quick
+  // actions (client-only), the nav rows are part of the server-rendered
+  // markup, so reading localStorage in the initializer would desync SSR/CSR
+  // markup for anyone who hid a row.
+  const [sidebarNavVisibility, setSidebarNavVisibilityState] =
+    useState<SidebarNavVisibility>(DEFAULT_SIDEBAR_NAV_VISIBILITY)
+
+  useEffect(() => {
+    setSidebarNavVisibilityState(
+      parseSidebarNavVisibility(readStored(STORAGE_KEY_SIDEBAR_NAV_VISIBILITY))
+    )
+  }, [])
+
   // 字体偏好的初始值从 localStorage 读 id/custom（视觉已由 inline 脚本就位，
   // 这里只是回填选中态，不会造成闪烁）。
   const [uiFont, setUiFontState] = useState<FontSelection>(() =>
@@ -477,6 +502,15 @@ export function AppearanceProvider({
     setShowWelcomeQuickActionsState(on)
     persist(STORAGE_KEY_WELCOME_QUICK_ACTIONS, on ? "1" : "0")
   }, [])
+
+  const setSidebarNavItemVisible = useCallback(
+    (id: HideableSidebarNavId, visible: boolean) => {
+      const next = { ...sidebarNavVisibility, [id]: visible }
+      setSidebarNavVisibilityState(next)
+      persist(STORAGE_KEY_SIDEBAR_NAV_VISIBILITY, JSON.stringify(next))
+    },
+    [sidebarNavVisibility]
+  )
 
   const setUiFont = useCallback((id: string, custom = "") => {
     setUiFontState({ id, custom })
@@ -829,6 +863,11 @@ export function AppearanceProvider({
           readBool(STORAGE_KEY_WELCOME_QUICK_ACTIONS, true)
         )
       }
+      // Settings is its own window: a nav row hidden there reaches the
+      // workspace window through this event. Removal (null) = defaults.
+      if (e.key === STORAGE_KEY_SIDEBAR_NAV_VISIBILITY) {
+        setSidebarNavVisibilityState(parseSidebarNavVisibility(e.newValue))
+      }
       if (e.key && FONT_KEYS.has(e.key)) {
         rehydrateFonts()
       }
@@ -927,6 +966,8 @@ export function AppearanceProvider({
         setZoomLevel,
         showWelcomeQuickActions,
         setShowWelcomeQuickActions,
+        sidebarNavVisibility,
+        setSidebarNavItemVisible,
         uiFont,
         setUiFont,
         editorFont,

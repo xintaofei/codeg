@@ -173,6 +173,13 @@
       "sectionDescription": "Die Shortcut-Karten „Code-Entwicklung / Büroarbeit“ über dem Eingabefeld auf der Seite für eine neue Konversation.",
       "showQuickActions": "Auf der Seite für neue Konversationen anzeigen"
     },
+    "sidebarNav": {
+      "sectionTitle": "Seitenleisten-Navigation",
+      "sectionDescription": "Wähle, welche festen Einträge die Seitenleiste über der Konversationsliste anzeigt. Ausgeblendete Seiten bleiben über das Schnellaktionen-Menü in der Statusleiste erreichbar.",
+      "showAutomations": "Automatisierungen anzeigen",
+      "showTasks": "To-dos anzeigen",
+      "showForge": "Repository-Panel anzeigen"
+    },
     "workspaceBackground": {
       "sectionTitle": "Arbeitsbereich-Hintergrund",
       "sectionDescription": "Zeigt ein Bild hinter dem gesamten Arbeitsbereich. Seitenleiste und Panels werden durchscheinend und mattiert, sodass das Bild durchscheint, und eine Maske sorgt für lesbaren Text.",

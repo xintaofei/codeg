@@ -173,6 +173,13 @@
       "sectionDescription": "新會話頁面輸入框上方顯示的「程式開發 / 日常辦公」快捷卡片區域。",
       "showQuickActions": "在新會話頁面顯示"
     },
+    "sidebarNav": {
+      "sectionTitle": "側邊欄導覽",
+      "sectionDescription": "選擇側邊欄在對話列表上方顯示哪些固定入口。隱藏的頁面仍可透過狀態列的「快捷操作」選單開啟。",
+      "showAutomations": "顯示自動化",
+      "showTasks": "顯示待辦任務",
+      "showForge": "顯示儲存庫面板"
+    },
     "workspaceBackground": {
       "sectionTitle": "工作區背景",
       "sectionDescription": "在整個工作區背後顯示一張圖片。側邊欄與面板會變半透明並磨砂讓圖片透出，遮罩確保文字可讀。",

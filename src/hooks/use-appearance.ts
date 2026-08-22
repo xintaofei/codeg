@@ -31,6 +31,13 @@ export function useWelcomeQuickActions() {
   return { showWelcomeQuickActions, setShowWelcomeQuickActions }
 }
 
+/** Semantic wrapper: which of the sidebar's fixed nav rows (Automations /
+ *  To-dos / Repository panel) are shown. */
+export function useSidebarNavVisibility() {
+  const { sidebarNavVisibility, setSidebarNavItemVisible } = useAppearance()
+  return { sidebarNavVisibility, setSidebarNavItemVisible }
+}
+
 /** 界面字体（普通组件）。stack 已解析，可直接用于 style 或 CSS 变量。 */
 export function useUiFont() {
   const { uiFont, setUiFont } = useAppearance()

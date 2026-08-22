@@ -173,6 +173,13 @@
       "sectionDescription": "새 대화 페이지에서 입력창 위에 표시되는 '코드 개발 / 일상 업무' 바로가기 카드입니다.",
       "showQuickActions": "새 대화 페이지에 표시"
     },
+    "sidebarNav": {
+      "sectionTitle": "사이드바 내비게이션",
+      "sectionDescription": "대화 목록 위에 표시할 고정 항목을 선택합니다. 숨긴 페이지는 상태 표시줄의 '빠른 작업' 메뉴에서 계속 열 수 있습니다.",
+      "showAutomations": "자동화 표시",
+      "showTasks": "할 일 표시",
+      "showForge": "리포지토리 패널 표시"
+    },
     "workspaceBackground": {
       "sectionTitle": "작업 공간 배경",
       "sectionDescription": "작업 공간 전체 뒤에 이미지를 표시합니다. 사이드바와 패널이 반투명 유리 효과로 바뀌어 이미지가 비쳐 보이며, 마스크가 텍스트 가독성을 유지합니다.",

@@ -39,7 +39,7 @@ import {
 import { useIsMobile } from "@/hooks/use-mobile"
 import { useIsMac } from "@/hooks/use-is-mac"
 import { usePlatform } from "@/hooks/use-platform"
-import { useZoomLevel } from "@/hooks/use-appearance"
+import { useSidebarNavVisibility, useZoomLevel } from "@/hooks/use-appearance"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { formatShortcutLabel } from "@/lib/keyboard-shortcuts"
 import { isDesktop } from "@/lib/platform"
@@ -138,6 +138,11 @@ export function Sidebar() {
   const isMac = useIsMac()
   const { isMac: platformIsMac } = usePlatform()
   const { zoomLevel } = useZoomLevel()
+  // Settings → Appearance controls which route rows render below. New chat is
+  // exempt on purpose: it is the primary entry point and never hides. Hidden
+  // routes stay reachable from the status bar's quick-actions menu, which
+  // exists precisely to be the always-on path to every workbench route.
+  const { sidebarNavVisibility } = useSidebarNavVisibility()
   const { shortcuts } = useShortcutSettings()
   const isMobile = useIsMobile()
   const listRef = useRef<SidebarConversationListHandle>(null)
@@ -447,50 +452,56 @@ export function Sidebar() {
         {/* Both route rows close the mobile Sheet on the way out, like tapping a
             conversation card (handled by the list wrapper below) — otherwise the
             page they just opened stays hidden behind the sidebar. */}
-        <SidebarNavButton
-          icon={Zap}
-          label={t("automations")}
-          active={routeId === "automations"}
-          onClick={() => {
-            if (isMobile) toggle()
-            setRoute("automations")
-          }}
-          trailing={
-            unseenFailures > 0 ? (
-              <span className="ml-auto inline-flex h-[0.9375rem] min-w-[0.9375rem] shrink-0 items-center justify-center rounded-full bg-destructive/15 px-1 font-mono text-[0.625rem] font-medium leading-none text-destructive">
-                {unseenFailures}
-              </span>
-            ) : null
-          }
-        />
-        <SidebarNavButton
-          icon={ListTodo}
-          label={t("tasks")}
-          active={routeId === "tasks"}
-          onClick={() => {
-            if (isMobile) toggle()
-            setRoute("tasks")
-          }}
-          trailing={
-            attentionCount > 0 ? (
-              // Attention (not failure): tasks waiting on the user — primary
-              // tint like the shortcut chips, not destructive.
-              <span className="ml-auto inline-flex h-[0.9375rem] min-w-[0.9375rem] shrink-0 items-center justify-center rounded-full bg-primary/10 px-1 font-mono text-[0.625rem] font-medium leading-none text-primary">
-                {attentionCount}
-              </span>
-            ) : null
-          }
-        />
-        <SidebarNavButton
-          icon={LayoutTemplate}
-          label={t("forge")}
-          active={routeId === "forge"}
-          onClick={() => {
-            if (isMobile) toggle()
-            setRoute("forge")
-          }}
-          trailing={<ForgeBetaBadge className="ml-auto" />}
-        />
+        {sidebarNavVisibility.automations && (
+          <SidebarNavButton
+            icon={Zap}
+            label={t("automations")}
+            active={routeId === "automations"}
+            onClick={() => {
+              if (isMobile) toggle()
+              setRoute("automations")
+            }}
+            trailing={
+              unseenFailures > 0 ? (
+                <span className="ml-auto inline-flex h-[0.9375rem] min-w-[0.9375rem] shrink-0 items-center justify-center rounded-full bg-destructive/15 px-1 font-mono text-[0.625rem] font-medium leading-none text-destructive">
+                  {unseenFailures}
+                </span>
+              ) : null
+            }
+          />
+        )}
+        {sidebarNavVisibility.tasks && (
+          <SidebarNavButton
+            icon={ListTodo}
+            label={t("tasks")}
+            active={routeId === "tasks"}
+            onClick={() => {
+              if (isMobile) toggle()
+              setRoute("tasks")
+            }}
+            trailing={
+              attentionCount > 0 ? (
+                // Attention (not failure): tasks waiting on the user — primary
+                // tint like the shortcut chips, not destructive.
+                <span className="ml-auto inline-flex h-[0.9375rem] min-w-[0.9375rem] shrink-0 items-center justify-center rounded-full bg-primary/10 px-1 font-mono text-[0.625rem] font-medium leading-none text-primary">
+                  {attentionCount}
+                </span>
+              ) : null
+            }
+          />
+        )}
+        {sidebarNavVisibility.forge && (
+          <SidebarNavButton
+            icon={LayoutTemplate}
+            label={t("forge")}
+            active={routeId === "forge"}
+            onClick={() => {
+              if (isMobile) toggle()
+              setRoute("forge")
+            }}
+            trailing={<ForgeBetaBadge className="ml-auto" />}
+          />
+        )}
       </div>
 
       {/* On mobile, clicking a conversation card auto-closes the Sheet */}

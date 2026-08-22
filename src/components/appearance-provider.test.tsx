@@ -2,8 +2,11 @@ import { act, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { AppearanceProvider } from "./appearance-provider"
-import { useCustomStyle } from "@/hooks/use-appearance"
-import { STORAGE_KEY_CUSTOM_THEME } from "@/lib/appearance-script"
+import { useCustomStyle, useSidebarNavVisibility } from "@/hooks/use-appearance"
+import {
+  STORAGE_KEY_CUSTOM_THEME,
+  STORAGE_KEY_SIDEBAR_NAV_VISIBILITY,
+} from "@/lib/appearance-script"
 
 function Probe() {
   const { setCustomThemeToken } = useCustomStyle()
@@ -91,5 +94,87 @@ describe("debounced persistence", () => {
     })
 
     expect(storedPrimary()).toBe("#bbbbbb")
+  })
+})
+
+function NavVisibilityProbe() {
+  const { sidebarNavVisibility, setSidebarNavItemVisible } =
+    useSidebarNavVisibility()
+  return (
+    <>
+      <span data-testid="nav-visibility">
+        {JSON.stringify(sidebarNavVisibility)}
+      </span>
+      <button onClick={() => setSidebarNavItemVisible("forge", false)}>
+        hide-forge
+      </button>
+    </>
+  )
+}
+
+describe("sidebar nav visibility", () => {
+  const renderNavProbe = () =>
+    render(
+      <AppearanceProvider>
+        <NavVisibilityProbe />
+      </AppearanceProvider>
+    )
+
+  const visibility = () =>
+    JSON.parse(screen.getByTestId("nav-visibility").textContent ?? "")
+
+  it("defaults every row to visible and round-trips a hide through storage", () => {
+    const { unmount } = renderNavProbe()
+    expect(visibility()).toEqual({
+      automations: true,
+      tasks: true,
+      forge: true,
+    })
+
+    fireEvent.click(screen.getByText("hide-forge"))
+    expect(visibility()).toEqual({
+      automations: true,
+      tasks: true,
+      forge: false,
+    })
+    // Persisted immediately (a discrete toggle, so no debounce to wait out).
+    expect(
+      JSON.parse(localStorage.getItem(STORAGE_KEY_SIDEBAR_NAV_VISIBILITY) ?? "")
+    ).toEqual({ automations: true, tasks: true, forge: false })
+
+    // A fresh mount reads the stored record back: the mount effect reconciles
+    // the SSR-safe all-visible initial state with the persisted choice.
+    unmount()
+    renderNavProbe()
+    expect(visibility()).toEqual({
+      automations: true,
+      tasks: true,
+      forge: false,
+    })
+  })
+
+  it("follows a change written by another window via the storage event", () => {
+    // Settings is its own window — without this sync a row hidden there would
+    // only disappear from the workspace after a reload.
+    renderNavProbe()
+    const next = JSON.stringify({
+      automations: false,
+      tasks: true,
+      forge: true,
+    })
+    act(() => {
+      localStorage.setItem(STORAGE_KEY_SIDEBAR_NAV_VISIBILITY, next)
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: STORAGE_KEY_SIDEBAR_NAV_VISIBILITY,
+          newValue: next,
+        })
+      )
+    })
+    expect(visibility()).toEqual({
+      automations: false,
+      tasks: true,
+      forge: true,
+    })
   })
 })

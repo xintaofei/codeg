@@ -18,6 +18,13 @@ export const STORAGE_KEY_ZOOM_LEVEL = "codeg-zoom-level"
 // 缺省即回退为开启（保持历史行为）；仅在欢迎态客户端渲染，无需预水合。
 export const STORAGE_KEY_WELCOME_QUICK_ACTIONS = "codeg-welcome-quick-actions"
 
+// Which of the sidebar's fixed nav rows (Automations / To-dos / Repository
+// panel) are shown, stored as one JSON record. Absent or corrupt = every row
+// visible (the historical behavior). Not pre-hydrated: the rows are part of
+// the server-rendered markup, so the provider reconciles the stored value in
+// a mount effect instead (same SSR/CSR rule as the sidebar's view toggles).
+export const STORAGE_KEY_SIDEBAR_NAV_VISIBILITY = "codeg-sidebar-nav-visibility"
+
 // 字体偏好（界面 / 编辑器 / 终端）。
 // 只有界面字体需要 *_STACK（已解析的 CSS font-family 栈），供 inline 脚本零依赖地
 // 预水合写入 --font-sans；编辑器/终端字体只走各自的 Monaco/xterm 选项，水合后才挂载，

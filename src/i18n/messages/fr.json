@@ -173,6 +173,13 @@
       "sectionDescription": "Les cartes de raccourci « Développement / Bureautique » affichées au-dessus du champ de saisie sur la page de nouvelle conversation.",
       "showQuickActions": "Afficher sur la page de nouvelle conversation"
     },
+    "sidebarNav": {
+      "sectionTitle": "Navigation de la barre latérale",
+      "sectionDescription": "Choisissez les entrées fixes que la barre latérale affiche au-dessus de la liste des conversations. Les pages masquées restent accessibles depuis le menu Actions rapides de la barre d'état.",
+      "showAutomations": "Afficher les automatisations",
+      "showTasks": "Afficher les tâches à faire",
+      "showForge": "Afficher le panneau du dépôt"
+    },
     "workspaceBackground": {
       "sectionTitle": "Arrière-plan de l'espace de travail",
       "sectionDescription": "Affiche une image derrière tout l'espace de travail. La barre latérale et les panneaux deviennent translucides et dépolis pour laisser transparaître l'image, et un masque préserve la lisibilité du texte.",
