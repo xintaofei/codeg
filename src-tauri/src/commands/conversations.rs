@@ -460,7 +460,7 @@ pub async fn import_local_conversations_core(
     emitter: &EventEmitter,
     chat_channel_manager: &crate::chat_channel::manager::ChatChannelManager,
     folder_id: i32,
-) -> Result<ImportResult, AppCommandError> {
+) -> Result<(ImportResult, Vec<i32>), AppCommandError> {
     // Share IMPORT_GUARD with the batch importer: `(external_id, agent_type)`
     // has no DB unique index, so this legacy path racing a batch import (or a
     // second legacy call) could double-insert. try_lock rejects the overlap
@@ -485,14 +485,19 @@ pub async fn import_local_conversations_core(
 
     // Broadcast a sidebar upsert for every title refreshed in place, so other
     // windows and web clients converge live, and propagate the new name to any
-    // bound chat thread — the same treatment the scan and list paths give a
-    // title discovered outside codeg. The importing client refetches the list
-    // itself, which also covers the newly imported rows.
+    // bound chat thread. The importing client refetches the list itself, which
+    // also covers the newly imported rows.
     drop(
-        notify_conversation_title_updates(conn, emitter, chat_channel_manager, updated_ids).await,
+        notify_conversation_title_updates(
+            conn,
+            emitter,
+            chat_channel_manager,
+            updated_ids.clone(),
+        )
+        .await,
     );
 
-    Ok(result)
+    Ok((result, updated_ids))
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -503,13 +508,24 @@ pub async fn import_local_conversations(
     chat_channel_manager: tauri::State<'_, crate::chat_channel::manager::ChatChannelManager>,
     folder_id: i32,
 ) -> Result<ImportResult, AppCommandError> {
-    import_local_conversations_core(
+    let (result, updated_ids) = import_local_conversations_core(
         &db.conn,
-        &EventEmitter::Tauri(app),
+        &EventEmitter::Tauri(app.clone()),
         &chat_channel_manager,
         folder_id,
     )
-    .await
+    .await?;
+    {
+        use tauri::Manager;
+        if let Some(indexer) =
+            app.try_state::<std::sync::Arc<crate::search::indexer::MessageSearchIndexer>>()
+        {
+            for id in updated_ids {
+                indexer.request_parse(id);
+            }
+        }
+    }
+    Ok(result)
 }
 
 /// Serializes concurrent batch imports: `(external_id, agent_type)` has no DB
@@ -696,8 +712,7 @@ pub async fn scan_importable_sessions_core(
     conn: &sea_orm::DatabaseConnection,
     emitter: &EventEmitter,
     chat_channel_manager: &crate::chat_channel::manager::ChatChannelManager,
-) -> Result<ScanResult, AppCommandError> {
-    let progress_emitter = emitter.clone();
+) -> Result<(ScanResult, Vec<i32>), AppCommandError> {    let progress_emitter = emitter.clone();
     let summaries =
         import_service::collect_local_summaries(move |agent_type, done, total, session_count| {
             emit_event(
@@ -724,7 +739,7 @@ async fn scan_importable_sessions_from_summaries(
     emitter: &EventEmitter,
     chat_channel_manager: &crate::chat_channel::manager::ChatChannelManager,
     summaries: Vec<(AgentType, ConversationSummary)>,
-) -> Result<ScanResult, AppCommandError> {
+) -> Result<(ScanResult, Vec<i32>), AppCommandError> {
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
     let conv_rows = conversation::Entity::find()
@@ -748,18 +763,23 @@ async fn scan_importable_sessions_from_summaries(
     // Refresh the already-imported rows in place before answering, then
     // broadcast each one so open sidebars re-sort without a refetch. The
     // chat-channel half runs detached so the scan never waits on Telegram.
+    let refreshed_ids =
+        import_service::sync_imported_sessions(conn, &conv_rows, &summaries).await;
     drop(
         notify_conversation_title_updates(
             conn,
             emitter,
             chat_channel_manager,
-            import_service::sync_imported_sessions(conn, &conv_rows, &summaries).await,
+            refreshed_ids.clone(),
         )
         .await,
     );
 
     let folder_rows = load_folder_rows(conn).await?;
-    Ok(build_scan_result(summaries, &imported_index, &folder_rows))
+    Ok((
+        build_scan_result(summaries, &imported_index, &folder_rows),
+        refreshed_ids,
+    ))
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -769,7 +789,23 @@ pub async fn scan_importable_sessions(
     db: tauri::State<'_, AppDatabase>,
     chat_channel_manager: tauri::State<'_, crate::chat_channel::manager::ChatChannelManager>,
 ) -> Result<ScanResult, AppCommandError> {
-    scan_importable_sessions_core(&db.conn, &EventEmitter::Tauri(app), &chat_channel_manager).await
+    let (result, refreshed_ids) = scan_importable_sessions_core(
+        &db.conn,
+        &EventEmitter::Tauri(app.clone()),
+        &chat_channel_manager,
+    )
+    .await?;
+    {
+        use tauri::Manager;
+        if let Some(indexer) =
+            app.try_state::<std::sync::Arc<crate::search::indexer::MessageSearchIndexer>>()
+        {
+            for id in refreshed_ids {
+                indexer.request_parse(id);
+            }
+        }
+    }
+    Ok(result)
 }
 
 /// Batch-import the selected sessions, creating (or reopening) each target
@@ -1444,7 +1480,7 @@ pub fn resolve_turn_window_req(
 /// full turn list (delegation meta, auto-title, in-flight stamping) — slicing
 /// is strictly a serialization concern, so the windowed `turns` are identical
 /// to the corresponding region of the full response.
-fn apply_turn_window(
+pub(crate) fn apply_turn_window(
     detail: &mut DbConversationDetail,
     req: crate::commands::turn_window::TurnWindowReq,
 ) {
@@ -1467,16 +1503,17 @@ fn apply_turn_window(
 /// reply persisted after it mid-stream. A no-op (one cheap lock pass) when no turn
 /// is in flight. Shared by the Tauri command and the web handler.
 ///
-/// `window`: when set, the response's `turns` are sliced to the requested
-/// window AFTER all full-list post-processing (the summary counts, stats and
-/// watermark keep describing the full transcript).
+/// This core function intentionally returns the FULL turn list. Callers that
+/// need a window must call [`apply_turn_window`] themselves AFTER handing the
+/// full turns to the search indexer — a windowed slice must never be written
+/// into the content index, or opening a conversation would silently truncate
+/// its indexed history.
 pub async fn get_folder_conversation_with_live_core(
     conn: &sea_orm::DatabaseConnection,
     manager: &crate::acp::manager::ConnectionManager,
     chat_channel_manager: &crate::chat_channel::manager::ChatChannelManager,
     emitter: &EventEmitter,
     conversation_id: i32,
-    window: Option<crate::commands::turn_window::TurnWindowReq>,
 ) -> Result<DbConversationDetail, AppCommandError> {
     let (mut detail, parsed_title) = get_folder_conversation_core(conn, conversation_id).await?;
 
@@ -1518,9 +1555,6 @@ pub async fn get_folder_conversation_with_live_core(
     {
         detail.in_flight_user_turn_id =
             apply_in_flight_message_id(&mut detail.turns, &pending, started_at);
-    }
-    if let Some(req) = window {
-        apply_turn_window(&mut detail, req);
     }
     Ok(detail)
 }
@@ -1564,15 +1598,26 @@ pub async fn get_folder_conversation(
     from_index: Option<usize>,
 ) -> Result<DbConversationDetail, AppCommandError> {
     let window = resolve_turn_window_req(tail_turns, from_index)?;
-    get_folder_conversation_with_live_core(
+    let mut result = get_folder_conversation_with_live_core(
         &db.conn,
         &manager,
         &chat_channel_manager,
-        &EventEmitter::Tauri(app),
+        &EventEmitter::Tauri(app.clone()),
         conversation_id,
-        window,
     )
-    .await
+    .await?;
+    {
+        use tauri::Manager;
+        if let Some(indexer) =
+            app.try_state::<std::sync::Arc<crate::search::indexer::MessageSearchIndexer>>()
+        {
+            indexer.submit_turns(conversation_id, std::sync::Arc::new(result.turns.clone()));
+        }
+    }
+    if let Some(req) = window {
+        apply_turn_window(&mut result, req);
+    }
+    Ok(result)
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -2329,8 +2374,17 @@ pub async fn delete_conversation(
     db: tauri::State<'_, AppDatabase>,
     conversation_id: i32,
 ) -> Result<(), AppCommandError> {
-    let emitter = EventEmitter::Tauri(app);
-    delete_conversation_with_cleanup_core(&emitter, &db.conn, conversation_id).await
+    let emitter = EventEmitter::Tauri(app.clone());
+    delete_conversation_with_cleanup_core(&emitter, &db.conn, conversation_id).await?;
+    {
+        use tauri::Manager;
+        if let Some(indexer) =
+            app.try_state::<std::sync::Arc<crate::search::indexer::MessageSearchIndexer>>()
+        {
+            indexer.request_delete(conversation_id);
+        }
+    }
+    Ok(())
 }
 
 fn compute_stats(all_conversations: &[ConversationSummary]) -> AgentStats {
@@ -3730,7 +3784,7 @@ mod tests {
         );
         summary.1.title = Some("Codex index title".into());
 
-        let result = scan_importable_sessions_from_summaries(
+        let (result, _refreshed_ids) = scan_importable_sessions_from_summaries(
             &db.conn,
             &emitter,
             &chat_channel_manager,

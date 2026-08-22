@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
+use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement};
 use sea_orm_migration::MigratorTrait;
 use tokio_util::sync::CancellationToken;
 
@@ -65,6 +65,9 @@ pub(crate) async fn create_backup_core(
         return Err(cancelled_error());
     }
     snapshot_db_to(inputs.conn, &db_snapshot).await?;
+    if !options.include_external_transcripts {
+        strip_search_content(&db_snapshot).await?;
+    }
 
     // ── Phase 2: build the ZIP payload (blocking) ────────────────────────
     let manifest_template = BackupManifest {
@@ -219,6 +222,31 @@ pub(crate) async fn scan_external_conflicts_core(
     tokio::task::spawn_blocking(move || super::external::scan_external_conflicts(&zip_path))
         .await
         .map_err(|e| AppCommandError::task_execution_failed("Scan task failed").with_detail(e.to_string()))?
+}
+
+/// Remove indexed conversation text from a snapshot when the backup was
+/// requested without content. `VACUUM INTO` copies the whole DB, so without
+/// this pass the content search documents would ride along and silently defeat
+/// the "include conversation content" switch.
+async fn strip_search_content(snapshot: &Path) -> Result<(), AppCommandError> {
+    let url = format!("sqlite:{}?mode=rw", snapshot.to_string_lossy());
+    let conn = Database::connect(url)
+        .await
+        .map_err(|e| AppCommandError::database_error("open backup snapshot").with_detail(e.to_string()))?;
+    for sql in [
+        "DELETE FROM message_search_trigram",
+        "DELETE FROM message_search_short",
+        "DELETE FROM message_search_document",
+        "UPDATE search_index_state SET indexed_conversation_count = 0 WHERE id = 1",
+    ] {
+        conn.execute(Statement::from_string(DbBackend::Sqlite, sql.to_string()))
+            .await
+            .map_err(|e| {
+                AppCommandError::database_error("strip search content from snapshot")
+                    .with_detail(e.to_string())
+            })?;
+    }
+    Ok(())
 }
 
 /// Run `VACUUM INTO` to produce a transactionally-consistent, defragmented

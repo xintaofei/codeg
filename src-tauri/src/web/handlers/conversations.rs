@@ -143,15 +143,20 @@ pub async fn get_folder_conversation(
 ) -> Result<Json<DbConversationDetail>, AppCommandError> {
     let db = &state.db;
     let window = conv_commands::resolve_turn_window_req(params.tail_turns, params.from_index)?;
-    let result = conv_commands::get_folder_conversation_with_live_core(
+    let mut result = conv_commands::get_folder_conversation_with_live_core(
         &db.conn,
         &state.connection_manager,
         &state.chat_channel_manager,
         &state.emitter,
         params.conversation_id,
-        window,
     )
     .await?;
+    if let Some(indexer) = &state.search_indexer {
+        indexer.submit_turns(params.conversation_id, std::sync::Arc::new(result.turns.clone()));
+    }
+    if let Some(req) = window {
+        conv_commands::apply_turn_window(&mut result, req);
+    }
     Ok(Json(result))
 }
 
@@ -202,28 +207,36 @@ pub async fn import_local_conversations(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<ImportLocalConversationsParams>,
 ) -> Result<Json<ImportResult>, AppCommandError> {
-    Ok(Json(
-        conv_commands::import_local_conversations_core(
-            &state.db.conn,
-            &state.emitter,
-            &state.chat_channel_manager,
-            params.folder_id,
-        )
-        .await?,
-    ))
+    let (result, updated_ids) = conv_commands::import_local_conversations_core(
+        &state.db.conn,
+        &state.emitter,
+        &state.chat_channel_manager,
+        params.folder_id,
+    )
+    .await?;
+    if let Some(indexer) = &state.search_indexer {
+        for id in updated_ids {
+            indexer.request_parse(id);
+        }
+    }
+    Ok(Json(result))
 }
 
 pub async fn scan_importable_sessions(
     Extension(state): Extension<Arc<AppState>>,
 ) -> Result<Json<ScanResult>, AppCommandError> {
-    Ok(Json(
-        conv_commands::scan_importable_sessions_core(
-            &state.db.conn,
-            &state.emitter,
-            &state.chat_channel_manager,
-        )
-        .await?,
-    ))
+    let (result, refreshed_ids) = conv_commands::scan_importable_sessions_core(
+        &state.db.conn,
+        &state.emitter,
+        &state.chat_channel_manager,
+    )
+    .await?;
+    if let Some(indexer) = &state.search_indexer {
+        for id in refreshed_ids {
+            indexer.request_parse(id);
+        }
+    }
+    Ok(Json(result))
 }
 
 #[derive(Deserialize)]
@@ -395,5 +408,8 @@ pub async fn delete_conversation(
         params.conversation_id,
     )
     .await?;
+    if let Some(indexer) = &state.search_indexer {
+        indexer.request_delete(params.conversation_id);
+    }
     Ok(Json(()))
 }

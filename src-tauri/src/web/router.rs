@@ -54,6 +54,18 @@ pub fn build_router(
             post(handlers::conversations::list_all_conversations),
         )
         .route(
+            "/search_conversations",
+            post(handlers::search::search_conversations),
+        )
+        .route(
+            "/get_search_index_status",
+            post(handlers::search::get_search_index_status),
+        )
+        .route(
+            "/set_search_settings",
+            post(handlers::search::set_search_settings),
+        )
+        .route(
             "/list_child_conversations",
             post(handlers::conversations::list_child_conversations),
         )

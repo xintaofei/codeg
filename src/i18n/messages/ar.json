@@ -1436,6 +1436,12 @@
   },
   "SettingsPages": {
     "agentsLoading": "جارٍ تحميل إعدادات الوكلاء...",
+    "searchEnabled": "البحث في المحتوى",
+    "searchModeAuto": "تلقائي",
+    "searchModeScan": "مسح موفر للمساحة",
+    "searchModeFts": "فهرس نص كامل",
+    "searchSaving": "جارٍ الحفظ...",
+    "searchSaveFailed": "تعذر حفظ إعدادات البحث",
     "skillPacksLoading": "جارٍ تحميل حزم المهارات…"
   },
   "GeneralSettings": {
@@ -1802,6 +1808,10 @@
       "typeToSearch": "اكتب للبحث في المحادثات",
       "typeToSearchFiles": "اكتب للبحث في الملفات أو المجلدات",
       "noResults": "لم يتم العثور على نتائج.",
+      "indexing": "جارٍ إنشاء فهرس المحتوى... {progress}%",
+      "dialogTitleAllFolders": "البحث في جميع المجلدات",
+      "scopeLabel": "نطاق البحث",
+      "scopeAllFolders": "جميع المجلدات",
       "untitledConversation": "محادثة بدون عنوان"
     },
     "folderTitleBar": {
@@ -2966,6 +2976,7 @@
         "attachedResources": "الموارد المرفقة",
         "loading": "جارٍ التحميل...",
         "loadEarlier": "تحميل الرسائل السابقة",
+        "nextSearchMatch": "المطابقة التالية",
         "loadingEarlier": "جارٍ تحميل الرسائل السابقة…",
         "error": "خطأ: {message}",
         "errorTitle": "فشل تحميل الجلسة",

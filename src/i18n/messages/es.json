@@ -1436,6 +1436,12 @@
   },
   "SettingsPages": {
     "agentsLoading": "Cargando configuración de agentes...",
+    "searchEnabled": "Búsqueda de contenido",
+    "searchModeAuto": "Automático",
+    "searchModeScan": "Escaneo de bajo espacio",
+    "searchModeFts": "Índice de texto completo",
+    "searchSaving": "Guardando...",
+    "searchSaveFailed": "No se pudieron guardar los ajustes de búsqueda",
     "skillPacksLoading": "Cargando paquetes de habilidades…"
   },
   "GeneralSettings": {
@@ -1802,6 +1808,10 @@
       "typeToSearch": "Escribe para buscar conversaciones",
       "typeToSearchFiles": "Escribe para buscar archivos o directorios",
       "noResults": "No se encontraron resultados.",
+      "indexing": "Creando índice de contenido... {progress}%",
+      "dialogTitleAllFolders": "Buscar en todas las carpetas",
+      "scopeLabel": "Ámbito de búsqueda",
+      "scopeAllFolders": "Todas las carpetas",
       "untitledConversation": "Conversación sin título"
     },
     "folderTitleBar": {
@@ -2966,6 +2976,7 @@
         "attachedResources": "Recursos adjuntos",
         "loading": "Cargando...",
         "loadEarlier": "Cargar mensajes anteriores",
+        "nextSearchMatch": "Siguiente coincidencia",
         "loadingEarlier": "Cargando mensajes anteriores…",
         "error": "Error del chat: {message}",
         "errorTitle": "Error al cargar la sesión",

@@ -83,10 +83,12 @@ import type {
   WorktreeResolution,
   GitWorktreeRemoval,
   DbConversationSummary,
+  DbConversationSearchResult,
   ImportResult,
   ImportSelectedResult,
   ScanResult,
   SelectedSessionKey,
+  SearchIndexStatus,
   OpenedTab,
   OpenedTabsSnapshot,
   SaveTabsOutcome,
@@ -1831,6 +1833,34 @@ export async function listAllConversations(params?: {
     sortBy: params?.sort_by ?? null,
     status: params?.status ?? null,
     includeChildren: params?.include_children ?? null,
+  })
+}
+
+export async function searchConversations(params?: {
+  folder_ids?: number[] | null
+  agent_type?: AgentType | null
+  query?: string | null
+  limit?: number | null
+}): Promise<DbConversationSearchResult[]> {
+  return getTransport().call("search_conversations", {
+    folderIds: params?.folder_ids ?? null,
+    agentType: params?.agent_type ?? null,
+    query: params?.query ?? "",
+    limit: params?.limit ?? null,
+  })
+}
+
+export async function getSearchIndexStatus(): Promise<SearchIndexStatus> {
+  return getTransport().call("get_search_index_status")
+}
+
+export async function setSearchSettings(
+  enabled: boolean,
+  userMode: "auto" | "scan" | "fts"
+): Promise<void> {
+  return getTransport().call("set_search_settings", {
+    enabled,
+    userMode,
   })
 }
 
