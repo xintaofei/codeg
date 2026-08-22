@@ -160,6 +160,14 @@ pub fn build_router(
             post(handlers::conversations::update_conversation_pinned),
         )
         .route(
+            "/get_composer_draft",
+            post(handlers::conversations::get_composer_draft),
+        )
+        .route(
+            "/put_composer_draft",
+            post(handlers::conversations::put_composer_draft),
+        )
+        .route(
             "/delete_conversation",
             post(handlers::conversations::delete_conversation),
         )
@@ -452,6 +460,19 @@ pub fn build_router(
             // size boundary.
             post(handlers::files::upload_attachment)
                 .layer(DefaultBodyLimit::max(UPLOAD_MAX_BYTES as usize + 64 * 1024)),
+        )
+        .route(
+            "/read_upload_attachment",
+            post(handlers::files::read_upload_attachment),
+        )
+        .route(
+            "/stage_composer_attachment",
+            // Local desktop stages draft images as JSON base64 over IPC or
+            // the web API. Pad to the same ceiling as multipart upload.
+            post(handlers::files::stage_composer_attachment)
+                .layer(DefaultBodyLimit::max(
+                    ((UPLOAD_MAX_BYTES as usize * 4) / 3) + 64 * 1024,
+                )),
         )
         // ─── Workspace files (web upload/download) ───
         //

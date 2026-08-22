@@ -474,6 +474,43 @@ export interface TabsChanged {
 
 export const TABS_CHANGED_EVENT = "tabs://changed"
 
+/** Payload for the global `composer-draft://changed` side-channel. Ids
+ *  only — the unsent text is fetched over the authenticated GET. `origin`
+ *  is echoed so the writer ignores its own notify. */
+export interface ComposerDraftChanged {
+  conversation_id: number
+  revision: number
+  origin: string
+  cleared: boolean
+}
+
+export const COMPOSER_DRAFT_CHANGED_EVENT = "composer-draft://changed"
+
+export interface ComposerDraftAttachment {
+  id: string
+  kind: "image" | "file"
+  name: string
+  mime?: string | null
+  size?: number
+  path?: string | null
+  uri?: string | null
+}
+
+export interface ComposerDraft {
+  conversation_id: number
+  text: string
+  revision: number
+  origin: string
+  attachments?: ComposerDraftAttachment[]
+}
+
+export interface ComposerDraftPutResult {
+  conversation_id: number
+  revision: number
+  origin: string
+  cleared: boolean
+}
+
 /** Response of `list_opened_tabs`: the persisted set + current workspace tab
  *  version (clients seed their compare-and-set / echo logic from it). */
 export interface OpenedTabsSnapshot {

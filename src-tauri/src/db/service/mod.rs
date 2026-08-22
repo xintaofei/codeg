@@ -3,6 +3,7 @@ pub mod app_metadata_service;
 pub mod automation_service;
 pub mod chat_channel_message_log_service;
 pub mod chat_channel_service;
+pub mod conversation_composer_draft_service;
 pub mod conversation_service;
 pub mod custom_agent_service;
 pub mod folder_command_service;
