@@ -1144,14 +1144,25 @@ pub async fn get_folder_conversation_core(
                 AgentType::Custom(_) => Box::new(AcpNativeParser::new(at)),
             };
             match parser.get_conversation(&eid) {
-                Ok(d) => Ok((
-                    d.turns,
-                    d.session_stats,
-                    None,
-                    d.summary.title,
-                    d.summary.model,
-                    d.transcript_watermark,
-                )),
+                Ok(d) => {
+                    // A session file that exists but yielded no turns (e.g. an
+                    // agent that wrote its header and died before the first
+                    // flush) reads like a blank chat. The journal has the one
+                    // thing codeg knows the agent was sent: the user's prompt.
+                    let turns = if d.turns.is_empty() {
+                        prompt_journal_turns(at, &eid)
+                    } else {
+                        d.turns
+                    };
+                    Ok((
+                        turns,
+                        d.session_stats,
+                        None,
+                        d.summary.title,
+                        d.summary.model,
+                        d.transcript_watermark,
+                    ))
+                }
                 Err(crate::parsers::ParseError::ConversationNotFound(_)) => {
                     // The external_id may no longer match any local file —
                     // e.g. an ACP session UUID (OpenClaw, Cline) or a stale
@@ -1196,7 +1207,13 @@ pub async fn get_folder_conversation_core(
                             }
                         }
                     }
-                    Ok((vec![], None, None, None, None, None))
+                    // The agent has nothing for this session — a wedged CLI
+                    // that never started the turn, a crash before the session
+                    // file was created, a store the agent's own retention
+                    // pruned. Fall back to codeg's prompt journal so the chat
+                    // reopens with the user's sent message(s) instead of
+                    // rendering blank.
+                    Ok((prompt_journal_turns(at, &eid), None, None, None, None, None))
                 }
                 Err(e) => Err(parse_error_to_app_error(e)),
             }
@@ -1457,6 +1474,38 @@ fn apply_turn_window(
     detail.assistant_turns_before_offset = Some(meta.assistant_before);
     detail.prefix_hash = Some(meta.prefix_hash);
     detail.uncovered_prefix_max_ts = meta.uncovered_prefix_max_ts;
+}
+
+/// Turns from codeg's prompt journal for this session, or empty.
+///
+/// The read half of `acp::connection::record_prompt_journal`, consulted ONLY
+/// when the agent's own store yielded no turns for a bound session. The
+/// journal holds outgoing prompts alone — never agent output — so what this
+/// returns can never disagree with, or duplicate, a history the agent
+/// actually has: either the agent's parser produced turns (journal unread),
+/// or it produced none (journal is all there is).
+fn prompt_journal_turns(agent_type: AgentType, session_id: &str) -> Vec<MessageTurn> {
+    prompt_journal_turns_in(
+        crate::paths::codeg_prompt_journal_root(),
+        agent_type,
+        session_id,
+    )
+}
+
+/// Root-injectable core of [`prompt_journal_turns`].
+fn prompt_journal_turns_in(
+    root: std::path::PathBuf,
+    agent_type: AgentType,
+    session_id: &str,
+) -> Vec<MessageTurn> {
+    // The journal shares the transcript file format, so the custom-agent
+    // parser pointed at the journal root reads it as a (prompt-only)
+    // transcript. Any error — no journal for this session included — means
+    // "nothing to show", which is exactly what the caller already had.
+    AcpNativeParser::new_in(agent_type, root)
+        .get_conversation(session_id)
+        .map(|d| d.turns)
+        .unwrap_or_default()
 }
 
 /// `get_folder_conversation_core` plus live in-flight correlation: when a turn is
@@ -2393,6 +2442,65 @@ mod tests {
     /// Always take this *before* `IMPORT_GUARD` (never the reverse) so the two
     /// locks can't deadlock. Held for the whole test body.
     static IMPORT_GUARD_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Prompt-journal fallback (`prompt_journal_turns_in`): a conversation
+    // whose agent store has nothing must reopen with the user's sent
+    // message(s) from the journal instead of rendering blank.
+    // ──────────────────────────────────────────────────────────────────────
+
+    /// One journal line, exactly as `record_prompt_journal` serializes it.
+    fn journal_prompt_line(t: u64, text: &str) -> String {
+        serde_json::to_string(&crate::acp_transcript::TranscriptEntry {
+            t,
+            k: crate::acp_transcript::EntryKind::Prompt,
+            p: serde_json::json!([{ "type": "text", "text": text }]),
+        })
+        .expect("serialize journal entry")
+    }
+
+    #[test]
+    fn prompt_journal_turns_reads_recorded_prompts_as_user_turns() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = crate::acp::registry::registry_id_for(AgentType::Grok);
+        crate::acp_transcript::append_line_in(
+            root.path(),
+            dir,
+            "sess-1",
+            &journal_prompt_line(1_000, "first message"),
+        );
+        crate::acp_transcript::append_line_in(
+            root.path(),
+            dir,
+            "sess-1",
+            &journal_prompt_line(2_000, "second message"),
+        );
+
+        let turns =
+            prompt_journal_turns_in(root.path().to_path_buf(), AgentType::Grok, "sess-1");
+        assert_eq!(turns.len(), 2, "every journaled prompt becomes a user turn");
+        for (turn, expected) in turns.iter().zip(["first message", "second message"]) {
+            assert!(matches!(turn.role, TurnRole::User));
+            match &turn.blocks[0] {
+                ContentBlock::Text { text } => assert_eq!(text, expected),
+                other => panic!("expected a text block, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn prompt_journal_turns_is_empty_for_an_unjournaled_session() {
+        let root = tempfile::tempdir().expect("tempdir");
+        // No file at all — the common case for every conversation recorded
+        // before the journal existed, and for custom agents, which never
+        // write here.
+        assert!(prompt_journal_turns_in(
+            root.path().to_path_buf(),
+            AgentType::Grok,
+            "sess-missing"
+        )
+        .is_empty());
+    }
 
     // ──────────────────────────────────────────────────────────────────────
     // Delegation meta injection for historical reload. Parsers always emit

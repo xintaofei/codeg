@@ -13,6 +13,7 @@ const UPLOADS_DIR_NAME: &str = "uploads";
 const LOGS_DIR_NAME: &str = "logs";
 const TURN_TIMINGS_DIR_NAME: &str = "turn-timings";
 const ACP_TRANSCRIPTS_DIR_NAME: &str = "acp-transcripts";
+const PROMPT_JOURNAL_DIR_NAME: &str = "acp-prompts";
 const BACKGROUNDS_DIR_NAME: &str = "backgrounds";
 
 /// `$CODEG_HOME` if set (and non-empty), else `~/.codeg/`.
@@ -167,6 +168,33 @@ pub fn codeg_acp_transcripts_root() -> PathBuf {
     dirs::home_dir()
         .map(|h| h.join(CODEG_DIR_NAME).join(ACP_TRANSCRIPTS_DIR_NAME))
         .unwrap_or_else(|| PathBuf::from(CODEG_DIR_NAME).join(ACP_TRANSCRIPTS_DIR_NAME))
+}
+
+/// Root directory for codeg's prompt journal: the outgoing `session/prompt`
+/// content recorded for **built-in** agents (see
+/// `crate::acp::connection::record_prompt_journal`).
+///
+/// Deliberately a SIBLING of [`codeg_acp_transcripts_root`] rather than a
+/// subdirectory of it: everything that walks the transcript root — the
+/// `session/load` replay gate, continuation chains, the custom-agent parser's
+/// conversation listing — assumes those files are the full history of a custom
+/// agent's session. Prompt-only journals for built-ins must stay invisible to
+/// all of them.
+///
+/// Resolution mirrors [`codeg_acp_transcripts_root`]:
+/// 1. `$CODEG_HOME/acp-prompts`
+/// 2. `$CODEG_DATA_DIR/acp-prompts` (server-mode data directory)
+/// 3. `~/.codeg/acp-prompts` (desktop default)
+pub fn codeg_prompt_journal_root() -> PathBuf {
+    if let Some(custom) = std::env::var_os("CODEG_HOME").filter(|s| !s.is_empty()) {
+        return PathBuf::from(custom).join(PROMPT_JOURNAL_DIR_NAME);
+    }
+    if let Some(data) = std::env::var_os("CODEG_DATA_DIR").filter(|s| !s.is_empty()) {
+        return PathBuf::from(data).join(PROMPT_JOURNAL_DIR_NAME);
+    }
+    dirs::home_dir()
+        .map(|h| h.join(CODEG_DIR_NAME).join(PROMPT_JOURNAL_DIR_NAME))
+        .unwrap_or_else(|| PathBuf::from(CODEG_DIR_NAME).join(PROMPT_JOURNAL_DIR_NAME))
 }
 
 /// Single source of truth for "where does the database live, and where
