@@ -20,6 +20,8 @@ import {
 import { getFolderConversation } from "@/lib/api"
 import { useCopiedFlag } from "@/hooks/use-copied-flag"
 import { pickModelFromTurns } from "./active-session-details"
+import { useSessionOutputSpeed } from "@/hooks/use-session-output-speed"
+import { averageOutputTps, formatTokPerSec } from "@/lib/token-speed"
 import { AgentIcon } from "@/components/agent-icon"
 import { ConversationStatusDot } from "./conversation-status-dot"
 
@@ -100,14 +102,16 @@ function InfoItem({
   children,
   className,
   valueClassName,
+  title,
 }: {
   label: string
   children: ReactNode
   className?: string
   valueClassName?: string
+  title?: string
 }) {
   return (
-    <div className={cn("min-w-0 space-y-0.5", className)}>
+    <div className={cn("min-w-0 space-y-0.5", className)} title={title}>
       <dt className="text-xs text-muted-foreground">{label}</dt>
       <dd className={cn("min-w-0 leading-snug", valueClassName)}>{children}</dd>
     </div>
@@ -269,6 +273,12 @@ export function SessionDetailsContent({
     ctxMax
   )
   const durationMs = resolveSessionDurationMs(summary, stats)
+  const liveOutputSpeed = useSessionOutputSpeed(summary.id)
+  const recordedOutputTps = averageOutputTps(
+    usage?.output_tokens ?? 0,
+    stats?.total_duration_ms ?? 0
+  )
+  const outputTps = liveOutputSpeed?.averageTps ?? recordedOutputTps
   // Never coerce an unknown `used` to 0 — some parsers infer the model's
   // context cap without any usage figure, so render "— / max" rather than a
   // bogus "0 / max".
@@ -281,11 +291,12 @@ export function SessionDetailsContent({
         ? formatTokenCount(ctxUsed)
         : null
   const hasTokenInfo =
-    stats != null &&
-    (totalTokens != null ||
-      usage != null ||
-      contextWindowValue != null ||
-      durationMs > 0)
+    outputTps != null ||
+    (stats != null &&
+      (totalTokens != null ||
+        usage != null ||
+        contextWindowValue != null ||
+        durationMs > 0))
 
   const numeric = "font-mono tabular-nums"
 
@@ -408,6 +419,15 @@ export function SessionDetailsContent({
             {durationMs > 0 && (
               <InfoItem label={t("duration")} valueClassName={numeric}>
                 {formatDuration(durationMs)}
+              </InfoItem>
+            )}
+            {outputTps != null && (
+              <InfoItem
+                label={t("outputSpeed")}
+                valueClassName={numeric}
+                title={t("outputSpeedTooltip")}
+              >
+                {formatTokPerSec(outputTps)}
               </InfoItem>
             )}
           </dl>
