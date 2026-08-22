@@ -10,6 +10,10 @@ use crate::web::{
     load_web_service_config, update_web_service_config_core, WebServerInfo, WebServiceConfig,
     WebServicePortProbe,
 };
+use crate::web::funnel::{
+    funnel_disable_core, funnel_enable_core, funnel_status_core, require_running_web_port,
+    serve_disable_core, serve_enable_core, serve_status_core, FunnelStatus,
+};
 
 pub async fn get_web_server_status(
     Extension(state): Extension<Arc<AppState>>,
@@ -94,6 +98,46 @@ pub async fn probe_web_service_port(
     do_probe_web_service_port(&state.db.conn, params.port)
         .await
         .map(Json)
+}
+
+pub async fn tailscale_serve_status() -> Result<Json<FunnelStatus>, AppCommandError> {
+    Ok(Json(serve_status_core().await))
+}
+
+pub async fn tailscale_serve_enable(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<FunnelEnableParams>,
+) -> Result<Json<FunnelStatus>, AppCommandError> {
+    let running = do_get_web_server_status(&state.web_server_state).map(|info| info.port);
+    require_running_web_port(running, params.port)?;
+    serve_enable_core(params.port).await.map(Json)
+}
+
+pub async fn tailscale_serve_disable() -> Result<Json<FunnelStatus>, AppCommandError> {
+    serve_disable_core().await.map(Json)
+}
+
+pub async fn tailscale_funnel_status() -> Result<Json<FunnelStatus>, AppCommandError> {
+    Ok(Json(funnel_status_core().await))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FunnelEnableParams {
+    pub port: u16,
+}
+
+pub async fn tailscale_funnel_enable(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<FunnelEnableParams>,
+) -> Result<Json<FunnelStatus>, AppCommandError> {
+    let running = do_get_web_server_status(&state.web_server_state).map(|info| info.port);
+    require_running_web_port(running, params.port)?;
+    funnel_enable_core(params.port).await.map(Json)
+}
+
+pub async fn tailscale_funnel_disable() -> Result<Json<FunnelStatus>, AppCommandError> {
+    funnel_disable_core().await.map(Json)
 }
 
 #[derive(Serialize)]
