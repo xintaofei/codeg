@@ -406,6 +406,10 @@
         "title": "關閉目前分頁",
         "description": "關閉目前會話或檔案分頁"
       },
+      "reopen_last_closed_tab": {
+        "title": "重新開啟關閉的標籤",
+        "description": "重新開啟最近關閉的會話或檔案標籤"
+      },
       "close_all_file_tabs": {
         "title": "關閉全部檔案分頁",
         "description": "當檔案面板處於作用中狀態時關閉所有開啟的檔案分頁"
@@ -417,6 +421,42 @@
       "prev_tab": {
         "title": "上一個標籤頁",
         "description": "切換到上一個會話或檔案標籤頁"
+      },
+      "switch_tab_1": {
+        "title": "切換到第 1 個標籤",
+        "description": "跳到第 1 個會話或檔案標籤"
+      },
+      "switch_tab_2": {
+        "title": "切換到第 2 個標籤",
+        "description": "跳到第 2 個會話或檔案標籤"
+      },
+      "switch_tab_3": {
+        "title": "切換到第 3 個標籤",
+        "description": "跳到第 3 個會話或檔案標籤"
+      },
+      "switch_tab_4": {
+        "title": "切換到第 4 個標籤",
+        "description": "跳到第 4 個會話或檔案標籤"
+      },
+      "switch_tab_5": {
+        "title": "切換到第 5 個標籤",
+        "description": "跳到第 5 個會話或檔案標籤"
+      },
+      "switch_tab_6": {
+        "title": "切換到第 6 個標籤",
+        "description": "跳到第 6 個會話或檔案標籤"
+      },
+      "switch_tab_7": {
+        "title": "切換到第 7 個標籤",
+        "description": "跳到第 7 個會話或檔案標籤"
+      },
+      "switch_tab_8": {
+        "title": "切換到第 8 個標籤",
+        "description": "跳到第 8 個會話或檔案標籤"
+      },
+      "switch_tab_9": {
+        "title": "切換到第 9 個標籤",
+        "description": "跳到第 9 個會話或檔案標籤"
       },
       "send_message": {
         "title": "傳送訊息",

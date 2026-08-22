@@ -406,6 +406,10 @@
         "title": "Cerrar pestaña actual",
         "description": "Cierra la conversación o pestaña de archivo actual"
       },
+      "reopen_last_closed_tab": {
+        "title": "Reabrir pestaña cerrada",
+        "description": "Reabrir la última pestaña de conversación o archivo cerrada"
+      },
       "close_all_file_tabs": {
         "title": "Cerrar todas las pestañas de archivos",
         "description": "Cierra todas las pestañas de archivos abiertas cuando el panel de archivos está activo"
@@ -417,6 +421,42 @@
       "prev_tab": {
         "title": "Pestaña anterior",
         "description": "Cambiar a la pestaña anterior de conversación o archivo"
+      },
+      "switch_tab_1": {
+        "title": "Ir a la pestaña 1",
+        "description": "Saltar a la pestaña de conversación o archivo 1"
+      },
+      "switch_tab_2": {
+        "title": "Ir a la pestaña 2",
+        "description": "Saltar a la pestaña de conversación o archivo 2"
+      },
+      "switch_tab_3": {
+        "title": "Ir a la pestaña 3",
+        "description": "Saltar a la pestaña de conversación o archivo 3"
+      },
+      "switch_tab_4": {
+        "title": "Ir a la pestaña 4",
+        "description": "Saltar a la pestaña de conversación o archivo 4"
+      },
+      "switch_tab_5": {
+        "title": "Ir a la pestaña 5",
+        "description": "Saltar a la pestaña de conversación o archivo 5"
+      },
+      "switch_tab_6": {
+        "title": "Ir a la pestaña 6",
+        "description": "Saltar a la pestaña de conversación o archivo 6"
+      },
+      "switch_tab_7": {
+        "title": "Ir a la pestaña 7",
+        "description": "Saltar a la pestaña de conversación o archivo 7"
+      },
+      "switch_tab_8": {
+        "title": "Ir a la pestaña 8",
+        "description": "Saltar a la pestaña de conversación o archivo 8"
+      },
+      "switch_tab_9": {
+        "title": "Ir a la pestaña 9",
+        "description": "Saltar a la pestaña de conversación o archivo 9"
       },
       "send_message": {
         "title": "Enviar mensaje",

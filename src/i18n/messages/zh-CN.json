@@ -406,6 +406,10 @@
         "title": "关闭当前标签",
         "description": "关闭当前会话或文件标签"
       },
+      "reopen_last_closed_tab": {
+        "title": "重新打开关闭的标签",
+        "description": "重新打开最近关闭的会话或文件标签"
+      },
       "close_all_file_tabs": {
         "title": "关闭全部文件标签",
         "description": "当文件面板处于活动状态时关闭所有打开的文件标签"
@@ -417,6 +421,42 @@
       "prev_tab": {
         "title": "上一个标签页",
         "description": "切换到上一个会话或文件标签页"
+      },
+      "switch_tab_1": {
+        "title": "切换到第 1 个标签",
+        "description": "跳转到第 1 个会话或文件标签"
+      },
+      "switch_tab_2": {
+        "title": "切换到第 2 个标签",
+        "description": "跳转到第 2 个会话或文件标签"
+      },
+      "switch_tab_3": {
+        "title": "切换到第 3 个标签",
+        "description": "跳转到第 3 个会话或文件标签"
+      },
+      "switch_tab_4": {
+        "title": "切换到第 4 个标签",
+        "description": "跳转到第 4 个会话或文件标签"
+      },
+      "switch_tab_5": {
+        "title": "切换到第 5 个标签",
+        "description": "跳转到第 5 个会话或文件标签"
+      },
+      "switch_tab_6": {
+        "title": "切换到第 6 个标签",
+        "description": "跳转到第 6 个会话或文件标签"
+      },
+      "switch_tab_7": {
+        "title": "切换到第 7 个标签",
+        "description": "跳转到第 7 个会话或文件标签"
+      },
+      "switch_tab_8": {
+        "title": "切换到第 8 个标签",
+        "description": "跳转到第 8 个会话或文件标签"
+      },
+      "switch_tab_9": {
+        "title": "切换到第 9 个标签",
+        "description": "跳转到第 9 个会话或文件标签"
       },
       "send_message": {
         "title": "发送消息",

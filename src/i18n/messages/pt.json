@@ -406,6 +406,10 @@
         "title": "Fechar aba atual",
         "description": "Fecha a conversa atual ou aba de arquivo"
       },
+      "reopen_last_closed_tab": {
+        "title": "Reabrir aba fechada",
+        "description": "Reabrir a última aba de conversa ou arquivo fechada"
+      },
       "close_all_file_tabs": {
         "title": "Fechar todas as abas de arquivo",
         "description": "Fecha todas as abas de arquivo abertas quando o painel de arquivos está ativo"
@@ -417,6 +421,42 @@
       "prev_tab": {
         "title": "Aba anterior",
         "description": "Mudar para a aba anterior de conversa ou arquivo"
+      },
+      "switch_tab_1": {
+        "title": "Ir para a aba 1",
+        "description": "Saltar para a aba de conversa ou arquivo 1"
+      },
+      "switch_tab_2": {
+        "title": "Ir para a aba 2",
+        "description": "Saltar para a aba de conversa ou arquivo 2"
+      },
+      "switch_tab_3": {
+        "title": "Ir para a aba 3",
+        "description": "Saltar para a aba de conversa ou arquivo 3"
+      },
+      "switch_tab_4": {
+        "title": "Ir para a aba 4",
+        "description": "Saltar para a aba de conversa ou arquivo 4"
+      },
+      "switch_tab_5": {
+        "title": "Ir para a aba 5",
+        "description": "Saltar para a aba de conversa ou arquivo 5"
+      },
+      "switch_tab_6": {
+        "title": "Ir para a aba 6",
+        "description": "Saltar para a aba de conversa ou arquivo 6"
+      },
+      "switch_tab_7": {
+        "title": "Ir para a aba 7",
+        "description": "Saltar para a aba de conversa ou arquivo 7"
+      },
+      "switch_tab_8": {
+        "title": "Ir para a aba 8",
+        "description": "Saltar para a aba de conversa ou arquivo 8"
+      },
+      "switch_tab_9": {
+        "title": "Ir para a aba 9",
+        "description": "Saltar para a aba de conversa ou arquivo 9"
       },
       "send_message": {
         "title": "Enviar mensagem",

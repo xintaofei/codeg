@@ -406,6 +406,10 @@
         "title": "Close Current Tab",
         "description": "Close current conversation or file tab"
       },
+      "reopen_last_closed_tab": {
+        "title": "Reopen Closed Tab",
+        "description": "Reopen the most recently closed conversation or file tab"
+      },
       "close_all_file_tabs": {
         "title": "Close All File Tabs",
         "description": "Close all open file tabs when the file pane is active"
@@ -417,6 +421,42 @@
       "prev_tab": {
         "title": "Previous Tab",
         "description": "Switch to the previous conversation or file tab"
+      },
+      "switch_tab_1": {
+        "title": "Switch to Tab 1",
+        "description": "Jump to conversation or file tab 1"
+      },
+      "switch_tab_2": {
+        "title": "Switch to Tab 2",
+        "description": "Jump to conversation or file tab 2"
+      },
+      "switch_tab_3": {
+        "title": "Switch to Tab 3",
+        "description": "Jump to conversation or file tab 3"
+      },
+      "switch_tab_4": {
+        "title": "Switch to Tab 4",
+        "description": "Jump to conversation or file tab 4"
+      },
+      "switch_tab_5": {
+        "title": "Switch to Tab 5",
+        "description": "Jump to conversation or file tab 5"
+      },
+      "switch_tab_6": {
+        "title": "Switch to Tab 6",
+        "description": "Jump to conversation or file tab 6"
+      },
+      "switch_tab_7": {
+        "title": "Switch to Tab 7",
+        "description": "Jump to conversation or file tab 7"
+      },
+      "switch_tab_8": {
+        "title": "Switch to Tab 8",
+        "description": "Jump to conversation or file tab 8"
+      },
+      "switch_tab_9": {
+        "title": "Switch to Tab 9",
+        "description": "Jump to conversation or file tab 9"
       },
       "send_message": {
         "title": "Send Message",
