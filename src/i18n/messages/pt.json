@@ -3821,7 +3821,9 @@
       "preview": "Visualização do SKILL.md",
       "loadingContent": "Carregando conteúdo…"
     },
-    "copyModeHint": "Copiado (não vinculado) — reative após atualizações para obter a versão mais recente"
+    "copyModeHint": "Copiado (não vinculado) — reative após atualizações para obter a versão mais recente",
+    "globalInherited": "Herdado do global",
+    "scopeUnavailable": "Este agente não oferece suporte a habilidades no escopo do projeto"
   },
   "ExpertsSettings": {
     "title": "Habilidades de Especialista",
@@ -3963,6 +3965,11 @@
     "autoPreviewHint": "Quando um agente cria ou edita um arquivo do Word, Excel ou PowerPoint, abre sua visualização ao vivo automaticamente."
   },
   "SkillPacksSettings": {
+    "scope": {
+      "label": "Escopo de habilidades",
+      "global": "Global",
+      "noFolders": "Nenhuma pasta disponível"
+    },
     "title": "Pacotes de habilidades",
     "description": "Pacotes de habilidades selecionados que o codeg gerencia de forma centralizada e vincula aos seus agentes de IA — especialistas em programação, pesquisa científica e ferramentas de documentos de escritório. Ative-os por agente abaixo.",
     "tabs": {

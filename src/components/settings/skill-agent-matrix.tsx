@@ -94,6 +94,8 @@ export interface SkillAgentMatrixProps {
   translateState: (state: ExpertLinkState) => string
   /** Authoritative snapshot loader; called on mount and after every batch. */
   loadAllStatuses: () => Promise<ExpertInstallStatus[]>
+  /** Global snapshot used to derive read-only inheritance in project scope. */
+  loadInheritedStatuses?: () => Promise<ExpertInstallStatus[]>
   applyLinks: (ops: LinkOp[]) => Promise<LinkOpResult[]>
   /** SKILL.md body for the detail drawer (page owns the experts/office split). */
   loadContent: (skillId: string) => Promise<string>
@@ -108,6 +110,8 @@ export interface SkillAgentMatrixProps {
    */
   /** Extra buttons in the toolbar, right of the search box (e.g. New / Import). */
   toolbarActions?: ReactNode
+  /** Scope selector rendered immediately before the batch menu. */
+  scopeControl?: ReactNode
   /** Extra items appended to a row's `⋯` menu (e.g. Edit / Duplicate / Delete). */
   rowActions?: (skill: MatrixSkill) => ReactNode
   /** Extra buttons in the selection bulk bar (e.g. Delete selected). */
@@ -148,7 +152,9 @@ export function computeLinkDelta(
   targets: DeltaTarget[],
   enable: boolean,
   statuses: Map<string, ExpertInstallStatus>,
-  isSkillEnableable: (skillId: string) => boolean
+  isSkillEnableable: (skillId: string) => boolean,
+  isTargetInherited: (skillId: string, agentType: AgentType) => boolean = () =>
+    false
 ): LinkOp[] {
   const ops: LinkOp[] = []
   const seen = new Set<string>()
@@ -157,6 +163,7 @@ export function computeLinkDelta(
     if (seen.has(key)) continue
     seen.add(key)
     const status = statuses.get(key)
+    if (isTargetInherited(skillId, agentType)) continue
     if (enable === isEnabled(status)) continue
     if (enable) {
       if (!isSkillEnableable(skillId)) continue
@@ -189,12 +196,14 @@ export function SkillAgentMatrix({
   translateCategory,
   translateState,
   loadAllStatuses,
+  loadInheritedStatuses,
   applyLinks,
   loadContent,
   onApplied,
   searchPlaceholder,
   notReadyHint,
   toolbarActions,
+  scopeControl,
   rowActions,
   bulkActions,
 }: SkillAgentMatrixProps) {
@@ -203,6 +212,9 @@ export function SkillAgentMatrix({
   const [statuses, setStatuses] = useState<Map<string, ExpertInstallStatus>>(
     new Map()
   )
+  const [inheritedStatuses, setInheritedStatuses] = useState<
+    Map<string, ExpertInstallStatus>
+  >(new Map())
   const [statusLoading, setStatusLoading] = useState(true)
   const [applying, setApplying] = useState(false)
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set())
@@ -227,9 +239,15 @@ export function SkillAgentMatrix({
   // the effect needs no synchronous setState (which the repo lint forbids).
   useEffect(() => {
     let cancelled = false
-    loadAllStatuses()
-      .then((list) => {
-        if (!cancelled) setStatuses(buildMap(list))
+    Promise.all([
+      loadAllStatuses(),
+      loadInheritedStatuses?.() ?? Promise.resolve([]),
+    ])
+      .then(([list, inherited]) => {
+        if (!cancelled) {
+          setStatuses(buildMap(list))
+          setInheritedStatuses(buildMap(inherited))
+        }
       })
       .catch((err) => {
         if (!cancelled)
@@ -243,7 +261,7 @@ export function SkillAgentMatrix({
     return () => {
       cancelled = true
     }
-  }, [loadAllStatuses, t])
+  }, [loadAllStatuses, loadInheritedStatuses, t])
 
   // Detail drawer content. Loading flags are set by `openDetail` (an event
   // handler) so this effect stays free of synchronous setState.
@@ -309,15 +327,26 @@ export function SkillAgentMatrix({
 
   const enabledCountForSkill = useCallback(
     (id: string) =>
-      agentTypes.filter((a) => isEnabled(statuses.get(statusKey(id, a))))
-        .length,
-    [agentTypes, statuses]
+      agentTypes.filter(
+        (a) =>
+          isEnabled(statuses.get(statusKey(id, a))) ||
+          isEnabled(inheritedStatuses.get(statusKey(id, a)))
+      ).length,
+    [agentTypes, statuses, inheritedStatuses]
   )
   const enabledCountForAgent = useCallback(
     (a: AgentType) =>
-      visibleSkills.filter((s) => isEnabled(statuses.get(statusKey(s.id, a))))
-        .length,
-    [visibleSkills, statuses]
+      visibleSkills.filter(
+        (s) =>
+          isEnabled(statuses.get(statusKey(s.id, a))) ||
+          isEnabled(inheritedStatuses.get(statusKey(s.id, a)))
+      ).length,
+    [visibleSkills, statuses, inheritedStatuses]
+  )
+  const isInherited = useCallback(
+    (skillId: string, agentType: AgentType) =>
+      isEnabled(inheritedStatuses.get(statusKey(skillId, agentType))),
+    [inheritedStatuses]
   )
 
   // ─── Apply ──────────────────────────────────────────────────────────
@@ -418,11 +447,12 @@ export function SkillAgentMatrix({
           [{ skillId, agentType }],
           !enabled,
           statuses,
-          isSkillEnableable
+          isSkillEnableable,
+          isInherited
         )
       )
     },
-    [statuses, isSkillEnableable, runOps]
+    [statuses, isSkillEnableable, isInherited, runOps]
   )
 
   const rowBatch = (skillId: string, enable: boolean) =>
@@ -431,7 +461,8 @@ export function SkillAgentMatrix({
         agentTypes.map((agentType) => ({ skillId, agentType })),
         enable,
         statuses,
-        isSkillEnableable
+        isSkillEnableable,
+        isInherited
       ),
       !enable
     )
@@ -442,7 +473,8 @@ export function SkillAgentMatrix({
         visibleSkills.map((s) => ({ skillId: s.id, agentType })),
         enable,
         statuses,
-        isSkillEnableable
+        isSkillEnableable,
+        isInherited
       ),
       !enable
     )
@@ -455,7 +487,8 @@ export function SkillAgentMatrix({
         ),
         enable,
         statuses,
-        isSkillEnableable
+        isSkillEnableable,
+        isInherited
       ),
       !enable
     )
@@ -469,7 +502,8 @@ export function SkillAgentMatrix({
         ),
         enable,
         statuses,
-        isSkillEnableable
+        isSkillEnableable,
+        isInherited
       ),
       !enable
     )
@@ -531,6 +565,7 @@ export function SkillAgentMatrix({
           />
           <div className="ml-auto flex items-center gap-2">
             {toolbarActions}
+            {scopeControl}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button size="sm" variant="outline" disabled={!interactive}>
@@ -730,6 +765,10 @@ export function SkillAgentMatrix({
                         {agents.map((agent) => {
                           const key = statusKey(skill.id, agent.agent_type)
                           const status = statuses.get(key)
+                          const inherited = isInherited(
+                            skill.id,
+                            agent.agent_type
+                          )
                           return (
                             <td
                               key={agent.agent_type}
@@ -740,11 +779,14 @@ export function SkillAgentMatrix({
                                 agentName={agent.name}
                                 ready={skill.ready}
                                 status={status}
+                                inherited={inherited}
                                 pending={pendingKeys.has(key)}
                                 disabled={!interactive}
                                 translateState={translateState}
                                 notReadyHint={notReadyHint}
                                 copyModeHint={t("copyModeHint")}
+                                inheritedHint={t("globalInherited")}
+                                unavailableHint={t("scopeUnavailable")}
                                 onToggle={() =>
                                   toggleCell(skill.id, agent.agent_type)
                                 }
@@ -881,8 +923,13 @@ export function SkillAgentMatrix({
                     {agents.map((agent) => {
                       const key = statusKey(detailSkill.id, agent.agent_type)
                       const status = statuses.get(key)
-                      const enabled = isEnabled(status)
+                      const inherited = isInherited(
+                        detailSkill.id,
+                        agent.agent_type
+                      )
+                      const enabled = inherited || isEnabled(status)
                       const blocked = isBlockedForEnable(status)
+                      const unavailable = !status && !inherited
                       return (
                         <div
                           key={agent.agent_type}
@@ -902,7 +949,13 @@ export function SkillAgentMatrix({
                               {agent.name}
                             </div>
                             <div className="text-[11px] text-muted-foreground truncate">
-                              {status ? translateState(status.state) : "—"}
+                              {inherited
+                                ? t("globalInherited")
+                                : unavailable
+                                  ? t("scopeUnavailable")
+                                  : status
+                                    ? translateState(status.state)
+                                    : "—"}
                             </div>
                           </div>
                           <Switch
@@ -910,8 +963,17 @@ export function SkillAgentMatrix({
                             disabled={
                               applying ||
                               pendingKeys.has(key) ||
+                              inherited ||
+                              unavailable ||
                               !detailSkill.ready ||
                               (blocked && !enabled)
+                            }
+                            title={
+                              inherited
+                                ? t("globalInherited")
+                                : unavailable
+                                  ? t("scopeUnavailable")
+                                  : undefined
                             }
                             onCheckedChange={() =>
                               toggleCell(detailSkill.id, agent.agent_type)
@@ -991,33 +1053,50 @@ function MatrixCell({
   agentName,
   ready,
   status,
+  inherited,
   pending,
   disabled,
   translateState,
   notReadyHint,
   copyModeHint,
+  inheritedHint,
+  unavailableHint,
   onToggle,
 }: {
   skillName: string
   agentName: string
   ready: boolean
   status: ExpertInstallStatus | undefined
+  inherited: boolean
   pending: boolean
   disabled: boolean
   translateState: (state: ExpertLinkState) => string
   notReadyHint?: string
   copyModeHint: string
+  inheritedHint: string
+  unavailableHint: string
   onToggle: () => void
 }) {
-  const enabled = isEnabled(status)
+  const enabled = inherited || isEnabled(status)
+  const unavailable = !status && !inherited
   const blocked = isBlockedForEnable(status)
   const broken = status?.state === "broken"
   // Mirror the single-toggle predicate: a not-ready skill or a blocked cell
   // can't be enabled, so it's non-interactive unless already enabled.
   const notInteractive =
-    disabled || pending || ((!ready || blocked) && !enabled)
+    disabled ||
+    pending ||
+    inherited ||
+    unavailable ||
+    ((!ready || blocked) && !enabled)
 
-  const stateLabel = status ? translateState(status.state) : "—"
+  const stateLabel = inherited
+    ? inheritedHint
+    : unavailable
+      ? unavailableHint
+      : status
+        ? translateState(status.state)
+        : "—"
   const tip = [
     `${skillName} · ${agentName}`,
     stateLabel,
@@ -1030,40 +1109,48 @@ function MatrixCell({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={enabled}
-          aria-label={`${skillName}, ${agentName}: ${stateLabel}`}
-          aria-disabled={notInteractive}
-          disabled={notInteractive}
-          onClick={onToggle}
-          className={cn(
-            // `align-middle` decouples the button from the text baseline so an
-            // empty cell (no svg) and a filled cell (Check svg) reserve the same
-            // line-box height — otherwise a fully-enabled row renders shorter.
-            "inline-flex h-7 w-7 items-center justify-center rounded-md border align-middle transition-colors",
-            enabled
-              ? "border-primary bg-primary text-primary-foreground"
-              : broken
-                ? "border-amber-500/50 text-amber-600 dark:text-amber-400"
-                : blocked || !ready
-                  ? "border-dashed border-border/70 text-muted-foreground/60"
-                  : "border-border hover:bg-muted/60",
-            status?.copyMode && enabled && "ring-1 ring-amber-400",
-            notInteractive && !enabled && "cursor-not-allowed opacity-60"
-          )}
+        <span
+          className="inline-flex"
+          tabIndex={notInteractive ? 0 : undefined}
+          aria-label={notInteractive ? tip : undefined}
         >
-          {pending ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : enabled ? (
-            <Check className="h-4 w-4" />
-          ) : broken ? (
-            <AlertTriangle className="h-3.5 w-3.5" />
-          ) : blocked || !ready ? (
-            <Lock className="h-3 w-3" />
-          ) : null}
-        </button>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={enabled}
+            aria-label={`${skillName}, ${agentName}: ${stateLabel}`}
+            aria-disabled={notInteractive}
+            disabled={notInteractive}
+            onClick={onToggle}
+            className={cn(
+              // `align-middle` decouples the button from the text baseline so an
+              // empty cell (no svg) and a filled cell (Check svg) reserve the same
+              // line-box height — otherwise a fully-enabled row renders shorter.
+              "inline-flex h-7 w-7 items-center justify-center rounded-md border align-middle transition-colors",
+              inherited
+                ? "border-primary/50 bg-primary/15 text-primary"
+                : enabled
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : broken
+                    ? "border-amber-500/50 text-amber-600 dark:text-amber-400"
+                    : blocked || unavailable || !ready
+                      ? "border-dashed border-border/70 text-muted-foreground/60"
+                      : "border-border hover:bg-muted/60",
+              status?.copyMode && enabled && "ring-1 ring-amber-400",
+              notInteractive && "cursor-not-allowed opacity-70"
+            )}
+          >
+            {pending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : enabled ? (
+              <Check className="h-4 w-4" />
+            ) : broken ? (
+              <AlertTriangle className="h-3.5 w-3.5" />
+            ) : blocked || unavailable || !ready ? (
+              <Lock className="h-3 w-3" />
+            ) : null}
+          </button>
+        </span>
       </TooltipTrigger>
       <TooltipContent>{tip}</TooltipContent>
     </Tooltip>

@@ -3833,7 +3833,9 @@
       "preview": "SKILL.md preview",
       "loadingContent": "Loading content…"
     },
-    "copyModeHint": "Copied (not linked) — re-enable after updates for the latest version"
+    "copyModeHint": "Copied (not linked) — re-enable after updates for the latest version",
+    "globalInherited": "Inherited from global",
+    "scopeUnavailable": "This agent does not support project-scoped skills"
   },
   "ExpertsSettings": {
     "title": "Expert Skills",
@@ -3975,6 +3977,11 @@
     "autoPreviewHint": "When an agent creates or edits a Word, Excel, or PowerPoint file, open its live preview automatically."
   },
   "SkillPacksSettings": {
+    "scope": {
+      "label": "Skill scope",
+      "global": "Global",
+      "noFolders": "No folders available"
+    },
     "title": "Skill Packs",
     "description": "Curated skill bundles that codeg manages centrally and links into your AI agents — coding experts, scientific research, and office document tools. Enable them per agent below.",
     "tabs": {

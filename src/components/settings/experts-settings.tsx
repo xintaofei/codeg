@@ -1,6 +1,12 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react"
 import { Loader2 } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
 
@@ -17,7 +23,13 @@ import {
 } from "@/lib/api"
 import { invalidateAgentSkillsCache } from "@/hooks/use-agent-skills"
 import { piUsesCustomAgentDir } from "@/lib/pi-config"
-import type { AcpAgentInfo, ExpertLinkState, ExpertListItem } from "@/lib/types"
+import type {
+  AcpAgentInfo,
+  AgentSkillScope,
+  ExpertLinkState,
+  ExpertListItem,
+  LinkOp,
+} from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
 import { getExpertIcon, pickLocalized } from "@/lib/expert-presentation"
 
@@ -33,8 +45,14 @@ const CATEGORY_SORT: Record<string, number> = {
 
 export function ExpertsBody({
   onRegisterRefresh,
+  scope,
+  workspacePath,
+  scopeControl,
 }: {
   onRegisterRefresh?: (refresh: () => void) => void
+  scope: AgentSkillScope
+  workspacePath: string | null
+  scopeControl: ReactNode
 }) {
   const t = useTranslations("ExpertsSettings")
   const locale = useLocale()
@@ -148,6 +166,19 @@ export function ExpertsBody({
     [experts, locale, t]
   )
 
+  const loadAllStatuses = useCallback(
+    () => expertsListAllInstallStatuses({ scope, workspacePath }),
+    [scope, workspacePath]
+  )
+  const loadGlobalStatuses = useCallback(
+    () => expertsListAllInstallStatuses({ scope: "global" }),
+    []
+  )
+  const applyLinks = useCallback(
+    (ops: LinkOp[]) => expertsApplyLinks(ops, { scope, workspacePath }),
+    [scope, workspacePath]
+  )
+
   if (loading) {
     return (
       <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
@@ -172,19 +203,23 @@ export function ExpertsBody({
       ) : (
         <div className="flex-1 min-h-0 min-w-0">
           <SkillAgentMatrix
-            key={reloadKey}
+            key={`${reloadKey}:${scope}:${workspacePath ?? ""}`}
             skills={matrixSkills}
             agents={agents}
             categoryOrder={CATEGORY_SORT}
             translateCategory={translatedCategory}
             translateState={translatedState}
-            loadAllStatuses={expertsListAllInstallStatuses}
-            applyLinks={expertsApplyLinks}
+            loadAllStatuses={loadAllStatuses}
+            loadInheritedStatuses={
+              scope === "project" ? loadGlobalStatuses : undefined
+            }
+            applyLinks={applyLinks}
             loadContent={expertsReadContent}
             onApplied={(touched) =>
               touched.forEach((a) => invalidateAgentSkillsCache(a))
             }
             searchPlaceholder={t("searchPlaceholder")}
+            scopeControl={scopeControl}
           />
         </div>
       )}

@@ -3821,7 +3821,9 @@
       "preview": "SKILL.md-Vorschau",
       "loadingContent": "Inhalt wird geladen…"
     },
-    "copyModeHint": "Kopiert (nicht verknüpft) – nach Updates erneut aktivieren, um die neueste Version zu erhalten"
+    "copyModeHint": "Kopiert (nicht verknüpft) – nach Updates erneut aktivieren, um die neueste Version zu erhalten",
+    "globalInherited": "Global übernommen",
+    "scopeUnavailable": "Dieser Agent unterstützt keine projektbezogenen Skills"
   },
   "ExpertsSettings": {
     "title": "Experten-Skills",
@@ -3963,6 +3965,11 @@
     "autoPreviewHint": "Wenn ein Agent eine Word-, Excel- oder PowerPoint-Datei erstellt oder bearbeitet, wird die Live-Vorschau automatisch geöffnet."
   },
   "SkillPacksSettings": {
+    "scope": {
+      "label": "Skill-Bereich",
+      "global": "Global",
+      "noFolders": "Keine Ordner verfügbar"
+    },
     "title": "Skill-Pakete",
     "description": "Kuratierte Skill-Pakete, die codeg zentral verwaltet und mit deinen KI-Agenten verknüpft – Programmierexperten, wissenschaftliche Forschung und Office-Dokumenttools. Unten pro Agent aktivierbar.",
     "tabs": {

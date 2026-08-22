@@ -1240,6 +1240,11 @@ export async function acpDeleteAgentSkill(params: {
 
 // ─── Experts (built-in expert skills) ───────────────────────────────────
 
+export interface SkillPackScopeParams {
+  scope: AgentSkillScope
+  workspacePath?: string | null
+}
+
 export async function expertsList(): Promise<ExpertListItem[]> {
   return getTransport().call("experts_list")
 }
@@ -1251,17 +1256,25 @@ export async function expertsGetInstallStatus(
 }
 
 /** One round-trip snapshot of every (expert, agent) link state for the matrix. */
-export async function expertsListAllInstallStatuses(): Promise<
-  ExpertInstallStatus[]
-> {
-  return getTransport().call("experts_list_all_install_statuses")
+export async function expertsListAllInstallStatuses(
+  params: SkillPackScopeParams
+): Promise<ExpertInstallStatus[]> {
+  return getTransport().call("experts_list_all_install_statuses", {
+    scope: params.scope,
+    workspacePath: params.workspacePath ?? null,
+  })
 }
 
 /** Apply a batch of enable/disable ops; returns one result per op. */
 export async function expertsApplyLinks(
-  ops: LinkOp[]
+  ops: LinkOp[],
+  params: SkillPackScopeParams
 ): Promise<LinkOpResult[]> {
-  return getTransport().call("experts_apply_links", { ops })
+  return getTransport().call("experts_apply_links", {
+    ops,
+    scope: params.scope,
+    workspacePath: params.workspacePath ?? null,
+  })
 }
 
 export async function expertsLinkToAgent(params: {
@@ -1307,17 +1320,25 @@ export async function scienceGetInstallStatus(
 }
 
 /** One round-trip snapshot of every (science skill, agent) link state. */
-export async function scienceListAllInstallStatuses(): Promise<
-  ExpertInstallStatus[]
-> {
-  return getTransport().call("science_list_all_install_statuses")
+export async function scienceListAllInstallStatuses(
+  params: SkillPackScopeParams
+): Promise<ExpertInstallStatus[]> {
+  return getTransport().call("science_list_all_install_statuses", {
+    scope: params.scope,
+    workspacePath: params.workspacePath ?? null,
+  })
 }
 
 /** Apply a batch of enable/disable ops; returns one result per op. */
 export async function scienceApplyLinks(
-  ops: LinkOp[]
+  ops: LinkOp[],
+  params: SkillPackScopeParams
 ): Promise<LinkOpResult[]> {
-  return getTransport().call("science_apply_links", { ops })
+  return getTransport().call("science_apply_links", {
+    ops,
+    scope: params.scope,
+    workspacePath: params.workspacePath ?? null,
+  })
 }
 
 export async function scienceLinkToAgent(params: {
@@ -1358,15 +1379,25 @@ export async function customList(): Promise<CustomSkillItem[]> {
 }
 
 /** One round-trip snapshot of every (custom skill, agent) link state. */
-export async function customListAllInstallStatuses(): Promise<
-  ExpertInstallStatus[]
-> {
-  return getTransport().call("custom_list_all_install_statuses")
+export async function customListAllInstallStatuses(
+  params: SkillPackScopeParams
+): Promise<ExpertInstallStatus[]> {
+  return getTransport().call("custom_list_all_install_statuses", {
+    scope: params.scope,
+    workspacePath: params.workspacePath ?? null,
+  })
 }
 
 /** Apply a batch of enable/disable ops; returns one result per op. */
-export async function customApplyLinks(ops: LinkOp[]): Promise<LinkOpResult[]> {
-  return getTransport().call("custom_apply_links", { ops })
+export async function customApplyLinks(
+  ops: LinkOp[],
+  params: SkillPackScopeParams
+): Promise<LinkOpResult[]> {
+  return getTransport().call("custom_apply_links", {
+    ops,
+    scope: params.scope,
+    workspacePath: params.workspacePath ?? null,
+  })
 }
 
 export async function customReadSkill(id: string): Promise<string> {
@@ -1488,17 +1519,25 @@ export async function officecliSkillGetInstallStatus(
 }
 
 /** One round-trip snapshot of every (skill, agent) link state for the matrix. */
-export async function officecliSkillListAllInstallStatuses(): Promise<
-  ExpertInstallStatus[]
-> {
-  return getTransport().call("officecli_skill_list_all_install_statuses")
+export async function officecliSkillListAllInstallStatuses(
+  params: SkillPackScopeParams
+): Promise<ExpertInstallStatus[]> {
+  return getTransport().call("officecli_skill_list_all_install_statuses", {
+    scope: params.scope,
+    workspacePath: params.workspacePath ?? null,
+  })
 }
 
 /** Apply a batch of enable/disable ops; returns one result per op. */
 export async function officecliSkillApplyLinks(
-  ops: LinkOp[]
+  ops: LinkOp[],
+  params: SkillPackScopeParams
 ): Promise<LinkOpResult[]> {
-  return getTransport().call("officecli_skill_apply_links", { ops })
+  return getTransport().call("officecli_skill_apply_links", {
+    ops,
+    scope: params.scope,
+    workspacePath: params.workspacePath ?? null,
+  })
 }
 
 export async function officecliSkillReadContent(

@@ -369,13 +369,22 @@ interface QuickActionsProps {
    *  detection: a card whose skill isn't linked to this agent is locked, and
    *  clicking it shows a hint instead of injecting an unusable badge. */
   agentType: AgentType | null
+  /** Current project directory; project-local skills are effective here too. */
+  workspacePath?: string | null
 }
 
-export function QuickActions({ onSelect, agentType }: QuickActionsProps) {
+export function QuickActions({
+  onSelect,
+  agentType,
+  workspacePath,
+}: QuickActionsProps) {
   const t = useTranslations("Folder.chat.welcomePanel.quickActions")
   const locale = useLocale()
   const experts = useBuiltInExperts()
-  const { enabledIds, ready, supported } = useEnabledSkillIds(agentType)
+  const { enabledIds, ready, supported } = useEnabledSkillIds(
+    agentType,
+    workspacePath
+  )
   const { showWelcomeQuickActions } = useWelcomeQuickActions()
   const lockHint = t("notEnabled.hint")
 

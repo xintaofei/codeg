@@ -3821,7 +3821,9 @@
       "preview": "SKILL.md 預覽",
       "loadingContent": "載入內容中…"
     },
-    "copyModeHint": "已複製（非連結）——更新後請重新啟用以取得最新版本"
+    "copyModeHint": "已複製（非連結）——更新後請重新啟用以取得最新版本",
+    "globalInherited": "全域繼承",
+    "scopeUnavailable": "此 agent 不支援專案範圍技能"
   },
   "ExpertsSettings": {
     "title": "專家技能",
@@ -3963,6 +3965,11 @@
     "autoPreviewHint": "當智慧代理建立或編輯 Word、Excel、PowerPoint 檔案時，自動開啟其即時預覽。"
   },
   "SkillPacksSettings": {
+    "scope": {
+      "label": "技能範圍",
+      "global": "全域",
+      "noFolders": "沒有可用的資料夾"
+    },
     "title": "技能包",
     "description": "由 codeg 集中管理、並連結到各 AI 智慧代理的成套技能——程式設計專家、科學研究與辦公文件工具。可在下方依代理分別啟用。",
     "tabs": {

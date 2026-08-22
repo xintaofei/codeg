@@ -11,17 +11,43 @@ import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { piUsesCustomAgentDir } from "@/lib/pi-config"
 import type { AgentType, ExpertInstallStatus } from "@/lib/types"
 
-// Module-level cache shared across QuickActions mounts. The snapshots are
-// agent-agnostic (one entry per (skill, agent) pair), so switching the selected
-// agent only re-filters in memory — no refetch. Refreshed on window focus to
-// pick up enable/disable performed in the settings window.
-let cached: ExpertInstallStatus[] | null = null
-let inflight: Promise<ExpertInstallStatus[] | null> | null = null
-// Bumped on every invalidation (focus). A load whose generation is stale by the
-// time it resolves must not overwrite a fresher snapshot — guards the
-// focus-refetch race where an orphaned earlier request resolves last.
-let generation = 0
-const subscribers = new Set<(snapshot: ExpertInstallStatus[]) => void>()
+interface SnapshotEntry {
+  workspacePath: string | null
+  cached: ExpertInstallStatus[] | null
+  inflight: Promise<ExpertInstallStatus[] | null> | null
+  generation: number
+  subscribers: Set<(snapshot: ExpertInstallStatus[]) => void>
+}
+
+// Effective snapshots are cached per workspace because project-local skills
+// differ by folder. A null workspace keeps the previous global-only behavior.
+const snapshotEntries = new Map<string, SnapshotEntry>()
+
+function normalizedWorkspacePath(workspacePath?: string | null): string | null {
+  const trimmed = workspacePath?.trim()
+  return trimmed ? trimmed : null
+}
+
+function snapshotKey(workspacePath?: string | null): string {
+  return normalizedWorkspacePath(workspacePath) ?? "__global__"
+}
+
+function getSnapshotEntry(workspacePath?: string | null): SnapshotEntry {
+  const normalized = normalizedWorkspacePath(workspacePath)
+  const key = snapshotKey(normalized)
+  let entry = snapshotEntries.get(key)
+  if (!entry) {
+    entry = {
+      workspacePath: normalized,
+      cached: null,
+      inflight: null,
+      generation: 0,
+      subscribers: new Set(),
+    }
+    snapshotEntries.set(key, entry)
+  }
+  return entry
+}
 
 /**
  * Load the experts + office-tools + science install-status snapshots and merge
@@ -35,35 +61,58 @@ const subscribers = new Set<(snapshot: ExpertInstallStatus[]) => void>()
  * `null`, so `ready` remains false and callers treat everything as usable
  * (the pre-gating behavior) instead of locking it all.
  */
-async function loadSnapshot(): Promise<ExpertInstallStatus[] | null> {
-  if (inflight) return inflight
-  const myGeneration = generation
+async function loadSnapshot(
+  workspacePath?: string | null
+): Promise<ExpertInstallStatus[] | null> {
+  const entry = getSnapshotEntry(workspacePath)
+  if (entry.inflight) return entry.inflight
+  const myGeneration = entry.generation
+  const globalRequests = [
+    expertsListAllInstallStatuses({ scope: "global" }),
+    officecliSkillListAllInstallStatuses({ scope: "global" }),
+    scienceListAllInstallStatuses({ scope: "global" }),
+  ]
+  const projectRequests = entry.workspacePath
+    ? [
+        expertsListAllInstallStatuses({
+          scope: "project",
+          workspacePath: entry.workspacePath,
+        }),
+        officecliSkillListAllInstallStatuses({
+          scope: "project",
+          workspacePath: entry.workspacePath,
+        }),
+        scienceListAllInstallStatuses({
+          scope: "project",
+          workspacePath: entry.workspacePath,
+        }),
+      ]
+    : []
   const request: Promise<ExpertInstallStatus[] | null> = Promise.all([
-    expertsListAllInstallStatuses(),
-    officecliSkillListAllInstallStatuses(),
-    scienceListAllInstallStatuses(),
+    ...globalRequests,
+    ...projectRequests,
   ])
-    .then(([experts, office, science]) => {
+    .then((snapshots) => {
       // Only clear the shared handle if it still points at *this* request: a
       // focus refresh may have superseded it, and nulling unconditionally would
       // orphan the newer in-flight request and let a concurrent mount kick off a
       // duplicate scan.
-      if (inflight === request) inflight = null
+      if (entry.inflight === request) entry.inflight = null
       // A newer invalidation superseded this request while it was in flight —
       // discard its result so it can't clobber the fresher snapshot.
-      if (myGeneration !== generation) return cached
-      const merged = [...experts, ...office, ...science]
-      cached = merged
-      for (const notify of subscribers) notify(merged)
+      if (myGeneration !== entry.generation) return entry.cached
+      const merged = snapshots.flat()
+      entry.cached = merged
+      for (const notify of entry.subscribers) notify(merged)
       return merged
     })
     .catch((err) => {
-      if (inflight === request) inflight = null
+      if (entry.inflight === request) entry.inflight = null
       console.warn("[useEnabledSkillIds] failed to load statuses:", err)
-      return cached
+      return entry.cached
     })
-  inflight = request
-  return inflight
+  entry.inflight = request
+  return entry.inflight
 }
 
 // Window-focus refetch is shared across all hook instances via a single
@@ -73,7 +122,8 @@ async function loadSnapshot(): Promise<ExpertInstallStatus[] | null> {
 // its own refresh on the same focus event, and because the handler clears
 // `inflight` before calling `loadSnapshot`, those N calls defeated the in-flight
 // dedup and ran N concurrent (expert + office) status scans. One coalesced
-// refresh per focus keeps the cost flat regardless of how many composers mount.
+// refresh per active workspace keeps duplicate consumers of the same folder
+// coalesced while still refreshing every folder currently on screen.
 let focusRefcount = 0
 let focusListener: (() => void) | null = null
 
@@ -82,9 +132,12 @@ function refreshSnapshotOnFocus(): void {
   // settings change we just returned from. The generation bump makes any stale
   // request discard its result instead of clobbering the fresh one. On failure
   // the cache is kept, so a transient error never resets a good snapshot.
-  generation += 1
-  inflight = null
-  loadSnapshot()
+  for (const entry of snapshotEntries.values()) {
+    if (entry.subscribers.size === 0) continue
+    entry.generation += 1
+    entry.inflight = null
+    void loadSnapshot(entry.workspacePath)
+  }
 }
 
 function acquireFocusRefresh(): void {
@@ -124,15 +177,22 @@ function releaseFocusRefresh(): void {
  * held unsupported until the agent registry has loaded, so a custom-dir pi
  * never briefly exposes default-dir shortcuts during the optimistic window.
  */
-export function useEnabledSkillIds(agentType: AgentType | null): {
+export function useEnabledSkillIds(
+  agentType: AgentType | null,
+  workspacePath?: string | null
+): {
   enabledIds: Set<string>
   ready: boolean
   supported: boolean
 } {
   const { agents, fresh: agentsFresh } = useAcpAgents()
-  const [snapshot, setSnapshot] = useState<ExpertInstallStatus[] | null>(
-    () => cached
-  )
+  const key = snapshotKey(workspacePath)
+  const entry = getSnapshotEntry(workspacePath)
+  const [snapshotState, setSnapshotState] = useState<{
+    key: string
+    snapshot: ExpertInstallStatus[] | null
+  }>(() => ({ key, snapshot: entry.cached }))
+  const snapshot = snapshotState.key === key ? snapshotState.snapshot : null
 
   // Initial load + subscribe for updates (covers the focus refetch below and
   // any concurrent QuickActions instance resolving the shared fetch first).
@@ -141,20 +201,25 @@ export function useEnabledSkillIds(agentType: AgentType | null): {
   // back to not-ready.
   useEffect(() => {
     let cancelled = false
-    if (!cached) {
-      loadSnapshot().then((next) => {
-        if (!cancelled && next) setSnapshot(next)
+    const adopt = (next: ExpertInstallStatus[]) => {
+      if (!cancelled) setSnapshotState({ key, snapshot: next })
+    }
+    if (entry.cached) {
+      Promise.resolve(entry.cached).then(adopt)
+    } else {
+      loadSnapshot(entry.workspacePath).then((next) => {
+        if (next) adopt(next)
       })
     }
     const onUpdate = (next: ExpertInstallStatus[]) => {
-      if (!cancelled) setSnapshot(next)
+      adopt(next)
     }
-    subscribers.add(onUpdate)
+    entry.subscribers.add(onUpdate)
     return () => {
       cancelled = true
-      subscribers.delete(onUpdate)
+      entry.subscribers.delete(onUpdate)
     }
-  }, [])
+  }, [entry, key])
 
   // Re-fetch when the window regains focus — the settings window links/unlinks
   // skills while this conversation window stays mounted. The listener is shared

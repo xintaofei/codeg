@@ -180,6 +180,7 @@ export function TaskMessageComposer({
   const shortcuts = useComposerShortcuts({
     editorRef,
     agentType,
+    workspacePath: folderPath,
     onAfterInsert: () => onChange(editorRef.current?.getText() ?? ""),
     logLabel: "TaskComposer",
   })

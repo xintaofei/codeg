@@ -112,6 +112,52 @@ function piLinkedStatus(expertId: string): ExpertInstallStatus {
   }
 }
 
+function linkedStatus(
+  expertId: string,
+  agentType: ExpertInstallStatus["agentType"]
+): ExpertInstallStatus {
+  return {
+    ...piLinkedStatus(expertId),
+    agentType,
+  }
+}
+
+describe("useEnabledSkillIds — project ownership", () => {
+  it("merges global and selected-project links without leaking another folder", async () => {
+    const { api, hook } = await setup()
+    vi.mocked(api.expertsListAllInstallStatuses).mockImplementation(
+      async (params) => {
+        if (params.scope === "global") {
+          return [linkedStatus("global-skill", "claude_code")]
+        }
+        return [
+          linkedStatus(
+            params.workspacePath === "D:\\Work\\Alpha"
+              ? "alpha-skill"
+              : "beta-skill",
+            "claude_code"
+          ),
+        ]
+      }
+    )
+
+    const alpha = renderHook(() =>
+      hook.useEnabledSkillIds("claude_code", "D:\\Work\\Alpha")
+    )
+
+    await waitFor(() => expect(alpha.result.current.ready).toBe(true))
+    expect(Array.from(alpha.result.current.enabledIds).sort()).toEqual([
+      "alpha-skill",
+      "global-skill",
+    ])
+    expect(api.expertsListAllInstallStatuses).toHaveBeenCalledWith({
+      scope: "project",
+      workspacePath: "D:\\Work\\Alpha",
+    })
+    expect(alpha.result.current.enabledIds.has("beta-skill")).toBe(false)
+  })
+})
+
 describe("useEnabledSkillIds — custom-dir pi gating", () => {
   it("never exposes managed skills for a custom-dir pi, before or after the registry resolves", async () => {
     const { api, hook } = await setup()

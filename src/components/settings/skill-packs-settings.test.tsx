@@ -10,7 +10,16 @@ let currentSearch = ""
 
 // Spy the refresh handler the active body registers with the hub's fixed
 // toolbar. Hoisted so the (hoisted) vi.mock factory can capture it.
-const { registeredRefresh } = vi.hoisted(() => ({ registeredRefresh: vi.fn() }))
+const { registeredRefresh, loadFolderHistoryMock } = vi.hoisted(() => ({
+  registeredRefresh: vi.fn(),
+  loadFolderHistoryMock: vi.fn(),
+}))
+
+vi.mock("@/lib/api", () => ({
+  expertsOpenCentralDir: vi.fn(),
+  loadFolderHistory: loadFolderHistoryMock,
+  openFolder: vi.fn(),
+}))
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace, push: vi.fn() }),
@@ -25,13 +34,28 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/components/settings/experts-settings", () => ({
   ExpertsBody: ({
     onRegisterRefresh,
+    scope,
+    workspacePath,
+    scopeControl,
   }: {
     onRegisterRefresh?: (fn: () => void) => void
+    scope: string
+    workspacePath: string | null
+    scopeControl: React.ReactNode
   }) => {
     useEffect(() => {
       onRegisterRefresh?.(registeredRefresh)
     }, [onRegisterRefresh])
-    return <div data-testid="experts-body" />
+    return (
+      <div
+        data-testid="experts-body"
+        data-scope={scope}
+        data-workspace-path={workspacePath ?? ""}
+      >
+        {scopeControl}
+        <button>Batch</button>
+      </div>
+    )
   },
 }))
 vi.mock("@/components/settings/science-settings", () => ({
@@ -59,6 +83,8 @@ describe("SkillPacksSettings", () => {
   beforeEach(() => {
     replace.mockClear()
     registeredRefresh.mockClear()
+    loadFolderHistoryMock.mockReset()
+    loadFolderHistoryMock.mockImplementation(() => new Promise(() => {}))
     currentSearch = ""
   })
 
@@ -122,5 +148,29 @@ describe("SkillPacksSettings", () => {
     renderHub()
     await userEvent.click(screen.getByRole("button", { name: "Refresh" }))
     expect(registeredRefresh).toHaveBeenCalledTimes(1)
+  })
+
+  it("offers the Skills folder list and passes the selected project scope to the active pack", async () => {
+    loadFolderHistoryMock.mockResolvedValueOnce([
+      {
+        id: 1,
+        name: "Alpha",
+        path: "D:\\Work\\Alpha",
+        sort_order: 0,
+        created_at: "2026-08-19T00:00:00Z",
+        updated_at: "2026-08-19T00:00:00Z",
+      },
+    ])
+    renderHub()
+    const body = screen.getByTestId("experts-body")
+    expect(body).toHaveAttribute("data-scope", "global")
+
+    await userEvent.click(
+      await screen.findByRole("combobox", { name: "Skill scope" })
+    )
+    await userEvent.click(await screen.findByText("Alpha"))
+
+    expect(body).toHaveAttribute("data-scope", "project")
+    expect(body).toHaveAttribute("data-workspace-path", "D:\\Work\\Alpha")
   })
 })

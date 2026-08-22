@@ -3821,7 +3821,9 @@
       "preview": "SKILL.md 미리보기",
       "loadingContent": "콘텐츠 불러오는 중…"
     },
-    "copyModeHint": "복사됨(링크 아님) — 업데이트 후 최신 버전을 받으려면 다시 활성화하세요"
+    "copyModeHint": "복사됨(링크 아님) — 업데이트 후 최신 버전을 받으려면 다시 활성화하세요",
+    "globalInherited": "전역에서 상속됨",
+    "scopeUnavailable": "이 agent는 프로젝트 범위 스킬을 지원하지 않습니다"
   },
   "ExpertsSettings": {
     "title": "전문가 스킬",
@@ -3963,6 +3965,11 @@
     "autoPreviewHint": "에이전트가 Word, Excel, PowerPoint 파일을 만들거나 편집하면 실시간 미리보기를 자동으로 엽니다."
   },
   "SkillPacksSettings": {
+    "scope": {
+      "label": "스킬 범위",
+      "global": "전역",
+      "noFolders": "사용 가능한 폴더가 없습니다"
+    },
     "title": "스킬 팩",
     "description": "codeg가 중앙에서 관리하고 각 AI 에이전트에 연결하는 엄선된 스킬 모음입니다 — 코딩 전문가, 과학 연구, 오피스 문서 도구. 아래에서 에이전트별로 활성화하세요.",
     "tabs": {

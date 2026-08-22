@@ -3821,7 +3821,9 @@
       "preview": "Aperçu de SKILL.md",
       "loadingContent": "Chargement du contenu…"
     },
-    "copyModeHint": "Copié (non lié) — réactivez après les mises à jour pour obtenir la dernière version"
+    "copyModeHint": "Copié (non lié) — réactivez après les mises à jour pour obtenir la dernière version",
+    "globalInherited": "Hérité du niveau global",
+    "scopeUnavailable": "Cet agent ne prend pas en charge les compétences au niveau du projet"
   },
   "ExpertsSettings": {
     "title": "Compétences d'experts",
@@ -3963,6 +3965,11 @@
     "autoPreviewHint": "Lorsqu'un agent crée ou modifie un fichier Word, Excel ou PowerPoint, ouvrir automatiquement son aperçu en direct."
   },
   "SkillPacksSettings": {
+    "scope": {
+      "label": "Portée des compétences",
+      "global": "Global",
+      "noFolders": "Aucun dossier disponible"
+    },
     "title": "Packs de compétences",
     "description": "Ensembles de compétences sélectionnés que codeg gère de manière centralisée et relie à vos agents IA : experts en programmation, recherche scientifique et outils de documents bureautiques. Activez-les par agent ci-dessous.",
     "tabs": {

@@ -2,6 +2,7 @@ use axum::Json;
 use serde::Deserialize;
 
 use crate::app_error::AppCommandError;
+use crate::acp::types::AgentSkillScope;
 use crate::commands::custom_skills as custom_skills_commands;
 use crate::commands::custom_skills::{CustomDeleteResult, CustomImportResult, CustomSkillItem};
 use crate::commands::experts::{ExpertInstallStatus, LinkOp, LinkOpResult};
@@ -17,6 +18,17 @@ pub struct CustomIdParams {
 #[serde(rename_all = "camelCase")]
 pub struct CustomApplyLinksParams {
     pub ops: Vec<LinkOp>,
+    pub scope: AgentSkillScope,
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopeParams {
+    pub scope: AgentSkillScope,
+    #[serde(default)]
+    pub workspace_path: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -62,19 +74,27 @@ pub async fn custom_list() -> Result<Json<Vec<CustomSkillItem>>, AppCommandError
 }
 
 pub async fn custom_list_all_install_statuses(
+    Json(params): Json<ScopeParams>,
 ) -> Result<Json<Vec<ExpertInstallStatus>>, AppCommandError> {
-    let result = custom_skills_commands::custom_list_all_install_statuses()
-        .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    let result = custom_skills_commands::custom_list_all_install_statuses(
+        params.scope,
+        params.workspace_path,
+    )
+    .await
+    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(result))
 }
 
 pub async fn custom_apply_links(
     Json(params): Json<CustomApplyLinksParams>,
 ) -> Result<Json<Vec<LinkOpResult>>, AppCommandError> {
-    let result = custom_skills_commands::custom_apply_links(params.ops)
-        .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    let result = custom_skills_commands::custom_apply_links(
+        params.ops,
+        params.scope,
+        params.workspace_path,
+    )
+    .await
+    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(result))
 }
 

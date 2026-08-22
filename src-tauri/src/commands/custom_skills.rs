@@ -138,8 +138,13 @@ fn skill_md_path(id: &str) -> PathBuf {
     custom_central_path(id).join("SKILL.md")
 }
 
-fn agent_link_path(agent: AgentType, id: &str) -> Result<PathBuf, CustomSkillsError> {
-    let dir = preferred_scope_skill_dir(agent, AgentSkillScope::Global, None)
+fn agent_link_path(
+    agent: AgentType,
+    id: &str,
+    scope: AgentSkillScope,
+    workspace_path: Option<&str>,
+) -> Result<PathBuf, CustomSkillsError> {
+    let dir = preferred_scope_skill_dir(agent, scope, workspace_path)
         .map_err(|_| CustomSkillsError::UnsupportedAgent(agent))?;
     Ok(dir.join(id))
 }
@@ -299,15 +304,17 @@ pub async fn custom_list() -> Result<Vec<CustomSkillItem>, CustomSkillsError> {
 /// One-shot snapshot of every (custom skill, agent) link state — lets the matrix
 /// render the whole grid from a single round-trip.
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn custom_list_all_install_statuses() -> Result<Vec<ExpertInstallStatus>, CustomSkillsError>
-{
+pub async fn custom_list_all_install_statuses(
+    scope: AgentSkillScope,
+    workspace_path: Option<String>,
+) -> Result<Vec<ExpertInstallStatus>, CustomSkillsError> {
     let ids = collect_custom_ids()?;
     let agents = supported_agents();
     let mut out = Vec::with_capacity(ids.len() * agents.len());
     for id in &ids {
         let expected = custom_central_path(id);
         for &agent in &agents {
-            let link_path = match agent_link_path(agent, id) {
+            let link_path = match agent_link_path(agent, id, scope, workspace_path.as_deref()) {
                 Ok(p) => p,
                 Err(_) => continue,
             };
@@ -345,6 +352,8 @@ pub async fn custom_read_skill(id: String) -> Result<String, CustomSkillsError> 
 fn link_one_locked(
     id: &str,
     agent_type: AgentType,
+    scope: AgentSkillScope,
+    workspace_path: Option<&str>,
 ) -> Result<ExpertInstallStatus, CustomSkillsError> {
     let id = validate_skill_id(id).map_err(|e| CustomSkillsError::Metadata(e.to_string()))?;
     let central = custom_central_path(&id);
@@ -352,7 +361,7 @@ fn link_one_locked(
         return Err(CustomSkillsError::NotFound(id));
     }
 
-    let link_path = agent_link_path(agent_type, &id)?;
+    let link_path = agent_link_path(agent_type, &id, scope, workspace_path)?;
     if let Some(parent) = link_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -400,12 +409,17 @@ fn link_one_locked(
 }
 
 /// Remove one custom skill's link from one agent's skill dirs. **Assumes the
-/// mutation lock is already held.** Scans ALL of the agent's global dirs to
-/// handle shared-dir agents (`~/.agents/skills`). Only ever removes OUR links
-/// (LinkedToCodeg / Broken) — foreign links and real dirs are left untouched.
-fn unlink_one_locked(id: &str, agent_type: AgentType) -> Result<(), CustomSkillsError> {
+/// mutation lock is already held.** Scans every skill dir in the selected
+/// scope. Only ever removes OUR links (LinkedToCodeg / Broken) — foreign links
+/// and real dirs are left untouched.
+fn unlink_one_locked(
+    id: &str,
+    agent_type: AgentType,
+    scope: AgentSkillScope,
+    workspace_path: Option<&str>,
+) -> Result<(), CustomSkillsError> {
     let id = validate_skill_id(id).map_err(|e| CustomSkillsError::Metadata(e.to_string()))?;
-    let dirs = scoped_skill_dirs(agent_type, AgentSkillScope::Global, None)
+    let dirs = scoped_skill_dirs(agent_type, scope, workspace_path)
         .map_err(|_| CustomSkillsError::UnsupportedAgent(agent_type))?;
     let central = custom_central_path(&id);
 
@@ -440,7 +454,11 @@ fn unlink_one_locked(id: &str, agent_type: AgentType) -> Result<(), CustomSkills
 /// frontend re-fetches the authoritative snapshot afterward (shared agent dirs
 /// make per-op state non-local — see the experts/science shared-dir note).
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn custom_apply_links(ops: Vec<LinkOp>) -> Result<Vec<LinkOpResult>, CustomSkillsError> {
+pub async fn custom_apply_links(
+    ops: Vec<LinkOp>,
+    scope: AgentSkillScope,
+    workspace_path: Option<String>,
+) -> Result<Vec<LinkOpResult>, CustomSkillsError> {
     let _guard = mutation_lock().lock().await;
     let mut out = Vec::with_capacity(ops.len());
     for op in ops {
@@ -450,9 +468,21 @@ pub async fn custom_apply_links(ops: Vec<LinkOp>) -> Result<Vec<LinkOpResult>, C
             enable,
         } = op;
         let res = if enable {
-            link_one_locked(&expert_id, agent_type).map(Some)
+            link_one_locked(
+                &expert_id,
+                agent_type,
+                scope,
+                workspace_path.as_deref(),
+            )
+            .map(Some)
         } else {
-            unlink_one_locked(&expert_id, agent_type).map(|()| None)
+            unlink_one_locked(
+                &expert_id,
+                agent_type,
+                scope,
+                workspace_path.as_deref(),
+            )
+            .map(|()| None)
         };
         out.push(match res {
             Ok(status) => LinkOpResult {
@@ -724,7 +754,7 @@ fn delete_one_locked(id: &str, agents: &[AgentType]) -> Result<(), CustomSkillsE
     // 1) Detach from every agent. A foreign link at the same path isn't ours, so
     // tolerate it rather than aborting the delete.
     for &agent in agents {
-        match unlink_one_locked(&id, agent) {
+        match unlink_one_locked(&id, agent, AgentSkillScope::Global, None) {
             Ok(()) => {}
             Err(CustomSkillsError::ForeignLink { .. })
             | Err(CustomSkillsError::UnsupportedAgent(_)) => {}
@@ -924,7 +954,10 @@ mod tests {
                 enable: false,
             },
         ];
-        let results = timeout(Duration::from_secs(5), custom_apply_links(ops))
+        let results = timeout(
+            Duration::from_secs(5),
+            custom_apply_links(ops, AgentSkillScope::Global, None),
+        )
             .await
             .expect("custom_apply_links must not deadlock")
             .expect("batch returns Ok");
@@ -948,7 +981,9 @@ mod tests {
                 enable: true,
             },
         ];
-        let results = custom_apply_links(ops).await.expect("batch returns Ok");
+        let results = custom_apply_links(ops, AgentSkillScope::Global, None)
+            .await
+            .expect("batch returns Ok");
         assert_eq!(results.len(), 2);
         assert!(results[0].ok, "idempotent disable should succeed");
         assert!(!results[1].ok, "enable of missing central skill should fail");
@@ -1004,7 +1039,7 @@ mod tests {
     #[tokio::test]
     async fn list_all_install_statuses_is_wellformed() {
         // Never panics; row count is a multiple of the supported-agent count.
-        let rows = custom_list_all_install_statuses()
+        let rows = custom_list_all_install_statuses(AgentSkillScope::Global, None)
             .await
             .expect("snapshot returns Ok");
         let agents = supported_agents().len();
@@ -1087,16 +1122,26 @@ mod tests {
                 .await
                 .expect("create");
 
-            let res = custom_apply_links(vec![LinkOp {
-                expert_id: id.into(),
-                agent_type: AgentType::ClaudeCode,
-                enable: true,
-            }])
+            let res = custom_apply_links(
+                vec![LinkOp {
+                    expert_id: id.into(),
+                    agent_type: AgentType::ClaudeCode,
+                    enable: true,
+                }],
+                AgentSkillScope::Global,
+                None,
+            )
             .await
             .expect("apply batch");
             assert!(res[0].ok, "link enable should succeed: {res:?}");
 
-            let link = agent_link_path(AgentType::ClaudeCode, id).expect("link path");
+            let link = agent_link_path(
+                AgentType::ClaudeCode,
+                id,
+                AgentSkillScope::Global,
+                None,
+            )
+            .expect("link path");
             assert!(path_is_symlink(&link), "agent link should exist after enable");
 
             let dir = central_experts_dir().join(id);

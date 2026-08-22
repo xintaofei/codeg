@@ -78,6 +78,8 @@ export interface ComposerShortcutsOptions {
   editorRef: RefObject<RichComposerHandle | null>
   /** Decides the skill trigger (`$` on Codex, `/` elsewhere) and skill gating. */
   agentType: AgentType | null
+  /** Current project directory; project-local skill links are effective here. */
+  workspacePath?: string | null
   /** Run after a skill badge lands — hosts that mirror the editor's empty state
    *  (the conversation composer's send button) resync it here. */
   onAfterInsert?: () => void
@@ -87,6 +89,7 @@ export interface ComposerShortcutsOptions {
 export function useComposerShortcuts({
   editorRef,
   agentType,
+  workspacePath,
   onAfterInsert,
   logLabel = "Composer",
 }: ComposerShortcutsOptions): ComposerShortcuts {
@@ -100,7 +103,7 @@ export function useComposerShortcuts({
     enabledIds,
     ready: skillStatusReady,
     supported: skillManagementSupported,
-  } = useEnabledSkillIds(agentType ?? null)
+  } = useEnabledSkillIds(agentType ?? null, workspacePath)
   const skillPrefix = agentType === "codex" ? "$" : "/"
 
   const [quickMessages, setQuickMessages] = useState<QuickMessage[]>([])

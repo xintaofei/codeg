@@ -1,6 +1,13 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react"
 import {
   BarChart3,
   Box,
@@ -50,7 +57,9 @@ import { useOfficecliInstallStream } from "@/hooks/use-officecli-install-stream"
 import { pickLocalized } from "@/lib/expert-presentation"
 import type {
   AcpAgentInfo,
+  AgentSkillScope,
   ExpertLinkState,
+  LinkOp,
   OfficecliInfo,
   OfficecliSkill,
 } from "@/lib/types"
@@ -219,8 +228,14 @@ function DetectionCard({
 
 export function OfficeToolsBody({
   onRegisterRefresh,
+  scope,
+  workspacePath,
+  scopeControl,
 }: {
   onRegisterRefresh?: (refresh: () => void) => void
+  scope: AgentSkillScope
+  workspacePath: string | null
+  scopeControl: ReactNode
 }) {
   const t = useTranslations("OfficeToolsSettings")
   const locale = useLocale()
@@ -354,6 +369,19 @@ export function OfficeToolsBody({
           : { label: t("badges.notSynced"), tone: "muted" },
       })),
     [skills, locale, t]
+  )
+
+  const loadAllStatuses = useCallback(
+    () => officecliSkillListAllInstallStatuses({ scope, workspacePath }),
+    [scope, workspacePath]
+  )
+  const loadGlobalStatuses = useCallback(
+    () => officecliSkillListAllInstallStatuses({ scope: "global" }),
+    []
+  )
+  const applyLinks = useCallback(
+    (ops: LinkOp[]) => officecliSkillApplyLinks(ops, { scope, workspacePath }),
+    [scope, workspacePath]
   )
 
   // Un-synced skills have no SKILL.md on disk; return empty rather than letting
@@ -502,20 +530,24 @@ export function OfficeToolsBody({
           </div>
         ) : (
           <SkillAgentMatrix
-            key={reloadKey}
+            key={`${reloadKey}:${scope}:${workspacePath ?? ""}`}
             skills={matrixSkills}
             agents={agents}
             categoryOrder={CATEGORY_SORT}
             translateCategory={translatedCategory}
             translateState={translatedState}
-            loadAllStatuses={officecliSkillListAllInstallStatuses}
-            applyLinks={officecliSkillApplyLinks}
+            loadAllStatuses={loadAllStatuses}
+            loadInheritedStatuses={
+              scope === "project" ? loadGlobalStatuses : undefined
+            }
+            applyLinks={applyLinks}
             loadContent={loadContent}
             onApplied={(touched) =>
               touched.forEach((a) => invalidateAgentSkillsCache(a))
             }
             searchPlaceholder={t("searchPlaceholder")}
             notReadyHint={installed ? t("syncFirst") : t("installFirst")}
+            scopeControl={scopeControl}
           />
         )}
       </div>

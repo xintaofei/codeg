@@ -1,23 +1,32 @@
 "use client"
 
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { useTranslations } from "next-intl"
 import { FolderOpen, RefreshCw } from "lucide-react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ExpertsBody } from "@/components/settings/experts-settings"
 import { ScienceBody } from "@/components/settings/science-settings"
 import { OfficeToolsBody } from "@/components/settings/office-tools-settings"
 import { CustomSkillsBody } from "@/components/settings/custom-skills-settings"
-import { expertsOpenCentralDir, openFolder } from "@/lib/api"
+import { expertsOpenCentralDir, loadFolderHistory, openFolder } from "@/lib/api"
 import { revealItemInDir } from "@/lib/platform"
 import { getActiveRemoteConnectionId, isDesktop } from "@/lib/transport"
 import { toErrorMessage } from "@/lib/app-error"
+import type { AgentSkillScope, FolderHistoryEntry } from "@/lib/types"
 
 type SkillPackTab = "experts" | "science" | "office" | "custom"
+const GLOBAL_SCOPE_VALUE = "__global__"
 
 function normalizeTab(raw: string | null): SkillPackTab {
   return raw === "science" || raw === "office" || raw === "custom"
@@ -48,6 +57,62 @@ export function SkillPacksSettings() {
   // for deep-linking, seeded once from the URL.
   const [tab, setTab] = useState<SkillPackTab>(() =>
     normalizeTab(searchParams.get("tab"))
+  )
+  const [scopeValue, setScopeValue] = useState(GLOBAL_SCOPE_VALUE)
+  const [folders, setFolders] = useState<FolderHistoryEntry[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    loadFolderHistory()
+      .then((list) => {
+        if (!cancelled) setFolders(list)
+      })
+      .catch((err) => {
+        console.error("[SkillPacksSettings] loadFolderHistory failed:", err)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const scope: AgentSkillScope =
+    scopeValue === GLOBAL_SCOPE_VALUE ? "global" : "project"
+  const workspacePath = scope === "project" ? scopeValue : null
+  const scopeControl = useMemo(
+    () => (
+      <Select value={scopeValue} onValueChange={setScopeValue}>
+        <SelectTrigger
+          className="h-8 w-[min(360px,42vw)] justify-between text-left"
+          aria-label={t("scope.label")}
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent align="end">
+          <SelectItem value={GLOBAL_SCOPE_VALUE}>
+            {t("scope.global")}
+          </SelectItem>
+          {folders.length === 0 ? (
+            <div className="px-2 py-1.5 text-xs text-muted-foreground">
+              {t("scope.noFolders")}
+            </div>
+          ) : (
+            folders.map((folder) => (
+              <SelectItem key={folder.path} value={folder.path}>
+                <span className="flex min-w-0 items-center gap-2 text-left">
+                  <span className="shrink-0 text-xs font-medium">
+                    {folder.name}
+                  </span>
+                  <span className="truncate text-[10px] text-muted-foreground">
+                    {folder.path}
+                  </span>
+                </span>
+              </SelectItem>
+            ))
+          )}
+        </SelectContent>
+      </Select>
+    ),
+    [folders, scopeValue, t]
   )
 
   // The currently-mounted pack body publishes its reload handler here, so the
@@ -152,25 +217,45 @@ export function SkillPacksSettings() {
           value="experts"
           className="mt-0 flex-1 min-h-0 flex flex-col"
         >
-          <ExpertsBody onRegisterRefresh={registerRefresh} />
+          <ExpertsBody
+            onRegisterRefresh={registerRefresh}
+            scope={scope}
+            workspacePath={workspacePath}
+            scopeControl={scopeControl}
+          />
         </TabsContent>
         <TabsContent
           value="science"
           className="mt-0 flex-1 min-h-0 flex flex-col"
         >
-          <ScienceBody onRegisterRefresh={registerRefresh} />
+          <ScienceBody
+            onRegisterRefresh={registerRefresh}
+            scope={scope}
+            workspacePath={workspacePath}
+            scopeControl={scopeControl}
+          />
         </TabsContent>
         <TabsContent
           value="office"
           className="mt-0 flex-1 min-h-0 flex flex-col"
         >
-          <OfficeToolsBody onRegisterRefresh={registerRefresh} />
+          <OfficeToolsBody
+            onRegisterRefresh={registerRefresh}
+            scope={scope}
+            workspacePath={workspacePath}
+            scopeControl={scopeControl}
+          />
         </TabsContent>
         <TabsContent
           value="custom"
           className="mt-0 flex-1 min-h-0 flex flex-col"
         >
-          <CustomSkillsBody onRegisterRefresh={registerRefresh} />
+          <CustomSkillsBody
+            onRegisterRefresh={registerRefresh}
+            scope={scope}
+            workspacePath={workspacePath}
+            scopeControl={scopeControl}
+          />
         </TabsContent>
       </Tabs>
     </div>

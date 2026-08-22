@@ -3833,7 +3833,9 @@
       "preview": "SKILL.md 预览",
       "loadingContent": "加载内容中…"
     },
-    "copyModeHint": "已复制（非链接）——更新后请重新启用以获取最新版本"
+    "copyModeHint": "已复制（非链接）——更新后请重新启用以获取最新版本",
+    "globalInherited": "全局继承",
+    "scopeUnavailable": "此 agent 不支持项目级技能"
   },
   "ExpertsSettings": {
     "title": "专家技能",
@@ -3975,6 +3977,11 @@
     "autoPreviewHint": "当智能体创建或编辑 Word、Excel、PowerPoint 文件时，自动打开其实时预览。"
   },
   "SkillPacksSettings": {
+    "scope": {
+      "label": "技能作用域",
+      "global": "全局",
+      "noFolders": "暂无可用文件夹"
+    },
     "title": "技能包",
     "description": "由 codeg 集中管理、并链接到各 AI 智能体的成套技能——编码专家、科学研究与办公文档工具。可在下方按智能体分别启用。",
     "tabs": {

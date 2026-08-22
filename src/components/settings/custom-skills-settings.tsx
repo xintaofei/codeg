@@ -1,6 +1,12 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react"
 import {
   Bot,
   Eye,
@@ -78,10 +84,12 @@ import {
 } from "@/lib/skill-frontmatter"
 import type {
   AcpAgentInfo,
+  AgentSkillScope,
   AgentSkillItem,
   AgentType,
   CustomSkillItem,
   ExpertLinkState,
+  LinkOp,
 } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
 import { cn } from "@/lib/utils"
@@ -128,8 +136,14 @@ type EditorMode = "create" | "edit"
 
 export function CustomSkillsBody({
   onRegisterRefresh,
+  scope,
+  workspacePath,
+  scopeControl,
 }: {
   onRegisterRefresh?: (refresh: () => void) => void
+  scope: AgentSkillScope
+  workspacePath: string | null
+  scopeControl: ReactNode
 }) {
   const t = useTranslations("CustomSkillsSettings")
 
@@ -254,6 +268,19 @@ export function CustomSkillsBody({
         ready: true,
       })),
     [skills]
+  )
+
+  const loadAllStatuses = useCallback(
+    () => customListAllInstallStatuses({ scope, workspacePath }),
+    [scope, workspacePath]
+  )
+  const loadGlobalStatuses = useCallback(
+    () => customListAllInstallStatuses({ scope: "global" }),
+    []
+  )
+  const applyLinks = useCallback(
+    (ops: LinkOp[]) => customApplyLinks(ops, { scope, workspacePath }),
+    [scope, workspacePath]
   )
 
   // Ids already in the central store — used to mark an agent's skills that are
@@ -639,20 +666,24 @@ export function CustomSkillsBody({
       {/* Even when empty, the matrix renders its toolbar (New / Import CTA). */}
       <div className="flex-1 min-h-0 min-w-0">
         <SkillAgentMatrix
-          key={reloadKey}
+          key={`${reloadKey}:${scope}:${workspacePath ?? ""}`}
           skills={matrixSkills}
           agents={agents}
           categoryOrder={CATEGORY_ORDER}
           translateCategory={() => t("category")}
           translateState={translateState}
-          loadAllStatuses={customListAllInstallStatuses}
-          applyLinks={customApplyLinks}
+          loadAllStatuses={loadAllStatuses}
+          loadInheritedStatuses={
+            scope === "project" ? loadGlobalStatuses : undefined
+          }
+          applyLinks={applyLinks}
           loadContent={customReadSkill}
           onApplied={(touched: AgentType[]) =>
             touched.forEach((a) => invalidateAgentSkillsCache(a))
           }
           searchPlaceholder={t("searchPlaceholder")}
           toolbarActions={toolbarActions}
+          scopeControl={scopeControl}
           rowActions={rowActions}
           bulkActions={bulkActions}
         />

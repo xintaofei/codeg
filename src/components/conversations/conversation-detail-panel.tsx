@@ -1898,6 +1898,7 @@ const ConversationTabView = memo(function ConversationTabView({
               <QuickActions
                 onSelect={handleQuickAction}
                 agentType={selectedAgent}
+                workspacePath={workingDir}
               />
               <div className="flex justify-center">
                 <AgentSelector

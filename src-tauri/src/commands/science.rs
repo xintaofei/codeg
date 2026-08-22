@@ -171,8 +171,13 @@ fn science_central_path(skill_id: &str) -> PathBuf {
     central_experts_dir().join(skill_id)
 }
 
-fn agent_link_path(agent: AgentType, skill_id: &str) -> Result<PathBuf, ScienceError> {
-    let dir = preferred_scope_skill_dir(agent, AgentSkillScope::Global, None)
+fn agent_link_path(
+    agent: AgentType,
+    skill_id: &str,
+    scope: AgentSkillScope,
+    workspace_path: Option<&str>,
+) -> Result<PathBuf, ScienceError> {
+    let dir = preferred_scope_skill_dir(agent, scope, workspace_path)
         .map_err(|_| ScienceError::UnsupportedAgent(agent))?;
     Ok(dir.join(skill_id))
 }
@@ -587,7 +592,7 @@ pub async fn science_get_install_status(
 
     let mut out = Vec::with_capacity(agents.len());
     for agent in agents {
-        let link_path = match agent_link_path(agent, &skill_id) {
+        let link_path = match agent_link_path(agent, &skill_id, AgentSkillScope::Global, None) {
             Ok(p) => p,
             Err(_) => continue,
         };
@@ -640,6 +645,8 @@ fn supported_agents() -> Vec<AgentType> {
 fn link_one_locked(
     skill_id: &str,
     agent_type: AgentType,
+    scope: AgentSkillScope,
+    workspace_path: Option<&str>,
 ) -> Result<ExpertInstallStatus, ScienceError> {
     let skill_id = validate_skill_id(skill_id).map_err(|e| ScienceError::Metadata(e.to_string()))?;
     let _ = find_metadata(&skill_id)?;
@@ -650,7 +657,7 @@ fn link_one_locked(
         )));
     }
 
-    let link_path = agent_link_path(agent_type, &skill_id)?;
+    let link_path = agent_link_path(agent_type, &skill_id, scope, workspace_path)?;
     if let Some(parent) = link_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -708,7 +715,7 @@ pub async fn science_link_to_agent(
     agent_type: AgentType,
 ) -> Result<ExpertInstallStatus, ScienceError> {
     let _guard = mutation_lock().lock().await;
-    link_one_locked(&skill_id, agent_type)
+    link_one_locked(&skill_id, agent_type, AgentSkillScope::Global, None)
 }
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
@@ -717,17 +724,22 @@ pub async fn science_unlink_from_agent(
     agent_type: AgentType,
 ) -> Result<(), ScienceError> {
     let _guard = mutation_lock().lock().await;
-    unlink_one_locked(&skill_id, agent_type)
+    unlink_one_locked(&skill_id, agent_type, AgentSkillScope::Global, None)
 }
 
 /// Remove one science skill's link from one agent's skill dirs. **Assumes the
 /// mutation lock is already held** (see `link_one_locked`).
-fn unlink_one_locked(skill_id: &str, agent_type: AgentType) -> Result<(), ScienceError> {
+fn unlink_one_locked(
+    skill_id: &str,
+    agent_type: AgentType,
+    scope: AgentSkillScope,
+    workspace_path: Option<&str>,
+) -> Result<(), ScienceError> {
     let skill_id = validate_skill_id(skill_id).map_err(|e| ScienceError::Metadata(e.to_string()))?;
 
-    // Scan ALL global dirs for this agent to handle shared-dir agents (Codex,
-    // Gemini and Cline all also point at `~/.agents/skills/`).
-    let dirs = scoped_skill_dirs(agent_type, AgentSkillScope::Global, None)
+    // Scan every directory in the selected scope to handle agents with multiple
+    // skill roots.
+    let dirs = scoped_skill_dirs(agent_type, scope, workspace_path)
         .map_err(|_| ScienceError::UnsupportedAgent(agent_type))?;
 
     let central = science_central_path(&skill_id);
@@ -769,7 +781,11 @@ fn unlink_one_locked(skill_id: &str, agent_type: AgentType) -> Result<(), Scienc
 /// `science_list_all_install_statuses` afterward (shared agent dirs make per-op
 /// state non-local — see the office/experts shared-dir note).
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn science_apply_links(ops: Vec<LinkOp>) -> Result<Vec<LinkOpResult>, ScienceError> {
+pub async fn science_apply_links(
+    ops: Vec<LinkOp>,
+    scope: AgentSkillScope,
+    workspace_path: Option<String>,
+) -> Result<Vec<LinkOpResult>, ScienceError> {
     let _guard = mutation_lock().lock().await;
     let mut out = Vec::with_capacity(ops.len());
     for op in ops {
@@ -779,9 +795,21 @@ pub async fn science_apply_links(ops: Vec<LinkOp>) -> Result<Vec<LinkOpResult>, 
             enable,
         } = op;
         let res = if enable {
-            link_one_locked(&expert_id, agent_type).map(Some)
+            link_one_locked(
+                &expert_id,
+                agent_type,
+                scope,
+                workspace_path.as_deref(),
+            )
+            .map(Some)
         } else {
-            unlink_one_locked(&expert_id, agent_type).map(|()| None)
+            unlink_one_locked(
+                &expert_id,
+                agent_type,
+                scope,
+                workspace_path.as_deref(),
+            )
+            .map(|()| None)
         };
         out.push(match res {
             Ok(status) => LinkOpResult {
@@ -806,13 +834,16 @@ pub async fn science_apply_links(ops: Vec<LinkOp>) -> Result<Vec<LinkOpResult>, 
 /// One-shot snapshot of every (science skill, agent) link state — lets the
 /// matrix UI render the whole grid from a single round-trip.
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn science_list_all_install_statuses() -> Result<Vec<ExpertInstallStatus>, ScienceError> {
+pub async fn science_list_all_install_statuses(
+    scope: AgentSkillScope,
+    workspace_path: Option<String>,
+) -> Result<Vec<ExpertInstallStatus>, ScienceError> {
     let agents = supported_agents();
     let mut out = Vec::with_capacity(bundled_metadata().len() * agents.len());
     for meta in bundled_metadata() {
         let expected = science_central_path(&meta.id);
         for &agent in &agents {
-            let link_path = match agent_link_path(agent, &meta.id) {
+            let link_path = match agent_link_path(agent, &meta.id, scope, workspace_path.as_deref()) {
                 Ok(p) => p,
                 Err(_) => continue,
             };
@@ -934,7 +965,10 @@ mod tests {
                 enable: false,
             },
         ];
-        let results = timeout(Duration::from_secs(5), science_apply_links(ops))
+        let results = timeout(
+            Duration::from_secs(5),
+            science_apply_links(ops, AgentSkillScope::Global, None),
+        )
             .await
             .expect("science_apply_links must not deadlock")
             .expect("batch returns Ok");
@@ -957,7 +991,9 @@ mod tests {
                 enable: true,
             },
         ];
-        let results = science_apply_links(ops).await.expect("batch returns Ok");
+        let results = science_apply_links(ops, AgentSkillScope::Global, None)
+            .await
+            .expect("batch returns Ok");
         assert_eq!(results.len(), 2);
         assert!(results[0].ok, "idempotent disable should succeed");
         assert!(!results[1].ok, "unknown skill enable should fail its op");
@@ -967,7 +1003,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_all_install_statuses_covers_every_skill_agent_pair() {
-        let rows = science_list_all_install_statuses()
+        let rows = science_list_all_install_statuses(AgentSkillScope::Global, None)
             .await
             .expect("snapshot returns Ok");
         let expected = bundled_metadata().len() * supported_agents().len();

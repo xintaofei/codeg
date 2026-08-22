@@ -3821,7 +3821,9 @@
       "preview": "SKILL.md プレビュー",
       "loadingContent": "コンテンツを読み込み中…"
     },
-    "copyModeHint": "コピー済み（リンクではありません）— 更新後は最新版を取得するため再度有効化してください"
+    "copyModeHint": "コピー済み（リンクではありません）— 更新後は最新版を取得するため再度有効化してください",
+    "globalInherited": "グローバルから継承",
+    "scopeUnavailable": "この agent はプロジェクトスコープのスキルに対応していません"
   },
   "ExpertsSettings": {
     "title": "エキスパートスキル",
@@ -3963,6 +3965,11 @@
     "autoPreviewHint": "エージェントが Word、Excel、PowerPoint ファイルを作成または編集したときに、ライブプレビューを自動で開きます。"
   },
   "SkillPacksSettings": {
+    "scope": {
+      "label": "スキルスコープ",
+      "global": "グローバル",
+      "noFolders": "利用可能なフォルダがありません"
+    },
     "title": "スキルパック",
     "description": "codeg が一元管理し、各 AI エージェントにリンクする厳選スキルの束です——コーディング専門家、科学研究、オフィス文書ツール。下でエージェントごとに有効化できます。",
     "tabs": {

@@ -275,8 +275,13 @@ fn skill_central_path(skill_id: &str) -> PathBuf {
     central_experts_dir().join(skill_id)
 }
 
-fn agent_link_path(agent: AgentType, skill_id: &str) -> Result<PathBuf, OfficeToolsError> {
-    let dir = preferred_scope_skill_dir(agent, AgentSkillScope::Global, None)
+fn agent_link_path(
+    agent: AgentType,
+    skill_id: &str,
+    scope: AgentSkillScope,
+    workspace_path: Option<&str>,
+) -> Result<PathBuf, OfficeToolsError> {
+    let dir = preferred_scope_skill_dir(agent, scope, workspace_path)
         .map_err(|_| OfficeToolsError::UnsupportedAgent(agent))?;
     Ok(dir.join(skill_id))
 }
@@ -1081,6 +1086,8 @@ fn supported_agents() -> Vec<AgentType> {
 fn link_one_locked(
     skill_id: &str,
     agent_type: AgentType,
+    scope: AgentSkillScope,
+    workspace_path: Option<&str>,
 ) -> Result<ExpertInstallStatus, OfficeToolsError> {
     let skill_id = validate_skill_id(skill_id).map_err(|e| OfficeToolsError::Io(e.to_string()))?;
     let _ = find_skill_def(&skill_id)
@@ -1093,7 +1100,7 @@ fn link_one_locked(
         )));
     }
 
-    let link_path = agent_link_path(agent_type, &skill_id)?;
+    let link_path = agent_link_path(agent_type, &skill_id, scope, workspace_path)?;
     if let Some(parent) = link_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -1148,7 +1155,7 @@ pub async fn officecli_skill_link_to_agent(
     agent_type: AgentType,
 ) -> Result<ExpertInstallStatus, OfficeToolsError> {
     let _guard = mutation_lock().lock().await;
-    link_one_locked(&skill_id, agent_type)
+    link_one_locked(&skill_id, agent_type, AgentSkillScope::Global, None)
 }
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
@@ -1157,17 +1164,22 @@ pub async fn officecli_skill_unlink_from_agent(
     agent_type: AgentType,
 ) -> Result<(), OfficeToolsError> {
     let _guard = mutation_lock().lock().await;
-    unlink_one_locked(&skill_id, agent_type)
+    unlink_one_locked(&skill_id, agent_type, AgentSkillScope::Global, None)
 }
 
 /// Remove one office skill's link from one agent's skill dirs. **Assumes the
 /// mutation lock is already held** (see `link_one_locked`).
-fn unlink_one_locked(skill_id: &str, agent_type: AgentType) -> Result<(), OfficeToolsError> {
+fn unlink_one_locked(
+    skill_id: &str,
+    agent_type: AgentType,
+    scope: AgentSkillScope,
+    workspace_path: Option<&str>,
+) -> Result<(), OfficeToolsError> {
     let skill_id = validate_skill_id(skill_id).map_err(|e| OfficeToolsError::Io(e.to_string()))?;
     let _ = find_skill_def(&skill_id)
         .ok_or_else(|| OfficeToolsError::SkillNotFound(skill_id.clone()))?;
 
-    let dirs = scoped_skill_dirs(agent_type, AgentSkillScope::Global, None)
+    let dirs = scoped_skill_dirs(agent_type, scope, workspace_path)
         .map_err(|_| OfficeToolsError::UnsupportedAgent(agent_type))?;
 
     let central = skill_central_path(&skill_id);
@@ -1213,7 +1225,7 @@ pub async fn officecli_skill_get_install_status(
 
     let mut out = Vec::with_capacity(agents.len());
     for agent in agents {
-        let link_path = match agent_link_path(agent, &skill_id) {
+        let link_path = match agent_link_path(agent, &skill_id, AgentSkillScope::Global, None) {
             Ok(p) => p,
             Err(_) => continue,
         };
@@ -1237,6 +1249,8 @@ pub async fn officecli_skill_get_install_status(
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn officecli_skill_apply_links(
     ops: Vec<LinkOp>,
+    scope: AgentSkillScope,
+    workspace_path: Option<String>,
 ) -> Result<Vec<LinkOpResult>, OfficeToolsError> {
     let _guard = mutation_lock().lock().await;
     let mut out = Vec::with_capacity(ops.len());
@@ -1250,9 +1264,21 @@ pub async fn officecli_skill_apply_links(
             enable,
         } = op;
         let res = if enable {
-            link_one_locked(&expert_id, agent_type).map(Some)
+            link_one_locked(
+                &expert_id,
+                agent_type,
+                scope,
+                workspace_path.as_deref(),
+            )
+            .map(Some)
         } else {
-            unlink_one_locked(&expert_id, agent_type).map(|()| None)
+            unlink_one_locked(
+                &expert_id,
+                agent_type,
+                scope,
+                workspace_path.as_deref(),
+            )
+            .map(|()| None)
         };
         out.push(match res {
             Ok(status) => LinkOpResult {
@@ -1277,13 +1303,15 @@ pub async fn officecli_skill_apply_links(
 /// One-shot snapshot of every (skill, agent) link state for the matrix UI.
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn officecli_skill_list_all_install_statuses(
+    scope: AgentSkillScope,
+    workspace_path: Option<String>,
 ) -> Result<Vec<ExpertInstallStatus>, OfficeToolsError> {
     let agents = supported_agents();
     let mut out = Vec::with_capacity(skill_defs().len() * agents.len());
     for def in skill_defs() {
         let expected = skill_central_path(def.id);
         for &agent in &agents {
-            let link_path = match agent_link_path(agent, def.id) {
+            let link_path = match agent_link_path(agent, def.id, scope, workspace_path.as_deref()) {
                 Ok(p) => p,
                 Err(_) => continue,
             };
@@ -1497,7 +1525,10 @@ mod tests {
                 enable: false,
             },
         ];
-        let results = timeout(Duration::from_secs(5), officecli_skill_apply_links(ops))
+        let results = timeout(
+            Duration::from_secs(5),
+            officecli_skill_apply_links(ops, AgentSkillScope::Global, None),
+        )
             .await
             .expect("officecli_skill_apply_links must not deadlock")
             .expect("batch returns Ok");
@@ -1520,7 +1551,7 @@ mod tests {
                 enable: false,
             },
         ];
-        let results = officecli_skill_apply_links(ops)
+        let results = officecli_skill_apply_links(ops, AgentSkillScope::Global, None)
             .await
             .expect("batch returns Ok");
         assert_eq!(results.len(), 2);
@@ -1531,7 +1562,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_all_install_statuses_covers_every_skill_agent_pair() {
-        let rows = officecli_skill_list_all_install_statuses()
+        let rows = officecli_skill_list_all_install_statuses(AgentSkillScope::Global, None)
             .await
             .expect("snapshot returns Ok");
         let expected = skill_defs().len() * supported_agents().len();

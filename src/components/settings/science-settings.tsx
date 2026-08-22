@@ -1,6 +1,12 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react"
 import { Loader2 } from "lucide-react"
 import { useLocale, useTranslations } from "next-intl"
 
@@ -19,7 +25,9 @@ import { invalidateAgentSkillsCache } from "@/hooks/use-agent-skills"
 import { piUsesCustomAgentDir } from "@/lib/pi-config"
 import type {
   AcpAgentInfo,
+  AgentSkillScope,
   ExpertLinkState,
+  LinkOp,
   ScienceListItem,
 } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
@@ -37,8 +45,14 @@ const CATEGORY_SORT: Record<string, number> = {
 
 export function ScienceBody({
   onRegisterRefresh,
+  scope,
+  workspacePath,
+  scopeControl,
 }: {
   onRegisterRefresh?: (refresh: () => void) => void
+  scope: AgentSkillScope
+  workspacePath: string | null
+  scopeControl: ReactNode
 }) {
   const t = useTranslations("ScienceSettings")
   const locale = useLocale()
@@ -159,6 +173,19 @@ export function ScienceBody({
     [skills, locale, t]
   )
 
+  const loadAllStatuses = useCallback(
+    () => scienceListAllInstallStatuses({ scope, workspacePath }),
+    [scope, workspacePath]
+  )
+  const loadGlobalStatuses = useCallback(
+    () => scienceListAllInstallStatuses({ scope: "global" }),
+    []
+  )
+  const applyLinks = useCallback(
+    (ops: LinkOp[]) => scienceApplyLinks(ops, { scope, workspacePath }),
+    [scope, workspacePath]
+  )
+
   if (loading) {
     return (
       <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
@@ -183,19 +210,23 @@ export function ScienceBody({
       ) : (
         <div className="flex-1 min-h-0 min-w-0">
           <SkillAgentMatrix
-            key={reloadKey}
+            key={`${reloadKey}:${scope}:${workspacePath ?? ""}`}
             skills={matrixSkills}
             agents={agents}
             categoryOrder={CATEGORY_SORT}
             translateCategory={translatedCategory}
             translateState={translatedState}
-            loadAllStatuses={scienceListAllInstallStatuses}
-            applyLinks={scienceApplyLinks}
+            loadAllStatuses={loadAllStatuses}
+            loadInheritedStatuses={
+              scope === "project" ? loadGlobalStatuses : undefined
+            }
+            applyLinks={applyLinks}
             loadContent={scienceReadContent}
             onApplied={(touched) =>
               touched.forEach((a) => invalidateAgentSkillsCache(a))
             }
             searchPlaceholder={t("searchPlaceholder")}
+            scopeControl={scopeControl}
           />
         </div>
       )}

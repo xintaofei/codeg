@@ -129,6 +129,31 @@ describe("computeLinkDelta", () => {
       { expertId: "a", agentType: "claude_code", enable: false },
     ])
   })
+
+  it("never emits operations for globally inherited project cells", () => {
+    const statuses = makeMap([makeStatus("a", "codex", "not_linked")])
+    const inherited = (skillId: string, agentType: AgentType) =>
+      skillId === "a" && agentType === "codex"
+
+    expect(
+      computeLinkDelta(
+        [{ skillId: "a", agentType: "codex" }],
+        true,
+        statuses,
+        enableable,
+        inherited
+      )
+    ).toEqual([])
+    expect(
+      computeLinkDelta(
+        [{ skillId: "a", agentType: "codex" }],
+        false,
+        statuses,
+        enableable,
+        inherited
+      )
+    ).toEqual([])
+  })
 })
 
 // ─── Component ─────────────────────────────────────────────────────────
@@ -276,6 +301,31 @@ describe("SkillAgentMatrix", () => {
     expect(cell).toBeDisabled()
     fireEvent.click(cell)
     expect(applyLinks).not.toHaveBeenCalled()
+  })
+
+  it("renders a global project inheritance as checked, disabled, and explained", async () => {
+    const applyLinks = vi.fn()
+    renderMatrix({
+      applyLinks,
+      loadInheritedStatuses: vi
+        .fn()
+        .mockResolvedValue([
+          makeStatus("brainstorming", "claude_code", "linked_to_codeg"),
+        ]),
+    })
+
+    const cell = await screen.findByRole("switch", {
+      name: "Brainstorming, Claude Code: Inherited from global",
+    })
+    expect(cell).toBeChecked()
+    expect(cell).toBeDisabled()
+    fireEvent.click(cell)
+    expect(applyLinks).not.toHaveBeenCalled()
+
+    await userEvent.hover(cell.parentElement as HTMLElement)
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Inherited from global"
+    )
   })
 })
 
