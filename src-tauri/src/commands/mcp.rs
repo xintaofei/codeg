@@ -752,12 +752,15 @@ fn write_json_file(path: &Path, value: &Value) -> Result<(), AppCommandError> {
 }
 
 fn read_codex_root_toml() -> Result<toml::Value, AppCommandError> {
-    let path = codex_config_toml_path();
+    read_codex_root_toml_at(&codex_config_toml_path())
+}
+
+fn read_codex_root_toml_at(path: &Path) -> Result<toml::Value, AppCommandError> {
     if !path.exists() {
         return Ok(toml::Value::Table(toml::map::Map::new()));
     }
 
-    let raw = fs::read_to_string(&path).map_err(AppCommandError::io)?;
+    let raw = fs::read_to_string(path).map_err(AppCommandError::io)?;
     let parsed = raw.parse::<toml::Value>().map_err(|e| {
         mcp_configuration_invalid(format!("invalid TOML at {}: {e}", path.display()))
     })?;
@@ -772,8 +775,7 @@ fn read_codex_root_toml() -> Result<toml::Value, AppCommandError> {
     Ok(parsed)
 }
 
-fn write_codex_root_toml(root: &toml::Value) -> Result<(), AppCommandError> {
-    let path = codex_config_toml_path();
+fn write_codex_root_toml_at(path: &Path, root: &toml::Value) -> Result<(), AppCommandError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(AppCommandError::io)?;
     }
@@ -784,7 +786,7 @@ fn write_codex_root_toml(root: &toml::Value) -> Result<(), AppCommandError> {
             path.display()
         ))
     })?;
-    fs::write(&path, format!("{serialized}\n")).map_err(AppCommandError::io)
+    fs::write(path, format!("{serialized}\n")).map_err(AppCommandError::io)
 }
 
 fn obj_as_string_map(value: Option<&Value>) -> Option<Map<String, Value>> {
@@ -1642,8 +1644,11 @@ fn remove_claude_server(id: &str) -> Result<bool, AppCommandError> {
 /// will not load until it appears in this list). Existing fields in the
 /// settings file (env, model, other plugin entries) are preserved.
 fn enable_claude_local_plugin(id: &str) -> Result<(), AppCommandError> {
-    let path = claude_settings_path();
-    let mut root = read_json_file(&path)?;
+    enable_claude_local_plugin_at(&claude_settings_path(), id)
+}
+
+fn enable_claude_local_plugin_at(path: &Path, id: &str) -> Result<(), AppCommandError> {
+    let mut root = read_json_file(path)?;
     if !root.is_object() {
         root = json!({});
     }
@@ -1671,18 +1676,21 @@ fn enable_claude_local_plugin(id: &str) -> Result<(), AppCommandError> {
         return Ok(());
     }
     plugins.insert(key, Value::Bool(true));
-    write_json_file(&path, &root)
+    write_json_file(path, &root)
 }
 
 /// Remove `<id>@local` from `~/.claude/settings.json.enabledPlugins` if
 /// present. Other entries (including any `<id>@<other-marketplace>` that
 /// the user manages manually) are intentionally left untouched.
 fn disable_claude_local_plugin(id: &str) -> Result<(), AppCommandError> {
-    let path = claude_settings_path();
+    disable_claude_local_plugin_at(&claude_settings_path(), id)
+}
+
+fn disable_claude_local_plugin_at(path: &Path, id: &str) -> Result<(), AppCommandError> {
     if !path.exists() {
         return Ok(());
     }
-    let mut root = read_json_file(&path)?;
+    let mut root = read_json_file(path)?;
     let Some(obj) = root.as_object_mut() else {
         return Ok(());
     };
@@ -1691,7 +1699,7 @@ fn disable_claude_local_plugin(id: &str) -> Result<(), AppCommandError> {
     };
     let key = claude_local_plugin_key(id);
     if plugins.remove(&key).is_some() {
-        write_json_file(&path, &root)?;
+        write_json_file(path, &root)?;
     }
     Ok(())
 }
@@ -1886,7 +1894,11 @@ fn read_codex_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
 }
 
 fn upsert_codex_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
-    let mut root = read_codex_root_toml()?;
+    upsert_codex_server_at(&codex_config_toml_path(), id, spec)
+}
+
+fn upsert_codex_server_at(path: &Path, id: &str, spec: &Value) -> Result<(), AppCommandError> {
+    let mut root = read_codex_root_toml_at(path)?;
     let table = root
         .as_table_mut()
         .ok_or_else(|| mcp_configuration_invalid("Codex root TOML must be a table"))?;
@@ -1925,16 +1937,19 @@ fn upsert_codex_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
         }
     }
 
-    write_codex_root_toml(&root)
+    write_codex_root_toml_at(path, &root)
 }
 
 fn remove_codex_server(id: &str) -> Result<bool, AppCommandError> {
-    let path = codex_config_toml_path();
+    remove_codex_server_at(&codex_config_toml_path(), id)
+}
+
+fn remove_codex_server_at(path: &Path, id: &str) -> Result<bool, AppCommandError> {
     if !path.exists() {
         return Ok(false);
     }
 
-    let mut root = read_codex_root_toml()?;
+    let mut root = read_codex_root_toml_at(path)?;
     let Some(table) = root.as_table_mut() else {
         return Ok(false);
     };
@@ -1967,7 +1982,7 @@ fn remove_codex_server(id: &str) -> Result<bool, AppCommandError> {
     }
 
     if removed {
-        write_codex_root_toml(&root)?;
+        write_codex_root_toml_at(path, &root)?;
     }
 
     Ok(removed)
@@ -2012,8 +2027,11 @@ fn read_opencode_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
 }
 
 fn upsert_opencode_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
-    let path = opencode_config_path();
-    let mut root = read_json_file(&path)?;
+    upsert_opencode_server_at(&opencode_config_path(), id, spec)
+}
+
+fn upsert_opencode_server_at(path: &Path, id: &str, spec: &Value) -> Result<(), AppCommandError> {
+    let mut root = read_json_file(path)?;
     if !root.is_object() {
         root = json!({});
     }
@@ -2045,16 +2063,19 @@ fn upsert_opencode_server(id: &str, spec: &Value) -> Result<(), AppCommandError>
         map.insert(id.to_string(), converted);
     }
 
-    write_json_file(&path, &root)
+    write_json_file(path, &root)
 }
 
 fn remove_opencode_server(id: &str) -> Result<bool, AppCommandError> {
-    let path = opencode_config_path();
+    remove_opencode_server_at(&opencode_config_path(), id)
+}
+
+fn remove_opencode_server_at(path: &Path, id: &str) -> Result<bool, AppCommandError> {
     if !path.exists() {
         return Ok(false);
     }
 
-    let mut root = read_json_file(&path)?;
+    let mut root = read_json_file(path)?;
     let Some(obj) = root.as_object_mut() else {
         return Ok(false);
     };
@@ -2070,7 +2091,7 @@ fn remove_opencode_server(id: &str) -> Result<bool, AppCommandError> {
     }
 
     if removed {
-        write_json_file(&path, &root)?;
+        write_json_file(path, &root)?;
     }
 
     Ok(removed)
@@ -2104,8 +2125,11 @@ fn read_gemini_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
 }
 
 fn upsert_gemini_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
-    let path = gemini_config_path();
-    let mut root = read_json_file(&path)?;
+    upsert_gemini_server_at(&gemini_config_path(), id, spec)
+}
+
+fn upsert_gemini_server_at(path: &Path, id: &str, spec: &Value) -> Result<(), AppCommandError> {
+    let mut root = read_json_file(path)?;
     if !root.is_object() {
         root = json!({});
     }
@@ -2127,16 +2151,19 @@ fn upsert_gemini_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
         })?;
     map.insert(id.to_string(), canonical);
 
-    write_json_file(&path, &root)
+    write_json_file(path, &root)
 }
 
 fn remove_gemini_server(id: &str) -> Result<bool, AppCommandError> {
-    let path = gemini_config_path();
+    remove_gemini_server_at(&gemini_config_path(), id)
+}
+
+fn remove_gemini_server_at(path: &Path, id: &str) -> Result<bool, AppCommandError> {
     if !path.exists() {
         return Ok(false);
     }
 
-    let mut root = read_json_file(&path)?;
+    let mut root = read_json_file(path)?;
     let Some(obj) = root.as_object_mut() else {
         return Ok(false);
     };
@@ -2146,7 +2173,7 @@ fn remove_gemini_server(id: &str) -> Result<bool, AppCommandError> {
 
     let removed = servers.remove(id).is_some();
     if removed {
-        write_json_file(&path, &root)?;
+        write_json_file(path, &root)?;
     }
     Ok(removed)
 }
@@ -2738,6 +2765,90 @@ fn find_local_server(server_id: &str) -> Result<Option<LocalMcpServer>, AppComma
     Ok(servers.into_iter().find(|item| item.id == server_id))
 }
 
+fn isolator_family_for_app(
+    app: McpAppType,
+) -> Option<crate::acp::family_isolator::IsolatorFamily> {
+    use crate::acp::family_isolator::IsolatorFamily;
+    match app {
+        McpAppType::ClaudeCode => Some(IsolatorFamily::Claude),
+        McpAppType::Codex => Some(IsolatorFamily::Codex),
+        McpAppType::Grok => Some(IsolatorFamily::Grok),
+        McpAppType::Gemini => Some(IsolatorFamily::Gemini),
+        McpAppType::OpenCode => Some(IsolatorFamily::OpenCode),
+        _ => None,
+    }
+}
+
+/// After a default-home write/remove, keep extra isolated family homes in
+/// lock-step. Auth files are never touched. `spec = None` means remove.
+fn fanout_server_for_extra_homes(
+    app: McpAppType,
+    id: &str,
+    spec: Option<&Value>,
+    extra_homes: &[PathBuf],
+) -> Result<(), AppCommandError> {
+    let Some(family) = isolator_family_for_app(app) else {
+        return Ok(());
+    };
+    for home in extra_homes {
+        match family {
+            crate::acp::family_isolator::IsolatorFamily::Claude => {
+                let settings = home.join("settings.json");
+                if spec.is_some() {
+                    enable_claude_local_plugin_at(&settings, id)?;
+                } else {
+                    disable_claude_local_plugin_at(&settings, id)?;
+                }
+            }
+            crate::acp::family_isolator::IsolatorFamily::Codex => {
+                let path = home.join("config.toml");
+                if let Some(spec) = spec {
+                    upsert_codex_server_at(&path, id, spec)?;
+                } else {
+                    let _ = remove_codex_server_at(&path, id)?;
+                }
+            }
+            crate::acp::family_isolator::IsolatorFamily::Grok => {
+                let path = home.join("config.toml");
+                if let Some(spec) = spec {
+                    upsert_grok_server_at(&path, id, spec)?;
+                } else {
+                    let _ = remove_grok_server_at(&path, id)?;
+                }
+            }
+            crate::acp::family_isolator::IsolatorFamily::Gemini => {
+                let path = home.join("settings.json");
+                if let Some(spec) = spec {
+                    upsert_gemini_server_at(&path, id, spec)?;
+                } else {
+                    let _ = remove_gemini_server_at(&path, id)?;
+                }
+            }
+            crate::acp::family_isolator::IsolatorFamily::OpenCode => {
+                let path = home.join("opencode.json");
+                if let Some(spec) = spec {
+                    upsert_opencode_server_at(&path, id, spec)?;
+                } else {
+                    let _ = remove_opencode_server_at(&path, id)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn fanout_live_extra_homes(
+    app: McpAppType,
+    id: &str,
+    spec: Option<&Value>,
+) -> Result<(), AppCommandError> {
+    let Some(family) = isolator_family_for_app(app) else {
+        return Ok(());
+    };
+    let homes = crate::acp::family_isolator::extra_homes_from_live_registry(family);
+    fanout_server_for_extra_homes(app, id, spec, &homes)
+}
+
 fn upsert_server_for_app(app: McpAppType, id: &str, spec: &Value) -> Result<(), AppCommandError> {
     match app {
         McpAppType::ClaudeCode => upsert_claude_server(id, spec),
@@ -2753,7 +2864,8 @@ fn upsert_server_for_app(app: McpAppType, id: &str, spec: &Value) -> Result<(), 
         McpAppType::Cursor => upsert_cursor_server(id, spec),
         McpAppType::DeepSeek => upsert_deepseek_server(id, spec),
         McpAppType::Qoder => upsert_qoder_server(id, spec),
-    }
+    }?;
+    fanout_live_extra_homes(app, id, Some(spec))
 }
 
 pub fn read_servers_for_agent_type(
@@ -3693,7 +3805,7 @@ fn remove_hermes_server(id: &str) -> Result<bool, AppCommandError> {
 }
 
 fn remove_server_for_app(app: McpAppType, id: &str) -> Result<bool, AppCommandError> {
-    match app {
+    let removed = match app {
         McpAppType::ClaudeCode => remove_claude_server(id),
         McpAppType::Codex => remove_codex_server(id),
         McpAppType::OpenCode => remove_opencode_server(id),
@@ -3707,7 +3819,11 @@ fn remove_server_for_app(app: McpAppType, id: &str) -> Result<bool, AppCommandEr
         McpAppType::Cursor => remove_cursor_server(id),
         McpAppType::DeepSeek => remove_deepseek_server(id),
         McpAppType::Qoder => remove_qoder_server(id),
-    }
+    }?;
+    // Always fan out the remove so a stale extra-home entry cannot outlive
+    // the family-row uncheck, even if the default home had nothing to drop.
+    fanout_live_extra_homes(app, id, None)?;
+    Ok(removed)
 }
 
 #[derive(Debug, Deserialize)]
@@ -6571,5 +6687,176 @@ mod tests {
             let canonical = canonicalize_spec(&spec, "expected").expect("canonical");
             assert_eq!(back, canonical, "round-trip mismatch for {spec}");
         }
+    }
+
+    #[test]
+    fn extra_home_fanout_writes_and_removes_without_touching_auth() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let claude_home = dir.path().join("claude-2");
+        let codex_home = dir.path().join("codex-2");
+        let gemini_home = dir.path().join("gemini-2");
+        let opencode_home = dir.path().join("opencode-2");
+        std::fs::create_dir_all(&claude_home).expect("claude home");
+        std::fs::create_dir_all(&codex_home).expect("codex home");
+        std::fs::create_dir_all(&gemini_home).expect("gemini home");
+        std::fs::create_dir_all(&opencode_home).expect("opencode home");
+
+        let claude_settings = claude_home.join("settings.json");
+        std::fs::write(
+            &claude_settings,
+            "{\n  \"model\": \"keep-me\",\n  \"enabledPlugins\": {\"other@local\": true}\n}\n",
+        )
+        .expect("seed claude settings");
+        let claude_auth = claude_home.join("auth.json");
+        let auth_bytes = b"{\"token\":\"do-not-copy\"}\n";
+        std::fs::write(&claude_auth, auth_bytes).expect("seed auth");
+
+        std::fs::write(
+            codex_home.join("config.toml"),
+            "[cli]\nauto_update = true\n",
+        )
+        .expect("seed codex");
+        std::fs::write(
+            gemini_home.join("settings.json"),
+            "{\n  \"theme\": \"dark\"\n}\n",
+        )
+        .expect("seed gemini");
+        std::fs::write(
+            opencode_home.join("opencode.json"),
+            "{\n  \"model\": \"keep\"\n}\n",
+        )
+        .expect("seed opencode");
+
+        let spec = json!({
+            "type": "stdio",
+            "command": "npx",
+            "args": ["-y", "ctx7-mcp"],
+        });
+
+        fanout_server_for_extra_homes(
+            McpAppType::ClaudeCode,
+            "ctx7",
+            Some(&spec),
+            std::slice::from_ref(&claude_home),
+        )
+        .expect("claude fanout");
+        fanout_server_for_extra_homes(
+            McpAppType::Codex,
+            "ctx7",
+            Some(&spec),
+            std::slice::from_ref(&codex_home),
+        )
+        .expect("codex fanout");
+        fanout_server_for_extra_homes(
+            McpAppType::Gemini,
+            "ctx7",
+            Some(&spec),
+            std::slice::from_ref(&gemini_home),
+        )
+        .expect("gemini fanout");
+        fanout_server_for_extra_homes(
+            McpAppType::OpenCode,
+            "ctx7",
+            Some(&spec),
+            std::slice::from_ref(&opencode_home),
+        )
+        .expect("opencode fanout");
+
+        let claude_root: Value =
+            serde_json::from_str(&std::fs::read_to_string(&claude_settings).unwrap()).unwrap();
+        assert_eq!(
+            claude_root.pointer("/enabledPlugins/ctx7@local"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            claude_root.pointer("/enabledPlugins/other@local"),
+            Some(&json!(true))
+        );
+        assert_eq!(claude_root.get("model").and_then(Value::as_str), Some("keep-me"));
+        assert_eq!(std::fs::read(&claude_auth).unwrap(), auth_bytes);
+        assert!(
+            !claude_root.as_object().unwrap().contains_key("mcpServers"),
+            "Claude extra homes get enabledPlugins only; defs stay in ~/.claude.json"
+        );
+
+        let codex_raw = std::fs::read_to_string(codex_home.join("config.toml")).unwrap();
+        let codex_root: toml::Value = codex_raw.parse().unwrap();
+        assert!(codex_root
+            .get("mcp_servers")
+            .and_then(toml::Value::as_table)
+            .map(|t| t.contains_key("ctx7"))
+            .unwrap_or(false));
+        assert!(codex_root.get("cli").is_some(), "unrelated Codex keys survive");
+
+        let gemini_root: Value = serde_json::from_str(
+            &std::fs::read_to_string(gemini_home.join("settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(gemini_root
+            .pointer("/mcpServers/ctx7")
+            .is_some());
+        assert_eq!(gemini_root.get("theme").and_then(Value::as_str), Some("dark"));
+
+        let opencode_root: Value = serde_json::from_str(
+            &std::fs::read_to_string(opencode_home.join("opencode.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            opencode_root.pointer("/mcp/ctx7").is_some()
+                || opencode_root.pointer("/mcpServers/ctx7").is_some()
+        );
+        assert_eq!(
+            opencode_root.get("model").and_then(Value::as_str),
+            Some("keep")
+        );
+
+        fanout_server_for_extra_homes(
+            McpAppType::ClaudeCode,
+            "ctx7",
+            None,
+            std::slice::from_ref(&claude_home),
+        )
+        .expect("claude remove");
+        fanout_server_for_extra_homes(
+            McpAppType::Codex,
+            "ctx7",
+            None,
+            std::slice::from_ref(&codex_home),
+        )
+        .expect("codex remove");
+        fanout_server_for_extra_homes(
+            McpAppType::Gemini,
+            "ctx7",
+            None,
+            std::slice::from_ref(&gemini_home),
+        )
+        .expect("gemini remove");
+        fanout_server_for_extra_homes(
+            McpAppType::OpenCode,
+            "ctx7",
+            None,
+            std::slice::from_ref(&opencode_home),
+        )
+        .expect("opencode remove");
+
+        let claude_root: Value =
+            serde_json::from_str(&std::fs::read_to_string(&claude_settings).unwrap()).unwrap();
+        assert!(claude_root.pointer("/enabledPlugins/ctx7@local").is_none());
+        assert_eq!(
+            claude_root.pointer("/enabledPlugins/other@local"),
+            Some(&json!(true))
+        );
+        assert_eq!(std::fs::read(&claude_auth).unwrap(), auth_bytes);
+
+        let codex_raw = std::fs::read_to_string(codex_home.join("config.toml")).unwrap();
+        let codex_root: toml::Value = codex_raw.parse().unwrap();
+        assert!(
+            !codex_root
+                .get("mcp_servers")
+                .and_then(toml::Value::as_table)
+                .map(|t| t.contains_key("ctx7"))
+                .unwrap_or(false)
+        );
+        assert!(codex_root.get("cli").is_some());
     }
 }
