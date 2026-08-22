@@ -2987,7 +2987,7 @@ fn effective_prompt_capabilities(
     capabilities: &sacp::schema::PromptCapabilities,
 ) -> PromptCapabilitiesInfo {
     PromptCapabilitiesInfo {
-        image: capabilities.image || agent_type == AgentType::Grok,
+        image: capabilities.image || agent_type.uses_grok_image_sidecar(),
         audio: capabilities.audio,
         embedded_context: capabilities.embedded_context,
     }
@@ -7387,7 +7387,7 @@ async fn run_conversation_loop<'a>(
                 // sidecar runs), the rest back as resource blobs. The last
                 // point that sees the blocks, so every producer (composer,
                 // queued draft, work task, delegation) is covered at once.
-                let blocks = if agent_type == AgentType::Grok {
+                let blocks = if agent_type.uses_grok_image_sidecar() {
                     normalize_grok_image_blocks(blocks)
                 } else {
                     blocks
