@@ -2215,11 +2215,13 @@ function parseCliExecutionEnvelope(text: string): {
 const TextPart = memo(function TextPart({
   text,
   isUser = false,
+  isStreaming = false,
 }: {
   text: string
   // User messages render as plain text + inline reference badges (no Markdown),
   // matching the plain-text composer. Assistant / system text keeps full Markdown.
   isUser?: boolean
+  isStreaming?: boolean
 }) {
   if (isUser) {
     return (
@@ -2230,7 +2232,12 @@ const TextPart = memo(function TextPart({
   }
   return (
     <div className='break-words text-sm prose prose-sm dark:prose-invert max-w-none [&_ul]:list-inside [&_ol]:list-inside [&_[data-streamdown="code-block-body"]]:max-h-96 [&_[data-streamdown="code-block-body"]]:overflow-auto'>
-      <MessageResponse>{text}</MessageResponse>
+      <MessageResponse
+        mode={isStreaming ? "streaming" : "static"}
+        parseIncompleteMarkdown={isStreaming}
+      >
+        {text}
+      </MessageResponse>
     </div>
   )
 })
@@ -3012,11 +3019,13 @@ const ToolGroupPart = memo(function ToolGroupPart({
 interface ContentPartsRendererProps {
   parts: AdaptedContentPart[]
   role?: MessageRole
+  isStreaming?: boolean
 }
 
 export const ContentPartsRenderer = memo(function ContentPartsRenderer({
   parts,
   role,
+  isStreaming = false,
 }: ContentPartsRendererProps) {
   const renderPart = (part: AdaptedContentPart, keyId: string): ReactNode => {
     if (part.type === "text") {
@@ -3025,6 +3034,7 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
           key={`text-${keyId}`}
           text={part.text}
           isUser={role === "user"}
+          isStreaming={isStreaming}
         />
       )
     }
