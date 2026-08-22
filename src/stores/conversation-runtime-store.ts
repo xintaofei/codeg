@@ -36,6 +36,7 @@ import { collapseLiveCollabBlocks } from "@/lib/collab-collapse"
 import { kimiTodoWriteEntries } from "@/lib/plan-parse"
 import { toErrorMessage } from "@/lib/app-error"
 import { BACKGROUND_TASK_MARKER } from "@/lib/background-agent"
+import { imageCardLabel } from "@/lib/image-tool-label"
 
 /**
  * Conversation-runtime shared state as a Zustand store — the per-conversation
@@ -1093,6 +1094,10 @@ export function buildStreamingTurnsFromLiveMessage(
           // each renders as its own card.
           const imgs = block.info.images ?? []
           const revisedPrompt = extractRevisedPrompt(block.info.content)
+          const label = imageCardLabel({
+            title: block.info.title,
+            input: block.info.raw_input,
+          })
           // Live ToolCallStatus is forwarded so the renderer can show a
           // failure slot when codex reports the call failed before any
           // image bytes arrived. Without this the in-flight skeleton would
@@ -1106,6 +1111,7 @@ export function buildStreamingTurnsFromLiveMessage(
               revised_prompt: revisedPrompt,
               image: null,
               status,
+              label,
             })
           } else {
             for (const img of imgs) {
@@ -1118,6 +1124,7 @@ export function buildStreamingTurnsFromLiveMessage(
                   uri: img.uri ?? null,
                 },
                 status,
+                label,
               })
             }
           }

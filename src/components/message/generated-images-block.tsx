@@ -12,6 +12,12 @@ import { cn } from "@/lib/utils"
 
 interface GeneratedImagesBlockProps {
   /**
+   * Card heading. Codex image generation leaves this unset so the
+   * translated "Image generation" copy is used. A Read, screenshot, or
+   * fetched page passes the tool/page name instead.
+   */
+  label?: string | null
+  /**
    * codex's revised prompt — what the model rewrote the user's request
    * into before passing to the image API. `null` when codex didn't echo
    * one back (e.g. failed generations) or it hasn't streamed in yet.
@@ -59,6 +65,7 @@ interface GeneratedImagesBlockProps {
  *   - web: blob `<a download>`
  */
 export const GeneratedImagesBlock = memo(function GeneratedImagesBlock({
+  label,
   revisedPrompt,
   image,
   status,
@@ -86,7 +93,7 @@ export const GeneratedImagesBlock = memo(function GeneratedImagesBlock({
     >
       <div className="flex items-center gap-1.5 text-sm font-medium text-foreground">
         <ImagePlus className="h-3.5 w-3.5 text-primary" />
-        <span>{t("imageGeneration")}</span>
+        <span>{label?.trim() || t("imageGeneration")}</span>
       </div>
 
       <div className="mt-2.5 flex flex-col gap-3 @[28rem]/genimg:flex-row @[28rem]/genimg:items-start">

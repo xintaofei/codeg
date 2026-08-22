@@ -3079,6 +3079,7 @@ export const ContentPartsRenderer = memo(function ContentPartsRenderer({
       return (
         <GeneratedImagesBlock
           key={`gimg-${keyId}`}
+          label={part.label}
           revisedPrompt={part.revisedPrompt}
           image={part.image}
           status={part.status}

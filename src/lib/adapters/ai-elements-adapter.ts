@@ -28,6 +28,7 @@ import {
   unescapeReferenceLabel,
   unwrapReferenceDestination,
 } from "@/lib/reference-link"
+import { imageCardLabel } from "@/lib/image-tool-label"
 
 /**
  * Adapted content part types for AI SDK Elements components
@@ -92,6 +93,8 @@ export type AdaptedGeneratedImagePart = {
   /** `null` while the agent has emitted the ToolCall but no image yet. */
   image: UserImageDisplay | null
   status: ToolCallStatus | null
+  /** Unset for Codex image generation; otherwise the tool or page name. */
+  label?: string | null
 }
 
 export type AdaptedGoalRunPart = {
@@ -1073,6 +1076,7 @@ function adaptContentBlock(
         revisedPrompt: block.revised_prompt ?? null,
         image: display,
         status: block.status ?? null,
+        label: block.label ?? null,
       }
     }
 
@@ -1116,11 +1120,23 @@ function deriveImageNameFromImageData(img: {
  * through to the normal tool-card path. Images missing `data`/`mime_type` are
  * skipped; if that empties the list, `null` is returned too.
  */
-function adaptImageToolResultParts(result: {
-  images?: ImageData[] | null
-}): AdaptedGeneratedImagePart[] | null {
+function adaptImageToolResultParts(
+  result: {
+    images?: ImageData[] | null
+  },
+  ctx?: {
+    toolName?: string | null
+    input?: string | null
+    title?: string | null
+  }
+): AdaptedGeneratedImagePart[] | null {
   const images = result.images
   if (!images || images.length === 0) return null
+  const label = imageCardLabel({
+    title: ctx?.title,
+    toolName: ctx?.toolName,
+    input: ctx?.input,
+  })
   const parts: AdaptedGeneratedImagePart[] = []
   for (const img of images) {
     if (!img.data || !img.mime_type) continue
@@ -1137,6 +1153,7 @@ function adaptImageToolResultParts(result: {
       // Historical replay always carries a present image, so status is
       // irrelevant to the renderer; `null` is treated as success.
       status: null,
+      label,
     })
   }
   return parts.length > 0 ? parts : null
@@ -1871,7 +1888,10 @@ export function adaptMessageTurn(
         // mid-stream we keep the spinner via the normal tool-call path.
         const imageParts = isToolStillRunning
           ? null
-          : adaptImageToolResultParts(matchedResult)
+          : adaptImageToolResultParts(matchedResult, {
+              toolName: block.tool_name,
+              input: block.input_preview,
+            })
         if (imageParts) {
           adaptedContent.push(...imageParts)
           continue
@@ -1908,7 +1928,10 @@ export function adaptMessageTurn(
           positionMatchedIndices.add(index + 1)
           // Same image-result handling as the id-matched branch above: a Read
           // returning image bytes renders as image card(s) in-position.
-          const imageParts = adaptImageToolResultParts(positionalResult)
+          const imageParts = adaptImageToolResultParts(positionalResult, {
+            toolName: block.tool_name,
+            input: block.input_preview,
+          })
           if (imageParts) {
             adaptedContent.push(...imageParts)
             continue
