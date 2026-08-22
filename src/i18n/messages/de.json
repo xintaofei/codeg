@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "Fensterzoom",
-      "sectionDescription": "Skaliert die gesamte Oberfläche. Wird sofort übernommen und pro Gerät gespeichert.",
+      "sectionDescription": "Skaliert die gesamte Oberfläche. Wird sofort übernommen und pro Gerät gespeichert. ⌘/Ctrl + und - durchlaufen dieselben Zoomstufen wie dieses Menü (⌘/Ctrl 0 setzt auf 100% zurück).",
       "placeholder": "Zoomstufe wählen",
       "default": "Standard",
       "current": "Aktueller Zoom: {zoom}%"
@@ -429,6 +429,18 @@
       "toggle_custom_style": {
         "title": "Eigenen Stil aussetzen/fortsetzen",
         "description": "Notausstieg: schaltet alle eigenen Farben und CSS aus und wieder ein"
+      },
+      "zoom_in": {
+        "title": "Vergrößern",
+        "description": "Das Fenster eine Stufe größer machen"
+      },
+      "zoom_out": {
+        "title": "Verkleinern",
+        "description": "Das Fenster eine Stufe kleiner machen"
+      },
+      "zoom_reset": {
+        "title": "Zoom zurücksetzen",
+        "description": "Fensterzoom auf 100% zurücksetzen"
       }
     }
   },

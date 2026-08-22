@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "Zoom da janela",
-      "sectionDescription": "Dimensiona toda a interface. Aplica imediatamente e é salvo por dispositivo.",
+      "sectionDescription": "Dimensiona toda a interface. Aplica imediatamente e é salvo por dispositivo. ⌘/Ctrl + e - percorrem os mesmos níveis de zoom deste menu (⌘/Ctrl 0 volta para 100%).",
       "placeholder": "Selecione o nível de zoom",
       "default": "Padrão",
       "current": "Zoom atual: {zoom}%"
@@ -429,6 +429,18 @@
       "toggle_custom_style": {
         "title": "Suspender/retomar estilo personalizado",
         "description": "Saída de emergência: desliga todas as cores e o CSS personalizados e volta a ligá-los"
+      },
+      "zoom_in": {
+        "title": "Aumentar zoom",
+        "description": "Aumenta a janela em um nível"
+      },
+      "zoom_out": {
+        "title": "Diminuir zoom",
+        "description": "Diminui a janela em um nível"
+      },
+      "zoom_reset": {
+        "title": "Redefinir zoom",
+        "description": "Restaura o zoom da janela para 100%"
       }
     }
   },

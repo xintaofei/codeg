@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "ウィンドウズーム",
-      "sectionDescription": "インターフェイス全体を拡大・縮小します。すぐに反映され、デバイスごとに保存されます。",
+      "sectionDescription": "インターフェイス全体を拡大・縮小します。すぐに反映され、デバイスごとに保存されます。⌘/Ctrl + と - で、このメニューと同じ段階で拡大縮小します（⌘/Ctrl 0 で 100% に戻します）。",
       "placeholder": "ズームレベルを選択",
       "default": "デフォルト",
       "current": "現在のズーム：{zoom}%"
@@ -429,6 +429,18 @@
       "toggle_custom_style": {
         "title": "カスタムスタイルの停止/再開",
         "description": "緊急脱出用: カスタム配色と CSS をすべてオフにし、再度押すと元に戻します"
+      },
+      "zoom_in": {
+        "title": "拡大",
+        "description": "ウィンドウの表示倍率を一段階上げます"
+      },
+      "zoom_out": {
+        "title": "縮小",
+        "description": "ウィンドウの表示倍率を一段階下げます"
+      },
+      "zoom_reset": {
+        "title": "ズームをリセット",
+        "description": "ウィンドウのズームを 100% に戻します"
       }
     }
   },

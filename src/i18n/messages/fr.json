@@ -146,7 +146,7 @@
     },
     "zoomLevel": {
       "sectionTitle": "Zoom de la fenêtre",
-      "sectionDescription": "Met à l'échelle toute l'interface. S'applique immédiatement et est enregistré par appareil.",
+      "sectionDescription": "Met à l'échelle toute l'interface. S'applique immédiatement et est enregistré par appareil. ⌘/Ctrl + et - parcourent les mêmes niveaux de zoom que ce menu (⌘/Ctrl 0 rétablit 100%).",
       "placeholder": "Sélectionnez le niveau de zoom",
       "default": "Par défaut",
       "current": "Zoom actuel : {zoom}%"
@@ -429,6 +429,18 @@
       "toggle_custom_style": {
         "title": "Suspendre/réactiver le style personnalisé",
         "description": "Issue de secours : désactive toutes les couleurs et le CSS personnalisés, puis les réactive"
+      },
+      "zoom_in": {
+        "title": "Zoom avant",
+        "description": "Agrandit la fenêtre d'un cran"
+      },
+      "zoom_out": {
+        "title": "Zoom arrière",
+        "description": "Réduit la fenêtre d'un cran"
+      },
+      "zoom_reset": {
+        "title": "Réinitialiser le zoom",
+        "description": "Remet le zoom de la fenêtre à 100%"
       }
     }
   },

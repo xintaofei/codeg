@@ -15,6 +15,7 @@ import {
   ZOOM_LEVELS,
   DEFAULT_ZOOM_LEVEL,
   type ZoomLevel,
+  stepZoom,
 } from "@/lib/theme-presets"
 import {
   resolveFontStack,
@@ -65,7 +66,11 @@ import {
   type CustomThemeToken,
 } from "@/lib/custom-style"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
-import { matchShortcutEvent } from "@/lib/keyboard-shortcuts"
+import {
+  isShortcutRecorderArmed,
+  matchShortcutEvent,
+  resolveWindowZoomAction,
+} from "@/lib/keyboard-shortcuts"
 import {
   DEFAULT_WORKSPACE_BG_ENABLED,
   DEFAULT_WORKSPACE_BG_MASK_OPACITY,
@@ -472,6 +477,10 @@ export function AppearanceProvider({
     syncTrafficLightPosition(zoom)
     persist(STORAGE_KEY_ZOOM_LEVEL, String(zoom))
   }, [])
+  const zoomLevelRef = useRef(zoomLevel)
+  useEffect(() => {
+    zoomLevelRef.current = zoomLevel
+  }, [zoomLevel])
 
   const setShowWelcomeQuickActions = useCallback((on: boolean) => {
     setShowWelcomeQuickActionsState(on)
@@ -744,6 +753,9 @@ export function AppearanceProvider({
   // 或某个组件吞掉了冒泡，这一路依然能把自定义样式整体停用。
   const { shortcuts } = useShortcutSettings()
   const toggleCustomStyleShortcut = shortcuts.toggle_custom_style
+  const zoomInShortcut = shortcuts.zoom_in
+  const zoomOutShortcut = shortcuts.zoom_out
+  const zoomResetShortcut = shortcuts.zoom_reset
   useEffect(() => {
     if (!toggleCustomStyleShortcut) return
     const onKeyDown = (event: KeyboardEvent) => {
@@ -755,6 +767,44 @@ export function AppearanceProvider({
     window.addEventListener("keydown", onKeyDown, true)
     return () => window.removeEventListener("keydown", onKeyDown, true)
   }, [toggleCustomStyleShortcut, customStyleSuspended, setCustomStyleSuspended])
+
+  // Same levels as Settings → Window zoom. Capture-phase so the webview
+  // does not eat Ctrl/Cmd +/- as its own page zoom.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing) return
+      if (isShortcutRecorderArmed()) return
+      if (
+        event.target instanceof Element &&
+        event.target.closest('[data-terminal-panel-region="true"]')
+      ) {
+        return
+      }
+
+      const action = resolveWindowZoomAction(event, {
+        zoom_in: zoomInShortcut,
+        zoom_out: zoomOutShortcut,
+        zoom_reset: zoomResetShortcut,
+      })
+      if (!action) return
+
+      // Match first, then preventDefault, including on repeats. A held
+      // key should walk the zoom levels, and in the browser the un-
+      // prevented repeat would also trigger the page's own zoom.
+      event.preventDefault()
+      if (action === "in") {
+        setZoomLevel(stepZoom(zoomLevelRef.current, 1))
+        return
+      }
+      if (action === "out") {
+        setZoomLevel(stepZoom(zoomLevelRef.current, -1))
+        return
+      }
+      setZoomLevel(DEFAULT_ZOOM_LEVEL)
+    }
+    window.addEventListener("keydown", onKeyDown, true)
+    return () => window.removeEventListener("keydown", onKeyDown, true)
+  }, [setZoomLevel, zoomInShortcut, zoomOutShortcut, zoomResetShortcut])
 
   // 跨标签页同步：用户在另一个窗口改了设置时，本窗口实时跟进
   useEffect(() => {

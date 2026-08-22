@@ -12,6 +12,7 @@ import {
   SHORTCUT_DEFINITIONS,
   type ShortcutActionId,
   formatShortcutLabel,
+  setShortcutRecorderArmed,
   shortcutFromKeyboardEvent,
 } from "@/lib/keyboard-shortcuts"
 import { Button } from "@/components/ui/button"
@@ -54,12 +55,18 @@ export function ShortcutSettings() {
   )
 
   useEffect(() => {
+    setShortcutRecorderArmed(Boolean(recordingAction))
+    return () => setShortcutRecorderArmed(false)
+  }, [recordingAction])
+
+  useEffect(() => {
     if (!recordingAction) return
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.repeat) return
       event.preventDefault()
       event.stopPropagation()
+      event.stopImmediatePropagation()
 
       if (event.key === "Escape") {
         setRecordingAction(null)

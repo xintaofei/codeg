@@ -15,6 +15,9 @@ export type ShortcutActionId =
   | "send_message"
   | "newline_in_message"
   | "toggle_custom_style"
+  | "zoom_in"
+  | "zoom_out"
+  | "zoom_reset"
 
 export interface ShortcutDefinition {
   id: ShortcutActionId
@@ -69,6 +72,15 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
   {
     id: "toggle_custom_style",
   },
+  {
+    id: "zoom_in",
+  },
+  {
+    id: "zoom_out",
+  },
+  {
+    id: "zoom_reset",
+  },
 ]
 
 /** Actions that allow shortcuts without modifier keys (e.g. plain Enter). */
@@ -98,6 +110,11 @@ export const DEFAULT_SHORTCUTS: ShortcutSettings = {
   // 自定义样式的逃生舱：用户把界面改到不可用时，这一路必须仍然按得动，所以选一个
   // 三修饰键组合（不会与任何常用操作撞车），并在捕获阶段监听。
   toggle_custom_style: "mod+alt+shift+s",
+  // Same rungs as Settings → Window zoom. `=` is what US keyboards fire for
+  // Ctrl/+ without Shift; `+` is Shift+= and the numpad.
+  zoom_in: "mod+=",
+  zoom_out: "mod+-",
+  zoom_reset: "mod+0",
 }
 
 export const SHORTCUTS_STORAGE_KEY = "settings:shortcuts:v1"
@@ -115,6 +132,40 @@ const SPECIAL_KEY_ALIASES: Record<string, string> = {
   down: "arrowdown",
   left: "arrowleft",
   right: "arrowright",
+}
+
+/**
+ * `=`/`+` and `-`/`_` are the same physical key (unshifted vs shifted).
+ * Bindings on one should also fire for the other; extra Shift is ignored
+ * only for these pairs, because Shift is how you type the sibling.
+ */
+const PHYSICAL_KEY_SIBLINGS: Record<string, string> = {
+  "=": "+",
+  "+": "=",
+  "-": "_",
+  _: "-",
+}
+
+export interface ParsedShortcut {
+  mod: boolean
+  alt: boolean
+  shift: boolean
+  key: string
+}
+
+/**
+ * Recording a shortcut in Settings and the global zoom listener are both
+ * capture handlers on `window`. `stopPropagation()` does not stop a sibling
+ * listener on the same target, so the recorder arms this flag instead.
+ */
+let shortcutRecorderArmed = false
+
+export function setShortcutRecorderArmed(armed: boolean): void {
+  shortcutRecorderArmed = armed
+}
+
+export function isShortcutRecorderArmed(): boolean {
+  return shortcutRecorderArmed
 }
 
 const KEY_LABELS: Record<string, string> = {
@@ -174,59 +225,77 @@ function normalizeSettings(input: unknown): ShortcutSettings {
   return next
 }
 
-export function normalizeShortcut(rawShortcut: string): string | null {
-  const parts = rawShortcut
-    .toLowerCase()
-    .split("+")
-    .map((part) => part.trim())
-    .filter(Boolean)
+/**
+ * Split a shortcut string without treating a trailing `+` key as a delimiter.
+ * `mod++` and `mod+shift++` are how Ctrl/Cmd+Shift+= serializes.
+ */
+export function parseShortcut(rawShortcut: string): ParsedShortcut | null {
+  const lowered = rawShortcut.toLowerCase().trim()
+  if (!lowered) return null
 
-  if (parts.length === 0) return null
+  let keyRaw: string
+  let prefix: string
+  if (lowered === "+" || lowered.endsWith("++")) {
+    keyRaw = "+"
+    prefix = lowered === "+" ? "" : lowered.slice(0, -2)
+  } else {
+    const lastPlus = lowered.lastIndexOf("+")
+    if (lastPlus === -1) {
+      keyRaw = lowered
+      prefix = ""
+    } else {
+      keyRaw = lowered.slice(lastPlus + 1)
+      prefix = lowered.slice(0, lastPlus)
+    }
+  }
+
+  const keyToken = normalizeKeyToken(keyRaw.trim())
+  if (!keyToken || MODIFIER_KEY_SET.has(keyToken)) return null
 
   let mod = false
   let alt = false
   let shift = false
-  let keyToken: string | null = null
-
-  for (const part of parts) {
-    if (
-      part === "mod" ||
-      part === "cmd" ||
-      part === "command" ||
-      part === "meta" ||
-      part === "ctrl" ||
-      part === "control"
-    ) {
-      mod = true
-      continue
+  if (prefix) {
+    const parts = prefix
+      .split("+")
+      .map((part) => part.trim())
+      .filter(Boolean)
+    for (const part of parts) {
+      if (
+        part === "mod" ||
+        part === "cmd" ||
+        part === "command" ||
+        part === "meta" ||
+        part === "ctrl" ||
+        part === "control"
+      ) {
+        mod = true
+        continue
+      }
+      if (part === "alt" || part === "option") {
+        alt = true
+        continue
+      }
+      if (part === "shift") {
+        shift = true
+        continue
+      }
+      return null
     }
-
-    if (part === "alt" || part === "option") {
-      alt = true
-      continue
-    }
-
-    if (part === "shift") {
-      shift = true
-      continue
-    }
-
-    if (keyToken) return null
-
-    const normalizedKey = normalizeKeyToken(part)
-    if (!normalizedKey || MODIFIER_KEY_SET.has(normalizedKey)) return null
-
-    keyToken = normalizedKey
   }
 
-  if (!keyToken) return null
+  return { mod, alt, shift, key: keyToken }
+}
+
+export function normalizeShortcut(rawShortcut: string): string | null {
+  const parsed = parseShortcut(rawShortcut)
+  if (!parsed) return null
 
   const normalizedParts: string[] = []
-  if (mod) normalizedParts.push("mod")
-  if (alt) normalizedParts.push("alt")
-  if (shift) normalizedParts.push("shift")
-  normalizedParts.push(keyToken)
-
+  if (parsed.mod) normalizedParts.push("mod")
+  if (parsed.alt) normalizedParts.push("alt")
+  if (parsed.shift) normalizedParts.push("shift")
+  normalizedParts.push(parsed.key)
   return normalizedParts.join("+")
 }
 
@@ -306,29 +375,59 @@ export function shortcutFromKeyboardEvent(
   return parts.join("+")
 }
 
+function siblingKeys(keyToken: string): Set<string> {
+  const sibling = PHYSICAL_KEY_SIBLINGS[keyToken]
+  return sibling ? new Set([keyToken, sibling]) : new Set([keyToken])
+}
+
+function matchesNumpadCode(
+  event: ShortcutEventLike,
+  boundKey: string
+): boolean {
+  if (boundKey === "=" || boundKey === "+") {
+    return event.code === "NumpadAdd"
+  }
+  if (boundKey === "-" || boundKey === "_") {
+    return event.code === "NumpadSubtract"
+  }
+  return false
+}
+
 export function matchShortcutEvent(
   event: ShortcutEventLike,
   shortcut: string
 ): boolean {
-  const normalized = normalizeShortcut(shortcut)
-  if (!normalized) return false
+  const parsed = parseShortcut(shortcut)
+  if (!parsed) return false
 
-  const parts = normalized.split("+")
-  const keyToken = parts[parts.length - 1]
-  const needsMod = parts.includes("mod")
-  const needsAlt = parts.includes("alt")
-  const needsShift = parts.includes("shift")
-
+  const keys = siblingKeys(parsed.key)
   const actualKey = eventKeyToken(event)
-  if (!actualKey) return false
-  if (actualKey !== keyToken) return false
+  const matchesKey = actualKey !== null && keys.has(actualKey)
+  if (!matchesKey && !matchesNumpadCode(event, parsed.key)) return false
 
   const hasMod = event.metaKey || event.ctrlKey
-  if (hasMod !== needsMod) return false
-  if (event.altKey !== needsAlt) return false
-  if (event.shiftKey !== needsShift) return false
+  if (hasMod !== parsed.mod) return false
+  if (event.altKey !== parsed.alt) return false
+
+  // Extra Shift is how `=` becomes `+` (and `-` becomes `_`). Require Shift
+  // when the binding asked for it; ignore a surplus Shift only on those pairs.
+  if (parsed.shift) {
+    if (!event.shiftKey) return false
+  } else if (event.shiftKey && keys.size === 1) {
+    return false
+  }
 
   return true
+}
+
+export function resolveWindowZoomAction(
+  event: ShortcutEventLike,
+  shortcuts: Pick<ShortcutSettings, "zoom_in" | "zoom_out" | "zoom_reset">
+): "in" | "out" | "reset" | null {
+  if (matchShortcutEvent(event, shortcuts.zoom_in)) return "in"
+  if (matchShortcutEvent(event, shortcuts.zoom_out)) return "out"
+  if (matchShortcutEvent(event, shortcuts.zoom_reset)) return "reset"
+  return null
 }
 
 function toKeyLabel(keyToken: string): string {
@@ -342,18 +441,15 @@ function toKeyLabel(keyToken: string): string {
 }
 
 export function formatShortcutLabel(shortcut: string, isMac: boolean): string {
-  const normalized = normalizeShortcut(shortcut)
-  if (!normalized) return shortcut
-
-  const parts = normalized.split("+")
-  const keyToken = parts[parts.length - 1]
+  const parsed = parseShortcut(shortcut)
+  if (!parsed) return shortcut
 
   const modifiers: string[] = []
-  if (parts.includes("mod")) modifiers.push(isMac ? "⌘" : "Ctrl")
-  if (parts.includes("alt")) modifiers.push(isMac ? "⌥" : "Alt")
-  if (parts.includes("shift")) modifiers.push(isMac ? "⇧" : "Shift")
+  if (parsed.mod) modifiers.push(isMac ? "⌘" : "Ctrl")
+  if (parsed.alt) modifiers.push(isMac ? "⌥" : "Alt")
+  if (parsed.shift) modifiers.push(isMac ? "⇧" : "Shift")
 
-  const keyLabel = toKeyLabel(keyToken)
+  const keyLabel = toKeyLabel(parsed.key)
 
   if (isMac) {
     return `${modifiers.join("")}${keyLabel}`
