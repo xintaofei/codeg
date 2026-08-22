@@ -3067,6 +3067,13 @@ fn claude_raw_sdk_session_meta(
 ///   Codex to keep the blast radius off other agents (e.g. Claude's native
 ///   AskUserQuestion, which would otherwise un-gate and duplicate the
 ///   codeg-mcp ask tool).
+/// - Cursor only: `_meta["parameterizedModelPicker"] = true` — Cursor
+///   ACP then publishes the base model plus separate session config
+///   options for reasoning / effort / thinking / context / fast, instead
+///   of one exploded `model` list whose values look like
+///   `claude-opus-4-6[thinking=true,context=200k,effort=high]`. The chat
+///   composer already renders each advertised option. Cursor staff
+///   documented this `_meta` flag as the client opt-in (2026-05-22).
 /// - Claude Code only: `_meta["subagent-transcript"] = true` — opt into
 ///   claude-agent-acp ≥0.63's subagent transcript forwarding (#881, SDK
 ///   `forwardSubagentText`). Subagent text/thought chunks then stream with
@@ -3112,6 +3119,14 @@ fn build_client_capabilities(
     let mut meta = serde_json::Map::new();
     if agent_type == AgentType::ClaudeCode {
         meta.insert("subagent-transcript".to_string(), serde_json::Value::Bool(true));
+    }
+    if agent_type == AgentType::Cursor {
+        // Cursor checks strictly for boolean true. Unknown agents ignore
+        // the key, so this stays Cursor-scoped on purpose.
+        meta.insert(
+            "parameterizedModelPicker".to_string(),
+            serde_json::Value::Bool(true),
+        );
     }
     // The capabilities array is deliberately "sessionFailure" ONLY.
     // claude-agent-acp 0.69.0 and codex-acp 1.4.0 added a second AIR
@@ -12974,6 +12989,15 @@ mod tests {
         let deepseek = caps_of(AgentType::DeepSeek);
         assert!(deepseek.get("elicitation").is_some());
         assert!(deepseek.get("_meta").is_none());
+
+        // Cursor: native model + effort/context/fast options, no elicitation.
+        let cursor = caps_of(AgentType::Cursor);
+        assert_eq!(
+            cursor["_meta"]["parameterizedModelPicker"],
+            serde_json::Value::Bool(true)
+        );
+        assert!(cursor["_meta"].get("subagent-transcript").is_none());
+        assert!(cursor.get("elicitation").is_none());
 
         // Everyone else: neither gate; fs + terminal always advertised.
         let other = caps_of(AgentType::Gemini);
