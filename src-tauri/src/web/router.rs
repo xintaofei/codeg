@@ -160,6 +160,10 @@ pub fn build_router(
             post(handlers::conversations::update_conversation_pinned),
         )
         .route(
+            "/hide_conversation_turns",
+            post(handlers::conversations::hide_conversation_turns),
+        )
+        .route(
             "/delete_conversation",
             post(handlers::conversations::delete_conversation),
         )

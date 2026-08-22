@@ -2880,6 +2880,17 @@ export async function updateConversationPinned(
   })
 }
 
+/** Persist timestamps of transcript turns hidden by editing a user message. */
+export async function hideConversationTurns(
+  conversationId: number,
+  hiddenTimestampsMs: number[]
+): Promise<void> {
+  return getTransport().call("hide_conversation_turns", {
+    conversationId,
+    hiddenTimestampsMs,
+  })
+}
+
 export async function deleteConversation(
   conversationId: number
 ): Promise<void> {

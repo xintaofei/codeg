@@ -2974,6 +2974,8 @@
         "emptyConversation": "이 대화에는 메시지가 없습니다.",
         "systemMessage": "시스템 메시지",
         "copyMessage": "복사",
+        "editMessage": "편집",
+        "editingMessage": "이 메시지를 편집 중입니다. 보내면 이 내용으로 바꾸고 여기서 이어갑니다.",
         "copied": "복사됨",
         "selectionActions": "선택 영역 작업",
         "selectionCopy": "텍스트 복사",

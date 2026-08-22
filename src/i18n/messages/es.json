@@ -2974,6 +2974,8 @@
         "emptyConversation": "No hay mensajes en esta conversación.",
         "systemMessage": "Mensaje del sistema",
         "copyMessage": "Copiar",
+        "editMessage": "Editar",
+        "editingMessage": "Editando este mensaje. Enviar lo reemplaza y continúa desde aquí.",
         "copied": "Copiado",
         "selectionActions": "Acciones de selección",
         "selectionCopy": "Copiar texto",

@@ -55,6 +55,10 @@ interface ChatInputProps {
   isEditingQueueItem?: boolean
   onSaveQueueEdit?: (draft: PromptDraft) => void
   onCancelQueueEdit?: () => void
+  isEditingUserMessage?: boolean
+  editingUserTurnId?: string | null
+  editingUserBlocks?: PromptInputBlock[] | null
+  onCancelUserEdit?: () => void
   onForkSend?: (draft: PromptDraft, modeId?: string | null) => void
   /** Inject the draft's text into the RUNNING turn over the native steering
    *  channel. Present only when the session's live-feedback channel is native
@@ -116,6 +120,10 @@ export const ChatInput = memo(function ChatInput({
   isEditingQueueItem,
   onSaveQueueEdit,
   onCancelQueueEdit,
+  isEditingUserMessage,
+  editingUserTurnId,
+  editingUserBlocks,
+  onCancelUserEdit,
   onForkSend,
   onSteer,
   onAddFeedback,
@@ -127,6 +135,7 @@ export const ChatInput = memo(function ChatInput({
   tall = false,
 }: ChatInputProps) {
   const t = useTranslations("Folder.chat.chatInput")
+  const tList = useTranslations("Folder.chat.messageList")
   const isConnected = status === "connected"
   const isPrompting = status === "prompting"
   const isConnecting = status === "connecting"
@@ -178,6 +187,11 @@ export const ChatInput = memo(function ChatInput({
             editingItemId={editingItemId ?? null}
           />
         )}
+      {isEditingUserMessage ? (
+        <div className="mb-1 px-1 text-xs text-muted-foreground">
+          {tList("editingMessage")}
+        </div>
+      ) : null}
       <MessageInput
         onSend={onSend}
         promptCapabilities={promptCapabilities}
@@ -205,12 +219,15 @@ export const ChatInput = memo(function ChatInput({
         isActive={isActive}
         showActiveFlow={showActiveFlow}
         onEnqueue={onEnqueue}
-        editingItemId={editingItemId}
+        editingItemId={editingItemId ?? editingUserTurnId}
         editingDraftText={editingDraftText}
-        editingDraftBlocks={editingDraftBlocks}
+        editingDraftBlocks={editingDraftBlocks ?? editingUserBlocks}
         isEditingQueueItem={isEditingQueueItem}
+        isEditingUserMessage={isEditingUserMessage}
         onSaveQueueEdit={onSaveQueueEdit}
-        onCancelQueueEdit={onCancelQueueEdit}
+        onCancelQueueEdit={
+          isEditingUserMessage ? onCancelUserEdit : onCancelQueueEdit
+        }
         onForkSend={onForkSend}
         onSteer={onSteer}
         onAddFeedback={onAddFeedback}
