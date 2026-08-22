@@ -1687,8 +1687,17 @@
       "sectionFolders": "المجلدات",
       "sectionChats": "محادثة",
       "sectionRecent": "الأحدث",
+      "sectionPk": "ساحة PK",
       "noChats": "لا توجد محادثات",
       "noRecent": "لا توجد محادثات حديثة",
+      "noPk": "لا توجد جلسات PK",
+      "pkOpenArena": "Open this PK arena",
+      "pkArchive": "Archive the PK round",
+      "pkArchiveConfirm": "Archive “{task}”? The round and its agent sessions will be hidden.",
+      "pkArchiveSuccess": "PK round archived",
+      "pkArchiveFailed": "Archive failed: {message}",
+      "pkExpand": "Expand agent sessions",
+      "pkCollapse": "Collapse agent sessions",
       "showMoreRecent": "عرض المزيد ({count})",
       "noFolders": "لا توجد مجلدات مفتوحة",
       "newChatAction": "محادثة جديدة",
@@ -1810,7 +1819,8 @@
       "search": "بحث",
       "openSettings": "فتح الإعدادات",
       "backToConversations": "العودة إلى المحادثات",
-      "withShortcut": "{label} (اختصار: {shortcut})"
+      "withShortcut": "{label} (اختصار: {shortcut})",
+      "pkArena": "ساحة منافسة الوكلاء"
     },
     "statusBar": {
       "connection": {
@@ -2745,7 +2755,8 @@
         "mentionGroupAgent": "الوكلاء",
         "mentionGroupSession": "الجلسات",
         "mentionGroupCommit": "عمليات الإيداع",
-        "mentionGroupSkill": "المهارات"
+        "mentionGroupSkill": "المهارات",
+        "startPk": "منافسة الوكلاء"
       },
       "messageQueue": {
         "addToQueue": "إضافة للقائمة",
@@ -5052,6 +5063,177 @@
     "emptyAction": "احسب جلساتي",
     "loadFailed": "تعذّر تحميل بيانات الاستهلاك",
     "truncatedNotice": "هذا النطاق واسع جدًا — الأرقام تغطي أحدث جزء منه فقط."
+  },
+  "PkArena": {
+    "launcher": {
+      "title": "منافسة الوكلاء الأذكياء",
+      "description": "أرسل مهمة واحدة إلى عدة وكلاء في آنٍ واحد وقارن النتائج",
+      "contestantsLabel": "المتنافسون ({min}–{max})",
+      "noFolderHint": "تحتاج الساحة إلى مجلد فيه مستودع git — افتح واحدًا أولًا.",
+      "needMore": "اختر {count} وكلاء على الأقل لبدء المنافسة.",
+      "taskLabel": "المهمة",
+      "taskPlaceholder": "المهمة نفسها التي يتلقاها كل متنافس، مثال: \"اكتب لعبة الثعبان في ملف HTML واحد\"",
+      "selectedCount": "تم اختيار {selected}/{max} (الحد الأدنى {min})",
+      "cancel": "إلغاء",
+      "start": "ابدأ المنافسة",
+      "notAGitRepo": "هذا المجلد ليس مستودع git — تحتاج الساحة إلى مستودع لمنح كل متنافس شجرة عمل معزولة.",
+      "initGitRepo": "git init",
+      "initializing": "جارٍ التهيئة…",
+      "permissionLabel": "الأذونات",
+      "permissionOptions": {
+        "default": "اسأل في كل مرة",
+        "acceptEdits": "اقبل التعديلات تلقائيًا",
+        "bypassPermissions": "تشغيل كامل"
+      },
+      "permissionHints": {
+        "default": "كل موافقة توقف المتنافس",
+        "acceptEdits": "تعديلات الملفات دون سؤال",
+        "bypassPermissions": "لا موافقات إطلاقًا"
+      },
+      "permissionNote": "تُطبق على كل متنافس عند بدء الجولة; الوكلاء غير الداعمة يستمرون في السؤال.",
+      "bareModeLabel": "الوضع الأساسي (بدون مهارات)",
+      "bareModeHint": "يُطلب من المتنافسين استخدام قدراتهم الأساسية فقط، دون أي مهارات عامة أو مشروع.",
+      "effortLabel": "مستوى التفكير (موحد لجميع المتنافسين)",
+      "effortOptions": {
+        "default": "افتراضي",
+        "low": "منخفض",
+        "medium": "متوسط",
+        "high": "مرتفع",
+        "max": "أقصى"
+      },
+      "effortNote": "يُطبق أقرب مستوى مُعلن لكل وكيل; الوكلاء غير الداعمين يحتفظون بإعداداتهم.",
+      "agentNotReady": "{agent} غير جاهز (ثبّته من إعدادات الوكلاء أولاً).",
+      "agentCheckFailed": "تعذّر التحقق من {agent}.",
+      "templates": {
+        "pelican": "بجعة",
+        "bouncingBall": "كرة",
+        "jellyBlob": "هلام",
+        "snake": "الثعبان",
+        "flappyBird": "Flappy Bird",
+        "voiceChat": "دردشة صوتية",
+        "blackHole": "ثقب أسود"
+      },
+      "judgeLabel": "حَكَم (اختياري)",
+      "judgeNone": "بدون حَكَم",
+      "judgeHint": "بعد انتهاء جميع المتسابقين، يقرأ هذا الوكيل كل فرق وينتج حكمًا منظماً بالدرجات والترتيب.",
+      "startPoint": "📍 نقطة البداية",
+      "fromHead": "من HEAD الحالي",
+      "startPointHint": "يبدأ المتسابقون من التزام قبل هذا — لا يرون تغييراته، بل رسالته كمهمة. يعيدون نفس الهدف بشكل مستقل.",
+      "loadingCommits": "جارٍ تحميل الالتزامات…",
+      "noCommits": "لم يتم العثور على التزامات.",
+      "creativeTemplates": "قوالب إبداعية",
+      "realEngineering": "هندسة حقيقية",
+      "loadMore": "تحميل المزيد",
+      "judgeDimensionsLabel": "أبعاد التقييم (اختياري)",
+      "judgeDimensionsPlaceholder": "Correctness — does it fulfill the task?\nCode quality — readability, structure, edge cases\nCompleteness — how much of the task is done?\nEfficiency — code-level efficiency (ignore token/time)",
+      "judgeDimensionsHint": "بُعد واحد لكل سطر. اتركه فارغًا لاستخدام الافتراضي.",
+      "addContestant": "إضافة {agent} كمتسابق",
+      "slotLabelPlaceholder": "تسمية (مثل Sonnet، Opus)",
+      "slotNumber": "المتنافس {number}",
+      "modelLoading": "جارٍ تحميل النماذج…",
+      "modelUnavailable": "يستخدم هذا الوكيل نموذجه الافتراضي",
+      "modelLoadFailed": "تعذر تحميل النماذج",
+      "retryModelLoad": "إعادة تحميل النماذج",
+      "removeSlot": "إزالة هذا المتسابق"
+    },
+    "scoreboard": {
+      "status": {
+        "preparing": "قيد التحضير",
+        "connecting": "قيد الاتصال",
+        "running": "قيد التشغيل",
+        "done": "تم",
+        "error": "فشل",
+        "canceled": "ملغى",
+        "ready": "جاهز"
+      },
+      "tokensUnit": "توكن",
+      "tokensUnavailable": "Token not reported",
+      "tokensUnavailableHint": "This agent did not return token usage; this does not mean zero tokens.",
+      "turnsUnit": "أدوار"
+    },
+    "history": {
+      "title": "Round history",
+      "hint": "Search, open, and archive complete rounds.",
+      "trigger": "History {count}",
+      "searchPlaceholder": "Search tasks or agents…",
+      "empty": "No matching rounds",
+      "agents": "{count} agents",
+      "archive": "Archive round",
+      "archiveConfirm": "Archive “{task}”? The round and its agent sessions will be hidden.",
+      "archiveSuccess": "PK round archived",
+      "archiveFailed": "Archive failed: {message}",
+      "status": {
+        "ready": "Ready",
+        "running": "Running",
+        "finished": "Finished",
+        "canceled": "Canceled",
+        "interrupted": "Interrupted"
+      }
+    },
+    "arena": {
+      "title": "ساحة منافسة الوكلاء",
+      "description": "مهمة واحدة، عدة وكلاء، جنبًا إلى جنب",
+      "roundStatus": {
+        "running": "مباشر",
+        "finished": "انتهت",
+        "canceled": "ملغاة",
+        "interrupted": "قُطعت بإعادة التشغيل",
+        "ready": "جاهز"
+      },
+      "roundPicker": "الجولة",
+      "cancelRound": "إلغاء الجولة",
+      "cleanupWorktrees": "تنظيف أشجار العمل",
+      "cleanupHint": "إزالة أشجار عمل المتنافسين (تُحفظ الفروع)",
+      "share": "مشاركة",
+      "sharing": "جارٍ التصدير…",
+      "tabs": {
+        "battle": "المنافسة",
+        "diff": "الفروقات"
+      },
+      "preparing": "جارٍ تحضير المتنافس…",
+      "noRound": "لم تُحدد جولة",
+      "contestantsUnit": "وكلاء",
+      "newRound": "جولة جديدة",
+      "startMatch": "ابدأ المباراة",
+      "readyNote": "اختر نموذج ومستوى تفكير كل متنافس ثم ابدأ.",
+      "modelLabel": "النموذج",
+      "effortLabel": "مستوى التفكير",
+      "effortUnsupported": "هذا الوكيل لا يوفّر إعداد مستويات التفكير؛ ستُستخدم قيمته الافتراضية",
+      "effortOptions": {
+        "off": "إيقاف",
+        "minimal": "الحد الأدنى",
+        "low": "منخفض",
+        "medium": "متوسط",
+        "high": "مرتفع",
+        "max": "الأقصى"
+      },
+      "minimize": "تصغير",
+      "exportReport": "تصدير التقرير",
+      "exporting": "جارٍ الإنشاء…",
+      "shareReport": "Save / share report",
+      "reportSaved": "HTML report saved",
+      "reportFailed": "Report export failed: {message}",
+      "readyTag": "جاهز",
+      "deleteRound": "حذف",
+      "deleteConfirm": "حذف هذه الجولة? تبقى أشجار العمل على القرص — استخدم تنظيف أشجار العمل.",
+      "followUp": "متابعة",
+      "followUpPlaceholder": "إرسال إلى هذا المتسابق فقط (⌘↩ للإرسال)"
+    },
+    "diff": {
+      "loading": "جارٍ تحميل الفروقات…",
+      "empty": "لا تغييرات في شجرة العمل هذه"
+    },
+    "judge": {
+      "title": "حكم الحَكَم",
+      "running": "يقيم…",
+      "error": "فشل الحَكَم",
+      "rerun": "إعادة التقييم"
+    },
+    "minimized": {
+      "restore": "العودة إلى الساحة",
+      "live": "منافسة قيد التشغيل",
+      "dismiss": "إخفاء"
+    }
   },
   "Forge": {
     "title": "لوحة المستودع",

@@ -7,6 +7,7 @@ pub mod folder;
 pub mod message;
 pub mod model_provider;
 pub mod pet;
+pub mod pk_round;
 pub mod quick_message;
 pub mod remote_workspace_connection;
 pub mod system;
@@ -35,6 +36,7 @@ pub use message::{
     TurnRole, TurnUsage, UnifiedMessage,
 };
 pub use quick_message::QuickMessageInfo;
+pub use pk_round::{PkRoundConfig, PkRoundInfo};
 pub use remote_workspace_connection::RemoteWorkspaceConnectionInfo;
 pub use token_usage::{
     TokenUsageBreakdownItem, TokenUsageBucket, TokenUsageConversationItem, TokenUsageFacets,

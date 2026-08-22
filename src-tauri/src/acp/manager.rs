@@ -1915,6 +1915,7 @@ impl ConnectionManager {
                         deleted_at: Set(None),
                         pinned_at: Set(None),
                         origin_cwd: Set(None),
+                        pk_round_id: Set(None),
                     };
                     let inserted = sibling.insert(txn).await?;
                     Ok(inserted.id)

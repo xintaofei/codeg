@@ -18,8 +18,9 @@ export const SIDEBAR_SECTION_IDS = ["folders", "chats", "recent"] as const
 export type SidebarSectionId = (typeof SIDEBAR_SECTION_IDS)[number]
 
 /** Every section that can own a header row — the reorderable ones plus the
- *  always-on-top "Pinned" bucket. */
-export type SidebarSectionKey = "pinned" | SidebarSectionId
+ *  always-on-top "Pinned" bucket and the always-on-top "PK" bucket (shown only
+ *  when PK arena conversations exist). */
+export type SidebarSectionKey = "pinned" | "pk" | SidebarSectionId
 
 /**
  * Vertical order of the reorderable sidebar sections, top to bottom. Always a
@@ -38,6 +39,7 @@ export const DEFAULT_SECTION_ORDER: SidebarSectionOrder = SIDEBAR_SECTION_IDS
  *  (the default), so a fresh user sees every section open. */
 export interface SidebarSectionCollapsed {
   pinned?: boolean
+  pk?: boolean
   folders?: boolean
   chats?: boolean
   recent?: boolean

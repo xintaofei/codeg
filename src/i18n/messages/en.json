@@ -1687,8 +1687,17 @@
       "sectionFolders": "Folders",
       "sectionChats": "Chat",
       "sectionRecent": "Recent",
+      "sectionPk": "PK Arena",
       "noChats": "No chats",
       "noRecent": "No recent conversations",
+      "noPk": "No PK arena sessions",
+      "pkOpenArena": "Open this PK arena",
+      "pkArchive": "Archive the PK round",
+      "pkArchiveConfirm": "Archive “{task}”? The round and its agent sessions will be hidden.",
+      "pkArchiveSuccess": "PK round archived",
+      "pkArchiveFailed": "Archive failed: {message}",
+      "pkExpand": "Expand agent sessions",
+      "pkCollapse": "Collapse agent sessions",
       "showMoreRecent": "Show more ({count})",
       "noFolders": "No folders open",
       "newChatAction": "New chat",
@@ -1810,7 +1819,8 @@
       "search": "Search",
       "openSettings": "Open Settings",
       "backToConversations": "Back to Conversations",
-      "withShortcut": "{label} ({shortcut})"
+      "withShortcut": "{label} ({shortcut})",
+      "pkArena": "Agent PK arena"
     },
     "statusBar": {
       "connection": {
@@ -2745,7 +2755,8 @@
         "mentionGroupAgent": "Agents",
         "mentionGroupSession": "Sessions",
         "mentionGroupCommit": "Commits",
-        "mentionGroupSkill": "Skills"
+        "mentionGroupSkill": "Skills",
+        "startPk": "Agent PK"
       },
       "messageQueue": {
         "addToQueue": "Queue message",
@@ -5052,6 +5063,177 @@
     "emptyAction": "Count my sessions",
     "loadFailed": "Could not load usage",
     "truncatedNotice": "This range is very large — the numbers cover only the most recent slice of it."
+  },
+  "PkArena": {
+    "launcher": {
+      "title": "Agent PK",
+      "description": "Send one task to several agents at once and compare the results",
+      "contestantsLabel": "Contestants ({min}–{max})",
+      "noFolderHint": "The arena needs a folder with a git repository — open one first.",
+      "needMore": "Pick at least {count} agents to run a match.",
+      "taskLabel": "Task",
+      "taskPlaceholder": "The task every contestant gets, e.g. \"Write a snake game in a single HTML file\"",
+      "selectedCount": "{selected}/{max} picked (min {min})",
+      "addContestant": "Add {agent} as contestant",
+      "slotLabelPlaceholder": "Label (e.g. Sonnet, Opus)",
+      "slotNumber": "Contestant {number}",
+      "modelLoading": "Loading models…",
+      "modelUnavailable": "This agent uses its default model",
+      "modelLoadFailed": "Could not load models",
+      "retryModelLoad": "Retry loading models",
+      "removeSlot": "Remove this contestant slot",
+      "cancel": "Cancel",
+      "start": "Start match",
+      "notAGitRepo": "This folder is not a git repository — the arena needs one to give each contestant an isolated worktree.",
+      "initGitRepo": "git init",
+      "initializing": "Initializing…",
+      "permissionLabel": "Permissions",
+      "permissionOptions": {
+        "default": "Ask every time",
+        "acceptEdits": "Auto-accept edits",
+        "bypassPermissions": "Full auto"
+      },
+      "permissionHints": {
+        "default": "each approval interrupts the contestant",
+        "acceptEdits": "file edits run without asking",
+        "bypassPermissions": "no approval prompts at all"
+      },
+      "permissionNote": "Applied per contestant when the round starts; agents that don't support a mode keep asking.",
+      "bareModeLabel": "Bare mode (no skills)",
+      "bareModeHint": "Contestants are instructed to use only their built-in capabilities — no global or project skills.",
+      "effortLabel": "Reasoning effort (all contestants)",
+      "effortOptions": {
+        "default": "Default",
+        "low": "Low",
+        "medium": "Medium",
+        "high": "High",
+        "max": "Max"
+      },
+      "effortNote": "Applied as the nearest advertised level per agent; agents without the option keep their default.",
+      "agentNotReady": "{agent} is not ready (install it from Agent Settings first).",
+      "agentCheckFailed": "Could not verify {agent}; check its installation.",
+      "templates": {
+        "pelican": "Pelican",
+        "bouncingBall": "Bouncing Ball",
+        "jellyBlob": "Jelly Blob",
+        "snake": "Snake",
+        "flappyBird": "Flappy Bird",
+        "voiceChat": "Voice Chat",
+        "blackHole": "Black Hole"
+      },
+      "judgeLabel": "Judge (optional)",
+      "judgeNone": "No judge",
+      "judgeHint": "After all contestants finish, this agent reads every diff and produces a structured verdict with scores and rankings.",
+      "judgeDimensionsLabel": "Scoring dimensions (optional)",
+      "judgeDimensionsPlaceholder": "Correctness — does it fulfill the task?\nCode quality — readability, structure, edge cases\nCompleteness — how much of the task is done?\nEfficiency — code-level efficiency (ignore token/time)",
+      "judgeDimensionsHint": "One dimension per line. Leave blank to use the defaults. Each becomes a numbered criterion in the judge prompt.",
+      "startPoint": "📍 Start point",
+      "fromHead": "from current HEAD",
+      "startPointHint": "Contestants branch from one commit BEFORE this — they never see its changes, only its message as the task. So they redo the same goal independently.",
+      "loadingCommits": "Loading commits…",
+      "noCommits": "No commits found.",
+      "creativeTemplates": "Creative templates",
+      "realEngineering": "Real engineering",
+      "loadMore": "Load more"
+    },
+    "scoreboard": {
+      "status": {
+        "preparing": "preparing",
+        "connecting": "connecting",
+        "running": "running",
+        "done": "done",
+        "error": "failed",
+        "canceled": "canceled",
+        "ready": "ready"
+      },
+      "tokensUnit": "tok",
+      "tokensUnavailable": "Token not reported",
+      "tokensUnavailableHint": "This agent did not return token usage; this does not mean zero tokens.",
+      "turnsUnit": "turns"
+    },
+    "history": {
+      "title": "Round history",
+      "hint": "Search, open, and archive complete rounds.",
+      "trigger": "History {count}",
+      "searchPlaceholder": "Search tasks or agents…",
+      "empty": "No matching rounds",
+      "agents": "{count} agents",
+      "archive": "Archive round",
+      "archiveConfirm": "Archive “{task}”? The round and its agent sessions will be hidden.",
+      "archiveSuccess": "PK round archived",
+      "archiveFailed": "Archive failed: {message}",
+      "status": {
+        "ready": "Ready",
+        "running": "Running",
+        "finished": "Finished",
+        "canceled": "Canceled",
+        "interrupted": "Interrupted"
+      }
+    },
+    "arena": {
+      "title": "Agent PK arena",
+      "description": "One task, several agents, side by side",
+      "roundStatus": {
+        "running": "Live",
+        "finished": "Finished",
+        "canceled": "Canceled",
+        "interrupted": "Interrupted by restart",
+        "ready": "Ready"
+      },
+      "roundPicker": "Round",
+      "cancelRound": "Cancel round",
+      "cleanupWorktrees": "Clean worktrees",
+      "cleanupHint": "Remove the contestants' worktrees (branches are kept)",
+      "share": "Share",
+      "sharing": "Exporting…",
+      "tabs": {
+        "battle": "Battle",
+        "diff": "Diff"
+      },
+      "preparing": "Preparing contestant…",
+      "noRound": "No round selected",
+      "contestantsUnit": "agents",
+      "newRound": "New round",
+      "startMatch": "Start match",
+      "readyNote": "Confirm the model and reasoning levels each contestant actually supports, then start the match.",
+      "modelLabel": "Model",
+      "effortLabel": "Reasoning effort",
+      "effortUnsupported": "This agent does not expose reasoning levels; its default will be used",
+      "effortOptions": {
+        "off": "Off",
+        "minimal": "Minimal",
+        "low": "Low",
+        "medium": "Medium",
+        "high": "High",
+        "max": "Max"
+      },
+      "minimize": "Minimize",
+      "exportReport": "Export report",
+      "exporting": "Building…",
+      "shareReport": "Save / share report",
+      "reportSaved": "HTML report saved",
+      "reportFailed": "Report export failed: {message}",
+      "readyTag": "Ready",
+      "deleteRound": "Delete",
+      "deleteConfirm": "Delete this round? (worktrees stay on disk — use Clean worktrees to remove them)",
+      "followUp": "Follow-up",
+      "followUpPlaceholder": "Send a follow-up message to this contestant only (⌘↩ to send)"
+    },
+    "diff": {
+      "loading": "Loading diff…",
+      "empty": "No changes in this worktree"
+    },
+    "judge": {
+      "title": "Judge Verdict",
+      "running": "Evaluating…",
+      "error": "Judge failed",
+      "rerun": "Re-evaluate"
+    },
+    "minimized": {
+      "restore": "Back to the arena",
+      "live": "PK in progress",
+      "dismiss": "Hide pill"
+    }
   },
   "Forge": {
     "title": "Repository panel",

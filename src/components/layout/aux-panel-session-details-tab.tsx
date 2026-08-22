@@ -11,6 +11,7 @@ import { resolveActiveSessionDetails } from "@/components/conversations/active-s
 import { SessionDetailsContent } from "@/components/conversations/session-details-content"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { useAuxPanelContext } from "@/contexts/aux-panel-context"
+import { isConversationWorkspaceTab } from "@/lib/workspace-tab"
 
 // Stable empty-turns reference so the `useShallow` slice below stays
 // reference-equal when there's no active session — otherwise a fresh `[]` each
@@ -34,13 +35,12 @@ export function SessionDetailsTab() {
 
   const tabs = useTabStore((s) => s.tabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
-  const activeConversationTab = useMemo(
-    () =>
-      tabs.find(
-        (tab) => tab.id === activeTabId && tab.conversationId != null
-      ) ?? null,
-    [tabs, activeTabId]
-  )
+  const activeConversationTab = useMemo(() => {
+    const tab = tabs.find((item) => item.id === activeTabId)
+    return tab && isConversationWorkspaceTab(tab) && tab.conversationId != null
+      ? tab
+      : null
+  }, [tabs, activeTabId])
 
   // A brand-new conversation streams under its virtual `runtimeConversationId`
   // until it reconciles; key the live-session lookup on it first (mirrors the

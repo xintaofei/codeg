@@ -2478,8 +2478,10 @@ export interface AcpActionsValue {
     agentType: AgentType,
     workingDir?: string,
     sessionId?: string,
-    conversationId?: number
-  ): Promise<void>
+    conversationId?: number,
+    modeIdOverride?: string | null,
+    configValuesOverride?: Record<string, string> | null
+  ): Promise<string | undefined>
   /**
    * Release the connection for `contextKey`. The LOCAL entry always goes away
    * — a stranded one would make the next `connect()` take its "already
@@ -4808,7 +4810,9 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       agentType: AgentType,
       workingDir?: string,
       sessionId?: string,
-      conversationId?: number
+      conversationId?: number,
+      modeIdOverride?: string | null,
+      configValuesOverride?: Record<string, string> | null
     ) => {
       const request: ConnectRequest = {
         agentType,
@@ -4939,7 +4943,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             existing.status !== "disconnected" &&
             existing.status !== "error"
           ) {
-            return
+            return existing.connectionId
           }
           if (
             existing.status !== "disconnected" &&
@@ -5029,7 +5033,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
               orphanConn.connectionId,
               orphanCursor
             )
-            return
+            return orphanConn.connectionId
           }
         }
 
@@ -5089,7 +5093,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             // Attached (or superseded) — done. Otherwise the connection died
             // between discovery and the attach, so fall through and spawn one
             // rather than leaving a viewer bound to a dead id.
-            if (attached) return
+            if (attached) return discovered.connection_id
           }
         }
 
@@ -5112,12 +5116,18 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         // re-open (the snapshot frame doesn't carry a `session_modes` event,
         // so the apply-on-event hook never fired).
         const savedPrefs = getSavedPrefsForConnect(agentType)
+        const initialModeId =
+          modeIdOverride !== undefined ? modeIdOverride : savedPrefs.modeId
+        const initialConfigValues =
+          configValuesOverride !== undefined
+            ? configValuesOverride
+            : savedPrefs.configValues
         const connectionId = await acpConnect(
           agentType,
           workingDir,
           sessionId,
-          savedPrefs.modeId,
-          savedPrefs.configValues
+          initialModeId,
+          initialConfigValues
         )
 
         // If disconnect was requested while connect was in flight, tear down
@@ -5227,6 +5237,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             }
           }
         }
+        return connectionId
       } catch (err) {
         const pendingRequest = pendingConnectRequestsRef.current.get(contextKey)
         const superseded =
@@ -5648,7 +5659,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   )
 
   const setMode = useCallback(async (contextKey: string, modeId: string) => {
-    const conn = storeRef.current.connections.get(contextKey)
+    const conn =
+      storeRef.current.connections.get(contextKey) ??
+      Array.from(storeRef.current.connections.values()).find(
+        (c) => c.connectionId === contextKey
+      )
     if (!conn) return
     // Persist user's mode selection to localStorage
     const modes =
@@ -5665,7 +5680,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
 
   const setConfigOption = useCallback(
     async (contextKey: string, configId: string, valueId: string) => {
-      const conn = storeRef.current.connections.get(contextKey)
+      const conn =
+        storeRef.current.connections.get(contextKey) ??
+        Array.from(storeRef.current.connections.values()).find(
+          (c) => c.connectionId === contextKey
+        )
       if (!conn) return
       dispatch({
         type: "CONFIG_OPTION_CHANGED",

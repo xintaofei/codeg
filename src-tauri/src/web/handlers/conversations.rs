@@ -272,6 +272,32 @@ pub async fn create_conversation(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CreatePkConversationParams {
+    pub folder_id: i32,
+    pub agent_type: AgentType,
+    pub title: Option<String>,
+    pub pk_round_id: i32,
+}
+
+pub async fn create_pk_conversation(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<CreatePkConversationParams>,
+) -> Result<Json<i32>, AppCommandError> {
+    let db = &state.db;
+    let result = conv_commands::create_pk_conversation_core(
+        &db.conn,
+        params.folder_id,
+        params.agent_type,
+        params.title,
+        params.pk_round_id,
+    )
+    .await?;
+    conv_commands::emit_conversation_upsert(&state.emitter, &db.conn, result).await;
+    Ok(Json(result))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateChatConversationParams {
     pub agent_type: AgentType,
     pub title: Option<String>,

@@ -45,6 +45,7 @@ const eslintConfig = defineConfig([
     // `.gitignore` — but flat config has no such default, so without this
     // `pnpm eslint .` fails the repo on files that are not in the repo.
     ".docs/**",
+    ".codeg-pk/**",
   ]),
   eslintConfigPrettier,
   eslintPluginPrettierRecommended,

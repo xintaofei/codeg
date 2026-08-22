@@ -735,6 +735,7 @@ describe("SidebarConversationList — scrollToActive across a worktree merge", (
     store.activeTabId = "tab-21"
     store.tabSpec = [
       {
+        kind: "conversation",
         id: "tab-21",
         conversationId: 21,
         agentType: "claude_code",

@@ -596,6 +596,56 @@ pub async fn open_folder_window(
 
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn open_pk_round_window(
+    app: AppHandle,
+    round_id: String,
+    title: String,
+    remote_connection_id: Option<i32>,
+) -> Result<(), AppCommandError> {
+    let parsed_round_id = round_id.parse::<i64>().map_err(|_| {
+        AppCommandError::invalid_input("Invalid PK round id")
+            .with_detail(format!("round_id={round_id}"))
+    })?;
+    let label = match remote_connection_id {
+        Some(remote_id) => format!("remote-pk-round-{remote_id}-{parsed_round_id}"),
+        None => format!("pk-round-{parsed_round_id}"),
+    };
+
+    if let Some(existing) = app.get_webview_window(&label) {
+        let _ = existing.unminimize();
+        existing
+            .set_focus()
+            .map_err(|e| AppCommandError::window("Failed to focus PK window", e.to_string()))?;
+        return Ok(());
+    }
+
+    let (url_str, remote_window_id) = route_with_new_remote_window(
+        format!("workspace?pkRoundId={parsed_round_id}"),
+        remote_connection_id,
+    );
+    let window_title = if title.trim().is_empty() {
+        "PK Arena".to_string()
+    } else {
+        format!("PK - {}", title.trim())
+    };
+    let builder = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(url_str.into()))
+        .title(window_title)
+        .inner_size(1440.0, 900.0)
+        .min_inner_size(900.0, 600.0)
+        .center();
+    let pk_window = apply_platform_window_style(builder)
+        .build()
+        .map_err(|e| AppCommandError::window("Failed to open PK window", e.to_string()))?;
+    register_remote_window_cleanup(&app, &pk_window, remote_window_id.as_deref());
+    post_window_setup(&pk_window);
+    pk_window
+        .set_focus()
+        .map_err(|e| AppCommandError::window("Failed to focus PK window", e.to_string()))?;
+    Ok(())
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn open_commit_window(
     app: AppHandle,
     window: tauri::WebviewWindow,

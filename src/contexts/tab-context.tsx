@@ -14,15 +14,17 @@ import {
   runRecoveryOnce,
   useTabStore,
   type TabItem,
+  type WorkspaceTabItem,
 } from "@/stores/tab-store"
 import {
   CONVERSATION_CHANGED_EVENT,
   TABS_CHANGED_EVENT,
+  type AgentType,
   type ConversationChange,
   type TabsChanged,
 } from "@/lib/types"
 
-export type { TabItem }
+export type { TabItem, WorkspaceTabItem }
 export { useTabStore, useTabActions } from "@/stores/tab-store"
 
 interface TabProviderProps {
@@ -214,15 +216,22 @@ export interface TabContextValue {
   openTab: (
     folderId: number,
     conversationId: number,
-    agentType: TabItem["agentType"],
+    agentType: AgentType,
     pin?: boolean,
     title?: string
   ) => void
+  openPkRoundTab: (
+    roundId: string,
+    folderId: number,
+    title: string,
+    options?: { targetGroup?: string }
+  ) => void
+  closePkRoundTab: (roundId: string) => void
   closeTab: (tabId: string) => void
   closeConversationTab: (
     folderId: number,
     conversationId: number,
-    agentType: TabItem["agentType"]
+    agentType: AgentType
   ) => void
   closeOtherTabs: (tabId: string) => void
   closeAllTabs: () => void
@@ -236,21 +245,18 @@ export interface TabContextValue {
     workingDir: string,
     options?: {
       inheritFromActive?: boolean
-      folderDefaultAgent?: TabItem["agentType"] | null
+      folderDefaultAgent?: AgentType | null
       targetGroup?: string
     }
   ) => void
   openChatModeTab: (options?: { targetGroup?: string }) => void
   setChatDraftWorkingDir: (tabId: string, workingDir: string) => void
-  confirmDraftAgent: (tabId: string, agentType: TabItem["agentType"]) => void
-  setDraftAgentFromFallback: (
-    tabId: string,
-    agentType: TabItem["agentType"]
-  ) => void
+  confirmDraftAgent: (tabId: string, agentType: AgentType) => void
+  setDraftAgentFromFallback: (tabId: string, agentType: AgentType) => void
   bindConversationTab: (
     tabId: string,
     conversationId: number,
-    agentType: TabItem["agentType"],
+    agentType: AgentType,
     title: string,
     runtimeConversationId?: number,
     folderId?: number,
@@ -275,11 +281,16 @@ export interface TabContextValue {
 export function useTabContext(): TabContextValue {
   return useTabStore(
     useShallow((s) => ({
-      tabs: s.tabs,
+      // Legacy accessor retained for the conversation-only test harness. The
+      // production workspace consumes `useTabStore` directly and sees the full
+      // discriminated union without allocating a filtered array per snapshot.
+      tabs: s.tabs as TabItem[],
       activeTabId: s.activeTabId,
       tabsHydrated: s.tabsHydrated,
       tileByGroup: s.tileByGroup,
       openTab: s.openTab,
+      openPkRoundTab: s.openPkRoundTab,
+      closePkRoundTab: s.closePkRoundTab,
       closeTab: s.closeTab,
       closeConversationTab: s.closeConversationTab,
       closeOtherTabs: s.closeOtherTabs,

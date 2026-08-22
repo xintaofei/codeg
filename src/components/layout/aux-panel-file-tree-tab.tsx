@@ -12,7 +12,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react"
-import { revealItemInDir, subscribe } from "@/lib/platform"
+import { isLocalDesktop, revealItemInDir, subscribe } from "@/lib/platform"
 import ignore from "ignore"
 import { Check, ChevronRight, Link2 } from "lucide-react"
 import { useTranslations } from "next-intl"
@@ -822,11 +822,13 @@ function RenderNode({
           <ContextMenuSub>
             <ContextMenuSubTrigger>{t("openIn")}</ContextMenuSubTrigger>
             <ContextMenuSubContent>
-              <ContextMenuItem
-                onSelect={() => void handleOpenInSystemExplorer()}
-              >
-                {systemExplorerLabel}
-              </ContextMenuItem>
+              {isLocalDesktop() && (
+                <ContextMenuItem
+                  onSelect={() => void handleOpenInSystemExplorer()}
+                >
+                  {systemExplorerLabel}
+                </ContextMenuItem>
+              )}
               <ContextMenuItem
                 onSelect={() => void onOpenDirInTerminal(dirPath, node.name)}
               >
@@ -1058,11 +1060,13 @@ function RenderNode({
         <ContextMenuSub>
           <ContextMenuSubTrigger>{t("openIn")}</ContextMenuSubTrigger>
           <ContextMenuSubContent>
-            <ContextMenuItem
-              onSelect={() => void handleOpenDirInSystemExplorer()}
-            >
-              {systemExplorerLabel}
-            </ContextMenuItem>
+            {isLocalDesktop() && (
+              <ContextMenuItem
+                onSelect={() => void handleOpenDirInSystemExplorer()}
+              >
+                {systemExplorerLabel}
+              </ContextMenuItem>
+            )}
             <ContextMenuItem
               onSelect={() => void onOpenDirInTerminal(absolutePath, node.name)}
             >
@@ -3002,13 +3006,15 @@ export function FileTreeTab() {
                         {t("openIn")}
                       </ContextMenuSubTrigger>
                       <ContextMenuSubContent>
-                        <ContextMenuItem
-                          onSelect={() => {
-                            void revealItemInDir(folder.path)
-                          }}
-                        >
-                          {systemExplorerLabel}
-                        </ContextMenuItem>
+                        {isLocalDesktop() && (
+                          <ContextMenuItem
+                            onSelect={() => {
+                              void revealItemInDir(folder.path)
+                            }}
+                          >
+                            {systemExplorerLabel}
+                          </ContextMenuItem>
+                        )}
                         <ContextMenuItem
                           onSelect={() => {
                             void handleOpenDirInTerminal(

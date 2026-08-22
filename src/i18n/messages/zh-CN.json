@@ -1687,8 +1687,17 @@
       "sectionFolders": "文件夹",
       "sectionChats": "聊天",
       "sectionRecent": "最近",
+      "sectionPk": "PK 竞技场",
       "noChats": "没有聊天",
       "noRecent": "暂无最近会话",
+      "noPk": "暂无 PK 会话",
+      "pkOpenArena": "打开这场 PK 竞技场",
+      "pkArchive": "归档整场 PK",
+      "pkArchiveConfirm": "归档“{task}”? 该局和所属的智能体会话会从列表隐藏。",
+      "pkArchiveSuccess": "PK 对局已归档",
+      "pkArchiveFailed": "归档失败：{message}",
+      "pkExpand": "展开智能体会话",
+      "pkCollapse": "收起智能体会话",
       "showMoreRecent": "显示更多（{count}）",
       "noFolders": "没有打开的文件夹",
       "newChatAction": "新建聊天",
@@ -1810,7 +1819,8 @@
       "search": "搜索",
       "openSettings": "打开设置",
       "backToConversations": "返回会话",
-      "withShortcut": "{label}（{shortcut}）"
+      "withShortcut": "{label}（{shortcut}）",
+      "pkArena": "智能体 PK 竞技场"
     },
     "statusBar": {
       "connection": {
@@ -2745,7 +2755,8 @@
         "mentionGroupAgent": "智能体",
         "mentionGroupSession": "会话",
         "mentionGroupCommit": "提交",
-        "mentionGroupSkill": "技能"
+        "mentionGroupSkill": "技能",
+        "startPk": "智能体 PK"
       },
       "messageQueue": {
         "addToQueue": "加入队列",
@@ -5052,6 +5063,177 @@
     "emptyAction": "统计我的会话",
     "loadFailed": "用量加载失败",
     "truncatedNotice": "该范围过大 —— 下面的数字只覆盖了其中最近的一段。"
+  },
+  "PkArena": {
+    "launcher": {
+      "title": "智能体 PK",
+      "description": "同一任务同时发给多个智能体,对比结果",
+      "contestantsLabel": "参赛选手（{min}–{max} 个）",
+      "noFolderHint": "竞技场需要一个 git 仓库文件夹——请先打开一个。",
+      "needMore": "至少选择 {count} 个智能体才能开赛。",
+      "taskLabel": "任务",
+      "taskPlaceholder": "所有选手收到的同一任务,例如\"用单个 HTML 文件写一个贪吃蛇游戏\"",
+      "selectedCount": "已选 {selected}/{max}(最少 {min})",
+      "addContestant": "添加 {agent} 为选手",
+      "slotLabelPlaceholder": "标签(如 Sonnet、Opus)",
+      "slotNumber": "选手 {number}",
+      "modelLoading": "正在读取模型…",
+      "modelUnavailable": "该智能体使用默认模型",
+      "modelLoadFailed": "模型列表读取失败",
+      "retryModelLoad": "重新读取模型列表",
+      "removeSlot": "移除该选手槽位",
+      "cancel": "取消",
+      "start": "开始比赛",
+      "notAGitRepo": "该文件夹不是 git 仓库——竞技场需要仓库来为每位选手创建隔离的 worktree。",
+      "initGitRepo": "git init",
+      "initializing": "初始化中…",
+      "permissionLabel": "权限",
+      "permissionOptions": {
+        "default": "每步询问",
+        "acceptEdits": "自动接受编辑",
+        "bypassPermissions": "全自动"
+      },
+      "permissionHints": {
+        "default": "每次审批都会打断选手",
+        "acceptEdits": "文件编辑不再询问",
+        "bypassPermissions": "完全不弹审批"
+      },
+      "permissionNote": "开赛时对每位选手生效;不支持的智能体仍会询问。",
+      "bareModeLabel": "裸机模式(禁用技能)",
+      "bareModeHint": "选手被明确要求只使用基础能力,不加载任何全局或项目技能。",
+      "effortLabel": "思考等级(所有选手统一)",
+      "effortOptions": {
+        "default": "默认",
+        "low": "低",
+        "medium": "中",
+        "high": "高",
+        "max": "最高"
+      },
+      "effortNote": "按各选手通告的最近档位应用;不支持的选手保持默认。",
+      "agentNotReady": "{agent} 未就绪(请先在智能体设置里安装)。",
+      "agentCheckFailed": "无法校验 {agent} 的安装状态。",
+      "templates": {
+        "pelican": "鹈鹕骑车",
+        "bouncingBall": "弹球",
+        "jellyBlob": "果冻 Blob",
+        "snake": "贪吃蛇",
+        "flappyBird": "Flappy Bird",
+        "voiceChat": "语音聊天",
+        "blackHole": "黑洞"
+      },
+      "judgeLabel": "裁判(可选)",
+      "judgeNone": "无裁判",
+      "judgeHint": "所有选手完成后,裁判 agent 会读取每个选手的 diff,给出结构化评分和排名。",
+      "judgeDimensionsLabel": "评分维度(可选)",
+      "judgeDimensionsPlaceholder": "正确性 — 是否完成任务?\n代码质量 — 可读性、结构、边界处理\n完整度 — 完成了多少?\n效率 — 代码层面效率(忽略 token 数和耗时)",
+      "judgeDimensionsHint": "每行一个维度。留空使用默认。每个维度会成为裁判提示词中的编号评分标准。",
+      "startPoint": "📍 起点",
+      "fromHead": "从当前 HEAD 开始",
+      "startPointHint": "选手从此提交的上一次提交开始,看不到这次提交的改动,只把它的提交信息当任务——等于独立重做同一个目标。",
+      "loadingCommits": "加载提交中…",
+      "noCommits": "未找到提交。",
+      "creativeTemplates": "创意 PK",
+      "realEngineering": "真实工程 PK",
+      "loadMore": "加载更多"
+    },
+    "scoreboard": {
+      "status": {
+        "preparing": "准备中",
+        "connecting": "连接中",
+        "running": "运行中",
+        "done": "完成",
+        "error": "失败",
+        "canceled": "已取消",
+        "ready": "就绪"
+      },
+      "tokensUnit": "tok",
+      "tokensUnavailable": "Token 未提供",
+      "tokensUnavailableHint": "该智能体没有返回 Token 用量,不是 0 Token。",
+      "turnsUnit": "轮"
+    },
+    "history": {
+      "title": "历史对局",
+      "hint": "按对局管理、查找和归档，不再把历史塞进下拉框。",
+      "trigger": "历史 {count}",
+      "searchPlaceholder": "搜索任务或智能体…",
+      "empty": "没有匹配的对局",
+      "agents": "{count} 个智能体",
+      "archive": "归档整局",
+      "archiveConfirm": "归档“{task}”? 该局和所属的智能体会话会从列表隐藏。",
+      "archiveSuccess": "PK 对局已归档",
+      "archiveFailed": "归档失败：{message}",
+      "status": {
+        "ready": "就绪",
+        "running": "进行中",
+        "finished": "已结束",
+        "canceled": "已取消",
+        "interrupted": "因重启中断"
+      }
+    },
+    "arena": {
+      "title": "智能体 PK 竞技场",
+      "description": "一个任务,多个智能体,同场竞技",
+      "roundStatus": {
+        "running": "进行中",
+        "finished": "已结束",
+        "canceled": "已取消",
+        "interrupted": "因重启中断",
+        "ready": "就绪"
+      },
+      "roundPicker": "回合",
+      "cancelRound": "取消本轮",
+      "cleanupWorktrees": "清理 worktree",
+      "cleanupHint": "移除选手的 worktree(保留分支)",
+      "share": "分享",
+      "sharing": "导出中…",
+      "tabs": {
+        "battle": "对战",
+        "diff": "Diff"
+      },
+      "preparing": "正在准备选手…",
+      "noRound": "未选择回合",
+      "contestantsUnit": "个智能体",
+      "newRound": "新一局",
+      "startMatch": "开始比赛",
+      "readyNote": "按每位选手实际支持的模型与思考等级确认配置,然后开始比赛。",
+      "modelLabel": "模型",
+      "effortLabel": "思考等级",
+      "effortUnsupported": "该智能体不支持思考等级配置,将使用自身默认值",
+      "effortOptions": {
+        "off": "关闭",
+        "minimal": "最低",
+        "low": "低",
+        "medium": "中",
+        "high": "高",
+        "max": "最高"
+      },
+      "minimize": "缩小",
+      "exportReport": "导出报告",
+      "exporting": "生成中…",
+      "shareReport": "保存 / 分享战报",
+      "reportSaved": "HTML 战报已保存",
+      "reportFailed": "战报导出失败：{message}",
+      "readyTag": "就绪",
+      "deleteRound": "删除",
+      "deleteConfirm": "删除这个回合?worktree 会留在磁盘上,可用「清理 worktree」移除。",
+      "followUp": "追加",
+      "followUpPlaceholder": "只对这名选手发追加消息(⌘↩ 发送)"
+    },
+    "diff": {
+      "loading": "正在加载 diff…",
+      "empty": "该 worktree 没有变更"
+    },
+    "judge": {
+      "title": "裁判裁决",
+      "running": "评审中…",
+      "error": "裁判失败",
+      "rerun": "重新评分"
+    },
+    "minimized": {
+      "restore": "回到竞技场",
+      "live": "PK 进行中",
+      "dismiss": "隐藏"
+    }
   },
   "Forge": {
     "title": "仓库面板",
