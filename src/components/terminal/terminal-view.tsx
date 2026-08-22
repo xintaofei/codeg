@@ -10,6 +10,8 @@ import {
 } from "@/lib/api"
 import { createWriteQueue } from "@/lib/terminal/write-queue"
 import { getTerminalTheme } from "@/lib/terminal/theme"
+import { isTerminalCopyShortcut } from "@/lib/terminal/shortcuts"
+import { copyTextToClipboard } from "@/lib/utils"
 import { useZoomLevel, useTerminalFont } from "@/hooks/use-appearance"
 import { detectPlatform } from "@/hooks/use-platform"
 import type { TerminalEvent } from "@/lib/types"
@@ -169,6 +171,13 @@ export function TerminalView({
 
         const writeSeq = (seq: string) => {
           writeQueue.enqueue(seq)
+          e.preventDefault()
+          return false
+        }
+
+        if (isTerminalCopyShortcut(e, isMac)) {
+          const selection = term.getSelection()
+          if (selection) void copyTextToClipboard(selection)
           e.preventDefault()
           return false
         }
