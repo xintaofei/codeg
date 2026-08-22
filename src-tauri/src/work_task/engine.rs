@@ -2061,9 +2061,10 @@ impl TaskEngine {
                 }
             }
             "cancelled" => {
-                // The user stopped the agent from the conversation UI — that is
-                // a task cancel, not an agent failure.
-                work_task_service::cancel(&self.db.conn, task_id, None)
+                // A cancelled task generation is a cancellation, not an agent
+                // failure. Keep it generation-scoped: a delayed event must not
+                // cancel a task that already reached review or was requeued.
+                work_task_service::cancel_running_generation(&self.db.conn, task_id, run_seq)
                     .await
                     .unwrap_or(false)
             }
@@ -4368,9 +4369,13 @@ impl TaskEngine {
                     settled
                 }
                 Some(ConversationStatus::Cancelled) => {
-                    work_task_service::cancel(&self.db.conn, task.id, None)
-                        .await
-                        .unwrap_or(false)
+                    work_task_service::cancel_running_generation(
+                        &self.db.conn,
+                        task.id,
+                        task.run_seq,
+                    )
+                    .await
+                    .unwrap_or(false)
                 }
                 _ => work_task_service::fail(
                     &self.db.conn,
@@ -7121,6 +7126,37 @@ mod tests {
             .await
             .expect("task row")
             .status
+    }
+
+    #[tokio::test]
+    async fn a_late_cancelled_event_does_not_cancel_a_task_in_review() {
+        let (engine, task_id) = running_task().await;
+        let run_seq = work_task_service::get_model(&engine.db.conn, task_id)
+            .await
+            .expect("task row")
+            .run_seq;
+        assert!(work_task_service::settle_review(
+            &engine.db.conn,
+            task_id,
+            run_seq,
+            None,
+            None,
+        )
+        .await
+        .expect("settle review"));
+
+        engine.on_turn_complete(PARENT_CONN, "cancelled").await;
+
+        assert_eq!(status_of(&engine, task_id).await, WorkTaskStatus::Review);
+    }
+
+    #[tokio::test]
+    async fn a_current_cancelled_event_cancels_the_running_task() {
+        let (engine, task_id) = running_task().await;
+
+        engine.on_turn_complete(PARENT_CONN, "cancelled").await;
+
+        assert_eq!(status_of(&engine, task_id).await, WorkTaskStatus::Canceled);
     }
 
     fn env(conn_id: &str, payload: AcpEvent) -> EventEnvelope {
