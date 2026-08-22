@@ -1521,6 +1521,8 @@
     "searchPlaceholder": "ابحث في العنوان أو المسار…",
     "allAgents": "جميع الوكلاء",
     "onlyImportable": "القابلة للاستيراد فقط",
+    "hideArchived": "إخفاء المؤرشفة",
+    "statusArchived": "مؤرشفة",
     "selectAll": "تحديد الكل",
     "clearSelection": "مسح",
     "expandAll": "توسيع الكل",

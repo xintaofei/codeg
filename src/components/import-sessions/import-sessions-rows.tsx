@@ -171,6 +171,11 @@ export const SessionRow = memo(function SessionRow({
           {t("statusDeleted")}
         </Badge>
       )}
+      {session.archived && (
+        <Badge variant="secondary" className="shrink-0 text-[10px]">
+          {t("statusArchived")}
+        </Badge>
+      )}
       <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
         {t("messageCount", { count: session.message_count })}
       </span>

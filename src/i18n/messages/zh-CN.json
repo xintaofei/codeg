@@ -1521,6 +1521,8 @@
     "searchPlaceholder": "搜索标题或路径…",
     "allAgents": "全部智能体",
     "onlyImportable": "仅显示可导入",
+    "hideArchived": "隐藏已归档",
+    "statusArchived": "已归档",
     "selectAll": "全选",
     "clearSelection": "清空",
     "expandAll": "全部展开",

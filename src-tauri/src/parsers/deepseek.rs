@@ -181,6 +181,7 @@ impl DeepSeekParser {
             parent_id: None,
             parent_tool_use_id: None,
             delegation_call_id: None,
+            archived: false,
         })
     }
 
@@ -222,6 +223,7 @@ impl DeepSeekParser {
             parent_id: None,
             parent_tool_use_id: None,
             delegation_call_id: None,
+            archived: false,
         };
 
         ConversationDetail {

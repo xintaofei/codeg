@@ -23,6 +23,11 @@ pub struct ConversationSummary {
     pub parent_tool_use_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delegation_call_id: Option<String>,
+    /// True when the originating CLI marked the session archived (Codex
+    /// `threads.archived`, Hermes `sessions.archived`, …). Import can hide
+    /// these behind a filter. Default false so older parsers stay live.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -231,6 +236,9 @@ pub struct ScanSession {
     pub model: Option<String>,
     pub git_branch: Option<String>,
     pub status: ScanSessionStatus,
+    /// Originating CLI archived this session. Default false for old scans.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 /// One folder group in the import-picker scan: all sessions sharing a

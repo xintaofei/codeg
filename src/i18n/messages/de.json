@@ -1521,6 +1521,8 @@
     "searchPlaceholder": "Titel oder Pfad suchen…",
     "allAgents": "Alle Agenten",
     "onlyImportable": "Nur importierbare",
+    "hideArchived": "Archivierte ausblenden",
+    "statusArchived": "Archiviert",
     "selectAll": "Alle auswählen",
     "clearSelection": "Leeren",
     "expandAll": "Alle ausklappen",

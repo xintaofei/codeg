@@ -1521,6 +1521,8 @@
     "searchPlaceholder": "搜尋標題或路徑…",
     "allAgents": "全部智慧代理",
     "onlyImportable": "僅顯示可匯入",
+    "hideArchived": "隱藏已封存",
+    "statusArchived": "已封存",
     "selectAll": "全選",
     "clearSelection": "清空",
     "expandAll": "全部展開",

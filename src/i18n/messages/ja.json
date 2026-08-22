@@ -1521,6 +1521,8 @@
     "searchPlaceholder": "タイトルまたはパスを検索…",
     "allAgents": "すべてのエージェント",
     "onlyImportable": "インポート可能のみ",
+    "hideArchived": "アーカイブを隠す",
+    "statusArchived": "アーカイブ",
     "selectAll": "すべて選択",
     "clearSelection": "クリア",
     "expandAll": "すべて展開",

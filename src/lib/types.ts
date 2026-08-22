@@ -513,6 +513,8 @@ export interface ScanSession {
   model: string | null
   git_branch: string | null
   status: ScanSessionStatus
+  /** Originating CLI archived this session. Missing on old servers = false. */
+  archived?: boolean
 }
 
 /** Mirrors Rust `ScanFolder`: sessions sharing a normalize-matched cwd, plus

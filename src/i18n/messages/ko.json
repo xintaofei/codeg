@@ -1521,6 +1521,8 @@
     "searchPlaceholder": "제목 또는 경로 검색…",
     "allAgents": "모든 에이전트",
     "onlyImportable": "가져오기 가능만",
+    "hideArchived": "보관됨 숨기기",
+    "statusArchived": "보관됨",
     "selectAll": "모두 선택",
     "clearSelection": "지우기",
     "expandAll": "모두 펼치기",

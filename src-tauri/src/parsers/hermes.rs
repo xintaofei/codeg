@@ -116,6 +116,7 @@ impl HermesParser {
                     s.started_at AS started_at,
                     s.ended_at AS ended_at,
                     s.parent_session_id AS parent_id,
+                    COALESCE(s.archived, 0) AS archived,
                     (
                         SELECT COUNT(*) FROM messages m
                         WHERE m.session_id = s.id
@@ -123,7 +124,6 @@ impl HermesParser {
                           AND m.role <> 'system'
                     ) AS message_count
                 FROM sessions s
-                WHERE COALESCE(s.archived, 0) = 0
                 ORDER BY s.started_at DESC
                 "#
                 .to_string(),
@@ -458,6 +458,7 @@ fn parse_sqlite_summary_row(row: &QueryResult) -> Result<ConversationSummary, Pa
     let title: Option<String> = row.try_get("", "title")?;
     let model: Option<String> = row.try_get("", "model")?;
     let parent_id: Option<String> = row.try_get("", "parent_id")?;
+    let archived_i64: i64 = row.try_get("", "archived").unwrap_or(0);
     let message_count_i64: i64 = row.try_get("", "message_count")?;
 
     let started_at = get_real(row, "started_at")
@@ -488,6 +489,7 @@ fn parse_sqlite_summary_row(row: &QueryResult) -> Result<ConversationSummary, Pa
         parent_id: normalize_optional_string(parent_id),
         parent_tool_use_id: None,
         delegation_call_id: None,
+        archived: archived_i64 != 0,
     })
 }
 

@@ -13,7 +13,8 @@ expression: detail
     "ended_at": "[ts]",
     "message_count": 2,
     "model": "claude-sonnet-4-6",
-    "git_branch": "main"
+    "git_branch": "main",
+    "archived": false
   },
   "turns": [
     {

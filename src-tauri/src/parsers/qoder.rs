@@ -838,6 +838,7 @@ fn parse_summary(path: &Path) -> Option<ConversationSummary> {
         parent_id: None,
         parent_tool_use_id: None,
         delegation_call_id: None,
+        archived: false,
     })
 }
 
@@ -886,6 +887,7 @@ fn parse_detail(path: &Path, conversation_id: &str) -> Result<ConversationDetail
             parent_id: None,
             parent_tool_use_id: None,
             delegation_call_id: None,
+            archived: false,
         },
         turns,
         session_stats,

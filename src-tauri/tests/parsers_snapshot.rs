@@ -927,7 +927,7 @@ fn hermes_minimal_session_snapshot() {
             203,
         )
         .await;
-        // Archived session (excluded from list) + one message.
+        // Archived session (kept in the list, flagged) + one message.
         hermes_ins_session(
             &conn,
             "hermes-sess-archived",

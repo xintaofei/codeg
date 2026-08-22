@@ -13,7 +13,8 @@ expression: detail
     "ended_at": "[ts]",
     "message_count": 2,
     "model": null,
-    "git_branch": null
+    "git_branch": null,
+    "archived": false
   },
   "turns": [
     {

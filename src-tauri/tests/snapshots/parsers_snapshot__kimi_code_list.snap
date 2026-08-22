@@ -13,6 +13,7 @@ expression: summaries
     "ended_at": "[ts]",
     "message_count": 2,
     "model": "kimi-k2.7-code",
-    "git_branch": null
+    "git_branch": null,
+    "archived": false
   }
 ]

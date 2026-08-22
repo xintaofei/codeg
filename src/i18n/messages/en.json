@@ -1521,6 +1521,8 @@
     "searchPlaceholder": "Search title or path…",
     "allAgents": "All agents",
     "onlyImportable": "Importable only",
+    "hideArchived": "Hide archived",
+    "statusArchived": "Archived",
     "selectAll": "Select all",
     "clearSelection": "Clear",
     "expandAll": "Expand all",

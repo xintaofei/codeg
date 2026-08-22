@@ -1521,6 +1521,8 @@
     "searchPlaceholder": "Rechercher un titre ou un chemin…",
     "allAgents": "Tous les agents",
     "onlyImportable": "Importables uniquement",
+    "hideArchived": "Masquer les archivées",
+    "statusArchived": "Archivée",
     "selectAll": "Tout sélectionner",
     "clearSelection": "Effacer",
     "expandAll": "Tout développer",

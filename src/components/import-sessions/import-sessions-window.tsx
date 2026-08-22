@@ -92,6 +92,7 @@ export function ImportSessionsWindow({
   const [search, setSearch] = useState("")
   const [agentFilter, setAgentFilter] = useState<AgentType | "all">("all")
   const [onlyImportable, setOnlyImportable] = useState(false)
+  const [hideArchived, setHideArchived] = useState(true)
   const [importResult, setImportResult] = useState<ImportSelectedResult | null>(
     null
   )
@@ -224,6 +225,9 @@ export function ImportSessionsWindow({
       if (onlyImportable) {
         sessions = sessions.filter((s) => s.status === "new")
       }
+      if (hideArchived) {
+        sessions = sessions.filter((s) => !s.archived)
+      }
       if (query) {
         const folderMatches =
           folder.path.toLowerCase().includes(query) ||
@@ -237,7 +241,7 @@ export function ImportSessionsWindow({
       if (sessions.length > 0) entries.push({ folder, sessions })
     }
     return entries
-  }, [scan, search, agentFilter, onlyImportable])
+  }, [scan, search, agentFilter, onlyImportable, hideArchived])
 
   const rows = useMemo(() => {
     const out: Row[] = []
@@ -530,6 +534,14 @@ export function ImportSessionsWindow({
             disabled={busy}
           />
           {t("onlyImportable")}
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Switch
+            checked={hideArchived}
+            onCheckedChange={setHideArchived}
+            disabled={busy}
+          />
+          {t("hideArchived")}
         </label>
         <div className="flex-1" />
         <Button
