@@ -99,6 +99,8 @@ import {
   loadMessageInputDraftV2,
   saveMessageInputDraftV2,
 } from "@/lib/message-input-draft"
+import { conversationIdFromDraftKey } from "@/lib/composer-draft-sync"
+import { useComposerDraftSync } from "@/hooks/use-composer-draft-sync"
 import { rankByTextMatch } from "@/lib/fuzzy-text-match"
 import {
   RichComposer,
@@ -353,6 +355,30 @@ export function MessageInput({
   // Flips true once the RichComposer's async (immediatelyRender:false) editor has
   // mounted, so the hydration effect can use the imperative handle.
   const [composerReady, setComposerReady] = useState(false)
+  const syncedConversationId = conversationIdFromDraftKey(
+    effectiveDraftStorageKey
+  )
+  const applyingRemoteDraftRef = useRef(false)
+  const persistSyncedDraft = useComposerDraftSync({
+    conversationId: syncedConversationId,
+    enabled: !isEditingQueueItem && composerReady,
+    getLocalText: () => editorRef.current?.getText() ?? "",
+    onRemote: (text) => {
+      const ed = editorRef.current
+      if (!ed) return
+      applyingRemoteDraftRef.current = true
+      ed.setText(text)
+      const editor = ed.getEditor()
+      setComposerEmpty(editor ? isComposerEmpty(editor) : text.length === 0)
+      if (typeof window !== "undefined") {
+        window.setTimeout(() => {
+          applyingRemoteDraftRef.current = false
+        }, 400)
+      } else {
+        applyingRemoteDraftRef.current = false
+      }
+    },
+  })
 
   const syncComposerEmpty = useCallback(() => {
     const ed = editorRef.current?.getEditor()
@@ -459,14 +485,16 @@ export function MessageInput({
       if (!ed || !effectiveDraftStorageKey) return
       if (ed.isEmpty()) {
         clearMessageInputDraftV2(effectiveDraftStorageKey)
+        if (!applyingRemoteDraftRef.current) persistSyncedDraft("")
       } else {
         saveMessageInputDraftV2(
           effectiveDraftStorageKey,
           stripEmbeddedReferences(ed.getJSON())
         )
+        if (!applyingRemoteDraftRef.current) persistSyncedDraft(ed.getText())
       }
     }, 300)
-  }, [effectiveDraftStorageKey, isEditingQueueItem])
+  }, [effectiveDraftStorageKey, isEditingQueueItem, persistSyncedDraft])
 
   useEffect(() => {
     return () => {
@@ -1225,6 +1253,10 @@ export function MessageInput({
     // Prompting mode: enqueue instead of sending
     if (isPrompting && onEnqueue) {
       onEnqueue(draft, showModeSelector ? effectiveModeId : null)
+      if (effectiveDraftStorageKey) {
+        clearMessageInputDraftV2(effectiveDraftStorageKey)
+      }
+      persistSyncedDraft("")
       resetComposer()
       return
     }
@@ -1233,6 +1265,7 @@ export function MessageInput({
     if (effectiveDraftStorageKey) {
       clearMessageInputDraftV2(effectiveDraftStorageKey)
     }
+    persistSyncedDraft("")
     resetComposer()
   }, [
     disabled,
@@ -1247,6 +1280,7 @@ export function MessageInput({
     effectiveModeId,
     showModeSelector,
     effectiveDraftStorageKey,
+    persistSyncedDraft,
     resetComposer,
   ])
 
@@ -1268,6 +1302,7 @@ export function MessageInput({
     onForkSend(draft, showModeSelector ? effectiveModeId : null)
     if (effectiveDraftStorageKey) {
       clearMessageInputDraftV2(effectiveDraftStorageKey)
+      persistSyncedDraft("")
     }
     resetComposer()
   }, [
@@ -1278,6 +1313,7 @@ export function MessageInput({
     effectiveModeId,
     showModeSelector,
     effectiveDraftStorageKey,
+    persistSyncedDraft,
     resetComposer,
   ])
 

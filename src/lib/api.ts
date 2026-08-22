@@ -39,6 +39,8 @@ import type {
   WorkTaskTemplate,
   ConversationSummary,
   ConversationDetail,
+  ComposerDraft,
+  ComposerDraftPutResult,
   ConversationTurnsPage,
   DbConversationDetail,
   FolderInfo,
@@ -2877,6 +2879,24 @@ export async function updateConversationPinned(
   return getTransport().call("update_conversation_pinned", {
     conversationId,
     pinned,
+  })
+}
+
+export async function getComposerDraft(
+  conversationId: number
+): Promise<ComposerDraft | null> {
+  return getTransport().call("get_composer_draft", { conversationId })
+}
+
+export async function putComposerDraft(
+  conversationId: number,
+  text: string,
+  origin: string
+): Promise<ComposerDraftPutResult> {
+  return getTransport().call("put_composer_draft", {
+    conversationId,
+    text,
+    origin,
   })
 }
 

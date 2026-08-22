@@ -287,6 +287,23 @@ pub struct ConversationsBulkChanged {
 /// webview and every WebSocket client.
 pub const TABS_CHANGED_EVENT: &str = "tabs://changed";
 
+/// Global side-channel for cross-client unsent composer text. The WS
+/// payload is ids only (`conversation_id`, `revision`, `origin`,
+/// `cleared`) — never the draft body — so a log of the firehose cannot
+/// leak what the user is typing. Clients fetch the body over the
+/// authenticated GET.
+pub const COMPOSER_DRAFT_CHANGED_EVENT: &str = "composer-draft://changed";
+
+/// Payload for [`COMPOSER_DRAFT_CHANGED_EVENT`]. Last-write-wins via
+/// `revision`; `origin` is echoed so the writer ignores its own notify.
+#[derive(Debug, Clone, Serialize)]
+pub struct ComposerDraftChanged {
+    pub conversation_id: i32,
+    pub revision: i64,
+    pub origin: String,
+    pub cleared: bool,
+}
+
 /// Payload for the [`TABS_CHANGED_EVENT`] side-channel. Carries the full
 /// conversation-bound tab set (a snapshot, not a delta) so every client
 /// converges idempotently — matching the full-replacement save semantics.
@@ -608,6 +625,34 @@ mod tests {
         assert_eq!(p["version"], 6);
         assert_eq!(p["origin"], "win-abc");
         assert!(p["tabs"].is_array(), "tabs must serialize as an array");
+    }
+
+    #[test]
+    fn emit_event_broadcasts_composer_draft_changed_without_body() {
+        // The notify is ids-only so a WS/log dump cannot leak unsent text.
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let emitter = EventEmitter::test_web_only(broadcaster.clone());
+
+        emit_event(
+            &emitter,
+            COMPOSER_DRAFT_CHANGED_EVENT,
+            ComposerDraftChanged {
+                conversation_id: 42,
+                revision: 3,
+                origin: "phone1".to_string(),
+                cleared: false,
+            },
+        );
+
+        let evt = rx.try_recv().expect("draft change should broadcast");
+        let p = &*evt.payload;
+        assert_eq!(evt.channel, COMPOSER_DRAFT_CHANGED_EVENT);
+        assert_eq!(p["conversation_id"], 42);
+        assert_eq!(p["revision"], 3);
+        assert_eq!(p["origin"], "phone1");
+        assert_eq!(p["cleared"], false);
+        assert!(p.get("text").is_none(), "notify must never carry the draft body");
     }
 
     #[test]
