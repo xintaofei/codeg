@@ -123,6 +123,7 @@ const SubAgentOverlayRow = memo(function SubAgentOverlayRow({
     errorCode,
     childConversationId,
     childConnectionId,
+    model,
   } = useDelegationCardModel(source)
 
   // Unlike the inline DelegatedSubThread (which falls through to the generic
@@ -153,6 +154,14 @@ const SubAgentOverlayRow = memo(function SubAgentOverlayRow({
             title={taskId}
           >
             #{taskId.slice(0, 8)}
+          </span>
+        )}
+        {model && (
+          <span
+            className="shrink-0 rounded border border-border px-1 py-px font-mono text-[10px] leading-none text-muted-foreground"
+            title={t("delegationPinnedModel", { model })}
+          >
+            {model}
           </span>
         )}
         <StatusBadge status={status} errorCode={errorCode} />

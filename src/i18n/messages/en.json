@@ -3040,6 +3040,7 @@
         "noDetail": "No detail available yet.",
         "unknownAgent": "Sub-agent",
         "openDetail": "Open conversation",
+        "delegationPinnedModel": "Started on {model}, pinned by the parent for this delegation",
         "detailTitle": "Sub-agent conversation",
         "detailDescription": "Read-only view of the delegated sub-agent's conversation.",
         "waitForResult": "Waiting for task {task} result",
