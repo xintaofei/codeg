@@ -95,6 +95,11 @@ impl CodexParser {
         let mut first_timestamp: Option<DateTime<Utc>> = None;
         let mut last_timestamp: Option<DateTime<Utc>> = None;
         let mut message_count: u32 = 0;
+        // Newer Codex rollouts report one assistant reply twice: first as an
+        // `item_completed / AgentMessage`, then as the canonical
+        // `response_item.message`. IDs let the lightweight parser count that
+        // reply once without collapsing distinct replies with equal text.
+        let mut assistant_message_ids: HashSet<String> = HashSet::new();
         // Mirror the detail parser's leading-`/goal` fallback in the lightweight
         // list path: newer codex records `/goal` only as `thread_goal_updated` (no
         // `user_message`), so without this the sidebar/import entry is titleless
@@ -179,7 +184,31 @@ impl CodexParser {
                                 }
                             }
                             "agent_message" => {
-                                message_count += 1;
+                                let has_text = payload
+                                    .get("message")
+                                    .and_then(|m| m.as_str())
+                                    .is_some_and(|text| !text.trim().is_empty());
+                                if has_text {
+                                    let id = payload.get("id").and_then(|v| v.as_str());
+                                    if id.is_none_or(|id| {
+                                        assistant_message_ids.insert(id.to_string())
+                                    }) {
+                                        message_count += 1;
+                                    }
+                                }
+                            }
+                            "item_completed" => {
+                                if extract_codex_item_agent_message_text(payload).is_some() {
+                                    let id = payload
+                                        .get("item")
+                                        .and_then(|item| item.get("id"))
+                                        .and_then(|v| v.as_str());
+                                    if id.is_none_or(|id| {
+                                        assistant_message_ids.insert(id.to_string())
+                                    }) {
+                                        message_count += 1;
+                                    }
+                                }
                             }
                             "thread_goal_updated" => {
                                 // Capture the first OPENING goal for the fallback,
@@ -250,12 +279,25 @@ impl CodexParser {
                             // must too. Mirroring it here keeps the pure-`/goal`
                             // fallback (title + count) in exact sync and stops
                             // internal text from leaking into the list title.
-                            if role == "user" && response_item_user_has_image(payload) {
-                                has_real_user = true;
-                                if title.is_none() {
-                                    title = extract_codex_text_content(payload)
-                                        .and_then(|t| extract_codex_title_candidate(&t, false));
+                            match role {
+                                "user" if response_item_user_has_image(payload) => {
+                                    has_real_user = true;
+                                    if title.is_none() {
+                                        title = extract_codex_text_content(payload)
+                                            .and_then(|t| extract_codex_title_candidate(&t, false));
+                                    }
                                 }
+                                "assistant" => {
+                                    if extract_codex_assistant_text_content(payload).is_some() {
+                                        let id = payload.get("id").and_then(|v| v.as_str());
+                                        if id.is_none_or(|id| {
+                                            assistant_message_ids.insert(id.to_string())
+                                        }) {
+                                            message_count += 1;
+                                        }
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -2053,6 +2095,13 @@ impl CodexParser {
         let reader = BufReader::new(file);
 
         let mut messages = Vec::new();
+        // Newer Codex rollouts emit an assistant reply as both
+        // `item_completed / AgentMessage` and the canonical
+        // `response_item.message`. Keep the first event in place so the
+        // timeline remains stable, then replace its text when the canonical
+        // record arrives. The ID is scoped to one response lifecycle; unlike
+        // content-based dedupe it cannot erase two consecutive equal replies.
+        let mut assistant_message_indices: HashMap<String, usize> = HashMap::new();
         let mut cwd: Option<String> = None;
         let mut git_branch: Option<String> = None;
         let mut model: Option<String> = None;
@@ -2377,8 +2426,12 @@ impl CodexParser {
                                     .and_then(|m| m.as_str())
                                     .unwrap_or("")
                                     .to_string();
+                                if text.trim().is_empty() {
+                                    continue;
+                                }
+                                let message_index = messages.len();
                                 messages.push(UnifiedMessage {
-                                    id: format!("assistant-{}", messages.len()),
+                                    id: format!("assistant-{}", message_index),
                                     role: MessageRole::Assistant,
                                     content: vec![ContentBlock::Text { text }],
                                     timestamp,
@@ -2387,6 +2440,38 @@ impl CodexParser {
                                     model: None,
                                     completed_at: Some(timestamp),
                                 });
+                                if let Some(id) = payload.get("id").and_then(|v| v.as_str()) {
+                                    assistant_message_indices.insert(id.to_string(), message_index);
+                                }
+                            }
+                            "item_completed" => {
+                                let Some(text) = extract_codex_item_agent_message_text(payload)
+                                else {
+                                    continue;
+                                };
+                                let item = payload.get("item");
+                                let item_id = item
+                                    .and_then(|item| item.get("id"))
+                                    .and_then(|v| v.as_str());
+                                if let Some(id) = item_id {
+                                    if assistant_message_indices.contains_key(id) {
+                                        continue;
+                                    }
+                                }
+                                let message_index = messages.len();
+                                messages.push(UnifiedMessage {
+                                    id: format!("assistant-{}", message_index),
+                                    role: MessageRole::Assistant,
+                                    content: vec![ContentBlock::Text { text }],
+                                    timestamp,
+                                    usage: None,
+                                    duration_ms: None,
+                                    model: None,
+                                    completed_at: Some(timestamp),
+                                });
+                                if let Some(id) = item_id {
+                                    assistant_message_indices.insert(id.to_string(), message_index);
+                                }
                             }
                             "thread_goal_updated" => {
                                 // codex-acp v1.1.0 (#263) routes live goals through
@@ -3318,7 +3403,46 @@ impl CodexParser {
                             "message" => {
                                 let role =
                                     payload.get("role").and_then(|r| r.as_str()).unwrap_or("");
-                                if role == "user" {
+                                if role == "assistant" {
+                                    let Some(text) = extract_codex_assistant_text_content(payload)
+                                    else {
+                                        continue;
+                                    };
+                                    let response_id = payload.get("id").and_then(|v| v.as_str());
+                                    if let Some(id) = response_id {
+                                        if let Some(&message_index) =
+                                            assistant_message_indices.get(id)
+                                        {
+                                            // Prefer the canonical response item, which
+                                            // carries the complete output_text. Keep the
+                                            // existing slot so reasoning/tool ordering does
+                                            // not change when the paired lifecycle event
+                                            // arrives first.
+                                            if let Some(message) = messages.get_mut(message_index) {
+                                                message.content = vec![ContentBlock::Text { text }];
+                                                message.timestamp = timestamp;
+                                                message.completed_at = Some(timestamp);
+                                            }
+                                            continue;
+                                        }
+                                    }
+
+                                    let message_index = messages.len();
+                                    messages.push(UnifiedMessage {
+                                        id: format!("assistant-{}", message_index),
+                                        role: MessageRole::Assistant,
+                                        content: vec![ContentBlock::Text { text }],
+                                        timestamp,
+                                        usage: None,
+                                        duration_ms: None,
+                                        model: None,
+                                        completed_at: Some(timestamp),
+                                    });
+                                    if let Some(id) = response_id {
+                                        assistant_message_indices
+                                            .insert(id.to_string(), message_index);
+                                    }
+                                } else if role == "user" {
                                     active_agent_count = 0;
                                     if let Some(blocks) =
                                         extract_response_item_user_image_blocks(payload)
@@ -3970,6 +4094,39 @@ fn extract_codex_text_content(payload: &serde_json::Value) -> Option<String> {
         }
     }
     None
+}
+
+fn extract_codex_text_parts(
+    payload: &serde_json::Value,
+    accepted_types: &[&str],
+) -> Option<String> {
+    let content = payload.get("content")?.as_array()?;
+    let text = content
+        .iter()
+        .filter_map(|item| {
+            let item_type = item.get("type").and_then(|v| v.as_str())?;
+            if !accepted_types.contains(&item_type) {
+                return None;
+            }
+            let text = item.get("text").and_then(|v| v.as_str())?;
+            (!text.trim().is_empty()).then_some(text)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    (!text.is_empty()).then_some(text)
+}
+
+fn extract_codex_assistant_text_content(payload: &serde_json::Value) -> Option<String> {
+    extract_codex_text_parts(payload, &["output_text", "text"])
+}
+
+fn extract_codex_item_agent_message_text(payload: &serde_json::Value) -> Option<String> {
+    let item = payload.get("item")?;
+    if item.get("type").and_then(|v| v.as_str()) != Some("AgentMessage") {
+        return None;
+    }
+    extract_codex_text_parts(item, &["Text", "text"])
 }
 
 fn parse_data_uri_image(raw: &str) -> Option<(String, String)> {
@@ -6014,6 +6171,179 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn new_codex_assistant_events_render_once_in_order_and_count_once() {
+        let lines = vec![
+            rollout_line(
+                "2026-08-23T10:00:00Z",
+                "event_msg",
+                serde_json::json!({"type":"user_message","message":"prompt"}),
+            ),
+            rollout_line(
+                "2026-08-23T10:00:01Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"reasoning",
+                    "summary":[{"type":"summary_text","text":"thinking first"}]
+                }),
+            ),
+            rollout_line(
+                "2026-08-23T10:00:02Z",
+                "event_msg",
+                serde_json::json!({
+                    "type":"item_completed",
+                    "item":{
+                        "type":"AgentMessage",
+                        "id":"msg-final",
+                        "content":[{"type":"Text","text":"short fallback"}]
+                    }
+                }),
+            ),
+            rollout_line(
+                "2026-08-23T10:00:03Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"message",
+                    "id":"msg-final",
+                    "role":"assistant",
+                    "content":[{"type":"output_text","text":"canonical final"}]
+                }),
+            ),
+        ];
+        let path = write_temp_rollout("new-assistant-events", &lines);
+        let parser = CodexParser::new();
+        let detail = parser
+            .parse_conversation_detail(&path, "new-assistant-events")
+            .expect("parse detail");
+
+        let assistant_texts: Vec<&str> = detail
+            .turns
+            .iter()
+            .flat_map(|turn| turn.blocks.iter())
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(assistant_texts, vec!["canonical final"]);
+        assert_eq!(thinking_texts(&detail), vec!["thinking first".to_string()]);
+        let thinking_index = detail
+            .turns
+            .iter()
+            .position(|turn| {
+                turn.blocks
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::Thinking { .. }))
+            })
+            .expect("thinking turn");
+        let assistant_index = detail
+            .turns
+            .iter()
+            .position(|turn| {
+                turn.blocks.iter().any(|block| {
+                    matches!(block, ContentBlock::Text { text } if text == "canonical final")
+                })
+            })
+            .expect("assistant turn");
+        assert!(thinking_index < assistant_index);
+
+        let summary = parser
+            .parse_jsonl_summary(&path)
+            .expect("parse summary")
+            .expect("summary");
+        assert_eq!(summary.message_count, 2, "user + one assistant reply");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn response_item_assistant_without_item_completed_is_visible() {
+        let lines = vec![
+            rollout_line(
+                "2026-08-23T10:00:00Z",
+                "event_msg",
+                serde_json::json!({"type":"user_message","message":"prompt"}),
+            ),
+            rollout_line(
+                "2026-08-23T10:00:01Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"message",
+                    "id":"msg-only",
+                    "role":"assistant",
+                    "content":[
+                        {"type":"output_text","text":"first"},
+                        {"type":"output_text","text":"second"}
+                    ]
+                }),
+            ),
+        ];
+        let path = write_temp_rollout("response-item-only", &lines);
+        let parser = CodexParser::new();
+        let detail = parser
+            .parse_conversation_detail(&path, "response-item-only")
+            .expect("parse detail");
+        let text = detail
+            .turns
+            .iter()
+            .flat_map(|turn| turn.blocks.iter())
+            .find_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            });
+        assert_eq!(text, Some("first\nsecond"));
+        assert_eq!(detail.summary.message_count, 2);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn assistant_messages_with_different_ids_are_not_content_deduped() {
+        let lines = vec![
+            rollout_line(
+                "2026-08-23T10:00:00Z",
+                "event_msg",
+                serde_json::json!({"type":"user_message","message":"prompt"}),
+            ),
+            rollout_line(
+                "2026-08-23T10:00:01Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"message",
+                    "id":"msg-a",
+                    "role":"assistant",
+                    "content":[{"type":"output_text","text":"same"}]
+                }),
+            ),
+            rollout_line(
+                "2026-08-23T10:00:02Z",
+                "response_item",
+                serde_json::json!({
+                    "type":"message",
+                    "id":"msg-b",
+                    "role":"assistant",
+                    "content":[{"type":"output_text","text":"same"}]
+                }),
+            ),
+        ];
+        let path = write_temp_rollout("same-text-replies", &lines);
+        let parser = CodexParser::new();
+        let detail = parser
+            .parse_conversation_detail(&path, "same-text-replies")
+            .expect("parse detail");
+        let text_count = detail
+            .turns
+            .iter()
+            .flat_map(|turn| turn.blocks.iter())
+            .filter(|block| matches!(block, ContentBlock::Text { text } if text == "same"))
+            .count();
+        assert_eq!(text_count, 2);
+        let summary = parser
+            .parse_jsonl_summary(&path)
+            .expect("parse summary")
+            .expect("summary");
+        assert_eq!(summary.message_count, 3, "user + two assistant replies");
+        let _ = fs::remove_file(path);
     }
 
     /// Codex surfaces one reasoning turn twice: as per-section
