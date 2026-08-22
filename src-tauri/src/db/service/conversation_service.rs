@@ -210,10 +210,42 @@ pub async fn refresh_auto_title(
         .col_expr(conversation::Column::Title, Expr::value(title))
         .filter(conversation::Column::Id.eq(conversation_id))
         .filter(conversation::Column::TitleLocked.eq(false))
+        .filter(conversation::Column::DeletedAt.is_null())
         .filter(
             sea_orm::Condition::any()
                 .add(conversation::Column::Title.is_null())
                 .add(conversation::Column::Title.ne(title)),
+        )
+        .exec(conn)
+        .await?;
+    Ok(res.rows_affected > 0)
+}
+
+/// First-prompt seed: write `title` ONLY when the row is unlocked AND still
+/// empty. Unlike [`refresh_auto_title`], this will not replace an existing
+/// name — a later user prompt must not overwrite the first one, and an
+/// agent-generated ACP title that already landed must not be clobbered by
+/// the next send. Returns `true` when a row was written so the caller can
+/// broadcast a sidebar upsert. Does not bump `updated_at` or set the lock.
+pub async fn seed_auto_title_if_empty(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+    title: String,
+) -> Result<bool, DbError> {
+    use sea_orm::sea_query::Expr;
+    let title = title.trim();
+    if title.is_empty() {
+        return Ok(false);
+    }
+    let res = conversation::Entity::update_many()
+        .col_expr(conversation::Column::Title, Expr::value(title))
+        .filter(conversation::Column::Id.eq(conversation_id))
+        .filter(conversation::Column::TitleLocked.eq(false))
+        .filter(conversation::Column::DeletedAt.is_null())
+        .filter(
+            sea_orm::Condition::any()
+                .add(conversation::Column::Title.is_null())
+                .add(conversation::Column::Title.eq("")),
         )
         .exec(conn)
         .await?;
@@ -2234,6 +2266,62 @@ mod tests {
             summary.updated_at, before,
             "auto-title backfill is metadata, not activity — it must not bump updated_at"
         );
+    }
+
+    #[tokio::test]
+    async fn seed_auto_title_if_empty_writes_only_when_untitled() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-title-seed").await;
+        let row = create(&db.conn, folder, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("create");
+        let before = row.updated_at;
+
+        assert!(
+            seed_auto_title_if_empty(&db.conn, row.id, "  First prompt  ".into())
+                .await
+                .expect("seed"),
+            "an empty unlocked title must be seeded"
+        );
+        let summary = get_by_id(&db.conn, row.id).await.expect("get");
+        assert_eq!(summary.title.as_deref(), Some("First prompt"));
+        assert!(!summary.title_locked);
+        assert_eq!(summary.updated_at, before, "seed must not bump updated_at");
+
+        assert!(
+            !seed_auto_title_if_empty(&db.conn, row.id, "Second prompt".into())
+                .await
+                .expect("seed-2"),
+            "a later prompt must not replace the first-prompt seed"
+        );
+        let summary = get_by_id(&db.conn, row.id).await.expect("get-2");
+        assert_eq!(summary.title.as_deref(), Some("First prompt"));
+    }
+
+    #[tokio::test]
+    async fn seed_auto_title_if_empty_skips_locked_and_empty() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-title-seed-skip").await;
+        let row = create(&db.conn, folder, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("create");
+        update_title(&db.conn, row.id, "User pick".into())
+            .await
+            .expect("rename");
+
+        assert!(
+            !seed_auto_title_if_empty(&db.conn, row.id, "First prompt".into())
+                .await
+                .expect("seed-locked"),
+            "a locked title must not be seeded over"
+        );
+        assert!(
+            !seed_auto_title_if_empty(&db.conn, row.id, String::new())
+                .await
+                .expect("seed-empty")
+        );
+        let summary = get_by_id(&db.conn, row.id).await.expect("get");
+        assert_eq!(summary.title.as_deref(), Some("User pick"));
     }
 
     /// The work-task / automation launch path: the seed IS the name, so locking

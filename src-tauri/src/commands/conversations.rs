@@ -1707,6 +1707,20 @@ async fn sync_conversation_title_until_current(
     }
 }
 
+/// Detach a chat-channel title sync so a live title write cannot sit on
+/// Telegram's 60s `editForumTopic` timeout. Callers that already upserted
+/// the sidebar should use this rather than awaiting `sync_conversation_title`.
+pub(crate) fn spawn_sync_conversation_title_until_current(
+    conn: sea_orm::DatabaseConnection,
+    chat_channel_manager: crate::chat_channel::manager::ChatChannelManager,
+    conversation_id: i32,
+) {
+    tokio::spawn(async move {
+        sync_conversation_title_until_current(&conn, &chat_channel_manager, conversation_id)
+            .await;
+    });
+}
+
 /// Broadcast and propagate title changes discovered outside codeg (for
 /// example, Codex's session index or an import scan). Both operations are
 /// best-effort: the database update has already committed, so notification

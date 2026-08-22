@@ -11433,9 +11433,29 @@ async fn emit_conversation_update(
             // `normalize_goal_status` unchanged; its extra fields
             // (createdAt/updatedAt/iterations/lastReason/controlMethod)
             // survive inside the marker's raw goal object for the card.
-            // (`info.title` is Codex's native thread name; it is adopted via the
-            // parser auto-title path on the next conversation fetch, not here, to
-            // keep this DB-agnostic emit path unchanged — see parsers/codex.rs.)
+            // `info.title` is the agent's live session name (Codex thread name,
+            // Claude ACP 0.69+ generated titles, anyone else who publishes the
+            // field). Apply it immediately via a dedicated lifecycle event
+            // rather than waiting for the next conversation fetch. Goal-only
+            // updates leave title undefined and emit nothing. Identical repeats
+            // are skipped (CodeBuddy resends its fallback after every turn).
+            // A title that arrives before the row is bound is dropped, not
+            // remembered, so ConversationLinked can still accept a later
+            // resend; a title that never comes back is recovered on the next
+            // detail load.
+            if let Some(title) = crate::acp::session_title::native_title_from_session_info(
+                info.title.value().map(|s| s.as_str()),
+            ) {
+                let skip = {
+                    let snap = state.read().await;
+                    snap.conversation_id.is_none()
+                        || snap.last_native_title.as_deref() == Some(title.as_str())
+                };
+                if !skip {
+                    state.write().await.last_native_title = Some(title.clone());
+                    emit_with_state(state, emitter, AcpEvent::NativeSessionTitle { title }).await;
+                }
+            }
             let neutral_goal_channel = state.read().await.neutral_goal_channel;
             if let Some(goal) =
                 session_info_goal_value(neutral_goal_channel, info.meta.as_ref())

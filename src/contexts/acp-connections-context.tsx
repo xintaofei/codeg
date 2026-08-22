@@ -3683,6 +3683,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           // what a backend GC / idle sweep removes.
           rememberResolvedIdentity(contextKey, { sessionId: e.session_id })
           break
+        case "native_session_title":
+          // Title is applied on the conversation row by the lifecycle worker
+          // and reaches the sidebar via `conversation://changed`. Do not flush
+          // the streaming queue: this can arrive mid-turn.
+          break
         case "conversation_linked":
           // Backend just bound (or reaffirmed) the connection's DB conversation
           // row. Phase 3a frontend pre-creates rows for new-tab sends so this

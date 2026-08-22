@@ -721,6 +721,12 @@ mod tauri_app {
                     ));
                 }
 
+                {
+                    let cm = app.state::<ConnectionManager>();
+                    let ccm = app.state::<ChatChannelManager>();
+                    cm.install_chat_channel(ccm.clone_ref());
+                }
+
                 match tauri::async_runtime::block_on(web::load_web_service_config(&db.conn)) {
                     Ok(config) if config.auto_start => {
                         let port = config.port.unwrap_or(web::DEFAULT_WEB_SERVICE_PORT);

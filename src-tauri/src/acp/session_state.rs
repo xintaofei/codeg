@@ -530,6 +530,14 @@ pub struct SessionState {
     /// Which settings surface drifted, for the banner's wording. `Some` iff
     /// `config_stale`; reset to `None` when staleness clears.
     pub config_stale_kind: Option<ConfigStaleKind>,
+
+    /// Last live ACP session title we actually emitted on this connection.
+    /// Used to skip identical `session_info_update.title` repeats (CodeBuddy
+    /// resends its fallback after every turn with no last-sent guard).
+    /// Backend-internal: not on the client snapshot. Cleared on
+    /// `ConversationLinked` so a title dropped while the row was still
+    /// unbound can be accepted on the next send.
+    pub last_native_title: Option<String>,
 }
 
 impl SessionState {
@@ -589,6 +597,7 @@ impl SessionState {
             last_turn_ended_abnormally: false,
             config_stale: false,
             config_stale_kind: None,
+            last_native_title: None,
         }
     }
 
@@ -1048,6 +1057,10 @@ impl SessionState {
             } => {
                 self.conversation_id = Some(*conversation_id);
                 self.folder_id = Some(*folder_id);
+                // A title published before this bind was dropped (no row yet).
+                // Forget the skip-cache so a later resend of the same string
+                // is not suppressed.
+                self.last_native_title = None;
             }
             AcpEvent::PlanUpdate { entries } => {
                 // Replace any existing Plan block, then append at end.
@@ -1185,6 +1198,7 @@ impl SessionState {
             | AcpEvent::ConfigOptionRejected { .. }
             | AcpEvent::SessionLoadFailed { .. }
             | AcpEvent::TurnRetrying { .. }
+            | AcpEvent::NativeSessionTitle { .. }
             | AcpEvent::UserPromptSent { .. } => {
                 // 这些事件不直接修改 SessionState 的可见字段。
                 // UserPromptSent 是纯通知事件，仅供 chat-channel 推送消费。

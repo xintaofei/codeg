@@ -216,6 +216,12 @@ pub enum AcpEvent {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         parent_tool_use_id: Option<String>,
     },
+    /// Agent published a live session title via ACP `session_info_update.title`.
+    /// Applied to the conversation row by the lifecycle worker (unlocked titles
+    /// only). The sidebar converges through `conversation://changed`; this event
+    /// itself is not rendered. Omitted when the update carries no title so
+    /// goal-only `session_info_update`s stay off the lifecycle path.
+    NativeSessionTitle { title: String },
     /// Backend has transitioned the conversation row's `status` column.
     /// Emitted by `send_prompt_linked` (`InProgress`) and the lifecycle
     /// subscriber on `TurnComplete` (`PendingReview`). The frontend mirrors

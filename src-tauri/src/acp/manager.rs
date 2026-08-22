@@ -213,6 +213,10 @@ pub struct ConnectionManager {
     /// init. `Arc<OnceLock>` so the inner `Self` cloned from `clone_ref` sees
     /// the install too — the lock is set once at startup and never mutated.
     delegation_injection: Arc<std::sync::OnceLock<crate::acp::connection::DelegationInjection>>,
+    /// Chat-channel manager installed during bootstrap so live title writes
+    /// can sync Telegram topic names without threading the manager through
+    /// every `send_prompt_linked` caller. Optional in tests.
+    chat_channel: Arc<std::sync::OnceLock<crate::chat_channel::manager::ChatChannelManager>>,
     /// Per-agent-type serialization for `probe_agent_options`. Without
     /// this, rapid agent-tab clicks in the settings UI would fan out one
     /// real CLI process per click — each one running up to 60s. The
@@ -269,6 +273,7 @@ impl ConnectionManager {
             spawn_handshake_timeout: spawn_handshake_timeout_from_env(),
             terminal_shell_config: TerminalShellRuntimeConfig::new(),
             delegation_injection: Arc::new(std::sync::OnceLock::new()),
+            chat_channel: Arc::new(std::sync::OnceLock::new()),
             probe_locks: Arc::new(Mutex::new(HashMap::new())),
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
@@ -283,6 +288,7 @@ impl ConnectionManager {
             spawn_handshake_timeout: self.spawn_handshake_timeout,
             terminal_shell_config: self.terminal_shell_config.clone(),
             delegation_injection: self.delegation_injection.clone(),
+            chat_channel: self.chat_channel.clone(),
             probe_locks: self.probe_locks.clone(),
             pending_questions: self.pending_questions.clone(),
             pending_plan_approvals: self.pending_plan_approvals.clone(),
@@ -294,6 +300,22 @@ impl ConnectionManager {
     /// the unlikely event a second `build_delegation_stack` runs.
     pub fn install_delegation(&self, injection: crate::acp::connection::DelegationInjection) {
         let _ = self.delegation_injection.set(injection);
+    }
+
+    /// Install the chat-channel manager exactly once during bootstrap so
+    /// live title writes can sync bound forum topics. Calling twice is a
+    /// no-op. Tests leave this unset and skip the remote sync.
+    pub fn install_chat_channel(
+        &self,
+        manager: crate::chat_channel::manager::ChatChannelManager,
+    ) {
+        let _ = self.chat_channel.set(manager);
+    }
+
+    pub(crate) fn chat_channel(
+        &self,
+    ) -> Option<crate::chat_channel::manager::ChatChannelManager> {
+        self.chat_channel.get().map(|c| c.clone_ref())
     }
 
     fn delegation_snapshot(&self) -> Option<crate::acp::connection::DelegationInjection> {
@@ -317,6 +339,7 @@ impl ConnectionManager {
             spawn_handshake_timeout: timeout,
             terminal_shell_config: TerminalShellRuntimeConfig::new(),
             delegation_injection: Arc::new(std::sync::OnceLock::new()),
+            chat_channel: Arc::new(std::sync::OnceLock::new()),
             probe_locks: Arc::new(Mutex::new(HashMap::new())),
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
@@ -973,9 +996,11 @@ impl ConnectionManager {
             // Seed a delegation child's title from the task prompt so the
             // sidebar shows a meaningful label immediately. `list_children`
             // returns the raw DB title, so a child born with NULL reads
-            // "Untitled" until the first detail load backfills it. Roots (no
-            // delegation) keep `None` and follow the existing backfill. Computed
-            // out here so `blocks` stays with the caller for the actual prompt.
+            // "Untitled" until the first detail load backfills it. Roots keep
+            // `None` here and get the same first-prompt seed after the send
+            // succeeds (so a failed enqueue does not name a cancelled row).
+            // Computed out here so `blocks` stays with the caller for the
+            // actual prompt.
             let seed_title = if delegation.is_some() {
                 delegation_child_title_seed(&blocks)
             } else {
@@ -1227,6 +1252,15 @@ impl ConnectionManager {
         } else {
             None
         };
+        // Seed an unlocked title from the first prompt so the sidebar is not
+        // "Untitled" while the agent is still working. Native ACP titles
+        // (session_info_update) replace this later via refresh_auto_title.
+        // Delegation children are already seeded at row create.
+        let first_prompt_title = if delegation.is_none() {
+            delegation_child_title_seed(&blocks)
+        } else {
+            None
+        };
 
         // Project the user's prompt blocks for the cross-client viewer
         // broadcast BEFORE `send_prompt_inner` consumes `blocks`, and hand the
@@ -1285,6 +1319,33 @@ impl ConnectionManager {
                         AcpEvent::UserPromptSent { text_preview },
                     )
                     .await;
+                }
+                if let (Some(cid), Some(title)) =
+                    (conversation_id_for_status, first_prompt_title)
+                {
+                    match conversation_service::seed_auto_title_if_empty(&db.conn, cid, title)
+                        .await
+                    {
+                        Ok(true) => {
+                            crate::commands::conversations::emit_conversation_upsert(
+                                &emitter, &db.conn, cid,
+                            )
+                            .await;
+                            if let Some(ccm) = self.chat_channel() {
+                                crate::commands::conversations::spawn_sync_conversation_title_until_current(
+                                    db.conn.clone(),
+                                    ccm,
+                                    cid,
+                                );
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(e) => tracing::warn!(
+                            conversation_id = cid,
+                            error = %e,
+                            "[manager] first-prompt title seed failed"
+                        ),
+                    }
                 }
                 Ok(conversation_id_for_status)
             }
@@ -4893,6 +4954,52 @@ mod tests {
             }
         }
         assert_eq!(found.as_deref(), Some("hello world"));
+    }
+
+    #[tokio::test]
+    async fn send_prompt_linked_seeds_first_prompt_title_when_untitled() {
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/title-seed").await;
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-title-seed";
+        let _rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::ClaudeCode,
+            Some(PathBuf::from("/tmp/title-seed")),
+        )
+        .await;
+
+        mgr.send_prompt_linked(
+            &db,
+            conn_id,
+            vec![PromptInputBlock::Text {
+                text: "hello world".into(),
+            }],
+            Some(folder_id),
+            None,
+            None,
+        )
+        .await
+        .expect("send");
+
+        let cid = mgr
+            .get_state(conn_id)
+            .await
+            .unwrap()
+            .read()
+            .await
+            .conversation_id
+            .expect("row linked");
+        let row = conversation_service::get_by_id(&db.conn, cid)
+            .await
+            .expect("get");
+        assert_eq!(row.title.as_deref(), Some("hello world"));
+        assert!(
+            !row.title_locked,
+            "first-prompt seed must stay unlocked so a later ACP title can replace it"
+        );
     }
 
     /// A textless prompt (image-only) succeeds but emits NO `UserPromptSent` —
