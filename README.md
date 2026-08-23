@@ -171,6 +171,8 @@ docker run -d -p 3080:3080 -v codeg-data:/data ghcr.io/xintaofei/codeg:latest
 
 **Mobile** — install the [iOS app](https://apps.apple.com/app/codeg-client/id6785199071) or the [Android APK](https://github.com/xintaofei/codeg-android/releases/latest), then point it at the **Web Service** of your desktop app or at your own `codeg-server`: URL, token, done. Pairing steps in [Mobile apps](https://docs.codeg.app/getting-started/installation#mobile-apps).
 
+For a **spectator** phone on the **desktop coding-agent host** (not the Codeg iOS/Android clients), see [Build Remote Agent](docs/gbr.md) (`gbr/1`). Companion, not a Codeg-mobile replacement. Attach only `http://127.0.0.1:8788` or `gbr-mcp`. Independent product — not affiliated with xAI or SpaceX.
+
 Compose, prebuilt binaries, source builds, and in-place updates are covered in [Deployment](https://docs.codeg.app/getting-started/deployment); environment variables in [Configuration](https://docs.codeg.app/getting-started/configuration). Building Codeg itself: [Development](https://docs.codeg.app/reference/development) and [Architecture](https://docs.codeg.app/reference/architecture).
 
 ## 🔒 Privacy & Security
