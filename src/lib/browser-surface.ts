@@ -8,6 +8,7 @@ export interface BrowserSurfaceTab {
 
 export interface BrowserSurfaceSnapshot {
   sessionId: string
+  surfaceKind: "frame" | "native"
   tabs: BrowserSurfaceTab[]
   activeTargetId: string | null
   active: {
@@ -62,6 +63,11 @@ export type BrowserSurfaceAction =
   | { action: "open"; url?: string }
   | { action: "focus"; targetId: string }
   | { action: "close"; targetId: string }
+  | {
+      action: "surface"
+      bounds: { x: number; y: number; width: number; height: number }
+      visible: boolean
+    }
   | { action: "resize"; width: number; height: number }
   | { action: "navigate"; url: string }
   | { action: "back" }

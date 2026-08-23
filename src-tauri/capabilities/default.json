@@ -2,8 +2,8 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
+  "webviews": ["main"],
   "windows": [
-    "main",
     "commit-*",
     "merge-*",
     "stash-*",

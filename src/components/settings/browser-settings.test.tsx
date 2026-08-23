@@ -43,7 +43,7 @@ const embeddedStoppedStatus: BrowserRuntimeStatus = {
   sidecarPid: null,
   browserPid: null,
   runtimeVersion: "0.1.0",
-  backend: "embedded_chromium_cdp",
+  backend: "embedded_webview2",
   browserName: null,
   browserVersion: null,
   profilePath: "C:\\Codeg\\browser\\profile",

@@ -30,6 +30,11 @@ export interface BrowserTab {
   title: string
 }
 
+export interface BrowserBackendSessionSnapshot {
+  tabs: BrowserTab[]
+  activeTargetId: string | null
+}
+
 export interface BrowserSurfacePageState {
   tab: BrowserTab
   loading: boolean
@@ -203,12 +208,17 @@ export interface BrowserBackend {
   doctor(): Promise<BrowserDoctorResult>
   start(): Promise<void>
   stop(): Promise<void>
+  shutdown(): Promise<void>
   recover(): Promise<void>
-  listTargets(): Promise<BrowserTab[]>
-  openTarget(url?: string): Promise<PageController>
-  page(targetId: string): Promise<PageController>
-  focusTarget(targetId: string): Promise<void>
-  closeTarget(targetId: string): Promise<void>
+  sessionSnapshot(
+    sessionId: string,
+    ensure: boolean
+  ): Promise<BrowserBackendSessionSnapshot | null>
+  listTargets(sessionId: string): Promise<BrowserTab[]>
+  openTarget(sessionId: string, url?: string): Promise<PageController>
+  page(sessionId: string, targetId: string): Promise<PageController>
+  focusTarget(sessionId: string, targetId: string): Promise<void>
+  closeTarget(sessionId: string, targetId: string): Promise<void>
   downloads(sessionId: string): Promise<BrowserDownload[]>
   waitForDownload(
     sessionId: string,

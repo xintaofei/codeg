@@ -84,7 +84,7 @@
     "externalNotDetected": "Aucun navigateur compatible détecté",
     "futureSessionHint": "Les modifications de l’accès au navigateur s’appliquent aux nouvelles sessions Agent. Les sessions en cours conservent la capacité disponible à leur démarrage.",
     "backends": {
-      "embedded_chromium_cdp": "Chromium intégré (CDP)",
+      "embedded_webview2": "WebView2 intégré",
       "external_chromium_cdp": "Chromium séparé (CDP)",
       "embedded": "Navigateur intégré",
       "external": "Navigateur séparé"
@@ -142,6 +142,7 @@
     "closeTab": "Fermer {title}",
     "openTab": "Ouvrir un nouvel onglet",
     "recover": "Récupérer",
+    "switchToExternal": "Passer au navigateur séparé",
     "page": "Page de navigateur interactive",
     "loading": "Chargement de la page…",
     "waitingForFrame": "En attente de la page du navigateur géré…"

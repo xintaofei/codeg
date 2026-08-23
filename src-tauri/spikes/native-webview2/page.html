@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Codeg Native WebView2 Spike</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family:
+          Inter, "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+        background: #0b1020;
+        color: #e8edf7;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 150vh;
+        background:
+          radial-gradient(circle at 85% 0%, #23406c 0, transparent 34rem),
+          linear-gradient(160deg, #0b1020, #141b30 60%, #10182b);
+      }
+      main {
+        width: min(760px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 24px 0 320px;
+      }
+      .eyebrow {
+        margin: 0 0 8px;
+        color: #7dd3fc;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      h1 {
+        margin: 0;
+        font-size: clamp(24px, 5vw, 38px);
+      }
+      .lede {
+        color: #bdc8dc;
+        line-height: 1.6;
+      }
+      .status,
+      .card {
+        margin-top: 16px;
+        border: 1px solid #334469;
+        border-radius: 14px;
+        background: rgb(18 26 47 / 88%);
+        box-shadow: 0 16px 50px rgb(0 0 0 / 22%);
+      }
+      .status {
+        padding: 12px 14px;
+        color: #fde68a;
+      }
+      .status[data-state="pass"] {
+        border-color: #15803d;
+        color: #86efac;
+      }
+      .status[data-state="fail"] {
+        border-color: #b91c1c;
+        color: #fca5a5;
+      }
+      .card {
+        padding: 18px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 14px;
+      }
+      label {
+        display: grid;
+        gap: 7px;
+        color: #cdd6e7;
+        font-size: 13px;
+      }
+      input,
+      [contenteditable],
+      button,
+      .dropzone,
+      .drag-source {
+        border: 1px solid #40547d;
+        border-radius: 10px;
+        background: #0d1529;
+        color: #f8fafc;
+        font: inherit;
+      }
+      input,
+      [contenteditable] {
+        min-height: 42px;
+        padding: 10px 12px;
+        outline: none;
+      }
+      input:focus,
+      [contenteditable]:focus {
+        border-color: #38bdf8;
+        box-shadow: 0 0 0 3px rgb(56 189 248 / 20%);
+      }
+      button {
+        min-height: 42px;
+        padding: 0 14px;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #17233f;
+      }
+      .drag-source,
+      .dropzone {
+        margin-top: 12px;
+        padding: 14px;
+        text-align: center;
+      }
+      .drag-source {
+        cursor: grab;
+      }
+      .dropzone {
+        border-style: dashed;
+        color: #9fb0ca;
+      }
+      #agent-marker {
+        color: #f9a8d4;
+        font-family: ui-monospace, Consolas, monospace;
+      }
+      .scroll-marker {
+        margin-top: 340px;
+        padding: 18px;
+        border-left: 4px solid #38bdf8;
+        background: rgb(14 165 233 / 10%);
+      }
+    </style>
+  </head>
+  <body>
+    <main id="native-spike-root">
+      <p class="eyebrow">B2-17 / child WebView2</p>
+      <h1>原生页面输入与同 controller CDP</h1>
+      <p class="lede">
+        自动检查完成后，请直接点击、输入、选择、滚动并尝试中文输入法。页面只记录事件类型、
+        <code>isTrusted</code> 与长度，不记录输入正文。
+      </p>
+      <div id="probe-status" class="status" data-state="running">
+        正在运行 WebView2 controller / CDP / IPC 隔离检查…
+      </div>
+
+      <section class="card grid">
+        <label>
+          原生文本输入
+          <input id="native-input" autocomplete="off" placeholder="请在这里直接输入" />
+        </label>
+        <label>
+          selection / caret / IME
+          <div id="native-editor" contenteditable="true">选择或修改这段文字</div>
+        </label>
+        <button id="native-button" type="button">直接点击（0）</button>
+        <div id="agent-marker">等待 Agent 侧 CDP 修改</div>
+      </section>
+
+      <section class="card">
+        <strong>HTML5 drag/drop</strong>
+        <div id="drag-source" class="drag-source" draggable="true">拖动我</div>
+        <div id="drop-zone" class="dropzone">放到这里</div>
+      </section>
+
+      <div class="scroll-marker" id="scroll-marker">
+        滚动已到达验证标记。继续滚动时仍由 WebView2 原生处理。
+      </div>
+    </main>
+
+    <script>
+      (() => {
+        const events = []
+        let clickCount = 0
+        const compactEvent = (event) => {
+          const target = event.target instanceof Element ? event.target : null
+          const selection = window.getSelection()
+          return {
+            type: event.type,
+            isTrusted: event.isTrusted,
+            targetId: target?.id || null,
+            inputType: typeof event.inputType === "string" ? event.inputType : null,
+            dataLength: typeof event.data === "string" ? event.data.length : null,
+            selectionLength: selection?.toString().length || 0,
+            scrollY: Math.round(window.scrollY),
+          }
+        }
+        const remember = (event) => {
+          events.push(compactEvent(event))
+          if (events.length > 200) events.shift()
+        }
+        ;[
+          "pointerdown",
+          "pointerup",
+          "click",
+          "beforeinput",
+          "input",
+          "keydown",
+          "keyup",
+          "compositionstart",
+          "compositionupdate",
+          "compositionend",
+          "selectionchange",
+          "scroll",
+          "paste",
+          "contextmenu",
+          "dragstart",
+          "dragover",
+          "drop",
+        ].forEach((type) => document.addEventListener(type, remember, true))
+
+        document.getElementById("native-button").addEventListener("click", (event) => {
+          clickCount += 1
+          event.currentTarget.textContent = `直接点击（${clickCount}）`
+        })
+        document.getElementById("drag-source").addEventListener("dragstart", (event) => {
+          event.dataTransfer?.setData("text/plain", "native-webview2-spike")
+        })
+        document.getElementById("drop-zone").addEventListener("dragover", (event) => {
+          event.preventDefault()
+        })
+        document.getElementById("drop-zone").addEventListener("drop", (event) => {
+          event.preventDefault()
+          event.currentTarget.textContent = "已收到原生 drop"
+        })
+
+        window.__nativeSpikeState = () => ({
+          inputLength: document.getElementById("native-input").value.length,
+          editorLength: document.getElementById("native-editor").textContent.length,
+          clickCount,
+          scrollY: Math.round(window.scrollY),
+          activeId: document.activeElement?.id || null,
+          selectionLength: window.getSelection()?.toString().length || 0,
+          agentMarker: document.getElementById("agent-marker").textContent,
+          events,
+        })
+      })()
+    </script>
+  </body>
+</html>

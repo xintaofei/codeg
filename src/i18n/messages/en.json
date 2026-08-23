@@ -84,7 +84,7 @@
     "externalNotDetected": "No supported browser detected",
     "futureSessionHint": "Changes to Browser access apply to new Agent sessions. Running sessions keep the capability they started with.",
     "backends": {
-      "embedded_chromium_cdp": "Embedded Chromium (CDP)",
+      "embedded_webview2": "Embedded WebView2",
       "external_chromium_cdp": "External Chromium (CDP)",
       "embedded": "Embedded browser",
       "external": "Separate browser"
@@ -142,6 +142,7 @@
     "closeTab": "Close {title}",
     "openTab": "Open new tab",
     "recover": "Recover",
+    "switchToExternal": "Switch to separate browser",
     "page": "Interactive browser page",
     "loading": "Loading page…",
     "waitingForFrame": "Waiting for the managed Browser page…"

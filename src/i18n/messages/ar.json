@@ -84,7 +84,7 @@
     "externalNotDetected": "لم يتم اكتشاف متصفح مدعوم",
     "futureSessionHint": "تنطبق تغييرات الوصول إلى المتصفح على جلسات Agent الجديدة. تحتفظ الجلسات قيد التشغيل بالإمكانات التي بدأت بها.",
     "backends": {
-      "embedded_chromium_cdp": "Chromium مضمن (CDP)",
+      "embedded_webview2": "WebView2 مضمن",
       "external_chromium_cdp": "Chromium مستقل (CDP)",
       "embedded": "متصفح مضمن",
       "external": "متصفح مستقل"
@@ -142,6 +142,7 @@
     "closeTab": "إغلاق {title}",
     "openTab": "فتح علامة تبويب جديدة",
     "recover": "استرداد",
+    "switchToExternal": "التبديل إلى المتصفح المنفصل",
     "page": "صفحة متصفح تفاعلية",
     "loading": "جارٍ تحميل الصفحة…",
     "waitingForFrame": "في انتظار صفحة المتصفح المُدار…"

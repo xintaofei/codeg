@@ -84,7 +84,7 @@
     "externalNotDetected": "未偵測到支援的瀏覽器",
     "futureSessionHint": "瀏覽器存取設定只影響之後新建的 Agent 工作階段。執行中的工作階段會保留建立時的能力。",
     "backends": {
-      "embedded_chromium_cdp": "內建 Chromium (CDP)",
+      "embedded_webview2": "內建 WebView2",
       "external_chromium_cdp": "獨立 Chromium (CDP)",
       "embedded": "內建瀏覽器",
       "external": "獨立瀏覽器"
@@ -142,6 +142,7 @@
     "closeTab": "關閉 {title}",
     "openTab": "開啟新分頁",
     "recover": "復原",
+    "switchToExternal": "切換到獨立瀏覽器",
     "page": "可互動瀏覽器頁面",
     "loading": "正在載入頁面…",
     "waitingForFrame": "正在等待受管理的瀏覽器頁面…"

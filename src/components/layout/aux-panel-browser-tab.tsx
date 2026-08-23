@@ -21,7 +21,11 @@ import {
   X,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
-import { recoverBrowserRuntime } from "@/lib/api"
+import {
+  getBrowserRuntimeSettings,
+  recoverBrowserRuntime,
+  updateBrowserRuntimeSettings,
+} from "@/lib/api"
 import {
   attachBrowserSurface,
   closeBrowserSurface,
@@ -52,6 +56,53 @@ interface QueuedBrowserInput {
   input: BrowserSurfaceInput
 }
 
+const BLOCKING_NATIVE_SURFACE_SELECTOR = [
+  '[role="dialog"]:not([data-state="closed"])',
+  '[role="alertdialog"]:not([data-state="closed"])',
+  '[role="menu"]:not([data-state="closed"])',
+  '[role="listbox"]:not([data-state="closed"])',
+].join(",")
+
+function hasBlockingNativeSurfaceOverlay(): boolean {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>(BLOCKING_NATIVE_SURFACE_SELECTOR)
+  ).some(
+    (element) =>
+      !element.hidden &&
+      element.getAttribute("aria-hidden") !== "true" &&
+      element.getAttribute("data-state") !== "closed"
+  )
+}
+
+export function browserNativeSurfaceBounds(
+  rect: Pick<DOMRect, "left" | "top" | "right" | "bottom">,
+  viewportWidth: number,
+  viewportHeight: number
+): { x: number; y: number; width: number; height: number } | null {
+  const values = [
+    rect.left,
+    rect.top,
+    rect.right,
+    rect.bottom,
+    viewportWidth,
+    viewportHeight,
+  ]
+  if (values.some((value) => !Number.isFinite(value))) return null
+
+  const left = Math.max(0, rect.left)
+  const top = Math.max(0, rect.top)
+  const right = Math.min(viewportWidth, rect.right)
+  const bottom = Math.min(viewportHeight, rect.bottom)
+  if (right - left < 1 || bottom - top < 1) return null
+
+  return {
+    x: left,
+    y: top,
+    width: right - left,
+    height: bottom - top,
+  }
+}
+
 function normalizeAddress(value: string): string {
   const trimmed = value.trim()
   if (!trimmed || /^[a-z][a-z\d+.-]*:/i.test(trimmed)) return trimmed
@@ -70,6 +121,15 @@ function modifiers(event: {
     (event.metaKey ? 4 : 0) |
     (event.shiftKey ? 8 : 0)
   )
+}
+
+export function browserPointerButton(
+  buttons: number
+): "none" | "left" | "middle" | "right" {
+  if (buttons & 1) return "left"
+  if (buttons & 2) return "right"
+  if (buttons & 4) return "middle"
+  return "none"
 }
 
 export function browserFramePoint(
@@ -139,11 +199,7 @@ export function AuxPanelBrowserTab({
   const surfaceRef = useRef<HTMLDivElement | null>(null)
   const inputQueue = useRef<QueuedBrowserInput[]>([])
   const inputQueueRunning = useRef(false)
-  const lastViewport = useRef<{
-    connectionId: string
-    width: number
-    height: number
-  } | null>(null)
+  const surfaceKind = useRef<BrowserSurfaceSnapshot["surfaceKind"] | null>(null)
   const onSessionAttachedRef = useRef(onSessionAttached)
   onSessionAttachedRef.current = onSessionAttached
 
@@ -152,8 +208,78 @@ export function AuxPanelBrowserTab({
     const currentGeneration = ++generation.current
     let disposed = false
     let resizeObserver: ResizeObserver | null = null
-    let resizeTimer: ReturnType<typeof setTimeout> | null = null
+    let overlayObserver: MutationObserver | null = null
+    let syncTimer: ReturnType<typeof setTimeout> | null = null
+    let lastSurfaceState: string | null = null
+    let surfaceActionChain = Promise.resolve()
     setError(null)
+    setFrame(null)
+    surfaceKind.current = null
+
+    const queueSurfaceAction = (
+      stateKey: string,
+      action: BrowserSurfaceAction
+    ) => {
+      if (lastSurfaceState === stateKey) return
+      lastSurfaceState = stateKey
+      surfaceActionChain = surfaceActionChain
+        .then(async () => {
+          if (disposed || generation.current !== currentGeneration) return
+          await runBrowserSurfaceAction(connectionId, action)
+        })
+        .catch((cause) => {
+          if (!disposed && generation.current === currentGeneration) {
+            lastSurfaceState = null
+            setError(toErrorMessage(cause))
+          }
+        })
+    }
+
+    const syncSurface = () => {
+      if (disposed || generation.current !== currentGeneration) return
+      const element = surfaceRef.current
+      const kind = surfaceKind.current
+      if (!element || !kind) return
+      const rect = element.getBoundingClientRect()
+
+      if (kind === "native") {
+        const bounds = browserNativeSurfaceBounds(
+          rect,
+          Math.max(window.innerWidth, document.documentElement.clientWidth),
+          Math.max(window.innerHeight, document.documentElement.clientHeight)
+        )
+        if (!bounds) return
+        const nativeVisible = !hasBlockingNativeSurfaceOverlay()
+        queueSurfaceAction(
+          [
+            connectionId,
+            kind,
+            bounds.x,
+            bounds.y,
+            bounds.width,
+            bounds.height,
+            nativeVisible,
+          ].join(":"),
+          { action: "surface", bounds, visible: nativeVisible }
+        )
+        return
+      }
+
+      if (rect.width <= 0 || rect.height <= 0) return
+      const width = Math.min(4_096, Math.max(1, Math.round(rect.width)))
+      const height = Math.min(4_096, Math.max(1, Math.round(rect.height)))
+      queueSurfaceAction([connectionId, kind, width, height].join(":"), {
+        action: "resize",
+        width,
+        height,
+      })
+    }
+
+    const scheduleSurfaceSync = () => {
+      if (syncTimer) clearTimeout(syncTimer)
+      syncTimer = setTimeout(syncSurface, 50)
+    }
+
     const acceptSnapshot = (next: BrowserSurfaceSnapshot) => {
       if (
         disposed ||
@@ -162,13 +288,20 @@ export function AuxPanelBrowserTab({
       ) {
         return
       }
+      surfaceKind.current = next.surfaceKind
+      if (next.surfaceKind === "native") setFrame(null)
       setSnapshot(next)
+      scheduleSurfaceSync()
     }
     const onEvent = (event: BrowserSurfaceEvent) => {
       if (event.type === "snapshot") {
         acceptSnapshot(event.snapshot)
       } else if (event.type === "frame") {
-        if (!disposed && generation.current === currentGeneration) {
+        if (
+          !disposed &&
+          generation.current === currentGeneration &&
+          surfaceKind.current === "frame"
+        ) {
           setFrame(event.frame)
         }
       } else if (!disposed && generation.current === currentGeneration) {
@@ -177,46 +310,23 @@ export function AuxPanelBrowserTab({
     }
     void attachBrowserSurface(connectionId, onEvent)
       .then((next) => {
-        if (disposed || generation.current !== currentGeneration) return
+        if (disposed || generation.current !== currentGeneration) {
+          void detachBrowserSurface(connectionId).catch(() => undefined)
+          return
+        }
         acceptSnapshot(next)
         onSessionAttachedRef.current?.(connectionId)
-        const syncViewport = () => {
-          if (disposed || generation.current !== currentGeneration) return
-          const element = surfaceRef.current
-          if (!element) return
-          const rect = element.getBoundingClientRect()
-          if (rect.width <= 0 || rect.height <= 0) return
-          const width = Math.min(4_096, Math.max(1, Math.round(rect.width)))
-          const height = Math.min(4_096, Math.max(1, Math.round(rect.height)))
-          const previous = lastViewport.current
-          if (
-            previous?.connectionId === connectionId &&
-            previous.width === width &&
-            previous.height === height
-          ) {
-            return
-          }
-          lastViewport.current = { connectionId, width, height }
-          void runBrowserSurfaceAction(connectionId, {
-            action: "resize",
-            width,
-            height,
-          }).catch((cause) => {
-            if (!disposed && generation.current === currentGeneration) {
-              setError(toErrorMessage(cause))
-            }
-          })
-        }
-        lastViewport.current = null
-        syncViewport()
+        syncSurface()
         const element = surfaceRef.current
         if (element) {
-          resizeObserver = new ResizeObserver(() => {
-            if (resizeTimer) clearTimeout(resizeTimer)
-            resizeTimer = setTimeout(syncViewport, 50)
-          })
+          resizeObserver = new ResizeObserver(scheduleSurfaceSync)
           resizeObserver.observe(element)
         }
+        overlayObserver = new MutationObserver(scheduleSurfaceSync)
+        overlayObserver.observe(document.body, {
+          childList: true,
+        })
+        window.addEventListener("resize", scheduleSurfaceSync)
       })
       .catch((cause) => {
         if (!disposed && generation.current === currentGeneration) {
@@ -227,8 +337,13 @@ export function AuxPanelBrowserTab({
       disposed = true
       generation.current += 1
       resizeObserver?.disconnect()
-      if (resizeTimer) clearTimeout(resizeTimer)
-      void detachBrowserSurface(connectionId).catch(() => undefined)
+      overlayObserver?.disconnect()
+      window.removeEventListener("resize", scheduleSurfaceSync)
+      if (syncTimer) clearTimeout(syncTimer)
+      surfaceKind.current = null
+      void surfaceActionChain.finally(() =>
+        detachBrowserSurface(connectionId).catch(() => undefined)
+      )
     }
   }, [connectionId, retryKey, visible])
 
@@ -252,6 +367,23 @@ export function AuxPanelBrowserTab({
     },
     [connectionId]
   )
+
+  const switchToExternalBrowser = useCallback(async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const settings = await getBrowserRuntimeSettings()
+      if (settings.backend !== "external") {
+        await updateBrowserRuntimeSettings({ ...settings, backend: "external" })
+      }
+      await recoverBrowserRuntime()
+      setRetryKey((value) => value + 1)
+    } catch (cause) {
+      setError(toErrorMessage(cause))
+    } finally {
+      setBusy(false)
+    }
+  }, [])
 
   const flushInputQueue = useCallback(async () => {
     if (inputQueueRunning.current) return
@@ -303,13 +435,19 @@ export function AuxPanelBrowserTab({
   )
 
   const frameSource = useMemo(() => {
-    if (!frame || frame.targetId !== snapshot?.activeTargetId) return null
+    if (
+      snapshot?.surfaceKind !== "frame" ||
+      !frame ||
+      frame.targetId !== snapshot.activeTargetId
+    ) {
+      return null
+    }
     return `data:${frame.mimeType};base64,${frame.data}`
-  }, [frame, snapshot?.activeTargetId])
+  }, [frame, snapshot?.activeTargetId, snapshot?.surfaceKind])
 
   const pointerInput = useCallback(
     (event: PointerEvent<HTMLDivElement>, phase: "pressed" | "released") => {
-      if (!frame) return
+      if (snapshot?.surfaceKind !== "frame" || !frame) return
       const rect = event.currentTarget.getBoundingClientRect()
       const point = browserFramePoint(
         rect.width,
@@ -327,7 +465,7 @@ export function AuxPanelBrowserTab({
         event: "moved",
         x: point.x,
         y: point.y,
-        button: "none",
+        button: browserPointerButton(event.buttons),
         modifiers: modifiers(event),
       })
       sendInput({
@@ -341,12 +479,12 @@ export function AuxPanelBrowserTab({
       event.currentTarget.focus()
       event.preventDefault()
     },
-    [frame, sendInput]
+    [frame, sendInput, snapshot?.surfaceKind]
   )
 
   const pointerMoveInput = useCallback(
     (event: PointerEvent<HTMLDivElement>) => {
-      if (!frame) return
+      if (snapshot?.surfaceKind !== "frame" || !frame) return
       const rect = event.currentTarget.getBoundingClientRect()
       const point = browserFramePoint(
         rect.width,
@@ -367,12 +505,12 @@ export function AuxPanelBrowserTab({
       })
       event.preventDefault()
     },
-    [frame, sendInput]
+    [frame, sendInput, snapshot?.surfaceKind]
   )
 
   const wheelInput = useCallback(
     (event: WheelEvent<HTMLDivElement>) => {
-      if (!frame) return
+      if (snapshot?.surfaceKind !== "frame" || !frame) return
       const rect = event.currentTarget.getBoundingClientRect()
       const point = browserFramePoint(
         rect.width,
@@ -395,12 +533,12 @@ export function AuxPanelBrowserTab({
       })
       event.preventDefault()
     },
-    [frame, sendInput]
+    [frame, sendInput, snapshot?.surfaceKind]
   )
 
   const keyInput = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
-      if (event.key === "Tab") return
+      if (snapshot?.surfaceKind !== "frame" || event.key === "Tab") return
       const common = {
         kind: "key" as const,
         key: event.key,
@@ -418,7 +556,7 @@ export function AuxPanelBrowserTab({
       sendInput({ ...common, event: "up" })
       event.preventDefault()
     },
-    [sendInput]
+    [sendInput, snapshot?.surfaceKind]
   )
 
   if (!connectionId) {
@@ -535,40 +673,84 @@ export function AuxPanelBrowserTab({
           className="flex shrink-0 items-center justify-between gap-2 border-b border-destructive/30 bg-destructive/10 px-2 py-1.5 text-xs text-destructive"
         >
           <span className="min-w-0 truncate">{error}</span>
-          <Button
-            size="xs"
-            variant="outline"
-            onClick={() => {
-              void recoverBrowserRuntime()
-                .then(() => setRetryKey((value) => value + 1))
-                .catch((cause) => setError(toErrorMessage(cause)))
-            }}
-          >
-            <RotateCcw />
-            {t("recover")}
-          </Button>
+          <div className="flex shrink-0 items-center gap-1">
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={busy}
+              onClick={() => void switchToExternalBrowser()}
+            >
+              {t("switchToExternal")}
+            </Button>
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={busy}
+              onClick={() => {
+                void recoverBrowserRuntime()
+                  .then(() => setRetryKey((value) => value + 1))
+                  .catch((cause) => setError(toErrorMessage(cause)))
+              }}
+            >
+              <RotateCcw />
+              {t("recover")}
+            </Button>
+          </div>
         </div>
       ) : null}
 
       <div
         ref={surfaceRef}
-        className="relative min-h-0 flex-1 touch-none overflow-hidden bg-muted/30 outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        role="application"
-        tabIndex={0}
-        aria-label={t("page")}
-        onPointerDown={(event) => pointerInput(event, "pressed")}
-        onPointerMove={pointerMoveInput}
-        onPointerUp={(event) => pointerInput(event, "released")}
-        onWheel={wheelInput}
-        onKeyDown={keyInput}
-        onPaste={(event) => {
-          const text = event.clipboardData.getData("text")
-          if (text) sendInput({ kind: "text", text })
-          event.preventDefault()
-        }}
-        onContextMenu={(event) => event.preventDefault()}
+        data-testid="browser-surface-slot"
+        data-surface-kind={snapshot?.surfaceKind ?? "pending"}
+        className={cn(
+          "relative min-h-0 flex-1 overflow-hidden bg-muted/30",
+          snapshot?.surfaceKind !== "native" &&
+            "touch-none outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        )}
+        role={snapshot?.surfaceKind === "native" ? undefined : "application"}
+        tabIndex={snapshot?.surfaceKind === "native" ? undefined : 0}
+        aria-label={snapshot?.surfaceKind === "native" ? undefined : t("page")}
+        onPointerDown={
+          snapshot?.surfaceKind === "native"
+            ? undefined
+            : (event) => pointerInput(event, "pressed")
+        }
+        onPointerMove={
+          snapshot?.surfaceKind === "native" ? undefined : pointerMoveInput
+        }
+        onPointerUp={
+          snapshot?.surfaceKind === "native"
+            ? undefined
+            : (event) => pointerInput(event, "released")
+        }
+        onWheel={snapshot?.surfaceKind === "native" ? undefined : wheelInput}
+        onKeyDown={snapshot?.surfaceKind === "native" ? undefined : keyInput}
+        onPaste={
+          snapshot?.surfaceKind === "native"
+            ? undefined
+            : (event) => {
+                const text = event.clipboardData.getData("text")
+                if (text) sendInput({ kind: "text", text })
+                event.preventDefault()
+              }
+        }
+        onContextMenu={
+          snapshot?.surfaceKind === "native"
+            ? undefined
+            : (event) => event.preventDefault()
+        }
       >
-        {frameSource ? (
+        {snapshot?.surfaceKind === "native" ? (
+          <div
+            aria-hidden="true"
+            className="flex h-full items-center justify-center p-6 text-center text-xs text-muted-foreground"
+          >
+            {busy || active?.loading ? (
+              <LoaderCircle className="size-4 animate-spin motion-reduce:animate-none" />
+            ) : null}
+          </div>
+        ) : frameSource ? (
           // The frame is the same CDP target the Agent controls. The target's
           // viewport follows this display region; contain is only a safe fallback
           // while a resized frame is in flight. Input uses the same fitted rect.

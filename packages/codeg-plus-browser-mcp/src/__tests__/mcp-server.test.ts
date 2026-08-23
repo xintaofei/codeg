@@ -90,8 +90,16 @@ class StatusOnlyBackend implements BrowserBackend {
     this.owners.clear()
   }
 
+  async shutdown(): Promise<void> {
+    await this.stop()
+  }
+
   async recover(): Promise<void> {
     this.state = "ready"
+  }
+
+  async sessionSnapshot(): Promise<null> {
+    return null
   }
 
   async listTargets(): Promise<BrowserTab[]> {
@@ -105,14 +113,14 @@ class StatusOnlyBackend implements BrowserBackend {
     return page
   }
 
-  async page(targetId: string): Promise<PageController> {
+  async page(_sessionId: string, targetId: string): Promise<PageController> {
     const page = this.pages.get(targetId)
     if (!page) throw new Error("missing page")
     return page
   }
 
   async focusTarget(): Promise<void> {}
-  async closeTarget(targetId: string): Promise<void> {
+  async closeTarget(_sessionId: string, targetId: string): Promise<void> {
     this.pages.delete(targetId)
     this.owners.delete(targetId)
   }
@@ -127,7 +135,7 @@ class StatusOnlyBackend implements BrowserBackend {
   }
   async releaseSession(sessionId: string): Promise<void> {
     for (const [targetId, owner] of [...this.owners]) {
-      if (owner === sessionId) await this.closeTarget(targetId)
+      if (owner === sessionId) await this.closeTarget(sessionId, targetId)
     }
   }
 }

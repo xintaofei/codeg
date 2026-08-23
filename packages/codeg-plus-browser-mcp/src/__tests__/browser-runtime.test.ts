@@ -128,15 +128,23 @@ class FakeBackend implements BrowserBackend {
     this.owners.clear()
   }
 
+  async shutdown(): Promise<void> {
+    await this.stop()
+  }
+
   async recover(): Promise<void> {
     this.state = "ready"
+  }
+
+  async sessionSnapshot(): Promise<null> {
+    return null
   }
 
   async listTargets(): Promise<BrowserTab[]> {
     return [...this.pages.values()].map((page) => page.tab)
   }
 
-  async openTarget(url?: string): Promise<PageController> {
+  async openTarget(_sessionId: string, url?: string): Promise<PageController> {
     this.openTargetUrls.push(url)
     const id = `t${this.nextId++}`
     const page = new FakePage({
@@ -148,7 +156,7 @@ class FakeBackend implements BrowserBackend {
     return page
   }
 
-  async page(targetId: string): Promise<PageController> {
+  async page(_sessionId: string, targetId: string): Promise<PageController> {
     const page = this.pages.get(targetId)
     if (!page) throw new Error("missing page")
     return page
@@ -156,7 +164,7 @@ class FakeBackend implements BrowserBackend {
 
   async focusTarget(): Promise<void> {}
 
-  async closeTarget(targetId: string): Promise<void> {
+  async closeTarget(_sessionId: string, targetId: string): Promise<void> {
     this.pages.delete(targetId)
     this.owners.delete(targetId)
   }
@@ -181,7 +189,7 @@ class FakeBackend implements BrowserBackend {
 
   async releaseSession(sessionId: string): Promise<void> {
     for (const [targetId, owner] of this.owners) {
-      if (owner === sessionId) await this.closeTarget(targetId)
+      if (owner === sessionId) await this.closeTarget(sessionId, targetId)
     }
   }
 }

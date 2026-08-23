@@ -84,7 +84,7 @@
     "externalNotDetected": "未检测到受支持的浏览器",
     "futureSessionHint": "Browser 访问设置仅影响之后新建的 Agent 会话。运行中的会话保留创建时的能力。",
     "backends": {
-      "embedded_chromium_cdp": "内置 Chromium (CDP)",
+      "embedded_webview2": "内置 WebView2",
       "external_chromium_cdp": "独立 Chromium (CDP)",
       "embedded": "内置浏览器",
       "external": "独立浏览器"
@@ -142,6 +142,7 @@
     "closeTab": "关闭 {title}",
     "openTab": "打开新标签页",
     "recover": "恢复",
+    "switchToExternal": "切换到独立浏览器",
     "page": "可交互浏览器页面",
     "loading": "正在加载页面…",
     "waitingForFrame": "正在等待托管浏览器页面…"

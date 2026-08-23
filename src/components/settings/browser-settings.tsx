@@ -284,8 +284,7 @@ export function BrowserSettings() {
     status.state === "starting" || status.state === "recovering"
   const settingsPending = pendingSetting !== null
   const embeddedHealthMatches =
-    settings.backend === "embedded" &&
-    status.backend === "embedded_chromium_cdp"
+    settings.backend === "embedded" && status.backend === "embedded_webview2"
   const externalDetected = availability?.detected === true
 
   return (

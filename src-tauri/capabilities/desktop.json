@@ -1,8 +1,8 @@
 {
   "identifier": "desktop-capability",
   "platforms": ["macOS", "windows", "linux"],
+  "webviews": ["main"],
   "windows": [
-    "main",
     "commit-*",
     "merge-*",
     "stash-*",

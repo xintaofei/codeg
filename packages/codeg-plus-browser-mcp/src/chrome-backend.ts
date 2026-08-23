@@ -2,9 +2,10 @@ import { mkdir, realpath } from "node:fs/promises"
 import { basename, join, resolve } from "node:path"
 
 import { CdpConnection, connectCdp } from "./cdp.js"
-import { DEFAULT_TOOL_TIMEOUT_MS, MAX_SCREENSHOT_BYTES } from "./contracts.js"
+import { DEFAULT_TOOL_TIMEOUT_MS } from "./contracts.js"
 import { ManagedChromeProcess, discoverBrowserPath } from "./chrome-process.js"
 import { BrowserError, asBrowserError } from "./errors.js"
+import { CdpPageAutomation } from "./page-automation.js"
 import {
   assertControlledPath,
   sanitizeRedirectHeaders,
@@ -22,7 +23,6 @@ import type {
   BrowserTab,
   PageController,
   PageSnapshot,
-  SemanticNode,
 } from "./runtime-types.js"
 
 interface ChromeBackendOptions {
@@ -39,45 +39,30 @@ interface TargetInfo {
   url: string
 }
 
-interface AxValue {
-  value?: unknown
-}
-
-interface AxNode {
-  backendDOMNodeId?: number
-  ignored?: boolean
-  role?: AxValue
-  name?: AxValue
-  value?: AxValue
-  description?: AxValue
-  properties?: Array<{ name: string; value?: AxValue }>
-}
+type BrowserSurfaceKeyInput = Extract<BrowserSurfaceInput, { kind: "key" }>
 
 interface DownloadRecord extends BrowserDownload {
   sessionId: string | null
   suggestedFilename: string
 }
 
-const INTERACTIVE_ROLES = new Set([
-  "button",
-  "checkbox",
-  "combobox",
-  "gridcell",
-  "link",
-  "listbox",
-  "menuitem",
-  "option",
-  "radio",
-  "searchbox",
-  "slider",
-  "spinbutton",
-  "switch",
-  "tab",
-  "textbox",
-  "treeitem",
-])
-
 const RECOVERY_BACKOFF_MS = [1_000, 2_000, 4_000] as const
+
+export function browserSurfaceKeyEventParams(
+  input: BrowserSurfaceKeyInput
+): Record<string, unknown> {
+  return {
+    type: input.event === "down" ? "keyDown" : "keyUp",
+    ...keyDetails(input.key),
+    key: bounded(input.key, 128),
+    ...(input.code ? { code: bounded(input.code, 128) } : {}),
+    text:
+      input.event === "down" && input.text
+        ? bounded(input.text, 4_096)
+        : undefined,
+    modifiers: input.modifiers ?? 0,
+  }
+}
 
 export class ChromeBackend implements BrowserBackend {
   private stateValue: BrowserRuntimeState = "stopped"
@@ -227,6 +212,10 @@ export class ChromeBackend implements BrowserBackend {
     this.recoveryAttempt = 0
   }
 
+  async shutdown(): Promise<void> {
+    await this.stop()
+  }
+
   async recover(): Promise<void> {
     let lastError: unknown
     this.stateValue = "recovering"
@@ -253,6 +242,10 @@ export class ChromeBackend implements BrowserBackend {
     )
   }
 
+  async sessionSnapshot(): Promise<null> {
+    return null
+  }
+
   async listTargets(): Promise<BrowserTab[]> {
     const cdp = this.requireReady()
     const result = await cdp.call<{ targetInfos: TargetInfo[] }>(
@@ -267,7 +260,7 @@ export class ChromeBackend implements BrowserBackend {
       }))
   }
 
-  async openTarget(url?: string): Promise<PageController> {
+  async openTarget(sessionId: string, url?: string): Promise<PageController> {
     const cdp = this.requireReady()
     const targetUrl = url
       ? (await validateNavigationUrl(url)).url
@@ -277,10 +270,10 @@ export class ChromeBackend implements BrowserBackend {
       newWindow: false,
       background: false,
     })
-    return await this.page(result.targetId)
+    return await this.page(sessionId, result.targetId)
   }
 
-  async page(targetId: string): Promise<PageController> {
+  async page(_sessionId: string, targetId: string): Promise<PageController> {
     this.requireReady()
     const cached = this.pages.get(targetId)
     if (cached) return cached
@@ -297,11 +290,11 @@ export class ChromeBackend implements BrowserBackend {
     return page
   }
 
-  async focusTarget(targetId: string): Promise<void> {
+  async focusTarget(_sessionId: string, targetId: string): Promise<void> {
     await this.requireReady().call("Target.activateTarget", { targetId })
   }
 
-  async closeTarget(targetId: string): Promise<void> {
+  async closeTarget(_sessionId: string, targetId: string): Promise<void> {
     const page = this.pages.get(targetId)
     await page?.close().catch(() => undefined)
     this.pages.delete(targetId)
@@ -358,7 +351,7 @@ export class ChromeBackend implements BrowserBackend {
       .filter(([, owner]) => owner === sessionId)
       .map(([targetId]) => targetId)
     for (const targetId of targets) {
-      await this.closeTarget(targetId).catch(() => undefined)
+      await this.closeTarget(sessionId, targetId).catch(() => undefined)
     }
     for (const [frameId, owner] of this.frameOwners) {
       if (owner === sessionId) this.frameOwners.delete(frameId)
@@ -441,12 +434,17 @@ interface ChromePageOptions {
 class ChromePageController implements PageController {
   private cdp: CdpConnection | null = null
   private initialized = false
-  private readonly refs = new Map<string, number>()
+  private readonly automation: CdpPageAutomation
   private readonly requestUrls = new Map<string, string>()
   private loading = false
   private screencastActive = false
 
-  constructor(private readonly options: ChromePageOptions) {}
+  constructor(private readonly options: ChromePageOptions) {
+    this.automation = new CdpPageAutomation(
+      async () => await this.connection(),
+      async () => await this.info()
+    )
+  }
 
   async info(): Promise<BrowserTab> {
     return await this.options.getTargetInfo()
@@ -479,42 +477,7 @@ class ChromePageController implements PageController {
     limit: number
     timeoutMs: number
   }): Promise<PageSnapshot> {
-    const cdp = await this.connection()
-    const result = await cdp.call<{ nodes: AxNode[] }>(
-      "Accessibility.getFullAXTree",
-      {},
-      { timeoutMs: options.timeoutMs }
-    )
-    this.refs.clear()
-    const nodes: SemanticNode[] = []
-    for (const node of result.nodes) {
-      if (node.ignored || !node.backendDOMNodeId) continue
-      const role = stringValue(node.role)
-      if (!role || (options.interactive && !INTERACTIVE_ROLES.has(role)))
-        continue
-      const name = stringValue(node.name)
-      const value = stringValue(node.value)
-      if (!options.interactive && !name && !value && role === "generic")
-        continue
-      const ref = `e${nodes.length + 1}`
-      this.refs.set(ref, node.backendDOMNodeId)
-      const semantic: SemanticNode = {
-        ref,
-        role: bounded(role, 128),
-        name: bounded(name, 4_096),
-      }
-      if (value) semantic.value = bounded(value, 4_096)
-      const description = stringValue(node.description)
-      if (description) semantic.description = bounded(description, 4_096)
-      const disabled = propertyBoolean(node, "disabled")
-      if (disabled !== undefined) semantic.disabled = disabled
-      const focused = propertyBoolean(node, "focused")
-      if (focused !== undefined) semantic.focused = focused
-      nodes.push(semantic)
-      if (nodes.length >= options.limit) break
-    }
-    const info = await this.info()
-    return { nodes, documentUrl: info.url, title: info.title }
+    return await this.automation.snapshot(options)
   }
 
   async screenshot(options: {
@@ -523,79 +486,11 @@ class ChromePageController implements PageController {
     quality?: number
     timeoutMs: number
   }): Promise<{ data: string; mimeType: "image/png" | "image/jpeg" }> {
-    const cdp = await this.connection()
-    let clip: Record<string, number> | undefined
-    if (options.fullPage) {
-      const metrics = await cdp.call<{
-        contentSize: { width: number; height: number }
-      }>("Page.getLayoutMetrics", {}, { timeoutMs: options.timeoutMs })
-      clip = {
-        x: 0,
-        y: 0,
-        width: Math.max(1, Math.ceil(metrics.contentSize.width)),
-        height: Math.max(1, Math.ceil(metrics.contentSize.height)),
-        scale: 1,
-      }
-    }
-    const result = await cdp.call<{ data: string }>(
-      "Page.captureScreenshot",
-      {
-        format: options.format,
-        ...(options.format === "jpeg" && options.quality
-          ? { quality: options.quality }
-          : {}),
-        captureBeyondViewport: options.fullPage,
-        fromSurface: true,
-        ...(clip ? { clip } : {}),
-      },
-      { timeoutMs: options.timeoutMs }
-    )
-    if (Buffer.byteLength(result.data, "base64") > MAX_SCREENSHOT_BYTES) {
-      throw new BrowserError(
-        "RESULT_TOO_LARGE",
-        "The screenshot exceeds the five megabyte result limit"
-      )
-    }
-    return {
-      data: result.data,
-      mimeType: options.format === "jpeg" ? "image/jpeg" : "image/png",
-    }
+    return await this.automation.screenshot(options)
   }
 
   async click(ref: string, timeoutMs: number): Promise<void> {
-    const rect = await this.callOnRef<{ x: number; y: number }>(
-      ref,
-      `function () {
-        this.scrollIntoView({ block: "center", inline: "center" });
-        const rect = this.getBoundingClientRect();
-        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-      }`,
-      [],
-      timeoutMs
-    )
-    const cdp = await this.connection()
-    await cdp.call(
-      "Input.dispatchMouseEvent",
-      {
-        type: "mousePressed",
-        x: rect.x,
-        y: rect.y,
-        button: "left",
-        clickCount: 1,
-      },
-      { timeoutMs }
-    )
-    await cdp.call(
-      "Input.dispatchMouseEvent",
-      {
-        type: "mouseReleased",
-        x: rect.x,
-        y: rect.y,
-        button: "left",
-        clickCount: 1,
-      },
-      { timeoutMs }
-    )
+    await this.automation.click(ref, timeoutMs)
   }
 
   async type(
@@ -604,42 +499,11 @@ class ChromePageController implements PageController {
     clear: boolean,
     timeoutMs: number
   ): Promise<void> {
-    await this.callOnRef(
-      ref,
-      `function (clear) {
-        this.scrollIntoView({ block: "center", inline: "center" });
-        this.focus();
-        if (clear) {
-          const prototype = this instanceof HTMLTextAreaElement
-            ? HTMLTextAreaElement.prototype
-            : HTMLInputElement.prototype;
-          const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
-          if (setter) setter.call(this, ""); else this.value = "";
-          this.dispatchEvent(new Event("input", { bubbles: true }));
-        }
-        return true;
-      }`,
-      [{ value: clear }],
-      timeoutMs
-    )
-    await (
-      await this.connection()
-    ).call("Input.insertText", { text }, { timeoutMs })
+    await this.automation.type(ref, text, clear, timeoutMs)
   }
 
   async press(key: string, timeoutMs: number): Promise<void> {
-    const details = keyDetails(key)
-    const cdp = await this.connection()
-    await cdp.call(
-      "Input.dispatchKeyEvent",
-      { type: "keyDown", ...details },
-      { timeoutMs }
-    )
-    await cdp.call(
-      "Input.dispatchKeyEvent",
-      { type: "keyUp", ...details, text: undefined },
-      { timeoutMs }
-    )
+    await this.automation.press(key, timeoutMs)
   }
 
   async scroll(
@@ -648,25 +512,7 @@ class ChromePageController implements PageController {
     deltaY: number,
     timeoutMs: number
   ): Promise<void> {
-    if (ref) {
-      await this.callOnRef(
-        ref,
-        "function (x, y) { this.scrollBy(x, y); return true; }",
-        [{ value: deltaX }, { value: deltaY }],
-        timeoutMs
-      )
-      return
-    }
-    await (
-      await this.connection()
-    ).call(
-      "Runtime.evaluate",
-      {
-        expression: `window.scrollBy(${JSON.stringify(deltaX)}, ${JSON.stringify(deltaY)})`,
-        returnByValue: true,
-      },
-      { timeoutMs }
-    )
+    await this.automation.scroll(ref, deltaX, deltaY, timeoutMs)
   }
 
   async wait(options: {
@@ -675,36 +521,7 @@ class ChromePageController implements PageController {
     urlIncludes?: string
     timeoutMs: number
   }): Promise<void> {
-    if (options.milliseconds !== undefined) {
-      await sleep(Math.min(options.milliseconds, options.timeoutMs))
-      if (!options.text && !options.urlIncludes) return
-    }
-    const deadline = Date.now() + options.timeoutMs
-    while (Date.now() <= deadline) {
-      const info = await this.info()
-      const urlMatches =
-        options.urlIncludes === undefined ||
-        info.url.includes(options.urlIncludes)
-      let textMatches = options.text === undefined
-      if (options.text !== undefined) {
-        const snapshot = await this.snapshot({
-          interactive: false,
-          limit: 1_000,
-          timeoutMs: Math.max(100, deadline - Date.now()),
-        })
-        textMatches = snapshot.nodes.some(
-          (node) =>
-            node.name.includes(options.text!) ||
-            node.value?.includes(options.text!)
-        )
-      }
-      if (urlMatches && textMatches) return
-      await sleep(100)
-    }
-    throw new BrowserError("TIMEOUT", "Browser wait condition timed out", {
-      retryable: true,
-      recovery: "retry",
-    })
+    await this.automation.wait(options)
   }
 
   async surfaceState() {
@@ -761,16 +578,7 @@ class ChromePageController implements PageController {
     if (input.kind === "key") {
       await cdp.call(
         "Input.dispatchKeyEvent",
-        {
-          type: input.event === "down" ? "keyDown" : "keyUp",
-          key: bounded(input.key, 128),
-          code: input.code ? bounded(input.code, 128) : undefined,
-          text:
-            input.event === "down" && input.text
-              ? bounded(input.text, 4_096)
-              : undefined,
-          modifiers: input.modifiers ?? 0,
-        },
+        browserSurfaceKeyEventParams(input),
         { timeoutMs }
       )
       return
@@ -883,7 +691,7 @@ class ChromePageController implements PageController {
     this.cdp?.close()
     this.cdp = null
     this.initialized = false
-    this.refs.clear()
+    this.automation.clear()
     this.requestUrls.clear()
   }
 
@@ -973,86 +781,13 @@ class ChromePageController implements PageController {
     }
   }
 
-  private async callOnRef<T>(
-    ref: string,
-    functionDeclaration: string,
-    args: Array<{ value: unknown }>,
-    timeoutMs: number
-  ): Promise<T> {
-    const backendNodeId = this.refs.get(ref)
-    if (!backendNodeId) {
-      throw new BrowserError(
-        "REF_NOT_FOUND",
-        "The semantic ref is stale; take a new snapshot and retry",
-        { retryable: true, recovery: "retry" }
-      )
-    }
-    const cdp = await this.connection()
-    const resolved = await cdp.call<{
-      object?: { objectId?: string }
-    }>("DOM.resolveNode", { backendNodeId }, { timeoutMs })
-    const objectId = resolved.object?.objectId
-    if (!objectId)
-      throw new BrowserError("REF_NOT_FOUND", "The semantic ref is gone")
-    try {
-      const result = await cdp.call<{
-        result?: { value?: T }
-        exceptionDetails?: unknown
-      }>(
-        "Runtime.callFunctionOn",
-        {
-          objectId,
-          functionDeclaration,
-          arguments: args,
-          returnByValue: true,
-          awaitPromise: false,
-        },
-        { timeoutMs }
-      )
-      if (result.exceptionDetails || result.result?.value === undefined) {
-        throw new BrowserError("INTERNAL_ERROR", "The browser action failed")
-      }
-      return result.result.value
-    } finally {
-      await cdp
-        .call("Runtime.releaseObject", { objectId })
-        .catch(() => undefined)
-    }
-  }
-
   private async waitForReadyState(timeoutMs: number): Promise<void> {
-    const deadline = Date.now() + timeoutMs
-    const cdp = await this.connection()
-    while (Date.now() <= deadline) {
-      const result = await cdp.call<{
-        result?: { value?: string }
-      }>(
-        "Runtime.evaluate",
-        { expression: "document.readyState", returnByValue: true },
-        { timeoutMs: Math.max(100, deadline - Date.now()) }
-      )
-      if (result.result?.value === "complete") return
-      await sleep(100)
-    }
-    throw new BrowserError("TIMEOUT", "Page navigation timed out", {
-      retryable: true,
-      recovery: "retry",
-    })
+    await this.automation.waitForReadyState(timeoutMs)
   }
 }
 
 function finiteCoordinate(value: number): number {
   return Number.isFinite(value) ? Math.max(0, Math.min(100_000, value)) : 0
-}
-
-function stringValue(value: AxValue | undefined): string {
-  return typeof value?.value === "string" ? value.value : ""
-}
-
-function propertyBoolean(node: AxNode, name: string): boolean | undefined {
-  const value = node.properties?.find((property) => property.name === name)
-    ?.value?.value
-  return typeof value === "boolean" ? value : undefined
 }
 
 function bounded(value: string, maximum: number): string {
@@ -1061,6 +796,10 @@ function bounded(value: string, maximum: number): string {
 
 function keyDetails(key: string): Record<string, unknown> {
   const named: Record<string, { code: string; keyCode: number }> = {
+    Control: { code: "ControlLeft", keyCode: 17 },
+    Shift: { code: "ShiftLeft", keyCode: 16 },
+    Alt: { code: "AltLeft", keyCode: 18 },
+    Meta: { code: "MetaLeft", keyCode: 91 },
     Enter: { code: "Enter", keyCode: 13 },
     Tab: { code: "Tab", keyCode: 9 },
     Escape: { code: "Escape", keyCode: 27 },
@@ -1090,6 +829,7 @@ function keyDetails(key: string): Record<string, unknown> {
     code: character.length === 1 ? `Key${character.toUpperCase()}` : character,
     text: character,
     windowsVirtualKeyCode: character.toUpperCase().charCodeAt(0),
+    nativeVirtualKeyCode: character.toUpperCase().charCodeAt(0),
   }
 }
 

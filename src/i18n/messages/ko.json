@@ -84,7 +84,7 @@
     "externalNotDetected": "지원되는 브라우저를 찾지 못했습니다",
     "futureSessionHint": "브라우저 접근 변경 사항은 새 Agent 세션에 적용됩니다. 실행 중인 세션은 시작할 때의 기능을 유지합니다.",
     "backends": {
-      "embedded_chromium_cdp": "내장 Chromium (CDP)",
+      "embedded_webview2": "내장 WebView2",
       "external_chromium_cdp": "독립 Chromium (CDP)",
       "embedded": "내장 브라우저",
       "external": "독립 브라우저"
@@ -142,6 +142,7 @@
     "closeTab": "{title} 닫기",
     "openTab": "새 탭 열기",
     "recover": "복구",
+    "switchToExternal": "별도 브라우저로 전환",
     "page": "대화형 브라우저 페이지",
     "loading": "페이지 로딩 중…",
     "waitingForFrame": "관리형 브라우저 페이지를 기다리는 중…"

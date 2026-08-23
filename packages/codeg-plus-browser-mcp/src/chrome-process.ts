@@ -21,6 +21,23 @@ export interface ChromeProcessInfo {
 }
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 20_000
+const LAUNCHER_HANDOFF_GRACE_MS = 2_000
+const PROCESS_MONITOR_INTERVAL_MS = 1_000
+const WINDOWS_PROFILE_PROCESS_QUERY = `
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$profile = [IO.Path]::GetFullPath($env:CODEG_BROWSER_PROFILE_DIR)
+$needle = '--user-data-dir=' + $profile
+Get-CimInstance Win32_Process -Filter "Name='chrome.exe' OR Name='msedge.exe' OR Name='chromium.exe'" |
+  Where-Object {
+    $commandLine = ([string]$_.CommandLine).Replace('"', '')
+    $index = $commandLine.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase)
+    if ($index -lt 0) { return $false }
+    $end = $index + $needle.Length
+    return $end -eq $commandLine.Length -or [char]::IsWhiteSpace($commandLine[$end])
+  } |
+  ForEach-Object { "$($_.ProcessId),$($_.ParentProcessId)" }
+`.trim()
 
 async function isExecutableFile(path: string): Promise<boolean> {
   try {
@@ -92,10 +109,191 @@ function browserName(executable: string): string {
   return "Google Chrome"
 }
 
+async function readDevToolsPort(portFile: string): Promise<number | null> {
+  try {
+    const [line] = (await readFile(portFile, "utf8")).split(/\r?\n/)
+    const port = Number(line)
+    return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : null
+  } catch {
+    return null
+  }
+}
+
+export async function waitForDevToolsPort(
+  portFile: string,
+  timeoutMs: number,
+  child: Pick<ChildProcess, "exitCode">,
+  options: { handoffGraceMs?: number; pollIntervalMs?: number } = {}
+): Promise<number> {
+  const deadline = Date.now() + timeoutMs
+  const handoffGraceMs = options.handoffGraceMs ?? LAUNCHER_HANDOFF_GRACE_MS
+  const pollIntervalMs = options.pollIntervalMs ?? 100
+  let launcherExitTime: number | null = null
+
+  while (Date.now() < deadline) {
+    const port = await readDevToolsPort(portFile)
+    if (port !== null) return port
+
+    if (child.exitCode !== null) {
+      launcherExitTime ??= Date.now()
+      if (Date.now() - launcherExitTime >= handoffGraceMs) {
+        throw new BrowserError(
+          "RUNTIME_START_FAILED",
+          "The browser exited before DevTools became ready",
+          { recovery: "check_settings" }
+        )
+      }
+    }
+    await new Promise((resolveDelay) =>
+      setTimeout(resolveDelay, pollIntervalMs)
+    )
+  }
+  throw new BrowserError(
+    "TIMEOUT",
+    "Timed out waiting for the browser DevTools endpoint",
+    { recovery: "check_settings" }
+  )
+}
+
+export function parseWindowsListenerPid(
+  output: string,
+  port: number
+): number | null {
+  const endpoint = `127.0.0.1:${port}`
+  for (const line of output.split(/\r?\n/)) {
+    const fields = line.trim().split(/\s+/)
+    if (fields[0]?.toUpperCase() !== "TCP" || fields[1] !== endpoint) continue
+    const value = Number(fields[fields.length - 1])
+    if (Number.isInteger(value) && value > 0) return value
+  }
+  return null
+}
+
+async function readCommandOutput(
+  executable: string,
+  args: string[],
+  env?: NodeJS.ProcessEnv
+): Promise<string> {
+  return await new Promise<string>((resolveOutput, rejectOutput) => {
+    const command = spawn(executable, args, {
+      env,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+    let output = ""
+    command.stdout?.setEncoding("utf8")
+    command.stdout?.on("data", (chunk: string) => {
+      output += chunk
+    })
+    command.once("error", rejectOutput)
+    command.once("close", (code) => {
+      if (code === 0) resolveOutput(output)
+      else
+        rejectOutput(
+          new Error(`${executable} exited with code ${String(code)}`)
+        )
+    })
+  })
+}
+
+async function readWindowsNetstat(): Promise<string> {
+  return await readCommandOutput("netstat.exe", ["-ano", "-p", "tcp"])
+}
+
+export function parseWindowsProfileProcessRoots(output: string): number[] {
+  const processes = output
+    .split(/\r?\n/)
+    .map((line) => /^(\d+),(\d+)$/.exec(line.trim()))
+    .filter((match): match is RegExpExecArray => match !== null)
+    .map((match) => ({
+      pid: Number(match[1]),
+      parentPid: Number(match[2]),
+    }))
+    .filter(
+      ({ pid, parentPid }) =>
+        Number.isInteger(pid) &&
+        pid > 0 &&
+        Number.isInteger(parentPid) &&
+        parentPid >= 0
+    )
+  const processIds = new Set(processes.map(({ pid }) => pid))
+  return processes
+    .filter(({ parentPid }) => !processIds.has(parentPid))
+    .map(({ pid }) => pid)
+}
+
+async function cleanupWindowsProfileProcesses(
+  profileDir: string
+): Promise<void> {
+  if (process.platform !== "win32") return
+  try {
+    await access(join(profileDir, "lockfile"))
+  } catch {
+    return
+  }
+
+  const env: NodeJS.ProcessEnv = {
+    CODEG_BROWSER_PROFILE_DIR: profileDir,
+    NODE_ENV: process.env.NODE_ENV,
+    PATH: process.env.PATH ?? "",
+    SystemRoot: process.env.SystemRoot ?? "C:\\Windows",
+    WINDIR: process.env.WINDIR ?? "C:\\Windows",
+  }
+  let roots: number[]
+  try {
+    const output = await readCommandOutput(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        WINDOWS_PROFILE_PROCESS_QUERY,
+      ],
+      env
+    )
+    roots = parseWindowsProfileProcessRoots(output)
+  } catch {
+    // A clean profile can still launch when PowerShell/CIM is unavailable.
+    return
+  }
+  await Promise.all(roots.map((pid) => killProcessTree(pid)))
+}
+
+function isProcessRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM"
+  }
+}
+
+async function resolveDevToolsOwnerPid(
+  port: number,
+  launcherPid: number
+): Promise<number | null> {
+  if (process.platform !== "win32") return launcherPid
+
+  const deadline = Date.now() + LAUNCHER_HANDOFF_GRACE_MS
+  do {
+    try {
+      const pid = parseWindowsListenerPid(await readWindowsNetstat(), port)
+      if (pid !== null) return pid
+    } catch {
+      break
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 100))
+  } while (Date.now() < deadline)
+
+  return isProcessRunning(launcherPid) ? launcherPid : null
+}
+
 export class ManagedChromeProcess {
   private child: ChildProcess | null = null
   private infoValue: ChromeProcessInfo | null = null
   private stopping = false
+  private starting = false
+  private monitorTimer: NodeJS.Timeout | null = null
   private crashListener: ((code: number | null) => void) | undefined
 
   constructor(private readonly options: ChromeProcessOptions) {}
@@ -119,6 +317,7 @@ export class ManagedChromeProcess {
     ])
 
     const portFile = join(profileDir, "DevToolsActivePort")
+    await cleanupWindowsProfileProcesses(profileDir)
     await rm(portFile, { force: true })
     const chromeArgs = [
       ...(this.options.headless
@@ -149,27 +348,42 @@ export class ManagedChromeProcess {
     }
     this.child = child
     this.stopping = false
+    this.starting = true
     child.once("exit", (code) => {
-      const unexpected = !this.stopping
+      if (this.child !== child) return
       this.child = null
-      this.infoValue = null
-      if (unexpected) this.crashListener?.(code)
+      if (this.stopping || this.starting) return
+      if (this.infoValue?.pid && this.infoValue.pid !== child.pid) return
+      this.handleUnexpectedExit(code, child.pid)
     })
 
     try {
-      const port = await this.waitForPort(
+      const port = await waitForDevToolsPort(
         portFile,
         this.options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS,
         child
       )
+      const pid = await resolveDevToolsOwnerPid(port, child.pid)
+      if (pid === null) {
+        throw new BrowserError(
+          "RUNTIME_START_FAILED",
+          "The browser DevTools endpoint has no live owning process",
+          { recovery: "check_settings" }
+        )
+      }
       this.infoValue = {
         executable,
         name: browserName(executable),
-        pid: child.pid,
+        pid,
         port,
+      }
+      this.starting = false
+      if (pid !== child.pid || child.exitCode !== null) {
+        this.monitorProcess(pid)
       }
       return this.infoValue
     } catch (error) {
+      this.starting = false
       await this.stop()
       if (error instanceof BrowserError) throw error
       throw new BrowserError(
@@ -182,41 +396,44 @@ export class ManagedChromeProcess {
 
   async stop(): Promise<void> {
     const child = this.child
+    const info = this.infoValue
     this.stopping = true
+    this.starting = false
     this.child = null
     this.infoValue = null
-    if (!child?.pid || child.exitCode !== null) return
-    await killProcessTree(child.pid)
+    this.clearMonitor()
+
+    const pids = new Set<number>()
+    if (info?.pid) pids.add(info.pid)
+    if (child?.pid && child.exitCode === null) pids.add(child.pid)
+    try {
+      await Promise.all([...pids].map((pid) => killProcessTree(pid)))
+    } finally {
+      this.stopping = false
+    }
   }
 
-  private async waitForPort(
-    portFile: string,
-    timeoutMs: number,
-    child: ChildProcess
-  ): Promise<number> {
-    const deadline = Date.now() + timeoutMs
-    while (Date.now() < deadline) {
-      if (child.exitCode !== null) {
-        throw new BrowserError(
-          "RUNTIME_START_FAILED",
-          "The browser exited before DevTools became ready",
-          { recovery: "check_settings" }
-        )
-      }
-      try {
-        const [line] = (await readFile(portFile, "utf8")).split(/\r?\n/)
-        const port = Number(line)
-        if (Number.isInteger(port) && port > 0 && port <= 65_535) return port
-      } catch {
-        // Chrome writes this file only after DevTools is listening.
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100))
-    }
-    throw new BrowserError(
-      "TIMEOUT",
-      "Timed out waiting for the browser DevTools endpoint",
-      { recovery: "check_settings" }
-    )
+  private monitorProcess(pid: number): void {
+    this.clearMonitor()
+    this.monitorTimer = setInterval(() => {
+      if (this.stopping || this.infoValue?.pid !== pid) return
+      if (!isProcessRunning(pid)) this.handleUnexpectedExit(null, pid)
+    }, PROCESS_MONITOR_INTERVAL_MS)
+    this.monitorTimer.unref()
+  }
+
+  private clearMonitor(): void {
+    if (this.monitorTimer) clearInterval(this.monitorTimer)
+    this.monitorTimer = null
+  }
+
+  private handleUnexpectedExit(code: number | null, pid?: number): void {
+    if (this.stopping) return
+    if (pid && this.infoValue?.pid && this.infoValue.pid !== pid) return
+    this.child = null
+    this.infoValue = null
+    this.clearMonitor()
+    this.crashListener?.(code)
   }
 }
 

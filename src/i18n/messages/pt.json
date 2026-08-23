@@ -84,7 +84,7 @@
     "externalNotDetected": "Nenhum navegador compatível foi detectado",
     "futureSessionHint": "As alterações no acesso ao navegador se aplicam às novas sessões do Agent. As sessões em execução mantêm o recurso com que foram iniciadas.",
     "backends": {
-      "embedded_chromium_cdp": "Chromium integrado (CDP)",
+      "embedded_webview2": "WebView2 integrado",
       "external_chromium_cdp": "Chromium separado (CDP)",
       "embedded": "Navegador integrado",
       "external": "Navegador separado"
@@ -142,6 +142,7 @@
     "closeTab": "Fechar {title}",
     "openTab": "Abrir nova aba",
     "recover": "Recuperar",
+    "switchToExternal": "Mudar para o navegador separado",
     "page": "Página interativa do navegador",
     "loading": "Carregando página…",
     "waitingForFrame": "Aguardando a página do navegador gerenciado…"

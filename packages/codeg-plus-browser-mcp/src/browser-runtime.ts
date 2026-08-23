@@ -6,6 +6,7 @@ import {
 import { BrowserError, asBrowserError } from "./errors.js"
 import type {
   BrowserBackend,
+  BrowserBackendSessionSnapshot,
   BrowserRuntimeStatus,
   BrowserSurfaceAction,
   BrowserSurfaceEvent,
@@ -104,7 +105,7 @@ export class BrowserRuntime {
       await this.detachSurface(sessionId)
     }
     this.sessions.clear()
-    await this.backend.stop()
+    await this.backend.shutdown()
   }
 
   async ensureSurface(sessionId: string): Promise<BrowserSurfaceSnapshot> {
@@ -122,9 +123,10 @@ export class BrowserRuntime {
     await this.cleanupStaleSessions()
     this.requireReady()
     const session = this.session(sessionId)
+    await this.reconcileBackendSession(sessionId, session, false)
 
     if (command.action === "open") {
-      const page = await this.backend.openTarget()
+      const page = await this.backend.openTarget(sessionId)
       let tab = await page.info()
       this.ownTarget(sessionId, session, tab.id)
       if (command.url) {
@@ -132,11 +134,11 @@ export class BrowserRuntime {
       }
     } else if (command.action === "focus") {
       this.assertOwned(session, command.targetId)
-      await this.backend.focusTarget(command.targetId)
+      await this.backend.focusTarget(sessionId, command.targetId)
       session.activeTargetId = command.targetId
     } else if (command.action === "close") {
       this.assertOwned(session, command.targetId)
-      await this.backend.closeTarget(command.targetId)
+      await this.backend.closeTarget(sessionId, command.targetId)
       session.targets.delete(command.targetId)
       if (session.activeTargetId === command.targetId) {
         session.activeTargetId = session.targets.values().next().value ?? null
@@ -238,8 +240,9 @@ export class BrowserRuntime {
 
     this.requireReady()
     const session = this.session(sessionId)
+    await this.reconcileBackendSession(sessionId, session, false)
     if (name === "tabs.list") {
-      const tabs = await this.syncSessionTargets(session)
+      const tabs = await this.syncSessionTargets(sessionId, session)
       return this.success(sessionId, name, {
         tabs,
         activeTabId: session.activeTargetId,
@@ -250,7 +253,7 @@ export class BrowserRuntime {
       // enables request interception), and establish session ownership before
       // navigating. Creating the target directly at an external URL would let
       // its first wave of subresource requests race the SSRF interceptor.
-      const page = await this.backend.openTarget()
+      const page = await this.backend.openTarget(sessionId)
       let tab = await page.info()
       this.ownTarget(sessionId, session, tab.id)
       const requestedUrl = optionalString(args.url)
@@ -262,15 +265,15 @@ export class BrowserRuntime {
     if (name === "tabs.focus") {
       const targetId = requiredString(args.tabId)
       this.assertOwned(session, targetId)
-      await this.backend.focusTarget(targetId)
+      await this.backend.focusTarget(sessionId, targetId)
       session.activeTargetId = targetId
-      const tab = await (await this.backend.page(targetId)).info()
+      const tab = await (await this.backend.page(sessionId, targetId)).info()
       return this.success(sessionId, name, { focused: true }, tab)
     }
     if (name === "tabs.close") {
       const targetId = requiredString(args.tabId)
       this.assertOwned(session, targetId)
-      await this.backend.closeTarget(targetId)
+      await this.backend.closeTarget(sessionId, targetId)
       session.targets.delete(targetId)
       if (session.activeTargetId === targetId) {
         session.activeTargetId = session.targets.values().next().value ?? null
@@ -397,33 +400,43 @@ export class BrowserRuntime {
     sessionId: string,
     session: BrowserSession
   ): Promise<PageController> {
+    await this.reconcileBackendSession(sessionId, session, true)
     if (!session.activeTargetId) {
-      const page = await this.backend.openTarget()
+      const page = await this.backend.openTarget(sessionId)
       const tab = await page.info()
       this.ownTarget(sessionId, session, tab.id)
       await this.applySurfaceViewport(session, page)
       return page
     }
     this.assertOwned(session, session.activeTargetId)
-    return await this.backend.page(session.activeTargetId)
+    return await this.backend.page(sessionId, session.activeTargetId)
   }
 
   private async surfaceSnapshot(
     sessionId: string,
     session: BrowserSession
   ): Promise<BrowserSurfaceSnapshot> {
-    const tabs = await this.syncSessionTargets(session)
+    const tabs = await this.syncSessionTargets(sessionId, session)
     const activeTargetId = session.activeTargetId
     const active = activeTargetId
-      ? await (await this.backend.page(activeTargetId)).surfaceState()
+      ? await (
+          await this.backend.page(sessionId, activeTargetId)
+        ).surfaceState()
       : null
     return { sessionId, tabs, activeTargetId, active }
   }
 
   private async syncSessionTargets(
+    sessionId: string,
     session: BrowserSession
   ): Promise<BrowserTab[]> {
-    const all = await this.backend.listTargets()
+    const authoritative = await this.reconcileBackendSession(
+      sessionId,
+      session,
+      false
+    )
+    const all =
+      authoritative?.tabs ?? (await this.backend.listTargets(sessionId))
     const tabs = all.filter((tab) => session.targets.has(tab.id))
     const live = new Set(tabs.map((tab) => tab.id))
     for (const targetId of [...session.targets]) {
@@ -449,7 +462,7 @@ export class BrowserRuntime {
       subscription.stopScreencast = null
       subscription.targetId = targetId
       if (targetId) {
-        const page = await this.backend.page(targetId)
+        const page = await this.backend.page(sessionId, targetId)
         await this.applySurfaceViewport(session, page)
         subscription.stopScreencast = await page.startScreencast((frame) => {
           if (this.surfaceSubscriptions.get(sessionId) === subscription) {
@@ -476,6 +489,22 @@ export class BrowserRuntime {
     session.targets.add(targetId)
     session.activeTargetId = targetId
     this.backend.assignTarget(targetId, sessionId)
+  }
+
+  private async reconcileBackendSession(
+    sessionId: string,
+    session: BrowserSession,
+    ensure: boolean
+  ): Promise<BrowserBackendSessionSnapshot | null> {
+    const snapshot = await this.backend.sessionSnapshot(sessionId, ensure)
+    if (!snapshot) return null
+    session.targets.clear()
+    for (const tab of snapshot.tabs) session.targets.add(tab.id)
+    session.activeTargetId =
+      snapshot.activeTargetId && session.targets.has(snapshot.activeTargetId)
+        ? snapshot.activeTargetId
+        : (snapshot.tabs[snapshot.tabs.length - 1]?.id ?? null)
+    return snapshot
   }
 
   private async applySurfaceViewport(

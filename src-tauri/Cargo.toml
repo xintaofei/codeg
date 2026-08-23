@@ -30,12 +30,26 @@ tauri-runtime = [
     "dep:tauri-plugin-single-instance",
     "dep:tauri-plugin-autostart",
     "dep:keyring",
+    "native-webview2",
 ]
 # Exposes test scaffolding (`AppState::new_for_test`, `EventEmitter::test_web_only`,
 # `ConnectionManager::insert_test_connection`, parser `with_base_dir`, the
 # `db::test_helpers` module) for integration tests in `tests/*.rs`. Without
 # this feature the items are physically uncompiled in release builds.
 test-utils = []
+# Product native WebView2 support. Tauri runtime-wry keys its shared WebContext
+# by `data_directory`, so every Browser tab using the managed profile shares a
+# single WebView2 environment while retaining a separate controller.
+native-webview2 = [
+    "tauri/unstable",
+    "dep:webview2-com",
+    "dep:windows",
+]
+# Opt-in B2-17 evidence harness. The product dependency is now enabled by the
+# desktop runtime, but the spike UI and probes remain opt-in.
+native-webview-spike = [
+    "tauri-runtime",
+]
 
 [[bin]]
 name = "codeg"
@@ -94,6 +108,7 @@ zip = "2"
 regex = "1"
 portable-pty = "0.8"
 urlencoding = "2"
+url = "2"
 fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs", version = "0.0.0", optional = true }
 sea-orm = { version = "1.1", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros"] }
 sea-orm-migration = { version = "1.1", features = ["sqlx-sqlite", "runtime-tokio-rustls"] }
@@ -156,6 +171,8 @@ mac-notification-sys = "0.6"
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Threading"] }
 junction = "1"
+webview2-com = { version = "=0.38.2", optional = true }
+windows = { version = "=0.61.3", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

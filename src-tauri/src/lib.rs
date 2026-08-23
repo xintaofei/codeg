@@ -29,6 +29,11 @@ pub mod intern;
 pub mod keyring_store;
 pub mod logging;
 pub mod models;
+pub mod native_browser_runtime;
+#[cfg(all(feature = "native-webview-spike", target_os = "windows"))]
+mod native_webview_capability;
+#[cfg(all(feature = "native-webview-spike", target_os = "windows"))]
+mod native_webview_spike;
 mod network;
 pub mod office_watch;
 pub mod parsers;
@@ -356,6 +361,8 @@ mod tauri_app {
                     effective_data_dir.clone(),
                     web::event_bridge::EventEmitter::Tauri(app.handle().clone()),
                 );
+                #[cfg(target_os = "windows")]
+                browser_runtime.install_native_runtime(app.handle().clone());
                 let browser_settings = tauri::async_runtime::block_on(
                     browser_runtime.load_settings(&app.state::<db::AppDatabase>()),
                 )
@@ -840,6 +847,8 @@ mod tauri_app {
                     );
                     if let Ok(w) = builder.build() {
                         windows::post_window_setup(&w);
+                        #[cfg(all(feature = "native-webview-spike", target_os = "windows"))]
+                        crate::native_webview_spike::maybe_attach(&w, &effective_data_dir)?;
                     }
                 }
 
@@ -886,6 +895,25 @@ mod tauri_app {
             })
             .on_window_event(|window, event| {
                 let label = window.label().to_string();
+
+                #[cfg(all(feature = "native-webview-spike", target_os = "windows"))]
+                crate::native_webview_spike::sync_geometry_on_window_event(window, event);
+                #[cfg(target_os = "windows")]
+                if label == "main"
+                    && matches!(
+                        event,
+                        tauri::WindowEvent::Resized(_)
+                            | tauri::WindowEvent::Moved(_)
+                            | tauri::WindowEvent::ScaleFactorChanged { .. }
+                    )
+                {
+                    if let Some(browser) = window
+                        .app_handle()
+                        .try_state::<crate::browser_runtime::BrowserRuntimeManager>()
+                    {
+                        browser.sync_native_surface_geometry();
+                    }
+                }
 
                 if (label == "settings" || label.starts_with("remote-settings-"))
                     && matches!(
@@ -978,6 +1006,14 @@ mod tauri_app {
 
                 if label == "main" {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        #[cfg(all(feature = "native-webview-spike", target_os = "windows"))]
+                        if crate::native_webview_spike::spike_enabled()
+                            && !APP_QUITTING.load(Ordering::Relaxed)
+                        {
+                            api.prevent_close();
+                            window.app_handle().exit(0);
+                            return;
+                        }
                         // The close button does one of two things, depending
                         // on whether the platform can keep the workspace
                         // recoverable while it's hidden:
@@ -1486,6 +1522,8 @@ mod tauri_app {
             .run(|app, event| match event {
                 tauri::RunEvent::ExitRequested { .. } => {
                     APP_QUITTING.store(true, Ordering::Relaxed);
+                    #[cfg(all(feature = "native-webview-spike", target_os = "windows"))]
+                    crate::native_webview_spike::close_for_exit(app);
                     // Drop the desktop pet alongside the workspace so it
                     // never outlives a real quit. Tauri also tears down all
                     // windows on shutdown, but doing it explicitly here lets

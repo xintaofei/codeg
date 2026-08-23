@@ -8,8 +8,14 @@ const surface = vi.hoisted(() => ({
   runBrowserSurfaceAction: vi.fn(),
 }))
 const connection = vi.hoisted(() => ({ connectionId: "connection-a" }))
+const api = vi.hoisted(() => ({
+  getBrowserRuntimeSettings: vi.fn(),
+  recoverBrowserRuntime: vi.fn(),
+  updateBrowserRuntimeSettings: vi.fn(),
+}))
 
 vi.mock("@/lib/browser-surface", () => surface)
+vi.mock("@/lib/api", () => api)
 vi.mock("@/contexts/tab-context", () => ({
   useTabStore: (selector: (state: { activeTabId: string }) => unknown) =>
     selector({ activeTabId: "tab-a" }),
@@ -21,7 +27,12 @@ vi.mock("next-intl", () => ({
   useTranslations: () => (key: string) => key,
 }))
 
-import { AuxPanelBrowserTab, browserFramePoint } from "./aux-panel-browser-tab"
+import {
+  AuxPanelBrowserTab,
+  browserFramePoint,
+  browserNativeSurfaceBounds,
+  browserPointerButton,
+} from "./aux-panel-browser-tab"
 import type {
   BrowserSurfaceAction,
   BrowserSurfaceEvent,
@@ -30,6 +41,7 @@ import type {
 
 const snapshot: BrowserSurfaceSnapshot = {
   sessionId: "connection-a",
+  surfaceKind: "native",
   tabs: [
     { id: "t1", title: "One", url: "https://one.example/" },
     { id: "t2", title: "Two", url: "https://two.example/" },
@@ -43,25 +55,47 @@ const snapshot: BrowserSurfaceSnapshot = {
   },
 }
 
+const frameSnapshot: BrowserSurfaceSnapshot = {
+  ...snapshot,
+  surfaceKind: "frame",
+}
+
 describe("AuxPanelBrowserTab", () => {
   let emit: ((event: BrowserSurfaceEvent) => void) | null
 
-  beforeEach(() => {
-    vi.clearAllMocks()
-    emit = null
-    connection.connectionId = "connection-a"
+  const attachSnapshot = (next: BrowserSurfaceSnapshot) => {
     surface.attachBrowserSurface.mockImplementation(
       async (
         _connectionId: string,
         listener: (event: BrowserSurfaceEvent) => void
       ) => {
         emit = listener
-        return snapshot
+        return next
       }
     )
+    surface.runBrowserSurfaceAction.mockResolvedValue(next)
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    emit = null
+    connection.connectionId = "connection-a"
+    attachSnapshot(snapshot)
     surface.detachBrowserSurface.mockResolvedValue(undefined)
     surface.closeBrowserSurface.mockResolvedValue(undefined)
-    surface.runBrowserSurfaceAction.mockResolvedValue(snapshot)
+    api.getBrowserRuntimeSettings.mockResolvedValue({
+      enabled: true,
+      autoStart: true,
+      browserPath: null,
+      backend: "embedded",
+    })
+    api.updateBrowserRuntimeSettings.mockResolvedValue({
+      enabled: true,
+      autoStart: true,
+      browserPath: null,
+      backend: "external",
+    })
+    api.recoverBrowserRuntime.mockResolvedValue(undefined)
   })
 
   it("attaches once to the real connection and renders every live target", async () => {
@@ -118,6 +152,54 @@ describe("AuxPanelBrowserTab", () => {
     expect(surface.closeBrowserSurface).not.toHaveBeenCalled()
   })
 
+  it("moves the native surface attachment when the Agent session changes", async () => {
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+    rect.mockReturnValue({
+      width: 240,
+      height: 180,
+      top: 80,
+      right: 400,
+      bottom: 260,
+      left: 160,
+      x: 160,
+      y: 80,
+      toJSON: () => ({}),
+    })
+    surface.attachBrowserSurface.mockImplementation(
+      async (
+        connectionId: string,
+        listener: (event: BrowserSurfaceEvent) => void
+      ) => {
+        emit = listener
+        return { ...snapshot, sessionId: connectionId }
+      }
+    )
+    const { rerender } = render(
+      <AuxPanelBrowserTab visible onExplicitClose={() => undefined} />
+    )
+    await waitFor(() => {
+      expect(surface.runBrowserSurfaceAction).toHaveBeenCalledWith(
+        "connection-a",
+        expect.objectContaining({ action: "surface", visible: true })
+      )
+    })
+
+    connection.connectionId = "connection-b"
+    rerender(<AuxPanelBrowserTab visible onExplicitClose={() => undefined} />)
+    await waitFor(() => {
+      expect(surface.detachBrowserSurface).toHaveBeenCalledWith("connection-a")
+      expect(surface.attachBrowserSurface).toHaveBeenCalledWith(
+        "connection-b",
+        expect.any(Function)
+      )
+      expect(surface.runBrowserSurfaceAction).toHaveBeenCalledWith(
+        "connection-b",
+        expect.objectContaining({ action: "surface", visible: true })
+      )
+    })
+    rect.mockRestore()
+  })
+
   it("explicit close releases the whole Browser session", async () => {
     const onExplicitClose = vi.fn()
     render(<AuxPanelBrowserTab visible onExplicitClose={onExplicitClose} />)
@@ -127,6 +209,29 @@ describe("AuxPanelBrowserTab", () => {
     await waitFor(() => {
       expect(surface.closeBrowserSurface).toHaveBeenCalledWith("connection-a")
       expect(onExplicitClose).toHaveBeenCalledWith("connection-a")
+    })
+  })
+
+  it("offers an explicit switch to External when native startup fails", async () => {
+    surface.attachBrowserSurface.mockRejectedValue(
+      new Error("NATIVE_CONTROLLER_FAILED")
+    )
+    render(<AuxPanelBrowserTab visible onExplicitClose={() => undefined} />)
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "NATIVE_CONTROLLER_FAILED"
+    )
+    fireEvent.click(screen.getByRole("button", { name: "switchToExternal" }))
+
+    await waitFor(() => {
+      expect(api.updateBrowserRuntimeSettings).toHaveBeenCalledWith({
+        enabled: true,
+        autoStart: true,
+        browserPath: null,
+        backend: "external",
+      })
+      expect(api.recoverBrowserRuntime).toHaveBeenCalledTimes(1)
+      expect(surface.attachBrowserSurface).toHaveBeenCalledTimes(2)
     })
   })
 
@@ -152,7 +257,109 @@ describe("AuxPanelBrowserTab", () => {
     expect(screen.queryByText("One")).not.toBeInTheDocument()
   })
 
-  it("resizes the real browser viewport to the rendered page region", async () => {
+  it("places and shows the native surface in logical window coordinates", async () => {
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+    rect.mockReturnValue({
+      width: 320,
+      height: 620,
+      top: 80,
+      right: 400,
+      bottom: 700,
+      left: 80,
+      x: 80,
+      y: 80,
+      toJSON: () => ({}),
+    })
+
+    render(<AuxPanelBrowserTab visible onExplicitClose={() => undefined} />)
+
+    await waitFor(() => {
+      expect(surface.runBrowserSurfaceAction).toHaveBeenCalledWith(
+        "connection-a",
+        {
+          action: "surface",
+          bounds: { x: 80, y: 80, width: 320, height: 620 },
+          visible: true,
+        }
+      )
+    })
+    rect.mockRestore()
+  })
+
+  it("hides the native child while a host menu is open and restores it", async () => {
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+    rect.mockReturnValue({
+      width: 320,
+      height: 200,
+      top: 80,
+      right: 400,
+      bottom: 280,
+      left: 80,
+      x: 80,
+      y: 80,
+      toJSON: () => ({}),
+    })
+    render(<AuxPanelBrowserTab visible onExplicitClose={() => undefined} />)
+    await waitFor(() => {
+      expect(surface.runBrowserSurfaceAction).toHaveBeenCalledWith(
+        "connection-a",
+        expect.objectContaining({ action: "surface", visible: true })
+      )
+    })
+
+    const menu = document.createElement("div")
+    menu.setAttribute("role", "menu")
+    menu.setAttribute("data-state", "open")
+    act(() => document.body.append(menu))
+    await waitFor(() => {
+      expect(surface.runBrowserSurfaceAction).toHaveBeenCalledWith(
+        "connection-a",
+        expect.objectContaining({ action: "surface", visible: false })
+      )
+    })
+
+    act(() => menu.remove())
+    await waitFor(() => {
+      const visibility = surface.runBrowserSurfaceAction.mock.calls
+        .map(([, action]) => action)
+        .filter((action) => action.action === "surface")
+        .map((action) => action.visible)
+      expect(visibility).toEqual([true, false, true])
+    })
+    rect.mockRestore()
+  })
+
+  it("does not render frames or reconstruct input for a native surface", async () => {
+    render(<AuxPanelBrowserTab visible onExplicitClose={() => undefined} />)
+    await screen.findByText("One")
+    act(() => {
+      emit?.({
+        type: "frame",
+        frame: {
+          targetId: "t1",
+          data: "AA==",
+          mimeType: "image/jpeg",
+          deviceWidth: 320,
+          deviceHeight: 200,
+          pageScaleFactor: 1,
+        },
+      })
+    })
+
+    const slot = screen.getByTestId("browser-surface-slot")
+    expect(slot).toHaveAttribute("data-surface-kind", "native")
+    expect(slot.querySelector("img")).toBeNull()
+    fireEvent.pointerDown(slot, { button: 0, clientX: 40, clientY: 60 })
+    fireEvent.keyDown(slot, { key: "a", code: "KeyA" })
+    expect(
+      surface.runBrowserSurfaceAction.mock.calls.some(
+        ([, action]) => action.action === "input"
+      )
+    ).toBe(false)
+  })
+
+  it("keeps frame viewport resizing for the External backend", async () => {
+    attachSnapshot(frameSnapshot)
     const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
     rect.mockReturnValue({
       width: 320,
@@ -167,7 +374,6 @@ describe("AuxPanelBrowserTab", () => {
     })
 
     render(<AuxPanelBrowserTab visible onExplicitClose={() => undefined} />)
-
     await waitFor(() => {
       expect(surface.runBrowserSurfaceAction).toHaveBeenCalledWith(
         "connection-a",
@@ -178,6 +384,7 @@ describe("AuxPanelBrowserTab", () => {
   })
 
   it("renders frames without non-uniform stretching", async () => {
+    attachSnapshot(frameSnapshot)
     render(<AuxPanelBrowserTab visible onExplicitClose={() => undefined} />)
     await screen.findByText("One")
     act(() => {
@@ -200,6 +407,7 @@ describe("AuxPanelBrowserTab", () => {
   })
 
   it("forwards pointer movement through the fitted frame", async () => {
+    attachSnapshot(frameSnapshot)
     render(<AuxPanelBrowserTab visible onExplicitClose={() => undefined} />)
     await screen.findByText("One")
     act(() => {
@@ -255,7 +463,17 @@ describe("AuxPanelBrowserTab", () => {
     })
   })
 
+  it.each([
+    [0, "none"],
+    [1, "left"],
+    [2, "right"],
+    [4, "middle"],
+  ] as const)("maps pointer buttons=%d to %s", (buttons, button) => {
+    expect(browserPointerButton(buttons)).toBe(button)
+  })
+
   it("refreshes the pointer position before pressing", async () => {
+    attachSnapshot(frameSnapshot)
     render(<AuxPanelBrowserTab visible onExplicitClose={() => undefined} />)
     await screen.findByText("One")
     act(() => {
@@ -292,7 +510,7 @@ describe("AuxPanelBrowserTab", () => {
           action.input.kind !== "mouse" ||
           action.input.event !== "moved"
         ) {
-          return snapshot
+          return frameSnapshot
         }
         return await new Promise<BrowserSurfaceSnapshot>((resolve) => {
           resolveMoved = resolve
@@ -328,7 +546,7 @@ describe("AuxPanelBrowserTab", () => {
       ])
     })
 
-    act(() => resolveMoved?.(snapshot))
+    act(() => resolveMoved?.(frameSnapshot))
 
     await waitFor(() => {
       const inputActions = surface.runBrowserSurfaceAction.mock.calls
@@ -390,5 +608,15 @@ describe("AuxPanelBrowserTab", () => {
     expect(browserFramePoint(320, 200, 1_600, 900, -1, 100)).toBeNull()
     expect(browserFramePoint(320, 200, 1_600, 900, 321, 100)).toBeNull()
     expect(browserFramePoint(320, 200, 1_600, 900, 160, 201)).toBeNull()
+  })
+
+  it("clips native logical bounds without applying device pixel scaling", () => {
+    expect(
+      browserNativeSurfaceBounds(
+        { left: -20, top: 80, right: 400, bottom: 700 },
+        1_024,
+        640
+      )
+    ).toEqual({ x: 0, y: 80, width: 400, height: 560 })
   })
 })

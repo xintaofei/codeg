@@ -5,6 +5,8 @@ import { resolve } from "node:path"
 import { BrowserRuntime } from "./browser-runtime.js"
 import { ChromeBackend } from "./chrome-backend.js"
 import { BrowserSidecarServer } from "./mcp-server.js"
+import { NativeWebViewBackend } from "./native-webview-backend.js"
+import type { BrowserBackend } from "./runtime-types.js"
 
 interface CliOptions {
   profileDir: string
@@ -28,13 +30,7 @@ async function main(): Promise<void> {
   if (!token || Buffer.byteLength(token, "utf8") < 32) {
     throw new Error("missing_or_short_control_token")
   }
-
-  const backend = new ChromeBackend({
-    profileDir: options.profileDir,
-    downloadDir: options.downloadDir,
-    browserPath: options.browserPath,
-    headless: options.backend === "embedded",
-  })
+  const backend = createBackend(options)
   const runtime = new BrowserRuntime(backend)
   const sidecar = new BrowserSidecarServer({
     runtime,
@@ -79,6 +75,23 @@ async function main(): Promise<void> {
       ok: result.envelope.ok,
     })
   }
+}
+
+function createBackend(options: CliOptions): BrowserBackend {
+  if (options.backend === "embedded") {
+    const endpoint = process.env.CODEG_BROWSER_NATIVE_BRIDGE_ENDPOINT
+    const token = process.env.CODEG_BROWSER_NATIVE_BRIDGE_TOKEN
+    if (!endpoint || !token) {
+      throw new Error("native_webview_bridge_credentials_missing")
+    }
+    return new NativeWebViewBackend({ endpoint, token })
+  }
+  return new ChromeBackend({
+    profileDir: options.profileDir,
+    downloadDir: options.downloadDir,
+    browserPath: options.browserPath,
+    headless: false,
+  })
 }
 
 function parseArguments(args: string[]): CliOptions {

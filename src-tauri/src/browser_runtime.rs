@@ -2,6 +2,8 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+#[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -18,6 +20,11 @@ use tokio::sync::{oneshot, Mutex};
 use crate::acp::connection::BrowserMcpProvider;
 use crate::db::service::app_metadata_service;
 use crate::db::AppDatabase;
+#[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+use crate::native_browser_runtime::{
+    NativeBrowserError, NativeBrowserRuntime, NativeBrowserSnapshot, NativeHistoryDirection,
+    NativeSurfaceBounds,
+};
 use crate::web::event_bridge::{emit_event, EventEmitter};
 
 const SETTINGS_KEY: &str = "browser_runtime_settings";
@@ -28,7 +35,7 @@ const HEALTH_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const HEALTH_POLL_TIMEOUT: Duration = Duration::from_secs(5);
 const LOG_LIMIT: usize = 100;
 const EXTERNAL_BACKEND_ID: &str = "external_chromium_cdp";
-const EMBEDDED_BACKEND_ID: &str = "embedded_chromium_cdp";
+const EMBEDDED_BACKEND_ID: &str = "embedded_webview2";
 const SURFACE_EVENT: &str = "browser://session-activity";
 #[cfg(feature = "tauri-runtime")]
 const MAX_SURFACE_EVENT_BYTES: usize = 10 * 1024 * 1024;
@@ -137,10 +144,20 @@ pub struct BrowserSurfacePageState {
     pub can_go_forward: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserSurfaceKind {
+    #[default]
+    Frame,
+    Native,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserSurfaceSnapshot {
     pub session_id: String,
+    #[serde(default)]
+    pub surface_kind: BrowserSurfaceKind,
     pub tabs: Vec<BrowserSurfaceTab>,
     pub active_target_id: Option<String>,
     pub active: Option<BrowserSurfacePageState>,
@@ -193,6 +210,8 @@ pub enum BrowserRuntimeError {
     ReadyTimeout,
     #[error("Browser runtime control request failed")]
     ControlFailed,
+    #[error("Native Browser runtime operation failed")]
+    NativeFailed,
     #[error("Browser runtime settings could not be saved")]
     SettingsFailed,
 }
@@ -200,6 +219,8 @@ pub enum BrowserRuntimeError {
 struct BrowserRuntimePrivate {
     status: BrowserRuntimeStatus,
     settings: BrowserRuntimeSettings,
+    sidecar_installed: bool,
+    sidecar_backend: Option<BrowserRuntimeBackend>,
     child: Option<Child>,
     endpoint: Option<String>,
     token: Option<String>,
@@ -260,6 +281,8 @@ pub struct BrowserRuntimeManager {
     stream_client: reqwest::Client,
     surface_registry: Arc<Mutex<BrowserSurfaceRegistry>>,
     surface_attach_gate: Arc<Mutex<()>>,
+    #[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+    native_runtime: Arc<StdMutex<Option<NativeBrowserRuntime>>>,
 }
 
 impl BrowserRuntimeManager {
@@ -301,6 +324,8 @@ impl BrowserRuntimeManager {
                     recent_logs: Vec::new(),
                 },
                 settings: BrowserRuntimeSettings::default(),
+                sidecar_installed: installed,
+                sidecar_backend: None,
                 child: None,
                 endpoint: None,
                 token: None,
@@ -319,6 +344,19 @@ impl BrowserRuntimeManager {
                 .expect("Browser surface HTTP client configuration is valid"),
             surface_registry: Arc::new(Mutex::new(BrowserSurfaceRegistry::default())),
             surface_attach_gate: Arc::new(Mutex::new(())),
+            #[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+            native_runtime: Arc::new(StdMutex::new(None)),
+        }
+    }
+
+    #[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+    pub fn install_native_runtime(&self, app: tauri::AppHandle) {
+        if let Ok(mut slot) = self.native_runtime.lock() {
+            *slot = Some(NativeBrowserRuntime::new(
+                app,
+                &self.data_dir,
+                self.emitter.clone(),
+            ));
         }
     }
 
@@ -349,7 +387,12 @@ impl BrowserRuntimeManager {
     ) -> Result<BrowserRuntimeSettings, BrowserRuntimeError> {
         let settings = normalize_settings(settings);
         let previous = self.settings().await;
-        let was_running = self.inner.lock().await.child.is_some();
+        let was_running = matches!(
+            self.inner.lock().await.status.state,
+            BrowserRuntimeState::Starting
+                | BrowserRuntimeState::Ready
+                | BrowserRuntimeState::Recovering
+        );
         let backend_changed = settings.backend != previous.backend;
 
         if backend_changed && was_running {
@@ -384,19 +427,27 @@ impl BrowserRuntimeManager {
     }
 
     pub async fn start(&self) -> Result<BrowserRuntimeStatus, BrowserRuntimeError> {
-        let already_running = {
+        let (already_running, backend) = {
             let mut inner = self.inner.lock().await;
             if inner.status.state == BrowserRuntimeState::Ready {
                 return Ok(inner.status.clone());
             }
             inner.status.state = BrowserRuntimeState::Starting;
             inner.status.last_error_code = None;
-            inner.endpoint.is_some()
+            (inner.endpoint.is_some(), inner.settings.backend)
         };
         self.emit_status().await;
 
+        if backend == BrowserRuntimeBackend::Embedded {
+            if let Err(error) = self.start_embedded().await {
+                self.set_error(error_code(&error)).await;
+                return Err(error);
+            }
+            return Ok(self.status().await);
+        }
+
         if !already_running {
-            if let Err(error) = self.spawn_sidecar().await {
+            if let Err(error) = self.spawn_sidecar(None).await {
                 self.set_error(error_code(&error)).await;
                 return Err(error);
             }
@@ -410,6 +461,34 @@ impl BrowserRuntimeManager {
     }
 
     pub async fn stop(&self) -> Result<BrowserRuntimeStatus, BrowserRuntimeError> {
+        let backend = self.inner.lock().await.settings.backend;
+        if backend == BrowserRuntimeBackend::Embedded {
+            self.detach_all_surfaces(true).await;
+            if self.inner.lock().await.endpoint.is_some() {
+                let _ = self.control("stop").await;
+            }
+            self.terminate_sidecar().await;
+            self.stop_embedded().await;
+            let mut inner = self.inner.lock().await;
+            inner.endpoint = None;
+            inner.token = None;
+            inner.sidecar_backend = None;
+            inner.status.sidecar_pid = None;
+            inner.status.browser_pid = None;
+            inner.status.runtime_version = None;
+            inner.status.browser_name = None;
+            inner.status.browser_version = None;
+            inner.status.recovery_attempt = 0;
+            inner.status.last_error_code = None;
+            inner.status.state = if inner.status.installed {
+                BrowserRuntimeState::Stopped
+            } else {
+                BrowserRuntimeState::NotInstalled
+            };
+            drop(inner);
+            self.emit_status().await;
+            return Ok(self.status().await);
+        }
         self.detach_all_surfaces(false).await;
         let has_endpoint = self.inner.lock().await.endpoint.is_some();
         if has_endpoint {
@@ -419,6 +498,7 @@ impl BrowserRuntimeManager {
             let mut inner = self.inner.lock().await;
             inner.endpoint = None;
             inner.token = None;
+            inner.sidecar_backend = None;
             inner.status.sidecar_pid = None;
             inner.status.browser_pid = None;
             inner.status.runtime_version = None;
@@ -446,6 +526,20 @@ impl BrowserRuntimeManager {
     }
 
     pub async fn recover(&self) -> Result<BrowserRuntimeStatus, BrowserRuntimeError> {
+        let backend = self.inner.lock().await.settings.backend;
+        if backend == BrowserRuntimeBackend::Embedded {
+            {
+                let mut inner = self.inner.lock().await;
+                inner.status.state = BrowserRuntimeState::Recovering;
+                inner.status.last_error_code = None;
+            }
+            self.emit_status().await;
+            if let Err(error) = self.recover_embedded().await {
+                self.set_error(error_code(&error)).await;
+                return Err(error);
+            }
+            return Ok(self.status().await);
+        }
         self.detach_all_surfaces(false).await;
         {
             let mut inner = self.inner.lock().await;
@@ -454,7 +548,7 @@ impl BrowserRuntimeManager {
         }
         self.emit_status().await;
         if self.inner.lock().await.endpoint.is_none() {
-            self.spawn_sidecar().await?;
+            self.spawn_sidecar(None).await?;
         }
         if let Err(error) = self.control("recover").await {
             self.set_error(error_code(&error)).await;
@@ -465,13 +559,19 @@ impl BrowserRuntimeManager {
     }
 
     pub async fn doctor(&self) -> Result<serde_json::Value, BrowserRuntimeError> {
+        if self.inner.lock().await.settings.backend == BrowserRuntimeBackend::Embedded {
+            return self.embedded_doctor();
+        }
         if self.inner.lock().await.endpoint.is_none() {
-            self.spawn_sidecar().await?;
+            self.spawn_sidecar(None).await?;
         }
         self.control("doctor").await
     }
 
     pub async fn diagnostics(&self) -> Result<serde_json::Value, BrowserRuntimeError> {
+        if self.inner.lock().await.settings.backend == BrowserRuntimeBackend::Embedded {
+            return self.embedded_diagnostics();
+        }
         if self.inner.lock().await.endpoint.is_none() {
             return Ok(serde_json::json!({
                 "status": self.status().await,
@@ -489,6 +589,20 @@ impl BrowserRuntimeManager {
             .await
             .entries
             .remove(session_id);
+        if self.inner.lock().await.settings.backend == BrowserRuntimeBackend::Embedded {
+            let released = self
+                .request(
+                    reqwest::Method::POST,
+                    "/admin/release-session",
+                    Some(serde_json::json!({ "sessionId": session_id })),
+                )
+                .await
+                .is_ok();
+            if !released {
+                self.release_embedded_session(session_id).await;
+            }
+            return;
+        }
         let _ = self
             .request(
                 reqwest::Method::POST,
@@ -504,6 +618,9 @@ impl BrowserRuntimeManager {
     ) -> Result<BrowserSurfaceSnapshot, BrowserRuntimeError> {
         validate_connection_id(connection_id)?;
         self.surface_registry.lock().await.ensure(connection_id);
+        if self.inner.lock().await.settings.backend == BrowserRuntimeBackend::Embedded {
+            return self.ensure_embedded_surface(connection_id).await;
+        }
         let value = self
             .request(
                 reqwest::Method::POST,
@@ -521,6 +638,9 @@ impl BrowserRuntimeManager {
     ) -> Result<BrowserSurfaceSnapshot, BrowserRuntimeError> {
         validate_connection_id(connection_id)?;
         self.surface_registry.lock().await.ensure(connection_id);
+        if self.inner.lock().await.settings.backend == BrowserRuntimeBackend::Embedded {
+            return self.embedded_surface_action(connection_id, action).await;
+        }
         let mut body = action
             .as_object()
             .cloned()
@@ -549,6 +669,7 @@ impl BrowserRuntimeManager {
         let _gate = self.surface_attach_gate.lock().await;
         self.stop_surface_attachment(connection_id).await;
         let snapshot = self.ensure_surface(connection_id).await?;
+        let embedded = self.inner.lock().await.settings.backend == BrowserRuntimeBackend::Embedded;
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let (done_tx, done_rx) = oneshot::channel();
         let generation = {
@@ -568,11 +689,16 @@ impl BrowserRuntimeManager {
         let manager = self.clone();
         let owned_connection_id = connection_id.to_string();
         tokio::spawn(async move {
-            if manager
-                .run_surface_stream(&owned_connection_id, channel.clone(), cancel_rx)
-                .await
-                .is_err()
-            {
+            let stream_result = if embedded {
+                manager
+                    .run_native_surface_stream(&owned_connection_id, channel.clone(), cancel_rx)
+                    .await
+            } else {
+                manager
+                    .run_surface_stream(&owned_connection_id, channel.clone(), cancel_rx)
+                    .await
+            };
+            if stream_result.is_err() {
                 let _ = channel.send(BrowserSurfaceEvent::Error {
                     code: "SURFACE_STREAM_FAILED".to_string(),
                     message: "Browser surface stream disconnected".to_string(),
@@ -599,6 +725,7 @@ impl BrowserRuntimeManager {
         validate_connection_id(connection_id)?;
         let _gate = self.surface_attach_gate.lock().await;
         self.stop_surface_attachment(connection_id).await;
+        self.hide_embedded_surface(connection_id);
         Ok(())
     }
 
@@ -607,6 +734,20 @@ impl BrowserRuntimeManager {
         let _gate = self.surface_attach_gate.lock().await;
         self.stop_surface_attachment(connection_id).await;
         self.surface_registry.lock().await.remove(connection_id);
+        if self.inner.lock().await.settings.backend == BrowserRuntimeBackend::Embedded {
+            let released = self
+                .request(
+                    reqwest::Method::POST,
+                    "/admin/release-session",
+                    Some(serde_json::json!({ "sessionId": connection_id })),
+                )
+                .await
+                .is_ok();
+            if !released {
+                self.release_embedded_session(connection_id).await;
+            }
+            return Ok(());
+        }
         self.request(
             reqwest::Method::POST,
             "/admin/release-session",
@@ -642,6 +783,7 @@ impl BrowserRuntimeManager {
         if remove_entries {
             self.surface_registry.lock().await.entries.clear();
         }
+        self.hide_all_embedded_surfaces();
     }
 
     #[cfg(feature = "tauri-runtime")]
@@ -734,7 +876,389 @@ impl BrowserRuntimeManager {
         Ok(())
     }
 
-    async fn spawn_sidecar(&self) -> Result<(), BrowserRuntimeError> {
+    #[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+    fn native_runtime(&self) -> Result<NativeBrowserRuntime, BrowserRuntimeError> {
+        self.native_runtime
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+            .ok_or(BrowserRuntimeError::NativeFailed)
+    }
+
+    async fn start_embedded(&self) -> Result<(), BrowserRuntimeError> {
+        #[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+        {
+            let runtime = self.native_runtime()?;
+            let credentials = runtime.start().await.map_err(map_native_error)?;
+            let needs_sidecar = {
+                let inner = self.inner.lock().await;
+                inner.child.is_none()
+                    || inner.endpoint.is_none()
+                    || inner.sidecar_backend != Some(BrowserRuntimeBackend::Embedded)
+            };
+            if needs_sidecar {
+                if let Err(error) = self
+                    .spawn_sidecar(Some((credentials.endpoint, credentials.token)))
+                    .await
+                {
+                    runtime.stop().await;
+                    return Err(error);
+                }
+            }
+            if let Err(error) = self.control("start").await {
+                self.terminate_sidecar().await;
+                runtime.stop().await;
+                return Err(error);
+            }
+            if let Err(error) = self.refresh_health().await {
+                self.terminate_sidecar().await;
+                runtime.stop().await;
+                return Err(error);
+            }
+            let mut inner = self.inner.lock().await;
+            inner.status.installed = true;
+            inner.status.browser_pid = None;
+            let sidecar_version = inner
+                .status
+                .runtime_version
+                .clone()
+                .unwrap_or_else(|| "sidecar".to_string());
+            inner.status.runtime_version = Some(format!(
+                "{}+native-bridge-v{}",
+                sidecar_version,
+                crate::native_browser_runtime::NATIVE_BRIDGE_PROTOCOL_VERSION,
+            ));
+            inner.status.backend = EMBEDDED_BACKEND_ID.to_string();
+            inner.status.browser_name = Some("Microsoft Edge WebView2".to_string());
+            inner.status.browser_version = None;
+            inner.status.recovery_attempt = 0;
+            inner.status.last_error_code = None;
+            inner.status.state = BrowserRuntimeState::Ready;
+            push_log(&mut inner.status, "native_bridge_ready");
+            drop(inner);
+            self.emit_status().await;
+            Ok(())
+        }
+        #[cfg(not(all(feature = "tauri-runtime", target_os = "windows")))]
+        {
+            Err(BrowserRuntimeError::UnsupportedPlatform)
+        }
+    }
+
+    async fn stop_embedded(&self) {
+        #[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+        if let Ok(runtime) = self.native_runtime() {
+            runtime.stop().await;
+        }
+    }
+
+    async fn recover_embedded(&self) -> Result<(), BrowserRuntimeError> {
+        #[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+        {
+            let runtime = self.native_runtime()?;
+            let credentials = runtime.start().await.map_err(map_native_error)?;
+            runtime
+                .recover_failed_tabs()
+                .await
+                .map_err(map_native_error)?;
+            let needs_sidecar = {
+                let inner = self.inner.lock().await;
+                inner.child.is_none()
+                    || inner.endpoint.is_none()
+                    || inner.sidecar_backend != Some(BrowserRuntimeBackend::Embedded)
+            };
+            if needs_sidecar {
+                self.spawn_sidecar(Some((credentials.endpoint, credentials.token)))
+                    .await?;
+            }
+            self.control("recover").await?;
+            self.refresh_health().await?;
+            let mut inner = self.inner.lock().await;
+            inner.status.installed = true;
+            inner.status.state = BrowserRuntimeState::Ready;
+            inner.status.last_error_code = None;
+            inner.status.recovery_attempt = 0;
+            push_log(&mut inner.status, "native_recovered");
+            drop(inner);
+            self.emit_status().await;
+            Ok(())
+        }
+        #[cfg(not(all(feature = "tauri-runtime", target_os = "windows")))]
+        {
+            Err(BrowserRuntimeError::UnsupportedPlatform)
+        }
+    }
+
+    fn embedded_doctor(&self) -> Result<serde_json::Value, BrowserRuntimeError> {
+        #[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+        {
+            Ok(self.native_runtime()?.doctor())
+        }
+        #[cfg(not(all(feature = "tauri-runtime", target_os = "windows")))]
+        {
+            Err(BrowserRuntimeError::UnsupportedPlatform)
+        }
+    }
+
+    fn embedded_diagnostics(&self) -> Result<serde_json::Value, BrowserRuntimeError> {
+        #[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+        {
+            Ok(self.native_runtime()?.diagnostics())
+        }
+        #[cfg(not(all(feature = "tauri-runtime", target_os = "windows")))]
+        {
+            Err(BrowserRuntimeError::UnsupportedPlatform)
+        }
+    }
+
+    async fn release_embedded_session(&self, _connection_id: &str) {
+        #[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+        if let Ok(runtime) = self.native_runtime() {
+            runtime.release_session(_connection_id).await;
+        }
+    }
+
+    async fn ensure_embedded_surface(
+        &self,
+        connection_id: &str,
+    ) -> Result<BrowserSurfaceSnapshot, BrowserRuntimeError> {
+        #[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+        {
+            let snapshot = self
+                .native_runtime()?
+                .ensure_session(connection_id)
+                .await
+                .map_err(map_native_error)?;
+            Ok(native_snapshot_to_surface(snapshot))
+        }
+        #[cfg(not(all(feature = "tauri-runtime", target_os = "windows")))]
+        {
+            let _ = connection_id;
+            Err(BrowserRuntimeError::UnsupportedPlatform)
+        }
+    }
+
+    async fn embedded_surface_action(
+        &self,
+        connection_id: &str,
+        action: serde_json::Value,
+    ) -> Result<BrowserSurfaceSnapshot, BrowserRuntimeError> {
+        #[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+        {
+            let runtime = self.native_runtime()?;
+            let object = action
+                .as_object()
+                .ok_or(BrowserRuntimeError::ControlFailed)?;
+            let action_name = object
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .ok_or(BrowserRuntimeError::ControlFailed)?;
+            let snapshot = match action_name {
+                "open" => {
+                    let url = object.get("url").and_then(serde_json::Value::as_str);
+                    runtime
+                        .create_tab(connection_id, url)
+                        .await
+                        .map_err(map_native_error)?
+                }
+                "focus" | "close" => {
+                    let tab_id = object
+                        .get("targetId")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or(BrowserRuntimeError::ControlFailed)?;
+                    let snapshot = runtime.snapshot(connection_id).map_err(map_native_error)?;
+                    let generation = snapshot
+                        .tabs
+                        .iter()
+                        .find(|tab| tab.id == tab_id)
+                        .map(|tab| tab.generation)
+                        .ok_or(BrowserRuntimeError::ControlFailed)?;
+                    if action_name == "focus" {
+                        runtime
+                            .focus_tab(connection_id, tab_id, generation)
+                            .map_err(map_native_error)?
+                    } else {
+                        runtime
+                            .close_tab(connection_id, tab_id, generation)
+                            .await
+                            .map_err(map_native_error)?
+                    }
+                }
+                "surface" => {
+                    let bounds = object
+                        .get("bounds")
+                        .and_then(serde_json::Value::as_object)
+                        .ok_or(BrowserRuntimeError::ControlFailed)?;
+                    let x = bounds
+                        .get("x")
+                        .and_then(serde_json::Value::as_f64)
+                        .ok_or(BrowserRuntimeError::ControlFailed)?;
+                    let y = bounds
+                        .get("y")
+                        .and_then(serde_json::Value::as_f64)
+                        .ok_or(BrowserRuntimeError::ControlFailed)?;
+                    let width = bounds
+                        .get("width")
+                        .and_then(serde_json::Value::as_f64)
+                        .ok_or(BrowserRuntimeError::ControlFailed)?;
+                    let height = bounds
+                        .get("height")
+                        .and_then(serde_json::Value::as_f64)
+                        .ok_or(BrowserRuntimeError::ControlFailed)?;
+                    let visible = object
+                        .get("visible")
+                        .and_then(serde_json::Value::as_bool)
+                        .ok_or(BrowserRuntimeError::ControlFailed)?;
+                    let (tab_id, generation) = runtime
+                        .active_identity(connection_id)
+                        .map_err(map_native_error)?;
+                    runtime
+                        .set_surface(
+                            connection_id,
+                            &tab_id,
+                            generation,
+                            NativeSurfaceBounds {
+                                x,
+                                y,
+                                width,
+                                height,
+                            },
+                            visible,
+                        )
+                        .map_err(map_native_error)?
+                }
+                "navigate" => {
+                    let url = object
+                        .get("url")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or(BrowserRuntimeError::ControlFailed)?;
+                    let (tab_id, generation) = runtime
+                        .active_identity(connection_id)
+                        .map_err(map_native_error)?;
+                    runtime
+                        .navigate(connection_id, &tab_id, generation, url)
+                        .map_err(map_native_error)?
+                }
+                "back" | "forward" => {
+                    let (tab_id, generation) = runtime
+                        .active_identity(connection_id)
+                        .map_err(map_native_error)?;
+                    runtime
+                        .go_history(
+                            connection_id,
+                            &tab_id,
+                            generation,
+                            if action_name == "back" {
+                                NativeHistoryDirection::Back
+                            } else {
+                                NativeHistoryDirection::Forward
+                            },
+                        )
+                        .map_err(map_native_error)?
+                }
+                "reload" | "stop" => {
+                    let (tab_id, generation) = runtime
+                        .active_identity(connection_id)
+                        .map_err(map_native_error)?;
+                    if action_name == "reload" {
+                        runtime
+                            .reload(connection_id, &tab_id, generation)
+                            .map_err(map_native_error)?
+                    } else {
+                        runtime
+                            .stop_loading(connection_id, &tab_id, generation)
+                            .map_err(map_native_error)?
+                    }
+                }
+                // Native WebView2 receives user input directly. Keeping the old
+                // host-coordinate input action alive would recreate the split
+                // interaction path B2-18 is replacing.
+                "resize" | "input" => return Err(BrowserRuntimeError::ControlFailed),
+                _ => return Err(BrowserRuntimeError::ControlFailed),
+            };
+            Ok(native_snapshot_to_surface(snapshot))
+        }
+        #[cfg(not(all(feature = "tauri-runtime", target_os = "windows")))]
+        {
+            let _ = (connection_id, action);
+            Err(BrowserRuntimeError::UnsupportedPlatform)
+        }
+    }
+
+    #[cfg(feature = "tauri-runtime")]
+    async fn run_native_surface_stream(
+        &self,
+        connection_id: &str,
+        channel: Channel<BrowserSurfaceEvent>,
+        mut cancel: oneshot::Receiver<()>,
+    ) -> Result<(), BrowserRuntimeError> {
+        #[cfg(target_os = "windows")]
+        {
+            let runtime = self.native_runtime()?;
+            let mut updates = runtime.subscribe();
+            let initial = native_snapshot_to_surface(
+                runtime.snapshot(connection_id).map_err(map_native_error)?,
+            );
+            if channel
+                .send(BrowserSurfaceEvent::Snapshot { snapshot: initial })
+                .is_err()
+            {
+                return Ok(());
+            }
+            loop {
+                tokio::select! {
+                    _ = &mut cancel => return Ok(()),
+                    update = updates.recv() => {
+                        match update {
+                            Ok(updated_connection) if updated_connection == connection_id => {
+                                let snapshot = native_snapshot_to_surface(
+                                    runtime.snapshot(connection_id).map_err(map_native_error)?,
+                                );
+                                if channel.send(BrowserSurfaceEvent::Snapshot { snapshot }).is_err() {
+                                    return Ok(());
+                                }
+                            }
+                            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                return Err(BrowserRuntimeError::NativeFailed);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (connection_id, channel, &mut cancel);
+            Err(BrowserRuntimeError::UnsupportedPlatform)
+        }
+    }
+
+    fn hide_embedded_surface(&self, _connection_id: &str) {
+        #[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+        if let Ok(runtime) = self.native_runtime() {
+            runtime.hide_session(_connection_id);
+        }
+    }
+
+    fn hide_all_embedded_surfaces(&self) {
+        #[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+        if let Ok(runtime) = self.native_runtime() {
+            runtime.hide_all();
+        }
+    }
+
+    #[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+    pub fn sync_native_surface_geometry(&self) {
+        if let Ok(runtime) = self.native_runtime() {
+            runtime.reapply_surface_geometry();
+        }
+    }
+
+    async fn spawn_sidecar(
+        &self,
+        native_bridge: Option<(String, String)>,
+    ) -> Result<(), BrowserRuntimeError> {
         let executable = locate_sidecar().ok_or({
             if cfg!(windows) {
                 BrowserRuntimeError::NotInstalled
@@ -773,6 +1297,17 @@ impl BrowserRuntimeManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        match (backend, native_bridge) {
+            (BrowserRuntimeBackend::Embedded, Some((endpoint, token))) => {
+                command
+                    .env("CODEG_BROWSER_NATIVE_BRIDGE_ENDPOINT", endpoint)
+                    .env("CODEG_BROWSER_NATIVE_BRIDGE_TOKEN", token);
+            }
+            (BrowserRuntimeBackend::Embedded, None) => {
+                return Err(BrowserRuntimeError::NativeFailed);
+            }
+            (BrowserRuntimeBackend::External, _) => {}
+        }
         if let Some(path) = browser_path {
             command.arg("--browser-path").arg(path);
         }
@@ -795,9 +1330,11 @@ impl BrowserRuntimeManager {
             inner.child = Some(child);
             inner.endpoint = Some(endpoint);
             inner.token = Some(token);
+            inner.sidecar_backend = Some(backend);
             inner.status.sidecar_pid = sidecar_pid;
             inner.status.runtime_version = Some(ready.version);
             inner.status.installed = true;
+            inner.sidecar_installed = true;
             push_log(&mut inner.status, "sidecar_ready");
         }
         self.spawn_stdout_drain(lines);
@@ -809,6 +1346,26 @@ impl BrowserRuntimeManager {
             self.spawn_health_monitor(pid);
         }
         Ok(())
+    }
+
+    async fn terminate_sidecar(&self) {
+        let child = {
+            let mut inner = self.inner.lock().await;
+            inner.endpoint = None;
+            inner.token = None;
+            inner.sidecar_backend = None;
+            inner.status.sidecar_pid = None;
+            inner.status.runtime_version = None;
+            inner.child.take()
+        };
+        if let Some(mut child) = child {
+            if let Some(pid) = child.id() {
+                let _ = kill_tree::tokio::kill_tree(pid).await;
+            } else {
+                let _ = child.start_kill();
+            }
+            let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
+        }
     }
 
     fn spawn_stdout_drain(&self, mut lines: Lines<BufReader<ChildStdout>>) {
@@ -886,6 +1443,7 @@ impl BrowserRuntimeManager {
                             inner.child = None;
                             inner.endpoint = None;
                             inner.token = None;
+                            inner.sidecar_backend = None;
                             inner.status.sidecar_pid = None;
                             inner.status.browser_pid = None;
                             inner.status.runtime_version = None;
@@ -1060,12 +1618,34 @@ impl BrowserRuntimeManager {
     }
 
     async fn apply_settings_snapshot(&self, settings: BrowserRuntimeSettings) {
+        #[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+        let native_installed = self
+            .native_runtime
+            .lock()
+            .ok()
+            .is_some_and(|slot| slot.is_some());
+        #[cfg(not(all(feature = "tauri-runtime", target_os = "windows")))]
+        let native_installed = false;
         let mut inner = self.inner.lock().await;
         inner.settings = settings.clone();
         inner.status.enabled = settings.enabled;
         inner.status.auto_start = settings.auto_start;
         inner.status.browser_path = settings.browser_path;
         inner.status.backend = settings.backend.id().to_string();
+        inner.status.installed = match settings.backend {
+            BrowserRuntimeBackend::Embedded => native_installed && inner.sidecar_installed,
+            BrowserRuntimeBackend::External => inner.sidecar_installed,
+        };
+        if matches!(
+            inner.status.state,
+            BrowserRuntimeState::Stopped | BrowserRuntimeState::NotInstalled
+        ) {
+            inner.status.state = if inner.status.installed {
+                BrowserRuntimeState::Stopped
+            } else {
+                BrowserRuntimeState::NotInstalled
+            };
+        }
         drop(inner);
         self.emit_status().await;
     }
@@ -1093,7 +1673,9 @@ impl BrowserMcpProvider for BrowserRuntimeManager {
     async fn server_for_session(&self, session_id: &str) -> Option<McpServer> {
         validate_connection_id(session_id).ok()?;
         let inner = self.inner.lock().await;
-        if inner.status.state != BrowserRuntimeState::Ready {
+        if inner.status.state != BrowserRuntimeState::Ready
+            || inner.sidecar_backend != Some(inner.settings.backend)
+        {
             return None;
         }
         let endpoint = inner.endpoint.as_ref()?;
@@ -1178,6 +1760,8 @@ fn sanitize_log_code(code: &str) -> String {
         "sidecar_ready",
         "sidecar_exited",
         "sidecar_stderr",
+        "native_bridge_ready",
+        "native_recovered",
         "missing_or_short_control_token",
         "profile_and_download_directories_are_required",
         "invalid_argument",
@@ -1191,6 +1775,7 @@ fn sanitize_log_code(code: &str) -> String {
         "SIDECAR_START_FAILED",
         "SIDECAR_READY_TIMEOUT",
         "CONTROL_REQUEST_FAILED",
+        "NATIVE_RUNTIME_FAILED",
         "SETTINGS_FAILED",
     ];
     if ALLOWED.contains(&code) {
@@ -1250,6 +1835,49 @@ fn validate_surface_snapshot(
     Ok(())
 }
 
+#[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+fn map_native_error(error: NativeBrowserError) -> BrowserRuntimeError {
+    if error == NativeBrowserError::UnsupportedPlatform {
+        BrowserRuntimeError::UnsupportedPlatform
+    } else {
+        BrowserRuntimeError::NativeFailed
+    }
+}
+
+#[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+fn native_snapshot_to_surface(snapshot: NativeBrowserSnapshot) -> BrowserSurfaceSnapshot {
+    let tabs = snapshot
+        .tabs
+        .iter()
+        .map(|tab| BrowserSurfaceTab {
+            id: tab.id.clone(),
+            url: tab.url.clone(),
+            title: tab.title.clone(),
+        })
+        .collect::<Vec<_>>();
+    let active = snapshot.active_tab_id.as_ref().and_then(|active_tab_id| {
+        snapshot.tabs.iter().find_map(|tab| {
+            (tab.id == *active_tab_id).then(|| BrowserSurfacePageState {
+                tab: BrowserSurfaceTab {
+                    id: tab.id.clone(),
+                    url: tab.url.clone(),
+                    title: tab.title.clone(),
+                },
+                loading: tab.loading,
+                can_go_back: tab.can_go_back,
+                can_go_forward: tab.can_go_forward,
+            })
+        })
+    });
+    BrowserSurfaceSnapshot {
+        session_id: snapshot.connection_id,
+        surface_kind: BrowserSurfaceKind::Native,
+        tabs,
+        active_target_id: snapshot.active_tab_id,
+        active,
+    }
+}
+
 fn error_code(error: &BrowserRuntimeError) -> &'static str {
     match error {
         BrowserRuntimeError::UnsupportedPlatform => "UNSUPPORTED_PLATFORM",
@@ -1258,6 +1886,7 @@ fn error_code(error: &BrowserRuntimeError) -> &'static str {
         BrowserRuntimeError::StartFailed => "SIDECAR_START_FAILED",
         BrowserRuntimeError::ReadyTimeout => "SIDECAR_READY_TIMEOUT",
         BrowserRuntimeError::ControlFailed => "CONTROL_REQUEST_FAILED",
+        BrowserRuntimeError::NativeFailed => "NATIVE_RUNTIME_FAILED",
         BrowserRuntimeError::SettingsFailed => "SETTINGS_FAILED",
     }
 }
@@ -1302,6 +1931,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn embedded_public_backend_id_names_the_native_runtime() {
+        assert_eq!(BrowserRuntimeBackend::Embedded.id(), "embedded_webview2");
+        assert_eq!(BrowserRuntimeBackend::External.id(), EXTERNAL_BACKEND_ID);
+    }
+
+    #[test]
+    fn surface_kind_preserves_legacy_frame_snapshots() {
+        let snapshot = parse_surface_snapshot(
+            serde_json::json!({
+                "sessionId": "connection-a",
+                "tabs": [{ "id": "t1", "url": "about:blank", "title": "New Tab" }],
+                "activeTargetId": "t1",
+                "active": {
+                    "tab": { "id": "t1", "url": "about:blank", "title": "New Tab" },
+                    "loading": false,
+                    "canGoBack": false,
+                    "canGoForward": false
+                }
+            }),
+            "connection-a",
+        )
+        .expect("legacy sidecar snapshot");
+
+        assert_eq!(snapshot.surface_kind, BrowserSurfaceKind::Frame);
+        assert_eq!(
+            serde_json::to_value(BrowserSurfaceKind::Native).unwrap(),
+            serde_json::json!("native")
+        );
+    }
+
+    #[test]
     fn log_codes_are_bounded_and_cannot_carry_urls_or_tokens() {
         assert_eq!(
             sanitize_log_code("https://example.com/?token=secret"),
@@ -1342,6 +2002,17 @@ mod tests {
                 .unwrap();
 
         assert_eq!(settings.backend, BrowserRuntimeBackend::External);
+    }
+
+    #[test]
+    fn saved_embedded_backend_migrates_to_the_native_webview_runtime() {
+        let settings: BrowserRuntimeSettings = serde_json::from_str(
+            r#"{"enabled":true,"autoStart":true,"browserPath":null,"backend":"embedded"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(settings.backend, BrowserRuntimeBackend::Embedded);
+        assert_eq!(settings.backend.id(), EMBEDDED_BACKEND_ID);
     }
 
     #[test]
@@ -1429,6 +2100,7 @@ mod tests {
             inner.status.state = BrowserRuntimeState::Ready;
             inner.endpoint = Some("http://127.0.0.1:12345".to_string());
             inner.token = Some("private-token".to_string());
+            inner.sidecar_backend = Some(BrowserRuntimeBackend::External);
         }
         // A provider already frozen into a running Agent session stays usable
         // after the future-session default is switched off.
@@ -1448,6 +2120,82 @@ mod tests {
                 && header["value"] == "session-a"));
     }
 
+    #[tokio::test]
+    async fn embedded_backend_rejects_an_external_sidecar_endpoint() {
+        let manager = BrowserRuntimeManager::new(PathBuf::from("unused"), EventEmitter::Noop);
+        manager
+            .apply_settings_snapshot(BrowserRuntimeSettings {
+                enabled: true,
+                auto_start: true,
+                browser_path: None,
+                backend: BrowserRuntimeBackend::Embedded,
+            })
+            .await;
+        {
+            let mut inner = manager.inner.lock().await;
+            inner.status.state = BrowserRuntimeState::Ready;
+            inner.endpoint = Some("http://127.0.0.1:12345".to_string());
+            inner.token = Some("stale-managed-chromium-token".to_string());
+        }
+
+        assert!(manager.server_for_session("session-a").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn embedded_backend_advertises_its_native_sidecar_endpoint() {
+        let manager = BrowserRuntimeManager::new(PathBuf::from("unused"), EventEmitter::Noop);
+        manager
+            .apply_settings_snapshot(BrowserRuntimeSettings {
+                enabled: true,
+                auto_start: true,
+                browser_path: None,
+                backend: BrowserRuntimeBackend::Embedded,
+            })
+            .await;
+        {
+            let mut inner = manager.inner.lock().await;
+            inner.status.state = BrowserRuntimeState::Ready;
+            inner.endpoint = Some("http://127.0.0.1:12345".to_string());
+            inner.token = Some("private-native-sidecar-token".to_string());
+            inner.sidecar_backend = Some(BrowserRuntimeBackend::Embedded);
+        }
+
+        let server = manager
+            .server_for_session("session-a")
+            .await
+            .expect("ready native provider");
+        let value = serde_json::to_value(server).unwrap();
+        assert_eq!(value["url"], "http://127.0.0.1:12345/mcp");
+    }
+
+    #[tokio::test]
+    async fn embedded_start_without_an_installed_native_runtime_fails_before_sidecar_spawn() {
+        let manager = BrowserRuntimeManager::new(PathBuf::from("unused"), EventEmitter::Noop);
+        manager
+            .apply_settings_snapshot(BrowserRuntimeSettings {
+                enabled: true,
+                auto_start: true,
+                browser_path: None,
+                backend: BrowserRuntimeBackend::Embedded,
+            })
+            .await;
+
+        let result = manager.start().await;
+        #[cfg(all(feature = "tauri-runtime", target_os = "windows"))]
+        assert!(matches!(result, Err(BrowserRuntimeError::NativeFailed)));
+        #[cfg(not(all(feature = "tauri-runtime", target_os = "windows")))]
+        assert!(matches!(
+            result,
+            Err(BrowserRuntimeError::UnsupportedPlatform)
+        ));
+
+        let inner = manager.inner.lock().await;
+        assert!(inner.child.is_none());
+        assert!(inner.endpoint.is_none());
+        assert!(inner.token.is_none());
+        assert_eq!(inner.status.state, BrowserRuntimeState::Error);
+    }
+
     #[test]
     fn surface_registry_is_unique_per_connection_and_isolates_sessions() {
         let mut registry = BrowserSurfaceRegistry::default();
@@ -1464,6 +2212,7 @@ mod tests {
     fn surface_snapshot_rejects_hidden_or_cross_session_targets() {
         let hidden = BrowserSurfaceSnapshot {
             session_id: "connection-a".to_string(),
+            surface_kind: BrowserSurfaceKind::Frame,
             tabs: vec![BrowserSurfaceTab {
                 id: "t1".to_string(),
                 url: "about:blank".to_string(),
