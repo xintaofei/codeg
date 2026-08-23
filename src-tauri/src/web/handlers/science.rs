@@ -25,6 +25,7 @@ pub struct ScienceAgentParams {
 #[serde(rename_all = "camelCase")]
 pub struct ApplyLinksParams {
     pub ops: Vec<LinkOp>,
+    #[serde(default)]
     pub scope: AgentSkillScope,
     #[serde(default)]
     pub workspace_path: Option<String>,
@@ -33,6 +34,7 @@ pub struct ApplyLinksParams {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScopeParams {
+    #[serde(default)]
     pub scope: AgentSkillScope,
     #[serde(default)]
     pub workspace_path: Option<String>,

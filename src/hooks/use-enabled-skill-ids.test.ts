@@ -87,6 +87,45 @@ describe("useEnabledSkillIds — focus refresh coalescing", () => {
     expect(api.officecliSkillListAllInstallStatuses).not.toHaveBeenCalled()
     expect(api.scienceListAllInstallStatuses).not.toHaveBeenCalled()
   })
+
+  it("shares one global refresh across different active workspaces", async () => {
+    const { api, hook } = await setup()
+    const alpha = renderHook(() =>
+      hook.useEnabledSkillIds("claude_code", "D:\\Work\\Alpha")
+    )
+    const beta = renderHook(() =>
+      hook.useEnabledSkillIds("codex", "D:\\Work\\Beta")
+    )
+    await waitFor(() => {
+      expect(alpha.result.current.ready).toBe(true)
+      expect(beta.result.current.ready).toBe(true)
+    })
+
+    vi.mocked(api.expertsListAllInstallStatuses).mockClear()
+    vi.mocked(api.officecliSkillListAllInstallStatuses).mockClear()
+    vi.mocked(api.scienceListAllInstallStatuses).mockClear()
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"))
+      await Promise.resolve()
+    })
+
+    await waitFor(() => {
+      for (const request of [
+        api.expertsListAllInstallStatuses,
+        api.officecliSkillListAllInstallStatuses,
+        api.scienceListAllInstallStatuses,
+      ]) {
+        const calls = vi.mocked(request).mock.calls.map(([params]) => params)
+        expect(
+          calls.filter((params) => params.scope === "global")
+        ).toHaveLength(1)
+        expect(
+          calls.filter((params) => params.scope === "project")
+        ).toHaveLength(2)
+      }
+    })
+  })
 })
 
 // Only the fields the hook + useAcpAgents read; the rest of AcpAgentInfo is
@@ -155,6 +194,47 @@ describe("useEnabledSkillIds — project ownership", () => {
       workspacePath: "D:\\Work\\Alpha",
     })
     expect(alpha.result.current.enabledIds.has("beta-skill")).toBe(false)
+  })
+
+  it("lets an actual project entry shadow the same global skill", async () => {
+    const { api, hook } = await setup()
+    vi.mocked(api.expertsListAllInstallStatuses).mockImplementation(
+      async (params) => [
+        params.scope === "global"
+          ? linkedStatus("shadowed", "deepseek")
+          : {
+              ...linkedStatus("shadowed", "deepseek"),
+              state: "blocked_by_real_directory",
+            },
+      ]
+    )
+
+    const { result } = renderHook(() =>
+      hook.useEnabledSkillIds("deepseek", "D:\\Work\\Alpha")
+    )
+    await waitFor(() => expect(result.current.ready).toBe(true))
+    expect(result.current.enabledIds.has("shadowed")).toBe(false)
+  })
+
+  it("reclaims an inactive workspace entry after its last subscriber leaves", async () => {
+    const { api, hook } = await setup()
+    const first = renderHook(() =>
+      hook.useEnabledSkillIds("claude_code", "D:\\Work\\Ephemeral")
+    )
+    await waitFor(() => expect(first.result.current.ready).toBe(true))
+    first.unmount()
+
+    vi.mocked(api.expertsListAllInstallStatuses).mockClear()
+    const second = renderHook(() =>
+      hook.useEnabledSkillIds("claude_code", "D:\\Work\\Ephemeral")
+    )
+    await waitFor(() => expect(second.result.current.ready).toBe(true))
+
+    expect(api.expertsListAllInstallStatuses).toHaveBeenCalledTimes(1)
+    expect(api.expertsListAllInstallStatuses).toHaveBeenCalledWith({
+      scope: "project",
+      workspacePath: "D:\\Work\\Ephemeral",
+    })
   })
 })
 

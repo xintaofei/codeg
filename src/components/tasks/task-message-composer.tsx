@@ -83,6 +83,10 @@ export interface TaskMessageComposerProps {
   agentType: AgentType
   /** Working directory the references, commands and file pickers resolve in. */
   folderPath: string | null
+  /** Workspace whose project-scoped skills the task can actually use.
+   *  Omit to reuse `folderPath`; pass null while a task worktree does not yet
+   *  exist so the composer only offers globally enabled skills. */
+  skillWorkspacePath?: string | null
   /** Content on mount; read once (the editor is uncontrolled afterwards). */
   defaultText: string
   /** A stored prompt to seed instead of `defaultText` — prose, inline
@@ -130,6 +134,7 @@ export function TaskMessageComposer({
   ref,
   agentType,
   folderPath,
+  skillWorkspacePath,
   defaultText,
   defaultBlocks,
   placeholder,
@@ -148,6 +153,8 @@ export function TaskMessageComposer({
   const containerRef = useRef<HTMLDivElement>(null)
 
   const { groupLabels, uiLabels } = useComposerMentionLabels()
+  const effectiveSkillWorkspacePath =
+    skillWorkspacePath === undefined ? folderPath : skillWorkspacePath
   const referenceSearch = useReferenceSearch({
     defaultPath: folderPath,
     enabled: true,
@@ -166,7 +173,7 @@ export function TaskMessageComposer({
   const invocations = useComposerInvocations({
     editorRef,
     agentType,
-    folderPath,
+    folderPath: effectiveSkillWorkspacePath,
     availableCommands,
   })
 
@@ -180,7 +187,7 @@ export function TaskMessageComposer({
   const shortcuts = useComposerShortcuts({
     editorRef,
     agentType,
-    workspacePath: folderPath,
+    workspacePath: effectiveSkillWorkspacePath,
     onAfterInsert: () => onChange(editorRef.current?.getText() ?? ""),
     logLabel: "TaskComposer",
   })

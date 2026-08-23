@@ -22,12 +22,16 @@ use crate::commands::acp::{
     preferred_scope_skill_dir, remove_skill_entry, resolve_command_on_path, scoped_skill_dirs,
     skill_storage_spec, validate_skill_id,
 };
+#[cfg(feature = "tauri-runtime")]
+use crate::commands::experts::known_workspace_paths;
 use crate::commands::experts::{
-    central_experts_dir, classify_link, create_link_raw, path_is_symlink, read_link_target,
-    ExpertInstallStatus, ExpertLinkState, LinkOp, LinkOpResult,
+    central_experts_dir, classify_link, create_link_raw, is_managed_copy, is_managed_link_entry,
+    path_is_symlink, read_link_target, ExpertInstallStatus, ExpertLinkState, LinkOp, LinkOpResult,
 };
 use crate::app_error::AppCommandError;
 use crate::commands::folders::resolve_tree_path;
+#[cfg(feature = "tauri-runtime")]
+use crate::db::AppDatabase;
 use crate::models::agent::AgentType;
 use crate::process::{collect_lines_lossy, tokio_command};
 use crate::web::event_bridge::EventEmitter;
@@ -892,8 +896,7 @@ fn officecli_install_command(os: InstallOs) -> OfficecliInstallCommand {
     }
 }
 
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn officecli_uninstall() -> Result<OfficecliInfo, OfficeToolsError> {
+pub async fn officecli_uninstall_core(workspace_paths: Vec<String>) -> Result<OfficecliInfo, OfficeToolsError> {
     let _guard = mutation_lock().lock().await;
 
     // Operate on the official installer's primary install location directly,
@@ -912,42 +915,16 @@ pub async fn officecli_uninstall() -> Result<OfficecliInfo, OfficeToolsError> {
 
     let mut cleanup_errors: Vec<String> = Vec::new();
 
-    // Remove per-agent symlinks across all scoped skill dirs (not just the
-    // preferred dir) so secondary dirs like ~/.agents/skills are also cleaned.
-    for agent in supported_agents() {
-        let dirs = match scoped_skill_dirs(agent, AgentSkillScope::Global, None) {
-            Ok(d) => d,
-            Err(_) => continue,
-        };
-        for def in skill_defs() {
-            let central = skill_central_path(def.id);
-            for dir in &dirs {
-                let candidate = dir.join(def.id);
-                if !candidate.exists() && !path_is_symlink(&candidate) {
-                    continue;
-                }
-                let state = classify_link(&candidate, &central);
-                let should_remove = match state {
-                    ExpertLinkState::LinkedToCodeg => true,
-                    ExpertLinkState::Broken => {
-                        // Only remove broken links whose target was our
-                        // central skill dir (not user-owned danglers).
-                        read_link_target(&candidate)
-                            .map(|t| t.starts_with(&central))
-                            .unwrap_or(false)
-                    }
-                    _ => false,
-                };
-                if should_remove {
-                    if let Err(e) = remove_skill_entry(&candidate) {
-                        cleanup_errors.push(format!(
-                            "failed to remove link {}: {e}",
-                            candidate.display()
-                        ));
-                    }
-                }
-            }
-        }
+    // Remove global links first, then best-effort project links from every
+    // folder known to the same history table used by the scope picker.
+    cleanup_office_skill_links(AgentSkillScope::Global, None, false, &mut cleanup_errors);
+    for workspace_path in &workspace_paths {
+        cleanup_office_skill_links(
+            AgentSkillScope::Project,
+            Some(workspace_path.as_str()),
+            true,
+            &mut cleanup_errors,
+        );
     }
 
     // Clean up OfficeCLI skills from central store
@@ -970,6 +947,50 @@ pub async fn officecli_uninstall() -> Result<OfficecliInfo, OfficeToolsError> {
     // Re-detect so the caller sees the real post-uninstall state (e.g. a
     // system/Homebrew binary may still be on PATH).
     Ok(officecli_detect().await)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn officecli_uninstall(
+    db: tauri::State<'_, AppDatabase>,
+) -> Result<OfficecliInfo, OfficeToolsError> {
+    let workspace_paths = known_workspace_paths(&db).await;
+    officecli_uninstall_core(workspace_paths).await
+}
+
+fn cleanup_office_skill_links(
+    scope: AgentSkillScope,
+    workspace_path: Option<&str>,
+    warn_only: bool,
+    cleanup_errors: &mut Vec<String>,
+) {
+    for agent in supported_agents() {
+        let dirs = match scoped_skill_dirs(agent, scope, workspace_path) {
+            Ok(dirs) => dirs,
+            Err(_) => continue,
+        };
+        for def in skill_defs() {
+            let central = skill_central_path(def.id);
+            for dir in &dirs {
+                let candidate = dir.join(def.id);
+                if !candidate.exists() && !path_is_symlink(&candidate) {
+                    continue;
+                }
+                let state = classify_link(&candidate, &central);
+                if !is_managed_link_entry(&candidate, &central, state) {
+                    continue;
+                }
+                if let Err(err) = remove_skill_entry(&candidate) {
+                    let message = format!("failed to remove link {}: {err}", candidate.display());
+                    if warn_only {
+                        tracing::warn!("[OfficeTools] {message}");
+                    } else {
+                        cleanup_errors.push(message);
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ─── Commands: skill listing ───────────────────────────────────────────
@@ -1106,35 +1127,53 @@ fn link_one_locked(
         fs::create_dir_all(parent)?;
     }
 
-    let mut copy_mode = false;
-    match create_link_raw(&central, &link_path) {
-        Ok(is_copy) => {
-            copy_mode = is_copy;
+    let mut copy_mode = is_managed_copy(&link_path, &central);
+    match classify_link(&link_path, &central) {
+        ExpertLinkState::LinkedToCodeg => {}
+        ExpertLinkState::BlockedByRealDirectory => {
+            return Err(OfficeToolsError::NameCollision {
+                path: link_path.to_string_lossy().to_string(),
+            });
         }
-        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-            match classify_link(&link_path, &central) {
-                ExpertLinkState::LinkedToCodeg => {}
-                ExpertLinkState::BlockedByRealDirectory => {
-                    return Err(OfficeToolsError::NameCollision {
-                        path: link_path.to_string_lossy().to_string(),
-                    });
-                }
-                ExpertLinkState::LinkedElsewhere | ExpertLinkState::Broken => {
-                    let found = read_link_target(&link_path)
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "<unknown>".into());
-                    return Err(OfficeToolsError::ForeignLink {
-                        path: link_path.to_string_lossy().to_string(),
-                        found,
-                    });
-                }
-                ExpertLinkState::NotLinked => {
-                    create_link_raw(&central, &link_path)
-                        .map_err(|e| OfficeToolsError::Io(format!("retry link failed: {e}")))?;
+        ExpertLinkState::LinkedElsewhere | ExpertLinkState::Broken => {
+            let found = read_link_target(&link_path)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "<unknown>".into());
+            return Err(OfficeToolsError::ForeignLink {
+                path: link_path.to_string_lossy().to_string(),
+                found,
+            });
+        }
+        ExpertLinkState::NotLinked => match create_link_raw(&central, &link_path) {
+            Ok(is_copy) => copy_mode = is_copy,
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                match classify_link(&link_path, &central) {
+                    ExpertLinkState::LinkedToCodeg => {
+                        copy_mode = is_managed_copy(&link_path, &central);
+                    }
+                    ExpertLinkState::BlockedByRealDirectory => {
+                        return Err(OfficeToolsError::NameCollision {
+                            path: link_path.to_string_lossy().to_string(),
+                        });
+                    }
+                    ExpertLinkState::LinkedElsewhere | ExpertLinkState::Broken => {
+                        let found = read_link_target(&link_path)
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "<unknown>".into());
+                        return Err(OfficeToolsError::ForeignLink {
+                            path: link_path.to_string_lossy().to_string(),
+                            found,
+                        });
+                    }
+                    ExpertLinkState::NotLinked => {
+                        return Err(OfficeToolsError::Io(
+                            "link destination changed during creation".into(),
+                        ));
+                    }
                 }
             }
-        }
-        Err(err) => return Err(OfficeToolsError::Io(err.to_string())),
+            Err(err) => return Err(OfficeToolsError::Io(err.to_string())),
+        },
     }
 
     let state = classify_link(&link_path, &central);
@@ -1150,6 +1189,7 @@ fn link_one_locked(
     })
 }
 
+/// Legacy global-only link API; scoped callers use the batch matrix API.
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn officecli_skill_link_to_agent(
     skill_id: String,
@@ -1159,6 +1199,7 @@ pub async fn officecli_skill_link_to_agent(
     link_one_locked(&skill_id, agent_type, AgentSkillScope::Global, None)
 }
 
+/// Legacy global-only unlink API; scoped callers use the batch matrix API.
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn officecli_skill_unlink_from_agent(
     skill_id: String,
@@ -1190,13 +1231,7 @@ fn unlink_one_locked(
             continue;
         }
         let state = classify_link(&candidate, &central);
-        let should_remove = match state {
-            ExpertLinkState::LinkedToCodeg => true,
-            ExpertLinkState::Broken => read_link_target(&candidate)
-                .map(|t| t.starts_with(&central))
-                .unwrap_or(false),
-            _ => false,
-        };
+        let should_remove = is_managed_link_entry(&candidate, &central, state);
         if should_remove {
             remove_skill_entry(&candidate).map_err(|e| {
                 OfficeToolsError::Io(format!("remove link {}: {e}", candidate.display()))
@@ -1213,6 +1248,7 @@ fn unlink_one_locked(
     Ok(())
 }
 
+/// Legacy global-only status API; scoped callers use the matrix snapshot API.
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn officecli_skill_get_install_status(
     skill_id: String,
@@ -1239,7 +1275,7 @@ pub async fn officecli_skill_get_install_status(
             link_path: link_path.to_string_lossy().to_string(),
             target_path,
             expected_target_path: expected.to_string_lossy().to_string(),
-            copy_mode: false,
+            copy_mode: is_managed_copy(&link_path, &expected),
         });
     }
     Ok(out)
@@ -1326,7 +1362,7 @@ pub async fn officecli_skill_list_all_install_statuses(
                 link_path: link_path.to_string_lossy().to_string(),
                 target_path,
                 expected_target_path: expected.to_string_lossy().to_string(),
-                copy_mode: false,
+                copy_mode: is_managed_copy(&link_path, &expected),
             });
         }
     }
@@ -1456,6 +1492,39 @@ pub async fn stop_office_watch(root_path: String, path: String) -> Result<(), Ap
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn uninstall_cleanup_removes_known_project_links() {
+        let home = tempfile::tempdir().expect("home");
+        let workspace = tempfile::tempdir().expect("workspace");
+        temp_env::with_var("HOME", Some(home.path()), || {
+            let def = &skill_defs()[0];
+            let central = skill_central_path(def.id);
+            fs::create_dir_all(&central).unwrap();
+            fs::write(central.join("SKILL.md"), "---\nname: Office\n---\n").unwrap();
+            let workspace_path = workspace.path().to_string_lossy().into_owned();
+            let status = link_one_locked(
+                def.id,
+                AgentType::ClaudeCode,
+                AgentSkillScope::Project,
+                Some(&workspace_path),
+            )
+            .expect("project link");
+            let link = PathBuf::from(status.link_path);
+            assert!(path_is_symlink(&link));
+
+            let mut errors = Vec::new();
+            cleanup_office_skill_links(
+                AgentSkillScope::Project,
+                Some(&workspace_path),
+                true,
+                &mut errors,
+            );
+            assert!(errors.is_empty(), "{errors:?}");
+            assert!(fs::symlink_metadata(link).is_err());
+        });
+    }
 
     #[test]
     fn a_declared_custom_agent_gains_a_column_here_too() {

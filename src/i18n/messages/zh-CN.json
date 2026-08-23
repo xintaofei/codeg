@@ -3847,8 +3847,13 @@
     "confirm": {
       "disableTitle": "禁用这些链接？",
       "disableBody": "这将移除 {count} 个由 codeg 管理的技能链接。占用自定义目录的技能不受影响。你可以随时重新启用。",
+      "projectEnableTitle": "启用项目级技能？",
+      "projectEnableBody": "这将在所选仓库内创建 {count} 个由 codeg 管理的技能链接。",
+      "projectEnablePaths": "将创建的条目",
+      "projectEnableGitignore": "这些链接指向本机绝对路径。请将上列生成路径加入 .gitignore，不要提交到仓库。",
       "cancel": "取消",
-      "confirm": "禁用"
+      "confirm": "禁用",
+      "enable": "启用"
     },
     "toasts": {
       "loadFailed": "加载技能状态失败",
@@ -4673,6 +4678,7 @@
     "titlePlaceholder": "要做什么？",
     "promptLabel": "任务描述",
     "promptPlaceholder": "向 agent 描述任务——输入 @ 可引用文件，/ 可唤起命令",
+    "projectSkillWorktreeHint": "任务会在独立 worktree 中运行。worktree 创建前这里只显示全局技能；源检出目录中的项目技能对该任务不可用。",
     "folderPlaceholder": "选择文件夹",
     "agentInheritedHint": "继承自任务设置，修改后仅对本任务生效",
     "agentOverrideReset": "恢复继承",

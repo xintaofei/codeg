@@ -148,6 +148,7 @@ export function TaskRestartDialog({
           ref={composerRef}
           agentType={target.agentType}
           folderPath={target.folderPath}
+          skillWorkspacePath={target.skillWorkspacePath}
           defaultText={text}
           placeholder={
             isRetry
@@ -167,6 +168,11 @@ export function TaskRestartDialog({
             void submit(duplicate != null)
           }}
         />
+        {target.skillWorkspacePath == null ? (
+          <p className="text-xs text-muted-foreground">
+            {t("projectSkillWorktreeHint")}
+          </p>
+        ) : null}
 
         {duplicate ? (
           // Announced, not just drawn: the refusal arrives while focus is in

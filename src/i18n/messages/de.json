@@ -3835,8 +3835,13 @@
     "confirm": {
       "disableTitle": "Diese Verknüpfungen deaktivieren?",
       "disableBody": "Dadurch werden {count} von codeg verwaltete Skill-Verknüpfungen entfernt. Skills, die ein eigenes Verzeichnis belegen, bleiben unberührt. Du kannst sie jederzeit wieder aktivieren.",
+      "projectEnableTitle": "Projekt-Skills aktivieren?",
+      "projectEnableBody": "Dadurch werden {count} von codeg verwaltete Skill-Verknüpfungen im ausgewählten Repository erstellt.",
+      "projectEnablePaths": "Zu erstellende Einträge",
+      "projectEnableGitignore": "Diese Verknüpfungen verwenden lokale absolute Ziele. Füge die oben aufgeführten erzeugten Pfade zu .gitignore hinzu und committe sie nicht.",
       "cancel": "Abbrechen",
-      "confirm": "Deaktivieren"
+      "confirm": "Deaktivieren",
+      "enable": "Aktivieren"
     },
     "toasts": {
       "loadFailed": "Skill-Status konnte nicht geladen werden",
@@ -4673,6 +4678,7 @@
     "titlePlaceholder": "Was ist zu tun?",
     "promptLabel": "Aufgabenbeschreibung",
     "promptPlaceholder": "Beschreibe die Aufgabe für den Agenten — @ für Dateiverweise, / für Befehle",
+    "projectSkillWorktreeHint": "Aufgaben laufen in einem separaten Worktree. Bis er existiert, werden nur globale Skills angezeigt; Projekt-Skills aus dem Quell-Checkout stehen der Aufgabe nicht zur Verfügung.",
     "folderPlaceholder": "Ordner wählen",
     "agentInheritedHint": "Aus den Aufgaben-Einstellungen geerbt — Änderungen gelten nur für diese Aufgabe",
     "agentOverrideReset": "Wieder erben",

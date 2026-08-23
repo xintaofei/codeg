@@ -3835,8 +3835,13 @@
     "confirm": {
       "disableTitle": "Desativar estes links?",
       "disableBody": "Isto remove {count} links de habilidades gerenciados pelo codeg. Habilidades que ocupam um diretório personalizado não são afetadas. Você pode reativá-las a qualquer momento.",
+      "projectEnableTitle": "Ativar habilidades do projeto?",
+      "projectEnableBody": "Isto cria {count} links de habilidades gerenciados pelo codeg dentro do repositório selecionado.",
+      "projectEnablePaths": "Entradas a criar",
+      "projectEnableGitignore": "Esses links usam destinos absolutos locais da máquina. Adicione os caminhos gerados listados acima ao .gitignore e não os envie ao repositório.",
       "cancel": "Cancelar",
-      "confirm": "Desativar"
+      "confirm": "Desativar",
+      "enable": "Ativar"
     },
     "toasts": {
       "loadFailed": "Falha ao carregar os status das habilidades",
@@ -4673,6 +4678,7 @@
     "titlePlaceholder": "O que precisa ser feito?",
     "promptLabel": "Descrição da tarefa",
     "promptPlaceholder": "Descreva a tarefa para o agente — @ para referenciar arquivos, / para comandos",
+    "projectSkillWorktreeHint": "As tarefas são executadas em uma worktree separada. Até ela existir, apenas habilidades globais são exibidas; as habilidades de projeto do checkout de origem não ficam disponíveis para a tarefa.",
     "folderPlaceholder": "Selecione uma pasta",
     "agentInheritedHint": "Herdado das configurações de tarefas; altere para personalizar esta tarefa",
     "agentOverrideReset": "Voltar a herdar",

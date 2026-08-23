@@ -3847,8 +3847,13 @@
     "confirm": {
       "disableTitle": "Disable these links?",
       "disableBody": "This removes {count} codeg-managed skill link(s). Skills occupying a custom directory are left untouched. You can re-enable them anytime.",
+      "projectEnableTitle": "Enable project skills?",
+      "projectEnableBody": "This creates {count} codeg-managed skill link(s) inside the selected repository.",
+      "projectEnablePaths": "Entries to create",
+      "projectEnableGitignore": "These links use machine-local absolute targets. Add the listed generated paths to .gitignore and do not commit them.",
       "cancel": "Cancel",
-      "confirm": "Disable"
+      "confirm": "Disable",
+      "enable": "Enable"
     },
     "toasts": {
       "loadFailed": "Failed to load skill statuses",
@@ -4673,6 +4678,7 @@
     "titlePlaceholder": "What needs to be done?",
     "promptLabel": "Task description",
     "promptPlaceholder": "Describe the task for the agent — @ to reference files, / for commands",
+    "projectSkillWorktreeHint": "Tasks run in a separate worktree. Until it exists, only global skills are shown; project skills from the source checkout are unavailable.",
     "folderPlaceholder": "Select a folder",
     "agentInheritedHint": "Inherited from task settings — change it to override for this task",
     "agentOverrideReset": "Reset to inherited",

@@ -3835,8 +3835,13 @@
     "confirm": {
       "disableTitle": "Désactiver ces liens ?",
       "disableBody": "Cela supprimera {count} liens de compétences gérés par codeg. Les compétences occupant un répertoire personnalisé ne sont pas touchées. Vous pouvez les réactiver à tout moment.",
+      "projectEnableTitle": "Activer les compétences du projet ?",
+      "projectEnableBody": "Cela crée {count} liens de compétences gérés par codeg dans le dépôt sélectionné.",
+      "projectEnablePaths": "Éléments à créer",
+      "projectEnableGitignore": "Ces liens utilisent des cibles absolues propres à cette machine. Ajoutez les chemins générés ci-dessus à .gitignore et ne les validez pas dans le dépôt.",
       "cancel": "Annuler",
-      "confirm": "Désactiver"
+      "confirm": "Désactiver",
+      "enable": "Activer"
     },
     "toasts": {
       "loadFailed": "Échec du chargement des états des compétences",
@@ -4673,6 +4678,7 @@
     "titlePlaceholder": "Que faut-il faire ?",
     "promptLabel": "Description de la tâche",
     "promptPlaceholder": "Décrivez la tâche pour l’agent — @ pour référencer des fichiers, / pour les commandes",
+    "projectSkillWorktreeHint": "Les tâches s’exécutent dans un worktree séparé. Tant qu’il n’existe pas, seuls les skills globaux sont affichés ; les skills de projet du checkout source ne sont pas disponibles pour la tâche.",
     "folderPlaceholder": "Choisir un dossier",
     "agentInheritedHint": "Hérité des réglages des tâches — modifiez-le pour personnaliser cette tâche",
     "agentOverrideReset": "Revenir à l'héritage",

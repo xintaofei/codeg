@@ -24,7 +24,7 @@
 //! reads as user modification and gets backed up on every launch. Re-add it
 //! after each sync.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -41,6 +41,7 @@ use crate::commands::acp::{
     preferred_scope_skill_dir, remove_skill_entry, scoped_skill_dirs, skill_storage_spec,
     validate_skill_id,
 };
+use crate::db::{service::folder_service, AppDatabase};
 use crate::models::agent::AgentType;
 
 // ─── Embedded bundle ────────────────────────────────────────────────────
@@ -51,6 +52,7 @@ const CENTRAL_DIR_NAME: &str = ".codeg";
 const CENTRAL_SKILLS_SUBDIR: &str = "skills";
 const MANIFEST_FILE: &str = ".manifest.json";
 const EXPERTS_TOML: &str = "experts.toml";
+const MANAGED_COPY_MARKER: &str = ".codeg-managed-skill-copy";
 
 // ─── Error type ─────────────────────────────────────────────────────────
 
@@ -413,14 +415,20 @@ pub(crate) fn create_link_raw(src: &Path, dst: &Path) -> io::Result<bool> {
 
 #[cfg(windows)]
 pub(crate) fn create_link_raw(src: &Path, dst: &Path) -> io::Result<bool> {
+    ensure_destination_absent(dst)?;
     match junction::create(src, dst) {
         Ok(_) => Ok(false),
         Err(junction_err) => {
+            // `junction::create` may fail for many reasons, but copy fallback is
+            // only safe while the destination is still absent. In particular,
+            // AlreadyExists must never turn into a recursive merge into a
+            // user-owned repository directory.
+            ensure_destination_absent(dst)?;
             // Fall back to recursive copy when junction creation is not
             // possible (e.g. cross-volume, permission denied). Mark the
             // returned status with copy_mode = true so the UI can warn
             // the user that upgrades won't propagate automatically.
-            copy_dir_recursive(src, dst).map_err(|copy_err| {
+            copy_dir_recursive_new(src, dst).map_err(|copy_err| {
                 io::Error::other(format!(
                     "junction failed ({junction_err}); copy fallback failed ({copy_err})"
                 ))
@@ -431,20 +439,72 @@ pub(crate) fn create_link_raw(src: &Path, dst: &Path) -> io::Result<bool> {
 }
 
 #[cfg(windows)]
-fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
-    fs::create_dir_all(dst)?;
+fn ensure_destination_absent(dst: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(dst) {
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("destination already exists: {}", dst.display()),
+        )),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+#[cfg(windows)]
+fn copy_dir_recursive_new(src: &Path, dst: &Path) -> io::Result<()> {
+    // Claim the root atomically. Every recursive child is then created below a
+    // directory owned by this operation, so fallback cannot merge into an
+    // existing tree even if the destination changes between preflight checks.
+    fs::create_dir(dst)?;
+    let result = copy_dir_contents(src, dst).and_then(|_| write_managed_copy_marker(src, dst));
+    if result.is_err() {
+        let _ = fs::remove_dir_all(dst);
+    }
+    result
+}
+
+#[cfg(windows)]
+fn copy_dir_contents(src: &Path, dst: &Path) -> io::Result<()> {
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let ft = entry.file_type()?;
         let from = entry.path();
         let to = dst.join(entry.file_name());
         if ft.is_dir() {
-            copy_dir_recursive(&from, &to)?;
+            fs::create_dir(&to)?;
+            copy_dir_contents(&from, &to)?;
         } else if ft.is_file() {
             fs::copy(&from, &to)?;
         }
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn write_managed_copy_marker(src: &Path, dst: &Path) -> io::Result<()> {
+    let source = fs::canonicalize(src).unwrap_or_else(|_| src.to_path_buf());
+    let marker = dst.join(MANAGED_COPY_MARKER);
+    if fs::symlink_metadata(&marker).is_ok() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("managed-copy marker already exists: {}", marker.display()),
+        ));
+    }
+    fs::write(marker, source.to_string_lossy().as_bytes())
+}
+
+pub(crate) fn is_managed_copy(path: &Path, expected_target: &Path) -> bool {
+    let Ok(raw) = fs::read_to_string(path.join(MANAGED_COPY_MARKER)) else {
+        return false;
+    };
+    let recorded = PathBuf::from(raw.trim());
+    if recorded.as_os_str().is_empty() {
+        return false;
+    }
+    let recorded = fs::canonicalize(&recorded).unwrap_or(recorded);
+    let expected =
+        fs::canonicalize(expected_target).unwrap_or_else(|_| expected_target.to_path_buf());
+    paths_equivalent(&recorded, &expected)
 }
 
 /// Best-effort human-readable link target. On Windows, `fs::read_link`
@@ -464,7 +524,7 @@ pub(crate) fn read_link_target(path: &Path) -> Option<PathBuf> {
 
 pub(crate) fn path_is_symlink(path: &Path) -> bool {
     fs::symlink_metadata(path)
-        .map(|m| m.file_type().is_symlink())
+        .map(|m| m.file_type().is_symlink() || path_is_reparse_point(path))
         .unwrap_or(false)
 }
 
@@ -520,12 +580,12 @@ pub(crate) fn classify_link(link_path: &Path, expected_target: &Path) -> ExpertL
 
     let is_link_like = meta.file_type().is_symlink() || path_is_reparse_point(link_path);
     if !is_link_like {
+        if meta.is_dir() && is_managed_copy(link_path, expected_target) {
+            return ExpertLinkState::LinkedToCodeg;
+        }
         // A real directory (or file) sits where we'd put our link.
-        // This also covers Windows copy-mode fallback, where we could not
-        // create a junction and fell back to `copy_dir_recursive`. We still
-        // surface it as BlockedByRealDirectory so experts_link_to_agent
-        // treats it as "needs user attention" (the copy will not track
-        // central-store updates and must be re-linked explicitly).
+        // Unmarked real directories are user-owned collisions. Windows
+        // copy-mode fallbacks carry the ownership marker checked above.
         return ExpertLinkState::BlockedByRealDirectory;
     }
 
@@ -543,6 +603,50 @@ pub(crate) fn classify_link(link_path: &Path, expected_target: &Path) -> ExpertL
         (None, _) => ExpertLinkState::Broken,
         (Some(l), Some(e)) if paths_equivalent(&l, &e) => ExpertLinkState::LinkedToCodeg,
         _ => ExpertLinkState::LinkedElsewhere,
+    }
+}
+
+/// Whether an existing entry is owned by codeg and can be removed safely.
+/// A generic dangling link is not enough: its recorded target must still sit
+/// under the exact central skill directory.
+pub(crate) fn is_managed_link_entry(
+    path: &Path,
+    expected_target: &Path,
+    state: ExpertLinkState,
+) -> bool {
+    match state {
+        ExpertLinkState::LinkedToCodeg => true,
+        ExpertLinkState::Broken => read_link_target(path)
+            .map(|target| {
+                let target = if target.is_absolute() {
+                    target
+                } else {
+                    path.parent().unwrap_or_else(|| Path::new("")).join(target)
+                };
+                target.starts_with(expected_target)
+            })
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// Folder-history paths are the best available inventory for project-scoped
+/// links created before a skill is deleted or an external pack is uninstalled.
+/// A database read failure must not make the destructive action impossible;
+/// callers still clean global links and surface this diagnostic in the log.
+pub(crate) async fn known_workspace_paths(db: &AppDatabase) -> Vec<String> {
+    match folder_service::list_folders(&db.conn).await {
+        Ok(folders) => folders
+            .into_iter()
+            .map(|folder| folder.path)
+            .filter(|path| !path.trim().is_empty())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+        Err(err) => {
+            tracing::warn!("[SkillPacks] failed to load folder history for link cleanup: {err}");
+            Vec::new()
+        }
     }
 }
 
@@ -763,6 +867,7 @@ pub async fn experts_list() -> Result<Vec<ExpertListItem>, ExpertsError> {
     Ok(out)
 }
 
+/// Legacy global-only status API; scoped callers use the matrix snapshot API.
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn experts_get_install_status(
     expert_id: String,
@@ -788,7 +893,7 @@ pub async fn experts_get_install_status(
             link_path: link_path.to_string_lossy().to_string(),
             target_path,
             expected_target_path: expected.to_string_lossy().to_string(),
-            copy_mode: false,
+            copy_mode: is_managed_copy(&link_path, &expected),
         });
     }
     Ok(out)
@@ -849,39 +954,55 @@ fn link_one_locked(
         fs::create_dir_all(parent)?;
     }
 
-    let mut copy_mode = false;
-    match create_link_raw(&central, &link_path) {
-        Ok(is_copy) => {
-            copy_mode = is_copy;
+    let mut copy_mode = is_managed_copy(&link_path, &central);
+    match classify_link(&link_path, &central) {
+        ExpertLinkState::LinkedToCodeg => {}
+        ExpertLinkState::BlockedByRealDirectory => {
+            return Err(ExpertsError::NameCollision {
+                path: link_path.to_string_lossy().to_string(),
+            });
         }
-        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-            // Already exists — figure out what kind.
-            match classify_link(&link_path, &central) {
-                ExpertLinkState::LinkedToCodeg => {
-                    // Idempotent success.
-                }
-                ExpertLinkState::BlockedByRealDirectory => {
-                    return Err(ExpertsError::NameCollision {
-                        path: link_path.to_string_lossy().to_string(),
-                    });
-                }
-                ExpertLinkState::LinkedElsewhere | ExpertLinkState::Broken => {
-                    let found = read_link_target(&link_path)
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "<unknown>".into());
-                    return Err(ExpertsError::ForeignLink {
-                        path: link_path.to_string_lossy().to_string(),
-                        found,
-                    });
-                }
-                ExpertLinkState::NotLinked => {
-                    // Shouldn't happen after AlreadyExists, but retry once.
-                    create_link_raw(&central, &link_path)
-                        .map_err(|e| ExpertsError::Io(format!("retry link failed: {e}")))?;
+        ExpertLinkState::LinkedElsewhere | ExpertLinkState::Broken => {
+            let found = read_link_target(&link_path)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "<unknown>".into());
+            return Err(ExpertsError::ForeignLink {
+                path: link_path.to_string_lossy().to_string(),
+                found,
+            });
+        }
+        ExpertLinkState::NotLinked => match create_link_raw(&central, &link_path) {
+            Ok(is_copy) => copy_mode = is_copy,
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                // A concurrent creator won after preflight. Classify the
+                // winner without ever merging copy fallback into it.
+                match classify_link(&link_path, &central) {
+                    ExpertLinkState::LinkedToCodeg => {
+                        copy_mode = is_managed_copy(&link_path, &central);
+                    }
+                    ExpertLinkState::BlockedByRealDirectory => {
+                        return Err(ExpertsError::NameCollision {
+                            path: link_path.to_string_lossy().to_string(),
+                        });
+                    }
+                    ExpertLinkState::LinkedElsewhere | ExpertLinkState::Broken => {
+                        let found = read_link_target(&link_path)
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "<unknown>".into());
+                        return Err(ExpertsError::ForeignLink {
+                            path: link_path.to_string_lossy().to_string(),
+                            found,
+                        });
+                    }
+                    ExpertLinkState::NotLinked => {
+                        return Err(ExpertsError::Io(
+                            "link destination changed during creation".into(),
+                        ));
+                    }
                 }
             }
-        }
-        Err(err) => return Err(ExpertsError::Io(err.to_string())),
+            Err(err) => return Err(ExpertsError::Io(err.to_string())),
+        },
     }
 
     let state = classify_link(&link_path, &central);
@@ -897,6 +1018,7 @@ fn link_one_locked(
     })
 }
 
+/// Legacy global-only link API; scoped callers use `experts_apply_links`.
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn experts_link_to_agent(
     expert_id: String,
@@ -906,6 +1028,7 @@ pub async fn experts_link_to_agent(
     link_one_locked(&expert_id, agent_type, AgentSkillScope::Global, None)
 }
 
+/// Legacy global-only unlink API; scoped callers use `experts_apply_links`.
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn experts_unlink_from_agent(
     expert_id: String,
@@ -939,11 +1062,7 @@ fn unlink_one_locked(
             continue;
         }
         let state = classify_link(&candidate, &central);
-        if matches!(
-            state,
-            ExpertLinkState::LinkedToCodeg | ExpertLinkState::Broken
-        ) {
-            // Safe to remove a link to our central store or a broken link.
+        if is_managed_link_entry(&candidate, &central, state) {
             remove_skill_entry(&candidate).map_err(|e| {
                 ExpertsError::Io(format!("remove link {}: {e}", candidate.display()))
             })?;
@@ -1053,7 +1172,7 @@ pub async fn experts_list_all_install_statuses(
                 link_path: link_path.to_string_lossy().to_string(),
                 target_path,
                 expected_target_path: expected.to_string_lossy().to_string(),
-                copy_mode: false,
+                copy_mode: is_managed_copy(&link_path, &expected),
             });
         }
     }
@@ -1094,6 +1213,89 @@ pub async fn experts_open_central_dir() -> Result<String, ExpertsError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn create_link_never_merges_into_an_existing_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let source = tmp.path().join("source");
+        let destination = tmp.path().join("destination");
+        fs::create_dir(&source).expect("source");
+        fs::write(source.join("SKILL.md"), "central").expect("source file");
+        fs::create_dir(&destination).expect("destination");
+        let sentinel = destination.join("SKILL.md");
+        fs::write(&sentinel, "user-owned").expect("sentinel");
+
+        let err = create_link_raw(&source, &destination).expect_err("must collide");
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(sentinel).unwrap(), "user-owned");
+    }
+
+    #[test]
+    fn managed_copy_marker_distinguishes_codeg_copy_from_user_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let source = tmp.path().join("central");
+        let managed = tmp.path().join("managed");
+        let user_owned = tmp.path().join("user-owned");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&managed).unwrap();
+        fs::create_dir(&user_owned).unwrap();
+        fs::write(
+            managed.join(MANAGED_COPY_MARKER),
+            fs::canonicalize(&source)
+                .unwrap()
+                .to_string_lossy()
+                .as_bytes(),
+        )
+        .unwrap();
+
+        assert!(is_managed_copy(&managed, &source));
+        assert_eq!(
+            classify_link(&managed, &source),
+            ExpertLinkState::LinkedToCodeg
+        );
+        assert_eq!(
+            classify_link(&user_owned, &source),
+            ExpertLinkState::BlockedByRealDirectory
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unlink_preserves_foreign_broken_links_but_removes_managed_ones() {
+        use std::os::unix::fs::symlink;
+
+        let home = tempfile::tempdir().expect("home");
+        let workspace = tempfile::tempdir().expect("workspace");
+        temp_env::with_var("HOME", Some(home.path()), || {
+            let link = workspace
+                .path()
+                .join(".claude")
+                .join("skills")
+                .join("brainstorming");
+            fs::create_dir_all(link.parent().unwrap()).unwrap();
+
+            symlink(workspace.path().join("missing-foreign"), &link).unwrap();
+            unlink_one_locked(
+                "brainstorming",
+                AgentType::ClaudeCode,
+                AgentSkillScope::Project,
+                workspace.path().to_str(),
+            )
+            .expect("foreign broken link is ignored");
+            assert!(fs::symlink_metadata(&link).is_ok(), "foreign link survives");
+
+            fs::remove_file(&link).unwrap();
+            symlink(expert_central_path("brainstorming"), &link).unwrap();
+            unlink_one_locked(
+                "brainstorming",
+                AgentType::ClaudeCode,
+                AgentSkillScope::Project,
+                workspace.path().to_str(),
+            )
+            .expect("managed broken link is removable");
+            assert!(fs::symlink_metadata(&link).is_err(), "managed link removed");
+        });
+    }
 
     #[test]
     fn a_declared_custom_agent_gains_a_column_here_too() {

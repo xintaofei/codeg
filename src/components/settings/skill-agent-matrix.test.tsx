@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -154,6 +160,17 @@ describe("computeLinkDelta", () => {
       )
     ).toEqual([])
   })
+
+  it("never treats a missing snapshot row as a disabled target", () => {
+    expect(
+      computeLinkDelta(
+        [{ skillId: "a", agentType: "codex" }],
+        true,
+        new Map(),
+        enableable
+      )
+    ).toEqual([])
+  })
 })
 
 // ─── Component ─────────────────────────────────────────────────────────
@@ -179,6 +196,7 @@ function renderMatrix(overrides: Partial<SkillAgentMatrixProps> = {}) {
   const props: SkillAgentMatrixProps = {
     skills: SKILLS,
     agents: AGENTS,
+    scope: "global",
     categoryOrder: { discovery: 1 },
     translateCategory: (c) => c,
     translateState: (s) => s,
@@ -284,7 +302,7 @@ describe("SkillAgentMatrix", () => {
     const cell = await screen.findByRole("switch", {
       name: "Brainstorming, Claude Code: blocked_by_real_directory",
     })
-    expect(cell).toBeDisabled()
+    expect(cell).toHaveAttribute("aria-disabled", "true")
     fireEvent.click(cell)
     expect(applyLinks).not.toHaveBeenCalled()
   })
@@ -298,7 +316,7 @@ describe("SkillAgentMatrix", () => {
     const cell = await screen.findByRole("switch", {
       name: "Brainstorming, Claude Code: not_linked",
     })
-    expect(cell).toBeDisabled()
+    expect(cell).toHaveAttribute("aria-disabled", "true")
     fireEvent.click(cell)
     expect(applyLinks).not.toHaveBeenCalled()
   })
@@ -307,6 +325,7 @@ describe("SkillAgentMatrix", () => {
     const applyLinks = vi.fn()
     renderMatrix({
       applyLinks,
+      scope: "project",
       loadInheritedStatuses: vi
         .fn()
         .mockResolvedValue([
@@ -318,14 +337,117 @@ describe("SkillAgentMatrix", () => {
       name: "Brainstorming, Claude Code: Inherited from global",
     })
     expect(cell).toBeChecked()
-    expect(cell).toBeDisabled()
+    expect(cell).toHaveAttribute("aria-disabled", "true")
     fireEvent.click(cell)
     expect(applyLinks).not.toHaveBeenCalled()
 
-    await userEvent.hover(cell.parentElement as HTMLElement)
+    await userEvent.hover(cell)
     expect(await screen.findByRole("tooltip")).toHaveTextContent(
       "Inherited from global"
     )
+  })
+
+  it("keeps a real project link visible and removable when global is also enabled", async () => {
+    const applyLinks = vi.fn().mockResolvedValue([])
+    renderMatrix({
+      applyLinks,
+      scope: "project",
+      loadAllStatuses: vi
+        .fn()
+        .mockResolvedValue([
+          makeStatus("brainstorming", "claude_code", "linked_to_codeg"),
+          makeStatus("brainstorming", "codex", "not_linked"),
+        ]),
+      loadInheritedStatuses: vi
+        .fn()
+        .mockResolvedValue([
+          makeStatus("brainstorming", "claude_code", "linked_to_codeg"),
+          makeStatus("brainstorming", "codex", "not_linked"),
+        ]),
+    })
+
+    const cell = await screen.findByRole("switch", {
+      name: "Brainstorming, Claude Code: linked_to_codeg",
+    })
+    expect(cell).toHaveAttribute("aria-disabled", "false")
+    fireEvent.click(cell)
+    await waitFor(() =>
+      expect(applyLinks).toHaveBeenCalledWith([
+        {
+          expertId: "brainstorming",
+          agentType: "claude_code",
+          enable: false,
+        },
+      ])
+    )
+  })
+
+  it("renders a load failure as an error instead of unsupported cells", async () => {
+    renderMatrix({
+      loadAllStatuses: vi.fn().mockRejectedValue(new Error("offline")),
+    })
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Failed to load skill statuses"
+    )
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument()
+    expect(toast.error).toHaveBeenCalled()
+  })
+
+  it("uses backend snapshot membership as the supported-agent truth", async () => {
+    renderMatrix({
+      loadAllStatuses: vi
+        .fn()
+        .mockResolvedValue([
+          makeStatus("brainstorming", "claude_code", "not_linked"),
+        ]),
+    })
+
+    expect(
+      await screen.findByRole("switch", {
+        name: "Brainstorming, Claude Code: not_linked",
+      })
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole("switch", { name: /Brainstorming, Codex/ })
+    ).not.toBeInTheDocument()
+  })
+
+  it("confirms project batch enables and lists every destination", async () => {
+    const projectStatuses = [
+      {
+        ...makeStatus("brainstorming", "claude_code", "not_linked"),
+        linkPath: "D:\\Repo\\.claude\\skills\\brainstorming",
+      },
+      {
+        ...makeStatus("brainstorming", "codex", "not_linked"),
+        linkPath: "D:\\Repo\\.codex\\skills\\brainstorming",
+      },
+    ]
+    const applyLinks = vi.fn().mockResolvedValue([])
+    renderMatrix({
+      scope: "project",
+      applyLinks,
+      loadAllStatuses: vi.fn().mockResolvedValue(projectStatuses),
+      loadInheritedStatuses: vi.fn().mockResolvedValue(projectStatuses),
+    })
+
+    await userEvent.click(
+      await screen.findByRole("checkbox", { name: "Select Brainstorming" })
+    )
+    await userEvent.click(screen.getByRole("button", { name: "Enable" }))
+
+    const dialog = await screen.findByRole("alertdialog")
+    expect(within(dialog).getByText("Enable project skills?")).toBeVisible()
+    expect(
+      within(dialog).getByText("D:\\Repo\\.claude\\skills\\brainstorming")
+    ).toBeVisible()
+    expect(applyLinks).not.toHaveBeenCalled()
+
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Enable" })
+    )
+    await waitFor(() => expect(applyLinks).toHaveBeenCalledTimes(1))
   })
 })
 

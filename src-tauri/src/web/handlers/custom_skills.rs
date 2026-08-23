@@ -1,11 +1,14 @@
-use axum::Json;
+use std::sync::Arc;
+
+use axum::{Extension, Json};
 use serde::Deserialize;
 
 use crate::app_error::AppCommandError;
 use crate::acp::types::AgentSkillScope;
+use crate::app_state::AppState;
 use crate::commands::custom_skills as custom_skills_commands;
 use crate::commands::custom_skills::{CustomDeleteResult, CustomImportResult, CustomSkillItem};
-use crate::commands::experts::{ExpertInstallStatus, LinkOp, LinkOpResult};
+use crate::commands::experts::{known_workspace_paths, ExpertInstallStatus, LinkOp, LinkOpResult};
 use crate::models::agent::AgentType;
 
 #[derive(Deserialize)]
@@ -18,6 +21,7 @@ pub struct CustomIdParams {
 #[serde(rename_all = "camelCase")]
 pub struct CustomApplyLinksParams {
     pub ops: Vec<LinkOp>,
+    #[serde(default)]
     pub scope: AgentSkillScope,
     #[serde(default)]
     pub workspace_path: Option<String>,
@@ -26,6 +30,7 @@ pub struct CustomApplyLinksParams {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScopeParams {
+    #[serde(default)]
     pub scope: AgentSkillScope,
     #[serde(default)]
     pub workspace_path: Option<String>,
@@ -154,9 +159,11 @@ pub async fn custom_import_from_agent(
 }
 
 pub async fn custom_delete_skills(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<CustomDeleteParams>,
 ) -> Result<Json<Vec<CustomDeleteResult>>, AppCommandError> {
-    let result = custom_skills_commands::custom_delete_skills(params.ids)
+    let workspace_paths = known_workspace_paths(&state.db).await;
+    let result = custom_skills_commands::custom_delete_skills_core(params.ids, workspace_paths)
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(result))

@@ -3835,8 +3835,13 @@
     "confirm": {
       "disableTitle": "これらのリンクを無効化しますか？",
       "disableBody": "codeg が管理する {count} 件のスキルリンクを削除します。カスタムディレクトリを占有しているスキルはそのまま残ります。いつでも再び有効化できます。",
+      "projectEnableTitle": "プロジェクトスキルを有効化しますか？",
+      "projectEnableBody": "選択したリポジトリ内に codeg 管理のスキルリンクを {count} 件作成します。",
+      "projectEnablePaths": "作成する項目",
+      "projectEnableGitignore": "これらのリンクは端末固有の絶対パスを参照します。上記の生成パスを .gitignore に追加し、コミットしないでください。",
       "cancel": "キャンセル",
-      "confirm": "無効化"
+      "confirm": "無効化",
+      "enable": "有効化"
     },
     "toasts": {
       "loadFailed": "スキルの状態の読み込みに失敗しました",
@@ -4673,6 +4678,7 @@
     "titlePlaceholder": "何をしますか？",
     "promptLabel": "タスクの説明",
     "promptPlaceholder": "エージェントへの指示を記述 — @ でファイル参照、/ でコマンド",
+    "projectSkillWorktreeHint": "タスクは独立した worktree で実行されます。作成されるまではグローバルスキルだけが表示され、元のチェックアウトにあるプロジェクトスキルはタスクでは利用できません。",
     "folderPlaceholder": "フォルダを選択",
     "agentInheritedHint": "タスク設定から継承 — 変更するとこのタスク専用になります",
     "agentOverrideReset": "継承に戻す",

@@ -110,6 +110,8 @@ export interface FollowUpComposerTarget {
   agentType: AgentType
   /** Working directory `@` references and the command probe run in. */
   folderPath: string | null
+  /** Worktree whose project-scoped skills are available to the task. */
+  skillWorkspacePath: string | null
 }
 
 /** The subset of a folder this resolution needs. */
@@ -148,5 +150,6 @@ export function followUpComposerTarget(args: {
       projectFolder?.default_agent_type ??
       "claude_code",
     folderPath: worktreeFolder?.path ?? projectFolder?.path ?? null,
+    skillWorkspacePath: worktreeFolder?.path ?? null,
   }
 }

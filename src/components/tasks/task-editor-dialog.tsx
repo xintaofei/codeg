@@ -389,6 +389,7 @@ function TaskEditorBody({
           ref={composerRef}
           agentType={agentType}
           folderPath={folderPath}
+          skillWorkspacePath={null}
           defaultText={composerSeed.text}
           defaultBlocks={composerSeed.blocks}
           placeholder={t("promptPlaceholder")}
@@ -421,6 +422,9 @@ function TaskEditorBody({
             />
           }
         />
+        <p className="text-xs text-muted-foreground">
+          {t("projectSkillWorktreeHint")}
+        </p>
 
         {/* Target — which project board the task lives on. */}
         <div className="flex flex-col gap-2">

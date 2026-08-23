@@ -63,6 +63,7 @@ import { cn } from "@/lib/utils"
 import { toErrorMessage } from "@/lib/app-error"
 import type {
   AcpAgentInfo,
+  AgentSkillScope,
   AgentType,
   ExpertInstallStatus,
   ExpertLinkState,
@@ -89,6 +90,7 @@ export interface MatrixSkill {
 export interface SkillAgentMatrixProps {
   skills: MatrixSkill[]
   agents: AcpAgentInfo[]
+  scope: AgentSkillScope
   categoryOrder: Record<string, number>
   translateCategory: (category: string) => string
   translateState: (state: ExpertLinkState) => string
@@ -163,6 +165,10 @@ export function computeLinkDelta(
     if (seen.has(key)) continue
     seen.add(key)
     const status = statuses.get(key)
+    // A missing snapshot row is not evidence that the target is disabled.
+    // It can mean the pack does not support that agent, so no operation may be
+    // synthesized from absence alone.
+    if (!status) continue
     if (isTargetInherited(skillId, agentType)) continue
     if (enable === isEnabled(status)) continue
     if (enable) {
@@ -192,6 +198,7 @@ function stripFrontmatter(content: string): string {
 export function SkillAgentMatrix({
   skills,
   agents,
+  scope,
   categoryOrder,
   translateCategory,
   translateState,
@@ -216,6 +223,7 @@ export function SkillAgentMatrix({
     Map<string, ExpertInstallStatus>
   >(new Map())
   const [statusLoading, setStatusLoading] = useState(true)
+  const [statusError, setStatusError] = useState<string | null>(null)
   const [applying, setApplying] = useState(false)
   const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set())
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -223,12 +231,32 @@ export function SkillAgentMatrix({
     () => new Set(agents.map((a) => a.agent_type))
   )
   const [search, setSearch] = useState("")
-  const [confirm, setConfirm] = useState<LinkOp[] | null>(null)
+  const [confirm, setConfirm] = useState<{
+    ops: LinkOp[]
+    kind: "disable" | "project_enable"
+    paths: string[]
+  } | null>(null)
   const [detailSkillId, setDetailSkillId] = useState<string | null>(null)
   const [detailContent, setDetailContent] = useState("")
   const [detailLoading, setDetailLoading] = useState(false)
 
-  const agentTypes = useMemo(() => agents.map((a) => a.agent_type), [agents])
+  const supportedAgentTypes = useMemo(
+    () =>
+      new Set(
+        [...statuses.values(), ...inheritedStatuses.values()].map(
+          (status) => status.agentType
+        )
+      ),
+    [statuses, inheritedStatuses]
+  )
+  const matrixAgents = useMemo(
+    () => agents.filter((agent) => supportedAgentTypes.has(agent.agent_type)),
+    [agents, supportedAgentTypes]
+  )
+  const agentTypes = useMemo(
+    () => matrixAgents.map((a) => a.agent_type),
+    [matrixAgents]
+  )
 
   const isSkillEnableable = useCallback(
     (skillId: string) => skills.find((s) => s.id === skillId)?.ready ?? false,
@@ -245,15 +273,18 @@ export function SkillAgentMatrix({
     ])
       .then(([list, inherited]) => {
         if (!cancelled) {
+          setStatusError(null)
           setStatuses(buildMap(list))
           setInheritedStatuses(buildMap(inherited))
         }
       })
       .catch((err) => {
-        if (!cancelled)
+        if (!cancelled) {
+          setStatusError(toErrorMessage(err))
           toast.error(t("toasts.loadFailed"), {
             description: toErrorMessage(err),
           })
+        }
       })
       .finally(() => {
         if (!cancelled) setStatusLoading(false)
@@ -324,6 +355,9 @@ export function SkillAgentMatrix({
     visibleIds.length > 0 && visibleIds.every((id) => selected.has(id))
   const someVisibleSelected = visibleIds.some((id) => selected.has(id))
   const selectedVisibleIds = visibleIds.filter((id) => selected.has(id))
+  const selectedBulkAgentCount = agentTypes.filter((agentType) =>
+    bulkAgents.has(agentType)
+  ).length
 
   const enabledCountForSkill = useCallback(
     (id: string) =>
@@ -344,9 +378,14 @@ export function SkillAgentMatrix({
     [visibleSkills, statuses, inheritedStatuses]
   )
   const isInherited = useCallback(
-    (skillId: string, agentType: AgentType) =>
-      isEnabled(inheritedStatuses.get(statusKey(skillId, agentType))),
-    [inheritedStatuses]
+    (skillId: string, agentType: AgentType) => {
+      if (scope !== "project") return false
+      const key = statusKey(skillId, agentType)
+      if (!isEnabled(inheritedStatuses.get(key))) return false
+      const projectStatus = statuses.get(key)
+      return !projectStatus || projectStatus.state === "not_linked"
+    },
+    [scope, statuses, inheritedStatuses]
   )
 
   // ─── Apply ──────────────────────────────────────────────────────────
@@ -425,17 +464,33 @@ export function SkillAgentMatrix({
     [applyLinks, loadAllStatuses, onApplied, t]
   )
 
-  /** Enable ops run immediately; destructive (disable) bulk ops confirm first. */
+  /** Bulk disables always confirm. Project enables also confirm because they
+   *  write agent-specific directories into the selected repository. */
   const dispatch = useCallback(
-    (ops: LinkOp[], destructive: boolean) => {
+    (ops: LinkOp[], enable: boolean) => {
       if (ops.length === 0) return
-      if (destructive) {
-        setConfirm(ops)
+      if (!enable || scope === "project") {
+        const paths = Array.from(
+          new Set(
+            ops
+              .map((op) =>
+                statuses
+                  .get(statusKey(op.expertId, op.agentType))
+                  ?.linkPath.trim()
+              )
+              .filter((path): path is string => !!path)
+          )
+        ).sort()
+        setConfirm({
+          ops,
+          kind: enable ? "project_enable" : "disable",
+          paths,
+        })
       } else {
         void runOps(ops)
       }
     },
-    [runOps]
+    [runOps, scope, statuses]
   )
 
   const toggleCell = useCallback(
@@ -464,7 +519,7 @@ export function SkillAgentMatrix({
         isSkillEnableable,
         isInherited
       ),
-      !enable
+      enable
     )
 
   const columnBatch = (agentType: AgentType, enable: boolean) =>
@@ -476,7 +531,7 @@ export function SkillAgentMatrix({
         isSkillEnableable,
         isInherited
       ),
-      !enable
+      enable
     )
 
   const everythingBatch = (enable: boolean) =>
@@ -490,11 +545,16 @@ export function SkillAgentMatrix({
         isSkillEnableable,
         isInherited
       ),
-      !enable
+      enable
     )
 
   const selectedBatch = (enable: boolean) => {
-    const targetAgents = bulkAgents.size ? Array.from(bulkAgents) : agentTypes
+    const selectedAgentTypes = agentTypes.filter((agentType) =>
+      bulkAgents.has(agentType)
+    )
+    const targetAgents = selectedAgentTypes.length
+      ? selectedAgentTypes
+      : agentTypes
     dispatch(
       computeLinkDelta(
         selectedVisibleIds.flatMap((skillId) =>
@@ -505,7 +565,7 @@ export function SkillAgentMatrix({
         isSkillEnableable,
         isInherited
       ),
-      !enable
+      enable
     )
   }
 
@@ -548,6 +608,21 @@ export function SkillAgentMatrix({
       <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
         {t("loading")}
+      </div>
+    )
+  }
+
+  if (statusError) {
+    return (
+      <div
+        role="alert"
+        className="h-full flex flex-col items-center justify-center gap-2 p-6 text-center"
+      >
+        <AlertTriangle className="h-5 w-5 text-destructive" />
+        <div className="text-sm font-medium">{t("toasts.loadFailed")}</div>
+        <div className="max-w-lg text-xs text-muted-foreground">
+          {statusError}
+        </div>
       </div>
     )
   }
@@ -624,7 +699,7 @@ export function SkillAgentMatrix({
                       </span>
                     </div>
                   </th>
-                  {agents.map((agent) => (
+                  {matrixAgents.map((agent) => (
                     <th
                       key={agent.agent_type}
                       scope="col"
@@ -681,7 +756,7 @@ export function SkillAgentMatrix({
                   <CategoryGroup
                     key={category}
                     label={translateCategory(category)}
-                    colSpan={agents.length + 2}
+                    colSpan={matrixAgents.length + 2}
                   >
                     {items.map((skill) => (
                       <tr key={skill.id} className="border-b last:border-b-0">
@@ -726,7 +801,7 @@ export function SkillAgentMatrix({
                               variant="outline"
                               className="h-5 px-1.5 text-[10px] shrink-0 tabular-nums text-muted-foreground"
                             >
-                              {enabledCountForSkill(skill.id)}/{agents.length}
+                              {`${enabledCountForSkill(skill.id)}/${matrixAgents.length}`}
                             </Badge>
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
@@ -762,7 +837,7 @@ export function SkillAgentMatrix({
                             </DropdownMenu>
                           </div>
                         </th>
-                        {agents.map((agent) => {
+                        {matrixAgents.map((agent) => {
                           const key = statusKey(skill.id, agent.agent_type)
                           const status = statuses.get(key)
                           const inherited = isInherited(
@@ -780,6 +855,9 @@ export function SkillAgentMatrix({
                                 ready={skill.ready}
                                 status={status}
                                 inherited={inherited}
+                                unavailable={
+                                  scope === "project" && !status && !inherited
+                                }
                                 pending={pendingKeys.has(key)}
                                 disabled={!interactive}
                                 translateState={translateState}
@@ -813,14 +891,16 @@ export function SkillAgentMatrix({
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button size="sm" variant="outline" disabled={!interactive}>
-                  {bulkAgents.size === agentTypes.length
+                  {selectedBulkAgentCount === agentTypes.length
                     ? t("bulk.targetAll")
-                    : t("bulk.targetSome", { count: bulkAgents.size })}
+                    : t("bulk.targetSome", {
+                        count: selectedBulkAgentCount,
+                      })}
                   <ChevronDown className="h-3.5 w-3.5" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start">
-                {agents.map((agent) => (
+                {matrixAgents.map((agent) => (
                   <DropdownMenuCheckboxItem
                     key={agent.agent_type}
                     checked={bulkAgents.has(agent.agent_type)}
@@ -868,7 +948,7 @@ export function SkillAgentMatrix({
         )}
       </div>
 
-      {/* Destructive-batch confirm. */}
+      {/* Destructive batches and repository-writing project enables confirm. */}
       <AlertDialog
         open={confirm !== null}
         onOpenChange={(open) => {
@@ -877,21 +957,48 @@ export function SkillAgentMatrix({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{t("confirm.disableTitle")}</AlertDialogTitle>
+            <AlertDialogTitle>
+              {confirm?.kind === "project_enable"
+                ? t("confirm.projectEnableTitle")
+                : t("confirm.disableTitle")}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              {t("confirm.disableBody", { count: confirm?.length ?? 0 })}
+              {confirm?.kind === "project_enable"
+                ? t("confirm.projectEnableBody", {
+                    count: confirm?.ops.length ?? 0,
+                  })
+                : t("confirm.disableBody", {
+                    count: confirm?.ops.length ?? 0,
+                  })}
             </AlertDialogDescription>
+            {confirm?.kind === "project_enable" && (
+              <div className="space-y-2 text-xs text-muted-foreground">
+                <div className="font-medium text-foreground">
+                  {t("confirm.projectEnablePaths")}
+                </div>
+                <ul className="max-h-40 space-y-1 overflow-auto rounded-md border bg-muted/30 p-2 font-mono">
+                  {confirm.paths.map((path) => (
+                    <li key={path} className="break-all">
+                      {path}
+                    </li>
+                  ))}
+                </ul>
+                <p>{t("confirm.projectEnableGitignore")}</p>
+              </div>
+            )}
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t("confirm.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
-                const ops = confirm ?? []
+                const ops = confirm?.ops ?? []
                 setConfirm(null)
                 void runOps(ops)
               }}
             >
-              {t("confirm.confirm")}
+              {confirm?.kind === "project_enable"
+                ? t("confirm.enable")
+                : t("confirm.confirm")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -923,7 +1030,7 @@ export function SkillAgentMatrix({
                     {t("detail.enableForAgents")}
                   </div>
                   <div className="space-y-1.5">
-                    {agents.map((agent) => {
+                    {matrixAgents.map((agent) => {
                       const key = statusKey(detailSkill.id, agent.agent_type)
                       const status = statuses.get(key)
                       const inherited = isInherited(
@@ -932,7 +1039,9 @@ export function SkillAgentMatrix({
                       )
                       const enabled = inherited || isEnabled(status)
                       const blocked = isBlockedForEnable(status)
-                      const unavailable = !status && !inherited
+                      const unavailable =
+                        scope === "project" && !status && !inherited
+                      const missing = !status
                       return (
                         <div
                           key={agent.agent_type}
@@ -967,7 +1076,7 @@ export function SkillAgentMatrix({
                               applying ||
                               pendingKeys.has(key) ||
                               inherited ||
-                              unavailable ||
+                              missing ||
                               !detailSkill.ready ||
                               (blocked && !enabled)
                             }
@@ -1057,6 +1166,7 @@ function MatrixCell({
   ready,
   status,
   inherited,
+  unavailable,
   pending,
   disabled,
   translateState,
@@ -1071,6 +1181,7 @@ function MatrixCell({
   ready: boolean
   status: ExpertInstallStatus | undefined
   inherited: boolean
+  unavailable: boolean
   pending: boolean
   disabled: boolean
   translateState: (state: ExpertLinkState) => string
@@ -1081,7 +1192,7 @@ function MatrixCell({
   onToggle: () => void
 }) {
   const enabled = inherited || isEnabled(status)
-  const unavailable = !status && !inherited
+  const missing = !status
   const blocked = isBlockedForEnable(status)
   const broken = status?.state === "broken"
   // Mirror the single-toggle predicate: a not-ready skill or a blocked cell
@@ -1090,7 +1201,7 @@ function MatrixCell({
     disabled ||
     pending ||
     inherited ||
-    unavailable ||
+    missing ||
     ((!ready || blocked) && !enabled)
 
   const stateLabel = inherited
@@ -1112,48 +1223,44 @@ function MatrixCell({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span
-          className="inline-flex"
-          tabIndex={notInteractive ? 0 : undefined}
-          aria-label={notInteractive ? tip : undefined}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={enabled}
+          aria-label={`${skillName}, ${agentName}: ${stateLabel}`}
+          aria-disabled={notInteractive}
+          tabIndex={notInteractive ? -1 : 0}
+          onClick={() => {
+            if (!notInteractive) onToggle()
+          }}
+          className={cn(
+            // `align-middle` decouples the button from the text baseline so an
+            // empty cell (no svg) and a filled cell (Check svg) reserve the same
+            // line-box height — otherwise a fully-enabled row renders shorter.
+            "inline-flex h-7 w-7 items-center justify-center rounded-md border align-middle transition-colors",
+            inherited
+              ? "border-primary/50 bg-primary/15 text-primary"
+              : enabled
+                ? "border-primary bg-primary text-primary-foreground"
+                : broken
+                  ? "border-amber-500/50 text-amber-600 dark:text-amber-400"
+                  : blocked || unavailable || !ready
+                    ? "border-dashed border-border/70 text-muted-foreground/60"
+                    : "border-border hover:bg-muted/60",
+            status?.copyMode && enabled && "ring-1 ring-amber-400",
+            notInteractive && "cursor-not-allowed opacity-70"
+          )}
         >
-          <button
-            type="button"
-            role="switch"
-            aria-checked={enabled}
-            aria-label={`${skillName}, ${agentName}: ${stateLabel}`}
-            aria-disabled={notInteractive}
-            disabled={notInteractive}
-            onClick={onToggle}
-            className={cn(
-              // `align-middle` decouples the button from the text baseline so an
-              // empty cell (no svg) and a filled cell (Check svg) reserve the same
-              // line-box height — otherwise a fully-enabled row renders shorter.
-              "inline-flex h-7 w-7 items-center justify-center rounded-md border align-middle transition-colors",
-              inherited
-                ? "border-primary/50 bg-primary/15 text-primary"
-                : enabled
-                  ? "border-primary bg-primary text-primary-foreground"
-                  : broken
-                    ? "border-amber-500/50 text-amber-600 dark:text-amber-400"
-                    : blocked || unavailable || !ready
-                      ? "border-dashed border-border/70 text-muted-foreground/60"
-                      : "border-border hover:bg-muted/60",
-              status?.copyMode && enabled && "ring-1 ring-amber-400",
-              notInteractive && "cursor-not-allowed opacity-70"
-            )}
-          >
-            {pending ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : enabled ? (
-              <Check className="h-4 w-4" />
-            ) : broken ? (
-              <AlertTriangle className="h-3.5 w-3.5" />
-            ) : blocked || unavailable || !ready ? (
-              <Lock className="h-3 w-3" />
-            ) : null}
-          </button>
-        </span>
+          {pending ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : enabled ? (
+            <Check className="h-4 w-4" />
+          ) : broken ? (
+            <AlertTriangle className="h-3.5 w-3.5" />
+          ) : blocked || unavailable || !ready ? (
+            <Lock className="h-3 w-3" />
+          ) : null}
+        </button>
       </TooltipTrigger>
       <TooltipContent>{tip}</TooltipContent>
     </Tooltip>

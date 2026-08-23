@@ -2,7 +2,7 @@ import { act, render, screen, waitFor } from "@testing-library/react"
 import type { Editor } from "@tiptap/core"
 import { NextIntlClientProvider } from "next-intl"
 import { createRef, useState } from "react"
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import enMessages from "@/i18n/messages/en.json"
 import type { ReferenceSearch } from "@/components/chat/composer/suggestion/types"
@@ -13,20 +13,30 @@ import {
   type TaskMessageComposerHandle,
 } from "./task-message-composer"
 
+const hookCalls = vi.hoisted(() => ({
+  agentOptions: vi.fn(),
+  agentSkills: vi.fn(),
+  enabledSkills: vi.fn(),
+  referenceSearch: vi.fn(),
+}))
+
 // The `/` menu's source: the agent-options probe (a transient CLI session).
 vi.mock("@/components/automations/use-agent-options", () => ({
-  useAgentOptions: () => ({
-    snapshot: {
-      available_commands: [
-        { name: "review", description: "Review the working diff" },
-        { name: "commit", description: "Commit the change" },
-      ],
-    },
-    loading: false,
-    error: null,
-    reload: vi.fn(),
-    ensure: () => Promise.resolve(null),
-  }),
+  useAgentOptions: (agentType: AgentType, folderPath: string | null) => {
+    hookCalls.agentOptions(agentType, folderPath)
+    return {
+      snapshot: {
+        available_commands: [
+          { name: "review", description: "Review the working diff" },
+          { name: "commit", description: "Commit the change" },
+        ],
+      },
+      loading: false,
+      error: null,
+      reload: vi.fn(),
+      ensure: () => Promise.resolve(null),
+    }
+  },
 }))
 
 // Codex's `$` skills: a filesystem scan in production.
@@ -44,11 +54,17 @@ const SKILL: AgentSkillItem = {
 vi.mock("@/hooks/use-built-in-experts", () => ({ useBuiltInExperts: () => [] }))
 vi.mock("@/hooks/use-built-in-science", () => ({ useBuiltInScience: () => [] }))
 vi.mock("@/hooks/use-enabled-skill-ids", () => ({
-  useEnabledSkillIds: () => ({
-    enabledIds: new Set<string>(),
-    ready: true,
-    supported: true,
-  }),
+  useEnabledSkillIds: (
+    agentType: AgentType | null,
+    workspacePath?: string | null
+  ) => {
+    hookCalls.enabledSkills(agentType, workspacePath)
+    return {
+      enabledIds: new Set<string>(),
+      ready: true,
+      supported: true,
+    }
+  },
 }))
 vi.mock("@/lib/platform", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/platform")>()),
@@ -56,8 +72,13 @@ vi.mock("@/lib/platform", async (importOriginal) => ({
 }))
 
 vi.mock("@/hooks/use-agent-skills", () => ({
-  useAgentSkills: (agentType: AgentType | null) =>
-    agentType === "codex" ? [SKILL] : [],
+  useAgentSkills: (
+    agentType: AgentType | null,
+    workspacePath?: string | null
+  ) => {
+    hookCalls.agentSkills(agentType, workspacePath)
+    return agentType === "codex" ? [SKILL] : []
+  },
 }))
 
 // The `@` panel's data sources all hit the transport; the panel itself is what
@@ -81,7 +102,10 @@ const search: ReferenceSearch = () => [
   },
 ]
 vi.mock("@/components/chat/composer/use-reference-search", () => ({
-  useReferenceSearch: () => search,
+  useReferenceSearch: (options: { defaultPath: string | null }) => {
+    hookCalls.referenceSearch(options)
+    return search
+  },
 }))
 
 async function mount(
@@ -115,6 +139,10 @@ async function mount(
 }
 
 describe("TaskMessageComposer", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
   it("offers the agent's slash commands and inserts the invocation token", async () => {
     const { editor, onChange } = await mount()
     act(() => {
@@ -239,5 +267,19 @@ describe("TaskMessageComposer", () => {
     rerender(<Host placeholder="What should it change?" />)
     expect(ref.current?.getEditor()).toBe(editor)
     expect(ref.current?.getText()).toContain("check the retry path")
+  })
+
+  it("keeps file context while hiding project skills before the worktree exists", async () => {
+    await mount({ agentType: "codex", skillWorkspacePath: null })
+
+    expect(hookCalls.agentOptions).toHaveBeenLastCalledWith(
+      "codex",
+      "/repo-task-7"
+    )
+    expect(hookCalls.referenceSearch).toHaveBeenLastCalledWith(
+      expect.objectContaining({ defaultPath: "/repo-task-7" })
+    )
+    expect(hookCalls.agentSkills).toHaveBeenLastCalledWith("codex", null)
+    expect(hookCalls.enabledSkills).toHaveBeenLastCalledWith("codex", null)
   })
 })

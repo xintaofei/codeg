@@ -37,10 +37,14 @@ use crate::commands::acp::{
 };
 // Reuse the generic filesystem link primitives, link-state DTOs and the shared
 // central store from experts (the same boundary science/office use).
+#[cfg(feature = "tauri-runtime")]
+use crate::commands::experts::known_workspace_paths;
 use crate::commands::experts::{
-    central_experts_dir, classify_link, create_link_raw, path_is_symlink, read_link_target,
-    ExpertInstallStatus, ExpertLinkState, LinkOp, LinkOpResult,
+    central_experts_dir, classify_link, create_link_raw, is_managed_copy, is_managed_link_entry,
+    path_is_symlink, read_link_target, ExpertInstallStatus, ExpertLinkState, LinkOp, LinkOpResult,
 };
+#[cfg(feature = "tauri-runtime")]
+use crate::db::AppDatabase;
 use crate::models::agent::AgentType;
 
 // ─── Error type ─────────────────────────────────────────────────────────
@@ -328,7 +332,7 @@ pub async fn custom_list_all_install_statuses(
                 link_path: link_path.to_string_lossy().to_string(),
                 target_path,
                 expected_target_path: expected.to_string_lossy().to_string(),
-                copy_mode: false,
+                copy_mode: is_managed_copy(&link_path, &expected),
             });
         }
     }
@@ -366,33 +370,53 @@ fn link_one_locked(
         fs::create_dir_all(parent)?;
     }
 
-    let mut copy_mode = false;
-    match create_link_raw(&central, &link_path) {
-        Ok(is_copy) => copy_mode = is_copy,
-        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-            match classify_link(&link_path, &central) {
-                ExpertLinkState::LinkedToCodeg => {} // idempotent success
-                ExpertLinkState::BlockedByRealDirectory => {
-                    return Err(CustomSkillsError::NameCollision {
-                        path: link_path.to_string_lossy().to_string(),
-                    });
-                }
-                ExpertLinkState::LinkedElsewhere | ExpertLinkState::Broken => {
-                    let found = read_link_target(&link_path)
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "<unknown>".into());
-                    return Err(CustomSkillsError::ForeignLink {
-                        path: link_path.to_string_lossy().to_string(),
-                        found,
-                    });
-                }
-                ExpertLinkState::NotLinked => {
-                    create_link_raw(&central, &link_path)
-                        .map_err(|e| CustomSkillsError::Io(format!("retry link failed: {e}")))?;
+    let mut copy_mode = is_managed_copy(&link_path, &central);
+    match classify_link(&link_path, &central) {
+        ExpertLinkState::LinkedToCodeg => {}
+        ExpertLinkState::BlockedByRealDirectory => {
+            return Err(CustomSkillsError::NameCollision {
+                path: link_path.to_string_lossy().to_string(),
+            });
+        }
+        ExpertLinkState::LinkedElsewhere | ExpertLinkState::Broken => {
+            let found = read_link_target(&link_path)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "<unknown>".into());
+            return Err(CustomSkillsError::ForeignLink {
+                path: link_path.to_string_lossy().to_string(),
+                found,
+            });
+        }
+        ExpertLinkState::NotLinked => match create_link_raw(&central, &link_path) {
+            Ok(is_copy) => copy_mode = is_copy,
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                match classify_link(&link_path, &central) {
+                    ExpertLinkState::LinkedToCodeg => {
+                        copy_mode = is_managed_copy(&link_path, &central);
+                    }
+                    ExpertLinkState::BlockedByRealDirectory => {
+                        return Err(CustomSkillsError::NameCollision {
+                            path: link_path.to_string_lossy().to_string(),
+                        });
+                    }
+                    ExpertLinkState::LinkedElsewhere | ExpertLinkState::Broken => {
+                        let found = read_link_target(&link_path)
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "<unknown>".into());
+                        return Err(CustomSkillsError::ForeignLink {
+                            path: link_path.to_string_lossy().to_string(),
+                            found,
+                        });
+                    }
+                    ExpertLinkState::NotLinked => {
+                        return Err(CustomSkillsError::Io(
+                            "link destination changed during creation".into(),
+                        ));
+                    }
                 }
             }
-        }
-        Err(err) => return Err(CustomSkillsError::Io(err.to_string())),
+            Err(err) => return Err(CustomSkillsError::Io(err.to_string())),
+        },
     }
 
     let state = classify_link(&link_path, &central);
@@ -429,10 +453,7 @@ fn unlink_one_locked(
             continue;
         }
         let state = classify_link(&candidate, &central);
-        if matches!(
-            state,
-            ExpertLinkState::LinkedToCodeg | ExpertLinkState::Broken
-        ) {
+        if is_managed_link_entry(&candidate, &central, state) {
             remove_skill_entry(&candidate).map_err(|e| {
                 CustomSkillsError::Io(format!("remove link {}: {e}", candidate.display()))
             })?;
@@ -721,18 +742,18 @@ fn copy_markdown_as_skill(src: &Path, dst: &Path) -> Result<(), CustomSkillsErro
     Ok(())
 }
 
-/// Batch-delete custom skills. For each id: first unlink from **every** agent
-/// (symlink-safe — foreign links are left in place), then remove the real
-/// central directory. Locks once; per-skill failures are reported, not fatal.
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn custom_delete_skills(
+/// Batch-delete custom skills after cleaning global links and every project in
+/// the supplied folder-history snapshot. Locks once; per-skill failures are
+/// reported without aborting the rest of the batch.
+pub async fn custom_delete_skills_core(
     ids: Vec<String>,
+    workspace_paths: Vec<String>,
 ) -> Result<Vec<CustomDeleteResult>, CustomSkillsError> {
     let _guard = mutation_lock().lock().await;
     let agents = supported_agents();
     let mut out = Vec::with_capacity(ids.len());
     for id in ids {
-        let res = delete_one_locked(&id, &agents);
+        let res = delete_one_locked(&id, &agents, &workspace_paths);
         out.push(match res {
             Ok(()) => CustomDeleteResult {
                 id,
@@ -749,10 +770,24 @@ pub async fn custom_delete_skills(
     Ok(out)
 }
 
-fn delete_one_locked(id: &str, agents: &[AgentType]) -> Result<(), CustomSkillsError> {
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn custom_delete_skills(
+    db: tauri::State<'_, AppDatabase>,
+    ids: Vec<String>,
+) -> Result<Vec<CustomDeleteResult>, CustomSkillsError> {
+    let workspace_paths = known_workspace_paths(&db).await;
+    custom_delete_skills_core(ids, workspace_paths).await
+}
+
+fn delete_one_locked(
+    id: &str,
+    agents: &[AgentType],
+    workspace_paths: &[String],
+) -> Result<(), CustomSkillsError> {
     let id = ensure_custom_id(id)?;
-    // 1) Detach from every agent. A foreign link at the same path isn't ours, so
-    // tolerate it rather than aborting the delete.
+    // 1) Detach global links from every agent. A foreign link at the same path
+    // isn't ours, so tolerate it rather than aborting the delete.
     for &agent in agents {
         match unlink_one_locked(&id, agent, AgentSkillScope::Global, None) {
             Ok(()) => {}
@@ -761,7 +796,29 @@ fn delete_one_locked(id: &str, agents: &[AgentType]) -> Result<(), CustomSkillsE
             Err(e) => return Err(e),
         }
     }
-    // 2) Remove the real central directory (guarded: under the store, not a link).
+
+    // 2) Best-effort cleanup in every project known to folder history. A stale
+    // or inaccessible workspace must not make a custom skill undeletable, but
+    // the exact residual path is logged for repair.
+    for workspace_path in workspace_paths {
+        for &agent in agents {
+            match unlink_one_locked(
+                &id,
+                agent,
+                AgentSkillScope::Project,
+                Some(workspace_path),
+            ) {
+                Ok(())
+                | Err(CustomSkillsError::ForeignLink { .. })
+                | Err(CustomSkillsError::UnsupportedAgent(_)) => {}
+                Err(err) => tracing::warn!(
+                    "[CustomSkills] failed to clean project link for {id} / {agent:?} at {workspace_path}: {err}"
+                ),
+            }
+        }
+    }
+
+    // 3) Remove the real central directory (guarded: under the store, not a link).
     let central = custom_central_path(&id);
     if path_is_symlink(&central) {
         // Never remove_dir_all through a link — just detach it.
@@ -995,10 +1052,13 @@ mod tests {
     async fn delete_absent_skills_report_per_id() {
         // Deleting ids with no central dir + no links is an idempotent success;
         // this never touches real content.
-        let results = custom_delete_skills(vec![
-            "zzz-codeg-custom-delete-absent-1".into(),
-            "zzz-codeg-custom-delete-absent-2".into(),
-        ])
+        let results = custom_delete_skills_core(
+            vec![
+                "zzz-codeg-custom-delete-absent-1".into(),
+                "zzz-codeg-custom-delete-absent-2".into(),
+            ],
+            Vec::new(),
+        )
         .await
         .expect("batch returns Ok");
         assert_eq!(results.len(), 2);
@@ -1104,7 +1164,7 @@ mod tests {
             assert_eq!(fs::read_to_string(&md).unwrap(), updated);
 
             let dir = central_experts_dir().join(id);
-            let results = custom_delete_skills(vec![id.into()])
+            let results = custom_delete_skills_core(vec![id.into()], Vec::new())
                 .await
                 .expect("delete batch");
             assert!(results.iter().all(|r| r.ok), "{results:?}");
@@ -1145,7 +1205,7 @@ mod tests {
             assert!(path_is_symlink(&link), "agent link should exist after enable");
 
             let dir = central_experts_dir().join(id);
-            let del = custom_delete_skills(vec![id.into()])
+            let del = custom_delete_skills_core(vec![id.into()], Vec::new())
                 .await
                 .expect("delete batch");
             assert!(del[0].ok, "{del:?}");
@@ -1154,6 +1214,49 @@ mod tests {
                 "agent link must be removed (unlink-before-delete)"
             );
             assert!(!dir.exists(), "central dir must be removed after unlinking");
+        })
+        .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fs_delete_cleans_links_from_known_projects() {
+        with_temp_home(|| async {
+            let id = "my-project-linked-skill";
+            let workspace = tempfile::tempdir().expect("workspace");
+            let workspace_path = workspace.path().to_string_lossy().into_owned();
+            custom_create_skill(id.into(), "---\nname: P\n---\nx\n".into())
+                .await
+                .expect("create");
+
+            let res = custom_apply_links(
+                vec![LinkOp {
+                    expert_id: id.into(),
+                    agent_type: AgentType::ClaudeCode,
+                    enable: true,
+                }],
+                AgentSkillScope::Project,
+                Some(workspace_path.clone()),
+            )
+            .await
+            .expect("apply project link");
+            assert!(res[0].ok, "project link enable should succeed: {res:?}");
+
+            let link = agent_link_path(
+                AgentType::ClaudeCode,
+                id,
+                AgentSkillScope::Project,
+                Some(&workspace_path),
+            )
+            .expect("project link path");
+            assert!(path_is_symlink(&link));
+
+            let del = custom_delete_skills_core(vec![id.into()], vec![workspace_path])
+                .await
+                .expect("delete batch");
+            assert!(del[0].ok, "{del:?}");
+            assert!(fs::symlink_metadata(&link).is_err());
+            assert!(!custom_central_path(id).exists());
         })
         .await;
     }
@@ -1230,11 +1333,12 @@ mod tests {
 
             // Batch delete reports each bad id as a validation failure (never a
             // successful escape).
-            let del = custom_delete_skills(
+            let del = custom_delete_skills_core(
                 ["../SENTINEL", "..", "/etc/passwd"]
                     .iter()
                     .map(|s| s.to_string())
                     .collect(),
+                Vec::new(),
             )
             .await
             .expect("batch returns Ok");

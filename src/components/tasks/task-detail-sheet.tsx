@@ -950,6 +950,7 @@ export function TaskDetailSheet({
                         ref={composerRef}
                         agentType={composerTarget.agentType}
                         folderPath={composerTarget.folderPath}
+                        skillWorkspacePath={composerTarget.skillWorkspacePath}
                         defaultText={composerText}
                         placeholder={composerPlaceholder}
                         ariaLabel={
@@ -971,6 +972,11 @@ export function TaskDetailSheet({
                             : submitRestart(restartDuplicate != null))
                         }}
                       />
+                      {composerTarget.skillWorkspacePath == null ? (
+                        <p className="text-xs text-muted-foreground">
+                          {t("projectSkillWorktreeHint")}
+                        </p>
+                      ) : null}
                       {!isReview && restartDuplicate ? (
                         // Announced, not just drawn: the refusal arrives while
                         // focus is in the editor, so a screen-reader user

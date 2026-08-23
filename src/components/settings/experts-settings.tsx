@@ -206,6 +206,7 @@ export function ExpertsBody({
             key={`${reloadKey}:${scope}:${workspacePath ?? ""}`}
             skills={matrixSkills}
             agents={agents}
+            scope={scope}
             categoryOrder={CATEGORY_SORT}
             translateCategory={translatedCategory}
             translateState={translatedState}

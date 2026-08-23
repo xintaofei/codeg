@@ -45,8 +45,8 @@ use crate::commands::acp::{
 // (same boundary office_tools.rs uses). The central store is shared, so science
 // installs into `central_experts_dir()` too.
 use crate::commands::experts::{
-    central_experts_dir, classify_link, create_link_raw, path_is_symlink, read_link_target,
-    ExpertInstallStatus, ExpertLinkState, LinkOp, LinkOpResult,
+    central_experts_dir, classify_link, create_link_raw, is_managed_copy, is_managed_link_entry,
+    path_is_symlink, read_link_target, ExpertInstallStatus, ExpertLinkState, LinkOp, LinkOpResult,
 };
 use crate::models::agent::AgentType;
 
@@ -580,6 +580,7 @@ pub async fn science_list() -> Result<Vec<ScienceListItem>, ScienceError> {
     Ok(out)
 }
 
+/// Legacy global-only status API; scoped callers use the matrix snapshot API.
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn science_get_install_status(
     skill_id: String,
@@ -605,7 +606,7 @@ pub async fn science_get_install_status(
             link_path: link_path.to_string_lossy().to_string(),
             target_path,
             expected_target_path: expected.to_string_lossy().to_string(),
-            copy_mode: false,
+            copy_mode: is_managed_copy(&link_path, &expected),
         });
     }
     Ok(out)
@@ -662,38 +663,53 @@ fn link_one_locked(
         fs::create_dir_all(parent)?;
     }
 
-    let mut copy_mode = false;
-    match create_link_raw(&central, &link_path) {
-        Ok(is_copy) => {
-            copy_mode = is_copy;
+    let mut copy_mode = is_managed_copy(&link_path, &central);
+    match classify_link(&link_path, &central) {
+        ExpertLinkState::LinkedToCodeg => {}
+        ExpertLinkState::BlockedByRealDirectory => {
+            return Err(ScienceError::NameCollision {
+                path: link_path.to_string_lossy().to_string(),
+            });
         }
-        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-            match classify_link(&link_path, &central) {
-                ExpertLinkState::LinkedToCodeg => {
-                    // Idempotent success.
-                }
-                ExpertLinkState::BlockedByRealDirectory => {
-                    return Err(ScienceError::NameCollision {
-                        path: link_path.to_string_lossy().to_string(),
-                    });
-                }
-                ExpertLinkState::LinkedElsewhere | ExpertLinkState::Broken => {
-                    let found = read_link_target(&link_path)
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "<unknown>".into());
-                    return Err(ScienceError::ForeignLink {
-                        path: link_path.to_string_lossy().to_string(),
-                        found,
-                    });
-                }
-                ExpertLinkState::NotLinked => {
-                    // Shouldn't happen after AlreadyExists, but retry once.
-                    create_link_raw(&central, &link_path)
-                        .map_err(|e| ScienceError::Io(format!("retry link failed: {e}")))?;
+        ExpertLinkState::LinkedElsewhere | ExpertLinkState::Broken => {
+            let found = read_link_target(&link_path)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "<unknown>".into());
+            return Err(ScienceError::ForeignLink {
+                path: link_path.to_string_lossy().to_string(),
+                found,
+            });
+        }
+        ExpertLinkState::NotLinked => match create_link_raw(&central, &link_path) {
+            Ok(is_copy) => copy_mode = is_copy,
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                match classify_link(&link_path, &central) {
+                    ExpertLinkState::LinkedToCodeg => {
+                        copy_mode = is_managed_copy(&link_path, &central);
+                    }
+                    ExpertLinkState::BlockedByRealDirectory => {
+                        return Err(ScienceError::NameCollision {
+                            path: link_path.to_string_lossy().to_string(),
+                        });
+                    }
+                    ExpertLinkState::LinkedElsewhere | ExpertLinkState::Broken => {
+                        let found = read_link_target(&link_path)
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "<unknown>".into());
+                        return Err(ScienceError::ForeignLink {
+                            path: link_path.to_string_lossy().to_string(),
+                            found,
+                        });
+                    }
+                    ExpertLinkState::NotLinked => {
+                        return Err(ScienceError::Io(
+                            "link destination changed during creation".into(),
+                        ));
+                    }
                 }
             }
-        }
-        Err(err) => return Err(ScienceError::Io(err.to_string())),
+            Err(err) => return Err(ScienceError::Io(err.to_string())),
+        },
     }
 
     let state = classify_link(&link_path, &central);
@@ -709,6 +725,7 @@ fn link_one_locked(
     })
 }
 
+/// Legacy global-only link API; scoped callers use `science_apply_links`.
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn science_link_to_agent(
     skill_id: String,
@@ -718,6 +735,7 @@ pub async fn science_link_to_agent(
     link_one_locked(&skill_id, agent_type, AgentSkillScope::Global, None)
 }
 
+/// Legacy global-only unlink API; scoped callers use `science_apply_links`.
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn science_unlink_from_agent(
     skill_id: String,
@@ -750,10 +768,7 @@ fn unlink_one_locked(
             continue;
         }
         let state = classify_link(&candidate, &central);
-        if matches!(
-            state,
-            ExpertLinkState::LinkedToCodeg | ExpertLinkState::Broken
-        ) {
+        if is_managed_link_entry(&candidate, &central, state) {
             remove_skill_entry(&candidate).map_err(|e| {
                 ScienceError::Io(format!("remove link {}: {e}", candidate.display()))
             })?;
@@ -857,7 +872,7 @@ pub async fn science_list_all_install_statuses(
                 link_path: link_path.to_string_lossy().to_string(),
                 target_path,
                 expected_target_path: expected.to_string_lossy().to_string(),
-                copy_mode: false,
+                copy_mode: is_managed_copy(&link_path, &expected),
             });
         }
     }

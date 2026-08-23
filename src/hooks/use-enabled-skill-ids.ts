@@ -23,6 +23,21 @@ interface SnapshotEntry {
 // differ by folder. A null workspace keeps the previous global-only behavior.
 const snapshotEntries = new Map<string, SnapshotEntry>()
 
+interface GlobalSnapshotCache {
+  cached: ExpertInstallStatus[] | null
+  inflight: Promise<ExpertInstallStatus[] | null> | null
+  generation: number
+}
+
+// Global status is identical for every workspace. Keeping it outside the
+// per-workspace entries prevents K mounted folders from repeating the same
+// three backend scans on mount and on every focus refresh.
+const globalSnapshot: GlobalSnapshotCache = {
+  cached: null,
+  inflight: null,
+  generation: 0,
+}
+
 function normalizedWorkspacePath(workspacePath?: string | null): string | null {
   const trimmed = workspacePath?.trim()
   return trimmed ? trimmed : null
@@ -49,6 +64,61 @@ function getSnapshotEntry(workspacePath?: string | null): SnapshotEntry {
   return entry
 }
 
+function pruneSnapshotEntry(entry: SnapshotEntry): void {
+  if (entry.subscribers.size > 0 || entry.inflight) return
+  const key = snapshotKey(entry.workspacePath)
+  if (snapshotEntries.get(key) === entry) snapshotEntries.delete(key)
+}
+
+async function loadGlobalSnapshot(
+  force = false
+): Promise<ExpertInstallStatus[] | null> {
+  if (globalSnapshot.inflight) return globalSnapshot.inflight
+  if (!force && globalSnapshot.cached) return globalSnapshot.cached
+  const myGeneration = globalSnapshot.generation
+  const request: Promise<ExpertInstallStatus[] | null> = Promise.all([
+    expertsListAllInstallStatuses({ scope: "global" }),
+    officecliSkillListAllInstallStatuses({ scope: "global" }),
+    scienceListAllInstallStatuses({ scope: "global" }),
+  ])
+    .then((snapshots) => {
+      if (globalSnapshot.inflight === request) globalSnapshot.inflight = null
+      if (myGeneration !== globalSnapshot.generation) {
+        return globalSnapshot.cached
+      }
+      globalSnapshot.cached = snapshots.flat()
+      return globalSnapshot.cached
+    })
+    .catch((err) => {
+      if (globalSnapshot.inflight === request) globalSnapshot.inflight = null
+      console.warn("[useEnabledSkillIds] failed to load global statuses:", err)
+      return globalSnapshot.cached
+    })
+  globalSnapshot.inflight = request
+  return request
+}
+
+function effectiveSnapshot(
+  global: ExpertInstallStatus[],
+  project: ExpertInstallStatus[]
+): ExpertInstallStatus[] {
+  if (project.length === 0) return global
+  const projectByKey = new Map(
+    project.map((status) => [`${status.expertId}:${status.agentType}`, status])
+  )
+  return [
+    ...global.filter((status) => {
+      const projectStatus = projectByKey.get(
+        `${status.expertId}:${status.agentType}`
+      )
+      // An actual project entry wins over the global skill with the same id.
+      // A plain not_linked row means there is no project override.
+      return !projectStatus || projectStatus.state === "not_linked"
+    }),
+    ...project.filter((status) => status.state !== "not_linked"),
+  ]
+}
+
 /**
  * Load the experts + office-tools + science install-status snapshots and merge
  * them.
@@ -67,11 +137,6 @@ async function loadSnapshot(
   const entry = getSnapshotEntry(workspacePath)
   if (entry.inflight) return entry.inflight
   const myGeneration = entry.generation
-  const globalRequests = [
-    expertsListAllInstallStatuses({ scope: "global" }),
-    officecliSkillListAllInstallStatuses({ scope: "global" }),
-    scienceListAllInstallStatuses({ scope: "global" }),
-  ]
   const projectRequests = entry.workspacePath
     ? [
         expertsListAllInstallStatuses({
@@ -89,7 +154,7 @@ async function loadSnapshot(
       ]
     : []
   const request: Promise<ExpertInstallStatus[] | null> = Promise.all([
-    ...globalRequests,
+    loadGlobalSnapshot(),
     ...projectRequests,
   ])
     .then((snapshots) => {
@@ -100,15 +165,25 @@ async function loadSnapshot(
       if (entry.inflight === request) entry.inflight = null
       // A newer invalidation superseded this request while it was in flight —
       // discard its result so it can't clobber the fresher snapshot.
-      if (myGeneration !== entry.generation) return entry.cached
-      const merged = snapshots.flat()
+      if (myGeneration !== entry.generation) {
+        pruneSnapshotEntry(entry)
+        return entry.cached
+      }
+      const [global, ...project] = snapshots
+      if (!global) {
+        pruneSnapshotEntry(entry)
+        return entry.cached
+      }
+      const merged = effectiveSnapshot(global, project.flat())
       entry.cached = merged
       for (const notify of entry.subscribers) notify(merged)
+      pruneSnapshotEntry(entry)
       return merged
     })
     .catch((err) => {
       if (entry.inflight === request) entry.inflight = null
       console.warn("[useEnabledSkillIds] failed to load statuses:", err)
+      pruneSnapshotEntry(entry)
       return entry.cached
     })
   entry.inflight = request
@@ -132,6 +207,9 @@ function refreshSnapshotOnFocus(): void {
   // settings change we just returned from. The generation bump makes any stale
   // request discard its result instead of clobbering the fresh one. On failure
   // the cache is kept, so a transient error never resets a good snapshot.
+  globalSnapshot.generation += 1
+  globalSnapshot.inflight = null
+  void loadGlobalSnapshot(true)
   for (const entry of snapshotEntries.values()) {
     if (entry.subscribers.size === 0) continue
     entry.generation += 1
@@ -187,7 +265,7 @@ export function useEnabledSkillIds(
 } {
   const { agents, fresh: agentsFresh } = useAcpAgents()
   const key = snapshotKey(workspacePath)
-  const entry = getSnapshotEntry(workspacePath)
+  const entry = useMemo(() => getSnapshotEntry(workspacePath), [workspacePath])
   const [snapshotState, setSnapshotState] = useState<{
     key: string
     snapshot: ExpertInstallStatus[] | null
@@ -218,6 +296,7 @@ export function useEnabledSkillIds(
     return () => {
       cancelled = true
       entry.subscribers.delete(onUpdate)
+      pruneSnapshotEntry(entry)
     }
   }, [entry, key])
 

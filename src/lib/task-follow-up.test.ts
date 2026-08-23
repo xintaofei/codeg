@@ -80,7 +80,11 @@ describe("followUpComposerTarget", () => {
         conversationAgentType: "claude_code",
         folders: FOLDERS,
       })
-    ).toEqual({ agentType: "claude_code", folderPath: "/repo-task-7" })
+    ).toEqual({
+      agentType: "claude_code",
+      folderPath: "/repo-task-7",
+      skillWorkspacePath: "/repo-task-7",
+    })
   })
 
   it("falls back to the project folder before the task has a worktree", () => {
@@ -90,6 +94,7 @@ describe("followUpComposerTarget", () => {
       folders: FOLDERS,
     })
     expect(target.folderPath).toBe("/repo")
+    expect(target.skillWorkspacePath).toBeNull()
   })
 
   it("prefers the conversation's agent over the task's own override", () => {
@@ -127,6 +132,10 @@ describe("followUpComposerTarget", () => {
         conversationAgentType: null,
         folders: [],
       })
-    ).toEqual({ agentType: "claude_code", folderPath: null })
+    ).toEqual({
+      agentType: "claude_code",
+      folderPath: null,
+      skillWorkspacePath: null,
+    })
   })
 })

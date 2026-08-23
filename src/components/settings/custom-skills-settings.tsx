@@ -669,6 +669,7 @@ export function CustomSkillsBody({
           key={`${reloadKey}:${scope}:${workspacePath ?? ""}`}
           skills={matrixSkills}
           agents={agents}
+          scope={scope}
           categoryOrder={CATEGORY_ORDER}
           translateCategory={() => t("category")}
           translateState={translateState}

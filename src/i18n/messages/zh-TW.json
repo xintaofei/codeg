@@ -3835,8 +3835,13 @@
     "confirm": {
       "disableTitle": "停用這些連結？",
       "disableBody": "這將移除 {count} 個由 codeg 管理的技能連結。佔用自訂目錄的技能不受影響。你可以隨時重新啟用。",
+      "projectEnableTitle": "啟用專案層級技能？",
+      "projectEnableBody": "這會在所選儲存庫內建立 {count} 個由 codeg 管理的技能連結。",
+      "projectEnablePaths": "將建立的項目",
+      "projectEnableGitignore": "這些連結指向本機絕對路徑。請將上列產生的路徑加入 .gitignore，且不要提交到儲存庫。",
       "cancel": "取消",
-      "confirm": "停用"
+      "confirm": "停用",
+      "enable": "啟用"
     },
     "toasts": {
       "loadFailed": "載入技能狀態失敗",
@@ -4673,6 +4678,7 @@
     "titlePlaceholder": "要做什麼？",
     "promptLabel": "任務描述",
     "promptPlaceholder": "向 agent 描述任務——輸入 @ 可引用檔案，/ 可喚起指令",
+    "projectSkillWorktreeHint": "任務會在獨立 worktree 中執行。worktree 建立前只顯示全域技能；來源簽出目錄中的專案技能無法供此任務使用。",
     "folderPlaceholder": "選擇資料夾",
     "agentInheritedHint": "繼承自任務設定，修改後僅對本任務生效",
     "agentOverrideReset": "恢復繼承",

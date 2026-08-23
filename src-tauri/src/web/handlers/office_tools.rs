@@ -6,7 +6,7 @@ use serde::Deserialize;
 use crate::app_error::AppCommandError;
 use crate::acp::types::AgentSkillScope;
 use crate::app_state::AppState;
-use crate::commands::experts::{ExpertInstallStatus, LinkOp, LinkOpResult};
+use crate::commands::experts::{known_workspace_paths, ExpertInstallStatus, LinkOp, LinkOpResult};
 use crate::commands::office_tools as ot;
 use crate::commands::office_tools::{OfficecliInfo, OfficecliSkill, SkillSyncReport};
 use crate::models::agent::AgentType;
@@ -35,6 +35,7 @@ pub struct RenderHtmlParams {
 #[serde(rename_all = "camelCase")]
 pub struct ApplyLinksParams {
     pub ops: Vec<LinkOp>,
+    #[serde(default)]
     pub scope: AgentSkillScope,
     #[serde(default)]
     pub workspace_path: Option<String>,
@@ -43,6 +44,7 @@ pub struct ApplyLinksParams {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScopeParams {
+    #[serde(default)]
     pub scope: AgentSkillScope,
     #[serde(default)]
     pub workspace_path: Option<String>,
@@ -70,8 +72,11 @@ pub async fn officecli_install(
     Ok(Json(result))
 }
 
-pub async fn officecli_uninstall() -> Result<Json<OfficecliInfo>, AppCommandError> {
-    let result = ot::officecli_uninstall()
+pub async fn officecli_uninstall(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<OfficecliInfo>, AppCommandError> {
+    let workspace_paths = known_workspace_paths(&state.db).await;
+    let result = ot::officecli_uninstall_core(workspace_paths)
         .await
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(result))
