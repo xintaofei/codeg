@@ -27,8 +27,6 @@ vi.mock("@/lib/api", () => ({
     disable_hardware_acceleration: false,
   })),
   updateSystemRenderingSettings: vi.fn(async (v: unknown) => v),
-  getSystemAutostartSettings: vi.fn(async () => ({ enabled: false })),
-  updateSystemAutostartSettings: vi.fn(async (v: unknown) => v),
   updateSystemTerminalSettings: vi.fn(async (v: unknown) => v),
   probeTerminalShellPath: vi.fn(async () => true),
   getDelegationSettings: vi.fn(async () => ({
@@ -92,16 +90,6 @@ describe("GeneralSettings", () => {
     expect(shell).toBeInTheDocument()
     expect(screen.getByText("Currently using: /bin/zsh")).toBeInTheDocument()
 
-    // Launch-at-login section: the heading labels the switch, and the switch
-    // follows what the backend reports rather than the optimistic value.
-    const autostart = screen.getByLabelText("Launch at login")
-    expect(autostart).toHaveAttribute("role", "switch")
-    expect(autostart).toHaveAttribute("data-state", "unchecked")
-    fireEvent.click(autostart)
-    await waitFor(() =>
-      expect(autostart).toHaveAttribute("data-state", "checked")
-    )
-
     // Rendering section: checkbox → Switch.
     const hwAccel = screen.getByLabelText("Disable hardware acceleration")
     expect(hwAccel).toHaveAttribute("role", "switch")
@@ -114,7 +102,6 @@ describe("GeneralSettings", () => {
     // Every child section mounted. A section that is one option is titled by
     // that option, so these double as the labels asserted above.
     for (const heading of [
-      "Launch at login",
       "Default Terminal",
       "Disable hardware acceleration",
       "Notification sounds",

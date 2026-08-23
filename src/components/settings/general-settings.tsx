@@ -5,7 +5,6 @@ import {
   Cpu,
   FolderCog,
   Loader2,
-  Power,
   RefreshCw,
   SquareTerminal,
 } from "lucide-react"
@@ -30,11 +29,9 @@ import {
 import { Switch } from "@/components/ui/switch"
 import {
   getAvailableTerminalShells,
-  getSystemAutostartSettings,
   getSystemRenderingSettings,
   getSystemTerminalSettings,
   probeTerminalShellPath,
-  updateSystemAutostartSettings,
   updateSystemRenderingSettings,
   updateSystemTerminalSettings,
 } from "@/lib/api"
@@ -87,11 +84,6 @@ export function GeneralSettings() {
     isDesktop() && getActiveRemoteConnectionId() === null
   const renderingSectionVisible = renderingSettingsLoadable && isWindows
 
-  // Launch at login registers *this* machine's executable with the OS, so it
-  // is meaningful under the same conditions as the rendering flag — local
-  // Tauri shell only — but on every desktop platform, not just Windows.
-  const autostartSectionVisible = renderingSettingsLoadable
-
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
 
@@ -103,13 +95,6 @@ export function GeneralSettings() {
   )
   const [customShellPath, setCustomShellPath] = useState<string>("")
   const [customPathExists, setCustomPathExists] = useState<boolean | null>(null)
-
-  const [autostartEnabled, setAutostartEnabled] = useState(false)
-  const [savingAutostart, setSavingAutostart] = useState(false)
-  // Non-null when the OS refused to report the registration (no home dir, a
-  // locked-down registry, …). The row stays on screen but inert, which beats
-  // hiding a setting the user came looking for.
-  const [autostartError, setAutostartError] = useState<string | null>(null)
 
   const [disableHwAccel, setDisableHwAccel] = useState(false)
   const [savingRendering, setSavingRendering] = useState(false)
@@ -125,26 +110,12 @@ export function GeneralSettings() {
     setLoadError(null)
 
     try {
-      const [terminalSettings, terminalShells, renderingSettings, autostart] =
+      const [terminalSettings, terminalShells, renderingSettings] =
         await Promise.all([
           getSystemTerminalSettings(),
           getAvailableTerminalShells(),
           renderingSettingsLoadable
             ? getSystemRenderingSettings()
-            : Promise.resolve(null),
-          // Kept out of the shared rejection path: a machine that cannot
-          // report its login items must not blank out the terminal picker.
-          autostartSectionVisible
-            ? getSystemAutostartSettings().then(
-                (settings) => ({ settings, error: null }),
-                (err) => {
-                  console.error(
-                    "[Settings] load autostart settings failed:",
-                    err
-                  )
-                  return { settings: null, error: toErrorMessage(err) }
-                }
-              )
             : Promise.resolve(null),
         ])
 
@@ -166,11 +137,6 @@ export function GeneralSettings() {
         setCustomPathExists(null)
       }
 
-      if (autostart) {
-        setAutostartEnabled(autostart.settings?.enabled ?? false)
-        setAutostartError(autostart.error)
-      }
-
       if (renderingSettings) {
         const value = renderingSettings.disable_hardware_acceleration
         setDisableHwAccel(value)
@@ -187,7 +153,7 @@ export function GeneralSettings() {
     } finally {
       setLoading(false)
     }
-  }, [renderingSettingsLoadable, autostartSectionVisible])
+  }, [renderingSettingsLoadable])
 
   useEffect(() => {
     loadSettings().catch((err) => {
@@ -253,27 +219,6 @@ export function GeneralSettings() {
     void persistTerminalShell(trimmed)
   }, [customShellPath, persistTerminalShell])
 
-  const saveAutostartSettings = useCallback(
-    async (next: boolean, prev: boolean) => {
-      setSavingAutostart(true)
-      try {
-        // The backend answers with what the OS settled on, not with the
-        // request — Windows can veto a Run entry through Task Manager, so the
-        // switch has to follow the reply rather than the optimistic value.
-        const result = await updateSystemAutostartSettings({ enabled: next })
-        setAutostartEnabled(result.enabled)
-        setAutostartError(null)
-      } catch (err) {
-        setAutostartEnabled(prev)
-        const message = toErrorMessage(err)
-        toast.error(t("autostartSaveFailed", { message }))
-      } finally {
-        setSavingAutostart(false)
-      }
-    },
-    [t]
-  )
-
   const saveRenderingSettings = useCallback(
     async (next: boolean, prev: boolean) => {
       setSavingRendering(true)
@@ -326,33 +271,6 @@ export function GeneralSettings() {
           <SettingsError>
             {t("loadFailed", { message: loadError })}
           </SettingsError>
-        )}
-
-        {autostartSectionVisible && (
-          <SettingsSection
-            icon={Power}
-            title={t("autostartTitle")}
-            description={t("autostartDescription")}
-            htmlFor="launch-at-login"
-            control={
-              <Switch
-                id="launch-at-login"
-                checked={autostartEnabled}
-                disabled={savingAutostart || autostartError !== null}
-                onCheckedChange={(next) => {
-                  const prev = autostartEnabled
-                  setAutostartEnabled(next)
-                  void saveAutostartSettings(next, prev)
-                }}
-              />
-            }
-          >
-            {autostartError !== null && (
-              <p className="text-[11px] text-amber-500">
-                {t("autostartUnavailable", { message: autostartError })}
-              </p>
-            )}
-          </SettingsSection>
         )}
 
         {/* The section is the picker: heading, purpose and control on one line,

@@ -967,7 +967,6 @@ export function TasksPage() {
         folderName={
           detailTask ? (folderNames.get(detailTask.folder_id) ?? null) : null
         }
-        onViewSession={openSession}
         onMerge={openMerge}
         onComplete={openComplete}
         onDeliverPr={openDeliver}
@@ -1019,8 +1018,10 @@ export function TasksPage() {
         onOpenChange={setScheduleOpen}
         task={scheduleTask}
       />
-      {/* Rendered after the sheet so it stacks above it when opened from
-          within (both portal to body; later mount wins). */}
+      {/* The BOARD's session viewer — the card's "查看会话", opened with no
+          detail sheet in play. The sheet's own copy of this viewer lives
+          inside it (see `task-detail-sheet.tsx`), because Base UI stacks a
+          drawer only over an ancestor drawer, never over a sibling. */}
       <TaskTranscriptDialog
         open={sessionOpen && sessionTask != null}
         onOpenChange={setSessionOpen}

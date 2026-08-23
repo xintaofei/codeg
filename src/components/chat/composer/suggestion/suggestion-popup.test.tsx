@@ -453,8 +453,8 @@ describe("SuggestionPopup", () => {
     expect(container.style.visibility).toBe("visible")
     expect(container.style.position).toBe("fixed")
     expect(container.dataset.placement).toBeTruthy()
-    // The panel portals to `body`, which a modal Radix layer (a Dialog or Sheet
-    // hosting the composer) sets to `pointer-events: none`. Without its own
+    // The panel portals to `body`, which a modal Radix layer (a Dialog hosting
+    // the composer) sets to `pointer-events: none`. Without its own
     // `auto` the panel is click-dead inside one, and the press lands on the
     // document — which that layer reads as an outside press and closes itself.
     expect(container.style.pointerEvents).toBe("auto")

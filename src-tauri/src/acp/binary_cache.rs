@@ -277,6 +277,34 @@ fn dir_entry_for_agent_id(agent_id: &str) -> Option<registry::BinaryDirEntry> {
     }
 }
 
+/// The launchable entry inside an extracted version directory, or `None` when
+/// the tree is INCOMPLETE.
+///
+/// The entry is probed by existence only — the magic-byte check the single-file
+/// path uses would reject a `#!` shell shim. The entry alone is not enough,
+/// though: every declared `required_siblings` must be there too. Without that,
+/// a version dir holding just the entry file reads as a working install, and
+/// the flat-archive case makes that a REAL state rather than a hypothetical —
+/// the same ACP-registry entry added as a CUSTOM agent before the built-in
+/// existed installs through the single-file copy-out path, under the same
+/// `<registry id>/<version>/<platform>` key, leaving exactly the entry behind.
+fn complete_dir_tree_install(
+    platform_dir: &Path,
+    entry: registry::BinaryDirEntry,
+) -> Option<PathBuf> {
+    let path = platform_dir.join(entry.for_current_platform());
+    if !path.is_file() {
+        return None;
+    }
+    let entry_dir = path.parent()?;
+    entry
+        .required_siblings
+        .for_current_platform()
+        .iter()
+        .all(|name| entry_dir.join(name).is_file())
+        .then_some(path)
+}
+
 fn installed_binary_path(agent_id: &str, version: &str, cmd_name: &str) -> Option<PathBuf> {
     let normalized = normalize_version_label(version);
     if normalized.is_empty() {
@@ -289,11 +317,8 @@ fn installed_binary_path(agent_id: &str, version: &str, cmd_name: &str) -> Optio
         .join(normalized)
         .join(registry::current_platform());
 
-    // Dir-tree agents launch an in-tree entry script; probe it by existence
-    // only — the magic-byte check below would reject `#!` shell shims.
     if let Some(entry) = dir_entry_for_agent_id(agent_id) {
-        let path = platform_dir.join(entry.for_current_platform());
-        return path.is_file().then_some(path);
+        return complete_dir_tree_install(&platform_dir, entry);
     }
 
     let bin_name = if cfg!(target_os = "windows") {
@@ -591,6 +616,25 @@ async fn ensure_binary_with_progress(
 /// children are renamed (same filesystem) rather than copied; the entry's
 /// existence is validated afterwards so a layout change in the upstream
 /// archive fails loudly instead of caching a dead tree.
+/// OPTIONAL helper binaries that may live next to a dir-tree agent's entry and
+/// be exec'd by it, so they need the executable bit as much as the entry does.
+/// Names absent from an archive are skipped, which is why one list can be
+/// shared by every dir-tree agent.
+///
+/// * `node` — Cursor's bundled runtime; its `cursor-agent` shim execs the
+///   sibling interpreter.
+/// * `localharness` — Antigravity's fallback harness name. Its PRIMARY name
+///   (`localharness_external`) is a hard requirement declared by the registry
+///   entry instead (`BinaryDirEntry::required_siblings`), because a missing
+///   harness is not a cosmetic problem: `agy_acp_server` starts anyway and only
+///   logs "Localharness not found.".
+const ENTRY_SIBLING_EXECUTABLES: &[&str] = &[
+    "node",
+    "localharness",
+    // Windows counterpart, harmless to probe elsewhere.
+    "localharness.exe",
+];
+
 fn install_extracted_tree(
     extract_dir: &Path,
     final_dir: &Path,
@@ -617,13 +661,30 @@ fn install_extracted_tree(
             "entry '{entry_rel}' not found in archive"
         )));
     }
-    // tar preserves the executable bit, but be defensive: the entry shim and
-    // its sibling `node` runtime must both be executable for the spawn to work.
+    // tar/zip preserve the executable bit, but be defensive: the entry and
+    // every helper it execs must be executable for the spawn to work.
     set_executable_permissions(&entry_path)?;
     if let Some(parent) = entry_path.parent() {
-        let node = parent.join("node");
-        if node.is_file() {
-            set_executable_permissions(&node)?;
+        // Declared helpers are REQUIRED: an archive that did not carry one
+        // must fail here rather than install a tree that starts and then
+        // misbehaves (Antigravity logs "Localharness not found." and keeps
+        // going). This is also what keeps `installed_binary_path`'s matching
+        // check from ever rejecting a tree codeg itself installed.
+        for sibling in entry.required_siblings.for_current_platform() {
+            let path = parent.join(sibling);
+            if !path.is_file() {
+                return Err(AcpError::DownloadFailed(format!(
+                    "required file '{sibling}' not found beside '{entry_rel}' in archive"
+                )));
+            }
+            set_executable_permissions(&path)?;
+        }
+        // Opportunistic: helpers some trees ship and others do not.
+        for sibling in ENTRY_SIBLING_EXECUTABLES {
+            let path = parent.join(sibling);
+            if path.is_file() {
+                set_executable_permissions(&path)?;
+            }
         }
     }
     on_progress("Binary installed successfully");
@@ -836,6 +897,7 @@ mod tests {
         let entry = registry::BinaryDirEntry {
             unix: "dist-package/cursor-agent",
             windows: "dist-package/cursor-agent.cmd",
+            required_siblings: registry::PlatformFiles::NONE,
         };
         // On Windows the fixture writes the unix name only; skip there — the
         // path join and rename logic under test is platform-independent.
@@ -856,6 +918,133 @@ mod tests {
         assert!(std::fs::read_dir(&extract).unwrap().next().is_none());
     }
 
+    // Antigravity's archive is the other dir-tree shape: FLAT (no wrapping
+    // directory) with the entry and its `localharness_external` sibling side
+    // by side. Both must land in the cache and both must come out executable
+    // — a harness without the executable bit is not a spawn failure, it is a
+    // server that starts and then logs "Localharness not found.".
+    #[cfg(unix)]
+    #[test]
+    fn install_extracted_tree_marks_localharness_sibling_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let extract = tmp.path().join("extracted");
+        std::fs::create_dir_all(&extract).unwrap();
+        std::fs::write(extract.join("agy_acp_server.par"), [0_u8, 1, 2]).unwrap();
+        std::fs::write(extract.join("localharness_external"), [0_u8, 1, 2]).unwrap();
+        // Simulate an archive/extractor that dropped the executable bit.
+        for name in ["agy_acp_server.par", "localharness_external"] {
+            std::fs::set_permissions(extract.join(name), std::fs::Permissions::from_mode(0o644))
+                .unwrap();
+        }
+        let final_dir = tmp.path().join("final");
+        std::fs::create_dir_all(&final_dir).unwrap();
+
+        let entry = registry::BinaryDirEntry {
+            unix: "agy_acp_server.par",
+            windows: "agy_acp_server.exe",
+            required_siblings: registry::PlatformFiles {
+                unix: &["localharness_external"],
+                windows: &["localharness_external.exe"],
+            },
+        };
+        let installed = install_extracted_tree(&extract, &final_dir, entry, &|_| {}).unwrap();
+        assert_eq!(installed, final_dir.join("agy_acp_server.par"));
+
+        let harness = final_dir.join("localharness_external");
+        assert!(harness.is_file(), "harness sibling must be installed");
+        for path in [&installed, &harness] {
+            let mode = std::fs::metadata(path).unwrap().permissions().mode();
+            assert_ne!(mode & 0o111, 0, "{} must be executable", path.display());
+        }
+    }
+
+    // The reported regression: `antigravity-acp` could be added as a CUSTOM
+    // agent before it became a built-in, and because its archive is FLAT
+    // (`cmd: "./agy_acp_server.par"`, no `/`) that install went through the
+    // single-file copy-out path — writing ONLY the entry file, under the same
+    // cache key the built-in now uses. Adopting that cache would skip the
+    // download and launch a server whose harness is missing, which does not
+    // fail: it starts and logs "Localharness not found.".
+    #[test]
+    fn stale_single_file_cache_is_not_adopted_as_a_dir_tree_install() {
+        let tmp = tempfile::tempdir().unwrap();
+        let platform_dir = tmp.path().join("darwin-aarch64");
+        std::fs::create_dir_all(&platform_dir).unwrap();
+        let entry = registry::BinaryDirEntry {
+            unix: "agy_acp_server.par",
+            windows: "agy_acp_server.exe",
+            required_siblings: registry::PlatformFiles {
+                unix: &["localharness_external"],
+                windows: &["localharness_external.exe"],
+            },
+        };
+        let entry_name = entry.for_current_platform();
+        let sibling = entry.required_siblings.for_current_platform()[0];
+
+        // Entry only — the legacy single-file cache.
+        std::fs::write(platform_dir.join(entry_name), [0_u8, 1, 2]).unwrap();
+        assert_eq!(
+            complete_dir_tree_install(&platform_dir, entry),
+            None,
+            "a tree missing its required helper must not read as installed"
+        );
+
+        // Complete tree.
+        std::fs::write(platform_dir.join(sibling), [0_u8, 1, 2]).unwrap();
+        assert_eq!(
+            complete_dir_tree_install(&platform_dir, entry),
+            Some(platform_dir.join(entry_name))
+        );
+
+        // An entry declaring no required siblings (Cursor, and every custom
+        // agent) keeps the old entry-only behaviour.
+        let bare = registry::BinaryDirEntry {
+            unix: "agy_acp_server.par",
+            windows: "agy_acp_server.exe",
+            required_siblings: registry::PlatformFiles::NONE,
+        };
+        std::fs::remove_file(platform_dir.join(sibling)).unwrap();
+        assert_eq!(
+            complete_dir_tree_install(&platform_dir, bare),
+            Some(platform_dir.join(entry_name))
+        );
+    }
+
+    // An archive that did not carry a REQUIRED helper must fail the install
+    // rather than leave a tree that starts and then misbehaves. This is also
+    // the write-side twin of the cache check: what installs successfully is
+    // exactly what `installed_binary_path` will later accept.
+    #[test]
+    fn install_extracted_tree_missing_required_sibling_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let extract = tmp.path().join("extracted");
+        std::fs::create_dir_all(&extract).unwrap();
+        let entry_name = if cfg!(windows) {
+            "agy_acp_server.exe"
+        } else {
+            "agy_acp_server.par"
+        };
+        std::fs::write(extract.join(entry_name), [0_u8, 1, 2]).unwrap();
+        let final_dir = tmp.path().join("final");
+        std::fs::create_dir_all(&final_dir).unwrap();
+
+        let entry = registry::BinaryDirEntry {
+            unix: "agy_acp_server.par",
+            windows: "agy_acp_server.exe",
+            required_siblings: registry::PlatformFiles {
+                unix: &["localharness_external"],
+                windows: &["localharness_external.exe"],
+            },
+        };
+        let err = install_extracted_tree(&extract, &final_dir, entry, &|_| {}).unwrap_err();
+        assert!(
+            err.to_string().contains("localharness_external"),
+            "the error must name the missing helper: {err}"
+        );
+    }
+
     #[test]
     fn install_extracted_tree_missing_entry_errors() {
         let tmp = tempfile::tempdir().unwrap();
@@ -866,6 +1055,7 @@ mod tests {
         let entry = registry::BinaryDirEntry {
             unix: "dist-package/cursor-agent",
             windows: "dist-package/cursor-agent.cmd",
+            required_siblings: registry::PlatformFiles::NONE,
         };
         let err = install_extracted_tree(&extract, &final_dir, entry, &|_| {}).unwrap_err();
         assert!(err.to_string().contains("not found in archive"), "{err}");

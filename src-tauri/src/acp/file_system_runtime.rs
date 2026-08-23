@@ -494,6 +494,16 @@ fn agent_root_slots(agent_type: AgentType) -> &'static [RootSlot] {
             trims: false,
             default_rel: &[".qoder"],
         }],
+        // Antigravity's whole tree hangs off `GEMINI_HOME`, which — unlike
+        // Gemini CLI's `GEMINI_CLI_HOME` above — names the `.gemini` directory
+        // ITSELF rather than its parent, so nothing is joined onto it. The
+        // server's settings, conversations, skills and OAuth tokens all live
+        // under it (`acp_server/paths.py`).
+        AgentType::Antigravity => &[RootSlot {
+            candidates: &[("GEMINI_HOME", "")],
+            trims: false,
+            default_rel: &[".gemini"],
+        }],
         AgentType::ClaudeCode => &[RootSlot {
             candidates: &[("CLAUDE_CONFIG_DIR", "")],
             trims: false,

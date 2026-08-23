@@ -13,6 +13,7 @@ import {
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { toast } from "sonner"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
@@ -68,6 +69,13 @@ function isGitLabAccount(account: GitHubAccount): boolean {
   return account.provider === "gitlab"
 }
 
+/** First character of a username, for the avatar fallback. Split with
+ *  `Array.from` so a leading astral-plane character is not halved into a
+ *  broken surrogate. */
+function accountInitial(username: string): string {
+  return Array.from(username.trim())[0]?.toUpperCase() ?? "?"
+}
+
 // ---------------------------------------------------------------------------
 // Shared account row component
 // ---------------------------------------------------------------------------
@@ -93,18 +101,21 @@ function AccountRow({
 }) {
   return (
     <div className="flex items-center gap-3 rounded-lg border bg-muted/10 px-3 py-2.5">
-      {account.avatar_url ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={account.avatar_url}
-          alt={account.username}
-          className="h-8 w-8 rounded-full"
-        />
-      ) : (
-        <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center text-xs font-medium">
-          {account.username[0]?.toUpperCase()}
-        </div>
-      )}
+      {/* Having an avatar URL is not the same as being able to load it, so the
+          initial is a fallback the primitive keeps mounted until the image
+          actually decodes — not an else-branch for a missing URL. GitLab hands
+          out third-party gravatar.com URLs for users who never uploaded a
+          picture, and a self-hosted instance can put an avatar behind a login;
+          either one fails on the wire and used to leave a hole where the
+          account's face should be. */}
+      <Avatar>
+        {account.avatar_url && (
+          <AvatarImage src={account.avatar_url} alt={account.username} />
+        )}
+        <AvatarFallback className="text-xs font-medium">
+          {accountInitial(account.username)}
+        </AvatarFallback>
+      </Avatar>
 
       <div className="flex-1 min-w-0 space-y-1">
         <div className="flex items-center gap-2">

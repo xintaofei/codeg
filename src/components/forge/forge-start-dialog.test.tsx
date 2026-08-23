@@ -18,6 +18,7 @@ import type {
   ForgeCreateResult,
   ForgeIssueRow,
   ForgeRemote,
+  ForgePanelSettings,
   WorkTask,
 } from "@/lib/types"
 
@@ -81,7 +82,11 @@ function task(overrides: Partial<WorkTask> = {}): WorkTask {
 function mount(
   item: ForgeIssueRow,
   remote: ForgeRemote = GITHUB,
-  handlers: { onClose?: () => void; onCreated?: (t: WorkTask) => void } = {}
+  handlers: {
+    onClose?: () => void
+    onCreated?: (t: WorkTask) => void
+    settings?: ForgePanelSettings
+  } = {}
 ) {
   const onClose = handlers.onClose ?? vi.fn()
   const onCreated = handlers.onCreated ?? vi.fn()
@@ -91,12 +96,19 @@ function mount(
         row={item}
         remote={remote}
         folderId={7}
+        settings={handlers.settings ?? null}
         onClose={onClose}
         onCreated={onCreated}
       />
     </NextIntlClientProvider>
   )
   return { onClose, onCreated }
+}
+
+/** The write-back control is a switch in a settings row, not a tick box — the
+ *  same shape the task settings use, because it is the same kind of decision. */
+function writebackSwitch(): HTMLElement {
+  return screen.getByRole("switch", { name: /Comment the outcome back/ })
 }
 
 beforeEach(() => {
@@ -134,9 +146,87 @@ describe("ForgeStartDialog", () => {
         labels: ["bug"],
         author: "octocat",
       },
+      // A scenario NAME — the template text it selects never leaves the
+      // server. "fix" is the issue default.
+      scenario: "fix",
       instruction: "start with the tests",
+      // The one thing the task will do in a thread other people read, asked
+      // here per work item. On unless the user says otherwise.
+      writeback: true,
       force: false,
     })
+  })
+
+  it("carries the write-back choice, off when the switch is cleared", async () => {
+    const user = userEvent.setup()
+    workTaskCreateFromForge.mockResolvedValueOnce({
+      outcome: "created",
+      task: task(),
+    })
+    mount(row())
+
+    const box = writebackSwitch()
+    expect(box).toBeChecked()
+    await user.click(box)
+    await user.click(screen.getByRole("button", { name: "Create task" }))
+
+    await waitFor(() => expect(workTaskCreateFromForge).toHaveBeenCalled())
+    expect(workTaskCreateFromForge.mock.calls[0][0].writeback).toBe(false)
+  })
+
+  /**
+   * The panel's preferences decide what this dialog OPENS with — nothing more.
+   * They are read by the page and handed down, so a trigger never waits on a
+   * round trip; with none loaded the dialog falls back to the built-ins.
+   */
+  it("opens on the folder's configured scenario and write-back state", async () => {
+    const user = userEvent.setup()
+    workTaskCreateFromForge.mockResolvedValueOnce({
+      outcome: "created",
+      task: task(),
+    })
+    mount(row(), GITHUB, {
+      settings: {
+        default_issue_scenario: "plan_first",
+        writeback_default: false,
+        scenario_prompts: {},
+      },
+    })
+
+    expect(screen.getByRole("radio", { name: /Plan first/ })).toBeChecked()
+    expect(writebackSwitch()).not.toBeChecked()
+
+    await user.click(screen.getByRole("button", { name: "Create task" }))
+    await waitFor(() => expect(workTaskCreateFromForge).toHaveBeenCalled())
+    const payload = workTaskCreateFromForge.mock.calls[0][0]
+    expect(payload.scenario).toBe("plan_first")
+    expect(payload.writeback).toBe(false)
+  })
+
+  /**
+   * A stored default belonging to the OTHER kind — settings written for issues,
+   * a row that is a PR — must not preselect a radio that is not on screen,
+   * which would leave the group showing nothing and send the server a scenario
+   * it refuses.
+   */
+  it("ignores a configured default the item's kind does not offer", () => {
+    mount(row({ is_pr: true }), GITHUB, {
+      settings: {
+        default_issue_scenario: "plan_first",
+        default_pr_scenario: "plan_first" as never,
+        writeback_default: true,
+        scenario_prompts: {},
+      },
+    })
+    expect(screen.getByRole("radio", { name: /Review & fix/ })).toBeChecked()
+  })
+
+  it("falls back to the built-in defaults when no settings loaded", () => {
+    mount(row())
+    expect(
+      screen.getByRole("radio", { name: /Fix \/ implement/ })
+    ).toBeChecked()
+    expect(writebackSwitch()).toBeChecked()
   })
 
   it("carries a blank instruction as null and marks a PR row as a pr", async () => {
@@ -152,6 +242,58 @@ describe("ForgeStartDialog", () => {
     const payload = workTaskCreateFromForge.mock.calls[0][0]
     expect(payload.instruction).toBeNull()
     expect(payload.source.kind).toBe("pr")
+    expect(payload.scenario).toBe("review_fix")
+  })
+
+  it("offers the kind's own scenarios with the default preselected", () => {
+    const { unmount } = render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <ForgeStartDialog
+          row={row()}
+          remote={GITHUB}
+          folderId={7}
+          onClose={vi.fn()}
+          onCreated={vi.fn()}
+        />
+      </NextIntlClientProvider>
+    )
+    // Issues: fix (default) / investigate / plan first — and no PR entries,
+    // whose templates talk about pushing back to a branch this task lacks.
+    expect(screen.getAllByRole("radio")).toHaveLength(3)
+    expect(
+      screen.getByRole("radio", { name: /Fix \/ implement/ })
+    ).toBeChecked()
+    expect(
+      screen.getByRole("radio", { name: /Investigate only/ })
+    ).not.toBeChecked()
+    expect(
+      screen.getByRole("radio", { name: /Plan first/ })
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole("radio", { name: /Review/ })
+    ).not.toBeInTheDocument()
+    unmount()
+
+    mount(row({ is_pr: true }))
+    expect(screen.getAllByRole("radio")).toHaveLength(2)
+    expect(screen.getByRole("radio", { name: /Review & fix/ })).toBeChecked()
+    expect(screen.getByRole("radio", { name: /Review only/ })).not.toBeChecked()
+  })
+
+  it("sends the picked scenario, not the default", async () => {
+    const user = userEvent.setup()
+    workTaskCreateFromForge.mockResolvedValueOnce({
+      outcome: "created",
+      task: task(),
+    })
+    mount(row())
+
+    await user.click(screen.getByRole("radio", { name: /Investigate only/ }))
+    await user.click(screen.getByRole("button", { name: "Create task" }))
+    await waitFor(() => expect(workTaskCreateFromForge).toHaveBeenCalled())
+    expect(workTaskCreateFromForge.mock.calls[0][0].scenario).toBe(
+      "investigate"
+    )
   })
 
   it("turns a duplicate into a choice, and 'create anyway' forces", async () => {
@@ -166,9 +308,10 @@ describe("ForgeStartDialog", () => {
 
     await user.click(screen.getByRole("button", { name: "Create task" }))
     await screen.findByText(/An active task already handles this item/)
-    // The instruction box is gone — the decision on screen is now which task
-    // to keep, not what to tell the agent.
+    // The instruction box and scenario picker are gone — the decision on
+    // screen is now which task to keep, not what to tell the agent.
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument()
 
     await user.click(screen.getByRole("button", { name: "Create anyway" }))
     await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1))

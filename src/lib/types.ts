@@ -1,4 +1,4 @@
-/** The fourteen agents codeg ships hand-written support for. */
+/** The fifteen agents codeg ships hand-written support for. */
 export type BuiltinAgentType =
   | "claude_code"
   | "codex"
@@ -14,6 +14,7 @@ export type BuiltinAgentType =
   | "cursor"
   | "deepseek"
   | "qoder"
+  | "antigravity"
 
 /**
  * Which agent backs a conversation.
@@ -698,6 +699,7 @@ export const AGENT_DISPLAY_ORDER: BuiltinAgentType[] = [
   "cursor",
   "deepseek",
   "qoder",
+  "antigravity",
 ]
 
 const AGENT_DISPLAY_ORDER_INDEX = new Map<AgentType, number>(
@@ -731,6 +733,7 @@ export const ALL_AGENT_TYPES: BuiltinAgentType[] = [
   "cursor",
   "deepseek",
   "qoder",
+  "antigravity",
 ]
 
 export const MODEL_PROVIDER_AGENT_TYPES: BuiltinAgentType[] = [
@@ -1041,6 +1044,7 @@ export const AGENT_LABELS: Record<BuiltinAgentType, string> = {
   cursor: "Cursor",
   deepseek: "DeepSeek Harness",
   qoder: "Qoder",
+  antigravity: "Google Antigravity",
 }
 
 export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
@@ -1058,6 +1062,7 @@ export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
   cursor: "bg-zinc-800",
   deepseek: "bg-[#4D6BFE]",
   qoder: "bg-[#6C4CF1]",
+  antigravity: "bg-[#1A73E8]",
 }
 
 // ACP connection status (matches Rust ConnectionStatus)
@@ -1457,6 +1462,9 @@ export interface ForgeSourceMeta {
   head_repo?: string | null
   /** URL of the PR created by the delivery acceptance path (P1). */
   result_pr?: string | null
+  /** The trigger dialog's write-back answer, frozen at trigger time. Absent on
+   *  rows minted before the choice lived here — those stay silent. */
+  writeback?: boolean | null
 }
 
 export type ForgeTab = "issues" | "prs"
@@ -1552,6 +1560,17 @@ export interface ForgeTaskLink {
   updated_at: string
 }
 
+/** How the trigger dialog asks the work item to be handled. A template NAME
+ *  the server resolves into its own instruction text — prompt text never
+ *  crosses the wire. `fix`/`investigate`/`plan_first` are issue scenarios,
+ *  `review_fix`/`review_only` are PR/MR scenarios. */
+export type ForgeScenarioId =
+  | "fix"
+  | "investigate"
+  | "plan_first"
+  | "review_fix"
+  | "review_only"
+
 /** Trigger payload (client supplies coordinates + display snapshot only —
  *  the server derives everything trusted). */
 export interface ForgeTaskDraftInput {
@@ -1570,10 +1589,59 @@ export interface ForgeTaskDraftInput {
     labels?: string[]
     author?: string | null
   }
+  /** Absent/null = the kind's default (`fix` for issues, `review_fix` for
+   *  proposed changes). */
+  scenario?: ForgeScenarioId | null
   instruction?: string | null
+  /** Comment the outcome back on this item once the task finishes — the
+   *  trigger dialog's own box, recorded on the task and frozen at trigger
+   *  time. Always sent explicitly by the dialog; ABSENT is read server-side as
+   *  "silent", not as the dialog's default, because a request without it came
+   *  from a client that never showed the question. */
+  writeback?: boolean | null
   agent_type?: string | null
   force?: boolean
 }
+
+/** One scope's repository-panel preferences — mirrors
+ *  `forge::settings::ForgePanelSettings`.
+ *
+ *  What lives here is the dimension this page adds on top of a folder's
+ *  task-settings stage prompts: how you like an ISSUE handled, and what you
+ *  always want said for a review as opposed to a fix. */
+export interface ForgePanelSettings {
+  /** Scenario the trigger dialog preselects for an issue; null = the built-in
+   *  default. Consumed by the DIALOG — the request it then sends always names
+   *  a scenario outright. */
+  default_issue_scenario?: ForgeScenarioId | null
+  /** Same, for a pull/merge request. */
+  default_pr_scenario?: ForgeScenarioId | null
+  /** What the trigger dialog's write-back switch starts as. Only the starting
+   *  position: the switch is on screen every time, and what it says when the
+   *  user presses Create is what the task records. */
+  writeback_default: boolean
+  /** Standing instructions appended after a scenario's built-in wording,
+   *  keyed by scenario id plus the reserved `all` (every scenario). */
+  scenario_prompts: Record<string, string>
+}
+
+/** Every scope of the panel's preferences — mirrors
+ *  `forge::settings::ForgeSettingsStore`.
+ *
+ *  Scoped the same way task settings are: a global row plus optional per-folder
+ *  overrides, and an override wins WHOLESALE rather than merging field by
+ *  field. Sent as one value because the settings dialog shows one folder while
+ *  saying whether that folder is following the global row, which takes both. */
+export interface ForgeSettingsStore {
+  global: ForgePanelSettings
+  /** Keyed by folder id (JSON has no integer keys, so they arrive as strings).
+   *  A folder with no entry follows `global` — absence IS the answer, so there
+   *  is no separate "follows global" flag to keep in sync. */
+  folders: Record<string, ForgePanelSettings>
+}
+
+/** Reserved `scenario_prompts` key applied to every scenario. */
+export const FORGE_SCENARIO_PROMPT_ALL = "all"
 
 /** Discriminated trigger outcome — duplicate/mismatch are answers, not errors. */
 export type ForgeCreateResult =
@@ -1660,10 +1728,6 @@ export interface WorkTaskFolderSettings {
    *  Keys are the engine's stage ids (`work` | `retry` | `return` | `merge`)
    *  plus the reserved `all`, which applies to every stage. */
   stage_prompts?: Record<string, string> | null
-  /** Comment the outcome back on the issue/PR a task came from once it
-   *  finishes. Optional here (and off in the backend's default) because it is
-   *  the only setting that writes where other people are watching. */
-  forge_writeback?: boolean
 }
 
 /** Changed file of a task worktree vs its recorded base. */
@@ -1978,6 +2042,13 @@ export type AcpEvent =
       folder_id: number
     }
   | {
+      // Agent published a live ACP session title. The backend writes the
+      // conversation row and broadcasts `conversation://changed`; the
+      // frontend does not apply this event itself.
+      type: "native_session_title"
+      title: string
+    }
+  | {
       type: "conversation_status_changed"
       conversation_id: number
       status: ConversationStatus
@@ -2051,9 +2122,19 @@ export type AcpEvent =
       // `codexErrorInfo` carried one. With AIR advertised, codex 1.2+ replaces
       // this channel with severity-"warning" `session_failure` records, so it
       // now serves only legacy paths.
+      //
+      // pi shares this channel (#525): pi-acp announces `auto_retry_start` as
+      // ordinary prose, so the backend classifies it out of the transcript and
+      // routes it here. pi sends an EMPTY `message` — it forwards no error text,
+      // only the counters below — and the banner renders its own localized line
+      // in that case. All three counters are absent for codex, which reports
+      // none of them.
       type: "turn_retrying"
       message: string
       error_status?: number
+      attempt?: number
+      max_retries?: number
+      retry_delay_ms?: number
     }
   | {
       // JetBrains AIR typed session failure upsert
@@ -3169,6 +3250,7 @@ export type McpAppType =
   | "cursor"
   | "deepseek"
   | "qoder"
+  | "antigravity"
 
 export interface LocalMcpServer {
   id: string

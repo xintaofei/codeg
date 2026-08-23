@@ -1349,6 +1349,14 @@ pub fn build_router(
             post(handlers::forge::work_task_lookup_by_source),
         )
         .route(
+            "/forge_settings_get",
+            post(handlers::forge::forge_settings_get),
+        )
+        .route(
+            "/forge_settings_set",
+            post(handlers::forge::forge_settings_set),
+        )
+        .route(
             "/work_task_deliver_pr",
             post(handlers::work_task::work_task_deliver_pr),
         )

@@ -69,14 +69,30 @@ export function getEventStream(): EventStream | null {
 }
 
 /**
- * Open a URL in the default browser (desktop) or new tab (web).
+ * Open a URL in the default browser (desktop) or a new tab (web).
+ *
+ * The remote-workspace guard its neighbours carry is deliberately ABSENT here.
+ * `openPath` / `revealItemInDir` take filesystem paths, which belong to
+ * whichever host the workspace lives on; a URL belongs to no host. And a
+ * remote-desktop window is still a Tauri webview, where `window.open` opens
+ * NOTHING (the app registers no new-window handler, so wry answers the request
+ * with nil on macOS and `SetHandled(true)` on Windows) — gating this on
+ * `isLocalDesktop()` left every external link silently dead in those windows.
+ * The `remote-*` windows carry `opener:default` in `capabilities/default.json`,
+ * so the plugin call is permitted there.
+ *
+ * `noreferrer` (which implies `noopener`) is not decoration: without it the
+ * opened page gets a `window.opener` handle back into the app and can navigate
+ * this tab, and the Referer leaks. It also makes `window.open` return null even
+ * on success (HTML window-open steps 12 and 17), so the return value carries no
+ * signal — don't test it for a "popup blocked" check.
  */
 export async function openUrl(url: string): Promise<void> {
-  if (isDesktop() && getActiveRemoteConnectionId() === null) {
+  if (isDesktop()) {
     const { openUrl: tauriOpenUrl } = await import("@tauri-apps/plugin-opener")
     await tauriOpenUrl(url)
   } else {
-    window.open(url, "_blank")
+    window.open(url, "_blank", "noreferrer")
   }
 }
 

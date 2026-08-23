@@ -75,6 +75,7 @@ import {
   loadConversationExpanded,
   saveConversationExpanded,
   DEFAULT_SECTION_ORDER,
+  SIDEBAR_SECTION_KEYS,
   type SidebarSectionCollapsed,
   type SidebarSectionKey,
   type SidebarSortMode,
@@ -723,6 +724,20 @@ const FolderHeader = memo(function FolderHeader({
 
 export interface SidebarConversationListHandle {
   scrollToActive: () => void
+  /**
+   * Open / close every collapsible group in the list at once, driven by the
+   * sidebar header's toggle. "Every" is literal: the folder groups (plus each
+   * container's worktree children and its root sub-group) AND all four
+   * top-level section headers — Pinned, Folders, Chat, Recent. Any header left
+   * standing open is what makes the button read as broken, and the flat
+   * sections in particular own conversation rows directly, with no folder in
+   * between, so nothing else would have closed them.
+   *
+   * Collapsed therefore bottoms out at four header rows and nothing else. That
+   * is the intent, not an overshoot — `expandAll` restores the folder groups
+   * underneath, since section collapse and per-folder collapse are stored
+   * separately and neither erases the other.
+   */
   expandAll: () => void
   collapseAll: () => void
 }
@@ -972,6 +987,20 @@ export function SidebarConversationList({
   const toggleSection = useCallback((section: SidebarSectionKey) => {
     setSectionCollapsed((prev) => {
       const next = { ...prev, [section]: !prev[section] }
+      saveSectionCollapsed(next)
+      return next
+    })
+  }, [])
+
+  /** Drive every top-level section header at once, for expand/collapse-all.
+   *  Bails out (same object → no re-render, no write) when they already all
+   *  agree, so the header button is idempotent. */
+  const setAllSectionsCollapsed = useCallback((collapsed: boolean) => {
+    setSectionCollapsed((prev) => {
+      if (SIDEBAR_SECTION_KEYS.every((key) => Boolean(prev[key]) === collapsed))
+        return prev
+      const next: SidebarSectionCollapsed = { ...prev }
+      for (const key of SIDEBAR_SECTION_KEYS) next[key] = collapsed
       saveSectionCollapsed(next)
       return next
     })
@@ -1352,6 +1381,7 @@ export function SidebarConversationList({
       })
       // Expand every container's root sub-group too (session-only state).
       setRootGroupCollapsed((prev) => (prev.size === 0 ? prev : new Set()))
+      setAllSectionsCollapsed(false)
     },
     collapseAll() {
       setFolderExpanded((prev) => {
@@ -1362,6 +1392,7 @@ export function SidebarConversationList({
         saveFolderExpanded(next)
         return next
       })
+      setAllSectionsCollapsed(true)
     },
   }))
 

@@ -62,6 +62,8 @@ function link(status: WorkTaskStatus): ForgeTaskLink {
   }
 }
 
+const onOpenDetail = vi.fn()
+
 function mount(
   item: ForgeIssueRow,
   taskLink: ForgeTaskLink | null,
@@ -74,6 +76,7 @@ function mount(
         row={item}
         link={taskLink}
         compact={compact}
+        onOpenDetail={onOpenDetail}
         onStart={onStart}
       />
     </NextIntlClientProvider>
@@ -139,16 +142,44 @@ describe("ForgeIssueRowItem", () => {
     expect(onStart).toHaveBeenCalledTimes(2)
   })
 
-  it("links the title out to the forge and shows the first labels", () => {
+  it("shows the first labels and the identity line", () => {
     mount(row({ labels: ["a", "b", "c", "d", "e"].map((n) => label(n)) }), null)
-    const title = screen.getByRole("link", { name: "Login times out" })
-    expect(title).toHaveAttribute("href", "https://github.com/o/r/issues/42")
-    expect(title).toHaveAttribute("target", "_blank")
     // Four labels fit the row; the fifth would push the action off the edge.
     expect(screen.getByText("d")).toBeInTheDocument()
     expect(screen.queryByText("e")).not.toBeInTheDocument()
     expect(screen.getByText("#42")).toBeInTheDocument()
     expect(screen.getByText("· octocat")).toBeInTheDocument()
+  })
+
+  /** The title used to be a link OUT of the app; reading an issue meant losing
+   *  the list, its filters and its scroll position to a browser tab. It now
+   *  opens the detail panel instead — and stays a real `<button>`, so Enter and
+   *  Space work without hand-written key handling. */
+  it("opens the detail panel from the title, by click and from the keyboard", async () => {
+    const user = userEvent.setup()
+    const onStart = mount(row(), null)
+    const title = screen.getByRole("button", { name: "Login times out" })
+    expect(title).not.toHaveAttribute("href")
+
+    await user.click(title)
+    title.focus()
+    await user.keyboard("{Enter}")
+    await user.keyboard(" ")
+    expect(onOpenDetail).toHaveBeenCalledTimes(3)
+    // Opening the panel is not triggering the item.
+    expect(onStart).not.toHaveBeenCalled()
+    expect(setRoute).not.toHaveBeenCalled()
+  })
+
+  /** The way out to the forge did not disappear with the title's link — it
+   *  moved to the number, which is what both forges use as the item's own link.
+   *  `target="_blank"` is what `BrowserLink` needs to stay a real link; the
+   *  click itself is routed through `openUrl`. */
+  it("keeps a link to the forge on the item's number", () => {
+    mount(row(), null)
+    const number = screen.getByRole("link", { name: "#42" })
+    expect(number).toHaveAttribute("href", "https://github.com/o/r/issues/42")
+    expect(number).toHaveAttribute("target", "_blank")
   })
 
   /** A phone-width row cannot fit four label chips AND a readable title. */
@@ -184,7 +215,12 @@ describe("ForgeIssueRowItem", () => {
   it("marks the actions with outline glyphs without renaming them", () => {
     const { container } = render(
       <NextIntlClientProvider locale="en" messages={enMessages}>
-        <ForgeIssueRowItem row={row()} link={null} onStart={vi.fn()} />
+        <ForgeIssueRowItem
+          row={row()}
+          link={null}
+          onOpenDetail={onOpenDetail}
+          onStart={vi.fn()}
+        />
       </NextIntlClientProvider>
     )
     const start = screen.getByRole("button", { name: "Start" })

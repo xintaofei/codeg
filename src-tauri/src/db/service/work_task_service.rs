@@ -701,7 +701,26 @@ pub async fn update(
             "a forge-sourced task cannot move to another folder; trigger it again from the issue instead".into(),
         ));
     }
-    let config_str = serde_json::to_string(&draft.config)
+    // `deliverable` is trigger-owned (a forge scenario stamps it; no editor
+    // shows or edits it), and the dialog rebuilds the config from its own
+    // fields — so an ABSENT key on an edit means "the client never knew",
+    // not "clear it". Dropping it would silently restore the write licence
+    // on a report task's next launch. Preserved at the JSON level: passing
+    // the value through `WorkTaskConfig` here would strip every field this
+    // build does not know about. An explicit `"deliverable": null` still
+    // clears (that is a statement, not ignorance).
+    let mut config = draft.config;
+    if config.get("deliverable").is_none() {
+        if let (Some(obj), Ok(stored)) = (
+            config.as_object_mut(),
+            serde_json::from_str::<serde_json::Value>(&row.config),
+        ) {
+            if let Some(deliverable) = stored.get("deliverable") {
+                obj.insert("deliverable".to_string(), deliverable.clone());
+            }
+        }
+    }
+    let config_str = serde_json::to_string(&config)
         .map_err(|e| DbError::Validation(format!("config not serializable: {e}")))?;
     let mut active = row.into_active_model();
     active.folder_id = Set(draft.folder_id);
@@ -4358,6 +4377,42 @@ mod tests {
             .await
             .expect_err("forge task folder move must be rejected");
         assert!(err.to_string().contains("forge-sourced"), "got: {err}");
+    }
+
+    /// `deliverable` is trigger-owned and no editor shows it, so an edit whose
+    /// config OMITS the key must keep the stored value — dropping it would
+    /// silently hand a report task the write licence back. An explicit null is
+    /// a statement, not ignorance, and still clears it.
+    #[tokio::test]
+    async fn update_preserves_the_stored_deliverable_unless_explicitly_cleared() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-deliv").await;
+
+        let mut with_report = draft(folder_id, "investigate #9");
+        with_report.config["deliverable"] = serde_json::json!("report");
+        let t = create(&db.conn, with_report).await.unwrap();
+
+        // The dialog rebuilds the config from its own fields and never knew
+        // the key: the stored marker survives the round trip, alongside the
+        // fields the client DID send.
+        let edited = update(&db.conn, t.id, draft(folder_id, "investigate #9 · renamed"))
+            .await
+            .unwrap();
+        assert_eq!(edited.config["deliverable"], serde_json::json!("report"));
+        assert_eq!(edited.config["display_text"], serde_json::json!("do the thing"));
+
+        // An explicit null clears — the escape hatch stays open.
+        let mut clearing = draft(folder_id, "investigate #9 · cleared");
+        clearing.config["deliverable"] = serde_json::Value::Null;
+        let cleared = update(&db.conn, t.id, clearing).await.unwrap();
+        assert_eq!(cleared.config["deliverable"], serde_json::Value::Null);
+
+        // And a task that never had one gains nothing.
+        let plain = create(&db.conn, draft(folder_id, "plain")).await.unwrap();
+        let edited = update(&db.conn, plain.id, draft(folder_id, "plain · renamed"))
+            .await
+            .unwrap();
+        assert!(edited.config.get("deliverable").is_none());
     }
 
     /// The write-first transaction shape under real concurrency: a file-backed

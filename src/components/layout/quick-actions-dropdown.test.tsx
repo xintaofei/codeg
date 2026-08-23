@@ -108,6 +108,9 @@ async function clickItem(name: string | RegExp) {
 // "Automations" carries a failure-count badge inside the row (2, per the mock),
 // so its accessible name is the label plus that number — matched by prefix.
 const AUTOMATIONS_ROW = /^Automations/
+// Same shape, for the same reason: the repository panel row carries a "Beta"
+// chip, so its accessible name is the label plus that word.
+const FORGE_ROW = /^Repository panel/
 
 beforeEach(() => {
   desktop = true
@@ -131,11 +134,21 @@ describe("QuickActionsDropdown", () => {
       "Import local sessions",
       AUTOMATIONS_ROW,
       "To-dos",
-      "Repository panel",
+      FORGE_ROW,
       "Show pet",
     ]) {
       expect(await screen.findByRole("menuitem", { name: label })).toBeVisible()
     }
+  })
+
+  it("marks the repository panel Beta on the row that opens it", async () => {
+    await mountAndOpen()
+    // On the entry point, not only on the page it leads to — the marker has to
+    // land before the click, and it is part of the row's accessible name so a
+    // screen reader hears it there too.
+    expect(
+      await screen.findByRole("menuitem", { name: "Repository panel Beta" })
+    ).toBeVisible()
   })
 
   it("has no Search row — that button is always visible in the chrome", async () => {
@@ -156,7 +169,7 @@ describe("QuickActionsDropdown", () => {
       await screen.findByRole("menuitem", { name: "Import local sessions" })
     ).toBeVisible()
     expect(
-      await screen.findByRole("menuitem", { name: "Repository panel" })
+      await screen.findByRole("menuitem", { name: FORGE_ROW })
     ).toBeVisible()
     expect(
       screen.queryByRole("menuitem", { name: "Open remote workspace" })
@@ -188,7 +201,7 @@ describe("QuickActionsDropdown", () => {
     expect(mocks.setRoute).toHaveBeenCalledWith("tasks")
 
     await reopen()
-    await clickItem("Repository panel")
+    await clickItem(FORGE_ROW)
     expect(mocks.setRoute).toHaveBeenCalledWith("forge")
 
     await reopen()

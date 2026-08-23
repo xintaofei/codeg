@@ -152,6 +152,10 @@ import { toErrorMessage } from "@/lib/app-error"
 import { getInstallErrorHintKey } from "@/lib/agent-install-error"
 import { useAgentInstallStream } from "@/hooks/use-agent-install-stream"
 import { OpencodePluginsModal } from "./opencode-plugins-modal"
+import {
+  ANTIGRAVITY_ENV_KEYS,
+  AntigravityConfigPanel,
+} from "./antigravity-config-panel"
 import { CodeBuddyConfigPanel } from "./codebuddy-config-panel"
 import { CursorConfigPanel } from "./cursor-config-panel"
 import {
@@ -10451,6 +10455,31 @@ supports_websockets = true`}
                     }
                     onSaved={refreshAgents}
                     onAffectedSessions={reportAffectedSessions}
+                  />
+                ) : selectedAgent.agent_type === "antigravity" ? (
+                  <AntigravityConfigPanel
+                    agent={selectedAgent}
+                    saving={Boolean(savingEnv[selectedAgent.agent_type])}
+                    onSaveEnv={(env, enabled) =>
+                      persistEnv(
+                        selectedAgent.agent_type,
+                        enabled,
+                        envMapToText(env),
+                        selectedAgent.model_provider_id,
+                        // The keys this panel owns, folded into the raw
+                        // editor's draft. That draft is persisted WHOLESALE by
+                        // the enable switch and the generic env Save button, so
+                        // without this a saved auth method would be silently
+                        // deleted the moment either one fires. `undefined` (the
+                        // method does not use that credential) deletes the
+                        // line, which is exactly what switching methods asks
+                        // for.
+                        Object.fromEntries(
+                          ANTIGRAVITY_ENV_KEYS.map((key) => [key, env[key]])
+                        )
+                      )
+                    }
+                    onSaved={refreshAgents}
                   />
                 ) : selectedAgent.agent_type === "grok" ? (
                   <div className="space-y-3 rounded-md border bg-muted/10 p-3">

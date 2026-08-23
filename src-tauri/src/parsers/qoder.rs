@@ -24,24 +24,29 @@ use crate::parsers::{
 
 /// Resolve Qoder's global config dir the way Qoder itself does.
 ///
-/// The 1.1.23 resolver is three env vars deep, and reading only the first of
-/// them puts codeg in a different directory than the CLI it just launched —
+/// The resolver is three env vars deep, and reading only the first of them
+/// puts codeg in a different directory than the CLI it just launched —
 /// sessions vanish from the list, and skills install where nothing loads them:
 ///
 /// ```js
-/// function pa(){ return ns(QODER_CLI_HOME, GEMINI_CLI_HOME) || os.homedir() }
-/// function Ai(){                       // getGlobalConfigDir()
-///   let e = /* --config-dir flag */, t = ns(QODER_CONFIG_DIR)
+/// function homeRoot(){ return firstEnv(QODER_CLI_HOME, GEMINI_CLI_HOME) || os.homedir() }
+/// function getGlobalConfigDir(){
+///   let e = /* --config-dir flag */, t = firstEnv(QODER_CONFIG_DIR)
 ///   if (e) A = e
 ///   else if (t) A = path.resolve(t)
-///   else A = path.join(pa(), Cf)       // Cf = userConfigDirName
+///   else A = path.join(homeRoot(), userConfigDirName)
 /// }
 /// ```
 ///
 /// (The names are built from a `QODER_`/`QODERCN_` prefix at runtime —
-/// `b8A=$t("CLI_HOME")`, `L8A=$t("CONFIG_DIR")`, `H8A=$t("CONFIG_DIR_NAME")` —
-/// so they do not appear as literals in the bundle. `GEMINI_CLI_HOME` really is
-/// a second key on the home lookup: qodercli carries its ancestry.)
+/// `<id>=<helper>("CLI_HOME")`, `…("CONFIG_DIR")`, `…("CONFIG_DIR_NAME")` — so
+/// they do not appear as literals in the bundle. Re-verify by grepping those
+/// bare SUFFIXES, never the minified identifiers: they are renamed every
+/// release (`$t`/`b8A`/`L8A`/`H8A` at 1.1.23 became `ln`/`I1A`/`h1A`/`Q1A` at
+/// 1.1.28), so a grep written against the old names returns zero hits and
+/// reads as "the resolver is gone" when nothing moved. `GEMINI_CLI_HOME`
+/// really is a second key on the home lookup: qodercli carries its ancestry.
+/// Re-checked against the pinned 1.1.28 bundle: same precedence, same keys.)
 ///
 /// Not mirrored, deliberately: the `--config-dir` FLAG, which codeg never
 /// passes, and the `QODERCN_*` twin, which belongs to the separate `.qoder-cn`

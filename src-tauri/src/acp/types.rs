@@ -216,6 +216,12 @@ pub enum AcpEvent {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         parent_tool_use_id: Option<String>,
     },
+    /// Agent published a live session title via ACP `session_info_update.title`.
+    /// Applied to the conversation row by the lifecycle worker (unlocked titles
+    /// only). The sidebar converges through `conversation://changed`; this event
+    /// itself is not rendered. Omitted when the update carries no title so
+    /// goal-only `session_info_update`s stay off the lifecycle path.
+    NativeSessionTitle { title: String },
     /// Backend has transitioned the conversation row's `status` column.
     /// Emitted by `send_prompt_linked` (`InProgress`) and the lifecycle
     /// subscriber on `TurnComplete` (`PendingReview`). The frontend mirrors
@@ -319,13 +325,37 @@ pub enum AcpEvent {
     /// transient "retrying" indicator on the active turn — it is NOT a turn
     /// failure and must not be rendered as one. The frontend reuses the Claude
     /// API-retry banner and clears it at the next turn boundary.
+    ///
+    /// pi shares this channel (issue #525): pi-acp announces `auto_retry_start`
+    /// as ordinary prose, which spliced the sentence into the reply, so it is
+    /// classified out of the transcript and routed here instead (see
+    /// `pi_message_chunk_route`).
     TurnRetrying {
         /// Human-readable transient error (`_meta.codex.error.message`).
+        ///
+        /// EMPTY for pi, which forwards no error text at all — only the retry
+        /// counters below. The frontend renders its own localized line in that
+        /// case rather than inventing an error description.
         message: String,
         /// HTTP status pulled from a `codexErrorInfo` object variant
         /// (e.g. `responseStreamDisconnected.httpStatusCode`), when present.
         #[serde(skip_serializing_if = "Option::is_none")]
         error_status: Option<i64>,
+        /// Which retry this is, and out of how many, and how long the agent will
+        /// wait first — pi's own numbers, recovered from the sentence pi-acp
+        /// formats them into (`pi_parse_retry_announcement`). The retry banner
+        /// has localized slots for exactly these, so filling them is what keeps
+        /// a non-English UI from reading half in English.
+        ///
+        /// All `None` for codex, which reports none of them; skipped from the
+        /// wire when absent, so codex's payload stays byte-identical and older
+        /// clients are unaffected.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_retries: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_delay_ms: Option<u64>,
     },
     /// A JetBrains AIR typed session failure upsert (see
     /// [`SessionFailureRecord`]). Emitted verbatim for every VALID record the

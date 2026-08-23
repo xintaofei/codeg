@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import type { WorkTask } from "@/lib/types"
 import {
   canDeliverToPr,
+  canRemoveWorktree,
   deliveredPrUrl,
   hasNothingToMerge,
   isFolderMerging,
@@ -180,6 +181,46 @@ describe("worktreeWasRemoved", () => {
         })
       )
     ).toBe(false)
+  })
+})
+
+describe("canRemoveWorktree", () => {
+  const done = { status: "done" } as const
+
+  it("offers the removal to a finished task still holding its worktree", () => {
+    // The merge / complete dialogs both let the user KEEP the worktree, so
+    // this is the state the drawer's own removal exists for.
+    expect(canRemoveWorktree(task({ ...done }))).toBe(true)
+  })
+
+  it("stays out of an unfinished task's way", () => {
+    // Mid-run the checkout is in use, and a reviewed task's worktree is what
+    // the acceptance is about to read — neither is housekeeping.
+    for (const status of ["todo", "running", "review", "merging"] as const) {
+      expect(canRemoveWorktree(task({ status }))).toBe(false)
+    }
+    // Canceled keeps its worktree on purpose: that task can be requeued, and
+    // requeuing wants the checkout it left behind.
+    expect(canRemoveWorktree(task({ status: "canceled" }))).toBe(false)
+  })
+
+  it("says nothing when there is no worktree left to remove", () => {
+    expect(canRemoveWorktree(task({ ...done, worktree_folder_id: null }))).toBe(
+      false
+    )
+    // Recorded, but its folder / directory went away behind the app — the card
+    // already reports that one as removed.
+    expect(canRemoveWorktree(task({ ...done, worktree_missing: true }))).toBe(
+      false
+    )
+  })
+
+  it("defers to the retry entry after a failed cleanup", () => {
+    // Same backend call, and that button names the failure — two of them in
+    // one bar would just be the same action twice.
+    expect(canRemoveWorktree(task({ ...done, cleanup_state: "failed" }))).toBe(
+      false
+    )
   })
 })
 

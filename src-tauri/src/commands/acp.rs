@@ -2150,6 +2150,33 @@ fn annotate_npm_bootstrap_failure(package: &str, err: AcpError) -> AcpError {
     ))
 }
 
+/// Name the proxy when npm refused to parse the proxy address itself.
+///
+/// npm resolves `HTTP(S)_PROXY` with WHATWG `new URL()`, where a scheme may not
+/// start with a digit, so a bare `127.0.0.1:7890` aborts the install with a
+/// context-free `ERR_INVALID_URL` before any network I/O — no mention of a
+/// proxy, no mention of which variable. codeg normalizes the address it exports
+/// from Settings, so what reaches here is an externally-provided value (docker
+/// `-e`, a shell export) that the startup contract leaves untouched.
+fn annotate_npm_proxy_url_failure(err: AcpError) -> AcpError {
+    let AcpError::Protocol(message) = &err else {
+        return err;
+    };
+    if !message.contains("ERR_INVALID_URL") && !message.contains("Invalid URL") {
+        return err;
+    }
+    let offenders = crate::network::proxy::proxy_env_vars_missing_scheme();
+    if offenders.is_empty() {
+        return err;
+    }
+    AcpError::Protocol(format!(
+        "{message}\n\nnpm could not parse the proxy address in {} — it has no scheme. \
+         npm requires one (codeg's own HTTP client does not, which is why updates still \
+         work). Set it to a full URL, e.g. `http://127.0.0.1:7890`.",
+        offenders.join(", ")
+    ))
+}
+
 /// Run an npm command with piped stdout/stderr, streaming each line as a log event.
 /// Returns (success: bool, collected_stderr: String) so callers can inspect errors.
 async fn run_npm_streaming(
@@ -2228,7 +2255,23 @@ async fn run_npm_streaming(
     Ok((status.success(), collected_stderr))
 }
 
+/// Install an npm package globally, streaming progress, with the proxy
+/// diagnostic attached to every failure.
+///
+/// The annotation lives here rather than at the call sites so it covers each
+/// entry point — the pinned npx agents and the `pi` binary prerequisite alike —
+/// and cannot be forgotten by the next one.
 async fn install_npm_global_package_streaming(
+    package: &str,
+    task_id: &str,
+    emitter: &EventEmitter,
+) -> Result<(), AcpError> {
+    install_npm_global_package_streaming_inner(package, task_id, emitter)
+        .await
+        .map_err(annotate_npm_proxy_url_failure)
+}
+
+async fn install_npm_global_package_streaming_inner(
     package: &str,
     task_id: &str,
     emitter: &EventEmitter,
@@ -6807,7 +6850,7 @@ async fn hermes_setup_argvs() -> (Vec<String>, Vec<String>) {
         // Unreachable: Hermes is always an Npx distribution. Fall through to
         // the npx guidance with the same pinned spec so a future match-arm
         // change can't resurrect a stale recipe.
-        _ => "hermes-agent@0.20.4",
+        _ => "hermes-agent@0.20.5",
     };
     let build = |tail: &[&str]| -> Vec<String> {
         let mut argv = vec![
@@ -7408,6 +7451,16 @@ fn agent_local_config_path(agent_type: AgentType) -> Option<PathBuf> {
     match agent_type {
         AgentType::ClaudeCode => Some(home_dir_or_default().join(".claude").join("settings.json")),
         AgentType::Gemini => Some(home_dir_or_default().join(".gemini").join("settings.json")),
+        // Antigravity's ACP server keeps its own `settings.json` under
+        // `<GEMINI_HOME>/antigravity-acp/` — a DIFFERENT file from Gemini
+        // CLI's above, even though both trees default to `~/.gemini`. Exposing
+        // the path lights up "open config file"; the write side is owned by
+        // `acp::connection::sync_antigravity_settings_file` at launch, which
+        // merges only `auth.type` and the `gcp` block and leaves every other
+        // key the user put there alone.
+        AgentType::Antigravity => Some(
+            crate::parsers::antigravity::resolve_antigravity_acp_dir().join("settings.json"),
+        ),
         AgentType::OpenCode => Some(resolve_opencode_config_path()),
         AgentType::Cline => Some(cline_global_state_path()),
         // Kimi Code's native config is `~/.kimi-code/config.toml`. Exposing the
@@ -7460,6 +7513,42 @@ pub(crate) fn load_agent_local_config_json(agent_type: AgentType) -> Option<Stri
     serde_json::to_string_pretty(&parsed).ok()
 }
 
+/// What a patch subtree means where the base has nothing to merge it into: a
+/// copy with its nested removal sentinels (`null` object values) dropped, or
+/// `None` when it carried nothing but removals.
+///
+/// Copying such a subtree verbatim is what turned the "remove this key"
+/// sentinel into a literal `null` on disk — and a `null` under
+/// `~/.claude/settings.json`'s `env` is not "unset": the Claude Code CLI
+/// stringifies it into `process.env`, so `ANTHROPIC_DEFAULT_OPUS_MODEL` becomes
+/// the model name `"null"` and every row of the composer's model picker reads
+/// `null`. The trigger is a first provider bind against a settings file that has
+/// no `env` object yet, which is exactly the "no model configured" case: every
+/// `ANTHROPIC_*_MODEL` key in the cascade patch is a removal.
+///
+/// Arrays are copied as-is: `merge_json_values` never treats their elements as
+/// keys, so a `null` inside one is data, not a sentinel.
+fn patch_addition(patch: &serde_json::Value) -> Option<serde_json::Value> {
+    let Some(patch_obj) = patch.as_object() else {
+        return Some(patch.clone());
+    };
+    let mut kept = serde_json::Map::new();
+    for (key, value) in patch_obj {
+        if value.is_null() {
+            continue;
+        }
+        if let Some(value) = patch_addition(value) {
+            kept.insert(key.clone(), value);
+        }
+    }
+    // An object the patch author wrote as empty is a value in its own right; one
+    // left empty by dropping removals asks for nothing and creates nothing.
+    if kept.is_empty() && !patch_obj.is_empty() {
+        return None;
+    }
+    Some(serde_json::Value::Object(kept))
+}
+
 fn merge_json_values(base: &mut serde_json::Value, patch: &serde_json::Value) {
     if let (Some(base_obj), Some(patch_obj)) = (base.as_object_mut(), patch.as_object()) {
         for (key, patch_value) in patch_obj {
@@ -7470,15 +7559,23 @@ fn merge_json_values(base: &mut serde_json::Value, patch: &serde_json::Value) {
             }
             match base_obj.get_mut(key) {
                 Some(base_value) => merge_json_values(base_value, patch_value),
+                // Nothing here to remove, so the subtree's own removal sentinels
+                // must not be materialized alongside its real values.
                 None => {
-                    base_obj.insert(key.clone(), patch_value.clone());
+                    if let Some(value) = patch_addition(patch_value) {
+                        base_obj.insert(key.clone(), value);
+                    }
                 }
             }
         }
         return;
     }
 
-    *base = patch.clone();
+    // Type mismatch (or a non-object base): the patch replaces the base
+    // wholesale, minus its removal sentinels — there is nothing here for them to
+    // remove either. An all-removals object collapses to `{}` rather than
+    // leaving the mistyped value in place.
+    *base = patch_addition(patch).unwrap_or_else(|| serde_json::Value::Object(Default::default()));
 }
 
 fn persist_agent_local_config_json(
@@ -7729,6 +7826,37 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
                 crate::parsers::qoder::qoder_project_skills_rel_dir(),
                 ".agents/skills",
             ],
+        }),
+        // Antigravity's roots are `server.py::resolve_skills_paths`, verbatim
+        // and in its order:
+        //
+        //   home       `<GEMINI_HOME>/config/skills`        ← cross-surface global
+        //   workspace  `<cwd>/.gemini/skills`
+        //   home       `<GEMINI_HOME>/antigravity-cli/skills` ← the CLI's, read too
+        //   workspace  `<cwd>/.agents/skills`
+        //
+        // Both home roots follow the resolved `GEMINI_HOME` on purpose: the
+        // server's own comment records that a `$HOME`-anchored entry here used
+        // to hand the real `~/.gemini` to the agent even when the home had
+        // been relocated. `config/skills` leads because it is the directory
+        // Antigravity itself calls the global one; `antigravity-cli/skills`
+        // belongs to the CLI and is only READ, so installs must not land
+        // there ahead of it.
+        //
+        // `SkillDirectoryOnly`: the discovery docstring says "SKILL.md files
+        // or skill subfolders", which does not distinguish a bundle's
+        // `<id>/SKILL.md` from a flat `<id>.md`, and the actual scan happens
+        // inside the Go harness. The directory bundle is the shape every agent
+        // supports, so codeg installs that rather than guessing at the wider
+        // one and writing skills the agent may never load.
+        AgentType::Antigravity => Some(SkillStorageSpec {
+            kind: SkillStorageKind::SkillDirectoryOnly,
+            global_dirs: vec![
+                crate::parsers::antigravity::resolve_antigravity_shared_config_dir()
+                    .join("skills"),
+                crate::parsers::antigravity::resolve_antigravity_cli_dir().join("skills"),
+            ],
+            project_rel_dirs: vec![".gemini/skills", ".agents/skills"],
         }),
         // codeg cannot detect where an arbitrary ACP agent loads skills from,
         // so custom agents are gated on the user's own declaration: that the
@@ -8175,8 +8303,31 @@ struct AgentRuntimeConfig {
     api_key: Option<String>,
     #[serde(default)]
     model: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_env_strings")]
     env: BTreeMap<String, String>,
+}
+
+/// Read an agent config's `env` map, skipping entries whose value is not a
+/// string instead of failing the whole parse.
+///
+/// Both readers of this struct discard the ENTIRE local config on a parse error
+/// (`build_runtime_env_from_setting` and the agent-info env projection), so one
+/// odd value would silently cost the launch env its base URL and key too. The
+/// value seen in the wild is `null` — written by an older
+/// [`merge_json_values`], see [`patch_addition`] — but a hand-edited number or
+/// bool deserves the same containment.
+fn deserialize_env_strings<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = BTreeMap::<String, serde_json::Value>::deserialize(deserializer)?;
+    Ok(raw
+        .into_iter()
+        .filter_map(|(key, value)| match value {
+            serde_json::Value::String(value) => Some((key, value)),
+            _ => None,
+        })
+        .collect())
 }
 
 fn trim_non_empty(value: Option<String>) -> Option<String> {
@@ -8829,6 +8980,21 @@ fn agent_env_keys(agent_type: AgentType) -> (&'static str, &'static str, &'stati
             "QODER_PERSONAL_ACCESS_TOKEN",
             "QODER_MODEL",
         ),
+        // Antigravity's credential depends on the auth method the settings
+        // panel picked, and the panel writes the right one directly; the slot
+        // named here is the Gemini Developer API key, which is what
+        // `auth.type = "gemini-api-key"` reads (the server says so in its own
+        // `auth_required` message). `AGY_ACP_DEFAULT_MODEL` is real — it is
+        // the env the server's `get_default_model_id` consults before falling
+        // back to `gemini-3.7-flash-high`. There is NO endpoint override, so
+        // the base-url slot stays an inert `AGY_BASE_URL` placeholder for the
+        // same reason `CURSOR_MODEL`/`QODER_BASE_URL` above are: it keeps the
+        // generic cascade off the `OPENAI_*` keys.
+        AgentType::Antigravity => (
+            "AGY_BASE_URL",
+            "GEMINI_API_KEY",
+            "AGY_ACP_DEFAULT_MODEL",
+        ),
         _ => ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"),
     }
 }
@@ -9260,6 +9426,18 @@ fn cascade_update_agent_config(
             // env, and while codeg DOES manage a Qoder config file
             // (`settings.json`, via the Qoder settings panel), that file holds
             // no credentials for the cascade to reconcile.
+        }
+        AgentType::Antigravity => {
+            // Antigravity only ever talks to Google's own endpoints (CCPA for
+            // the consumer path, BAIC for Gemini Enterprise, the Gemini
+            // Developer API for a raw key), none of which accepts a custom
+            // base URL — so it stays off the model-provider credential
+            // cascade. Its credentials come from the auth method the settings
+            // panel recorded, which the launch path projects into the process
+            // env and into `antigravity-acp/settings.json` (see
+            // `sync_antigravity_settings_file`); that file carries the chosen
+            // METHOD, never a credential, so there is nothing here to
+            // reconcile either.
         }
         AgentType::Custom(_) => {
             // Custom agents are deliberately configuration-free: codeg writes
@@ -14611,6 +14789,105 @@ wire_api = "chat"
     }
 
     #[test]
+    fn merge_json_values_never_materializes_a_removal_into_a_missing_parent() {
+        // The regression: binding a Claude provider that configures NO models
+        // against a ~/.claude/settings.json that has no `env` object yet. Every
+        // ANTHROPIC_*_MODEL entry of the cascade patch is a removal, and the old
+        // merge copied the whole `env` subtree in verbatim because the key was
+        // absent — writing the sentinels out as real JSON nulls. The Claude Code
+        // CLI stringifies settings env into `process.env`, so those became the
+        // model name "null" and every row of the composer's model picker read
+        // `null`.
+        let mut base = serde_json::json!({ "effortLevel": "high" });
+        let patch = serde_json::json!({
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://gw.example",
+                "ANTHROPIC_AUTH_TOKEN": "sk-1",
+                "ANTHROPIC_MODEL": null,
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": null,
+                "ANTHROPIC_CUSTOM_MODEL_OPTION": null
+            }
+        });
+        merge_json_values(&mut base, &patch);
+        let env = base
+            .get("env")
+            .and_then(|v| v.as_object())
+            .expect("env object created for the real values");
+        assert_eq!(
+            env.get("ANTHROPIC_BASE_URL").and_then(|v| v.as_str()),
+            Some("https://gw.example")
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_AUTH_TOKEN").and_then(|v| v.as_str()),
+            Some("sk-1")
+        );
+        // Not "present and null" — absent.
+        assert!(!env.contains_key("ANTHROPIC_MODEL"));
+        assert!(!env.contains_key("ANTHROPIC_DEFAULT_OPUS_MODEL"));
+        assert!(!env.contains_key("ANTHROPIC_CUSTOM_MODEL_OPTION"));
+        // Untouched siblings survive.
+        assert_eq!(
+            base.get("effortLevel").and_then(|v| v.as_str()),
+            Some("high")
+        );
+    }
+
+    #[test]
+    fn merge_json_values_skips_a_patch_subtree_that_is_only_removals() {
+        // Same missing-parent case, but the patch has nothing real to add:
+        // creating an empty `env` husk in a config that never had one would be
+        // writing a key the user never asked for.
+        let mut base = serde_json::json!({});
+        merge_json_values(
+            &mut base,
+            &serde_json::json!({ "env": { "ANTHROPIC_MODEL": null } }),
+        );
+        assert!(!base.as_object().expect("object").contains_key("env"));
+
+        // An object the patch author wrote as empty IS a value — it still lands.
+        let mut base = serde_json::json!({});
+        merge_json_values(&mut base, &serde_json::json!({ "env": {} }));
+        assert_eq!(base.get("env"), Some(&serde_json::json!({})));
+    }
+
+    #[test]
+    fn merge_json_values_strips_removals_when_replacing_a_mistyped_base() {
+        // A base whose `env` is not an object can't be merged into, so the patch
+        // replaces it — still without materializing the sentinels.
+        let mut base = serde_json::json!({ "env": "not-an-object" });
+        merge_json_values(
+            &mut base,
+            &serde_json::json!({ "env": { "ANTHROPIC_BASE_URL": "https://gw", "ANTHROPIC_MODEL": null } }),
+        );
+        assert_eq!(
+            base.get("env"),
+            Some(&serde_json::json!({ "ANTHROPIC_BASE_URL": "https://gw" }))
+        );
+
+        // Arrays are data, not key/value maps: a null element is preserved.
+        let mut base = serde_json::json!({});
+        merge_json_values(&mut base, &serde_json::json!({ "xs": [1, null, 2] }));
+        assert_eq!(base.get("xs"), Some(&serde_json::json!([1, null, 2])));
+    }
+
+    #[test]
+    fn agent_runtime_config_env_survives_a_non_string_value() {
+        // A settings.json corrupted by the old merge (env values as JSON null)
+        // must not cost the launch env everything else in the file: the bad
+        // entries are skipped, the rest — including the credentials — still land.
+        let config: AgentRuntimeConfig = serde_json::from_str(
+            r#"{"env":{"ANTHROPIC_BASE_URL":"https://gw","ANTHROPIC_MODEL":null,"PORT":8080}}"#,
+        )
+        .expect("a null env value must not fail the whole parse");
+        assert_eq!(
+            config.env.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some("https://gw")
+        );
+        assert!(!config.env.contains_key("ANTHROPIC_MODEL"));
+        assert!(!config.env.contains_key("PORT"));
+    }
+
+    #[test]
     fn fingerprint_config_is_deterministic_and_excludes_volatile_keys() {
         let agent = AgentType::Codex;
         let mut env = BTreeMap::new();
@@ -16707,7 +16984,7 @@ wire_api = "chat"
                     .expect("npx recipe must pin via --package");
                 assert_eq!(
                     argv.get(pkg_idx + 1).map(String::as_str),
-                    Some("hermes-agent@0.20.4")
+                    Some("hermes-agent@0.20.5")
                 );
                 assert_eq!(argv.get(pkg_idx + 2).map(String::as_str), Some("hermes"));
             } else {
@@ -17319,7 +17596,7 @@ model = "gpt"
             )
         };
 
-        let annotated = annotate_npm_bootstrap_failure("hermes-agent@0.20.4", download());
+        let annotated = annotate_npm_bootstrap_failure("hermes-agent@0.20.5", download());
         let text = annotated.to_string();
         assert!(text.contains("fetch failed"), "keeps the original error");
         assert!(text.contains("HTTP(S)_PROXY"), "adds the proxy hint");
@@ -17331,9 +17608,29 @@ model = "gpt"
 
         // A hermes failure that isn't a download stays untouched.
         let permissions = annotate_npm_bootstrap_failure(
-            "hermes-agent@0.20.4",
+            "hermes-agent@0.20.5",
             AcpError::Protocol("failed to install npm package globally: EACCES".to_string()),
         );
         assert!(!permissions.to_string().contains("HTTP(S)_PROXY"));
+    }
+
+    /// The proxy hint is keyed on npm's URL-parse failure, so every other way an
+    /// install can die has to pass through untouched. (The positive branch also
+    /// requires a scheme-less proxy in the process env; asserting that would
+    /// mean mutating env under a parallel test binary.)
+    #[test]
+    fn npm_proxy_url_hint_leaves_unrelated_failures_alone() {
+        for err in [
+            AcpError::Protocol("failed to install npm package globally: EACCES".to_string()),
+            AcpError::Protocol("failed to install npm package globally: ETIMEDOUT".to_string()),
+            AcpError::SdkNotInstalled("npm is not installed".to_string()),
+        ] {
+            let before = err.to_string();
+            assert_eq!(
+                annotate_npm_proxy_url_failure(err).to_string(),
+                before,
+                "only an ERR_INVALID_URL failure may be annotated"
+            );
+        }
     }
 }

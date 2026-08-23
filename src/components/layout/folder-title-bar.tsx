@@ -34,7 +34,7 @@ import { WindowControls } from "./window-controls"
  * into fixed corner overlays (`LeftEdgeChrome` / `RightEdgeChrome`) and its
  * global shortcuts + dialogs moved to `WorkspaceChromeController`. This bar is
  * mounted only on the mobile path (`FolderLayoutShell`), where the sidebar / aux
- * / terminal are `Sheet` overlays that need a compact bar to summon them.
+ * / terminal are `Drawer` overlays that need a compact bar to summon them.
  *
  * It mirrors the desktop chrome directly (rather than via `AppTitleBar`): the
  * left holds the sidebar toggle + a new-conversation shortcut; the right holds
@@ -103,7 +103,7 @@ export function FolderTitleBar() {
         </Button>
         {/* Mobile's counterpart to the search button in the desktop
             `LeftEdgeChrome`: this bar and the sidebar are the only chrome here,
-            the sidebar is a Sheet that covers the workspace, and there is no ⌘K
+            the sidebar is a Drawer that covers the workspace, and there is no ⌘K
             on a phone — so without this button search would have no visible
             entry point at all. No shortcut suffix on the tooltip, same reason. */}
         <Button

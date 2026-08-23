@@ -15,7 +15,6 @@ use crate::models::{
     AvailableTerminalShells, SystemLanguageSettings, SystemProxySettings, SystemTerminalSettings,
     TerminalShellOption,
 };
-#[cfg(feature = "tauri-runtime")]
 use crate::network::proxy;
 #[cfg(feature = "tauri-runtime")]
 use crate::preferences;
@@ -30,7 +29,15 @@ pub(crate) const TERMINAL_SETTINGS_UPDATED_EVENT: &str = "app://terminal-setting
 pub(crate) const TERMINAL_SHELL_OPTION_SYSTEM: &str = "system";
 pub(crate) const TERMINAL_SHELL_OPTION_CUSTOM: &str = "custom";
 
-fn normalize_proxy_settings(
+/// Trim, validate, and canonicalize proxy settings. Shared by the save path,
+/// the load path, and the web handler so all three agree on what gets stored.
+///
+/// Enabling the proxy rewrites the address into one that carries an explicit
+/// scheme (see [`proxy::normalize_proxy_url`]) — the stored value, the value
+/// echoed back to the settings page, and the value exported to child processes
+/// are then the same string. Because the load path normalizes too, a row saved
+/// by an older build with a bare `host:port` heals on read; no migration.
+pub(crate) fn normalize_proxy_settings(
     settings: SystemProxySettings,
 ) -> Result<SystemProxySettings, AppCommandError> {
     if !settings.enabled {
@@ -56,13 +63,9 @@ fn normalize_proxy_settings(
             AppCommandError::configuration_missing("Proxy URL is required when proxy is enabled")
         })?;
 
-    reqwest::Proxy::all(proxy_url).map_err(|e| {
-        AppCommandError::configuration_invalid("Invalid proxy URL").with_detail(e.to_string())
-    })?;
-
     Ok(SystemProxySettings {
         enabled: true,
-        proxy_url: Some(proxy_url.to_string()),
+        proxy_url: Some(proxy::normalize_proxy_url(proxy_url)?),
     })
 }
 
@@ -620,6 +623,162 @@ mod tests {
     use super::*;
     use crate::db::test_helpers::fresh_in_memory_db;
     use crate::web::event_bridge::EventEmitter;
+
+    fn enabled_proxy(url: &str) -> SystemProxySettings {
+        SystemProxySettings {
+            enabled: true,
+            proxy_url: Some(url.to_string()),
+        }
+    }
+
+    fn normalized_url(url: &str) -> String {
+        normalize_proxy_settings(enabled_proxy(url))
+            .expect("proxy url should be accepted")
+            .proxy_url
+            .expect("enabled proxy keeps its url")
+    }
+
+    /// A scheme-less address is what a user actually types, and what used to
+    /// reach `HTTP_PROXY` verbatim — killing every npm-based agent install with
+    /// `ERR_INVALID_URL` while codeg's own reqwest calls kept working.
+    #[test]
+    fn scheme_less_proxy_addresses_gain_an_http_scheme() {
+        assert_eq!(normalized_url("127.0.0.1:7890"), "http://127.0.0.1:7890");
+        // Parses as a URL whose *scheme* is `localhost` — so "did it parse" is
+        // not a usable test; only the missing host gives it away.
+        assert_eq!(normalized_url("localhost:7890"), "http://localhost:7890");
+        assert_eq!(
+            normalized_url("proxy.corp.com:8080"),
+            "http://proxy.corp.com:8080"
+        );
+        assert_eq!(
+            normalized_url("user:pass@127.0.0.1:7890"),
+            "http://user:pass@127.0.0.1:7890"
+        );
+        // An IPv6 literal keeps its brackets — without them the address is
+        // indistinguishable from a host and a port.
+        assert_eq!(normalized_url("[::1]:7890"), "http://[::1]:7890");
+        assert_eq!(normalized_url("  127.0.0.1:7890  "), "http://127.0.0.1:7890");
+    }
+
+    /// The repaired value is the user's own string with a prefix, never the
+    /// `url` crate's re-serialization — which would append a trailing slash and
+    /// churn what the settings field shows back.
+    #[test]
+    fn normalizing_does_not_reserialize_the_address() {
+        assert_eq!(normalized_url("127.0.0.1:7890/"), "http://127.0.0.1:7890/");
+        assert_eq!(
+            normalized_url("proxy.corp.com:8080/gateway"),
+            "http://proxy.corp.com:8080/gateway"
+        );
+        assert_eq!(normalized_url("http://127.0.0.1:7890"), "http://127.0.0.1:7890");
+    }
+
+    /// Re-running normalization over its own output must be a no-op: the value
+    /// is normalized once on save and again on env export.
+    #[test]
+    fn normalizing_is_idempotent() {
+        for url in ["127.0.0.1:7890", "[::1]:7890", "socks5://127.0.0.1:1080"] {
+            let once = normalized_url(url);
+            assert_eq!(normalized_url(&once), once, "{url} re-normalized");
+        }
+    }
+
+    /// An address that already names a scheme must survive untouched — most of
+    /// all a socks proxy, which would stop working if rewritten to `http://`.
+    #[test]
+    fn proxy_addresses_with_a_scheme_are_left_alone() {
+        for url in [
+            "http://127.0.0.1:7890",
+            "https://proxy.corp.com:8443",
+            "socks5://127.0.0.1:1080",
+            "socks5h://127.0.0.1:1080",
+        ] {
+            assert_eq!(normalized_url(url), url);
+        }
+    }
+
+    /// The repair must not launder a malformed address into a parseable one:
+    /// `http://` has a scheme separator but no host, so prefixing it would
+    /// produce `http://http://` and quietly accept it.
+    #[test]
+    fn malformed_addresses_are_still_rejected() {
+        for url in ["http://", "socks5://", "http://:7890"] {
+            assert!(
+                normalize_proxy_settings(enabled_proxy(url)).is_err(),
+                "{url} should not be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn enabling_the_proxy_still_requires_an_address() {
+        for settings in [
+            SystemProxySettings {
+                enabled: true,
+                proxy_url: None,
+            },
+            enabled_proxy("   "),
+        ] {
+            assert!(normalize_proxy_settings(settings).is_err());
+        }
+    }
+
+    /// Disabling keeps the stored address as typed: it is only a remembered
+    /// value at that point, not something exported to a child process.
+    #[test]
+    fn disabled_proxy_keeps_its_address_unchanged() {
+        let normalized = normalize_proxy_settings(SystemProxySettings {
+            enabled: false,
+            proxy_url: Some("  127.0.0.1:7890  ".to_string()),
+        })
+        .expect("disabled settings never validate the url");
+
+        assert!(!normalized.enabled);
+        assert_eq!(normalized.proxy_url.as_deref(), Some("127.0.0.1:7890"));
+    }
+
+    /// What actually reaches `HTTP_PROXY` and every spawned agent.
+    #[test]
+    fn exported_env_value_carries_the_scheme() {
+        assert_eq!(
+            proxy::proxy_env_value(&enabled_proxy("127.0.0.1:7890")).expect("normalizes"),
+            Some("http://127.0.0.1:7890".to_string())
+        );
+        assert_eq!(
+            proxy::proxy_env_value(&SystemProxySettings {
+                enabled: false,
+                proxy_url: Some("127.0.0.1:7890".to_string()),
+            })
+            .expect("disabled is not an error"),
+            None
+        );
+    }
+
+    /// Rows written by a build that stored the address verbatim must heal on
+    /// read, so startup exports a usable value without a migration.
+    #[tokio::test]
+    async fn stored_scheme_less_proxy_heals_on_load() {
+        let db = fresh_in_memory_db().await;
+        app_metadata_service::upsert_value(
+            &db.conn,
+            SYSTEM_PROXY_SETTINGS_KEY,
+            r#"{"enabled":true,"proxy_url":"127.0.0.1:7890"}"#,
+        )
+        .await
+        .expect("seed legacy proxy row");
+
+        let loaded = load_system_proxy_settings(&db.conn)
+            .await
+            .expect("load proxy settings");
+
+        assert!(loaded.enabled);
+        assert_eq!(
+            loaded.proxy_url.as_deref(),
+            Some("http://127.0.0.1:7890"),
+            "a legacy bare host:port must be repaired on read"
+        );
+    }
 
     #[tokio::test]
     async fn terminal_shell_setting_persists_and_updates_live_runtime() {

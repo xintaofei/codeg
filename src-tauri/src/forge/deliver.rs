@@ -160,13 +160,17 @@ pub struct DeliveryCtx<'a> {
 /// against a real HTTP server (see this module's tests).
 #[async_trait]
 pub trait ForgeDeliveryApi: Send + Sync {
-    /// Publish `work_branch` as `remote_branch` on the source repository.
+    /// Publish `work_branch` as `remote_branch` on `repo` — the repository the
+    /// push lands in: the source repository for an issue task's own branch,
+    /// the recorded HEAD repository for a pull-request push-back (the same
+    /// repository except when the pull request comes from a fork).
     /// Fast-forward only — a rejected push means that branch has another owner
     /// and the task must go back to a human.
     async fn push_branch(
         &self,
         ctx: &DeliveryCtx<'_>,
         worktree_path: &str,
+        repo: &str,
         work_branch: &str,
         remote_branch: &str,
     ) -> Result<(), String>;
@@ -248,13 +252,14 @@ impl ForgeDeliveryApi for ForgeDelivery {
         &self,
         ctx: &DeliveryCtx<'_>,
         worktree_path: &str,
+        repo: &str,
         work_branch: &str,
         remote_branch: &str,
     ) -> Result<(), String> {
         // Git is git: the same explicit-URL push with the same pinned
         // credentials works against both forges.
         let auth = resolve(ctx).await?;
-        push_work_branch(ctx, &auth, worktree_path, work_branch, remote_branch).await
+        push_work_branch(ctx, &auth, worktree_path, repo, work_branch, remote_branch).await
     }
 
     async fn find_pulls(
@@ -409,17 +414,29 @@ pub async fn get_pull(
 /// behind its author's back, so the engine refuses it), which would leave it
 /// stuck in review with no acceptance at all. Refusing at the only moment the
 /// user can still choose something else is the whole point.
+///
+/// A change from a FORK has such a place: its own branch in the fork — the
+/// checkout never needed it (both forges publish the head under a server-side
+/// ref on this repository), and the delivery pushes to the fork with the same
+/// pinned credentials, which the forge grants when the author allowed
+/// maintainer edits. That grant cannot be read reliably up front, so it is not
+/// gated here: a refused push bounces the task back to review with the reason,
+/// and a review turn that added no commits settles without pushing at all.
+/// What IS refused is a fork codeg cannot even name — a deleted or invisible
+/// head repository — because a push there can never work for anyone.
 pub fn pull_is_workable(
     provider: ForgeProvider,
     pull: &ForgePr,
     owner_repo: &str,
 ) -> Result<(), String> {
     let noun = provider.change_noun();
-    if !super::same_repo(&pull.head_repo, owner_repo) {
+    if !super::same_repo(&pull.head_repo, owner_repo)
+        && super::normalize_repo(&pull.head_repo).is_none()
+    {
         return Err(format!(
-            "{noun} #{} comes from a fork ({}), and codeg can only work on {noun}s whose branch \
-             lives in {owner_repo}",
-            pull.number, pull.head_repo
+            "{noun} #{} comes from a fork whose repository codeg cannot see (it may be private \
+             or deleted), so there would be no way to push work back to it",
+            pull.number
         ));
     }
     // A closed-but-unmerged pull request is fine: it can be reopened, and the
@@ -497,17 +514,25 @@ pub async fn create_issue_comment(
 /// the repository may well use an SSH remote (which would bypass credential
 /// injection entirely), and the identity here must be the pinned account, not
 /// whatever git's helper chain answers with.
+///
+/// `repo` — not `ctx.owner_repo` — is where the push lands: a pull request
+/// from a fork pushes back to the fork, while every context-level operation
+/// (comments, pull-request lookups) stays on the source repository.
 async fn push_work_branch(
     ctx: &DeliveryCtx<'_>,
     auth: &ResolvedAuth,
     worktree_path: &str,
+    repo: &str,
     work_branch: &str,
     remote_branch: &str,
 ) -> Result<(), String> {
-    // Both names are interpolated into a refspec. Validate BEFORE building it.
+    // Everything here is interpolated into a URL or a refspec. Validate
+    // BEFORE building either.
+    let repo = super::normalize_repo(repo)
+        .ok_or_else(|| format!("bad repository path: {repo}"))?;
     ensure_pushable_branch(work_branch)?;
     ensure_pushable_branch(remote_branch)?;
-    let url = format!("{}/{}.git", web_origin(auth), ctx.owner_repo);
+    let url = format!("{}/{}.git", web_origin(auth), repo);
     // Fully qualified on both sides: a short name goes through git's revision
     // resolution, where a same-named tag makes it ambiguous (the project's
     // existing push path documents the same trap).
@@ -629,13 +654,35 @@ fn ensure_pushable_branch(branch: &str) -> Result<(), String> {
     crate::commands::folders::ensure_pushable_branch_name(branch).map_err(|e| e.to_string())
 }
 
+/// How a codeg task id is written into text that lands on a forge.
+///
+/// The number is codeg-local: it names a row in this workspace's task list,
+/// not anything in the repository the text is posted to. Both halves of the
+/// form below carry weight — neither is decoration:
+///
+/// - Dropping the `#` is what stops the ISSUE reference. `#27` is a reference
+///   on both GitHub and GitLab; left bare it autolinks to whatever their own
+///   issue, pull request or merge request 27 happens to be, pointing readers
+///   of the thread at an unrelated page that looks authoritative.
+/// - The code span is what stops the COMMIT reference. Every decimal digit is
+///   also a hex digit, so a long enough id is a valid abbreviated sha:
+///   GitHub linkifies a bare `5899977` when some commit in that repository
+///   starts with it. Reference scanners skip code spans, which is what keeps
+///   this safe once ids grow past six digits.
+fn task_ref(task_id: i32) -> String {
+    format!("`{task_id}`")
+}
+
 /// Body of the pull request codeg opens. `Closes #N` is what links it to the
 /// issue: GitHub's native closing keyword beats an API `close` call — it fires
 /// only if the pull request actually merges, and only into the right branch.
+/// That reference is the intended one; the task id beside it is not, hence
+/// [`task_ref`].
 pub fn pull_request_body(issue_url: &str, issue_number: i64, task_id: i32) -> String {
+    let task = task_ref(task_id);
     format!(
         "Closes #{issue_number}\n\n\
-         Prepared by [codeg](https://github.com/xggz/codeg) work task #{task_id} \
+         Prepared by [codeg](https://github.com/xggz/codeg) work task {task} \
          from {issue_url}.\n\n\
          Review the diff before merging — the task ran against issue text \
          written by an external author."
@@ -676,22 +723,28 @@ pub fn writeback_comment_body(
         ),
         None => String::new(),
     };
+    let task = task_ref(task_id);
     match outcome {
         TaskOutcome::Merged { commit, base_branch } => {
             let short: String = commit.chars().take(7).collect();
+            // "merged locally", not "merged": this landed in the triggering
+            // user's own checkout and was never pushed, so to everyone else
+            // reading the thread the branch is untouched and the sha resolves
+            // to nothing. Saying it plainly is the difference between a status
+            // note and a false claim that the work has shipped.
             format!(
-                "codeg work task #{task_id} is done — merged into `{base_branch}` as \
+                "codeg work task {task} is done — merged locally into `{base_branch}` as \
                  `{short}`{numbers}."
             )
         }
         TaskOutcome::Delivered { pr_url } => {
-            format!("codeg work task #{task_id} is done — {pr_url}{numbers}.")
+            format!("codeg work task {task} is done — {pr_url}{numbers}.")
         }
         TaskOutcome::Accepted { nothing_to_land: true } => {
-            format!("codeg work task #{task_id} is done — accepted with nothing to land.")
+            format!("codeg work task {task} is done — accepted with nothing to land.")
         }
         TaskOutcome::Accepted { nothing_to_land: false } => {
-            format!("codeg work task #{task_id} is done — accepted without merging{numbers}.")
+            format!("codeg work task {task} is done — accepted without merging{numbers}.")
         }
     }
 }
@@ -1047,7 +1100,11 @@ mod tests {
     fn body_carries_the_closing_keyword() {
         let body = pull_request_body("https://github.com/acme/app/issues/7", 7, 12);
         assert!(body.starts_with("Closes #7\n"));
-        assert!(body.contains("work task #12"));
+        // The one reference the body is allowed to make is that closing
+        // keyword. The task id sits in a code span so the forge does not
+        // autolink it to its own issue 12.
+        assert!(body.contains("work task `12`"), "{body}");
+        assert!(!body.contains("#12"), "autolinkable task id: {body}");
     }
 
     /// The trigger gate answers one question: when the agent finishes, is
@@ -1071,9 +1128,20 @@ mod tests {
         let err = pull_is_workable(gh, &merged, "acme/app").expect_err("merged");
         assert!(err.contains("already merged"), "{err}");
 
-        // A fork's branch lives in someone else's repository.
+        // A fork's branch lives in someone else's repository — a real place
+        // the delivery can push to, so it is workable.
         let fork = pr(7, "abc", "feature", "main", "contributor/app");
-        let err = pull_is_workable(gh, &fork, "acme/app").expect_err("fork");
+        assert!(pull_is_workable(gh, &fork, "acme/app").is_ok());
+
+        // ...unless that repository cannot even be named: GitHub reports a
+        // deleted fork as no repository at all, and GitLab keeps a
+        // `project-{id}` placeholder when the fork project is not visible to
+        // this account. No name, no push URL, ever.
+        let deleted_fork = pr(7, "abc", "feature", "main", "");
+        let err = pull_is_workable(gh, &deleted_fork, "acme/app").expect_err("deleted fork");
+        assert!(err.contains("fork") && err.contains("cannot see"), "{err}");
+        let invisible_fork = pr(7, "abc", "feature", "main", "project-4711");
+        let err = pull_is_workable(gh, &invisible_fork, "acme/app").expect_err("placeholder");
         assert!(err.contains("fork"), "{err}");
 
         // Nothing to check out or push back to.
@@ -1137,10 +1205,15 @@ mod tests {
             },
             Some((3, 42, 7)),
         );
-        assert!(merged.contains("work task #12"), "{merged}");
+        // A code-spanned id, never `#12`: the number is codeg's, and both
+        // forges would turn the bare form into a link to their own issue 12.
+        assert!(merged.contains("work task `12`"), "{merged}");
+        assert!(!merged.contains("#12"), "autolinkable task id: {merged}");
         assert!(merged.contains("`abc1234`"), "short sha: {merged}");
         assert!(!merged.contains("def5678"), "full sha leaked: {merged}");
         assert!(merged.contains("`main`") && merged.contains("(3 files, +42/-7)"), "{merged}");
+        // A local merge must not read as "this shipped" to the thread.
+        assert!(merged.contains("merged locally into"), "{merged}");
 
         let delivered = writeback_comment_body(
             12,
@@ -1159,7 +1232,7 @@ mod tests {
         // The third settlement says so rather than staying silent — the
         // setting promises a comment whenever a forge task finishes.
         let empty = writeback_comment_body(12, &TaskOutcome::Accepted { nothing_to_land: true }, None);
-        assert!(empty.contains("work task #12") && empty.contains("nothing to land"));
+        assert!(empty.contains("work task `12`") && empty.contains("nothing to land"));
         // …and an acceptance whose worktree was gone must NOT claim there was
         // nothing to land while printing the counters that say otherwise.
         let gone = writeback_comment_body(

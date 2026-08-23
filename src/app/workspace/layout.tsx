@@ -90,7 +90,8 @@ import {
 } from "@/lib/window-chrome"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { usePlatform } from "@/hooks/use-platform"
-import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
+import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer"
+import { OverlayHostHiddenProvider } from "@/components/ui/overlay-host-hidden"
 
 function WorkspaceDocumentTitle() {
   const { activeFolder } = useActiveFolder()
@@ -198,6 +199,51 @@ function usePanelSlideOnToggle(open: boolean, ready: boolean): boolean {
   return animating
 }
 
+/**
+ * The conversation surface while a full-page workbench route covers it: kept
+ * MOUNTED (so background conversations keep streaming) and merely stopped from
+ * painting.
+ *
+ * `inert` drops it from the tab order; `invisible` (visibility, not display —
+ * keeps mount/layout/scroll) stops it painting, because with a workspace
+ * background image the route overlay's ws-surface is translucent and the
+ * conversation would ghost through it. `conversation-tab-hidden` hardens that
+ * hidden subtree (see globals.css): it kills the subtree's transitions so
+ * visibility flips instantly (transition-all ghosts) and re-hides the
+ * descendants that declare `visibility: visible` themselves — Monaco's diff
+ * panes do, which is why an open git-diff file tab used to show through the
+ * tasks / automations / token-usage pages.
+ *
+ * The fourth part is `OverlayHostHiddenProvider`, and it is the reason this is
+ * one component instead of the three lines it used to be in each shell. None
+ * of the above reaches a layer that PORTALS out of this subtree, and the
+ * session-viewer drawers do exactly that (to the body) — so a sub-agent
+ * transcript opened from a conversation went on painting over the tasks board.
+ * Keeping the flag welded to the class and the `inert` is what stops the next
+ * hidden subtree from reintroducing that.
+ */
+function KeptMountedSurface({
+  hidden,
+  children,
+}: {
+  hidden: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <OverlayHostHiddenProvider hidden={hidden}>
+      <div
+        className={cn(
+          "h-full min-h-0",
+          hidden && "conversation-tab-hidden invisible"
+        )}
+        inert={hidden || undefined}
+      >
+        {children}
+      </div>
+    </OverlayHostHiddenProvider>
+  )
+}
+
 function WorkspaceContent({ children }: { children: React.ReactNode }) {
   const { mode, filesMaximized } = useWorkspaceView()
   const { setActivePane } = useWorkspaceActions()
@@ -291,24 +337,7 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="relative h-full min-h-0 overflow-hidden">
-      {/* Kept mounted (and only hidden) when a workbench route takes over, so
-          background conversations keep streaming. `inert` drops it from the tab
-          order; `invisible` (visibility, not display — keeps mount/layout/
-          scroll) stops it painting, because with a workspace background image
-          the route overlay's ws-surface is translucent and the conversation
-          would ghost through it. conversation-tab-hidden hardens that hidden
-          subtree (see globals.css): it kills the subtree's transitions so
-          visibility flips instantly (transition-all ghosts) and re-hides the
-          descendants that declare `visibility: visible` themselves — Monaco's
-          diff panes do, which is why an open git-diff file tab used to show
-          through the tasks / automations / token-usage pages. */}
-      <div
-        className={cn(
-          "h-full min-h-0",
-          !isConversations && "conversation-tab-hidden invisible"
-        )}
-        inert={!isConversations || undefined}
-      >
+      <KeptMountedSurface hidden={!isConversations}>
         <ResizablePanelGroup
           id={WORKSPACE_PANEL_GROUP_ID}
           ref={panelGroupRef}
@@ -321,23 +350,27 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
             defaultSize={56}
             minSize={mode === "fusion" ? 25 : 0}
           >
-            <section
-              className={cn(
-                "flex h-full min-h-0 flex-col overflow-hidden",
-                mode === "conversation" &&
-                  "absolute inset-0 z-30 bg-background ws-transparent-bg",
-                // Covered by the files-maximized overlay: stop painting so it
-                // can't show through the now-translucent overlay. `invisible`
-                // (visibility:hidden), not display:none, keeps mount + box size
-                // intact so the stick-to-bottom scroll doesn't reset;
-                // conversation-tab-hidden is the shared hardening for a hidden
-                // keep-alive subtree (kills its transitions, and re-hides the
-                // descendants that declare `visibility: visible` themselves).
-                filesMaximized && "conversation-tab-hidden invisible"
-              )}
-              inert={filesMaximized || undefined}
-            >
-              {/* Conversation column top bar (UNSPLIT only): the tab strip,
+            {/* Conversations live in here, so a session viewer opened from one
+                portals to the body and escapes the hiding below — same reason
+                `KeptMountedSurface` carries this flag. */}
+            <OverlayHostHiddenProvider hidden={filesMaximized}>
+              <section
+                className={cn(
+                  "flex h-full min-h-0 flex-col overflow-hidden",
+                  mode === "conversation" &&
+                    "absolute inset-0 z-30 bg-background ws-transparent-bg",
+                  // Covered by the files-maximized overlay: stop painting so it
+                  // can't show through the now-translucent overlay. `invisible`
+                  // (visibility:hidden), not display:none, keeps mount + box size
+                  // intact so the stick-to-bottom scroll doesn't reset;
+                  // conversation-tab-hidden is the shared hardening for a hidden
+                  // keep-alive subtree (kills its transitions, and re-hides the
+                  // descendants that declare `visibility: visible` themselves).
+                  filesMaximized && "conversation-tab-hidden invisible"
+                )}
+                inert={filesMaximized || undefined}
+              >
+                {/* Conversation column top bar (UNSPLIT only): the tab strip,
                   plus a left reserve (only when the sidebar is collapsed, so
                   this column owns the window's left edge) and a right reserve
                   (only when it's the window's right edge) for the fixed corner
@@ -355,48 +388,49 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
                   strip whose tail spacer is a window-drag region, and the
                   TOP-edge strips re-create the corner reserves themselves (see
                   SplitStripCornerReserve in conversation-detail-panel). */}
-              {!isConvSplit && (
-                <div className="flex h-10 shrink-0 items-stretch bg-muted ws-transparent-bg">
-                  {!sidebarOpen && (
-                    <div
-                      data-tauri-drag-region
-                      className="h-full shrink-0 ws-strip-line"
-                      style={{ width: leftReserve }}
-                    />
-                  )}
-                  <div className="flex min-w-0 flex-1 items-stretch">
-                    {hasConvTabs ? (
-                      <TabBar />
-                    ) : (
-                      // No tabs → TabBar renders null; keep a drag region so
-                      // the title bar can still move the window.
+                {!isConvSplit && (
+                  <div className="flex h-10 shrink-0 items-stretch bg-muted ws-transparent-bg">
+                    {!sidebarOpen && (
                       <div
                         data-tauri-drag-region
-                        className="h-full min-w-0 flex-1 ws-strip-line"
+                        className="h-full shrink-0 ws-strip-line"
+                        style={{ width: leftReserve }}
+                      />
+                    )}
+                    <div className="flex min-w-0 flex-1 items-stretch">
+                      {hasConvTabs ? (
+                        <TabBar />
+                      ) : (
+                        // No tabs → TabBar renders null; keep a drag region so
+                        // the title bar can still move the window.
+                        <div
+                          data-tauri-drag-region
+                          className="h-full min-w-0 flex-1 ws-strip-line"
+                        />
+                      )}
+                    </div>
+                    {convReservesRight && (
+                      <div
+                        data-tauri-drag-region
+                        className="h-full shrink-0 ws-strip-line"
+                        style={{ width: rightReserve }}
                       />
                     )}
                   </div>
-                  {convReservesRight && (
-                    <div
-                      data-tauri-drag-region
-                      className="h-full shrink-0 ws-strip-line"
-                      style={{ width: rightReserve }}
-                    />
-                  )}
-                </div>
-              )}
-              {/* Pane activation lives on the CONTENT, not the top bar: clicking
+                )}
+                {/* Pane activation lives on the CONTENT, not the top bar: clicking
                   edge chrome (terminal/settings/toggles) or grabbing a drag
                   region stays pane-neutral so it never hijacks close-tab /
                   next-tab routing. Tabs self-activate via switchTab. */}
-              <div
-                className="relative flex-1 min-h-0 overflow-hidden"
-                onPointerDownCapture={markConversationActive}
-                onFocusCapture={markConversationActive}
-              >
-                {children}
-              </div>
-            </section>
+                <div
+                  className="relative flex-1 min-h-0 overflow-hidden"
+                  onPointerDownCapture={markConversationActive}
+                  onFocusCapture={markConversationActive}
+                >
+                  {children}
+                </div>
+              </section>
+            </OverlayHostHiddenProvider>
           </ResizablePanel>
           {/* The divider only belongs to a real two-column split. In conversation
               mode the column overlays the whole area, so the handle collapses to
@@ -497,7 +531,7 @@ function WorkspaceContent({ children }: { children: React.ReactNode }) {
             </section>
           </ResizablePanel>
         </ResizablePanelGroup>
-      </div>
+      </KeptMountedSurface>
       {!isConversations ? (
         // `bg-background ws-transparent-bg` matches the conversation surface
         // exactly: opaque background normally, fully transparent (image shows
@@ -544,15 +578,7 @@ function MobileWorkspaceContent({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="relative h-full min-h-0 overflow-hidden">
-      {/* Same keep-alive hiding as the desktop shell: stop painting under the
-          translucent route overlay without unmounting. */}
-      <div
-        className={cn(
-          "h-full min-h-0",
-          !isConversations && "conversation-tab-hidden invisible"
-        )}
-        inert={!isConversations || undefined}
-      >
+      <KeptMountedSurface hidden={!isConversations}>
         {showConversation ? (
           // Mobile mirrors the desktop chrome: no tab strip — the conversation
           // detail header (folder › title) renders inside {children}, and tabs
@@ -572,7 +598,7 @@ function MobileWorkspaceContent({ children }: { children: React.ReactNode }) {
             </div>
           </section>
         )}
-      </div>
+      </KeptMountedSurface>
       {!isConversations ? (
         // Same canvas as the desktop overlay: conversation-identical background
         // (opaque normally, transparent under a workspace background image).
@@ -611,44 +637,59 @@ function MobileFolderWorkspaceShell({
 
   return (
     <div className="flex flex-1 min-h-0 overflow-hidden">
-      <Sheet open={sidebarRestored && sidebarOpen} onOpenChange={toggleSidebar}>
-        <SheetContent
-          side="left"
+      {/* These three opt back into press-outside-to-close, against the app-wide
+          drawer default. They are mobile NAVIGATION: each covers most of the
+          screen and the strip of page left showing is the affordance for
+          getting back to it — tapping there to dismiss is the platform habit,
+          and there is nothing behind them a user would want to click *through*
+          to while they are open. */}
+      <Drawer
+        open={sidebarRestored && sidebarOpen}
+        onOpenChange={toggleSidebar}
+        swipeDirection="left"
+        disablePointerDismissal={false}
+      >
+        <DrawerContent
           showCloseButton={false}
           className="w-[85%] max-w-[360px] p-0"
         >
-          <SheetTitle className="sr-only">Sidebar</SheetTitle>
+          <DrawerTitle className="sr-only">Sidebar</DrawerTitle>
           <Sidebar />
-        </SheetContent>
-      </Sheet>
+        </DrawerContent>
+      </Drawer>
 
       <main className="flex h-full min-h-0 w-full flex-col overflow-hidden">
         <MobileWorkspaceContent>{children}</MobileWorkspaceContent>
       </main>
 
-      <Sheet open={auxRestored && auxOpen} onOpenChange={toggleAux}>
-        <SheetContent
-          side="right"
+      <Drawer
+        open={auxRestored && auxOpen}
+        onOpenChange={toggleAux}
+        swipeDirection="right"
+        disablePointerDismissal={false}
+      >
+        <DrawerContent
           showCloseButton={false}
           className="w-[85%] max-w-[360px] p-0"
         >
-          <SheetTitle className="sr-only">Panel</SheetTitle>
+          <DrawerTitle className="sr-only">Panel</DrawerTitle>
           <AuxPanel />
-        </SheetContent>
-      </Sheet>
+        </DrawerContent>
+      </Drawer>
 
-      <Sheet open={terminalOpen} onOpenChange={toggleTerminal}>
-        <SheetContent
-          side="bottom"
-          showCloseButton={false}
-          className="!h-[70vh] p-0"
-        >
-          <SheetTitle className="sr-only">Terminal</SheetTitle>
+      <Drawer
+        open={terminalOpen}
+        onOpenChange={toggleTerminal}
+        swipeDirection="down"
+        disablePointerDismissal={false}
+      >
+        <DrawerContent showCloseButton={false} className="h-[70vh] p-0">
+          <DrawerTitle className="sr-only">Terminal</DrawerTitle>
           <div className="h-full min-h-0 overflow-hidden">
             <TerminalPanel />
           </div>
-        </SheetContent>
-      </Sheet>
+        </DrawerContent>
+      </Drawer>
     </div>
   )
 }

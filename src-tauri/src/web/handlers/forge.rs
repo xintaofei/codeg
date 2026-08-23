@@ -9,6 +9,7 @@ use serde::Deserialize;
 use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::commands::forge as core;
+use crate::forge::settings::{ForgePanelSettings, ForgeSettingsStore};
 use crate::forge::{CountFilters, ListFilters};
 
 #[derive(Deserialize)]
@@ -58,6 +59,20 @@ pub struct CreateFromForgeParams {
 #[serde(rename_all = "camelCase")]
 pub struct LookupParams {
     pub source_keys: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsParams {
+    /// Which scope is being written — absent (or null) is the global row.
+    #[serde(default)]
+    pub folder_id: Option<i32>,
+    /// The scope's settings wholesale, or absent to DROP a folder's own row so
+    /// it follows the global one again (see `forge::settings::save`). Its
+    /// FIELDS keep their snake_case wire names: this is the same blob that goes
+    /// into storage, not a request DTO built around it.
+    #[serde(default)]
+    pub settings: Option<ForgePanelSettings>,
 }
 
 pub async fn folder_forge_remote(
@@ -111,5 +126,20 @@ pub async fn work_task_lookup_by_source(
 ) -> Result<Json<Vec<core::ForgeTaskLink>>, AppCommandError> {
     Ok(Json(
         core::work_task_lookup_by_source_core(&state.db, params.source_keys).await?,
+    ))
+}
+
+pub async fn forge_settings_get(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<ForgeSettingsStore>, AppCommandError> {
+    Ok(Json(core::forge_settings_get_core(&state.db).await?))
+}
+
+pub async fn forge_settings_set(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<SettingsParams>,
+) -> Result<Json<ForgeSettingsStore>, AppCommandError> {
+    Ok(Json(
+        core::forge_settings_set_core(&state.db, params.folder_id, params.settings).await?,
     ))
 }

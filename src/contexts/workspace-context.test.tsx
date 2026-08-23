@@ -2043,6 +2043,45 @@ describe("WorkspaceProvider office auto-preview", () => {
     expect(screen.getByTestId("active-pane")).toHaveTextContent("conversation")
   })
 
+  it("ignores the burst of `~$` owner files WPS drops when documents are opened", async () => {
+    renderWorkspace()
+
+    // The reported failure: opening a folder of documents in WPS (or Word)
+    // writes one `~$`-prefixed owner file per document, all at once and all
+    // carrying a real office extension. Auto-preview used to answer with a tab
+    // and an `officecli watch` process for every one of them.
+    await act(async () => {
+      workspaceStoreMock.emitEnvelope([
+        "~$report.docx",
+        "~$budget.xlsx",
+        "~$deck.pptx",
+        "docs/~$minutes.docx",
+        // Word truncates long names to fit the prefix, so the tail need not
+        // match any document sitting next to it.
+        "~$cument.docx",
+      ])
+    })
+
+    expect(screen.getByTestId("file-tab-count")).toHaveTextContent("0")
+    expect(screen.getByTestId("active-pane")).toHaveTextContent("conversation")
+  })
+
+  it("still auto-opens the document whose owner file arrives with it", async () => {
+    renderWorkspace()
+
+    // Opening `report.docx` externally touches the document itself as well as
+    // its owner file. The owner file is the byproduct; the document is still a
+    // legitimate preview, so the filter must not swallow the pair.
+    await act(async () => {
+      workspaceStoreMock.emitEnvelope(["~$report.docx", "report.docx"])
+    })
+
+    expect(screen.getByTestId("file-tab-count")).toHaveTextContent("1")
+    expect(screen.getByTestId("active-file-tab")).toHaveTextContent(
+      fileTabId("/repo/report.docx")
+    )
+  })
+
   it("still auto-opens a visible office file reported alongside hidden ones", async () => {
     renderWorkspace()
 

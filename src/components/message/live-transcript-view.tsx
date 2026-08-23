@@ -10,7 +10,7 @@
  *
  * Extracted from the delegation sub-agent dialog so other embeds (the work-task
  * transcript viewer) reuse the exact same streaming pipeline. The host owns the
- * chrome (Dialog/Sheet + header) and, when the viewed connection is not a
+ * chrome (Dialog/Drawer + header) and, when the viewed connection is not a
  * delegation child already attached by its parent, the host also owns the
  * `attachDelegationChild`/`detachDelegationChild` lifecycle.
  *
@@ -331,7 +331,13 @@ export function LiveTranscriptView({
           />
         </div>
       )}
-      <div className="min-h-0 flex-1 px-4 py-3">
+      {/* No padding of its own. `MessageListView` insets its own content —
+          every virtualized row is wrapped in `mx-auto max-w-3xl px-4` and the
+          virtualizer adds 16px above the first row and below the last — so a
+          padded wrapper here doubled it, and in a panel this narrow the two
+          layers cost the transcript a visible chunk of its width. This is
+          exactly how the main conversation panel mounts the same component. */}
+      <div className="min-h-0 flex-1">
         <MessageListView
           conversationId={conversationId}
           agentType={agentType ?? "claude_code"}

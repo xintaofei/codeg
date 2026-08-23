@@ -61,15 +61,238 @@ pub struct ForgeTaskDraft {
     pub folder_id: i32,
     pub source: ForgeTaskSourceInput,
     pub snapshot: ForgeSnapshot,
+    /// How to handle the item — a template NAME, never template text (see the
+    /// trust boundary above). `None` falls back to the kind's default so
+    /// older clients keep triggering the way they always did.
+    #[serde(default)]
+    pub scenario: Option<ForgeScenario>,
     /// Extra instruction the user typed in the trigger dialog.
     #[serde(default)]
     pub instruction: Option<String>,
+    /// Comment the outcome back on this item once the task finishes — the
+    /// trigger dialog's own box. See [`resolve_writeback`] for what an absent
+    /// answer means (it is NOT the dialog's default).
+    #[serde(default)]
+    pub writeback: Option<bool>,
     /// Per-task agent override; `None` inherits folder settings.
     #[serde(default)]
     pub agent_type: Option<String>,
     /// Deliberately create a second live task for the same work item.
     #[serde(default)]
     pub force: bool,
+}
+
+/// What the user wants done with the work item. Each variant selects a
+/// server-side instruction template and decides whether the task delivers a
+/// report or code changes; the client only ever names one of these.
+///
+/// The "report" scenarios all close their loop the same way: the prompt tells
+/// the agent the user may RETURN the task for the follow-up work (fix what the
+/// investigation found, implement the reviewed plan, apply review findings),
+/// which is exactly the engine's existing review → follow-up cycle in the same
+/// worktree — including, for a PR task, the push-back-to-branch delivery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForgeScenario {
+    /// Issue: implement or fix it (the issue default).
+    Fix,
+    /// Issue: reproduce and diagnose only — the reply is the deliverable.
+    Investigate,
+    /// Issue: write an implementation plan and stop; the user reviews the
+    /// plan, then returns the task for implementation.
+    PlanFirst,
+    /// PR/MR: review the change and fix on top (the PR default).
+    ReviewFix,
+    /// PR/MR: review only — the reply is the deliverable.
+    ReviewOnly,
+}
+
+impl ForgeScenario {
+    /// Resolve the selection against the item kind: default when absent,
+    /// reject a scenario that belongs to the other kind (a stale or crafted
+    /// client — same reason the provider claim is checked, worth saying out
+    /// loud rather than minting a task whose prompt contradicts its item).
+    fn resolve(selected: Option<Self>, is_pr: bool) -> Result<Self, AppCommandError> {
+        let scenario = selected.unwrap_or(if is_pr { Self::ReviewFix } else { Self::Fix });
+        let fits = match scenario {
+            Self::Fix | Self::Investigate | Self::PlanFirst => !is_pr,
+            Self::ReviewFix | Self::ReviewOnly => is_pr,
+        };
+        if !fits {
+            return Err(AppCommandError::invalid_input(format!(
+                "scenario \"{}\" does not apply to {} — refresh the workbench and try again",
+                scenario.as_str(),
+                if is_pr { "a proposed change" } else { "an issue" }
+            )));
+        }
+        Ok(scenario)
+    }
+
+    /// Report scenarios put the deliverable in the reply, not in commits —
+    /// recorded on the task config so the engine's worktree guard grants a
+    /// matching licence instead of "commit as you like".
+    fn is_report(self) -> bool {
+        matches!(self, Self::Investigate | Self::PlanFirst | Self::ReviewOnly)
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Fix => "fix",
+            Self::Investigate => "investigate",
+            Self::PlanFirst => "plan_first",
+            Self::ReviewFix => "review_fix",
+            Self::ReviewOnly => "review_only",
+        }
+    }
+}
+
+/// The instruction block for one scenario. Pure and composed HERE — clients
+/// never hand us prompt text (the dialog's extra instruction is appended as
+/// plain user input by the caller, at the same trust level as any chat).
+///
+/// Wording discipline: milestone/completion reporting is NOT mentioned — the
+/// engine appends its "Work task context" block to every launch, and that
+/// block already asks for `task_progress`/`task_complete` (conditionally,
+/// which is more accurate: not every agent gets those tools). Each template
+/// instead states the goal, the deliverable, and how its loop closes, and the
+/// "report" templates keep any commit allowance explicit so the engine's
+/// report licence ("commit only what the task's instructions explicitly
+/// allow") has a defined answer to point at.
+///
+/// Layout discipline: paragraphs are separated by a BLANK line, never a bare
+/// one. This text is read twice — by the agent, and by the user in the
+/// transcript, where a work task's prompt renders verbatim with the sender's
+/// own line breaks. A single newline between two paragraphs makes the whole
+/// order read as one wall of prose there.
+fn forge_instruction(
+    scenario: ForgeScenario,
+    provider: ForgeProvider,
+    number: i64,
+    url: &str,
+) -> String {
+    let noun = provider.change_noun();
+    match scenario {
+        ForgeScenario::Fix => format!(
+            "Handle issue #{number} ({url}).\n\nRead the fenced external content below to \
+             understand what is being asked, then implement or fix it inside this worktree. \
+             Verify your changes the way this project would (build, tests, lint — whatever \
+             applies) before you finish."
+        ),
+        ForgeScenario::Investigate => format!(
+            "Investigate issue #{number} ({url}) — analysis only: do not fix or implement \
+             anything in this turn.\n\nRead the fenced external content below, then \
+             investigate it against the code in this worktree: reproduce the problem if you \
+             can, locate the root cause, and judge impact and scope (for a feature request: \
+             feasibility and what it would take). Run whatever you need to prove it, but \
+             leave the worktree clean — put the repro steps or test snippet and its observed \
+             output in the report instead of committing them (this task delivers nothing to \
+             merge, and a committed \"proof\" would read as work to land).\n\nDeliver the \
+             findings in your reply: whether it reproduces and how, the cause with file/line \
+             references, and a concrete recommendation. The user may send this task back \
+             afterwards to have you implement the fix in this same worktree."
+        ),
+        ForgeScenario::PlanFirst => format!(
+            "Plan issue #{number} ({url}) — this turn delivers a plan, not an \
+             implementation.\n\nRead the fenced external content below, explore the code in \
+             this worktree as needed, and write an implementation plan: the approach and why, \
+             the files and surfaces to touch, the risks and open questions, and how the \
+             change will be verified. Do NOT start implementing, and change no files.\n\nPut \
+             the full plan in your reply. The user reviews it and then sends this task back \
+             for you to implement it in this same worktree — write the plan you would want \
+             to execute from."
+        ),
+        ForgeScenario::ReviewFix => format!(
+            "Review {noun} #{number} ({url}) and fix what needs fixing.\n\nThis worktree is \
+             already checked out at the {noun}'s head commit, so its changes are here and \
+             your commits go on top of them — they are pushed back to the same {noun} branch \
+             when the task is accepted. Read the fenced external content below to understand \
+             what the {noun} claims to do, then review its changes against the base branch: \
+             correctness, tests, security, and whether they deliver what is \
+             promised.\n\nJudge the approach, not just the diff. Is the change warranted at \
+             all; is this the best way to solve it given the rest of this codebase; and is it \
+             production-ready as it stands? A diff can be flawless line by line and still be \
+             the wrong design. If the design itself is what is wrong, say so and propose the \
+             better one — do not rewrite the {noun} into it, because a rewrite its author \
+             never asked for is not a review.\n\nFix the problems that are worth fixing in \
+             place, and say in your reply what you found, what you fixed, what you left for \
+             the author, and your verdict on whether this is ready for production."
+        ),
+        ForgeScenario::ReviewOnly => format!(
+            "Review {noun} #{number} ({url}) — review only: report findings, do not change \
+             the code.\n\nThis worktree is already checked out at the {noun}'s head commit, \
+             so its changes are here to read, build and test. Read the fenced external \
+             content below to understand what the {noun} claims to do, then review its \
+             changes: correctness, tests, security, and whether they deliver what is \
+             promised. Commit nothing.\n\nJudge the approach, not just the diff. Is the \
+             change warranted at all; is this the best way to solve it given the rest of this \
+             codebase; and is it production-ready as it stands? A diff can be flawless line \
+             by line and still be the wrong design, and saying so is the most useful thing a \
+             review can do.\n\nDeliver the review in your reply: each finding with its \
+             location, severity and a suggested fix, a verdict on whether this is ready for \
+             production, and — if the approach itself should change — what you would do \
+             instead. If the user wants findings fixed, they can send this task back — \
+             commits made then are pushed back to the {noun} branch once accepted."
+        ),
+    }
+}
+
+/// Section header for the user's own note, in the same `—— … ——` style the
+/// engine's appended blocks use (`—— Work task context ——`). It earns its
+/// keep twice: it tells the agent where the template stops and the user's own
+/// words start, and it keeps that note from reading as the tail of the
+/// paragraph above it in the transcript.
+const USER_NOTE_HEADER: &str = "—— Additional instruction from the user ——";
+
+/// Section header for the workbench's standing instructions (forge settings).
+/// Separate from [`USER_NOTE_HEADER`] on purpose: one is policy that applies
+/// to every task of this scenario, the other is what the user wants for THIS
+/// item, and an agent reading a single merged section cannot tell which of the
+/// two it is being asked to weigh more.
+const STANDING_HEADER: &str = "—— Standing instructions ——";
+
+/// The whole instruction block: the scenario's template, then the workbench's
+/// standing instructions, then whatever the user typed in the trigger dialog —
+/// general to specific, so the last word belongs to the box that was filled in
+/// while looking at this item. Blank (or absent) sections leave the template
+/// alone, unchanged.
+fn instruction_block(
+    scenario: ForgeScenario,
+    provider: ForgeProvider,
+    number: i64,
+    url: &str,
+    standing: Option<&str>,
+    note: Option<&str>,
+) -> String {
+    let mut text = forge_instruction(scenario, provider, number, url);
+    push_section(&mut text, STANDING_HEADER, standing);
+    push_section(&mut text, USER_NOTE_HEADER, note);
+    text
+}
+
+/// Append `—— header ——` and its body as a new section, or nothing at all if
+/// the body is blank. The blank line is what keeps the section from reading as
+/// the tail of the paragraph above it (see the layout note on
+/// [`forge_instruction`]).
+fn push_section(text: &mut String, header: &str, body: Option<&str>) {
+    let Some(body) = body.map(str::trim).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    text.push_str("\n\n");
+    text.push_str(header);
+    text.push('\n');
+    text.push_str(body);
+}
+
+/// The trigger dialog's write-back answer, resolved for storage.
+///
+/// The dialog's box ships CHECKED, and it always sends its state explicitly —
+/// so an absent field does not mean "the default", it means the request came
+/// from a client that never showed the question (a browser tab loaded before
+/// this shipped, or a script). Posting into a thread other people are reading
+/// on behalf of someone who was never asked is the one mistake worth being
+/// asymmetric about, so silence is the answer to a missing one.
+fn resolve_writeback(asked: Option<bool>) -> bool {
+    asked.unwrap_or(false)
 }
 
 /// Discriminated result: a dedup hit and a folder/repo mismatch are answers
@@ -343,34 +566,34 @@ pub async fn work_task_create_from_forge_core(
         head_sha: pull.as_ref().map(|p| p.head_sha.clone()),
         head_repo: pull.as_ref().map(|p| p.head_repo.clone()),
         result_pr: None,
+        // Always stamped explicitly, both answers: the engine reads it as the
+        // user's decision, and an absent field there means "an older row that
+        // never had the choice" — a meaning a fresh task must not borrow.
+        writeback: Some(resolve_writeback(draft.writeback)),
     };
 
     // Prompt composed HERE, server-side: instruction block + envelope block.
-    // The client never hands us prompt text (the dialog's extra instruction is
-    // plain user input in its own paragraph, same trust level as any chat).
-    let mut instruction = if is_pr {
-        let noun = provider.change_noun();
-        format!(
-            "Review {noun} #{} of {url}.\nThis worktree is already checked out at the {noun}'s \
-             head commit, so its changes are here and your commits go on top of them — they are \
-             pushed back to the same {noun} branch when the task is accepted. Read the fenced \
-             external content below to understand what the {noun} claims to do, then review it \
-             and fix what needs fixing. Report milestones with task_progress and call \
-             task_complete once right before you finish.",
-            source.number
-        )
-    } else {
-        format!(
-            "Handle issue #{} of {url}.\nRead the fenced external content below to understand \
-             what is being asked, then implement/fix it inside this worktree. Report milestones \
-             with task_progress and call task_complete once right before you finish.",
-            source.number
-        )
-    };
-    if let Some(extra) = draft.instruction.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        instruction.push_str("\n\nAdditional instruction from the user:\n");
-        instruction.push_str(extra);
-    }
+    // The client names a scenario; the template text is ours (the dialog's
+    // extra instruction is plain user input in its own paragraph, same trust
+    // level as any chat).
+    let scenario = ForgeScenario::resolve(draft.scenario, is_pr)?;
+    // The panel's standing instructions ride in from settings rather than from
+    // the request, for the same reason the templates do: prompt text is not
+    // something a client hands us. Resolved for THIS folder — its own row if it
+    // has one, else the global one. A failed read is not a failed trigger: an
+    // unreadable preferences blob composes the prompt it always did.
+    let standing = forge::settings::load_effective(&db.conn, draft.folder_id)
+        .await
+        .unwrap_or_default()
+        .standing_prompt(scenario.as_str());
+    let instruction = instruction_block(
+        scenario,
+        provider,
+        source.number,
+        &url,
+        standing.as_deref(),
+        draft.instruction.as_deref(),
+    );
     let envelope = forge_untrusted_envelope(provider.as_str(), &draft.snapshot);
     let blocks = vec![
         serde_json::to_value(crate::acp::types::PromptInputBlock::Text {
@@ -392,6 +615,9 @@ pub async fn work_task_create_from_forge_core(
         mode_id: None,
         config_values: Default::default(),
         label_snapshot: None,
+        deliverable: scenario
+            .is_report()
+            .then(|| crate::models::DELIVERABLE_REPORT.to_string()),
     };
     let task_draft = WorkTaskDraft {
         folder_id: draft.folder_id,
@@ -430,6 +656,31 @@ pub async fn work_task_create_from_forge_core(
             Ok(ForgeCreateResult::Duplicate { existing })
         }
     }
+}
+
+/// The panel's preferences, every scope at once. Its own call rather than a
+/// field on the list response: the page reads them once on mount and again
+/// after the settings dialog saves, while lists are re-fetched on every filter
+/// change. All scopes rather than the folder's, because the dialog shows one
+/// folder while saying whether that folder is following the global row — which
+/// takes both.
+pub async fn forge_settings_get_core(
+    db: &AppDatabase,
+) -> Result<forge::settings::ForgeSettingsStore, AppCommandError> {
+    Ok(forge::settings::load(&db.conn).await?)
+}
+
+/// Save ONE scope and hand back every scope as stored — trimmed, blanks
+/// dropped — so the dialog shows the stored truth instead of the draft it sent.
+///
+/// `folder_id = None` is the global row; `settings = None` drops a folder's own
+/// row so it follows the global one again.
+pub async fn forge_settings_set_core(
+    db: &AppDatabase,
+    folder_id: Option<i32>,
+    settings: Option<forge::settings::ForgePanelSettings>,
+) -> Result<forge::settings::ForgeSettingsStore, AppCommandError> {
+    Ok(forge::settings::save(&db.conn, folder_id, settings).await?)
 }
 
 pub async fn work_task_lookup_by_source_core(
@@ -527,9 +778,408 @@ pub async fn work_task_lookup_by_source(
     work_task_lookup_by_source_core(&db, source_keys).await
 }
 
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn forge_settings_get(
+    db: tauri::State<'_, AppDatabase>,
+) -> Result<forge::settings::ForgeSettingsStore, AppCommandError> {
+    forge_settings_get_core(&db).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn forge_settings_set(
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: Option<i32>,
+    settings: Option<forge::settings::ForgePanelSettings>,
+) -> Result<forge::settings::ForgeSettingsStore, AppCommandError> {
+    forge_settings_set_core(&db, folder_id, settings).await
+}
+
 // AppCommandError ← ForgeError conversion lives in `forge::mod` (used above
 // via `?` and the explicit map for `source_key`).
 #[allow(unused)]
 fn _assert_forge_error_converts(err: ForgeError) -> AppCommandError {
     err.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const URL: &str = "https://github.com/acme/app/issues/7";
+
+    fn all_scenarios() -> [ForgeScenario; 5] {
+        [
+            ForgeScenario::Fix,
+            ForgeScenario::Investigate,
+            ForgeScenario::PlanFirst,
+            ForgeScenario::ReviewFix,
+            ForgeScenario::ReviewOnly,
+        ]
+    }
+
+    /// Absent scenario = the kind's historical default, so pre-scenario
+    /// clients (and the plain "Start" path) keep minting the same tasks.
+    #[test]
+    fn scenario_defaults_per_kind_and_rejects_the_other_kinds() {
+        assert_eq!(
+            ForgeScenario::resolve(None, false).unwrap(),
+            ForgeScenario::Fix
+        );
+        assert_eq!(
+            ForgeScenario::resolve(None, true).unwrap(),
+            ForgeScenario::ReviewFix
+        );
+        for s in all_scenarios() {
+            let issue_side = matches!(
+                s,
+                ForgeScenario::Fix | ForgeScenario::Investigate | ForgeScenario::PlanFirst
+            );
+            assert!(ForgeScenario::resolve(Some(s), !issue_side).is_ok());
+            let err = ForgeScenario::resolve(Some(s), issue_side).unwrap_err();
+            assert!(
+                err.to_string().contains("does not apply"),
+                "cross-kind {s:?} must be refused: {err}"
+            );
+        }
+    }
+
+    /// Wire names are snake_case — what the dialog sends.
+    #[test]
+    fn scenario_parses_from_wire_names() {
+        for s in all_scenarios() {
+            let parsed: ForgeScenario =
+                serde_json::from_value(serde_json::json!(s.as_str())).expect("round-trips");
+            assert_eq!(parsed, s);
+        }
+        assert!(serde_json::from_value::<ForgeScenario>(serde_json::json!("rewrite")).is_err());
+    }
+
+    /// Milestone/completion reporting belongs to the engine's "Work task
+    /// context" block, which every launch gets appended — a second, blunter
+    /// copy here would just contradict its "if available" phrasing on agents
+    /// that never get those tools.
+    #[test]
+    fn no_template_mentions_the_reporting_tools() {
+        for s in all_scenarios() {
+            for provider in [ForgeProvider::GitHub, ForgeProvider::GitLab] {
+                let text = forge_instruction(s, provider, 7, URL);
+                assert!(
+                    !text.contains("task_progress") && !text.contains("task_complete"),
+                    "{s:?} duplicates the engine's reporting instructions"
+                );
+                assert!(text.contains("#7") && text.contains(URL), "{s:?} lost its anchor");
+                assert!(
+                    text.contains("fenced external content"),
+                    "{s:?} must point at the envelope"
+                );
+            }
+        }
+    }
+
+    /// Each scenario states its own goal, and the report ones close their
+    /// loop: the reply carries the deliverable, and the user can return the
+    /// task for the follow-up work.
+    #[test]
+    fn templates_carry_their_scenario_contract() {
+        let gh = ForgeProvider::GitHub;
+
+        let fix = forge_instruction(ForgeScenario::Fix, gh, 7, URL);
+        assert!(fix.starts_with("Handle issue #7"));
+        assert!(fix.contains("implement or fix it inside this worktree"));
+
+        let investigate = forge_instruction(ForgeScenario::Investigate, gh, 7, URL);
+        assert!(investigate.contains("analysis only"));
+        assert!(investigate.contains("do not fix or implement anything"));
+        // Proof goes INTO the report — a committed "proof" would be a landable
+        // diff on a task whose acceptance path must stay "complete", and the
+        // engine refuses completion while landable changes exist.
+        assert!(investigate.contains("leave the worktree clean"));
+        assert!(investigate.contains("nothing to merge"));
+        assert!(!investigate.contains("may commit"));
+        assert!(investigate.contains("send this task back"));
+
+        let plan = forge_instruction(ForgeScenario::PlanFirst, gh, 7, URL);
+        assert!(plan.contains("a plan, not an implementation"));
+        assert!(plan.contains("Do NOT start implementing"));
+        assert!(plan.contains("sends this task back"));
+
+        let review_fix = forge_instruction(ForgeScenario::ReviewFix, gh, 7, URL);
+        assert!(review_fix.starts_with("Review pull request #7"));
+        assert!(review_fix.contains("pushed back to the same pull request branch"));
+        assert!(review_fix.contains("against the base branch"));
+        assert!(review_fix.contains("security"));
+        assert!(review_fix.contains("what you left for the author"));
+
+        let review_only = forge_instruction(ForgeScenario::ReviewOnly, gh, 7, URL);
+        assert!(review_only.contains("review only"));
+        assert!(review_only.contains("Commit nothing"));
+        assert!(review_only.contains("send this task back"));
+        assert!(!review_only.contains("Fix the problems"));
+        // GitLab wording follows the provider's own noun.
+        let review_gl = forge_instruction(ForgeScenario::ReviewOnly, ForgeProvider::GitLab, 7, URL);
+        assert!(review_gl.contains("merge request"));
+        assert!(!review_gl.contains("pull request"));
+    }
+
+    /// Both review scenarios weigh the DESIGN, not only the diff — a change
+    /// can be correct line by line and still be unnecessary, built the wrong
+    /// way, or not ready to run in production, and those are the findings a
+    /// reviewer is actually wanted for.
+    ///
+    /// The two differ in what they may then do about it: "review & fix" is
+    /// explicitly fenced off from rewriting the change into its own preferred
+    /// design (its commits are pushed back to the author's branch), and
+    /// "review only" touches nothing at all.
+    #[test]
+    fn the_review_templates_judge_the_approach_and_production_readiness() {
+        for provider in [ForgeProvider::GitHub, ForgeProvider::GitLab] {
+            for s in [ForgeScenario::ReviewFix, ForgeScenario::ReviewOnly] {
+                let text = forge_instruction(s, provider, 7, URL);
+                assert!(text.contains("Judge the approach, not just the diff"), "{s:?}");
+                assert!(text.contains("warranted at all"), "{s:?}");
+                assert!(text.contains("best way to solve it"), "{s:?}");
+                assert!(text.contains("production-ready as it stands"), "{s:?}");
+                assert!(text.contains("ready for production"), "{s:?}");
+            }
+        }
+        // The guard rail belongs to the scenario that CAN commit: without it
+        // "the design is wrong" plus a write licence reads as permission to
+        // replace someone else's branch with your own version of it.
+        let fix = forge_instruction(ForgeScenario::ReviewFix, ForgeProvider::GitHub, 7, URL);
+        assert!(fix.contains("do not rewrite the pull request into it"));
+        assert!(fix.contains("a rewrite its author never asked for is not a review"));
+        // Review-only has nothing to fence off — it commits nothing at all —
+        // so it must not carry a sentence about what its commits may do.
+        let only = forge_instruction(ForgeScenario::ReviewOnly, ForgeProvider::GitHub, 7, URL);
+        assert!(!only.contains("do not rewrite"));
+    }
+
+    /// A work task's prompt renders verbatim in the transcript, with the
+    /// sender's own line breaks and no Markdown — so a bare newline between
+    /// two paragraphs shows up as one unbroken wall of prose.
+    #[test]
+    fn templates_separate_their_paragraphs_with_a_blank_line() {
+        for s in all_scenarios() {
+            for provider in [ForgeProvider::GitHub, ForgeProvider::GitLab] {
+                let text = forge_instruction(s, provider, 7, URL);
+                assert!(text.contains("\n\n"), "{s:?} runs together as one paragraph");
+                assert!(
+                    !text.replace("\n\n", "").contains('\n'),
+                    "{s:?} still breaks a paragraph with a bare newline"
+                );
+                assert_eq!(text.trim(), text, "{s:?} has stray edge whitespace");
+            }
+        }
+    }
+
+    /// The dialog's note is the user's own words, so it gets its own section
+    /// rather than being glued onto the template's last sentence — and onto
+    /// the envelope block that follows it.
+    #[test]
+    fn the_users_note_becomes_a_section_of_its_own() {
+        let gh = ForgeProvider::GitHub;
+        let plain = instruction_block(ForgeScenario::Fix, gh, 7, URL, None, None);
+        assert_eq!(plain, forge_instruction(ForgeScenario::Fix, gh, 7, URL));
+
+        // Nothing typed — including a box holding only whitespace — leaves the
+        // template exactly as it was: no empty header hanging off the end.
+        assert_eq!(
+            instruction_block(ForgeScenario::Fix, gh, 7, URL, Some(" "), Some("  \n ")),
+            plain
+        );
+
+        let noted = instruction_block(
+            ForgeScenario::Fix,
+            gh,
+            7,
+            URL,
+            None,
+            Some("  also update the docs  "),
+        );
+        assert_eq!(noted, format!("{plain}\n\n{USER_NOTE_HEADER}\nalso update the docs"));
+        // A blank line before the header, and the note on its own line under
+        // it — the two breaks the old wording was missing.
+        assert!(noted.contains(&format!("\n\n{USER_NOTE_HEADER}\n")));
+    }
+
+    /// The workbench's standing text and this trigger's note are two sections,
+    /// in that order: policy, then the ask made while looking at this item. A
+    /// merged section would leave the agent unable to tell which is which.
+    #[test]
+    fn standing_instructions_precede_the_note_as_their_own_section() {
+        let gh = ForgeProvider::GitHub;
+        let plain = instruction_block(ForgeScenario::ReviewFix, gh, 7, URL, None, None);
+
+        let standing =
+            instruction_block(ForgeScenario::ReviewFix, gh, 7, URL, Some("  Reply in zh.  "), None);
+        assert_eq!(standing, format!("{plain}\n\n{STANDING_HEADER}\nReply in zh."));
+
+        let both = instruction_block(
+            ForgeScenario::ReviewFix,
+            gh,
+            7,
+            URL,
+            Some("Reply in zh."),
+            Some("focus on the migration"),
+        );
+        assert_eq!(
+            both,
+            format!(
+                "{plain}\n\n{STANDING_HEADER}\nReply in zh.\n\n{USER_NOTE_HEADER}\nfocus on the \
+                 migration"
+            )
+        );
+        let standing_at = both.find(STANDING_HEADER).expect("standing section");
+        let note_at = both.find(USER_NOTE_HEADER).expect("note section");
+        assert!(standing_at < note_at, "the per-item note must have the last word");
+    }
+
+    /// The envelope is a separate prompt block appended right after the
+    /// instruction, and blocks arrive back to back — so the seam between the
+    /// two must survive without any separator being added between them.
+    #[test]
+    fn the_envelope_block_starts_a_line_of_its_own_after_the_note() {
+        let instruction = instruction_block(
+            ForgeScenario::Fix,
+            ForgeProvider::GitHub,
+            7,
+            URL,
+            None,
+            Some("do X"),
+        );
+        let envelope = forge_untrusted_envelope(
+            "github",
+            &ForgeSnapshot {
+                title: "Login broken".into(),
+                body: None,
+                labels: vec![],
+                author: None,
+            },
+        );
+        let glued = format!("{instruction}{envelope}");
+        let note_line = glued.lines().find(|l| l.contains("do X")).expect("the note's line");
+        assert_eq!(note_line.trim(), "do X", "the envelope ran onto the user's note");
+    }
+
+    /// The settings blob keys its standing instructions by SCENARIO WIRE NAME
+    /// and the trigger looks them up with `ForgeScenario::as_str` — two files
+    /// agreeing on a string. A rename on either side would not fail to
+    /// compile; it would quietly stop every configured instruction from
+    /// applying, which is the kind of silence a user reads as "it ignored me".
+    #[test]
+    fn every_scenario_can_be_addressed_from_the_panel_settings() {
+        use crate::forge::settings::{ForgePanelSettings, SCENARIO_PROMPT_ALL};
+        for s in all_scenarios() {
+            let settings = ForgePanelSettings {
+                scenario_prompts: [
+                    (SCENARIO_PROMPT_ALL.to_string(), "always".to_string()),
+                    (s.as_str().to_string(), "here".to_string()),
+                ]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            };
+            assert_eq!(
+                settings.standing_prompt(s.as_str()).as_deref(),
+                Some("always\n\nhere"),
+                "{s:?} cannot be configured"
+            );
+        }
+    }
+
+    fn draft_json(extra: serde_json::Value) -> ForgeTaskDraft {
+        let mut wire = serde_json::json!({
+            "folder_id": 1,
+            "source": {
+                "kind": "issue",
+                "provider": "github",
+                "server_host": "github.com",
+                "owner_repo": "acme/app",
+                "number": 7,
+            },
+            "snapshot": { "title": "Login times out" },
+        });
+        for (key, value) in extra.as_object().expect("object").clone() {
+            wire[key] = value;
+        }
+        serde_json::from_value(wire).expect("draft decodes")
+    }
+
+    /// The whole chain for the one thing a task does where other people are
+    /// watching: what the client sent → what gets stored → what the engine's
+    /// gate (`meta.writeback.unwrap_or(false)`) then reads.
+    ///
+    /// The asymmetry is the point. A checked box sends `true` and comments; an
+    /// unchecked one sends `false`; a client that never showed the question
+    /// sends nothing and gets silence — NOT the dialog's default, because a
+    /// default the user never saw is not consent.
+    #[test]
+    fn the_write_back_answer_survives_the_wire_and_defaults_to_silence() {
+        for (sent, expected) in [
+            (serde_json::json!({ "writeback": true }), true),
+            (serde_json::json!({ "writeback": false }), false),
+            (serde_json::json!({}), false),
+        ] {
+            let draft = draft_json(sent.clone());
+            let stored = Some(resolve_writeback(draft.writeback));
+            assert_eq!(stored, Some(expected), "resolved wrong for {sent}");
+
+            // Through the stored blob and back, exactly as the engine reads it.
+            let meta = ForgeSourceMeta {
+                provider: ForgeProvider::GitHub,
+                server_host: "github.com".into(),
+                api_base: "https://api.github.com".into(),
+                account_id: "acc-1".into(),
+                owner_repo: "acme/app".into(),
+                number: 7,
+                url: URL.into(),
+                title: "Login times out".into(),
+                base_ref: None,
+                head_ref: None,
+                head_sha: None,
+                head_repo: None,
+                result_pr: None,
+                writeback: stored,
+            };
+            let round: ForgeSourceMeta =
+                serde_json::from_str(&serde_json::to_string(&meta).expect("encode"))
+                    .expect("decode");
+            assert_eq!(round.writeback.unwrap_or(false), expected, "gate flipped for {sent}");
+        }
+    }
+
+    /// A row minted before the choice lived on the task carries no field at
+    /// all, and that absence has to keep meaning "silent" — it is what every
+    /// pre-existing forge task in a user's database looks like.
+    #[test]
+    fn source_metadata_without_the_field_reads_as_silent() {
+        let legacy = r#"{
+            "provider": "github",
+            "server_host": "github.com",
+            "api_base": "https://api.github.com",
+            "account_id": "acc-1",
+            "owner_repo": "acme/app",
+            "number": 7,
+            "url": "https://github.com/acme/app/issues/7",
+            "title": "Login times out"
+        }"#;
+        let meta: ForgeSourceMeta = serde_json::from_str(legacy).expect("legacy meta decodes");
+        assert_eq!(meta.writeback, None);
+        assert!(!meta.writeback.unwrap_or(false));
+    }
+
+    /// The deliverable flag is what makes the engine swap the commit licence —
+    /// exactly the three reply-deliverable scenarios, never the change ones.
+    #[test]
+    fn report_scenarios_and_only_those_mark_the_report_deliverable() {
+        for s in all_scenarios() {
+            let expect = matches!(
+                s,
+                ForgeScenario::Investigate | ForgeScenario::PlanFirst | ForgeScenario::ReviewOnly
+            );
+            assert_eq!(s.is_report(), expect, "{s:?}");
+        }
+    }
 }

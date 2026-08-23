@@ -26,6 +26,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import enMessages from "@/i18n/messages/en.json"
 import { forgeListIssues, openSettingsWindow } from "@/lib/api"
+import { buildForgeSourceKey } from "@/lib/forge-source-key"
 import type {
   ForgeIssueList,
   ForgeIssueRow,
@@ -53,6 +54,12 @@ vi.mock("@/lib/api", () => ({
   openSettingsWindow: vi.fn().mockResolvedValue(undefined),
   workTaskLookupBySource: vi.fn().mockResolvedValue([]),
   workTaskCreateFromForge: vi.fn(),
+  // Read once on mount for the trigger dialog's starting positions. Resolved,
+  // never rejected, in the default fixture: every assertion below is about the
+  // LIST, and a rejected preferences read would add an unhandled rejection to
+  // each of them.
+  forgeSettingsGet: vi.fn(),
+  forgeSettingsSet: vi.fn(),
 }))
 vi.mock("@/lib/platform", () => ({
   subscribe: vi.fn().mockResolvedValue(() => {}),
@@ -65,10 +72,21 @@ vi.mock("@/contexts/workbench-route-context", () => ({
     openConversations: vi.fn(),
   }),
 }))
+// The detail panel's Markdown renderer. The real one reaches the workspace
+// context (link safety routes file links into the file panel), which this page
+// is mounted outside of; the stub still reports what it was handed, so the
+// assertions below are about the panel's own wiring rather than about
+// Streamdown.
+vi.mock("@/components/ai-elements/message", () => ({
+  MessageResponse: ({ children }: { children?: string }) => (
+    <div data-testid="markdown">{children}</div>
+  ),
+}))
 
 import {
   folderForgeRemote,
   forgeListLabels,
+  forgeSettingsGet,
   forgeTabCount,
   workTaskLookupBySource,
 } from "@/lib/api"
@@ -175,6 +193,10 @@ beforeEach(() => {
       { name: "help wanted", color: null },
     ],
     truncated: false,
+  })
+  vi.mocked(forgeSettingsGet).mockResolvedValue({
+    global: { writeback_default: true, scenario_prompts: {} },
+    folders: {},
   })
 })
 
@@ -452,6 +474,44 @@ describe("ForgePage reload button", () => {
     await screen.findByText("a row")
     await waitFor(() => expect(reloadButton()).toBeEnabled())
     expect(reloadButton().querySelector(".animate-spin")).toBeNull()
+  })
+})
+
+/**
+ * The gear beside reload. Sender and receiver are in two different branches of
+ * the tree — the button is drawn in the window chrome, the dialog belongs to
+ * the page — so the only thing worth asserting is that the event actually
+ * crosses between them.
+ */
+describe("ForgePage settings button", () => {
+  function settingsButton() {
+    return screen.getByRole("button", { name: "Panel settings" })
+  }
+
+  it("opens the panel's preferences from the window chrome", async () => {
+    const user = userEvent.setup()
+    vi.mocked(forgeListIssues).mockResolvedValue(listOf([issue(1, "a row")]))
+    mount()
+    await screen.findByText("a row")
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    await user.click(settingsButton())
+    // Opened on the folder whose list is on screen, not on the global row —
+    // that is the scope the gear beside THIS list is about.
+    expect(
+      await screen.findByText("How issues and changes in codeg are handled.")
+    ).toBeInTheDocument()
+  })
+
+  it("stays live over a folder with no repository at all", async () => {
+    // Unlike reload: the preferences exist whatever the folder resolves to, so
+    // there is something to change even when the list has nothing to show.
+    vi.mocked(folderForgeRemote).mockResolvedValue(null)
+    mount()
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Refresh" })).toBeDisabled()
+    )
+    expect(settingsButton()).toBeEnabled()
   })
 })
 
@@ -1124,6 +1184,200 @@ describe("ForgePage loading coordination", () => {
     expect(screen.getByTestId("forge-footer")).toBeInTheDocument()
     expect(
       screen.getByRole("navigation", { name: "Pagination" })
+    ).toBeInTheDocument()
+  })
+})
+
+/**
+ * The row's title opens the detail panel on the right instead of navigating
+ * out to the forge's web page. The body it shows already rides along with every
+ * row, so the panel costs no request — which is what makes it worth having over
+ * a browser tab that also loses the list, its filters and its scroll position.
+ *
+ * Everything here is about the WIRING between page and panel: which row it
+ * opens on, whether it keeps up with the list underneath it, and whether it
+ * goes when the rows it belongs to do.
+ */
+describe("ForgePage detail panel", () => {
+  function withBody(number: number, title: string, body: string | null) {
+    return { ...issue(number, title), body }
+  }
+
+  async function openDetail(title: string) {
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole("button", { name: title }))
+    return user
+  }
+
+  it("opens on the clicked row, with that item's body as Markdown", async () => {
+    vi.mocked(forgeListIssues).mockResolvedValue(
+      listOf([
+        withBody(1, "first row", "## First"),
+        withBody(2, "second row", "## Second"),
+      ])
+    )
+    mount()
+    await openDetail("second row")
+
+    const panel = screen.getByRole("dialog")
+    expect(within(panel).getByTestId("markdown")).toHaveTextContent("## Second")
+    // The panel names the item it opened on, not the one above it.
+    expect(within(panel).getByText("· #2")).toBeInTheDocument()
+  })
+
+  /** A row is a SNAPSHOT. Reload the list and the same item arrives again in a
+   *  new object — the panel has to follow it, or it sits there showing what the
+   *  list said when it opened while the row behind it says something else. */
+  it("keeps up with the item's fresh copy when the list reloads under it", async () => {
+    const user = userEvent.setup()
+    vi.mocked(forgeListIssues).mockResolvedValue(
+      listOf([withBody(1, "a row", "before")])
+    )
+    mount()
+    await openDetail("a row")
+    expect(screen.getByTestId("markdown")).toHaveTextContent("before")
+
+    vi.mocked(forgeListIssues).mockResolvedValue(
+      listOf([withBody(1, "a row", "after")])
+    )
+    await user.click(screen.getByRole("button", { name: "Refresh" }))
+    await waitFor(() =>
+      expect(screen.getByTestId("markdown")).toHaveTextContent("after")
+    )
+  })
+
+  /** Same rule the rows themselves follow, and for the same reason: the panel
+   *  carries its own copy of a row numbered against a repository the page has
+   *  stopped showing, and its footer offers "Start" on it. */
+  it("closes when the folder changes", async () => {
+    useAppWorkspaceStore.setState({
+      folders: [
+        { id: 1, name: "codeg", parent_id: null, kind: "regular" },
+        { id: 2, name: "other-project", parent_id: null, kind: "regular" },
+      ] as never,
+    })
+    vi.mocked(forgeListIssues).mockResolvedValue(
+      listOf([withBody(1, "row from codeg", "body")])
+    )
+    mount()
+    await openDetail("row from codeg")
+    expect(screen.getByRole("dialog")).toBeInTheDocument()
+
+    // The folder changes out from under the page — the FALLBACK path the page
+    // documents (the folder on screen leaves the workspace, so `effectiveFolderId`
+    // drops to the first one left). Driven through the store rather than
+    // through the picker because it is the same effect either way, and because
+    // a press that lands in the same tick the drawer opened in gets swallowed
+    // while the drawer is still settling its focus management — nothing a
+    // person can hit, and not what this test is about.
+    await act(async () => {
+      useAppWorkspaceStore.setState({
+        folders: [
+          { id: 2, name: "other-project", parent_id: null, kind: "regular" },
+        ] as never,
+      })
+    })
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+  })
+
+  /** The end of that same road: the LAST project folder goes, so there is no
+   *  folder to fall back to. That path used to exit the resolution effect
+   *  before any of the clean-up ran, leaving the panel mounted over a page that
+   *  had gone back to "pick a folder" — with a "Start" whose dialog is gated on
+   *  a folder, and so did nothing at all when pressed. */
+  it("closes when the last folder leaves the workspace", async () => {
+    vi.mocked(forgeListIssues).mockResolvedValue(
+      listOf([withBody(1, "row from codeg", "body")])
+    )
+    mount()
+    await openDetail("row from codeg")
+    expect(screen.getByRole("dialog")).toBeInTheDocument()
+
+    await act(async () => {
+      useAppWorkspaceStore.setState({ folders: [] as never })
+    })
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+    // The rows go with it, so nothing of the old repository is left on screen.
+    expect(
+      screen.queryByRole("button", { name: "row from codeg" })
+    ).not.toBeInTheDocument()
+  })
+
+  /**
+   * The panel outliving its row must not cost the item its TASK.
+   *
+   * The chip lookup asks about the rows on screen and replaces the whole map
+   * with the answer, so an item the panel is still showing after a page turn
+   * lost its entry — and the footer fell back from a live status chip to
+   * "Start", offering to trigger work that was already running.
+   */
+  it("keeps the panel's task chip after its row leaves the page", async () => {
+    const user = userEvent.setup()
+    const keyOf = (number: number) =>
+      buildForgeSourceKey({
+        provider: "github",
+        serverHost: REMOTE.server_host,
+        ownerRepo: REMOTE.owner_repo,
+        kind: "issue",
+        number,
+      })
+    // Only #1 has ever been handled. Answering from the REQUESTED keys is the
+    // whole point: a lookup that stopped asking about #1 gets nothing back.
+    vi.mocked(workTaskLookupBySource).mockImplementation(async (keys) =>
+      keys
+        .filter((k) => k === keyOf(1))
+        .map((source_key) => ({
+          source_key,
+          task_id: 3,
+          status: "running" as const,
+          verdict: null,
+          updated_at: "2026-08-19T00:00:00Z",
+        }))
+    )
+    vi.mocked(forgeListIssues).mockResolvedValue(
+      listOf([withBody(1, "a row", "body")], { has_next: true })
+    )
+    mount()
+    await openDetail("a row")
+    const panel = screen.getByRole("dialog")
+    expect(
+      await within(panel).findByRole("button", { name: "Running" })
+    ).toBeInTheDocument()
+
+    // Page two: #1 is gone from the list, and the panel deliberately stays.
+    vi.mocked(forgeListIssues).mockResolvedValue(
+      listOf([withBody(2, "another row", "other body")], { page: 2 })
+    )
+    await user.click(screen.getByRole("button", { name: "Next page" }))
+    await screen.findByText("another row")
+
+    expect(within(panel).getByRole("button", { name: "Running" })).toBeVisible()
+    expect(
+      within(panel).queryByRole("button", { name: "Start" })
+    ).not.toBeInTheDocument()
+  })
+
+  /** "Start" inside the panel triggers the item the panel is open on, and
+   *  leaves the panel standing: the dialog opens over it, and closing it comes
+   *  back to a footer that now carries the new task's chip. */
+  it("triggers the panel's own item from its footer", async () => {
+    vi.mocked(forgeListIssues).mockResolvedValue(
+      listOf([
+        withBody(1, "first row", "one"),
+        withBody(2, "second row", "two"),
+      ])
+    )
+    mount()
+    const user = await openDetail("second row")
+
+    const panel = screen.getByRole("dialog")
+    await user.click(within(panel).getByRole("button", { name: "Start" }))
+
+    // The trigger dialog opens on #2 — the panel's item, not the first row,
+    // and not whatever the list happens to start with. Its heading is
+    // `#number · title`, so the number is what proves WHICH item was handed on.
+    expect(
+      await screen.findByRole("heading", { name: "#2 · second row" })
     ).toBeInTheDocument()
   })
 })

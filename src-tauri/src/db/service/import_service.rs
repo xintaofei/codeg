@@ -13,6 +13,7 @@ use crate::parsers::codebuddy::CodeBuddyParser;
 use crate::parsers::codex::CodexParser;
 use crate::parsers::cursor::CursorParser;
 use crate::parsers::deepseek::DeepSeekParser;
+use crate::parsers::antigravity::AntigravityParser;
 use crate::parsers::qoder::QoderParser;
 use crate::parsers::gemini::GeminiParser;
 use crate::parsers::grok::GrokParser;
@@ -24,7 +25,7 @@ use crate::parsers::opencode::OpenCodeParser;
 use crate::parsers::{path_eq_for_matching, AgentParser};
 
 /// Every locally-parsable agent, in the canonical parser order.
-const ALL_PARSER_AGENTS: [AgentType; 14] = [
+const ALL_PARSER_AGENTS: [AgentType; 15] = [
     AgentType::ClaudeCode,
     AgentType::Codex,
     AgentType::OpenCode,
@@ -39,6 +40,7 @@ const ALL_PARSER_AGENTS: [AgentType; 14] = [
     AgentType::Cursor,
     AgentType::DeepSeek,
     AgentType::Qoder,
+    AgentType::Antigravity,
 ];
 
 fn build_parser(agent_type: AgentType) -> Box<dyn AgentParser> {
@@ -57,6 +59,7 @@ fn build_parser(agent_type: AgentType) -> Box<dyn AgentParser> {
         AgentType::Cursor => Box::new(CursorParser::new()),
         AgentType::DeepSeek => Box::new(DeepSeekParser::new()),
         AgentType::Qoder => Box::new(QoderParser::new()),
+        AgentType::Antigravity => Box::new(AntigravityParser::new()),
         // Custom agents' history lives in codeg's own ACP transcript.
         AgentType::Custom(_) => Box::new(crate::parsers::acp_native::AcpNativeParser::new(
             agent_type,

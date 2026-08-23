@@ -2,8 +2,12 @@ import { act, fireEvent, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import type { Ref } from "react"
 
 import { Sidebar } from "./sidebar"
+// Type-only (erased at runtime, so it does not defeat the mock below): pins the
+// stub's imperative handle to the real component's contract.
+import type { SidebarConversationListHandle } from "@/components/conversations/sidebar-conversation-list"
 import enMessages from "@/i18n/messages/en.json"
 
 // Stable spies + mutable active-folder, referenced from the hoisted mock
@@ -13,6 +17,10 @@ const spies = vi.hoisted(() => ({
   openChatModeTab: vi.fn(),
   setRoute: vi.fn(),
   openConversations: vi.fn(),
+  // The list's imperative handle, driven by the header buttons.
+  scrollToActive: vi.fn(),
+  expandAll: vi.fn(),
+  collapseAll: vi.fn(),
   // Latest props the (stubbed) conversation list was rendered with, so tests can
   // assert what the sidebar threads down (e.g. showWorktrees / showCompleted).
   listProps: null as {
@@ -27,18 +35,33 @@ const mockState = vi.hoisted(() => ({
 }))
 
 // The conversation list is irrelevant here — stub it so the test exercises only
-// the sidebar's header + fixed nav region.
-vi.mock("@/components/conversations/sidebar-conversation-list", () => ({
-  SidebarConversationList: (props: {
-    showWorktrees?: boolean
-    showCompleted?: boolean
-    showRecent?: boolean
-    sectionOrder?: readonly string[]
-  }) => {
-    spies.listProps = props
-    return null
-  },
-}))
+// the sidebar's header + fixed nav region. The stub still fulfils the imperative
+// handle (React 19 hands `ref` to a function component as a plain prop, which is
+// how the real component takes it), so the header buttons that drive the list
+// are asserted against real calls instead of clicking into a null ref.
+vi.mock("@/components/conversations/sidebar-conversation-list", async () => {
+  const { useImperativeHandle } = await import("react")
+  return {
+    SidebarConversationList: ({
+      ref,
+      ...props
+    }: {
+      ref?: Ref<SidebarConversationListHandle>
+      showWorktrees?: boolean
+      showCompleted?: boolean
+      showRecent?: boolean
+      sectionOrder?: readonly string[]
+    }) => {
+      spies.listProps = props
+      useImperativeHandle(ref, () => ({
+        scrollToActive: spies.scrollToActive,
+        expandAll: spies.expandAll,
+        collapseAll: spies.collapseAll,
+      }))
+      return null
+    },
+  }
+})
 vi.mock("@/contexts/sidebar-context", () => ({
   useSidebarContext: () => ({ isOpen: true, toggle: vi.fn() }),
 }))
@@ -90,6 +113,27 @@ function renderSidebar() {
       <Sidebar />
     </NextIntlClientProvider>
   )
+}
+
+/**
+ * Walk into one of the view-options menu's two visibility inventories, which
+ * live behind submenus. Clicking a sub-trigger opens it synchronously; opening
+ * it by HOVER runs on a 100ms Radix timer and is asserted separately below.
+ *
+ * This — and every click on a row inside the submenu — deliberately uses the
+ * module-level `userEvent` instead of a `setup()` instance, matching the
+ * quick-actions submenu tests. A shared instance remembers where the pointer
+ * was, so the next click drags it off the sub-trigger first; Radix answers a
+ * trigger-leave with its grace-area check, which needs real element geometry,
+ * and jsdom reports every rect as 0×0. The check fails, the root menu takes
+ * focus back, and the submenu closes out from under the click. A fresh
+ * instance has no previous position, so nothing ever leaves the trigger.
+ */
+async function openViewOptionsGroup(
+  group: "Conversation list" | "Navigation items"
+) {
+  await userEvent.click(screen.getByRole("button", { name: "View options" }))
+  await userEvent.click(screen.getByRole("menuitem", { name: group }))
 }
 
 describe("Sidebar — fixed nav region", () => {
@@ -147,6 +191,63 @@ describe("Sidebar — fixed nav region", () => {
   })
 })
 
+describe("Sidebar — View options grouping", () => {
+  beforeEach(() => {
+    localStorage.clear()
+    mockState.activeFolder = { id: 7, path: "/x" }
+  })
+
+  it("keeps both visibility inventories out of the root menu", async () => {
+    const user = userEvent.setup()
+    renderSidebar()
+    await user.click(screen.getByRole("button", { name: "View options" }))
+
+    // Six checkboxes inline turned the root into a wall; they now sit one hop
+    // in, behind their group. Sort by / Section order stay inline — the
+    // control on the right is the proof this is about the two inventories and
+    // not the menu failing to render.
+    expect(
+      screen.queryByRole("menuitemcheckbox", { name: "Show worktree folders" })
+    ).toBeNull()
+    expect(
+      screen.queryByRole("menuitemcheckbox", { name: "Automations" })
+    ).toBeNull()
+    expect(
+      screen.getByRole("menuitemradio", { name: "Created time" })
+    ).toBeTruthy()
+
+    expect(
+      screen.getByRole("menuitem", { name: "Conversation list" })
+    ).toBeTruthy()
+    expect(
+      screen.getByRole("menuitem", { name: "Navigation items" })
+    ).toBeTruthy()
+    await user.keyboard("{Escape}")
+  })
+
+  it("opens a group on hover alone, with no click", async () => {
+    const user = userEvent.setup()
+    renderSidebar()
+    await user.click(screen.getByRole("button", { name: "View options" }))
+
+    // Load-bearing: without this the assertion below would also pass on a menu
+    // that never nested the toggles in the first place.
+    expect(
+      screen.queryByRole("menuitemcheckbox", { name: "Automations" })
+    ).toBeNull()
+
+    // Pointing at the row is the whole interaction — Radix opens the submenu on
+    // a short pointer-move timer, so this resolves without a second click.
+    await user.hover(screen.getByRole("menuitem", { name: "Navigation items" }))
+
+    expect(
+      await screen.findByRole("menuitemcheckbox", { name: "Automations" })
+    ).toBeTruthy()
+    // Escape inside a submenu closes the whole stack, root included.
+    await user.keyboard("{Escape}")
+  })
+})
+
 describe("Sidebar — Show worktree folders toggle", () => {
   beforeEach(() => {
     localStorage.clear()
@@ -167,14 +268,13 @@ describe("Sidebar — Show worktree folders toggle", () => {
     expect(spies.listProps?.showWorktrees).toBe(false)
   })
 
-  it("toggling the funnel item off persists the choice and threads it down", async () => {
-    const user = userEvent.setup()
+  it("toggling the view-options item off persists the choice and threads it down", async () => {
     renderSidebar()
     // Default on with a cleared store.
     expect(spies.listProps?.showWorktrees).toBe(true)
 
-    await user.click(screen.getByRole("button", { name: "View options" }))
-    await user.click(
+    await openViewOptionsGroup("Conversation list")
+    await userEvent.click(
       screen.getByRole("menuitemcheckbox", { name: "Show worktree folders" })
     )
 
@@ -222,21 +322,132 @@ describe("Sidebar — Show Recent group toggle", () => {
     expect(spies.listProps?.showRecent).toBe(false)
   })
 
-  it("toggling the funnel item off persists the choice and keeps the menu open", async () => {
-    const user = userEvent.setup()
+  it("toggling the view-options item off persists the choice and keeps the menu open", async () => {
     renderSidebar()
 
-    await user.click(screen.getByRole("button", { name: "View options" }))
-    await user.click(
+    await openViewOptionsGroup("Conversation list")
+    await userEvent.click(
       screen.getByRole("menuitemcheckbox", { name: "Show Recent group" })
     )
 
     expect(localStorage.getItem("workspace:sidebar-show-recent")).toBe("false")
     expect(spies.listProps?.showRecent).toBe(false)
     // The view-options menu is a settings panel: flipping one option must not
-    // dismiss it, or changing two costs two trips through the trigger.
+    // dismiss it — nor the submenu it lives in — or changing two costs two
+    // trips back through the trigger.
     expect(
       screen.getByRole("menuitemcheckbox", { name: "Show Recent group" })
+    ).toBeTruthy()
+  })
+})
+
+describe("Sidebar — Navigation item visibility", () => {
+  beforeEach(() => {
+    localStorage.clear()
+    mockState.activeFolder = { id: 7, path: "/x" }
+  })
+
+  // The nav rows are `button`s; the menu's toggles are `menuitemcheckbox`es, so
+  // the two never collide even while the menu is open. The Forge row's name
+  // carries its Beta badge (deliberately not aria-hidden), unlike its toggle.
+  const navRow = (name: string | RegExp) =>
+    screen.queryByRole("button", { name })
+  const FORGE_ROW = /^Repository panel/
+
+  it("shows every route row by default", () => {
+    renderSidebar()
+    expect(navRow("Automations")).toBeTruthy()
+    expect(navRow("To-dos")).toBeTruthy()
+    expect(navRow(FORGE_ROW)).toBeTruthy()
+  })
+
+  it("hides a row when its menu toggle is switched off, and persists it", async () => {
+    renderSidebar()
+
+    await openViewOptionsGroup("Navigation items")
+    await userEvent.click(
+      screen.getByRole("menuitemcheckbox", { name: "Automations" })
+    )
+    // Like every other option here, flipping one must not dismiss the menu —
+    // and the submenu it lives in has to survive too.
+    expect(
+      screen.getByRole("menuitemcheckbox", { name: "Automations" })
+    ).toBeTruthy()
+    // Close it before looking at the rows: an open Radix menu is modal and
+    // aria-hides the sidebar behind it, which would make "the row is gone" true
+    // for the wrong reason. Escape inside a submenu closes the whole stack.
+    await userEvent.keyboard("{Escape}")
+
+    expect(navRow("Automations")).toBeNull()
+    // Control: the other rows are still there, so the assertion above is about
+    // this one row rather than a hidden subtree.
+    expect(navRow("To-dos")).toBeTruthy()
+    expect(
+      JSON.parse(localStorage.getItem("workspace:sidebar-nav-items") ?? "{}")
+    ).toEqual({ automations: false })
+  })
+
+  it("respects an explicitly-stored hidden row from localStorage", () => {
+    localStorage.setItem(
+      "workspace:sidebar-nav-items",
+      JSON.stringify({ forge: false })
+    )
+    renderSidebar()
+    expect(navRow(FORGE_ROW)).toBeNull()
+    expect(navRow("Automations")).toBeTruthy()
+  })
+
+  it("ignores a stored entry for a route that no longer exists", () => {
+    localStorage.setItem(
+      "workspace:sidebar-nav-items",
+      JSON.stringify({ retired: false, tasks: false })
+    )
+    renderSidebar()
+    expect(navRow("To-dos")).toBeNull()
+    expect(navRow("Automations")).toBeTruthy()
+  })
+})
+
+describe("Sidebar — Expand / collapse all groups", () => {
+  beforeEach(() => {
+    localStorage.clear()
+    spies.collapseAll.mockClear()
+    spies.expandAll.mockClear()
+    mockState.activeFolder = { id: 7, path: "/x" }
+  })
+
+  it("is an icon-only header button on desktop, no longer a menu row", async () => {
+    const user = userEvent.setup()
+    renderSidebar()
+
+    // Icon-only, so the accessible name comes from aria-label and names the
+    // action the click performs.
+    const toggle = screen.getByRole("button", { name: "Collapse All Groups" })
+    expect(toggle.textContent).toBe("")
+
+    await user.click(screen.getByRole("button", { name: "View options" }))
+    expect(
+      screen.queryByRole("menuitem", { name: "Collapse All Groups" })
+    ).toBeNull()
+    await user.keyboard("{Escape}")
+  })
+
+  it("drives the list from the header in one click, and flips direction", async () => {
+    const user = userEvent.setup()
+    renderSidebar()
+
+    // One click, from the header — it used to cost a trip through the menu.
+    await user.click(
+      screen.getByRole("button", { name: "Collapse All Groups" })
+    )
+    expect(spies.collapseAll).toHaveBeenCalledTimes(1)
+    expect(spies.expandAll).not.toHaveBeenCalled()
+
+    // The button now offers the opposite action, and performs it.
+    await user.click(screen.getByRole("button", { name: "Expand All Groups" }))
+    expect(spies.expandAll).toHaveBeenCalledTimes(1)
+    expect(
+      screen.getByRole("button", { name: "Collapse All Groups" })
     ).toBeTruthy()
   })
 })

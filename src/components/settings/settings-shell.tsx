@@ -37,7 +37,7 @@ import { getActiveRemoteConnectionId } from "@/lib/transport"
 import { AppTitleBar } from "@/components/layout/app-title-bar"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { usePlatform } from "@/hooks/use-platform"
-import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
+import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer"
 
 interface SettingsNavItem {
   href: string
@@ -271,18 +271,21 @@ export function SettingsShell({ children }: SettingsShellProps) {
           </aside>
         )}
 
-        {/* Mobile navigation Sheet */}
+        {/* Mobile navigation Drawer. Opts back into press-outside-to-close,
+            against the app-wide drawer default: it is navigation, and tapping
+            the page it partially covers is how you put it away on a phone. */}
         {isMobile && (
-          <Sheet open={navOpen} onOpenChange={setNavOpen}>
-            <SheetContent
-              side="left"
-              showCloseButton={false}
-              className="w-[260px] p-3"
-            >
-              <SheetTitle className="sr-only">{t("title")}</SheetTitle>
+          <Drawer
+            open={navOpen}
+            onOpenChange={setNavOpen}
+            swipeDirection="left"
+            disablePointerDismissal={false}
+          >
+            <DrawerContent showCloseButton={false} className="w-[260px] p-3">
+              <DrawerTitle className="sr-only">{t("title")}</DrawerTitle>
               {navContent}
-            </SheetContent>
-          </Sheet>
+            </DrawerContent>
+          </Drawer>
         )}
 
         <section className="flex-1 min-w-0 min-h-0 overflow-hidden">

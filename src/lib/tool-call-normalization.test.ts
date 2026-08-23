@@ -557,6 +557,69 @@ describe("normalizeToolName Grok terminal tool", () => {
   })
 })
 
+describe("Antigravity terminal tool", () => {
+  it("aliases the history parser's run_command to bash", () => {
+    // `parsers/antigravity.rs` stores the trajectory's own tool name.
+    expect(normalizeToolName("run_command")).toBe("bash")
+  })
+
+  it("classifies the live exec call by its input shape, not its title", () => {
+    // The live title IS the command — `tools.py::extract_tool_display_title`
+    // returns the CommandLine for exec tools "so IDEs render the command
+    // inside the terminal box". `byTitle` therefore resolves before `byKind`
+    // and named the tool "pnpm build", stranding it on the generic tool shell
+    // with the `{combinedOutput, exitCode, formatted_output, …}` rawOutput
+    // dumped as a JSON tree. Only the input shape identifies it.
+    expect(
+      inferLiveToolName({
+        title: "pnpm build",
+        kind: "execute",
+        rawInput: JSON.stringify({
+          command_line: "pnpm build",
+          working_dir: "/Users/x/work/my-app",
+        }),
+      })
+    ).toBe("bash")
+  })
+
+  it("classifies the PascalCase envelope a permission frame carries", () => {
+    // `_request_permission` forwards the MODEL's own argument envelope
+    // verbatim, which spells the same two arguments `CommandLine` / `Cwd`.
+    // That is also what the trajectory stores, so the historical card resolves
+    // through this branch too when the tool name is missing.
+    expect(
+      inferLiveToolName({
+        title: "pnpm build",
+        kind: "execute",
+        rawInput: JSON.stringify({
+          CommandLine: "pnpm build",
+          Cwd: "/Users/x/work/my-app",
+          WaitMsBeforeAsync: 10000,
+          toolAction: "Running pnpm build",
+        }),
+      })
+    ).toBe("bash")
+  })
+})
+
+describe("Antigravity MCP dispatch naming", () => {
+  it("collapses the <server>_<tool> name both paths now emit", () => {
+    // Antigravity routes EVERY MCP call through the `call_mcp_tool` sentinel
+    // and re-presents it as `<server>_<tool>`
+    // (`tools.py::unwrap_mcp_tool_call`); `parsers/antigravity.rs` performs the
+    // same rewrite so history and live resolve identically. Pinned here
+    // because that naming is now load-bearing for the delegation cards.
+    expect(normalizeToolName("codeg-mcp_delegate_to_agent")).toBe(
+      "delegate_to_agent"
+    )
+    expect(normalizeToolName("codeg-mcp_get_delegation_status")).toBe(
+      "get_delegation_status"
+    )
+    expect(normalizeToolName("codeg-mcp_ask_user_question")).toBe("question")
+    expect(normalizeToolName("codeg-mcp_task_progress")).toBe("task_progress")
+  })
+})
+
 describe("Grok spawn_subagent routes to the Agent card", () => {
   it("aliases the raw spawn_subagent name to agent", () => {
     // The freeform `\bagent\b` matcher can NOT catch it — "subagent" has no

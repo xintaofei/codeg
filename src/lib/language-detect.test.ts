@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest"
 
-import { isHiddenPath, languageFromPath } from "./language-detect"
+import {
+  isHiddenPath,
+  isOfficeOwnerFile,
+  languageFromPath,
+} from "./language-detect"
 
 describe("languageFromPath", () => {
   // The original implementation was a 13-case switch. These cases lock that
@@ -225,5 +229,61 @@ describe("isHiddenPath", () => {
     expect(isHiddenPath("")).toBe(false)
     expect(isHiddenPath(null)).toBe(false)
     expect(isHiddenPath(undefined)).toBe(false)
+  })
+})
+
+describe("isOfficeOwnerFile", () => {
+  describe("`~$`-prefixed names are owner files", () => {
+    it.each([
+      // The whole Office family, since each suite writes one for its own
+      // document type and all three reach auto-preview.
+      ["~$report.docx"],
+      ["~$budget.xlsx"],
+      ["~$deck.pptx"],
+      // Nested, and under both separators — WPS on Windows is where this was
+      // reported, so the backslash form is the reported shape, not headroom.
+      ["docs/~$report.docx"],
+      ["docs\\~$report.docx"],
+      ["C:\\Users\\me\\Documents\\~$report.docx"],
+      // Word truncates the leading characters of long names to make room for
+      // the prefix, so the tail rarely matches the document it belongs to.
+      ["~$cument.docx"],
+      // Legacy binary formats and stray extensions still name the owner file
+      // the same way. Auto-preview rejects these on extension anyway; the
+      // predicate answers about the name alone so it stays true wherever the
+      // two filters are composed in the other order.
+      ["~$report.doc"],
+      ["~$notes.txt"],
+      ["~$"],
+    ])("%s -> owner file", (path) => {
+      expect(isOfficeOwnerFile(path)).toBe(true)
+    })
+  })
+
+  describe("real documents are not owner files", () => {
+    it.each([
+      ["report.docx"],
+      ["docs/report.docx"],
+      // A tilde without the dollar sign is an ordinary (if unusual) name —
+      // Word's own `~WRD0001.tmp` scratch files are excluded by extension, so
+      // widening the prefix here would only cost false positives.
+      ["~report.docx"],
+      ["~/Documents/report.docx"],
+      // The marker only counts at the start of the file name: mid-name, and on
+      // a directory, it is somebody's naming choice rather than Office's.
+      ["report~$copy.docx"],
+      ["~$drafts/report.docx"],
+      ["~$drafts\\report.docx"],
+      // Dot-tilde is LibreOffice's spelling, caught by `isHiddenPath` instead.
+      [".~lock.report.docx#"],
+    ])("%s -> document", (path) => {
+      expect(isOfficeOwnerFile(path)).toBe(false)
+    })
+  })
+
+  it("treats empty and nullish input as not an owner file", () => {
+    expect(isOfficeOwnerFile("")).toBe(false)
+    expect(isOfficeOwnerFile(null)).toBe(false)
+    expect(isOfficeOwnerFile(undefined)).toBe(false)
   })
 })

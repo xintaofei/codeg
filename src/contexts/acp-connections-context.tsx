@@ -161,6 +161,18 @@ export interface ClaudeApiRetryState {
   error: string | null
   errorStatus: number | null
   retryDelayMs: number | null
+  /**
+   * Whether the SOURCE reports error text for a retry at all — not whether this
+   * particular record carries it.
+   *
+   * Claude's `api_retry` and codex's `_meta.codex.error` both do, and a missing
+   * `error` there means "we didn't catch the cause this time", which is what
+   * `claudeApiRetry.fallbackError` covers. pi (#525) reports no cause at any
+   * time — only the counters — so the fallback would assert an authentication
+   * failure that never happened. False makes the banner render from the
+   * counters alone instead of inventing a reason.
+   */
+  reportsError: boolean
 }
 
 export type LiveContentBlock =
@@ -703,6 +715,9 @@ function parseClaudeApiRetryEvent(
     error: typeof message.error === "string" ? message.error : null,
     errorStatus: asFiniteNumber(message.error_status),
     retryDelayMs: asFiniteNumber(message.retry_delay_ms),
+    // Claude's api_retry always carries a cause in principle; an absent one is a
+    // gap in THIS message, so keep the existing fallback wording for it.
+    reportsError: true,
   }
 }
 
@@ -3668,6 +3683,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           // what a backend GC / idle sweep removes.
           rememberResolvedIdentity(contextKey, { sessionId: e.session_id })
           break
+        case "native_session_title":
+          // Title is applied on the conversation row by the lifecycle worker
+          // and reaches the sidebar via `conversation://changed`. Do not flush
+          // the streaming queue: this can arrive mid-turn.
+          break
         case "conversation_linked":
           // Backend just bound (or reaffirmed) the connection's DB conversation
           // row. Phase 3a frontend pre-creates rows for new-tab sends so this
@@ -3817,19 +3837,32 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         case "turn_retrying": {
           // codex-acp #289: a retryable turn error keeps the turn alive (codex
           // auto-retries). Reuse the Claude API-retry banner — codex doesn't
-          // report attempt/limit/delay, so those stay null; the banner clears at
-          // the next turn boundary like the Claude path.
+          // report attempt/limit/delay, so those stay null; the banner clears
+          // as soon as streaming content resumes (`applyStreamingAction`).
+          //
+          // pi (#525) is the opposite shape: it reports all three counters and
+          // NO error text, so its empty `message` normalizes to null rather than
+          // painting the banner with a blank error slot. `?? null` (not `||`)
+          // keeps a genuine attempt 0 / 0ms delay from collapsing to "unknown".
+          //
+          // Flush FIRST, like the Claude `claude_sdk_message` path: deltas are
+          // queued and applied in batches, and applying one clears the banner.
+          // Without this, a delta enqueued just BEFORE the retry arrived lands
+          // just AFTER it and wipes the banner we are about to raise — which pi
+          // reaches routinely, since it retries mid-stream between prose chunks.
+          flushStreamingQueue()
           const retryConn = storeRef.current.connections.get(contextKey)
           dispatch({
             type: "CLAUDE_API_RETRY",
             contextKey,
             retry: {
               sessionId: retryConn?.sessionId ?? "",
-              attempt: null,
-              maxRetries: null,
-              error: e.message,
+              attempt: e.attempt ?? null,
+              maxRetries: e.max_retries ?? null,
+              error: e.message || null,
               errorStatus: e.error_status ?? null,
-              retryDelayMs: null,
+              retryDelayMs: e.retry_delay_ms ?? null,
+              reportsError: e.message.trim().length > 0,
             },
           })
           break

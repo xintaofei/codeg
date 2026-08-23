@@ -16,6 +16,7 @@ use crate::parsers::cline::ClineParser;
 use crate::parsers::codebuddy::CodeBuddyParser;
 use crate::parsers::codex::CodexParser;
 use crate::parsers::deepseek::DeepSeekParser;
+use crate::parsers::antigravity::AntigravityParser;
 use crate::parsers::qoder::QoderParser;
 use crate::parsers::gemini::GeminiParser;
 use crate::parsers::cursor::CursorParser;
@@ -250,6 +251,7 @@ fn list_conversations_sync(
         (AgentType::Cursor, Box::new(CursorParser::new())),
         (AgentType::DeepSeek, Box::new(DeepSeekParser::new())),
         (AgentType::Qoder, Box::new(QoderParser::new())),
+        (AgentType::Antigravity, Box::new(AntigravityParser::new())),
     ];
     // Registered custom agents read back from codeg's own ACP transcripts, so
     // their sessions participate in folder grouping and stats like any other.
@@ -366,6 +368,7 @@ pub async fn get_conversation(
             AgentType::Cursor => Box::new(CursorParser::new()),
             AgentType::DeepSeek => Box::new(DeepSeekParser::new()),
             AgentType::Qoder => Box::new(QoderParser::new()),
+            AgentType::Antigravity => Box::new(AntigravityParser::new()),
             // Custom ACP agents have no native store to reverse-engineer;
             // their history is codeg's own ACP transcript.
             AgentType::Custom(_) => Box::new(AcpNativeParser::new(agent_type)),
@@ -1141,6 +1144,7 @@ pub async fn get_folder_conversation_core(
                 AgentType::Cursor => Box::new(CursorParser::new()),
                 AgentType::DeepSeek => Box::new(DeepSeekParser::new()),
                 AgentType::Qoder => Box::new(QoderParser::new()),
+                AgentType::Antigravity => Box::new(AntigravityParser::new()),
                 AgentType::Custom(_) => Box::new(AcpNativeParser::new(at)),
             };
             match parser.get_conversation(&eid) {
@@ -1705,6 +1709,20 @@ async fn sync_conversation_title_until_current(
             .await;
         sent = Some(title);
     }
+}
+
+/// Detach a chat-channel title sync so a live title write cannot sit on
+/// Telegram's 60s `editForumTopic` timeout. Callers that already upserted
+/// the sidebar should use this rather than awaiting `sync_conversation_title`.
+pub(crate) fn spawn_sync_conversation_title_until_current(
+    conn: sea_orm::DatabaseConnection,
+    chat_channel_manager: crate::chat_channel::manager::ChatChannelManager,
+    conversation_id: i32,
+) {
+    tokio::spawn(async move {
+        sync_conversation_title_until_current(&conn, &chat_channel_manager, conversation_id)
+            .await;
+    });
 }
 
 /// Broadcast and propagate title changes discovered outside codeg (for

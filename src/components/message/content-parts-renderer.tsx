@@ -410,6 +410,13 @@ function commandFromUnknownValue(value: unknown): string | null {
     "command",
     "cmd",
     "script",
+    // Antigravity's terminal arguments — `command_line` on the executed call,
+    // PascalCase `CommandLine` on the model's own envelope (the shape a
+    // permission-prompt frame and the stored trajectory both carry). Ahead of
+    // the argv-style keys so an envelope that has both keeps the full command
+    // line. See `inferFromInput` in `tool-call-normalization.ts`.
+    "command_line",
+    "CommandLine",
     "args",
     "argv",
     "command_args",

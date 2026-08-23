@@ -10,6 +10,7 @@ import { isWindowedDetail } from "@/lib/turn-window"
 import { ContentPartsRenderer } from "./content-parts-renderer"
 import { ContextCompactionCard } from "./context-compaction-card"
 import { CollapsibleUserMessage } from "./collapsible-user-message"
+import { CollapsibleSystemMessage } from "./collapsible-system-message"
 import { isContextCompactionMeta } from "@/lib/context-compaction"
 import {
   createMessageTurnAdapter,
@@ -30,6 +31,7 @@ import { UserResourceLinks } from "./user-resource-links"
 import { UserImageAttachments } from "./user-image-attachments"
 import { AgentPlanOverlay } from "@/components/chat/agent-plan-overlay"
 import { SubAgentOverlay } from "@/components/chat/sub-agent-overlay"
+import { SessionViewerHost } from "@/components/message/session-viewer-host"
 import { normalizeToolName } from "@/lib/tool-call-normalization"
 import { isDelegateToAgentToolName } from "@/lib/delegation-card"
 import type { DelegationCardSource } from "@/hooks/use-delegation-card-model"
@@ -45,10 +47,7 @@ import {
 import {
   AlertCircle,
   CheckIcon,
-  ChevronDown,
-  ChevronRight,
   CopyIcon,
-  Info,
   Loader2,
   Plus,
   RefreshCw,
@@ -230,41 +229,6 @@ function extractDelegationSources(
   collectDelegationSources(parts, out)
   return out
 }
-
-const CollapsibleSystemMessage = memo(function CollapsibleSystemMessage({
-  group,
-}: {
-  group: ResolvedMessageGroup
-}) {
-  const [expanded, setExpanded] = useState(false)
-  const t = useTranslations("Folder.chat.messageList")
-
-  return (
-    <div className="border rounded-md text-sm border-yellow-500/30 bg-yellow-500/5">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-2 w-full px-3 py-2.5 text-left hover:bg-yellow-500/10 transition-colors"
-      >
-        {expanded ? (
-          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-yellow-600 dark:text-yellow-500" />
-        ) : (
-          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-yellow-600 dark:text-yellow-500" />
-        )}
-        <Info className="h-3.5 w-3.5 shrink-0 text-yellow-600 dark:text-yellow-500" />
-        <span className="font-medium text-yellow-700 dark:text-yellow-400">
-          {t("systemMessage")}
-        </span>
-      </button>
-      {expanded && (
-        <div className="px-3 pb-3 border-t border-yellow-500/20">
-          <div className="text-sm text-muted-foreground mt-2.5 max-h-96 overflow-auto">
-            <ContentPartsRenderer parts={group.parts} role={group.role} />
-          </div>
-        </div>
-      )}
-    </div>
-  )
-})
 
 function extractTextFromParts(parts: AdaptedContentPart[]): string {
   return parts
@@ -583,7 +547,7 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   sourceTurns?: MessageTurn[]
 }) {
   if (group.role === "system") {
-    return <CollapsibleSystemMessage group={group} />
+    return <CollapsibleSystemMessage parts={group.parts} />
   }
 
   return (
@@ -1130,39 +1094,45 @@ export function MessageListView({
   }
 
   return (
-    <div
-      ref={selectionBoxRef}
-      className="relative flex h-full min-h-0 flex-col"
-    >
-      <MessageThread
-        className="flex-1 min-h-0"
-        resize={shouldUseSmoothResize ? "smooth" : undefined}
+    // The "查看会话" drawers are hosted HERE, not in the cards that offer them:
+    // those live in virtua's rows and take their drawer down with them when
+    // they scroll out of the buffer. This is the nearest ancestor that owns
+    // the virtualizer instead of sitting inside it — and it covers the
+    // top-right SubAgentOverlay's rows too.
+    <SessionViewerHost>
+      <div
+        ref={selectionBoxRef}
+        className="relative flex h-full min-h-0 flex-col"
       >
-        <AutoScrollOnSend signal={sendSignal} />
-        <VirtualizedMessageThread
-          items={threadItems}
-          getItemKey={getThreadItemKey}
-          renderItem={renderThreadItem}
-          emptyState={emptyState}
-          scrollApiRef={scrollApiRef}
-          hasOlder={hasOlderTurns}
-          isLoadingOlder={loadingOlderTurns}
-          onLoadOlder={handleLoadOlder}
-          loadOlderLabel={t("loadEarlier")}
-          loadingOlderLabel={t("loadingEarlier")}
-          prependEpoch={session?.olderTurnsPrependEpoch ?? 0}
-          prependScopeKey={conversationId}
-        />
-        <MessageThreadScrollButton />
-      </MessageThread>
-      {liveMessage && connStatus === "prompting" && (
-        <LiveTurnStats
-          message={liveMessage}
-          agentType={agentType}
-          isStreaming={connStatus === "prompting"}
-        />
-      )}
-      {/* Shared overlay stack pinned to the inline-start edge (top-left in LTR,
+        <MessageThread
+          className="flex-1 min-h-0"
+          resize={shouldUseSmoothResize ? "smooth" : undefined}
+        >
+          <AutoScrollOnSend signal={sendSignal} />
+          <VirtualizedMessageThread
+            items={threadItems}
+            getItemKey={getThreadItemKey}
+            renderItem={renderThreadItem}
+            emptyState={emptyState}
+            scrollApiRef={scrollApiRef}
+            hasOlder={hasOlderTurns}
+            isLoadingOlder={loadingOlderTurns}
+            onLoadOlder={handleLoadOlder}
+            loadOlderLabel={t("loadEarlier")}
+            loadingOlderLabel={t("loadingEarlier")}
+            prependEpoch={session?.olderTurnsPrependEpoch ?? 0}
+            prependScopeKey={conversationId}
+          />
+          <MessageThreadScrollButton />
+        </MessageThread>
+        {liveMessage && connStatus === "prompting" && (
+          <LiveTurnStats
+            message={liveMessage}
+            agentType={agentType}
+            isStreaming={connStatus === "prompting"}
+          />
+        )}
+        {/* Shared overlay stack pinned to the inline-start edge (top-left in LTR,
           top-right in RTL). A flex column keeps the order stable regardless of
           each panel's expand/collapse height: the message navigator first, then
           the plan panel, then the sub-agent panel. Empty panels render null and
@@ -1171,34 +1141,35 @@ export function MessageListView({
           edge), rounded on the end side — that expand toward the inline-end on
           hover. Logical `start-0` + `items-start` keep the anchor and the bullet
           on the same side, so the whole stack mirrors cleanly in RTL. */}
-      <div className="pointer-events-none absolute start-0 top-4 z-20 flex max-w-[min(22rem,calc(100%-2rem))] flex-col items-start gap-2">
-        {showMessageNav && userMessageCount > 0 && (
-          <ConversationMessageNav
-            count={userMessageCount}
-            expanded={navExpanded}
-            onToggle={setNavExpanded}
-            entries={navEntries}
-            scrollApiRef={scrollApiRef}
+        <div className="pointer-events-none absolute start-0 top-4 z-20 flex max-w-[min(22rem,calc(100%-2rem))] flex-col items-start gap-2">
+          {showMessageNav && userMessageCount > 0 && (
+            <ConversationMessageNav
+              count={userMessageCount}
+              expanded={navExpanded}
+              onToggle={setNavExpanded}
+              entries={navEntries}
+              scrollApiRef={scrollApiRef}
+            />
+          )}
+          <AgentPlanOverlay
+            key={agentPlanOverlayKey}
+            message={liveMessage ?? null}
+            entries={historicalPlanEntries}
+            planKey={historicalPlanKey}
+            defaultExpanded={false}
+            isStreaming={connStatus === "prompting"}
           />
-        )}
-        <AgentPlanOverlay
-          key={agentPlanOverlayKey}
-          message={liveMessage ?? null}
-          entries={historicalPlanEntries}
-          planKey={historicalPlanKey}
-          defaultExpanded={false}
-          isStreaming={connStatus === "prompting"}
-        />
-        <SubAgentOverlay
-          key={subAgentOverlayKey}
-          delegations={lastAssistantDelegations}
-          overlayKey={subAgentOverlayKey}
+          <SubAgentOverlay
+            key={subAgentOverlayKey}
+            delegations={lastAssistantDelegations}
+            overlayKey={subAgentOverlayKey}
+          />
+        </div>
+        <SelectionActionBubble
+          containerRef={selectionBoxRef}
+          onQuote={onQuoteSelection}
         />
       </div>
-      <SelectionActionBubble
-        containerRef={selectionBoxRef}
-        onQuote={onQuoteSelection}
-      />
-    </div>
+    </SessionViewerHost>
   )
 }

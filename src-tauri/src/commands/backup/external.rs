@@ -349,6 +349,101 @@ mod tests {
         }
     }
 
+    /// `map_external_to_target` resolves an archive entry by
+    /// `find(|s| s.agent == agent)`, so a duplicated name silently routes the
+    /// SECOND source's entries into the FIRST source's root on restore. That is
+    /// invisible in a backup and only shows up as misplaced files on someone
+    /// else's machine, so pin the invariant here rather than trusting review.
+    /// An agent that owns two independently-relocatable trees (DeepSeek: its
+    /// session logs and its attachment store) needs two distinct names.
+    #[test]
+    fn external_source_agent_names_are_unique() {
+        let sources = external_transcript_sources();
+        let mut seen = std::collections::HashSet::new();
+        for src in &sources {
+            assert!(
+                seen.insert(src.agent),
+                "duplicate external source agent name: {}",
+                src.agent
+            );
+        }
+    }
+
+    /// deepseek-acp 0.6.0 puts prompt images in a content-addressed store that
+    /// is NOT under the session-log root, and the log keeps only a `sha256:`
+    /// reference. If the store is not archived, restoring on a clean machine
+    /// degrades every image to the parser's `[image …]` placeholder with the
+    /// bytes gone for good — so both trees must be registered, must restore to
+    /// their own roots, and the store's non-conversation siblings must stay out.
+    #[test]
+    fn deepseek_attachment_objects_restore_into_the_attachment_store() {
+        let sources = external_transcript_sources();
+        let logs = sources
+            .iter()
+            .find(|s| s.agent == "deepseek")
+            .expect("deepseek session logs are not registered for backup");
+        let store = sources
+            .iter()
+            .find(|s| s.agent == "deepseek-attachments")
+            .expect("deepseek attachment store is not registered for backup");
+        // Two roots, resolved independently — `DEEPSEEK_ACP_SESSIONS_ROOT` moves
+        // the logs without moving the store.
+        assert_ne!(logs.root, store.root);
+        assert!(store.root.ends_with("attachments/v1"), "{:?}", store.root);
+
+        // Scoped to `objects/`: `tmp/` is upload staging and `request-images/`
+        // holds per-provider re-encodings the agent rebuilds on demand.
+        let store_only = std::slice::from_ref(store);
+        let hex = "a".repeat(64);
+        let object = format!("external/deepseek-attachments/objects/aa/{hex}");
+        let (_, base, target) =
+            map_external_to_target(&object, store_only).expect("object entry must map");
+        assert_eq!(base, store.root);
+        assert_eq!(target, store.root.join("objects").join("aa").join(&hex));
+        assert!(
+            map_external_to_target("external/deepseek-attachments/tmp/staged", store_only).is_none()
+        );
+        assert!(map_external_to_target(
+            "external/deepseek-attachments/request-images/aa/bb",
+            store_only
+        )
+        .is_none());
+
+        // And the bytes actually land there on restore — at exactly the path
+        // `parsers::deepseek::attachment_image_block` reads back.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("attachments").join("v1");
+        let staged = dir.path().join("external");
+        std::fs::create_dir_all(staged.join("deepseek-attachments/objects/aa")).unwrap();
+        std::fs::create_dir_all(staged.join("deepseek-attachments/tmp")).unwrap();
+        std::fs::write(
+            staged.join("deepseek-attachments/objects/aa").join(&hex),
+            b"\x89PNG\r\n\x1a\n",
+        )
+        .unwrap();
+        std::fs::write(staged.join("deepseek-attachments/tmp/staged"), b"junk").unwrap();
+
+        let restored = vec![ExternalSource {
+            agent: "deepseek-attachments",
+            root: root.clone(),
+            is_file: false,
+            include_top: Some(&["objects"]),
+        }];
+        let skipped = restore_external_with_sources(
+            &staged,
+            &restored,
+            ConflictPolicy::SkipExisting,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(
+            std::fs::read(root.join("objects").join("aa").join(&hex)).unwrap(),
+            b"\x89PNG\r\n\x1a\n"
+        );
+        assert!(!root.join("tmp").join("staged").exists());
+    }
+
     /// Restore-to-original-locations must never silently overwrite an existing
     /// file: `SkipExisting` reports it as skipped and leaves it untouched,
     /// while `Overwrite` replaces it. Non-conflicting files always restore.

@@ -26,6 +26,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/message/delegation-status-badge"
 import { SubAgentSessionDialog } from "@/components/message/sub-agent-session-dialog"
+import { useSessionViewerHost } from "@/components/message/session-viewer-host"
 import {
   useDelegationCardModel,
   type DelegationCardSource,
@@ -114,6 +115,10 @@ const SubAgentOverlayRow = memo(function SubAgentOverlayRow({
   source: DelegationCardSource
 }) {
   const t = useTranslations("Folder.chat.delegation")
+  // Same host as the inline card — so the two entry points share one viewer,
+  // and neither depends on its own row surviving. `null` = rendered outside a
+  // `MessageListView`; keep the local drawer then.
+  const viewerHost = useSessionViewerHost()
   const [dialogOpen, setDialogOpen] = useState(false)
   const {
     agentType,
@@ -169,7 +174,11 @@ const SubAgentOverlayRow = memo(function SubAgentOverlayRow({
         <button
           type="button"
           data-testid="sub-agent-row"
-          onClick={() => setDialogOpen(true)}
+          onClick={() =>
+            viewerHost
+              ? viewerHost.open({ kind: "delegation", source })
+              : setDialogOpen(true)
+          }
           className="flex w-full items-center gap-2 rounded-lg border bg-transparent px-2 py-1.5 text-left transition-colors hover:bg-muted/60"
           // No aria-label: let the row content (agent name + task) name the
           // button so screen readers can tell rows apart. `title` stays for the
@@ -186,7 +195,7 @@ const SubAgentOverlayRow = memo(function SubAgentOverlayRow({
           {rowBody}
         </div>
       )}
-      {childConversationId != null && (
+      {viewerHost == null && childConversationId != null && (
         <SubAgentSessionDialog
           open={dialogOpen}
           onOpenChange={setDialogOpen}
