@@ -960,11 +960,6 @@ mod tests {
             std::env::temp_dir().join(format!("codeg-helper-e2e-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&data_dir).expect("create data dir");
 
-        // Save & override CODEG_DATA_DIR for the duration of this test —
-        // server-mode `keyring_store` resolves `tokens.json` from this var.
-        let saved_env = std::env::var("CODEG_DATA_DIR").ok();
-        std::env::set_var("CODEG_DATA_DIR", &data_dir);
-
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -974,7 +969,7 @@ mod tests {
         let token = "ghp_test_token_value";
         let account_id = "acct-1";
 
-        rt.block_on(async {
+        let body = async {
             // Seed: real on-disk DB with migrations + one github_accounts entry.
             let db = crate::db::init_database(&data_dir, "test")
                 .await
@@ -1026,13 +1021,14 @@ mod tests {
                 .await
                 .expect("miss should be Ok(None), not Err");
             assert!(miss.is_none(), "unrelated host must not match");
+        };
+
+        // Serialize this process-global override with every other `temp_env`
+        // user so parallel tests cannot redirect each other's token lookups.
+        temp_env::with_var("CODEG_DATA_DIR", Some(data_dir.as_path()), || {
+            rt.block_on(body);
         });
 
-        // Restore env and clean up.
-        match saved_env {
-            Some(v) => std::env::set_var("CODEG_DATA_DIR", v),
-            None => std::env::remove_var("CODEG_DATA_DIR"),
-        }
         let _ = std::fs::remove_dir_all(&data_dir);
     }
 }
