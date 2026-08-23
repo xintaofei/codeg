@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import { ExternalLink, Eye, EyeOff, Loader2, Plug } from "lucide-react"
 
+import { BrowserLink } from "@/components/ui/browser-link"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -257,15 +258,13 @@ export function OpenCodeConnectDialog({
                   </span>
                 )}
                 {catalogProvider?.doc && (
-                  <a
+                  <BrowserLink
                     href={catalogProvider.doc}
-                    target="_blank"
-                    rel="noreferrer"
                     className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
                   >
                     {t("openCode.connect.getKey")}
                     <ExternalLink className="h-3 w-3" />
-                  </a>
+                  </BrowserLink>
                 )}
               </div>
 

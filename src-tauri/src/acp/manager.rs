@@ -213,6 +213,10 @@ pub struct ConnectionManager {
     /// init. `Arc<OnceLock>` so the inner `Self` cloned from `clone_ref` sees
     /// the install too — the lock is set once at startup and never mutated.
     delegation_injection: Arc<std::sync::OnceLock<crate::acp::connection::DelegationInjection>>,
+    /// Chat-channel manager installed during bootstrap so live title writes
+    /// can sync Telegram topic names without threading the manager through
+    /// every `send_prompt_linked` caller. Optional in tests.
+    chat_channel: Arc<std::sync::OnceLock<crate::chat_channel::manager::ChatChannelManager>>,
     /// Per-agent-type serialization for `probe_agent_options`. Without
     /// this, rapid agent-tab clicks in the settings UI would fan out one
     /// real CLI process per click — each one running up to 60s. The
@@ -269,6 +273,7 @@ impl ConnectionManager {
             spawn_handshake_timeout: spawn_handshake_timeout_from_env(),
             terminal_shell_config: TerminalShellRuntimeConfig::new(),
             delegation_injection: Arc::new(std::sync::OnceLock::new()),
+            chat_channel: Arc::new(std::sync::OnceLock::new()),
             probe_locks: Arc::new(Mutex::new(HashMap::new())),
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
@@ -283,6 +288,7 @@ impl ConnectionManager {
             spawn_handshake_timeout: self.spawn_handshake_timeout,
             terminal_shell_config: self.terminal_shell_config.clone(),
             delegation_injection: self.delegation_injection.clone(),
+            chat_channel: self.chat_channel.clone(),
             probe_locks: self.probe_locks.clone(),
             pending_questions: self.pending_questions.clone(),
             pending_plan_approvals: self.pending_plan_approvals.clone(),
@@ -294,6 +300,22 @@ impl ConnectionManager {
     /// the unlikely event a second `build_delegation_stack` runs.
     pub fn install_delegation(&self, injection: crate::acp::connection::DelegationInjection) {
         let _ = self.delegation_injection.set(injection);
+    }
+
+    /// Install the chat-channel manager exactly once during bootstrap so
+    /// live title writes can sync bound forum topics. Calling twice is a
+    /// no-op. Tests leave this unset and skip the remote sync.
+    pub fn install_chat_channel(
+        &self,
+        manager: crate::chat_channel::manager::ChatChannelManager,
+    ) {
+        let _ = self.chat_channel.set(manager);
+    }
+
+    pub(crate) fn chat_channel(
+        &self,
+    ) -> Option<crate::chat_channel::manager::ChatChannelManager> {
+        self.chat_channel.get().map(|c| c.clone_ref())
     }
 
     fn delegation_snapshot(&self) -> Option<crate::acp::connection::DelegationInjection> {
@@ -317,6 +339,7 @@ impl ConnectionManager {
             spawn_handshake_timeout: timeout,
             terminal_shell_config: TerminalShellRuntimeConfig::new(),
             delegation_injection: Arc::new(std::sync::OnceLock::new()),
+            chat_channel: Arc::new(std::sync::OnceLock::new()),
             probe_locks: Arc::new(Mutex::new(HashMap::new())),
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
@@ -941,67 +964,195 @@ impl ConnectionManager {
         )
         .await?;
 
-        if !already_linked {
-            match (conversation_id, folder_id) {
-                // Branch A: caller already owns a row — adopt it. No DB write.
-                (Some(caller_conv_id), Some(caller_folder_id)) => {
-                    emit_with_state(
-                        &state_arc,
-                        &emitter,
-                        AcpEvent::ConversationLinked {
-                            conversation_id: caller_conv_id,
-                            folder_id: caller_folder_id,
-                            parent_conversation_id: None,
-                            parent_tool_use_id: None,
-                        },
-                    )
-                    .await;
-                }
-                // Function-entry guard rejects this combination.
-                (Some(_), None) => unreachable!(
-                    "conversation_id without folder_id should have been rejected at function entry"
-                ),
-                // Branch B: backend creates the row from caller-supplied
-                // folder_id. Phase 3c-1 made folder_id required here — every
-                // production caller that reaches this branch passes one, and
-                // silent fallback to working_dir-based find-or-create masked
-                // contract violations.
-                (None, Some(folder_id)) => {
-                    // Snapshot the delegation link before move-into-create: we
-                    // still need the parent ids for the ConversationLinked
-                    // event payload.
-                    let parent_conversation_id_for_event =
-                        delegation.as_ref().map(|d| d.parent_conversation_id);
-                    let parent_tool_use_id_for_event =
-                        delegation.as_ref().map(|d| d.parent_tool_use_id.clone());
-                    // Seed a delegation child's title from the task prompt so the
-                    // sidebar shows a meaningful label immediately. `list_children`
-                    // returns the raw DB title, so a child born with NULL reads
-                    // "Untitled" until the first detail load backfills it. Roots
-                    // (no delegation) keep `None` and follow the existing backfill.
-                    let seed_title = if delegation.is_some() {
-                        delegation_child_title_seed(&blocks)
+        // CANCELLATION SHIELD around the first link, same shape and for the same
+        // reason as `fork_session` below.
+        //
+        // Everything above this point is side-effect-free: drop this future and
+        // `_prompt_guard` drops with it, having changed nothing. What follows is
+        // not. `bind_external_id` COMMITS ownership of the agent session to a
+        // row, and only the publication after it makes that row reachable —
+        // `ConversationLinked` latches `state.conversation_id` (which is exactly
+        // what `already_linked` reads), and the upsert puts the row in every
+        // client's sidebar. Leaving that pair tied to this future means a
+        // dropped caller (server mode: an HTTP client disconnecting
+        // mid-request) can commit the bind and never publish, stranding a row
+        // that owns the session but that nothing was told about — after which
+        // Branch B fails EVERY retry with a `Conflict` naming that invisible
+        // row, until the connection is re-established.
+        //
+        // Reordering does not solve it, it only moves the damage: publishing
+        // first means a drop during the bind leaves the link latched onto a row
+        // that does NOT hold the session, so the next prompt takes the
+        // `already_linked` fast path and silently misfiles into the holder's
+        // transcript. Both orderings are unsafe under cancellation, so the
+        // phase must not be cancellable at all. It runs in a DETACHED task that
+        // OWNS the guard and hands it back: dropping this future no longer
+        // aborts the phase, it runs to completion and releases the lock when its
+        // result is dropped. The handle is awaited only to hand the outcome to a
+        // caller that is still there.
+        let _prompt_guard = if already_linked {
+            _prompt_guard
+        } else {
+            // Seed a delegation child's title from the task prompt so the
+            // sidebar shows a meaningful label immediately. `list_children`
+            // returns the raw DB title, so a child born with NULL reads
+            // "Untitled" until the first detail load backfills it. Roots keep
+            // `None` here and get the same first-prompt seed after the send
+            // succeeds (so a failed enqueue does not name a cancelled row).
+            // Computed out here so `blocks` stays with the caller for the
+            // actual prompt.
+            let seed_title = if delegation.is_some() {
+                delegation_child_title_seed(&blocks)
+            } else {
+                None
+            };
+            let db_conn = db.conn.clone();
+            let task_state = state_arc.clone();
+            let task_emitter = emitter.clone();
+            let task_conn_id = conn_id.to_string();
+            let task_delegation = delegation.clone();
+            let handle = tokio::spawn(async move {
+                // Holding the owned guard for the whole task is what shields the
+                // bind + publication from caller cancellation.
+                let guard = _prompt_guard;
+                let outcome: Result<(), AcpError> = async {
+                    // Resolve which row this prompt belongs to WITHOUT
+                    // announcing it yet — the announce is held back until the
+                    // session id has actually been bound to that row below.
+                    let (
+                        linked_conversation_id,
+                        linked_folder_id,
+                        parent_conv_for_event,
+                        parent_tool_for_event,
+                    ) = match (conversation_id, folder_id) {
+                        // Branch A: caller already owns a row — adopt it. No DB write.
+                        (Some(caller_conv_id), Some(caller_folder_id)) => {
+                            (caller_conv_id, caller_folder_id, None, None)
+                        }
+                        // Function-entry guard rejects this combination.
+                        (Some(_), None) => unreachable!(
+                            "conversation_id without folder_id should have been rejected at function entry"
+                        ),
+                        // Branch B: backend creates the row from caller-supplied
+                        // folder_id. Phase 3c-1 made folder_id required here —
+                        // every production caller that reaches this branch passes
+                        // one, and silent fallback to working_dir-based
+                        // find-or-create masked contract violations.
+                        (None, Some(folder_id)) => {
+                            // Snapshot the delegation link before
+                            // move-into-create: we still need the parent ids for
+                            // the ConversationLinked event payload.
+                            let parent_conversation_id_for_event =
+                                task_delegation.as_ref().map(|d| d.parent_conversation_id);
+                            let parent_tool_use_id_for_event = task_delegation
+                                .as_ref()
+                                .map(|d| d.parent_tool_use_id.clone());
+                            let row = conversation_service::create_with_delegation(
+                                &db_conn,
+                                folder_id,
+                                agent_type,
+                                seed_title,
+                                None,
+                                task_delegation,
+                            )
+                            .await
+                            .map_err(|e| AcpError::protocol(e.to_string()))?;
+                            (
+                                row.id,
+                                folder_id,
+                                parent_conversation_id_for_event,
+                                parent_tool_use_id_for_event,
+                            )
+                        }
+                        (None, None) => {
+                            return Err(AcpError::protocol(
+                                "folder_id required for new conversation row".to_string(),
+                            ));
+                        }
+                    };
+
+                    // UI new-conversation path: SessionStarted applied
+                    // state.external_id back during acp_connect, but
+                    // conversation_id was None then so the lifecycle
+                    // subscriber's SessionStarted handler skipped the DB write.
+                    // Now that we have resolved the row in the same prompt_lock
+                    // critical section, snapshot external_id and persist it
+                    // synchronously — no dependence on broadcaster eventual
+                    // consistency. The chat_channel reverse-order path (link
+                    // before SessionStarted) is unaffected and continues to be
+                    // handled by the lifecycle subscriber.
+                    let eid_opt = task_state.read().await.external_id.clone();
+                    let preserved = if let Some(eid) = eid_opt {
+                        // THE codeg#500 write. Branch A above adopts a row the
+                        // caller supplied, which may still be bound to an older
+                        // session — a connection spawned with `session_id = None`
+                        // (a reconnect that lost the id, or an unclassified
+                        // `session/load` failure that fell through to
+                        // `session/new`) arrives here holding a session that has
+                        // nothing to do with the row's history.
+                        // `bind_external_id` splits that history onto its own row
+                        // instead of overwriting it.
+                        let continues = crate::acp::continued_session_ids(agent_type, &eid);
+                        match conversation_service::bind_external_id(
+                            &db_conn,
+                            linked_conversation_id,
+                            &eid,
+                            &continues,
+                        )
+                        .await
+                        {
+                            Ok(preserved) => preserved,
+                            Err(e) => {
+                                // Refused, or a genuine DB failure. Either way
+                                // this row does not hold the session, so the
+                                // prompt must not go out and the link must not
+                                // stick.
+                                //
+                                // Branch B minted a row moments ago that no
+                                // client has been told about — it was never
+                                // announced, because the announce is below this
+                                // bind. Drop it, or every refused attempt would
+                                // leave another empty conversation behind for the
+                                // sidebar's next full refetch to surface. Branch
+                                // A creates nothing and has nothing to undo.
+                                if conversation_id.is_none() {
+                                    if let Err(cleanup) = conversation_service::soft_delete(
+                                        &db_conn,
+                                        linked_conversation_id,
+                                    )
+                                    .await
+                                    {
+                                        tracing::warn!(
+                                            conversation_id = linked_conversation_id,
+                                            error = %cleanup,
+                                            "[manager] failed to drop the unannounced row left \
+                                             by a refused bind"
+                                        );
+                                    }
+                                }
+                                return Err(AcpError::protocol(e.to_string()));
+                            }
+                        }
                     } else {
+                        tracing::info!(
+                            "[manager] send_prompt_linked: conversation resolved but \
+                             external_id not yet on state (conn={task_conn_id}); lifecycle \
+                             subscriber will catch up when SessionStarted arrives"
+                        );
                         None
                     };
-                    let row = conversation_service::create_with_delegation(
-                        &db.conn,
-                        folder_id,
-                        agent_type,
-                        seed_title,
-                        None,
-                        delegation.clone(),
-                    )
-                    .await
-                    .map_err(|e| AcpError::protocol(e.to_string()))?;
+
+                    // Bound (or nothing to bind). NOW the link is real, so
+                    // announce it: this is the write that makes `already_linked`
+                    // true for every subsequent prompt on this connection.
                     emit_with_state(
-                        &state_arc,
-                        &emitter,
+                        &task_state,
+                        &task_emitter,
                         AcpEvent::ConversationLinked {
-                            conversation_id: row.id,
-                            folder_id,
-                            parent_conversation_id: parent_conversation_id_for_event,
-                            parent_tool_use_id: parent_tool_use_id_for_event,
+                            conversation_id: linked_conversation_id,
+                            folder_id: linked_folder_id,
+                            parent_conversation_id: parent_conv_for_event,
+                            parent_tool_use_id: parent_tool_for_event,
                         },
                     )
                     .await;
@@ -1009,12 +1160,16 @@ impl ConnectionManager {
                     // prompt sent without a pre-created row, not the create
                     // button) must reach every client immediately via the global
                     // `conversation://changed` channel. Roots land in the sidebar
-                    // list; delegation children (parent set) are routed into their
-                    // parent's expanded sub-session subtree and bump its chevron.
-                    // Both carry `external_id: null` here (no session yet) — the
-                    // external_id write below re-broadcasts the full summary.
+                    // list; delegation children (parent set) are routed into
+                    // their parent's expanded sub-session subtree and bump its
+                    // chevron. Emitted after the bind, so — unlike before, when
+                    // Branch B broadcast an `external_id: null` summary and a
+                    // second upsert corrected it — this carries the complete
+                    // summary first time.
                     crate::commands::conversations::emit_conversation_upsert(
-                        &emitter, &db.conn, row.id,
+                        &task_emitter,
+                        &db_conn,
+                        linked_conversation_id,
                     )
                     .await;
                     // A new delegation child changes its parent's child_count
@@ -1022,67 +1177,45 @@ impl ConnectionManager {
                     // the parent so every client converges its count from the
                     // authoritative DB aggregate rather than a drift-prone
                     // per-client increment. The parent may itself be a root or a
-                    // nested child — the upsert routes correctly either way by its
-                    // own parent_id.
-                    if let Some(parent_id) = parent_conversation_id_for_event {
+                    // nested child — the upsert routes correctly either way by
+                    // its own parent_id.
+                    if let Some(parent_id) = parent_conv_for_event {
                         crate::commands::conversations::emit_conversation_upsert(
-                            &emitter, &db.conn, parent_id,
+                            &task_emitter,
+                            &db_conn,
+                            parent_id,
                         )
                         .await;
                     }
-                }
-                (None, None) => {
-                    return Err(AcpError::protocol(
-                        "folder_id required for new conversation row".to_string(),
-                    ));
-                }
-            }
-
-            // UI new-conversation path: SessionStarted applied state.external_id
-            // back during acp_connect, but conversation_id was None then so the
-            // lifecycle subscriber's SessionStarted handler skipped the DB write.
-            // Now that we just linked the row in the same prompt_lock critical
-            // section, snapshot external_id and persist it synchronously — no
-            // dependence on broadcaster eventual consistency. The chat_channel
-            // reverse-order path (link before SessionStarted) is unaffected and
-            // continues to be handled by the lifecycle subscriber.
-            let (cid_opt, eid_opt) = {
-                let s = state_arc.read().await;
-                (s.conversation_id, s.external_id.clone())
-            };
-            if let (Some(cid), Some(eid)) = (cid_opt, eid_opt) {
-                // THE codeg#500 write. Branch A above adopts a row the caller
-                // supplied, which may still be bound to an older session — a
-                // connection spawned with `session_id = None` (a reconnect that
-                // lost the id, or an unclassified `session/load` failure that
-                // fell through to `session/new`) arrives here holding a session
-                // that has nothing to do with the row's history. `bind_external_id`
-                // splits that history onto its own row instead of overwriting it.
-                let continues = crate::acp::continued_session_ids(agent_type, &eid);
-                let preserved =
-                    conversation_service::bind_external_id(&db.conn, cid, &eid, &continues)
-                        .await
-                        .map_err(|e| AcpError::protocol(e.to_string()))?;
-                // SessionStarted arrived BEFORE this link, so the lifecycle
-                // subscriber skipped its broadcast (no conversation_id then).
-                // Now that external_id is persisted, converge every client's
-                // sidebar with the complete summary — this also corrects a
-                // Branch B upsert above that necessarily carried
-                // `external_id: null`. Root-only via the helper.
-                crate::commands::conversations::emit_conversation_upsert(&emitter, &db.conn, cid)
+                    crate::commands::conversations::emit_preserved_conversation(
+                        &task_emitter,
+                        &db_conn,
+                        preserved,
+                    )
                     .await;
-                crate::commands::conversations::emit_preserved_conversation(
-                    &emitter, &db.conn, preserved,
-                )
+                    Ok(())
+                }
                 .await;
-            } else if cid_opt.is_some() {
-                tracing::info!(
-                    "[manager] send_prompt_linked: conversation linked but \
-                     external_id not yet on state (conn={conn_id}); lifecycle \
-                     subscriber will catch up when SessionStarted arrives"
-                );
-            }
-        }
+                // Logged HERE, not just returned. Once the phase is detached the
+                // caller may be gone by now, and `handle.await`'s result is then
+                // dropped unread — a `Conflict` (or any failure) would leave no
+                // trace at all in exactly the disconnect case this shield exists
+                // to handle.
+                if let Err(e) = &outcome {
+                    tracing::warn!(
+                        connection_id = %task_conn_id,
+                        error = %e,
+                        "[manager] conversation link phase failed"
+                    );
+                }
+                (outcome, guard)
+            });
+            let (outcome, guard) = handle.await.map_err(|e| {
+                AcpError::protocol(format!("conversation link phase failed to join: {e}"))
+            })?;
+            outcome?;
+            guard
+        };
 
         // Centralized status transition: every prompt send flips the
         // conversation row to InProgress. This MUST happen on every call
@@ -1116,6 +1249,15 @@ impl ConnectionManager {
         // never reached the agent produces no "user message" notification.
         let user_prompt_preview = if delegation.is_none() {
             user_prompt_text_preview(&blocks)
+        } else {
+            None
+        };
+        // Seed an unlocked title from the first prompt so the sidebar is not
+        // "Untitled" while the agent is still working. Native ACP titles
+        // (session_info_update) replace this later via refresh_auto_title.
+        // Delegation children are already seeded at row create.
+        let first_prompt_title = if delegation.is_none() {
+            delegation_child_title_seed(&blocks)
         } else {
             None
         };
@@ -1177,6 +1319,33 @@ impl ConnectionManager {
                         AcpEvent::UserPromptSent { text_preview },
                     )
                     .await;
+                }
+                if let (Some(cid), Some(title)) =
+                    (conversation_id_for_status, first_prompt_title)
+                {
+                    match conversation_service::seed_auto_title_if_empty(&db.conn, cid, title)
+                        .await
+                    {
+                        Ok(true) => {
+                            crate::commands::conversations::emit_conversation_upsert(
+                                &emitter, &db.conn, cid,
+                            )
+                            .await;
+                            if let Some(ccm) = self.chat_channel() {
+                                crate::commands::conversations::spawn_sync_conversation_title_until_current(
+                                    db.conn.clone(),
+                                    ccm,
+                                    cid,
+                                );
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(e) => tracing::warn!(
+                            conversation_id = cid,
+                            error = %e,
+                            "[manager] first-prompt title seed failed"
+                        ),
+                    }
                 }
                 Ok(conversation_id_for_status)
             }
@@ -3943,6 +4112,178 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_prompt_linked_refuses_a_session_owned_by_another_conversation() {
+        // The connection holds a session that ALREADY belongs to a different
+        // row, so no bind can make this row own it.
+        //
+        // The retry is the whole point of the test. `ConversationLinked` is
+        // applied to `SessionState`, and `already_linked` is read from exactly
+        // that field — so announcing the link before the bind meant the first
+        // call failed with the link latched, and the SECOND call skipped the
+        // entire link/bind block and dispatched the turn into a session this
+        // row does not own. Both calls must fail identically, and neither may
+        // enqueue a prompt.
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/conflict").await;
+
+        let holder = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Codex,
+            Some("owns the session".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        conversation_service::bind_external_id(&db.conn, holder.id, "S_SHARED", &[])
+            .await
+            .unwrap();
+        let target = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Codex,
+            Some("the row the user is looking at".into()),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-conflict";
+        let mut cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::Codex,
+            Some(PathBuf::from("/tmp/conflict")),
+        )
+        .await;
+        mgr.get_state(conn_id)
+            .await
+            .unwrap()
+            .write()
+            .await
+            .external_id = Some("S_SHARED".into());
+
+        for attempt in 1..=2 {
+            let err = mgr
+                .send_prompt_linked(
+                    &db,
+                    conn_id,
+                    vec![PromptInputBlock::Text {
+                        text: "should never reach the agent".into(),
+                    }],
+                    Some(folder_id),
+                    Some(target.id),
+                    None,
+                )
+                .await
+                .expect_err("a session owned by another row must be refused");
+            assert!(
+                err.to_string().contains("already bound"),
+                "attempt {attempt} must name the conflict, got {err}"
+            );
+            assert!(
+                mgr.get_state(conn_id)
+                    .await
+                    .unwrap()
+                    .read()
+                    .await
+                    .conversation_id
+                    .is_none(),
+                "attempt {attempt} must leave the connection UNLINKED, or the next \
+                 prompt takes the already_linked fast path and skips the bind"
+            );
+            assert!(
+                drain_prompt_user_messages(&mut cmd_rx).is_empty(),
+                "attempt {attempt} must not enqueue a prompt"
+            );
+        }
+
+        // Neither row moved, and no split row was manufactured.
+        assert_eq!(
+            conversation_service::get_by_id(&db.conn, target.id)
+                .await
+                .expect("target")
+                .external_id,
+            None
+        );
+        assert_eq!(
+            conversation_service::get_by_id(&db.conn, holder.id)
+                .await
+                .expect("holder")
+                .external_id
+                .as_deref(),
+            Some("S_SHARED")
+        );
+    }
+
+    #[tokio::test]
+    async fn send_prompt_linked_drops_the_row_it_minted_when_the_bind_is_refused() {
+        // Branch B mints the row before the bind can be attempted. Since the
+        // announce now happens AFTER the bind, a refused one leaves a row no
+        // client was ever told about — invisible until the sidebar's next full
+        // refetch surfaces it as an empty untitled conversation. Every retry
+        // would add another.
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/conflict-b").await;
+
+        let holder =
+            conversation_service::create(&db.conn, folder_id, AgentType::Codex, None, None)
+                .await
+                .unwrap();
+        conversation_service::bind_external_id(&db.conn, holder.id, "S_SHARED", &[])
+            .await
+            .unwrap();
+
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-conflict-b";
+        let _cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::Codex,
+            Some(PathBuf::from("/tmp/conflict-b")),
+        )
+        .await;
+        mgr.get_state(conn_id)
+            .await
+            .unwrap()
+            .write()
+            .await
+            .external_id = Some("S_SHARED".into());
+
+        for _ in 0..2 {
+            mgr.send_prompt_linked(
+                &db,
+                conn_id,
+                vec![PromptInputBlock::Text { text: "hi".into() }],
+                Some(folder_id),
+                // No conversation_id — Branch B.
+                None,
+                None,
+            )
+            .await
+            .expect_err("must be refused");
+        }
+
+        let listed = crate::commands::conversations::list_all_conversations_core(
+            &db.conn,
+            &EventEmitter::Noop,
+            &crate::chat_channel::manager::ChatChannelManager::new(),
+            crate::commands::conversations::ListAllConversationsOptions::default(),
+        )
+        .await
+        .expect("list");
+        assert_eq!(
+            listed.len(),
+            1,
+            "only the pre-existing holder may remain, got {listed:?}"
+        );
+        assert_eq!(listed[0].id, holder.id);
+    }
+
+    #[tokio::test]
     async fn send_prompt_linked_rejects_second_prompt_while_turn_in_flight() {
         // Two clients co-controlling one connection can send near-
         // simultaneously. The first accepted prompt marks the turn in flight;
@@ -4532,6 +4873,27 @@ mod tests {
         assert!(preview.ends_with("..."));
     }
 
+    /// The chat-channel handle is installed once at bootstrap on the ONE
+    /// manager Tauri/axum owns, but every consumer (the web AppState at
+    /// `web/mod.rs`, the lifecycle worker) holds a `clone_ref` of it. The
+    /// handle therefore has to live behind the shared `Arc<OnceLock>` — if a
+    /// clone ever got a fresh lock, live title writes would stop renaming
+    /// bound Telegram topics on exactly the paths that do the writing, with
+    /// no error anywhere.
+    #[test]
+    fn installed_chat_channel_survives_clone_ref() {
+        let mgr = ConnectionManager::new();
+        assert!(mgr.chat_channel().is_none(), "unset before bootstrap");
+
+        // Install on a clone: the handle must become visible on the original
+        // too (bootstrap order across `clone_ref` boundaries is not fixed).
+        let clone = mgr.clone_ref();
+        clone.install_chat_channel(crate::chat_channel::manager::ChatChannelManager::new());
+
+        assert!(mgr.chat_channel().is_some());
+        assert!(mgr.clone_ref().chat_channel().is_some());
+    }
+
     #[test]
     fn delegation_child_title_seed_uses_parser_title_from_first_prompt() {
         // The delegating prompt is a single text block (the task) — the seed must
@@ -4613,6 +4975,52 @@ mod tests {
             }
         }
         assert_eq!(found.as_deref(), Some("hello world"));
+    }
+
+    #[tokio::test]
+    async fn send_prompt_linked_seeds_first_prompt_title_when_untitled() {
+        use crate::db::test_helpers;
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/title-seed").await;
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-title-seed";
+        let _rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::ClaudeCode,
+            Some(PathBuf::from("/tmp/title-seed")),
+        )
+        .await;
+
+        mgr.send_prompt_linked(
+            &db,
+            conn_id,
+            vec![PromptInputBlock::Text {
+                text: "hello world".into(),
+            }],
+            Some(folder_id),
+            None,
+            None,
+        )
+        .await
+        .expect("send");
+
+        let cid = mgr
+            .get_state(conn_id)
+            .await
+            .unwrap()
+            .read()
+            .await
+            .conversation_id
+            .expect("row linked");
+        let row = conversation_service::get_by_id(&db.conn, cid)
+            .await
+            .expect("get");
+        assert_eq!(row.title.as_deref(), Some("hello world"));
+        assert!(
+            !row.title_locked,
+            "first-prompt seed must stay unlocked so a later ACP title can replace it"
+        );
     }
 
     /// A textless prompt (image-only) succeeds but emits NO `UserPromptSent` —

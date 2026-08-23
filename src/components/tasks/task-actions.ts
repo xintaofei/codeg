@@ -5,6 +5,7 @@ import {
   CalendarClock,
   CircleCheck,
   GitMerge,
+  GitPullRequestArrow,
   ListX,
   MessageSquareText,
   Pencil,
@@ -12,7 +13,12 @@ import {
   RotateCw,
   type LucideIcon,
 } from "lucide-react"
-import { hasNothingToMerge, isMergeQueued } from "./task-acceptance"
+import {
+  hasNothingToMerge,
+  isMergeQueued,
+  mustDeliverToPr,
+  usesMergeRequests,
+} from "./task-acceptance"
 import type { WorkTask } from "@/lib/types"
 
 export interface TaskActionItem {
@@ -30,6 +36,10 @@ export interface TaskActionHandlers {
   /** Opens the read-only live session viewer (TaskTranscriptDialog). */
   onViewSession: () => void
   onMerge: () => void
+  /** Pushes the task to the forge: a new pull request for an issue-sourced
+   *  task, back onto its own branch for a pull-request-sourced one — which is
+   *  the ONLY acceptance those have (see `mustDeliverToPr`). */
+  onDeliverPr: () => void
   /** Withdraws a merge that is waiting in the project's queue (see
    *  `isMergeQueued`) — the task stays in review. */
   onUnqueueMerge: () => void
@@ -51,6 +61,8 @@ type ActionLabelKey =
   | "actionRequeue"
   | "actionViewSession"
   | "actionMerge"
+  | "actionDeliverPrBack"
+  | "actionDeliverPrBackMr"
   | "actionUnqueueMerge"
   | "actionComplete"
   | "actionArchive"
@@ -124,18 +136,32 @@ export function buildTaskActions(
           break
         }
         // Nothing was changed ⟹ nothing to merge: offer the acceptance that
-        // actually applies.
-        primary = hasNothingToMerge(task)
-          ? {
-              icon: CircleCheck,
-              label: t("actionComplete"),
-              onClick: handlers.onComplete,
-            }
-          : {
-              icon: GitMerge,
-              label: t("actionMerge"),
-              onClick: handlers.onMerge,
-            }
+        // actually applies. A task that came from a pull request has its own
+        // one — its work goes back to that pull request, never onto the local
+        // base.
+        if (hasNothingToMerge(task)) {
+          primary = {
+            icon: CircleCheck,
+            label: t("actionComplete"),
+            onClick: handlers.onComplete,
+          }
+        } else if (mustDeliverToPr(task)) {
+          primary = {
+            icon: GitPullRequestArrow,
+            label: t(
+              usesMergeRequests(task)
+                ? "actionDeliverPrBackMr"
+                : "actionDeliverPrBack"
+            ),
+            onClick: handlers.onDeliverPr,
+          }
+        } else {
+          primary = {
+            icon: GitMerge,
+            label: t("actionMerge"),
+            onClick: handlers.onMerge,
+          }
+        }
         break
       case "merging":
         break

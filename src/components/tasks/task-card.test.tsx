@@ -4,7 +4,15 @@ import { NextIntlClientProvider } from "next-intl"
 import { describe, expect, it, vi } from "vitest"
 import enMessages from "@/i18n/messages/en.json"
 import type { WorkTask } from "@/lib/types"
+import { openUrl } from "@/lib/platform"
 import { TaskCard } from "./task-card"
+
+// Partial mock: only the opener is stubbed, so anything else the card's module
+// graph pulls from `@/lib/platform` later keeps its real implementation.
+vi.mock("@/lib/platform", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/platform")>()),
+  openUrl: vi.fn(async () => {}),
+}))
 
 function task(overrides?: Partial<WorkTask>): WorkTask {
   return {
@@ -56,6 +64,7 @@ function renderCard(
     onRequeue: noop,
     onViewSession: noop,
     onMerge: noop,
+    onDeliverPr: noop,
     onUnqueueMerge: noop,
     onComplete: noop,
     onArchive: noop,
@@ -250,5 +259,53 @@ describe("TaskCard agent mark", () => {
     renderCard(task({ agent_type: null }))
     expect(screen.queryByTitle("Claude Code")).toBeNull()
     expect(screen.getByText("Answer the question")).toBeInTheDocument()
+  })
+})
+
+describe("TaskCard forge provenance", () => {
+  const sourced = () =>
+    task({
+      source_kind: "forge_issue",
+      source_meta: {
+        provider: "github",
+        server_host: "github.com",
+        api_base: "https://api.github.com",
+        account_id: "acct-1",
+        owner_repo: "acme/widgets",
+        number: 123,
+        url: "https://github.com/acme/widgets/issues/123",
+        title: "Answer the question",
+      },
+    })
+
+  it("links to the work item it came from", () => {
+    renderCard(sourced())
+    expect(
+      screen.getByRole("link", { name: "#123 · acme/widgets" })
+    ).toHaveAttribute("href", "https://github.com/acme/widgets/issues/123")
+  })
+
+  it("opens the work item through the platform opener, not the card", async () => {
+    // `target="_blank"` alone is inert in the desktop webview — the click has
+    // to reach `openUrl`. And it must not also open the detail sheet.
+    const onOpen = vi.fn()
+    renderCard(sourced(), { onOpen })
+    await userEvent.click(
+      screen.getByRole("link", { name: "#123 · acme/widgets" })
+    )
+    expect(openUrl).toHaveBeenCalledWith(
+      "https://github.com/acme/widgets/issues/123"
+    )
+    expect(onOpen).not.toHaveBeenCalled()
+  })
+
+  it("keeps the link off the folder/branch line", () => {
+    // A repo path beside `repo / task/7` either crowds it or truncates itself
+    // into uselessness — the link owns its own row.
+    renderCard(sourced())
+    const link = screen.getByRole("link", { name: "#123 · acme/widgets" })
+    const metaLine = screen.getByText("task/7").parentElement
+    expect(metaLine).not.toBeNull()
+    expect(metaLine?.contains(link)).toBe(false)
   })
 })

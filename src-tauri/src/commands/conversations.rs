@@ -16,6 +16,8 @@ use crate::parsers::cline::ClineParser;
 use crate::parsers::codebuddy::CodeBuddyParser;
 use crate::parsers::codex::CodexParser;
 use crate::parsers::deepseek::DeepSeekParser;
+use crate::parsers::antigravity::AntigravityParser;
+use crate::parsers::qoder::QoderParser;
 use crate::parsers::gemini::GeminiParser;
 use crate::parsers::cursor::CursorParser;
 use crate::parsers::grok::GrokParser;
@@ -248,6 +250,8 @@ fn list_conversations_sync(
         (AgentType::Grok, Box::new(GrokParser::new())),
         (AgentType::Cursor, Box::new(CursorParser::new())),
         (AgentType::DeepSeek, Box::new(DeepSeekParser::new())),
+        (AgentType::Qoder, Box::new(QoderParser::new())),
+        (AgentType::Antigravity, Box::new(AntigravityParser::new())),
     ];
     // Registered custom agents read back from codeg's own ACP transcripts, so
     // their sessions participate in folder grouping and stats like any other.
@@ -363,6 +367,8 @@ pub async fn get_conversation(
             AgentType::Grok => Box::new(GrokParser::new()),
             AgentType::Cursor => Box::new(CursorParser::new()),
             AgentType::DeepSeek => Box::new(DeepSeekParser::new()),
+            AgentType::Qoder => Box::new(QoderParser::new()),
+            AgentType::Antigravity => Box::new(AntigravityParser::new()),
             // Custom ACP agents have no native store to reverse-engineer;
             // their history is codeg's own ACP transcript.
             AgentType::Custom(_) => Box::new(AcpNativeParser::new(agent_type)),
@@ -1137,6 +1143,8 @@ pub async fn get_folder_conversation_core(
                 AgentType::Grok => Box::new(GrokParser::new()),
                 AgentType::Cursor => Box::new(CursorParser::new()),
                 AgentType::DeepSeek => Box::new(DeepSeekParser::new()),
+                AgentType::Qoder => Box::new(QoderParser::new()),
+                AgentType::Antigravity => Box::new(AntigravityParser::new()),
                 AgentType::Custom(_) => Box::new(AcpNativeParser::new(at)),
             };
             match parser.get_conversation(&eid) {
@@ -1653,9 +1661,18 @@ pub(crate) async fn emit_preserved_conversation(
 /// never a stale snapshot captured at spawn time.
 ///
 /// Deliberately NOT capped at N attempts. The loop exits only when the title it
-/// just read equals the one it last sent, so an exit always leaves the provider
-/// holding the current title; any fixed cap reintroduces exactly the bug this
-/// closes (rename → stall → rename → … exhausts the cap and exits stale). It
+/// just read equals the one it last SENT, so the last value it sent is always
+/// the current one; any fixed cap reintroduces exactly the bug this closes
+/// (rename → stall → rename → … exhausts the cap and exits stale).
+///
+/// The guarantee is about what was SENT, not about what the provider ended up
+/// holding. `sync_conversation_title` reports nothing back, so an edit that the
+/// provider rejected still counts as sent and is not retried here — on that
+/// path the thread keeps its old name. That is the intended best-effort
+/// contract, not an oversight: the DB has already converged and is the source
+/// of truth, the channel layer logs the failure, and retrying a provider that
+/// is down would turn a detached task into an unbounded remote-call loop over a
+/// cosmetic thread title. It
 /// cannot spin on its own: an iteration happens only when a NEW title was
 /// observed, so it terminates as soon as renames stop, and each iteration is
 /// rate-limited by one provider round-trip. Two concurrent syncs for the same
@@ -1692,6 +1709,20 @@ async fn sync_conversation_title_until_current(
             .await;
         sent = Some(title);
     }
+}
+
+/// Detach a chat-channel title sync so a live title write cannot sit on
+/// Telegram's 60s `editForumTopic` timeout. Callers that already upserted
+/// the sidebar should use this rather than awaiting `sync_conversation_title`.
+pub(crate) fn spawn_sync_conversation_title_until_current(
+    conn: sea_orm::DatabaseConnection,
+    chat_channel_manager: crate::chat_channel::manager::ChatChannelManager,
+    conversation_id: i32,
+) {
+    tokio::spawn(async move {
+        sync_conversation_title_until_current(&conn, &chat_channel_manager, conversation_id)
+            .await;
+    });
 }
 
 /// Broadcast and propagate title changes discovered outside codeg (for
@@ -2367,6 +2398,19 @@ fn parse_error_to_app_error(error: ParseError) -> AppCommandError {
 mod tests {
     use super::*;
     use crate::db::test_helpers::{fresh_in_memory_db, seed_folder};
+
+    /// Serializes every test that touches the process-global [`IMPORT_GUARD`].
+    ///
+    /// The harness runs `#[tokio::test]`s on parallel threads of one process, so
+    /// a test that *holds* the guard and a test that *calls* a guard-taking
+    /// import flip each other's expected outcome: the caller sees a spurious
+    /// "already in progress" instead of its real error, and the holder's
+    /// `try_lock().expect(...)` panics. Both are timing-dependent, so the suite
+    /// passes locally and fails on a loaded CI runner.
+    ///
+    /// Always take this *before* `IMPORT_GUARD` (never the reverse) so the two
+    /// locks can't deadlock. Held for the whole test body.
+    static IMPORT_GUARD_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     // ──────────────────────────────────────────────────────────────────────
     // Delegation meta injection for historical reload. Parsers always emit
@@ -4268,6 +4312,9 @@ mod tests {
 
     #[tokio::test]
     async fn import_local_conversations_core_missing_folder_errors() {
+        // Takes IMPORT_GUARD internally — must not overlap a test holding it,
+        // or the guard error masks the not-found error asserted below.
+        let _serialized = IMPORT_GUARD_SERIALIZER.lock().await;
         let db = fresh_in_memory_db().await;
         let err = import_local_conversations_core(
             &db.conn,
@@ -5277,6 +5324,7 @@ mod tests {
 
     #[tokio::test]
     async fn import_selected_sessions_core_rejects_concurrent_and_empty() {
+        let _serialized = IMPORT_GUARD_SERIALIZER.lock().await;
         let db = fresh_in_memory_db().await;
 
         assert!(
@@ -5305,6 +5353,7 @@ mod tests {
         // legacy import racing a batch import could double-insert on a DB with no
         // unique index. With the guard held it is rejected BEFORE the folder
         // lookup, so even a valid folder id surfaces the guard error, not a hit.
+        let _serialized = IMPORT_GUARD_SERIALIZER.lock().await;
         let db = fresh_in_memory_db().await;
         let folder_id = seed_folder(&db, "/tmp/legacy-guard").await;
 

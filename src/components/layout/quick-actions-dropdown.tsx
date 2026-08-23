@@ -6,12 +6,12 @@ import {
   FolderGit2,
   FolderOpenDot,
   GamepadDirectional,
+  LayoutTemplate,
   ListChecks,
   ListTodo,
   MonitorCloud,
   PawPrint,
   Rocket,
-  Search,
   Settings,
   Zap,
 } from "lucide-react"
@@ -30,24 +30,18 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { useActiveFolder } from "@/contexts/active-folder-context"
-import { useSearchDialog } from "@/contexts/search-dialog-context"
 import { useAutomationsView } from "@/contexts/automations-view-context"
 import { useTasksView } from "@/contexts/tasks-view-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
+import { useRemoteWorkspaceConnections } from "@/hooks/use-remote-workspace-connections"
 import { openImportSessionsWindow, openProjectBootWindow } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import { openPetWindow } from "@/lib/pet/api"
-import { isDesktop } from "@/lib/platform"
-import {
-  listRemoteWorkspaceConnections,
-  openRemoteWorkspace,
-} from "@/lib/remote-workspace"
-import type { RemoteWorkspaceConnection } from "@/lib/types"
-import { cn } from "@/lib/utils"
 import { CloneDialog } from "./clone-dialog"
 import { RemoteWorkspaceManageDialog } from "./remote-workspace-manage-dialog"
 import { WorkspaceFolderDialog } from "./workspace-folder-dialog"
 import { ConversationManageDialog } from "@/components/conversations/conversation-manage-dialog"
+import { ForgeBetaBadge } from "@/components/forge/forge-beta-badge"
 
 /**
  * The quick-actions launcher pinned to the status bar's leading edge — the
@@ -59,8 +53,9 @@ import { ConversationManageDialog } from "@/components/conversations/conversatio
  * collapsed. The status bar never unmounts, so this menu is the one always-on
  * path to all of them. Items are grouped by what they act on rather than by
  * where they used to live: workspace (open/clone/boot/remote), sessions
- * (manage/import/search), workbench routes (automations/to-dos), and the
- * desktop pet.
+ * (manage/import), navigation (every full-page workbench route), and the
+ * desktop pet. Search is the one deliberate omission — it has a permanent
+ * button in the window's top-left chrome, so it needs no always-on fallback.
  *
  * Dialogs are rendered as siblings of the menu, not inside it: the menu
  * unmounts its content on close, which would take a nested dialog with it.
@@ -73,41 +68,24 @@ export function QuickActionsDropdown() {
   const tPet = useTranslations("Pet.manager")
 
   const { activeFolder } = useActiveFolder()
-  const { setOpen: setSearchOpen } = useSearchDialog()
   const { unseenFailures } = useAutomationsView()
   const { attentionCount } = useTasksView()
-  const { routeId, setRoute } = useWorkbenchRoute()
+  const { setRoute } = useWorkbenchRoute()
 
   const [folderDialogOpen, setFolderDialogOpen] = useState(false)
   const [cloneOpen, setCloneOpen] = useState(false)
   const [remoteManageOpen, setRemoteManageOpen] = useState(false)
   const [manageFolderId, setManageFolderId] = useState<number | null>(null)
-  const [remoteConnections, setRemoteConnections] = useState<
-    RemoteWorkspaceConnection[]
-  >([])
 
   // Remote connections are only reachable on the desktop runtime (a web client
   // can't spawn another window bound to a different server), so the whole
   // submenu — and the pet entry below it — self-hide elsewhere.
-  const desktop = isDesktop()
-
-  const refreshRemote = useCallback(async () => {
-    if (!desktop) return
-    try {
-      setRemoteConnections(await listRemoteWorkspaceConnections())
-    } catch (err) {
-      toast.error(tRemote("loadFailed"), { description: toErrorMessage(err) })
-    }
-  }, [desktop, tRemote])
-
-  const handleOpenRemote = useCallback(
-    (connectionId: number) => {
-      openRemoteWorkspace(connectionId).catch((err) => {
-        toast.error(tRemote("openFailed"), { description: toErrorMessage(err) })
-      })
-    },
-    [tRemote]
-  )
+  const {
+    desktop,
+    connections: remoteConnections,
+    refresh: refreshRemote,
+    open: handleOpenRemote,
+  } = useRemoteWorkspaceConnections()
 
   const handleProjectBoot = useCallback(() => {
     openProjectBootWindow().catch((err) => {
@@ -143,7 +121,16 @@ export function QuickActionsDropdown() {
             title={t("title")}
             aria-label={t("title")}
           >
-            <GamepadDirectional aria-hidden="true" className="h-3.5 w-3.5" />
+            {/* Sized with `size-3.5`, NOT `h-3.5 w-3.5`: the Button base
+                carries `[&_svg:not([class*='size-'])]:size-4`, and that
+                selector's (0,2,1) specificity beats a bare `h-*`/`w-*`
+                (0,1,0) — so the `h-3.5 w-3.5` spelling silently rendered this
+                glyph at 1rem, the largest icon on a bar whose others are
+                0.75–0.875rem. Spelling it `size-` is what opts out of that
+                rule. 0.875rem is also exactly the sidebar's nav-icon size, so
+                atop the bar's `pl-2` this glyph shares their leading edge, not
+                just their rail axis. */}
+            <GamepadDirectional aria-hidden="true" className="size-3.5" />
           </Button>
         </DropdownMenuTrigger>
         {/* `side="top"`: the trigger sits on the window's bottom edge, so the
@@ -228,19 +215,21 @@ export function QuickActionsDropdown() {
             <Download />
             {tSidebar("importLocalSessions")}
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => setSearchOpen(true)}>
-            <Search />
-            {tSidebar("search")}
-          </DropdownMenuItem>
+          {/* No Search row: it now has a permanent button in the window's
+              top-left chrome (`LeftEdgeChrome`, and `FolderTitleBar` on mobile),
+              which is visible without opening anything. This menu exists for
+              actions whose only other home disappears with the sidebar. */}
 
           <DropdownMenuSeparator />
-          <DropdownMenuLabel>{t("groups.automation")}</DropdownMenuLabel>
-          {/* Both rows carry the same badges as their sidebar twins: failures
-              are destructive-tinted, tasks waiting on the user are not. */}
-          <DropdownMenuItem
-            onSelect={() => setRoute("automations")}
-            className={cn(routeId === "automations" && "bg-accent/60")}
-          >
+          <DropdownMenuLabel>{t("groups.navigation")}</DropdownMenuLabel>
+          {/* Every full-page workbench route the sidebar lists, in the sidebar's
+              own order. The badged rows carry the same badges as their sidebar
+              twins: failures are destructive-tinted, tasks waiting on the user
+              are not. None of them mark the current route the way the sidebar
+              rows do — this is a launcher, not a nav list, and every other row
+              in it is stateless, so a tinted row here reads as hover/focus
+              rather than "you are here". */}
+          <DropdownMenuItem onSelect={() => setRoute("automations")}>
             <Zap />
             <span className="min-w-0 flex-1 truncate">
               {tSidebar("automations")}
@@ -251,10 +240,7 @@ export function QuickActionsDropdown() {
               </span>
             )}
           </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={() => setRoute("tasks")}
-            className={cn(routeId === "tasks" && "bg-accent/60")}
-          >
+          <DropdownMenuItem onSelect={() => setRoute("tasks")}>
             <ListTodo />
             <span className="min-w-0 flex-1 truncate">{tSidebar("tasks")}</span>
             {attentionCount > 0 && (
@@ -262,6 +248,11 @@ export function QuickActionsDropdown() {
                 {attentionCount}
               </span>
             )}
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setRoute("forge")}>
+            <LayoutTemplate />
+            <span className="min-w-0 flex-1 truncate">{tSidebar("forge")}</span>
+            <ForgeBetaBadge />
           </DropdownMenuItem>
 
           {desktop && (

@@ -1565,7 +1565,44 @@ function mergeGoalObjectiveHints(
  * reloaded goal capsule spins forever. `isStreaming` gates that: an unfinished
  * run flushes with `isRunning: isStreaming`, so it settles (static) once the
  * turn stops or on history reload, and shimmers only while live.
+ *
+ * The Goal card starts collapsed once the run settles, so a settled run must
+ * not keep the turn's answer inside the chip. After the last process item (or
+ * when the body is only answer parts), lift those parts out so a reload still
+ * shows the final answer under the chip. While the turn is live the answer
+ * stays in the card, which opens itself as soon as it holds anything.
  */
+
+/**
+ * Parts that ARE the turn's answer rather than the process that produced it:
+ * prose, the codex Plan-mode document the user has to read, and a generated
+ * image. Everything else (tool calls/results/groups, reasoning, todo plans,
+ * delegation and background-task polls) is process and belongs in the capsule.
+ */
+const GOAL_ANSWER_PART_TYPES: ReadonlySet<AdaptedContentPart["type"]> = new Set(
+  ["text", "proposed-plan", "generated-image"]
+)
+
+/**
+ * Split a settled unfinished run's body at the last process part: everything
+ * after it is the answer and gets lifted out, in order. Answer parts BEFORE a
+ * process part stay inside — prose followed by more work is a mid-run note,
+ * not a wrap-up, and lifting it would reorder the reply.
+ */
+function splitTrailingAnswerParts(items: AdaptedContentPart[]): {
+  body: AdaptedContentPart[]
+  trailing: AdaptedContentPart[]
+} {
+  let end = items.length
+  while (end > 0 && GOAL_ANSWER_PART_TYPES.has(items[end - 1]!.type)) {
+    end -= 1
+  }
+  if (end === items.length) {
+    return { body: items, trailing: [] }
+  }
+  return { body: items.slice(0, end), trailing: items.slice(end) }
+}
+
 export function groupGoalRuns(
   parts: AdaptedContentPart[],
   isStreaming: boolean = false
@@ -1592,17 +1629,44 @@ export function groupGoalRuns(
     return Boolean(objective && completedGoalObjectives.has(objective))
   }
 
-  const flushActive = () => {
-    if (!active) return
+  const pushGoalRun = (
+    start: AdaptedToolCallPart,
+    end: AdaptedToolCallPart | null,
+    items: AdaptedContentPart[],
+    isRunning: boolean
+  ) => {
+    // Keep the live answer inside the running card (it opens while in flight).
+    // Once the turn settles, lift the trailing answer so a collapsed chip on
+    // reload does not hide it.
+    // Only lift when the run never closed. A completed update_goal already
+    // leaves later prose as siblings; mid-run notes stay in that card.
+    const shouldLiftTrailing = !isRunning && end === null
+    if (!shouldLiftTrailing) {
+      result.push({
+        type: "goal-run",
+        start,
+        end,
+        items: [...items],
+        isRunning,
+      })
+      return
+    }
+    const { body, trailing } = splitTrailingAnswerParts(items)
     result.push({
       type: "goal-run",
-      start: active.start,
+      start,
       end: null,
-      items: [...active.items],
-      // Unfinished run: shimmer only while the turn is live. A stopped or
-      // reloaded goal (codex never emits a closing update_goal) settles static.
-      isRunning: isStreaming,
+      items: body,
+      isRunning: false,
     })
+    result.push(...trailing)
+  }
+
+  const flushActive = () => {
+    if (!active) return
+    // Unfinished run: shimmer only while the turn is live. A stopped or
+    // reloaded goal (codex never emits a closing update_goal) settles static.
+    pushGoalRun(active.start, null, active.items, isStreaming)
     active = null
   }
 
@@ -1619,10 +1683,7 @@ export function groupGoalRuns(
         } else if (part.end === null) {
           active = { start: part.start, items: [...part.items] }
         } else {
-          result.push({
-            ...part,
-            items: [...part.items],
-          })
+          pushGoalRun(part.start, part.end, part.items, part.isRunning)
           rememberCompletedGoal(part.start, part.end)
         }
         continue
@@ -1637,13 +1698,12 @@ export function groupGoalRuns(
       if (part.end === null) {
         active.items.push(...part.items)
       } else {
-        result.push({
-          type: "goal-run",
-          start: active.start,
-          end: part.end,
-          items: [...active.items, ...part.items],
-          isRunning: part.isRunning,
-        })
+        pushGoalRun(
+          active.start,
+          part.end,
+          [...active.items, ...part.items],
+          part.isRunning
+        )
         rememberCompletedGoal(active.start, part.end)
         active = null
       }
@@ -1664,13 +1724,7 @@ export function groupGoalRuns(
     }
 
     if (active && isGoalEndPart(part)) {
-      result.push({
-        type: "goal-run",
-        start: active.start,
-        end: part,
-        items: [...active.items],
-        isRunning: isRunningToolCall(part),
-      })
+      pushGoalRun(active.start, part, active.items, isRunningToolCall(part))
       rememberCompletedGoal(active.start, part)
       active = null
       continue

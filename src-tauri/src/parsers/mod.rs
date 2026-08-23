@@ -1,4 +1,5 @@
 pub mod acp_native;
+pub mod antigravity;
 pub mod claude;
 pub mod cline;
 pub mod codebuddy;
@@ -13,6 +14,7 @@ pub mod kimi_code;
 pub mod openclaw;
 pub mod opencode;
 pub mod pi;
+pub mod qoder;
 mod summary_cache;
 
 use std::collections::{HashMap, HashSet};
@@ -163,6 +165,55 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             // sibling `.credentials.yaml` under `~/.dsh` is never archived.
             agent: "deepseek",
             root: deepseek::resolve_deepseek_sessions_root(),
+            is_file: false,
+            include_top: None,
+        },
+        ExternalSource {
+            // Since deepseek-acp 0.6.0 a prompt can carry images, and the log
+            // keeps only a `sha256:` reference — the pixels live in the
+            // content-addressed store at `$DSH_HOME/attachments/v1/objects/`.
+            // Without this source a backup restores every image as the
+            // `[image …]` placeholder `parsers::deepseek` falls back to, which
+            // is unrecoverable: the bytes exist nowhere else.
+            //
+            // A SEPARATE source rather than widening the one above, for two
+            // reasons. `DEEPSEEK_ACP_SESSIONS_ROOT` relocates the logs
+            // INDEPENDENTLY of `DSH_HOME`, so re-rooting both at `$DSH_HOME`
+            // would silently stop archiving the logs of any deployment that
+            // uses it. And `agent` is the restore key — `map_external_to_target`
+            // resolves `external/<agent>/…` by `find(|s| s.agent == agent)`, so
+            // two sources sharing a name would restore this one's entries under
+            // the sessions root.
+            //
+            // Scoped to `objects/`: the siblings are `tmp/` (upload staging)
+            // and `request-images/` (per-provider re-encodings derived from
+            // `objects/`), neither of which is conversation content, and both
+            // of which the agent rebuilds on demand.
+            agent: "deepseek-attachments",
+            root: deepseek::resolve_deepseek_attachments_root(),
+            is_file: false,
+            include_top: Some(&["objects"]),
+        },
+        ExternalSource {
+            // Qoder keeps one JSONL per session under
+            // `~/.qoder/projects/<encoded-cwd>/<sessionId>.jsonl` (relocatable
+            // via `QODER_CONFIG_DIR`). The resolver already points at the
+            // `projects/` subtree, so the sibling `settings.json` /
+            // `security/` / `cache/` under `~/.qoder` are never archived.
+            agent: "qoder",
+            root: qoder::resolve_qoder_config_dir().join("projects"),
+            is_file: false,
+            include_top: None,
+        },
+        ExternalSource {
+            // Antigravity keeps one SQLite trajectory + `.meta` sidecar per
+            // session under `<GEMINI_HOME>/antigravity-acp/conversations`
+            // (default `~/.gemini/...`). The root points at `conversations`
+            // and NOT at `antigravity-acp` itself, whose siblings are the
+            // OAuth token files (`acp_token.json`, `acp_business_token.json`)
+            // — those must never end up in a backup archive.
+            agent: "antigravity",
+            root: antigravity::resolve_antigravity_sessions_dir(),
             is_file: false,
             include_top: None,
         },
@@ -676,6 +727,26 @@ pub fn latest_turn_total_usage_tokens(turns: &[MessageTurn]) -> Option<u64> {
                 .saturating_add(usage.output_tokens)
                 .saturating_add(usage.cache_creation_input_tokens)
                 .saturating_add(usage.cache_read_input_tokens)
+        })
+    })
+}
+
+/// Context-window occupancy for agents whose transcripts carry ANTHROPIC-SHAPED
+/// usage counters (`input_tokens` + `cache_creation_input_tokens` +
+/// `cache_read_input_tokens` are the whole prompt; `output_tokens` is the reply).
+///
+/// Deliberately NOT [`latest_turn_total_usage_tokens`], which adds
+/// `output_tokens` too: for this counter shape the reply is not resident in the
+/// prompt window that produced it, so including it over-reports the gauge by
+/// the last turn's output. Claude Code and Qoder both write this shape.
+pub fn latest_turn_prompt_usage_tokens(turns: &[MessageTurn]) -> Option<u64> {
+    turns.iter().rev().find_map(|turn| {
+        turn.usage.as_ref().and_then(|usage| {
+            let used = usage
+                .input_tokens
+                .saturating_add(usage.cache_creation_input_tokens)
+                .saturating_add(usage.cache_read_input_tokens);
+            (used > 0).then_some(used)
         })
     })
 }

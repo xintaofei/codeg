@@ -25,6 +25,7 @@ import type {
 import type { QueuedMessage } from "@/hooks/use-message-queue"
 import { Loader2 } from "lucide-react"
 import { ChatInput } from "@/components/chat/chat-input"
+import type { ComposerInjectContent } from "@/components/chat/message-input"
 import { PermissionDialog } from "@/components/chat/permission-dialog"
 import { QuestionDialog } from "@/components/chat/question-dialog"
 import { AskQuestionCard } from "@/components/chat/ask-question-card"
@@ -121,6 +122,11 @@ interface ConversationShellProps {
    *  (e.g. the "restart to apply" config-stale banner). Renders nothing when
    *  omitted. */
   topBanner?: ReactNode
+  /** Content pushed into the docked composer from outside it — currently a
+   *  quoted transcript selection. Cleared by the host via `onInjectConsumed`
+   *  once the composer has taken it. */
+  injectContent?: ComposerInjectContent | null
+  onInjectConsumed?: () => void
 }
 
 export function ConversationShell({
@@ -178,6 +184,8 @@ export function ConversationShell({
   onForkSend,
   onSteer,
   topBanner,
+  injectContent,
+  onInjectConsumed,
 }: ConversationShellProps) {
   const tAcp = useTranslations("Folder.chat.acpConnections")
   const retryLineText = useMemo(() => {
@@ -196,7 +204,11 @@ export function ConversationShell({
       retry.retryDelayMs !== null && retry.retryDelayMs !== undefined
         ? (retry.retryDelayMs / 1000).toFixed(1)
         : null
-    const errorLabel = retry.error ?? tAcp("claudeApiRetry.fallbackError")
+    // `null` only for a source that reports no cause at all (pi, #525) — see
+    // `ClaudeApiRetryState.reportsError`. Claude and codex keep the fallback.
+    const errorLabel =
+      retry.error ??
+      (retry.reportsError ? tAcp("claudeApiRetry.fallbackError") : null)
     const statusLabel =
       retry.errorStatus !== null && retry.errorStatus !== undefined
         ? tAcp("claudeApiRetry.httpStatus", {
@@ -221,15 +233,27 @@ export function ConversationShell({
           })
         : null
 
+    // With no cause AND no HTTP status there is nothing to put before the
+    // separator, and the shared template would render a dangling "· 正在重试".
+    // Take the prefix-less pair instead — the counters carry the whole message.
+    if (errorLabel === null && statusLabel === "") {
+      return delayLabel !== null
+        ? tAcp("claudeApiRetry.lineNoErrorWithDelay", {
+            retry: retryLabel,
+            delay: delayLabel,
+          })
+        : tAcp("claudeApiRetry.lineNoError", { retry: retryLabel })
+    }
+
     return delayLabel !== null
       ? tAcp("claudeApiRetry.lineWithDelay", {
-          error: errorLabel,
+          error: errorLabel ?? "",
           status: statusLabel,
           retry: retryLabel,
           delay: delayLabel,
         })
       : tAcp("claudeApiRetry.line", {
-          error: errorLabel,
+          error: errorLabel ?? "",
           status: statusLabel,
           retry: retryLabel,
         })
@@ -321,6 +345,8 @@ export function ConversationShell({
               onSteer={onSteer}
               onAddFeedback={onAddFeedback}
               feedbackAddDisabled={feedbackAddDisabled}
+              injectContent={injectContent}
+              onInjectConsumed={onInjectConsumed}
             />
           </div>
         )}

@@ -382,6 +382,7 @@ impl AutomationEngine {
             mode_id: cfg.mode_id.clone(),
             config_values: cfg.config_values.clone(),
             label_snapshot: cfg.label_snapshot.clone(),
+            deliverable: None,
         };
         let draft = crate::models::WorkTaskDraft {
             folder_id,

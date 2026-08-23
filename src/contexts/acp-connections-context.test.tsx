@@ -1884,13 +1884,9 @@ describe("out-of-turn wire guard + background activity", () => {
       watermark: 4096,
     })
 
-    // 1. outstanding mirrored onto the connection (sweep exemption + chip);
-    //    the settlement arms the "syncing results" bridge state (the agent's
-    //    reaction turn is being generated).
+    // 1. outstanding mirrored onto the connection (teardown gates only —
+    //    nothing renders the count).
     expect(h.store!.getConnection(TAB)?.backgroundOutstanding).toBe(2)
-    expect(h.store!.getConnection(TAB)?.backgroundSettleSyncingSince).toEqual(
-      expect.any(Number)
-    )
 
     // 2. overlay turn upserted into the runtime session — under the RUNTIME
     //    key (that's the session the panel renders).
@@ -1937,66 +1933,6 @@ describe("out-of-turn wire guard + background activity", () => {
         ?.backgroundTurns
     ).toHaveLength(1)
     expect(notify).toHaveBeenCalledTimes(1)
-    // Accounting-only events keep the syncing bridge armed — the reaction
-    // turn hasn't surfaced yet.
-    expect(h.store!.getConnection(TAB)?.backgroundSettleSyncingSince).toEqual(
-      expect.any(Number)
-    )
-
-    // The reaction turn arriving (turns-only event) disarms the bridge.
-    emitAcpEvent(handlers, {
-      seq: 3,
-      connection_id: "spawned-conn",
-      type: "background_activity",
-      session_id: "sess-1",
-      turns: [
-        {
-          id: "bg-100-1",
-          role: "assistant",
-          blocks: [{ type: "text", text: "here is what the build produced" }],
-          timestamp: "2026-07-07T03:47:12.000Z",
-        },
-      ],
-      outstanding: 0,
-      watermark: 4400,
-    })
-    expect(h.store!.getConnection(TAB)?.backgroundSettleSyncingSince).toBeNull()
-
-    resetConversationRuntimeStore()
-  })
-
-  it("does NOT arm the syncing-results hint for a wire-visible (#870-held) settle", async () => {
-    const { resetConversationRuntimeStore } =
-      await import("@/stores/conversation-runtime-store")
-    resetConversationRuntimeStore()
-    const handlers = await mountOwnerConnection()
-
-    // #870: the launching turn is held OPEN and the sub-agent's reply streams
-    // live as the tail of that held turn — the backend marks the settle
-    // `wire_visible: true`. There is no "results not yet visible" gap, so the
-    // hint must stay hidden (not strand on "Syncing background results…" until
-    // the 30s cap). Gated on the backend flag, NOT the connection status, so it
-    // holds even if this event is delivered after the turn returns to connected.
-    emitAcpEvent(handlers, {
-      seq: 1,
-      connection_id: "spawned-conn",
-      type: "background_activity",
-      session_id: "sess-1",
-      outstanding: 0,
-      settled: [
-        {
-          task_id: "agent1",
-          status: "completed",
-          tool_use_id: "toolu_01",
-          result: "done",
-          wire_visible: true,
-        },
-      ],
-      watermark: 100,
-    })
-
-    expect(h.store!.getConnection(TAB)?.backgroundOutstanding).toBe(0)
-    expect(h.store!.getConnection(TAB)?.backgroundSettleSyncingSince).toBeNull()
 
     resetConversationRuntimeStore()
   })
@@ -3725,5 +3661,98 @@ describe("connect() teardown races", () => {
     })
 
     expect(h.store!.getConnection(TAB)?.connectionId).toBe("replacement-conn")
+  })
+})
+
+// The retry banner is shared by three producers with three different shapes
+// (#525): Claude reports a cause, codex reports a cause, pi reports only
+// counters. `reportsError` is what keeps pi from borrowing Claude's
+// "authentication_failed" fallback wording for a retry that had nothing to do
+// with authentication.
+describe("AcpConnectionsProvider retry banner (turn_retrying)", () => {
+  async function connectOwner(): Promise<AttachHandlers> {
+    h.acpFindConnectionForConversation.mockResolvedValue(null)
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+    })
+    return latestAttachHandlers()
+  }
+
+  it("carries pi's counters and marks it as reporting no cause", async () => {
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "turn_retrying",
+      message: "",
+      attempt: 2,
+      max_retries: 3,
+      retry_delay_ms: 4000,
+    })
+
+    const retry = h.store!.getConnection(TAB)?.claudeApiRetry
+    expect(retry?.attempt).toBe(2)
+    expect(retry?.maxRetries).toBe(3)
+    expect(retry?.retryDelayMs).toBe(4000)
+    // Empty message normalizes to null, and the banner is told not to invent a
+    // cause for it.
+    expect(retry?.error).toBeNull()
+    expect(retry?.reportsError).toBe(false)
+  })
+
+  it("keeps codex's error text and its fallback eligibility", async () => {
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "turn_retrying",
+      message: "stream disconnected",
+      error_status: 503,
+    })
+
+    const retry = h.store!.getConnection(TAB)?.claudeApiRetry
+    expect(retry?.error).toBe("stream disconnected")
+    expect(retry?.errorStatus).toBe(503)
+    expect(retry?.reportsError).toBe(true)
+    // codex reports no counters; they must not be invented.
+    expect(retry?.attempt).toBeNull()
+    expect(retry?.maxRetries).toBeNull()
+    expect(retry?.retryDelayMs).toBeNull()
+  })
+
+  // Deltas are queued and applied in batches, and applying one clears the
+  // banner (`applyStreamingAction`). A delta that arrived just BEFORE the retry
+  // must not be flushed just AFTER it and wipe the banner — pi hits this
+  // routinely, retrying mid-stream between prose chunks.
+  it("survives a delta that was queued before the retry arrived", async () => {
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "status_changed",
+      status: "prompting",
+    })
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "content_delta",
+      text: "是的，",
+    })
+    emitAcpEvent(handlers, {
+      seq: 3,
+      connection_id: "spawned-conn",
+      type: "turn_retrying",
+      message: "",
+      attempt: 1,
+      max_retries: 3,
+      retry_delay_ms: 2000,
+    })
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 60))
+    })
+
+    expect(h.store!.getConnection(TAB)?.claudeApiRetry?.attempt).toBe(1)
   })
 })

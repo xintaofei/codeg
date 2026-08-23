@@ -15,52 +15,97 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { validateGitHubToken, saveAccountToken } from "@/lib/api"
-import type { GitHubAccount } from "@/lib/types"
+import {
+  validateGitHubToken,
+  validateGitLabToken,
+  saveAccountToken,
+} from "@/lib/api"
+import type { ForgeProviderId, GitHubAccount } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
 
-interface AddGitHubAccountDialogProps {
+interface AddForgeAccountDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onAccountAdded: (account: GitHubAccount) => void
   isFirstAccount: boolean
+  /** Which forge the token is for. It picks the endpoint the token is checked
+   *  against AND is stored on the account, which is what later tells a
+   *  self-hosted host apart from a GitHub Enterprise one. */
+  provider: ForgeProviderId
+  /** Set to replace an existing account's token IN PLACE — same id, same
+   *  server, new secret. A token expires or gets rotated as a matter of
+   *  routine, and every task that was triggered by this account is pinned to
+   *  its id: remove-and-re-add mints a new one and leaves those tasks with no
+   *  identity that can deliver them. */
+  existing?: GitHubAccount | null
 }
 
-export function AddGitHubAccountDialog({
+/** Where each forge lets you mint a token, with the scopes codeg needs
+ *  pre-selected. GitLab's single `api` scope covers reads, merge requests and
+ *  notes; GitHub wants the classic-token set. */
+function tokenPageUrl(provider: ForgeProviderId, serverUrl: string): string {
+  const base =
+    serverUrl.trim().replace(/\/+$/, "") || defaultServerUrl(provider)
+  if (provider === "gitlab") {
+    const params = new URLSearchParams({ name: "codeg", scopes: "api" })
+    return `${base}/-/user_settings/personal_access_tokens?${params.toString()}`
+  }
+  const params = new URLSearchParams({
+    description: "codeg",
+    scopes: "repo,read:org,workflow,gist,read:user,user:email",
+  })
+  return `${base}/settings/tokens/new?${params.toString()}`
+}
+
+function defaultServerUrl(provider: ForgeProviderId): string {
+  return provider === "gitlab" ? "https://gitlab.com" : "https://github.com"
+}
+
+/**
+ * Add a forge credential: type a token, check it against that forge's "who am
+ * I" endpoint, store the token in the keyring and the account beside it.
+ *
+ * One dialog for both forges because the flow is identical — only the endpoint,
+ * the token page and the wording differ. GitLab has no `gh auth token`
+ * equivalent to lift a credential from, so typing a personal access token is
+ * the only way in, which is exactly why it is validated here rather than at
+ * delivery time on a task that already ran.
+ */
+export function AddForgeAccountDialog({
   open,
   onOpenChange,
   onAccountAdded,
   isFirstAccount,
-}: AddGitHubAccountDialogProps) {
+  provider,
+  existing,
+}: AddForgeAccountDialogProps) {
   const t = useTranslations("VersionControlSettings")
+  const gitlab = provider === "gitlab"
+  const rotating = existing != null
 
-  const [serverUrl, setServerUrl] = useState("https://github.com")
+  const [serverUrl, setServerUrl] = useState(
+    existing?.server_url || defaultServerUrl(provider)
+  )
   const [token, setToken] = useState("")
   const [showToken, setShowToken] = useState(false)
   const [validating, setValidating] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const handleGenerateToken = useCallback(async () => {
-    const base = serverUrl.trim().replace(/\/+$/, "") || "https://github.com"
-    const params = new URLSearchParams({
-      description: "codeg",
-      scopes: "repo,read:org,workflow,gist,read:user,user:email",
-    })
-    const url = `${base}/settings/tokens/new?${params.toString()}`
     try {
-      await openUrl(url)
+      await openUrl(tokenPageUrl(provider, serverUrl))
     } catch {
       // fallback: ignore if opener fails
     }
-  }, [serverUrl])
+  }, [provider, serverUrl])
 
   const resetForm = useCallback(() => {
-    setServerUrl("https://github.com")
+    setServerUrl(existing?.server_url || defaultServerUrl(provider))
     setToken("")
     setShowToken(false)
     setValidating(false)
     setError(null)
-  }, [])
+  }, [existing, provider])
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
@@ -83,7 +128,8 @@ export function AddGitHubAccountDialog({
     setError(null)
 
     try {
-      const result = await validateGitHubToken(serverUrl.trim(), trimmedToken)
+      const validate = gitlab ? validateGitLabToken : validateGitHubToken
+      const result = await validate(serverUrl.trim(), trimmedToken)
 
       if (!result.success) {
         setError(
@@ -92,14 +138,17 @@ export function AddGitHubAccountDialog({
         return
       }
 
+      // Rotating keeps the id — that id is what every task triggered by this
+      // account is pinned to, and it is the whole point of this path.
       const account: GitHubAccount = {
-        id: randomUUID(),
-        server_url: serverUrl.trim() || "https://github.com",
+        id: existing?.id ?? randomUUID(),
+        server_url: serverUrl.trim() || defaultServerUrl(provider),
         username: result.username ?? "unknown",
         scopes: result.scopes,
         avatar_url: result.avatar_url,
-        is_default: isFirstAccount,
-        created_at: new Date().toISOString(),
+        is_default: existing?.is_default ?? isFirstAccount,
+        created_at: existing?.created_at ?? new Date().toISOString(),
+        provider,
       }
 
       await saveAccountToken(account.id, trimmedToken)
@@ -111,14 +160,30 @@ export function AddGitHubAccountDialog({
     } finally {
       setValidating(false)
     }
-  }, [serverUrl, token, isFirstAccount, onAccountAdded, handleOpenChange, t])
+  }, [
+    existing,
+    gitlab,
+    provider,
+    serverUrl,
+    token,
+    isFirstAccount,
+    onAccountAdded,
+    handleOpenChange,
+    t,
+  ])
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>{t("addAccount")}</DialogTitle>
-          <DialogDescription>{t("githubDescription")}</DialogDescription>
+          <DialogTitle>
+            {rotating ? t("updateTokenTitle") : t("addAccount")}
+          </DialogTitle>
+          <DialogDescription>
+            {rotating
+              ? t("updateTokenDescription", { username: existing.username })
+              : t(gitlab ? "gitlabDescription" : "githubDescription")}
+          </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 py-2">
@@ -130,6 +195,9 @@ export function AddGitHubAccountDialog({
               value={serverUrl}
               onChange={(e) => setServerUrl(e.target.value)}
               placeholder={t("serverUrlPlaceholder")}
+              // The server is what the account IS; changing it here would be a
+              // different account wearing this one's id.
+              disabled={rotating}
             />
           </div>
 
@@ -176,7 +244,7 @@ export function AddGitHubAccountDialog({
               </Button>
             </div>
             <p className="text-[11px] text-muted-foreground">
-              {t("tokenHint")}
+              {t(gitlab ? "gitlabTokenHint" : "tokenHint")}
             </p>
           </div>
 
@@ -194,6 +262,8 @@ export function AddGitHubAccountDialog({
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 {t("validating")}
               </>
+            ) : rotating ? (
+              t("updateTokenSubmit")
             ) : (
               t("validateAndAdd")
             )}

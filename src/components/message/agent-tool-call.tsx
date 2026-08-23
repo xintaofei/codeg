@@ -3,6 +3,7 @@ import type { AdaptedContentPart } from "@/lib/adapters/ai-elements-adapter"
 import type { AgentToolCall, AgentType } from "@/lib/types"
 import { tryParseJson, extractJsonField } from "./content-parts-renderer"
 import { SubagentSessionDialog } from "./subagent-session-dialog"
+import { useSessionViewerHost } from "./session-viewer-host"
 import { shortAgentId } from "@/lib/collab-tool"
 import { MessageResponse } from "@/components/ai-elements/message"
 import { Shimmer } from "@/components/ai-elements/shimmer"
@@ -363,6 +364,7 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
     () => parseChildSessionId(part.meta, agentStats?.child_session_id),
     [part.meta, agentStats?.child_session_id]
   )
+  const viewerHost = useSessionViewerHost()
   const [sessionOpen, setSessionOpen] = useState(false)
   const grokProgressLine = useMemo(() => {
     if (!grokProgress) return null
@@ -519,13 +521,32 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
         <>
           <button
             type="button"
-            onClick={() => setSessionOpen(true)}
+            onClick={() =>
+              // Preferred: the transcript-level host, which survives this card
+              // scrolling out of the virtual list. Falls back to owning the
+              // drawer here when there is no host (this part also renders
+              // inside the grok child transcript, which is not virtualized).
+              viewerHost
+                ? viewerHost.open({
+                    kind: "agentSession",
+                    sessionId: childSession.sessionId,
+                    agentType: childSession.agentType,
+                    subagentType,
+                    description,
+                    // Keep re-reading the child's transcript from disk while
+                    // its launch call is unsettled or the background child is
+                    // still out. A snapshot once handed over — see the note on
+                    // `AgentSessionRequest.live`.
+                    live: isRunning || isLiveBackgroundLaunch,
+                  })
+                : setSessionOpen(true)
+            }
             className="flex w-fit items-center gap-1.5 text-xs text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
           >
             <MessagesSquare aria-hidden className="size-3.5 shrink-0" />
             {t("agentSessionAction")}
           </button>
-          {sessionOpen && (
+          {viewerHost == null && sessionOpen && (
             <SubagentSessionDialog
               open={sessionOpen}
               onOpenChange={setSessionOpen}
@@ -533,8 +554,6 @@ export const AgentToolCallPart = memo(function AgentToolCallPart({
               agentType={childSession.agentType}
               subagentType={subagentType}
               description={description}
-              // Keep re-reading the child's transcript from disk while its
-              // launch call is unsettled or the background child is still out.
               live={isRunning || isLiveBackgroundLaunch}
             />
           )}

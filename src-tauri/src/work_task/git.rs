@@ -197,6 +197,68 @@ pub async fn is_ancestor(
     }
 }
 
+/// Best common ancestor of two revisions — the point a pull request's diff is
+/// taken from. Using the base branch's TIP instead would hide every change the
+/// base gained since the pull request was opened behind a false conflict, and
+/// using the head would hide the pull request's own changes entirely.
+pub async fn merge_base(path: &str, a: &str, b: &str) -> Result<String, AppCommandError> {
+    let out = run_git(path, &["merge-base", a, b]).await?;
+    if !out.status.success() {
+        return Err(git_command_error("merge-base", &out.stderr));
+    }
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if sha.is_empty() {
+        return Err(AppCommandError::external_command(
+            "git merge-base returned nothing",
+            format!("{a}..{b}"),
+        ));
+    }
+    Ok(sha)
+}
+
+/// Whether an object is present in this repository AND is a commit. The probe
+/// a pinned sha needs after a fetch: a force-pushed pull request leaves the
+/// recorded head unreachable, and `worktree add` on it would fail with git's
+/// own wording instead of an explanation.
+pub async fn commit_present(path: &str, rev: &str) -> Result<bool, AppCommandError> {
+    let out = run_git(path, &["cat-file", "-e", &format!("{rev}^{{commit}}")]).await?;
+    Ok(out.status.success())
+}
+
+/// `git fetch <remote> +<remote_ref>:<local_ref>` → the fetched tip.
+///
+/// Two deliberate choices:
+///
+/// - The folder's OWN remote, not an explicit URL with an injected token: this
+///   reads with whatever credentials the user's git already has for that
+///   repository (ssh key, helper, whatever they cloned with). Pushing is the
+///   opposite case and has its own path — that one must run as the account the
+///   task was triggered with.
+/// - A NAMED destination ref instead of `FETCH_HEAD`. `FETCH_HEAD` is
+///   per-worktree, and these fetches run in the shared project folder, where
+///   two task setups in the same folder would overwrite each other's — and
+///   read back the other one's commit.
+pub async fn fetch_into_ref(
+    path: &str,
+    remote: &str,
+    remote_ref: &str,
+    local_ref: &str,
+) -> Result<String, AppCommandError> {
+    let refspec = format!("+{remote_ref}:{local_ref}");
+    let out = run_git(path, &["fetch", "--quiet", remote, &refspec]).await?;
+    if !out.status.success() {
+        return Err(git_command_error("fetch", &out.stderr));
+    }
+    rev_parse(path, local_ref).await
+}
+
+/// Drop a ref this module created. Best-effort by design: the commits that
+/// matter are held by the task's own branch, so a leftover here is untidy
+/// rather than dangerous.
+pub async fn delete_ref(path: &str, local_ref: &str) {
+    let _ = run_git(path, &["update-ref", "-d", local_ref]).await;
+}
+
 /// Whether two revisions point at identical trees (`git diff --quiet a b`) —
 /// how a squash landing is recognized without knowing the commit message.
 pub async fn trees_equal(path: &str, a: &str, b: &str) -> Result<bool, AppCommandError> {

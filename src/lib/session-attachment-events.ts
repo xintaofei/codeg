@@ -1,3 +1,5 @@
+import type { DbConversationSummary } from "@/lib/types"
+
 export const ATTACH_FILE_TO_SESSION_EVENT = "codeg:attach-file-to-session"
 
 export interface AttachFileToSessionDetail {
@@ -20,6 +22,32 @@ export function emitAttachFileToSession(
     new CustomEvent<AttachFileToSessionDetail>(ATTACH_FILE_TO_SESSION_EVENT, {
       detail,
     })
+  )
+}
+
+export const ATTACH_SESSION_TO_SESSION_EVENT = "codeg:attach-session-to-session"
+
+export interface AttachSessionToSessionDetail {
+  /** The conversation tab whose composer receives the mention badge. */
+  tabId: string
+  /**
+   * The conversation being mentioned. Carried whole (rather than by id) so the
+   * consumer builds the badge through the same `sessionToSuggestion` adapter the
+   * `@` panel uses — one source of truth for the label / `codeg://session/<id>`
+   * uri / agent + status + branch meta.
+   */
+  conversation: DbConversationSummary
+}
+
+export function emitAttachSessionToSession(
+  detail: AttachSessionToSessionDetail
+): void {
+  if (typeof window === "undefined") return
+  window.dispatchEvent(
+    new CustomEvent<AttachSessionToSessionDetail>(
+      ATTACH_SESSION_TO_SESSION_EVENT,
+      { detail }
+    )
   )
 }
 

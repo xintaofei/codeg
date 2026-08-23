@@ -1724,7 +1724,7 @@ export function FileTreeTab() {
       treeContainerRef.current?.focus({ preventScroll: true })
       if (!filePathSet.has(path)) return
       void openFilePreview(path)
-      // On mobile the file tree lives in a Sheet overlay — close it so the
+      // On mobile the file tree lives in a Drawer overlay — close it so the
       // opened file is visible in the main pane.
       if (isMobile) setAuxOpen(false)
     },

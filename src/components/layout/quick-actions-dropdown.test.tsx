@@ -19,7 +19,6 @@ const mocks = vi.hoisted(() => {
     openPetWindow: vi.fn(() => Promise.resolve()),
     openRemoteWorkspace: vi.fn(() => Promise.resolve()),
     listRemoteWorkspaceConnections: vi.fn(() => Promise.resolve(connections)),
-    setSearchOpen: vi.fn(),
     setRoute: vi.fn(),
   }
 })
@@ -45,10 +44,6 @@ vi.mock("@/contexts/active-folder-context", () => ({
     activeFolder,
     activeFolderId: activeFolder?.id ?? null,
   }),
-}))
-
-vi.mock("@/contexts/search-dialog-context", () => ({
-  useSearchDialog: () => ({ open: false, setOpen: mocks.setSearchOpen }),
 }))
 
 vi.mock("@/contexts/automations-view-context", () => ({
@@ -113,6 +108,9 @@ async function clickItem(name: string | RegExp) {
 // "Automations" carries a failure-count badge inside the row (2, per the mock),
 // so its accessible name is the label plus that number — matched by prefix.
 const AUTOMATIONS_ROW = /^Automations/
+// Same shape, for the same reason: the repository panel row carries a "Beta"
+// chip, so its accessible name is the label plus that word.
+const FORGE_ROW = /^Repository panel/
 
 beforeEach(() => {
   desktop = true
@@ -124,12 +122,7 @@ describe("QuickActionsDropdown", () => {
   it("groups all ten actions under their headings on desktop", async () => {
     await mountAndOpen()
 
-    for (const group of [
-      "Workspace",
-      "Sessions",
-      "Automation & to-dos",
-      "More",
-    ]) {
+    for (const group of ["Workspace", "Sessions", "Navigation", "More"]) {
       expect(await screen.findByText(group)).toBeVisible()
     }
     for (const label of [
@@ -139,13 +132,30 @@ describe("QuickActionsDropdown", () => {
       "Open remote workspace",
       "Manage conversations",
       "Import local sessions",
-      "Search",
       AUTOMATIONS_ROW,
       "To-dos",
+      FORGE_ROW,
       "Show pet",
     ]) {
       expect(await screen.findByRole("menuitem", { name: label })).toBeVisible()
     }
+  })
+
+  it("marks the repository panel Beta on the row that opens it", async () => {
+    await mountAndOpen()
+    // On the entry point, not only on the page it leads to — the marker has to
+    // land before the click, and it is part of the row's accessible name so a
+    // screen reader hears it there too.
+    expect(
+      await screen.findByRole("menuitem", { name: "Repository panel Beta" })
+    ).toBeVisible()
+  })
+
+  it("has no Search row — that button is always visible in the chrome", async () => {
+    await mountAndOpen()
+    // Every other entry here is a fallback for a home that disappears with the
+    // sidebar; search's home (LeftEdgeChrome / FolderTitleBar) never does.
+    expect(screen.queryByRole("menuitem", { name: "Search" })).toBeNull()
   })
 
   it("drops the desktop-only rows in web mode", async () => {
@@ -153,9 +163,13 @@ describe("QuickActionsDropdown", () => {
     await mountAndOpen()
 
     // The remaining eight still render, so this is a targeted removal rather
-    // than the menu failing to open.
+    // than the menu failing to open. The navigation rows in particular are
+    // platform-neutral route switches and must survive off the desktop.
     expect(
-      await screen.findByRole("menuitem", { name: "Search" })
+      await screen.findByRole("menuitem", { name: "Import local sessions" })
+    ).toBeVisible()
+    expect(
+      await screen.findByRole("menuitem", { name: FORGE_ROW })
     ).toBeVisible()
     expect(
       screen.queryByRole("menuitem", { name: "Open remote workspace" })
@@ -168,10 +182,6 @@ describe("QuickActionsDropdown", () => {
     activeFolder = FOLDER
     await mountAndOpen()
 
-    await clickItem("Search")
-    expect(mocks.setSearchOpen).toHaveBeenCalledWith(true)
-
-    await reopen()
     await clickItem(AUTOMATIONS_ROW)
     expect(mocks.setRoute).toHaveBeenCalledWith("automations")
 
@@ -189,6 +199,10 @@ describe("QuickActionsDropdown", () => {
     await reopen()
     await clickItem("To-dos")
     expect(mocks.setRoute).toHaveBeenCalledWith("tasks")
+
+    await reopen()
+    await clickItem(FORGE_ROW)
+    expect(mocks.setRoute).toHaveBeenCalledWith("forge")
 
     await reopen()
     await clickItem("Show pet")

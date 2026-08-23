@@ -76,7 +76,10 @@ fn resolve_pi_sessions_dir_from(
 ///   - `user`: `content` is a STRING or an ARRAY of blocks (text parts joined),
 ///   - `assistant`: `content` is an ARRAY of `{type:"text"|"thinking"|"toolCall"}`
 ///     blocks, plus `provider` / `model` / `usage` / `stopReason`,
-///   - `toolResult`: `toolCallId` / `toolName` / `content` / `isError`.
+///   - `toolResult`: `toolCallId` / `toolName` / `content` / `isError`, where
+///     `content` is an ARRAY of MCP-shaped blocks (`[{"type":"text","text":…}]`)
+///     for every tool — bash, read, write alike (see
+///     `tool_result_content_text`).
 /// - `bashExecution` — a `command` + `output` + `exitCode` pair, surfaced as a
 ///   synthetic `bash` tool use + result.
 /// - `usage` — `{input,output,cacheRead,cacheWrite,totalTokens,cost}` per step.
@@ -556,17 +559,45 @@ fn tool_arguments_preview(arguments: Option<&Value>) -> Option<String> {
     Some(truncate_str(&serialized, 4000))
 }
 
-/// A tool result's `content` is usually a string; a rich result (array/object)
-/// is serialized as a fallback. `None` for a missing / null / empty value.
+/// Flatten a pi tool-result `content` value into the text pi itself displays.
+///
+/// Every pi tool — `bash`, `read`, `write` — writes its result as an ARRAY of
+/// MCP-shaped blocks (`[{"type":"text","text":…}]`); a bare string is accepted
+/// defensively. Only `text` blocks carry readable output and pi joins them with
+/// no separator, so this returns byte-for-byte what pi-acp puts on the live
+/// `content[]` channel (its `toolResultToText`) — history and live must not
+/// render two different strings for the same result.
+///
+/// `None` for a missing / null / empty value, and for any shape carrying no text
+/// block at all; callers decide what to fall back to.
+pub(crate) fn tool_result_content_text(content: &Value) -> Option<String> {
+    if let Some(text) = content.as_str() {
+        return (!text.is_empty()).then(|| text.to_string());
+    }
+    let mut out = String::new();
+    for item in content.as_array()? {
+        if item.get("type").and_then(Value::as_str) == Some("text") {
+            if let Some(text) = item.get("text").and_then(Value::as_str) {
+                out.push_str(text);
+            }
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// A tool result's `content` — the MCP block array pi actually writes (or, for
+/// robustness, a plain string). Anything else is serialized as a fallback so an
+/// unrecognized future shape still surfaces something rather than nothing.
+/// `None` for a missing / null / empty value.
 fn content_to_text(content: Option<&Value>) -> Option<String> {
     let content = content?;
-    if let Some(text) = content.as_str() {
-        (!text.is_empty()).then(|| text.to_string())
-    } else if content.is_null() {
-        None
-    } else {
-        serde_json::to_string(content).ok()
+    if let Some(text) = tool_result_content_text(content) {
+        return Some(text);
     }
+    if content.is_null() || content.is_string() {
+        return None;
+    }
+    serde_json::to_string(content).ok()
 }
 
 /// Map a `usage` object (`{input,output,cacheRead,cacheWrite,…}`) onto
@@ -843,7 +874,7 @@ mod tests {
                      ]}}),
             json!({"type":"message","id":"m3","parentId":"m2","timestamp":"2026-06-27T10:00:09.000Z",
                    "message":{"role":"toolResult","toolCallId":"call_1","toolName":"bash",
-                     "content":"Compiled successfully","isError":false}}),
+                     "content":[{"type":"text","text":"Compiled successfully"}],"isError":false}}),
             json!({"type":"message","id":"m4","parentId":"m3","timestamp":"2026-06-27T10:00:10.000Z",
                    "message":{"role":"assistant","provider":"anthropic","model":"claude-sonnet-4-6","stopReason":"end_turn",
                      "content":[{"type":"text","text":"Build succeeded."}]}}),
@@ -956,9 +987,10 @@ mod tests {
                 _ => None,
             })
             .expect("a matching ToolResult");
-        assert!(
-            result.0.as_deref().unwrap_or_default().contains("Compiled successfully"),
-            "tool result output is surfaced"
+        assert_eq!(
+            result.0.as_deref(),
+            Some("Compiled successfully"),
+            "the MCP block array is flattened to its text, not dumped as JSON"
         );
         assert!(!result.1, "a successful tool result is not an error");
 
@@ -979,6 +1011,50 @@ mod tests {
         assert_eq!(usage.input_tokens, 1200);
         assert_eq!(usage.output_tokens, 80);
         assert_eq!(usage.cache_read_input_tokens, 4000);
+    }
+
+    /// Regression: a `bash` result is an MCP block array, and serializing it
+    /// painted the terminal card with the JSON source string
+    /// (`[{"text":"$ next build\n…","type":"text"}]`) instead of the output.
+    #[test]
+    fn tool_result_content_shapes() {
+        assert_eq!(
+            tool_result_content_text(&json!([{"type":"text","text":"$ next build\nok\n"}]))
+                .as_deref(),
+            Some("$ next build\nok\n"),
+            "the real on-disk shape: one text block, unwrapped"
+        );
+        assert_eq!(
+            tool_result_content_text(&json!([
+                {"type":"text","text":"part one "},
+                {"type":"image","data":"…"},
+                {"type":"text","text":"part two"}
+            ]))
+            .as_deref(),
+            Some("part one part two"),
+            "text blocks join with no separator; non-text blocks are skipped"
+        );
+        assert_eq!(
+            tool_result_content_text(&json!("plain string")).as_deref(),
+            Some("plain string"),
+            "a bare string is accepted defensively"
+        );
+        assert_eq!(tool_result_content_text(&json!([])), None, "empty array");
+        assert_eq!(
+            tool_result_content_text(&json!([{"type":"image","data":"…"}])),
+            None,
+            "no text block at all — caller decides the fallback"
+        );
+
+        // `content_to_text` keeps the JSON fallback for shapes with no text.
+        assert_eq!(content_to_text(None), None);
+        assert_eq!(content_to_text(Some(&Value::Null)), None);
+        assert_eq!(content_to_text(Some(&json!(""))), None);
+        assert_eq!(
+            content_to_text(Some(&json!({"exitCode": 0}))).as_deref(),
+            Some(r#"{"exitCode":0}"#),
+            "an unrecognized object still surfaces something"
+        );
     }
 
     #[test]

@@ -395,6 +395,51 @@ const GrokMonoIcon = memo(function GrokMonoIcon({ size = "1em" }: IconProps) {
   )
 })
 
+const QoderMonoIcon = memo(function QoderMonoIcon({ size = "1em" }: IconProps) {
+  // Qoder's Q mark — the official glyph from the ACP registry
+  // (cdn.agentclientprotocol.com/registry/v1/latest/qoder.svg), already
+  // authored in currentColor so it renders frameless like the other mono
+  // marks (Cursor's icon comes from the same registry CDN).
+  return (
+    <svg
+      fill="currentColor"
+      height={size}
+      style={baseSvgStyle}
+      viewBox="0 0 16 16"
+      width={size}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <title>Qoder</title>
+      <path d="M8 1C4.134 1 1 4.134 1 8s3.134 7 7 7c1.5 0 2.9-.47 4.05-1.28l1.12 1.12a.75.75 0 1 0 1.06-1.06l-1.12-1.12A6.97 6.97 0 0 0 15 8c0-3.866-3.134-7-7-7Zm0 2c2.761 0 5 2.239 5 5s-2.239 5-5 5-5-2.239-5-5 2.239-5 5-5Z" />
+    </svg>
+  )
+})
+
+const AntigravityMonoIcon = memo(function AntigravityMonoIcon({
+  size = "1em",
+}: IconProps) {
+  // Antigravity's arch mark — the official glyph from the ACP registry
+  // (cdn.agentclientprotocol.com/registry/v1/latest/antigravity-acp.svg),
+  // already authored in currentColor so it renders frameless like the other
+  // mono marks (Qoder's and Cursor's come from the same registry CDN).
+  return (
+    <svg
+      fill="none"
+      height={size}
+      style={baseSvgStyle}
+      viewBox="0 0 16 16"
+      width={size}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <title>Google Antigravity</title>
+      <path
+        d="M14.1452 14.6818C14.9937 15.3182 16.2664 14.894 15.0997 13.7273C11.5998 10.3333 12.3421 1 7.99366 1C3.64518 1 4.3876 10.3333 0.887603 13.7273C-0.385123 15 0.993664 15.3182 1.84215 14.6818C5.13002 12.4545 4.9179 8.5303 7.99366 8.5303C11.0694 8.5303 10.8573 12.4545 14.1452 14.6818Z"
+        fill="currentColor"
+      />
+    </svg>
+  )
+})
+
 const CursorMonoIcon = memo(function CursorMonoIcon({
   size = "1em",
 }: IconProps) {
@@ -436,6 +481,8 @@ const MONO_ICONS: Partial<Record<AgentType, AnyIcon>> = {
   code_buddy: CodeBuddyMonoIcon,
   grok: GrokMonoIcon,
   cursor: CursorMonoIcon,
+  qoder: QoderMonoIcon,
+  antigravity: AntigravityMonoIcon,
 }
 
 // Per-agent color override for mono marks, layered on top of the default

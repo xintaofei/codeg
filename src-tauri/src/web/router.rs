@@ -583,6 +583,10 @@ pub fn build_router(
             post(handlers::version_control::validate_github_token),
         )
         .route(
+            "/validate_gitlab_token",
+            post(handlers::version_control::validate_gitlab_token),
+        )
+        .route(
             "/save_account_token",
             post(handlers::version_control::save_account_token),
         )
@@ -723,6 +727,10 @@ pub fn build_router(
         .route(
             "/acp_cursor_list_models",
             post(handlers::acp::acp_cursor_list_models),
+        )
+        .route(
+            "/acp_qoder_auth_status",
+            post(handlers::acp::acp_qoder_auth_status),
         )
         .route(
             "/acp_update_kimi_code_config",
@@ -1315,6 +1323,42 @@ pub fn build_router(
         .route(
             "/work_task_return",
             post(handlers::work_task::work_task_return),
+        )
+        .route(
+            "/folder_forge_remote",
+            post(handlers::forge::folder_forge_remote),
+        )
+        .route(
+            "/forge_list_issues",
+            post(handlers::forge::forge_list_issues),
+        )
+        .route(
+            "/forge_tab_count",
+            post(handlers::forge::forge_tab_count),
+        )
+        .route(
+            "/forge_list_labels",
+            post(handlers::forge::forge_list_labels),
+        )
+        .route(
+            "/work_task_create_from_forge",
+            post(handlers::forge::work_task_create_from_forge),
+        )
+        .route(
+            "/work_task_lookup_by_source",
+            post(handlers::forge::work_task_lookup_by_source),
+        )
+        .route(
+            "/forge_settings_get",
+            post(handlers::forge::forge_settings_get),
+        )
+        .route(
+            "/forge_settings_set",
+            post(handlers::forge::forge_settings_set),
+        )
+        .route(
+            "/work_task_deliver_pr",
+            post(handlers::work_task::work_task_deliver_pr),
         )
         .route(
             "/work_task_cancel",

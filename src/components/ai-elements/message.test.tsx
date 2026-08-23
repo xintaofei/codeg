@@ -45,6 +45,20 @@ describe("MessageResponse", () => {
       "[&_ol]:pl-3"
     )
   })
+
+  it("re-declares the blockquote rule Streamdown's own classes lose", () => {
+    // Streamdown sets `border-l-4 border-muted-foreground/30 … italic` on
+    // blockquotes from inside node_modules, which Tailwind v4 does not scan — so
+    // those utilities generate no CSS and a quote renders with no rule at all.
+    // Declaring them here (scanned source) is what actually paints them.
+    render(<MessageResponse>{"> quoted"}</MessageResponse>)
+
+    expect(screen.getByTestId("streamdown-root")).toHaveClass(
+      "[&_blockquote]:border-l-2",
+      "[&_blockquote]:border-border",
+      "[&_blockquote]:not-italic"
+    )
+  })
 })
 
 describe("normalizeMathDelimiters", () => {

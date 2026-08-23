@@ -31,6 +31,7 @@ import {
   useWorkspaceFileTabs,
   type FileWorkspaceTab,
 } from "@/contexts/workspace-context"
+import { BrowserLink } from "@/components/ui/browser-link"
 import { ImagePreview } from "@/components/files/image-preview"
 import { HtmlPreview } from "@/components/files/html-preview"
 import { OfficePreview } from "@/components/files/office-preview"
@@ -305,17 +306,17 @@ function MarkdownDocumentPreview({
                 </a>
               )
             }
-            return (
-              <a
-                {...aProps}
-                // Pin protocol-relative urls to https: the webview's
-                // own scheme (tauri://) would otherwise hijack them.
-                href={href?.startsWith("//") ? `https:${href}` : href}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
+            // Pin protocol-relative urls to https: the webview's own
+            // scheme (tauri://) would otherwise hijack them.
+            const external = href?.startsWith("//") ? `https:${href}` : href
+            return external ? (
+              <BrowserLink {...aProps} href={external}>
                 {children}
-              </a>
+              </BrowserLink>
+            ) : (
+              // `[text]()` — nothing to open, so keep the text and drop
+              // the link rather than render a dead one.
+              <a {...aProps}>{children}</a>
             )
           },
         }}
@@ -2085,6 +2086,10 @@ export function FileWorkspacePanel() {
     // rehype-harden mangles them: relative ones against the document's own
     // directory, root-relative ones ("/assets/x.png") against the preview
     // root (owning folder when inside the workspace, else the directory).
+    // Deliberately NOT `escapeWindowsPathSeparators` (see
+    // ai-elements/windows-path-escape.ts): this renders a real Markdown
+    // DOCUMENT, where `\.` → `.` is correct CommonMark and the author's escapes
+    // are theirs to keep. That transform is for agent-authored chat text only.
     const preprocessedContent = normalizeMathDelimiters(
       localRefsEnabled
         ? preprocessMarkdownPaths(renderedContent, fileDir ?? "", previewRoot)

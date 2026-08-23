@@ -603,6 +603,11 @@ function TaskSettingsBody({
                     />
                   }
                 />
+                {/* Writing the outcome back to the issue/PR used to be a
+                    switch here. It moved into the workbench's own start
+                    dialog: it is the one thing a task does in a thread other
+                    people are reading, so it is asked per work item, in front
+                    of the item. */}
               </SettingCard>
             </TabsContent>
 

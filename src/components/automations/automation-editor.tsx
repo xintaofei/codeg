@@ -120,6 +120,8 @@ export function AutomationEditor({
   const [cronBuilderOpen, setCronBuilderOpen] = useState(false)
 
   const editorRef = useRef<RichComposerHandle>(null)
+  // The composer's outer box, so the `@` panel spans it like the `/` menu does.
+  const composerBoxRef = useRef<HTMLDivElement>(null)
   // True once the user explicitly picks an agent. A system fallback (saved agent
   // unavailable on this device) updates the displayed type via onFallback but
   // leaves this false, so submit can persist the original agent instead of
@@ -354,6 +356,7 @@ export function AutomationEditor({
       {/* The real conversation composer (rich text + @-mentions) plus an inline
           config bottom bar, matching the new-conversation input. */}
       <div
+        ref={composerBoxRef}
         // Clicking the box's blank chrome (padding, the dead space below a short
         // prompt, the config-bar gaps) focuses the editor at the click point —
         // same affordance as the chat composer. Interactive controls, badges and
@@ -375,6 +378,7 @@ export function AutomationEditor({
           referenceSearch={referenceSearch}
           mentionUiLabels={mentionUiLabels}
           tabLabels={referenceGroupLabels}
+          mentionAnchorRef={composerBoxRef}
           onChange={(text) => {
             setPrompt(text)
             invocations.detect()

@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils"
 import {
   openExternalTab,
   openLinkWithSafety,
+  parseLocalFileTarget,
   useStreamdownLinkSafety,
 } from "./link-safety"
 
@@ -143,11 +144,21 @@ export function MarkdownLink({
   //    A small upward `-translate-y` nudge (purely visual, no layout shift)
   //    seats it on that optical center.
   if (kind === "file") {
+    // Hover text shows the path the opener will actually use, not the raw
+    // sanitized href — a Windows path reaches us percent-encoded and
+    // slash-prefixed (`/C:%5Crepo%5Ca.png`), which reads as a broken path.
+    // `ReferenceBadge` renders `uri` as its own title and uses it for nothing
+    // else, so both tooltips resolve from the same value. The `:line` suffix is
+    // re-appended because the parser splits it off into its own field.
+    const target = parseLocalFileTarget(href)
+    const displayPath = target
+      ? `${target.path}${target.line ? `:${target.line}` : ""}`
+      : href
     const fileData: ReferenceAttrs = {
       refType: "file",
       id: href,
       label: nodeText(children) || href,
-      uri: href,
+      uri: displayPath,
       meta: { fileKind: "file" },
     }
     return (
@@ -158,7 +169,7 @@ export function MarkdownLink({
           <button
             type="button"
             data-resource-kind="file"
-            title={href}
+            title={displayPath}
             onClick={handleClick}
             className="inline-flex max-w-full -translate-y-[1.5px] cursor-pointer appearance-none items-center align-middle leading-none hover:opacity-80"
           >

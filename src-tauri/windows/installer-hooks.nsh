@@ -28,3 +28,14 @@
   Pop $0
   Sleep 500
 !macroend
+
+; Deliberately NOT cleaning up the "launch at login" HKCU Run values here.
+; Tauri's installer template inserts NSIS_HOOK_PREUNINSTALL unconditionally at
+; the top of `Section Uninstall`, and an upgrading install runs the *previous*
+; version's uninstaller (`ExecWait` in the `reinst_uninstall` branch) — so a
+; DeleteRegValue in this hook would silently turn launch-at-login off on every
+; update, not just on a real uninstall. `$UpdateMode` only distinguishes the two
+; when the in-app updater drove it; a manually re-run installer looks like a
+; plain uninstall. Leaving a stale Run value behind after an uninstall is
+; cosmetic (Windows ignores an entry whose target is gone), so it wins over
+; losing the user's setting on upgrade.

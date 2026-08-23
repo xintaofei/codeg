@@ -27,6 +27,22 @@ if (typeof globalThis !== "undefined" && !("ResizeObserver" in globalThis)) {
     disconnect() {}
   }
 }
+if (typeof window !== "undefined" && !window.matchMedia) {
+  // jsdom doesn't implement matchMedia, which `useMediaQuery` (and so
+  // `useIsMobile`) subscribes to on mount. Nothing matches by default, so a
+  // component tree renders at its desktop breakpoint; a test that needs the
+  // other side stubs this itself.
+  window.matchMedia = ((query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia
+}
 if (typeof Range !== "undefined") {
   Range.prototype.getClientRects ??= () =>
     ({

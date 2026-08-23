@@ -41,6 +41,8 @@ fn default_enabled(agent_type: AgentType) -> bool {
             | AgentType::Grok
             | AgentType::Cursor
             | AgentType::DeepSeek
+            | AgentType::Qoder
+            | AgentType::Antigravity
             // A user who just registered a custom agent wants to use it.
             | AgentType::Custom(_)
     )

@@ -162,6 +162,16 @@ pub async fn validate_github_token(
     Ok(Json(result))
 }
 
+/// Same request shape, different forge: GitLab takes a personal access token
+/// (there is no `gh auth token` to lift one from) and reports its scopes on a
+/// separate endpoint.
+pub async fn validate_gitlab_token(
+    Json(params): Json<ValidateGitHubTokenParams>,
+) -> Result<Json<GitHubTokenValidation>, AppCommandError> {
+    let result = vc_commands::validate_gitlab_token(params.server_url, params.token).await?;
+    Ok(Json(result))
+}
+
 // ---------------------------------------------------------------------------
 // Keyring token management
 // ---------------------------------------------------------------------------

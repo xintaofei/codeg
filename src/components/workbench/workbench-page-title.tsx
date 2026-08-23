@@ -1,5 +1,6 @@
 "use client"
 
+import type { ReactNode } from "react"
 import { ChevronRight, MessagesSquare } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
@@ -7,6 +8,10 @@ import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 
 interface WorkbenchPageTitleProps {
   title: string
+  /** Optional chip drawn after the title — a route's maturity marker, not an
+   *  action. Anything interactive belongs in the chrome cluster on the far
+   *  side of the strip, where every route's buttons already live. */
+  badge?: ReactNode
 }
 
 /**
@@ -23,7 +28,7 @@ interface WorkbenchPageTitleProps {
  * No route glyph before the title: it repeated the icon on the sidebar row the
  * user just came from, and the title already names the page.
  */
-export function WorkbenchPageTitle({ title }: WorkbenchPageTitleProps) {
+export function WorkbenchPageTitle({ title, badge }: WorkbenchPageTitleProps) {
   const tTitleBar = useTranslations("Folder.folderTitleBar")
   const { openConversations } = useWorkbenchRoute()
 
@@ -48,6 +53,7 @@ export function WorkbenchPageTitle({ title }: WorkbenchPageTitleProps) {
       <h1 className="min-w-0 truncate pl-1 text-[0.8125rem] font-semibold leading-none">
         {title}
       </h1>
+      {badge}
     </div>
   )
 }

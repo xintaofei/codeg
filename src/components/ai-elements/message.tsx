@@ -29,9 +29,11 @@ import {
   defaultRemarkPlugins,
 } from "streamdown"
 import { markdownLinkComponents } from "./markdown-link"
+import { maskLiteralSpans } from "./markdown-mask"
 import { rehypePluginsAllowingCodeg } from "./rehype-allow-codeg"
 import { remarkTrimCjkAutolinkTail } from "./remark-cjk-autolink-tail"
 import { remarkRewriteFileUriLinks } from "./remark-file-uri-links"
+import { remarkRestoreWindowsPaths } from "./remark-windows-paths"
 import { MATH_FENCE_PAD, useStreamdownPlugins } from "./streamdown-plugins"
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
@@ -376,15 +378,7 @@ export type MessageResponseProps = ComponentProps<typeof Streamdown>
 // avoid it — 4 spaces means "indented code" at top level but "content column"
 // inside a nested list, and a prefix scan cannot tell those apart.
 export function normalizeMathDelimiters(text: string): string {
-  const saved: string[] = []
-  const placeholder = (m: string) => {
-    saved.push(m)
-    return `\0CBLK${saved.length - 1}\0`
-  }
-  const masked = text.replace(
-    /`{3,}[\s\S]*?`{3,}|~{3,}[\s\S]*?~{3,}|`[^`\n]+`/g,
-    placeholder
-  )
+  const { masked, restore } = maskLiteralSpans(text)
   // Fold line endings only after masking, so the offsets and line scans below
   // match what remark-parse sees while masked code keeps its own bytes.
   const source = masked.replace(/\r\n|\r/g, "\n")
@@ -398,10 +392,7 @@ export function normalizeMathDelimiters(text: string): string {
       const open = atContentStart ? MATH_FENCE_PAD : ""
       return `${open}$$${inner}${MATH_FENCE_PAD}$$`
     })
-  return normalized.replace(
-    /\0CBLK(\d+)\0/g,
-    (_m, i: string) => saved[Number(i)]
-  )
+  return restore(normalized)
 }
 
 function isSpaceOrTab(code: number): boolean {
@@ -473,6 +464,8 @@ function containerPrefixEnd(
 
 const remarkPlugins = [
   ...Object.values(defaultRemarkPlugins),
+  // Before remarkRewriteFileUriLinks, which reshapes a drive path's url.
+  remarkRestoreWindowsPaths,
   remarkRewriteFileUriLinks,
   remarkTrimCjkAutolinkTail,
 ]
@@ -502,6 +495,18 @@ function MessageResponseImpl({
     <Streamdown
       className={cn(
         "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_ul]:list-disc [&_ol]:list-decimal [&_ul]:pl-3 [&_ol]:pl-3",
+        // Streamdown gives `blockquote` its own `border-l-4
+        // border-muted-foreground/30 … italic`, but those class names live in
+        // node_modules, which Tailwind v4 does not scan — so the two border
+        // utilities generate no CSS and a quote renders as bare indented text
+        // with no rule (the `pl-4`/`my-4`/`text-muted-foreground` on the same
+        // element only survive because they happen to be used elsewhere in src).
+        // Re-declare the rule here, where it IS scanned; the descendant selector
+        // also outranks Streamdown's plain utility class. No `pl-*` — its `pl-4`
+        // already works and a same-specificity duplicate would be a coin flip.
+        // Upright, not italic: CJK has no true italic, so a browser fakes it by
+        // skewing, which looks broken.
+        "[&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:not-italic",
         className
       )}
       plugins={plugins}

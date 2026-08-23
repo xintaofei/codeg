@@ -649,7 +649,12 @@ pub(crate) fn is_interrupt_marker(value: &serde_json::Value) -> bool {
 /// must prefer `custom_title` over `ai_title`. Empty/whitespace values are
 /// ignored: Claude Code refuses to set a blank name, and it emits an empty
 /// `aiTitle` for trivial sessions.
-fn capture_title_record(
+///
+/// `pub(crate)`: Qoder writes the same two record types with the same field
+/// names (verified against the qodercli 1.1.23 bundle, whose transcript record
+/// set includes `custom-title` and `ai-title`), so `parsers::qoder` resolves
+/// titles through this exact helper rather than a second spelling of the rule.
+pub(crate) fn capture_title_record(
     value: &serde_json::Value,
     msg_type: &str,
     custom_title: &mut Option<String>,
@@ -687,7 +692,11 @@ fn is_context_continuation(content: &[ContentBlock]) -> bool {
     })
 }
 
-fn is_synthetic_assistant(value: &serde_json::Value) -> bool {
+/// `pub(crate)`: Qoder stamps the same `<synthetic>` model on the assistant
+/// record it writes for a failed API turn (alongside `isApiErrorMessage`), so
+/// `parsers::qoder` shares this predicate — see `is_non_conversational_assistant`
+/// there for the error-record half.
+pub(crate) fn is_synthetic_assistant(value: &serde_json::Value) -> bool {
     value
         .get("message")
         .and_then(|m| m.get("model"))
@@ -731,24 +740,11 @@ fn claude_context_window_max_tokens_for_model(model: Option<&str>) -> Option<u64
     None
 }
 
-fn claude_context_window_used_tokens_from_usage(usage: &TurnUsage) -> Option<u64> {
-    let used_tokens = usage
-        .input_tokens
-        .saturating_add(usage.cache_creation_input_tokens)
-        .saturating_add(usage.cache_read_input_tokens);
-    if used_tokens > 0 {
-        Some(used_tokens)
-    } else {
-        None
-    }
-}
-
+/// The Anthropic-usage-shape occupancy rule now lives in
+/// [`super::latest_turn_prompt_usage_tokens`] so Qoder — which writes the same
+/// counters — reads the gauge the same way instead of re-deriving it.
 fn latest_claude_context_window_used_tokens(turns: &[MessageTurn]) -> Option<u64> {
-    turns.iter().rev().find_map(|turn| {
-        turn.usage
-            .as_ref()
-            .and_then(claude_context_window_used_tokens_from_usage)
-    })
+    super::latest_turn_prompt_usage_tokens(turns)
 }
 
 fn merge_claude_context_window_stats(
@@ -1186,11 +1182,18 @@ impl ClaudeRecordAccumulator {
     ///
     /// A line with no `message.id` cannot be grouped, so it keeps whatever it
     /// reported.
-    fn claim_assistant_usage(
+    ///
+    /// `owner_index` is the slot the claiming message WILL occupy — normally
+    /// `messages.len()` (a fresh push). `parsers::qoder` merges the fragments of
+    /// one `message.id` into a single bubble, so it claims for
+    /// `messages.len() - 1` instead; passing it explicitly keeps the demotion
+    /// bookkeeping correct for both shapes.
+    pub(crate) fn claim_assistant_usage(
         messages: &mut [UnifiedMessage],
         usage_owner_by_message_id: &mut std::collections::HashMap<String, usize>,
         message_id: Option<&str>,
         usage: Option<TurnUsage>,
+        owner_index: usize,
     ) -> Option<TurnUsage> {
         let usage = usage?;
         let Some(message_id) = message_id.filter(|id| !id.is_empty()) else {
@@ -1214,14 +1217,14 @@ impl ClaudeRecordAccumulator {
                     if let Some(previous) = messages.get_mut(owner) {
                         previous.usage = None;
                     }
-                    usage_owner_by_message_id.insert(message_id.to_string(), messages.len());
+                    usage_owner_by_message_id.insert(message_id.to_string(), owner_index);
                     Some(usage)
                 } else {
                     None
                 }
             }
             None => {
-                usage_owner_by_message_id.insert(message_id.to_string(), messages.len());
+                usage_owner_by_message_id.insert(message_id.to_string(), owner_index);
                 Some(usage)
             }
         }
@@ -1538,6 +1541,7 @@ impl ClaudeRecordAccumulator {
                 let content = extract_assistant_content(&value);
                 // One API call is spread over several lines that each repeat
                 // its full usage; only one of them may keep it.
+                let owner_index = messages.len();
                 let usage = Self::claim_assistant_usage(
                     messages,
                     usage_owner_by_message_id,
@@ -1546,6 +1550,7 @@ impl ClaudeRecordAccumulator {
                         .and_then(|m| m.get("id"))
                         .and_then(|id| id.as_str()),
                     extract_usage(&value),
+                    owner_index,
                 );
 
                 messages.push(UnifiedMessage {
@@ -1958,7 +1963,10 @@ fn parse_timestamp(value: &serde_json::Value) -> Option<DateTime<Utc>> {
         .and_then(|s| s.parse::<DateTime<Utc>>().ok())
 }
 
-fn extract_user_text(value: &serde_json::Value) -> Option<String> {
+/// `pub(crate)`: shared with `parsers::qoder`, whose transcript uses the same
+/// envelope — including the block-ARRAY content shape qoder writes for every
+/// ACP-entrypoint prompt and for any prompt carrying attachments.
+pub(crate) fn extract_user_text(value: &serde_json::Value) -> Option<String> {
     let message = value.get("message")?;
     let content = message.get("content")?;
 
@@ -1981,7 +1989,9 @@ fn extract_user_text(value: &serde_json::Value) -> Option<String> {
     None
 }
 
-fn extract_user_content(value: &serde_json::Value) -> Vec<ContentBlock> {
+/// `pub(crate)`: shared with `parsers::qoder` (same envelope: string or block
+/// array, `image` blocks, `tool_result` / `server_tool_result` with images).
+pub(crate) fn extract_user_content(value: &serde_json::Value) -> Vec<ContentBlock> {
     let mut blocks = Vec::new();
     let message = match value.get("message") {
         Some(m) => m,
@@ -2101,7 +2111,9 @@ fn parse_data_uri_image(raw: &str) -> Option<(String, String)> {
     Some((mime_type.to_string(), data.to_string()))
 }
 
-fn extract_assistant_content(value: &serde_json::Value) -> Vec<ContentBlock> {
+/// `pub(crate)`: shared with `parsers::qoder` (same `text`/`thinking`/
+/// `tool_use`/`server_tool_use` block shapes).
+pub(crate) fn extract_assistant_content(value: &serde_json::Value) -> Vec<ContentBlock> {
     let mut blocks = Vec::new();
     let message = match value.get("message") {
         Some(m) => m,
@@ -2157,7 +2169,9 @@ fn extract_assistant_content(value: &serde_json::Value) -> Vec<ContentBlock> {
     blocks
 }
 
-fn extract_usage(value: &serde_json::Value) -> Option<TurnUsage> {
+/// `pub(crate)`: shared with `parsers::qoder` — qoder meters its subscription
+/// in `credits` but writes the same Anthropic-shaped token counters alongside.
+pub(crate) fn extract_usage(value: &serde_json::Value) -> Option<TurnUsage> {
     let usage = value.get("message")?.get("usage")?;
     Some(TurnUsage {
         input_tokens: usage

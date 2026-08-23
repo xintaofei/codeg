@@ -27,6 +27,7 @@ import {
   GitBranch,
   GitCommitHorizontal,
   GitMerge,
+  GitPullRequestArrow,
   ListX,
   Loader2,
   MessageSquareText,
@@ -68,12 +69,26 @@ import { AgentIcon } from "@/components/agent-icon"
 import { getAgentLabel } from "@/lib/custom-agents"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { hasNothingToMerge, isMergeQueued } from "./task-acceptance"
+import {
+  canDeliverToPr,
+  canRemoveWorktree,
+  deliveredPrUrl,
+  hasNothingToMerge,
+  isMergeQueued,
+  mustDeliverToPr,
+  usesMergeRequests,
+} from "./task-acceptance"
 import { StatusChip, statusLabelKey } from "./task-card"
 import {
   TaskMessageComposer,
   type TaskMessageComposerHandle,
 } from "./task-message-composer"
+import { TaskTranscriptDialog } from "./task-transcript-dialog"
+import {
+  duplicateActiveSource,
+  duplicateActiveSourceLabel,
+  type DuplicateActiveSource,
+} from "./task-restart-guard"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -84,6 +99,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import { BrowserLink } from "@/components/ui/browser-link"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -102,12 +118,19 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet"
+  Drawer,
+  DrawerContent,
+  DrawerDescription,
+  DrawerHeader,
+  DrawerTitle,
+  SIDE_PANEL_CONTENT_CLASS,
+} from "@/components/ui/drawer"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import type {
   AgentType,
@@ -143,11 +166,12 @@ interface TaskDetailSheetProps {
   /** The live task row (already refreshed by the board's provider). */
   task: WorkTask | null
   folderName: string | null
-  /** Opens the page-owned read-only live session viewer. */
-  onViewSession: (task: WorkTask) => void
   onMerge: (task: WorkTask) => void
   /** Replaces merge when the task changed nothing (see `hasNothingToMerge`). */
   onComplete: (task: WorkTask) => void
+  /** Push the task to the forge: a new pull request for an issue-sourced
+   *  task, back onto its own branch for a pull-request-sourced one. */
+  onDeliverPr: (task: WorkTask) => void
   /** Opens the page-owned cancel dialog, which records the user's reason.
    *  Both "cancel" and a reviewed task's "abandon" go through it — same
    *  backend transition, same thing worth writing down. */
@@ -157,7 +181,7 @@ interface TaskDetailSheetProps {
   onSchedule: (task: WorkTask) => void
 }
 
-/** One button of the sheet's action panel (see below). */
+/** One button of the drawer's action panel (see below). */
 interface ZoneAction {
   icon: typeof Play
   label: string
@@ -183,9 +207,9 @@ export function TaskDetailSheet({
   onOpenChange,
   task,
   folderName,
-  onViewSession,
   onMerge,
   onComplete,
+  onDeliverPr,
   onCancel,
   onEdit,
   onSchedule,
@@ -210,9 +234,29 @@ export function TaskDetailSheet({
   // Mirrors the composer's attached-file count so an image-only follow-up (or
   // restart note) still enables the send — the text alone would read as empty.
   const [composerAttachments, setComposerAttachments] = useState(0)
+  /** Set when the resurrection guard refused a restart — see `submitRestart`. */
+  const [restartDuplicate, setRestartDuplicate] =
+    useState<DuplicateActiveSource | null>(null)
   const [intent, setIntent] = useState<FollowUpIntent>(DEFAULT_FOLLOW_UP_INTENT)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleteWorktree, setDeleteWorktree] = useState(false)
+  /** Confirm for the footer's standalone worktree removal (`canRemoveWorktree`
+   *  decides who is offered it). */
+  const [cleanupOpen, setCleanupOpen] = useState(false)
+  /**
+   * The read-only live session viewer, owned HERE rather than by the board.
+   *
+   * It used to be raised through an `onViewSession` callback and rendered by
+   * `tasks-page.tsx` as a sibling of this sheet. Both are drawers, and Base UI
+   * only stacks a drawer that is a React DESCENDANT of the one it opens over
+   * (nesting rides `DialogRootContext` — see `useRenderDialogRoot`), so as
+   * siblings they could never stack: the viewer just landed on top with the
+   * sheet still at full size underneath. Mounting it inside our own `Drawer`
+   * gets the real thing — the sheet scales back and dims, and Escape unwinds
+   * one layer at a time. The board keeps its own top-level instance for the
+   * card's "查看会话" action, which opens with no sheet in play.
+   */
+  const [sessionOpen, setSessionOpen] = useState(false)
   const [diffFile, setDiffFile] = useState<string | null | false>(false)
   const [busy, setBusy] = useState(false)
   /** Synchronous in-flight latch for the follow-up send (see submitFollowUp). */
@@ -291,6 +335,7 @@ export function TaskDetailSheet({
     setComposerOpen(false)
     setComposerText("")
     setComposerAttachments(0)
+    setRestartDuplicate(null)
     setIntent(DEFAULT_FOLLOW_UP_INTENT)
     void reload()
     let unsub: (() => void) | undefined
@@ -322,12 +367,24 @@ export function TaskDetailSheet({
     }
   }, [])
 
+  // The guard's refusal belongs to the box it was raised in, and to the status
+  // it was raised for. Closing the box or the task leaving `failed`/`canceled`
+  // retires it — otherwise a later restart could open on a stale "restart
+  // anyway" and waive a guard the user never saw refuse anything. (The label
+  // and the waiver read the same state, so the two can never disagree; this is
+  // about not carrying a decision across the moment it was made.)
+  useEffect(() => {
+    setRestartDuplicate(null)
+  }, [composerOpen, task?.status])
+
   /// A restart that consumed the note closes the box with it, so the text
   /// cannot be silently attached to a second restart the user did not mean.
+  /// A refusal the box answers on the spot (the resurrection guard) reports
+  /// `false` instead, and everything stays exactly where the user left it.
   const runRestart = useCallback(
-    (fn: () => Promise<unknown>) =>
+    (fn: () => Promise<boolean>) =>
       run(async () => {
-        await fn()
+        if (!(await fn())) return
         setComposerOpen(false)
         setComposerText("")
         setComposerAttachments(0)
@@ -368,6 +425,8 @@ export function TaskDetailSheet({
   // The user-authored brief, as typed (the agent receives the block form).
   const promptText = task.config?.display_text?.trim() || null
   const archived = task.archived_at != null
+  /** Set only when this task finished BY delivering — the link to show. */
+  const deliveredPr = deliveredPrUrl(task)
 
   const canEdit = task.status === "todo" || task.status === "failed"
 
@@ -417,22 +476,47 @@ export function TaskDetailSheet({
       })
     } else {
       // A task that changed nothing has no merge to offer — accepting it IS
-      // the primary action (same swap the board card makes).
-      zoneActions.push(
-        hasNothingToMerge(task)
-          ? {
-              icon: CircleCheck,
-              label: t("actionComplete"),
-              filled: true,
-              onClick: () => onComplete(task),
-            }
-          : {
-              icon: GitMerge,
-              label: t("actionMerge"),
-              filled: true,
-              onClick: () => onMerge(task),
-            }
-      )
+      // the primary action (same swap the board card makes). A task that came
+      // from a pull request has no local merge at all: its work belongs on
+      // that pull request's branch, and the backend refuses anything else.
+      if (hasNothingToMerge(task)) {
+        zoneActions.push({
+          icon: CircleCheck,
+          label: t("actionComplete"),
+          filled: true,
+          onClick: () => onComplete(task),
+        })
+      } else if (mustDeliverToPr(task)) {
+        zoneActions.push({
+          icon: GitPullRequestArrow,
+          label: t(
+            usesMergeRequests(task)
+              ? "actionDeliverPrBackMr"
+              : "actionDeliverPrBack"
+          ),
+          filled: true,
+          onClick: () => onDeliverPr(task),
+        })
+      } else {
+        zoneActions.push({
+          icon: GitMerge,
+          label: t("actionMerge"),
+          filled: true,
+          onClick: () => onMerge(task),
+        })
+        // A second way to accept, not a replacement: a task that came from an
+        // issue can still legitimately be landed locally, so both stay on
+        // offer and the merge above keeps the filled slot.
+        if (canDeliverToPr(task)) {
+          zoneActions.push({
+            icon: GitPullRequestArrow,
+            label: t(
+              usesMergeRequests(task) ? "actionDeliverPrMr" : "actionDeliverPr"
+            ),
+            onClick: () => onDeliverPr(task),
+          })
+        }
+      }
     }
     zoneActions.push({
       icon: Undo2,
@@ -556,7 +640,7 @@ export function TaskDetailSheet({
   /// task exactly the way the button used to on its own. Gated on the status
   /// still being restartable: the row is live while the box is open, so a task
   /// the engine picked back up must not be re-queued by a late click.
-  const submitRestart = () => {
+  const submitRestart = (allowDuplicateSource = false) => {
     if (!isRestart) return
     // The same ref latch the follow-up send takes, and for the same reason: the
     // box now sends, so the send key reaches this out of the editor's own
@@ -574,10 +658,21 @@ export function TaskDetailSheet({
     return runRestart(async () => {
       try {
         if (task.status === "failed") {
-          await workTaskRetry(task.id, note, blocks)
+          await workTaskRetry(task.id, note, blocks, allowDuplicateSource)
         } else {
-          await workTaskRequeue(task.id, note, blocks)
+          await workTaskRequeue(task.id, note, blocks, allowDuplicateSource)
         }
+        setRestartDuplicate(null)
+        return true
+      } catch (e) {
+        // The resurrection guard is the one refusal with a way through, and it
+        // refuses EVERY restart of this card while the other task lives — a
+        // toast would leave the user with no next move. Everything else keeps
+        // `run`'s toast: there is nothing there to decide.
+        const dup = duplicateActiveSource(e)
+        if (!dup) throw e
+        setRestartDuplicate(dup)
+        return false
       } finally {
         submittingRef.current = false
       }
@@ -586,12 +681,9 @@ export function TaskDetailSheet({
 
   return (
     <>
-      <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent
-          side="right"
-          className="flex w-full flex-col gap-0 p-0 sm:max-w-[44rem]"
-        >
-          <SheetHeader className="shrink-0 gap-0 border-b border-border px-5 py-4">
+      <Drawer open={open} onOpenChange={onOpenChange} swipeDirection="right">
+        <DrawerContent className={SIDE_PANEL_CONTENT_CLASS}>
+          <DrawerHeader className="shrink-0 gap-0 border-b border-border px-5 py-4">
             {/* Agent glyph, then the title block. The status chip rides
                 directly beside the title rather than being pinned to the far
                 edge — it reads as part of the name, not as a separate
@@ -613,9 +705,9 @@ export function TaskDetailSheet({
               </span>
               <div className="flex min-w-0 flex-1 flex-col gap-1">
                 <div className="flex min-w-0 items-start gap-2">
-                  <SheetTitle className="min-w-0 break-words text-[0.9375rem] font-semibold leading-5">
+                  <DrawerTitle className="min-w-0 break-words text-[0.9375rem] font-semibold leading-5">
                     {task.title}
-                  </SheetTitle>
+                  </DrawerTitle>
                   {/* One title line tall, centring its own content: the chips
                       differ in height (pill vs bare spinner text), so a fixed
                       margin would only ever centre one of them — and a
@@ -658,10 +750,10 @@ export function TaskDetailSheet({
                 </div>
               </div>
             </div>
-            <SheetDescription className="sr-only">
+            <DrawerDescription className="sr-only">
               {t("detailDescription")}
-            </SheetDescription>
-          </SheetHeader>
+            </DrawerDescription>
+          </DrawerHeader>
 
           <ScrollArea className="min-h-0 flex-1">
             <div className="flex flex-col gap-5 px-5 py-4">
@@ -869,9 +961,30 @@ export function TaskDetailSheet({
                         onChange={setComposerText}
                         onAttachmentsChange={setComposerAttachments}
                         onSubmit={() => {
-                          void (isReview ? submitFollowUp() : submitRestart())
+                          // Mirrors the send button exactly — including the
+                          // waiver once the guard's warning is on screen and
+                          // the button reads "restart anyway". Sending without
+                          // it there would re-run into the same refusal and
+                          // read as a dead key.
+                          void (isReview
+                            ? submitFollowUp()
+                            : submitRestart(restartDuplicate != null))
                         }}
                       />
+                      {!isReview && restartDuplicate ? (
+                        // Announced, not just drawn: the refusal arrives while
+                        // focus is in the editor, so a screen-reader user
+                        // would otherwise get silence — the same dead key this
+                        // affordance exists to remove.
+                        <p role="alert" className="text-xs text-destructive">
+                          {t("restartDuplicateSource", {
+                            task: duplicateActiveSourceLabel(
+                              restartDuplicate,
+                              t("restartDuplicateSourceAnon")
+                            ),
+                          })}
+                        </p>
+                      ) : null}
                       {/* One footer for every case: the scenario picker on the
                           left (reviewed tasks only — a restart's purpose is
                           already fixed by the button that opened this box) and
@@ -928,9 +1041,19 @@ export function TaskDetailSheet({
                                 composerAttachments > 0
                               ))
                           }
-                          onClick={isReview ? submitFollowUp : submitRestart}
+                          // Arrow-wrapped, never a bare `submitRestart`: the
+                          // handler would receive the click event as
+                          // `allowDuplicateSource`, and a MouseEvent is truthy
+                          // — every restart would waive the guard.
+                          onClick={() =>
+                            void (isReview
+                              ? submitFollowUp()
+                              : submitRestart(restartDuplicate != null))
+                          }
                         >
-                          {t("followUpSubmit")}
+                          {!isReview && restartDuplicate
+                            ? t("actionRestartAnyway")
+                            : t("followUpSubmit")}
                         </Button>
                       </div>
                     </div>
@@ -972,6 +1095,27 @@ export function TaskDetailSheet({
                         />
                         {task.merge_commit.slice(0, 8)}
                       </span>
+                    </InfoRow>
+                  ) : null}
+                  {deliveredPr ? (
+                    <InfoRow
+                      label={t(
+                        usesMergeRequests(task)
+                          ? "detailMergeRequest"
+                          : "detailPullRequest"
+                      )}
+                    >
+                      <BrowserLink
+                        href={deliveredPr}
+                        className="inline-flex min-w-0 items-center gap-1 truncate underline-offset-2 hover:underline"
+                        title={deliveredPr}
+                      >
+                        <GitPullRequestArrow
+                          className="size-3 shrink-0 text-muted-foreground"
+                          aria-hidden="true"
+                        />
+                        <span className="truncate">{deliveredPr}</span>
+                      </BrowserLink>
                     </InfoRow>
                   ) : null}
                   {task.files_changed != null && task.files_changed > 0 ? (
@@ -1102,9 +1246,9 @@ export function TaskDetailSheet({
           {/* Footer: everything that does NOT advance the task's state — the
               status's own actions live in the action zone / acceptance panel
               above. Left: session viewer, edit (while editable), cleanup
-              retry; right: destructive delete (`merging` cannot be deleted).
-              Deleting offers the worktree checkbox in its confirm dialog, so
-              that is the only worktree affordance kept here. */}
+              retry; right: the worktree a finished task is still holding, then
+              the destructive delete (`merging` cannot be deleted), which takes
+              the worktree along as a checkbox in its own confirm. */}
           {task.conversation_id != null ||
           canEdit ||
           task.status !== "merging" ? (
@@ -1114,7 +1258,7 @@ export function TaskDetailSheet({
                   icon={MessageSquareText}
                   label={t("actionViewSession")}
                   busy={false}
-                  onClick={() => onViewSession(task)}
+                  onClick={() => setSessionOpen(true)}
                 />
               ) : null}
               {canEdit ? (
@@ -1134,6 +1278,18 @@ export function TaskDetailSheet({
                 />
               ) : null}
               <div className="flex-1" />
+              {/* Beside "delete", because that is the other way to be rid of
+                  this worktree — and glyph-only, because a done task's leftover
+                  checkout is a housekeeping detail, not a decision the drawer
+                  should press on the user every time they open it. */}
+              {canRemoveWorktree(task) ? (
+                <FooterIconAction
+                  icon={FolderX}
+                  label={t("actionDeleteWorktree")}
+                  busy={busy}
+                  onClick={() => setCleanupOpen(true)}
+                />
+              ) : null}
               {task.status !== "merging" ? (
                 <FooterAction
                   icon={Trash2}
@@ -1145,8 +1301,18 @@ export function TaskDetailSheet({
               ) : null}
             </div>
           ) : null}
-        </SheetContent>
-      </Sheet>
+        </DrawerContent>
+
+        {/* Inside the `Drawer` (so it nests) but outside `DrawerContent` (so
+            it escapes the content's `overflow-hidden` and the `opacity-0` the
+            content takes on while a nested drawer is open). Anywhere under
+            the root is enough — nesting is context, not DOM. */}
+        <TaskTranscriptDialog
+          open={sessionOpen}
+          onOpenChange={setSessionOpen}
+          task={task}
+        />
+      </Drawer>
 
       {/* Per-file / full diff viewer. */}
       <Dialog
@@ -1164,6 +1330,35 @@ export function TaskDetailSheet({
           ) : null}
         </DialogContent>
       </Dialog>
+
+      {/* Worktree removal confirm. Git takes the directory `--force` and the
+          work branch `-D`, so anything left uncommitted or unlanded in there
+          goes with it — too much to hang off one click on a bare glyph. */}
+      <AlertDialog open={cleanupOpen} onOpenChange={setCleanupOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t("deleteWorktreeConfirmTitle")}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("deleteWorktreeConfirmBody")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() =>
+                run(async () => {
+                  await workTaskCleanup(task.id)
+                  setCleanupOpen(false)
+                })
+              }
+            >
+              {t("actionDeleteWorktree")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Delete confirm (optionally with the worktree). */}
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
@@ -1410,6 +1605,45 @@ function FooterAction({
   )
 }
 
+/**
+ * A footer action stripped to its glyph. The label lives on twice over: as an
+ * `aria-label` (a Radix tooltip only DESCRIBES its trigger — it never names it)
+ * and as the tooltip itself, which is the only way a pointer user reads it.
+ * Sized to `FooterAction`'s own h-7 so the row keeps one baseline.
+ */
+function FooterIconAction({
+  icon: Icon,
+  label,
+  onClick,
+  busy,
+}: {
+  icon: typeof Play
+  label: string
+  onClick: () => void
+  busy: boolean
+}) {
+  return (
+    <TooltipProvider delayDuration={200}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="ghost"
+            disabled={busy}
+            aria-label={label}
+            className="size-7 text-muted-foreground hover:text-foreground"
+            onClick={onClick}
+          >
+            <Icon className="size-3.5" aria-hidden="true" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="top">{label}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
+}
+
 const EVENT_KIND_KEYS = {
   created: "eventCreated",
   status_changed: "eventStatusChanged",
@@ -1425,6 +1659,8 @@ const EVENT_KIND_KEYS = {
   resume_fallback: "eventResumeFallback",
   user_action: "eventUserAction",
   diff_stat: "eventDiffStat",
+  forge_writeback: "eventForgeWriteback",
+  forge_writeback_failed: "eventForgeWritebackFailed",
 } as const
 
 const STATUS_KEYS = new Set([
@@ -1599,6 +1835,10 @@ function timelineDetail(event: WorkTaskEvent): string | null {
       if (typeof fc === "number") return `${fc} files · +${a ?? 0} -${d ?? 0}`
       return null
     }
+    case "forge_writeback":
+      return str("url")
+    case "forge_writeback_failed":
+      return str("error")
     default:
       return null
   }

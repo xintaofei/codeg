@@ -4,6 +4,29 @@ import nextTs from "eslint-config-next/typescript"
 import eslintConfigPrettier from "eslint-config-prettier"
 import eslintPluginPrettierRecommended from "eslint-plugin-prettier/recommended"
 
+/**
+ * `target="_blank"` on a raw anchor is a trap: it opens a tab in the browser
+ * (web mode, `next dev`) and does NOTHING in the desktop webview, which
+ * registers no new-window handler. The bug is invisible until someone runs the
+ * packaged app. `<BrowserLink>` keeps the attribute AND routes the click
+ * through the platform opener; it is the only place allowed to write one.
+ */
+const BLANK_TARGET_MESSAGE =
+  'A bare <a target="_blank"> is dead in the desktop webview. Use <BrowserLink> from @/components/ui/browser-link.'
+
+const noRawBlankTarget = {
+  selector:
+    "JSXOpeningElement[name.name='a'] > JSXAttribute[name.name='target'][value.value='_blank']",
+  message: BLANK_TARGET_MESSAGE,
+}
+
+/** The same attribute written as an expression — `target={"_blank"}`. */
+const noRawBlankTargetExpression = {
+  selector:
+    "JSXOpeningElement[name.name='a'] > JSXAttribute[name.name='target'] > JSXExpressionContainer > Literal[value='_blank']",
+  message: BLANK_TARGET_MESSAGE,
+}
+
 const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
@@ -28,6 +51,11 @@ const eslintConfig = defineConfig([
   {
     rules: {
       "prettier/prettier": "error",
+      "no-restricted-syntax": [
+        "error",
+        noRawBlankTarget,
+        noRawBlankTargetExpression,
+      ],
     },
   },
   {
@@ -42,14 +70,27 @@ const eslintConfig = defineConfig([
       "src/components/conversations/**",
     ],
     rules: {
+      // Flat config REPLACES a rule's options rather than merging them, so
+      // this block has to restate every restriction that applies here — drop
+      // the blank-target pair and these four directories silently lose it.
       "no-restricted-syntax": [
         "error",
+        noRawBlankTarget,
+        noRawBlankTargetExpression,
         {
           selector: "CallExpression[callee.name='useWorkspaceContext']",
           message:
             "Hot path: use useWorkspaceActions / useWorkspaceView / useWorkspaceFileTabs instead of the aggregate useWorkspaceContext (it re-renders on every fileTabs change).",
         },
       ],
+    },
+  },
+  {
+    // The one anchor that is allowed to ask for a new window — it pairs the
+    // attribute with the opener call that actually delivers one.
+    files: ["src/components/ui/browser-link.tsx"],
+    rules: {
+      "no-restricted-syntax": "off",
     },
   },
 ])

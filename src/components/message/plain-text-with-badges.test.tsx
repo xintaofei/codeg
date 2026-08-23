@@ -101,4 +101,68 @@ describe("PlainTextWithBadges", () => {
     expect(root.className).toContain("whitespace-pre-wrap")
     expect(container.textContent).toBe("a\nb")
   })
+
+  describe("quote blocks", () => {
+    const quotes = (c: HTMLElement) =>
+      Array.from(c.querySelectorAll("[data-testid='user-message-quote']"))
+
+    it("renders a quoted run as a rule block with the markers dropped", () => {
+      const { container } = render(
+        <PlainTextWithBadges text={"> first\n> second"} />
+      )
+      const [quote] = quotes(container)
+      expect(quote).toBeDefined()
+      expect(quote.className).toContain("border-l-2")
+      expect(quote.textContent).toBe("first\nsecond")
+      // No stray marker anywhere in the bubble.
+      expect(container.textContent).not.toContain(">")
+    })
+
+    it("keeps the prose after a quote as its own block", () => {
+      // The shape the quote action produces: quote, blank separator, question.
+      const { container } = render(
+        <PlainTextWithBadges text={"> quoted\n\nmy question"} />
+      )
+      expect(quotes(container)).toHaveLength(1)
+      expect(quotes(container)[0].textContent).toBe("quoted")
+      // The separator blank line is structure, not content — it must not also
+      // survive as a literal newline on top of the block gap.
+      expect(container.textContent).toBe("quotedmy question")
+    })
+
+    it("nests a doubly-marked quote", () => {
+      const { container } = render(<PlainTextWithBadges text="> > deep" />)
+      const found = quotes(container)
+      expect(found).toHaveLength(2)
+      expect(found[0].contains(found[1])).toBe(true)
+      expect(found[1].textContent).toBe("deep")
+    })
+
+    it("still badges references inside a quote", () => {
+      const { container } = render(
+        <PlainTextWithBadges text="> edit [app.ts](file:///repo/app.ts) now" />
+      )
+      const [quote] = quotes(container)
+      expect(quote.querySelector("[data-reference-badge]")).not.toBeNull()
+      expect(quote.textContent).toContain("now")
+    })
+
+    it("does NOT widen Markdown rendering beyond the quote marker", () => {
+      const { container } = render(
+        <PlainTextWithBadges text={"> # Heading\n> **bold**\n> - item"} />
+      )
+      expect(container.querySelector("h1")).toBeNull()
+      expect(container.querySelector("strong")).toBeNull()
+      expect(container.querySelector("li")).toBeNull()
+      expect(quotes(container)[0].textContent).toBe(
+        "# Heading\n**bold**\n- item"
+      )
+    })
+
+    it("leaves a `>` that is not line-leading literal", () => {
+      const { container } = render(<PlainTextWithBadges text="2 > 1 is true" />)
+      expect(quotes(container)).toHaveLength(0)
+      expect(container.textContent).toBe("2 > 1 is true")
+    })
+  })
 })

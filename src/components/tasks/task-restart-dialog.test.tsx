@@ -21,6 +21,11 @@ import type {
 
 const workTaskRetry = vi.fn().mockResolvedValue(undefined)
 const workTaskRequeue = vi.fn().mockResolvedValue(undefined)
+const toastError = vi.fn()
+
+vi.mock("sonner", () => ({
+  toast: { error: (...a: unknown[]) => toastError(...a) },
+}))
 
 vi.mock("@/lib/api", () => ({
   workTaskRequeue: (...args: unknown[]) => workTaskRequeue(...args),
@@ -100,7 +105,8 @@ describe("TaskRestartDialog", () => {
     expect(workTaskRetry).toHaveBeenCalledWith(
       7,
       "look at [retry.ts](file:///repo/retry.ts) first",
-      []
+      [],
+      false
     )
   })
 
@@ -109,7 +115,7 @@ describe("TaskRestartDialog", () => {
     mount(task({ status: "canceled" }), "requeue")
     await user.click(screen.getByRole("button", { name: "Requeue" }))
     await waitFor(() => expect(workTaskRequeue).toHaveBeenCalledTimes(1))
-    expect(workTaskRequeue).toHaveBeenCalledWith(7, null, [])
+    expect(workTaskRequeue).toHaveBeenCalledWith(7, null, [], false)
   })
 
   it("restarts on a pasted screenshot alone, with no note", async () => {
@@ -121,7 +127,7 @@ describe("TaskRestartDialog", () => {
     await user.click(screen.getByRole("button", { name: "Retry" }))
     await waitFor(() => expect(workTaskRetry).toHaveBeenCalledTimes(1))
     // No prose, but the image still reaches the next run as its own block.
-    expect(workTaskRetry).toHaveBeenCalledWith(7, null, editorBlocks)
+    expect(workTaskRetry).toHaveBeenCalledWith(7, null, editorBlocks, false)
   })
 
   it("refuses to send while an image upload is still in flight", async () => {
@@ -134,6 +140,72 @@ describe("TaskRestartDialog", () => {
     await user.click(screen.getByRole("button", { name: "Retry" }))
     // The block would carry neither bytes nor a uri to hydrate from.
     expect(workTaskRetry).not.toHaveBeenCalled()
+  })
+
+  it("offers the override when the resurrection guard refuses, and only then", async () => {
+    const user = userEvent.setup()
+    workTaskRetry.mockRejectedValueOnce(
+      new Error(
+        "validation error: duplicate_active_source: task #9 (Same issue) is already active for this work item"
+      )
+    )
+    editorText = "the note survives the refusal"
+    mount(task())
+
+    await user.click(screen.getByRole("button", { name: "Retry" }))
+    // The refusal is answerable, so it lands in the dialog rather than in a
+    // toast that leaves the card with nowhere to go.
+    const alert = await screen.findByRole("alert")
+    // Announced, not just drawn: focus is in the editor when this arrives.
+    expect(alert).toHaveTextContent(/#9 \(Same issue\) is already active/)
+    expect(toastError).not.toHaveBeenCalled()
+    expect(
+      screen.queryByRole("button", { name: "Retry" })
+    ).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole("button", { name: "Restart anyway" }))
+    await waitFor(() => expect(workTaskRetry).toHaveBeenCalledTimes(2))
+    // Same note, now with the waiver the backend already accepts.
+    expect(workTaskRetry).toHaveBeenLastCalledWith(
+      7,
+      "the note survives the refusal",
+      [],
+      true
+    )
+  })
+
+  it("keeps waiving from the send key once the warning is up", async () => {
+    workTaskRequeue.mockRejectedValueOnce(
+      new Error("validation error: duplicate_active_source: task #9 (X) is")
+    )
+    mount(task({ status: "canceled" }), "requeue")
+
+    await act(async () => {
+      composerProps?.onSubmit?.()
+    })
+    await screen.findByRole("button", { name: "Restart anyway" })
+    await act(async () => {
+      composerProps?.onSubmit?.()
+    })
+    // A send key that re-ran into the same refusal would read as a dead key.
+    await waitFor(() => expect(workTaskRequeue).toHaveBeenCalledTimes(2))
+    expect(workTaskRequeue).toHaveBeenLastCalledWith(7, null, [], true)
+  })
+
+  it("still toasts a failure that has nothing to decide", async () => {
+    const user = userEvent.setup()
+    workTaskRetry.mockRejectedValueOnce(new Error("task is not in failed"))
+    mount(task())
+
+    await user.click(screen.getByRole("button", { name: "Retry" }))
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith("task is not in failed")
+    )
+    expect(
+      screen.queryByRole("button", { name: "Restart anyway" })
+    ).not.toBeInTheDocument()
+    // The primary stays what it was — no waiver to offer.
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument()
   })
 
   it("sends once when the send key fires twice before React catches up", async () => {

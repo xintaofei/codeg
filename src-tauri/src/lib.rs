@@ -21,6 +21,7 @@ pub mod chat_channel;
 pub mod commands;
 pub mod db;
 pub mod folder_links;
+pub mod forge;
 pub mod git_credential;
 pub mod git_repo;
 pub mod intern;
@@ -76,7 +77,7 @@ mod tauri_app {
         session_info as session_info_commands,
         system_settings, terminal as terminal_commands,
         token_usage as token_usage_commands,
-        version_control, windows, work_task as work_task_commands,
+        forge as forge_commands, version_control, windows, work_task as work_task_commands,
         workspace_state as workspace_state_commands,
     };
     use crate::terminal::manager::TerminalManager;
@@ -206,6 +207,40 @@ mod tauri_app {
             .plugin(tauri_plugin_updater::Builder::new().build())
             .plugin(tauri_plugin_process::init())
             .plugin(tauri_plugin_notification::init())
+            // "Launch at login". LaunchAgent rather than AppleScript on macOS:
+            // writing `~/Library/LaunchAgents/codeg.plist` needs no Automation
+            // consent prompt, where scripting System Events does. No extra
+            // startup args — an auto-started codeg is the same app the user
+            // would have launched by hand.
+            //
+            // Nothing rewrites the registration at startup, deliberately. The
+            // entry records an absolute path that no backend re-validates, so a
+            // refresh would repair a moved app — but `is_enabled()` only knows
+            // whether the *file* is there, and the desktop environments disable
+            // an entry in place: GNOME sets `X-GNOME-Autostart-enabled=false`
+            // inside the .desktop file the plugin would overwrite from a fixed
+            // template. Refreshing would therefore silently undo a disable the
+            // user made outside codeg. Re-toggling the setting rewrites the
+            // path, which is the same repair with consent attached.
+            //
+            // Two accepted defects live in `auto-launch`, which this plugin
+            // wraps, and are still unfixed as of its 0.6 line — so there is no
+            // version to upgrade to, and pinning past `auto-launch ^0.5` (what
+            // the plugin requires) would not help:
+            //   * Windows writes the Run value as `{app_path} {args}` with the
+            //     path unquoted. Per-user installs land under
+            //     `C:\Users\<name>\AppData\Local\codeg\`, so a username with a
+            //     space produces the classic unquoted-path value. Windows'
+            //     successive-prefix parsing still resolves it; the residual
+            //     risk is the usual hijack, which already requires the attacker
+            //     to be able to write `C:\Users\<first>.exe`.
+            //   * macOS builds the plist with a bare `<string>{path}</string>`
+            //     and no XML escaping, so an install path containing `&`, `<`
+            //     or `>` yields a malformed plist and autostart silently fails.
+            .plugin(tauri_plugin_autostart::init(
+                tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+                None,
+            ))
             .manage(ConnectionManager::new())
             .manage(TerminalManager::new())
             .manage(ChatChannelManager::new())
@@ -466,6 +501,19 @@ mod tauri_app {
                             tracing::info!("[folders] labeled {n} worktree folder(s) by branch");
                         }
                     });
+                }
+
+                // Hand the chat-channel manager to the connection manager
+                // BEFORE the chat background tasks below start accepting
+                // messages: a `/new` that lands first would write its live ACP
+                // title against an `install_chat_channel` that hasn't happened
+                // yet, and skip the topic rename for good (the later
+                // reconciliation passes only sync titles their own conditional
+                // UPDATE wrote, and this one already converged).
+                {
+                    let cm = app.state::<ConnectionManager>();
+                    let ccm = app.state::<ChatChannelManager>();
+                    cm.install_chat_channel(ccm.clone_ref());
                 }
 
                 // Start chat channel background tasks
@@ -1160,6 +1208,8 @@ mod tauri_app {
                 system_settings::probe_terminal_shell_path,
                 system_settings::get_system_rendering_settings,
                 system_settings::update_system_rendering_settings,
+                system_settings::get_system_autostart_settings,
+                system_settings::update_system_autostart_settings,
                 logging_commands::get_log_settings,
                 logging_commands::set_log_settings,
                 logging_commands::get_recent_logs,
@@ -1182,6 +1232,7 @@ mod tauri_app {
                 version_control::update_git_settings,
                 version_control::get_github_accounts,
                 version_control::validate_github_token,
+                version_control::validate_gitlab_token,
                 version_control::update_github_accounts,
                 version_control::save_account_token,
                 version_control::get_account_token,
@@ -1189,6 +1240,7 @@ mod tauri_app {
                 acp_commands::acp_preflight,
                 acp_commands::acp_cursor_auth_status,
                 acp_commands::acp_cursor_list_models,
+                acp_commands::acp_qoder_auth_status,
                 acp_commands::acp_connect,
                 acp_commands::acp_prompt,
                 acp_commands::acp_set_mode,
@@ -1333,6 +1385,7 @@ mod tauri_app {
                 work_task_commands::work_task_cancel,
                 work_task_commands::work_task_merge,
                 work_task_commands::work_task_merge_unqueue,
+                work_task_commands::work_task_deliver_pr,
                 work_task_commands::work_task_complete,
                 work_task_commands::work_task_archive,
                 work_task_commands::work_task_cleanup,
@@ -1346,6 +1399,14 @@ mod tauri_app {
                 work_task_commands::work_task_template_list,
                 work_task_commands::work_task_template_save,
                 work_task_commands::work_task_template_delete,
+                forge_commands::folder_forge_remote,
+                forge_commands::forge_list_issues,
+                forge_commands::forge_tab_count,
+                forge_commands::forge_list_labels,
+                forge_commands::work_task_create_from_forge,
+                forge_commands::work_task_lookup_by_source,
+                forge_commands::forge_settings_get,
+                forge_commands::forge_settings_set,
                 terminal_commands::terminal_spawn,
                 terminal_commands::terminal_write,
                 terminal_commands::terminal_resize,

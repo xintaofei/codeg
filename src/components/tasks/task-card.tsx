@@ -13,6 +13,7 @@ import {
   Loader2,
 } from "lucide-react"
 import { AgentIcon } from "@/components/agent-icon"
+import { BrowserLink } from "@/components/ui/browser-link"
 import { Button } from "@/components/ui/button"
 import { formatRelative } from "@/components/conversations/sidebar-conversation-grouping"
 import { formatScheduleFull, formatScheduleShort } from "@/lib/task-schedule"
@@ -365,6 +366,11 @@ export function TaskCard({
     now
   )
 
+  // Hoisted so the click handler closes over a plain string: narrowing on
+  // `task.source_meta?.url` does not survive into the callback.
+  const source = task.source_meta
+  const sourceUrl = source?.url ?? null
+
   const { primary, secondaries } = buildTaskActions(task, t, handlers)
 
   return (
@@ -445,6 +451,27 @@ export function TaskCard({
           </span>
         ) : null}
       </div>
+
+      {/* Forge provenance — `#123 · owner/repo`, straight to the issue. On its
+          own row rather than in the meta line above: `owner/repo` is long
+          enough that beside a folder and a `task/7` branch it either crowds
+          them or truncates itself into uselessness. mt-1 (tighter than the
+          meta line's own mt-1.5) keeps it reading as part of that block.
+          inline-block, not block, so the hit area hugs the text — a
+          full-width anchor would swallow clicks meant for the card. */}
+      {sourceUrl && source ? (
+        <div className="mt-1 min-w-0">
+          <BrowserLink
+            href={sourceUrl}
+            // The card itself opens the detail sheet — keep the click local.
+            onClick={(e) => e.stopPropagation()}
+            className="inline-block max-w-full truncate align-bottom font-mono text-[0.625rem] text-primary/80 hover:underline"
+            title={sourceUrl}
+          >
+            #{source.number} · {source.owner_repo}
+          </BrowserLink>
+        </div>
+      ) : null}
 
       {task.last_error &&
       (task.status === "failed" || task.status === "review") ? (

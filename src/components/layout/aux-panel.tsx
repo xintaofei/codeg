@@ -179,7 +179,7 @@ export function AuxPanel() {
   // on desktop Windows/Linux the native caption buttons sit beyond it. The
   // segmented control has to fit LEFT of all that — otherwise collapse it into
   // a dropdown. Only relevant to the desktop layout (mobile is a full-width
-  // Sheet), and only when there's more than the lone Session Details tab.
+  // Drawer), and only when there's more than the lone Session Details tab.
   const winLinuxControls = isDesktop() && (isWindows || isLinux)
   const rightReserve = rightChromeReserve(winLinuxControls, zoomLevel)
   const collapsed =
@@ -269,7 +269,7 @@ export function AuxPanel() {
   return (
     // Desktop: background matches the middle workspace (bg-background), not the
     // darker sidebar shade, so the right column reads as one surface with it.
-    // Mobile (Sheet) is unchanged — keep the sidebar shade.
+    // Mobile (Drawer) is unchanged — keep the sidebar shade.
     <aside
       ref={asideRef}
       className={cn(
@@ -285,7 +285,7 @@ export function AuxPanel() {
         className="flex h-full min-h-0 flex-col gap-0"
       >
         {isMobile ? (
-          // Mobile (Sheet): unchanged — full-width underline tabs + a divider.
+          // Mobile (Drawer): unchanged — full-width underline tabs + a divider.
           <TabsList
             variant="line"
             className="h-10 w-full shrink-0 justify-start border-b border-border ws-chrome-border px-3 group-data-horizontal/tabs:h-10"

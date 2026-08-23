@@ -13,9 +13,12 @@ import {
   configTextForClaudeSave,
   getAgentChecks,
   hostToolsAgentModeEnabled,
+  importantEnvKeysByAgent,
+  importantFieldsFor,
   inferGrokMode,
   materializeClaudeHardeningFlags,
   patchCodexConfigTomlText,
+  patchEnvByImportantKey,
   patchImportantConfigText,
   rebaseDeepSeekDraft,
   setClaudeEnvFlagInConfigText,
@@ -1602,5 +1605,71 @@ describe("rebaseDeepSeekDraft", () => {
       env: { DEEPSEEK_API_KEY: "sk-1" },
     })
     expect(rebaseDeepSeekDraft(draft, agent)).toBe(draft)
+  })
+})
+
+describe("important env keys", () => {
+  // Qoder is the only agent with an EMPTY slot (it talks solely to its own
+  // service, so there is no endpoint variable). `keys.apiBaseUrl[0]` is then
+  // `undefined`, and the writer used to hand that straight to `patchEnvText` —
+  // producing an env line literally named `undefined` and silently swallowing
+  // the value the user typed.
+  it("never writes an `undefined` key for a slot the agent has no var for", () => {
+    expect(importantEnvKeysByAgent("qoder" as AgentType).apiBaseUrl).toEqual([])
+    const before = "QODER_MODEL=qmodel_38max"
+    const after = patchEnvByImportantKey(
+      "qoder" as AgentType,
+      before,
+      "apiBaseUrl",
+      "https://example.com"
+    )
+    expect(after).toBe(before)
+    expect(after).not.toContain("undefined")
+  })
+
+  // …and the field is hidden, so the no-op above is unreachable in practice
+  // rather than a silently-ignored input the user can type into.
+  it("hides only the fields whose slot is empty", () => {
+    expect(importantFieldsFor("qoder" as AgentType)).toEqual({
+      apiBaseUrl: false,
+      apiKey: true,
+      model: true,
+    })
+    expect(importantFieldsFor("deepseek" as AgentType)).toEqual({
+      apiBaseUrl: true,
+      apiKey: true,
+      model: true,
+    })
+    // The generic fallback keeps all three for agents with no special-casing.
+    expect(importantFieldsFor("open_code" as AgentType)).toEqual({
+      apiBaseUrl: true,
+      apiKey: true,
+      model: true,
+    })
+  })
+
+  // The credential Qoder actually reads. Generic OPENAI_*/API_KEY aliases must
+  // stay out: Qoder reads neither, so listing them would let the auth panel
+  // report "configured" off a key that never reaches the agent.
+  it("writes Qoder's PAT and model to the vars the CLI documents", () => {
+    const keys = importantEnvKeysByAgent("qoder" as AgentType)
+    expect(keys.apiKey).toEqual(["QODER_PERSONAL_ACCESS_TOKEN"])
+    expect(keys.model).toEqual(["QODER_MODEL"])
+
+    const withPat = patchEnvByImportantKey(
+      "qoder" as AgentType,
+      "",
+      "apiKey",
+      "pat-123"
+    )
+    expect(withPat).toBe("QODER_PERSONAL_ACCESS_TOKEN=pat-123")
+    expect(
+      patchEnvByImportantKey(
+        "qoder" as AgentType,
+        withPat,
+        "model",
+        "qmodel_38max"
+      )
+    ).toContain("QODER_MODEL=qmodel_38max")
   })
 })

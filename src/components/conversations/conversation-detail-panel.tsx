@@ -1,17 +1,8 @@
 "use client"
 
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type PointerEvent as ReactPointerEvent,
-} from "react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   AlertCircle,
-  Copy,
   Download,
   FileCode,
   FileImage,
@@ -37,7 +28,8 @@ import { useTabActions, useTabStore } from "@/contexts/tab-context"
 import { groupOfTab, isReparentUnmount } from "@/stores/tab-store"
 import { computeRects, leafIds } from "@/lib/tab-group-layout"
 import { useTaskContext } from "@/contexts/task-context"
-import { cn, copyTextFromMenu, randomUUID } from "@/lib/utils"
+import { cn, randomUUID } from "@/lib/utils"
+import { buildQuotedMarkdown } from "@/lib/message-quote"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
 import { useMessageQueue, type QueuedMessage } from "@/hooks/use-message-queue"
 import { MessageListView } from "@/components/message/message-list-view"
@@ -49,7 +41,6 @@ import { useAdvertisedGoalActions } from "@/hooks/use-goal-actions"
 import { ConversationShell } from "@/components/chat/conversation-shell"
 import { SessionConfigStaleBanner } from "@/components/chat/session-config-stale-banner"
 import { PiProjectTrustBanner } from "@/components/chat/pi-project-trust-banner"
-import { BackgroundTasksChip } from "@/components/chat/background-tasks-chip"
 import { FeedbackNotesDisplay } from "@/components/chat/feedback-notes-display"
 import { FeedbackDialog } from "@/components/chat/feedback-dialog"
 import { AgentDiagnosticsDialog } from "@/components/settings/agent-diagnostics-dialog"
@@ -62,6 +53,7 @@ import { QuickActions } from "@/components/chat/quick-actions"
 import type { ComposerInjectContent } from "@/components/chat/message-input"
 import { TileScrollContainer } from "@/components/conversations/tile-scroll-container"
 import { GroupSplitHandle } from "@/components/conversations/group-split-handle"
+import { OverlayHostHiddenProvider } from "@/components/ui/overlay-host-hidden"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { TabBar } from "@/components/tabs/tab-bar"
 import { TabDragGhost } from "@/components/tabs/tab-drag-ghost"
@@ -331,7 +323,11 @@ const ConversationTabView = memo(function ConversationTabView({
     null
   )
   const [hasSentMessage, setHasSentMessage] = useState(false)
-  const [quickActionInject, setQuickActionInject] =
+  // One inbox for everything pushed into this tab's composer from outside it:
+  // welcome-page quick actions (replace) and quoted transcript selections
+  // (append). Exactly one composer is mounted at a time — the welcome one or the
+  // docked one — so a single slot can serve both.
+  const [composerInject, setComposerInject] =
     useState<ComposerInjectContent | null>(null)
 
   const hasPersistedConversation = dbConversationId != null
@@ -1541,11 +1537,19 @@ const ConversationTabView = memo(function ConversationTabView({
   const isWelcomeMode = showDraftHeader
 
   const handleQuickAction = useCallback((payload: ComposerInjectContent) => {
-    setQuickActionInject(payload)
+    setComposerInject(payload)
   }, [])
 
-  const handleQuickActionConsumed = useCallback(() => {
-    setQuickActionInject(null)
+  const handleComposerInjectConsumed = useCallback(() => {
+    setComposerInject(null)
+  }, [])
+
+  // Quote a transcript selection into the composer. A fresh object every time so
+  // quoting the same passage twice still re-fires the composer's inject effect.
+  const handleQuoteSelection = useCallback((selected: string) => {
+    const quoted = buildQuotedMarkdown(selected)
+    if (!quoted) return
+    setComposerInject({ text: quoted, mode: "append" })
   }, [])
 
   const canShowDetailErrorActions =
@@ -1726,6 +1730,12 @@ const ConversationTabView = memo(function ConversationTabView({
     [acpActions, tabId]
   )
 
+  // The docked composer is the only place a quote can land, so the selection
+  // bubble offers "quote" exactly when that composer is on screen (see
+  // `hideInput` below). Without a composer the inject would never be consumed
+  // and the action would silently do nothing.
+  const composerAvailable = !isWelcomeMode && !acpLoadError
+
   const messageListNode = (
     <GoalControlProvider value={goalControlValue}>
       <MessageListView
@@ -1742,6 +1752,7 @@ const ConversationTabView = memo(function ConversationTabView({
         onNewSession={
           canShowDetailErrorActions ? handleOpenNewSession : undefined
         }
+        onQuoteSelection={composerAvailable ? handleQuoteSelection : undefined}
       />
     </GoalControlProvider>
   )
@@ -1790,7 +1801,6 @@ const ConversationTabView = memo(function ConversationTabView({
             agentType={selectedAgent}
             workingDir={workingDirForConnection}
           />
-          <BackgroundTasksChip contextKey={tabId} />
         </>
       }
       status={connStatus}
@@ -1832,6 +1842,8 @@ const ConversationTabView = memo(function ConversationTabView({
       attachmentTabId={tabId}
       draftStorageKey={draftStorageKey}
       hideInput={isWelcomeMode || Boolean(acpLoadError)}
+      injectContent={composerInject}
+      onInjectConsumed={handleComposerInjectConsumed}
       composerBanner={acpLoadErrorBanner}
       feedbackList={
         feedback.showList ? (
@@ -1959,8 +1971,8 @@ const ConversationTabView = memo(function ConversationTabView({
                   feedback.featureEnabled ? feedback.openDialog : undefined
                 }
                 feedbackAddDisabled={!feedback.canSubmit}
-                injectContent={quickActionInject}
-                onInjectConsumed={handleQuickActionConsumed}
+                injectContent={composerInject}
+                onInjectConsumed={handleComposerInjectConsumed}
                 flush
                 tall
               />
@@ -2207,68 +2219,6 @@ export function ConversationDetailPanel() {
       [activeConversationTab.id]: (prev[activeConversationTab.id] ?? 0) + 1,
     }))
   }, [activeConversationTab])
-
-  const [contextMenuSelectedText, setContextMenuSelectedText] = useState("")
-  const savedSelectionRangeRef = useRef<Range | null>(null)
-  const isContextMenuOpenRef = useRef(false)
-
-  const handleContextMenuOpenChange = useCallback((open: boolean) => {
-    isContextMenuOpenRef.current = open
-    if (!open) {
-      savedSelectionRangeRef.current = null
-      return
-    }
-    const selection = window.getSelection()
-    const text = selection?.toString() ?? ""
-    setContextMenuSelectedText(text)
-    savedSelectionRangeRef.current =
-      selection && selection.rangeCount > 0 && !selection.isCollapsed
-        ? selection.getRangeAt(0).cloneRange()
-        : null
-  }, [])
-
-  const handleContextMenuTriggerPointerDown = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (event.button !== 2) return
-      const selection = window.getSelection()
-      if (selection && !selection.isCollapsed) {
-        event.preventDefault()
-      }
-    },
-    []
-  )
-
-  useEffect(() => {
-    const handler = () => {
-      if (!isContextMenuOpenRef.current) return
-      const range = savedSelectionRangeRef.current
-      if (!range) return
-      if (
-        !document.contains(range.startContainer) ||
-        !document.contains(range.endContainer)
-      ) {
-        savedSelectionRangeRef.current = null
-        return
-      }
-      const selection = window.getSelection()
-      if (!selection) return
-      if (selection.toString().length > 0) return
-      selection.removeAllRanges()
-      selection.addRange(range)
-    }
-    document.addEventListener("selectionchange", handler)
-    return () => document.removeEventListener("selectionchange", handler)
-  }, [])
-
-  const handleCopySelectedText = useCallback(async () => {
-    if (!contextMenuSelectedText) return
-    const ok = await copyTextFromMenu(contextMenuSelectedText)
-    if (ok) {
-      toast.success(t("copyTextSuccess"))
-    } else {
-      toast.error(t("copyTextFailed"))
-    }
-  }, [contextMenuSelectedText, t])
 
   const handleNewConversation = useCallback(() => {
     if (!folder) return
@@ -2528,7 +2478,14 @@ export function ConversationDetailPanel() {
         {(isSplit || canTileG) && active && (
           <span className="sr-only">{t("activeConversationIndicator")}</span>
         )}
-        {view}
+        {/* A backgrounded tab is kept mounted and merely hidden (its session is
+            still live), but a "查看会话" drawer opened from it portals to the
+            body — so without this it went on painting over whichever tab the
+            user switched to. The flag is additive, so a visible tab inside a
+            covered workspace stays hidden. */}
+        <OverlayHostHiddenProvider hidden={!canTileG && !visible}>
+          {view}
+        </OverlayHostHiddenProvider>
       </div>
     )
   }
@@ -2653,12 +2610,11 @@ export function ConversationDetailPanel() {
             status={activeTab.status as ConversationStatus | undefined}
           />
         )}
-        <ContextMenu onOpenChange={handleContextMenuOpenChange}>
+        <ContextMenu>
           <ContextMenuTrigger asChild>
             <div
               ref={groupContainerRef}
               className="relative min-h-0 flex-1 overflow-hidden"
-              onPointerDown={handleContextMenuTriggerPointerDown}
             >
               {/* Flat sibling shells keyed by stable group id + divider
                   overlays — stable across every split/tile flip, otherwise
@@ -2677,14 +2633,6 @@ export function ConversationDetailPanel() {
             </div>
           </ContextMenuTrigger>
           <ContextMenuContent>
-            <ContextMenuItem
-              disabled={!contextMenuSelectedText}
-              onSelect={handleCopySelectedText}
-            >
-              <Copy className="h-4 w-4" />
-              {t("copyText")}
-            </ContextMenuItem>
-            <ContextMenuSeparator />
             <ContextMenuItem
               disabled={!folder?.path}
               onSelect={handleNewConversation}

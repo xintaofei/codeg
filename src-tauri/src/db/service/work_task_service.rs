@@ -81,6 +81,7 @@ fn to_info(m: work_task::Model) -> WorkTaskInfo {
         additions: m.additions,
         deletions: m.deletions,
         merge_commit: m.merge_commit,
+        completion_kind: m.completion_kind,
         preflight: m
             .preflight
             .as_deref()
@@ -88,6 +89,12 @@ fn to_info(m: work_task::Model) -> WorkTaskInfo {
         merge_queued: queued_merge(m.pending_merge.as_deref()),
         archived_at: m.archived_at,
         scheduled_at: m.scheduled_at,
+        source_kind: m.source_kind,
+        source_key: m.source_key,
+        source_meta: m
+            .source_meta
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok()),
         latest_progress: None,
         created_at: m.created_at,
         updated_at: m.updated_at,
@@ -455,6 +462,169 @@ pub async fn create(
         .unwrap_or(0);
 
     let txn = conn.begin().await?;
+    let row = insert_todo_row(&txn, &draft, config_str, max_order, now, None).await?;
+    record_event(&txn, row.id, "created", "user", None).await?;
+    txn.commit().await?;
+    Ok(to_info(row))
+}
+
+/// Outcome of a forge-triggered create: either the new task, or the ACTIVE
+/// task that already handles the same source_key (dedup hit, not an error —
+/// the UI offers "view it" / "create anyway").
+#[derive(Debug)]
+pub enum ForgeCreateOutcome {
+    Created(WorkTaskInfo),
+    Duplicate(WorkTaskInfo),
+}
+
+/// Create a forge-triggered task. This is the ONLY path that writes the
+/// source columns — the public `create` (DTO-driven) cannot mint provenance,
+/// so a forged client draft can never bypass the trigger command's repo
+/// validation and untrusted-data envelope.
+///
+/// Concurrency shape (the repo's write-first idiom, same reason as
+/// `auto_claim_next`): the INSERT is the transaction's FIRST statement, so the
+/// SQLite write lock is taken up front and a concurrent trigger simply waits —
+/// a dedup SELECT before the first write would make this a deferred
+/// read-then-write transaction, and under WAL the loser of that upgrade gets
+/// `database is locked` instead of the promised `Duplicate` answer. The dedup
+/// check then runs AFTER the insert, inside the same lock, and rolls the fresh
+/// row back on a hit. `max_order` is read outside the transaction exactly like
+/// `create` does — a stale value only affects board ordering, never
+/// correctness.
+pub async fn create_from_forge(
+    conn: &DatabaseConnection,
+    draft: WorkTaskDraft,
+    source: crate::models::WorkTaskSource,
+    force: bool,
+) -> Result<ForgeCreateOutcome, DbError> {
+    validate_draft(&draft)?;
+    let folder = folder::Entity::find_by_id(draft.folder_id)
+        .one(conn)
+        .await?
+        .filter(|f| f.deleted_at.is_none())
+        .ok_or_else(|| DbError::NotFound(format!("folder {}", draft.folder_id)))?;
+    if folder.parent_id.is_some() {
+        return Err(DbError::Validation(
+            "tasks must target a project folder, not a worktree".into(),
+        ));
+    }
+    let config_str = serde_json::to_string(&draft.config)
+        .map_err(|e| DbError::Validation(format!("config not serializable: {e}")))?;
+    let now = Utc::now();
+    let max_order = work_task::Entity::find()
+        .filter(work_task::Column::FolderId.eq(draft.folder_id))
+        .order_by_desc(work_task::Column::SortOrder)
+        .one(conn)
+        .await?
+        .map(|m| m.sort_order)
+        .unwrap_or(0);
+
+    let txn = conn.begin().await?;
+    // FIRST statement: the write. See the doc comment — this is load-bearing.
+    let row = insert_todo_row(&txn, &draft, config_str, max_order, now, Some(&source)).await?;
+    if !force {
+        if let Some(existing) =
+            other_active_with_same_source(&txn, row.id, &source.key).await?
+        {
+            txn.rollback().await?;
+            return Ok(ForgeCreateOutcome::Duplicate(to_info(existing)));
+        }
+    }
+    record_event(&txn, row.id, "created", "user", None).await?;
+    record_event(
+        &txn,
+        row.id,
+        "forge_linked",
+        "user",
+        Some(serde_json::json!({ "source_key": source.key, "kind": source.kind })),
+    )
+    .await?;
+    txn.commit().await?;
+    Ok(ForgeCreateOutcome::Created(to_info(row)))
+}
+
+/// Every non-terminal status — the single definition of "active" shared by
+/// the create dedup and the resurrection guards, so the two can never drift.
+pub const ACTIVE_STATUSES: [WorkTaskStatus; 7] = [
+    WorkTaskStatus::Todo,
+    WorkTaskStatus::Queued,
+    WorkTaskStatus::Preparing,
+    WorkTaskStatus::Running,
+    WorkTaskStatus::AwaitingInput,
+    WorkTaskStatus::Review,
+    WorkTaskStatus::Merging,
+];
+
+/// The wire-detectable error of a blocked resurrection: the frontend matches
+/// on the `duplicate_active_source` marker to offer "re-open anyway".
+fn duplicate_active_source_error(other: &work_task::Model) -> DbError {
+    DbError::Validation(format!(
+        "duplicate_active_source: task #{} ({}) is already active for this work item",
+        other.id, other.title
+    ))
+}
+
+/// Resurrection guard: does ANOTHER active task share this task's source_key?
+/// Called (inside the claiming/requeue transaction) before a failed/canceled
+/// forge task returns to the active set — without it, "trigger a replacement,
+/// then requeue the old card" silently ends with two live tasks on one issue.
+pub async fn other_active_with_same_source<C: ConnectionTrait>(
+    conn: &C,
+    task_id: i32,
+    source_key: &str,
+) -> Result<Option<work_task::Model>, DbError> {
+    Ok(work_task::Entity::find()
+        .filter(work_task::Column::SourceKey.eq(source_key))
+        .filter(work_task::Column::Id.ne(task_id))
+        .filter(work_task::Column::DeletedAt.is_null())
+        .filter(work_task::Column::Status.is_in(ACTIVE_STATUSES))
+        .order_by_desc(work_task::Column::CreatedAt)
+        .one(conn)
+        .await?)
+}
+
+/// Latest task row (any state, newest `created_at` per key) for each of the
+/// given source keys — the workbench's reverse lookup for its visible rows.
+/// One indexed query; missing keys simply have no entry.
+pub async fn lookup_latest_by_source_keys(
+    conn: &DatabaseConnection,
+    keys: &[String],
+) -> Result<Vec<(String, work_task::Model)>, DbError> {
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = work_task::Entity::find()
+        .filter(work_task::Column::SourceKey.is_in(keys.iter().cloned()))
+        .filter(work_task::Column::DeletedAt.is_null())
+        .order_by_desc(work_task::Column::CreatedAt)
+        .order_by_desc(work_task::Column::Id)
+        .all(conn)
+        .await?;
+    let mut seen = std::collections::HashSet::new();
+    Ok(rows
+        .into_iter()
+        .filter_map(|m| {
+            let key = m.source_key.clone()?;
+            seen.insert(key.clone()).then_some((key, m))
+        })
+        .collect())
+}
+
+async fn insert_todo_row<C: ConnectionTrait>(
+    txn: &C,
+    draft: &WorkTaskDraft,
+    config_str: String,
+    max_order: i32,
+    now: chrono::DateTime<Utc>,
+    source: Option<&crate::models::WorkTaskSource>,
+) -> Result<work_task::Model, DbError> {
+    let source_meta = source
+        .map(|s| {
+            serde_json::to_string(&s.meta)
+                .map_err(|e| DbError::Validation(format!("source meta not serializable: {e}")))
+        })
+        .transpose()?;
     let active = work_task::ActiveModel {
         id: NotSet,
         folder_id: Set(draft.folder_id),
@@ -480,9 +650,13 @@ pub async fn create(
         additions: Set(None),
         deletions: Set(None),
         merge_commit: Set(None),
+        completion_kind: Set(None),
         preflight: Set(None),
         archived_at: Set(None),
         scheduled_at: Set(None),
+        source_kind: Set(source.map(|s| s.kind.clone())),
+        source_key: Set(source.map(|s| s.key.clone())),
+        source_meta: Set(source_meta),
         created_at: Set(now),
         updated_at: Set(now),
         started_at: Set(None),
@@ -490,10 +664,7 @@ pub async fn create(
         finished_at: Set(None),
         deleted_at: Set(None),
     };
-    let row = active.insert(&txn).await?;
-    record_event(&txn, row.id, "created", "user", None).await?;
-    txn.commit().await?;
-    Ok(to_info(row))
+    Ok(active.insert(txn).await?)
 }
 
 /// Edit title/config. Only meaningful outside an active run: allowed in
@@ -521,7 +692,35 @@ pub async fn update(
             "a task that already ran cannot move to another folder".into(),
         ));
     }
-    let config_str = serde_json::to_string(&draft.config)
+    // A forge-sourced task is pinned to the folder whose git remote was
+    // validated against the source repository at trigger time; moving it —
+    // even as a pristine todo — would void that check and run an issue's
+    // prompt against an unrelated repo. Re-trigger in the right folder instead.
+    if draft.folder_id != row.folder_id && row.source_kind.is_some() {
+        return Err(DbError::Validation(
+            "a forge-sourced task cannot move to another folder; trigger it again from the issue instead".into(),
+        ));
+    }
+    // `deliverable` is trigger-owned (a forge scenario stamps it; no editor
+    // shows or edits it), and the dialog rebuilds the config from its own
+    // fields — so an ABSENT key on an edit means "the client never knew",
+    // not "clear it". Dropping it would silently restore the write licence
+    // on a report task's next launch. Preserved at the JSON level: passing
+    // the value through `WorkTaskConfig` here would strip every field this
+    // build does not know about. An explicit `"deliverable": null` still
+    // clears (that is a statement, not ignorance).
+    let mut config = draft.config;
+    if config.get("deliverable").is_none() {
+        if let (Some(obj), Ok(stored)) = (
+            config.as_object_mut(),
+            serde_json::from_str::<serde_json::Value>(&row.config),
+        ) {
+            if let Some(deliverable) = stored.get("deliverable") {
+                obj.insert("deliverable".to_string(), deliverable.clone());
+            }
+        }
+    }
+    let config_str = serde_json::to_string(&config)
         .map_err(|e| DbError::Validation(format!("config not serializable: {e}")))?;
     let mut active = row.into_active_model();
     active.folder_id = Set(draft.folder_id);
@@ -581,7 +780,7 @@ pub async fn claim_for_run(
     from: WorkTaskStatus,
     actor: &str,
 ) -> Result<Option<i32>, DbError> {
-    claim_inner(conn, id, from, actor, None, false).await
+    claim_inner(conn, id, from, actor, None, false, false).await
 }
 
 /// `claim_for_run` for a BULK start ("process all"), which must leave a planned
@@ -598,7 +797,7 @@ pub async fn claim_unplanned_for_run(
     from: WorkTaskStatus,
     actor: &str,
 ) -> Result<Option<i32>, DbError> {
-    claim_inner(conn, id, from, actor, None, true).await
+    claim_inner(conn, id, from, actor, None, true, false).await
 }
 
 /// `claim_for_run` plus a `user_action` event written in the SAME transaction
@@ -617,14 +816,17 @@ pub async fn claim_for_run_with_action(
     from: WorkTaskStatus,
     actor: &str,
     action: Option<serde_json::Value>,
+    allow_duplicate_source: bool,
 ) -> Result<Option<i32>, DbError> {
-    claim_inner(conn, id, from, actor, action, false).await
+    claim_inner(conn, id, from, actor, action, false, allow_duplicate_source).await
 }
 
 /// Shared body of every user-driven claim. `only_unplanned` narrows the CAS to
 /// tasks without a planned start (see `claim_unplanned_for_run`); a targeted
 /// start leaves it off, because pressing Start on one particular task IS the
-/// instruction to override its plan.
+/// instruction to override its plan. `allow_duplicate_source` waives the
+/// resurrection guard (see [`resurrection_guard`]) for a claim the user
+/// explicitly confirmed.
 async fn claim_inner(
     conn: &DatabaseConnection,
     id: i32,
@@ -632,6 +834,7 @@ async fn claim_inner(
     actor: &str,
     action: Option<serde_json::Value>,
     only_unplanned: bool,
+    allow_duplicate_source: bool,
 ) -> Result<Option<i32>, DbError> {
     let now = Utc::now();
     let txn = conn.begin().await?;
@@ -677,11 +880,26 @@ async fn claim_inner(
         txn.rollback().await?;
         return Ok(None);
     }
-    let run_seq = work_task::Entity::find_by_id(id)
+    let claimed = work_task::Entity::find_by_id(id)
         .one(&txn)
         .await?
-        .map(|m| m.run_seq)
         .ok_or_else(|| DbError::NotFound(format!("work task {id}")))?;
+    // Resurrection guard, inside the SAME transaction as the winning CAS: a
+    // failed/canceled forge task must not come back to life while ANOTHER
+    // active task already handles the same work item ("trigger a replacement,
+    // then requeue the old card" would end with two live tasks on one issue).
+    // The user can waive it explicitly per claim.
+    if matches!(from, WorkTaskStatus::Failed | WorkTaskStatus::Canceled)
+        && !allow_duplicate_source
+    {
+        if let Some(key) = claimed.source_key.as_deref() {
+            if let Some(other) = other_active_with_same_source(&txn, id, key).await? {
+                txn.rollback().await?;
+                return Err(duplicate_active_source_error(&other));
+            }
+        }
+    }
+    let run_seq = claimed.run_seq;
     // The instruction lands before the status change, so a newest-first scan
     // that stops at the first user action never has to reason about ordering
     // within this transaction.
@@ -953,6 +1171,7 @@ pub async fn requeue_canceled(
     id: i32,
     note: Option<&str>,
     blocks: &[serde_json::Value],
+    allow_duplicate_source: bool,
 ) -> Result<bool, DbError> {
     let now = Utc::now();
     let txn = conn.begin().await?;
@@ -978,6 +1197,20 @@ pub async fn requeue_canceled(
     if res.rows_affected != 1 {
         txn.rollback().await?;
         return Ok(false);
+    }
+    // Same resurrection guard as `claim_inner` — canceled → todo is the other
+    // road back into the active set.
+    if !allow_duplicate_source {
+        let row = work_task::Entity::find_by_id(id)
+            .one(&txn)
+            .await?
+            .ok_or_else(|| DbError::NotFound(format!("work task {id}")))?;
+        if let Some(key) = row.source_key.as_deref() {
+            if let Some(other) = other_active_with_same_source(&txn, id, key).await? {
+                txn.rollback().await?;
+                return Err(duplicate_active_source_error(&other));
+            }
+        }
     }
     // An attachment is an instruction on its own: a screenshot with no sentence
     // still has to reach the next run, so the action is recorded whenever
@@ -1617,6 +1850,157 @@ pub async fn clear_queued_merge(
     Ok(res.rows_affected == 1)
 }
 
+/// review → merging for a DELIVERY (`op = deliver_pr`) — the engine pushing a
+/// branch and opening a pull request, with no agent generation behind it.
+///
+/// Mirrors [`begin_merge`]'s two protective writes for the same reasons, and
+/// deliberately differs in one: `verdict` is KEPT. A merge dispatch clears it
+/// because the agent is about to produce a new one; a delivery spawns nobody,
+/// so clearing it would just erase the review badge the user is looking at.
+pub async fn begin_delivery(
+    conn: &DatabaseConnection,
+    id: i32,
+    state: &WorkTaskMergeState,
+    expect_run_seq: i32,
+) -> Result<Option<i32>, DbError> {
+    let state_json = serde_json::to_string(state)
+        .map_err(|e| DbError::Validation(format!("merge state not serializable: {e}")))?;
+    let now = Utc::now();
+    let txn = conn.begin().await?;
+    let res = work_task::Entity::update_many()
+        .col_expr(
+            work_task::Column::Status,
+            Expr::value(status_str(WorkTaskStatus::Merging)),
+        )
+        // Bumped so events of the run that just settled cannot act on a row
+        // that is now delivering.
+        .col_expr(
+            work_task::Column::RunSeq,
+            Expr::col(work_task::Column::RunSeq).add(1),
+        )
+        // Cleared so crash recovery cannot mistake the settled run's still-open
+        // session for "a live generation owns this settle" and skip a delivery
+        // that died with the process. `conversation_id` (the history link the
+        // UI shows) is untouched.
+        .col_expr(work_task::Column::ConnectionId, Expr::value(None::<String>))
+        .col_expr(work_task::Column::MergeState, Expr::value(Some(state_json)))
+        .col_expr(work_task::Column::LastError, Expr::value(None::<String>))
+        .col_expr(work_task::Column::UpdatedAt, Expr::value(now))
+        .filter(work_task::Column::Id.eq(id))
+        .filter(work_task::Column::Status.eq(WorkTaskStatus::Review))
+        .filter(work_task::Column::RunSeq.eq(expect_run_seq))
+        .filter(work_task::Column::DeletedAt.is_null())
+        .exec(&txn)
+        .await?;
+    if res.rows_affected != 1 {
+        txn.rollback().await?;
+        return Ok(None);
+    }
+    let run_seq = work_task::Entity::find_by_id(id)
+        .one(&txn)
+        .await?
+        .map(|m| m.run_seq)
+        .ok_or_else(|| DbError::NotFound(format!("work task {id}")))?;
+    record_event(
+        &txn,
+        id,
+        "deliver_attempt",
+        "user",
+        Some(serde_json::json!({
+            "remote_branch": state.remote_branch,
+            "expected_head": state.expected_head,
+        })),
+    )
+    .await?;
+    status_changed_event(
+        &txn,
+        id,
+        "user",
+        Some(WorkTaskStatus::Review),
+        WorkTaskStatus::Merging,
+        Some(serde_json::json!({ "reason": "delivering to a pull request" })),
+    )
+    .await?;
+    txn.commit().await?;
+    Ok(Some(run_seq))
+}
+
+/// merging → done for a delivery: the pull request carrying this task is open
+/// (or already merged) and anchored to the commit we pushed.
+///
+/// `source_meta_json` is the row's provenance snapshot with `result_pr` filled
+/// in, serialized by the CALLER. That is not an accident of layering: the
+/// update below has to be the transaction's FIRST statement. A deferred SQLite
+/// transaction that reads before it writes cannot upgrade to a writer under
+/// WAL — it fails with `database is locked` instead of waiting — so any
+/// read-modify-write of `source_meta` happens outside, and the CAS filter is
+/// what makes a stale read harmless.
+pub async fn complete_delivered(
+    conn: &DatabaseConnection,
+    id: i32,
+    expect_run_seq: i32,
+    pr_url: &str,
+    source_meta_json: &str,
+) -> Result<bool, DbError> {
+    let now = Utc::now();
+    let txn = conn.begin().await?;
+    let res = work_task::Entity::update_many()
+        .col_expr(
+            work_task::Column::Status,
+            Expr::value(status_str(WorkTaskStatus::Done)),
+        )
+        .col_expr(
+            work_task::Column::CompletionKind,
+            Expr::value(Some(COMPLETION_DELIVERED_PR.to_string())),
+        )
+        .col_expr(
+            work_task::Column::SourceMeta,
+            Expr::value(Some(source_meta_json.to_string())),
+        )
+        .col_expr(work_task::Column::MergeState, Expr::value(None::<String>))
+        .col_expr(work_task::Column::LastError, Expr::value(None::<String>))
+        .col_expr(work_task::Column::FinishedAt, Expr::value(Some(now)))
+        .col_expr(work_task::Column::UpdatedAt, Expr::value(now))
+        .filter(work_task::Column::Id.eq(id))
+        .filter(work_task::Column::Status.eq(WorkTaskStatus::Merging))
+        .filter(work_task::Column::RunSeq.eq(expect_run_seq))
+        .filter(work_task::Column::DeletedAt.is_null())
+        .exec(&txn)
+        .await?;
+    if res.rows_affected != 1 {
+        txn.rollback().await?;
+        return Ok(false);
+    }
+    record_event(
+        &txn,
+        id,
+        "delivered_pr",
+        "engine",
+        Some(serde_json::json!({ "pr_url": pr_url })),
+    )
+    .await?;
+    status_changed_event(
+        &txn,
+        id,
+        "engine",
+        Some(WorkTaskStatus::Merging),
+        WorkTaskStatus::Done,
+        Some(serde_json::json!({ "pr_url": pr_url })),
+    )
+    .await?;
+    txn.commit().await?;
+    Ok(true)
+}
+
+/// The three ways a task can be `done`, recorded in `completion_kind`.
+pub const COMPLETION_MERGED: &str = "merged";
+pub const COMPLETION_DELIVERED_PR: &str = "delivered_pr";
+/// Deliberately an umbrella rather than `no_changes`: [`complete_without_merge`]
+/// also accepts a task whose worktree is GONE, and that branch may still hold
+/// commits nobody landed. Claiming "no changes" there would be false evidence;
+/// the existing reason string still distinguishes the two situations.
+pub const COMPLETION_ACCEPTED_WITHOUT_MERGE: &str = "accepted_without_merge";
+
 /// merging → done. The merge path's writer of `done` (the other is
 /// [`complete_without_merge`]); never rolls back. Used both by the live merge
 /// path and by crash recovery back-filling a landed merge.
@@ -1635,6 +2019,10 @@ pub async fn merge_landed(
         .col_expr(
             work_task::Column::MergeCommit,
             Expr::value(Some(merge_commit.to_string())),
+        )
+        .col_expr(
+            work_task::Column::CompletionKind,
+            Expr::value(Some(COMPLETION_MERGED.to_string())),
         )
         .col_expr(work_task::Column::FinishedAt, Expr::value(Some(now)))
         .col_expr(work_task::Column::UpdatedAt, Expr::value(now))
@@ -1677,6 +2065,10 @@ pub async fn complete_without_merge(
         .col_expr(
             work_task::Column::Status,
             Expr::value(status_str(WorkTaskStatus::Done)),
+        )
+        .col_expr(
+            work_task::Column::CompletionKind,
+            Expr::value(Some(COMPLETION_ACCEPTED_WITHOUT_MERGE.to_string())),
         )
         // A refused merge attempt leaves its reason on the row; the task is
         // finishing on purpose now, so that banner must not follow it.
@@ -1738,12 +2130,16 @@ pub async fn set_review_error(
 pub async fn merge_back_to_review(
     conn: &DatabaseConnection,
     id: i32,
+    // `Some` binds the bounce to one generation — a delivery recovery that
+    // spent time at the forge must not undo a newer attempt that started while
+    // it was deciding. `None` keeps the historical merge behavior.
+    expect_run_seq: Option<i32>,
     error: Option<String>,
     conflict_files: Option<Vec<String>>,
 ) -> Result<bool, DbError> {
     let now = Utc::now();
     let txn = conn.begin().await?;
-    let res = work_task::Entity::update_many()
+    let update = work_task::Entity::update_many()
         .col_expr(
             work_task::Column::Status,
             Expr::value(status_str(WorkTaskStatus::Review)),
@@ -1753,9 +2149,12 @@ pub async fn merge_back_to_review(
         .col_expr(work_task::Column::UpdatedAt, Expr::value(now))
         .filter(work_task::Column::Id.eq(id))
         .filter(work_task::Column::Status.eq(WorkTaskStatus::Merging))
-        .filter(work_task::Column::DeletedAt.is_null())
-        .exec(&txn)
-        .await?;
+        .filter(work_task::Column::DeletedAt.is_null());
+    let update = match expect_run_seq {
+        Some(seq) => update.filter(work_task::Column::RunSeq.eq(seq)),
+        None => update,
+    };
+    let res = update.exec(&txn).await?;
     if res.rows_affected != 1 {
         txn.rollback().await?;
         return Ok(false);
@@ -2252,6 +2651,7 @@ pub async fn template_delete(conn: &DatabaseConnection, id: i32) -> Result<(), D
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::WorkTaskMergeOp;
     use crate::db::test_helpers::{fresh_in_memory_db, seed_folder};
 
     fn draft(folder_id: i32, title: &str) -> WorkTaskDraft {
@@ -2525,7 +2925,7 @@ mod tests {
             .await
             .unwrap());
         assert!(cancel(&db.conn, t.id, None).await.unwrap());
-        assert!(requeue_canceled(&db.conn, t.id, None, &[]).await.unwrap());
+        assert!(requeue_canceled(&db.conn, t.id, None, &[], false).await.unwrap());
         assert_eq!(
             get_model(&db.conn, t.id).await.unwrap().verdict.as_deref(),
             Some("blocked"),
@@ -2540,7 +2940,7 @@ mod tests {
             .unwrap());
         assert!(cancel(&db.conn, t.id, None).await.unwrap());
         assert!(get_model(&db.conn, t.id).await.unwrap().scheduled_at.is_none());
-        assert!(requeue_canceled(&db.conn, t.id, None, &[]).await.unwrap());
+        assert!(requeue_canceled(&db.conn, t.id, None, &[], false).await.unwrap());
         assert!(get_model(&db.conn, t.id).await.unwrap().scheduled_at.is_none());
 
         // A due plan claims the task and clears the stale verdict with it.
@@ -2555,7 +2955,7 @@ mod tests {
 
         // The auto-process arm holds the same invariant.
         assert!(cancel(&db.conn, t.id, None).await.unwrap());
-        assert!(requeue_canceled(&db.conn, t.id, None, &[]).await.unwrap());
+        assert!(requeue_canceled(&db.conn, t.id, None, &[], false).await.unwrap());
         let seq = claim_for_run(&db.conn, t.id, WorkTaskStatus::Todo, "user")
             .await
             .unwrap()
@@ -2563,7 +2963,7 @@ mod tests {
         assert!(start_running(&db.conn, t.id, seq, 1, "c2").await.unwrap());
         assert!(set_verdict(&db.conn, t.id, seq, "blocked", None).await.unwrap());
         assert!(cancel(&db.conn, t.id, None).await.unwrap());
-        assert!(requeue_canceled(&db.conn, t.id, None, &[]).await.unwrap());
+        assert!(requeue_canceled(&db.conn, t.id, None, &[], false).await.unwrap());
         assert_eq!(
             auto_claim_next(&db.conn, folder_id, 0).await.unwrap(),
             Some(t.id)
@@ -2688,7 +3088,7 @@ mod tests {
         );
 
         // Requeue resurrects it; the next claim bumps the generation.
-        assert!(requeue_canceled(&db.conn, t.id, None, &[]).await.unwrap());
+        assert!(requeue_canceled(&db.conn, t.id, None, &[], false).await.unwrap());
         let seq2 = claim_for_run(&db.conn, t.id, WorkTaskStatus::Todo, "user")
             .await
             .unwrap()
@@ -2755,6 +3155,7 @@ mod tests {
             strategy: "squash".into(),
             delete_worktree: true,
             auto_message: false,
+            ..Default::default()
         };
         // The merge is a fresh agent generation: begin bumps run_seq and
         // clears the run-scoped fields.
@@ -2778,7 +3179,7 @@ mod tests {
         // A second landing (event vs recovery race) is a no-op.
         assert!(!merge_landed(&db.conn, t.id, "zzz").await.unwrap());
         // And nothing can pull a done task back to review.
-        assert!(!merge_back_to_review(&db.conn, t.id, None, None).await.unwrap());
+        assert!(!merge_back_to_review(&db.conn, t.id, None, None, None).await.unwrap());
 
         let got = get(&db.conn, t.id).await.unwrap();
         assert_eq!(got.status, WorkTaskStatus::Done);
@@ -2791,6 +3192,120 @@ mod tests {
         let got = get(&db.conn, t.id).await.unwrap();
         assert_eq!(got.status, WorkTaskStatus::Done);
         assert_eq!(got.cleanup_state.as_deref(), Some("failed"));
+    }
+
+    /// `done` no longer means one thing, so every writer of it has to say
+    /// which ending this was — a NULL `completion_kind` on a fresh row would
+    /// make the board guess again.
+    #[tokio::test]
+    async fn each_ending_records_how_the_task_finished() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-endings").await;
+
+        let landed = reviewed(&db, folder_id, "merged one").await;
+        let state = WorkTaskMergeState {
+            pre_merge_head: "abc".into(),
+            strategy: "squash".into(),
+            ..Default::default()
+        };
+        begin_merge(&db.conn, landed.0, &state, landed.1, false, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(merge_landed(&db.conn, landed.0, "def456").await.unwrap());
+        assert_eq!(
+            get(&db.conn, landed.0).await.unwrap().completion_kind.as_deref(),
+            Some(COMPLETION_MERGED)
+        );
+
+        let accepted = reviewed(&db, folder_id, "nothing to land").await;
+        assert!(complete_without_merge(&db.conn, accepted.0, "no changes")
+            .await
+            .unwrap());
+        assert_eq!(
+            get(&db.conn, accepted.0).await.unwrap().completion_kind.as_deref(),
+            Some(COMPLETION_ACCEPTED_WITHOUT_MERGE)
+        );
+    }
+
+    /// A delivery's whole lifecycle at the service layer: the CAS that starts
+    /// it, what it keeps and clears, and the settle that records the pull
+    /// request on the row the issue list reads back.
+    #[tokio::test]
+    async fn a_delivery_starts_settles_and_binds_to_its_own_generation() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-deliver").await;
+        let (id, seq) = reviewed(&db, folder_id, "deliver me").await;
+
+        let state = WorkTaskMergeState {
+            op: WorkTaskMergeOp::DeliverPr,
+            remote_branch: Some("task/1".into()),
+            expected_head: Some("abc123".into()),
+            ..Default::default()
+        };
+        let deliver_seq = begin_delivery(&db.conn, id, &state, seq)
+            .await
+            .unwrap()
+            .expect("CAS");
+        assert_eq!(deliver_seq, seq + 1, "a delivery is its own generation");
+        let row = get_model(&db.conn, id).await.unwrap();
+        assert_eq!(row.status, WorkTaskStatus::Merging);
+        assert!(row.connection_id.is_none(), "recovery must not see a live session");
+        assert_eq!(
+            row.verdict.as_deref(),
+            Some("success"),
+            "no new agent runs, so the review badge stays"
+        );
+        // Cancel is refused while merging — a delivery inherits that.
+        assert!(!cancel(&db.conn, id, None).await.unwrap());
+        // Double begin loses: the row is no longer in review.
+        assert!(begin_delivery(&db.conn, id, &state, seq).await.unwrap().is_none());
+
+        let meta = r#"{"provider":"github","result_pr":"https://x/pull/9"}"#;
+        // A settle bound to the WRONG generation must miss, or a recovery pass
+        // racing a live delivery could settle a run that already moved on.
+        assert!(!complete_delivered(&db.conn, id, seq, "https://x/pull/9", meta)
+            .await
+            .unwrap());
+        assert!(complete_delivered(&db.conn, id, deliver_seq, "https://x/pull/9", meta)
+            .await
+            .unwrap());
+
+        let done = get_model(&db.conn, id).await.unwrap();
+        assert_eq!(done.status, WorkTaskStatus::Done);
+        assert_eq!(done.completion_kind.as_deref(), Some(COMPLETION_DELIVERED_PR));
+        assert_eq!(done.source_meta.as_deref(), Some(meta));
+        assert!(done.merge_state.is_none(), "the intent is spent");
+        assert!(done.finished_at.is_some());
+        // A second settle (event vs recovery race) is a no-op, and nothing
+        // pulls a delivered task back to review.
+        assert!(!complete_delivered(&db.conn, id, deliver_seq, "https://x/pull/9", meta)
+            .await
+            .unwrap());
+        assert!(!merge_back_to_review(&db.conn, id, None, None, None).await.unwrap());
+    }
+
+    /// Run a fresh task all the way to `review` — the state every acceptance
+    /// path starts from.
+    async fn reviewed(
+        db: &crate::db::AppDatabase,
+        folder_id: i32,
+        title: &str,
+    ) -> (i32, i32) {
+        let t = create(&db.conn, draft(folder_id, title)).await.unwrap();
+        let seq = claim_for_run(&db.conn, t.id, WorkTaskStatus::Todo, "user")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(start_running(&db.conn, t.id, seq, 1, "c").await.unwrap());
+        // Stamped while the run is still live (that is the only window
+        // `set_verdict` accepts), so the review badge is present for the
+        // acceptance paths to preserve or clear.
+        assert!(set_verdict(&db.conn, t.id, seq, "success", Some("done"))
+            .await
+            .unwrap());
+        assert!(settle_review(&db.conn, t.id, seq, None, None).await.unwrap());
+        (t.id, seq)
     }
 
     #[tokio::test]
@@ -2810,15 +3325,13 @@ mod tests {
             strategy: "squash".into(),
             delete_worktree: false,
             auto_message: false,
+            ..Default::default()
         };
         assert!(begin_merge(&db.conn, t.id, &state, seq, false, None)
             .await
             .unwrap()
             .is_some());
-        assert!(merge_back_to_review(
-            &db.conn,
-            t.id,
-            Some("conflict".into()),
+        assert!(merge_back_to_review(&db.conn, t.id, None, Some("conflict".into()),
             Some(vec!["a.rs".into()])
         )
         .await
@@ -2858,6 +3371,7 @@ mod tests {
             strategy: "squash".into(),
             delete_worktree: true,
             auto_message: true,
+            ..Default::default()
         };
         // An unattended dispatch never clears a banner — the failed row waits
         // for a human (the no-auto-retry latch) …
@@ -2878,7 +3392,7 @@ mod tests {
         assert!(get(&db.conn, t.id).await.unwrap().last_error.is_none());
 
         // Back in clean review for the unattended path proper.
-        assert!(merge_back_to_review(&db.conn, t.id, None, None).await.unwrap());
+        assert!(merge_back_to_review(&db.conn, t.id, None, None, None).await.unwrap());
         assert!(begin_merge(&db.conn, t.id, &state, seq + 1, true, None)
             .await
             .unwrap()
@@ -2929,6 +3443,7 @@ mod tests {
             strategy: "squash".into(),
             delete_worktree: true,
             auto_message: true,
+            ..Default::default()
         };
 
         // Sweep A dispatches generation `seq` and its launch fails: back to
@@ -2938,7 +3453,7 @@ mod tests {
             .unwrap()
             .is_some());
         assert!(
-            merge_back_to_review(&db.conn, t.id, Some("launch failed".into()), None)
+            merge_back_to_review(&db.conn, t.id, None, Some("launch failed".into()), None)
                 .await
                 .unwrap()
         );
@@ -3033,6 +3548,7 @@ mod tests {
             strategy: "squash".into(),
             delete_worktree: false,
             auto_message: true,
+            ..Default::default()
         };
         assert!(begin_merge(&db.conn, t.id, &state, seq, false, None)
             .await
@@ -3070,6 +3586,7 @@ mod tests {
             strategy: "squash".into(),
             delete_worktree: true,
             auto_message: true,
+            ..Default::default()
         };
         let intent = |secs: i64| WorkTaskQueuedMerge {
             message: Some(format!("feat: land it {secs}")),
@@ -3346,12 +3863,13 @@ mod tests {
             strategy: "squash".into(),
             delete_worktree: false,
             auto_message: false,
+            ..Default::default()
         };
         assert!(begin_merge(&db.conn, t.id, &state, seq, false, None)
             .await
             .unwrap()
             .is_some());
-        assert!(merge_back_to_review(&db.conn, t.id, Some("nope".into()), None)
+        assert!(merge_back_to_review(&db.conn, t.id, None, Some("nope".into()), None)
             .await
             .unwrap());
         assert_eq!(
@@ -3432,6 +3950,7 @@ mod tests {
                 strategy: "squash".into(),
                 delete_worktree: false,
                 auto_message: false,
+                ..Default::default()
             },
             seq,
             false,
@@ -3676,7 +4195,7 @@ mod tests {
         // …and so does requeueing an archived canceled task.
         assert!(cancel(&db.conn, t.id, None).await.unwrap());
         assert!(set_archived(&db.conn, t.id, true).await.unwrap());
-        assert!(requeue_canceled(&db.conn, t.id, None, &[]).await.unwrap());
+        assert!(requeue_canceled(&db.conn, t.id, None, &[], false).await.unwrap());
         let row = get(&db.conn, t.id).await.unwrap();
         assert_eq!(row.status, WorkTaskStatus::Todo);
         assert!(row.archived_at.is_none());
@@ -3713,5 +4232,323 @@ mod tests {
         assert!(template_save(&db.conn, &d("  ", "x")).await.is_err());
         template_delete(&db.conn, a.id).await.unwrap();
         assert_eq!(template_list(&db.conn).await.unwrap().len(), 1);
+    }
+
+    fn source(key: &str) -> crate::models::WorkTaskSource {
+        crate::models::WorkTaskSource {
+            kind: "forge_issue".to_string(),
+            key: key.to_string(),
+            meta: serde_json::json!({
+                "provider": "github",
+                "server_host": "github.com",
+                "owner_repo": "acme/app",
+                "number": 123,
+                "url": "https://github.com/acme/app/issues/123",
+                "title": "Login times out",
+            }),
+        }
+    }
+
+    /// The forge path is the only writer of the source columns; the public
+    /// create leaves them NULL, and the dedup guard turns a second trigger
+    /// into a `Duplicate` answer unless the user forces a second live task.
+    #[tokio::test]
+    async fn forge_create_writes_source_and_dedups_active() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-forge").await;
+        let key = "github:github.com:acme/app:issue:123";
+
+        let plain = create(&db.conn, draft(folder_id, "manual card")).await.unwrap();
+        assert_eq!(plain.source_kind, None);
+        assert_eq!(plain.source_key, None);
+
+        let first = match create_from_forge(&db.conn, draft(folder_id, "#123 · fix"), source(key), false)
+            .await
+            .unwrap()
+        {
+            ForgeCreateOutcome::Created(t) => t,
+            other => panic!("expected Created, got {other:?}"),
+        };
+        assert_eq!(first.source_kind.as_deref(), Some("forge_issue"));
+        assert_eq!(first.source_key.as_deref(), Some(key));
+        assert_eq!(
+            first.source_meta.as_ref().and_then(|m| m["number"].as_i64()),
+            Some(123)
+        );
+        // The provenance audit event landed in the create transaction.
+        let events = list_events(&db.conn, first.id, 100).await.unwrap();
+        assert!(events.iter().any(|e| e.kind == "forge_linked"));
+
+        // Second trigger answers with the live task instead of a twin…
+        match create_from_forge(&db.conn, draft(folder_id, "#123 · again"), source(key), false)
+            .await
+            .unwrap()
+        {
+            ForgeCreateOutcome::Duplicate(existing) => assert_eq!(existing.id, first.id),
+            other => panic!("expected Duplicate, got {other:?}"),
+        }
+        // …unless the user explicitly forces a second one.
+        let forced = match create_from_forge(&db.conn, draft(folder_id, "#123 · fork"), source(key), true)
+            .await
+            .unwrap()
+        {
+            ForgeCreateOutcome::Created(t) => t,
+            other => panic!("expected forced Created, got {other:?}"),
+        };
+        assert_ne!(forced.id, first.id);
+
+        // The resurrection guard sees the OTHER live task for the same key.
+        let other = other_active_with_same_source(&db.conn, forced.id, key)
+            .await
+            .unwrap()
+            .expect("first task is still active");
+        assert_eq!(other.id, first.id);
+        // …and nothing for a key with a single live task.
+        assert!(other_active_with_same_source(&db.conn, first.id, "github:github.com:acme/app:issue:999")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    /// A finished task is history, not a blocker: dedup only counts the
+    /// ACTIVE set, so re-triggering a done issue creates a fresh card.
+    #[tokio::test]
+    async fn forge_dedup_ignores_terminal_tasks() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-forge-term").await;
+        let key = "github:github.com:acme/app:issue:7";
+
+        let first = match create_from_forge(&db.conn, draft(folder_id, "#7"), source(key), false)
+            .await
+            .unwrap()
+        {
+            ForgeCreateOutcome::Created(t) => t,
+            other => panic!("expected Created, got {other:?}"),
+        };
+        // Drive it to a terminal state through the plain status column.
+        let mut active: work_task::ActiveModel = get_model(&db.conn, first.id)
+            .await
+            .unwrap()
+            .into_active_model();
+        active.status = Set(WorkTaskStatus::Canceled);
+        active.update(&db.conn).await.unwrap();
+
+        match create_from_forge(&db.conn, draft(folder_id, "#7 again"), source(key), false)
+            .await
+            .unwrap()
+        {
+            ForgeCreateOutcome::Created(t) => assert_ne!(t.id, first.id),
+            other => panic!("terminal task must not block a re-trigger, got {other:?}"),
+        }
+    }
+
+    /// Editing a forge task keeps its provenance intact and refuses a folder
+    /// move — the folder was validated against the source repo at trigger
+    /// time, and a move would silently void that check.
+    #[tokio::test]
+    async fn forge_task_update_keeps_source_and_pins_folder() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-forge-upd").await;
+        let other_folder = seed_folder(&db, "/tmp/wt-forge-upd-2").await;
+        let key = "github:github.com:acme/app:issue:55";
+
+        let t = match create_from_forge(&db.conn, draft(folder_id, "#55"), source(key), false)
+            .await
+            .unwrap()
+        {
+            ForgeCreateOutcome::Created(t) => t,
+            other => panic!("expected Created, got {other:?}"),
+        };
+
+        // Title/config edits pass through and leave the source columns alone.
+        let edited = update(&db.conn, t.id, draft(folder_id, "#55 · renamed"))
+            .await
+            .unwrap();
+        assert_eq!(edited.title, "#55 · renamed");
+        assert_eq!(edited.source_kind.as_deref(), Some("forge_issue"));
+        assert_eq!(edited.source_key.as_deref(), Some(key));
+        assert!(edited.source_meta.is_some());
+
+        // A pristine PLAIN todo may still move (existing behaviour)…
+        let plain = create(&db.conn, draft(folder_id, "movable")).await.unwrap();
+        assert!(update(&db.conn, plain.id, draft(other_folder, "movable")).await.is_ok());
+        // …but a forge todo may not.
+        let err = update(&db.conn, t.id, draft(other_folder, "#55 · moved"))
+            .await
+            .expect_err("forge task folder move must be rejected");
+        assert!(err.to_string().contains("forge-sourced"), "got: {err}");
+    }
+
+    /// `deliverable` is trigger-owned and no editor shows it, so an edit whose
+    /// config OMITS the key must keep the stored value — dropping it would
+    /// silently hand a report task the write licence back. An explicit null is
+    /// a statement, not ignorance, and still clears it.
+    #[tokio::test]
+    async fn update_preserves_the_stored_deliverable_unless_explicitly_cleared() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-deliv").await;
+
+        let mut with_report = draft(folder_id, "investigate #9");
+        with_report.config["deliverable"] = serde_json::json!("report");
+        let t = create(&db.conn, with_report).await.unwrap();
+
+        // The dialog rebuilds the config from its own fields and never knew
+        // the key: the stored marker survives the round trip, alongside the
+        // fields the client DID send.
+        let edited = update(&db.conn, t.id, draft(folder_id, "investigate #9 · renamed"))
+            .await
+            .unwrap();
+        assert_eq!(edited.config["deliverable"], serde_json::json!("report"));
+        assert_eq!(edited.config["display_text"], serde_json::json!("do the thing"));
+
+        // An explicit null clears — the escape hatch stays open.
+        let mut clearing = draft(folder_id, "investigate #9 · cleared");
+        clearing.config["deliverable"] = serde_json::Value::Null;
+        let cleared = update(&db.conn, t.id, clearing).await.unwrap();
+        assert_eq!(cleared.config["deliverable"], serde_json::Value::Null);
+
+        // And a task that never had one gains nothing.
+        let plain = create(&db.conn, draft(folder_id, "plain")).await.unwrap();
+        let edited = update(&db.conn, plain.id, draft(folder_id, "plain · renamed"))
+            .await
+            .unwrap();
+        assert!(edited.config.get("deliverable").is_none());
+    }
+
+    /// The write-first transaction shape under real concurrency: a file-backed
+    /// WAL database (multi-connection pool, like production) and two
+    /// simultaneous `force=false` triggers must yield exactly one `Created`
+    /// and one `Duplicate` — never `database is locked`. This is the exact
+    /// failure a dedup-SELECT-before-first-write shape produced (deferred
+    /// read→write upgrade loses under WAL instead of waiting).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_forge_creates_yield_one_created_one_duplicate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::test_helpers::fresh_disk_db(dir.path()).await;
+        let folder_id = seed_folder(&db, "/tmp/wt-forge-race").await;
+        let key = "github:github.com:acme/app:issue:900";
+
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let mut handles = Vec::new();
+        for n in 0..2 {
+            let conn = db.conn.clone();
+            let barrier = barrier.clone();
+            let d = draft(folder_id, &format!("#900 · racer {n}"));
+            let s = source(key);
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                create_from_forge(&conn, d, s, false).await
+            }));
+        }
+        let mut created = 0;
+        let mut duplicate = 0;
+        for handle in handles {
+            match handle.await.expect("join").expect("no lock error") {
+                ForgeCreateOutcome::Created(_) => created += 1,
+                ForgeCreateOutcome::Duplicate(_) => duplicate += 1,
+            }
+        }
+        assert_eq!((created, duplicate), (1, 1));
+    }
+
+    /// Resurrection guards on BOTH roads back into the active set: a failed
+    /// retry claim and a canceled requeue must refuse while another active
+    /// task holds the same source key — and the explicit override waives it.
+    #[tokio::test]
+    async fn resurrection_guards_block_and_override_waives() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/wt-forge-res").await;
+        let key = "github:github.com:acme/app:issue:70";
+
+        let set_status = |id: i32, status: WorkTaskStatus| {
+            let conn = db.conn.clone();
+            async move {
+                let mut active: work_task::ActiveModel =
+                    get_model(&conn, id).await.unwrap().into_active_model();
+                active.status = Set(status);
+                active.update(&conn).await.unwrap();
+            }
+        };
+
+        // Old task fails; a replacement is triggered (old is terminal, so the
+        // create dedup rightly lets it through) and stays active.
+        let old = match create_from_forge(&db.conn, draft(folder_id, "#70"), source(key), false)
+            .await
+            .unwrap()
+        {
+            ForgeCreateOutcome::Created(t) => t,
+            other => panic!("expected Created, got {other:?}"),
+        };
+        set_status(old.id, WorkTaskStatus::Failed).await;
+        let replacement =
+            match create_from_forge(&db.conn, draft(folder_id, "#70 v2"), source(key), false)
+                .await
+                .unwrap()
+            {
+                ForgeCreateOutcome::Created(t) => t,
+                other => panic!("expected Created, got {other:?}"),
+            };
+
+        // Retry road (failed → queued): blocked, then waived.
+        let err = claim_for_run_with_action(
+            &db.conn,
+            old.id,
+            WorkTaskStatus::Failed,
+            "user",
+            None,
+            false,
+        )
+        .await
+        .expect_err("retry must hit the resurrection guard");
+        assert!(err.to_string().contains("duplicate_active_source"), "got: {err}");
+        assert_eq!(
+            get(&db.conn, old.id).await.unwrap().status,
+            WorkTaskStatus::Failed,
+            "the losing claim must roll back"
+        );
+        assert!(claim_for_run_with_action(
+            &db.conn,
+            old.id,
+            WorkTaskStatus::Failed,
+            "user",
+            None,
+            true,
+        )
+        .await
+        .expect("override waives the guard")
+        .is_some());
+
+        // Requeue road (canceled → todo): same dance on a fresh terminal task.
+        set_status(old.id, WorkTaskStatus::Canceled).await;
+        let err = requeue_canceled(&db.conn, old.id, None, &[], false)
+            .await
+            .expect_err("requeue must hit the resurrection guard");
+        assert!(err.to_string().contains("duplicate_active_source"), "got: {err}");
+        assert_eq!(
+            get(&db.conn, old.id).await.unwrap().status,
+            WorkTaskStatus::Canceled,
+            "the refused requeue must roll back"
+        );
+        assert!(requeue_canceled(&db.conn, old.id, None, &[], true).await.unwrap());
+        assert_eq!(
+            get(&db.conn, old.id).await.unwrap().status,
+            WorkTaskStatus::Todo
+        );
+
+        // A plain (non-forge) failed task never trips the guard.
+        let plain = create(&db.conn, draft(folder_id, "plain")).await.unwrap();
+        set_status(plain.id, WorkTaskStatus::Failed).await;
+        assert!(claim_for_run_with_action(
+            &db.conn,
+            plain.id,
+            WorkTaskStatus::Failed,
+            "user",
+            None,
+            false,
+        )
+        .await
+        .unwrap()
+        .is_some());
+        let _ = replacement;
     }
 }

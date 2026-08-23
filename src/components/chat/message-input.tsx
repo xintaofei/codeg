@@ -61,8 +61,10 @@ import type {
 } from "@/lib/types"
 import {
   ATTACH_FILE_TO_SESSION_EVENT,
+  ATTACH_SESSION_TO_SESSION_EVENT,
   APPEND_TEXT_TO_SESSION_EVENT,
   type AttachFileToSessionDetail,
+  type AttachSessionToSessionDetail,
   type AppendTextToSessionDetail,
 } from "@/lib/session-attachment-events"
 import {
@@ -106,6 +108,7 @@ import {
   composerLeafText,
   docToPromptBlocks,
   serializeDocToDisplayText,
+  serializeDocToText,
 } from "@/components/chat/composer/to-prompt-blocks"
 import { isEmbeddedReferenceUri } from "@/components/chat/composer/reference-uri"
 import {
@@ -120,6 +123,8 @@ import {
   skillToReference,
 } from "@/components/chat/composer/invocation-reference"
 import { cutSelectionToClipboard } from "@/components/chat/composer/clipboard-actions"
+import { sessionToSuggestion } from "@/components/chat/composer/suggestion/adapters"
+import { editorHasReference } from "@/components/chat/composer/attachment-files"
 import type { ReferenceAttrs } from "@/components/chat/composer/types"
 import type { Editor, JSONContent } from "@tiptap/core"
 import { useReferenceSearch } from "@/components/chat/composer/use-reference-search"
@@ -131,13 +136,23 @@ import { useComposerShortcuts } from "@/components/chat/composer/use-composer-sh
 
 /**
  * Payload pushed into the composer from outside (e.g. a welcome-page quick
- * action). `text` replaces the document; `skill`, when present, is prepended as
- * the leading invocation badge (serializes to `${prefix}${id}` as the first
+ * action, or a quoted transcript selection). `skill`, when present, is prepended
+ * as the leading invocation badge (serializes to `${prefix}${id}` as the first
  * token).
  */
 export interface ComposerInjectContent {
   text: string
   skill?: { id: string; label: string }
+  /**
+   * How `text` lands in the composer.
+   *
+   * - `"replace"` (default) swaps the whole document — the welcome quick-action
+   *   behaviour, where the card's prompt IS the message.
+   * - `"append"` keeps whatever the user has already drafted and adds `text` as
+   *   a trailing block, caret after it. Used for quoting a message selection,
+   *   which is only ever the *start* of what the user is about to write.
+   */
+  mode?: "replace" | "append"
 }
 
 interface MessageInputProps {
@@ -159,6 +174,13 @@ interface MessageInputProps {
   onConfigOptionChange?: (configId: string, valueId: string) => void
   agentType?: AgentType | null
   availableCommands?: AvailableCommandInfo[] | null
+  /**
+   * The agent's command list is still on its way (the connection is being
+   * established). The editor stays typable throughout, so `/` opens its panel
+   * on a loading row instead of silently doing nothing, and fills in the moment
+   * `availableCommands` lands.
+   */
+  commandsLoading?: boolean
   promptCapabilities: PromptCapabilitiesInfo
   attachmentTabId?: string | null
   draftStorageKey?: string | null
@@ -283,6 +305,7 @@ export function MessageInput({
   onConfigOptionChange,
   agentType,
   availableCommands,
+  commandsLoading = false,
   promptCapabilities,
   attachmentTabId,
   draftStorageKey,
@@ -577,23 +600,42 @@ export function MessageInput({
     const raf = requestAnimationFrame(() => {
       const handle = editorRef.current
       if (handle) {
-        handle.setText(payload.text)
-        // Prepend the skill as the leading invocation badge, so the sent
-        // message opens with `${prefix}${id}`.
-        if (payload.skill) {
+        if (payload.mode === "append") {
+          // Land at the end of whatever is already drafted, separated by a blank
+          // line so a Markdown block (the quote) is never glued onto the tail of
+          // the user's own sentence. `focus()` places the caret at end-of-doc
+          // first: the user was interacting with the transcript, so the editor's
+          // remembered selection is stale and could be anywhere.
           const editor = handle.getEditor()
-          if (editor) {
-            applyExpertReference(editor, {
-              refType: "skill",
-              id: payload.skill.id,
-              label: payload.skill.label,
-              uri: null,
-              meta: { invocationPrefix: skillPrefix, scope: "expert" },
-            })
+          const existing = editor ? serializeDocToText(editor.state.doc) : ""
+          const gap = !existing.trim()
+            ? ""
+            : existing.endsWith("\n\n")
+              ? ""
+              : existing.endsWith("\n")
+                ? "\n"
+                : "\n\n"
+          handle.focus()
+          handle.insertTextAtCursor(`${gap}${payload.text}\n\n`)
+        } else {
+          handle.setText(payload.text)
+          // Prepend the skill as the leading invocation badge, so the sent
+          // message opens with `${prefix}${id}`.
+          if (payload.skill) {
+            const editor = handle.getEditor()
+            if (editor) {
+              applyExpertReference(editor, {
+                refType: "skill",
+                id: payload.skill.id,
+                label: payload.skill.label,
+                uri: null,
+                meta: { invocationPrefix: skillPrefix, scope: "expert" },
+              })
+            }
           }
+          handle.focus()
         }
         setComposerEmpty(false)
-        handle.focus()
       }
       onInjectConsumed?.()
     })
@@ -700,6 +742,19 @@ export function MessageInput({
   }, [slashMenuOpen, availableSkills, agentType, slashTriggerChar, slashFilter])
   const slashAutocompleteCount =
     filteredSlashCommands.length + filteredSlashSkills.length
+  // `/` is fed by the agent's own command list, which only exists once the
+  // connection is up — so while it is being established the panel shows a
+  // loading row rather than nothing at all. `$` (Codex skills) is read from
+  // disk and never waits on a connection.
+  const slashLoading =
+    slashMenuOpen &&
+    slashTriggerChar === "/" &&
+    commandsLoading &&
+    slashCommands.length === 0
+  // Whether the panel is actually on screen — it renders for either rows or the
+  // loading row, and that is also what makes it own the editor's nav keys.
+  const slashMenuVisible =
+    slashMenuOpen && (slashAutocompleteCount > 0 || slashLoading)
 
   // Keep the highlighted row inside the current result window. As the user
   // types and the filter narrows, the previously-highlighted index can point
@@ -720,7 +775,8 @@ export function MessageInput({
   // off the rendered area when the filtered list overflows `max-h`.
   const slashMenuListRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    if (!slashMenuOpen) return
+    // Nothing to keep in view while the panel holds only its loading row.
+    if (!slashMenuOpen || slashAutocompleteCount === 0) return
     const container = slashMenuListRef.current
     if (!container) return
     const el = container.children[slashSelectedIndex] as HTMLElement | undefined
@@ -743,13 +799,11 @@ export function MessageInput({
   // whitespace, and not inside inline code / a code block, opens the menu.
   const detectSlashTrigger = useCallback(() => {
     const editor = editorRef.current?.getEditor()
-    const hasSlashSource =
-      slashCommands.length > 0 || availableSkills.length > 0
     const close = () => {
       setSlashMenuOpen(false)
       setSlashTriggerChar(null)
     }
-    if (!editor || !hasSlashSource) return close()
+    if (!editor) return close()
     const { selection } = editor.state
     if (!selection.empty) return close()
     if (editor.isActive("code") || editor.isActive("codeBlock")) return close()
@@ -764,11 +818,23 @@ export function MessageInput({
       agentType === "codex" ? /(^|\s)([/$])(\S*)$/ : /(^|\s)(\/)(\S*)$/
     const match = before.match(regex)
     if (!match) return close()
-    setSlashTriggerChar(match[2] as "/" | "$")
+    const trigger = match[2] as "/" | "$"
+    // Only `/` is gated here. Its source is the agent's own command list, which
+    // exists only once the connection is up — so an empty list means "nothing to
+    // show" unless the connection is still coming, where the panel opens on a
+    // loading row instead. `$` (the on-disk Codex skills) is deliberately
+    // ungated: `useAgentSkills` reports an in-flight scan as an empty list, so
+    // closing on empty would strand a `$` typed before the scan lands. Left
+    // open, the panel simply stays hidden until the skills arrive and then
+    // fills itself in — no second keystroke needed.
+    if (trigger === "/" && slashCommands.length === 0 && !commandsLoading) {
+      return close()
+    }
+    setSlashTriggerChar(trigger)
     setSlashFilter(match[3])
     setSlashSelectedIndex(0)
     setSlashMenuOpen(true)
-  }, [slashCommands.length, availableSkills.length, agentType])
+  }, [slashCommands.length, commandsLoading, agentType])
 
   useEffect(() => {
     detectSlashTriggerRef.current = detectSlashTrigger
@@ -1004,6 +1070,43 @@ export function MessageInput({
       window.removeEventListener(ATTACH_FILE_TO_SESSION_EVENT, handleAttachFile)
     }
   }, [attach, attachmentTabId])
+
+  // Sidebar "add to session": drop a session mention badge — the very same
+  // reference the `@` panel's Sessions group inserts — at the caret. Deduped by
+  // uri like the file badges, so repeated menu clicks can't stack the same
+  // `codeg://session/<id>` twice; the focus still lands in the composer either
+  // way so the user sees where the badge went.
+  useEffect(() => {
+    if (!attachmentTabId) return
+
+    const handleAttachSession = (event: Event) => {
+      const customEvent = event as CustomEvent<AttachSessionToSessionDetail>
+      if (!customEvent.detail) return
+      if (customEvent.detail.tabId !== attachmentTabId) return
+      const editor = editorRef.current?.getEditor()
+      if (!editor) return
+      const { reference } = sessionToSuggestion(customEvent.detail.conversation)
+      if (
+        reference.uri &&
+        editorHasReference(editor, "session", reference.uri)
+      ) {
+        editor.commands.focus()
+        return
+      }
+      editor.chain().focus().insertReference(reference).insertContent(" ").run()
+    }
+
+    window.addEventListener(
+      ATTACH_SESSION_TO_SESSION_EVENT,
+      handleAttachSession
+    )
+    return () => {
+      window.removeEventListener(
+        ATTACH_SESSION_TO_SESSION_EVENT,
+        handleAttachSession
+      )
+    }
+  }, [attachmentTabId])
 
   useEffect(() => {
     if (!attachmentTabId) return
@@ -1241,7 +1344,17 @@ export function MessageInput({
   const handleExternalMenuKeyDown = useCallback(
     (event: KeyboardEvent): boolean => {
       if (isImeCompositionKey(event)) return false
-      if (!slashMenuOpen || slashAutocompleteCount === 0) return false
+      if (!slashMenuVisible) return false
+      if (event.key === "Escape") {
+        closeSlashMenu()
+        return true
+      }
+      if (slashAutocompleteCount === 0) {
+        // Loading row: own the navigation/confirm keys so nothing submits or
+        // moves the caret under an open panel, but insert nothing. Same
+        // treatment the `@` panel gives its own stale state.
+        return ["ArrowDown", "ArrowUp", "Enter", "Tab"].includes(event.key)
+      }
       if (event.key === "ArrowDown") {
         setSlashSelectedIndex((i) =>
           i < slashAutocompleteCount - 1 ? i + 1 : 0
@@ -1267,14 +1380,10 @@ export function MessageInput({
         }
         return true
       }
-      if (event.key === "Escape") {
-        closeSlashMenu()
-        return true
-      }
       return false
     },
     [
-      slashMenuOpen,
+      slashMenuVisible,
       slashAutocompleteCount,
       slashSelectedIndex,
       filteredSlashCommands,
@@ -1294,14 +1403,14 @@ export function MessageInput({
       if (
         isEditingQueueItem &&
         e.key === "Escape" &&
-        !slashMenuOpen &&
+        !slashMenuVisible &&
         onCancelQueueEdit
       ) {
         e.preventDefault()
         onCancelQueueEdit()
       }
     },
-    [isEditingQueueItem, slashMenuOpen, onCancelQueueEdit]
+    [isEditingQueueItem, slashMenuVisible, onCancelQueueEdit]
   )
 
   // Clicking the input's empty chrome (its padding, the blank space below a
@@ -1658,11 +1767,25 @@ export function MessageInput({
       onKeyDown={handleContainerKeyDown}
       {...attach.containerDragProps}
     >
-      {slashMenuOpen && slashAutocompleteCount > 0 && (
-        <div className="absolute bottom-full left-0 right-0 mb-1 z-50 flex max-h-[min(16rem,40dvh)] flex-col overflow-hidden rounded-xl border border-border bg-popover shadow-lg">
+      {slashMenuVisible && (
+        <div
+          data-testid="slash-menu"
+          className="absolute bottom-full left-0 right-0 mb-1 z-50 flex max-h-[min(16rem,40dvh)] flex-col overflow-hidden rounded-xl border border-border bg-popover shadow-lg"
+        >
           {/* No search box: the user types the filter inline after `/` (like the
               `@` panel); navigation is routed from the editor's keydown. */}
           <div ref={slashMenuListRef} className="flex-1 overflow-y-auto p-1">
+            {slashLoading && (
+              // The connection is still coming up, so the agent hasn't named its
+              // commands yet. Holding the panel open (instead of ignoring the
+              // `/`) tells the user the list is on its way; the rows replace
+              // this the moment `availableCommands` lands. The panel takes no
+              // focus, so the wait is announced through a polite live region —
+              // the same treatment the `@` panel gives its own loading state.
+              <div role="status" aria-live="polite">
+                <SelectorLoadingChip label={t("slashLoading")} />
+              </div>
+            )}
             {filteredSlashCommands.map((cmd, i) => (
               <button
                 key={`cmd-${cmd.name}`}
@@ -1795,6 +1918,10 @@ export function MessageInput({
                 referenceSearch={referenceSearch}
                 mentionUiLabels={mentionUiLabels}
                 tabLabels={referenceGroupLabels}
+                // The `@` panel spans the whole composer and opens above it —
+                // the same box the `/` menu hangs off (this container), so the
+                // two read as one affordance.
+                mentionAnchorRef={containerRef}
                 onChange={handleComposerChange}
                 onReady={handleComposerReady}
                 onSubmit={handleSend}
@@ -1804,7 +1931,7 @@ export function MessageInput({
                 onPlainPaste={handlePlainPasteShortcut}
                 submitShortcut={shortcuts.send_message}
                 newlineShortcut={shortcuts.newline_in_message}
-                isExternalMenuOpen={slashMenuOpen && slashAutocompleteCount > 0}
+                isExternalMenuOpen={slashMenuVisible}
                 onExternalMenuKeyDown={handleExternalMenuKeyDown}
                 className="min-h-0 flex-1"
               />

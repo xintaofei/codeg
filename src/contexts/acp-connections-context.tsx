@@ -161,6 +161,18 @@ export interface ClaudeApiRetryState {
   error: string | null
   errorStatus: number | null
   retryDelayMs: number | null
+  /**
+   * Whether the SOURCE reports error text for a retry at all — not whether this
+   * particular record carries it.
+   *
+   * Claude's `api_retry` and codex's `_meta.codex.error` both do, and a missing
+   * `error` there means "we didn't catch the cause this time", which is what
+   * `claudeApiRetry.fallbackError` covers. pi (#525) reports no cause at any
+   * time — only the counters — so the fallback would assert an authentication
+   * failure that never happened. False makes the banner render from the
+   * counters alone instead of inventing a reason.
+   */
+  reportsError: boolean
 }
 
 export type LiveContentBlock =
@@ -292,22 +304,13 @@ export interface ConnectionState {
    * Launched-but-unresolved background tasks (async sub-agents / background
    * shells) on this connection, mirrored from `background_activity` events
    * (authoritative accounting lives in the backend transcript watcher).
-   * Non-zero exempts the connection from the frontend idle sweep — killing
-   * the connection kills the agent CLI and the background work with it —
-   * and drives the "background tasks running" chip.
+   * The count itself is never rendered — it is a busy signal. Non-zero exempts
+   * the connection from the frontend idle sweep and the unmount/preview
+   * teardowns (killing the connection kills the agent CLI and the background
+   * work with it), and marks a manual reconnect destructive so the status
+   * popover warns before interrupting that work.
    */
   backgroundOutstanding: number
-  /**
-   * Epoch ms of the most recent `background_activity` event that settled a
-   * task, cleared when the follow-up overlay turns start arriving. Bridges
-   * the otherwise-blank gap between "N tasks running" disappearing and the
-   * agent's reaction to the results surfacing (model time-to-first-block +
-   * the transcript's record granularity — typically 3–15s): the chip shows a
-   * "syncing results" state while this is set. Client-local UI state (not in
-   * the snapshot); the chip additionally expires it from display after a
-   * fixed window so a killed CLI can't strand the indicator.
-   */
-  backgroundSettleSyncingSince: number | null
   /**
    * Tool-call context observed OUT-OF-TURN (status !== "prompting"), kept
    * ONLY so a background permission request can still render its command/
@@ -401,19 +404,13 @@ type Action =
       ids: string[]
     }
   | {
-      // Mirror of a `background_activity` event onto the connection: the
-      // `outstanding` count (the backend transcript watcher's authoritative
-      // accounting) plus whether this event settled tasks / carried overlay
-      // turns, which drive the settle-syncing bridge state. No-op when
-      // nothing it mirrors changed, so repeat events don't re-render
-      // connection consumers. `outOfTurnSettleCount` counts only settles whose
-      // reply arrives OUT OF TURN (a separate overlay turn) — i.e. NOT
-      // wire-visible; those are the ones the "syncing results" hint bridges.
+      // Mirror of a `background_activity` event's `outstanding` count (the
+      // backend transcript watcher's authoritative accounting) onto the
+      // connection, where it gates the teardowns. No-op when the count didn't
+      // change, so repeat events don't re-render connection consumers.
       type: "SET_BACKGROUND_OUTSTANDING"
       contextKey: string
       outstanding: number
-      outOfTurnSettleCount: number
-      turnsCount: number
     }
   | StreamingAction
   | { type: "STREAM_BATCH"; actions: StreamingAction[] }
@@ -718,6 +715,9 @@ function parseClaudeApiRetryEvent(
     error: typeof message.error === "string" ? message.error : null,
     errorStatus: asFiniteNumber(message.error_status),
     retryDelayMs: asFiniteNumber(message.retry_delay_ms),
+    // Claude's api_retry always carries a cause in principle; an absent one is a
+    // gap in THIS message, so keep the existing fallback wording for it.
+    reportsError: true,
   }
 }
 
@@ -1312,7 +1312,6 @@ function connectionsReducer(
         configStaleKind: null,
         configStaleDismissed: false,
         backgroundOutstanding: 0,
-        backgroundSettleSyncingSince: null,
         outOfTurnToolCalls: null,
       })
       return next
@@ -1370,7 +1369,6 @@ function connectionsReducer(
         configStaleKind: null,
         configStaleDismissed: false,
         backgroundOutstanding: 0,
-        backgroundSettleSyncingSince: null,
         outOfTurnToolCalls: null,
       })
       return next
@@ -1491,7 +1489,7 @@ function connectionsReducer(
         configStaleKind: action.patch.configStaleKind,
         // Current-state field like `status`: a client attaching mid-episode
         // recovers the pending-background count the one-shot events won't
-        // replay for it (sweep exemption + chip).
+        // replay for it, so its teardown gates hold.
         backgroundOutstanding: action.patch.backgroundOutstanding,
         sessionFailures: mergedSessionFailures,
         error: action.patch.lastError,
@@ -1582,36 +1580,11 @@ function connectionsReducer(
     case "SET_BACKGROUND_OUTSTANDING": {
       const conn = state.get(action.contextKey)
       if (!conn) return state
-      // Settle-syncing bridge: a settlement whose reply arrives OUT OF TURN
-      // (as a separate overlay turn) means that reply is being generated — arm
-      // the "syncing results" hint to fill the gap until it surfaces. The
-      // backend classifies this per settle via `wire_visible` (folded into
-      // `outOfTurnSettleCount` by the handler): under claude-agent-acp #870 the
-      // launching turn is held OPEN and the reply streams LIVE as its tail —
-      // already on screen, no gap to bridge — so those are excluded. Arming for
-      // a held settle would STRAND the hint: its reply never arrives as an
-      // overlay `turns` event, so nothing disarms it and it sits until the 30s
-      // cap (the "结果都出来了还显示 Syncing" bug). Using the backend flag rather
-      // than the connection's current status is deliberate — it's correct even
-      // when the watcher reads the settlement after the turn already fell back
-      // to `connected`. The first genuinely out-of-turn `turns` event disarms.
-      const syncingSince =
-        action.outOfTurnSettleCount > 0
-          ? Date.now()
-          : action.turnsCount > 0
-            ? null
-            : conn.backgroundSettleSyncingSince
-      if (
-        conn.backgroundOutstanding === action.outstanding &&
-        conn.backgroundSettleSyncingSince === syncingSince
-      ) {
-        return state
-      }
+      if (conn.backgroundOutstanding === action.outstanding) return state
       const next = new Map(state)
       next.set(action.contextKey, {
         ...conn,
         backgroundOutstanding: action.outstanding,
-        backgroundSettleSyncingSince: syncingSince,
       })
       return next
     }
@@ -3571,18 +3544,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           // Out-of-turn transcript activity from the backend watcher: async
           // task completions, the agent's continued work after them, cron//
           // loop turns. Three consumers:
-          // 1. the outstanding mirror (idle-sweep exemption + chip) plus the
-          //    settle-syncing bridge inputs;
+          // 1. the outstanding mirror, which gates the teardowns (nothing
+          //    renders the count);
           dispatch({
             type: "SET_BACKGROUND_OUTSTANDING",
             contextKey,
             outstanding: e.outstanding,
-            // Only settles whose reply arrives out of turn (NOT wire-visible)
-            // warrant the syncing hint; a #870-held settle's reply is already
-            // live on screen (see the reducer + BackgroundSettledInfo).
-            outOfTurnSettleCount:
-              e.settled?.filter((s) => !s.wire_visible).length ?? 0,
-            turnsCount: e.turns?.length ?? 0,
           })
           // 2. overlay turns → the conversation runtime store (resolved via
           //    the external-id index; unresolved = this conversation was never
@@ -3715,6 +3682,11 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           // only here, and only the store entry holds it — which is precisely
           // what a backend GC / idle sweep removes.
           rememberResolvedIdentity(contextKey, { sessionId: e.session_id })
+          break
+        case "native_session_title":
+          // Title is applied on the conversation row by the lifecycle worker
+          // and reaches the sidebar via `conversation://changed`. Do not flush
+          // the streaming queue: this can arrive mid-turn.
           break
         case "conversation_linked":
           // Backend just bound (or reaffirmed) the connection's DB conversation
@@ -3865,19 +3837,32 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         case "turn_retrying": {
           // codex-acp #289: a retryable turn error keeps the turn alive (codex
           // auto-retries). Reuse the Claude API-retry banner — codex doesn't
-          // report attempt/limit/delay, so those stay null; the banner clears at
-          // the next turn boundary like the Claude path.
+          // report attempt/limit/delay, so those stay null; the banner clears
+          // as soon as streaming content resumes (`applyStreamingAction`).
+          //
+          // pi (#525) is the opposite shape: it reports all three counters and
+          // NO error text, so its empty `message` normalizes to null rather than
+          // painting the banner with a blank error slot. `?? null` (not `||`)
+          // keeps a genuine attempt 0 / 0ms delay from collapsing to "unknown".
+          //
+          // Flush FIRST, like the Claude `claude_sdk_message` path: deltas are
+          // queued and applied in batches, and applying one clears the banner.
+          // Without this, a delta enqueued just BEFORE the retry arrived lands
+          // just AFTER it and wipes the banner we are about to raise — which pi
+          // reaches routinely, since it retries mid-stream between prose chunks.
+          flushStreamingQueue()
           const retryConn = storeRef.current.connections.get(contextKey)
           dispatch({
             type: "CLAUDE_API_RETRY",
             contextKey,
             retry: {
               sessionId: retryConn?.sessionId ?? "",
-              attempt: null,
-              maxRetries: null,
-              error: e.message,
+              attempt: e.attempt ?? null,
+              maxRetries: e.max_retries ?? null,
+              error: e.message || null,
               errorStatus: e.error_status ?? null,
-              retryDelayMs: null,
+              retryDelayMs: e.retry_delay_ms ?? null,
+              reportsError: e.message.trim().length > 0,
             },
           })
           break
