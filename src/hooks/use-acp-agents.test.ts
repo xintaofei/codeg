@@ -40,6 +40,7 @@ function makeAgent(agentType: AgentType, sortOrder: number): AcpAgentInfo {
     skills_capable: true,
     registry_id: agentType,
     registry_version: null,
+    supports_custom_version: false,
     name: agentType,
     description: "",
     available: true,

@@ -38,6 +38,7 @@ function makeAgent(overrides: Partial<AcpAgentInfo>): AcpAgentInfo {
     skills_capable: true,
     registry_id: "hermes",
     registry_version: "0.16.0",
+    supports_custom_version: false,
     name: "Hermes Agent",
     description: "",
     available: true,

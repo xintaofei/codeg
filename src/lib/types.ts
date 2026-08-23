@@ -2598,6 +2598,17 @@ export interface AcpAgentInfo {
   skills_capable: boolean
   registry_id: string
   registry_version: string | null
+  /**
+   * Whether "install a specific version" can actually fetch that version.
+   *
+   * NOT the same as `registry_version != null`, which is what this page used to
+   * infer it from: a binary agent's custom install substitutes the requested
+   * version into the pinned download URL, and Antigravity's URLs carry a Google
+   * build id rather than its registry version — so the substitution is a no-op
+   * and the install would relabel the same bytes under a version that was never
+   * fetched. The backend answers per-platform.
+   */
+  supports_custom_version: boolean
   name: string
   description: string
   available: boolean

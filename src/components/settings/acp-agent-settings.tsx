@@ -3820,12 +3820,15 @@ export function buildVersionCheck(
 
   // Custom-version install is offered in every installable state (and stays
   // available after a version is installed, so users can switch versions).
-  // Binary agents need the registry version present to template the download URL.
-  // uvx agents pin their version in the package spec, so custom-version
-  // install does not apply (the backend ignores the override).
-  const supportsCustomInstall =
-    agent.distribution_type === "npx" ||
-    (agent.distribution_type === "binary" && Boolean(agent.registry_version))
+  //
+  // The backend decides, because the condition is a property of the download
+  // URL rather than of the distribution kind: a binary agent's custom install
+  // substitutes the requested version into the pinned URL, which only yields a
+  // different archive when the pinned version appears in it. Antigravity's URLs
+  // carry a Google build id, so inferring support from
+  // `binary && registry_version` — as this did — offered an install that
+  // downloaded the same bytes and cached them under the number the user typed.
+  const supportsCustomInstall = agent.supports_custom_version
   const customInstallFix: UiFixAction = {
     label: acpText("actions.customInstall", "Custom install"),
     kind: "custom_install",

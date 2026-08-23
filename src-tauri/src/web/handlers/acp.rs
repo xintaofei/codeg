@@ -908,6 +908,15 @@ pub async fn acp_validate_pi_command(
     )))
 }
 
+pub async fn acp_sync_antigravity_settings(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<crate::acp::connection::AntigravitySyncReport>, AppCommandError> {
+    let result = acp_commands::acp_sync_antigravity_settings_core(&state.db)
+        .await
+        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(result))
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpPiProjectTrustStateParams {

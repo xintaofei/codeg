@@ -5501,6 +5501,45 @@ pub(crate) fn pi_project_trust_launch_block(
     ))
 }
 
+/// Write Antigravity's `auth.type` (and `gcp` block) from the STORED agent row,
+/// and report what happened.
+///
+/// The settings panel calls this straight after saving. The launch path runs the
+/// same sync, but only at launch and only into the log — which made the panel's
+/// "saved" mean less than it looked: the env row is not what authenticates
+/// Antigravity, `<GEMINI_HOME>/antigravity-acp/settings.json` is, and when that
+/// file cannot be rewritten (it is Hjson with comments, it is unreadable, its
+/// `auth` is not an object) the two part ways silently. Switching methods is
+/// where that bites: the launch scrubs the credentials for the NEW method while
+/// the server still reads the OLD `auth.type`, so `session/new` fails with no
+/// credential for the method it believes it is using — hours after the save
+/// that caused it.
+///
+/// Reads the row rather than taking the env from the caller so it reports on
+/// what was actually persisted, not on what the request claimed.
+pub(crate) async fn acp_sync_antigravity_settings_core(
+    db: &AppDatabase,
+) -> Result<crate::acp::connection::AntigravitySyncReport, AcpError> {
+    // The read error is PROPAGATED, unlike the `.ok().flatten()` the pi trust
+    // path uses. This function's whole job is to report on the stored row, and
+    // treating a failed read as "no row" would not merely lose the method — it
+    // would hand the sync an empty environment, which on a machine with no
+    // settings.json yet writes `oauth-personal` and reports success for a
+    // choice the user did not make.
+    let setting = agent_setting_service::get_by_agent_type(&db.conn, AgentType::Antigravity)
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+    let local_config_json = load_agent_local_config_json(AgentType::Antigravity);
+    let runtime_env = build_runtime_env_from_setting(
+        AgentType::Antigravity,
+        setting.as_ref(),
+        local_config_json.as_deref(),
+    );
+    Ok(crate::acp::connection::sync_antigravity_settings_for_env(
+        &runtime_env,
+    ))
+}
+
 pub(crate) async fn acp_pi_project_trust_state_core(
     db: &AppDatabase,
     workspace: String,
@@ -10399,6 +10438,7 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
             agent_type,
             registry_id: registry::registry_id_for(agent_type).to_string(),
             registry_version: meta.registry_version().map(ToString::to_string),
+            supports_custom_version: meta.supports_custom_version(),
             name: meta.name.to_string(),
             description: meta.description.to_string(),
             available,
@@ -11280,6 +11320,16 @@ pub async fn acp_pi_project_trust_state(
     acp_pi_project_trust_state_core(&db, workspace).await
 }
 
+/// Project the saved Antigravity auth choice into the server's settings file,
+/// and say whether it landed. Called by the settings panel after a save.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_sync_antigravity_settings(
+    db: tauri::State<'_, AppDatabase>,
+) -> Result<crate::acp::connection::AntigravitySyncReport, AcpError> {
+    acp_sync_antigravity_settings_core(&db).await
+}
+
 /// Record (or clear, with `trusted: null`) an explicit project-trust decision in
 /// pi's `trust.json`. Only ever called from a user action in the approval UI.
 #[cfg(feature = "tauri-runtime")]
@@ -11451,9 +11501,16 @@ pub(crate) async fn acp_download_agent_binary_core(
             // cache key; `None`/empty keeps the registry-pinned version.
             let custom = match version_override.as_deref() {
                 Some(raw) if !raw.trim().is_empty() => {
-                    Some(sanitize_custom_version(raw).ok_or_else(|| {
+                    let sanitized = sanitize_custom_version(raw).ok_or_else(|| {
                         AcpError::protocol(format!("invalid custom version: {}", raw.trim()))
-                    })?)
+                    })?;
+                    // Asking for the version that is already pinned is a normal
+                    // install, not a custom one. Keeping it as `Some` would make
+                    // the substitution below a no-op and trip the "not
+                    // templatable" refusal on the one request that is trivially
+                    // satisfiable — and would drop the registry's digest for a
+                    // URL that has not changed.
+                    (sanitized != version).then_some(sanitized)
                 }
                 _ => None,
             };
@@ -11471,7 +11528,25 @@ pub(crate) async fn acp_download_agent_binary_core(
 
             let effective_version = custom.as_deref().unwrap_or(version);
             let archive_url = match &custom {
-                Some(c) => apply_custom_version_to_url(fallback.url, version, c),
+                Some(c) => {
+                    let substituted = apply_custom_version_to_url(fallback.url, version, c);
+                    // The substitution is the whole mechanism: when the pinned
+                    // version is not a substring of the URL, asking for another
+                    // one downloads the SAME archive and caches it under the
+                    // requested number, so `installed_version` reports a build
+                    // that was never fetched. Refuse instead of lying — the UI
+                    // hides the control for these agents
+                    // (`supports_custom_version`), and this is the backstop for
+                    // a direct API call.
+                    if substituted == fallback.url {
+                        return Err(AcpError::protocol(format!(
+                            "{} publishes no version-templated download URL, so it cannot install \
+                             a custom version ({c}); its pinned build is {version}",
+                            meta.name
+                        )));
+                    }
+                    substituted
+                }
                 None => fallback.url.to_string(),
             };
 

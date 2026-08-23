@@ -10,28 +10,13 @@ use crate::models::{
     AgentType, ContentBlock, ConversationDetail, ConversationSummary, MessageTurn, TurnRole,
     TurnUsage,
 };
+use crate::parsers::expand_home_prefix;
 use crate::parsers::{
     backfill_turn_durations, compute_session_stats, folder_name_from_path,
     infer_context_window_max_tokens, merge_context_window_stats, relocate_orphaned_tool_results,
     resolve_patch_line_numbers, structurize_read_tool_output, title_from_user_text, truncate_str,
     AgentParser, ParseError,
 };
-
-/// Expand a leading `~` the way `dsh-home-paths`' `expandHomePath` does: the
-/// bare `~` and a `~/` or `~\` prefix only — a `~user` form is left verbatim,
-/// exactly as upstream leaves it.
-fn expand_home_prefix(value: &str, home_dir: Option<&PathBuf>) -> PathBuf {
-    let Some(home) = home_dir else {
-        return PathBuf::from(value);
-    };
-    if value == "~" {
-        return home.clone();
-    }
-    if let Some(rest) = value.strip_prefix("~/").or_else(|| value.strip_prefix("~\\")) {
-        return home.join(rest);
-    }
-    PathBuf::from(value)
-}
 
 /// Resolve the DeepSeek Harness home the way `@deepseek-ai/dsh-home-paths`'
 /// `resolveDshHome` does: `DSH_HOME` wins, else `~/.dsh`.

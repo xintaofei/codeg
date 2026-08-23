@@ -145,6 +145,39 @@ impl AcpAgentMeta {
             | AgentDistribution::Uvx { version, .. } => Some(*version),
         }
     }
+
+    /// Whether asking for a version other than the pinned one can actually
+    /// FETCH that version on this machine.
+    ///
+    /// Having a `registry_version` does not imply it: a binary agent's custom
+    /// install works by substituting the requested version into the pinned
+    /// download URL (`apply_custom_version_to_url`), which only produces a
+    /// different URL when the pinned version is a substring of it. Antigravity
+    /// is the counter-example — its `version` is the ACP registry's `1.0.0`
+    /// while its URLs carry Google's build id
+    /// (`agy_acp_server_20260818_01_RC01`), so the substitution is a no-op and
+    /// the "install 1.2.3" the user asked for would download the SAME bytes
+    /// and cache them under the new number. That is worse than refusing:
+    /// `installed_version` then reports a build that was never fetched.
+    ///
+    /// Judged per-platform, because only the current platform's URL is ever
+    /// downloaded and a future agent may template one target but not another.
+    /// An unsupported platform answers `false` — there is nothing to install.
+    ///
+    /// Uvx pins its version inside the package spec and the download path
+    /// rejects it outright, so it is `false` rather than "ignored silently".
+    pub fn supports_custom_version(&self) -> bool {
+        match &self.distribution {
+            AgentDistribution::Npx { .. } => true,
+            AgentDistribution::Uvx { .. } => false,
+            AgentDistribution::Binary {
+                version, platforms, ..
+            } => platforms
+                .iter()
+                .find(|p| p.platform == current_platform())
+                .is_some_and(|p| p.url.contains(version)),
+        }
+    }
 }
 
 /// Launch args for Google Antigravity's ACP server, resolved at compile time.
@@ -688,8 +721,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "Cline",
             description: "Autonomous coding agent CLI",
             distribution: AgentDistribution::Npx {
-                version: "3.0.56",
-                package: "cline@3.0.56",
+                version: "3.0.57",
+                package: "cline@3.0.57",
                 cmd: "cline",
                 args: &["--acp"],
                 env: &[],
@@ -702,39 +735,39 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             name: "OpenCode",
             description: "The open source coding agent",
             distribution: AgentDistribution::Binary {
-                version: "1.18.20",
+                version: "1.18.21",
                 cmd: "opencode",
                 args: &["acp"],
                 env: &[],
                 platforms: &[
                     PlatformBinary {
                         platform: "darwin-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.20/opencode-darwin-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.21/opencode-darwin-arm64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "darwin-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.20/opencode-darwin-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.21/opencode-darwin-x64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.20/opencode-linux-arm64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.21/opencode-linux-arm64.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.20/opencode-linux-x64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.21/opencode-linux-x64.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.20/opencode-windows-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.21/opencode-windows-arm64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.20/opencode-windows-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v1.18.21/opencode-windows-x64.zip",
                         sha256: None,
                     },
                 ],
@@ -1155,8 +1188,11 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // VERSION vs URL. `version` is the ACP registry's ("1.0.0"); the
             // URLs carry Google's build id (`agy_acp_server_20260818_01_RC01`)
             // instead, so the two do NOT substitute into each other — bump
-            // both together, and note a custom-version override can only
-            // relabel the cache entry, not select a different build.
+            // both together. Because the version is not templatable into the
+            // URL, `supports_custom_version()` answers false for this agent and
+            // both the settings page and the download path refuse a custom
+            // version outright, rather than relabelling the cache entry with a
+            // build that was never fetched.
             // `darwin-x86_64` is deliberately absent: upstream publishes no
             // Intel macOS build, so those machines get `PlatformNotSupported`
             // rather than a 404 mid-download.
@@ -1339,6 +1375,29 @@ mod tests {
         }
     }
 
+    /// The URL is what decides whether a custom version can be installed, not
+    /// the presence of a `version`.
+    ///
+    /// Antigravity has both a registry version (`1.0.0`) and download URLs that
+    /// never mention it — they carry Google's build id — so substituting a
+    /// requested version into the URL is a no-op: the same archive comes down
+    /// and gets cached under whatever number was typed, leaving
+    /// `installed_version` describing a build that was never fetched. The
+    /// settings page used to offer the control to every binary agent with a
+    /// version, which is exactly that inference.
+    #[test]
+    fn custom_version_install_follows_the_url_not_the_version_field() {
+        assert!(
+            !get_agent_meta(AgentType::Antigravity).supports_custom_version(),
+            "antigravity's URLs carry a build id, so a version cannot be templated in"
+        );
+        // Cursor is the control: a binary agent whose release path IS its
+        // pinned version, so the substitution genuinely selects a build.
+        assert!(get_agent_meta(AgentType::Cursor).supports_custom_version());
+        // npx installs `<package>@<version>` directly — no URL involved.
+        assert!(get_agent_meta(AgentType::Codex).supports_custom_version());
+    }
+
     // Cursor is one of two dir-tree binary agents: the archive must be kept
     // intact (bundled Node runtime) and launched via the in-tree entry
     // script, never copied out as a single file.
@@ -1443,8 +1502,8 @@ mod tests {
         );
         assert_npx_version(
             AgentType::Cline,
-            "3.0.56",
-            "cline@3.0.56",
+            "3.0.57",
+            "cline@3.0.57",
             Some("22.0.0"),
         );
         assert_npx_version(
@@ -1488,7 +1547,7 @@ mod tests {
             "@qoder-ai/qodercli@1.1.28",
             Some("20.0.0"),
         );
-        assert_binary_version(AgentType::OpenCode, "1.18.20", "/releases/download/v1.18.20/");
+        assert_binary_version(AgentType::OpenCode, "1.18.21", "/releases/download/v1.18.21/");
         // Hermes rides the community npm bridge (upstream retired its PyPI
         // channel at 0.19.0; see the registry entry). The npm package version
         // tracks the upstream version 1:1, and the pin must stay EXACT — the

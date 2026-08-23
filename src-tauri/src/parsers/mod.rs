@@ -256,6 +256,45 @@ pub trait AgentParser {
     fn get_conversation(&self, conversation_id: &str) -> Result<ConversationDetail, ParseError>;
 }
 
+/// Expand a leading `~` in a relocation env var, for the agents whose OWN
+/// resolver does that.
+///
+/// Handles a bare `~` and a `~/` — or, on Windows, `~\` — prefix.
+///
+/// A `~user` form is left VERBATIM, which is a deliberate divergence rather
+/// than a match: Python's `os.path.expanduser` does attempt a passwd lookup for
+/// it on unix, and Node's does not. Resolving another account's home here would
+/// mean duplicating that lookup to guess at a directory, so the value is passed
+/// through instead — and because a literal `~user/...` is not an absolute path,
+/// every consumer of this treats it as unresolvable and fails closed (the fs
+/// sandbox refuses the slot; the Antigravity settings sync refuses the write).
+/// The cost is that this rare form is unsupported, not that it resolves wrongly.
+///
+/// Deliberately NOT applied everywhere. Antigravity runs `os.path.expanduser`
+/// on `GEMINI_HOME` (`acp_server/paths.py`) and DeepSeek expands `DSH_HOME`
+/// (`dsh-home-paths`' `expandHomePath`), but Hermes's `get_hermes_home` is a
+/// bare `Path(val.strip())` and Codex, Claude and the rest are likewise
+/// verbatim. Expanding for one of those would point codeg at `$HOME/...` while
+/// the agent used a literal `~` directory — and, in the fs sandbox, would hand
+/// out `$HOME` as a writable root the user never selected.
+///
+/// Shared so the rule lives in ONE place: it is mirrored by
+/// `acp::file_system_runtime`'s root table (`EXPANDS_TILDE`), and a copy that
+/// drifts from the resolver it mirrors is exactly how the agent ends up unable
+/// to write its own directory.
+pub fn expand_home_prefix(value: &str, home_dir: Option<&PathBuf>) -> PathBuf {
+    let Some(home) = home_dir else {
+        return PathBuf::from(value);
+    };
+    if value == "~" {
+        return home.clone();
+    }
+    if let Some(rest) = value.strip_prefix("~/").or_else(|| value.strip_prefix("~\\")) {
+        return home.join(rest);
+    }
+    PathBuf::from(value)
+}
+
 /// Truncate a string to `max_len` characters, appending "..." if truncated.
 pub fn truncate_str(s: &str, max_len: usize) -> String {
     if s.chars().count() <= max_len {

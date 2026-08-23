@@ -24,6 +24,7 @@ function agent(
     skills_capable: true,
     registry_id: `${agentType}-registry`,
     registry_version: null,
+    supports_custom_version: false,
     name: agentType,
     description: "",
     available: true,

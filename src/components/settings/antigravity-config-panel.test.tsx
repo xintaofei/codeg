@@ -2,6 +2,16 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
+vi.mock("@/lib/api", () => ({
+  acpSyncAntigravitySettings: vi.fn(),
+}))
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+}))
+
+import { toast } from "sonner"
+
+import { acpSyncAntigravitySettings } from "@/lib/api"
 import {
   ANTIGRAVITY_ENV_KEYS,
   AntigravityConfigPanel,
@@ -223,6 +233,71 @@ describe("AntigravityConfigPanel", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.mocked(acpSyncAntigravitySettings).mockResolvedValue({
+      path: "/home/u/.gemini/antigravity-acp/settings.json",
+      status: "written",
+      reason: null,
+    })
+  })
+
+  /**
+   * Saving the row is only half of it, so "saved" is only half true.
+   *
+   * The choice is enforced by `auth.type` in the ACP server's settings.json,
+   * and that file is the user's — comments make it Hjson, which codeg refuses
+   * to rewrite rather than flatten. The launch skips it with a log line nobody
+   * reads. Claiming success anyway is how switching methods becomes a mystery
+   * failure hours later: the launch scrubs the credentials for the NEW method
+   * while the server keeps reading the OLD auth.type.
+   */
+  it("does not claim success when the settings file was left alone", async () => {
+    vi.mocked(acpSyncAntigravitySettings).mockResolvedValue({
+      path: "/home/u/.gemini/antigravity-acp/settings.json",
+      status: "skipped",
+      reason: "it is not strict JSON codeg can rewrite without losing content",
+    })
+    const onSaved = vi.fn()
+    renderPanel({ env: { AGY_AUTH_METHOD: "oauth-personal" }, onSaved })
+
+    fireEvent.click(screen.getByRole("button", { name: m.save }))
+
+    await waitFor(() => expect(toast.warning).toHaveBeenCalled())
+    expect(toast.success).not.toHaveBeenCalled()
+    // And it stays on screen: this is a standing disagreement between the form
+    // and the file, not a four-second event.
+    expect(await screen.findByText(m.syncSkipped)).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        "it is not strict JSON codeg can rewrite without losing content"
+      )
+    ).toBeInTheDocument()
+    // The row itself DID save, so the panel still reports the save as done.
+    await waitFor(() => expect(onSaved).toHaveBeenCalled())
+  })
+
+  it("reports a plain success when the file was written", async () => {
+    renderPanel({ env: { AGY_AUTH_METHOD: "oauth-personal" } })
+    fireEvent.click(screen.getByRole("button", { name: m.save }))
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalled())
+    expect(toast.warning).not.toHaveBeenCalled()
+    expect(screen.queryByText(m.syncSkipped)).not.toBeInTheDocument()
+  })
+
+  /** A transport failure on the REPORT must not turn a stored row into a
+   *  failed save — the launch-time sync still runs either way. */
+  it("still reports the save when the sync probe itself fails", async () => {
+    vi.mocked(acpSyncAntigravitySettings).mockRejectedValue(
+      new Error("offline")
+    )
+    const onSaved = vi.fn()
+    renderPanel({ env: { AGY_AUTH_METHOD: "oauth-personal" }, onSaved })
+
+    fireEvent.click(screen.getByRole("button", { name: m.save }))
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled())
+    expect(toast.success).toHaveBeenCalled()
+    expect(toast.error).not.toHaveBeenCalled()
   })
 
   it("shows the browser-login hint and the settings.json path by default", () => {

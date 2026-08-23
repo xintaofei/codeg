@@ -1485,6 +1485,27 @@ pub async fn fail(
     Ok(true)
 }
 
+/// Cancel the active generation when its agent reports a cancelled turn.
+///
+/// Unlike [`cancel`], this is an engine-owned transition: a delayed event must
+/// not overwrite a generation that has already settled for review (or a newer
+/// generation of the same task).
+pub async fn cancel_running_generation(
+    conn: &DatabaseConnection,
+    id: i32,
+    run_seq: i32,
+) -> Result<bool, DbError> {
+    cancel_inner(
+        conn,
+        id,
+        &[WorkTaskStatus::Running, WorkTaskStatus::AwaitingInput],
+        Some(run_seq),
+        "engine",
+        None,
+    )
+    .await
+}
+
 /// running/awaiting_input → review for the given generation. Captures the
 /// agent's summary and the diff-stat snapshot; also writes a `diff_stat` event
 /// when stats are present.
@@ -2287,9 +2308,40 @@ pub async fn cancel(
     id: i32,
     reason: Option<&str>,
 ) -> Result<bool, DbError> {
+    cancel_inner(
+        conn,
+        id,
+        &[
+            WorkTaskStatus::Todo,
+            WorkTaskStatus::Queued,
+            WorkTaskStatus::Preparing,
+            WorkTaskStatus::Running,
+            WorkTaskStatus::AwaitingInput,
+            WorkTaskStatus::Review,
+            WorkTaskStatus::Failed,
+        ],
+        None,
+        "user",
+        reason,
+    )
+    .await
+}
+
+/// The single conditional UPDATE behind both cancels: `expected` (and, for an
+/// engine-owned transition, `run_seq`) is the CAS; `actor` / `reason` is the
+/// audit trail. One write, so the columns a cancel has to clear can never drift
+/// between the user's stop button and the engine's own.
+async fn cancel_inner(
+    conn: &DatabaseConnection,
+    id: i32,
+    expected: &[WorkTaskStatus],
+    run_seq: Option<i32>,
+    actor: &str,
+    reason: Option<&str>,
+) -> Result<bool, DbError> {
     let now = Utc::now();
     let txn = conn.begin().await?;
-    let res = work_task::Entity::update_many()
+    let mut update = work_task::Entity::update_many()
         .col_expr(
             work_task::Column::Status,
             Expr::value(status_str(WorkTaskStatus::Canceled)),
@@ -2300,7 +2352,9 @@ pub async fn cancel(
         .col_expr(work_task::Column::PendingMerge, Expr::value(None::<String>))
         // Same reasoning for a planned start: stopping a task drops its plan,
         // so a requeue days later cannot resurrect a time nobody remembers
-        // setting and launch an agent unattended.
+        // setting and launch an agent unattended. (A running row carries no
+        // plan — every claim consumes it — so this only bites the user path,
+        // but the clear belongs to "canceled", not to one caller.)
         .col_expr(
             work_task::Column::ScheduledAt,
             Expr::value(None::<chrono::DateTime<Utc>>),
@@ -2308,18 +2362,12 @@ pub async fn cancel(
         .col_expr(work_task::Column::FinishedAt, Expr::value(Some(now)))
         .col_expr(work_task::Column::UpdatedAt, Expr::value(now))
         .filter(work_task::Column::Id.eq(id))
-        .filter(work_task::Column::Status.is_in([
-            WorkTaskStatus::Todo,
-            WorkTaskStatus::Queued,
-            WorkTaskStatus::Preparing,
-            WorkTaskStatus::Running,
-            WorkTaskStatus::AwaitingInput,
-            WorkTaskStatus::Review,
-            WorkTaskStatus::Failed,
-        ]))
-        .filter(work_task::Column::DeletedAt.is_null())
-        .exec(&txn)
-        .await?;
+        .filter(work_task::Column::Status.is_in(expected.iter().copied()))
+        .filter(work_task::Column::DeletedAt.is_null());
+    if let Some(run_seq) = run_seq {
+        update = update.filter(work_task::Column::RunSeq.eq(run_seq));
+    }
+    let res = update.exec(&txn).await?;
     if res.rows_affected != 1 {
         txn.rollback().await?;
         return Ok(false);
@@ -2328,7 +2376,7 @@ pub async fn cancel(
         .map(str::trim)
         .filter(|r| !r.is_empty())
         .map(|r| serde_json::json!({ "reason": r }));
-    status_changed_event(&txn, id, "user", None, WorkTaskStatus::Canceled, extra).await?;
+    status_changed_event(&txn, id, actor, None, WorkTaskStatus::Canceled, extra).await?;
     txn.commit().await?;
     Ok(true)
 }

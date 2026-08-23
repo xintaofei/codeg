@@ -831,6 +831,17 @@ pub struct AcpAgentInfo {
     pub skills_capable: bool,
     pub registry_id: String,
     pub registry_version: Option<String>,
+    /// Whether "install a specific version" can actually fetch that version.
+    ///
+    /// NOT derivable from `registry_version` + `distribution_type`, which is
+    /// what the settings page used to infer it from: a binary agent's custom
+    /// install works by substituting the requested version into the pinned
+    /// download URL, and Antigravity's URLs carry a Google build id rather than
+    /// its registry version, so the substitution is a no-op and the install
+    /// would relabel the same bytes. Resolved by
+    /// [`crate::acp::registry::AcpAgentMeta::supports_custom_version`], which
+    /// checks the URL for THIS platform.
+    pub supports_custom_version: bool,
     pub name: String,
     pub description: String,
     pub available: bool,

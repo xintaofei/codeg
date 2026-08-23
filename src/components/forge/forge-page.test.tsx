@@ -32,6 +32,7 @@ import type {
   ForgeIssueRow,
   ForgeRemote,
   ForgeTab,
+  ForgeTaskLink,
 } from "@/lib/types"
 import {
   resetAppWorkspaceStore,
@@ -1354,6 +1355,93 @@ describe("ForgePage detail panel", () => {
     expect(within(panel).getByRole("button", { name: "Running" })).toBeVisible()
     expect(
       within(panel).queryByRole("button", { name: "Start" })
+    ).not.toBeInTheDocument()
+  })
+
+  /**
+   * A chip lookup that comes back LATE must not undo a newer one.
+   *
+   * Three things fire the lookup — the rows changing, a `work-task://changed`
+   * event, and the trigger dialog — so two are routinely in flight at once,
+   * and the answer replaces the whole map. Without a generation counter the
+   * slower request wins whatever order they were SENT in, so an answer to a
+   * question about last page's rows erases this page's links. The row then
+   * reads a missing link as "never handled" and offers "Start" for work that
+   * is already running, which is how a duplicate task gets created.
+   */
+  it("ignores a task-link answer a newer lookup already overtook", async () => {
+    const user = userEvent.setup()
+    const keyOf = (number: number) =>
+      buildForgeSourceKey({
+        provider: "github",
+        serverHost: REMOTE.server_host,
+        ownerRepo: REMOTE.owner_repo,
+        kind: "issue",
+        number,
+      })
+    const runningOn = (number: number, taskId: number): ForgeTaskLink => ({
+      source_key: keyOf(number),
+      task_id: taskId,
+      status: "running",
+      verdict: null,
+      updated_at: "2026-08-19T00:00:00Z",
+    })
+
+    // Every lookup parks until the test releases it, so the order the answers
+    // LAND in is the test's to choose rather than the scheduler's. Each is
+    // still answered truthfully from the keys it actually asked about — the
+    // stale response is a correct answer to an old question, which is exactly
+    // the shape that made this go wrong.
+    const parked: { keys: string[]; resolve: (v: ForgeTaskLink[]) => void }[] =
+      []
+    vi.mocked(workTaskLookupBySource).mockImplementation(
+      (keys) =>
+        new Promise<ForgeTaskLink[]>((resolve) => {
+          parked.push({ keys, resolve })
+        })
+    )
+    const answer = async (entry: (typeof parked)[number]) => {
+      await act(async () => {
+        entry.resolve(
+          entry.keys
+            .map((k) =>
+              k === keyOf(1)
+                ? runningOn(1, 3)
+                : k === keyOf(2)
+                  ? runningOn(2, 7)
+                  : null
+            )
+            .filter((l): l is ForgeTaskLink => l != null)
+        )
+      })
+    }
+
+    vi.mocked(forgeListIssues).mockResolvedValue(
+      listOf([issue(1, "a row")], { has_next: true })
+    )
+    mount()
+    await screen.findByText("a row")
+    // Everything asked about page one — held back, and answered last.
+    const stale = parked.splice(0, parked.length)
+
+    vi.mocked(forgeListIssues).mockResolvedValue(
+      listOf([issue(2, "another row")], { page: 2 })
+    )
+    await user.click(screen.getByRole("button", { name: "Next page" }))
+    await screen.findByText("another row")
+
+    // Page two's lookup answers first, so #2 wears its chip.
+    for (const entry of parked) await answer(entry)
+    expect(
+      await screen.findByRole("button", { name: "Running" })
+    ).toBeInTheDocument()
+
+    // Page one's finally comes back. It never asked about #2, so honoring it
+    // would blank the chip that is on screen.
+    for (const entry of stale) await answer(entry)
+    expect(screen.getByRole("button", { name: "Running" })).toBeVisible()
+    expect(
+      screen.queryByRole("button", { name: "Start" })
     ).not.toBeInTheDocument()
   })
 

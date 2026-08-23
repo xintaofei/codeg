@@ -8,6 +8,10 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
+  acpSyncAntigravitySettings,
+  type AntigravitySyncReport,
+} from "@/lib/api"
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -225,6 +229,11 @@ export function AntigravityConfigPanel({
   )
   const [showKey, setShowKey] = useState(false)
   const [savingForm, setSavingForm] = useState(false)
+  /** The last save whose settings.json write was REFUSED, or null. Held rather
+   *  than left to the toast: this is a standing disagreement between the form
+   *  and the file the agent reads, and it stays true until someone edits that
+   *  file — a notice that scrolls away after four seconds would not say so. */
+  const [syncSkip, setSyncSkip] = useState<AntigravitySyncReport | null>(null)
 
   const mountedRef = useRef(true)
   useEffect(() => {
@@ -294,7 +303,32 @@ export function AntigravityConfigPanel({
       // edit: the form stays editable while the request is in flight, so
       // anything changed since is NEWER than what was stored.
       if (valuesRef.current === submitted) dirty.current = false
-      toast.success(t("toasts.antigravitySaved"))
+
+      // Storing the row is only half of a save. What actually authenticates
+      // Antigravity is `auth.type` in the server's settings.json, and that file
+      // is the user's — it can legitimately be Hjson with comments, or hold an
+      // `auth` key of a shape codeg refuses to overwrite — in which case the
+      // launch leaves it alone and only writes a log line. Saying "saved"
+      // regardless was claiming something that had not happened, and the
+      // consequence lands later and elsewhere: switching methods scrubs the
+      // credentials for the NEW method while the server still reads the OLD
+      // auth.type, so the next session fails with no credential for the method
+      // it believes it is using. Ask, and say so while the user is still here.
+      let report: AntigravitySyncReport | null = null
+      try {
+        report = await acpSyncAntigravitySettings()
+      } catch {
+        // The sync is a report, not the save. A transport failure leaves the
+        // row stored and the launch-time sync still to come, so it must not
+        // turn a successful save into a failed one.
+      }
+      if (mountedRef.current)
+        setSyncSkip(report?.status === "skipped" ? report : null)
+      if (report?.status === "skipped") {
+        toast.warning(t("toasts.antigravitySyncSkipped"))
+      } else {
+        toast.success(t("toasts.antigravitySaved"))
+      }
       onSaved()
     } catch (e) {
       toast.error(
@@ -482,6 +516,26 @@ export function AntigravityConfigPanel({
           <p className="text-[11px] text-amber-600 dark:text-amber-400">
             {t(`antigravity.${incomplete}`)}
           </p>
+        ) : null}
+
+        {/* The save landed in the database but not in the file the server
+            reads, so the choice above is NOT what the next session will
+            authenticate with. Names the file and the reason, because the fix
+            is to edit that file by hand — codeg will not touch it again. */}
+        {syncSkip ? (
+          <div className="space-y-1 rounded-md border border-amber-500/40 bg-amber-500/5 p-2">
+            <p className="text-[11px] text-amber-600 dark:text-amber-400">
+              {t("antigravity.syncSkipped")}
+            </p>
+            {syncSkip.reason ? (
+              <p className="text-[10px] text-muted-foreground">
+                {syncSkip.reason}
+              </p>
+            ) : null}
+            <code className="block overflow-x-auto rounded bg-muted px-2 py-1 font-mono text-[10px] whitespace-nowrap text-muted-foreground">
+              {syncSkip.path}
+            </code>
+          </div>
         ) : null}
 
         {agent.config_file_path ? (

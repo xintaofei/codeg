@@ -812,6 +812,35 @@ export type PiProjectTrustState = {
 }
 
 /**
+ * What one settings.json sync did. Mirrors `AntigravitySyncReport` in
+ * src-tauri/src/acp/connection.rs.
+ *
+ * `skipped` is the one that matters: the file was left as it was, so the
+ * agent's auth is NOT what the panel now shows, and `reason` says why in the
+ * same words the log uses.
+ */
+export type AntigravitySyncReport = {
+  path: string
+  status: "written" | "already_current" | "skipped"
+  reason: string | null
+}
+
+/**
+ * Write the saved Antigravity auth choice into the ACP server's settings.json
+ * and report what happened.
+ *
+ * Call it right after saving the env row. The row is not what authenticates
+ * Antigravity — `<GEMINI_HOME>/antigravity-acp/settings.json` is — and the file
+ * can legitimately refuse to be rewritten (Hjson with comments, an `auth` key
+ * that is not an object). Reporting "saved" without asking would be claiming
+ * something that never happened: the launch would go on using the OLD
+ * auth.type with the NEW method's credentials scrubbed out from under it.
+ */
+export async function acpSyncAntigravitySettings(): Promise<AntigravitySyncReport> {
+  return getTransport().call("acp_sync_antigravity_settings", {})
+}
+
+/**
  * Which repo-shipped pi resources a workspace ships, and whether any trust
  * decision already covers it. Read-only.
  */

@@ -337,6 +337,8 @@ export function ForgePage() {
   const [labelOptions, setLabelOptions] = useState<ForgeLabel[]>([])
   const [labelsTruncated, setLabelsTruncated] = useState(false)
   const reqRef = useRef(0)
+  /** Generation counter for the task-link lookup (see `refreshLinks`). */
+  const linksReqRef = useRef(0)
   /** Request generations kept PER TAB. One shared counter would make a probe
    *  for Issues invalidate an in-flight probe for pull requests, so toggling
    *  the switcher during a slow load would throw away each answer as the next
@@ -765,6 +767,20 @@ export function ForgePage() {
   }, [rows, detailRow])
 
   const refreshLinks = useCallback(async () => {
+    // Its own generation counter, not `reqRef`: this stream and the list fetch
+    // run on different triggers (a `work-task://changed` event refreshes links
+    // without touching the list), so sharing one would have each cancel the
+    // other's answer.
+    //
+    // The guard is load-bearing rather than hygiene. The answer REPLACES this
+    // map wholesale, and three sources fire it — the deps below, the task
+    // event, and the trigger dialog — so two lookups are routinely in flight
+    // at once. Without a generation the SLOWER one wins whatever order they
+    // were sent in, dropping links that exist; the detail panel reads a
+    // missing link as "no task yet" and offers "Start" for work that is
+    // already running (`forge-issue-detail-sheet.tsx`), which is how a stale
+    // response turns into a duplicate task.
+    const id = ++linksReqRef.current
     // The panel's item is asked about too, and not only while it is on screen.
     // It deliberately outlives the row it was opened from (see `detail`), and
     // the answer REPLACES this map wholesale — so a page turn, a narrowed
@@ -779,11 +795,16 @@ export function ForgePage() {
       .map((r) => keyFor(r))
       .filter((k): k is string => k != null)
     if (keys.length === 0) {
-      setLinks(new Map())
+      // Claimed the generation above, so this clear is ordered against the
+      // in-flight lookups like any other answer: it lands only while it is
+      // still the newest word, and a lookup sent after it cannot be undone by
+      // it either.
+      if (id === linksReqRef.current) setLinks(new Map())
       return
     }
     try {
       const found = await workTaskLookupBySource(keys)
+      if (id !== linksReqRef.current) return
       setLinks(new Map(found.map((l) => [l.source_key, l])))
     } catch {
       // Chips are best-effort decoration; the list itself stays useful.

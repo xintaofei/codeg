@@ -51,6 +51,7 @@ use crate::models::{
     AgentType, ContentBlock, ConversationDetail, ConversationSummary, MessageTurn, TurnRole,
     TurnUsage,
 };
+use crate::parsers::expand_home_prefix;
 use crate::parsers::{
     backfill_turn_durations, compute_session_stats, folder_name_from_path,
     infer_context_window_max_tokens, merge_context_window_stats, relocate_orphaned_tool_results,
@@ -83,6 +84,28 @@ pub(crate) fn resolve_gemini_home() -> PathBuf {
     resolve_gemini_home_from(std::env::var_os("GEMINI_HOME"), dirs::home_dir())
 }
 
+/// The same resolution for an EXPLICIT `GEMINI_HOME`, so a caller holding a
+/// launch environment does not have to rebuild the rules by hand.
+///
+/// It exists because rebuilding them by hand is exactly what went wrong:
+/// `acp::connection`'s settings-file writer used a bare `PathBuf::from`, which
+/// dropped the `~` expansion above and sent every `GEMINI_HOME=~/...` user's
+/// `auth.type` into a literal `~` directory beside codeg's working directory
+/// while the server read `$HOME/...` and kept failing `Authentication
+/// required`.
+/// `home_dir` is the home the value's `~` is expanded against, and that the
+/// `~/.gemini` default hangs off. A caller holding a launch environment must
+/// pass the CHILD's home (`acp::file_system_runtime::child_home_dir`), not
+/// codeg's: `merge_agent_env` copies `HOME` into the child like any other
+/// variable, so `HOME=/srv/agy GEMINI_HOME=~/profile` means `/srv/agy/profile`
+/// to the server and nothing else.
+pub(crate) fn resolve_gemini_home_from_value(
+    value: Option<std::ffi::OsString>,
+    home_dir: Option<PathBuf>,
+) -> PathBuf {
+    resolve_gemini_home_from(value, home_dir)
+}
+
 fn resolve_gemini_home_from(
     gemini_home_env: Option<std::ffi::OsString>,
     home_dir: Option<PathBuf>,
@@ -94,22 +117,6 @@ fn resolve_gemini_home_from(
         Some(value) => expand_home_prefix(&value, home_dir.as_ref()),
         None => home_dir.unwrap_or_default().join(".gemini"),
     }
-}
-
-/// Expand a leading `~` the way `os.path.expanduser` does for the forms that
-/// matter here: a bare `~` and a `~/` (or `~\` on Windows) prefix. A `~user`
-/// form is left verbatim — we cannot resolve another account's home.
-fn expand_home_prefix(value: &str, home_dir: Option<&PathBuf>) -> PathBuf {
-    let Some(home) = home_dir else {
-        return PathBuf::from(value);
-    };
-    if value == "~" {
-        return home.clone();
-    }
-    if let Some(rest) = value.strip_prefix("~/").or_else(|| value.strip_prefix("~\\")) {
-        return home.join(rest);
-    }
-    PathBuf::from(value)
 }
 
 /// `<home>/antigravity-acp` — the ACP server's private directory. Also holds

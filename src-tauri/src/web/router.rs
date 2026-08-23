@@ -753,6 +753,10 @@ pub fn build_router(
             post(handlers::acp::acp_validate_pi_command),
         )
         .route(
+            "/acp_sync_antigravity_settings",
+            post(handlers::acp::acp_sync_antigravity_settings),
+        )
+        .route(
             "/acp_pi_project_trust_state",
             post(handlers::acp::acp_pi_project_trust_state),
         )
