@@ -1159,15 +1159,29 @@ export function TaskDetailSheet({
                 </dl>
               </section>
 
-              {/* Changed files vs the recorded base. */}
+              {/* Changed files vs the recorded base — which for a task that
+                  came FROM a pull request is the merge base, so this list is
+                  "the pull request plus whatever the agent did". The counters
+                  above it are the task's own work alone (see
+                  `hasNothingToMerge`), so the difference is spelled out rather
+                  than left to read as a contradiction. */}
               {worktreeUsable ? (
                 <section className="flex flex-col gap-1.5">
                   <div className="flex items-center justify-between gap-2">
-                    <h3 className="text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">
+                    <h3 className="min-w-0 text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">
                       {t("detailFiles")}
                       {files.length > 0 ? (
                         <span className="ml-1.5 font-normal text-muted-foreground/70 tabular-nums">
                           {files.length}
+                        </span>
+                      ) : null}
+                      {mustDeliverToPr(task) && files.length > 0 ? (
+                        <span className="ml-1.5 font-normal normal-case tracking-normal text-muted-foreground/70">
+                          {t(
+                            usesMergeRequests(task)
+                              ? "detailFilesIncludesMr"
+                              : "detailFilesIncludesPr"
+                          )}
                         </span>
                       ) : null}
                     </h3>
@@ -1176,7 +1190,7 @@ export function TaskDetailSheet({
                         type="button"
                         size="sm"
                         variant="ghost"
-                        className="h-6 gap-1 px-2 text-[0.6875rem] text-muted-foreground"
+                        className="h-6 shrink-0 gap-1 px-2 text-[0.6875rem] text-muted-foreground"
                         onClick={() => setDiffFile(null)}
                       >
                         <FileDiff className="size-3" aria-hidden="true" />

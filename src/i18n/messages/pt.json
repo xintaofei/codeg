@@ -4787,6 +4787,8 @@
     "detailDescription": "Detalhes da tarefa",
     "detailSummary": "Resultado",
     "detailFiles": "Arquivos alterados",
+    "detailFilesIncludesPr": "inclui as alterações do próprio pull request",
+    "detailFilesIncludesMr": "inclui as alterações do próprio merge request",
     "detailDiffAll": "Ver diff completo",
     "detailDiffAllTitle": "Diff completo",
     "detailNoChanges": "Ainda não há mudanças em relação à base",

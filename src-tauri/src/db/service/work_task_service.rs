@@ -1559,6 +1559,33 @@ pub async fn set_verdict(
     Ok(true)
 }
 
+/// Re-write the diff counters of a task that is ALREADY in review, without
+/// touching anything else about it (no status change, no timeline entry — the
+/// `diff_stat` event records what the settle measured and stays as it was).
+///
+/// Bound to the generation whose counters these are: a task that started
+/// another round between the read and this write must not be stamped with
+/// numbers taken from the previous one.
+pub async fn refresh_diff_stats(
+    conn: &DatabaseConnection,
+    id: i32,
+    run_seq: i32,
+    stats: (i32, i32, i32),
+) -> Result<bool, DbError> {
+    let res = work_task::Entity::update_many()
+        .col_expr(work_task::Column::FilesChanged, Expr::value(Some(stats.0)))
+        .col_expr(work_task::Column::Additions, Expr::value(Some(stats.1)))
+        .col_expr(work_task::Column::Deletions, Expr::value(Some(stats.2)))
+        .col_expr(work_task::Column::UpdatedAt, Expr::value(Utc::now()))
+        .filter(work_task::Column::Id.eq(id))
+        .filter(work_task::Column::Status.eq(WorkTaskStatus::Review))
+        .filter(work_task::Column::RunSeq.eq(run_seq))
+        .filter(work_task::Column::DeletedAt.is_null())
+        .exec(conn)
+        .await?;
+    Ok(res.rows_affected == 1)
+}
+
 pub async fn settle_review(
     conn: &DatabaseConnection,
     id: i32,

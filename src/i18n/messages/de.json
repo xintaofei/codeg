@@ -4787,6 +4787,8 @@
     "detailDescription": "Aufgabendetails",
     "detailSummary": "Ergebnis",
     "detailFiles": "Geänderte Dateien",
+    "detailFilesIncludesPr": "inkl. der Änderungen des Pull Requests selbst",
+    "detailFilesIncludesMr": "inkl. der Änderungen des Merge Requests selbst",
     "detailDiffAll": "Gesamtes Diff anzeigen",
     "detailDiffAllTitle": "Gesamtes Diff",
     "detailNoChanges": "Noch keine Änderungen gegenüber der Basis",

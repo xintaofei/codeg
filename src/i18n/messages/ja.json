@@ -4787,6 +4787,8 @@
     "detailDescription": "タスク詳細",
     "detailSummary": "結果",
     "detailFiles": "変更ファイル",
+    "detailFilesIncludesPr": "PR 自体の変更を含む",
+    "detailFilesIncludesMr": "MR 自体の変更を含む",
     "detailDiffAll": "差分をすべて表示",
     "detailDiffAllTitle": "全差分",
     "detailNoChanges": "ベースからの変更はまだありません",

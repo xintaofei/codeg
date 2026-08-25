@@ -292,6 +292,19 @@ fn acquire_engine_ownership(data_dir: &Path) -> Ownership {
 /// Long-running driver: boot recovery, then a select loop over the event bus +
 /// the reconcile tick. Spawn once per process in each boot path.
 pub async fn run_task_engine(engine: Arc<TaskEngine>) {
+    // Subscribed BEFORE the boot work below, not after it: a broadcast receiver
+    // only ever sees what is published after it subscribes, and the boot work
+    // is not instant (a git probe per merging row, a re-measure per review
+    // row). A task the user starts inside that window would emit its events
+    // into a bus nobody is listening to, and a missed `TurnComplete` leaves it
+    // running forever — the reconcile sweep deliberately leaves rows whose
+    // connection is still live to `on_event`. Anything that piles up while boot
+    // finishes is processed right after, which is safe by construction: every
+    // settle is a CAS on `(connection_id, run_seq)`, so an event for a
+    // generation boot already failed is a no-op. A backlog past the channel's
+    // capacity surfaces as `Lagged`, which the loop already handles.
+    let mut rx = engine.bus.subscribe();
+
     // Boot recovery: no connections (and no setup child processes) survive a
     // restart, so queued / preparing / running / awaiting_input are
     // interruptions → failed(interrupted); retry is idempotent (the worktree is
@@ -314,8 +327,8 @@ pub async fn run_task_engine(engine: Arc<TaskEngine>) {
         }
         Err(e) => tracing::warn!("[work_task] boot merging scan error: {e}"),
     }
+    engine.refresh_review_diff_stats().await;
 
-    let mut rx = engine.bus.subscribe();
     let mut reconcile = {
         let mut i = tokio::time::interval(Duration::from_secs(RECONCILE_INTERVAL_SECS));
         i.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -2384,16 +2397,76 @@ impl TaskEngine {
         }
     }
 
-    /// Best-effort diff-stat snapshot of the task worktree vs its base.
+    /// Best-effort diff-stat snapshot of what THIS TASK produced — measured
+    /// from [`own_work_anchor`], not from the review baseline (see that
+    /// function for why the two differ on a pull-request task).
     async fn snapshot_diff_stats(&self, task_id: i32) -> Option<(i32, i32, i32)> {
         let task = work_task_service::get_model(&self.db.conn, task_id).await.ok()?;
         let wt_id = task.worktree_folder_id?;
-        let base = task.base_sha.clone()?;
         let wt = get_folder_core(&self.db, wt_id).await.ok()?;
-        let files = task_git::diff_numstat(&wt.path, &base).await.ok()?;
-        let adds: i32 = files.iter().map(|f| f.additions).sum();
-        let dels: i32 = files.iter().map(|f| f.deletions).sum();
-        Some((files.len() as i32, adds, dels))
+        let anchor = own_work_anchor(&wt.path, &task).await?;
+        diff_stats_from(&wt.path, &anchor).await
+    }
+
+    /// Boot pass: re-measure the counters of every task sitting in review.
+    ///
+    /// They were snapshotted when the run settled and nothing rewrites them
+    /// afterwards, so a row can outlive the state it describes — a worktree the
+    /// user committed to (or reverted) in the meantime, and rows written before
+    /// [`own_work_anchor`] existed, which credited a pull-request task with the
+    /// pull request's own change set and cost it the "complete" button. The
+    /// counters decide which acceptance the board offers, so the correction has
+    /// to reach the row itself; recomputing per card is not an option (the list
+    /// endpoint would run one `git diff` per task, per refresh).
+    ///
+    /// Best-effort throughout: an unreadable worktree keeps whatever the row
+    /// already says, which is exactly the pre-existing behaviour.
+    async fn refresh_review_diff_stats(self: &Arc<Self>) {
+        let Ok(rows) = work_task_service::list_by_status(&self.db.conn, &[WorkTaskStatus::Review])
+            .await
+        else {
+            return;
+        };
+        for task in rows {
+            let Some(wt) = self.live_worktree(&task).await else {
+                continue;
+            };
+            let Some(anchor) = own_work_anchor(&wt.path, &task).await else {
+                continue;
+            };
+            let Some(stats) = diff_stats_from(&wt.path, &anchor).await else {
+                continue;
+            };
+            if (task.files_changed, task.additions, task.deletions)
+                == (Some(stats.0), Some(stats.1), Some(stats.2))
+            {
+                continue;
+            }
+            match work_task_service::refresh_diff_stats(
+                &self.db.conn,
+                task.id,
+                task.run_seq,
+                stats,
+            )
+            .await
+            {
+                Ok(true) => {
+                    tracing::info!(
+                        "[work_task] task {}: diff stat corrected to {} file(s), +{}/-{}",
+                        task.id,
+                        stats.0,
+                        stats.1,
+                        stats.2
+                    );
+                    self.emit_upsert(task.id);
+                }
+                Ok(false) => {} // left review meanwhile — its own settle owns the row
+                Err(e) => tracing::warn!(
+                    "[work_task] task {}: could not refresh the diff stat: {e}",
+                    task.id
+                ),
+            }
+        }
     }
 
     /// Best-effort: the turn's final assistant text (cleared at next turn
@@ -2425,10 +2498,13 @@ impl TaskEngine {
     /// cleared it and the `branch -D` that would take it away.
     ///
     /// Two probes on the live-worktree path, because neither alone sees
-    /// everything the removal destroys: a commit made on the work branch is
-    /// invisible to `git status` but shows up in the diff against the base, and
-    /// an untracked file is the reverse. Anything either one finds keeps the
-    /// worktree on disk.
+    /// everything the removal destroys. The anchor diff
+    /// ([`Self::has_landable_changes`]) covers commits made on the branch after
+    /// the run settled — invisible to `git status` — as well as uncommitted
+    /// files, untracked ones included. What it cannot see is a worktree that
+    /// differs from its own HEAD while matching the anchor: work committed and
+    /// then edited back out is a `git status` finding and an empty diff.
+    /// Anything either one finds keeps the worktree on disk.
     pub async fn complete_task(
         self: &Arc<Self>,
         task_id: i32,
@@ -2598,21 +2674,22 @@ impl TaskEngine {
         task_git::has_changes(&wt.path).await.unwrap_or(false)
     }
 
-    /// Live git truth for "would a merge still have something to take from this
-    /// task?" — including work committed on the branch after the run settled,
-    /// which `git status` reports as a clean worktree. Mirrors the changed-files
-    /// view the user reviewed (same base fallback), so the board's offer and
-    /// this check cannot disagree. `wt_path` is the already-verified live
-    /// worktree (see [`Self::live_worktree`]).
+    /// Live git truth for "would an acceptance still have something to take
+    /// from this task?" — work committed on the branch after the run settled
+    /// (which `git status` reports as a clean worktree) as well as work the
+    /// agent never committed, new files included. Measured from
+    /// [`own_work_anchor`], the same place the recorded diff stat is taken
+    /// from, so the board's offer and this check cannot disagree. `wt_path` is
+    /// the already-verified live worktree (see [`Self::live_worktree`]).
     async fn has_landable_changes(
         &self,
         task: &crate::db::entities::work_task::Model,
         wt_path: &str,
     ) -> Result<bool, String> {
-        let Some(base) = task.base_sha.clone().or_else(|| task.base_branch.clone()) else {
+        let Some(anchor) = own_work_anchor(wt_path, task).await else {
             return Ok(false);
         };
-        let files = task_git::diff_numstat(wt_path, &base)
+        let files = task_git::diff_numstat_with_untracked(wt_path, &anchor)
             .await
             .map_err(|e| format!("could not read the task's changes: {e}"))?;
         Ok(!files.is_empty())
@@ -3151,13 +3228,18 @@ impl TaskEngine {
             }
             Err(e) => return Err(format!("could not read the task worktree's state: {e}")),
         }
-        // GitHub answers an empty pull request with a 422; refuse before the
-        // CAS and point at the button that actually applies.
+        // GitHub answers an empty pull request with a 422, and a push back that
+        // carries nothing leaves the pull request untouched while the task
+        // records a delivery. Refuse before the CAS and point at the button that
+        // actually applies — the likeliest task here is a review-only one,
+        // whose worktree holds the pull request and nothing else.
         if !self.has_landable_changes(&task, &wt.path).await? {
-            return Err(
+            return Err(if from_pull {
+                "this task added nothing to the pull request — complete it instead of pushing back"
+            } else {
                 "this task has nothing to deliver — complete it instead of opening a pull request"
-                    .to_string(),
-            );
+            }
+            .to_string());
         }
         // The pull request is diffed against the base branch AS THE REMOTE HAS
         // IT, not against the local one the task branched from. If those have
@@ -3523,12 +3605,15 @@ impl TaskEngine {
         let pushed = !before.head_sha.eq_ignore_ascii_case(expected_head);
         let after = if !pushed {
             // The pull request already sits at the commit this task would
-            // push — a review turn that added nothing. There is nothing to
-            // publish, so nothing is pushed: this is what lets a task on a
-            // fork the account cannot write to still settle, and it is why
-            // the closed/merged refusal below does not run here — a merged
-            // pull request that carries this exact head IS the delivery, and
-            // `settle_pull_target` says so.
+            // push: a retry of a delivery whose push landed before something
+            // interrupted the settle. There is nothing left to publish, so
+            // nothing is pushed — which is also what lets such a retry finish
+            // on a fork the account cannot write to. A task with nothing of
+            // its own never reaches this branch; `has_landable_changes`
+            // refuses it in favour of completing. It is why the closed/merged
+            // refusal below does not run here, too: a merged pull request that
+            // carries this exact head IS the delivery, and `settle_pull_target`
+            // says so.
             before.clone()
         } else {
             if before.merged || before.state != "open" {
@@ -4881,6 +4966,88 @@ async fn converge_worktree_removal(
     if folder_gone {
         emit_folder_deleted(emitter, wt_id);
     }
+}
+
+/// The commit THIS TASK's own work sits on top of: the point its worktree was
+/// checked out at, which is also the point an acceptance would deliver from.
+/// The counters on the row and every "is there anything to land" probe measure
+/// from here — deliberately not from the review baseline, which answers a
+/// different question ("what is under review", pull request included).
+///
+/// For an ordinary task the two coincide: the branch was minted at the recorded
+/// base, so "diff against the base" and "what the agent did" are one set. Two
+/// things move the anchor off it:
+///
+/// - **A task triggered from a pull request starts ON that pull request's
+///   head**, while its base is the MERGE BASE — because the review is meant to
+///   show the pull request plus whatever the agent did (see
+///   [`TaskEngine::pr_checkout_point`]). Measuring the task's own work from
+///   there would credit it with every file the pull request itself changed: a
+///   review-only task that committed nothing would report a full change set,
+///   the board would offer to push it back (a delivery with nothing in it),
+///   and "complete" — the acceptance that actually applies — would never
+///   appear. The head comes from the task's source snapshot, which is what the
+///   checkout used; it must still be a commit HERE, since a force-push can
+///   leave the row naming one this repository never had.
+/// - **The branch absorbing base content** (the agent merged the base branch
+///   in, or rebased onto it) moves the merge base forward, and everything the
+///   base contributed would otherwise read as this task's work. Taken only
+///   when it moved FORWARD from the recorded base: a base branch that is
+///   behind locally, or a same-name branch of unrelated history, must not drag
+///   the anchor backwards and inflate the count it was meant to correct.
+///
+/// `wt_path` is the task's worktree — where every ref here is resolved.
+async fn own_work_anchor(
+    wt_path: &str,
+    task: &crate::db::entities::work_task::Model,
+) -> Option<String> {
+    if task.source_kind.as_deref() == Some(SOURCE_KIND_PR) {
+        let head = task
+            .source_meta
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<ForgeSourceMeta>(s).ok())
+            .and_then(|m| m.head_sha)
+            .filter(|s| !s.trim().is_empty());
+        if let Some(head) = head {
+            if task_git::commit_present(wt_path, &head).await.unwrap_or(false) {
+                return Some(head);
+            }
+        }
+    }
+    let recorded = task.base_sha.clone().or_else(|| task.base_branch.clone());
+    let Some(base_branch) = task.base_branch.as_deref() else {
+        return recorded;
+    };
+    let Ok(Some(tip)) = task_git::local_branch_tip(wt_path, base_branch).await else {
+        return recorded;
+    };
+    let Ok(merge_base) = task_git::merge_base(wt_path, &tip, "HEAD").await else {
+        return recorded;
+    };
+    match task.base_sha.as_deref() {
+        Some(sha) => task_git::is_ancestor(wt_path, sha, &merge_base)
+            .await
+            .unwrap_or(false)
+            .then_some(merge_base)
+            .or(recorded),
+        // No recorded sha to move forward from — the merge base is strictly
+        // better than the branch NAME this would otherwise diff against, which
+        // measures against its tip and calls the base's own progress a change.
+        None => Some(merge_base),
+    }
+}
+
+/// `(files, additions, deletions)` of the worktree against `anchor`,
+/// uncommitted work included — nothing forces the agent to commit before the
+/// task lands in review, and a task whose new files are still untracked has
+/// done work all the same.
+async fn diff_stats_from(wt_path: &str, anchor: &str) -> Option<(i32, i32, i32)> {
+    let files = task_git::diff_numstat_with_untracked(wt_path, anchor)
+        .await
+        .ok()?;
+    let adds: i32 = files.iter().map(|f| f.additions).sum();
+    let dels: i32 = files.iter().map(|f| f.deletions).sum();
+    Some((files.len() as i32, adds, dels))
 }
 
 /// Row-level auto-merge eligibility: everything the sweep can decide without
@@ -9254,6 +9421,222 @@ mod tests {
         assert!(f.forge.comments.lock().await.is_empty());
     }
 
+    /// The engine has to be listening to the event bus BEFORE it starts its
+    /// boot work, not after: the bus drops what it broadcasts while nobody is
+    /// subscribed, so a task the user starts during boot would emit its
+    /// `TurnComplete` into nothing and sit `running` forever — the reconcile
+    /// sweep deliberately leaves rows whose connection is still live to
+    /// `on_event`.
+    ///
+    /// Pinned without timing games. A `merging` row parks the boot pass on the
+    /// folder's git lock, which this test holds, so the engine is provably
+    /// still inside boot work when the event goes out; and the queued row
+    /// flipping to `failed` is the boot pass announcing it got that far.
+    #[tokio::test]
+    async fn boot_work_does_not_swallow_the_events_published_under_it() {
+        use crate::db::test_helpers::{fresh_in_memory_db, seed_folder};
+        use sea_orm::{ActiveModelTrait, Set};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        git_run(dir.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.path().join("a.txt"), "one\n").expect("write");
+        git_run(dir.path(), &["add", "-A"]);
+        git_run(dir.path(), &["commit", "-q", "-m", "base"]);
+
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, dir.path().to_str().expect("utf-8 path")).await;
+        let draft = |title: &str| crate::models::WorkTaskDraft {
+            folder_id,
+            title: title.to_string(),
+            config: serde_json::json!({ "display_text": title }),
+        };
+
+        // Interrupted by the restart — the boot pass fails it, which is how
+        // this test learns the pass has begun.
+        let interrupted = work_task_service::create(&db.conn, draft("interrupted"))
+            .await
+            .expect("task");
+        work_task_service::claim_for_run(&db.conn, interrupted.id, WorkTaskStatus::Todo, "test")
+            .await
+            .expect("claim")
+            .expect("claimed");
+
+        // The row that parks the boot pass on the folder's git lock.
+        let now = chrono::Utc::now();
+        let merging = crate::db::entities::work_task::ActiveModel {
+            folder_id: Set(folder_id),
+            title: Set("mid-merge".to_string()),
+            config: Set("{}".to_string()),
+            status: Set(WorkTaskStatus::Merging),
+            run_seq: Set(1),
+            sort_order: Set(0),
+            base_branch: Set(Some("main".to_string())),
+            work_branch: Set(Some("task/1".to_string())),
+            merge_state: Set(Some(
+                serde_json::to_string(&WorkTaskMergeState {
+                    op: WorkTaskMergeOp::Land,
+                    strategy: "merge".into(),
+                    ..Default::default()
+                })
+                .expect("state"),
+            )),
+            created_at: Set(now),
+            updated_at: Set(now),
+            ..Default::default()
+        }
+        .insert(&db.conn)
+        .await
+        .expect("merging row");
+
+        let engine = test_engine(db);
+        let lock = engine.folder_lock(folder_id).await;
+        let guard = lock.lock().await;
+
+        let driver = engine.clone();
+        tokio::spawn(async move { run_task_engine(driver).await });
+
+        let probe = engine.clone();
+        wait_for("the boot pass to start", move || {
+            let probe = probe.clone();
+            async move { row(&probe, interrupted.id).await.status == WorkTaskStatus::Failed }
+        })
+        .await;
+
+        // A run the user starts while boot is still going. Created HERE, after
+        // the boot pass swept the interrupted rows, so nothing but the event
+        // below can settle it.
+        let live = work_task_service::create(&engine.db.conn, draft("started during boot"))
+            .await
+            .expect("task");
+        let conv = conversation_service::create(
+            &engine.db.conn,
+            folder_id,
+            AgentType::ClaudeCode,
+            None,
+            None,
+        )
+        .await
+        .expect("conversation");
+        let run_seq =
+            work_task_service::claim_for_run(&engine.db.conn, live.id, WorkTaskStatus::Todo, "test")
+                .await
+                .expect("claim")
+                .expect("claimed");
+        assert!(work_task_service::begin_setup(&engine.db.conn, live.id, run_seq)
+            .await
+            .expect("begin_setup"));
+        assert!(work_task_service::mark_running(
+            &engine.db.conn,
+            live.id,
+            run_seq,
+            conv.id,
+            PARENT_CONN
+        )
+        .await
+        .expect("mark_running"));
+        engine
+            .index
+            .lock()
+            .await
+            .insert(PARENT_CONN.into(), (live.id, run_seq));
+        // A LIVE connection, so the reconcile sweep keeps its hands off the row
+        // — which is exactly the production shape that makes a lost
+        // `TurnComplete` permanent.
+        engine
+            .manager
+            .insert_test_connection(
+                PARENT_CONN,
+                AgentType::ClaudeCode,
+                None,
+                crate::web::event_bridge::EventEmitter::Noop,
+            )
+            .await;
+
+        engine.bus.send(std::sync::Arc::new(env(
+            PARENT_CONN,
+            AcpEvent::TurnComplete {
+                session_id: "s-1".into(),
+                stop_reason: "end_turn".into(),
+                agent_type: "claude_code".into(),
+            },
+        )));
+
+        // Boot can finish now; the event has to survive it.
+        drop(guard);
+        let probe = engine.clone();
+        wait_for("the settle from an event published during boot", move || {
+            let probe = probe.clone();
+            async move { row(&probe, live.id).await.status == WorkTaskStatus::Review }
+        })
+        .await;
+        assert_eq!(
+            row(&engine, merging.id).await.status,
+            WorkTaskStatus::Review,
+            "the parked boot pass still ran to completion"
+        );
+    }
+
+    /// Nothing makes an agent commit before its task lands in review — the
+    /// merge generation's prompt starts by committing whatever is left over —
+    /// so a task whose new files are still untracked has done work all the
+    /// same. Reading it as "changed nothing" would put "complete" on the card
+    /// and let the user close a task whose work never lands.
+    #[tokio::test]
+    async fn work_the_agent_never_committed_still_counts() {
+        let f = delivery_fixture(FakeForge::default()).await;
+        // Undo the fixture's commit, leaving its content in the worktree as an
+        // uncommitted edit, and add a new file nobody ran `git add` on.
+        git_run(&f.worktree, &["reset", "-q", "--mixed", "HEAD~1"]);
+        std::fs::write(f.worktree.join("fresh.txt"), "a\nb\n").expect("write");
+
+        let stats = f.engine.snapshot_diff_stats(f.task_id).await.expect("stats");
+        assert_eq!(stats, (2, 3, 0), "the edit and the new file both count");
+        let task = row(&f.engine, f.task_id).await;
+        assert!(
+            f.engine
+                .has_landable_changes(&task, f.worktree.to_str().unwrap())
+                .await
+                .expect("landable probe"),
+            "completing this task would strand real work"
+        );
+    }
+
+    /// Base content the branch ABSORBED is not this task's work. An agent that
+    /// merges the base branch in — or rebases onto it — brings every commit the
+    /// base gained along, and measuring from the commit the task branched off
+    /// would count all of it: a task that added one line would report the whole
+    /// week's work, and the counters decide which acceptance the board offers.
+    #[tokio::test]
+    async fn base_content_the_branch_absorbed_is_not_the_tasks_work() {
+        let f = delivery_fixture(FakeForge::default()).await;
+        // The task's own contribution, as the fixture left it.
+        assert_eq!(
+            f.engine.snapshot_diff_stats(f.task_id).await,
+            Some((1, 1, 0))
+        );
+
+        // The base branch moves on, and the worktree takes it in.
+        git_run(&f.root, &["checkout", "-q", "main"]);
+        std::fs::write(f.root.join("later.txt"), "one\ntwo\nthree\n").expect("write");
+        git_run(&f.root, &["add", "-A"]);
+        git_run(&f.root, &["commit", "-qm", "the base moves on"]);
+        git_run(&f.worktree, &["merge", "-q", "--no-edit", "main"]);
+
+        assert_eq!(
+            f.engine.snapshot_diff_stats(f.task_id).await,
+            Some((1, 1, 0)),
+            "the merged-in base branch is not this task's change set"
+        );
+        let task = row(&f.engine, f.task_id).await;
+        assert!(
+            f.engine
+                .has_landable_changes(&task, f.worktree.to_str().unwrap())
+                .await
+                .expect("landable probe"),
+            "…and its own commit is still there to land"
+        );
+    }
+
     // ── tasks that ARE a pull request ───────────────────────────────────────
 
     /// Re-stamp the delivery fixture's task as one triggered from a pull
@@ -9431,6 +9814,149 @@ mod tests {
             !changed.iter().any(|f| f.file == "b.txt"),
             "the base branch's later commits are not this task's work: {changed:?}"
         );
+        drop(home);
+    }
+
+    /// The counters on the row are the TASK's own work, which on a
+    /// pull-request task is NOT the review diff: the worktree starts on the
+    /// pull request, so the whole contribution is already there before the
+    /// agent does anything. A review-only run — findings reported, nothing
+    /// committed — has to settle at zero, or the board hides "complete" behind
+    /// a delivery that would push an empty change.
+    #[tokio::test]
+    async fn a_pull_request_task_counts_only_what_the_agent_added() {
+        let (engine, task_id, home, _pull_head, branch_point) =
+            pull_checkout_fixture(None, crate::forge::ForgeProvider::GitHub).await;
+        let task = row(&engine, task_id).await;
+        let root = get_folder_core(&engine.db, task.folder_id).await.expect("root");
+        let wt = engine
+            .ensure_worktree(&task, &root, &WorkTaskFolderSettings::default())
+            .await
+            .expect("worktree");
+        let task = row(&engine, task_id).await;
+
+        // What the user reviews still holds the pull request itself…
+        let reviewed = task_git::diff_numstat(&wt.path, &branch_point)
+            .await
+            .expect("review diff");
+        assert!(
+            reviewed.iter().any(|f| f.file == "feature.txt"),
+            "the review diff is unchanged: {reviewed:?}"
+        );
+        // …while the task's own contribution is empty, on both the recorded
+        // stat and the live probe the acceptances re-ask.
+        assert_eq!(
+            engine.snapshot_diff_stats(task_id).await,
+            Some((0, 0, 0)),
+            "a review-only run changed nothing"
+        );
+        assert!(!engine
+            .has_landable_changes(&task, &wt.path)
+            .await
+            .expect("landable probe"));
+
+        // A round that does commit is counted — and only its own file.
+        std::fs::write(Path::new(&wt.path).join("fix.txt"), "the agent's work\n").expect("write");
+        git_run(Path::new(&wt.path), &["add", "-A"]);
+        git_run(Path::new(&wt.path), &["commit", "-qm", "the agent's fix"]);
+        assert_eq!(
+            engine.snapshot_diff_stats(task_id).await,
+            Some((1, 1, 0)),
+            "the agent's file, not the pull request's"
+        );
+        assert!(engine
+            .has_landable_changes(&task, &wt.path)
+            .await
+            .expect("landable probe"));
+        drop(home);
+    }
+
+    /// The same rule on the path that made it matter: a pull-request task whose
+    /// agent wrote a file and never added it. The counters have to say the task
+    /// did something, the drawer has to list the same file the counters count,
+    /// and completing has to refuse — closing it here would leave work that
+    /// nothing is going to land (delivery cannot push an uncommitted tree
+    /// either; it says so and asks for another round). The ignore rules are
+    /// pinned where they are applied, in
+    /// `git::tests::the_acceptance_measure_sees_work_that_was_never_committed`.
+    #[tokio::test]
+    async fn an_untracked_file_keeps_a_pull_request_task_out_of_complete() {
+        use sea_orm::{ActiveModelTrait, IntoActiveModel, Set};
+        let (engine, task_id, home, _pull_head, _branch_point) =
+            pull_checkout_fixture(None, crate::forge::ForgeProvider::GitHub).await;
+        let task = row(&engine, task_id).await;
+        let root = get_folder_core(&engine.db, task.folder_id).await.expect("root");
+        let wt = engine
+            .ensure_worktree(&task, &root, &WorkTaskFolderSettings::default())
+            .await
+            .expect("worktree");
+
+        std::fs::write(Path::new(&wt.path).join("findings.md"), "one\ntwo\n").expect("write");
+
+        assert_eq!(
+            engine.snapshot_diff_stats(task_id).await,
+            Some((1, 2, 0)),
+            "an uncommitted new file is still this task's work"
+        );
+        let listed = crate::commands::work_task::work_task_changed_files_core(&engine.db, task_id)
+            .await
+            .expect("changed files");
+        assert!(
+            listed.iter().any(|f| f.file == "findings.md"),
+            "the drawer must list what the card counts: {listed:?}"
+        );
+
+        let mut active = row(&engine, task_id).await.into_active_model();
+        active.status = Set(WorkTaskStatus::Review);
+        active.update(&engine.db.conn).await.expect("into review");
+        let refused = engine
+            .complete_task(task_id, false)
+            .await
+            .expect_err("the work is still sitting there");
+        assert!(refused.contains("changed files after all"), "{refused}");
+        assert_eq!(
+            row(&engine, task_id).await.status,
+            WorkTaskStatus::Review,
+            "a refused completion leaves the task where it was"
+        );
+        drop(home);
+    }
+
+    /// The counters are written once, when the run settles, and every board
+    /// decision reads them afterwards — so a row can outlive what it describes
+    /// (a worktree committed to since, or a pull-request task settled by a
+    /// build that credited it with the pull request's own files). The boot pass
+    /// re-measures whatever is still sitting in review.
+    #[tokio::test]
+    async fn the_boot_pass_re_measures_a_review_row() {
+        use sea_orm::{ActiveModelTrait, IntoActiveModel, Set};
+        let (engine, task_id, home, _pull_head, _branch_point) =
+            pull_checkout_fixture(None, crate::forge::ForgeProvider::GitHub).await;
+        let task = row(&engine, task_id).await;
+        let root = get_folder_core(&engine.db, task.folder_id).await.expect("root");
+        engine
+            .ensure_worktree(&task, &root, &WorkTaskFolderSettings::default())
+            .await
+            .expect("worktree");
+
+        // The row an older build left behind: in review, carrying the pull
+        // request's change set as if the task had written it.
+        let mut active = row(&engine, task_id).await.into_active_model();
+        active.status = Set(WorkTaskStatus::Review);
+        active.files_changed = Set(Some(1));
+        active.additions = Set(Some(1));
+        active.deletions = Set(Some(0));
+        active.update(&engine.db.conn).await.expect("stale review row");
+
+        engine.refresh_review_diff_stats().await;
+
+        let after = row(&engine, task_id).await;
+        assert_eq!(
+            (after.files_changed, after.additions, after.deletions),
+            (Some(0), Some(0), Some(0)),
+            "the corrected counters are what the board reads"
+        );
+        assert_eq!(after.status, WorkTaskStatus::Review, "nothing else moved");
         drop(home);
     }
 
@@ -9691,12 +10217,19 @@ mod tests {
         assert_eq!(task.completion_kind.as_deref(), Some("delivered_pr"));
     }
 
-    /// A delivery whose commit the pull request ALREADY has (a review turn
-    /// that added nothing) settles without pushing at all. That is what lets a
-    /// review-only task on a fork this account cannot write to still be
-    /// accepted — the fake here would fail any push, and none may happen.
+    /// A push back with nothing new is REFUSED, and the acceptance that fits
+    /// takes over. The task's branch is the pull request's own head — a review
+    /// turn that committed nothing — so a delivery would push nothing, leave
+    /// the pull request exactly as it was, and still record the task as
+    /// delivered to it. The board offers "complete" for this row (nothing of
+    /// its own to land); the backend has to agree, or the two disagree about
+    /// the same task.
+    ///
+    /// The review-only task on a fork this account cannot write to is still
+    /// accepted — completing needs no write access at all, and the fake here
+    /// would fail any push.
     #[tokio::test]
-    async fn a_push_back_with_nothing_new_settles_without_pushing() {
+    async fn a_push_back_with_nothing_new_is_refused_for_completing() {
         let forge = FakeForge {
             push_error: Some("403: permission denied".into()),
             ..FakeForge::default()
@@ -9707,7 +10240,58 @@ mod tests {
         as_pull_request_task(&f, pr.clone()).await;
         f.forge.existing.lock().await.push(pr);
 
-        f.engine.deliver_pr(f.task_id, None, false, false).await.expect("settled without a push");
+        let refused = f
+            .engine
+            .deliver_pr(f.task_id, None, false, false)
+            .await
+            .expect_err("a delivery with nothing in it");
+        assert!(refused.contains("complete it instead"), "{refused}");
+        assert!(f.forge.pushes.lock().await.is_empty(), "no push may run");
+        assert_eq!(
+            row(&f.engine, f.task_id).await.status,
+            WorkTaskStatus::Review,
+            "a refused delivery leaves the task exactly as it was"
+        );
+
+        f.engine
+            .complete_task(f.task_id, false)
+            .await
+            .expect("accepted without touching the fork");
+        let task = row(&f.engine, f.task_id).await;
+        assert_eq!(task.status, WorkTaskStatus::Done);
+        assert_eq!(
+            task.completion_kind.as_deref(),
+            Some("accepted_without_merge"),
+            "…and recorded as what it was, not as a delivery"
+        );
+    }
+
+    /// The OTHER way a delivery finds nothing to push: its push already landed
+    /// and something interrupted the settle. The retry must recognize the pull
+    /// request as carrying this task's commit and finish — without pushing
+    /// again, which is what lets it complete on a fork this account cannot
+    /// write to (the fake here fails any push). Distinguished from the refused
+    /// case above by the task actually having work: it was triggered on the
+    /// pull request's earlier head and committed on top of it.
+    #[tokio::test]
+    async fn a_delivery_whose_push_already_landed_settles_without_pushing_again() {
+        let forge = FakeForge {
+            push_error: Some("403: permission denied".into()),
+            ..FakeForge::default()
+        };
+        let f = delivery_fixture(forge).await;
+        as_pull_request_task(&f, open_pull(&f.base_sha, "feature", "contributor/app")).await;
+        // What the forge answers today: the task's own commit is already there.
+        f.forge
+            .existing
+            .lock()
+            .await
+            .push(open_pull(&f.head, "feature", "contributor/app"));
+
+        f.engine
+            .deliver_pr(f.task_id, None, false, false)
+            .await
+            .expect("settled without a push");
         assert!(f.forge.pushes.lock().await.is_empty(), "no push may run");
         let task = row(&f.engine, f.task_id).await;
         assert_eq!(task.status, WorkTaskStatus::Done);

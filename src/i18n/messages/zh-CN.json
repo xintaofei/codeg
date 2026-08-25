@@ -4787,6 +4787,8 @@
     "detailDescription": "任务详情",
     "detailSummary": "结果",
     "detailFiles": "变更文件",
+    "detailFilesIncludesPr": "含 PR 自身的改动",
+    "detailFilesIncludesMr": "含 MR 自身的改动",
     "detailDiffAll": "查看全部差异",
     "detailDiffAllTitle": "全部差异",
     "detailNoChanges": "相对基准还没有变更",

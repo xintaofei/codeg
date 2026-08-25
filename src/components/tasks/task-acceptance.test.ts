@@ -13,6 +13,7 @@ import {
   usesMergeRequests,
   worktreeWasRemoved,
 } from "./task-acceptance"
+import { buildTaskActions } from "./task-actions"
 
 /** A parked merge, reduced to what the queue helpers actually read. */
 function queued(at: string): WorkTask["merge_queued"] {
@@ -302,5 +303,44 @@ describe("deliveredPrUrl", () => {
     expect(
       deliveredPrUrl(task({ status: "done", source_meta: meta }))
     ).toBeNull()
+  })
+})
+
+describe("the acceptance a review-only pull-request task offers", () => {
+  const handlers = {
+    onStart: () => {},
+    onCancel: () => {},
+    onRetry: () => {},
+    onRequeue: () => {},
+    onViewSession: () => {},
+    onMerge: () => {},
+    onDeliverPr: () => {},
+    onUnqueueMerge: () => {},
+    onComplete: () => {},
+    onArchive: () => {},
+    onEdit: () => {},
+    onSchedule: () => {},
+  }
+  const primary = (t: WorkTask): string | null =>
+    buildTaskActions(t, (key) => key, handlers).primary?.label ?? null
+
+  const fromPr = { source_kind: "forge_pr" as const, conversation_id: null }
+
+  // A task triggered from a pull request is checked out ON that pull request,
+  // so its worktree holds the whole contribution before the agent starts. The
+  // counters are measured from that checkout point, which is what keeps a
+  // review turn that committed nothing at zero here — anything else offers a
+  // push back with nothing in it (and the backend refuses that one).
+  it("is completing, not a push back that would carry nothing", () => {
+    const reviewOnly = task({ ...fromPr, files_changed: 0 })
+    expect(hasNothingToMerge(reviewOnly)).toBe(true)
+    expect(canDeliverToPr(reviewOnly)).toBe(false)
+    expect(primary(reviewOnly)).toBe("actionComplete")
+  })
+
+  it("is the push back once the agent has committed something of its own", () => {
+    const withWork = task({ ...fromPr, files_changed: 2 })
+    expect(canDeliverToPr(withWork)).toBe(true)
+    expect(primary(withWork)).toBe("actionDeliverPrBack")
   })
 })

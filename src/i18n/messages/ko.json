@@ -4787,6 +4787,8 @@
     "detailDescription": "작업 상세",
     "detailSummary": "결과",
     "detailFiles": "변경된 파일",
+    "detailFilesIncludesPr": "PR 자체의 변경 포함",
+    "detailFilesIncludesMr": "MR 자체의 변경 포함",
     "detailDiffAll": "전체 차이 보기",
     "detailDiffAllTitle": "전체 차이",
     "detailNoChanges": "기준 대비 변경 사항이 아직 없습니다",

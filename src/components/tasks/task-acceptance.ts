@@ -50,10 +50,15 @@ export function canRemoveWorktree(task: WorkTask): boolean {
 /**
  * Whether a reviewed task has no merge to offer, so "complete" takes the
  * primary slot instead:
- * - the run settled with an empty diff against the recorded base — only `0`
- *   counts; `null` means the engine could not read the stats, and merging
- *   stays the safe default there. The engine re-runs the same diff before it
- *   finishes the task, so a stale card cannot drop work;
+ * - the run produced nothing — only `0` counts; `null` means the engine could
+ *   not read the stats, and merging stays the safe default there. The engine
+ *   re-runs the same diff before it finishes the task, so a stale card cannot
+ *   drop work. `files_changed` counts what the TASK wrote, measured from the
+ *   commit its worktree was checked out at — which is not always the diff the
+ *   drawer lists: a task triggered from a pull request is checked out ON that
+ *   pull request, and its files are the material under review, not this task's
+ *   work (a review-only task must offer "complete", not a delivery that would
+ *   push nothing);
  * - or the worktree is gone (see `isWorktreeGone`) — a merge could only fail,
  *   and completing is the one acceptance left. The engine preserves a work
  *   branch that still holds unlanded commits.

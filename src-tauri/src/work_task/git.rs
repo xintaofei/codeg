@@ -16,6 +16,28 @@ async fn run_git(path: &str, args: &[&str]) -> Result<std::process::Output, AppC
         .map_err(AppCommandError::io)
 }
 
+/// As [`run_git`], against a git index of our choosing instead of the
+/// worktree's own — see [`ScratchIndex`].
+///
+/// `core.splitIndex=false` because a throwaway index must stay in ONE file:
+/// with splitting on, writing it deposits a fresh `sharedindex.*` beside it in
+/// the git directory, which outlives the scratch (git only prunes those on a
+/// later `gc`).
+async fn run_git_with_index(
+    path: &str,
+    index: &std::path::Path,
+    args: &[&str],
+) -> Result<std::process::Output, AppCommandError> {
+    crate::process::tokio_command("git")
+        .args(["-c", "core.splitIndex=false"])
+        .args(args)
+        .current_dir(path)
+        .env("GIT_INDEX_FILE", index)
+        .output()
+        .await
+        .map_err(AppCommandError::io)
+}
+
 /// A worktree's own git directory (`<repo>/.git/worktrees/<name>` for a linked
 /// worktree, `<repo>/.git` for the main one). Engine-private markers live here:
 /// nothing under it can show up in `git status` or be committed by the agent.
@@ -272,6 +294,10 @@ pub async fn trees_equal(path: &str, a: &str, b: &str) -> Result<bool, AppComman
 
 /// `git diff --numstat <base>` — the task's change set vs its recorded base.
 /// Binary files report `-` counts; they are counted as a changed file with 0/0.
+///
+/// Blind to UNTRACKED files by construction (git enumerates the diff from the
+/// index) — [`diff_numstat_with_untracked`] is the one to reach for when the
+/// answer decides something; this one stays the plain primitive.
 pub async fn diff_numstat(
     path: &str,
     base: &str,
@@ -280,8 +306,12 @@ pub async fn diff_numstat(
     if !out.status.success() {
         return Err(git_command_error("diff --numstat", &out.stderr));
     }
+    Ok(parse_numstat(&out.stdout))
+}
+
+fn parse_numstat(stdout: &[u8]) -> Vec<WorkTaskChangedFile> {
     let mut files = Vec::new();
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
+    for line in String::from_utf8_lossy(stdout).lines() {
         let mut parts = line.splitn(3, '\t');
         let (Some(adds), Some(dels), Some(file)) = (parts.next(), parts.next(), parts.next())
         else {
@@ -293,7 +323,128 @@ pub async fn diff_numstat(
             deletions: dels.parse().unwrap_or(0),
         });
     }
-    Ok(files)
+    files
+}
+
+/// A THROWAWAY git index, seeded from a commit and then told about every
+/// untracked, non-ignored file (`add -A -N`, intent-to-add: names only, no
+/// content). Deleted when dropped.
+///
+/// This is what lets a diff see work the agent left UNCOMMITTED — new files
+/// included. A task is not guaranteed to have committed when it lands in
+/// review (the merge generation's own prompt begins by committing whatever is
+/// left over), and a plain `git diff <commit>` walks the index to decide which
+/// paths exist: uncommitted edits to tracked files show up, a brand-new file
+/// nobody ran `git add` on does not. Reporting that task as having changed
+/// nothing is the difference between "merge it" and "complete it".
+///
+/// The worktree's REAL index is never touched — `git add -N` on it would leave
+/// the agent's next round, and any `git stash` / `git commit -a` the user runs,
+/// looking at an index this feature quietly edited.
+struct ScratchIndex {
+    path: std::path::PathBuf,
+}
+
+impl Drop for ScratchIndex {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+impl ScratchIndex {
+    /// Build one for `wt_path`: a COPY of the worktree's own index, plus
+    /// intent-to-add entries for everything untracked.
+    ///
+    /// Copied rather than built from `anchor` with `read-tree`, because the
+    /// real index carries per-entry flags a tree does not. A SPARSE checkout is
+    /// the case that decides it: its skip-worktree entries have no file on
+    /// disk, so an index rebuilt from a tree reports every path outside the
+    /// cone as DELETED — a task that changed nothing would show hundreds of
+    /// deletions, which is the exact class of wrong answer this measure exists
+    /// to prevent. `anchor` is only the fallback seed for a checkout that has
+    /// no index to copy at all.
+    async fn build(wt_path: &str, anchor: &str) -> Result<Self, AppCommandError> {
+        // Inside the worktree's own git directory: never visible to
+        // `git status`, never committable, and on the same filesystem as the
+        // index it copies. The name carries the process id and a counter
+        // because two probes of the same worktree can overlap (a board refresh
+        // next to a settle).
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let git_dir = git_dir(wt_path).await?;
+        let path = git_dir.join(format!("codeg-diff-index-{}-{seq}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let scratch = Self { path };
+        // The copy keeps `assume-unchanged` entries as they are, deliberately.
+        // Clearing them would surface edits to a file the user promised git not
+        // to look at — and nothing in the acceptance path can land such an
+        // edit: `git add -A` skips it and `git commit -a` reports a clean tree,
+        // so the merge generation would commit nothing and the task would
+        // settle as landed with the edit still sitting there. (Landing it would
+        // take a `--no-assume-unchanged` before staging, which no acceptance
+        // does.) A measure that promises work an acceptance cannot take is the
+        // same failure as one that hides work, pointed the other way.
+        //
+        // Git replaces the index by renaming `index.lock` over it, so a copy
+        // racing an agent's own `git add` reads one whole version or the
+        // other — never a half-written file.
+        if std::fs::copy(git_dir.join("index"), &scratch.path).is_err() {
+            let read = run_git_with_index(wt_path, &scratch.path, &["read-tree", anchor]).await?;
+            if !read.status.success() {
+                return Err(git_command_error("read-tree", &read.stderr));
+            }
+        }
+        // git runs with the worktree root as its cwd, so a bare `-A` covers the
+        // whole tree; `-N` records names only — nothing is staged, and the
+        // content the diff reports is read from the working tree either way.
+        let add = run_git_with_index(wt_path, &scratch.path, &["add", "-A", "-N"]).await?;
+        if !add.status.success() {
+            return Err(git_command_error("add -A -N", &add.stderr));
+        }
+        Ok(scratch)
+    }
+}
+
+/// `git diff --numstat <anchor>` that also sees uncommitted work — the measure
+/// every ACCEPTANCE decision uses (see [`ScratchIndex`] for why the plain diff
+/// is not enough).
+pub async fn diff_numstat_with_untracked(
+    path: &str,
+    anchor: &str,
+) -> Result<Vec<WorkTaskChangedFile>, AppCommandError> {
+    let scratch = ScratchIndex::build(path, anchor).await?;
+    let out = run_git_with_index(
+        path,
+        &scratch.path,
+        &["diff", "--numstat", "--ignore-cr-at-eol", anchor],
+    )
+    .await?;
+    if !out.status.success() {
+        return Err(git_command_error("diff --numstat", &out.stderr));
+    }
+    Ok(parse_numstat(&out.stdout))
+}
+
+/// The patch behind [`diff_numstat_with_untracked`] — whole change set, or one
+/// file. An uncommitted new file renders as a normal `new file mode` hunk
+/// rather than as an empty diff nobody can explain.
+pub async fn diff_patch_with_untracked(
+    path: &str,
+    anchor: &str,
+    file: Option<&str>,
+) -> Result<String, AppCommandError> {
+    let scratch = ScratchIndex::build(path, anchor).await?;
+    let literal = file.map(|f| format!(":(literal){f}"));
+    let mut args = vec!["diff", "--no-color", "--ignore-cr-at-eol", anchor];
+    if let Some(ref f) = literal {
+        args.push("--");
+        args.push(f);
+    }
+    let out = run_git_with_index(path, &scratch.path, &args).await?;
+    if !out.status.success() {
+        return Err(git_command_error("diff", &out.stderr));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
 /// Tip commit of a LOCAL branch (`refs/heads/<name>`), or `None` when no such
@@ -543,6 +694,162 @@ mod tests {
             "untracked files are invisible to the base diff"
         );
         assert!(has_changes(path).await.expect("status"));
+    }
+
+    /// The measure every acceptance decision runs on has to see work the agent
+    /// never committed — a task is not required to commit before it lands in
+    /// review, and the merge generation's own prompt starts by committing
+    /// whatever is left over. Uncommitted edits to tracked files were always
+    /// visible; a brand-new file nobody added is the case a plain diff misses,
+    /// and reporting that task as "changed nothing" is what puts the wrong
+    /// acceptance on its card.
+    #[tokio::test]
+    async fn the_acceptance_measure_sees_work_that_was_never_committed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().to_str().expect("utf-8 path");
+        git_run(dir.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.path().join(".gitignore"), "*.log\n").expect("write");
+        std::fs::write(dir.path().join("a.txt"), "one\n").expect("write");
+        git_run(dir.path(), &["add", "-A"]);
+        git_run(dir.path(), &["commit", "-q", "-m", "base"]);
+        let base = rev_parse(path, "HEAD").await.expect("base sha");
+
+        // The agent's round: one tracked file edited, one new file written,
+        // neither committed — plus a build artifact the repository ignores.
+        std::fs::write(dir.path().join("a.txt"), "one\ntwo\n").expect("write");
+        std::fs::write(dir.path().join("new.txt"), "x\ny\nz\n").expect("write");
+        std::fs::write(dir.path().join("build.log"), "noise\n").expect("write");
+
+        let plain = diff_numstat(path, &base).await.expect("plain diff");
+        assert_eq!(
+            plain.iter().map(|f| f.file.as_str()).collect::<Vec<_>>(),
+            ["a.txt"],
+            "the plain diff is blind to the new file — this is why the acceptance \
+             measure cannot use it"
+        );
+
+        let seen = diff_numstat_with_untracked(path, &base)
+            .await
+            .expect("acceptance diff");
+        let names: Vec<&str> = seen.iter().map(|f| f.file.as_str()).collect();
+        assert_eq!(names, ["a.txt", "new.txt"], "ignored files stay out: {seen:?}");
+        let new_file = seen.iter().find(|f| f.file == "new.txt").expect("new file");
+        assert_eq!(
+            (new_file.additions, new_file.deletions),
+            (3, 0),
+            "counted like any other addition"
+        );
+
+        // …and the patch behind it renders that file instead of nothing.
+        let patch = diff_patch_with_untracked(path, &base, Some("new.txt"))
+            .await
+            .expect("patch");
+        assert!(patch.contains("new file mode"), "{patch}");
+        assert!(patch.contains("+x"), "{patch}");
+
+        // The worktree's own index is left exactly as it was: nothing staged,
+        // the new file still untracked, and no scratch file left behind.
+        let staged = std::process::Command::new("git")
+            .args(["diff", "--cached", "--name-only"])
+            .current_dir(dir.path())
+            .output()
+            .expect("spawn git");
+        assert!(
+            staged.stdout.is_empty(),
+            "the real index was written to: {}",
+            String::from_utf8_lossy(&staged.stdout)
+        );
+        assert!(has_changes(path).await.expect("status"));
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path().join(".git"))
+            .expect("read .git")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("codeg-diff-index"))
+            .collect();
+        assert!(leftovers.is_empty(), "scratch index left behind: {leftovers:?}");
+    }
+
+    /// A file the ignore rules exclude but that is TRACKED anyway (`git add
+    /// -f`, then committed) is the task's work like any other. Only the index
+    /// knows it: an index rebuilt from the anchor would not carry it, and
+    /// `add -A -N` will not put it back — the ignore rules see to that — so it
+    /// would drop out of the measure entirely, and the plain diff that DOES
+    /// see it would be the more accurate one. Completing the task would then
+    /// `branch -D` committed work.
+    #[tokio::test]
+    async fn a_tracked_file_the_ignore_rules_exclude_stays_in_the_measure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().to_str().expect("utf-8 path");
+        git_run(dir.path(), &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.path().join(".gitignore"), "*.log\n").expect("write");
+        std::fs::write(dir.path().join("a.txt"), "one\n").expect("write");
+        git_run(dir.path(), &["add", "-A"]);
+        git_run(dir.path(), &["commit", "-q", "-m", "base"]);
+        let base = rev_parse(path, "HEAD").await.expect("base sha");
+
+        std::fs::write(dir.path().join("kept.log"), "one\ntwo\n").expect("write");
+        git_run(dir.path(), &["add", "-f", "kept.log"]);
+        git_run(dir.path(), &["commit", "-q", "-m", "the task's work"]);
+
+        let seen = diff_numstat_with_untracked(path, &base)
+            .await
+            .expect("acceptance diff");
+        assert_eq!(
+            seen.iter().map(|f| f.file.as_str()).collect::<Vec<_>>(),
+            ["kept.log"],
+            "committed work must not vanish because a pattern would have ignored it: {seen:?}"
+        );
+    }
+
+    /// A SPARSE checkout has tracked files with no file on disk, and they must
+    /// not read as deletions: that would report a task that changed nothing as
+    /// having removed everything outside the cone. What keeps them out is the
+    /// scratch index being a COPY of the worktree's own (skip-worktree flags
+    /// and all) rather than a tree read back from the anchor.
+    ///
+    /// Set up through `core.sparseCheckout` + `info/sparse-checkout` +
+    /// `read-tree -mu`, which is how sparse checkouts worked long before the
+    /// `git sparse-checkout` command existed — the test should not depend on
+    /// the git version the developer happens to run.
+    #[tokio::test]
+    async fn a_sparse_checkout_reports_no_phantom_deletions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().to_str().expect("utf-8 path");
+        git_run(dir.path(), &["init", "-q", "-b", "main"]);
+        std::fs::create_dir_all(dir.path().join("kept")).expect("mkdir");
+        std::fs::create_dir_all(dir.path().join("sparse")).expect("mkdir");
+        std::fs::write(dir.path().join("kept/a.txt"), "one\n").expect("write");
+        std::fs::write(dir.path().join("sparse/b.txt"), "two\n").expect("write");
+        git_run(dir.path(), &["add", "-A"]);
+        git_run(dir.path(), &["commit", "-q", "-m", "base"]);
+        let base = rev_parse(path, "HEAD").await.expect("base sha");
+
+        git_run(dir.path(), &["config", "core.sparseCheckout", "true"]);
+        std::fs::write(dir.path().join(".git/info/sparse-checkout"), "kept/\n").expect("write");
+        git_run(dir.path(), &["read-tree", "-mu", "HEAD"]);
+        assert!(
+            !dir.path().join("sparse/b.txt").exists(),
+            "the fixture must actually be sparse"
+        );
+
+        assert!(
+            diff_numstat_with_untracked(path, &base)
+                .await
+                .expect("acceptance diff")
+                .is_empty(),
+            "a checked-out subset is not a change"
+        );
+
+        // …and real work in the cone is still seen.
+        std::fs::write(dir.path().join("kept/new.txt"), "x\n").expect("write");
+        let seen = diff_numstat_with_untracked(path, &base)
+            .await
+            .expect("acceptance diff");
+        assert_eq!(
+            seen.iter().map(|f| f.file.as_str()).collect::<Vec<_>>(),
+            ["kept/new.txt"],
+            "{seen:?}"
+        );
     }
 
     /// The branch guard behind converging a missing worktree: unlanded commits

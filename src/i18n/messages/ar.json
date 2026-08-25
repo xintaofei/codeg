@@ -4787,6 +4787,8 @@
     "detailDescription": "تفاصيل المهمة",
     "detailSummary": "النتيجة",
     "detailFiles": "الملفات المتغيرة",
+    "detailFilesIncludesPr": "يشمل تغييرات طلب السحب نفسه",
+    "detailFilesIncludesMr": "يشمل تغييرات طلب الدمج نفسه",
     "detailDiffAll": "عرض كامل الفروق",
     "detailDiffAllTitle": "كامل الفروق",
     "detailNoChanges": "لا تغييرات بعد مقارنةً بالأساس",
