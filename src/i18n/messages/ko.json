@@ -1482,6 +1482,12 @@
   },
   "SettingsPages": {
     "agentsLoading": "에이전트 설정을 불러오는 중...",
+    "searchEnabled": "본문 검색",
+    "searchModeAuto": "자동",
+    "searchModeScan": "용량 절약 스캔",
+    "searchModeFts": "전체 텍스트 색인",
+    "searchSaving": "저장 중...",
+    "searchSaveFailed": "검색 설정 저장 실패",
     "skillPacksLoading": "스킬 팩 로딩 중…"
   },
   "GeneralSettings": {
@@ -1850,6 +1856,10 @@
       "typeToSearch": "입력하여 대화를 검색하세요",
       "typeToSearchFiles": "입력하여 파일 또는 디렉토리를 검색하세요",
       "noResults": "검색 결과가 없습니다.",
+      "indexing": "콘텐츠 색인 생성 중... {progress}%",
+      "dialogTitleAllFolders": "모든 폴더 검색",
+      "scopeLabel": "검색 범위",
+      "scopeAllFolders": "모든 폴더",
       "untitledConversation": "제목 없는 대화"
     },
     "folderTitleBar": {
@@ -3014,6 +3024,7 @@
         "attachedResources": "첨부된 리소스",
         "loading": "불러오는 중...",
         "loadEarlier": "이전 메시지 불러오기",
+        "nextSearchMatch": "다음 일치",
         "loadingEarlier": "이전 메시지를 불러오는 중…",
         "error": "오류: {message}",
         "errorTitle": "세션 불러오기 실패",

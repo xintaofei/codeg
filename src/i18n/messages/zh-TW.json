@@ -1482,6 +1482,12 @@
   },
   "SettingsPages": {
     "agentsLoading": "載入 Agent 設定中...",
+    "searchEnabled": "正文搜尋",
+    "searchModeAuto": "自動",
+    "searchModeScan": "省空間掃描",
+    "searchModeFts": "全文索引",
+    "searchSaving": "儲存中...",
+    "searchSaveFailed": "搜尋設定儲存失敗",
     "skillPacksLoading": "正在載入技能包…"
   },
   "GeneralSettings": {
@@ -1850,6 +1856,10 @@
       "typeToSearch": "輸入關鍵字搜尋會話",
       "typeToSearchFiles": "輸入關鍵字搜尋檔案或目錄",
       "noResults": "找不到結果。",
+      "indexing": "正在建立內容索引... {progress}%",
+      "dialogTitleAllFolders": "搜尋全部資料夾",
+      "scopeLabel": "搜尋範圍",
+      "scopeAllFolders": "全部資料夾",
       "untitledConversation": "未命名會話"
     },
     "folderTitleBar": {
@@ -3014,6 +3024,7 @@
         "attachedResources": "附加資源",
         "loading": "載入中...",
         "loadEarlier": "載入更早的訊息",
+        "nextSearchMatch": "下一條符合項目",
         "loadingEarlier": "正在載入更早的訊息…",
         "error": "錯誤：{message}",
         "errorTitle": "會話載入失敗",

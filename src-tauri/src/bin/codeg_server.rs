@@ -253,6 +253,8 @@ async fn async_main() -> ExitCode {
         event_bus_metrics.clone(),
     ));
     let emitter = EventEmitter::web_only(broadcaster.clone(), acp_event_bus.clone());
+    let search_indexer =
+        codeg_lib::search::indexer::MessageSearchIndexer::spawn(db.conn.clone(), emitter.clone());
 
     // Build AppState
     let pet_state_handle = codeg_lib::pet_state_mapper::new_pet_state_handle();
@@ -293,6 +295,7 @@ async fn async_main() -> ExitCode {
         chat_authoring_config: chat_authoring_config.clone(),
         system_op_lock: codeg_lib::app_state::default_system_op_lock(),
         update_state: codeg_lib::app_state::default_update_state(),
+        search_indexer: Some(search_indexer),
     });
     state
         .connection_manager

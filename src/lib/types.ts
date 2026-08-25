@@ -420,6 +420,36 @@ export interface DbConversationSummary {
   origin_cwd?: string | null
 }
 
+export type SearchMatchLocationKind = "title" | "content"
+
+/** Precise location of one search hit inside a conversation. */
+export interface SearchMatchLocation {
+  kind: SearchMatchLocationKind
+  turn_id: string | null
+  block_index: number | null
+  char_start: number
+  char_end: number
+}
+
+/** Conversation-level search result returned by the content-search dialog. */
+export interface DbConversationSearchResult {
+  summary: DbConversationSummary
+  snippet_prefix: string | null
+  snippet_match: string | null
+  snippet_suffix: string | null
+  matches: SearchMatchLocation[]
+}
+
+export interface SearchIndexStatus {
+  mode: "scan" | "fts"
+  user_enabled: boolean
+  user_mode: "auto" | "scan" | "fts"
+  indexed_conversation_count: number
+  visible_conversation_count: number
+  building: boolean
+  progress: number
+}
+
 /** Payload for the global `conversation://changed` side-channel that keeps
  *  every client's sidebar list/status in sync across desktop + browsers.
  *  Mirrors the Rust `ConversationChange` enum (serde `tag = "kind"`). */

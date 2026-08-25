@@ -48,6 +48,16 @@ vi.mock("@/lib/api", () => ({
     work_tasks_enabled: false,
   })),
   setChatAuthoringSettings: vi.fn(async (v: unknown) => v),
+  getSearchIndexStatus: vi.fn(async () => ({
+    mode: "fts",
+    user_enabled: true,
+    user_mode: "auto",
+    indexed_conversation_count: 0,
+    visible_conversation_count: 0,
+    building: false,
+    progress: 1,
+  })),
+  setSearchSettings: vi.fn(async () => undefined),
 }))
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))

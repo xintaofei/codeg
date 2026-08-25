@@ -60,7 +60,12 @@ import {
   buildPlanKey,
   extractLatestPlanEntriesFromMessages,
 } from "@/lib/agent-plan"
-import type { AgentType, ConnectionStatus, MessageTurn } from "@/lib/types"
+import type {
+  AgentType,
+  ConnectionStatus,
+  MessageTurn,
+  SearchMatchLocation,
+} from "@/lib/types"
 import { copyTextToClipboard } from "@/lib/utils"
 import { VirtualizedMessageThread } from "@/components/message/virtualized-message-thread"
 import { SelectionActionBubble } from "@/components/message/selection-action-bubble"
@@ -105,6 +110,12 @@ interface MessageListViewProps {
    * items render in arbitrary order and multiplicity. `null` = no divider.
    */
   userTurnHeader?: ((group: ResolvedMessageGroup) => string | null) | null
+  searchMatch?: (SearchMatchLocation & { occurrenceIndex?: number }) | null
+  searchQuery?: string | null
+  searchMatchOrdinal?: number | null
+  searchMatchTotal?: number | null
+  onNextMatch?: () => void
+  onSearchNavigationFailed?: () => void
   /**
    * Quote a text selection made in this transcript into the conversation
    * composer. Enables the "quote" entry on the selection bubble; omitted on
@@ -640,6 +651,240 @@ const AutoScrollOnSend = memo(function AutoScrollOnSend({
   return null
 })
 
+const SEARCH_HIGHLIGHT_KEY = "codeg-search-hit"
+
+function findSearchTurnElement(
+  root: HTMLElement | null,
+  turnId: string
+): HTMLElement | null {
+  if (!root) return null
+  const candidates = root.querySelectorAll<HTMLElement>(
+    "[data-search-turn-ids]"
+  )
+  for (const element of Array.from(candidates).reverse()) {
+    try {
+      const ids = JSON.parse(element.dataset.searchTurnIds ?? "[]") as string[]
+      if (ids.includes(turnId)) return element
+    } catch {
+      // Ignore malformed attributes.
+    }
+  }
+  return null
+}
+
+function findScrollableAncestor(
+  element: HTMLElement | null
+): HTMLElement | null {
+  let current: HTMLElement | null = element
+  while (current) {
+    if (current.scrollHeight > current.clientHeight + 1) {
+      const overflowY = window.getComputedStyle(current).overflowY
+      if (overflowY === "auto" || overflowY === "scroll") return current
+    }
+    current = current.parentElement
+  }
+  return null
+}
+
+function scrollElementToCenter(element: HTMLElement) {
+  const container = findScrollableAncestor(element)
+  if (!container) return
+  const targetRect = element.getBoundingClientRect()
+  const containerRect = container.getBoundingClientRect()
+  const nextScrollTop =
+    container.scrollTop +
+    targetRect.top -
+    containerRect.top -
+    (container.clientHeight - element.clientHeight) / 2
+  container.scrollTo({
+    top: Math.max(0, nextScrollTop),
+    behavior: "smooth",
+  })
+}
+
+function scrollRangeToCenter(range: Range) {
+  const node = range.startContainer
+  const element =
+    node instanceof HTMLElement ? node : (node.parentElement ?? null)
+  const container = findScrollableAncestor(element)
+  if (!container) return
+  const targetRect = range.getBoundingClientRect()
+  const containerRect = container.getBoundingClientRect()
+  const nextScrollTop =
+    container.scrollTop +
+    targetRect.top -
+    containerRect.top -
+    (container.clientHeight - targetRect.height) / 2
+  container.scrollTo({
+    top: Math.max(0, nextScrollTop),
+    behavior: "smooth",
+  })
+}
+
+/** The exact matched substring from the source block, taken from the backend
+ *  char offsets. Using this per-match text (rather than the whole query)
+ *  keeps multi-term highlights and their counts aligned with the backend. */
+function searchMatchNeedle(
+  match: SearchMatchLocation,
+  turn: MessageTurn | undefined
+): string | null {
+  if (!turn || match.block_index == null) return null
+  const block = turn.blocks[match.block_index]
+  if (block?.type !== "text") return null
+  const chars = Array.from(block.text)
+  const start = Math.max(0, Math.min(match.char_start, chars.length))
+  const end = Math.max(start, Math.min(match.char_end, chars.length))
+  if (start >= end) return null
+  return chars.slice(start, end).join("")
+}
+
+function countOccurrences(text: string, needleLower: string): number {
+  if (!needleLower) return 0
+  const lower = text.toLocaleLowerCase()
+  let count = 0
+  let from = 0
+  while (from <= lower.length - needleLower.length) {
+    const index = lower.indexOf(needleLower, from)
+    if (index < 0) break
+    count += 1
+    from = index + needleLower.length
+  }
+  return count
+}
+
+/** How many occurrences of `needle` appear in the rendered DOM before this
+ *  match. Merged assistant turns share one DOM element, so the raw per-turn
+ *  occurrence index alone would land on the wrong turn; summing the source
+ *  turns that render before the target block fixes that offset. */
+function searchOccurrenceOffset(
+  threadItems: ThreadRenderItem[],
+  targetIndex: number,
+  turnId: string,
+  blockIndex: number,
+  charStart: number,
+  needleLower: string
+): number {
+  let offset = 0
+  for (let index = 0; index < targetIndex; index += 1) {
+    const item = threadItems[index]
+    if (item.kind !== "turn") continue
+    for (const turn of item.sourceTurns) {
+      for (const block of turn.blocks) {
+        if (block.type === "text")
+          offset += countOccurrences(block.text, needleLower)
+      }
+    }
+  }
+  const target = threadItems[targetIndex]
+  if (!target || target.kind !== "turn") return offset
+  for (const turn of target.sourceTurns) {
+    if (turn.id !== turnId) {
+      for (const block of turn.blocks) {
+        if (block.type === "text")
+          offset += countOccurrences(block.text, needleLower)
+      }
+      continue
+    }
+    for (
+      let index = 0;
+      index < Math.min(blockIndex, turn.blocks.length);
+      index += 1
+    ) {
+      const block = turn.blocks[index]
+      if (block.type === "text")
+        offset += countOccurrences(block.text, needleLower)
+    }
+    const block = turn.blocks[blockIndex]
+    if (block?.type === "text") {
+      const chars = Array.from(block.text)
+      const prefix = chars.slice(0, Math.min(charStart, chars.length)).join("")
+      offset += countOccurrences(prefix, needleLower)
+    }
+    break
+  }
+  return offset
+}
+
+function createHighlightRange(
+  element: HTMLElement,
+  needle: string,
+  occurrence: number
+): Range | null {
+  const needleLower = needle.toLocaleLowerCase()
+  if (!needleLower) return null
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+  let node = walker.nextNode()
+  let count = 0
+  while (node) {
+    const parentTag = node.parentElement?.tagName ?? ""
+    if (!["SCRIPT", "STYLE", "NOSCRIPT"].includes(parentTag)) {
+      const text = node.nodeValue ?? ""
+      const lower = text.toLocaleLowerCase()
+      let offset = 0
+      while (offset <= lower.length - needleLower.length) {
+        const index = lower.indexOf(needleLower, offset)
+        if (index < 0) break
+        if (count === occurrence) {
+          const range = document.createRange()
+          range.setStart(node, index)
+          range.setEnd(node, index + needleLower.length)
+          return range
+        }
+        count += 1
+        offset = index + needleLower.length
+      }
+    }
+    node = walker.nextNode()
+  }
+  return null
+}
+
+interface SearchHighlightRegistry {
+  set(name: string, highlight: unknown): void
+  delete(name: string): void
+}
+
+let searchHighlightStyleInjected = false
+
+/** The static CSS pipeline does not accept `::highlight()` yet, so inject the
+ *  one rule at runtime and reuse the theme's yellow token. */
+function ensureSearchHighlightStyle() {
+  if (searchHighlightStyleInjected) return
+  searchHighlightStyleInjected = true
+  const style = document.createElement("style")
+  style.id = "codeg-search-highlight-style"
+  const background =
+    getComputedStyle(document.documentElement)
+      .getPropertyValue("--search-hit-bg")
+      .trim() || "#fde047"
+  style.textContent = `::highlight(codeg-search-hit){background-color:${background};color:inherit}`
+  document.head.appendChild(style)
+}
+
+/** Apply a highlight without mutating React-owned DOM. Falls back to nothing
+ *  (scroll only) on engines that predate the CSS Custom Highlight API. */
+function applySearchHighlight(range: Range): (() => void) | null {
+  if (typeof CSS === "undefined") return null
+  const registry = (CSS as unknown as { highlights?: SearchHighlightRegistry })
+    .highlights
+  const HighlightCtor = (
+    window as unknown as {
+      Highlight?: new (...ranges: Range[]) => { add: (range: Range) => void }
+    }
+  ).Highlight
+  if (!registry || !HighlightCtor) return null
+  ensureSearchHighlightStyle()
+  const highlight = new HighlightCtor()
+  highlight.add(range)
+  registry.set(SEARCH_HIGHLIGHT_KEY, highlight)
+  const timer = window.setTimeout(() => {
+    registry.delete(SEARCH_HIGHLIGHT_KEY)
+  }, 1800)
+  return () => {
+    window.clearTimeout(timer)
+    registry.delete(SEARCH_HIGHLIGHT_KEY)
+  }
+}
 export function MessageListView({
   conversationId,
   agentType,
@@ -654,6 +899,12 @@ export function MessageListView({
   onNewSession,
   showMessageNav = true,
   userTurnHeader = null,
+  searchMatch = null,
+  searchQuery = null,
+  searchMatchOrdinal = null,
+  searchMatchTotal = null,
+  onNextMatch,
+  onSearchNavigationFailed,
   onQuoteSelection,
   onAskSelection,
 }: MessageListViewProps) {
@@ -871,7 +1122,12 @@ export function MessageListView({
               ? userTurnHeader(item.group)
               : null
           return (
-            <div style={pt > 0 ? { paddingTop: pt } : undefined}>
+            <div
+              data-search-turn-ids={JSON.stringify(
+                item.sourceTurns.map((turn) => turn.id)
+              )}
+              style={pt > 0 ? { paddingTop: pt } : undefined}
+            >
               {phaseLabel ? (
                 <div className="flex items-center gap-2 px-1 pb-3 pt-1">
                   <span aria-hidden="true" className="h-px flex-1 bg-border" />
@@ -962,15 +1218,152 @@ export function MessageListView({
   // Lifted scroll handle so the panel (which lives in the overlay stack, outside
   // the MessageScrollProvider subtree) can drive scrollToIndex.
   const scrollApiRef = useRef<MessageScrollContextValue | null>(null)
+  const listRootRef = useRef<HTMLDivElement | null>(null)
+  const searchAttemptsRef = useRef(0)
+  const handledSearchMatchKeyRef = useRef<string | null>(null)
   // Collapse state is owned here (not in the panel) so the expensive per-file
   // `navEntries` is computed only while the panel is open.
   const [navExpanded, setNavExpanded] = useState(false)
+
+  const searchTargetItemIndex = useMemo(() => {
+    if (!searchMatch?.turn_id || searchMatch.kind !== "content") return -1
+    const turnId = searchMatch.turn_id
+    for (let index = threadItems.length - 1; index >= 0; index -= 1) {
+      const item = threadItems[index]
+      if (
+        item.kind === "turn" &&
+        item.sourceTurns.some((turn) => turn.id === turnId)
+      ) {
+        return index
+      }
+    }
+    return -1
+  }, [searchMatch, threadItems])
+
+  useEffect(() => {
+    if (
+      !searchMatch ||
+      searchMatch.kind !== "content" ||
+      detailLoading ||
+      !searchQuery
+    ) {
+      if (!searchMatch || searchMatch.kind !== "content") {
+        handledSearchMatchKeyRef.current = null
+      }
+      return
+    }
+    if (!searchMatch.turn_id) {
+      onSearchNavigationFailed?.()
+      return
+    }
+
+    const matchKey = [
+      searchMatch.turn_id,
+      searchMatch.block_index ?? "",
+      searchMatch.char_start,
+      searchMatch.char_end,
+      searchMatch.occurrenceIndex ?? 0,
+    ].join(":")
+    if (handledSearchMatchKeyRef.current !== matchKey) {
+      searchAttemptsRef.current = 0
+    }
+    if (handledSearchMatchKeyRef.current === matchKey) return
+
+    if (searchTargetItemIndex < 0) {
+      if (!hasOlderTurns || loadingOlderTurns) {
+        if (!hasOlderTurns) {
+          handledSearchMatchKeyRef.current = matchKey
+          onSearchNavigationFailed?.()
+        }
+        return
+      }
+      searchAttemptsRef.current += 1
+      if (searchAttemptsRef.current > 6) {
+        handledSearchMatchKeyRef.current = matchKey
+        onSearchNavigationFailed?.()
+        return
+      }
+      const timer = window.setTimeout(() => {
+        loadOlderTurns(conversationId)
+      }, 50)
+      return () => window.clearTimeout(timer)
+    }
+
+    handledSearchMatchKeyRef.current = matchKey
+    let cancelled = false
+    let highlightTimer: number | undefined
+    let removeHighlight: (() => void) | null = null
+    const firstScrollTimer = window.setTimeout(() => {
+      if (cancelled) return
+      scrollApiRef.current?.scrollToIndex(searchTargetItemIndex, {
+        align: "center",
+        smooth: false,
+      })
+    }, 120)
+    const settleScrollTimer = window.setTimeout(() => {
+      if (cancelled) return
+      scrollApiRef.current?.scrollToIndex(searchTargetItemIndex, {
+        align: "center",
+        smooth: false,
+      })
+      highlightTimer = window.setTimeout(() => {
+        if (cancelled) return
+        const element = findSearchTurnElement(
+          listRootRef.current,
+          searchMatch.turn_id as string
+        )
+        if (!element) return
+        const turn = timelineTurns.find(
+          (candidate) => candidate.turn.id === searchMatch.turn_id
+        )?.turn
+        const needle =
+          searchMatchNeedle(searchMatch, turn) ?? (searchQuery?.trim() || null)
+        if (!needle) {
+          scrollElementToCenter(element)
+          return
+        }
+        const occurrence = searchOccurrenceOffset(
+          threadItems,
+          searchTargetItemIndex,
+          searchMatch.turn_id as string,
+          searchMatch.block_index ?? 0,
+          searchMatch.char_start,
+          needle.toLocaleLowerCase()
+        )
+        const range = createHighlightRange(element, needle, occurrence)
+        if (!range) {
+          scrollElementToCenter(element)
+          return
+        }
+        removeHighlight = applySearchHighlight(range)
+        scrollRangeToCenter(range)
+      }, 120)
+    }, 500)
+    return () => {
+      cancelled = true
+      window.clearTimeout(firstScrollTimer)
+      window.clearTimeout(settleScrollTimer)
+      if (highlightTimer != null) window.clearTimeout(highlightTimer)
+      removeHighlight?.()
+    }
+  }, [
+    conversationId,
+    detailLoading,
+    hasOlderTurns,
+    loadOlderTurns,
+    loadingOlderTurns,
+    onSearchNavigationFailed,
+    searchMatch,
+    searchQuery,
+    searchTargetItemIndex,
+    threadItems,
+    timelineTurns,
+  ])
 
   // Positioning box for the text-selection bubble. It is the transcript's outer
   // (non-scrolling) frame, so the bubble is clipped to the message area and
   // never overlaps the composer or the tab strip.
   const selectionBoxRef = useRef<HTMLDivElement | null>(null)
-
   // Cheap user-message tally for the collapsed chip — counts user turns without
   // parsing any file diffs.
   const userMessageCount = useMemo(() => {
@@ -1102,14 +1495,12 @@ export function MessageListView({
   }
 
   return (
-    // The "查看会话" drawers are hosted HERE, not in the cards that offer them:
-    // those live in virtua's rows and take their drawer down with them when
-    // they scroll out of the buffer. This is the nearest ancestor that owns
-    // the virtualizer instead of sitting inside it — and it covers the
-    // top-right SubAgentOverlay's rows too.
     <SessionViewerHost>
       <div
-        ref={selectionBoxRef}
+        ref={(node) => {
+          listRootRef.current = node
+          selectionBoxRef.current = node
+        }}
         className="relative flex h-full min-h-0 flex-col"
       >
         <MessageThread
@@ -1140,6 +1531,24 @@ export function MessageListView({
             isStreaming={connStatus === "prompting"}
           />
         )}
+        {searchMatch &&
+          searchMatch.kind === "content" &&
+          (searchMatchTotal ?? 0) > 1 &&
+          onNextMatch && (
+            <div className="pointer-events-auto absolute end-4 top-4 z-30">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={onNextMatch}
+              >
+                {t("nextSearchMatch")}
+                {searchMatchOrdinal != null && searchMatchTotal != null
+                  ? ` ${searchMatchOrdinal} / ${searchMatchTotal}`
+                  : ""}
+              </Button>
+            </div>
+          )}
         {/* Shared overlay stack pinned to the inline-start edge (top-left in LTR,
           top-right in RTL). A flex column keeps the order stable regardless of
           each panel's expand/collapse height: the message navigator first, then

@@ -1482,6 +1482,12 @@
   },
   "SettingsPages": {
     "agentsLoading": "Chargement des paramètres des agents...",
+    "searchEnabled": "Recherche de contenu",
+    "searchModeAuto": "Automatique",
+    "searchModeScan": "Analyse économe en espace",
+    "searchModeFts": "Index plein texte",
+    "searchSaving": "Enregistrement...",
+    "searchSaveFailed": "Échec de l'enregistrement des paramètres de recherche",
     "skillPacksLoading": "Chargement des packs de compétences…"
   },
   "GeneralSettings": {
@@ -1850,6 +1856,10 @@
       "typeToSearch": "Tapez pour rechercher des conversations",
       "typeToSearchFiles": "Tapez pour rechercher des fichiers ou répertoires",
       "noResults": "Aucun résultat trouvé.",
+      "indexing": "Indexation du contenu... {progress}%",
+      "dialogTitleAllFolders": "Rechercher dans tous les dossiers",
+      "scopeLabel": "Portée de la recherche",
+      "scopeAllFolders": "Tous les dossiers",
       "untitledConversation": "Conversation sans titre"
     },
     "folderTitleBar": {
@@ -3014,6 +3024,7 @@
         "attachedResources": "Ressources jointes",
         "loading": "Chargement...",
         "loadEarlier": "Charger les messages précédents",
+        "nextSearchMatch": "Correspondance suivante",
         "loadingEarlier": "Chargement des messages précédents…",
         "error": "Erreur : {message}",
         "errorTitle": "Échec du chargement de la session",

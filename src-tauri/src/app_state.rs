@@ -75,6 +75,9 @@ pub struct AppState {
     /// The upgrade UI subscribes to it and re-syncs from a snapshot on mount,
     /// so download progress survives settings-page navigation and reloads.
     pub update_state: crate::update::AppUpdateStateHandle,
+    /// Background content-search indexer. Optional in tests and in
+    /// desktop-mode HTTP routers that cannot see a Tauri-managed instance.
+    pub search_indexer: Option<Arc<crate::search::indexer::MessageSearchIndexer>>,
 }
 
 pub fn default_system_op_lock() -> Arc<tokio::sync::Mutex<()>> {
@@ -247,6 +250,7 @@ impl AppState {
             chat_authoring_config,
             system_op_lock: default_system_op_lock(),
             update_state: default_update_state(),
+            search_indexer: None,
         }
     }
 }

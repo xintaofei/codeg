@@ -1482,6 +1482,12 @@
   },
   "SettingsPages": {
     "agentsLoading": "Loading agent settings...",
+    "searchEnabled": "Content search",
+    "searchModeAuto": "Automatic",
+    "searchModeScan": "Space-saving scan",
+    "searchModeFts": "Full-text index",
+    "searchSaving": "Saving...",
+    "searchSaveFailed": "Failed to save search settings",
     "skillPacksLoading": "Loading skill packs…"
   },
   "GeneralSettings": {
@@ -1850,6 +1856,10 @@
       "typeToSearch": "Type to search conversations",
       "typeToSearchFiles": "Type to search files or directories",
       "noResults": "No results found.",
+      "indexing": "Building content index... {progress}%",
+      "dialogTitleAllFolders": "Search all folders",
+      "scopeLabel": "Search scope",
+      "scopeAllFolders": "All folders",
       "untitledConversation": "Untitled conversation"
     },
     "folderTitleBar": {
@@ -3014,6 +3024,7 @@
         "attachedResources": "Attached resources",
         "loading": "Loading...",
         "loadEarlier": "Load earlier messages",
+        "nextSearchMatch": "Next match",
         "loadingEarlier": "Loading earlier messages…",
         "error": "Error: {message}",
         "errorTitle": "Session load failed",

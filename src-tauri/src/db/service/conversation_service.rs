@@ -1111,6 +1111,26 @@ pub async fn get_by_delegation_call_id(
     Ok(conv.map(conv_to_summary))
 }
 
+/// Fetch full summaries for a bounded set of ids in one query (used by content
+/// search to build only the rows it will actually return, instead of pulling
+/// every workspace summary). Preserves caller-side ordering responsibility:
+/// rows come back unsorted and callers reorder by their own ranking.
+pub async fn list_summaries_by_ids(
+    conn: &DatabaseConnection,
+    ids: &[i32],
+) -> Result<Vec<DbConversationSummary>, DbError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = conversation::Entity::find()
+        .filter(conversation::Column::DeletedAt.is_null())
+        .filter(conversation::Column::Id.is_in(ids.to_vec()))
+        .all(conn)
+        .await?;
+    let mut summaries: Vec<DbConversationSummary> = rows.into_iter().map(conv_to_summary).collect();
+    fill_child_counts(conn, &mut summaries).await?;
+    Ok(summaries)
+}
 pub async fn list_by_folder(
     conn: &DatabaseConnection,
     folder_id: i32,

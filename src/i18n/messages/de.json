@@ -1482,6 +1482,12 @@
   },
   "SettingsPages": {
     "agentsLoading": "Agent-Einstellungen werden geladen...",
+    "searchEnabled": "Inhaltssuche",
+    "searchModeAuto": "Automatisch",
+    "searchModeScan": "Platzsparender Scan",
+    "searchModeFts": "Volltextindex",
+    "searchSaving": "Speichern...",
+    "searchSaveFailed": "Sucheinstellungen konnten nicht gespeichert werden",
     "skillPacksLoading": "Skill-Pakete werden geladen…"
   },
   "GeneralSettings": {
@@ -1850,6 +1856,10 @@
       "typeToSearch": "Tippen, um Konversationen zu suchen",
       "typeToSearchFiles": "Tippen, um Dateien oder Verzeichnisse zu suchen",
       "noResults": "Keine Ergebnisse gefunden.",
+      "indexing": "Inhaltsindex wird erstellt... {progress}%",
+      "dialogTitleAllFolders": "Alle Ordner durchsuchen",
+      "scopeLabel": "Suchbereich",
+      "scopeAllFolders": "Alle Ordner",
       "untitledConversation": "Unbenannte Konversation"
     },
     "folderTitleBar": {
@@ -3014,6 +3024,7 @@
         "attachedResources": "Angehängte Ressourcen",
         "loading": "Lädt...",
         "loadEarlier": "Frühere Nachrichten laden",
+        "nextSearchMatch": "Nächster Treffer",
         "loadingEarlier": "Frühere Nachrichten werden geladen…",
         "error": "Fehler: {message}",
         "errorTitle": "Sitzung konnte nicht geladen werden",

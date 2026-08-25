@@ -413,7 +413,12 @@ pub async fn diff_numstat_with_untracked(
     anchor: &str,
 ) -> Result<Vec<WorkTaskChangedFile>, AppCommandError> {
     let scratch = ScratchIndex::build(path, anchor).await?;
-    let out = run_git_with_index(path, &scratch.path, &["diff", "--numstat", anchor]).await?;
+    let out = run_git_with_index(
+        path,
+        &scratch.path,
+        &["diff", "--numstat", "--ignore-cr-at-eol", anchor],
+    )
+    .await?;
     if !out.status.success() {
         return Err(git_command_error("diff --numstat", &out.stderr));
     }
@@ -430,7 +435,7 @@ pub async fn diff_patch_with_untracked(
 ) -> Result<String, AppCommandError> {
     let scratch = ScratchIndex::build(path, anchor).await?;
     let literal = file.map(|f| format!(":(literal){f}"));
-    let mut args = vec!["diff", "--no-color", anchor];
+    let mut args = vec!["diff", "--no-color", "--ignore-cr-at-eol", anchor];
     if let Some(ref f) = literal {
         args.push("--");
         args.push(f);

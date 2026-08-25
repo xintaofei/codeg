@@ -1482,6 +1482,12 @@
   },
   "SettingsPages": {
     "agentsLoading": "加载 Agent 设置中...",
+    "searchEnabled": "正文搜索",
+    "searchModeAuto": "自动",
+    "searchModeScan": "省空间扫描",
+    "searchModeFts": "全文索引",
+    "searchSaving": "保存中...",
+    "searchSaveFailed": "搜索设置保存失败",
     "skillPacksLoading": "正在加载技能包…"
   },
   "GeneralSettings": {
@@ -1850,6 +1856,10 @@
       "typeToSearch": "输入关键词搜索会话",
       "typeToSearchFiles": "输入关键词搜索文件或目录",
       "noResults": "未找到结果。",
+      "indexing": "正在建立内容索引... {progress}%",
+      "dialogTitleAllFolders": "搜索全部文件夹",
+      "scopeLabel": "搜索范围",
+      "scopeAllFolders": "全部文件夹",
       "untitledConversation": "未命名会话"
     },
     "folderTitleBar": {
@@ -3014,6 +3024,7 @@
         "attachedResources": "附加资源",
         "loading": "加载中...",
         "loadEarlier": "加载更早的消息",
+        "nextSearchMatch": "下一条匹配",
         "loadingEarlier": "正在加载更早的消息…",
         "error": "错误：{message}",
         "errorTitle": "会话加载失败",
