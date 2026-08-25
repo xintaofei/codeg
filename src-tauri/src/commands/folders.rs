@@ -689,6 +689,65 @@ pub async fn open_folder_core(
         .ok_or_else(|| AppCommandError::not_found("Folder not found after add"))
 }
 
+/// Register a folder discovered by the session importer, preserving git
+/// worktree grouping when the repository's main worktree is already known.
+///
+/// Import summaries only carry a cwd, not the source folder id passed by the
+/// interactive worktree flows. Ask git for the repository's worktree list and,
+/// when `path` is one of its linked worktrees, reuse the registered main
+/// worktree as the source. Any git failure, ordinary repository, or unregistered
+/// main worktree falls back to the historical top-level-folder behavior.
+pub(crate) async fn add_imported_folder_core(
+    conn: &sea_orm::DatabaseConnection,
+    path: &str,
+) -> Result<FolderHistoryEntry, AppCommandError> {
+    if let Some(parent_id) = imported_worktree_parent(conn, path).await? {
+        return add_worktree_folder_with_parent(conn, path, Some(parent_id)).await;
+    }
+
+    folder_service::add_folder(conn, path)
+        .await
+        .map_err(AppCommandError::from)
+}
+
+/// Resolve the registered main-worktree folder for an imported linked
+/// worktree. `git worktree list --porcelain` guarantees the main worktree is
+/// listed first; matching the target against later entries keeps a normal repo
+/// cwd top-level while still repairing a worktree row created by an older
+/// importer with `parent_id = NULL`.
+async fn imported_worktree_parent(
+    conn: &sea_orm::DatabaseConnection,
+    path: &str,
+) -> Result<Option<i32>, AppCommandError> {
+    let output = match crate::process::tokio_command("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(path)
+        .output()
+        .await
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return Ok(None),
+    };
+
+    let worktrees = parse_worktrees(&String::from_utf8_lossy(&output.stdout));
+    let Some((main_path, _)) = worktrees.first() else {
+        return Ok(None);
+    };
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+    let is_linked_worktree = worktrees.iter().skip(1).any(|(worktree_path, _)| {
+        std::fs::canonicalize(worktree_path).unwrap_or_else(|_| PathBuf::from(worktree_path))
+            == target
+    });
+    if !is_linked_worktree {
+        return Ok(None);
+    }
+
+    let main = std::fs::canonicalize(main_path).unwrap_or_else(|_| PathBuf::from(main_path));
+    Ok(folder_at_path(conn, &main)
+        .await?
+        .map(|folder| folder.parent_id.unwrap_or(folder.id)))
+}
+
 /// Open a freshly created git worktree directory as a folder, recording the
 /// *root* folder it descends from. Parents are flattened: a worktree created
 /// from another worktree still records the original root, so every worktree of a
@@ -716,14 +775,26 @@ pub async fn open_worktree_folder_core(
     } else {
         None
     };
-    let entry = folder_service::add_folder_with_parent(&db.conn, &path, parent_id)
-        .await
-        .map_err(AppCommandError::from)?;
-    seed_worktree_alias(db, entry.id, &path).await;
+    let entry = add_worktree_folder_with_parent(&db.conn, &path, parent_id).await?;
     folder_service::get_folder_by_id(&db.conn, entry.id)
         .await
         .map_err(AppCommandError::from)?
         .ok_or_else(|| AppCommandError::not_found("Folder not found after add"))
+}
+
+/// Shared worktree registration path used by interactive creation and session
+/// import. Keeping the authoritative parent write and branch-alias seeding here
+/// makes re-registration idempotent and prevents the two entry points drifting.
+async fn add_worktree_folder_with_parent(
+    conn: &sea_orm::DatabaseConnection,
+    path: &str,
+    parent_id: Option<i32>,
+) -> Result<FolderHistoryEntry, AppCommandError> {
+    let entry = folder_service::add_folder_with_parent(conn, path, parent_id)
+        .await
+        .map_err(AppCommandError::from)?;
+    seed_worktree_alias(conn, entry.id, path).await;
+    Ok(entry)
 }
 
 /// Default a worktree folder's alias to the branch checked out at `path`.
@@ -739,11 +810,15 @@ pub async fn open_worktree_folder_core(
 /// - The write only lands when no alias is set yet (see
 ///   [`folder_service::seed_folder_alias`]), so re-registering a worktree — a
 ///   task retry, a re-created checkout — never overwrites a name the user chose.
-async fn seed_worktree_alias(db: &AppDatabase, folder_id: i32, path: &str) {
+async fn seed_worktree_alias(
+    conn: &sea_orm::DatabaseConnection,
+    folder_id: i32,
+    path: &str,
+) {
     let Some(branch) = resolve_git_head(path).await.ok().and_then(|h| h.branch) else {
         return;
     };
-    if let Err(e) = folder_service::seed_folder_alias(&db.conn, folder_id, &branch).await {
+    if let Err(e) = folder_service::seed_folder_alias(conn, folder_id, &branch).await {
         tracing::warn!("[folders] could not seed folder {folder_id}'s alias from git: {e}");
     }
 }
@@ -2865,7 +2940,7 @@ pub async fn resolve_worktree_folder_core(
     };
 
     let canonical_wt = std::fs::canonicalize(&wt_path).unwrap_or_else(|_| PathBuf::from(&wt_path));
-    let folder_id = folder_at_path(db, &canonical_wt).await?.map(|f| f.id);
+    let folder_id = folder_at_path(&db.conn, &canonical_wt).await?.map(|f| f.id);
 
     Ok(WorktreeResolution {
         path: Some(canonical_wt.to_string_lossy().to_string()),
@@ -2879,10 +2954,10 @@ pub async fn resolve_worktree_folder_core(
 /// which is the one the rest of the app (and every conversation's `origin_cwd`)
 /// is written in terms of.
 async fn folder_at_path(
-    db: &AppDatabase,
+    conn: &sea_orm::DatabaseConnection,
     path: &Path,
 ) -> Result<Option<FolderDetail>, AppCommandError> {
-    let folders = folder_service::list_all_folder_details(&db.conn)
+    let folders = folder_service::list_all_folder_details(conn)
         .await
         .map_err(AppCommandError::from)?;
     Ok(folders.into_iter().find(|f| {
@@ -2981,7 +3056,7 @@ pub async fn git_remove_worktree_core(
 
         // Resolve the folder while the directory still exists — canonicalizing
         // its path afterwards would no longer match anything.
-        let wt_folder = folder_at_path(db, &canonical).await?;
+        let wt_folder = folder_at_path(&db.conn, &canonical).await?;
 
         // A to-do task mid-run or mid-merge is working inside this directory:
         // removing it (and `--force` would) yanks the tree out from under a live
@@ -6863,6 +6938,41 @@ mod tests {
             wt.parent_id,
             Some(root.id),
             "worktree records its source root folder"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_imported_folder_core_keeps_non_worktree_paths_top_level() {
+        let db = fresh_in_memory_db().await;
+        let plain_dir = tempfile::tempdir().expect("plain tempdir");
+        let plain = plain_dir.path().to_str().expect("utf-8 path");
+        let plain_entry = add_imported_folder_core(&db.conn, plain)
+            .await
+            .expect("plain folder");
+        assert_eq!(
+            folder_service::get_folder_by_id(&db.conn, plain_entry.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .parent_id,
+            None,
+            "a non-git cwd keeps the legacy top-level behavior"
+        );
+
+        let repo_dir = tempfile::tempdir().expect("repo tempdir");
+        git_run(repo_dir.path(), &["init", "-q", "-b", "main"]);
+        let repo = repo_dir.path().to_str().expect("utf-8 path");
+        let repo_entry = add_imported_folder_core(&db.conn, repo)
+            .await
+            .expect("main worktree folder");
+        assert_eq!(
+            folder_service::get_folder_by_id(&db.conn, repo_entry.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .parent_id,
+            None,
+            "a repository's main worktree must remain top-level"
         );
     }
 
